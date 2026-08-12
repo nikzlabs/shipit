@@ -216,6 +216,12 @@ export interface ClaudeAssistantEvent {
   type: "assistant";
   message: {
     content: ClaudeContentBlock[];
+    /**
+     * Usage for this single model call. Some Claude-compatible providers do
+     * not populate `result.usage.iterations`, so the final top-level assistant
+     * event is the only non-cumulative context-occupancy reading available.
+     */
+    usage?: ClaudeUsageIteration;
   };
   /**
    * When the Claude CLI emits this event from a subagent (Task tool), this is

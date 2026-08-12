@@ -975,9 +975,10 @@ function mapClaudeEvent(raw: RawClaudeEvent): Record<string, unknown> | null {
       };
     case "result": {
       const u = raw.usage;
-      // Mirror ClaudeAdapter: extract real per-turn context from the last
-      // iteration's input + cache, and the authoritative context window from
-      // `modelUsage[<model>].contextWindow`.
+      // Mirror ClaudeAdapter's result-only path: extract real per-turn context
+      // from the last iteration's input + cache. This stateless test mapper
+      // cannot retain the adapter's latest-assistant fallback for providers
+      // that omit iterations.
       let contextTokens: number | undefined;
       const lastIter = u?.iterations?.length ? u.iterations[u.iterations.length - 1] : undefined;
       if (lastIter) {

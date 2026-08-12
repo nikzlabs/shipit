@@ -138,6 +138,14 @@ Plumbed end-to-end:
 - `turnContextTokens()` prefers the explicit `turn.contextTokens` when present and falls back to the cache-sum for legacy rows. All call sites (`ContextDial`, `useMessageHandler`, `session-data`) inherit the fix transparently.
 - `tokens.cacheRead` / `tokens.cacheWrite` on `AgentResultEvent` keep their existing meaning (turn-wide sums) and continue to drive cost/billing rollups — only the dial's "current context size" reading switched to the last-iteration value.
 
+Some Claude-compatible providers, including DeepSeek through the Claude
+harness, omit `result.usage.iterations`. For these providers the adapter keeps
+the usage from the latest top-level `assistant` event, which represents one
+model call, and uses it as the result's context occupancy. Nested subagent
+assistant events are excluded. The turn-wide result totals remain the billing
+source, but they are never used as context occupancy when this per-call reading
+is available.
+
 ## Authoritative context window from `result.modelUsage.contextWindow`
 
 The original implementation derived the context window from a static `MODEL_CONTEXT_WINDOWS` map keyed by substring. That's brittle: Claude Opus 4.7 ships with a 1M window, but the map's `"opus": 200_000` entry beat any future-model substring and pinned the dial at 200K. The Claude CLI already reports the real window in `result.modelUsage.<model>.contextWindow` — that's now the source of truth.
