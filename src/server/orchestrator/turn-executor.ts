@@ -47,6 +47,8 @@ export interface RefusedAttempt {
   label: string;
   providerMessage: string;
   resetAt: string | null;
+  /** Why this route was excluded from the rest of this logical turn. */
+  failureKind: "quota" | "auth";
 }
 
 /**
@@ -56,11 +58,22 @@ export interface RefusedAttempt {
  * account (req 12), so the sentence is true by construction.
  */
 export function allRefusedMessage(ledger: readonly RefusedAttempt[]): string {
-  const lines = ledger.map((entry) => {
+  const quotaAttempts = ledger.filter((entry) => entry.failureKind === "quota");
+  const authAttempts = ledger.filter((entry) => entry.failureKind === "auth");
+  const lines = quotaAttempts.map((entry) => {
     const reset = entry.resetAt ? ` (resets at ${entry.resetAt})` : "";
     return `- ${entry.label}${reset}: ${entry.providerMessage}`;
   });
-  return `Every connected account refused this turn for quota:\n${lines.join("\n")}\nSend this message again to re-try every account, or connect another account in Settings.`;
+  if (authAttempts.length === 0) {
+    return `Every connected account refused this turn for quota:\n${lines.join("\n")}\nSend this message again to re-try every account, or connect another account in Settings.`;
+  }
+  const quotaSection = lines.length > 0
+    ? `Quota refusals:\n${lines.join("\n")}\n`
+    : "";
+  const authSection = authAttempts.length > 0
+    ? `Authentication failed for: ${authAttempts.map((entry) => entry.label).join(", ")}.\n`
+    : "";
+  return `${quotaSection}${authSection}No eligible subscription account could continue this turn. Sign in again or connect another account in Settings, then resend your message.`;
 }
 import { resetRunnerTurnState } from "./session-runner.js";
 import type { SessionRunnerInterface, SystemTurnDeps } from "./session-runner.js";
@@ -413,6 +426,18 @@ export async function executeAgentTurn(
     automaticRecoveryInProgress = true;
     return true;
   };
+  const finalizeAttemptOutput = (): void => {
+    if (!runner) return;
+    const messages = buildTurnMessages(
+      runner.chatMessageGroups,
+      runner.steeredMessages ?? [],
+      runner.recordedCards ?? [],
+      { inProgress: false },
+    );
+    if (messages.length === 0) return;
+    deps.listenerDeps.chatHistoryManager.replaceInProgress(sessionId, messages);
+    deps.listenerDeps.chatHistoryManager.finalizeInProgress(sessionId);
+  };
   const recoverAuth = async (): Promise<boolean> => {
     let healed: boolean;
     try {
@@ -463,6 +488,41 @@ export async function executeAgentTurn(
       healed = false;
     }
     if (!healed) {
+      // A confirmed unusable account is different from a transient stale token:
+      // the refresher has already marked this exact account auth_failed, so run
+      // the same logical turn once through the existing route-attempt loop. The
+      // ledger excludes the captured account, and env selection preserves the
+      // same service + subscription billing mode. Reserved routes and metered
+      // keys never enter this branch.
+      const policy = capturedRoutePolicy();
+      if (
+        !recoveryRetryUsed
+        && capturedCredentialRoute?.providerRouteKind === "account"
+        && !!capturedCredentialRoute.providerRouteId
+        && policy
+        && !policy.stopsOnFailure
+        && policy.vendorOwnedRecovery
+      ) {
+        const routeId = capturedCredentialRoute.providerRouteId;
+        automaticRecoveryInProgress = true;
+        // `ensureFresh` can return false before its full refresh tick when the
+        // credential file is missing. Nudge the existing account-qualified
+        // refresher path so it persists `auth_failed` and keeps Settings/UI
+        // behavior intact for future turns.
+        deps.listenerDeps.onAgentAuthRequired?.(agentId);
+        finalizeAttemptOutput();
+        await retryOnNextAccount(
+          {
+            routeId,
+            label: deps.routeLabel?.(routeId) ?? routeId,
+            providerMessage: "Authentication failed; this account must sign in again.",
+            resetAt: null,
+            failureKind: "auth",
+          },
+          true,
+        );
+        return true;
+      }
       // Heal genuinely failed (token revoked / rate-limited / no rotation). The
       // `done` handler stood down for us, so run the same terminal teardown it
       // would have, then return false so the listener surfaces the sign-in card.
@@ -494,24 +554,9 @@ export async function executeAgentTurn(
     } catch (err) {
       console.warn("[turn] 401-recovery token repush failed:", err);
     }
-    if (runner) {
-      // The retry starts by resetting every per-turn accumulator. Finalize any
-      // output the first attempt already streamed before allowing that reset,
-      // otherwise a retry that fails before producing output rebuilds history
-      // from empty groups and deletes the transcript the user already saw.
-      // The user row is persisted independently and guarded across attempts;
-      // only the first attempt's assistant/tool groups are finalized here.
-      const firstAttemptMessages = buildTurnMessages(
-        runner.chatMessageGroups,
-        runner.steeredMessages ?? [],
-        runner.recordedCards ?? [],
-        { inProgress: false },
-      );
-      if (firstAttemptMessages.length > 0) {
-        deps.listenerDeps.chatHistoryManager.replaceInProgress(sessionId, firstAttemptMessages);
-        deps.listenerDeps.chatHistoryManager.finalizeInProgress(sessionId);
-      }
-    }
+    // Preserve any partial assistant/tool output before the retry resets the
+    // per-turn accumulators. The shared user-row guard is independent.
+    finalizeAttemptOutput();
     const freshAgent = deps.agentFactory(agentId);
     if (runner) runner.setAgent(freshAgent);
     await executeAgentTurn(runner, deps, freshAgent, {
@@ -620,7 +665,10 @@ export async function executeAgentTurn(
     return !stopsOnCredentialFailure(deps.listenerDeps.sessionManager.get(sessionId));
   };
 
-  const retryOnNextAccount = async (entry: RefusedAttempt): Promise<void> => {
+  const retryOnNextAccount = async (
+    entry: RefusedAttempt,
+    consumeRecoveryBudget = false,
+  ): Promise<void> => {
     console.log(
       `[turn] ${agentId} reported a quota refusal for ${sessionId} on ${entry.routeId}; `
       + "retrying on the next eligible credential",
@@ -639,10 +687,14 @@ export async function executeAgentTurn(
       // The resident streaming process died with the account; the retry spawns
       // its own. Left set, the next turn would try to steer into a dead pipe.
       runner.isStreamingActive = false;
+      // The process that owned this route is dead. Keeping its identity would
+      // let the req-13 resident-route override defeat the ledger exclusion.
+      runner.residentRoute = undefined;
     }
     await executeAgentTurn(runner, deps, freshAgent, {
       ...input,
       attemptLedger: [...(input.attemptLedger ?? []), entry],
+      ...(consumeRecoveryBudget ? { recoveryRetryUsed: true } : {}),
       reuseExistingAgent: false,
       emitUserEcho: false,
       persistGuard,
@@ -670,6 +722,7 @@ export async function executeAgentTurn(
       label: (routeId !== "unknown" ? deps.routeLabel?.(routeId) : undefined) ?? routeId,
       providerMessage: providerMessage.replace(/\s+/g, " ").trim().slice(0, 400),
       resetAt: statedReset,
+      failureKind: "quota",
     };
   };
 
@@ -1760,10 +1813,13 @@ export async function executeAgentTurn(
     if (runner && turnRoute) {
       const routeLabel = deps.routeLabel?.(turnRoute.id) ?? turnRoute.id;
       if (lastRefusal) {
+        const reason = lastRefusal.failureKind === "auth"
+          ? "could not authenticate"
+          : "is out of quota";
         emitNoticeInTurn(
           runner,
           sessionId,
-          `${lastRefusal.label} is out of quota — continuing this turn on ${routeLabel}.`,
+          `${lastRefusal.label} ${reason} — continuing this turn on ${routeLabel}.`,
           deps.listenerDeps.chatHistoryManager,
         );
       } else {

@@ -170,6 +170,13 @@ Req 7's boundaries are unchanged and inherited, not re-implemented: the
 candidate walk never includes metered/env routes (no silent rollover), and
 mid-turn refusal-with-side-effects keeps today's "retry regardless" answer.
 
+The same ledger also carries a confirmed vendor-account authentication failure
+from docs/179. A failed forced heal excludes the captured account and performs
+one same-logical-turn hop to the next eligible route in the same subscription
+selection. It consumes the shared auth-recovery budget, so it cannot loop or
+cross into metered billing; the prompt persistence guard remains shared across
+both attempts.
+
 **Notices (req 10).** Every actual attempt is visible: a refusal emits
 "«label» is out of quota — trying «next label»." (or the terminal failure),
 and a turn that starts on a different account than the previous turn emits

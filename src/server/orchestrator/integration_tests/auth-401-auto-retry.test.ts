@@ -119,9 +119,13 @@ function makeDeps(
   deps: SystemTurnDeps;
   sseBroadcast: ReturnType<typeof vi.fn>;
   startOAuthFlow: ReturnType<typeof vi.fn>;
+  persistUserRow: ReturnType<typeof vi.fn>;
+  onAgentAuthRequired: ReturnType<typeof vi.fn>;
 } {
   const sseBroadcast = vi.fn();
   const startOAuthFlow = vi.fn();
+  const persistUserRow = vi.fn();
+  const onAgentAuthRequired = vi.fn();
   const deps: SystemTurnDeps = {
     agentFactory: () => {
       const a = makeFakeAgent();
@@ -150,7 +154,7 @@ function makeDeps(
       chatHistoryManager: {
         replaceInProgress: vi.fn(),
         finalizeInProgress: vi.fn(),
-        append: vi.fn(),
+        append: persistUserRow,
         updateLastMessage: vi.fn().mockReturnValue(null),
         indexOfMessageId: vi.fn().mockReturnValue(-1),
       } as never,
@@ -158,10 +162,11 @@ function makeDeps(
       sseBroadcast,
       broadcastLog: vi.fn(),
       getSelectedModel: () => undefined,
+      onAgentAuthRequired,
     },
     buildRunParams: vi.fn().mockResolvedValue({ prompt: "do work", cwd: "/tmp/s1" }),
   };
-  return { deps, sseBroadcast, startOAuthFlow };
+  return { deps, sseBroadcast, startOAuthFlow, persistUserRow, onAgentAuthRequired };
 }
 
 async function flush(): Promise<void> {
@@ -290,6 +295,122 @@ describe("runtime-401 auto-retry (docs/179)", () => {
     expect(sseBroadcast).toHaveBeenCalledWith("session_agent_finished", { sessionId: "s1" });
     expect(runner.running).toBe(false);
 
+    runner.dispose({ force: true });
+  });
+
+  it("continues the same logical turn on the next healthy subscription account after a confirmed auth failure", async () => {
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
+    const agents: FakeAgent[] = [];
+    const messages: { type: string; [key: string]: unknown }[] = [];
+    runner.on("message", (message) => messages.push(message as never));
+    const authFailedAccounts = new Set<string>();
+    const ensureAgentTokenFresh = vi.fn().mockResolvedValue(false);
+    const { deps, persistUserRow, onAgentAuthRequired } = makeDeps(agents, ensureAgentTokenFresh);
+    onAgentAuthRequired.mockImplementation(() => authFailedAccounts.add("acct-a"));
+    const prepareAgentEnv = vi.fn().mockImplementation(
+      async (_sessionId: string, _agentId: AgentId, opts?: { excludeRouteIds?: readonly string[] }) => {
+        const excluded = opts?.excludeRouteIds ?? [];
+        if (!excluded.includes("acct-a") && !authFailedAccounts.has("acct-a")) {
+          return { turnRoute: { kind: "account" as const, id: "acct-a" } };
+        }
+        return {
+          turnRoute: {
+            kind: "account" as const,
+            id: "acct-b",
+          },
+        };
+      },
+    );
+    deps.prepareAgentEnv = prepareAgentEnv;
+    deps.routeProfile = vi.fn().mockReturnValue({
+      serviceId: "anthropic",
+      billingMode: "sub",
+    });
+    deps.routeLabel = (routeId) => routeId === "acct-a" ? "Primary" : "Backup";
+    runner.setSystemTurnDeps(deps);
+
+    runner.dispatch(testDispatch({ text: "do work" }));
+    await waitFor(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "first account run");
+
+    agents[0]!.emit("event", {
+      type: "agent_assistant",
+      content: [{ type: "text", text: "Partial work before authentication failed" }],
+    });
+    agents[0]!.emit("auth_required");
+    agents[0]!.emit("done", 0);
+    await waitFor(() => agents.length === 2 && agents[1]!.run.mock.calls.length === 1, "backup account run");
+
+    expect(ensureAgentTokenFresh).toHaveBeenCalledWith("claude", "acct-a", { force: true });
+    expect(onAgentAuthRequired).toHaveBeenCalledWith("claude");
+    expect(authFailedAccounts).toContain("acct-a");
+    expect(prepareAgentEnv.mock.calls[1]?.[2]?.excludeRouteIds).toEqual(["acct-a"]);
+    expect(agents[1]!.run.mock.calls[0]?.[0]?.prompt).toBe("do work");
+    const history = deps.listenerDeps.chatHistoryManager as any;
+    expect(history.replaceInProgress.mock.calls.some((call: any[]) =>
+      call[1]?.some((row: { text?: string }) => row.text === "Partial work before authentication failed"),
+    )).toBe(true);
+    expect(history.finalizeInProgress).toHaveBeenCalled();
+    expect(messages.some((message) =>
+      String(message.message).includes("Primary could not authenticate")
+      && !String(message.message).includes("out of quota"),
+    )).toBe(true);
+
+    agents[1]!.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    agents[1]!.emit("done", 0);
+    await waitFor(() => !runner.running, "failover turn finished");
+
+    expect(agents).toHaveLength(2);
+    expect(runner.lastTurnErrored).toBe(false);
+    expect(messages.filter((message) => message.type === "error")).toHaveLength(0);
+    const userRows = persistUserRow.mock.calls
+      .map((call) => call[1] as { role?: string; text?: string } | undefined)
+      .filter((row) => row?.role === "user" && row.text === "do work");
+    expect(userRows).toHaveLength(1);
+    runner.dispose({ force: true });
+  });
+
+  it("does not cross to metered billing and stops after the backup subscription also fails auth", async () => {
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
+    const agents: FakeAgent[] = [];
+    const ensureAgentTokenFresh = vi.fn().mockResolvedValue(false);
+    const { deps } = makeDeps(agents, ensureAgentTokenFresh);
+    const selectedRoutes: string[] = [];
+    const prepareAgentEnv = vi.fn().mockImplementation(
+      async (_sessionId: string, _agentId: AgentId, opts?: { excludeRouteIds?: readonly string[] }) => {
+        const excluded = opts?.excludeRouteIds ?? [];
+        if (excluded.includes("acct-a") && excluded.includes("acct-b")) {
+          selectedRoutes.push("metered-key");
+          return { turnRoute: { kind: "reserved" as const, id: "metered-key" } };
+        }
+        if (excluded.includes("acct-a")) {
+          selectedRoutes.push("acct-b");
+          return { turnRoute: { kind: "account" as const, id: "acct-b" } };
+        }
+        selectedRoutes.push("acct-a");
+        return { turnRoute: { kind: "account" as const, id: "acct-a" } };
+      },
+    );
+    deps.prepareAgentEnv = prepareAgentEnv;
+    deps.routeProfile = vi.fn().mockImplementation((_kind, routeId) => ({
+      serviceId: "anthropic",
+      billingMode: routeId === "metered-key" ? "key" : "sub",
+    }));
+    runner.setSystemTurnDeps(deps);
+
+    runner.dispatch(testDispatch({ text: "do work" }));
+    await waitFor(() => agents.length === 1 && agents[0]!.run.mock.calls.length === 1, "primary run");
+    agents[0]!.emit("auth_required");
+    agents[0]!.emit("done", 0);
+    await waitFor(() => agents.length === 2 && agents[1]!.run.mock.calls.length === 1, "backup run");
+
+    // The replacement attempt has spent the one automatic recovery budget.
+    // Its auth failure surfaces normally and cannot start a third route.
+    agents[1]!.emit("auth_required");
+    agents[1]!.emit("done", 0);
+    await waitFor(() => !runner.running, "bounded auth failure");
+    expect(agents).toHaveLength(2);
+    expect(prepareAgentEnv).toHaveBeenCalledTimes(2);
+    expect(selectedRoutes).toEqual(["acct-a", "acct-b"]);
     runner.dispose({ force: true });
   });
 
