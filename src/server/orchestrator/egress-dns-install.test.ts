@@ -76,6 +76,8 @@ describe("buildResolverConfigB64", () => {
     const b64 = buildResolverConfigB64({ extraDomains: ["internal-registry.corp"] });
     const cfg = Buffer.from(b64, "base64").toString("utf-8");
     expect(cfg).toContain(`server=/anthropic.com/${  EGRESS_DNS_DEFAULT_UPSTREAMS[0]}`);
+    expect(cfg).toContain(`server=/platform.claude.com/${  EGRESS_DNS_DEFAULT_UPSTREAMS[0]}`);
+    expect(cfg).not.toContain("server=/claude.com/");
     expect(cfg).toContain("server=/internal-registry.corp/");
     expect(cfg).toContain("no-resolv"); // no default upstream → tunneling closed
   });
