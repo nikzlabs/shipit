@@ -285,11 +285,54 @@ No open questions remain.
     they just made. A mode that offers something else as well — a key to paste — still asks,
     because there the sign-in is one option among several.
 
+19. **A configured service is stated compactly.** A service's card says what the service is
+    and what the user gave it; it does not spend space on prose that would read the same on
+    every install, and it does not say a thing twice in two ways. The models a card can run
+    stay reachable **from** the card without occupying it.
+
+20. **A credential ShipIt takes from the deployment's environment is an ordinary
+    credential.** Where the deployment supplies one in an environment variable, it appears
+    in Settings like any other: it can be seen, renamed, reordered, replaced and removed,
+    and it takes part in exactly the same ordering and failover rules as one the user pasted
+    in. Nothing on the screen presents it as a different class of credential, and nothing
+    about where it came from changes how it is used. Removing it is a removal: a later
+    restart does not bring it back.
+
 ## Open questions
 
 _None._
 
 ## Resolved questions
+
+- 2026-08-12 — A service card carries four sentences of explanation, an empty-state box and a
+  row of model-id chips around a single credential row (272 px for 39 px of credential). How
+  compact, and what goes? **Chosen: the compact card, with the model ids moved into a control
+  in the card's top-right corner that names them on hover.** The human picked the compact
+  option over a denser one that also flattened the chips into a truncated line — "A, but the
+  model names should be in a tooltip of a separate control, e.g. 'models' chip or icon, maybe
+  on the right top corner" — which keeps the ids scannable while taking their row out of every
+  card. Req 19 added. The prose cut with it is listed in `plan.md`; the one item that was not
+  merely verbose is the account empty-state box, which printed "No Anthropic subscription
+  connected" directly above a connected Anthropic credential.
+
+- 2026-08-12 — A deployment-supplied variable (`ANTHROPIC_AUTH_TOKEN`, `DEEPSEEK_API_KEY`)
+  creates no credential row: it is invisible in Settings and used only when nothing is stored.
+  Keep that, or adopt it as an ordinary credential? **Chosen: adopt it.** The human's words are
+  the requirement — "I want these environment variables applied through ShipIt to behave
+  exactly as if I would add the service manually" — and the reason they arose is worth keeping:
+  a deployment (the dogfood instance) could not be used to judge what a real user sees, because
+  its credentials were a category the product treats differently. Req 20 added. Two consequences
+  the human accepted with it: the value is copied into ShipIt's encrypted credential store, and
+  a removal is remembered so the next boot does not re-import what the user deleted.
+
+- 2026-08-12 — When every connected subscription of a mode is exhausted, should ShipIt move
+  onto a supplied key on the same card? **Chosen: no — it stops and reports when quota
+  resets**, confirming the phase 5 decision behind reqs 12 and 13 rather than changing it. The
+  question was put because the card printed a sentence describing that rule and the human read
+  it as a special case for environment-supplied credentials. It is not one: the rule applies to
+  every supplied key sitting on an account-backed card, and the sentence was wrong only in
+  claiming to know the credential came from the environment. It changes no requirement; the
+  false sentence goes with req 19's compaction and the rule stays as reqs 12 and 13 state it.
 
 - 2026-08-11 — A sign-in is in progress, the provider's code is on screen, and the user
   dismisses the dialog with Esc / the backdrop / the close button rather than pressing
@@ -844,6 +887,19 @@ human, but most of the mechanism did not. What the human actually said, in order
   for a mode that also takes a key is the agent's, from the catalogue rather than from
   anything said: Anthropic's subscription has a field on that step, so the click there is not
   the empty one being described.
+
+- "I want the service definition panel in the settings to be way more compact" → req 19.
+- "it's hard for me to understand how it would look like for the user, from a DogFood service.
+  So there is some special case for DogFood environment variables, which I don't want. I want
+  these environment variables applied through ShipIt to behave exactly as if I would add the
+  service manually" → req 20. The premise was half wrong — the rows the human was looking at
+  were ordinary stored credentials that a card had *described* as environment-supplied — and
+  the requirement is stated for the real case the complaint uncovered: a deployment variable
+  that produces no row at all.
+- "A, but the model names should be in a tooltip of a separate control, e.g. 'models' chip or
+  icon, maybe on the right top corner" → req 19's closing clause. The corner placement is the
+  human's; the requirement states only that the models stay reachable without occupying the
+  card.
 
 Reqs 5 and 13 were changed again on 2026-08-08 from **Codex's** review, under CLAUDE.md's
 cross-backend rule. Same shape as the round below: the findings are the reviewer's, the
