@@ -433,15 +433,29 @@ export function ClaudeAuthOutput({ accountId }: { accountId: string }) {
       <summary className="cursor-pointer select-none text-xs text-(--color-text-link) transition-colors hover:text-(--color-accent)">
         Claude CLI output ({entries.length})
       </summary>
-      {/* `--font-size-code` (13px) is the size a code block in the chat reads
-          at, and this is not that: it is a diagnostic dump, skimmed for the one
-          line that explains a failure, and at 13px three entries filled the
-          panel. 10/14 mono fits a legible page of it in the same space. */}
-      <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-md border border-(--color-border-secondary) bg-(--color-bg-secondary) p-2 font-mono text-[10px] leading-[14px] text-(--color-text-secondary)">
-        {entries.map((entry) =>
-          `${entry.timestamp} ${entry.level.toUpperCase()} ${entry.source}: ${entry.message}`,
-        ).join("\n")}
-      </pre>
+      {/*
+        **Pinned to the newest line, by `flex-col-reverse` rather than by a
+        scroll effect.** In a reversed column the scroll origin *is* the bottom,
+        so a single growing child keeps its end in view while the log streams —
+        and a user who scrolls up to read stays where they put themselves, which
+        an effect that assigns `scrollTop` on every append would fight. It also
+        needs no effect at all, which this codebase restricts on purpose.
+
+        `--font-size-code` (13px) is the size a code block in the chat reads at,
+        and this is not that: it is a diagnostic dump, skimmed for the one line
+        that explains a failure, and at 13px three entries filled the panel.
+        10/14 mono fits a legible page of it in the same space.
+      */}
+      <div
+        className="mt-2 flex max-h-48 flex-col-reverse overflow-auto rounded-md border border-(--color-border-secondary) bg-(--color-bg-secondary) p-2"
+        data-testid={`provider-account-diagnostics-scroll-${accountId}`}
+      >
+        <pre className="whitespace-pre-wrap break-words font-mono text-[10px] leading-[14px] text-(--color-text-secondary)">
+          {entries.map((entry) =>
+            `${entry.timestamp} ${entry.level.toUpperCase()} ${entry.source}: ${entry.message}`,
+          ).join("\n")}
+        </pre>
+      </div>
     </details>
   );
 }

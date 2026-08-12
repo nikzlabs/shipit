@@ -442,6 +442,24 @@ describe("ServicesPanel", () => {
     });
   });
 
+  it("shows Save with the field it saves, and not a step early", async () => {
+    // It used to render from step 1, where there is nothing to save: disabled
+    // the whole time, and — the mode being unknown — `primary`, so arriving at
+    // a mode with an account path ANIMATED it blue-to-grey. Sampled per frame
+    // in the browser, the button never becomes enabled; it just looks like a
+    // control that was available and was then taken away.
+    render(<ServicesPanel agentList={[claudeAgent]} />);
+    await userEvent.click(screen.getByTestId("services-add-empty"));
+    expect(screen.queryByTestId("add-service-save")).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByTestId("add-service-option-anthropic"));
+    expect(screen.queryByTestId("add-service-save")).not.toBeInTheDocument();
+
+    // Step 3, and this mode takes a key: now there is something to save.
+    await userEvent.click(screen.getByTestId("add-service-mode-sub"));
+    expect(screen.getByTestId("add-service-save")).toBeInTheDocument();
+  });
+
   it("signs in inside the dialog for a mode connected only by signing in (req 17)", async () => {
     // The hand-off is gone. It sent the user out of a flow they had started —
     // "press Add account on its card" — and paid for it with a revealed empty

@@ -1200,8 +1200,17 @@ function AddServiceDialog({
             is primary wherever it exists, and *Save* steps down to secondary
             rather than disappearing — the key is still a working way to connect
             Anthropic's subscription, just not the one being recommended.
+
+            **It appears with the field it saves, and not before.** It used to
+            render from step 1 (`!billingMode || !service`), where there is
+            nothing to save and it is permanently disabled — and, worse, where
+            the mode is unknown, so it renders `primary` and then *animates* to
+            `secondary` on arriving at a mode with an account path. Sampled per
+            frame, the button is disabled the whole way through; what changes is
+            its colour, blue to grey over eight frames, which reads exactly as a
+            control that was available and then was taken away.
           */}
-          {(acceptsString || !billingMode || !service) && (
+          {acceptsString && (
             <Button
               variant={acceptsAccount ? "secondary" : "primary"}
               size="md"

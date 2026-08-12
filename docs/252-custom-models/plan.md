@@ -3011,7 +3011,16 @@ pulse alone reads as *stuck* rather than as *working*.
   destroyed and rebuilt at exactly the moment the code arrives. Uncontrolled, a buffer the user
   had open snapped shut under them and the panel jumped by the height of what they were
   reading. It is also 10px/14px mono rather than `--font-size-code` (13px) — that token is the
-  size a chat code block reads at, and this is a diagnostic dump skimmed for one line.
+  size a chat code block reads at, and this is a diagnostic dump skimmed for one line — and it
+  is **pinned to the newest line by `flex-col-reverse`**, not by a scroll effect: in a reversed
+  column the scroll origin *is* the bottom, so a single growing child keeps its end in view
+  while a reader who scrolls up stays where they put themselves. An effect assigning
+  `scrollTop` on every append would fight them, and this codebase restricts effects anyway.
+- **Save appears with the field it saves.** It used to render from step 1, where there is
+  nothing to save: permanently disabled, and — the mode being unknown that early — `primary`,
+  so arriving at a mode with an account path *animated* it from blue to grey. Sampled per
+  frame in the browser it is disabled the whole way through; only the colour moves, which
+  reads exactly as a control that was available and was then taken away.
 
 **Two rejected cuts got there first, and both are worth stating because they look reasonable
 written down.** The first streamed the CLI's last three lines *below* the box: that put the
