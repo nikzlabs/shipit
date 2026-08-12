@@ -56,7 +56,7 @@
  */
 
 import { useRef, useState } from "react";
-import { CaretDownIcon, CaretUpIcon, PlusIcon, TrashIcon } from "@phosphor-icons/react";
+import { PlusIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../../design-tokens.js";
 import type { AgentOption } from "../../agent-types.js";
 import type { AgentId, CredentialRoute } from "../../../server/shared/types.js";
@@ -71,7 +71,10 @@ import {
 } from "../../../server/shared/catalogue/index.js";
 import { Button } from "../ui/button.js";
 import { Dialog, DialogContent, DialogTitle } from "../ui/dialog.js";
+import { DropdownMenuItem } from "../ui/dropdown-menu.js";
 import { providerAccountAuthKey, useSettingsStore } from "../../stores/settings-store.js";
+import { CredentialRowShell } from "./CredentialRowShell.js";
+import { useRowDrag, type RowDragProps } from "./useRowDrag.js";
 import {
   AccountChallenge,
   ChallengePlaceholder,
@@ -153,6 +156,32 @@ function signInIsTheWholeStep(service: ServiceDef, billingMode: BillingMode): bo
     && !modeCredentialFor(service.id, billingMode, "string");
 }
 
+/**
+ * **Leave the sign-in this dialog was hosting, without taking a credential with
+ * it.**
+ *
+ * The rule the dialog had was "abandon whatever `signInAccountId` names", which
+ * was right while every id it held was one it had minted. Req 19's reconnect
+ * breaks that: the id is now sometimes an account the user has been using for
+ * months, and abandoning it DELETES it — so changing your mind about
+ * re-authenticating would revoke the working credential. The worst thing this
+ * feature could ship, and a guard test pins it.
+ *
+ * So the question is asked of the row rather than of how the dialog came by it:
+ * `isUnconnectedAttempt` is exactly "this has never been a credential", it is
+ * the same predicate the panel uses to decide what to list, and the two must
+ * agree — anything the panel hides, this must clean up.
+ *
+ * Either way the LOGIN is cancelled. It is a live process on the provider's
+ * side, and leaving one running against a row is how the next sign-in ends up
+ * refused with a 409 nobody can clear from the UI.
+ */
+function standDown(provider: AgentId, account: CredentialRoute | undefined): void {
+  if (!account) return;
+  if (isUnconnectedAttempt(account)) void abandonAccount(provider, account.id);
+  else void cancelAccountLogin(provider, account.id);
+}
+
 export function ServicesPanel({ agentList = [] }: { agentList?: AgentOption[] }) {
   const routes = useSettingsStore((s) => s.credentialRoutes);
   const accounts = useSettingsStore((s) => s.providerAccounts);
@@ -164,15 +193,21 @@ export function ServicesPanel({ agentList = [] }: { agentList?: AgentOption[] })
    * the panel flickering a card in and out around one.
    */
   const connectedAccounts = accounts.filter((a) => !isUnconnectedAttempt(a));
-  const [addOpen, setAddOpen] = useState(false);
   /**
-   * The account whose sign-in the dialog is currently hosting, if any.
+   * **The panel's one dialog, and the whole of how it was opened** (req 19).
    *
-   * Lives here rather than in the dialog because the cards behind the dialog
-   * are what it is for: see the prop's docstring on `AddServiceDialog`. Cleared
-   * with the dialog, so a card is only ever asked to stand down while there is
-   * something on top of it doing the job.
+   * `null` is closed. `{}` is *Add a service* from the top. A reconnect fills
+   * all three fields, which is exactly the input the dialog's step 3 already
+   * takes — `(service, mode, accountId)` — so reconnect is this component
+   * entered differently rather than a `ReconnectDialog`.
+   *
+   * Held as one object rather than an `addOpen` boolean beside a
+   * `reconnectTarget`, because two flags is how a panel comes to have two
+   * dialogs: the second state ends up mounting its own.
    */
+  const [dialog, setDialog] = useState<
+    { service?: ServiceDef; mode?: BillingMode; accountId?: string } | null
+  >(null);
 
   /**
    * **A service appears once it has a credential — never before** (req 17).
@@ -210,10 +245,42 @@ export function ServicesPanel({ agentList = [] }: { agentList?: AgentOption[] })
       billingMode={billingMode}
       routes={routes.filter((r) => r.serviceId === service.id && r.billingMode === billingMode)}
       agentList={agentList}
+      onReconnect={(accountId) => {
+        /**
+         * **Open the dialog first, then start the login** — in that order, and
+         * both from the click.
+         *
+         * The order is the fix. The row used to post `/login` itself and render
+         * `AccountChallenge` inline, and that component returns `null` until
+         * the auth URL arrives, so the row showed *nothing* between the click
+         * and the URL. Opening first means the dialog's step 3 is on screen
+         * from the first frame, with its waiting panel, its phase message and
+         * its CLI output buffer — the surface built to fill exactly that gap.
+         *
+         * The login runs here rather than inside the dialog because the click
+         * IS the event: a dialog that started its own login would have to do it
+         * on mount, which this codebase spends `eslint-disable` lines avoiding.
+         * `cancelAccountLogin` first, because the CLI outlives the browser and
+         * an adopted attempt may still have one running — without it the start
+         * is a 409.
+         */
+        const provider = accountProviderFor(service, billingMode);
+        if (!provider) return;
+        setDialog({ service, mode: billingMode, accountId });
+        void (async () => {
+          try {
+            await cancelAccountLogin(provider, accountId);
+            await startAccountLogin(provider, accountId);
+          } catch {
+            // Swallowed on purpose: the dialog is already showing this
+            // account's sign-in, and a start that never happened lands there
+            // as the stalled state with its own *Try again* — reporting it
+            // twice would put the same failure on the card behind the modal.
+          }
+        })();
+      }}
     />
   ));
-
-  const dialog = addOpen && <AddServiceDialog agentList={agentList} onClose={() => setAddOpen(false)} />;
 
   // "Nothing configured" is the caption under the heading rather than a box of
   // its own: empty, the whole panel is two lines and a button.
@@ -255,7 +322,7 @@ export function ServicesPanel({ agentList = [] }: { agentList?: AgentOption[] })
           // shrinking the target.
           size="md"
           className="rounded-md"
-          onClick={() => setAddOpen(true)}
+          onClick={() => setDialog({})}
           data-testid={empty ? "services-add-empty" : "services-add"}
         >
           <PlusIcon size={ICON_SIZE.XS} /> Add a service
@@ -263,7 +330,23 @@ export function ServicesPanel({ agentList = [] }: { agentList?: AgentOption[] })
       </div>
 
       <InstalledHarnesses agentList={agentList} />
-      {dialog}
+      {/*
+        **One mount site, whichever way the dialog was opened.** A copy of step
+        3 in a row, a second `Dialog` mounted from `ProviderAccountRows`, or a
+        "reconnect mode" branch that re-implements the panel are all the wrong
+        seam: the dialog's step 3 is already parameterised by
+        `(service, mode, accountId)`, and that is the entire input reconnect
+        has. A test asserts exactly one `add-service-dialog` is mounted.
+      */}
+      {dialog && (
+        <AddServiceDialog
+          {...(dialog.service ? { initialService: dialog.service } : {})}
+          {...(dialog.mode ? { initialMode: dialog.mode } : {})}
+          {...(dialog.accountId ? { reconnectAccountId: dialog.accountId } : {})}
+          agentList={agentList}
+          onClose={() => setDialog(null)}
+        />
+      )}
     </div>
   );
 }
@@ -338,11 +421,14 @@ function ServiceModeCard({
   billingMode,
   routes,
   agentList,
+  onReconnect,
 }: {
   service: ServiceDef;
   billingMode: BillingMode;
   routes: CredentialRoute[];
   agentList: AgentOption[];
+  /** Passed through to the account rows — see their prop's docstring. */
+  onReconnect: (accountId: string) => void;
 }) {
   // A mode can hold BOTH shapes at once — Anthropic's subscription takes an
   // OAuth account and an env-supplied token — so this renders whichever are
@@ -372,24 +458,95 @@ function ServiceModeCard({
    * (`service-routing.ts`). Presenting the total as one number and offering
    * "spread across accounts" over it would describe a pool the server does not
    * have.
+   *
+   * **Both shapes PRESENT, not both shapes possible.** This read
+   * `provider !== undefined && stringRoutes.length > 0` — "this mode can take
+   * an account, and holds a string" — which is a different question, and req
+   * 20 turned the difference into a visible bug. Anthropic's subscription can
+   * take an account; a dogfood install has none and two supplied credentials,
+   * and those two ARE one routing pool. Reading "can" for "does" told the card
+   * they were a mixed pair, so it offered no order between them and no routing
+   * band at all — two credentials the user could neither order nor choose
+   * between. It was unreachable before adoption, because the second string
+   * credential was invisible.
    */
-  const mixedDelivery = provider !== undefined && stringRoutes.length > 0;
+  const mixedDelivery = accounts.length > 0 && stringRoutes.length > 0;
   /**
    * What one credential of this mode *is*, in the user's words. An
    * account-backed subscription has accounts; everything else has credentials,
    * and calling a pasted key an "account" is the conflation this whole feature
    * removes. A mixed card holds both, so it says the wider word.
    */
-  const noun = provider && !mixedDelivery ? "account" : "credential";
-  /** The credentials the routing controls actually route between. */
-  const routedCredentials = provider ? accounts : stringRoutes;
-  const routedNoun = provider ? "account" : "credential";
+  /**
+   * What the header's count pill calls the things it is counting.
+   *
+   * "account" only when every counted credential IS one — the same
+   * present-not-possible correction as `mixedDelivery`. Reading it off
+   * `provider` said "2 accounts" over two supplied credentials on a card with
+   * no account at all, which is precisely the account/credential conflation
+   * this whole feature exists to remove.
+   */
+  const noun = accounts.length > 0 && stringRoutes.length === 0 ? "account" : "credential";
+  /**
+   * The credentials the routing controls actually route between.
+   *
+   * The accounts when there are any, and otherwise the strings — **not** "the
+   * accounts whenever the mode could have some". The same correction as
+   * `mixedDelivery` above and for the same reason: a mode that accepts an
+   * account but currently holds two supplied credentials has a real pool of
+   * two, and reading the empty account list as the pool left it with no
+   * controls at all.
+   */
+  const routedByAccount = accounts.length > 0;
+  const routedCredentials = routedByAccount ? accounts : stringRoutes;
+  const routedNoun = routedByAccount ? "account" : "credential";
+  const [reordering, setReordering] = useState(false);
+  const [reorderError, setReorderError] = useState("");
+
+  /**
+   * req 21 — a dropped row rewrites the group's whole order.
+   *
+   * Owned by the card rather than by the row, because the endpoint takes the
+   * complete set and only the card holds it. That is the same reason the carets
+   * this replaces had to be handed an `ids` array: a row can say where it
+   * landed, never what the list now is.
+   */
+  const reorderStrings = async (routeIds: string[]): Promise<void> => {
+    setReordering(true);
+    setReorderError("");
+    try {
+      const res = await fetch(`/api/credential-routes/${service.id}/${billingMode}/order`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ routeIds }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = (await res.json()) as { routes: CredentialRoute[] };
+      useSettingsStore.getState().setCredentialRoutes(data.routes);
+    } catch (err) {
+      setReorderError(err instanceof Error && err.message ? err.message : "Failed to reorder the credentials");
+      console.error("[services] credential reorder failed:", err);
+    } finally {
+      setReordering(false);
+    }
+  };
+
+  const stringDrag = useRowDrag(
+    stringRoutes.map((r) => r.id),
+    (next) => void reorderStrings(next),
+    reordering,
+  );
 
   // req 12 — `key` is single-credential by definition, so an API-key card gets
   // no routing band at all: not a disabled group, not an empty section, and no
   // sentence explaining the absence.
+  //
+  // req 19 — one row: the segmented control on the left, the cutoffs on the
+  // right. The band's four explanatory strings are kept in tooltips on those
+  // same controls (`CredentialRouting`), not deleted with the lines they were
+  // on.
   const routing = !multiple ? undefined : routedCredentials.length > 1 ? (
-    <>
+    <div className="flex flex-wrap items-center justify-between gap-2">
       <CredentialSelectionModeControl
         serviceId={service.id}
         billingMode={billingMode}
@@ -408,7 +565,7 @@ function ServiceModeCard({
           provider={provider}
         />
       )}
-    </>
+    </div>
   ) : routedCredentials.length === 1 ? (
     // Exactly one, never zero: with none connected the card is already asking
     // for the first one, and "nothing to route between yet" under that ask
@@ -428,18 +585,8 @@ function ServiceModeCard({
       billingMode={billingMode}
       credentialCount={credentialCount}
       countNoun={noun}
-      description={
-        provider
-          ? "Connect one or more subscriptions. ShipIt fails over between them when one runs out."
-          : billingMode === "key"
-            ? "Metered — no quota to report, so this card shows no usage."
-            : "A plan, authenticated by a supplied key."
-      }
       models={modelIds(service, billingMode)}
       routing={routing}
-      routingTitle={
-        routedCredentials.length > 1 ? `How ShipIt picks between these ${routedNoun}s` : undefined
-      }
       testId={`service-card-${credentialModeKey(service.id, billingMode)}`}
     >
       {/* The docs/150 account rows, whole: the login flow and the fallback
@@ -448,56 +595,85 @@ function ServiceModeCard({
         <ProviderAccountRows
           provider={provider}
           agent={agentList.find((a) => a.id === provider)}
+          billingMode={billingMode}
+          onReconnect={onReconnect}
         />
       )}
       {stringRoutes.length > 0 && (
-        <div className="space-y-1.5">
-          {mixedDelivery && (
-            <p
-              className="text-xs text-(--color-text-tertiary)"
-              data-testid={`service-string-fallback-${credentialModeKey(service.id, billingMode)}`}
-            >
-              Supplied by an environment variable, and used only while no account above is
-              connected — ShipIt does not move onto it when the accounts run out.
-            </p>
-          )}
-          {stringRoutes.map((route, index) => (
-            <CredentialRow
+        <div className="space-y-1">
+          {/*
+            **The environment-variable sentence is gone** (req 19/20), and not
+            because it was verbose. Its first clause — "Supplied by an
+            environment variable" — was simply FALSE: the panel printed it for
+            every `via: "string"` row on an account-backed card, and those rows
+            are ordinary stored credentials with no recorded provenance. The
+            rows that prompted the report had been added by hand through the
+            dialog. Its second clause is true and is reqs 12/13, which do not
+            need printing on every card to stay true.
+
+            Req 20 removes the distinction the sentence was reaching for: a
+            deployment-supplied credential is adopted into an ordinary row at
+            boot (`adoptEnvCredentials`), so there is no longer a category of
+            credential that behaves differently from one the user added.
+          */}
+          {stringRoutes.map((route) => (
+            <StringCredentialRow
               key={route.id}
               route={route}
-              order={
-                // req 2's fallback order, and it is not cosmetic: the FIRST
-                // credential of a group is the one delivered, so moving a row
-                // changes which key sessions receive.
-                //
-                // Never offered on a mixed card: the reorder endpoint requires
-                // EVERY route of the `(service, mode)` exactly once
-                // (`reorderCredentialRoutes`), and the account rows are in that
-                // set — so a list of just these ids is a 400. There is nothing
-                // to order anyway, since the env token is not in the accounts'
-                // failover chain.
-                multiple && !mixedDelivery && stringRoutes.length > 1
-                  ? { index, total: stringRoutes.length, ids: stringRoutes.map((r) => r.id) }
-                  : undefined
-              }
+              // req 2's fallback order, and it is not cosmetic: the FIRST
+              // credential of a group is the one delivered, so moving a row
+              // changes which key sessions receive.
+              //
+              // Never offered on a mixed card: the reorder endpoint requires
+              // EVERY route of the `(service, mode)` exactly once
+              // (`reorderCredentialRoutes`), and the account rows are in that
+              // set — so a list of just these ids is a 400. There is nothing to
+              // order anyway, since the env token is not in the accounts'
+              // failover chain.
+              drag={multiple && !mixedDelivery ? stringDrag(route.id) : undefined}
             />
           ))}
+          {reorderError && (
+            <p
+              className="px-1 text-[11px] text-(--color-error)"
+              role="alert"
+              data-testid={`credential-reorder-error-${credentialModeKey(service.id, billingMode)}`}
+            >
+              {reorderError}
+            </p>
+          )}
         </div>
       )}
     </ServiceCard>
   );
 }
 
-interface RowOrder {
-  index: number;
-  total: number;
-  /** Every id in the group, in current order — the reorder endpoint takes the complete set. */
-  ids: string[];
-}
-
-function CredentialRow({ route, order }: { route: CredentialRoute; order?: RowOrder }) {
+/**
+ * A string-delivered credential: the same `label · quota · ⋯` row an account
+ * gets, with a key's verbs in the menu.
+ *
+ * **Rename is new here.** `PATCH /api/credential-routes/:id` has always taken a
+ * label patch and nothing in the UI ever reached it, so a key was stuck with
+ * whatever `generatedLabel` called it — "Anthropic key", "Anthropic key 2" —
+ * for the life of the install. A row that can be reordered but not named is
+ * exactly the asymmetry req 19 is closing between the two row types.
+ *
+ * **No quota pill, and no sentence about the absence.** A key reports no quota
+ * (req 10) and a string-delivered subscription reports none until its reader
+ * lands (planning#339); either way the slot is simply empty, which is what the
+ * whole column already means everywhere else.
+ */
+function StringCredentialRow({
+  route,
+  drag,
+}: {
+  route: CredentialRoute;
+  drag?: RowDragProps | undefined;
+}) {
   const [busy, setBusy] = useState(false);
   const [replacing, setReplacing] = useState(false);
+  const [renaming, setRenaming] = useState(false);
+  const [draftLabel, setDraftLabel] = useState("");
   const [value, setValue] = useState("");
   /**
    * docs/257 req 5 — reorder / remove / replace failures render on the row that
@@ -509,34 +685,6 @@ function CredentialRow({ route, order }: { route: CredentialRoute; order?: RowOr
    * rows exist while the panel is still on screen.
    */
   const [error, setError] = useState("");
-
-  const move = async (delta: number): Promise<void> => {
-    if (!order) return;
-    const next = [...order.ids];
-    const to = order.index + delta;
-    if (to < 0 || to >= next.length) return;
-    [next[order.index], next[to]] = [next[to], next[order.index]];
-    setBusy(true);
-    setError("");
-    try {
-      const res = await fetch(
-        `/api/credential-routes/${route.serviceId}/${route.billingMode}/order`,
-        {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ routeIds: next }),
-        },
-      );
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = (await res.json()) as { routes: CredentialRoute[] };
-      useSettingsStore.getState().setCredentialRoutes(data.routes);
-    } catch (err) {
-      setError(err instanceof Error && err.message ? err.message : "Failed to reorder the credentials");
-      console.error("[services] credential reorder failed:", err);
-    } finally {
-      setBusy(false);
-    }
-  };
 
   const remove = async (): Promise<void> => {
     setBusy(true);
@@ -554,21 +702,22 @@ function CredentialRow({ route, order }: { route: CredentialRoute; order?: RowOr
     }
   };
 
-  const replace = async (): Promise<void> => {
-    if (!value.trim()) return;
+  /** One PATCH for both verbs — the endpoint takes either field, or both. */
+  const patch = async (body: { label: string } | { secret: string }): Promise<void> => {
     setBusy(true);
     setError("");
     try {
       const res = await fetch(`/api/credential-routes/${route.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ secret: value }),
+        body: JSON.stringify(body),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = (await res.json()) as { routes: CredentialRoute[] };
       useSettingsStore.getState().setCredentialRoutes(data.routes);
       setValue("");
       setReplacing(false);
+      setRenaming(false);
     } catch (err) {
       setError(err instanceof Error && err.message ? err.message : "Failed to update the credential");
       console.error("[services] credential update failed:", err);
@@ -577,94 +726,97 @@ function CredentialRow({ route, order }: { route: CredentialRoute; order?: RowOr
     }
   };
 
+  const commitRename = (): void => {
+    const label = draftLabel.trim();
+    // Unchanged or empty still closes the field — see the account row's
+    // `saveLabel` for why: the open state must not survive a no-op save.
+    if (!label || label === route.label) { setRenaming(false); return; }
+    void patch({ label });
+  };
+
   return (
-    <div
-      className="rounded-md border border-(--color-border-secondary) bg-(--color-bg-secondary) p-2"
-      data-testid={`credential-row-${route.id}`}
-    >
-      <div className="flex items-center justify-between gap-2">
-        <div className="min-w-0 flex items-center gap-2">
-          {order && (
-            <span className="flex items-center gap-0.5" data-testid={`credential-order-${route.id}`}>
-              <button
-                onClick={() => void move(-1)}
-                disabled={busy || order.index === 0}
-                aria-label={`Move ${route.label} earlier in the fallback order`}
-                className="rounded px-1 py-0.5 text-[11px] text-(--color-text-secondary) hover:bg-(--color-bg-hover) disabled:opacity-30 disabled:hover:bg-transparent"
-                data-testid={`credential-move-up-${route.id}`}
-              >
-                <CaretUpIcon size={ICON_SIZE.XS} />
-              </button>
-              <button
-                onClick={() => void move(1)}
-                disabled={busy || order.index === order.total - 1}
-                aria-label={`Move ${route.label} later in the fallback order`}
-                className="rounded px-1 py-0.5 text-[11px] text-(--color-text-secondary) hover:bg-(--color-bg-hover) disabled:opacity-30 disabled:hover:bg-transparent"
-                data-testid={`credential-move-down-${route.id}`}
-              >
-                <CaretDownIcon size={ICON_SIZE.XS} />
-              </button>
-            </span>
-          )}
-          <span className="truncate text-xs text-(--color-text-primary)">{route.label}</span>
-          {order && route.isPrimary && (
-            <span className="rounded bg-(--color-bg-primary) px-1 py-0.5 text-[10px] text-(--color-text-tertiary)">
-              Primary
-            </span>
-          )}
-        </div>
-        <div className="flex shrink-0 gap-1">
-          <button
-            onClick={() => setReplacing((v) => !v)}
-            className="rounded px-1.5 py-0.5 text-[11px] text-(--color-text-secondary) hover:bg-(--color-bg-hover)"
+    <CredentialRowShell
+      testId={`credential-row-${route.id}`}
+      label={route.label}
+      {...(drag ? { drag } : {})}
+      menuLabel={`Manage ${route.label}`}
+      menu={
+        <>
+          <DropdownMenuItem
+            onSelect={() => { setDraftLabel(route.label); setRenaming(true); }}
+            data-testid={`credential-rename-${route.id}`}
+          >
+            Rename
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            onSelect={() => setReplacing(true)}
             data-testid={`credential-replace-${route.id}`}
           >
-            Replace
-          </button>
-          <button
-            onClick={() => void remove()}
+            Replace secret
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            onSelect={() => void remove()}
             disabled={busy}
-            aria-label={`Remove ${route.label}`}
-            className="rounded px-1.5 py-0.5 text-[11px] text-(--color-text-secondary) hover:bg-(--color-bg-hover) disabled:opacity-40"
+            className="text-(--color-error) hover:text-(--color-error) focus:text-(--color-error)"
             data-testid={`credential-remove-${route.id}`}
           >
-            <TrashIcon size={ICON_SIZE.XS} />
-          </button>
-        </div>
-      </div>
-      {error && (
-        <p
-          className="mt-2 text-xs text-(--color-text-error)"
-          role="alert"
-          data-testid={`credential-error-${route.id}`}
-        >
-          {error}
-        </p>
+            Remove
+          </DropdownMenuItem>
+        </>
+      }
+      error={
+        error ? (
+          <p
+            className="px-1 pb-1 text-[11px] text-(--color-error)"
+            role="alert"
+            data-testid={`credential-error-${route.id}`}
+          >
+            {error}
+          </p>
+        ) : undefined
+      }
+    >
+      {renaming && (
+        <input
+          autoFocus
+          value={draftLabel}
+          onChange={(e) => setDraftLabel(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") commitRename();
+            if (e.key === "Escape") setRenaming(false);
+          }}
+          onBlur={commitRename}
+          aria-label={`Name for ${route.label}`}
+          className="mt-1 w-full rounded border border-(--color-border-secondary) bg-(--color-bg-primary) px-1.5 py-0.5 text-xs text-(--color-text-primary) focus:border-(--color-border-focus) focus:outline-none"
+          data-testid={`credential-rename-input-${route.id}`}
+        />
       )}
       {replacing && (
-        <div className="mt-2 flex gap-2">
+        <div className="mt-1 flex gap-1">
           <input
+            autoFocus
             type="password"
             value={value}
             onChange={(e) => setValue(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Escape") setReplacing(false); }}
             placeholder="Paste the new key"
             aria-label={`New credential for ${route.label}`}
-            className="flex-1 rounded-md border border-(--color-border-secondary) bg-(--color-bg-primary) px-2 py-1 text-xs text-(--color-text-primary) focus:border-(--color-border-focus) focus:outline-none"
+            className="min-w-0 flex-1 rounded border border-(--color-border-secondary) bg-(--color-bg-primary) px-1.5 py-0.5 text-xs text-(--color-text-primary) focus:border-(--color-border-focus) focus:outline-none"
             data-testid={`credential-replace-input-${route.id}`}
           />
           <Button
             variant="secondary"
             size="sm"
-            className="rounded-md"
+            className="rounded"
             disabled={busy || !value.trim()}
-            onClick={() => void replace()}
+            onClick={() => void patch({ secret: value })}
             data-testid={`credential-replace-submit-${route.id}`}
           >
             Save
           </Button>
         </div>
       )}
-    </div>
+    </CredentialRowShell>
   );
 }
 
@@ -697,11 +849,30 @@ function CredentialRow({ route, order }: { route: CredentialRoute; order?: RowOr
 function AddServiceDialog({
   initialService,
   initialMode,
+  reconnectAccountId,
   agentList = [],
   onClose,
 }: {
   initialService?: ServiceDef;
   initialMode?: BillingMode;
+  /**
+   * **Reconnect: an account that already exists, signing in again** (req 19).
+   *
+   * It is deliberately the ONLY thing that distinguishes a reconnect from an
+   * add, because everything else it needs was already here.
+   * `initialService`/`initialMode` skip steps 1 and 2, so the dialog opens on
+   * step 3; `signInAccountId` already means "the account this dialog's sign-in
+   * belongs to", so reconnect seeds it with an **existing** id instead of one
+   * the dialog minted; and `startSignIn`'s adopt-don't-create branch then
+   * cancels any stale login and starts a fresh one against it — the same call
+   * an add makes after its create.
+   *
+   * The one consequence to state, because a test pins it: an existing account
+   * is not an attempt (`isUnconnectedAttempt` is false once it has an
+   * `externalId`), so **cancelling a reconnect must leave it connected and in
+   * the same position**. `cancel` abandons only what this dialog created.
+   */
+  reconnectAccountId?: string;
   /** Only to tell whether the harness that runs a sign-in is installed. */
   agentList?: AgentOption[];
   onClose: () => void;
@@ -722,9 +893,26 @@ function AddServiceDialog({
    * to list from the accounts themselves ({@link isUnconnectedAttempt}), which
    * is what keeps the two from disagreeing for a frame.
    */
-  const [signInAccountId, setSignInAccountId] = useState<string | undefined>(undefined);
+  const [signInAccountId, setSignInAccountId] = useState<string | undefined>(reconnectAccountId);
   /** The user has left. Read by `startSignIn` after every await — see `cancel`. */
   const left = useRef(false);
+  /**
+   * **A reconnect has actually taken effect** — the account has been observed
+   * to leave `ready`.
+   *
+   * Needed because a reconnect starts from a *connected* account, and
+   * `signedIn` below is `status === "ready"`. Without this the dialog opens on
+   * "Connected. Anthropic subscription is ready" with a *Done* button, for the
+   * ~50 ms until the server's `authenticating` broadcast lands: a flash of the
+   * flow's LAST screen at the moment the user asked to start it again.
+   *
+   * Adjusted during render rather than in an effect, which is what makes it a
+   * frame-exact answer instead of a frame-late one. A start that fails outright
+   * leaves the account `ready` and this `false`, which is precisely the
+   * `signInStalled` shape — so that path ends on *Try again*, not on a wait
+   * with no end.
+   */
+  const [reconnectLeftReady, setReconnectLeftReady] = useState(reconnectAccountId === undefined);
 
   /**
    * **Choosing the mode starts its sign-in, when signing in is all the step
@@ -791,7 +979,10 @@ function AddServiceDialog({
    * `provider_accounts` broadcast. Derived rather than watched, so the dialog
    * needs no effect and survives a reload mid-challenge exactly as the row does.
    */
-  const signedIn = signInAccount?.status === "ready";
+  if (!reconnectLeftReady && signInAccount && signInAccount.status !== "ready") {
+    setReconnectLeftReady(true);
+  }
+  const signedIn = signInAccount?.status === "ready" && reconnectLeftReady;
   const harnessInstalled = signInProvider
     ? (agentList.find((a) => a.id === signInProvider)?.installed ?? true)
     : true;
@@ -900,8 +1091,12 @@ function AddServiceDialog({
        * component been left?" and the answer must not be a render behind the
        * question. Found by the independent review.
        */
+      // `standDown`, not `abandonAccount`: `account` here is the row this
+      // dialog will sign in, and on a reconnect that is a connected credential
+      // rather than an attempt — deleting it because the user pressed Esc
+      // during the round-trip would revoke it. See that function.
       if (left.current) {
-        void abandonAccount(provider, account.id);
+        standDown(provider, account);
         return;
       }
       // An adopted attempt may still have a login running against it (the CLI
@@ -909,7 +1104,7 @@ function AddServiceDialog({
       // this dialog then shows the live one, rather than a 409.
       if (existing) await cancelAccountLogin(provider, account.id);
       if (left.current) {
-        void abandonAccount(provider, account.id);
+        standDown(provider, account);
         return;
       }
       await startAccountLogin(provider, account.id);
@@ -943,12 +1138,12 @@ function AddServiceDialog({
    * reaches it.
    */
   const cancel = (): void => {
-    // Said before the abandon, so a `startSignIn` still awaiting a response
+    // Said before the stand-down, so a `startSignIn` still awaiting a response
     // sees it and cleans up after itself: between the two of them, every
     // account this dialog created is either connected or gone.
     left.current = true;
     if (signInProvider && signInAccountId && !signedIn) {
-      void abandonAccount(signInProvider, signInAccountId);
+      standDown(signInProvider, signInAccount);
     }
     onClose();
   };

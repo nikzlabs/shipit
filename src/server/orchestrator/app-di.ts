@@ -20,6 +20,7 @@ import { EgressAllowlistStore } from "./egress-allowlist-store.js";
 import { FileReviewStore } from "./review-store.js";
 import { PresentStore } from "./present-store.js";
 import { CredentialStore } from "./credential-store.js";
+import { adoptEnvCredentials } from "./adopt-env-credentials.js";
 import { resolveSecretCipher, type SecretCipher } from "./secret-cipher.js";
 import { ProviderAccountManager } from "./provider-account-manager.js";
 import { initGlobalGitConfig } from "./git-config.js";
@@ -477,6 +478,22 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
   // ---- Credential store ----
   const credentialStore =
     deps.credentialStore ?? new CredentialStore(credentialsDir, secretCipher ?? undefined);
+
+  /**
+   * docs/252 req 20 — turn the deployment's credential variables into ordinary
+   * stored rows, and take a removed one back out of `process.env`.
+   *
+   * Runs here, immediately after the store is built and **before** anything
+   * reads a credential: the agent registry's eligibility, the env seeding
+   * below, and every routing decision all ask either the store or
+   * `process.env`, and both answers change here. Running it later would give
+   * the first readers of this boot a different picture from the rest.
+   */
+  const envAdoption = adoptEnvCredentials(credentialStore);
+  for (const what of ["adopted", "rotated", "suppressed"] as const) {
+    const names = envAdoption[what];
+    if (names.length > 0) console.log(`[credentials] environment credentials ${what}: ${names.join(", ")}`);
+  }
 
   // ---- Provider accounts (docs/150 Phase 1) ----
   const providerAccountManager = deps.providerAccountManager ?? new ProviderAccountManager({

@@ -210,7 +210,17 @@ interface SubscriptionLimitPillProps {
    * upstream call instead of one per connected account.
    */
   routeId?: string;
-  label: string;
+  /**
+   * Whose quota this is — omitted where the surrounding row already says so.
+   *
+   * In the header a pill floats free and must name its account (docs/150 req
+   * 10). On a Settings → Services credential row (docs/252 req 19) the row IS
+   * the account's name, and repeating it inside the pill spends the width the
+   * compaction was for. The pill is otherwise identical, deliberately: the
+   * meters, the elapsed-time marker, the staleness dimming and the refresh
+   * button are one implementation, not a second read-out that can disagree.
+   */
+  label?: string;
   snapshot?: SubscriptionLimits;
   showRefresh?: boolean;
   /** See `SubscriptionLimitsBadgeProps.autoRefresh`. Only acts with `showRefresh`. */
@@ -237,9 +247,11 @@ export function SubscriptionLimitPill({ serviceId, routeId, label, snapshot, sho
       numeric
       className={`gap-2 pl-2 ${showRefresh ? "pr-1" : "pr-2"} pt-0 pb-0.5 bg-(--color-bg-hover) min-w-0`}
     >
-      <span className="truncate" title={snapshot?.plan ? `${label} — ${snapshot.plan}` : label}>
-        {label}
-      </span>
+      {label !== undefined && (
+        <span className="truncate" title={snapshot?.plan ? `${label} — ${snapshot.plan}` : label}>
+          {label}
+        </span>
+      )}
       <Meter
         shortLabel="5h"
         longLabel="5h window"

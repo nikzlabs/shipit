@@ -43,6 +43,7 @@ import {
 } from "../../shared/catalogue/index.js";
 import type { CredentialStore } from "../credential-store.js";
 import { collectServiceCredentialEnv } from "../secret-resolver.js";
+import { envRouteIdFor } from "../service-routing.js";
 import { ServiceError } from "./types.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
 
@@ -325,6 +326,30 @@ export function deleteCredentialRoute(
   }
   const before = deliveredValueFor(credentialStore, route.serviceId, route.billingMode);
   credentialStore.deleteCredentialRoute(routeId);
+  /**
+   * docs/252 req 20 — **remember the removal of an adopted credential.**
+   *
+   * The deployment's variable is still set, so without this the next boot
+   * re-imports the row the user just deleted and the removal silently never
+   * happened. Recorded against the variable rather than the route id because
+   * the variable is what would re-create it, and matched by the reserved id
+   * `adoptEnvCredentials` writes — so removing a *hand-added* credential of the
+   * same mode records nothing and leaves adoption free to run.
+   */
+  const envName = storageEnvFor(route.serviceId, route.billingMode);
+  if (envName && routeId === envRouteIdFor(envName)) {
+    credentialStore.setAdoptedEnvCredential(envName, { removed: true });
+    if (process.env[envName] !== undefined) {
+      // Unset it here too, not only at the next boot: every downstream reader
+      // asks `process.env` (`listConfiguredCredentials`, `stringSelectionFor`,
+      // the registry's probes), so leaving it set would keep the credential
+      // working for the rest of this process's life. `syncProcessEnvForMode`
+      // below would only clear it when the value happened to match what the
+      // store delivered.
+      // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- keyed by a catalogue storageEnv name
+      delete process.env[envName];
+    }
+  }
   syncProcessEnvForMode(credentialStore, route.serviceId, route.billingMode, before);
   return { routes: listCredentialRoutes(credentialStore) };
 }

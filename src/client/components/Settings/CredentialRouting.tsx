@@ -18,6 +18,29 @@
  * cutoff is a percentage of a *reported* quota, and nothing reports one for a
  * string-delivered subscription until its quota reader lands (planning#339), so
  * the control would set a number that can never fire.
+ *
+ * **docs/252 req 19 — the band is one row, and none of its copy was deleted.**
+ * It was two stacked radios with a hint under each, a dashed rule, and a
+ * paragraph over two labelled number fields: five lines of prose for two
+ * settings. Compacting it must not cost the sentences, because they are what
+ * make the choice answerable — so each moved to the control it was already
+ * describing, verbatim:
+ *
+ * | String | Where it is now |
+ * |---|---|
+ * | "How ShipIt picks between these {noun}s" | the segmented control's accessible name (`role="radiogroup"`) |
+ * | "Use in order" + its hint | tooltip on the first segment, the option's own name as its first line |
+ * | "Spread across {noun}s" + its hint | tooltip on the second segment, same shape |
+ * | "Start new work on the next account once an account passes these…" | tooltip on both cutoff fields |
+ *
+ * Only one on-screen *label* shortens — the second segment reads **Spread
+ * evenly**, because it sits in a 470px row beside the cutoffs — and its full
+ * name leads its own tooltip, so nothing is available only in the short form.
+ *
+ * `WithTooltip` (Radix) rather than a `title` attribute, because a `title` never
+ * opens on keyboard focus: with one, the copy this compaction promised to keep
+ * would be unreachable without a mouse. A test asserts all four strings are
+ * still reachable from the rendered band.
  */
 
 // useEffect is used solely for its cleanup: a pending cutoff edit must be
@@ -29,6 +52,24 @@ import type { AgentId } from "../../../server/shared/types.js";
 import { credentialModeKey } from "../../../server/shared/types/domain-types/credential-route.js";
 import type { BillingMode } from "../../../server/shared/catalogue/index.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
+import { WithTooltip } from "../ui/tooltip.js";
+
+/**
+ * A tooltip that leads with the thing's own name.
+ *
+ * Two of the band's four strings are a name plus an explanation, and the name
+ * is the part the shortened on-screen label may have dropped ("Spread evenly"
+ * ← "Spread across accounts"). Putting it on a bold first line is what makes
+ * the full name still reachable rather than merely implied.
+ */
+function TitledHint({ title, hint }: { title: string; hint: string }) {
+  return (
+    <span className="flex max-w-64 flex-col gap-0.5">
+      <span className="font-medium text-(--color-text-primary)">{title}</span>
+      <span className="text-(--color-text-secondary)">{hint}</span>
+    </span>
+  );
+}
 
 /**
  * docs/150 req 21 — how these credentials relate to each other.
@@ -82,43 +123,73 @@ export function CredentialSelectionModeControl({
     }
   };
 
-  const option = (value: "strict" | "balanced", label: string, hint: string) => (
-    <label className="flex cursor-pointer items-start gap-2 rounded px-1 py-1 text-xs hover:bg-(--color-bg-hover)">
-      <input
-        type="radio"
-        name={`credential-selection-mode-${key}`}
-        checked={mode === value}
+  /**
+   * One segment. `role="radio"` on a button rather than an `<input type=radio>`
+   * so the tooltip has a focusable trigger it can wrap — a native radio inside
+   * a `<label>` puts the hover target and the focus target in two places, and
+   * Radix would attach to one of them.
+   */
+  const option = (value: "strict" | "balanced", label: string, fullName: string, hint: string) => (
+    <WithTooltip side="top" label={<TitledHint title={fullName} hint={hint} />}>
+      <button
+        type="button"
+        role="radio"
+        aria-checked={mode === value}
         disabled={saving}
-        onChange={() => void save(value)}
-        aria-label={`${serviceName} credential selection: ${label}`}
-        className="mt-0.5 accent-(--color-accent)"
+        onClick={() => void save(value)}
+        className={`rounded px-2 py-0.5 text-[11px] transition-colors disabled:opacity-50 ${
+          mode === value
+            ? "bg-(--color-bg-elevated) text-(--color-text-primary) shadow-sm"
+            : "text-(--color-text-tertiary) hover:text-(--color-text-secondary)"
+        }`}
         data-testid={`credential-selection-mode-${key}-${value}`}
-      />
-      <span>
-        <span className="text-(--color-text-secondary)">{label}</span>
-        <span className="block text-(--color-text-tertiary)">{hint}</span>
-      </span>
-    </label>
+      >
+        {label}
+      </button>
+    </WithTooltip>
   );
 
   return (
-    <div data-testid={`credential-selection-mode-${key}`}>
-      {option(
-        "strict",
-        "Use in order",
-        `New sessions start on the first ${noun} with quota left. Best when they differ — a bigger plan first, a smaller one as backup.`,
-      )}
-      {option(
-        "balanced",
-        `Spread across ${noun}s`,
-        `New sessions go to whichever ${noun} has been used least, so quota drains evenly. Best when they are equivalent.`,
-      )}
+    <div className="flex min-w-0 items-center gap-2">
+      {/*
+        The band's title, as the group's accessible name. It is announced on
+        focus and never drawn — see the module docstring for why it gets no
+        tooltip of its own.
+      */}
+      <div
+        role="radiogroup"
+        aria-label={`How ShipIt picks between these ${noun}s`}
+        className="flex shrink-0 items-center gap-0.5 rounded-md bg-(--color-bg-primary) p-0.5"
+        data-testid={`credential-selection-mode-${key}`}
+      >
+        {option(
+          "strict",
+          "Use in order",
+          "Use in order",
+          `New sessions start on the first ${noun} with quota left. Best when they differ — a bigger plan first, a smaller one as backup.`,
+        )}
+        {option(
+          "balanced",
+          "Spread evenly",
+          `Spread across ${noun}s`,
+          `New sessions go to whichever ${noun} has been used least, so quota drains evenly. Best when they are equivalent.`,
+        )}
+      </div>
       {error && (
-        <p className="mt-1 text-xs text-(--color-text-error)" role="alert">{error}</p>
+        <p className="min-w-0 truncate text-[11px] text-(--color-error)" role="alert">{error}</p>
       )}
     </div>
   );
 }
+
+/**
+ * The paragraph that used to sit above the two cutoff fields, kept whole as
+ * their tooltip. Named because both fields carry the same one — it explains the
+ * pair, not either half.
+ */
+const CUTOFF_EXPLANATION =
+  "Start new work on the next account once an account passes these. Accounts past their "
+  + "cutoff are still used when no other account is below one, so nothing is stranded.";
 
 const CUTOFF_KEYS = ["session", "weekly"] as const;
 type CutoffKey = (typeof CUTOFF_KEYS)[number];
@@ -245,10 +316,14 @@ export function FailoverCutoffControls({
     void saveCutoff(key, provider, serviceName, field, raw);
   };
 
-  const field = (name: CutoffKey, label: string) => (
-    <label className="flex items-center justify-between gap-3 text-xs">
-      <span className="text-(--color-text-secondary)">{label}</span>
-      <span className="flex items-center gap-1">
+  // Inline, and both on the band's one row: the label is the window it names
+  // ("5h", "7d" — the same two the quota pill's meters are labelled with, so
+  // the number a cutoff is measured against is named the same way on both), and
+  // the paragraph they shared is now the tooltip they share.
+  const field = (name: CutoffKey, label: string, longLabel: string) => (
+    <WithTooltip side="top" label={<TitledHint title={`${longLabel} cutoff`} hint={CUTOFF_EXPLANATION} />}>
+      <label className="flex shrink-0 items-center gap-1 text-[11px] text-(--color-text-tertiary)">
+        {label}
         <input
           type="number"
           min={1}
@@ -260,26 +335,19 @@ export function FailoverCutoffControls({
           }}
           onKeyDown={(e) => { if (e.key === "Enter") commit(name); }}
           onBlur={() => commit(name)}
-          aria-label={`${serviceName} ${label} failover cutoff, percent`}
-          className="w-16 rounded-md border border-(--color-border-secondary) bg-(--color-bg-primary) px-2 py-1 text-right text-xs text-(--color-text-primary) focus:border-(--color-border-focus) focus:outline-none"
+          aria-label={`${serviceName} ${longLabel} failover cutoff, percent`}
+          className="w-11 rounded border border-(--color-border-secondary) bg-(--color-bg-primary) px-1 py-0.5 text-right text-[11px] text-(--color-text-primary) focus:border-(--color-border-focus) focus:outline-none"
           data-testid={`failover-cutoff-${key}-${name}`}
         />
-        <span className="text-(--color-text-tertiary)">%</span>
-      </span>
-    </label>
+        %
+      </label>
+    </WithTooltip>
   );
 
   return (
-    <div
-      className="mt-3 space-y-2 border-t border-dashed border-(--color-border-secondary) pt-3"
-      data-testid={`failover-cutoffs-${key}`}
-    >
-      <p className="text-xs text-(--color-text-tertiary)">
-        Start new work on the next account once an account passes these. Accounts past their
-        cutoff are still used when no other account is below one, so nothing is stranded.
-      </p>
-      {field("session", "Short window")}
-      {field("weekly", "Weekly")}
+    <div className="flex items-center gap-2" data-testid={`failover-cutoffs-${key}`}>
+      {field("session", "5h", "Short window")}
+      {field("weekly", "7d", "Weekly")}
     </div>
   );
 }

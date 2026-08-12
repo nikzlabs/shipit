@@ -263,16 +263,40 @@ landed ahead of this checklist's per-phase sections.
 
 ## Compact services panel (reqs 19-21)
 
-- [ ] `ServiceCard` compact: header line only, `N models` control top-right with the ids on hover
-- [ ] Drop the per-card description prose, the account empty-state box on a card that holds a credential, and the environment-variable sentence
-- [ ] Credential row = `label · quota · ⋯`; `SubscriptionLimitPill` reused with `label` optional
-- [ ] `⋯` menu: Rename / Reconnect / Disconnect (account), Rename / Replace secret / Remove (key)
-- [ ] Rename for a supplied key (the label patch endpoint already exists)
-- [ ] Drag-and-drop ordering replaces the carets, for both row types
-- [ ] Routing band: segmented control + inline cutoffs, with three existing strings kept verbatim in `WithTooltip`s (`label` widened to `ReactNode`); the band title survives only as the radiogroup's accessible name — no tooltip, it would have no trigger
-- [ ] Guard test: all four band strings are still reachable — three as tooltip content, the title as the accessible name
-- [ ] Delete `Make primary`: the button, both badges, `POST …/:id/primary`, `makePrimaryProviderAccount`, `ProviderAccountManager.makePrimary`
-- [ ] Reconnect opens the **same** `AddServiceDialog` on step 3 (`initialService` + `initialMode` + an existing `signInAccountId`); delete the row's inline challenge
-- [ ] Guard test: cancelling a reconnect leaves the account connected and in the same position
-- [ ] Guard test: exactly one `add-service-dialog` is mounted, however it was opened — no second dialog for reconnect
-- [ ] Adopt environment-delivered credentials into ordinary rows at boot (rotation, remembered deletion, reserved route ids)
+- [x] `ServiceCard` compact: header line only, `N models` control top-right with the ids on hover
+- [x] Drop the per-card description prose, the account empty-state box on a card that holds a credential, and the environment-variable sentence
+- [x] Credential row = `label · quota · ⋯`; `SubscriptionLimitPill` reused with `label` optional
+- [x] `⋯` menu: Rename / Reconnect / Disconnect (account), Rename / Replace secret / Remove (key)
+- [x] Rename for a supplied key (the label patch endpoint already exists)
+- [x] Drag-and-drop ordering replaces the carets, for both row types
+- [x] Routing band: segmented control + inline cutoffs, with three existing strings kept verbatim in `WithTooltip`s (`label` widened to `ReactNode`); the band title survives only as the radiogroup's accessible name — no tooltip, it would have no trigger
+- [x] Guard test: all four band strings are still reachable — three as tooltip content, the title as the accessible name
+- [x] Delete `Make primary`: the button, both badges, `POST …/:id/primary`, `makePrimaryProviderAccount`, `ProviderAccountManager.makePrimary`
+- [x] Reconnect opens the **same** `AddServiceDialog` on step 3 (`initialService` + `initialMode` + an existing `signInAccountId`); delete the row's inline challenge
+- [x] Guard test: cancelling a reconnect leaves the account connected and in the same position
+- [x] Guard test: exactly one `add-service-dialog` is mounted, however it was opened — no second dialog for reconnect
+- [x] Adopt environment-delivered credentials into ordinary rows at boot (rotation, remembered deletion, reserved route ids)
+
+Four defects found while building it, three of them by the work rather than by
+review. Recorded because each is a rule that was stated correctly and
+implemented as a near-neighbour of itself:
+
+- [x] **Cancelling a reconnect deleted the account.** `cancel` abandoned
+      whatever `signInAccountId` named, which was right while every id the
+      dialog held was one it had minted. `standDown` asks the ROW instead —
+      `isUnconnectedAttempt`, the same predicate the panel uses to decide what
+      to list — and cancels the login either way. Caught by the guard test
+      above, before the code ran.
+- [x] **`mixedDelivery` read "can hold both" for "holds both."** An
+      account-capable mode with no account and two supplied credentials was
+      treated as a mixed pair, so it offered no order between them and no
+      routing band at all. Unreachable before adoption, because the second
+      string credential was invisible; visible in the dogfood instance the
+      first time it ran. Same correction for the routing pool and for the
+      header count, which said "2 accounts" over two credentials on a card
+      with no account.
+- [x] **Adoption created a second API key**, which `createStringCredential`
+      answers with a 409 — req 12 says keys never fail over. "Behave exactly as
+      if I would add it manually" cuts both ways: an add that would be refused
+      is an adoption that is refused, and the variable stays as shadowed as it
+      already was.

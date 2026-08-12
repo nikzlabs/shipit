@@ -857,10 +857,15 @@ describe("ProviderAccountManager", () => {
       expect(mgr.getPrimary("anthropic")?.id).toBe(ids[1]);
     });
 
-    it("promotes to the front via makePrimary without disturbing the rest", () => {
+    // docs/252 req 21 deleted `makePrimary`: it was `reorder([this, …rest])`
+    // behind a button sitting beside the reorder controls, so dragging a row to
+    // the top is now the only way to say it. The property it asserted is still
+    // the one that matters — promoting one row leaves the others' relative
+    // order alone — so it is asserted through the verb that survived.
+    it("promotes to the front without disturbing the rest", () => {
       const { mgr, ids } = threeReady();
       mgr.reorder("anthropic", [ids[0]!, ids[1]!, ids[2]!]);
-      mgr.makePrimary("anthropic", ids[2]!);
+      mgr.reorder("anthropic", [ids[2]!, ids[0]!, ids[1]!]);
 
       expect(mgr.accountsInSelectionOrder("anthropic").map((a) => a.id)).toEqual([ids[2], ids[0], ids[1]]);
     });
@@ -934,7 +939,7 @@ describe("ProviderAccountManager", () => {
       const { mgr, ids } = threeReady();
       expect(mgr.getPrimary("anthropic")?.id).toBe(ids[0]);
 
-      mgr.makePrimary("anthropic", ids[2]!);
+      mgr.reorder("anthropic", [ids[2]!, ids[0]!, ids[1]!]);
 
       expect(mgr.getPrimary("anthropic")?.id).toBe(ids[2]);
       expect(mgr.list("anthropic").map((a) => a.isPrimary)).toEqual([true, false, false]);

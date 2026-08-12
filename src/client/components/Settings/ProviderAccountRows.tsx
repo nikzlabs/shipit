@@ -1,10 +1,12 @@
 import { useState } from "react";
-import { CaretDownIcon, CaretUpIcon, XIcon } from "@phosphor-icons/react";
+import { XIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../../design-tokens.js";
 import type { AgentOption } from "../../agent-types.js";
-import type { AgentId, CredentialRoute } from "../../../server/shared/types.js";
+import type { AgentId, CredentialRoute, SubscriptionLimits, SubscriptionLimitsMap } from "../../../server/shared/types.js";
 import { getService, nativeServiceForHarness } from "../../../server/shared/catalogue/index.js";
 import { Button } from "../ui/button.js";
+import { DropdownMenuItem } from "../ui/dropdown-menu.js";
+import { SubscriptionLimitPill } from "../SubscriptionLimitsBadge.js";
 import { useUiStore } from "../../stores/ui-store.js";
 import type { ProviderAccountNotice } from "../../stores/settings-store.js";
 import {
@@ -12,6 +14,8 @@ import {
   providerAccountAuthKey,
   EMPTY_CLAUDE_AUTH_DIAGNOSTICS,
 } from "../../stores/settings-store.js";
+import { CredentialRowShell } from "./CredentialRowShell.js";
+import { useRowDrag } from "./useRowDrag.js";
 
 /**
  * docs/150 req 16 / docs/252 — the account rows of an account-backed
@@ -36,15 +40,22 @@ import {
  * `(service, billing mode)` alike, `CredentialRouting` owns the routing
  * controls (which were a duplicate of the string-delivered ones keyed on the
  * same setting), and what is left here is the part that is genuinely specific:
- * the rows, the login challenge, and the notices those produce. The per-vendor
- * Settings tabs are gone, so Services is the only host.
+ * the rows and the notices they produce. The per-vendor Settings tabs are gone,
+ * so Services is the only host.
  *
- * The row shell is shared across providers; only the challenge panel differs,
- * because the providers genuinely differ — Anthropic hands back an
- * authorization code the user pastes into ShipIt, OpenAI shows a user code the
- * user types on OpenAI's page. Both variants render in the same slot on the
- * row that started them, keyed by {@link providerAccountAuthKey}, so two
- * concurrent sign-ins can't overwrite each other.
+ * **And the sign-in is not rendered here at all any more** (docs/252 req 19).
+ * The row hosted `AccountChallenge` inline, which returns `null` until the auth
+ * URL arrives — so between pressing *Reconnect* and the URL landing, the row
+ * showed nothing. That is the same "it looks stuck" gap the dialog's step 3 was
+ * built to close, so reconnect goes there instead of getting a second, poorer
+ * copy of it: `onReconnect` asks `ServicesPanel` to open the one dialog on the
+ * one step. What is left of the flow here is `createAccount`,
+ * `startAccountLogin`, `AccountChallenge` and `AuthPanel` — exported for that
+ * dialog, rendered by it, and by nothing else.
+ *
+ * Both providers' challenges keep to one slot in it, keyed by
+ * {@link providerAccountAuthKey}, so two concurrent sign-ins can't overwrite
+ * each other.
  *
  * Pay-as-you-go API keys stay deliberately out of the account list: they are
  * not subscriptions, they never participate in failover (req 12), and they bill
@@ -487,14 +498,16 @@ export function ClaudeAuthOutput({
 }
 
 /**
- * The provider's login challenge — **one implementation, two hosts.**
+ * The provider's login challenge — **one implementation, and now one host.**
  *
- * It renders on the account row and inside the add-service dialog, and it is a
- * component rather than a copy in each because docs/150 req 16 already paid for
- * the alternative once: a user's first account connected by different code than
- * their second. The two providers genuinely differ inside it — Anthropic hands
- * back an authorization code the user pastes into ShipIt, OpenAI shows a user
- * code the user types on OpenAI's page — and that difference is the only branch.
+ * It renders inside `AddServiceDialog` and nowhere else: docs/252 req 19 moved
+ * reconnect into that dialog, so the copy that used to sit on the account row
+ * is gone rather than kept in step. It stays a component in this module because
+ * docs/150 req 16 already paid for the alternative once — a user's first account
+ * connected by different code than their second — and because the dialog is not
+ * the natural owner of the two providers' difference: Anthropic hands back an
+ * authorization code the user pastes into ShipIt, OpenAI shows a user code the
+ * user types on OpenAI's page, and that difference is the only branch.
  *
  * It owns the code input and the submit, and reports a failure through
  * `onError` so each host can put it where that host puts failures.
@@ -581,14 +594,69 @@ export function AccountChallenge({
   );
 }
 
+/**
+ * The one word a row says about itself — and only when something needs doing
+ * (docs/252 req 19).
+ *
+ * A ready account returns `undefined` and the row stays silent, which is the
+ * whole rule: the panel used to print a `status` pill on every row, so the
+ * normal case spent width saying "ready" and the abnormal one said
+ * "auth failed" in the same grey. The states that need attention now say so in
+ * words and in a colour, rather than in a hue alone.
+ */
+function statusWordFor(
+  account: CredentialRoute,
+): { text: string; tone: "warning" | "error" } | undefined {
+  if (account.status === "ready") return undefined;
+  if (account.status === "authenticating") return { text: "signing in…", tone: "warning" };
+  return { text: "reconnect needed", tone: "error" };
+}
+
+/**
+ * This account's quota snapshot, if the provider has reported one.
+ *
+ * `subscription_limits` is keyed `(service, mode) → routeId`, and an account
+ * that has simply been quiet has no entry — which is not the same as 0%. The
+ * pill renders either way and says `—` for the windows it has no number for, so
+ * the absence is passed through rather than filled in.
+ */
+function snapshotFor(
+  limits: SubscriptionLimitsMap,
+  account: CredentialRoute,
+): SubscriptionLimits | undefined {
+  return limits[`${account.serviceId}:sub`]?.[account.id];
+}
+
 export function ProviderAccountRows({
   provider,
   agent,
+  billingMode,
+  onReconnect,
 }: {
   provider: AgentId;
   agent: AgentOption | undefined;
+  /**
+   * Which mode's quota these rows report. Only a subscription has one (req 10),
+   * and an account row only ever belongs to one — but the pill is keyed by
+   * `(service, mode)` and this is the caller's fact, not a re-derivation.
+   */
+  billingMode: string;
+  /**
+   * Re-run the sign-in for an account, **in the add-service dialog** (req 19).
+   *
+   * A callback rather than a login started here, because the surface reconnect
+   * needs already exists and there must be exactly one of it. This row used to
+   * `POST …/login` itself and render `AccountChallenge` inline — and that
+   * component returns `null` until the auth URL arrives, so between the click
+   * and the URL the row showed nothing at all. The dialog's step 3 closed that
+   * gap already: the waiting skeleton, the CLI output buffer, the code field
+   * and the failure state are all there. `ServicesPanel` owns the one mount
+   * site, so what travels up here is the request, not a second dialog.
+   */
+  onReconnect: (accountId: string) => void;
 }) {
   const accounts = useProviderAccounts(provider);
+  const limits = useUiStore((s) => s.subscriptionLimits);
   const setProviderAccounts = useSettingsStore((s) => s.setProviderAccounts);
   const accountAuthErrors = useSettingsStore((s) => s.providerAccountAuthErrors);
   const setProviderAccountAuth = useSettingsStore((s) => s.setProviderAccountAuth);
@@ -635,9 +703,28 @@ export function ProviderAccountRows({
     });
   };
 
+  /**
+   * Close the rename field without saving.
+   *
+   * A draft's *presence* is what holds the field open now, so dropping it is
+   * both the cancel and the close — there is no second "is it open" flag to
+   * fall out of step with it.
+   */
+  const cancelRename = (accountId: string): void => {
+    setDraftLabels((current) => Object.fromEntries(
+      Object.entries(current).filter(([id]) => id !== accountId),
+    ));
+  };
+
   const saveLabel = async (account: CredentialRoute) => {
     const label = (draftLabels[account.id] ?? account.label).trim();
-    if (!label || label === account.label) return;
+    // An empty or unchanged name still CLOSES the field: the draft is what
+    // holds it open, so returning early with the draft in place left the user
+    // typing into a field that had stopped listening.
+    if (!label || label === account.label) {
+      cancelRename(account.id);
+      return;
+    }
     setSavingId(account.id);
     clearRow(account.id);
     try {
@@ -646,9 +733,7 @@ export function ProviderAccountRows({
         body: JSON.stringify({ label }),
       });
       setProviderAccounts(result.accounts);
-      setDraftLabels((current) => Object.fromEntries(
-        Object.entries(current).filter(([id]) => id !== account.id),
-      ));
+      cancelRename(account.id);
     } catch (err) {
       failRow(account.id, err, "Failed to rename account");
     } finally {
@@ -656,46 +741,31 @@ export function ProviderAccountRows({
     }
   };
 
-  const makePrimary = async (account: CredentialRoute) => {
-    if (account.isPrimary) return;
-    setSavingId(account.id);
-    clearRow(account.id);
-    try {
-      const result = await request<{ accounts: CredentialRoute[] }>(`/api/provider-accounts/${provider}/${account.id}/primary`, {
-        method: "POST",
-      });
-      setProviderAccounts(result.accounts);
-    } catch (err) {
-      failRow(account.id, err, "Failed to update primary account");
-    } finally {
-      setSavingId(null);
-    }
-  };
-
   /**
-   * docs/150 req 2 — move an account one place in the fallback order.
+   * docs/150 req 2 — the fallback order, now set by dropping a row (req 21).
+   *
+   * *Make primary* went with the carets, and deleting it was the point rather
+   * than a consequence: "primary" was never a property. `isPrimary` is stamped
+   * on read from position, every writer stores `false`, and the endpoint behind
+   * that button was this same reorder with the account moved to the front — a
+   * button that reordered, beside the controls that reorder.
    *
    * Sends the whole order rather than "move this one": the server rejects a
    * partial list, so a card rendered before another tab added an account fails
    * visibly instead of quietly demoting it to the end.
    */
-  const moveAccount = async (account: CredentialRoute, direction: -1 | 1) => {
-    const ids = accounts.map((a) => a.id);
-    const from = ids.indexOf(account.id);
-    const to = from + direction;
-    if (from < 0 || to < 0 || to >= ids.length) return;
-    const next = [...ids];
-    next.splice(to, 0, ...next.splice(from, 1));
-    setSavingId(account.id);
-    clearRow(account.id);
+  const reorderAccounts = async (nextIds: string[]) => {
+    const moved = nextIds.find((id, index) => accounts[index]?.id !== id);
+    setSavingId(moved ?? null);
+    if (moved) clearRow(moved);
     try {
       const result = await request<{ accounts: CredentialRoute[] }>(`/api/provider-accounts/${provider}/order`, {
         method: "PUT",
-        body: JSON.stringify({ accountIds: next }),
+        body: JSON.stringify({ accountIds: nextIds }),
       });
       setProviderAccounts(result.accounts);
     } catch (err) {
-      failRow(account.id, err, "Failed to reorder accounts");
+      if (moved) failRow(moved, err, "Failed to reorder accounts");
     } finally {
       setSavingId(null);
     }
@@ -727,19 +797,6 @@ export function ProviderAccountRows({
     }
   };
 
-  const connect = async (account: CredentialRoute) => {
-    setSavingId(account.id);
-    clearRow(account.id);
-    setCardNotice(provider, null);
-    try {
-      await startAccountLogin(provider, account.id);
-    } catch (err) {
-      failRow(account.id, err, "Failed to start sign-in");
-    } finally {
-      setSavingId(null);
-    }
-  };
-
   const cancelLogin = async (account: CredentialRoute) => {
     setSavingId(account.id);
     clearRow(account.id);
@@ -753,10 +810,17 @@ export function ProviderAccountRows({
     }
   };
 
-  // Submitting the authorization code belongs to `AccountChallenge`, which is
-  // shared with the add-service dialog — the row only hosts it.
+  // The challenge itself is the dialog's now (req 19) — this only decides
+  // whether the menu's Reconnect can be pressed, which is the same question
+  // `AddServiceDialog` asks before it starts one.
   const blockedBy = (accountId: string): string | undefined =>
     signInBlockedReason(accounts, accountId);
+
+  const dragFor = useRowDrag(
+    accounts.map((a) => a.id),
+    (next) => void reorderAccounts(next),
+    savingId !== null,
+  );
 
   return (
     <div className="space-y-2" data-testid={`provider-account-rows-${provider}`}>
@@ -775,151 +839,117 @@ export function ProviderAccountRows({
         />
       )}
 
-      {accounts.length === 0 ? (
-        <div
-          className="rounded-md border border-(--color-border-secondary) bg-(--color-bg-secondary) p-3 text-xs text-(--color-text-secondary)"
-          data-testid={`provider-accounts-empty-${provider}`}
-        >
-          {/* req 17 — this card has no way in of its own, so the sentence names
-              the one that exists rather than a button beside it. Reachable only
-              when a notice is holding the card open after the last account was
-              disconnected: with no account and nothing to say, the card is gone. */}
-          No {serviceName} subscription connected. Add one with{" "}
-          <span className="text-(--color-text-primary)">Add a service</span>.
-        </div>
-      ) : (
-        <div className="space-y-2">
-          {accounts.map((account, accountIndex) => {
-            const draft = draftLabels[account.id] ?? account.label;
+      {/*
+        There is no empty state here any more (req 19). It used to print "No
+        {service} subscription connected. Add one with Add a service." — above a
+        connected credential of that same service, whenever the card held a
+        supplied key and no account. Its docstring assumed the only way to reach
+        it was a notice holding an empty card open, which stopped being true
+        when the two delivery shapes became one card. A card that reaches zero
+        accounts and has nothing else to say is removed by the panel, so the box
+        was never the thing keeping it on screen.
+      */}
+      {accounts.length > 0 && (
+        <div className="space-y-1">
+          {accounts.map((account) => {
             const busy = savingId === account.id;
             const authError = accountAuthErrors[providerAccountAuthKey(provider, account.id)] ?? null;
+            const renaming = account.id in draftLabels;
+            const blocked = blockedBy(account.id);
             return (
-              <div
+              <CredentialRowShell
                 key={account.id}
-                className="space-y-3 rounded-md border border-(--color-border-secondary) bg-(--color-bg-secondary) p-3"
-                data-testid={`provider-account-row-${account.id}`}
-              >
-                {/* The order carets lead the row, exactly as they do on a
-                    string-delivered credential one card down: both row types
-                    now live inside the same `ServiceCard`, so a fallback order
-                    that reads left-to-right in one and right-to-left in the
-                    other is the seam this unification exists to close. */}
-                <div className="flex items-start gap-2">
-                  {/* req 2 — the fallback order, only meaningful with more
-                      than one account to fall back between. */}
-                  {accounts.length > 1 && (
-                    <span className="mt-1 flex items-center gap-0.5" data-testid={`provider-account-order-${account.id}`}>
-                      <button
-                        onClick={() => void moveAccount(account, -1)}
-                        disabled={busy || accountIndex === 0}
-                        aria-label={`Move ${account.label} earlier in the fallback order`}
-                        className="rounded px-1 py-0.5 text-[11px] text-(--color-text-secondary) hover:bg-(--color-bg-hover) disabled:opacity-30 disabled:hover:bg-transparent"
-                        data-testid={`provider-account-move-up-${account.id}`}
-                      >
-                        <CaretUpIcon size={ICON_SIZE.XS} />
-                      </button>
-                      <button
-                        onClick={() => void moveAccount(account, 1)}
-                        disabled={busy || accountIndex === accounts.length - 1}
-                        aria-label={`Move ${account.label} later in the fallback order`}
-                        className="rounded px-1 py-0.5 text-[11px] text-(--color-text-secondary) hover:bg-(--color-bg-hover) disabled:opacity-30 disabled:hover:bg-transparent"
-                        data-testid={`provider-account-move-down-${account.id}`}
-                      >
-                        <CaretDownIcon size={ICON_SIZE.XS} />
-                      </button>
-                    </span>
-                  )}
-                  <div className="min-w-0 flex-1">
-                    <input
-                      value={draft}
-                      onChange={(e) => setDraftLabels((current) => ({ ...current, [account.id]: e.target.value }))}
-                      onBlur={() => void saveLabel(account)}
-                      className="w-full rounded-md border border-(--color-border-secondary) bg-(--color-bg-primary) px-2 py-1 text-sm text-(--color-text-primary) focus:border-(--color-border-focus) focus:outline-none"
-                      aria-label={`${serviceName} account label`}
+                testId={`provider-account-row-${account.id}`}
+                label={account.label}
+                {...(statusWordFor(account) ? { status: statusWordFor(account) } : {})}
+                drag={dragFor(account.id)}
+                menuLabel={`Manage ${account.label}`}
+                quota={
+                  // Only a subscription reports a quota (req 10), and only a
+                  // connected one has anything to report. `label` is omitted:
+                  // the row to its left IS the account's name.
+                  billingMode === "sub" && account.status === "ready" ? (
+                    <SubscriptionLimitPill
+                      serviceId={account.serviceId}
+                      routeId={account.id}
+                      {...(snapshotFor(limits, account) ? { snapshot: snapshotFor(limits, account) } : {})}
+                      showRefresh={account.serviceId === "anthropic"}
                     />
-                    <p className="mt-1 truncate text-[11px] text-(--color-text-tertiary)">{account.id}</p>
-                  </div>
-                  <div className="mt-1 flex shrink-0 flex-wrap justify-end gap-1.5">
-                    {account.isPrimary && (
-                      <span className="rounded bg-(--color-accent-subtle) px-1.5 py-0.5 text-[11px] text-(--color-accent)">Primary</span>
+                  ) : undefined
+                }
+                menu={
+                  <>
+                    <DropdownMenuItem
+                      onSelect={() => setDraftLabels((current) => ({ ...current, [account.id]: account.label }))}
+                      data-testid={`provider-account-rename-${account.id}`}
+                    >
+                      Rename
+                    </DropdownMenuItem>
+                    {account.status === "authenticating" ? (
+                      <DropdownMenuItem
+                        onSelect={() => void cancelLogin(account)}
+                        disabled={busy}
+                        data-testid={`provider-account-cancel-login-${account.id}`}
+                      >
+                        Cancel sign-in
+                      </DropdownMenuItem>
+                    ) : (
+                      <DropdownMenuItem
+                        onSelect={() => onReconnect(account.id)}
+                        disabled={busy || !!blocked}
+                        {...(blocked ? { title: blocked } : {})}
+                        data-testid={`provider-account-connect-${account.id}`}
+                      >
+                        {account.status === "ready" ? "Reconnect" : "Connect"}
+                      </DropdownMenuItem>
                     )}
-                    <span className="rounded bg-(--color-bg-hover) px-1.5 py-0.5 text-[11px] text-(--color-text-secondary)">
-                      {account.status.replace("_", " ")}
-                    </span>
-                  </div>
-                </div>
-
-                {/* The shared challenge — the same component the add-service
-                    dialog renders, so the first sign-in and the fifth are one
-                    implementation (docs/150 req 16). */}
-                <AccountChallenge
-                  provider={provider}
-                  account={account}
-                  serviceName={serviceName}
-                  onError={(message) => setRowNotices((current) => ({
-                    ...current,
-                    [account.id]: { kind: "error", message },
-                  }))}
-                />
-
-                {authError && (
-                  <p className="text-xs text-(--color-error)" data-testid={`provider-account-error-${account.id}`}>
-                    {authError}
-                  </p>
-                )}
-
-                {rowNotices[account.id] && (
-                  <NoticeLine
-                    notice={rowNotices[account.id]}
-                    testId={`provider-account-notice-${account.id}`}
+                    <DropdownMenuItem
+                      onSelect={() => void disconnect(account)}
+                      disabled={busy}
+                      className="text-(--color-error) hover:text-(--color-error) focus:text-(--color-error)"
+                      data-testid={`provider-account-disconnect-${account.id}`}
+                    >
+                      {busy ? "Working…" : "Disconnect"}
+                    </DropdownMenuItem>
+                  </>
+                }
+                error={
+                  <>
+                    {authError && (
+                      <p className="px-1 pb-1 text-[11px] text-(--color-error)" data-testid={`provider-account-error-${account.id}`}>
+                        {authError}
+                      </p>
+                    )}
+                    {rowNotices[account.id] && (
+                      <div className="pb-1 pt-1">
+                        <NoticeLine
+                          notice={rowNotices[account.id]}
+                          testId={`provider-account-notice-${account.id}`}
+                        />
+                      </div>
+                    )}
+                  </>
+                }
+              >
+                {/* Rename opens the field the row used to hold permanently —
+                    which was most of its 120px, for something done once per
+                    account and often never. */}
+                {renaming && (
+                  <input
+                    autoFocus
+                    value={draftLabels[account.id] ?? account.label}
+                    onChange={(e) => setDraftLabels((current) => ({ ...current, [account.id]: e.target.value }))}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") void saveLabel(account);
+                      if (e.key === "Escape") cancelRename(account.id);
+                    }}
+                    onBlur={() => void saveLabel(account)}
+                    className="mt-1 w-full rounded border border-(--color-border-secondary) bg-(--color-bg-primary) px-1.5 py-0.5 text-xs text-(--color-text-primary) focus:border-(--color-border-focus) focus:outline-none"
+                    aria-label={`${serviceName} account label`}
+                    data-testid={`provider-account-rename-input-${account.id}`}
                   />
                 )}
-
-                <div className="flex flex-wrap gap-2">
-                  {account.status === "authenticating" ? (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => void cancelLogin(account)}
-                      disabled={busy}
-                      className="rounded-md"
-                      data-testid={`provider-account-cancel-login-${account.id}`}
-                    >
-                      Cancel sign-in
-                    </Button>
-                  ) : (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => void connect(account)}
-                      disabled={busy || !!blockedBy(account.id)}
-                      {...(blockedBy(account.id) ? { title: blockedBy(account.id) } : {})}
-                      className="rounded-md"
-                      data-testid={`provider-account-connect-${account.id}`}
-                    >
-                      {account.status === "ready" ? "Reconnect" : "Connect"}
-                    </Button>
-                  )}
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => void makePrimary(account)}
-                    disabled={busy || account.isPrimary}
-                    className="rounded-md"
-                  >
-                    Make primary
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => void disconnect(account)}
-                    disabled={busy}
-                    className="rounded-md text-(--color-error) hover:text-(--color-error)"
-                  >
-                    {busy ? "Working..." : "Disconnect"}
-                  </Button>
-                </div>
-              </div>
+              </CredentialRowShell>
             );
           })}
         </div>

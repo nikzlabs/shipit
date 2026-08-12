@@ -3193,6 +3193,45 @@ them visible in the happy path:
   adopted row keeps that id rather than minting a `cred_…` one, or every session pinned to it
   is orphaned.
 
+**What building it changed about the design.** Four things, kept here rather
+than quietly folded in, because each is a rule this document already stated and
+the code implemented as a near-neighbour of itself.
+
+- **Cancelling a reconnect must be asked of the ROW, not of the dialog's
+  history.** The dialog abandoned whatever `signInAccountId` named, which was
+  correct while every id it held was one it had minted. Seeding that field with
+  an existing account — the whole of how reconnect works — made it a deletion of
+  the user's working credential. `standDown` asks `isUnconnectedAttempt`, the
+  same predicate the panel uses to decide what to list, and cancels the login
+  either way; anything the panel hides, it cleans up. The guard test this
+  section promised is what found it, before the code was ever run.
+- **`mixedDelivery` and the routing pool read "can" for "does".** Both were
+  `provider !== undefined && …` — "this mode can take an account" — where the
+  question is "does it hold one". An account-capable mode holding two supplied
+  credentials and no account was therefore treated as a mixed pair: no order
+  between them, no routing band, and a header reading "2 accounts" over two
+  things that are not accounts. It was unreachable until req 20, because the
+  second string credential was invisible; the dogfood instance showed it on the
+  first run after adoption.
+- **Adoption obeys the rule an add obeys.** Req 20 is "behave exactly as if I
+  would add the service manually", and adding a second API key by hand is
+  refused with a 409 (req 12: keys never fail over). The first cut adopted past
+  that and put two keys on a card the API allows one of. An add that would be
+  refused is an adoption that is refused — and nothing is lost, because
+  `collectServiceCredentialEnv` already delivers the stored credential, so the
+  deployment's variable was shadowed and unused before adoption existed.
+- **A remembered removal has to leave `process.env`, not just the route list.**
+  `listConfiguredCredentials` and `stringSelectionFor` read the raw variable, so
+  remembering the removal only in the store would have left the credential
+  working and the user's removal a no-op. Unsetting the variable — once, in
+  adoption, and again at the delete — is what makes every downstream reader see
+  the absence without any of them learning what a removal is.
+
+**Measured, at the same 470px the compaction was specified against.** The
+DeepSeek key card is **148px → 78px**; the Anthropic subscription card, which
+was 272px holding one credential, is 154px holding *two* and a routing band. A
+credential row is 34px, from 39px for a supplied key and ~120px for an account.
+
 ## Key files
 
 | File | Why it matters |

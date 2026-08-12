@@ -330,10 +330,16 @@ describe("agent_list producers all carry canRunTurns", () => {
     // A total rather than a per-file or per-line census: moving a compliant
     // producer must not fail a test that is not about it. Only appearing and
     // disappearing producers move this number.
+    //
+    // Eleven became ten with docs/252 req 21: `POST
+    // /api/provider-accounts/:provider/:id/primary` was deleted along with the
+    // *Make primary* button, so its broadcast went too. Reordering — the verb
+    // that survived — has a producer of its own and is unaffected. This is the
+    // disappearing half of what the count is for.
     const producers = agentListProducers();
     expect(
       producers.length,
       producers.map((p) => `${p.where} — ${p.payload}`).join("\n"),
-    ).toBe(11);
+    ).toBe(10);
   });
 });

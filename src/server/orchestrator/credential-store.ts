@@ -244,6 +244,26 @@ interface CredentialData {
    * answer.
    */
   harnessOnboardingCompletedAt?: string;
+  /**
+   * docs/252 req 20 — what `adoptEnvCredentials` has done with each catalogue
+   * `storageEnv` the deployment set, keyed by the variable's name.
+   *
+   * Two facts, and both are about *history*, which is why neither can be
+   * derived from the route list at boot:
+   *
+   * - `importedValue` is the exact secret adoption last wrote. It answers "is
+   *   this row still ours?" — a rotation may overwrite a value adoption put
+   *   there, and must not overwrite one the user replaced by hand. A boolean
+   *   "was adopted" flag cannot tell those apart, because it records how the
+   *   row *started*.
+   * - `removed` says the user deleted the adopted row. The variable is still
+   *   set in the deployment, so without this the next boot re-imports it and
+   *   the removal silently never happens.
+   *
+   * Server-side only, and it holds a secret (`importedValue`), so it lives here
+   * beside `credentialSecrets` rather than anywhere a route list is returned.
+   */
+  adoptedEnvCredentials?: Record<string, { importedValue?: string; removed?: boolean }>;
 }
 
 const DEFAULT_CREDENTIALS_DIR = "/credentials";
@@ -621,6 +641,28 @@ export class CredentialStore {
 
   setCredentialSecret(routeId: string, secret: string): void {
     this.data.credentialSecrets = { ...(this.data.credentialSecrets ?? {}), [routeId]: secret };
+    this.save();
+  }
+
+  /** docs/252 req 20 — see {@link CredentialData.adoptedEnvCredentials}. */
+  getAdoptedEnvCredential(storageEnv: string): { importedValue?: string; removed?: boolean } | undefined {
+    return this.data.adoptedEnvCredentials?.[storageEnv];
+  }
+
+  /**
+   * Record what adoption did with one variable. Merges rather than replaces, so
+   * marking a removal cannot drop the `importedValue` that says the row was
+   * ours — and re-importing after a rotation cannot drop a `removed` flag.
+   */
+  setAdoptedEnvCredential(
+    storageEnv: string,
+    patch: { importedValue?: string; removed?: boolean },
+  ): void {
+    const current = this.data.adoptedEnvCredentials ?? {};
+    this.data.adoptedEnvCredentials = {
+      ...current,
+      [storageEnv]: { ...current[storageEnv], ...patch },
+    };
     this.save();
   }
 
