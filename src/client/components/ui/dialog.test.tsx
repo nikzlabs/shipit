@@ -118,13 +118,16 @@ describe("Dialog back-button dismissal", () => {
 });
 
 describe("DialogContent opening motion", () => {
-  // The dialog fades; it does not scale. A 5% scale on a panel this size drags
-  // its text the last pixel or two into place after the fade has already made
-  // it readable — the "the label nudges up when Settings opens" report. The
-  // guard is here because the classes are easy to re-add by copying another
-  // surface's animation, and the effect is a few frames long: obvious as a
-  // complaint, invisible in review.
-  it("fades in and out with no scale", () => {
+  // The panel is painted once, in its final form: the overlay's fade carries
+  // the entrance. Both a scale and a fade move the text of a panel this size —
+  // the scale geometrically (the fade lands first, so the last 1% of the scale
+  // drags each line into place after it is readable), the fade optically (a
+  // composited layer antialiases glyphs differently, and they re-render when it
+  // collapses on the final frame). Either one reads as "the label nudges up
+  // when Settings opens". The guard is here because an entrance animation is
+  // easy to re-add by copying another surface, and the effect lasts a few
+  // frames: loud as a complaint, invisible in review.
+  it("has no entrance animation of its own", () => {
     render(
       <Dialog open onOpenChange={vi.fn()}>
         <DialogContent data-testid="motion-content">
@@ -133,8 +136,23 @@ describe("DialogContent opening motion", () => {
       </Dialog>,
     );
     const classes = screen.getByTestId("motion-content").className;
-    expect(classes).toContain("data-[state=open]:fade-in-0");
     expect(classes).not.toMatch(/zoom-(in|out)/);
+    expect(classes).not.toContain("data-[state=open]:");
+  });
+
+  it("keeps the overlay's fade, which is what the entrance is made of", () => {
+    render(
+      <Dialog open onOpenChange={vi.fn()}>
+        <DialogContent>
+          <DialogTitle>Hi</DialogTitle>
+        </DialogContent>
+      </Dialog>,
+    );
+    // The overlay is the open-state element that is not the dialog itself.
+    const overlay = Array.from(document.querySelectorAll('[data-state="open"]')).find(
+      (el) => el.getAttribute("role") !== "dialog",
+    );
+    expect(overlay?.className).toContain("data-[state=open]:fade-in-0");
   });
 });
 

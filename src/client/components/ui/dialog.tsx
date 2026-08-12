@@ -166,16 +166,29 @@ const DialogContent = forwardRef<
         // there's no inset (desktop, no nav bar), so this is a no-op off-mobile.
         "max-md:[padding-bottom:env(safe-area-inset-bottom)]",
         "md:rounded-xl md:max-h-[90vh]",
-        // Fade only — deliberately no `zoom-in-95`/`zoom-out-95`. A scale on a
-        // panel this large moves its text, and the fade finishes first: by the
-        // time the content is fully opaque the scale is still ~0.99, so every
-        // line slides the last pixel or two into place *after* you can read it,
-        // re-rasterising from blurry to crisp as it lands. Measured on Settings:
-        // a row 78px above the dialog's centre settled 1.9px upward over 140ms,
-        // ~1px of it plainly visible. Small surfaces (tooltip, popover, dropdown
-        // menu) keep their zoom — they are close to their transform origin, so
-        // the same 5% moves them a fraction of a pixel.
-        "data-[state=open]:animate-in data-[state=open]:fade-in-0",
+        // The panel itself does NOT animate — no zoom, and no fade either. Only
+        // the overlay behind it fades, which is what carries the entrance.
+        //
+        // Both animations moved the text, in two different ways, and the second
+        // one survived the removal of the first:
+        //
+        //  1. `zoom-in-95` moved it geometrically. The fade lands before the
+        //     scale does, so the last ~1% of the scale drags every line into
+        //     place *after* it is readable. Measured on Settings: a row 78px
+        //     above the dialog's centre settled 1.9px upward over 140ms.
+        //  2. The fade alone still moved it *optically*. An element mid-opacity
+        //     is composited on its own layer, where the browser falls back to
+        //     grayscale antialiasing; on the last frame the layer collapses and
+        //     the same glyphs re-render with subpixel antialiasing. Nothing has
+        //     moved — geometry is byte-identical across the whole open (dialog
+        //     top 120, height 480, label top 322.25, all 299 frames) — but the
+        //     glyphs change weight and edge placement, and the eye reads that
+        //     as a settle of about a pixel.
+        //
+        // So the panel is painted once, in its final form. Small surfaces
+        // (tooltip, popover, dropdown menu) keep their zoom and fade: they are
+        // close to their transform origin and carry a line or two of text, so
+        // neither effect is legible there.
         "data-[state=closed]:animate-out data-[state=closed]:fade-out-0",
         className,
       )}
