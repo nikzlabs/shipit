@@ -93,6 +93,19 @@ the client doesn't flicker out of its loading state between attempts.
 Net effect: a transient stale-token 401 recovers invisibly — no sign-in card,
 no manual re-send.
 
+### Confirmed account failure fails over in the same logical turn
+
+The forced heal can prove that the captured subscription account is unusable
+(`missing_credentials` / revoked) while another account for the same service
+and billing mode is healthy. That result now enters docs/260's existing
+route-attempt loop instead of settling the turn: the failed captured route id
+is added to the ledger, env preparation selects the next eligible subscription
+route, and the original prompt is dispatched with the shared persistence guard.
+The auth recovery budget is consumed by this hop, so a second authentication
+failure surfaces normally. Reserved routes and metered keys do not enter this
+branch, and the account-qualified `auth_failed` persistence remains owned by
+the refresher.
+
 ### 3. Recognizing the failure at all (the 2026-08 follow-up)
 
 Both mechanisms above hang off one signal: the CLI process emitting

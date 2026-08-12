@@ -25,6 +25,7 @@ import type { SystemTurnDeps } from "../session-runner.js";
 import type { AgentId } from "../../shared/types.js";
 import { ProviderRouteUnavailableError } from "../provider-route-preflight.js";
 import { testDispatch } from "./dispatch-test-helpers.js";
+import { allRefusedMessage } from "../turn-executor.js";
 
 interface FakeAgent extends EventEmitter {
   run: ReturnType<typeof vi.fn>;
@@ -142,6 +143,31 @@ const QUOTA_NOTICE_TEXT = "You've hit your session limit · resets 5:10pm (UTC)"
 
 describe("same-turn quota failover (docs/150 req 14)", () => {
   afterEach(() => vi.restoreAllMocks());
+
+  it("preserves quota details when the attempt ledger also contains an auth failure", () => {
+    const message = allRefusedMessage([
+      {
+        routeId: "acct-1",
+        label: "Personal",
+        providerMessage: QUOTA_ERROR,
+        resetAt: "2099-01-01T00:00:00.000Z",
+        failureKind: "quota",
+      },
+      {
+        routeId: "acct-2",
+        label: "Work",
+        providerMessage: "Authentication failed",
+        resetAt: null,
+        failureKind: "auth",
+      },
+    ]);
+
+    expect(message).toContain("Personal");
+    expect(message).toContain(QUOTA_ERROR);
+    expect(message).toContain("2099-01-01T00:00:00.000Z");
+    expect(message).toContain("Authentication failed for: Work");
+    expect(message).not.toContain("Authentication failed for: Personal");
+  });
 
   it("re-runs the turn once on a fresh agent when the provider reports exhaustion", async () => {
     const runner = new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
