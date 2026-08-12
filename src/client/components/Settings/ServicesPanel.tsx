@@ -1103,8 +1103,14 @@ function AddServiceDialog({
                             be a moment from now — so the panel is the whole of
                             the sign-in and the arrival of the field moves
                             nothing. */}
-                        {signInProvider === "claude" && signInAccountId && (
-                          <ClaudeAuthOutput accountId={signInAccountId} />
+                        {signInProvider === "claude" && (
+                          <ClaudeAuthOutput
+                            // No id for the first frames — the account is still
+                            // being created — and the control renders anyway,
+                            // because appearing later is what grew the panel.
+                            {...(signInAccountId ? { accountId: signInAccountId } : {})}
+                            evenWhenEmpty
+                          />
                         )}
                       </ChallengePlaceholder>
                     )}

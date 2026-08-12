@@ -3016,6 +3016,12 @@ pulse alone reads as *stuck* rather than as *working*.
   column the scroll origin *is* the bottom, so a single growing child keeps its end in view
   while a reader who scrolls up stays where they put themselves. An effect assigning
   `scrollTop` on every append would fight them, and this codebase restricts effects anyway.
+- **The buffer control is reserved from the panel's first frame**, empty and before there is an
+  account to key it by. The CLI's first line lands a few frames after the login starts, so a
+  disclosure that waits for it grew the panel by its own height *after* the panel had already
+  appeared: measured, 302 → 395 → 419 across five frames — the second, smaller jump a user
+  notices without being able to say what moved. The cost is a line reading "Claude CLI output"
+  with no count for those frames; `ClaudeAuthOutput` therefore takes an **optional** account id.
 - **The sign-in button goes with the click that presses it**, not with the state change a few
   frames later. `startingSignIn` is in its render test for that reason: the click turns the
   panel into the waiting box at once, and without it the blue button sat through the create

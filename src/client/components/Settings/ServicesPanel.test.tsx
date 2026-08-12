@@ -312,9 +312,11 @@ describe("ServicesPanel", () => {
       await waitFor(() => expect(logins()).toBe(1));
 
       // Nothing known yet: the box is the shape of the one Anthropic shows — a
-      // field to paste into, not a code to read — and says nothing.
+      // field to paste into, not a code to read — and the only thing in it is
+      // the buffer control, reserved so its arrival does not grow the panel a
+      // few frames after the panel itself appeared.
       const placeholder = await screen.findByTestId("add-service-signin-starting");
-      expect(placeholder.textContent).toBe("");
+      expect(placeholder.textContent).toBe("Claude CLI output");
 
       useSettingsStore.getState().setClaudeAuthProgress("acct-anthropic-1", {
         attemptId: "attempt-1",
@@ -389,6 +391,10 @@ describe("ServicesPanel", () => {
       // and the button is already gone.
       expect(screen.getByTestId("add-service-signin-starting")).toBeInTheDocument();
       expect(screen.queryByTestId("add-service-sign-in")).not.toBeInTheDocument();
+      // And the buffer control is already in it, before there is an account to
+      // key it by — appearing later grew the panel a second time, a few frames
+      // after it had appeared.
+      expect(screen.getByTestId("provider-account-diagnostics-pending")).toBeInTheDocument();
 
       releaseCreate();
       await waitFor(() => expect(logins()).toBe(1));

@@ -405,8 +405,34 @@ export function useAuthStatus(accountId: string | undefined): string | undefined
  *
  * Claude only. Codex's device flow produces no such stream.
  */
-export function ClaudeAuthOutput({ accountId }: { accountId: string }) {
-  const diagnostics = useSettingsStore((s) => s.claudeAuthDiagnostics)[accountId]
+export function ClaudeAuthOutput({
+  accountId,
+  evenWhenEmpty,
+}: {
+  /**
+   * Undefined until the account this sign-in will hang on has been created —
+   * a couple of hundred milliseconds into the flow. The control renders
+   * anyway, empty, for the reason `evenWhenEmpty` exists: a panel that is
+   * about to hold it should not grow when it appears.
+   */
+  accountId?: string;
+  /**
+   * Render the control before the first line arrives, for a panel that is
+   * about to fill with them.
+   *
+   * The CLI's first entry lands a few frames after the login starts, so a
+   * disclosure that waits for it grew the waiting panel by its own height
+   * *after* the panel had already appeared — measured, 302 → 395 → 419 across
+   * five frames, which is the second, smaller jump a user notices without
+   * being able to say what moved. Reserving it costs a line that says
+   * "Claude CLI output" for those few frames.
+   */
+  evenWhenEmpty?: boolean;
+}) {
+  // Read the map, then index — never `accountId ? useSettingsStore(...) : …`,
+  // which changes the hook count on the render where the id arrives.
+  const allDiagnostics = useSettingsStore((s) => s.claudeAuthDiagnostics);
+  const diagnostics = (accountId ? allDiagnostics[accountId] : undefined)
     ?? EMPTY_CLAUDE_AUTH_DIAGNOSTICS;
   /**
    * **Open/closed is held in the store, not by the `<details>` element.**
@@ -418,20 +444,20 @@ export function ClaudeAuthOutput({ accountId }: { accountId: string }) {
    * height of what they were reading. Keyed by account, so two rows cannot
    * share one answer.
    */
-  const open = useSettingsStore((s) => s.claudeAuthOutputOpen[accountId] ?? false);
+  const open = useSettingsStore((s) => (accountId ? s.claudeAuthOutputOpen[accountId] ?? false : false));
   const setOpen = useSettingsStore((s) => s.setClaudeAuthOutputOpen);
   const { entries } = diagnostics;
-  if (entries.length === 0) return null;
+  if (entries.length === 0 && !evenWhenEmpty) return null;
 
   return (
     <details
       className="group"
       open={open}
-      onToggle={(event) => setOpen(accountId, event.currentTarget.open)}
-      data-testid={`provider-account-diagnostics-${accountId}`}
+      onToggle={(event) => { if (accountId) setOpen(accountId, event.currentTarget.open); }}
+      data-testid={`provider-account-diagnostics-${accountId ?? "pending"}`}
     >
       <summary className="cursor-pointer select-none text-xs text-(--color-text-link) transition-colors hover:text-(--color-accent)">
-        Claude CLI output ({entries.length})
+        Claude CLI output{entries.length > 0 ? ` (${entries.length})` : ""}
       </summary>
       {/*
         **Pinned to the newest line, by `flex-col-reverse` rather than by a
@@ -448,7 +474,7 @@ export function ClaudeAuthOutput({ accountId }: { accountId: string }) {
       */}
       <div
         className="mt-2 flex max-h-48 flex-col-reverse overflow-auto rounded-md border border-(--color-border-secondary) bg-(--color-bg-secondary) p-2"
-        data-testid={`provider-account-diagnostics-scroll-${accountId}`}
+        data-testid={`provider-account-diagnostics-scroll-${accountId ?? "pending"}`}
       >
         <pre className="whitespace-pre-wrap break-words font-mono text-[10px] leading-[14px] text-(--color-text-secondary)">
           {entries.map((entry) =>
