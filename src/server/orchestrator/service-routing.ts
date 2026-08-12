@@ -28,7 +28,12 @@ import type {
   ProviderRoute,
   SelectAccountOptions,
 } from "./provider-account-manager.js";
-import { accountServiceForHarness, orderForSelectionMode } from "./provider-account-manager.js";
+import {
+  accountServiceForHarness,
+  isOverCutoff,
+  orderForSelectionMode,
+  snapshotExhaustedResetAt,
+} from "./provider-account-manager.js";
 import type { CredentialStore } from "./credential-store.js";
 import type { BillingMode, ModelSelection } from "../shared/catalogue/index.js";
 import {
@@ -60,7 +65,13 @@ import type { AccountSelectionMode, ProviderRouteKind } from "../shared/types/do
  */
 export type ServiceRoutingCredentialSource = Pick<
   CredentialStore,
-  "listCredentialRoutes" | "getCredentialSecret" | "getSelectionMode" | "getCredentialRoute"
+  | "listCredentialRoutes"
+  | "getCredentialSecret"
+  | "getSelectionMode"
+  | "getCredentialRoute"
+  // The string-delivered walk applies the user's cutoffs, exactly as the
+  // account walk does — see `stringSelectionFor`.
+  | "getFailoverCutoffs"
 >;
 
 /**
@@ -223,7 +234,16 @@ function servicesWithStringCredentials(): {
 
 export interface SelectRouteDeps {
   credentialStore: ServiceRoutingCredentialSource;
-  providerAccountManager?: Pick<ProviderAccountManager, "selectAccountForTurn">;
+  /**
+   * `subscriptionLimitsFor` is in the Pick for the STRING path, not the account
+   * one: it is how `stringSelectionFor` reaches the same quota snapshots the
+   * account walk uses. A caller with no manager gets no snapshots and therefore
+   * no quota tiers, which is the honest neutral — "no opinion", not "clear".
+   */
+  providerAccountManager?: Pick<
+    ProviderAccountManager,
+    "selectAccountForTurn" | "subscriptionLimitsFor"
+  >;
   env?: NodeJS.ProcessEnv;
   /** Injected clock, so a benched-credential test does not have to wait one out. */
   now?: () => number;
@@ -392,7 +412,52 @@ function stringSelectionFor(
       );
       if (resident) return { ok: true, route: { kind: "reserved", id: resident.id } };
     }
-    const next = ordered.find((route) => refusalBlockedUntil(route, now) === null);
+    /**
+     * **The account walk's quota tiers, on the string-delivered twin.**
+     *
+     * This walk had refusal memory and nothing else, and the gap was invisible
+     * while a supplied subscription credential was invisible: docs/252 req 20
+     * put them on screen as ordinary rows beside accounts, and a threshold that
+     * works for one and not for the other is exactly the carve-out a user
+     * cannot predict. The Settings band offers *Use in order* / *Spread evenly*
+     * and two cutoffs over rows that look identical; only one delivery shape
+     * honoured the cutoffs.
+     *
+     * The data was always there. Quota is recorded per ROUTE and gated only on
+     * the mode being a subscription (`bootstrap-managers.ts` →
+     * `credentialOwnerForRouteId`), so an Anthropic plan token delivered as a
+     * string reports its 5h and 7d windows exactly as an account does. What was
+     * missing was a reader — which is why the previous comment's reason ("only
+     * account-backed subscriptions report a quota") was wrong even though its
+     * conclusion, *don't show the cutoffs yet*, was right.
+     *
+     * Same three tiers, same helpers, same rule that only refusal memory
+     * SKIPS: telemetry can order a credential to the back of the walk but must
+     * never take it out, because a credential whose data says it is spent is
+     * still the one to try when nothing else is left (docs/260 req 9).
+     *
+     * planning#339 is untouched: a service with no quota reader reports no
+     * snapshot, `limits[id]` is undefined, and both helpers answer "no
+     * opinion" — so GLM's coding plan behaves exactly as it does today.
+     */
+    const limits = deps.providerAccountManager?.subscriptionLimitsFor(
+      selection.serviceId,
+      selection.billingMode,
+    ) ?? {};
+    const cutoffs = deps.credentialStore.getFailoverCutoffs(
+      selection.serviceId,
+      selection.billingMode,
+    );
+    const clear: CredentialRoute[] = [];
+    const overCutoff: CredentialRoute[] = [];
+    const looksSpent: CredentialRoute[] = [];
+    for (const route of ordered) {
+      if (refusalBlockedUntil(route, now) !== null) continue;
+      if (snapshotExhaustedResetAt(limits[route.id], now) !== null) looksSpent.push(route);
+      else if (isOverCutoff(limits[route.id], cutoffs, now)) overCutoff.push(route);
+      else clear.push(route);
+    }
+    const next = [...clear, ...overCutoff, ...looksSpent][0];
     if (next) return { ok: true, route: { kind: "reserved", id: next.id } };
     const probe = ordered[0];
     if (opts.optimistic && probe) return { ok: true, route: { kind: "reserved", id: probe.id } };

@@ -183,7 +183,15 @@ export type ReviewerSelection =
 
 export interface ReviewerModelDeps {
   credentialStore: Pick<CredentialStore, "getReviewerPin"> & ServiceRoutingCredentialSource;
-  providerAccountManager?: Pick<ProviderAccountManager, "selectAccountForTurn"> | undefined;
+  /**
+   * Both members: `subscriptionLimitsFor` is what lets the string-delivered
+   * walk apply the same quota tiers the account walk does. Narrowing this to
+   * `selectAccountForTurn` alone would silently drop a failover tier for a
+   * supplied subscription credential.
+   */
+  providerAccountManager?:
+    | Pick<ProviderAccountManager, "selectAccountForTurn" | "subscriptionLimitsFor">
+    | undefined;
   env?: NodeJS.ProcessEnv | undefined;
 }
 

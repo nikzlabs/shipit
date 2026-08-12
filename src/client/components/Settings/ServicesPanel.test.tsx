@@ -1572,9 +1572,59 @@ describe("an account-capable mode holding only supplied credentials (docs/252 re
     const band = screen.getByTestId("service-routing-service-card-anthropic:sub");
     expect(within(band).getByRole("radiogroup", { name: "How ShipIt picks between these credentials" }))
       .toBeInTheDocument();
-    // No cutoffs: nothing reports a quota for a string-delivered plan yet
-    // (planning#339), so the control would set a number that can never fire.
-    expect(screen.queryByTestId("failover-cutoffs-anthropic:sub")).not.toBeInTheDocument();
+    /**
+     * **And the cutoffs, because Anthropic reports a quota.** This asserted
+     * their ABSENCE, on the belief that only account-backed subscriptions
+     * report one. They do not: a snapshot is recorded per route and gated only
+     * on the mode being a subscription, so a plan token supplied as a string
+     * reports its 5h and 7d windows exactly as an account does — and the
+     * string-delivered walk now applies the cutoffs to it. Two credentials, an
+     * order and a strategy with no thresholds beside them was the bug.
+     */
+    expect(within(band).getByTestId("failover-cutoffs-anthropic:sub")).toBeInTheDocument();
+  });
+
+  /**
+   * The half planning#339 still owns: GLM's coding plan declares
+   * `zai-plan-usage`, which has no reader, so a cutoff there would set a number
+   * that can never fire — the dishonesty req 10 refuses a surface over. The
+   * ORDER still works, because ordering needs no quota.
+   */
+  it("offers no cutoffs for a subscription whose quota nobody reads yet", () => {
+    useSettingsStore.getState().setCredentialRoutes([
+      route({ id: "cred_1", serviceId: "zai", billingMode: "sub", via: "string", priority: 0, isPrimary: true }),
+      route({ id: "cred_2", serviceId: "zai", billingMode: "sub", via: "string", priority: 1 }),
+    ]);
+    render(<ServicesPanel />);
+
+    const band = screen.getByTestId("service-routing-service-card-zai:sub");
+    expect(within(band).getByTestId("credential-selection-mode-zai:sub")).toBeInTheDocument();
+    expect(screen.queryByTestId("failover-cutoffs-zai:sub")).not.toBeInTheDocument();
+    // …and no usage read-out either: an empty pill would say "no usage" where
+    // the truth is "not measured".
+    expect(screen.queryByTestId("credential-row-cred_1")?.textContent).not.toMatch(/5h|7d/);
+  });
+
+  /**
+   * The read-out itself. The compact row gave the quota pill to ACCOUNT rows
+   * only, so the reporting install in the bug report — two Anthropic plan
+   * tokens, no account — showed no numbers at all. The header pill has always
+   * rendered one for these routes; only the row did not.
+   */
+  it("shows each supplied credential's own quota, as the header always has", () => {
+    twoStrings();
+    useUiStore.getState().setSubscriptionLimits({
+      "anthropic:sub": {
+        cred_1: {
+          routeId: "cred_1", serviceId: "anthropic", fetchedAt: Date.now(),
+          session: { usedPct: 42, resetAt: new Date(Date.now() + 3_600_000).toISOString(), source: "usage-api" },
+          weekly: null,
+        },
+      },
+    } as never);
+    render(<ServicesPanel agentList={[claudeAgent]} />);
+
+    expect(screen.getByTestId("credential-row-cred_1")).toHaveTextContent("5h 42%");
   });
 
   it("lets them be reordered, which is what decides the one delivered", async () => {

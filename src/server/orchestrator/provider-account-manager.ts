@@ -8,6 +8,7 @@ import type {
   CredentialStatus,
   FailoverCutoffs,
   ProviderRouteKind,
+  SubscriptionLimits,
   SubscriptionLimitsMap,
 } from "../shared/types.js";
 import type { CredentialStore } from "./credential-store.js";
@@ -302,6 +303,28 @@ export class ProviderAccountManager {
    * manager (it needs the agent runtime), so the wiring cannot be a constructor
    * argument in the real app.
    */
+  /**
+   * The quota snapshots of one `(service, billing mode)`, keyed by route id.
+   *
+   * Public because the STRING-delivered twin of the account walk needs exactly
+   * the same map (`stringSelectionFor`). Quota is recorded per route and gated
+   * only on the mode being a subscription (`bootstrap-managers.ts` →
+   * `credentialOwnerForRouteId`), so a supplied Anthropic plan token reports
+   * quota just as an account does — the map has never been accounts-only, only
+   * its readers were.
+   *
+   * Lives here rather than being threaded through `SelectRouteDeps` from six
+   * call sites because this manager already holds the accessor, and a
+   * per-call-site parameter is a parameter a site can forget: absence would
+   * read as "no quota", silently dropping a failover tier.
+   */
+  subscriptionLimitsFor(
+    serviceId: string,
+    billingMode: "sub" | "key",
+  ): Record<string, SubscriptionLimits> {
+    return this.getSubscriptionLimits?.()?.[credentialModeKey(serviceId, billingMode)] ?? {};
+  }
+
   attachSubscriptionLimits(getSubscriptionLimits: () => SubscriptionLimitsMap): void {
     this.getSubscriptionLimits = getSubscriptionLimits;
   }
@@ -833,7 +856,7 @@ export class ProviderAccountManager {
     // docs/252 req 10 — quota is keyed by `(service, billing mode)` now.
     // Accounts are always subscriptions, so this manager's group is exactly
     // `routingSettingsKeyFor`'s, which is where its cutoffs already come from.
-    const limits = this.getSubscriptionLimits?.()?.[credentialModeKey(...routingSettingsKeyFor(serviceId))] ?? {};
+    const limits = this.subscriptionLimitsFor(...routingSettingsKeyFor(serviceId));
     const now = Date.now();
     const cutoffs = this.credentialStore.getFailoverCutoffs(...routingSettingsKeyFor(serviceId));
 
@@ -1406,7 +1429,7 @@ export function orderForSelectionMode<T extends { lastUsedAt?: number }>(
  * to skip it. The refusal memory in `refusalBlockedUntil` (shared,
  * `credential-route.ts`) is the only thing that skips.
  */
-function snapshotExhaustedResetAt(
+export function snapshotExhaustedResetAt(
   limits: { session?: unknown; weekly?: unknown } | undefined,
   now: number,
 ): number | null {
@@ -1462,7 +1485,7 @@ function readClaudeAccessToken(file: string): string | null {
  * account whose turns are the only source of a fresher reading, and a demoted
  * account is never reached at all while any account is clear.
  */
-function isOverCutoff(
+export function isOverCutoff(
   limits: { session?: unknown; weekly?: unknown } | undefined,
   cutoffs: FailoverCutoffs,
   now: number,

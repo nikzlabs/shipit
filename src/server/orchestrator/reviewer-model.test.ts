@@ -52,6 +52,9 @@ function storeWith(routes: CredentialRoute[], pins: Partial<Record<ReviewerSlot,
     // names a STORED row, because an adopted credential keeps a legacy reserved
     // id and can no longer be recognised by its id's shape.
     getCredentialRoute: (id: string) => routes.find((r) => r.id === id),
+    // docs/252 follow-up — the string-delivered walk applies the user's
+    // cutoffs, so its credential source carries them. Default: nothing set.
+    getFailoverCutoffs: () => ({ session: 90, weekly: 90 }),
   };
 }
 
@@ -385,6 +388,7 @@ describe("resolving the two reviewer slots", () => {
         DEEPSEEK_KEY,
       ]),
       providerAccountManager: {
+        subscriptionLimitsFor: () => ({}),
         selectAccountForTurn: () => ({
           ok: false as const,
           reason: "all_exhausted" as const,

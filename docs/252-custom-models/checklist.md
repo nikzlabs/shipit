@@ -348,3 +348,20 @@ the first of these. All six are fixed.
 - [x] **Reconnect had no title of its own** — "Add a service — Anthropic",
       which reads as an add and names no account. Now "Reconnect — Anthropic ·
       Work", as the plan specified.
+
+## Reported from the dogfood instance after reqs 19-21 shipped
+
+- [x] **Failover cutoffs were missing** on a subscription whose credentials are
+      supplied strings. "Quota" had been read as "account" in two places; it is
+      a property of the MODE (`modeReportsQuota`), so an Anthropic plan token
+      reports its windows whether it arrives as an account or a string.
+- [x] **The quota read-out was missing from those rows too** — the header pill
+      had always rendered one for the same routes.
+- [x] **`stringSelectionFor` gained the account walk's quota tiers**, so the
+      cutoff control is not a number that can never fire. planning#339 is
+      untouched: GLM declares a reader that does not exist, reports no snapshot,
+      and gets neither cutoffs nor a read-out.
+- [x] **One token was listed as two credentials** — adoption imported a secret a
+      stored row already held. It now compares by value, and withdraws a
+      duplicate it created before the rule existed (narrowly: still its secret,
+      still its generated label).

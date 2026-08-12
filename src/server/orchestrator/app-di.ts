@@ -490,7 +490,7 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
    * the first readers of this boot a different picture from the rest.
    */
   const envAdoption = adoptEnvCredentials(credentialStore);
-  for (const what of ["adopted", "rotated", "suppressed"] as const) {
+  for (const what of ["adopted", "rotated", "suppressed", "alreadyStored"] as const) {
     const names = envAdoption[what];
     if (names.length > 0) console.log(`[credentials] environment credentials ${what}: ${names.join(", ")}`);
   }

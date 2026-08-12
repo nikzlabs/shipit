@@ -36,6 +36,7 @@ function store(
   routes: CredentialRoute[],
   secrets: Record<string, string> = {},
   selectionMode: AccountSelectionMode = "strict",
+  cutoffs: { session: number; weekly: number } = { session: 90, weekly: 90 },
 ) {
   return {
     listCredentialRoutes: (serviceId?: string, billingMode?: string) =>
@@ -47,6 +48,8 @@ function store(
     getCredentialSecret: (id: string) => secrets[id],
     getSelectionMode: () => selectionMode,
     getCredentialRoute: (id: string) => routes.find((r) => r.id === id),
+    // The string-delivered walk applies the same cutoffs the account walk does.
+    getFailoverCutoffs: () => cutoffs,
   };
 }
 
@@ -202,7 +205,7 @@ describe("selectRouteForSelection — scoped to the SELECTED billing mode", () =
       { serviceId: "anthropic", billingMode: "sub", modelId: "claude-opus-5" },
       {
         credentialStore: store([]),
-        providerAccountManager: { selectAccountForTurn: () => anthropicAccount },
+        providerAccountManager: { selectAccountForTurn: () => anthropicAccount, subscriptionLimitsFor: () => ({}) },
       },
     );
     expect(selected).toEqual(anthropicAccount);
@@ -236,6 +239,7 @@ describe("selectRouteForSelection — scoped to the SELECTED billing mode", () =
       {
         credentialStore: store([]),
         providerAccountManager: {
+          subscriptionLimitsFor: () => ({}),
           selectAccountForTurn: (serviceId: string) => {
             asked.push(serviceId);
             return anthropicAccount;
@@ -260,6 +264,7 @@ describe("selectRouteForSelection — scoped to the SELECTED billing mode", () =
     selectRouteForSelection("codex", undefined, {
       credentialStore: store([]),
       providerAccountManager: {
+        subscriptionLimitsFor: () => ({}),
         selectAccountForTurn: (serviceId: string) => {
           asked.push(serviceId);
           return noAccount;
@@ -282,6 +287,7 @@ describe("selectRouteForSelection — scoped to the SELECTED billing mode", () =
         credentialStore: store([]),
         providerAccountManager: {
           selectAccountForTurn: () => ({ ok: true, route: { kind: "reserved", id: "claude-api-key" } }),
+          subscriptionLimitsFor: () => ({}),
         },
         env: { ANTHROPIC_API_KEY: "sk-ant" } as NodeJS.ProcessEnv,
       },
@@ -298,7 +304,7 @@ describe("selectRouteForSelection — scoped to the SELECTED billing mode", () =
       { serviceId: "anthropic", billingMode: "sub", modelId: "claude-opus-5" },
       {
         credentialStore: store([]),
-        providerAccountManager: { selectAccountForTurn: () => noAccount },
+        providerAccountManager: { selectAccountForTurn: () => noAccount, subscriptionLimitsFor: () => ({}) },
         env: { ANTHROPIC_AUTH_TOKEN: "tok" } as NodeJS.ProcessEnv,
       },
     );
@@ -316,7 +322,7 @@ describe("selectRouteForSelection — scoped to the SELECTED billing mode", () =
       { serviceId: "anthropic", billingMode: "sub", modelId: "claude-opus-5" },
       {
         credentialStore: store([]),
-        providerAccountManager: { selectAccountForTurn: () => exhausted },
+        providerAccountManager: { selectAccountForTurn: () => exhausted, subscriptionLimitsFor: () => ({}) },
         env: { ANTHROPIC_AUTH_TOKEN: "tok" } as NodeJS.ProcessEnv,
       },
     );
@@ -329,7 +335,7 @@ describe("selectRouteForSelection — scoped to the SELECTED billing mode", () =
       { serviceId: "deepseek", billingMode: "key", modelId: "deepseek-v4-flash" },
       {
         credentialStore: store([route({ id: "cred_ds", serviceId: "deepseek" })], { cred_ds: "sk" }),
-        providerAccountManager: { selectAccountForTurn: () => anthropicAccount },
+        providerAccountManager: { selectAccountForTurn: () => anthropicAccount, subscriptionLimitsFor: () => ({}) },
       },
     );
     expect(selected).toEqual({ ok: true, route: { kind: "reserved", id: "cred_ds" } });
@@ -338,7 +344,7 @@ describe("selectRouteForSelection — scoped to the SELECTED billing mode", () =
   it("keeps the pre-feature question for a session with no selection", () => {
     const selected = selectRouteForSelection("claude", undefined, {
       credentialStore: store([]),
-      providerAccountManager: { selectAccountForTurn: () => anthropicAccount },
+      providerAccountManager: { selectAccountForTurn: () => anthropicAccount, subscriptionLimitsFor: () => ({}) },
     });
     expect(selected).toEqual(anthropicAccount);
   });
@@ -363,6 +369,96 @@ describe("string-delivered subscription failover", () => {
       env: {} as NodeJS.ProcessEnv,
       now: () => NOW,
     });
+
+  /**
+   * **The account walk's quota tiers, on the string-delivered twin.**
+   *
+   * This walk had refusal memory and nothing else, which was invisible while a
+   * supplied subscription credential was itself invisible. docs/252 req 20 put
+   * them on screen as ordinary rows beside accounts, so a threshold honoured
+   * for one delivery shape and silently not the other became a carve-out no
+   * user could predict — two credentials, an order, a strategy, and no numbers.
+   *
+   * Anthropic here rather than GLM: quota is recorded per ROUTE and gated only
+   * on the mode being a subscription, so a plan token supplied as a string
+   * reports its 5h and 7d windows exactly as an account does. GLM declares
+   * `zai-plan-usage`, which has no reader (planning#339), so its snapshots stay
+   * empty and every case above behaves exactly as it did.
+   */
+  describe("quota tiers, the same three the account walk has", () => {
+    const anthropic = { serviceId: "anthropic", billingMode: "sub", modelId: "claude-opus-5" } as const;
+    const tok = (id: string, over: Partial<CredentialRoute> = {}): CredentialRoute =>
+      route({ id, serviceId: "anthropic", billingMode: "sub", priority: 0, ...over });
+    const window = (usedPct: number) => ({
+      usedPct,
+      resetAt: new Date(NOW + 3_600_000).toISOString(),
+      source: "usage-api" as const,
+    });
+    const pickAnthropic = (
+      routes: CredentialRoute[],
+      limits: Record<string, unknown>,
+      cutoffs = { session: 90, weekly: 90 },
+    ) =>
+      selectRouteForSelection("claude", anthropic, {
+        credentialStore: store(routes, { tok_a: "k1", tok_b: "k2" }, "strict", cutoffs),
+        providerAccountManager: {
+          selectAccountForTurn: () => ({ ok: false, reason: "auth_required" }) as never,
+          subscriptionLimitsFor: () => limits as never,
+        },
+        env: {} as NodeJS.ProcessEnv,
+        now: () => NOW,
+      });
+
+    it("passes over a credential above the user's cutoff", () => {
+      const selected = pickAnthropic(
+        [tok("tok_a", { priority: 0 }), tok("tok_b", { priority: 1 })],
+        { tok_a: { session: window(95), weekly: window(10) } },
+      );
+      expect(selected).toEqual({ ok: true, route: { kind: "reserved", id: "tok_b" } });
+    });
+
+    it("respects the user's own cutoff, not a fixed one", () => {
+      // 60% is under the default 90 and over a cutoff the user set to 50.
+      const routes = [tok("tok_a", { priority: 0 }), tok("tok_b", { priority: 1 })];
+      const limits = { tok_a: { session: window(60), weekly: window(10) } };
+      expect(pickAnthropic(routes, limits))
+        .toEqual({ ok: true, route: { kind: "reserved", id: "tok_a" } });
+      expect(pickAnthropic(routes, limits, { session: 50, weekly: 90 }))
+        .toEqual({ ok: true, route: { kind: "reserved", id: "tok_b" } });
+    });
+
+    /**
+     * docs/260 req 9 — telemetry ORDERS, it never skips. A credential whose
+     * data says it is spent is still the one to try when nothing else is left:
+     * that turn is how a fresher reading is obtained at all.
+     */
+    it("still uses a credential over its cutoff when it is the only one left", () => {
+      const selected = pickAnthropic(
+        [tok("tok_a", { priority: 0 })],
+        { tok_a: { session: window(99), weekly: window(99) } },
+      );
+      expect(selected).toEqual({ ok: true, route: { kind: "reserved", id: "tok_a" } });
+    });
+
+    it("orders a spent credential behind one merely over its cutoff", () => {
+      const selected = pickAnthropic(
+        [tok("tok_a", { priority: 0 }), tok("tok_b", { priority: 1 })],
+        {
+          tok_a: { session: window(100), weekly: window(10) },
+          tok_b: { session: window(95), weekly: window(10) },
+        },
+      );
+      expect(selected).toEqual({ ok: true, route: { kind: "reserved", id: "tok_b" } });
+    });
+
+    it("has no opinion when nothing reports a quota — planning#339 untouched", () => {
+      const selected = pickAnthropic(
+        [tok("tok_a", { priority: 0 }), tok("tok_b", { priority: 1 })],
+        {},
+      );
+      expect(selected).toEqual({ ok: true, route: { kind: "reserved", id: "tok_a" } });
+    });
+  });
 
   it("moves to the next credential when the first is benched", () => {
     const selected = pick(
