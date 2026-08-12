@@ -5,7 +5,7 @@ import { WarningIcon, CircleNotchIcon, ArrowClockwiseIcon, ArrowSquareOutIcon } 
 import { ICON_SIZE } from "../../design-tokens.js";
 import { Button } from "../ui/button.js";
 import type { PreviewError } from "../../hooks/usePreviewErrors.js";
-import { usePreviewStore, isServicesDrawerOpen } from "../../stores/preview-store.js";
+import { usePreviewStore } from "../../stores/preview-store.js";
 import { resolvePointerNavigation } from "../../utils/preview-link-navigation.js";
 import { useUiStore } from "../../stores/ui-store.js";
 import { resolvePreviewHost, suggestWildcardHost } from "../../utils/preview-host.js";
@@ -482,8 +482,6 @@ export function PreviewFrame({
   const showSelector = isRunning && (detectedPorts.length > 1 || ((preview.source === "vite" || preview.source === "managed") && detectedPorts.length > 0));
   const startupSteps = usePreviewStore((s) => s.startupSteps);
   const services = usePreviewStore((s) => s.services);
-  const savedDrawerExpanded = usePreviewStore((s) => s.servicesDrawerExpanded);
-  const drawerIdleCollapsed = usePreviewStore((s) => s.servicesDrawerIdleCollapsed);
 
   // Compute current port label and remember it for transitions
   // Prefer service name over raw port number for detected services
@@ -645,32 +643,15 @@ export function PreviewFrame({
     // duplicating the list. `manualOnly` just tunes the copy (the dogfooding
     // case is a single manual `dev` service the user must start by hand).
     const manualOnly = services.length > 0 && services.every(s => s.preview === "manual");
-    // The drawer opens itself while nothing is previewing, so "Show services"
-    // is only worth rendering for the one case where it isn't open: the user
-    // collapsed it by hand.
-    const drawerOpen = isServicesDrawerOpen({
-      previewRunning: false,
-      expanded: savedDrawerExpanded,
-      idleCollapsed: drawerIdleCollapsed,
-    });
+    // No button here. The drawer opens itself while nothing is previewing, and
+    // the one case where it doesn't — the user collapsed it by hand — is a
+    // deliberate act, with the drawer's own caret right there to undo it.
     overlayContent = (
       <div className="text-center space-y-3 max-w-sm px-4">
         <WarningIcon size={ICON_SIZE.LG} className="mx-auto text-(--color-text-tertiary)" />
         <p className="text-sm text-(--color-text-secondary)">
           {manualOnly ? "No preview running. Start a service to launch it." : "No preview running"}
         </p>
-        {!drawerOpen && (
-          <Button
-            variant="secondary"
-            size="md"
-            onClick={() => {
-              usePreviewStore.getState().setServicesDrawerIdleCollapsed(false);
-              usePreviewStore.getState().setServicesDrawerExpanded(true);
-            }}
-          >
-            Show services
-          </Button>
-        )}
       </div>
     );
   }

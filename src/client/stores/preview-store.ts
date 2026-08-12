@@ -326,12 +326,10 @@ function loadServicesDrawerExpanded(): boolean {
  *
  * While a preview runs, the saved preference decides. While none runs, the
  * drawer is the only place to start one — so it opens itself whatever the
- * preference says, because making the user press "Show services" first is a
- * step with no decision in it. A hand collapse still wins, and holds until a
- * preview starts (`servicesDrawerIdleCollapsed`).
- *
- * Both the drawer and the PreviewFrame empty state read this, so the overlay
- * never offers a button for a drawer that is already open.
+ * preference says, because making the user press a "Show services" button first
+ * is a step with no decision in it — which is why that button no longer exists.
+ * A hand collapse still wins, and holds until a preview starts
+ * (`servicesDrawerIdleCollapsed`); the drawer's own caret undoes it.
  */
 export function isServicesDrawerOpen(opts: {
   previewRunning: boolean;

@@ -36,9 +36,9 @@ of competing for a tab.
     "Show services" click first is a step with no decision in it. The saved
     preference keeps its own meaning — "how I like the drawer while a preview is
     up" — and a hand collapse still wins, held in the ephemeral
-    `servicesDrawerIdleCollapsed` store flag until a preview starts. Both the
-    drawer and the empty state below read the single helper
-    `isServicesDrawerOpen()` (`preview-store.ts`).
+    `servicesDrawerIdleCollapsed` store flag until a preview starts — the
+    drawer's own caret undoes it, so the empty state below needs no button.
+    Helper: `isServicesDrawerOpen()` (`preview-store.ts`).
   - `selectedService` — list view vs single-service log view, mirroring the old
     panel's two-view design.
   - Plain-text log accumulation for the "Send to Agent" button (same
@@ -79,10 +79,10 @@ manual-only dogfooding case. That duplicated the drawer, so it was removed: the
 overlay is now just a "No preview running" nudge. `PreviewFrame` no longer
 imports `ServiceList` or takes `onStartService`/`onStopService` props.
 
-The **Show services** button that used to sit in that nudge now renders only
-when the drawer is actually collapsed — i.e. only after the user collapsed it by
-hand, since the drawer opens itself whenever no preview runs. Clicking it clears
-that dismissal and sets the saved preference.
+The nudge carries **no button**. It once held a **Show services** button that
+expanded the drawer; now that the drawer opens itself whenever no preview runs,
+the only state that button could act on is a collapse the user made by hand —
+a deliberate act, with the drawer's own caret one click away to undo it.
 
 ## Visual redesign
 
