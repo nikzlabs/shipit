@@ -79,9 +79,18 @@ export function CodeEditor({
       .map((c) => ({ id: c.id, kind: "line", line: c.line, text: c.text }));
   }, [comments]);
 
+  // Latest `lineComments`, readable from inside the async editor setup below.
+  // The setup awaits a dynamic import, and the sync effect at the end of this
+  // component no-ops while that import is pending (there is no manager yet) —
+  // so comments arriving in that window would be applied by neither path if the
+  // setup used its captured value, and would stay stale until the next change.
+  const lineCommentsRef = useRef(lineComments);
+  lineCommentsRef.current = lineComments;
+
   // `lineComments` is intentionally absent from the deps (see the note at the
   // end of this effect): including it would tear down and rebuild the whole
-  // Monaco editor on every comment change. The effect below syncs it instead.
+  // Monaco editor on every comment change. The effect below syncs it instead,
+  // and the ref above covers the import-in-flight window.
   // eslint-disable-next-line no-restricted-syntax -- Monaco lifecycle (createEditor + cleanup)
   useEffect(() => {
     if (!editorRef.current) return;
@@ -128,7 +137,9 @@ export function CodeEditor({
         readOnly,
       });
 
-      managerRef.current.setComments(lineComments);
+      // Read through the ref, not the captured value: comments may have changed
+      // while the dynamic import above was in flight.
+      managerRef.current.setComments(lineCommentsRef.current);
 
       // Jump to (and briefly highlight) the requested line, e.g. when opened
       // from a `path:line` link in chat. Clamp to the document so an out-of-range
@@ -161,9 +172,8 @@ export function CodeEditor({
       editorInstanceRef.current?.dispose();
       editorInstanceRef.current = null;
     };
-    // The lineComments dep is intentionally omitted: we sync via the
-    // separate effect below to avoid tearing down the editor on every change.
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- `lineComments` omitted on purpose — including it would rebuild the Monaco editor on every comment change; the effect below syncs it instead
+    // No `lineComments` dep — the setup reads it through `lineCommentsRef`, so
+    // comments sync without tearing down and rebuilding the editor.
   }, [filePath, content, sessionId, addLineComment, editComment, deleteComment, setComposing, readOnly, revealLine, language]);
 
   // Sync comments without rebuilding the editor.
