@@ -10,6 +10,7 @@ import { usePrStore } from "../pr-store.js";
 import { useSettingsStore } from "../settings-store.js";
 import { useRepoStore } from "../repo-store.js";
 import { useIssuesStore } from "../issues-store.js";
+import { usePluginReposStore } from "../plugin-repos-store.js";
 import type { AgentId, SessionInfo } from "../../../server/shared/types.js";
 
 /**
@@ -60,6 +61,10 @@ export function resetSessionState() {
   useUiStore.getState().reset();
   usePreviewStore.getState().reset();
   usePresentStore.getState().reset();
+  // docs/262 — the Plugins tab's snapshot is session-scoped; drop it so the
+  // incoming session doesn't briefly gate its tab on the outgoing session's
+  // declarations (App refetches on the sessionId change).
+  usePluginReposStore.getState().reset();
   // Not an unconditional reset: the issues store is repo-scoped, not
   // session-scoped, and only drops its contents when the repo actually changes.
   scopeIssuesToSession();
@@ -98,6 +103,12 @@ export function resumeSessionInternal(sessionId: string) {
   useLogStore.getState().reset();
   useUiStore.getState().reset();
   usePresentStore.getState().reset();
+  // docs/262 — session-scoped: drop the outgoing session's plugin declarations
+  // so the incoming session never gates its tab (or warn dot) on them. The
+  // store also pairs every snapshot with its session id, so a missed reset
+  // can't leak state — this keeps the store from holding a dead session's
+  // data at all.
+  usePluginReposStore.getState().reset();
   // Repo-scoped, not session-scoped (planning#327): clears only when the incoming
   // session belongs to a different repository than the outgoing one.
   scopeIssuesToSession(sessionId);
@@ -142,6 +153,7 @@ export function fullResetAllStores() {
   // session-scoped `reset()` above deliberately keeps them (docs/089).
   usePreviewStore.getState().clearPreviewPaths();
   usePresentStore.getState().reset();
+  usePluginReposStore.getState().reset();
   usePrStore.getState().reset();
   useSettingsStore.getState().reset();
   useRepoStore.getState().reset();

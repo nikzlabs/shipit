@@ -39,6 +39,7 @@ import {
   ClockCounterClockwiseIcon,
   PresentationChartIcon,
   GitPullRequestIcon,
+  PlugsIcon,
 } from "@phosphor-icons/react";
 import { ICON_SIZE } from "./design-tokens.js";
 import { Tab } from "./components/ui/tab.js";
@@ -65,6 +66,13 @@ import { AppLayout } from "./AppLayout.js";
 import { DocsViewer } from "./components/DocsViewer.js";
 import { IssuesPanel } from "./components/IssuesPanel.js";
 import { useIssuesStore } from "./stores/issues-store.js";
+import { PluginReposPanel } from "./components/PluginReposPanel.js";
+import {
+  pluginsAttention,
+  pluginsTabVisible,
+  snapshotForSession,
+  usePluginReposStore,
+} from "./stores/plugin-repos-store.js";
 import { FileTree } from "./components/FileTree.js";
 import { FilePreviewModal } from "./components/FilePreviewModal.js";
 import { FileEditModal } from "./components/FileEditModal.js";
@@ -124,7 +132,7 @@ import { useTerminalStore } from "./stores/terminal-store.js";
 import { useLogStore } from "./stores/log-store.js";
 import { usePrStore } from "./stores/pr-store.js";
 import { useSettingsStore } from "./stores/settings-store.js";
-import { useUiStore } from "./stores/ui-store.js";
+import { useUiStore, type RightTab } from "./stores/ui-store.js";
 import { useRepoStore } from "./stores/repo-store.js";
 import {
   composeReviewMessage,
@@ -300,6 +308,14 @@ export default function App() {
     () => sessions.find((s) => s.id === wsSessionId)?.kind === "sandbox",
     [sessions, wsSessionId],
   );
+  // docs/262 — the Plugins tab is gated on plugin intent (a `plugins:` block in
+  // shipit.yaml, even an invalid one). Session-scoped store; seeded by the
+  // sessionId-keyed effect below and by the files-changed shipit.yaml hook.
+  // Read through `snapshotForSession`: the store holds one slot, so pairing
+  // the snapshot with its owning session is what keeps a switch from showing
+  // the previous session's tab, dot and cards (review finding).
+  const pluginSnapshot = usePluginReposStore((s) => snapshotForSession(s, sessionId));
+  const showPluginsTab = pluginsTabVisible(pluginSnapshot);
   const rightTab = (() => {
     if (isOpsSession && (rightTabRaw === "preview" || rightTabRaw === "pr"))
       {return "host";}
@@ -311,6 +327,12 @@ export default function App() {
       (rightTabRaw === "preview" || rightTabRaw === "terminal")
     )
       {return "files";}
+    // docs/262 — the tab disappears when the declaration is edited away or the
+    // session switches to a plugin-less repo; coerce so the panel never lands
+    // on a tab that isn't rendered.
+    if (rightTabRaw === "plugins" && !showPluginsTab) {
+      return isLocalMode || isOpsSession || isSandboxSession ? "files" : "preview";
+    }
     return rightTabRaw;
   })();
   const mobilePanel = useUiStore((s) => s.mobilePanel);
@@ -982,18 +1004,9 @@ export default function App() {
   });
 
   const handleTabChange = useCallback(
-    (
-      tab:
-        | "preview"
-        | "docs"
-        | "issues"
-        | "files"
-        | "terminal"
-        | "history"
-        | "pr"
-        | "host"
-        | "present",
-    ) => {
+    // RightTab itself, not a re-spelled union — an inline copy drifts the
+    // moment a tab is added (docs/262's "plugins" caught it doing exactly that).
+    (tab: RightTab) => {
       useUiStore.getState().setRightTab(tab);
       const sid = useSessionStore.getState().sessionId;
       if (
@@ -1073,6 +1086,17 @@ export default function App() {
   // transcript as plain text until the user opened the Issues tab, which was
   // the only other refetch. It retries only while the server says the answer
   // isn't readable yet, so the ordinary case is still one request.
+  // docs/262 — seed the Plugins tab's snapshot on session change. Keyed on
+  // `sessionId` because the tab's *visibility* (and its warn dot) derives from
+  // the snapshot, so it must exist while the pane is closed. Cheap: the server
+  // reads one local file. The files-changed handler refetches on shipit.yaml
+  // edits; a session with no id (fresh app) has nothing to declare plugins.
+  // eslint-disable-next-line no-restricted-syntax -- external system sync: seed plugin declarations for tab gating
+  useEffect(() => {
+    if (!sessionId) return;
+    void usePluginReposStore.getState().fetchSnapshot(sessionId);
+  }, [sessionId]);
+
   // eslint-disable-next-line no-restricted-syntax -- external system sync: warm tracker config for inline issue-link interception
   useEffect(() => {
     void (async () => {
@@ -1631,6 +1655,7 @@ export default function App() {
       presentations.length > 0,
       hasPr,
       rightTab !== "present" && presentUnseenCount > 0,
+      showPluginsTab,
     ].join("|"),
   );
   const rightPanel = (
@@ -1679,6 +1704,25 @@ export default function App() {
           active={rightTab === "files"}
           onClick={() => handleTabChange("files")}
         />
+        {showPluginsTab && (
+          <Tab
+            icon={<PlugsIcon size={ICON_SIZE.SM} />}
+            label="Plugins"
+            active={rightTab === "plugins"}
+            onClick={() => handleTabChange("plugins")}
+            badge={
+              pluginsAttention(pluginSnapshot) ? (
+                // docs/262 — urgency escapes a closed tab as a warn dot; the
+                // accessible label carries the meaning for screen readers.
+                <span
+                  role="img"
+                  aria-label="Plugins — attention required"
+                  className="inline-block w-2 h-2 rounded-full bg-(--color-warning)"
+                />
+              ) : undefined
+            }
+          />
+        )}
         {!isLocalMode && (
           <Tab
             icon={<TerminalWindowIcon size={ICON_SIZE.SM} />}
@@ -1782,6 +1826,8 @@ export default function App() {
             }}
             onOpenIssue={handleOpenIssue}
           />
+        ) : rightTab === "plugins" ? (
+          <PluginReposPanel />
         ) : rightTab === "issues" ? (
           <IssuesPanel
             onStartSession={handleIssueStartSession}

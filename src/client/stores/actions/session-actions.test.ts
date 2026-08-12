@@ -3,6 +3,7 @@ import { createHeadlessSession, handleSessionResume, resumeSessionInternal, star
 import { useSessionStore } from "../session-store.js";
 import { useUiStore } from "../ui-store.js";
 import { useIssuesStore } from "../issues-store.js";
+import { usePluginReposStore } from "../plugin-repos-store.js";
 import { useRepoStore } from "../repo-store.js";
 import type { SessionInfo } from "../../../server/shared/types.js";
 
@@ -167,6 +168,22 @@ describe("resumeSessionInternal", () => {
     resumeSessionInternal("session-b");
 
     expect(useUiStore.getState().mobilePanel).toBe("chat");
+  });
+
+  // docs/262 — the plugin snapshot IS session-scoped: it gates the Plugins tab
+  // and its warn dot, so carrying it into another session would show that
+  // session a tab its repository never declared.
+  it("drops the plugin declarations on switch", () => {
+    useSessionStore.setState({ sessionId: "session-a" });
+    usePluginReposStore.setState({
+      snapshot: { declared: true, pending: false, consumerRepoUrl: null, repos: [], warnings: [] },
+      forSessionId: "session-a",
+    });
+
+    resumeSessionInternal("session-b");
+
+    expect(usePluginReposStore.getState().snapshot).toBeNull();
+    expect(usePluginReposStore.getState().forSessionId).toBeNull();
   });
 
   /**

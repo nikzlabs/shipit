@@ -289,20 +289,34 @@ copied: per-request config read behind `GET /api/plugin-repos`, the
 `plugin_repo_status` WS message keeps user- and agent-triggered refreshes
 coherent in one UI.
 
-## 4. Key files (anticipated)
+## 4. Key files (anticipated; ✓ = exists)
 
-- `src/server/shared/shipit-config.ts` — both blocks parsed here (consumer
+- ✓ `src/server/shared/plugin-repos.ts` — both blocks parsed here (consumer
   `plugins:`, plugin `exports.plugins:`), one cross-block name reservation
-  pass, fail-closed grammar.
-- `src/server/orchestrator/api-routes-plugin-repos.ts` — browser snapshot +
-  refresh endpoints (new); tracker registration folds into the existing
-  trackers registry (`api-routes-issues.ts`) with destination-based dedup.
+  pass, fail-closed grammar, and the snapshot projection. Filesystem-free so
+  the client imports the types; `shipit-config.ts` is the entry point and
+  parses trackers first (the reservation order).
+- ✓ `src/server/orchestrator/api-routes-plugin-repos.ts` — browser snapshot
+  (the GET exists; refresh endpoints come with generation mechanics); tracker
+  registration folds into the existing trackers registry
+  (`api-routes-issues.ts`) with destination-based dedup.
 - `src/server/session/agent-shim/shipit-plugin.ts` + a worker agent-ops
   relay route — the agent's `shipit plugin refresh` transport (orchestrator
   API routes are container-denied; the shim goes through the worker like
   `shipit issue`).
-- `src/client/stores/plugin-repos-store.ts` — the session-scoped store
-  behind the tab, its warn dot, and the effective-tab fallback.
+- ✓ `src/client/stores/plugin-repos-store.ts` — the session-scoped store
+  behind the tab, its warn dot, and the effective-tab fallback; the pane is
+  `PluginReposPanel.tsx`. v0 renders declarations with an honest
+  "declared — mechanics pending" state for tracked repos (not counted toward
+  the warn dot; the full state set arrives with the slice-2 mechanics).
+  Three race guards, each from the implementation review: foreign-session
+  responses are dropped, a monotonic generation makes same-session refetches
+  **latest-wins** (the seeding fetch and `files_changed` overlap freely), and
+  every read goes through `snapshotForSession` so a snapshot can only gate the
+  session it belongs to. The route reports **`pending`** — evicted or
+  mid-restore checkout — which the store retries with backoff instead of
+  caching, the `declarationsPending` mechanism docs/248 needed for the same
+  reason.
 - `src/server/shared/types/ws-server-messages/service.ts` — structured
   `origin` on service messages; `secrets_status` origin dimension; new
   `plugin_repo_status`.
@@ -327,7 +341,11 @@ no checkout, generations, or refresh (req 27) and therefore cannot dogfood
 them: (a) **self-declared** (`repo: self`) for the live-working-tree path,
 and (b) **consumer-declared** — the inner instance declaring the test
 plugin's repo by `owner/name` — for checkout, generation activation, pin
-durability, and refresh.
+durability, and refresh. The consumer fixture lives in the dogfood seed repo
+`nicolasalt-shipit/todo-list` (its PR #13): it exports its own tiny
+`todo-stats` CLI plugin, dogfoods it via `repo: self`, and consumes this
+repo's `probe` by `owner/name` — two declared repos in one project, which
+also exercises req 14 independence.
 
 What runs where — the dogfood boundary:
 

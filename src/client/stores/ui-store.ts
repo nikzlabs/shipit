@@ -22,6 +22,7 @@ export type RightTab =
   | "docs"
   | "issues"
   | "files"
+  | "plugins"
   | "terminal"
   | "history"
   | "pr"

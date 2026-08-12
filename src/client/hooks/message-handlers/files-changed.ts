@@ -1,6 +1,7 @@
 import type { WsFilesChanged } from "../../../server/shared/types.js";
 import { useFileStore } from "../../stores/file-store.js";
 import { useIssuesStore } from "../../stores/issues-store.js";
+import { usePluginReposStore } from "../../stores/plugin-repos-store.js";
 import { useSessionStore } from "../../stores/session-store.js";
 import { useUiStore } from "../../stores/ui-store.js";
 import type { Handler } from "./types.js";
@@ -51,5 +52,12 @@ export const handleFilesChanged: Handler<WsFilesChanged> = (_ctx, data) => {
         await useIssuesStore.getState().fetchIssues();
       }
     })();
+    // docs/262 — shipit.yaml is also where plugin repositories are declared,
+    // and the snapshot gates the Plugins tab itself, so refresh it whether or
+    // not the tab is open. Same cost profile as the tracker refetch: one local
+    // file read on the server.
+    if (sid) {
+      void usePluginReposStore.getState().fetchSnapshot(sid);
+    }
   }
 };
