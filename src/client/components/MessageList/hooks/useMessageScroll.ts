@@ -31,14 +31,28 @@ function now(): number {
  * keep correcting until `scrollHeight` has been unchanged for a few frames
  * (bounded by a safety cap so streaming never loops forever).
  */
-function scheduleScrollToBottom(container: HTMLElement, shouldContinue: () => boolean): () => void {
+function scheduleScrollToBottom(
+  container: HTMLElement,
+  shouldContinue: () => boolean,
+  onSettled: () => void,
+): () => void {
   let cancelled = false;
   let lastHeight = -1;
   let stableFrames = 0;
   const start = now();
 
+  const stop = () => {
+    if (cancelled) return;
+    cancelled = true;
+    onSettled();
+  };
+
   const tick = () => {
-    if (cancelled || !shouldContinue()) return;
+    if (cancelled) return;
+    if (!shouldContinue()) {
+      stop();
+      return;
+    }
     scrollToBottom(container);
 
     const height = container.scrollHeight;
@@ -51,14 +65,15 @@ function scheduleScrollToBottom(container: HTMLElement, shouldContinue: () => bo
 
     if (stableFrames < STABLE_FRAMES && now() - start < MAX_SCROLL_SETTLE_MS) {
       window.requestAnimationFrame(tick);
+    } else {
+      // Settled: report it so the caller stops treating scroll events as ours.
+      stop();
     }
   };
 
   window.requestAnimationFrame(tick);
 
-  return () => {
-    cancelled = true;
-  };
+  return stop;
 }
 
 /**
@@ -83,6 +98,9 @@ export function useMessageScroll(
   // Canceller for the in-flight post-send settle loop, so a manual scroll can
   // halt it the instant the user takes control (see the gesture listeners below).
   const cancelSettleRef = useRef<(() => void) | null>(null);
+  // True while that loop is re-pinning the view, i.e. while every scroll event
+  // the container fires is one we caused (see `handleScroll`).
+  const settlingRef = useRef(false);
 
   // Track whether the user has scrolled away from the bottom, and let any manual
   // scroll take authoritative control — we must never fight a user's scroll.
@@ -92,27 +110,47 @@ export function useMessageScroll(
     if (!container) return;
 
     const handleScroll = () => {
+      // While the settle loop is running, every scroll event is our own doing: a
+      // programmatic pin fires one too, and it is delivered a frame later — by
+      // which time a `content-visibility: auto` child may have painted its real
+      // height, so the event reports a position far above the *new* bottom
+      // although nobody touched the scrollbar. Reading that as "the user scrolled
+      // away" cancelled the loop mid-message and stranded the view partway: the
+      // exact stranding the loop exists to correct, and worse the taller the
+      // message or card that just painted. Comparing the offset against the one
+      // we pinned is not a way out — scroll anchoring shifts the position between
+      // the write and the event, so our own echo does not report the offset we
+      // wrote. A real user scroll always comes with a gesture, and those (below)
+      // stop the loop first, which reopens this handler.
+      if (settlingRef.current) return;
+
       const near = isNearBottom(container);
       autoScrollRef.current = near;
       // Moving away from the bottom (scrollbar drag, keyboard, momentum) cancels
-      // any forced scroll immediately. Our own programmatic scrolls always land
-      // at the bottom (`near` true), so they never cancel themselves.
+      // any forced scroll immediately.
       if (!near) cancelSettleRef.current?.();
     };
 
-    // `wheel`/`touchmove` fire only from genuine user input — never from a
-    // programmatic `scrollTop` write — so they are an unambiguous "user took
-    // control" signal. Halt the in-flight settle loop on the very first gesture,
-    // even before it crosses the near-bottom threshold, so a manual scroll is
-    // never overridden.
+    // These fire only from genuine user input — never from a programmatic
+    // `scrollTop` write — so they are an unambiguous "user took control" signal,
+    // and they cover every way a person can scroll this container: `wheel`
+    // (mouse, trackpad, momentum), `touchmove` (touch), `pointerdown` (grabbing
+    // the scrollbar), `keydown` (Page Down, arrows, Home/End, with focus inside
+    // the transcript; the composer is outside this container, so typing there
+    // does not reach us). Halt the in-flight settle loop on the very first
+    // gesture, even before it crosses the near-bottom threshold, so a manual
+    // scroll is never overridden — and so `handleScroll` starts honouring the
+    // events the gesture itself produces.
     const handleManualScroll = () => {
       cancelSettleRef.current?.();
     };
+    const MANUAL_SCROLL_EVENTS = ["wheel", "touchmove", "pointerdown", "keydown"] as const;
 
     handleScroll();
     container.addEventListener("scroll", handleScroll, { passive: true });
-    container.addEventListener("wheel", handleManualScroll, { passive: true });
-    container.addEventListener("touchmove", handleManualScroll, { passive: true });
+    for (const type of MANUAL_SCROLL_EVENTS) {
+      container.addEventListener(type, handleManualScroll, { passive: true });
+    }
 
     const observer = typeof ResizeObserver !== "undefined"
       ? new ResizeObserver(() => {
@@ -123,8 +161,9 @@ export function useMessageScroll(
 
     return () => {
       container.removeEventListener("scroll", handleScroll);
-      container.removeEventListener("wheel", handleManualScroll);
-      container.removeEventListener("touchmove", handleManualScroll);
+      for (const type of MANUAL_SCROLL_EVENTS) {
+        container.removeEventListener(type, handleManualScroll);
+      }
       observer?.disconnect();
     };
   }, []);
@@ -159,10 +198,17 @@ export function useMessageScroll(
     scrollToBottom(container);
     autoScrollRef.current = true;
 
-    const cancel = scheduleScrollToBottom(container, () => {
-      const latestContainer = containerRef.current;
-      return latestContainer === container && autoScrollRef.current;
-    });
+    settlingRef.current = true;
+    const cancel = scheduleScrollToBottom(
+      container,
+      () => {
+        const latestContainer = containerRef.current;
+        return latestContainer === container && autoScrollRef.current;
+      },
+      () => {
+        settlingRef.current = false;
+      },
+    );
     cancelSettleRef.current = cancel;
     return () => {
       cancel();
@@ -174,6 +220,12 @@ export function useMessageScroll(
   // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
     if (currentMatch && currentMatchRef.current) {
+      // Jumping to a match is the user deliberately leaving the bottom, and it is
+      // the one scroll here that moves the view without a gesture — so say so
+      // outright rather than leaving `handleScroll` to infer it, which it cannot
+      // do while the settle loop owns the scroll events.
+      cancelSettleRef.current?.();
+      autoScrollRef.current = false;
       currentMatchRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
     }
   }, [currentMatch]);

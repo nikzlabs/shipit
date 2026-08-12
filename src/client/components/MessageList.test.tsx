@@ -91,6 +91,10 @@ describe("MessageList", () => {
       );
       const scrollContainer = container.firstElementChild!;
       setScrollMetrics(scrollContainer, { scrollTop: 100, scrollHeight: 300, clientHeight: 100 });
+      // The wheel is what marks this as the user's doing: while the mount's
+      // settle loop is still re-pinning, a bare scroll event is one we caused
+      // ourselves and is ignored by design (useMessageScroll.ts).
+      fireEvent.wheel(scrollContainer);
       fireEvent.scroll(scrollContainer);
 
       setScrollMetrics(scrollContainer, { scrollTop: 100, scrollHeight: 380, clientHeight: 100 });

@@ -77,6 +77,120 @@ describe("useMessageScroll", () => {
     expect(rafQueue.length).toBe(0);
   });
 
+  it("keeps settling through the scroll event its own pin fires after a tall child paints", () => {
+    let height = 100;
+    let scrollTop = 0;
+
+    const view = render(<Harness messages={[]} />);
+    const div = view.getByTestId("scroller");
+    Object.defineProperty(div, "scrollHeight", { configurable: true, get: () => height });
+    Object.defineProperty(div, "clientHeight", { configurable: true, get: () => 500 });
+    Object.defineProperty(div, "scrollTop", {
+      configurable: true,
+      get: () => scrollTop,
+      set: (v: number) => {
+        scrollTop = v;
+      },
+    });
+
+    // Send: the layout effect pins to the bottom of the placeholder height.
+    act(() => {
+      view.rerender(<Harness messages={[user("a very long message")]} />);
+    });
+    expect(scrollTop).toBe(100);
+
+    // The message paints its real height, then the browser delivers the scroll
+    // event for OUR pin — a frame late, so it reports the pre-growth offset and
+    // looks like the user jumped far from the bottom. Mistaking that for a user
+    // scroll cancels the settle loop and strands the view partway.
+    act(() => {
+      height = 2000;
+      div.dispatchEvent(new Event("scroll"));
+    });
+
+    flushFrame();
+    flushFrame();
+    flushFrame();
+    flushFrame();
+
+    expect(scrollTop).toBe(2000);
+  });
+
+  it("honours a plain scroll event again once the settle loop has finished", () => {
+    let height = 2000;
+    let scrollTop = 0;
+
+    const view = render(<Harness messages={[]} />);
+    const div = view.getByTestId("scroller");
+    Object.defineProperty(div, "scrollHeight", { configurable: true, get: () => height });
+    Object.defineProperty(div, "clientHeight", { configurable: true, get: () => 500 });
+    Object.defineProperty(div, "scrollTop", {
+      configurable: true,
+      get: () => scrollTop,
+      set: (v: number) => {
+        scrollTop = v;
+      },
+    });
+
+    act(() => {
+      view.rerender(<Harness messages={[user("hello")]} />);
+    });
+    // Let the height settle, which ends the window in which scroll events are ours.
+    for (let i = 0; i < 6; i++) flushFrame();
+    expect(scrollTop).toBe(2000);
+
+    // A scrollbar drag or Page Up — no wheel, no touch — must still pause
+    // auto-follow, or ignoring our own events would leave it stuck on forever.
+    act(() => {
+      scrollTop = 0;
+      div.dispatchEvent(new Event("scroll"));
+    });
+
+    act(() => {
+      height = 2500;
+      view.rerender(<Harness messages={[user("hello"), { role: "assistant", text: "reply" }]} />);
+    });
+    flushFrame();
+
+    expect(scrollTop).toBe(0);
+  });
+
+  it("hands control back to the scroll handler as soon as a gesture stops the settle loop", () => {
+    const height = 2000;
+    let scrollTop = 0;
+
+    const view = render(<Harness messages={[]} />);
+    const div = view.getByTestId("scroller");
+    Object.defineProperty(div, "scrollHeight", { configurable: true, get: () => height });
+    Object.defineProperty(div, "clientHeight", { configurable: true, get: () => 500 });
+    Object.defineProperty(div, "scrollTop", {
+      configurable: true,
+      get: () => scrollTop,
+      set: (v: number) => {
+        scrollTop = v;
+      },
+    });
+
+    // Send, then wheel away mid-settle: the scroll events the gesture produces
+    // must register as the user's, not be swallowed as the loop's own.
+    act(() => {
+      view.rerender(<Harness messages={[user("hello")]} />);
+    });
+    act(() => {
+      div.dispatchEvent(new Event("wheel"));
+      scrollTop = 500;
+      div.dispatchEvent(new Event("scroll"));
+    });
+
+    // Streaming continues: the view stays where the user put it.
+    act(() => {
+      view.rerender(<Harness messages={[user("hello"), { role: "assistant", text: "reply" }]} />);
+    });
+    flushFrame();
+
+    expect(scrollTop).toBe(500);
+  });
+
   it("stops the in-flight settle loop the instant the user wheels — even within the near-bottom band", () => {
     const height = 2000;
     // Park the user just inside the near-bottom threshold so isNearBottom stays
@@ -129,9 +243,14 @@ describe("useMessageScroll", () => {
       },
     });
 
+    // Let the mount's settle loop finish first — while it runs, scroll events are
+    // its own and are ignored by design (see the settle-window tests above).
+    for (let i = 0; i < 6; i++) flushFrame();
+
     // Simulate the user scrolling up: dispatch a scroll event so the hook records
     // that we are no longer near the bottom.
     act(() => {
+      scrollTop = 0;
       div.dispatchEvent(new Event("scroll"));
     });
 
