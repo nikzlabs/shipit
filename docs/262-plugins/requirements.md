@@ -13,17 +13,23 @@ under **Open questions** until a human answers them.
 ## Context, in the user's words
 
 The user builds multiple projects with ShipIt. Every project lives in its own
-repository — that part is convenient and stays. A couple of tools — for
-requirements management, for image generation, and so on — live in one common
-repository. ShipIt gives no convenient way to access that repository and the
-services inside it from a project session.
+repository — that part is convenient and stays. The shared tools — for
+requirements management, for image generation, and so on — live in their own
+repositories, separate from the projects and not necessarily all in one.
+ShipIt gives no convenient way to access those repositories and the services
+inside them from a project session.
 
 Hosting the tools behind deployed endpoints (e.g. as remote MCP servers) was
-considered and rejected by the user: a tool change would mean edit in the tools
-repo → test with fake data → deploy somewhere with proper authentication. The
-user wants the integration that same-repo services already have: the services
-run in the session, the agent can send data to the preview, and the agent
-receives data when someone clicks buttons in the previewed pages.
+considered and rejected by the user. The original argument — a tool change
+would mean edit in the tools repo, test with fake data, then deploy somewhere
+with proper authentication — lost most of its force once req 7 settled on a
+read-only checkout: changes are made in the plugin repository either way, and
+reach projects through refresh (req 12), not through a deploy. The argument
+that stands (user, 2026-08-12): **a deployed MCP server cannot present a web
+UI.** The user wants the integration that same-repo services already have —
+the services run in the session, the agent can send data to the preview, and
+the agent receives data when someone clicks buttons in the previewed pages
+(req 3).
 
 ## Naming
 
@@ -32,9 +38,10 @@ a **plugin repository** (user decision, 2026-08-11 — see Resolved questions).
 The name follows the declared unit: what ShipIt consumes is a package of
 host-integration — declaration, services, CLI exposure, skills, credentials —
 which cannot exist outside ShipIt. Doctrine that keeps the engineering honest:
-**a plugin packages a tool; the tool's core stays host-agnostic and runnable
-outside ShipIt** (the user's requirements tool, whose CLI needs only a
-filesystem, is the model). The context section above and the historical
+**a plugin packages a tool; the tool's core COULD stay host-agnostic and
+runnable outside ShipIt — that choice belongs to the tool author** (the
+user's requirements tool, whose CLI needs only a filesystem, made it; nothing
+in this spec requires it). The context section above and the historical
 receipts below keep the original "tools" vocabulary of the early rounds.
 
 ## Requirements
@@ -186,7 +193,9 @@ receipts below keep the original "tools" vocabulary of the early rounds.
   the agent gets automatically in project sessions). Deferred; revisit for
   v2. The tracker-as-tool boundary exercise (planning#355, 2026-08-11) is the
   motivating example: platform-shaped integrations need capability upcalls,
-  not delivered credentials.
+  not delivered credentials. Whatever v2 decides, one boundary is permanent
+  (user, 2026-08-12): an MCP server cannot present a web UI, so MCP can only
+  ever complement the preview integration of req 3, never replace it.
 - A declared **data-format version** (a plugin repository stating which
   version of its on-disk project data it reads and writes, with a pre-run
   mismatch report). Deferred; pinning (req 8) is the v1 mitigation.
@@ -309,3 +318,13 @@ and quoted historical material below keeps that vocabulary.
   with the recorded doctrine that a plugin packages a host-agnostic tool.
   → Naming section; vocabulary swept through all requirements; earlier
   receipts keep their historical wording.
+- **2026-08-12 — Doc-review feedback** (user review of the full doc). Three
+  edits: (a) the shared tools live in **separate repositories, not
+  necessarily one** — context updated to match req 14's plurality; (b) the
+  anti-MCP rationale corrected — the "test with fake data, then deploy"
+  argument weakened once req 7 chose the read-only checkout (changes happen
+  in the plugin repository either way); the standing argument, now written
+  down, is that **an MCP server cannot present a web UI** — context and the
+  Out-of-scope MCP bullet updated; (c) the naming doctrine softened — a
+  tool's core **could** stay host-agnostic; that choice belongs to the tool
+  author, and nothing in the spec requires it.
