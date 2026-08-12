@@ -194,9 +194,18 @@ interface PreviewState {
    */
   servicesDrawerExpanded: boolean;
 
+  /**
+   * True when the user collapsed the drawer *during the current no-preview
+   * episode*. Ephemeral (never persisted, cleared as soon as a preview runs):
+   * it only suppresses the auto-open below, and the saved preference above
+   * keeps its own meaning — "how I like the drawer while a preview is up".
+   */
+  servicesDrawerIdleCollapsed: boolean;
+
   setStatus: (status: PreviewStatus | null) => void;
   setSelectedPort: (port: number | null) => void;
   setServicesDrawerExpanded: (expanded: boolean) => void;
+  setServicesDrawerIdleCollapsed: (collapsed: boolean) => void;
   addError: (error: PreviewError) => void;
   clearErrors: () => void;
   setAutoFixEnabled: (enabled: boolean) => void;
@@ -312,6 +321,24 @@ function loadServicesDrawerExpanded(): boolean {
   try { return localStorage.getItem(SERVICES_DRAWER_EXPANDED_KEY) === "1"; } catch { return false; }
 }
 
+/**
+ * Whether the Services drawer is open right now.
+ *
+ * While a preview runs, the saved preference decides. While none runs, the
+ * drawer is the only place to start one — so it opens itself whatever the
+ * preference says, because making the user press a "Show services" button first
+ * is a step with no decision in it — which is why that button no longer exists.
+ * A hand collapse still wins, and holds until a preview starts
+ * (`servicesDrawerIdleCollapsed`); the drawer's own caret undoes it.
+ */
+export function isServicesDrawerOpen(opts: {
+  previewRunning: boolean;
+  expanded: boolean;
+  idleCollapsed: boolean;
+}): boolean {
+  return opts.expanded || (!opts.previewRunning && !opts.idleCollapsed);
+}
+
 const PREVIEW_PATHS_KEY = "shipit:preview-paths";
 
 /**
@@ -378,6 +405,7 @@ const initialState = {
   sessionSnapshots: {} as Record<string, SessionPreviewSnapshot>,
   previewPaths: loadPreviewPaths(),
   // Ephemeral state — never persisted into a session snapshot.
+  servicesDrawerIdleCollapsed: false,
   previewProxyError: null as PreviewState["previewProxyError"],
   previewLinkIntent: null as PreviewLinkIntent | null,
 };
@@ -393,6 +421,8 @@ export const usePreviewStore = create<PreviewState>((set, get) => ({
     try { localStorage.setItem(SERVICES_DRAWER_EXPANDED_KEY, servicesDrawerExpanded ? "1" : "0"); } catch { /* ignore */ }
     set({ servicesDrawerExpanded });
   },
+
+  setServicesDrawerIdleCollapsed: (servicesDrawerIdleCollapsed) => set({ servicesDrawerIdleCollapsed }),
 
   addError: (error) =>
     set((state) => {

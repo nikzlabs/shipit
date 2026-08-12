@@ -643,15 +643,15 @@ export function PreviewFrame({
     // duplicating the list. `manualOnly` just tunes the copy (the dogfooding
     // case is a single manual `dev` service the user must start by hand).
     const manualOnly = services.length > 0 && services.every(s => s.preview === "manual");
+    // No button here. The drawer opens itself while nothing is previewing, and
+    // the one case where it doesn't — the user collapsed it by hand — is a
+    // deliberate act, with the drawer's own caret right there to undo it.
     overlayContent = (
       <div className="text-center space-y-3 max-w-sm px-4">
         <WarningIcon size={ICON_SIZE.LG} className="mx-auto text-(--color-text-tertiary)" />
         <p className="text-sm text-(--color-text-secondary)">
           {manualOnly ? "No preview running. Start a service to launch it." : "No preview running"}
         </p>
-        <Button variant="secondary" size="md" onClick={() => usePreviewStore.getState().setServicesDrawerExpanded(true)}>
-          Show services
-        </Button>
       </div>
     );
   }

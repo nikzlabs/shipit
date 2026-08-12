@@ -791,9 +791,20 @@ describe("PreviewFrame", () => {
     expect(screen.getByText("No preview running. Start a service to launch it.")).toBeInTheDocument();
     // ...but the list itself now lives in the drawer, not inline here.
     expect(screen.queryByTitle("Start dev")).not.toBeInTheDocument();
-    // The button expands the Services drawer rather than switching tabs.
-    fireEvent.click(screen.getByText("Show services"));
-    expect(usePreviewStore.getState().servicesDrawerExpanded).toBe(true);
+    // No "Show services" button at all: the drawer opens itself while nothing
+    // is previewing, and its own caret undoes a hand collapse.
+    expect(screen.queryByText("Show services")).not.toBeInTheDocument();
+  });
+
+  it("keeps the empty state buttonless even when the user collapsed the drawer", () => {
+    usePreviewStore.getState().setServices([
+      { name: "dev", status: "stopped", port: 3000, preview: "manual" },
+    ]);
+    usePreviewStore.getState().setServicesDrawerIdleCollapsed(true);
+    const stoppedPreview: PreviewStatus = { running: false, port: 0, url: "" };
+    render(<PreviewFrame preview={stoppedPreview} sessionId="abc" {...defaultProps} />);
+    expect(screen.getByText("No preview running. Start a service to launch it.")).toBeInTheDocument();
+    expect(screen.queryByText("Show services")).not.toBeInTheDocument();
   });
 
   it("shows the generic empty state when at least one service is auto", () => {
@@ -805,7 +816,6 @@ describe("PreviewFrame", () => {
     render(<PreviewFrame preview={stoppedPreview} sessionId="abc" {...defaultProps} />);
     // Mixed stack: generic copy (auto preview is expected to come up on its own).
     expect(screen.getByText("No preview running")).toBeInTheDocument();
-    expect(screen.getByText("Show services")).toBeInTheDocument();
     // No inline list rows — that lives in the drawer now.
     expect(screen.queryByTitle("Start web")).not.toBeInTheDocument();
   });
