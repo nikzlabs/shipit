@@ -1,0 +1,21 @@
+# docs/262 — the test plugin's compose fragment (manifest: `compose:`).
+# Merged into the consuming project's stack by the slice-2 mechanics.
+#
+# Relative paths follow standard compose semantics: they resolve against THIS
+# file's directory — i.e. against the plugin's checkout (through its writable
+# layer), never against the consuming project. The `/project` workspace mount,
+# the `/plugin-state` state dir, and the SHIPIT_* env are injected by ShipIt,
+# not declared here, so the fragment stays valid for plain `docker compose up`
+# (the probe then reports those contract pieces as absent).
+services:
+  probe:
+    image: node:22-alpine
+    working_dir: /app
+    command: node /app/service/server.mjs
+    environment:
+      PROBE_PORT: "4820"
+    volumes:
+      - .:/app:ro
+    ports:
+      - "4820:4820"
+    x-shipit-preview: auto
