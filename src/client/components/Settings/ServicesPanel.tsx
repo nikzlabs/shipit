@@ -75,6 +75,9 @@ import { providerAccountAuthKey, useSettingsStore } from "../../stores/settings-
 import {
   AccountChallenge,
   ChallengePlaceholder,
+  AuthPanel,
+  ClaudeAuthOutput,
+  useAuthStatus,
   ProviderAccountRows,
   abandonAccount,
   cancelAccountLogin,
@@ -842,6 +845,8 @@ function AddServiceDialog({
   const authKey = signInProvider && signInAccountId
     ? providerAccountAuthKey(signInProvider, signInAccountId)
     : undefined;
+  /** Only Claude narrates; for Codex this is empty and the box just pulses. */
+  const authStatus = useAuthStatus(signInProvider === "claude" ? signInAccountId : undefined);
   const pendingAuth = useSettingsStore((s) => (authKey ? s.providerAccountAuths[authKey] : undefined));
   const authError = useSettingsStore((s) => (authKey ? s.providerAccountAuthErrors[authKey] : undefined));
   const signInStalled = !!signInAccount && !signedIn && !pendingAuth && !startingSignIn
@@ -1045,10 +1050,18 @@ function AddServiceDialog({
                     its models are selectable now.
                   </p>
                 ) : signInStalled ? (
-                  <p className="text-xs text-(--color-text-error)" data-testid="add-service-signin-stalled">
-                    {authError ?? "The sign-in stopped before the account connected."} Try again
-                    below, or close this to add nothing.
-                  </p>
+                  // The same panel again, holding the reason and the record: a
+                  // failed sign-in is exactly when the CLI's own words matter,
+                  // and the copy above says "copy the diagnostic details".
+                  <AuthPanel>
+                    <p className="text-xs text-(--color-text-error)" data-testid="add-service-signin-stalled">
+                      {authError ?? "The sign-in stopped before the account connected."} Try again
+                      below, or close this to add nothing.
+                    </p>
+                    {signInProvider === "claude" && signInAccountId && (
+                      <ClaudeAuthOutput accountId={signInAccountId} />
+                    )}
+                  </AuthPanel>
                 ) : signInAccount || startingSignIn ? (
                   <>
                     {pendingAuth && signInAccount ? (
@@ -1070,7 +1083,36 @@ function AddServiceDialog({
                         a line of prose and then grew by the height of a panel,
                         which is the jump this placeholder exists to remove.
                       */
-                      <ChallengePlaceholder testId="add-service-signin-starting" />
+                      /*
+                        **What the sign-in is doing goes IN the box**, not in a
+                        block under it: ShipIt's phase message where the link
+                        will be, the CLI's latest line where the field will be,
+                        and a pulse for the rest. Anthropic's wizard runs about
+                        six seconds and narrates the whole way, and a pulse
+                        alone reads as stuck. An earlier cut streamed three
+                        lines *below* the box, which put the same output on
+                        screen twice — live there, and again inside the
+                        collapsed buffer the challenge already carries.
+                      */
+                      <ChallengePlaceholder
+                        shape={signInProvider === "claude" ? "paste" : "code"}
+                        {...(authStatus ? { status: authStatus } : {})}
+                        testId="add-service-signin-starting"
+                      >
+                        {/* The buffer, collapsed, and in the same place it will
+                            be a moment from now — so the panel is the whole of
+                            the sign-in and the arrival of the field moves
+                            nothing. */}
+                        {signInProvider === "claude" && (
+                          <ClaudeAuthOutput
+                            // No id for the first frames — the account is still
+                            // being created — and the control renders anyway,
+                            // because appearing later is what grew the panel.
+                            {...(signInAccountId ? { accountId: signInAccountId } : {})}
+                            evenWhenEmpty
+                          />
+                        )}
+                      </ChallengePlaceholder>
                     )}
                     <p className="text-[11px] text-(--color-text-tertiary)">
                       Keep this open until the account connects — this step will say so.
@@ -1164,8 +1206,17 @@ function AddServiceDialog({
             is primary wherever it exists, and *Save* steps down to secondary
             rather than disappearing — the key is still a working way to connect
             Anthropic's subscription, just not the one being recommended.
+
+            **It appears with the field it saves, and not before.** It used to
+            render from step 1 (`!billingMode || !service`), where there is
+            nothing to save and it is permanently disabled — and, worse, where
+            the mode is unknown, so it renders `primary` and then *animates* to
+            `secondary` on arriving at a mode with an account path. Sampled per
+            frame, the button is disabled the whole way through; what changes is
+            its colour, blue to grey over eight frames, which reads exactly as a
+            control that was available and then was taken away.
           */}
-          {(acceptsString || !billingMode || !service) && (
+          {acceptsString && (
             <Button
               variant={acceptsAccount ? "secondary" : "primary"}
               size="md"
@@ -1179,41 +1230,43 @@ function AddServiceDialog({
           )}
           {/*
             **While a sign-in is under way there is one button, and it says
-            Cancel.** Where the flow starts itself (req 18) the user is watching
-            a box fill in, and a second button beside it — however it is
-            labelled — is a live control they did not ask for, in the one place
-            where an accidental click restarts the login they are in the middle
-            of. So: nothing during the start, nothing during the wait, nothing
-            while the challenge is up.
+            Cancel** — from the click that starts it, not from the state change
+            after. `startingSignIn` is in the test for that reason: the click
+            turns the panel above into the waiting box immediately, and without
+            this the blue button sat there for a few more frames, through the
+            create request, before vanishing. Sampled per frame it is one frame
+            of blue, seven of nothing, and then whatever comes next — read from
+            the outside as a button that hung around after the UI had moved on
+            and was then swapped for a disabled *Save*.
+
+            The rule is uniform across the two kinds of mode. Where the flow
+            starts itself (req 18) the user is watching a box fill in, and a
+            second button beside it is a live control they did not ask for, in
+            the one place where an accidental click restarts the login they are
+            in the middle of; where the user pressed the button themselves, it
+            has already done its job. Either way: nothing during the start,
+            nothing during the wait, nothing while the challenge is up.
 
             It comes back only when nothing is happening — the attempt stopped,
-            or it never started (no harness, another login in flight) — and even
-            then it is secondary, because the flow's own next step is not a
-            button any more. The cost, chosen knowingly: a login that hangs at
-            `authenticating` without ever sending a code offers no one-press
-            retry, and is recovered the way everything else in this dialog is,
-            by closing it and starting again.
-
-            A mode that also takes a key keeps the old button, primary and
-            labelled to sign in: nothing auto-starts there, so it is still the
-            step's own action rather than a second way to do what is already
-            happening.
+            or it never started (no harness, another login in flight). The cost,
+            chosen knowingly: a login that hangs at `authenticating` without ever
+            sending a code offers no one-press retry, and is recovered the way
+            everything else in this dialog is, by closing it and starting again.
           */}
-          {acceptsAccount && !pendingAuth && !signedIn
-            && (!signInAccount || signInStalled) && !(autoStarts && startingSignIn) && (
+          {acceptsAccount && !pendingAuth && !signedIn && !startingSignIn
+            && (!signInAccount || signInStalled) && (
             <Button
+              // Secondary only where the step signs itself in: there the button
+              // is a recovery, not the way forward. Where the user must press
+              // it, it is the step's own action and stays primary.
               variant={autoStarts ? "secondary" : "primary"}
               size="md"
               className="rounded-md"
-              disabled={startingSignIn || !harnessInstalled || !!blockedBySignIn}
+              disabled={!harnessInstalled || !!blockedBySignIn}
               onClick={() => void startSignIn()}
               data-testid="add-service-sign-in"
             >
-              {startingSignIn
-                ? "Starting..."
-                : signInStalled
-                  ? "Try again"
-                  : `Sign in to ${service?.name ?? "the service"}`}
+              {signInStalled ? "Try again" : `Sign in to ${service?.name ?? "the service"}`}
             </Button>
           )}
         </div>

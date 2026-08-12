@@ -2991,6 +2991,59 @@ at is the one carrying the provider's code.
   close it and start again. A mode that also takes a key keeps its primary *Sign in*, because
   nothing auto-starts there.
 
+**One panel per sign-in, and everything about the sign-in is in it.** Two providers, two
+waits: OpenAI's device flow produces a code in about a third of a second, while Anthropic's is
+a wizard ShipIt drives through the Claude CLI and runs about six seconds — long enough that a
+pulse alone reads as *stuck* rather than as *working*.
+
+- `AuthPanel` is the bordered box, and it is the same box in every state — waiting, challenge,
+  failure. What changes as a login proceeds is its *contents*, never the page around it.
+- `ChallengePlaceholder` fills it before the code lands, and takes a `shape`, because the box
+  it stands in for differs: a code to read (98px) or a field to paste into (84px). One
+  placeholder could only be right for one of them.
+- **The narration is ShipIt's phase message**, in the slot the link will occupy ("Waiting for
+  Claude CLI to print an authentication link"), with a pulse for the rest.
+- **`ClaudeAuthOutput` — the whole buffer, collapsed — lives INSIDE the panel**, in both the
+  waiting state and the challenge, so the arrival of the field moves nothing and there is one
+  place carrying the sign-in. Its open/closed state is held in the settings store
+  (`claudeAuthOutputOpen`, keyed by account) and **not** by the `<details>` element: the
+  disclosure is rendered by two different components across one sign-in, so the element is
+  destroyed and rebuilt at exactly the moment the code arrives. Uncontrolled, a buffer the user
+  had open snapped shut under them and the panel jumped by the height of what they were
+  reading. It is also 10px/14px mono rather than `--font-size-code` (13px) — that token is the
+  size a chat code block reads at, and this is a diagnostic dump skimmed for one line — and it
+  is **pinned to the newest line by `flex-col-reverse`**, not by a scroll effect: in a reversed
+  column the scroll origin *is* the bottom, so a single growing child keeps its end in view
+  while a reader who scrolls up stays where they put themselves. An effect assigning
+  `scrollTop` on every append would fight them, and this codebase restricts effects anyway.
+- **The buffer control is reserved from the panel's first frame**, empty and before there is an
+  account to key it by. The CLI's first line lands a few frames after the login starts, so a
+  disclosure that waits for it grew the panel by its own height *after* the panel had already
+  appeared: measured, 302 → 395 → 419 across five frames — the second, smaller jump a user
+  notices without being able to say what moved. The cost is a line reading "Claude CLI output"
+  with no count for those frames; `ClaudeAuthOutput` therefore takes an **optional** account id.
+- **The sign-in button goes with the click that presses it**, not with the state change a few
+  frames later. `startingSignIn` is in its render test for that reason: the click turns the
+  panel into the waiting box at once, and without it the blue button sat through the create
+  request first — sampled per frame, one frame of blue, seven of nothing, then whatever came
+  next, which reads as a control that hung around after the UI had moved on and was then
+  swapped for a disabled *Save*. The rule is uniform across both kinds of mode now: while a
+  sign-in is under way there is one button and it says Cancel.
+- **Save appears with the field it saves.** It used to render from step 1, where there is
+  nothing to save: permanently disabled, and — the mode being unknown that early — `primary`,
+  so arriving at a mode with an account path *animated* it from blue to grey. Sampled per
+  frame in the browser it is disabled the whole way through; only the colour moves, which
+  reads exactly as a control that was available and was then taken away.
+
+**Two rejected cuts got there first, and both are worth stating because they look reasonable
+written down.** The first streamed the CLI's last three lines *below* the box: that put the
+same output on screen twice — live there, and again inside the buffer — and needed
+`authLogTail` (escape-stripping, redraw and spinner filtering, repeat collapsing) to be
+readable at all, machinery that went with it. The second kept the collapsed buffer but left it
+under the box, which still made the sign-in two places to look. The human called each on sight
+from a screenshot; the third attempt was drawn as a mock-up and agreed *before* it was written,
+which is the cheaper order for anything this visual.
+
 **Waiting looks like what it is waiting for.** The step renders `ChallengePlaceholder` — the
 same `CHALLENGE_BOX` shell as the real challenge, its lines drawn as a pulse — and the two
 measure **98px** each, which is why the first bar is `h-4` rather than the `h-5` the link's

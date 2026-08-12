@@ -50,6 +50,8 @@ beforeEach(() => {
     providerAccountNotices: {},
     providerAccountAuths: {},
     providerAccountAuthErrors: {},
+    claudeAuthDiagnostics: {},
+    claudeAuthOutputOpen: {},
   });
   vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
     fetchCalls.push({
@@ -284,6 +286,164 @@ describe("ServicesPanel", () => {
       expect(placeholder.className).toContain("rounded-md border");
     });
 
+    it("shows what the Claude CLI is saying while the wizard runs", async () => {
+      // Anthropic's sign-in is a wizard ShipIt drives, not a code handed over,
+      // so the wait before the paste field can run for a while — and a pulse
+      // alone reads as stuck rather than as working. What the CLI is saying
+      // goes IN the box the field will occupy: everything transient about the
+      // sign-in in one panel, and the full buffer stays one collapsed control
+      // rather than a second live copy of the same lines.
+      const account = {
+        id: "acct-anthropic-1",
+        serviceId: "anthropic", billingMode: "sub", via: "account",
+        label: "Anthropic account 1", isPrimary: true, status: "authenticating",
+        createdAt: 1, updatedAt: 1,
+      };
+      vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
+        fetchCalls.push({ url, method: init?.method ?? "GET", body: init?.body ? JSON.parse(init.body as string) : undefined });
+        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ account, accounts: [account] }) });
+      });
+
+      render(<ServicesPanel agentList={[claudeAgent]} />);
+      await userEvent.click(screen.getByTestId("services-add-empty"));
+      await userEvent.click(screen.getByTestId("add-service-option-anthropic"));
+      await userEvent.click(screen.getByTestId("add-service-mode-sub"));
+      await userEvent.click(screen.getByTestId("add-service-sign-in"));
+      await waitFor(() => expect(logins()).toBe(1));
+
+      // Nothing known yet: the box is the shape of the one Anthropic shows — a
+      // field to paste into, not a code to read — and the only thing in it is
+      // the buffer control, reserved so its arrival does not grow the panel a
+      // few frames after the panel itself appeared.
+      const placeholder = await screen.findByTestId("add-service-signin-starting");
+      expect(placeholder.textContent).toBe("Claude CLI output");
+
+      useSettingsStore.getState().setClaudeAuthProgress("acct-anthropic-1", {
+        attemptId: "attempt-1",
+        phase: "waiting_for_url",
+        message: "Waiting for Claude CLI to print an authentication link.",
+      });
+      for (const message of ["Launching the Claude CLI.", "Still waiting."]) {
+        useSettingsStore.getState().appendClaudeAuthLog("acct-anthropic-1", {
+          attemptId: "attempt-1", timestamp: "2026-08-11T00:00:00.000Z",
+          level: "info", source: "claude_stdout", message,
+        });
+      }
+
+      // Inside the box: the phase where the link will be, and the buffer —
+      // closed, and inside the panel rather than under it, because the panel is
+      // the whole of the sign-in. Two rejected cuts are why that is asserted:
+      // a live three-line tail beside it showed the same output twice, and the
+      // control under the box made the sign-in two places to look.
+      const panel = await screen.findByTestId("add-service-signin-starting");
+      await waitFor(() => expect(panel)
+        .toHaveTextContent("Waiting for Claude CLI to print an authentication link."));
+      const buffer = within(panel).getByTestId("provider-account-diagnostics-acct-anthropic-1");
+      expect(buffer).toHaveTextContent("Claude CLI output (2)");
+      expect(buffer).not.toHaveAttribute("open");
+
+      // The box becomes the real thing, and the buffer is there to open.
+      useSettingsStore.getState().setProviderAccountAuth("claude", "acct-anthropic-1", {
+        provider: "claude", accountId: "acct-anthropic-1",
+        verificationUri: "https://claude.ai/oauth/authorize",
+      });
+      await waitFor(() => expect(
+        screen.getByTestId("provider-account-challenge-acct-anthropic-1"),
+      ).toBeInTheDocument());
+      expect(screen.queryByTestId("add-service-signin-starting")).not.toBeInTheDocument();
+      // Still one, still closed, still in the panel — it does not move house
+      // when the field arrives.
+      const challenge = screen.getByTestId("provider-account-challenge-acct-anthropic-1");
+      expect(within(challenge).getByTestId("provider-account-diagnostics-acct-anthropic-1"))
+        .toHaveTextContent("Claude CLI output (2)");
+    });
+
+    it("takes the sign-in button away with the click, not a moment after", async () => {
+      // The click turns the panel above into the waiting box at once. The
+      // button used to stay through the create request — one frame of blue,
+      // then seven of nothing — which reads as a control that hung around
+      // after the UI had moved on and was then swapped for a disabled Save.
+      let releaseCreate = (): void => {};
+      const createPending = new Promise<void>((resolve) => { releaseCreate = resolve; });
+      const claudeAccount = {
+        id: "acct-anthropic-3",
+        serviceId: "anthropic", billingMode: "sub", via: "account",
+        label: "Anthropic account 3", isPrimary: true, status: "authenticating",
+        createdAt: 1, updatedAt: 1,
+      };
+      vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
+        fetchCalls.push({ url, method: init?.method ?? "GET", body: init?.body ? JSON.parse(init.body as string) : undefined });
+        const answer = { ok: true, status: 200, json: () => Promise.resolve({ account: claudeAccount, accounts: [claudeAccount] }) };
+        if (url === "/api/provider-accounts" && init?.method === "POST") {
+          return (async () => { await createPending; return answer; })();
+        }
+        return Promise.resolve(answer);
+      });
+
+      render(<ServicesPanel agentList={[claudeAgent]} />);
+      await userEvent.click(screen.getByTestId("services-add-empty"));
+      await userEvent.click(screen.getByTestId("add-service-option-anthropic"));
+      await userEvent.click(screen.getByTestId("add-service-mode-sub"));
+      // Anthropic's subscription takes a key too, so this one is pressed.
+      await userEvent.click(screen.getByTestId("add-service-sign-in"));
+
+      // Still inside the create request: the panel is already the waiting box,
+      // and the button is already gone.
+      expect(screen.getByTestId("add-service-signin-starting")).toBeInTheDocument();
+      expect(screen.queryByTestId("add-service-sign-in")).not.toBeInTheDocument();
+      // And the buffer control is already in it, before there is an account to
+      // key it by — appearing later grew the panel a second time, a few frames
+      // after it had appeared.
+      expect(screen.getByTestId("provider-account-diagnostics-pending")).toBeInTheDocument();
+
+      releaseCreate();
+      await waitFor(() => expect(logins()).toBe(1));
+      expect(screen.queryByTestId("add-service-sign-in")).not.toBeInTheDocument();
+    });
+
+    it("keeps the output open across the moment the code arrives", async () => {
+      // The disclosure is rendered by the waiting panel and then by the
+      // challenge — two components, so the element is destroyed and rebuilt at
+      // exactly the moment the user is reading it. Uncontrolled, it came back
+      // closed and the panel jumped by the height of what they were reading.
+      const account = {
+        id: "acct-anthropic-2",
+        serviceId: "anthropic", billingMode: "sub", via: "account",
+        label: "Anthropic account 2", isPrimary: true, status: "authenticating",
+        createdAt: 1, updatedAt: 1,
+      };
+      vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
+        fetchCalls.push({ url, method: init?.method ?? "GET", body: init?.body ? JSON.parse(init.body as string) : undefined });
+        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ account, accounts: [account] }) });
+      });
+
+      render(<ServicesPanel agentList={[claudeAgent]} />);
+      await userEvent.click(screen.getByTestId("services-add-empty"));
+      await userEvent.click(screen.getByTestId("add-service-option-anthropic"));
+      await userEvent.click(screen.getByTestId("add-service-mode-sub"));
+      await userEvent.click(screen.getByTestId("add-service-sign-in"));
+      await waitFor(() => expect(logins()).toBe(1));
+      useSettingsStore.getState().appendClaudeAuthLog("acct-anthropic-2", {
+        attemptId: "attempt-2", timestamp: "2026-08-12T00:00:00.000Z",
+        level: "info", source: "shipit", message: "Spawned claude /login.",
+      });
+
+      const buffer = await screen.findByTestId("provider-account-diagnostics-acct-anthropic-2");
+      await userEvent.click(within(buffer).getByText(/Claude CLI output/));
+      expect(screen.getByTestId("provider-account-diagnostics-acct-anthropic-2")).toHaveAttribute("open");
+
+      useSettingsStore.getState().setProviderAccountAuth("claude", "acct-anthropic-2", {
+        provider: "claude", accountId: "acct-anthropic-2",
+        verificationUri: "https://claude.ai/oauth/authorize",
+      });
+
+      await waitFor(() => expect(
+        screen.getByTestId("provider-account-challenge-acct-anthropic-2"),
+      ).toBeInTheDocument());
+      // Still open, in the rebuilt one.
+      expect(screen.getByTestId("provider-account-diagnostics-acct-anthropic-2")).toHaveAttribute("open");
+    });
+
     it("leaves a mode that also takes a key alone — there the sign-in is a choice", async () => {
       // Anthropic's subscription accepts an env-supplied token too, so step 3
       // has a field. Starting a login nobody asked for would pre-empt it.
@@ -325,6 +485,24 @@ describe("ServicesPanel", () => {
       expect(screen.getByTestId("add-service-signin-blocked")).toBeInTheDocument();
       expect(logins()).toBe(0);
     });
+  });
+
+  it("shows Save with the field it saves, and not a step early", async () => {
+    // It used to render from step 1, where there is nothing to save: disabled
+    // the whole time, and — the mode being unknown — `primary`, so arriving at
+    // a mode with an account path ANIMATED it blue-to-grey. Sampled per frame
+    // in the browser, the button never becomes enabled; it just looks like a
+    // control that was available and was then taken away.
+    render(<ServicesPanel agentList={[claudeAgent]} />);
+    await userEvent.click(screen.getByTestId("services-add-empty"));
+    expect(screen.queryByTestId("add-service-save")).not.toBeInTheDocument();
+
+    await userEvent.click(screen.getByTestId("add-service-option-anthropic"));
+    expect(screen.queryByTestId("add-service-save")).not.toBeInTheDocument();
+
+    // Step 3, and this mode takes a key: now there is something to save.
+    await userEvent.click(screen.getByTestId("add-service-mode-sub"));
+    expect(screen.getByTestId("add-service-save")).toBeInTheDocument();
   });
 
   it("signs in inside the dialog for a mode connected only by signing in (req 17)", async () => {

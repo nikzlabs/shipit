@@ -297,25 +297,192 @@ export function signInBlockedReason(accounts: CredentialRoute[], accountId?: str
 const CHALLENGE_BOX =
   "space-y-2 rounded-md border border-(--color-border-secondary) bg-(--color-bg-primary) p-3";
 
+const PULSE = "animate-pulse rounded bg-(--color-bg-secondary)";
+
 /**
- * The challenge box before the provider's code has arrived: **the same box, at
- * the same size**, with the lines it is about to hold drawn as a pulse.
+ * **One panel per sign-in, and everything about the sign-in is in it.**
  *
- * It shares `CHALLENGE_BOX` with the real thing rather than approximating it,
- * because the whole job here is that nothing moves when the code lands — a
- * placeholder of a different height is the jump it exists to remove.
+ * The same bordered box in every state — waiting, challenge, failure — so what
+ * changes as a login proceeds is the box's *contents* and never the page around
+ * it. Anything that rendered under the box (a live line, a disclosure, a status)
+ * both moved the layout and gave the user two places to look; the rule is now
+ * simply that there is one place.
  */
-export function ChallengePlaceholder({ testId }: { testId?: string }) {
+export function AuthPanel({
+  busy,
+  testId,
+  children,
+}: {
+  busy?: boolean;
+  testId?: string;
+  children: React.ReactNode;
+}) {
   return (
-    <div className={CHALLENGE_BOX} data-testid={testId} aria-busy="true">
-      {/* `h-4`, not `h-5`: the link above is inline, so its line box is 16px.
-          Measured — the two boxes are 98px each. */}
-      <div className="h-4 w-52 animate-pulse rounded bg-(--color-bg-secondary)" />
-      <div>
-        <div className="h-4 w-40 animate-pulse rounded bg-(--color-bg-secondary)" />
-        <div className="mt-1 h-7 w-44 animate-pulse rounded bg-(--color-bg-secondary)" />
-      </div>
+    <div className={CHALLENGE_BOX} data-testid={testId} {...(busy ? { "aria-busy": true } : {})}>
+      {children}
     </div>
+  );
+}
+
+/**
+ * The panel before the provider's code has arrived: **the same box, at the same
+ * size**, saying where the sign-in has got to and pulsing for the rest.
+ *
+ * It shares {@link AuthPanel} with the real thing rather than approximating it,
+ * because the whole job here is that nothing moves when the code lands — a
+ * placeholder of a different height is the jump it exists to remove. For the
+ * same reason it takes the `shape`: the two providers put different things in
+ * that box (OpenAI a code to read, Anthropic a field to paste into), so one
+ * placeholder can only be right for one of them.
+ *
+ * **`status` is what stops it reading as stuck.** A pulse says "something is
+ * loading"; it does not say the thing is still going, and Anthropic's wizard
+ * runs about six seconds. So ShipIt's phase message takes the slot the link
+ * will occupy, and `children` — the collapsed output buffer — sits under it
+ * INSIDE the box.
+ */
+export function ChallengePlaceholder({
+  shape,
+  status,
+  testId,
+  children,
+}: {
+  shape: "code" | "paste";
+  /** Where the sign-in has got to, in ShipIt's words. Takes the link's slot. */
+  status?: string;
+  testId?: string;
+  children?: React.ReactNode;
+}) {
+  return (
+    <AuthPanel busy testId={testId}>
+      {/* `h-4` / `text-xs`: the link above is inline, so its line box is 16px,
+          and the stand-in has to be the same or the box changes height. */}
+      {status ? (
+        <p className="truncate text-xs leading-4 text-(--color-text-secondary)">{status}</p>
+      ) : (
+        <div className={`h-4 w-52 ${PULSE}`} />
+      )}
+      {shape === "code" ? (
+        <div>
+          <div className={`h-4 w-40 ${PULSE}`} />
+          <div className={`mt-1 h-7 w-44 ${PULSE}`} />
+        </div>
+      ) : (
+        // The paste row: a field and its Submit, both at their real heights.
+        <div className="flex gap-2">
+          <div className={`h-[34px] min-w-0 flex-1 ${PULSE}`} />
+          <div className={`h-[34px] w-28 ${PULSE}`} />
+        </div>
+      )}
+      {children}
+    </AuthPanel>
+  );
+}
+
+/**
+ * **Where a sign-in has got to, in ShipIt's own words** — the phase message the
+ * server broadcasts as the wizard advances.
+ *
+ * Returned as data rather than rendered, because it belongs *inside*
+ * {@link ChallengePlaceholder}: the transient part of a sign-in is one panel,
+ * not a stack of things near one.
+ */
+export function useAuthStatus(accountId: string | undefined): string | undefined {
+  const all = useSettingsStore((s) => s.claudeAuthDiagnostics);
+  const diagnostics = (accountId ? all[accountId] : undefined) ?? EMPTY_CLAUDE_AUTH_DIAGNOSTICS;
+  return diagnostics.message ?? undefined;
+}
+
+/**
+ * **The whole sign-in buffer, one collapsed control, inside the panel**
+ * (docs/150).
+ *
+ * It is the record you open when something went wrong, and it is the ONLY place
+ * the output is spelled out. Two rejected cuts are why that is stated so flatly:
+ * a live three-line tail beside it put the same lines on screen twice, and this
+ * control sitting *under* the box made the panel one of two places carrying the
+ * sign-in.
+ *
+ * Claude only. Codex's device flow produces no such stream.
+ */
+export function ClaudeAuthOutput({
+  accountId,
+  evenWhenEmpty,
+}: {
+  /**
+   * Undefined until the account this sign-in will hang on has been created —
+   * a couple of hundred milliseconds into the flow. The control renders
+   * anyway, empty, for the reason `evenWhenEmpty` exists: a panel that is
+   * about to hold it should not grow when it appears.
+   */
+  accountId?: string;
+  /**
+   * Render the control before the first line arrives, for a panel that is
+   * about to fill with them.
+   *
+   * The CLI's first entry lands a few frames after the login starts, so a
+   * disclosure that waits for it grew the waiting panel by its own height
+   * *after* the panel had already appeared — measured, 302 → 395 → 419 across
+   * five frames, which is the second, smaller jump a user notices without
+   * being able to say what moved. Reserving it costs a line that says
+   * "Claude CLI output" for those few frames.
+   */
+  evenWhenEmpty?: boolean;
+}) {
+  // Read the map, then index — never `accountId ? useSettingsStore(...) : …`,
+  // which changes the hook count on the render where the id arrives.
+  const allDiagnostics = useSettingsStore((s) => s.claudeAuthDiagnostics);
+  const diagnostics = (accountId ? allDiagnostics[accountId] : undefined)
+    ?? EMPTY_CLAUDE_AUTH_DIAGNOSTICS;
+  /**
+   * **Open/closed is held in the store, not by the `<details>` element.**
+   *
+   * One sign-in renders this disclosure from two different components — the
+   * waiting panel, then the challenge — so the element is destroyed and rebuilt
+   * at the moment the code arrives. Left to itself it comes back closed: a user
+   * reading the output had it snap shut under them, and the panel jumped by the
+   * height of what they were reading. Keyed by account, so two rows cannot
+   * share one answer.
+   */
+  const open = useSettingsStore((s) => (accountId ? s.claudeAuthOutputOpen[accountId] ?? false : false));
+  const setOpen = useSettingsStore((s) => s.setClaudeAuthOutputOpen);
+  const { entries } = diagnostics;
+  if (entries.length === 0 && !evenWhenEmpty) return null;
+
+  return (
+    <details
+      className="group"
+      open={open}
+      onToggle={(event) => { if (accountId) setOpen(accountId, event.currentTarget.open); }}
+      data-testid={`provider-account-diagnostics-${accountId ?? "pending"}`}
+    >
+      <summary className="cursor-pointer select-none text-xs text-(--color-text-link) transition-colors hover:text-(--color-accent)">
+        Claude CLI output{entries.length > 0 ? ` (${entries.length})` : ""}
+      </summary>
+      {/*
+        **Pinned to the newest line, by `flex-col-reverse` rather than by a
+        scroll effect.** In a reversed column the scroll origin *is* the bottom,
+        so a single growing child keeps its end in view while the log streams —
+        and a user who scrolls up to read stays where they put themselves, which
+        an effect that assigns `scrollTop` on every append would fight. It also
+        needs no effect at all, which this codebase restricts on purpose.
+
+        `--font-size-code` (13px) is the size a code block in the chat reads at,
+        and this is not that: it is a diagnostic dump, skimmed for the one line
+        that explains a failure, and at 13px three entries filled the panel.
+        10/14 mono fits a legible page of it in the same space.
+      */}
+      <div
+        className="mt-2 flex max-h-48 flex-col-reverse overflow-auto rounded-md border border-(--color-border-secondary) bg-(--color-bg-secondary) p-2"
+        data-testid={`provider-account-diagnostics-scroll-${accountId ?? "pending"}`}
+      >
+        <pre className="whitespace-pre-wrap break-words font-mono text-[10px] leading-[14px] text-(--color-text-secondary)">
+          {entries.map((entry) =>
+            `${entry.timestamp} ${entry.level.toUpperCase()} ${entry.source}: ${entry.message}`,
+          ).join("\n")}
+        </pre>
+      </div>
+    </details>
   );
 }
 
@@ -344,13 +511,10 @@ export function AccountChallenge({
   onError: (message: string) => void;
 }) {
   const auths = useSettingsStore((s) => s.providerAccountAuths);
-  const allDiagnostics = useSettingsStore((s) => s.claudeAuthDiagnostics);
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
   const pendingAuth = auths[providerAccountAuthKey(provider, account.id)] ?? null;
   if (!pendingAuth) return null;
-
-  const diagnostics = allDiagnostics[account.id] ?? EMPTY_CLAUDE_AUTH_DIAGNOSTICS;
 
   const submit = async () => {
     const trimmed = code.trim();
@@ -369,66 +533,51 @@ export function AccountChallenge({
   };
 
   return (
-    <>
-      <div
-        className={CHALLENGE_BOX}
-        data-testid={`provider-account-challenge-${account.id}`}
+    <AuthPanel testId={`provider-account-challenge-${account.id}`}>
+      <a
+        href={pendingAuth.verificationUri}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="text-sm font-medium text-(--color-text-link) hover:underline"
       >
-        <a
-          href={pendingAuth.verificationUri}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-sm font-medium text-(--color-text-link) hover:underline"
-        >
-          Open {serviceName} authentication page
-        </a>
-        {pendingAuth.userCode ? (
-          <div>
-            <p className="text-xs text-(--color-text-secondary)">Enter this code on that page:</p>
-            <p
-              className="mt-1 font-mono text-lg tracking-widest text-(--color-text-primary)"
-              data-testid={`provider-account-user-code-${account.id}`}
-            >
-              {pendingAuth.userCode}
-            </p>
-          </div>
-        ) : (
-          <div className="flex gap-2">
-            <input
-              value={code}
-              onChange={(event) => setCode(event.target.value)}
-              placeholder="Paste authorization code"
-              aria-label={`Authorization code for ${account.label}`}
-              className="min-w-0 flex-1 rounded-md border border-(--color-border-secondary) bg-(--color-bg-secondary) px-2 py-1.5 text-sm text-(--color-text-primary) focus:border-(--color-border-focus) focus:outline-none"
-            />
-            <Button
-              variant="primary"
-              size="md"
-              disabled={busy || !code.trim()}
-              onClick={() => void submit()}
-            >
-              Submit code
-            </Button>
-          </div>
-        )}
-      </div>
+        Open {serviceName} authentication page
+      </a>
+      {pendingAuth.userCode ? (
+        <div>
+          <p className="text-xs text-(--color-text-secondary)">Enter this code on that page:</p>
+          <p
+            className="mt-1 font-mono text-lg tracking-widest text-(--color-text-primary)"
+            data-testid={`provider-account-user-code-${account.id}`}
+          >
+            {pendingAuth.userCode}
+          </p>
+        </div>
+      ) : (
+        <div className="flex gap-2">
+          <input
+            value={code}
+            onChange={(event) => setCode(event.target.value)}
+            placeholder="Paste authorization code"
+            aria-label={`Authorization code for ${account.label}`}
+            className="min-w-0 flex-1 rounded-md border border-(--color-border-secondary) bg-(--color-bg-secondary) px-2 py-1.5 text-sm text-(--color-text-primary) focus:border-(--color-border-focus) focus:outline-none"
+          />
+          <Button
+            variant="primary"
+            size="md"
+            disabled={busy || !code.trim()}
+            onClick={() => void submit()}
+          >
+            Submit code
+          </Button>
+        </div>
+      )}
 
       {/* Claude's CLI-driven sign-in is the one that strands users, so its
-          diagnostics stay reachable. docs/150 — read this account's own buffer:
-          the output belongs to the attempt that produced it. */}
-      {provider === "claude" && diagnostics.entries.length > 0 && (
-        <details className="group" data-testid={`provider-account-diagnostics-${account.id}`}>
-          <summary className="cursor-pointer select-none text-xs text-(--color-text-link) transition-colors hover:text-(--color-accent)">
-            Claude CLI output ({diagnostics.entries.length})
-          </summary>
-          <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded-md border border-(--color-border-secondary) bg-(--color-bg-primary) p-2 font-mono text-[var(--font-size-code)] text-(--color-text-secondary)">
-            {diagnostics.entries.map((entry) =>
-              `${entry.timestamp} ${entry.level.toUpperCase()} ${entry.source}: ${entry.message}`,
-            ).join("\n")}
-          </pre>
-        </details>
-      )}
-    </>
+        record stays reachable — docs/150 — and it belongs to the attempt that
+        produced it, so it is read by account id. Inside the panel, because
+        the panel is where the sign-in is. */}
+      {provider === "claude" && <ClaudeAuthOutput accountId={account.id} />}
+    </AuthPanel>
   );
 }
 

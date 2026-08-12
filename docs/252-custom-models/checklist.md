@@ -252,3 +252,11 @@ landed ahead of this checklist's per-phase sections.
       98px, on screen from the step's first frame) with **no button beside it** — while the
       flow runs itself there is one control and it says Cancel, so a stray click cannot
       restart a live login.
+- [x] **The Anthropic wait shows the Claude CLI's own output** (req 18 follow-up). Its sign-in
+      is a wizard, not a code hand-over, so the wait runs ~6s and a pulse alone read as stuck.
+      `AuthPanel` is one bordered box in every state, holding ShipIt's phase message and the
+      collapsed `ClaudeAuthOutput` buffer — nothing about the sign-in renders outside it, and
+      `ChallengePlaceholder` takes the `shape` of the box it stands in for. Two rejected cuts
+      on the way: a live three-line tail below the box (the same output twice), then the
+      collapsed buffer below the box (two places to look). The whole flow holds one height,
+      measured live.
