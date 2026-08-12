@@ -139,6 +139,12 @@ export interface PluginRepoCardView {
 export interface PluginReposSnapshot {
   /** Plugin intent — gates the tab. */
   declared: boolean;
+  /**
+   * The answer is *not yet knowable*: the session's checkout is evicted or
+   * mid-restore, so "declares nothing" must not be cached — the client
+   * retries instead (the `declarationsPending` precedent, plan §3).
+   */
+  pending: boolean;
   /** The consuming project's remote — the secret store "Add key…" must write to (plan §3). */
   consumerRepoUrl: string | null;
   repos: PluginRepoCardView[];
@@ -170,18 +176,24 @@ function isScalar(v: unknown): v is string | number | boolean {
 }
 
 /**
- * Parse the consumer `plugins:` block. `trackers` feeds the cross-block name
- * reservation: tracker names are reserved first (they parse first), and a repo
- * name colliding with one is dropped — UNLESS the repo's GitHub destination is
- * the same repository the tracker already points at, which is the sanctioned
- * alias case (plan §1a: one destination, two names, one adapter).
+ * Parse the consumer `plugins:` block. **Call only when the `plugins` key
+ * exists in the document** (shipit-config gates on `"plugins" in raw`): an
+ * empty or null value — bare `plugins:` in YAML parses to null — is still
+ * plugin INTENT and must keep its tab (req 13, review finding), so presence
+ * is the caller's signal and every value, including null, declares.
+ *
+ * `trackers` feeds the cross-block name reservation: tracker names are
+ * reserved first (they parse first), and a repo name colliding with one is
+ * dropped — UNLESS the repo's GitHub destination is the same repository the
+ * tracker already points at, which is the sanctioned alias case (plan §1a:
+ * one destination, two names, one adapter).
  */
 export function parsePluginRepos(
   raw: unknown,
   trackers: readonly DeclaredTracker[],
   warnings: string[],
 ): PluginReposConfig {
-  if (raw === undefined || raw === null) return { ...EMPTY_PLUGIN_REPOS };
+  if (raw === undefined || raw === null) return { declared: true, repos: [], uses: [] };
 
   if (!isMapping(raw)) {
     warnings.push("`plugins` must be a mapping (object); ignoring it.");
@@ -407,6 +419,13 @@ function parseUseList(
   return uses;
 }
 
+/**
+ * Overrides are **fail-closed at the use-entry level** (review finding): a
+ * malformed override field must drop the whole `use` entry, never degrade
+ * into different executable semantics — `autostart: "false"` silently
+ * becoming "no override" would START a service the declaration asked to keep
+ * off. Returns null (with one warning naming the field) on any invalid piece.
+ */
 function parseOverrides(
   raw: unknown,
   useIndex: number,
@@ -414,10 +433,13 @@ function parseOverrides(
 ): PluginUseOverrides | null {
   const empty: PluginUseOverrides = { services: {}, commands: {}, settings: {} };
   if (raw === undefined || raw === null) return empty;
-  if (!isMapping(raw)) {
-    warnings.push(`Ignoring \`plugins.use[${useIndex}]\`: \`overrides\` must be a mapping.`);
+
+  const fail = (field: string, reason: string): null => {
+    warnings.push(`Ignoring \`plugins.use[${useIndex}]\`: \`${field}\` ${reason}.`);
     return null;
-  }
+  };
+
+  if (!isMapping(raw)) return fail("overrides", "must be a mapping");
 
   for (const key of Object.keys(raw)) {
     if (!KNOWN_OVERRIDE_KEYS.has(key)) {
@@ -427,82 +449,66 @@ function parseOverrides(
 
   const services: Record<string, PluginServiceOverride> = {};
   if (raw.services !== undefined && raw.services !== null) {
-    if (!isMapping(raw.services)) {
-      warnings.push(`Ignoring \`plugins.use[${useIndex}].overrides.services\`: must be a mapping keyed by service name.`);
-    } else {
-      for (const [svc, val] of Object.entries(raw.services)) {
-        if (!isMapping(val)) {
-          warnings.push(`Ignoring \`plugins.use[${useIndex}].overrides.services.${svc}\`: must be a mapping.`);
-          continue;
+    if (!isMapping(raw.services)) return fail("overrides.services", "must be a mapping keyed by service name");
+    for (const [svc, val] of Object.entries(raw.services)) {
+      const field = `overrides.services.${svc}`;
+      if (!isMapping(val)) return fail(field, "must be a mapping");
+      for (const key of Object.keys(val)) {
+        if (!KNOWN_SERVICE_OVERRIDE_KEYS.has(key)) {
+          warnings.push(`Unknown key \`plugins.use[${useIndex}].${field}.${key}\` in shipit.yaml.`);
         }
-        const out: PluginServiceOverride = {};
-        for (const key of Object.keys(val)) {
-          if (!KNOWN_SERVICE_OVERRIDE_KEYS.has(key)) {
-            warnings.push(`Unknown key \`plugins.use[${useIndex}].overrides.services.${svc}.${key}\` in shipit.yaml.`);
-          }
-        }
-        if (val.autostart !== undefined) {
-          if (typeof val.autostart !== "boolean") {
-            warnings.push(`Ignoring \`…services.${svc}.autostart\`: must be true or false.`);
-          } else {
-            out.autostart = val.autostart;
-          }
-        }
-        const as = parseAlias(val.as, `plugins.use[${useIndex}].overrides.services.${svc}.as`, warnings);
-        if (as) out.as = as;
-        services[svc] = out;
       }
+      const out: PluginServiceOverride = {};
+      if (val.autostart !== undefined && val.autostart !== null) {
+        if (typeof val.autostart !== "boolean") return fail(`${field}.autostart`, "must be true or false");
+        out.autostart = val.autostart;
+      }
+      if (val.as !== undefined && val.as !== null) {
+        const as = parseAlias(val.as);
+        if (!as) return fail(`${field}.as`, "must be letters, digits, `.`, `_` or `-`");
+        out.as = as;
+      }
+      services[svc] = out;
     }
   }
 
   const commands: Record<string, { as?: string }> = {};
   if (raw.commands !== undefined && raw.commands !== null) {
-    if (!isMapping(raw.commands)) {
-      warnings.push(`Ignoring \`plugins.use[${useIndex}].overrides.commands\`: must be a mapping keyed by command name.`);
-    } else {
-      for (const [cmd, val] of Object.entries(raw.commands)) {
-        if (!isMapping(val)) {
-          warnings.push(`Ignoring \`plugins.use[${useIndex}].overrides.commands.${cmd}\`: must be a mapping.`);
-          continue;
+    if (!isMapping(raw.commands)) return fail("overrides.commands", "must be a mapping keyed by command name");
+    for (const [cmd, val] of Object.entries(raw.commands)) {
+      const field = `overrides.commands.${cmd}`;
+      if (!isMapping(val)) return fail(field, "must be a mapping");
+      for (const key of Object.keys(val)) {
+        if (!KNOWN_COMMAND_OVERRIDE_KEYS.has(key)) {
+          warnings.push(`Unknown key \`plugins.use[${useIndex}].${field}.${key}\` in shipit.yaml.`);
         }
-        for (const key of Object.keys(val)) {
-          if (!KNOWN_COMMAND_OVERRIDE_KEYS.has(key)) {
-            warnings.push(`Unknown key \`plugins.use[${useIndex}].overrides.commands.${cmd}.${key}\` in shipit.yaml.`);
-          }
-        }
-        const out: { as?: string } = {};
-        const as = parseAlias(val.as, `plugins.use[${useIndex}].overrides.commands.${cmd}.as`, warnings);
-        if (as) out.as = as;
-        commands[cmd] = out;
       }
+      const out: { as?: string } = {};
+      if (val.as !== undefined && val.as !== null) {
+        const as = parseAlias(val.as);
+        if (!as) return fail(`${field}.as`, "must be letters, digits, `.`, `_` or `-`");
+        out.as = as;
+      }
+      commands[cmd] = out;
     }
   }
 
   const settings: Record<string, string | number | boolean> = {};
   if (raw.settings !== undefined && raw.settings !== null) {
-    if (!isMapping(raw.settings)) {
-      warnings.push(`Ignoring \`plugins.use[${useIndex}].overrides.settings\`: must be a mapping.`);
-    } else {
-      for (const [name, val] of Object.entries(raw.settings)) {
-        // Fail-closed grammar (plan §1a): setting values are scalars.
-        if (!isScalar(val)) {
-          warnings.push(`Ignoring \`plugins.use[${useIndex}].overrides.settings.${name}\`: setting values must be scalars.`);
-          continue;
-        }
-        settings[name] = val;
-      }
+    if (!isMapping(raw.settings)) return fail("overrides.settings", "must be a mapping");
+    for (const [name, val] of Object.entries(raw.settings)) {
+      // Fail-closed grammar (plan §1a): setting values are scalars, and a
+      // malformed value must not silently fall back to the plugin's default.
+      if (!isScalar(val)) return fail(`overrides.settings.${name}`, "must be a scalar");
+      settings[name] = val;
     }
   }
 
   return { services, commands, settings };
 }
 
-function parseAlias(raw: unknown, label: string, warnings: string[]): string | undefined {
-  if (raw === undefined || raw === null) return undefined;
-  if (typeof raw !== "string" || !PLUGIN_NAME_RE.test(raw.trim())) {
-    warnings.push(`Ignoring \`${label}\`: an alias must be letters, digits, \`.\`, \`_\` or \`-\`.`);
-    return undefined;
-  }
+function parseAlias(raw: unknown): string | undefined {
+  if (typeof raw !== "string" || !PLUGIN_NAME_RE.test(raw.trim())) return undefined;
   return raw.trim();
 }
 
@@ -560,8 +566,13 @@ export function parsePluginExports(raw: unknown, warnings: string[]): PluginExpo
 }
 
 function parseExportEntry(name: string, entry: unknown, warnings: string[]): PluginExport | null {
+  // The message quotes the full `exports.plugins.<name>` key: the snapshot
+  // projection keeps warnings by their quoted key prefix, and the drop reason
+  // must reach the tab — a self-declared consumer of this export otherwise
+  // sees only "not in manifest" with the real cause filtered away (review
+  // finding).
   const drop = (reason: string): null => {
-    warnings.push(`Ignoring exported plugin \`${name}\`: ${reason}.`);
+    warnings.push(`Ignoring \`exports.plugins.${name}\`: ${reason}.`);
     return null;
   };
 
@@ -647,6 +658,14 @@ function parseExportEntry(name: string, entry: unknown, warnings: string[]): Plu
         continue;
       }
       if (!isMapping(sVal)) return drop(`\`settings.${sName}\` must be a mapping (description/default)`);
+      // A misspelled descriptor key (`defualt`) silently loses the default it
+      // meant to set — say so (review finding). Warn-not-drop, the same
+      // forward-compatibility rule as every other unknown key.
+      for (const key of Object.keys(sVal)) {
+        if (key !== "description" && key !== "default") {
+          warnings.push(`Unknown key \`exports.plugins.${name}.settings.${sName}.${key}\` in shipit.yaml.`);
+        }
+      }
       const out: { description?: string; default?: string | number | boolean } = {};
       if (sVal.description !== undefined) {
         if (typeof sVal.description !== "string") return drop(`\`settings.${sName}.description\` must be a string`);
@@ -734,10 +753,22 @@ export function buildPluginReposSnapshot(
     };
   });
 
+  // Warning projection (review finding): consumer-block warnings always ride
+  // the snapshot — they are what the tab's intent gating protects. Exports
+  // warnings ride it only when the project consumes plugins: a repo that only
+  // EXPORTS must not grow a Plugins tab from a manifest warning (plan §3 —
+  // the tab renders only when the project declares plugins; the config
+  // banner already surfaces those warnings to the plugin's author). Every
+  // message from this module quotes its config key, which is what the
+  // prefixes match.
+  const consumerWarnings = warnings.filter((w) => w.includes("`plugins"));
+  const exportWarnings = plugins.declared ? warnings.filter((w) => w.includes("`exports")) : [];
+
   return {
     declared: plugins.declared,
+    pending: false,
     consumerRepoUrl,
     repos,
-    warnings: warnings.filter((w) => w.includes("plugins") || w.includes("exports")),
+    warnings: [...consumerWarnings, ...exportWarnings],
   };
 }
