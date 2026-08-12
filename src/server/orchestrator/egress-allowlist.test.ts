@@ -20,6 +20,8 @@ import {
   sandboxLifelineBase,
   sandboxLifelineEgressConfig,
 } from "./egress-allowlist.js";
+import { EGRESS_TIER_A_RESOLVE_HOSTS } from "./egress-firewall.js";
+import { SERVICES } from "../shared/catalogue/services.js";
 import type { CredentialStore } from "./credential-store.js";
 import type { McpServerConfig, OAuthTokens } from "../shared/types/mcp-types.js";
 import type { SessionInfo } from "../shared/types.js";
@@ -217,6 +219,22 @@ describe("buildEgressAllowlist", () => {
     expect(EGRESS_DEFAULT_ALLOWLIST.length).toBeGreaterThan(0);
     for (const e of EGRESS_DEFAULT_ALLOWLIST) {
       expect(normalizeHost(e)).toBe(e); // already normalized in source
+    }
+  });
+
+  it("keeps every catalogue API endpoint reachable through the LLM lifeline and Tier A", () => {
+    const endpointHosts = new Set(
+      SERVICES.flatMap((service) =>
+        service.modes.flatMap((mode) =>
+          Object.values(mode.endpoints).map((endpoint) => new URL(endpoint).hostname),
+        ),
+      ),
+    );
+    const lifeline = makeAllowlist(EGRESS_LIFELINE_ALLOWLIST);
+
+    for (const host of endpointHosts) {
+      expect(lifeline.isAllowed(host), `${host} is missing from the LLM lifeline`).toBe(true);
+      expect(EGRESS_TIER_A_RESOLVE_HOSTS, `${host} is missing from Tier-A DNS resolution`).toContain(host);
     }
   });
 });

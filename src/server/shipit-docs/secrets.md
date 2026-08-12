@@ -213,7 +213,9 @@ written by the `claude` / `codex` CLIs) are out of scope for this encryption.
 Agent containers are **network-contained by default** (planning#92,
 `docs/172-agent-containment`): a default-deny egress allowlist + controlled DNS
 resolver + transparent SNI proxy restrict outbound traffic to known hosts (the
-agent API, your git host, package registries, your connected MCP servers). So a
+agent APIs in ShipIt's service catalogue, your git host, package registries,
+your connected MCP servers). Provider API access uses the catalogue's exact
+endpoint hosts; it does not allow other subdomains from those providers. So a
 value reachable inside the container — `agent: true` secrets, MCP tokens, the
 agent's own CLI OAuth — can no longer be POSTed to an arbitrary attacker host by
 code the agent runs (a malicious dependency README, fetched page, or repo

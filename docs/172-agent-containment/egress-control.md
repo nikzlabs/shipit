@@ -617,7 +617,9 @@ Stored orchestrator-side alongside MCP servers / secrets.
 
 Reuses `egress-allowlist.ts` (already merged on the planning#92 branch):
 
-- Base list (`EGRESS_DEFAULT_ALLOWLIST`): agent APIs, `.github.com` / `.githubusercontent.com`,
+- Base list (`EGRESS_DEFAULT_ALLOWLIST`): every provider API endpoint in the service
+  catalogue (exact hosts unless an existing provider auth flow requires a narrow suffix),
+  `.github.com` / `.githubusercontent.com`,
   npm/yarn/pypi, and `.nodejs.org` (node-gyp downloads the Node headers tarball there to
   compile native modules such as `node-pty`; registry fetches alone don't need it, so only
   native builds were affected by its absence).

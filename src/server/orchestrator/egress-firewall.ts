@@ -46,6 +46,11 @@ export const EGRESS_TIER_A_RESOLVE_HOSTS: readonly string[] = [
   "api.openai.com",
   "auth.openai.com",
   "chatgpt.com",
+  // Catalogue provider APIs — exact endpoints, not vendor-wide suffixes
+  "api.deepseek.com",
+  "api.z.ai",
+  "openrouter.ai",
+  "ai-gateway.vercel.sh",
   // Package registries
   "registry.npmjs.org",
   "registry.yarnpkg.com",
