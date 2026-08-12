@@ -1751,6 +1751,7 @@ export default function App() {
             services={composeServices}
             sessionId={sessionId}
             active={previewVisible}
+            previewRunning={!!effectivePreviewStatus?.running}
             send={send}
             onSendToAgent={handleSendServiceLogsToAgent}
             onSelectPreviewPort={(port) =>

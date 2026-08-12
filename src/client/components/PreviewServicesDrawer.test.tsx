@@ -18,18 +18,21 @@ function svc(over: Partial<ManagedServiceState> & { name: string }): ManagedServ
   return { status: "running", preview: "auto", ...over };
 }
 
+// `previewRunning: true` keeps the saved preference in charge for the cases
+// below; the auto-open while nothing is previewing has its own describe block.
 const baseProps = () => ({
   active: true,
   send: vi.fn(),
   onSendToAgent: vi.fn(),
   onSelectPreviewPort: vi.fn(),
+  previewRunning: true,
 });
 
 beforeEach(() => {
   localStorage.clear();
   // The preview store is a module singleton; reset the lifted drawer flag so
   // a prior test's expand doesn't leak into the next case.
-  usePreviewStore.setState({ servicesDrawerExpanded: false });
+  usePreviewStore.setState({ servicesDrawerExpanded: false, servicesDrawerIdleCollapsed: false });
   useLogStore.getState().reset();
 });
 afterEach(cleanup);
@@ -198,5 +201,39 @@ describe("PreviewServicesDrawer", () => {
     expect(screen.getByText("exit 137 (OOM)")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /Ask the agent to fix/ }));
     expect(props.onSendToAgent).toHaveBeenCalledWith("db", "error", "exit 137 (OOM)");
+  });
+});
+
+describe("PreviewServicesDrawer — opens itself while no preview runs", () => {
+  const idleProps = () => ({ ...baseProps(), previewRunning: false });
+
+  it("is expanded with no preview running, even though the saved preference is collapsed", () => {
+    localStorage.setItem("shipit:preview-services:expanded", "0");
+    usePreviewStore.setState({ servicesDrawerExpanded: false });
+    render(<PreviewServicesDrawer services={[svc({ name: "dev", status: "stopped" })]} {...idleProps()} />);
+    // The service is reachable without a "Show services" step first.
+    expect(screen.getByRole("button", { name: "Start service" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Collapse services" })).toBeInTheDocument();
+  });
+
+  it("a hand collapse holds while no preview runs", () => {
+    render(<PreviewServicesDrawer services={[svc({ name: "dev", status: "stopped" })]} {...idleProps()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Collapse services" }));
+    expect(screen.getByRole("button", { name: "Expand services" })).toBeInTheDocument();
+    expect(usePreviewStore.getState().servicesDrawerIdleCollapsed).toBe(true);
+  });
+
+  it("a preview starting ends that collapse, so the next stop opens the drawer again", () => {
+    const props = idleProps();
+    const services = [svc({ name: "dev", status: "stopped" })];
+    const { rerender } = render(<PreviewServicesDrawer services={services} {...props} />);
+    fireEvent.click(screen.getByRole("button", { name: "Collapse services" }));
+    // Preview comes up: the saved preference (collapsed) takes over again.
+    rerender(<PreviewServicesDrawer services={[svc({ name: "dev" })]} {...props} previewRunning />);
+    expect(usePreviewStore.getState().servicesDrawerIdleCollapsed).toBe(false);
+    expect(screen.getByRole("button", { name: "Expand services" })).toBeInTheDocument();
+    // Preview stops again → open, without the user asking.
+    rerender(<PreviewServicesDrawer services={services} {...props} />);
+    expect(screen.getByRole("button", { name: "Collapse services" })).toBeInTheDocument();
   });
 });
