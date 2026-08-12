@@ -75,8 +75,9 @@ import { providerAccountAuthKey, useSettingsStore } from "../../stores/settings-
 import {
   AccountChallenge,
   ChallengePlaceholder,
+  AuthPanel,
   ClaudeAuthOutput,
-  useAuthProgressLine,
+  useAuthStatus,
   ProviderAccountRows,
   abandonAccount,
   cancelAccountLogin,
@@ -845,9 +846,7 @@ function AddServiceDialog({
     ? providerAccountAuthKey(signInProvider, signInAccountId)
     : undefined;
   /** Only Claude narrates; for Codex this is empty and the box just pulses. */
-  const authProgress = useAuthProgressLine(
-    signInProvider === "claude" ? signInAccountId : undefined,
-  );
+  const authStatus = useAuthStatus(signInProvider === "claude" ? signInAccountId : undefined);
   const pendingAuth = useSettingsStore((s) => (authKey ? s.providerAccountAuths[authKey] : undefined));
   const authError = useSettingsStore((s) => (authKey ? s.providerAccountAuthErrors[authKey] : undefined));
   const signInStalled = !!signInAccount && !signedIn && !pendingAuth && !startingSignIn
@@ -1051,18 +1050,18 @@ function AddServiceDialog({
                     its models are selectable now.
                   </p>
                 ) : signInStalled ? (
-                  <>
+                  // The same panel again, holding the reason and the record: a
+                  // failed sign-in is exactly when the CLI's own words matter,
+                  // and the copy above says "copy the diagnostic details".
+                  <AuthPanel>
                     <p className="text-xs text-(--color-text-error)" data-testid="add-service-signin-stalled">
                       {authError ?? "The sign-in stopped before the account connected."} Try again
                       below, or close this to add nothing.
                     </p>
-                    {/* A failed Claude sign-in is exactly when the CLI's own
-                        words matter — the error above says "copy the diagnostic
-                        details", and this is them. */}
                     {signInProvider === "claude" && signInAccountId && (
                       <ClaudeAuthOutput accountId={signInAccountId} />
                     )}
-                  </>
+                  </AuthPanel>
                 ) : signInAccount || startingSignIn ? (
                   <>
                     {pendingAuth && signInAccount ? (
@@ -1097,17 +1096,17 @@ function AddServiceDialog({
                       */
                       <ChallengePlaceholder
                         shape={signInProvider === "claude" ? "paste" : "code"}
-                        {...authProgress}
+                        {...(authStatus ? { status: authStatus } : {})}
                         testId="add-service-signin-starting"
-                      />
-                    )}
-                    {/* The buffer, collapsed — the same control `AccountChallenge`
-                        carries a moment later, rendered here so it does not
-                        appear from nowhere and move everything under it when the
-                        field arrives. Collapsed is the whole point: the live
-                        line is in the box above, and this is the record. */}
-                    {signInProvider === "claude" && signInAccountId && !pendingAuth && (
-                      <ClaudeAuthOutput accountId={signInAccountId} />
+                      >
+                        {/* The buffer, collapsed, and in the same place it will
+                            be a moment from now — so the panel is the whole of
+                            the sign-in and the arrival of the field moves
+                            nothing. */}
+                        {signInProvider === "claude" && signInAccountId && (
+                          <ClaudeAuthOutput accountId={signInAccountId} />
+                        )}
+                      </ChallengePlaceholder>
                     )}
                     <p className="text-[11px] text-(--color-text-tertiary)">
                       Keep this open until the account connects — this step will say so.

@@ -254,9 +254,9 @@ landed ahead of this checklist's per-phase sections.
       restart a live login.
 - [x] **The Anthropic wait shows the Claude CLI's own output** (req 18 follow-up). Its sign-in
       is a wizard, not a code hand-over, so the wait runs ~6s and a pulse alone read as stuck.
-      The phase message and the CLI's latest line render INSIDE the placeholder box — one
-      panel for everything transient — while `ClaudeAuthOutput` stays what it was, the whole
-      buffer collapsed, present from the wait so it does not shift the layout when the field
-      arrives. `authLogTail` makes a terminal stream readable (redraw lines, spinner frames,
-      repeats and `claude_control` dropped). `ChallengePlaceholder` takes the `shape` of the
-      box it stands in for. The whole flow holds one height, measured live.
+      `AuthPanel` is one bordered box in every state, holding ShipIt's phase message and the
+      collapsed `ClaudeAuthOutput` buffer — nothing about the sign-in renders outside it, and
+      `ChallengePlaceholder` takes the `shape` of the box it stands in for. Two rejected cuts
+      on the way: a live three-line tail below the box (the same output twice), then the
+      collapsed buffer below the box (two places to look). The whole flow holds one height,
+      measured live.

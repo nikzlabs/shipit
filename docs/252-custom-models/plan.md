@@ -2991,37 +2991,30 @@ at is the one carrying the provider's code.
   close it and start again. A mode that also takes a key keeps its primary *Sign in*, because
   nothing auto-starts there.
 
-**Waiting looks like what it is waiting for, and on Anthropic it says what the CLI is
-saying.** Two providers, two waits. OpenAI's is a device flow that produces a code in about a
-third of a second; Anthropic's is a wizard ShipIt drives through the Claude CLI, and measured
-live it runs about six seconds — long enough that a pulse alone reads as *stuck* rather than
-as *working*.
+**One panel per sign-in, and everything about the sign-in is in it.** Two providers, two
+waits: OpenAI's device flow produces a code in about a third of a second, while Anthropic's is
+a wizard ShipIt drives through the Claude CLI and runs about six seconds — long enough that a
+pulse alone reads as *stuck* rather than as *working*.
 
-- `ChallengePlaceholder` takes a `shape`, because the box it stands in for differs: a code to
-  read (98px) or a field to paste into (84px). One placeholder could only be right for one of
-  them.
-- **The narration goes IN that box**, via `status` and `line`: ShipIt's phase message where
-  the link will be ("Waiting for Claude CLI to print an authentication link"), the CLI's own
-  latest line where the field will be, a pulse for the rest. One panel holds everything
-  transient about the sign-in. The rejected cut streamed three lines *below* the box, which
-  put the same output on screen twice — live there, and again inside the buffer the challenge
-  already carried — and the human called it on sight from a screenshot.
-- **`ClaudeAuthOutput` is therefore what it always was: the whole buffer, collapsed.** It is
-  the record you open when something went wrong, and it renders in the wait as well as in the
-  challenge and the failure — one control that stays put, rather than appearing with the field
-  and pushing everything under it down.
-- **The output is a terminal, not a log**, which is what `authLogTail` is for. One entry can
-  be a whole screen redraw; the spinner emits a line per frame; `claude_control` entries are a
-  byte counter rather than words. Unfiltered and wrapped, that moved the dialog between 466
-  and 648px while the user was reading it. Now: entries split into lines, redraw-only lines
-  and repeats dropped, and only the newest survivor is shown — in a slot of fixed height.
-  Measured live, the whole Anthropic flow — start, wait, challenge — holds one height (419px).
-- A known artifact, left alone deliberately: some lines read `Esctocancel`. The CLI positions
-  each word with a cursor move and the **server** strips those before the client sees them
-  (`auth-diagnostics.ts:64`), so the spacing is already gone on arrival. Restoring it means
-  spacing the escapes out server-side instead — and the redaction that runs right after works
-  on the joined text, so a URL the CLI wrapped across a redraw would stop matching
-  `URL_PATTERN` and could show a fragment of an auth code. Ugly beats leaky.
+- `AuthPanel` is the bordered box, and it is the same box in every state — waiting, challenge,
+  failure. What changes as a login proceeds is its *contents*, never the page around it.
+- `ChallengePlaceholder` fills it before the code lands, and takes a `shape`, because the box
+  it stands in for differs: a code to read (98px) or a field to paste into (84px). One
+  placeholder could only be right for one of them.
+- **The narration is ShipIt's phase message**, in the slot the link will occupy ("Waiting for
+  Claude CLI to print an authentication link"), with a pulse for the rest.
+- **`ClaudeAuthOutput` — the whole buffer, collapsed — lives INSIDE the panel**, in both the
+  waiting state and the challenge, so the arrival of the field moves nothing and there is one
+  place carrying the sign-in.
+
+**Two rejected cuts got there first, and both are worth stating because they look reasonable
+written down.** The first streamed the CLI's last three lines *below* the box: that put the
+same output on screen twice — live there, and again inside the buffer — and needed
+`authLogTail` (escape-stripping, redraw and spinner filtering, repeat collapsing) to be
+readable at all, machinery that went with it. The second kept the collapsed buffer but left it
+under the box, which still made the sign-in two places to look. The human called each on sight
+from a screenshot; the third attempt was drawn as a mock-up and agreed *before* it was written,
+which is the cheaper order for anything this visual.
 
 **Waiting looks like what it is waiting for.** The step renders `ChallengePlaceholder` — the
 same `CHALLENGE_BOX` shell as the real challenge, its lines drawn as a pulse — and the two

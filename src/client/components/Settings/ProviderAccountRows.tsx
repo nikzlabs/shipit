@@ -300,38 +300,61 @@ const CHALLENGE_BOX =
 const PULSE = "animate-pulse rounded bg-(--color-bg-secondary)";
 
 /**
- * The challenge box before the provider's code has arrived: **the same box, at
- * the same size**, holding whatever is known so far and pulsing for the rest.
+ * **One panel per sign-in, and everything about the sign-in is in it.**
  *
- * It shares `CHALLENGE_BOX` with the real thing rather than approximating it,
+ * The same bordered box in every state — waiting, challenge, failure — so what
+ * changes as a login proceeds is the box's *contents* and never the page around
+ * it. Anything that rendered under the box (a live line, a disclosure, a status)
+ * both moved the layout and gave the user two places to look; the rule is now
+ * simply that there is one place.
+ */
+export function AuthPanel({
+  busy,
+  testId,
+  children,
+}: {
+  busy?: boolean;
+  testId?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className={CHALLENGE_BOX} data-testid={testId} {...(busy ? { "aria-busy": true } : {})}>
+      {children}
+    </div>
+  );
+}
+
+/**
+ * The panel before the provider's code has arrived: **the same box, at the same
+ * size**, saying where the sign-in has got to and pulsing for the rest.
+ *
+ * It shares {@link AuthPanel} with the real thing rather than approximating it,
  * because the whole job here is that nothing moves when the code lands — a
  * placeholder of a different height is the jump it exists to remove. For the
  * same reason it takes the `shape`: the two providers put different things in
  * that box (OpenAI a code to read, Anthropic a field to paste into), so one
  * placeholder can only be right for one of them.
  *
- * **`status` and `line` are what stop it reading as stuck.** A pulse says
- * "something is loading"; it does not say the thing is still going. Anthropic's
- * wizard runs about six seconds and narrates the whole way, so the narration
- * goes *here*, in the box the paste field is about to occupy — one place for
- * everything transient about the sign-in, rather than a second block of live
- * text underneath it.
+ * **`status` is what stops it reading as stuck.** A pulse says "something is
+ * loading"; it does not say the thing is still going, and Anthropic's wizard
+ * runs about six seconds. So ShipIt's phase message takes the slot the link
+ * will occupy, and `children` — the collapsed output buffer — sits under it
+ * INSIDE the box.
  */
 export function ChallengePlaceholder({
   shape,
   status,
-  line,
   testId,
+  children,
 }: {
   shape: "code" | "paste";
   /** Where the sign-in has got to, in ShipIt's words. Takes the link's slot. */
   status?: string;
-  /** The provider tool's own latest line. Takes the input's slot. */
-  line?: string;
   testId?: string;
+  children?: React.ReactNode;
 }) {
   return (
-    <div className={CHALLENGE_BOX} data-testid={testId} aria-busy="true">
+    <AuthPanel busy testId={testId}>
       {/* `h-4` / `text-xs`: the link above is inline, so its line box is 16px,
           and the stand-in has to be the same or the box changes height. */}
       {status ? (
@@ -347,98 +370,38 @@ export function ChallengePlaceholder({
       ) : (
         // The paste row: a field and its Submit, both at their real heights.
         <div className="flex gap-2">
-          {line ? (
-            <div
-              className="flex h-[34px] min-w-0 flex-1 items-center overflow-hidden rounded-md border border-(--color-border-secondary) bg-(--color-bg-secondary) px-2"
-              data-testid={testId ? `${testId}-line` : undefined}
-            >
-              <span className="truncate font-mono text-[10px] text-(--color-text-tertiary)">
-                {line}
-              </span>
-            </div>
-          ) : (
-            <div className={`h-[34px] min-w-0 flex-1 ${PULSE}`} />
-          )}
+          <div className={`h-[34px] min-w-0 flex-1 ${PULSE}`} />
           <div className={`h-[34px] w-28 ${PULSE}`} />
         </div>
       )}
-    </div>
+      {children}
+    </AuthPanel>
   );
 }
 
-/** Terminal escape sequences: colours, cursor moves, OSC titles, charset picks. */
-const ANSI = new RegExp(
-  "\\u001b\\[[0-9;?]*[a-zA-Z]"        // CSI: colours, cursor moves, erases
-  + "|\\u001b\\][^\\u0007]*\\u0007"  // OSC: window titles
-  + "|\\u001b[()][A-Za-z0-9]"           // charset selection
-  + "|[\\u0000-\\u0008\\u000b-\\u001f\\u007f]", // stray control bytes
-  "g",
-);
-/** A line that is only box-drawing or a spinner frame — a redraw, not news. */
-const REDRAW_ONLY = /^[\s─│┌┐└┘├┤┬┴┼╭╮╰╯═║▪▫•·*✢✶✻✽⏸⏵◐◓◑◒]+$/u;
-
 /**
- * The last few **readable** lines of a sign-in's output.
- *
- * The Claude CLI is a full-screen terminal program, so its stream is not a log:
- * one entry can be a whole screen redraw, wrapped in escape sequences, and the
- * spinner alone emits a line per frame. Shown raw it is unreadable and it
- * resizes whatever holds it. So each entry is split into lines, stripped of
- * escapes, and dropped when it carries nothing — empty, or only the characters
- * a redraw is made of — and a line identical to the one before it is a repaint
- * rather than a new event.
- */
-export function authLogTail(
-  entries: readonly { message: string; source?: string }[],
-  count: number,
-): string[] {
-  const lines: string[] = [];
-  for (const entry of entries) {
-    // `claude_control` is the byte counter for the terminal traffic itself
-    // (`auth-manager.ts:650`) — it says the CLI is talking, not what it said,
-    // and three of those crowd out the line that carries the news.
-    if (entry.source === "claude_control") continue;
-    // Replaced with a space, not with nothing: the CLI positions each word with
-    // a cursor move, so deleting the escapes ran the words together —
-    // "Esctocancel". Collapsing the runs afterwards puts them back.
-    for (const raw of entry.message.replace(ANSI, " ").split(/\r\n|\r|\n/)) {
-      const line = raw.replace(/\s+/g, " ").trim();
-      if (!line || REDRAW_ONLY.test(line)) continue;
-      if (line !== lines[lines.length - 1]) lines.push(line);
-    }
-  }
-  return lines.slice(-count);
-}
-
-/**
- * **Where a sign-in has got to, for the box that is waiting on it** — ShipIt's
- * own phase message, and the provider tool's latest readable line.
+ * **Where a sign-in has got to, in ShipIt's own words** — the phase message the
+ * server broadcasts as the wizard advances.
  *
  * Returned as data rather than rendered, because it belongs *inside*
- * {@link ChallengePlaceholder} and not in a block of its own: the transient
- * part of a sign-in is one panel, not two things stacked.
+ * {@link ChallengePlaceholder}: the transient part of a sign-in is one panel,
+ * not a stack of things near one.
  */
-export function useAuthProgressLine(accountId: string | undefined): {
-  status?: string;
-  line?: string;
-} {
+export function useAuthStatus(accountId: string | undefined): string | undefined {
   const all = useSettingsStore((s) => s.claudeAuthDiagnostics);
   const diagnostics = (accountId ? all[accountId] : undefined) ?? EMPTY_CLAUDE_AUTH_DIAGNOSTICS;
-  const line = authLogTail(diagnostics.entries, 1)[0];
-  return {
-    ...(diagnostics.message ? { status: diagnostics.message } : {}),
-    ...(line ? { line } : {}),
-  };
+  return diagnostics.message ?? undefined;
 }
 
 /**
- * **The whole sign-in buffer, one collapsed control** (docs/150).
+ * **The whole sign-in buffer, one collapsed control, inside the panel**
+ * (docs/150).
  *
- * Collapsed, and the only place the output is spelled out: an always-on tail
- * beside it put the same lines on screen twice — once live under the box, once
- * inside this — which is what it looked like in use, and why it is gone. The
- * live line lives in the box now ({@link ChallengePlaceholder}); this is the
- * record you open when something went wrong.
+ * It is the record you open when something went wrong, and it is the ONLY place
+ * the output is spelled out. Two rejected cuts are why that is stated so flatly:
+ * a live three-line tail beside it put the same lines on screen twice, and this
+ * control sitting *under* the box made the panel one of two places carrying the
+ * sign-in.
  *
  * Claude only. Codex's device flow produces no such stream.
  */
@@ -453,7 +416,7 @@ export function ClaudeAuthOutput({ accountId }: { accountId: string }) {
       <summary className="cursor-pointer select-none text-xs text-(--color-text-link) transition-colors hover:text-(--color-accent)">
         Claude CLI output ({entries.length})
       </summary>
-      <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded-md border border-(--color-border-secondary) bg-(--color-bg-primary) p-2 font-mono text-[var(--font-size-code)] text-(--color-text-secondary)">
+      <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded-md border border-(--color-border-secondary) bg-(--color-bg-secondary) p-2 font-mono text-[var(--font-size-code)] text-(--color-text-secondary)">
         {entries.map((entry) =>
           `${entry.timestamp} ${entry.level.toUpperCase()} ${entry.source}: ${entry.message}`,
         ).join("\n")}
@@ -509,55 +472,51 @@ export function AccountChallenge({
   };
 
   return (
-    <>
-      <div
-        className={CHALLENGE_BOX}
-        data-testid={`provider-account-challenge-${account.id}`}
+    <AuthPanel testId={`provider-account-challenge-${account.id}`}>
+      <a
+        href={pendingAuth.verificationUri}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="text-sm font-medium text-(--color-text-link) hover:underline"
       >
-        <a
-          href={pendingAuth.verificationUri}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-sm font-medium text-(--color-text-link) hover:underline"
-        >
-          Open {serviceName} authentication page
-        </a>
-        {pendingAuth.userCode ? (
-          <div>
-            <p className="text-xs text-(--color-text-secondary)">Enter this code on that page:</p>
-            <p
-              className="mt-1 font-mono text-lg tracking-widest text-(--color-text-primary)"
-              data-testid={`provider-account-user-code-${account.id}`}
-            >
-              {pendingAuth.userCode}
-            </p>
-          </div>
-        ) : (
-          <div className="flex gap-2">
-            <input
-              value={code}
-              onChange={(event) => setCode(event.target.value)}
-              placeholder="Paste authorization code"
-              aria-label={`Authorization code for ${account.label}`}
-              className="min-w-0 flex-1 rounded-md border border-(--color-border-secondary) bg-(--color-bg-secondary) px-2 py-1.5 text-sm text-(--color-text-primary) focus:border-(--color-border-focus) focus:outline-none"
-            />
-            <Button
-              variant="primary"
-              size="md"
-              disabled={busy || !code.trim()}
-              onClick={() => void submit()}
-            >
-              Submit code
-            </Button>
-          </div>
-        )}
-      </div>
+        Open {serviceName} authentication page
+      </a>
+      {pendingAuth.userCode ? (
+        <div>
+          <p className="text-xs text-(--color-text-secondary)">Enter this code on that page:</p>
+          <p
+            className="mt-1 font-mono text-lg tracking-widest text-(--color-text-primary)"
+            data-testid={`provider-account-user-code-${account.id}`}
+          >
+            {pendingAuth.userCode}
+          </p>
+        </div>
+      ) : (
+        <div className="flex gap-2">
+          <input
+            value={code}
+            onChange={(event) => setCode(event.target.value)}
+            placeholder="Paste authorization code"
+            aria-label={`Authorization code for ${account.label}`}
+            className="min-w-0 flex-1 rounded-md border border-(--color-border-secondary) bg-(--color-bg-secondary) px-2 py-1.5 text-sm text-(--color-text-primary) focus:border-(--color-border-focus) focus:outline-none"
+          />
+          <Button
+            variant="primary"
+            size="md"
+            disabled={busy || !code.trim()}
+            onClick={() => void submit()}
+          >
+            Submit code
+          </Button>
+        </div>
+      )}
 
       {/* Claude's CLI-driven sign-in is the one that strands users, so its
-          output stays on screen — docs/150 — and it belongs to the attempt that
-          produced it, so it is read by account id. */}
+        record stays reachable — docs/150 — and it belongs to the attempt that
+        produced it, so it is read by account id. Inside the panel, because
+        the panel is where the sign-in is. */}
       {provider === "claude" && <ClaudeAuthOutput accountId={account.id} />}
-    </>
+    </AuthPanel>
   );
 }
 

@@ -326,14 +326,15 @@ describe("ServicesPanel", () => {
         });
       }
 
-      // Both of them inside the box: the phase where the link will be, the
-      // CLI's own latest line where the field will be.
-      await waitFor(() => expect(screen.getByTestId("add-service-signin-starting"))
+      // Inside the box: the phase where the link will be, and the buffer —
+      // closed, and inside the panel rather than under it, because the panel is
+      // the whole of the sign-in. Two rejected cuts are why that is asserted:
+      // a live three-line tail beside it showed the same output twice, and the
+      // control under the box made the sign-in two places to look.
+      const panel = await screen.findByTestId("add-service-signin-starting");
+      await waitFor(() => expect(panel)
         .toHaveTextContent("Waiting for Claude CLI to print an authentication link."));
-      expect(screen.getByTestId("add-service-signin-starting-line")).toHaveTextContent("Still waiting.");
-      // And nowhere else: the buffer is ONE control, and it is closed. An
-      // always-on tail beside it put the same lines on screen twice.
-      const buffer = screen.getByTestId("provider-account-diagnostics-acct-anthropic-1");
+      const buffer = within(panel).getByTestId("provider-account-diagnostics-acct-anthropic-1");
       expect(buffer).toHaveTextContent("Claude CLI output (2)");
       expect(buffer).not.toHaveAttribute("open");
 
@@ -346,9 +347,10 @@ describe("ServicesPanel", () => {
         screen.getByTestId("provider-account-challenge-acct-anthropic-1"),
       ).toBeInTheDocument());
       expect(screen.queryByTestId("add-service-signin-starting")).not.toBeInTheDocument();
-      // Still one, still closed — it does not appear from nowhere with the
-      // field and push everything under it down.
-      expect(screen.getByTestId("provider-account-diagnostics-acct-anthropic-1"))
+      // Still one, still closed, still in the panel — it does not move house
+      // when the field arrives.
+      const challenge = screen.getByTestId("provider-account-challenge-acct-anthropic-1");
+      expect(within(challenge).getByTestId("provider-account-diagnostics-acct-anthropic-1"))
         .toHaveTextContent("Claude CLI output (2)");
     });
 
