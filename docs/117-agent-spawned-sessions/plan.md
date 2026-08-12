@@ -62,7 +62,14 @@ Phases 1, 2, and 3 are live as of this revision. What works today:
   `--model` whose owning backend conflicts with an explicit `--agent`, is
   rejected with an actionable message; an unlisted/versioned model id the
   picker hasn't surfaced is still accepted (the CLI forwards `--model`
-  as-is, so forward-compat is preserved). `shipit session view` now also
+  as-is, so forward-compat is preserved). The same rule then runs on the
+  **resolved** pair, not only on the flags the caller passed (planning#304):
+  the inherited model triple is dropped when the child switches harness, and
+  dropped again when a parent row whose `agentId` and `model` name different
+  backends would otherwise reconstruct — by inheritance — the exact pair the
+  explicit path rejects. Dropped rather than rejected, because a caller who
+  passed no model has nothing to fix and an empty row already means "the
+  child harness's default". `shipit session view` now also
   reports the resolved `agent` + `model` the child runs on — the
   authoritative confirmation of a child's backend, since models self-report
   their own version unreliably. Key files: `services/child-sessions.ts`

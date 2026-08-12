@@ -1048,6 +1048,52 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     expect(sessionManager.get(sameChildId)?.model).toBe("claude-opus-4-7");
   });
 
+  it("planning#304 — inheritance cannot hand the child a model its own harness can't run", { timeout: 15_000 }, async () => {
+    // The guard above compares HARNESSES, so it sees nothing wrong with a parent
+    // that stays on its own: the incoherence is inside the parent's row, whose
+    // `agentId` says one backend and whose `model` names the other's catalogue.
+    // Copied verbatim, that row pins the child to a pair the explicit
+    // `--agent`/`--model` path rejects with a 400 — and its first turn spawns a
+    // CLI with a model it cannot run, which is the dead child of planning#304.
+    const parentId = await createParentSession("Incoherent parent");
+    sessionManager.setAgentId(parentId, "claude");
+    sessionManager.setModel(parentId, "gpt-5.5");
+
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: { prompt: "x", title: "Child of an incoherent parent" },
+    });
+    expect(res.statusCode).toBe(200);
+    // Assert on the response's session snapshot, which the route reads before
+    // the child's first turn is dispatched. Re-reading the live row instead
+    // races with the turn-time settle (`session-agent-env.ts`), which writes a
+    // derived selection onto an empty row whenever the install's first eligible
+    // service is not the harness's own vendor — so the same assertion would
+    // pass or fail depending on which credentials the host happens to carry.
+    const body = res.json() as { sessionId: string; session: { model?: string; serviceId?: string } };
+    // The harness still inherits — only the model that doesn't belong to it is
+    // dropped, leaving the empty row that means "this harness's default". The
+    // harness is read from the live row because it is pinned after the snapshot
+    // is taken; the settle above never touches it.
+    expect(sessionManager.get(body.sessionId)?.agentId).toBe("claude");
+    expect(body.session.model).toBeUndefined();
+    expect(body.session.serviceId).toBeUndefined();
+
+    // Contrast, same parent and same no-flag spawn: a model the parent's harness
+    // DOES own still inherits. Without this the assertion above would pass under
+    // "a no-flag spawn inherits nothing", which is not the rule.
+    sessionManager.setModel(parentId, "claude-opus-4-7");
+    const ok = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: { prompt: "x", title: "Child of a coherent parent" },
+    });
+    expect(ok.statusCode).toBe(200);
+    const okChild = (ok.json() as { session: { model?: string } }).session;
+    expect(okChild.model).toBe("claude-opus-4-7");
+  });
+
   it("POST /spawn rejects an unknown agent id with 400", { timeout: 15_000 }, async () => {
     const parentId = await createParentSession();
     const res = await app.inject({

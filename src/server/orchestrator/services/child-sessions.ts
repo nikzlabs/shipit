@@ -504,6 +504,24 @@ export async function spawnChildSession(
     if (childAgentId !== parentAgentId) return {};
     applyModelRetirement(sessionManager, parent, parentAgentId);
     const fresh = sessionManager.get(parentSessionId) ?? parent;
+    // planning#304 — the cross-backend guard runs on the RESOLVED pair, not only
+    // on the flags the caller passed. The harness-switch rule above covers the
+    // ordinary case; this covers the one it cannot see: a parent row whose
+    // `agentId` names one harness while its `model` names another's catalogue.
+    // Inheritance copies that row verbatim, so the incoherence is handed to the
+    // child's first turn — the pair the explicit `--model` + `--agent` check
+    // above rejects outright, reconstructed by inheritance. The
+    // parent's own row is not repaired here: this is the spawn boundary, the
+    // parent may be mid-turn on it, and healing another session's selection from
+    // a child spawn is a write nobody asked for.
+    //
+    // DROPPED, not rejected: the caller passed no model, so there is nothing for
+    // them to fix and a 400 would fail a spawn that has a right answer — an empty
+    // row, i.e. the child harness's default. The same rule the reasoning level
+    // below already follows. An unlisted id (`owner === undefined`) still passes
+    // through, for the forward-compat reason stated at the explicit check.
+    const owner = agentIdForModel(fresh.model);
+    if (owner && owner !== childAgentId) return {};
     return {
       ...(fresh.model ? { model: fresh.model } : {}),
       ...(fresh.serviceId ? { serviceId: fresh.serviceId } : {}),
