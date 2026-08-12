@@ -157,7 +157,9 @@ export function usePreviewHealthPoller(params: UsePreviewHealthPollerParams): vo
     setSlot,
   } = params;
 
-  // eslint-disable-next-line no-restricted-syntax -- existing usage
+  // The ref-in-cleanup warning does not apply: `pollingRef` holds a Map owned
+  // by the hook, not a DOM node, so deleting this key at cleanup is correct.
+  // eslint-disable-next-line no-restricted-syntax -- existing usage; hook-owned Map, see above
   useEffect(() => {
     if (!activeSlotKey || !activePort || !preview?.running || !pollUrl) return;
 
@@ -240,6 +242,7 @@ export function usePreviewHealthPoller(params: UsePreviewHealthPollerParams): vo
     void poll();
     return () => {
       state.cancelled = true;
+      // eslint-disable-next-line react-hooks/exhaustive-deps -- `pollingRef` holds a hook-owned Map, not a DOM node, so deleting this key at cleanup is correct
       pollingRef.current.delete(key);
     };
   }, [activeSlotKey, activePort, sessionId, preview?.running, preview?.url, pollUrl, isContainerMode, apiHost, apiProtocol, promoteSlot, setSlot, preview, createdSlotsRef, pollingRef]);

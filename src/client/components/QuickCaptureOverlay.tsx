@@ -98,9 +98,14 @@ export function QuickCaptureOverlay({
   // `open` is in the deps so the value is re-read from localStorage on every
   // opening — a send earlier in this page session must be reflected without a
   // reload.
+  // `open` reads as an unnecessary dependency because it is not referenced in
+  // the body — that is the point: `getSavedQuickSessionRepo()` reads
+  // localStorage, which React cannot track, so `open` is the deliberate
+  // cache-buster that re-reads it on each opening.
   const lastQuickSessionRepo = useMemo(() => {
     const saved = getSavedQuickSessionRepo();
     return saved && repos.some((r) => r.url === saved) ? saved : undefined;
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- `open` is unreferenced by design — it re-reads a non-reactive localStorage value on each opening (see above)
   }, [repos, open]);
   const defaultRepoUrl = lastQuickSessionRepo ?? activeSessionRepo ?? activeRepoUrl ?? repos[0]?.url;
   const effectiveRepoUrl = selectedRepoUrl ?? defaultRepoUrl;

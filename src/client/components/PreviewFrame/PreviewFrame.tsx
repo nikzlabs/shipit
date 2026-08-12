@@ -544,6 +544,9 @@ export function PreviewFrame({
   // Keep every mounted page informed when its ShipIt surface becomes visible
   // or hidden. Background slots remain alive by design, so CSS alone is not a
   // sufficient lifecycle signal for audio, animation, or automatic work.
+  // `iframeRefs` is a ref (stable) and `drainPendingReady` is only invoked, never
+  // captured — the effect must fire on slot/visibility changes, not on either
+  // identity, so both stay out of the deps.
   // eslint-disable-next-line no-restricted-syntax -- synchronize cooperative child visibility with iframe-pool state
   useEffect(() => {
     drainPendingReady();
@@ -557,6 +560,7 @@ export function PreviewFrame({
         visible: key === activeSlotKey && !hideIframe,
       }, expectedOrigin);
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- `iframeRefs` is a ref and `drainPendingReady` is only invoked; this must fire on slot/visibility changes, not on either identity
   }, [activeSlotKey, hideIframe, slotOrder, slots]);
 
   // Determine overlay content for the main area

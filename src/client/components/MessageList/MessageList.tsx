@@ -1,9 +1,9 @@
-import { Fragment, useMemo, useDeferredValue } from "react";
+import { Fragment, useMemo, useDeferredValue, type ReactNode } from "react";
 import { TodoPanel } from "../TodoPanel.js";
 import { isTaskListTool } from "../../../server/shared/task-list-tools.js";
 import { CircleNotchIcon } from "@phosphor-icons/react";
 import type { SearchMatch } from "../../hooks/useSearch.js";
-import { buildVisualElements } from "../visual-elements.js";
+import { buildVisualElements, type VisualElement } from "../visual-elements.js";
 import { RewindPoint, type RewindGapAction } from "../RewindPoint.js";
 import type { WsRewindPreview, ReleaseMechanism } from "../../../server/shared/types.js";
 import { isPlanDocumentWrite } from "../../../server/shared/transcript-input-policy.js";
@@ -30,6 +30,38 @@ import type { TrackerId } from "../../../server/shared/types.js";
 function defaultSessionNameFor(value: string): string {
   const cleaned = value.trim().replace(/\s+/g, " ").slice(0, 80);
   return cleaned || "Fork from here";
+}
+
+/** The message a visual element is anchored to (elements come out in transcript order). */
+function elementMessageIndex(el: VisualElement): number {
+  if (el.kind === "message") return el.index;
+  if (el.kind === "tool-group") return el.messageIndices[0] ?? 0;
+  return el.messageIndex;
+}
+
+/**
+ * docs/178 — insert the transient "Compacting…" row at the transcript position
+ * the compaction started at, rather than appending it after everything.
+ *
+ * The indicator used to render after the whole list, so a message the user sent
+ * while the compaction was still running (steered into the live turn, or
+ * optimistically shown in the window before the server queues it) appeared
+ * ABOVE the spinner — reading as if the compaction had started after it. The
+ * anchor is the message count captured when `compacting` went true, so every
+ * later message sorts below the spinner.
+ *
+ * A `null` anchor (or one past the end) keeps the old end-of-list placement.
+ */
+function withCompactingIndicator(
+  nodes: ReactNode[],
+  elements: VisualElement[],
+  anchor: number | null,
+  indicator: ReactNode,
+): ReactNode[] {
+  if (!indicator) return nodes;
+  const found = anchor === null ? -1 : elements.findIndex((el) => elementMessageIndex(el) >= anchor);
+  const at = found === -1 ? nodes.length : found;
+  return [...nodes.slice(0, at), indicator, ...nodes.slice(at)];
 }
 
 export function MessageList({
@@ -124,7 +156,7 @@ export function MessageList({
   );
   const messages = deferred.messages;
 
-  const { containerRef, currentMatchRef } = useMessageScroll(messages, isLoading, currentMatch);
+  const { containerRef, contentRef, currentMatchRef } = useMessageScroll(messages, isLoading, currentMatch);
 
   const voicePlaybackEnabled = useSettingsStore((s) => s.voicePlaybackEnabled);
   // docs/178 — transient "Compacting…" indicator (emit-only; not persisted).
@@ -132,6 +164,7 @@ export function MessageList({
   // Cancel targets it.
   const activeSessionId = liveSessionId;
   const compacting = useSessionStore((s) => s.compacting);
+  const compactingAnchor = useSessionStore((s) => s.compactingAnchor);
   // docs/144 — transient sub-agent spawn chips (emit-only; not persisted).
   const subAgentSpawns = useSessionStore((s) => s.subAgentSpawns);
 
@@ -258,18 +291,46 @@ export function MessageList({
     );
   };
 
+  const visualElements = useMemo(() => buildVisualElements(messages), [messages]);
+
+  // Gate on isLoading: a compaction only ever runs mid-turn, so the transient
+  // "Compacting…" indicator should never outlive the turn. This backstops any
+  // path that leaves the global `compacting` flag stuck true after the turn
+  // ended (e.g. a reconnect that replayed a buffered `compaction_status
+  // active:true` without a balancing clear).
+  const compactingIndicator =
+    compacting && isLoading ? (
+      <div key="compacting-indicator" className="flex justify-start" data-testid="compacting-indicator">
+        <div className="flex items-center gap-2 rounded-lg border border-(--color-border-primary) bg-(--color-bg-tertiary) px-3 py-2 text-xs text-(--color-text-secondary)">
+          <CircleNotchIcon size={14} className="animate-spin text-(--color-text-tertiary)" />
+          Compacting context…
+        </div>
+      </div>
+    ) : null;
+
   return (
     <ShipitPointerSessionProvider value={deferred.sessionId ?? null}>
     <div
       ref={containerRef}
-      className="flex-1 min-h-0 overflow-y-auto px-3 sm:px-6 py-3 sm:py-4 space-y-3 sm:space-y-2 [&>*]:[content-visibility:auto] [&>*]:[contain-intrinsic-size:auto_5rem]"
+      className="flex-1 min-h-0 overflow-y-auto px-3 sm:px-6 py-3 sm:py-4"
+    >
+    {/* The messages live in their own element rather than directly in the
+        scroll container, so that one ResizeObserver on it reports every change
+        in the transcript's height — the scroll container's own box never
+        changes when its content grows. `useMessageScroll` uses that to stay
+        pinned to the bottom while a message paints; see the hook. The spacing
+        and content-visibility utilities move with the messages, so the elements
+        they apply to are unchanged. */}
+    <div
+      ref={contentRef}
+      className="space-y-3 sm:space-y-2 [&>*]:[content-visibility:auto] [&>*]:[contain-intrinsic-size:auto_5rem]"
     >
       {/* planning#12 — floating "Reply" button shown when the user highlights text
           inside a message bubble; quotes the passage into the composer. Scoped
           to this scroll container via the ref so it never fires on the composer
           or other panels. */}
       <ChatQuoteReply containerRef={containerRef} />
-      {buildVisualElements(messages).map((el) => {
+      {withCompactingIndicator(visualElements.map((el) => {
         // ── The agent's to-do list, folded from its task calls (task-list.ts) ──
         if (el.kind === "task-panel") {
           return (
@@ -497,21 +558,7 @@ export function MessageList({
             )}
           </Fragment>
         );
-      })}
-
-      {/* Gate on isLoading: a compaction only ever runs mid-turn, so the
-          transient "Compacting…" indicator should never outlive the turn. This
-          backstops any path that leaves the global `compacting` flag stuck true
-          after the turn ended (e.g. a reconnect that replayed a buffered
-          `compaction_status active:true` without a balancing clear). */}
-      {compacting && isLoading && (
-        <div className="flex justify-start" data-testid="compacting-indicator">
-          <div className="flex items-center gap-2 rounded-lg border border-(--color-border-primary) bg-(--color-bg-tertiary) px-3 py-2 text-xs text-(--color-text-secondary)">
-            <CircleNotchIcon size={14} className="animate-spin text-(--color-text-tertiary)" />
-            Compacting context…
-          </div>
-        </div>
-      )}
+      }), visualElements, compactingAnchor, compactingIndicator)}
 
       {/*
         planning#280 — the durable pending consult card (inline, at the call site) is
@@ -526,6 +573,7 @@ export function MessageList({
         ))}
 
       {!isLoading && messages.length > 0 && renderRewindPoint(messages.length, true)}
+    </div>
     </div>
     </ShipitPointerSessionProvider>
   );

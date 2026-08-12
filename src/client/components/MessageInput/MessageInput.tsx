@@ -256,6 +256,10 @@ export function MessageInput({
     // is its own short-lived surface and never "switches" underneath itself.
     sessionId: isOverlay ? "overlay" : sessionId,
   });
+  // Destructured so the effects below can depend on the individual callbacks
+  // rather than the whole `voice` object — both are `useCallback`s with stable
+  // identities, so an effect keyed on them wires up exactly once.
+  const { onTranscript, cancelRecording } = voice;
 
   // docs/144 — whether the draft currently in the composer contains dictated
   // text. Set when a transcript is spliced in, cleared on send and whenever the
@@ -272,7 +276,7 @@ export function MessageInput({
   // live textarea so dictation stitches into partially-typed text.
   // eslint-disable-next-line no-restricted-syntax -- transcript subscription with cleanup
   useEffect(() => {
-    return voice.onTranscript((transcript) => {
+    return onTranscript((transcript) => {
       const ta = textareaRef.current;
       setDraftDictated(true);
       setText((prev) => {
@@ -292,17 +296,21 @@ export function MessageInput({
         return res.value;
       });
     });
-  }, [voice.onTranscript]);
+  }, [onTranscript]);
 
   // docs/257 req 3 — the install can lose its last credential mid-recording
   // (another tab signs out). Dropping the hotkey listeners does not stop a
   // capture already running, and its transcript would land in a hidden draft.
   // eslint-disable-next-line no-restricted-syntax -- abort an external capture when the composer dies under it
   useEffect(() => {
-    if (inert) voice.cancelRecording();
-  }, [inert]);
+    if (inert) cancelRecording();
+  }, [inert, cancelRecording]);
 
   // Mode B: when the overlay was opened via the voice hotkey, auto-start mic.
+  // `voice.startRecording` is deliberately not a dependency: unlike the other
+  // voice callbacks its identity changes with the recorder's own `state`, so
+  // depending on it would re-run this arm-the-mic effect on every transition
+  // of the recording it just started. Keyed on the open/eligibility inputs only.
   // eslint-disable-next-line no-restricted-syntax -- one-shot auto-start on overlay open
   useEffect(() => {
     if (!isOverlay) return;
@@ -315,6 +323,7 @@ export function MessageInput({
       if (!inert) voice.startRecording();
       useUiStore.getState().setQuickCaptureAutoMic(false);
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- `voice.startRecording`'s identity changes with the recorder's own state, so depending on it would re-run this one-shot arm-the-mic effect mid-recording
   }, [isOverlay, quickCaptureAutoMic, voiceInputEnabled, inert]);
 
   // Per-session draft persistence: remember/restore typed text across session

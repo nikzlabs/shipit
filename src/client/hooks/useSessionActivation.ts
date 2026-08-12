@@ -47,8 +47,10 @@ export function useSessionActivation(params: {
   const claimAbortRef = useRef<AbortController | null>(null);
   const previousNewSessionRouteRef = useRef<string | undefined>(undefined);
 
-  // Initialize sessionId from URL on mount
-  // eslint-disable-next-line no-restricted-syntax -- existing usage
+  // Initialize sessionId from URL on mount. Mount-only by design: the URL→store
+  // sync for every later change is the separate effect below, and re-running
+  // this one would re-open the templates panel mid-session.
+  // eslint-disable-next-line no-restricted-syntax -- existing usage; mount-only, see above
   useEffect(() => {
     if (urlSessionId) {
       useSessionStore.getState().setSessionId(urlSessionId);
@@ -56,6 +58,7 @@ export function useSessionActivation(params: {
     if (!urlSessionId && !isNewSessionRoute) {
       useUiStore.getState().setShowTemplates(true);
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-only by design — the URL->store sync for later changes is the separate effect below (see above)
   }, []);
 
   // Sync session state with the URL. Keep `sessionId` in the dependency list:

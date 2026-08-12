@@ -320,3 +320,27 @@ Fix (client-side, no server/connect-contract change):
 for idle runners; that broke the "`preview_status` is the last synchronous
 connect message" sentinel contract several integration tests rely on, so the fix
 moved entirely client-side.)
+
+## Fix (2026-08-12): "Compacting…" rendered below a message sent during the compaction
+
+Symptom (user-reported): send `/compact`, then immediately send another message
+while the compaction is still running — the "Compacting context…" row appears
+*below* the new message, reading as if the compaction had started after it. The
+server handles the ordering correctly (the message is steered into the live turn
+or queued behind it); only the transcript's visual order was wrong.
+
+Cause: the indicator was rendered after the whole message list, so any message
+appended later — a steered one, or the optimistic bubble in the window before
+`message_queued` removes it — sorted above it. The spinner had no transcript
+position of its own.
+
+Fix (client-only): the indicator now has an anchor.
+`SessionState.compactingAnchor` records `messages.length` at the moment
+`compacting` goes true (captured inside `setCompacting`, so every path gets it;
+a repeated `active:true` from a reconnect replay keeps the original anchor), and
+`MessageList` splices the indicator into the rendered element stream at that
+position via `withCompactingIndicator` instead of appending it. A `null` anchor
+falls back to the old end-of-list placement. Key files:
+`src/client/stores/session-store.ts`, `src/client/components/MessageList/MessageList.tsx`.
+Tests: `MessageList.test.tsx` ("compacting indicator placement"),
+`message-handlers/compaction.test.ts` (anchor capture / replay / clear).

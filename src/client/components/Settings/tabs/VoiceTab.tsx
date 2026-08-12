@@ -112,11 +112,12 @@ export function VoiceTab() {
     }
   };
 
-  // eslint-disable-next-line no-restricted-syntax -- one-shot status fetch on mount
+  // eslint-disable-next-line no-restricted-syntax -- one-shot status fetch on mount; the refresh fns are re-created each render and must not re-trigger it
   useEffect(() => {
     void refreshKeyStatus();
     void refreshCleanupStatus();
     void refreshWebhookStatus();
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- one-shot status fetch on mount; the refresh fns are re-created each render and must not re-trigger it
   }, []);
 
   const onDeliveryModeChange = async (mode: "native" | "external" | "both") => {

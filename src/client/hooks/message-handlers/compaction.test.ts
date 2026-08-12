@@ -32,8 +32,10 @@ const status = (active: boolean): WsCompactionStatus => ({
 });
 
 beforeEach(() => {
-  useSessionStore.setState({ messages: [], compacting: false });
+  useSessionStore.setState({ messages: [], compacting: false, compactingAnchor: null });
 });
+
+const userMsg = (text: string) => ({ role: "user" as const, text });
 
 describe("handleCompactionStatus (docs/178)", () => {
   it("flips the transient compacting flag", () => {
@@ -41,6 +43,34 @@ describe("handleCompactionStatus (docs/178)", () => {
     expect(useSessionStore.getState().compacting).toBe(true);
     handleCompactionStatus(ctx, status(false));
     expect(useSessionStore.getState().compacting).toBe(false);
+  });
+
+  it("anchors the indicator to the transcript position the compaction started at", () => {
+    useSessionStore.setState({ messages: [userMsg("/compact")] });
+
+    handleCompactionStatus(ctx, status(true));
+    expect(useSessionStore.getState().compactingAnchor).toBe(1);
+
+    // A message sent while the compaction runs must not move the anchor — it
+    // belongs below the spinner, not above it.
+    useSessionStore.getState().setMessages((prev) => [...prev, userMsg("go ahead with phase 1")]);
+    expect(useSessionStore.getState().compactingAnchor).toBe(1);
+  });
+
+  it("keeps the original anchor when a buffered active:true is replayed after a reconnect", () => {
+    useSessionStore.setState({ messages: [userMsg("/compact")] });
+    handleCompactionStatus(ctx, status(true));
+    useSessionStore.getState().setMessages((prev) => [...prev, userMsg("go ahead with phase 1")]);
+
+    handleCompactionStatus(ctx, status(true));
+
+    expect(useSessionStore.getState().compactingAnchor).toBe(1);
+  });
+
+  it("clears the anchor when the compaction ends", () => {
+    handleCompactionStatus(ctx, status(true));
+    handleCompactionStatus(ctx, status(false));
+    expect(useSessionStore.getState().compactingAnchor).toBeNull();
   });
 });
 
