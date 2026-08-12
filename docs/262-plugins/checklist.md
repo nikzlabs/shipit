@@ -5,7 +5,7 @@ Design phase (this slice):
 - [x] Consumer declaration format (`plugins:` in shipit.yaml) — plan.md §1a
 - [x] Plugin manifest format (`exports.plugins:`) — plan.md §1b
 - [x] In-session usage contract (paths, env, CLI surface, refresh, feedback) — plan.md §2
-- [x] UI surfaces mapped to existing components, with committed prototypes (mockup.html A–C) — plan.md §3
+- [x] UI surfaces mapped to existing components, with committed prototypes (mockup.html services panel; mockup-plugins-tab.html right-rail tab) — plan.md §3
 - [x] Apply independent design-review findings (12 correctness, 2 simplification bundles — resolutions on planning#355)
 
 Next design slice (server mechanics):

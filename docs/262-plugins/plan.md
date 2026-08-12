@@ -8,10 +8,13 @@ description: The shipit.yaml formats on both sides of the plugin edge, and the U
 
 Implements [requirements.md](requirements.md) (26 requirements; cited as
 `(req N)`). This design slice covers **how plugins are declared and used**
-and **every UI change**, with committed prototypes in [mockup.html](mockup.html).
-Server mechanics are the next slice — see `checklist.md`. An independent
-design review (adversarial + simplification passes) ran on 2026-08-12; its
-accepted findings are folded in below and recorded on planning#355.
+and **every UI change**, with committed prototypes in
+[mockup.html](mockup.html) (services panel) and
+[mockup-plugins-tab.html](mockup-plugins-tab.html) (the Plugins tab).
+Server mechanics are the next slice — see `checklist.md`. Independent design
+reviews (adversarial + simplification passes) ran on 2026-08-12; accepted
+findings are folded in below and recorded on planning#355, alongside the
+user-directed revisions (repos+use syntax; the right-rail Plugins tab).
 
 ## 1. The two sides of the edge
 
