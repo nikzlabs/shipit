@@ -126,9 +126,11 @@ receipts below keep the original "tools" vocabulary of the early rounds.
     plugin itself, so a plugin can decide whether a version change
     invalidates caches it keeps, instead of assuming it does.
 16. Plugin services follow the same start, health, preview, stop, and
-    session-disposal behavior as equivalent same-repo services. Only services
-    the plugin repository marks for automatic startup run automatically; the
-    rest start on demand.
+    session-disposal behavior as equivalent same-repo services. A plugin
+    declares whether its services start automatically; services not marked
+    automatic start on demand. The consuming project's declaration can
+    override that choice per service — starting a manual service
+    automatically, or keeping an automatic one manual.
 17. A plugin is not necessarily a web preview only — it may ship a
     **companion CLI**. The agent can run that CLI inside the project session
     to modify things programmatically. The CLI and the plugin's UI work on
@@ -234,7 +236,10 @@ and quoted historical material below keeps that vocabulary.
 
 ## Open questions
 
-(None.)
+- **Plugin feedback channel.** How does the agent (or the user) in a project
+  session report a bug or a limitation in a plugin, given that the plugin
+  checkout is read-only (req 7)? V1 candidate: file an issue on the plugin's
+  own repository from within the session.
 
 ## Resolved questions
 
@@ -328,3 +333,7 @@ and quoted historical material below keeps that vocabulary.
   Out-of-scope MCP bullet updated; (c) the naming doctrine softened — a
   tool's core **could** stay host-agnostic; that choice belongs to the tool
   author, and nothing in the spec requires it.
+- **2026-08-12 — Service startup override** (doc review). Answer, stated
+  directly by the user: a plugin declares whether its services start
+  automatically, and the consuming repository can override it. → req 16
+  amended.
