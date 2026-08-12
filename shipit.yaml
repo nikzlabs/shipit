@@ -23,6 +23,39 @@ issues:
       # `name` is the address (`planning#42`); `label` is what the Issues tab
       # shows. Without it the tab would render the lower-case slug.
       label: Planning
+# docs/262 — plugin repositories. Both blocks are the feature's live fixture
+# (test-plugin/README.md): ShipIt exports one deliberately tiny plugin and
+# declares it back into itself with `repo: self`, so the repo that implements
+# the feature also dogfoods it. Slice-2 parsing will read these; until then the
+# keys are reserved (known-but-ignored) in shipit-config.ts.
+exports:
+  plugins:
+    probe:
+      compose: test-plugin/docker-compose.yml
+      cli:
+        probe: test-plugin/cli/probe.mjs
+      skills: test-plugin/skills
+      install: node test-plugin/install.mjs
+      install-inputs: [test-plugin/install.mjs]
+      credentials: [PROBE_TOKEN]
+      hosts: [example.com]
+      settings:
+        greeting:
+          description: Text the probe service and CLI echo back
+          default: hello from the probe
+plugins:
+  repos:
+    - repo: self
+      name: shipit-dev
+  use:
+    - plugin: probe
+      from: shipit-dev
+      overrides:
+        services:
+          probe:
+            # The dev service is this repo's primary preview; the probe UI is
+            # started on demand (and exercises the req 16 consumer override).
+            autostart: false
 # Release auto-publish (docs/214): ShipIt cuts releases by merging a version-bump
 # PR into the `stable` maintenance branch. On merge, .github/workflows/release.yml
 # derives the tag `v<package.json version>`, gates on a green build, tags the

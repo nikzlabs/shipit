@@ -14,7 +14,7 @@ Next design slice (server mechanics):
 - [ ] Generation staging/activation: stage → validate → install → prepare → atomic swap; old-generation semantics for concurrent CLI calls (reqs 12, 15)
 - [ ] Per-plugin per-session shared state directory, mounted into services and exposed to CLIs (reqs 17, 18)
 - [ ] Published-port stability per (session, service) so the preview origin survives a fragment port edit (req 18)
-- [ ] Compose-fragment merging + security validation of plugin services (reqs 3, 5, 16, 20)
+- [ ] Compose-fragment merging + security validation of plugin services, preserving fragment-relative path resolution (paths resolve against the fragment's directory in the checkout — set by the fixture) (reqs 3, 5, 16, 20)
 - [ ] Agent refresh transport: `shipit plugin` shim → worker agent-ops relay → orchestrator, with guard tests (req 12; orchestrator routes are container-denied)
 - [ ] Egress execution-surface semantics: host satisfaction is agent-container truth today (services are unconfined, docs/172); decide whether plugin services get their own containment (req 24)
 - [ ] Credential name resolution + `secrets_status` plugin grouping (req 23)
@@ -30,7 +30,8 @@ Next design slice (server mechanics):
 
 Verification (plan.md §5 — drives the implementation):
 
-- [ ] Test plugin exported by the ShipIt repo itself: one tiny service, one CLI, one skill, one setting, one credential name, one host — exercised via TWO fixtures: self-declared (`repo: self`, live path) and consumer-declared by `owner/name` (checkout/generation/refresh path)
+- [x] Test plugin authored (`test-plugin/`): one tiny service, one CLI, one skill, one setting, one credential name, one host — every export a self-reporting probe; manifest + `repo: self` declaration live in this repo's shipit.yaml; `plugins`/`exports` reserved in shipit-config.ts with a guard test
+- [ ] Test plugin exercised via TWO fixtures once slice 2 lands: self-declared (`repo: self`, live path — no `SHIPIT_PLUGIN_COMMIT`) and consumer-declared by `owner/name` (checkout/generation/refresh path — commit set, `install.matchesActiveCommit: true`)
 - [ ] Dogfood everything but services in the inner instance (`RUNTIME_MODE=local` skips Docker): parsing, tab, needs, CLI wrappers, skills via the self fixture; generations + refresh relay via the consumer fixture — including admitting the relay in local mode's explicit agent-ops route allowlist (`local-agent-ops.ts`) with the parity test extended
 - [ ] Service path via integration tests (isTestMode fakes): fragment merge, per-service startup/overrides, origin on service messages, collision failures
 - [ ] One real-instance end-to-end: plugin service + preview + `window.shipit` interaction

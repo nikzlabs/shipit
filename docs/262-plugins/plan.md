@@ -148,13 +148,32 @@ exports:
 
 The manifest is versioned with the repo, so a refresh (req 12) can change it;
 parsing is fail-closed per plugin with the generation rule above (req 13).
+Ahead of the parser, `plugins` and `exports` are **reserved top-level keys** in
+`shipit-config.ts` (known-but-ignored), so a repo already carrying the
+declaration — this repo's own fixture — doesn't render a migration warning.
+
+**Fragment paths** (set by the fixture): relative paths in the compose
+fragment resolve against the fragment's own directory inside the checkout
+(through the writable layer), never against the consuming project. That is
+how the fragment behaves standalone (`docker compose up` in its own
+directory) — but it is **not** what compose's multi-file merge does, which
+resolves relative paths from the base file. Slice 2 must therefore
+deliberately preserve per-fragment resolution: compose `include` semantics,
+or rebasing the fragment's paths before merging (review finding, this
+round).
+ShipIt-injected pieces (`/project`, the state dir, the `SHIPIT_*` env) are
+deliberately not declared in the fragment, so it stays valid for a plain
+`docker compose up` and the plugin can degrade its report gracefully.
 
 **Install contract** (review finding 7): `install` runs with **cwd = the
 plugin's checkout root inside its writable layer** — a copy-on-write layer
 over the read-only checkout, so `node_modules` and build output land in the
 layer, never in the checkout and never in the project (req 7). Writes outside
-the layer fail. Install re-runs when its stamped inputs change: the plugin
-commit, the install string, or the content of the manifest's
+the layer fail. Install runs with the generation's env — `SHIPIT_PLUGIN_COMMIT`
+set for a consumer generation, unset under `repo: self` (set by the fixture:
+its install stamp records the commit, and the probe checks the stamp against
+the active generation). Install re-runs when its stamped inputs change: the
+plugin commit, the install string, or the content of the manifest's
 `install-inputs` files (the same convention `agent.install` already uses).
 
 ## 2. How a plugin is used inside a session
@@ -167,8 +186,10 @@ commit, the install string, or the content of the manifest's
   run in the agent container with **cwd = the project workspace**, which
   keeps cwd-addressed tools (the requirements tool) working unchanged.
 - **Shared plugin state** (reqs 17, 18 — review finding 2): each imported
-  plugin (keyed by `alias`) gets a per-session **state directory**, mounted read-write into its
-  service containers and exposed to its CLIs, surviving service restarts,
+  plugin (keyed by `alias`) gets a per-session **state directory**, mounted
+  read-write into its service containers at **`/plugin-state`** and named by
+  **`SHIPIT_PLUGIN_STATE`** on both surfaces (concrete names set by the
+  fixture), surviving service restarts,
   refreshes, and container restarts, deleted with the session. This is the
   home of "same live state" between a CLI and a UI that is neither project
   data nor plugin source. Related mechanic for slice 2: a plugin service's
@@ -176,10 +197,15 @@ commit, the install string, or the content of the manifest's
   tracked commit edits the fragment's port, because the preview origin is
   port-derived and req 18 guarantees origin stability.
 - **Env**: `SHIPIT_PROJECT_DIR`, `SHIPIT_PLUGIN_COMMIT` (per declared repo;
-  req 15 — the commit readable by the plugin itself), and `SHIPIT_SETTINGS`
+  req 15 — the commit readable by the plugin itself; **unset under
+  `repo: self`**, since a live tree corresponds to no exact commit — this is
+  also how the fixture discriminates its two modes), and `SHIPIT_SETTINGS`
   — the path to one validated JSON file with the imported plugin's setting
   values, keyed by its `alias` (req 26; a per-setting env grammar was
-  reviewed out as collision-prone). CLI wrappers use absolute entrypoints,
+  reviewed out as collision-prone). **Both surfaces get the same env names**
+  (set by the fixture): for a CLI the paths are agent-container paths; for a
+  service ShipIt mounts the settings file into the container and points the
+  env at the mount. CLI wrappers use absolute entrypoints,
   so no plugin-dir variable is needed.
 - **CLIs** (reqs 17, 20, 23): exported commands go on the agent's PATH as
   generated wrappers. A wrapper injects the plugin's declared credentials
@@ -292,7 +318,11 @@ coherent in one UI.
 The implementation is driven by a **test plugin exported by the ShipIt repo
 itself** — a deliberately small export with one tiny service, one CLI, one
 skill, one declared setting, one declared credential name, and one declared
-host — exercised through **two fixtures**, because self-use deliberately has
+host. **It exists**: [`test-plugin/`](../../test-plugin/README.md), with the
+manifest and the `repo: self` declaration live in this repo's `shipit.yaml`.
+Each export is a *probe* that reports which contract pieces it received, so a
+regression shows as a changed report field. It is exercised through **two
+fixtures**, because self-use deliberately has
 no checkout, generations, or refresh (req 27) and therefore cannot dogfood
 them: (a) **self-declared** (`repo: self`) for the live-working-tree path,
 and (b) **consumer-declared** — the inner instance declaring the test

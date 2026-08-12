@@ -217,6 +217,12 @@ const KNOWN_TOP_LEVEL_KEYS = new Set([
   "release",
   "issues",
   "x-shipit-host-mounts",
+  // docs/262 — reserved for plugin repositories: the consumer `plugins:` block
+  // and the plugin-side `exports:` manifest. Parsing lands with slice 2; until
+  // then the keys are known-but-ignored so a repo carrying the declaration
+  // (this repo's own test-plugin fixture) doesn't render a migration warning.
+  "plugins",
+  "exports",
 ]);
 const KNOWN_AGENT_KEYS = new Set(["install", "dep-dirs", "install-inputs"]);
 
