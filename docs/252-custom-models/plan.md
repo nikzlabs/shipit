@@ -3052,6 +3052,88 @@ font size suggests (the link is inline, so its line box is 16). It is keyed off
 the dialog opened short on a line of prose and then grew by the height of a panel. Measured
 live, step 3 is 326px from its first frame and does not move when the code lands.
 
+## The compact card (reqs 19, 20, 21)
+
+Agreed from a mock-up before any of it was written (`/persist/services-compact-prototype.html`),
+in the order the earlier round proved cheaper: draw it, agree it, then write it.
+
+**The measurement that started it.** In the dogfood instance at 470px wide, the Anthropic
+subscription card is **272px** and holds **39px** of credential; the DeepSeek key card is
+**148px** and holds the same 39px. The rest is a description sentence (32px), an account
+empty-state box (42px), a sentence about environment variables (48px) and a row of model-id
+chips that grows with the catalogue. Compact, both cards are **~74px**: a header line and the
+credential.
+
+**What goes, and why each one is not merely verbose.**
+
+- *"Connect one or more subscriptions. ShipIt fails over between them when one runs out."* and
+  *"Metered — no quota to report, so this card shows no usage."* — neither says anything about
+  *this* install. The failover rule is stated by the routing band, which appears only when
+  there is something to route between; the metered fact is the **API key** pill.
+- *"No {service} subscription connected. Add one with Add a service."* — printed **above a
+  connected credential** of that same service whenever a card holds a supplied key and no
+  account. Its docstring assumed the only way to reach it was a notice holding an empty card
+  open, which stopped being true when the two delivery shapes became one card.
+- *"Supplied by an environment variable, and used only while no account above is connected —
+  ShipIt does not move onto it when the accounts run out."* — the first clause is **false**: the
+  panel renders it for every `via: "string"` row on an account-backed card, and those rows are
+  ordinary stored credentials with no recorded provenance. The rows that prompted the report
+  were added by hand through the dialog. The second clause is true and is reqs 12/13; it does
+  not need printing on every card to stay true.
+- **The model-id chip row** — moved, not deleted. It becomes a `N models` control in the card's
+  top-right corner naming them on hover (the human's placement).
+
+**A row is `label · quota · ⋯`, whatever it holds.** The account row loses the permanently
+mounted rename input (most of its 120px), the account UUID line, the status pill and three
+ghost buttons; status becomes a dot, and Rename / Reconnect / Disconnect move into the `⋯`
+menu. A supplied-key row gets the same menu — Rename / Replace secret / Remove — so both row
+types read the same. **Rename on a key row is new**: `PATCH /api/credential-routes/:id` has
+always accepted a label patch, and nothing reaches it after the credential is added.
+
+**Quota is `SubscriptionLimitPill`, not a new readout.** The header's pill is already keyed by
+*route id*, already carries both windows, the elapsed-time marker, the staleness dimming and
+Anthropic's refresh button. The one change it needs is `label` becoming optional: in the header
+it must name its account, in a row the row already does. A key reports no quota, so a key row
+has no pill and nothing explains the absence.
+
+**Ordering is drag-and-drop, and `Make primary` goes (req 21).** "Primary" was never a property.
+`isPrimary` is stamped on read from position (`orderCredentialRoutes`, `index === 0`), every
+writer stores `false`, and the endpoint behind the button is `reorder([this, …rest])`. Its only
+live readers are the button, its disabled guard, and two badges; `backfillPriority` reads the
+derived value once at boot and keeps working. So `POST /api/provider-accounts/:provider/:id/primary`,
+`makePrimaryProviderAccount` and `ProviderAccountManager.makePrimary` are deleted with the
+button — no other caller exists — and the field stays on the wire with no UI consumer.
+
+**Reconnect opens the add-service dialog on its sign-in step, targeted at that account.** Today
+it posts `/login` for the existing row and renders `AccountChallenge` inline in the card, which
+returns `null` until the auth URL arrives — so between the click and the URL the row shows
+nothing at all. That is the same "it looks stuck" gap the dialog's step 3 was built to close,
+and the fix is to have one sign-in surface rather than a second, poorer copy: the waiting
+skeleton, the CLI output buffer, the code field and the failure state all exist there already,
+and the dialog can host an existing account by id (`signInAccountId`). The row's inline
+challenge is deleted with it. **The one thing to pin with a test: cancelling a reconnect must
+not remove the account.** The dialog abandons an attempt *it* created; a connected account is
+not an attempt (`isUnconnectedAttempt` is false once it has an `externalId`), so cancel must
+leave it connected and in the same position in the order.
+
+**Environment-delivered credentials are adopted, not special-cased (req 20).** Today a
+deployment's `ANTHROPIC_AUTH_TOKEN` produces no row: `listCredentialRoutes` returns stored rows
+only, and `stringSelectionFor` reaches the variable solely as a last resort when nothing is
+stored (`service-routing.ts`) — so it is invisible in Settings and cannot be renamed, reordered
+or removed. It becomes an ordinary credential row at boot instead, which is what makes the
+dogfood instance representative of a real install. Three things this has to get right, none of
+them visible in the happy path:
+
+- **Rotation.** The stored copy is written once. A deployment that changes the variable later
+  has a stale copy, so adoption re-reads the variable on each boot and updates the secret of the
+  row it created — unless the user has since replaced it by hand, which wins.
+- **Deletion is a deletion.** The variable is still set after the user removes the row, so
+  adoption must remember the removal rather than re-import it on the next boot.
+- **The reserved route id.** `envRouteIdFor` maps the three legacy variables to ids that pinned
+  session rows already hold (`claude-env-oauth`, `claude-api-key`, `codex-api-key`), so an
+  adopted row keeps that id rather than minting a `cred_…` one, or every session pinned to it
+  is orphaned.
+
 ## Key files
 
 | File | Why it matters |

@@ -260,3 +260,16 @@ landed ahead of this checklist's per-phase sections.
       on the way: a live three-line tail below the box (the same output twice), then the
       collapsed buffer below the box (two places to look). The whole flow holds one height,
       measured live.
+
+## Compact services panel (reqs 19-21)
+
+- [ ] `ServiceCard` compact: header line only, `N models` control top-right with the ids on hover
+- [ ] Drop the per-card description prose, the account empty-state box on a card that holds a credential, and the environment-variable sentence
+- [ ] Credential row = `label · quota · ⋯`; `SubscriptionLimitPill` reused with `label` optional
+- [ ] `⋯` menu: Rename / Reconnect / Disconnect (account), Rename / Replace secret / Remove (key)
+- [ ] Rename for a supplied key (the label patch endpoint already exists)
+- [ ] Drag-and-drop ordering replaces the carets, for both row types
+- [ ] Delete `Make primary`: the button, both badges, `POST …/:id/primary`, `makePrimaryProviderAccount`, `ProviderAccountManager.makePrimary`
+- [ ] Reconnect opens the add-service dialog on its sign-in step; delete the row's inline challenge
+- [ ] Guard test: cancelling a reconnect leaves the account connected and in the same position
+- [ ] Adopt environment-delivered credentials into ordinary rows at boot (rotation, remembered deletion, reserved route ids)
