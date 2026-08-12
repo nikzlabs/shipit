@@ -14,7 +14,9 @@ import type { ResolvedEgressConfig } from "./egress-allowlist.js";
 import {
   buildTierAEgressInputs,
   installEgressFirewall,
+  allowEgressToSubnets,
 } from "./egress-firewall-install.js";
+import { extractNetworkSubnets } from "./egress-firewall.js";
 import {
   buildResolverConfigB64,
   launchEgressResolver,
@@ -42,6 +44,8 @@ export interface ContainComposeServicesOptions {
   labels?: Record<string, string>;
   orchestratorHost?: string;
   orchestratorPort?: string;
+  /** Replace live service resolver/proxy sidecars after an allowlist change. */
+  refresh?: boolean;
 }
 
 function egressNetworkName(sessionId: string): string {
@@ -74,14 +78,23 @@ async function ensureEgressNetwork(
 export async function containComposeServices(opts: ContainComposeServicesOptions): Promise<void> {
   if (!opts.config.contained) return;
   const parentLabel = `shipit-parent-session=${opts.sessionId}`;
-  const containers = await opts.docker.listContainers({ all: false, filters: { label: [parentLabel] } });
+  const containers = await opts.docker.listContainers({ all: true, filters: { label: [parentLabel] } });
   const serviceContainers = containers.filter((entry) =>
-    Boolean(entry.Labels?.["shipit-service-name"]) && !entry.Labels?.[EGRESS_RESOLVER_LABEL] && !entry.Labels?.[EGRESS_PROXY_LABEL]
+    entry.State === "running" && Boolean(entry.Labels?.["shipit-service-name"])
+      && !entry.Labels?.[EGRESS_RESOLVER_LABEL] && !entry.Labels?.[EGRESS_PROXY_LABEL]
   );
+  const liveServiceIds = new Set(serviceContainers.map((entry) => entry.Id));
+  for (const entry of containers) {
+    const parent = entry.Labels?.["shipit-egress-parent"];
+    if (!parent || liveServiceIds.has(parent)) continue;
+    try { await opts.docker.getContainer(entry.Id).remove({ force: true }); } catch { /* best-effort reap */ }
+  }
   if (serviceContainers.length === 0) return;
 
   const labels = { ...(opts.labels ?? {}), "shipit-parent-session": opts.sessionId };
   const network = await ensureEgressNetwork(opts.docker, opts.sessionId, labels);
+  const sessionNetwork = opts.docker.getNetwork(`shipit-session-${opts.sessionId}`);
+  const sessionSubnets = extractNetworkSubnets(await sessionNetwork.inspect());
   const inputs = await buildTierAEgressInputs();
   const discoveredServiceNames = serviceContainers
     .map((entry) => entry.Labels?.["shipit-service-name"])
@@ -97,21 +110,40 @@ export async function containComposeServices(opts: ContainComposeServicesOptions
     const alreadyHasProxy = containers.some((entry) =>
       entry.Labels?.["shipit-egress-parent"] === info.Id && Boolean(entry.Labels?.[EGRESS_PROXY_LABEL])
     );
-    if ((!opts.dnsEnabled || alreadyHasResolver) && (!opts.proxyEnabled || alreadyHasProxy)) {
+    if (opts.refresh) {
+      for (const sidecar of containers.filter((entry) => entry.Labels?.["shipit-egress-parent"] === info.Id)) {
+        try { await opts.docker.getContainer(sidecar.Id).remove({ force: true }); } catch { /* already gone */ }
+      }
+    } else if (opts.dnsEnabled && alreadyHasResolver && (!opts.proxyEnabled || alreadyHasProxy)) {
       continue;
     }
     const container = opts.docker.getContainer(info.Id);
     const sidecarLabels = { ...labels, "shipit-egress-parent": info.Id };
     let paused = false;
     try {
+      const inspected = await container.inspect();
+      if (inspected.State?.Paused) {
+        // A previous orchestrator died inside the critical section. Removing
+        // the frozen service is fail-closed; the next Compose up recreates it.
+        await container.remove({ force: true });
+        throw new Error(`service ${info.Labels?.["shipit-service-name"] ?? info.Id} was left paused during egress setup`);
+      }
       await container.pause();
       paused = true;
       // A private per-session bridge supplies the resolver/proxy's internet
       // route. GwPriority makes it the default route after the attachment.
-      await network.connect({
-        Container: info.Id,
-        EndpointConfig: { GwPriority: 1 },
-      } as Docker.NetworkConnectOptions);
+      try {
+        await network.connect({
+          Container: info.Id,
+          EndpointConfig: { GwPriority: 1 },
+        } as Docker.NetworkConnectOptions);
+      } catch (error) {
+        const code = error && typeof error === "object" && "statusCode" in error
+          ? Number(error.statusCode)
+          : 0;
+        const message = error instanceof Error ? error.message : String(error);
+        if (code !== 403 && !/already exists|already connected/i.test(message)) throw error;
+      }
 
       await installEgressFirewall(opts.docker, {
         agentContainerId: info.Id,
@@ -120,6 +152,15 @@ export async function containComposeServices(opts: ContainComposeServicesOptions
         resolverUid: opts.dnsEnabled ? EGRESS_RESOLVER_UID : undefined,
         proxyUid: opts.proxyEnabled ? EGRESS_PROXY_UID : undefined,
         proxyPort: opts.proxyEnabled ? EGRESS_PROXY_PORT : undefined,
+        labels: sidecarLabels,
+      });
+      // The installer allows only its default egress bridge. Re-open the
+      // internal session subnet so api→database, service→agent, and similar
+      // intra-session connections keep working.
+      await allowEgressToSubnets(opts.docker, {
+        agentContainerId: info.Id,
+        sidecarImage: opts.sidecarImage,
+        subnets: sessionSubnets,
         labels: sidecarLabels,
       });
       if (opts.dnsEnabled) {

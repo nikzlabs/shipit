@@ -70,11 +70,14 @@ export interface ReloadEgressOpts {
   orchPort?: string;
 }
 
-/** Remove every container carrying `label`. Best-effort, errors swallowed. */
-async function removeByLabel(docker: Docker, label: string): Promise<void> {
+/** Remove the matching sidecar for one network-namespace parent. */
+async function removeByLabel(docker: Docker, label: string, parentId: string): Promise<void> {
   let list: { Id: string }[];
   try {
-    list = await docker.listContainers({ all: true, filters: { label: [label] } });
+    list = await docker.listContainers({
+      all: true,
+      filters: { label: [label, `shipit-egress-parent=${parentId}`] },
+    });
   } catch {
     return;
   }
@@ -96,7 +99,7 @@ export async function reloadEgressSidecars(opts: ReloadEgressOpts): Promise<void
   const labels = { ...baseLabels, "shipit-parent-session": sessionId };
 
   if (opts.reloadResolver) {
-    await removeByLabel(docker, `${EGRESS_RESOLVER_LABEL}=${sessionId}`);
+    await removeByLabel(docker, `${EGRESS_RESOLVER_LABEL}=${sessionId}`, agentContainerId);
     const configB64 = buildResolverConfigB64({
       internalDomains: sessionInternalNames({ opsSession: opts.opsSession }),
       extraDomains: extraHosts,
@@ -106,12 +109,12 @@ export async function reloadEgressSidecars(opts: ReloadEgressOpts): Promise<void
       agentContainerId,
       sidecarImage,
       configB64,
-      labels: { ...labels, [EGRESS_RESOLVER_LABEL]: sessionId },
+      labels: { ...labels, [EGRESS_RESOLVER_LABEL]: sessionId, "shipit-egress-parent": agentContainerId },
     });
   }
 
   if (opts.reloadProxy) {
-    await removeByLabel(docker, `${EGRESS_PROXY_LABEL}=${sessionId}`);
+    await removeByLabel(docker, `${EGRESS_PROXY_LABEL}=${sessionId}`, agentContainerId);
     const orchPort = opts.orchPort ?? process.env.PORT ?? "3000";
     const decisionUrl = `http://${orchestratorCallbackHost()}:${orchPort}/api/egress/decision`;
     await launchEgressProxy(docker, {
@@ -121,7 +124,7 @@ export async function reloadEgressSidecars(opts: ReloadEgressOpts): Promise<void
       sessionId,
       decisionUrl,
       ...(opts.identityRules ? { identityRules: opts.identityRules } : {}),
-      labels: { ...labels, [EGRESS_PROXY_LABEL]: sessionId },
+      labels: { ...labels, [EGRESS_PROXY_LABEL]: sessionId, "shipit-egress-parent": agentContainerId },
     });
   }
 }

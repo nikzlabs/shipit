@@ -511,7 +511,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
    * services. Called after every Compose `up`, because that command can replace
    * containers while preserving service names.
    */
-  async containComposeServices(sessionId: string, serviceNames: string[]): Promise<void> {
+  async containComposeServices(sessionId: string, serviceNames: string[], refresh = false): Promise<void> {
     if (!egressEnforceEnabled()) return;
     const sidecarImage = process.env.SESSION_EGRESS_SIDECAR_IMAGE;
     const sc = this.containers.get(sessionId);
@@ -533,6 +533,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
       proxyEnabled: egressProxyEnabled(),
       labels: this.baseLabels(),
       orchestratorHost: orchestratorCallbackHost(),
+      refresh,
     });
   }
 
@@ -590,6 +591,9 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
       reloadResolver,
       reloadProxy,
     });
+    // Service sidecars borrow different network namespaces. Refresh each of
+    // them with the new effective allowlist as part of the same operation.
+    await this.containComposeServices(sessionId, [], true);
     return true;
   }
 

@@ -4,4 +4,4 @@
 - [x] Add regression tests for override generation and fail-closed orchestration.
 - [x] Update the egress design reference and agent-facing Compose documentation.
 - [x] Run targeted and affected tests, lint, and typecheck.
-- [x] Request independent review (ShipIt reviewer run failed with API `ENOTIMP`; self-audit completed, including the pre-pause DNS path).
+- [x] Independent review completed; all nine findings were addressed (restart persistence, Tier C sysctl, intra-session subnet, reconnect idempotency, allowlist reload, Tier A-only mode, network replacement, paused recovery, and orphan cleanup).

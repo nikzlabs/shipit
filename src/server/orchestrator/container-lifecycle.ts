@@ -1136,7 +1136,7 @@ export async function createContainer(
           agentContainerId: container.id,
           sidecarImage: deps.egressSidecarImage,
           configB64,
-          labels: { ...egressLabels, [EGRESS_RESOLVER_LABEL]: config.sessionId },
+          labels: { ...egressLabels, [EGRESS_RESOLVER_LABEL]: config.sessionId, "shipit-egress-parent": container.id },
         });
       }
       // Tier C: launch the SNI proxy into the agent's netns (after the resolver,
@@ -1157,7 +1157,7 @@ export async function createContainer(
           sessionId: config.sessionId,
           decisionUrl,
           ...(egressCfg.identityRules ? { identityRules: egressCfg.identityRules } : {}),
-          labels: { ...egressLabels, [EGRESS_PROXY_LABEL]: config.sessionId },
+          labels: { ...egressLabels, [EGRESS_PROXY_LABEL]: config.sessionId, "shipit-egress-parent": container.id },
         });
       }
       const dnsNote = deps.egressDns ? " + Tier B controlled resolver" : "";

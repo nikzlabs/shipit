@@ -1,8 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type Docker from "dockerode";
 
-const { installFirewall, launchResolver, launchProxy } = vi.hoisted(() => ({
+const { installFirewall, allowSubnets, launchResolver, launchProxy } = vi.hoisted(() => ({
   installFirewall: vi.fn(async () => undefined),
+  allowSubnets: vi.fn(async () => ["172.30.0.0/24"]),
   launchResolver: vi.fn(async () => "resolver-id"),
   launchProxy: vi.fn(async () => "proxy-id"),
 }));
@@ -12,6 +13,7 @@ vi.mock("./egress-firewall-install.js", async (load) => ({
   ...(await load<typeof import("./egress-firewall-install.js")>()),
   buildTierAEgressInputs: vi.fn(async () => ({ hosts: ["api.github.com"], cidrs: [] })),
   installEgressFirewall: installFirewall,
+  allowEgressToSubnets: allowSubnets,
 }));
 vi.mock("./egress-dns-install.js", async (load) => ({
   // eslint-disable-next-line no-restricted-syntax -- Vitest partial-module mock typing
@@ -29,16 +31,19 @@ import { containComposeServices } from "./compose-service-egress.js";
 function fakeDocker(events: string[]) {
   const container = {
     pause: vi.fn(async () => { events.push("pause"); }),
+    inspect: vi.fn(async () => ({ State: { Paused: false } })),
     unpause: vi.fn(async () => { events.push("unpause"); }),
     remove: vi.fn(async () => { events.push("remove"); }),
     stop: vi.fn(async () => { events.push("stop"); }),
   };
   const network = {
     connect: vi.fn(async () => { events.push("connect"); }),
+    inspect: vi.fn(async () => ({ IPAM: { Config: [{ Subnet: "172.30.0.0/24" }] } })),
   };
   const docker = {
     listContainers: vi.fn(async () => [{
       Id: "service-1",
+      State: "running",
       Labels: { "shipit-service-name": "web", "shipit-parent-session": "session-1" },
     }]),
     listNetworks: vi.fn(async () => [{ Name: "shipit-egress-session-1" }]),
@@ -72,6 +77,9 @@ describe("containComposeServices", () => {
     });
 
     expect(events).toEqual(["pause", "connect", "firewall", "resolver", "proxy", "unpause"]);
+    expect(allowSubnets).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      subnets: ["172.30.0.0/24"],
+    }));
   });
 
   it("removes the paused service when containment setup fails", async () => {
@@ -106,5 +114,40 @@ describe("containComposeServices", () => {
       proxyEnabled: true,
     });
     expect(events).toEqual([]);
+  });
+
+  it("tolerates an existing egress-network endpoint and still reinstalls containment", async () => {
+    const events: string[] = [];
+    const { docker, network, container } = fakeDocker(events);
+    network.connect.mockRejectedValueOnce(Object.assign(new Error("endpoint already exists"), { statusCode: 403 }));
+    await containComposeServices({
+      docker,
+      sessionId: "session-1",
+      sidecarImage: "egress:test",
+      config: { contained: true, extraHosts: [] },
+      serviceNames: ["web"],
+      dnsEnabled: false,
+      proxyEnabled: false,
+    });
+    expect(installFirewall).toHaveBeenCalled();
+    expect(container.remove).not.toHaveBeenCalled();
+    expect(container.unpause).toHaveBeenCalled();
+  });
+
+  it("removes a service left paused by an interrupted containment pass", async () => {
+    const events: string[] = [];
+    const { docker, container } = fakeDocker(events);
+    container.inspect.mockResolvedValueOnce({ State: { Paused: true } });
+    await expect(containComposeServices({
+      docker,
+      sessionId: "session-1",
+      sidecarImage: "egress:test",
+      config: { contained: true, extraHosts: [] },
+      serviceNames: ["web"],
+      dnsEnabled: true,
+      proxyEnabled: true,
+    })).rejects.toThrow("left paused");
+    expect(container.remove).toHaveBeenCalledWith({ force: true });
+    expect(container.unpause).not.toHaveBeenCalled();
   });
 });
