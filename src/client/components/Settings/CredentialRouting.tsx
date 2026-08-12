@@ -14,10 +14,16 @@
  * also the key the server writes (`routingSettingsKeyFor`), so nothing about
  * the stored shape changes — this is the same setting, addressed once.
  *
- * **The cutoffs stay account-backed-only, and that is not an oversight.** A
- * cutoff is a percentage of a *reported* quota, and nothing reports one for a
- * string-delivered subscription until its quota reader lands (planning#339), so
- * the control would set a number that can never fire.
+ * **The cutoffs follow the QUOTA, not the delivery shape.** A cutoff is a
+ * percentage of a reported quota, so it is offered exactly where one is
+ * reported (`modeReportsQuota`) — which is a property of the mode. This used to
+ * read "account-backed only", on the belief that only accounts report quota;
+ * they do not. A snapshot is recorded per route and gated only on the mode
+ * being a subscription, so an Anthropic plan supplied as a token reports its 5h
+ * and 7d windows exactly as an account does, and the string-delivered walk now
+ * applies the cutoffs to it (`stringSelectionFor`). GLM's coding plan declares
+ * `zai-plan-usage`, which has no reader yet (planning#339), so it still gets no
+ * cutoffs — the original conclusion, reached for the right reason.
  *
  * **docs/252 req 19 — the band is one row, and none of its copy was deleted.**
  * It was two stacked radios with a hint under each, a dashed rule, and a
@@ -207,7 +213,7 @@ const currentCutoffs = (key: string): Record<CutoffKey, number> =>
  */
 async function saveCutoff(
   key: string,
-  provider: AgentId,
+  provider: AgentId | undefined,
   serviceName: string,
   field: CutoffKey,
   raw: string,
@@ -240,10 +246,23 @@ async function saveCutoff(
     // where the component's state and its setters are already gone. The notice
     // channel is still keyed by harness because cutoffs only ever render on an
     // account-backed mode, which always has one.
-    useSettingsStore.getState().setProviderAccountNotice(provider, {
-      kind: "error",
-      message: `Failed to update ${serviceName} failover cutoff`,
-    });
+    /**
+     * The notice channel is keyed by HARNESS, and a string-delivered
+     * subscription need not have one — GLM's coding plan is a subscription with
+     * no login flow, and Anthropic's plan can arrive as a supplied token on an
+     * install with no account. Re-keying the whole notice map by
+     * `(service, mode)` is a larger change than this control warrants, so
+     * without a harness the failure is logged and the field's **rollback** is
+     * the feedback: the number visibly snaps back to the stored one, which is
+     * the same signal the notice accompanies. Weaker, and stated rather than
+     * hidden.
+     */
+    if (provider) {
+      useSettingsStore.getState().setProviderAccountNotice(provider, {
+        kind: "error",
+        message: `Failed to update ${serviceName} failover cutoff`,
+      });
+    }
     console.error("[settings] failover cutoff save failed:", err);
   }
 }
@@ -279,8 +298,14 @@ export function FailoverCutoffControls({
   serviceId: string;
   billingMode: BillingMode;
   serviceName: string;
-  /** Only the channel a failed save reports on — see {@link saveCutoff}. */
-  provider: AgentId;
+  /**
+   * Only the channel a failed save reports on — see {@link saveCutoff}.
+   *
+   * Optional because the cutoffs are keyed on the MODE reporting a quota, not
+   * on the mode being account-backed, and a string-delivered subscription may
+   * have no harness to report against.
+   */
+  provider?: AgentId;
 }) {
   const key = credentialModeKey(serviceId, billingMode);
   const stored = useSettingsStore((s) => s.failoverCutoffs[key]);

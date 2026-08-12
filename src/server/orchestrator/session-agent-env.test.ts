@@ -96,6 +96,9 @@ function makeFakeCredentialStore(
       if (found) found.lastUsedAt = Date.now();
     },
     getSelectionMode: () => "strict" as const,
+    // The string-delivered walk applies the user's cutoffs, exactly as the
+    // account walk does. The defaults, since nothing here reports a quota.
+    getFailoverCutoffs: () => ({ session: 90, weekly: 90 }),
   };
   return stub as unknown as CredentialStore;
 }

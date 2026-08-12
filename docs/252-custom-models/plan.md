@@ -3271,6 +3271,55 @@ DeepSeek key card is **148px → 78px**; the Anthropic subscription card, which
 was 272px holding one credential, is 154px holding *two* and a routing band. A
 credential row is 34px, from 39px for a supplied key and ~120px for an account.
 
+### Two bugs the compaction exposed (reqs 19-21 follow-up)
+
+Both reported from the dogfood instance, and both are the same shape as the ten
+before them: a rule stated correctly, implemented as a near-neighbour of itself.
+
+**"Quota" was read as "account".** The failover cutoffs rendered on
+`provider && accounts.length > 1`, and the quota pill only on account rows —
+both on the belief, written into two comments, that *only account-backed
+subscriptions report a quota*. They do not. A snapshot is recorded per **route**
+and gated only on the mode being a subscription (`bootstrap-managers.ts` →
+`credentialOwnerForRouteId`), so an Anthropic plan token supplied as a string
+reports its 5h and 7d windows exactly as an account does — the header pill has
+always rendered one for those routes. The install that reported it had two plan
+tokens and no account, so it got an order, a strategy, and no numbers of any
+kind. Three changes, one fact:
+
+- `modeReportsQuota(serviceId, billingMode)` in the catalogue — a mode reports a
+  quota when its declared `QuotaIntegrationId` is one this build implements.
+  Every `sub` mode declares one (the type requires it), and `zai-plan-usage` has
+  no reader yet, so **planning#339 is unchanged**: GLM still gets no cutoffs and
+  no read-out, now for the right reason and from one line rather than two
+  beliefs.
+- The row shows `SubscriptionLimitPill` for a supplied subscription credential,
+  as the header always has.
+- `stringSelectionFor` grew the account walk's other two tiers — *looks spent*
+  and *over cutoff*, from the same `isOverCutoff` / `snapshotExhaustedResetAt`
+  helpers and the same snapshot map. Without this the cutoff control would have
+  been a number that never fires, which is what the original comment was right
+  to refuse. Only refusal memory still SKIPS; telemetry orders and never
+  removes (docs/260 req 9).
+
+Req 19 is what made this a bug rather than a quirk: once both delivery shapes
+are identical rows, a threshold honoured for one and silently not the other is
+a carve-out no user could predict.
+
+**One token, listed twice.** `adoptEnvCredentials` imported
+`ANTHROPIC_AUTH_TOKEN` into a row of its own while the dogfood seeder had
+already stored that exact secret through the ordinary API — so one credential
+appeared as two, and was offered to itself as a failover target that can only
+fail with it. Not dogfood-specific: any user who pastes the key their deployment
+also sets gets the same pair. Adoption now compares by **value** — provenance is
+exactly what is missing, since a seeded row is indistinguishable from a typed
+one — and both declines to create the duplicate and **withdraws one it created**
+before the rule existed. The withdrawal is deliberately narrow, because it
+deletes a credential: only a row adoption created, whose secret is still the one
+adoption imported, and whose label ShipIt still generated. Any of those failing
+means the row is the user's, and a duplicate they can see beats one deleted
+behind their back.
+
 ## Key files
 
 | File | Why it matters |

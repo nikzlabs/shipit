@@ -62,13 +62,19 @@ import { useEffect, useRef, useState } from "react";
 import { PlusIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../../design-tokens.js";
 import type { AgentOption } from "../../agent-types.js";
-import type { AgentId, CredentialRoute } from "../../../server/shared/types.js";
+import type {
+  AgentId,
+  CredentialRoute,
+  SubscriptionLimits,
+  SubscriptionLimitsMap,
+} from "../../../server/shared/types.js";
 import { credentialModeKey } from "../../../server/shared/types/domain-types/credential-route.js";
 import {
   allServices,
   harnessForNativeService,
   modeAllowsMultipleCredentials,
   modeCredentialFor,
+  modeReportsQuota,
   type BillingMode,
   type ServiceDef,
 } from "../../../server/shared/catalogue/index.js";
@@ -76,6 +82,8 @@ import { Button } from "../ui/button.js";
 import { Dialog, DialogContent, DialogTitle } from "../ui/dialog.js";
 import { DropdownMenuItem } from "../ui/dropdown-menu.js";
 import { providerAccountAuthKey, useSettingsStore } from "../../stores/settings-store.js";
+import { useUiStore } from "../../stores/ui-store.js";
+import { SubscriptionLimitPill } from "../SubscriptionLimitsBadge.js";
 import { CredentialRowShell } from "./CredentialRowShell.js";
 import { useRowDrag, type RowDragProps } from "./useRowDrag.js";
 import {
@@ -560,16 +568,28 @@ function ServiceModeCard({
         serviceName={service.name}
         noun={routedNoun}
       />
-      {/* D14 / planning#339 — a cutoff is a percentage of a *reported* quota,
-          and only account-backed subscriptions report one today. On a
-          string-delivered plan the control would set a number that can never
-          fire, which is the dishonesty req 10 refuses one surface over. */}
-      {provider && accounts.length > 1 && (
+      {/*
+        D14 / planning#339 — a cutoff is a percentage of a *reported* quota, so
+        it is offered where a quota is reported and nowhere else. GLM's coding
+        plan declares `zai-plan-usage`, which has no reader yet, so it still
+        gets none.
+
+        **Keyed on the MODE, not on the delivery shape**, which is the fix. This
+        read `provider && accounts.length > 1` — "an account-backed mode with
+        two accounts" — on the belief that only accounts report quota. They do
+        not: a snapshot is recorded per ROUTE and gated only on the mode being a
+        subscription, so an Anthropic plan token supplied as a string reports
+        its 5h and 7d windows exactly as an account does. Since req 19 put both
+        delivery shapes on screen as identical rows, a threshold that worked for
+        one and silently not the other was a carve-out no user could predict —
+        two credentials, an order and a strategy, and no numbers.
+      */}
+      {modeReportsQuota(service.id, billingMode) && (
         <FailoverCutoffControls
           serviceId={service.id}
           billingMode={billingMode}
           serviceName={service.name}
-          provider={provider}
+          {...(provider ? { provider } : {})}
         />
       )}
     </div>
@@ -670,6 +690,20 @@ function ServiceModeCard({
  * lands (planning#339); either way the slot is simply empty, which is what the
  * whole column already means everywhere else.
  */
+/**
+ * This credential's quota snapshot, if one has been reported.
+ *
+ * An absent entry is not 0% — a credential no turn has run on yet has simply
+ * not been measured, and the pill says `—` for the windows it has no number
+ * for. Passed through rather than filled in.
+ */
+function snapshotFor(
+  limits: SubscriptionLimitsMap,
+  route: CredentialRoute,
+): SubscriptionLimits | undefined {
+  return limits[credentialModeKey(route.serviceId, route.billingMode)]?.[route.id];
+}
+
 function StringCredentialRow({
   route,
   drag,
@@ -677,6 +711,7 @@ function StringCredentialRow({
   route: CredentialRoute;
   drag?: RowDragProps | undefined;
 }) {
+  const limits = useUiStore((s) => s.subscriptionLimits);
   const [busy, setBusy] = useState(false);
   const [replacing, setReplacing] = useState(false);
   const [renaming, setRenaming] = useState(false);
@@ -747,6 +782,28 @@ function StringCredentialRow({
       label={route.label}
       {...(drag ? { drag } : {})}
       menuLabel={`Manage ${route.label}`}
+      quota={
+        /*
+          **A supplied subscription credential reports quota too.** The compact
+          row gave the pill only to ACCOUNT rows, so the dogfood install — two
+          Anthropic plan tokens, no account — showed no numbers at all beside a
+          band offering an order and a strategy. The snapshot is recorded per
+          route and gated only on the mode being a subscription, and the header
+          pill has always rendered one for these routes; only this row did not.
+
+          `modeReportsQuota` rather than `billingMode === "sub"`: GLM's coding
+          plan is a subscription whose reader does not exist yet, and an empty
+          pill would say "no usage" where the truth is "not measured".
+        */
+        modeReportsQuota(route.serviceId, route.billingMode) ? (
+          <SubscriptionLimitPill
+            serviceId={route.serviceId}
+            routeId={route.id}
+            {...(snapshotFor(limits, route) ? { snapshot: snapshotFor(limits, route) } : {})}
+            showRefresh={route.serviceId === "anthropic"}
+          />
+        ) : undefined
+      }
       menu={
         <>
           <DropdownMenuItem

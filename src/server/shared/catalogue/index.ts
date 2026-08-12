@@ -25,6 +25,7 @@ import type {
   ModeCredential,
   ModelDef,
   ModelSelection,
+  QuotaIntegrationId,
   ServiceDef,
 } from "./types.js";
 import type { ModelIdentity } from "./model-identity.js";
@@ -225,6 +226,40 @@ export function credentialModeForStorageEnv(
  */
 export function modeAllowsMultipleCredentials(billingMode: BillingMode): boolean {
   return billingMode === "sub";
+}
+
+/**
+ * The quota integrations this build actually implements.
+ *
+ * Every `sub` mode DECLARES one — the type makes it required, so "a
+ * subscription with nowhere to read its quota from" cannot be expressed — but
+ * declaring is not implementing: `zai-plan-usage` has no reader yet
+ * (planning#339), so GLM's coding plan reports nothing.
+ *
+ * One list, because "does this mode report a quota" is asked in two places that
+ * must agree: whether to offer failover CUTOFFS (a percentage of a number
+ * nobody reports can never fire — the dishonesty req 10 refuses a surface
+ * over), and whether a credential row shows a usage read-out at all. When the
+ * GLM reader lands, this is the line that changes.
+ */
+const IMPLEMENTED_QUOTA_INTEGRATIONS = new Set<QuotaIntegrationId>([
+  "anthropic-oauth-usage",
+  "openai-chatgpt-usage",
+]);
+
+/**
+ * Does this `(service, billing mode)` report a quota ShipIt can read?
+ *
+ * A property of the MODE, never of the delivery shape. An Anthropic plan
+ * reports its 5h and 7d windows whether it arrives as an OAuth account or as a
+ * supplied token — the snapshot is recorded per route and gated only on the
+ * mode being a subscription (`credentialOwnerForRouteId`). Reading "quota" as
+ * "account" is what left a supplied subscription credential with no read-out
+ * and no cutoffs while an account beside it had both.
+ */
+export function modeReportsQuota(serviceId: string, billingMode: BillingMode): boolean {
+  const mode = getMode(serviceId, billingMode);
+  return mode?.kind === "sub" && IMPLEMENTED_QUOTA_INTEGRATIONS.has(mode.quota);
 }
 
 /** A catalogue row paired with the identity that names it. */

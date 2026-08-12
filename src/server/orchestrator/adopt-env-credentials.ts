@@ -16,7 +16,7 @@
  * what makes the dogfood instance representative of a real install rather than
  * a special case of one.
  *
- * Three things this has to get right, none of them visible in the happy path.
+ * Four things this has to get right, none of them visible in the happy path.
  *
  * **1. Rotation.** The stored copy is written once. A deployment that changes
  * the variable later would otherwise keep serving the value from first boot
@@ -46,6 +46,14 @@
  * `claude-api-key`, `codex-api-key`), so an adopted row must keep that id
  * rather than mint a `cred_…` one — otherwise every session pinned to it is
  * orphaned the moment adoption runs.
+ *
+ * **4. The same secret is one credential.** A row storing the variable's value
+ * already exists whenever anything else put it there — the dogfood seeder POSTs
+ * every `storageEnv` it finds, and a user can paste the key their deployment
+ * also sets. Importing it again produced one token listed twice, offered to
+ * itself as a failover target that can only fail with it. Adoption therefore
+ * compares by VALUE (provenance is exactly what is missing) and both declines
+ * to create a duplicate and withdraws one it created before this rule existed.
  */
 
 import {
@@ -80,6 +88,13 @@ export interface EnvAdoptionResult {
   rotated: string[];
   /** Variables the user has removed, and which this boot therefore unset. */
   suppressed: string[];
+  /**
+   * Variables whose secret a stored credential already holds, so there was
+   * nothing to adopt. Reported rather than silent: two rows for one token is
+   * the bug this prevents, and a deployment that expects its variable to appear
+   * needs to be able to see why it did not.
+   */
+  alreadyStored: string[];
 }
 
 /**
@@ -94,7 +109,7 @@ export function adoptEnvCredentials(
   credentialStore: CredentialStore,
   env: NodeJS.ProcessEnv = process.env,
 ): EnvAdoptionResult {
-  const result: EnvAdoptionResult = { adopted: [], rotated: [], suppressed: [] };
+  const result: EnvAdoptionResult = { adopted: [], rotated: [], suppressed: [], alreadyStored: [] };
 
   for (const mode of envDeliverableModes()) {
     const value = env[mode.storageEnv]?.trim();
@@ -131,6 +146,33 @@ export function adoptEnvCredentials(
        * refused.
        */
       if (!modeAllowsMultipleCredentials(mode.billingMode) && group.some((r) => r.via === "string")) {
+        continue;
+      }
+      /**
+       * **The same secret is one credential, however it got here.**
+       *
+       * Adoption's job is to make an *unrepresented* environment credential
+       * visible, not to add a second copy of one already on screen. Anything
+       * that stores the variable's value through the ordinary API — the dogfood
+       * seeder does exactly this (`scripts/seed-inner-credentials.ts` POSTs
+       * every `storageEnv` it finds), and so does a user who pastes the key
+       * their deployment also sets — leaves a row holding this very secret.
+       * Importing it again produced two rows for one token, which is what the
+       * dogfood instance showed: "Anthropic plan (dogfood secret)" and
+       * "Anthropic (ANTHROPIC_AUTH_TOKEN)", one credential, listed twice, and
+       * offered to each other as failover targets that can only fail together.
+       *
+       * Compared by value rather than by provenance because provenance is
+       * exactly what is missing: a row the seeder created is indistinguishable
+       * from one the user typed, and both are equally "already carrying this".
+       *
+       * Nothing is recorded when this fires. If the user later removes that
+       * row, the variable is unrepresented again and the next boot adopts it —
+       * which is right, and is the difference between skipping an import and
+       * remembering a deletion.
+       */
+      if (group.some((r) => r.via === "string" && credentialStore.getCredentialSecret(r.id) === value)) {
+        result.alreadyStored.push(mode.storageEnv);
         continue;
       }
       const now = Date.now();
@@ -174,6 +216,33 @@ export function adoptEnvCredentials(
     // deployment does not get to overwrite that on the next restart.
     const stored = credentialStore.getCredentialSecret(routeId);
     const stillOurs = record !== undefined && stored === record.importedValue;
+    /**
+     * **Withdraw a duplicate this function itself created.**
+     *
+     * The creation guard above stops a NEW duplicate; this clears one already
+     * on disk, because the version without that guard shipped. An install whose
+     * deployment sets a variable that some other row also stores — the dogfood
+     * seeder is the reproducing case — came away with one token listed twice,
+     * offered to itself as a failover target that can only fail with it.
+     *
+     * Deliberately narrow, because this deletes a credential: only a row
+     * **adoption created** (it holds the reserved id), whose secret is **still
+     * the one adoption imported** (so the user has not replaced it), and whose
+     * label ShipIt still generated (so the user has not named it). Any of those
+     * three failing means the row is the user's now, and a duplicate they can
+     * see and remove beats one this deletes behind them.
+     */
+    if (stillOurs && existing.labelIsGenerated) {
+      const twin = credentialStore
+        .listCredentialRoutes(mode.serviceId, mode.billingMode)
+        .find((r) => r.id !== routeId && r.via === "string"
+          && credentialStore.getCredentialSecret(r.id) === stored);
+      if (twin) {
+        credentialStore.deleteCredentialRoute(routeId);
+        result.alreadyStored.push(mode.storageEnv);
+        continue;
+      }
+    }
     if (stillOurs && value !== stored) {
       // Same ordering rule as the initial import: a record naming a value the
       // row does not hold makes the next boot's `stillOurs` false, which

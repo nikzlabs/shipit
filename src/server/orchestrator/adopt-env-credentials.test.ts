@@ -58,12 +58,12 @@ describe("adoptEnvCredentials", () => {
     adoptEnvCredentials(store, { ANTHROPIC_API_KEY: "sk-first" });
     const second = adoptEnvCredentials(reboot(), { ANTHROPIC_API_KEY: "sk-first" });
 
-    expect(second).toEqual({ adopted: [], rotated: [], suppressed: [] });
+    expect(second).toEqual({ adopted: [], rotated: [], suppressed: [], alreadyStored: [] });
     expect(reboot().listCredentialRoutes("anthropic", "key")).toHaveLength(1);
   });
 
   it("does nothing when the deployment sets nothing", () => {
-    expect(adoptEnvCredentials(store, {})).toEqual({ adopted: [], rotated: [], suppressed: [] });
+    expect(adoptEnvCredentials(store, {})).toEqual({ adopted: [], rotated: [], suppressed: [], alreadyStored: [] });
     expect(store.listCredentialRoutes()).toHaveLength(0);
   });
 
@@ -200,6 +200,86 @@ describe("adoptEnvCredentials", () => {
     expect(adoptEnvCredentials(store, { ANTHROPIC_AUTH_TOKEN: "token-env" }).adopted)
       .toEqual(["ANTHROPIC_AUTH_TOKEN"]);
     expect(store.listCredentialRoutes("anthropic", "sub")).toHaveLength(2);
+  });
+
+  /**
+   * **One token, one row.** The bug this prevents was visible in the dogfood
+   * instance: the seeder POSTs every `storageEnv` it finds, so the same
+   * `ANTHROPIC_AUTH_TOKEN` was stored as "Anthropic plan (dogfood secret)" and
+   * then adopted again as "Anthropic (ANTHROPIC_AUTH_TOKEN)" — one credential,
+   * listed twice, and offered to itself as a failover target that can only fail
+   * with it. Compared by VALUE because provenance is exactly what is missing.
+   */
+  describe("the same secret is one credential", () => {
+    const alreadyStored = (secret: string) => {
+      store.upsertCredentialRouteWithSecret({
+        id: "cred_seeded", serviceId: "anthropic", billingMode: "sub", via: "string",
+        label: "Anthropic plan (dogfood secret)", isPrimary: false, priority: 0,
+        status: "ready", createdAt: 1, updatedAt: 1,
+      }, secret);
+    };
+
+    it("does not adopt a variable a stored credential already holds", () => {
+      alreadyStored("token-shared");
+
+      const result = adoptEnvCredentials(store, { ANTHROPIC_AUTH_TOKEN: "token-shared" });
+
+      expect(result.adopted).toEqual([]);
+      expect(result.alreadyStored).toEqual(["ANTHROPIC_AUTH_TOKEN"]);
+      expect(store.listCredentialRoutes("anthropic", "sub")).toHaveLength(1);
+    });
+
+    it("still adopts when the stored credential is a DIFFERENT secret", () => {
+      alreadyStored("token-mine");
+      expect(adoptEnvCredentials(store, { ANTHROPIC_AUTH_TOKEN: "token-from-env" }).adopted)
+        .toEqual(["ANTHROPIC_AUTH_TOKEN"]);
+      expect(store.listCredentialRoutes("anthropic", "sub")).toHaveLength(2);
+    });
+
+    /**
+     * The version without the guard shipped, so an install can already hold the
+     * duplicate. Adoption withdraws one it created — and only one it still
+     * owns, which is what keeps this from deleting a credential the user has
+     * made their own.
+     */
+    it("withdraws a duplicate it created before the rule existed", () => {
+      adoptEnvCredentials(store, { ANTHROPIC_AUTH_TOKEN: "token-shared" });
+      alreadyStored("token-shared");
+      expect(reboot().listCredentialRoutes("anthropic", "sub")).toHaveLength(2);
+
+      const next = reboot();
+      const result = adoptEnvCredentials(next, { ANTHROPIC_AUTH_TOKEN: "token-shared" });
+
+      expect(result.alreadyStored).toEqual(["ANTHROPIC_AUTH_TOKEN"]);
+      expect(next.getCredentialRoute("claude-env-oauth")).toBeUndefined();
+      expect(next.listCredentialRoutes("anthropic", "sub").map((r) => r.id)).toEqual(["cred_seeded"]);
+    });
+
+    it("keeps a duplicate the user has renamed, because it is theirs now", () => {
+      adoptEnvCredentials(store, { ANTHROPIC_AUTH_TOKEN: "token-shared" });
+      const adoptedRow = store.getCredentialRoute("claude-env-oauth")!;
+      store.upsertCredentialRoute({ ...adoptedRow, label: "My backup", labelIsGenerated: false });
+      alreadyStored("token-shared");
+
+      const next = reboot();
+      adoptEnvCredentials(next, { ANTHROPIC_AUTH_TOKEN: "token-shared" });
+
+      expect(next.getCredentialRoute("claude-env-oauth")?.label).toBe("My backup");
+    });
+
+    it("keeps a duplicate whose secret the user replaced, for the same reason", () => {
+      adoptEnvCredentials(store, { ANTHROPIC_AUTH_TOKEN: "token-shared" });
+      store.setCredentialSecret("claude-env-oauth", "token-shared");
+      alreadyStored("token-shared");
+      // Their replacement happens to equal the env value, but the record says
+      // it is no longer the value adoption imported.
+      store.setAdoptedEnvCredential("ANTHROPIC_AUTH_TOKEN", { importedValue: "token-older" });
+
+      const next = reboot();
+      adoptEnvCredentials(next, { ANTHROPIC_AUTH_TOKEN: "token-shared" });
+
+      expect(next.getCredentialRoute("claude-env-oauth")).toBeDefined();
+    });
   });
 
   /**
