@@ -1082,6 +1082,22 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     expect(err).toContain("codex");
   });
 
+  it("POST /spawn rejects a model the resolved harness doesn't offer (400)", { timeout: 15_000 }, async () => {
+    const parentId = await createParentSession();
+    // gpt-99 is no catalogue id for any harness. With --agent omitted, the child
+    // would otherwise inherit the parent's Claude agent and pair it with a model
+    // Claude Code cannot run — the dead-child failure this guard closes.
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: { prompt: "x", title: "Unknown model", model: "gpt-99" },
+    });
+    expect(res.statusCode).toBe(400);
+    const err = (res.json() as { error: string }).error;
+    expect(err).toContain("Unknown model 'gpt-99'");
+    expect(err).toContain("claude");
+  });
+
   it("POST /spawn derives the agent from the model when --agent is omitted", { timeout: 15_000 }, async () => {
     const parentId = await createParentSession();
     // Parent is Claude; passing only --model gpt-5.5 should route the child to

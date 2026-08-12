@@ -68,7 +68,7 @@ Hardens the already-shipped `--agent`/`--model` spawn flags: validate before
 disk work, derive backend from model, and surface the resolved agent/model on
 `view`.
 
-- [x] `services/child-sessions.ts` — `spawnChildSession` validates `--agent` against `KNOWN_AGENT_IDS`, derives the agent from `--model` when `--agent` is omitted (`agentIdForModel`), and rejects a cross-backend `agent`+`model` mismatch — all before the claim/disk work. Unlisted/versioned model ids pass through (CLI forwards `--model` as-is).
+- [x] `services/child-sessions.ts` — `spawnChildSession` validates `--agent` against `KNOWN_AGENT_IDS`, derives the agent from `--model` when `--agent` is omitted (`agentIdForModel`), and rejects a cross-backend `agent`+`model` mismatch — all before the claim/disk work. (A later change, planning#304, also rejects a `--model` the resolved harness's catalogue does not list; unlisted ids no longer pass through.)
 - [x] `services/child-sessions.ts` — `ChildSessionView` gains `agent`/`model`; `buildChildView` populates them from the child's `SessionInfo`.
 - [x] `shared/agent-registry.ts` — exports `KNOWN_AGENT_IDS` (derived from `AGENT_DEFS`) for runtime agent-id validation.
 - [x] `agent-shim/shipit-session.ts` — `shipit session view` plain-text output renders `agent:`/`model:` lines (omitted when unset).

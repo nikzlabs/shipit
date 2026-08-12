@@ -58,11 +58,12 @@ Phases 1, 2, and 3 are live as of this revision. What works today:
   errors on its first turn. The model is treated as the source of truth and
   the agent is derived from it (`agentIdForModel`, mirroring the client's
   `agentIdForModel`): `--model gpt-5.5` alone routes the child to Codex
-  rather than inheriting the parent's Claude. An unknown `--agent`, or a
-  `--model` whose owning backend conflicts with an explicit `--agent`, is
-  rejected with an actionable message; an unlisted/versioned model id the
-  picker hasn't surfaced is still accepted (the CLI forwards `--model`
-  as-is, so forward-compat is preserved). `shipit session view` now also
+  rather than inheriting the parent's Claude. An unknown `--agent`, a
+  `--model` whose owning backend conflicts with an explicit `--agent`, or a
+  `--model` the resolved harness's catalogue does not list, is rejected with
+  an actionable message — the once-accepted unlisted-id passthrough was
+  removed by planning#304, which validates the *resolved* (agent, model)
+  pair rather than only the explicitly-passed flags. `shipit session view` now also
   reports the resolved `agent` + `model` the child runs on — the
   authoritative confirmation of a child's backend, since models self-report
   their own version unreliably. Key files: `services/child-sessions.ts`

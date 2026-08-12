@@ -269,9 +269,10 @@ export async function spawnChildSession(
   // model and `--agent` was omitted, route to that backend so `--model gpt-5.5`
   // alone lands on Codex instead of silently inheriting the parent's Claude.
   // When both are given, reject a cross-backend mismatch with an actionable
-  // message. An unlisted/versioned id (`modelOwner === undefined`) is passed
-  // through for forward-compat — the CLI forwards `--model` as-is, so a
-  // valid-but-newer id the picker hasn't surfaced yet must not be rejected.
+  // message. An unlisted/versioned id (`modelOwner === undefined`) — a typo, or a
+  // model this catalogue does not carry — is rejected below against the resolved
+  // harness (planning#304 follow-up 1), so it can no longer inherit the parent's
+  // agent and boot a dead child.
   //
   // planning#304 — both halves ask **"does this harness offer this model"**, not
   // "who owns it". `agentIdForModel` answers with the first harness whose list
@@ -306,6 +307,24 @@ export async function spawnChildSession(
         400,
         `Model '${opts.model}' belongs to agent '${modelOwner}', not '${agentOverride}'. ` +
           `Pass --agent ${modelOwner}, or omit --agent to derive it from the model.`,
+      );
+    }
+    // planning#304 (follow-up 1) — validate the RESOLVED pair, not only the
+    // explicitly-passed flags. The cross-backend check above only places an id
+    // `agentIdForModel` can map to a harness; an id it cannot place (a typo, or
+    // a model this catalogue does not carry) fell through and, when `--agent`
+    // was omitted, the child inherited the PARENT's agent and paired it with a
+    // model that harness cannot run — the same dead-child failure a bare
+    // `--agent` switch used to produce. Check the id against the harness the
+    // child will actually run on, resolved by the same precedence `childAgentId`
+    // uses below, so the list in the message is what that harness can speak to.
+    const childHarness: AgentId = agentOverride ?? parent.agentId ?? defaultAgentId;
+    const offered = getAgentCapabilities(childHarness)?.models ?? [];
+    if (!offered.includes(opts.model)) {
+      throw new ServiceError(
+        400,
+        `Unknown model '${opts.model}' for agent '${childHarness}'. ` +
+          `Valid models: ${offered.join(", ")}.`,
       );
     }
   }
