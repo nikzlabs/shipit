@@ -52,8 +52,8 @@ drawer path keeps the identity. No group headers.</p>
 <div class="frame">
   <div class="fh">Services</div>
   <div class="row"><span class="dot on"></span><div class="grow"><span class="name">dev</span> <span class="sub">· port 5173 · auto</span></div><button class="btn">Stop</button></div>
-  <div class="row"><span class="dot on"></span><div class="grow"><span class="name">requirements</span> <span class="chip plug">tools</span> <span class="sub">· port 8080 · auto</span></div><button class="btn">Stop</button></div>
-  <div class="row"><span class="dot off"></span><div class="grow"><span class="name">imagegen</span> <span class="chip plug">tools</span> <span class="sub">· manual</span></div><button class="btn pri">Start</button></div>
+  <div class="row"><span class="dot on"></span><div class="grow"><span class="name">requirements</span> <span class="chip plug">reqs</span> <span class="sub">· port 8080 · auto</span></div><button class="btn">Stop</button></div>
+  <div class="row"><span class="dot off"></span><div class="grow"><span class="name">imagegen</span> <span class="chip plug">imagegen</span> <span class="sub">· manual</span></div><button class="btn pri">Start</button></div>
 </div>
 
 <!-- ============================================================ B -->
@@ -63,10 +63,10 @@ declared context without a PR). Header: local name, ref @ exact running commit (
 (req 12). Body: exports summary, then the <b>needs list</b> — every declared-but-unsatisfied
 credential (req 23) and host (req 24) with its grant affordance. Grants post to existing,
 browser-only endpoints; a satisfied card is quiet.</p>
-<div class="striprow"><span class="chip plug">⌁ tools · main @ a1b2c3f</span><span class="sub">← chip in the strip; click opens the card</span></div>
+<div class="striprow"><span class="chip plug">⌁ game-tools · main @ a1b2c3f</span><span class="sub">← chip per repo group in the strip; click opens the card</span></div>
 <div class="frame">
-  <div class="grp"><span class="name">tools</span><span class="chip mono">nicolasalt/game-tools</span><span class="chip mono">main @ a1b2c3f</span><span style="flex:1"></span><button class="btn">↻ Refresh</button></div>
-  <div class="row"><div class="grow sub">requirements · imagegen &nbsp;·&nbsp; 1 command (<code>reqs</code>) · 1 skill</div></div>
+  <div class="grp"><span class="name">game-tools</span><span class="chip mono">nicolasalt/game-tools</span><span class="chip mono">main @ a1b2c3f</span><span style="flex:1"></span><button class="btn">↻ Refresh</button></div>
+  <div class="row"><div class="grow sub">imports: <b>requirements</b> as <code>reqs</code> · <b>imagegen</b> &nbsp;·&nbsp; 1 command (<code>reqs</code>) · 1 skill</div></div>
   <div class="need"><span class="ic">⚠</span><div class="grow">Credential <code class="kbd">FAL_KEY</code> is not set for this project</div><button class="btn pri">Add key…</button></div>
   <div class="need"><span class="ic">⚠</span><div class="grow">Host <code class="kbd">fal.run</code> is not on the egress allowlist</div><button class="btn">Allow (session)</button><button class="btn">Allow (instance)</button></div>
 </div>
@@ -78,20 +78,20 @@ browser-only endpoints; a satisfied card is quiet.</p>
 degrades visibly and continues — req 13). A collision names its domain and the exact declaration fix
 (req 20).</p>
 <div class="frame">
-  <div class="grp"><span class="name">tools</span><span class="chip mono">main @ a1b2c3f</span><span class="chip" style="color:var(--warn)">refresh failed</span><span style="flex:1"></span><button class="btn">↻ Retry</button></div>
+  <div class="grp"><span class="name">game-tools</span><span class="chip mono">main @ a1b2c3f</span><span class="chip" style="color:var(--warn)">refresh failed</span><span style="flex:1"></span><button class="btn">↻ Retry</button></div>
   <div class="need"><span class="ic">⚠</span><div class="grow">Branch <code class="kbd">main</code> could not be fetched (authorization failed).
     The prior version <code class="kbd">a1b2c3f</code> remains active — files, commands, and services are unchanged.</div></div>
 </div>
 <div class="frame" style="margin-top:14px">
-  <div class="grp"><span class="name">tools</span><span class="chip mono">main @ —</span><span class="chip err">unavailable</span><span style="flex:1"></span><button class="btn">↻ Retry</button></div>
+  <div class="grp"><span class="name">game-tools</span><span class="chip mono">main @ —</span><span class="chip err">unavailable</span><span style="flex:1"></span><button class="btn">↻ Retry</button></div>
   <div class="need"><span class="ic err">✕</span><div class="grow">This repository has never been fetched (authorization failed).
     The session continues without its services and commands.</div></div>
 </div>
 <div class="frame" style="margin-top:14px">
-  <div class="grp"><span class="name">tools</span><span class="chip mono">main @ a1b2c3f</span><span class="chip err">collision</span><span style="flex:1"></span></div>
+  <div class="grp"><span class="name">game-tools</span><span class="chip mono">main @ a1b2c3f</span><span class="chip err">collision</span><span style="flex:1"></span></div>
   <div class="need"><span class="ic err">✕</span><div class="grow">Service <code class="kbd">requirements</code> is already declared by this
     project's <code>docker-compose.yml</code>; the plugin service was not started. Fix in <code>shipit.yaml</code>:
-    <code>plugins[tools].overrides.requirements.services.requirements.as: reqs-ui</code></div></div>
+    <code>plugins[reqs].overrides.services.requirements.as: reqs-ui</code></div></div>
 </div>
 
 </body>

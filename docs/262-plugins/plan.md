@@ -18,48 +18,66 @@ accepted findings are folded in below and recorded on planning#355.
 A plugin crosses one edge: a **plugin repository** exports it; a **consuming
 project** declares it. Each side owns one block in its own `shipit.yaml`.
 
-### 1a. Consumer side — `plugins:` (req 11)
+### 1a. Consumer side — `plugins:` (req 11): per-PLUGIN imports
 
-Modeled on `issues.trackers`: a list of named repository declarations,
-fail-closed per entry (a malformed entry warns and is dropped; the session
+Each list entry imports **one plugin** (user decision, 2026-08-12 — replacing
+the earlier per-repo entries with a `select:` list). The unit of declaration
+is the unit of thought; `select` disappears and overrides flatten a level.
+Fail-closed per entry (a malformed entry warns and is dropped; the session
 still opens — req 13).
 
 ```yaml
 plugins:
   - repo: nicolasalt/game-tools   # GitHub owner/name (v1; see Feedback below)
-    name: tools                   # local name: unique, used in paths, UI, references
+    name: requirements            # selector: the exported plugin to import
+    alias: reqs                   # optional local name; default = name.
+                                  # Keys overrides/settings/skills namespacing and UI.
     branch: main                  # tracked branch (default: repo default branch)
     # pin: v2.1.0                 # tag or SHA; mutually exclusive with branch (req 8)
-    select: [requirements]        # optional; default = everything exported (req 5)
-    overrides:                    # optional, per exported plugin
-      requirements:
-        services:
-          requirements:           # per SERVICE, not per plugin (req 16)
-            autostart: false
-            as: reqs-ui           # service alias on collision (req 20)
-        commands:
-          reqs:
-            as: rt-reqs           # command alias on collision (req 20)
-        settings:                 # req 26 — values for plugin-declared settings
-          root: docs
+    overrides:                    # optional — flat: the entry IS one plugin
+      services:
+        requirements:             # per SERVICE (req 16)
+          autostart: false
+          as: reqs-ui             # service alias on collision (req 20)
+      commands:
+        reqs:
+          as: rt-reqs             # command alias on collision (req 20)
+      settings:                   # req 26 — values for plugin-declared settings
+        root: docs
 ```
 
-Rules (review findings 3, 4, 6, 12):
+**Repo groups.** Several ratified requirements are per *repository* —
+coherence (req 15), refresh (req 12), independence (req 14), degradation
+(req 13), feedback (req 25) — so entries sharing a `repo` form one derived
+**repo group**: one checkout, one generation, one refresh unit, one feedback
+destination, one plugin card. All entries of a group must agree on
+`branch`/`pin`; a disagreement drops the whole group with a surfaced warning
+(degraded beats an incoherent split — req 13). The group's **short name** is
+the repo name after the slash (`game-tools`); if two groups' short names
+collide, both become `<owner>--<name>`. The short name keys the checkout path
+and the feedback destination.
 
-- **Naming domains** (req 20) — four, each case-normalized and checked
+Rules (review findings 3, 4, 6, 12, adapted to per-plugin imports):
+
+- **Naming domains** (req 20) — five, each case-normalized and checked
   independently at parse time:
-  1. plugin-repo `name`s **plus declared tracker names** (one reservation
+  1. repo-group short names **plus declared tracker names** (one reservation
      pass across both blocks; first declared wins, the loser is dropped with
-     a surfaced warning) — the feedback channel (req 25) registers `name`
+     a surfaced warning) — the feedback channel (req 25) registers the group
      into the tracker address space;
-  2. exported plugin names within one manifest (`select`/`overrides` keys);
-  3. surfaced **service** names across the project and every plugin
+  2. plugin `alias`es across all entries (they key settings files, skills
+     namespacing, and UI identity);
+  3. `name` selectors must exist in the group's manifest (an unknown
+     selector drops the entry with a warning);
+  4. surfaced **service** names across the project and every plugin
      (service controls and log channels are name-addressed today —
      `ws-handlers/service-handlers.ts`);
-  4. **command** names across every plugin, the project, and protected
+  5. **command** names across every plugin, the project, and protected
      binaries (`shipit`, `git`, coreutils, anything already on the base
      PATH).
-  Aliases are per service and per command; there is no plugin-wide rename.
+  Aliases are per service and per command; there is no plugin-wide rename of
+  services or commands (the entry-level `alias` names the *plugin*, not its
+  parts).
 - **Pin durability** (req 8): `pin:` accepts a tag or SHA. On first
   resolution ShipIt records the resolved SHA durably, keyed by the consumer
   declaration, and stays there even if a tag moves (a moved tag warns). Only
@@ -112,15 +130,15 @@ commit, the install string, or declared install-input files.
 
 ## 2. How a plugin is used inside a session
 
-- **Files** (reqs 2, 7): each declared repo is checked out read-only at
-  `/plugins/<name>` in the agent container (browsable by the agent), with the
-  per-plugin writable layer described above.
+- **Files** (reqs 2, 7): each repo group is checked out read-only at
+  `/plugins/<repo-short-name>` in the agent container (browsable by the
+  agent), with the per-group writable layer described above.
 - **Workspace handle** (req 21): plugin *services* get the consuming
   project's workspace mounted at the fixed path **`/project`**; plugin *CLIs*
   run in the agent container with **cwd = the project workspace**, which
   keeps cwd-addressed tools (the requirements tool) working unchanged.
-- **Shared plugin state** (reqs 17, 18 — review finding 2): each exported
-  plugin gets a per-session **state directory**, mounted read-write into its
+- **Shared plugin state** (reqs 17, 18 — review finding 2): each imported
+  plugin (keyed by `alias`) gets a per-session **state directory**, mounted read-write into its
   service containers and exposed to its CLIs, surviving service restarts,
   refreshes, and container restarts, deleted with the session. This is the
   home of "same live state" between a CLI and a UI that is neither project
@@ -128,11 +146,12 @@ commit, the install string, or declared install-input files.
   **published port must stay stable per (session, service)** even if a
   tracked commit edits the fragment's port, because the preview origin is
   port-derived and req 18 guarantees origin stability.
-- **Env**: `SHIPIT_PROJECT_DIR`, `SHIPIT_PLUGIN_COMMIT` (req 15 — the commit
-  readable by the plugin itself), and `SHIPIT_SETTINGS` — the path to one
-  validated JSON file with the plugin's setting values (req 26; a
-  per-setting env grammar was reviewed out as collision-prone). CLI wrappers
-  use absolute entrypoints, so no plugin-dir variable is needed.
+- **Env**: `SHIPIT_PROJECT_DIR`, `SHIPIT_PLUGIN_COMMIT` (per repo group;
+  req 15 — the commit readable by the plugin itself), and `SHIPIT_SETTINGS`
+  — the path to one validated JSON file with the imported plugin's setting
+  values, keyed by its `alias` (req 26; a per-setting env grammar was
+  reviewed out as collision-prone). CLI wrappers use absolute entrypoints,
+  so no plugin-dir variable is needed.
 - **CLIs** (reqs 17, 20, 23): exported commands go on the agent's PATH as
   generated wrappers. A wrapper injects the plugin's declared credentials
   into that command's environment only — plugin credentials never enter the
@@ -140,9 +159,9 @@ commit, the install string, or declared install-input files.
 - **Skills** (req 22 — review finding 5): checkout alone discloses nothing —
   ShipIt's skill listing scans only the workspace skill dirs, and Codex
   reading `.claude/skills` is observed harness behavior, not a guarantee
-  (docs/209). The design therefore **materializes** each plugin's skills
-  into every backend's actual discovery root, namespaced
-  (`plugins--<name>--<skill>`), without touching project-tracked paths;
+  (docs/209). The design therefore **materializes** each imported plugin's
+  skills into every backend's actual discovery root, namespaced
+  (`plugins--<alias>--<skill>`), without touching project-tracked paths;
   refresh re-materializes and the agent re-scans on next turn. The docs/209
   verification rule applies to future backends.
 - **Refresh** (reqs 12, 15 — review finding 1): refresh is **generation
@@ -152,14 +171,15 @@ commit, the install string, or declared install-input files.
   affected services from the same generation. A CLI invoked mid-refresh runs
   the old generation or fails with "refreshing"; any failure keeps the old
   generation whole and active. Agent surface: `shipit plugin refresh
-  [name]`, which prints before/after status (a separate `list`/`status`
+  [repo-short-name]`, which prints before/after status (a separate `list`/`status`
   command was reviewed out; the UI and `SHIPIT_PLUGIN_COMMIT` cover
   observability).
-- **Feedback** (req 25 — review finding 12): the declaration registers
-  `name` in the **same tracker registry** the issue shim and Issues UI
+- **Feedback** (req 25 — review finding 12): each repo group registers its
+  short name in the **same tracker registry** the issue shim and Issues UI
   resolve (`GET /api/trackers`) — a separate registry would leave
-  `shipit issue create --tracker tools` unresolvable. Filing stays brokered;
-  the token stays out of the container.
+  `shipit issue create --tracker game-tools` unresolvable. One destination
+  per repository, however many plugins are imported from it. Filing stays
+  brokered; the token stays out of the container.
 
 ## 3. UI design
 
@@ -173,7 +193,7 @@ marketplace skills feature already owns `PluginInfo` and `/api/plugins/*`
 | Surface | Mock | Extends | Change |
 |---|---|---|---|
 | Service rows: origin badge (reqs 3, 15, 16) | A | `ServiceList.tsx`, `PreviewServicesDrawer.tsx` | Services get a stable runtime ID, display name, and **structured origin** on `ManagedServiceState` and the service WS messages; every path consumes it — the flat list, the single-service focus card, the log drill-in, bulk actions. A small origin chip renders beside `ModeBadge`. No group headers (reviewed out). Health counts stay over service rows only |
-| **The plugin card** — the one surface for ref @ exact SHA, needs, grants, refresh, degraded and collision states (reqs 12, 13, 15, 20, 23, 24) | B, C | Chip row in the strip under `PrLifecycleCard` + a card it opens | The strip is PR-conditioned today (`hasPanelContent`, `PrLifecycleCard.tsx:133`) — the parent generalizes to show declared-context chips without a PR. Data: `GET /api/plugin-repos?sessionId` returns one authoritative snapshot (declaration, resolved ref/SHA, exports, needs and their satisfaction, degraded/collision state); WS `plugin_repo_status` carries deltas, has `sessionId`, is stale-session guarded, and the snapshot re-seeds on attach/reload. Grants happen here: "Add key…" deep-links the Secrets tab; "Allow (session)/(instance)" posts to the existing not-container-accessible `POST /api/egress/hosts` with the scope choice. No "commits behind" badge (req 15 wants ref + exact commit, not network polling) |
+| **The plugin card** — one per repo group: ref @ exact SHA, its imported plugins, needs, grants, refresh, degraded and collision states (reqs 12, 13, 15, 20, 23, 24) | B, C | Chip row in the strip under `PrLifecycleCard` + a card it opens | The strip is PR-conditioned today (`hasPanelContent`, `PrLifecycleCard.tsx:133`) — the parent generalizes to show declared-context chips without a PR. Data: `GET /api/plugin-repos?sessionId` returns one authoritative snapshot (declaration, resolved ref/SHA, exports, needs and their satisfaction, degraded/collision state); WS `plugin_repo_status` carries deltas, has `sessionId`, is stale-session guarded, and the snapshot re-seeds on attach/reload. Grants happen here: "Add key…" deep-links the Secrets tab; "Allow (session)/(instance)" posts to the existing not-container-accessible `POST /api/egress/hosts` with the scope choice. No "commits behind" badge (req 15 wants ref + exact commit, not network polling) |
 | Needs — credentials (req 23) | B | `SecretsTab.tsx` / `DeclaredSecretRow.tsx`, fed by `secrets_status` | `secrets_status.declared` gains an **origin** dimension (it is flat, name-keyed today — `service.ts:117`, and `SecretsTab` save assumes unique names). A project credential and a plugin credential with the same name are **deliberately the same stored secret**; multiple claimants render as one row with claimant chips |
 | Degraded / collision reporting (reqs 13, 20) | C | The plugin card's own states | Two card states, not transcript cards (reviewed out — no new DB columns, stores, or migrations): **degraded** distinguishes "refresh failed — prior version `<sha>` remains active" (req 15) from "never fetched — session runs without this repo's services" (req 13); **collision** names the colliding domain and the exact `overrides…as:` fix |
 
