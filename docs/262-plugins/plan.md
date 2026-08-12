@@ -66,23 +66,31 @@ with zero `use:` entries is still checked out (req 2 gives its *files* to the
 session); nothing from its manifest is activated. There is no derived
 grouping and no ref-agreement rule — the version is stated exactly once.
 
-Rules (review findings 3, 4, 6, 12, adapted):
+Rules (review findings, both rounds):
 
-- **Naming domains** (req 20) — five, each case-normalized and checked
-  independently at parse time:
-  1. repo `name`s **plus declared tracker names** (one reservation pass
-     across both blocks; first declared wins, the loser is dropped with a
-     surfaced warning) — the feedback channel (req 25) registers the repo
-     `name` into the tracker address space;
-  2. plugin `alias`es across all `use:` entries (they key settings files,
-     skills namespacing, and UI identity);
-  3. `plugin:` selectors, validated against the referenced repo's manifest;
-  4. surfaced **service** names across the project and every plugin
-     (service controls and log channels are name-addressed today —
-     `ws-handlers/service-handlers.ts`);
-  5. **command** names across every plugin, the project, and protected
-     binaries (`shipit`, `git`, coreutils, anything already on the base
-     PATH).
+- **Naming domains** (req 20) — five, each case-normalized, checked in the
+  earliest phase that can know the answer (round-two finding 7 split the
+  old "all at parse time" claim into three phases):
+  - *Phase 1 — consumer-config parse* (no network): 1. repo `name`s **plus
+    declared tracker names** (one reservation pass across both blocks; first
+    declared wins, the loser is dropped with a surfaced warning). The
+    reservation is also **destination-based**: a plugin repo whose GitHub
+    repository is already a declared tracker does not register a second
+    destination — its `name` becomes an alias of the existing one, so both
+    names resolve to one adapter (round-two finding 6). 2. plugin `alias`es
+    across all `use:` entries. Plus reference shape: unknown `from:`,
+    `branch`+`pin`.
+  - *Phase 2 — repository-generation validation* (after fetch, before
+    activation): 3. `plugin:` selectors against the fetched manifest; a
+    failing selected export invalidates that repository's generation
+    (reqs 13, 14).
+  - *Phase 3 — activation validation* (per session): 4. surfaced **service**
+    names across the project and every plugin (service controls and log
+    channels are name-addressed today — `ws-handlers/service-handlers.ts`);
+    5. **command** names across every plugin, the project, and protected
+    binaries (`shipit`, `git`, coreutils, the base PATH). An activation
+    failure keeps the prior generation (or nothing) active and reports the
+    collision; it never half-activates (req 15).
   Aliases are per service and per command; there is no plugin-wide rename of
   services or commands (the entry-level `alias` names the *plugin*, not its
   parts).
@@ -181,7 +189,11 @@ commit, the install string, or declared install-input files.
   generation whole and active. Agent surface: `shipit plugin refresh
   [repo-name]`, which prints before/after status (a separate `list`/`status`
   command was reviewed out; the UI and `SHIPIT_PLUGIN_COMMIT` cover
-  observability).
+  observability). Transport (round-two finding 3): the shim relays through
+  the **worker's agent-ops surface** — like `shipit service` and the issue
+  shim — because orchestrator API routes are default-denied to containers
+  (`api-container-guard.ts`); the browser's `/api/plugin-repos` endpoints
+  are not the agent's path.
 - **Feedback** (req 25 — review finding 12): each declared repo registers
   its `name` in the **same tracker registry** the issue shim and Issues UI
   resolve (`GET /api/trackers`) — a separate registry would leave
@@ -210,10 +222,11 @@ only the `shipit.yaml` key says `plugins:`.
 
 | Surface | Mock | Extends | Change |
 |---|---|---|---|
-| Service rows: origin badge (reqs 3, 15, 16) | A | `ServiceList.tsx`, `PreviewServicesDrawer.tsx` | Services get a stable runtime ID, display name, and **structured origin** on `ManagedServiceState` and the service WS messages; every path consumes it — the flat list, the single-service focus card, the log drill-in, bulk actions. A small origin chip renders beside `ModeBadge`. No group headers (reviewed out). Health counts stay over service rows only |
-| **The Plugins tab** — a right-rail tab holding one card per declared repo: ref @ exact SHA, the plugins used from it, needs, grants, refresh, degraded and collision states (reqs 12, 13, 15, 20, 23, 24) | tab mock 1–3 | The right-rail tab strip (`App.tsx` ~1690–1895, pattern: conditionally shown tabs like PR/Present) | New tab, rendered only when the parsed config declares plugins; a warn dot on the tab label whenever any repo has an actionable state (unsatisfied need, failed refresh, collision), so urgency survives a closed tab. The pane stacks one card per declared repo. Data: `GET /api/plugin-repos?sessionId` returns one authoritative snapshot (declaration, resolved ref/SHA, exports, needs and their satisfaction, degraded/collision state); WS `plugin_repo_status` carries deltas, has `sessionId`, is stale-session guarded, and the snapshot re-seeds on attach/reload. Grants happen here: "Add key…" opens the existing per-repo Project Settings dialog on its Secrets tab (`setProjectSettingsRepoUrl(repoUrl, "secrets")`, same as the missing-secret banner); "Allow (session)/(instance)" posts to the existing not-container-accessible `POST /api/egress/hosts` with the scope choice. The `PrLifecycleCard` and its strip are **untouched**. No "commits behind" badge (req 15 wants ref + exact commit, not network polling) |
+| Service rows: origin badge (reqs 3, 15, 16) | A | `ServiceList.tsx`, `PreviewServicesDrawer.tsx` | Services keep `name` as their client identity (it is already globally collision-checked, req 20, and it is today's control/log address) and gain only a **structured `origin`** field on `ManagedServiceState` and the service WS messages — the runtime-ID/display-name layer was reviewed out (round-two finding 9). A small origin chip renders beside `ModeBadge` in every drawer path. No group headers. Health counts stay over service rows only |
+| **The Plugins tab** — a right-rail tab holding one card per declared repo: ref @ exact SHA, the plugins used from it, needs, grants, refresh, degraded and collision states (reqs 12, 13, 15, 20, 23, 24) | tab mock 1–3 | The right-rail tab strip (`App.tsx` ~1690–1895; `Tab.badge` slot for the warn dot) | New tab, gated on **plugin intent, not on valid repos** (round-two finding 2): a `plugins:` block that parses to zero valid repos still shows the tab, and parse warnings, never-fetched, and unavailable states all count toward the warn dot — otherwise an invalid declaration erases its own warning surface (req 13). The dot uses the existing `Tab.badge` slot with an accessible label ("Plugins — attention required"). Client state is a **session-scoped store** (not pane-local): seeded from the snapshot on attach/reload, stale-session guarded, refetched by the `files-changed` shipit.yaml hook, feeding the dot while the pane is closed; when the tab disappears (declaration edited away, session switch to a plugin-less repo) an effective-tab fallback coerces `rightTab` to Preview/Files, and the tab joins `useTabLabelCollapse`'s dependency key. Mobile needs nothing separate — the same right panel renders under Workspace. Data: `GET /api/plugin-repos?sessionId` returns one authoritative snapshot (declaration incl. **`consumerRepoUrl`**, resolved ref/SHA, exports, needs and their satisfaction, degraded/collision state); WS `plugin_repo_status` carries deltas with `sessionId`. Grants happen here: **"Add key…" opens the Project Settings dialog on the CONSUMING project's secret store** — `setProjectSettingsRepoUrl(consumerRepoUrl, "secrets")`; passing the plugin repo's URL would save the key into the wrong store, since that call selects the store `/api/secrets` writes to (round-two finding 1). "Allow (session)/(instance)" posts to the existing not-container-accessible `POST /api/egress/hosts` with the scope choice. The `PrLifecycleCard` and its strip are **untouched**. No "commits behind" badge (req 15 wants ref + exact commit, not network polling) |
 | Needs — credentials (req 23) | tab mock 1 | `SecretsTab.tsx` / `DeclaredSecretRow.tsx`, fed by `secrets_status` | `secrets_status.declared` gains an **origin** dimension (it is flat, name-keyed today — `service.ts:117`, and `SecretsTab` save assumes unique names). A project credential and a plugin credential with the same name are **deliberately the same stored secret**; multiple claimants render as one row with claimant chips |
-| Degraded / collision reporting (reqs 13, 20) | tab mock 2 | Card states inside the Plugins tab | Two card states, not transcript cards (reviewed out — no new DB columns, stores, or migrations): **degraded** distinguishes "refresh failed — prior version `<sha>` remains active" (req 15) from "never fetched — session runs without this repo's services" (req 13); **collision** names the colliding domain and the exact `overrides…as:` fix |
+| Needs — hosts (req 24) | tab mock 1 | The plugin card's needs rows, over the existing `POST /api/egress/hosts` (global or session scope; browser-only) | "Host not allowed" is evaluated against the **agent container's** allowlist — where companion CLIs run — because today's containment lives in the agent's netns while compose service containers have unrestricted egress (docs/172 residual). The need-row therefore names the blocked claimant (e.g. "blocks `artk`") rather than asserting one repository-level truth across both execution surfaces (round-two finding 4). Whether plugin *services* get their own containment is an explicit slice-2 decision, not a side effect of compose validation. Grant endpoints stay browser-only, so plugin code cannot self-grant |
+| Degraded / collision reporting (reqs 13, 20) | tab mock 2 | Card states inside the Plugins tab | **One card per declared repo, always** — simultaneous problems compose as multiple issue rows under one header whose status chip shows the worst state (round-two finding 8). **Degraded** distinguishes "refresh failed — prior version `<sha>` remains active" (req 15) from "never fetched — session runs without this repo's services" (req 13); **collision** names the colliding domain and the fix as "under the `use` entry whose alias is `<alias>`" (a `use` entry is a YAML sequence item, so there is no bracket path). Not transcript cards — no new DB columns, stores, or migrations |
 
 Settings → Network egress is **unchanged** (it is explicitly the global-only
 editor — `SettingsEgress.tsx:135`); the diagnostics panel addition and the
@@ -231,9 +244,15 @@ coherent in one UI.
 - `src/server/shared/shipit-config.ts` — both blocks parsed here (consumer
   `plugins:`, plugin `exports.plugins:`), one cross-block name reservation
   pass, fail-closed grammar.
-- `src/server/orchestrator/api-routes-plugin-repos.ts` — snapshot +
+- `src/server/orchestrator/api-routes-plugin-repos.ts` — browser snapshot +
   refresh endpoints (new); tracker registration folds into the existing
-  trackers registry (`api-routes-issues.ts`).
+  trackers registry (`api-routes-issues.ts`) with destination-based dedup.
+- `src/server/session/agent-shim/shipit-plugin.ts` + a worker agent-ops
+  relay route — the agent's `shipit plugin refresh` transport (orchestrator
+  API routes are container-denied; the shim goes through the worker like
+  `shipit issue`).
+- `src/client/stores/plugin-repos-store.ts` — the session-scoped store
+  behind the tab, its warn dot, and the effective-tab fallback.
 - `src/server/shared/types/ws-server-messages/service.ts` — structured
   `origin` on service messages; `secrets_status` origin dimension; new
   `plugin_repo_status`.

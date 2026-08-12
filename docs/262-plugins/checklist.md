@@ -15,6 +15,8 @@ Next design slice (server mechanics):
 - [ ] Per-plugin per-session shared state directory, mounted into services and exposed to CLIs (reqs 17, 18)
 - [ ] Published-port stability per (session, service) so the preview origin survives a fragment port edit (req 18)
 - [ ] Compose-fragment merging + security validation of plugin services (reqs 3, 5, 16, 20)
+- [ ] Agent refresh transport: `shipit plugin` shim → worker agent-ops relay → orchestrator, with guard tests (req 12; orchestrator routes are container-denied)
+- [ ] Egress execution-surface semantics: host satisfaction is agent-container truth today (services are unconfined, docs/172); decide whether plugin services get their own containment (req 24)
 - [ ] Skills materialization into each backend's discovery root + refresh re-scan (req 22, docs/209)
 - [ ] Credential name resolution + `secrets_status` plugin grouping (req 23)
 - [ ] CLI PATH mechanism + collision checks (reqs 17, 20)

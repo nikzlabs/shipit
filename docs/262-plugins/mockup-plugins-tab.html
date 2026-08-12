@@ -26,7 +26,6 @@
   .chip.mono{font-family:var(--mono)}
   .chip.warn{color:var(--warn);border-color:#6f5a2b}
   .chip.err{color:var(--err);border-color:#6f3b38}
-  .chip.ok{color:var(--ok);border-color:#2b5f45}
   .btn{background:var(--panel);border:1px solid var(--border);color:var(--text);border-radius:7px;padding:3px 11px;font-size:12px;cursor:pointer;white-space:nowrap}
   .btn.pri{background:#1d3a5f;border-color:#2b567f;color:#cfe6ff}
   .crow{display:flex;align-items:center;gap:8px;padding:7px 12px;border-bottom:1px solid var(--border);font-size:12.5px}
@@ -44,13 +43,17 @@
 
 <h1>docs/262 — the Plugins tab (right rail)</h1>
 <p class="note">The plugin <b>instrument panel</b> lives as its own right-rail tab, beside Preview /
-Files / Issues — not in the chat column, whose PR card describes the work in flight. The tab renders
-<b>only when the project declares plugins</b>; everyone else pays zero rail space. Urgency escapes
-the tab as a warn dot on the tab label, so a closed tab can hide information but never a problem.
-Services themselves stay in Preview's services drawer (req 16 parity) with their origin badges —
-this tab manages the <i>environment</i>: versions, refresh, credentials, hosts, errors.</p>
+Files / Issues — not in the chat column, whose PR card describes the work in flight. The tab is
+gated on <b>plugin intent</b>: any <code>plugins:</code> block shows it, including one that parses to
+zero valid repos — an invalid declaration must not erase its own warning surface. Urgency escapes
+the tab as a warn dot on the label (the existing <code>Tab.badge</code> slot, labeled
+"Plugins — attention required"); parse warnings, never-fetched, unavailable, collisions, and unmet
+needs all count. Services stay in Preview's services drawer (req 16 parity) with origin badges —
+this tab manages the <i>environment</i>: versions, refresh, credentials, hosts, errors.
+<b>Invariant: one card per declared repo, always</b> — simultaneous problems stack as rows under one
+header whose chip shows the worst state.</p>
 
-<h2>1 · The tab, with attention pending — warn dot on the label</h2>
+<h2>1 · Attention pending — warn dot on the label</h2>
 <div class="rail">
   <div class="tabs">
     <span class="tab">Preview</span><span class="tab">Files</span><span class="tab">Issues</span>
@@ -59,17 +62,16 @@ this tab manages the <i>environment</i>: versions, refresh, credentials, hosts, 
   </div>
   <div class="pane">
 
-    <!-- repo 1: quiet -->
+    <!-- repo 1: quiet — no status chip; absence of a dot means healthy -->
     <div class="card">
       <div class="ch">
         <span class="name">game-tools</span>
         <span class="chip mono">nicolasalt/game-tools</span>
         <span class="chip mono">main @ a1b2c3f</span>
-        <span class="chip ok">ok</span>
         <span class="spread"></span>
         <button class="btn">↻ Refresh</button>
       </div>
-      <div class="crow"><div class="grow sub">uses <b>requirements</b> as <code>reqs</code> · <b>imagegen</b> &nbsp;·&nbsp; 1 command (<code>reqs</code>) · 1 skill</div></div>
+      <div class="crow"><div class="grow sub">uses <b>requirements</b> as <code>reqs</code> · <b>imagegen</b></div></div>
     </div>
 
     <!-- repo 2: needs attention -->
@@ -82,18 +84,20 @@ this tab manages the <i>environment</i>: versions, refresh, credentials, hosts, 
         <span class="spread"></span>
         <button class="btn">↻ Refresh</button>
       </div>
-      <div class="crow"><div class="grow sub">uses <b>palette</b> · 1 command (<code>artk</code>)</div></div>
+      <div class="crow"><div class="grow sub">uses <b>palette</b></div></div>
       <div class="crow"><span class="ic">⚠</span><div class="grow">Credential <code class="kbd">FAL_KEY</code> is not set for this project</div><button class="btn pri">Add key…</button></div>
-      <div class="crow"><span class="ic">⚠</span><div class="grow">Host <code class="kbd">fal.run</code> is not on the egress allowlist</div><button class="btn">Allow (session)</button><button class="btn">Allow (instance)</button></div>
+      <div class="crow"><span class="ic">⚠</span><div class="grow">Host <code class="kbd">fal.run</code> is not allowed — blocks <code class="kbd">artk</code></div><button class="btn">Allow (session)</button><button class="btn">Allow (instance)</button></div>
     </div>
 
   </div>
 </div>
-<p class="note">"Add key…" opens the existing per-repo Project Settings dialog on its Secrets tab
-(<code>setProjectSettingsRepoUrl(repoUrl, "secrets")</code> — same as the missing-secret banner).
-"Allow" posts to the existing browser-only <code>POST /api/egress/hosts</code> with the scope choice.</p>
+<p class="note">"Add key…" opens the existing Project Settings dialog on the <b>consuming project's</b>
+secret store — <code>setProjectSettingsRepoUrl(consumerRepoUrl, "secrets")</code>. That call selects
+the store <code>/api/secrets</code> writes to, so passing the plugin repo's URL would save the key in
+the wrong place. "Allow" posts to the existing browser-only <code>POST /api/egress/hosts</code>;
+"not allowed" is the agent container's truth (where the CLI runs), so the row names what it blocks.</p>
 
-<h2>2 · Error states in the same pane — degraded and collision</h2>
+<h2>2 · Error states — still one card per repo; problems stack as rows</h2>
 <div class="rail">
   <div class="tabs">
     <span class="tab">Preview</span><span class="tab">Files</span><span class="tab">Issues</span>
@@ -102,18 +106,23 @@ this tab manages the <i>environment</i>: versions, refresh, credentials, hosts, 
   </div>
   <div class="pane">
 
+    <!-- game-tools: refresh failure AND a collision compose in one card; chip shows the worst -->
     <div class="card">
       <div class="ch">
         <span class="name">game-tools</span>
         <span class="chip mono">main @ a1b2c3f</span>
-        <span class="chip warn">refresh failed</span>
+        <span class="chip err">collision · stale</span>
         <span class="spread"></span>
         <button class="btn">↻ Retry</button>
       </div>
+      <div class="crow"><span class="ic err">✕</span><div class="grow">Service <code class="kbd">requirements</code> is already declared by this
+        project's <code>docker-compose.yml</code>; the plugin service was not started. Fix in <code>shipit.yaml</code>,
+        under the <code>use</code> entry whose alias is <code>reqs</code>: set <code>overrides.services.requirements.as: reqs-ui</code></div></div>
       <div class="crow"><span class="ic">⚠</span><div class="grow">Branch <code class="kbd">main</code> could not be fetched (authorization failed).
         The prior version <code class="kbd">a1b2c3f</code> remains active — files, commands, and services are unchanged.</div></div>
     </div>
 
+    <!-- art-kit: never fetched -->
     <div class="card">
       <div class="ch">
         <span class="name">art-kit</span>
@@ -126,30 +135,38 @@ this tab manages the <i>environment</i>: versions, refresh, credentials, hosts, 
         The session continues without its services and commands.</div></div>
     </div>
 
-    <div class="card">
-      <div class="ch">
-        <span class="name">game-tools</span>
-        <span class="chip mono">main @ a1b2c3f</span>
-        <span class="chip err">collision</span>
-        <span class="spread"></span>
-      </div>
-      <div class="crow"><span class="ic err">✕</span><div class="grow">Service <code class="kbd">requirements</code> is already declared by this
-        project's <code>docker-compose.yml</code>; the plugin service was not started. Fix in <code>shipit.yaml</code>:
-        <code>plugins.use[reqs].overrides.services.requirements.as: reqs-ui</code></div></div>
-    </div>
-
   </div>
 </div>
 
-<h2>3 · Quiet project — tab present, no dot; undeclared project — no tab at all</h2>
+<h2>3 · Quiet project — cards present, no dot; files-only repos included</h2>
 <div class="rail">
   <div class="tabs">
     <span class="tab">Preview</span><span class="tab">Files</span><span class="tab">Issues</span>
     <span class="tab">Plugins</span>
     <span class="tab">Terminal</span><span class="tab">PR</span>
   </div>
-  <div class="pane"><div class="sub" style="padding:2px 2px 6px">Everything satisfied and current — the tab is
-  just there, dotless. A project with no <code>plugins:</code> block never shows the tab.</div></div>
+  <div class="pane">
+    <div class="card">
+      <div class="ch">
+        <span class="name">game-tools</span>
+        <span class="chip mono">main @ a1b2c3f</span>
+        <span class="spread"></span>
+        <button class="btn">↻ Refresh</button>
+      </div>
+      <div class="crow"><div class="grow sub">uses <b>requirements</b> as <code>reqs</code> · <b>imagegen</b></div></div>
+    </div>
+    <div class="card">
+      <div class="ch">
+        <span class="name">docs-templates</span>
+        <span class="chip mono">main @ 4f2a9c1</span>
+        <span class="spread"></span>
+        <button class="btn">↻ Refresh</button>
+      </div>
+      <div class="crow"><div class="grow sub">files only — no plugins activated (checked out at <code>/plugins/docs-templates</code>)</div></div>
+    </div>
+    <div class="sub" style="padding:6px 2px 0">No status chips, no dot — absence of a dot means healthy.
+    A project with no <code>plugins:</code> block never shows the tab.</div>
+  </div>
 </div>
 
 </body>
