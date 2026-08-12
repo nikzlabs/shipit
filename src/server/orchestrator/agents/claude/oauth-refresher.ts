@@ -489,6 +489,11 @@ export class ClaudeOAuthRefresher extends EventEmitter {
         reason: `source file missing or unparseable at ${sourceFile}`,
       };
       console.log(`[claude-oauth-refresh] account=${accountId} missing_credentials — waiting for auth_complete`);
+      // An existing account with no usable source cannot run turns. Treat this
+      // like terminal revocation so persistence, routing, and Settings all
+      // stop advertising the exact account as ready. emitUnauthenticated is
+      // idempotent; repeated manual probes do not duplicate the notifications.
+      this.emitUnauthenticated(accountId, "missing_credentials");
       return result;
     }
 
@@ -518,6 +523,7 @@ export class ClaudeOAuthRefresher extends EventEmitter {
       // Token's still healthy. Tier 1 was just read-only. Rearm on the
       // expiry-derived schedule.
       state.failureCount = 0;
+      this.handleHealthySource(accountId);
       this.scheduleAccount(accountId);
       return {
         outcome: "noop",
@@ -645,7 +651,7 @@ export class ClaudeOAuthRefresher extends EventEmitter {
 
     if (isRevoked) {
       console.log(`[claude-oauth-refresh] account=${accountId} revoked (${this.authFailureReason(lc)}) — emitting auth_required`);
-      this.emitUnauthenticated(accountId);
+      this.emitUnauthenticated(accountId, "revoked");
       // Stop scheduling. The auth_complete handler will reschedule when the
       // user signs back in.
       return {
@@ -697,7 +703,7 @@ export class ClaudeOAuthRefresher extends EventEmitter {
    *   - The per-account `claude_account_unauthenticated` SSE — carries
    *     `{ accountId }` for docs/150 multi-account failover to consume.
    */
-  private emitUnauthenticated(accountId: string): void {
+  private emitUnauthenticated(accountId: string, reason: "revoked" | "missing_credentials"): void {
     const state = this.ensureAccountState(accountId);
     if (state.emittedUnauthenticated) return; // Don't spam SSE on each backoff tick.
     state.emittedUnauthenticated = true;
@@ -705,7 +711,21 @@ export class ClaudeOAuthRefresher extends EventEmitter {
     this.deps.sseBroadcast("claude_account_unauthenticated", { accountId });
     // docs/150 req 19 — see the matching comment in the Codex refresher: the
     // client drops an `agent_auth_failed` that names no account.
-    this.deps.sseBroadcast("agent_auth_failed", { agentId: "claude", accountId, reason: "revoked" });
+    this.deps.sseBroadcast("agent_auth_failed", { agentId: "claude", accountId, reason });
+  }
+
+  /** Clear the terminal-state latch when re-auth wrote a healthy source file. */
+  private handleHealthySource(accountId: string): void {
+    const state = this.ensureAccountState(accountId);
+    if (!state.emittedUnauthenticated) return;
+    state.emittedUnauthenticated = false;
+    try {
+      this.deps.repushAccountToken("claude", accountId);
+    } catch (err) {
+      console.error(`[claude-oauth-refresh] account=${accountId} recovery repush failed:`, err);
+    }
+    this.deps.sseBroadcast("claude_account_authenticated", { accountId });
+    this.emit("account_reauthenticated", accountId);
   }
 
   /**
@@ -859,4 +879,3 @@ export class ClaudeOAuthRefresher extends EventEmitter {
     return Array.from(this.accounts.keys());
   }
 }
-

@@ -190,6 +190,22 @@ everything else (including expired-token 401s) falls through to `rate_limited` o
 tests: `oauth-refresher.test.ts` ("401 … unknown_failure (NOT revoked)",
 "expired-token 401 + refresh 429 as rate_limited").
 
+### Missing source credentials are terminal account state (2026-08 fix)
+
+An existing account whose `.credentials.json` is absent or unparseable cannot
+run a turn and cannot be repaired by another refresh tick. The refresher marks
+that exact account unauthenticated through the same persisted-account and SSE
+path as a revoked refresh token, with `reason: "missing_credentials"`. The
+per-account latch makes repeated ticks and forced probes idempotent. Routing
+then excludes the `auth_failed` account and the next turn selects another ready
+Anthropic subscription account; it never changes the billing mode to an API
+key. The already-failed turn is not replayed by this background transition.
+
+After account-scoped sign-in writes a healthy source, the `auth_complete` nudge
+rearms the schedule. A healthy tier-1 probe clears the latch even when the CLI
+does not rotate the new token, restores the row to `ready`, re-pushes the source
+to pinned sessions, and clears stale Settings and model-selector state.
+
 ### Detecting refresh outcomes
 
 The CLI is a native binary; we can't introspect it statically. We rely on two

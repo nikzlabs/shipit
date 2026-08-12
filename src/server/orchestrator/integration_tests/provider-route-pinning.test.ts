@@ -31,7 +31,9 @@ import { SessionManager } from "../sessions.js";
 import { SessionRunnerRegistry } from "../session-runner.js";
 import { prepareSessionAgentEnvironment } from "../session-agent-env.js";
 import { wakeSessionWithTurn } from "../wake-session.js";
+import { markProviderAccountUnauthenticated } from "../app-lifecycle.js";
 import type { SessionRunnerInterface } from "../session-runner.js";
+import type { AgentRegistry } from "../../shared/agent-registry.js";
 import type { AgentId, SubscriptionLimits, SubscriptionLimitsMap } from "../../shared/types.js";
 import type { ProviderRouteKind } from "../../shared/types/domain-types/provider.js";
 import { createTestDatabaseManager } from "./test-helpers.js";
@@ -194,6 +196,39 @@ describe("per-turn account routing (docs/260)", () => {
 
     const { turnRoute } = await runEnvPrep("s1", "claude");
     expect(turnRoute).toEqual({ kind: "account", id: second });
+  });
+
+  it("routes the next turn to a healthy subscription after an account-qualified auth failure", async () => {
+    process.env.ANTHROPIC_API_KEY = "configured-metered-key";
+    const first = readyAccount("claude", "Missing source");
+    const second = readyAccount("claude", "Healthy subscription");
+    const events: { event: string; data: unknown }[] = [];
+    const agentRegistry = {
+      refreshAuth: () => {},
+      list: () => [],
+    } as unknown as AgentRegistry;
+
+    // This is the persistence and UI event path used by the OAuth refresher's
+    // account_unauthenticated event for missing credentials and revocation.
+    markProviderAccountUnauthenticated({
+      agentId: "claude",
+      accountId: first,
+      providerAccountManager: accounts,
+      agentRegistry,
+      sseBroadcast: (event, data) => events.push({ event, data }),
+      credentialStore: store,
+    });
+
+    expect(accounts.get("anthropic", first)?.status).toBe("auth_failed");
+    expect(events).toContainEqual({
+      event: "provider_accounts",
+      data: { accounts: expect.arrayContaining([expect.objectContaining({ id: first, status: "auth_failed" })]) },
+    });
+
+    sessions.track("s1", "Test", path.join(root, "sessions", "s1"));
+    const { turnRoute } = await runEnvPrep("s1", "claude");
+    expect(turnRoute).toEqual({ kind: "account", id: second });
+    expect(turnRoute).not.toEqual({ kind: "reserved", id: "anthropic-key" });
   });
 
   it("returns to the strategy's best account the turn its refusal clears (reqs 1, 8)", async () => {

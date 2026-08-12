@@ -611,7 +611,7 @@ describe("ClaudeOAuthRefresher", () => {
     fs.rmSync(rootDir, { recursive: true, force: true });
   });
 
-  it("returns missing_credentials when the source file is absent", async () => {
+  it("marks missing source credentials unauthenticated once and recovers after re-auth", async () => {
     const now = 1_700_000_000_000;
     const rig = buildRig({
       accounts: [makeAccount("claude-default")],
@@ -620,10 +620,31 @@ describe("ClaudeOAuthRefresher", () => {
     });
     rigs.push(rig);
 
+    const unauthenticated: string[] = [];
+    const reauthenticated: string[] = [];
+    rig.refresher.on("account_unauthenticated", (accountId: string) => unauthenticated.push(accountId));
+    rig.refresher.on("account_reauthenticated", (accountId: string) => reauthenticated.push(accountId));
+
     const [result] = await rig.refresher.refreshNow("claude-default");
+    await rig.refresher.refreshNow("claude-default");
     expect(result!.outcome).toBe("missing_credentials");
     expect(rig.spawnHandle.invocations.length).toBe(0);
     expect(rig.repushCalls.length).toBe(0);
+    expect(unauthenticated).toEqual(["claude-default"]);
+    expect(rig.sseCalls).toContainEqual({
+      event: "agent_auth_failed",
+      data: { agentId: "claude", accountId: "claude-default", reason: "missing_credentials" },
+    });
+    expect(rig.sseCalls.filter((call) => call.event === "agent_auth_failed")).toHaveLength(1);
+
+    writeCredentials(
+      path.join(rig.rootDir, "provider-accounts", "claude", "claude-default"),
+      { expiresAt: now + 8 * 60 * 60 * 1000 },
+    );
+    await rig.refresher.refreshNow("claude-default");
+    expect(reauthenticated).toEqual(["claude-default"]);
+    expect(rig.repushCalls).toEqual([{ agentId: "claude", accountId: "claude-default" }]);
+    expect(rig.refresher._inspectForTest("claude-default").emittedUnauthenticated).toBe(false);
   });
 
   // ---- ensureFresh (docs/179) — proactive pre-read heal ----
