@@ -416,7 +416,11 @@ export function ClaudeAuthOutput({ accountId }: { accountId: string }) {
       <summary className="cursor-pointer select-none text-xs text-(--color-text-link) transition-colors hover:text-(--color-accent)">
         Claude CLI output ({entries.length})
       </summary>
-      <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded-md border border-(--color-border-secondary) bg-(--color-bg-secondary) p-2 font-mono text-[var(--font-size-code)] text-(--color-text-secondary)">
+      {/* `--font-size-code` (13px) is the size a code block in the chat reads
+          at, and this is not that: it is a diagnostic dump, skimmed for the one
+          line that explains a failure, and at 13px three entries filled the
+          panel. 10/14 mono fits a legible page of it in the same space. */}
+      <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded-md border border-(--color-border-secondary) bg-(--color-bg-secondary) p-2 font-mono text-[10px] leading-[14px] text-(--color-text-secondary)">
         {entries.map((entry) =>
           `${entry.timestamp} ${entry.level.toUpperCase()} ${entry.source}: ${entry.message}`,
         ).join("\n")}
