@@ -31,7 +31,7 @@ Next design slice (server mechanics):
 Verification (plan.md §5 — drives the implementation):
 
 - [x] Test plugin authored (`test-plugin/`): one tiny service, one CLI, one skill, one setting, one credential name, one host — every export a self-reporting probe; manifest + `repo: self` declaration live in this repo's shipit.yaml; `plugins`/`exports` reserved in shipit-config.ts with a guard test
-- [ ] Test plugin exercised via TWO fixtures once slice 2 lands: self-declared (`repo: self`, live path — `checkout.writable: true`) and consumer-declared by `owner/name` (checkout/generation/refresh path — `checkout.writable: false`)
+- [ ] Test plugin exercised via TWO fixtures once slice 2 lands: self-declared (`repo: self`, live path — no `SHIPIT_PLUGIN_COMMIT`) and consumer-declared by `owner/name` (checkout/generation/refresh path — commit set, `install.matchesActiveCommit: true`)
 - [ ] Dogfood everything but services in the inner instance (`RUNTIME_MODE=local` skips Docker): parsing, tab, needs, CLI wrappers, skills via the self fixture; generations + refresh relay via the consumer fixture — including admitting the relay in local mode's explicit agent-ops route allowlist (`local-agent-ops.ts`) with the parity test extended
 - [ ] Service path via integration tests (isTestMode fakes): fragment merge, per-service startup/overrides, origin on service messages, collision failures
 - [ ] One real-instance end-to-end: plugin service + preview + `window.shipit` interaction

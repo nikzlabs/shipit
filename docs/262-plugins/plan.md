@@ -153,10 +153,14 @@ Ahead of the parser, `plugins` and `exports` are **reserved top-level keys** in
 declaration — this repo's own fixture — doesn't render a migration warning.
 
 **Fragment paths** (set by the fixture): relative paths in the compose
-fragment follow standard compose semantics — they resolve against the
-fragment's own directory inside the checkout (through the writable layer),
-never against the consuming project — and the slice-2 merge must preserve
-that resolution when it folds the fragment into the project stack.
+fragment resolve against the fragment's own directory inside the checkout
+(through the writable layer), never against the consuming project. That is
+how the fragment behaves standalone (`docker compose up` in its own
+directory) — but it is **not** what compose's multi-file merge does, which
+resolves relative paths from the base file. Slice 2 must therefore
+deliberately preserve per-fragment resolution: compose `include` semantics,
+or rebasing the fragment's paths before merging (review finding, this
+round).
 ShipIt-injected pieces (`/project`, the state dir, the `SHIPIT_*` env) are
 deliberately not declared in the fragment, so it stays valid for a plain
 `docker compose up` and the plugin can degrade its report gracefully.
@@ -165,8 +169,11 @@ deliberately not declared in the fragment, so it stays valid for a plain
 plugin's checkout root inside its writable layer** — a copy-on-write layer
 over the read-only checkout, so `node_modules` and build output land in the
 layer, never in the checkout and never in the project (req 7). Writes outside
-the layer fail. Install re-runs when its stamped inputs change: the plugin
-commit, the install string, or the content of the manifest's
+the layer fail. Install runs with the generation's env — `SHIPIT_PLUGIN_COMMIT`
+set for a consumer generation, unset under `repo: self` (set by the fixture:
+its install stamp records the commit, and the probe checks the stamp against
+the active generation). Install re-runs when its stamped inputs change: the
+plugin commit, the install string, or the content of the manifest's
 `install-inputs` files (the same convention `agent.install` already uses).
 
 ## 2. How a plugin is used inside a session
@@ -190,7 +197,9 @@ commit, the install string, or the content of the manifest's
   tracked commit edits the fragment's port, because the preview origin is
   port-derived and req 18 guarantees origin stability.
 - **Env**: `SHIPIT_PROJECT_DIR`, `SHIPIT_PLUGIN_COMMIT` (per declared repo;
-  req 15 — the commit readable by the plugin itself), and `SHIPIT_SETTINGS`
+  req 15 — the commit readable by the plugin itself; **unset under
+  `repo: self`**, since a live tree corresponds to no exact commit — this is
+  also how the fixture discriminates its two modes), and `SHIPIT_SETTINGS`
   — the path to one validated JSON file with the imported plugin's setting
   values, keyed by its `alias` (req 26; a per-setting env grammar was
   reviewed out as collision-prone). **Both surfaces get the same env names**

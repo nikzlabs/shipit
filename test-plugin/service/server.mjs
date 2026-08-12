@@ -2,15 +2,18 @@
 // A dependency-free HTTP server that renders the probe report from the
 // service surface: /project mount, shared state dir, settings file, env.
 //
-//   GET  /             HTML report (auto-refreshes the counter line)
+//   GET  /             HTML report (reads never mutate the counter)
 //   GET  /report.json  the raw report
-//   POST /increment    bump the shared counter (what the CLI also bumps)
+//   POST /increment    bump the shared counter (what `probe --bump` also bumps)
 //
-// The page also reports whether `window.shipit` is injected — the hook the
-// real-instance E2E uses (plan §5).
+// The page also exercises the Agent Interface SDK (req 3, plan §5): it awaits
+// `window.shipit.ready`, feature-detects `embedded` (presence alone proves
+// nothing — /shipit-docs/agent-interface-sdk.md), and a button sends the
+// current counter to the agent via `window.shipit.agent.sendMessage()` — the
+// real-instance E2E's browser-to-agent click.
 
 import http from "node:http";
-import { buildReport } from "../lib/report.mjs";
+import { buildReport, bumpCounter } from "../lib/report.mjs";
 
 const PORT = Number(process.env.PROBE_PORT) || 4820;
 
@@ -21,9 +24,8 @@ const server = http.createServer((req, res) => {
     return;
   }
   if (req.method === "POST" && req.url === "/increment") {
-    const report = buildReport("service"); // building the report increments the counter
     res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify({ counter: report.state.counter ?? null }));
+    res.end(JSON.stringify({ counter: bumpCounter("service") }));
     return;
   }
   if (req.method === "GET" && (req.url === "/" || req.url?.startsWith("/?"))) {
@@ -54,17 +56,45 @@ function renderPage(report) {
 <p><b>${escapeHtml(greeting)}</b></p>
 <p>Shared counter: <b id="counter">${report.state.counter ?? "—"}</b>
    <button id="bump">Increment</button>
-   <span class="ok" hidden id="hint">now run the <code>probe</code> CLI — it bumps the same counter</span></p>
-<p>window.shipit: <b id="shipit">checking…</b></p>
+   <span class="ok" hidden id="hint">now run <code>probe --bump</code> — the CLI bumps the same counter</span></p>
+<p>Agent Interface SDK: <b id="shipit">checking…</b>
+   <button id="send" disabled>Send counter to agent</button>
+   <span id="sent"></span></p>
 <pre>${escapeHtml(JSON.stringify(report, null, 2))}</pre>
 <script>
-  document.getElementById("shipit").textContent = window.shipit ? "injected" : "absent";
   document.getElementById("bump").addEventListener("click", async () => {
     const res = await fetch("/increment", { method: "POST" });
     const body = await res.json();
     document.getElementById("counter").textContent = body.counter ?? "—";
     document.getElementById("hint").hidden = false;
   });
+
+  // req 3 — the browser-to-agent path. Presence alone proves nothing: await
+  // the parent handshake and feature-detect "embedded" (agent-interface-sdk).
+  (async () => {
+    const label = document.getElementById("shipit");
+    if (!window.shipit) { label.textContent = "absent"; return; }
+    await window.shipit.ready;
+    if (!window.shipit.embedded) { label.textContent = "injected, not embedded"; return; }
+    label.textContent = "embedded";
+    const send = document.getElementById("send");
+    send.disabled = false;
+    send.addEventListener("click", async () => {
+      const sent = document.getElementById("sent");
+      try {
+        const counter = document.getElementById("counter").textContent;
+        await window.shipit.agent.sendMessage({
+          text: "test-plugin probe: the shared counter is " + counter +
+            ". Reply with the counter value to confirm the plugin page reached you.",
+        });
+        sent.textContent = "sent — check the chat";
+        sent.className = "ok";
+      } catch (err) {
+        sent.textContent = err instanceof Error ? err.message : "send failed";
+        sent.className = "bad";
+      }
+    });
+  })();
 </script>
 </body>
 </html>`;

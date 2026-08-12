@@ -3,14 +3,19 @@
 // Prints the probe report as JSON. Runs in the agent container with
 // cwd = the consuming project's workspace (plan §2, req 21).
 //
-//   probe                 print the report
+//   probe                 print the report (read-only — mutates nothing)
+//   probe --bump          increment the shared counter first (reqs 17, 18),
+//                         then report; the service page shows the same number
 //   probe --host-check    additionally try HTTPS to the declared host
 //                         (example.com, req 24) and report allowed/blocked
 //
 // Exit code is always 0 — the probe reports; it does not judge.
 
-import { buildReport } from "../lib/report.mjs";
+import { buildReport, bumpCounter } from "../lib/report.mjs";
 
+if (process.argv.includes("--bump")) {
+  bumpCounter("cli");
+}
 const report = buildReport("cli");
 
 if (process.argv.includes("--host-check")) {

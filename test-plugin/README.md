@@ -11,10 +11,14 @@ checkout, generations, or refresh (req 27):
 
 - **self-declared** — this repo's own `shipit.yaml` declares `repo: self`
   (name `shipit-dev`) and uses the `probe` plugin: the live working-tree
-  path. `checkout.writable` must report `true` here.
+  path. The report must show `mode: self-or-unprovided` — no
+  `SHIPIT_PLUGIN_COMMIT`, because a live tree corresponds to no exact commit.
 - **consumer-declared** — a consuming project (the inner dogfood instance)
   declares this repo by `owner/name`: the checkout / generation / pin /
-  refresh path. `checkout.writable` must report `false` here.
+  refresh path. The report must show `mode: consumer-generation` with the
+  exact commit, and `install.matchesActiveCommit: true`. (`checkout.writable`
+  is deliberately not the discriminator: a consumer CLI runs through the
+  plugin's writable layer, where writes succeed.)
 
 Layout:
 
