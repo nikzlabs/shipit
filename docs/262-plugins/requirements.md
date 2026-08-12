@@ -174,16 +174,17 @@ receipts below keep the original "tools" vocabulary of the early rounds.
     (Claude, Codex, or a later one) — a plugin's skills are never tied to one
     backend.
 23. A plugin repository declares the **credential names** its services and
-    CLIs require for their own job (e.g. a third-party API key). Values
-    resolve from a store associated with the plugin repository, so one key
-    serves every consuming project and rotation happens in one place; a
-    project may override a value for itself. A project session shows which
-    declared credentials a plugin requires and whether they are satisfied.
-    Onboarding a project therefore stays one declaration (req 5) — never
-    declaration plus copying keys into each project. The store holds only
-    values the user placed there for plugins; it can never resolve ShipIt's
-    own platform credentials — the user's GitHub identity, tracker tokens, or
-    agent tokens.
+    CLIs require for their own job (e.g. a third-party API key). Values come
+    from the **consuming project's own secret store**, per repository — the
+    model that exists today, kept deliberately for v1 scope. It covers every
+    case, suboptimally: a key used by three projects is entered three times
+    and rotated in three places (the inherited plugin-repo store is deferred
+    — see Out of scope). A project session shows which declared credentials a
+    plugin requires and whether they are satisfied, so a missing key is a
+    visible, named gap, never an opaque failure. Whatever store feeds a
+    plugin holds only values the user placed there for plugins; it can never
+    resolve ShipIt's own platform credentials — the user's GitHub identity,
+    tracker tokens, or agent tokens.
 24. Plugin code gets no network access of its own. A plugin declaration never
     widens a session's network reach: services and companion CLIs from a
     plugin repository reach exactly what equivalent same-repo code could
@@ -224,6 +225,13 @@ receipts below keep the original "tools" vocabulary of the early rounds.
   consumes metered external resources, per-session spend visibility, and
   project-set caps). Deferred entirely; pinning (req 8) and the owner
   controlling both repositories are the v1 mitigation.
+- An **inherited plugin-repo credential store** (set a shared key once on the
+  plugin's own repository; consuming projects inherit it, with per-project
+  override). Deferred to v2. The user's analysis (2026-08-12): both homes
+  are eventually right — a shared image-generation key wants one rotation
+  point, while a key to a per-project database is inherently per-project —
+  so v2 likely supports both. V1 sticks to per-project copies (req 23),
+  which cover all cases, suboptimally.
 
 ## Requirement provenance
 
@@ -320,6 +328,8 @@ requirement 26 (plugin settings) from its third round.
   **tools-repo store with per-project override** — the tools repo declares
   credential names; one key serves every consumer and rotates in one place;
   sessions show satisfaction. → req 23; req 19 gains its second half.
+  *(Credential home superseded 2026-08-12 — see below; the declared-names
+  half stands.)*
 - **2026-08-11 — Metered spend** (fit review 2, finding 2). Answer: **defer
   entirely to v2** (the agent recommended per-session spend visibility in v1;
   the user chose full deferral — pinning and single-owner repos are the v1
@@ -371,3 +381,13 @@ requirement 26 (plugin settings) from its third round.
   Stated directly by the user: plugins need per-project settings written in
   the project's `shipit.yaml` — the example given is the root directory
   where a plugin reads and writes files. → req 26.
+- **2026-08-12 — Credential home revisited** (doc review, round 4). The user
+  questioned the inherited plugin-repo store adopted on 2026-08-11 and chose
+  to **reduce v1 to per-project copies** — the existing per-repository
+  secret store, which covers every case, suboptimally. Rationale recorded:
+  both homes are eventually right — some keys are inherently per-project (a
+  plugin talking to a per-project database), others naturally shared (an
+  image-generation key) — so v2 likely supports both. → req 23 rewritten;
+  inherited store moved to Out of scope. Supersedes the credential-home half
+  of the 2026-08-11 "Tool credentials" resolution; the declared-names half
+  (visibility of required/missing keys) stands.
