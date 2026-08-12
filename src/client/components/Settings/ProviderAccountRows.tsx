@@ -408,11 +408,28 @@ export function useAuthStatus(accountId: string | undefined): string | undefined
 export function ClaudeAuthOutput({ accountId }: { accountId: string }) {
   const diagnostics = useSettingsStore((s) => s.claudeAuthDiagnostics)[accountId]
     ?? EMPTY_CLAUDE_AUTH_DIAGNOSTICS;
+  /**
+   * **Open/closed is held in the store, not by the `<details>` element.**
+   *
+   * One sign-in renders this disclosure from two different components — the
+   * waiting panel, then the challenge — so the element is destroyed and rebuilt
+   * at the moment the code arrives. Left to itself it comes back closed: a user
+   * reading the output had it snap shut under them, and the panel jumped by the
+   * height of what they were reading. Keyed by account, so two rows cannot
+   * share one answer.
+   */
+  const open = useSettingsStore((s) => s.claudeAuthOutputOpen[accountId] ?? false);
+  const setOpen = useSettingsStore((s) => s.setClaudeAuthOutputOpen);
   const { entries } = diagnostics;
   if (entries.length === 0) return null;
 
   return (
-    <details className="group" data-testid={`provider-account-diagnostics-${accountId}`}>
+    <details
+      className="group"
+      open={open}
+      onToggle={(event) => setOpen(accountId, event.currentTarget.open)}
+      data-testid={`provider-account-diagnostics-${accountId}`}
+    >
       <summary className="cursor-pointer select-none text-xs text-(--color-text-link) transition-colors hover:text-(--color-accent)">
         Claude CLI output ({entries.length})
       </summary>

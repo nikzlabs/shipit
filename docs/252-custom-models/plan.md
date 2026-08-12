@@ -3005,7 +3005,13 @@ pulse alone reads as *stuck* rather than as *working*.
   Claude CLI to print an authentication link"), with a pulse for the rest.
 - **`ClaudeAuthOutput` — the whole buffer, collapsed — lives INSIDE the panel**, in both the
   waiting state and the challenge, so the arrival of the field moves nothing and there is one
-  place carrying the sign-in.
+  place carrying the sign-in. Its open/closed state is held in the settings store
+  (`claudeAuthOutputOpen`, keyed by account) and **not** by the `<details>` element: the
+  disclosure is rendered by two different components across one sign-in, so the element is
+  destroyed and rebuilt at exactly the moment the code arrives. Uncontrolled, a buffer the user
+  had open snapped shut under them and the panel jumped by the height of what they were
+  reading. It is also 10px/14px mono rather than `--font-size-code` (13px) — that token is the
+  size a chat code block reads at, and this is a diagnostic dump skimmed for one line.
 
 **Two rejected cuts got there first, and both are worth stating because they look reasonable
 written down.** The first streamed the CLI's last three lines *below* the box: that put the

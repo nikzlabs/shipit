@@ -50,6 +50,8 @@ beforeEach(() => {
     providerAccountNotices: {},
     providerAccountAuths: {},
     providerAccountAuthErrors: {},
+    claudeAuthDiagnostics: {},
+    claudeAuthOutputOpen: {},
   });
   vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
     fetchCalls.push({
@@ -352,6 +354,49 @@ describe("ServicesPanel", () => {
       const challenge = screen.getByTestId("provider-account-challenge-acct-anthropic-1");
       expect(within(challenge).getByTestId("provider-account-diagnostics-acct-anthropic-1"))
         .toHaveTextContent("Claude CLI output (2)");
+    });
+
+    it("keeps the output open across the moment the code arrives", async () => {
+      // The disclosure is rendered by the waiting panel and then by the
+      // challenge — two components, so the element is destroyed and rebuilt at
+      // exactly the moment the user is reading it. Uncontrolled, it came back
+      // closed and the panel jumped by the height of what they were reading.
+      const account = {
+        id: "acct-anthropic-2",
+        serviceId: "anthropic", billingMode: "sub", via: "account",
+        label: "Anthropic account 2", isPrimary: true, status: "authenticating",
+        createdAt: 1, updatedAt: 1,
+      };
+      vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
+        fetchCalls.push({ url, method: init?.method ?? "GET", body: init?.body ? JSON.parse(init.body as string) : undefined });
+        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ account, accounts: [account] }) });
+      });
+
+      render(<ServicesPanel agentList={[claudeAgent]} />);
+      await userEvent.click(screen.getByTestId("services-add-empty"));
+      await userEvent.click(screen.getByTestId("add-service-option-anthropic"));
+      await userEvent.click(screen.getByTestId("add-service-mode-sub"));
+      await userEvent.click(screen.getByTestId("add-service-sign-in"));
+      await waitFor(() => expect(logins()).toBe(1));
+      useSettingsStore.getState().appendClaudeAuthLog("acct-anthropic-2", {
+        attemptId: "attempt-2", timestamp: "2026-08-12T00:00:00.000Z",
+        level: "info", source: "shipit", message: "Spawned claude /login.",
+      });
+
+      const buffer = await screen.findByTestId("provider-account-diagnostics-acct-anthropic-2");
+      await userEvent.click(within(buffer).getByText(/Claude CLI output/));
+      expect(screen.getByTestId("provider-account-diagnostics-acct-anthropic-2")).toHaveAttribute("open");
+
+      useSettingsStore.getState().setProviderAccountAuth("claude", "acct-anthropic-2", {
+        provider: "claude", accountId: "acct-anthropic-2",
+        verificationUri: "https://claude.ai/oauth/authorize",
+      });
+
+      await waitFor(() => expect(
+        screen.getByTestId("provider-account-challenge-acct-anthropic-2"),
+      ).toBeInTheDocument());
+      // Still open, in the rebuilt one.
+      expect(screen.getByTestId("provider-account-diagnostics-acct-anthropic-2")).toHaveAttribute("open");
     });
 
     it("leaves a mode that also takes a key alone — there the sign-in is a choice", async () => {

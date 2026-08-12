@@ -253,6 +253,16 @@ interface SettingsState {
    * serialization guard, so a row can only render its own attempt's output.
    */
   claudeAuthDiagnostics: Record<string, ClaudeAuthDiagnostics>;
+  /**
+   * Which accounts' output buffers the user has opened, keyed by account id.
+   *
+   * Here rather than left to the `<details>` element because the disclosure is
+   * rendered by two different components across one sign-in — the waiting panel
+   * and then the challenge — so the element itself is destroyed and rebuilt at
+   * the moment the code arrives. Uncontrolled, the buffer a user had open
+   * snapped shut under them, and the panel jumped by the height of it.
+   */
+  claudeAuthOutputOpen: Record<string, boolean>;
   providerAccounts: CredentialRoute[];
   /**
    * docs/252 phase 2 — every credential the user holds, keyed by
@@ -362,6 +372,7 @@ interface SettingsState {
     status: "complete" | "failed",
     message?: string,
   ) => void;
+  setClaudeAuthOutputOpen: (accountId: string, open: boolean) => void;
   setProviderAccounts: (accounts: CredentialRoute[]) => void;
   setCredentialRoutes: (routes: CredentialRoute[]) => void;
   /** docs/252 phase 7 — apply a `/api/settings` response's non-turn fields. */
@@ -448,6 +459,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   failoverCutoffs: {},
   accountSelectionMode: {},
   claudeAuthDiagnostics: {},
+  claudeAuthOutputOpen: {},
   providerAccounts: [],
   credentialRoutes: [],
   nonTurnModel: null,
@@ -642,6 +654,11 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
         },
       };
     }),
+  setClaudeAuthOutputOpen: (accountId, open) =>
+    set((state) => ({
+      claudeAuthOutputOpen: { ...state.claudeAuthOutputOpen, [accountId]: open },
+    })),
+
   setProviderAccounts: (accounts) => set({ providerAccounts: accounts }),
   setCredentialRoutes: (routes) => set({ credentialRoutes: routes }),
   setNonTurnModel: (pinned, resolved) => set({ nonTurnModel: pinned, nonTurnModelResolved: resolved }),
