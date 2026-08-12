@@ -3116,12 +3116,33 @@ it posts `/login` for the existing row and renders `AccountChallenge` inline in 
 returns `null` until the auth URL arrives — so between the click and the URL the row shows
 nothing at all. That is the same "it looks stuck" gap the dialog's step 3 was built to close,
 and the fix is to have one sign-in surface rather than a second, poorer copy: the waiting
-skeleton, the CLI output buffer, the code field and the failure state all exist there already,
-and the dialog can host an existing account by id (`signInAccountId`). The row's inline
-challenge is deleted with it. **The one thing to pin with a test: cancelling a reconnect must
-not remove the account.** The dialog abandons an attempt *it* created; a connected account is
-not an attempt (`isUnconnectedAttempt` is false once it has an `externalId`), so cancel must
-leave it connected and in the same position in the order.
+skeleton, the CLI output buffer, the code field and the failure state all exist there already.
+The row's inline challenge is deleted with it.
+
+**It is the same component, entered differently — not a `ReconnectDialog`.** This is the whole
+point of the change, so it is stated as a constraint rather than left to taste: there is exactly
+**one** dialog in this panel, `AddServiceDialog`, with **one** mount site in `ServicesPanel`.
+Everything reconnect needs is already there:
+
+- `initialService` / `initialMode` skip steps 1 and 2, so the dialog opens on step 3.
+- `signInAccountId` already names "the account this dialog's sign-in belongs to", re-read from
+  the store every render. Reconnect seeds it with an **existing** id instead of one the dialog
+  minted, and starts the login for it — the same `startAccountLogin` call `startSignIn` makes
+  after its create.
+- The title is already computed (`Add a service — {service.name}`), so the verb becomes a prop
+  rather than a second dialog: *Reconnect Anthropic — Work plan*.
+
+What must NOT happen: a copy of step 3 in the row, a second `Dialog` mounted from
+`ProviderAccountRows`, or a "reconnect mode" branch that re-implements the panel. If a change
+looks like it needs one of those, the seam is wrong — the dialog's step 3 is already parameterised
+by `(service, mode, accountId)` and that is the entire input reconnect has.
+
+**The one thing to pin with a test: cancelling a reconnect must not remove the account.** The
+dialog abandons an attempt *it* created; a connected account is not an attempt
+(`isUnconnectedAttempt` is false once it has an `externalId`), so cancel must leave it connected
+and in the same position in the order. A second test asserts the panel renders exactly one
+`add-service-dialog` testid whichever way it was opened, so a future reconnect surface cannot be
+added beside it without turning the suite red.
 
 **Environment-delivered credentials are adopted, not special-cased (req 20).** Today a
 deployment's `ANTHROPIC_AUTH_TOKEN` produces no row: `listCredentialRoutes` returns stored rows

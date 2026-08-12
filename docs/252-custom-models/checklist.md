@@ -270,6 +270,7 @@ landed ahead of this checklist's per-phase sections.
 - [ ] Rename for a supplied key (the label patch endpoint already exists)
 - [ ] Drag-and-drop ordering replaces the carets, for both row types
 - [ ] Delete `Make primary`: the button, both badges, `POST …/:id/primary`, `makePrimaryProviderAccount`, `ProviderAccountManager.makePrimary`
-- [ ] Reconnect opens the add-service dialog on its sign-in step; delete the row's inline challenge
+- [ ] Reconnect opens the **same** `AddServiceDialog` on step 3 (`initialService` + `initialMode` + an existing `signInAccountId`); delete the row's inline challenge
 - [ ] Guard test: cancelling a reconnect leaves the account connected and in the same position
+- [ ] Guard test: exactly one `add-service-dialog` is mounted, however it was opened — no second dialog for reconnect
 - [ ] Adopt environment-delivered credentials into ordinary rows at boot (rotation, remembered deletion, reserved route ids)
