@@ -2,6 +2,7 @@
 import { useState, useRef, useEffect } from "react";
 import { Button } from "./ui/button.js";
 import { DeclaredSecretRow } from "./DeclaredSecretRow.js";
+import { SettingsTabPane } from "./Settings/SettingsTabPane.js";
 import { usePreviewStore } from "../stores/preview-store.js";
 
 /**
@@ -223,7 +224,28 @@ export function SecretsTab({ repoUrl, onSecretsSave, onSecretsLoad }: SecretsTab
   }
 
   return (
-    <>
+    <SettingsTabPane
+      testId="secrets-tab"
+      footer={
+        <Button
+          variant="primary"
+          size="md"
+          disabled={saving}
+          onClick={save}
+          className="rounded-md"
+          data-testid="secrets-save"
+        >
+          {saving ? "Saving..." : saved ? "Saved" : "Save"}
+        </Button>
+      }
+    >
+      <div className="space-y-1">
+        <h3 className="text-sm font-medium text-(--color-text-primary)">Environment Variables</h3>
+        <p className="text-xs text-(--color-text-secondary)">
+          Secrets are injected into the services that declare them in <code className="px-1 py-0.5 rounded bg-(--color-bg-secondary) text-(--color-text-primary)">x-shipit-secrets</code>. The agent only sees values you explicitly mark with <code className="px-1 py-0.5 rounded bg-(--color-bg-secondary) text-(--color-text-primary)">agent: true</code>.
+        </p>
+      </div>
+
       {/* Declared secrets (from x-shipit-secrets). Hidden when the repo's
           compose file declares nothing — the tab shrinks to the custom-only
           legacy form. */}
@@ -307,19 +329,6 @@ export function SecretsTab({ repoUrl, onSecretsSave, onSecretsLoad }: SecretsTab
           + Add variable
         </button>
       </section>
-
-      <div className="flex justify-end mt-2">
-        <Button
-          variant="primary"
-          size="md"
-          disabled={saving}
-          onClick={save}
-          className="rounded-md"
-          data-testid="secrets-save"
-        >
-          {saving ? "Saving..." : saved ? "Saved" : "Save"}
-        </Button>
-      </div>
-    </>
+    </SettingsTabPane>
   );
 }
