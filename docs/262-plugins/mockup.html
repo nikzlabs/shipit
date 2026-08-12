@@ -10,90 +10,88 @@
     --warn:#e2b93b; --err:#e0655f; --chip:#232c3b; --mono:ui-monospace,Menlo,Consolas,monospace;
   }
   body{background:var(--bg);color:var(--text);font:14px/1.5 system-ui,sans-serif;margin:0;padding:32px;}
-  h1{font-size:18px} h2{font-size:15px;margin:40px 0 6px} .note{color:var(--muted);font-size:12.5px;max-width:70ch}
-  .frame{background:var(--panel);border:1px solid var(--border);border-radius:10px;max-width:460px;overflow:hidden;margin-top:10px}
-  .frame.wide{max-width:640px}
+  h1{font-size:18px} h2{font-size:15px;margin:40px 0 6px} .note{color:var(--muted);font-size:12.5px;max-width:72ch}
+  .frame{background:var(--panel);border:1px solid var(--border);border-radius:10px;max-width:470px;overflow:hidden;margin-top:10px}
   .fh{padding:8px 14px;font-size:12px;color:var(--muted);border-bottom:1px solid var(--border);letter-spacing:.04em;text-transform:uppercase}
   .row{display:flex;align-items:center;gap:10px;padding:9px 14px;border-bottom:1px solid var(--border)}
   .row:last-child{border-bottom:none}
   .dot{width:8px;height:8px;border-radius:50%;flex:none}
-  .dot.on{background:var(--ok)} .dot.off{background:var(--muted)} .dot.warn{background:var(--warn)}
+  .dot.on{background:var(--ok)} .dot.off{background:var(--muted)}
   .grow{flex:1;min-width:0} .name{font-weight:600}
   .sub{color:var(--muted);font-size:12px}
   .chip{background:var(--chip);border:1px solid var(--border);border-radius:20px;padding:1px 9px;font-size:11.5px;color:var(--muted);white-space:nowrap}
   .chip.mono{font-family:var(--mono)}
   .chip.plug{color:var(--accent);border-color:#2b4a6f}
+  .chip.err{color:var(--err);border-color:#6f3b38}
   .btn{background:var(--panel-2);border:1px solid var(--border);color:var(--text);border-radius:7px;padding:3px 11px;font-size:12px;cursor:pointer;white-space:nowrap}
   .btn.pri{background:#1d3a5f;border-color:#2b567f;color:#cfe6ff}
   .grp{padding:7px 14px;background:var(--panel-2);display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--border);font-size:12px;color:var(--muted)}
   .grp .name{color:var(--text);font-size:12.5px}
   .need{display:flex;align-items:center;gap:8px;padding:8px 14px;border-bottom:1px solid var(--border);font-size:12.5px}
+  .need:last-child{border-bottom:none}
   .need .ic{flex:none;width:16px;text-align:center;color:var(--warn)}
-  .card{border:1px solid var(--border);border-left:3px solid var(--warn);background:var(--panel);border-radius:8px;padding:12px 14px;max-width:560px;margin-top:10px}
-  .card.err{border-left-color:var(--err)}
-  .card h3{margin:0 0 4px;font-size:13px}
-  .card p{margin:4px 0;font-size:12.5px;color:var(--muted)}
+  .need .ic.err{color:var(--err)}
   code{font-family:var(--mono);font-size:12px;background:var(--chip);border-radius:4px;padding:1px 5px}
   .kbd{color:var(--text)}
+  .striprow{display:flex;gap:8px;align-items:center;margin-top:10px}
 </style>
 </head>
 <body>
 
 <h1>docs/262 plugin repositories — UI prototypes</h1>
-<p class="note">Four surfaces, all extensions of existing ones. Requirement pointers in each caption.
-Colors approximate the dark theme; real implementation uses the semantic tokens.</p>
+<p class="note">Post-review shape (2026-08-12): the v1 surface is <b>service-row origin badges</b> plus
+<b>one authoritative plugin card</b> that owns version, needs, grants, refresh, and the degraded /
+collision states. Settings screens are unchanged; there are no plugin transcript cards. Colors
+approximate the dark theme; the implementation uses the semantic tokens.</p>
 
 <!-- ============================================================ A -->
-<h2>A · Services panel — plugin services grouped under their plugin (reqs 3, 15, 16)</h2>
-<p class="note">Plugin services join the existing services list as first-class rows. A slim group header
-carries the plugin identity: local name, repo, ref @ running commit (req 15), and the refresh control
-(req 12). Start/stop rows behave exactly like project services (req 16).</p>
+<h2>A · Services panel — origin badge only (reqs 3, 15, 16)</h2>
+<p class="note">Plugin services are ordinary rows in the existing flat list — same start/stop, focus,
+logs, and bulk actions, driven by a structured <code>origin</code> on the service model so every
+drawer path keeps the identity. No group headers.</p>
 <div class="frame">
   <div class="fh">Services</div>
   <div class="row"><span class="dot on"></span><div class="grow"><span class="name">dev</span> <span class="sub">· port 5173 · auto</span></div><button class="btn">Stop</button></div>
-  <div class="grp"><span class="name">tools</span><span class="chip mono">nicolasalt/game-tools</span><span class="chip mono">main @ a1b2c3f</span><span style="flex:1"></span><button class="btn" title="req 12">↻ Refresh</button></div>
-  <div class="row"><span class="dot on"></span><div class="grow"><span class="name">requirements</span> <span class="chip plug">plugin</span> <span class="sub">· port 8080 · auto</span></div><button class="btn">Stop</button></div>
-  <div class="row"><span class="dot off"></span><div class="grow"><span class="name">imagegen</span> <span class="chip plug">plugin</span> <span class="sub">· manual</span></div><button class="btn pri">Start</button></div>
+  <div class="row"><span class="dot on"></span><div class="grow"><span class="name">requirements</span> <span class="chip plug">tools</span> <span class="sub">· port 8080 · auto</span></div><button class="btn">Stop</button></div>
+  <div class="row"><span class="dot off"></span><div class="grow"><span class="name">imagegen</span> <span class="chip plug">tools</span> <span class="sub">· manual</span></div><button class="btn pri">Start</button></div>
 </div>
 
 <!-- ============================================================ B -->
-<h2>B · Plugin card — needs and freshness (reqs 12, 15, 23, 24)</h2>
-<p class="note">One card per declared plugin repo, in the session info column. Its core is the
-<b>needs list</b>: declared-but-unsatisfied credentials (req 23) and hosts (req 24), each with the
-grant affordance. The declaration satisfied = the card is quiet.</p>
+<h2>B · The plugin card (reqs 12, 15, 23, 24)</h2>
+<p class="note">Opened from a chip in the strip under the PR card (the strip generalizes to show
+declared context without a PR). Header: local name, ref @ exact running commit (req 15), Refresh
+(req 12). Body: exports summary, then the <b>needs list</b> — every declared-but-unsatisfied
+credential (req 23) and host (req 24) with its grant affordance. Grants post to existing,
+browser-only endpoints; a satisfied card is quiet.</p>
+<div class="striprow"><span class="chip plug">⌁ tools · main @ a1b2c3f</span><span class="sub">← chip in the strip; click opens the card</span></div>
 <div class="frame">
-  <div class="fh">Plugins</div>
-  <div class="grp"><span class="name">tools</span><span class="chip mono">main @ a1b2c3f</span><span class="chip" style="color:var(--warn)">2 commits behind</span><span style="flex:1"></span><button class="btn">↻ Refresh</button></div>
-  <div class="row"><div class="grow sub">requirements · imagegen &nbsp;·&nbsp; 1 CLI (<code>reqs</code>) · 1 skill</div></div>
+  <div class="grp"><span class="name">tools</span><span class="chip mono">nicolasalt/game-tools</span><span class="chip mono">main @ a1b2c3f</span><span style="flex:1"></span><button class="btn">↻ Refresh</button></div>
+  <div class="row"><div class="grow sub">requirements · imagegen &nbsp;·&nbsp; 1 command (<code>reqs</code>) · 1 skill</div></div>
   <div class="need"><span class="ic">⚠</span><div class="grow">Credential <code class="kbd">FAL_KEY</code> is not set for this project</div><button class="btn pri">Add key…</button></div>
   <div class="need"><span class="ic">⚠</span><div class="grow">Host <code class="kbd">fal.run</code> is not on the egress allowlist</div><button class="btn">Allow (session)</button><button class="btn">Allow (instance)</button></div>
 </div>
 
 <!-- ============================================================ C -->
-<h2>C · Chat cards — degraded and collision states (reqs 13, 20)</h2>
-<p class="note">Both are persisted transcript cards (chat-card rules apply). Degradation never blocks
-the session (req 13); a collision names its resolution in the declaration (req 20).</p>
-<div class="card">
-  <h3>⚠ Plugin unavailable — tools</h3>
-  <p>Branch <code>main</code> of <code>nicolasalt/game-tools</code> could not be fetched (authorization failed).
-  The session continues without its services; the last good version was <code>a1b2c3f</code>.</p>
+<h2>C · Plugin card states — degraded and collision (reqs 13, 15, 20)</h2>
+<p class="note">Card states, not transcript cards. Degraded distinguishes a failed <i>refresh</i>
+(the prior complete generation stays active — req 15) from a repo that never fetched (the session
+degrades visibly and continues — req 13). A collision names its domain and the exact declaration fix
+(req 20).</p>
+<div class="frame">
+  <div class="grp"><span class="name">tools</span><span class="chip mono">main @ a1b2c3f</span><span class="chip" style="color:var(--warn)">refresh failed</span><span style="flex:1"></span><button class="btn">↻ Retry</button></div>
+  <div class="need"><span class="ic">⚠</span><div class="grow">Branch <code class="kbd">main</code> could not be fetched (authorization failed).
+    The prior version <code class="kbd">a1b2c3f</code> remains active — files, commands, and services are unchanged.</div></div>
 </div>
-<div class="card err">
-  <h3>✕ Service name collision — <code>requirements</code></h3>
-  <p>Exported by plugin <b>tools</b> and already declared by this project's <code>docker-compose.yml</code>.
-  The plugin service was not started. Rename it in <code>shipit.yaml</code>:
-  <code>plugins[tools].overrides.requirements.as: reqs-ui</code></p>
+<div class="frame" style="margin-top:14px">
+  <div class="grp"><span class="name">tools</span><span class="chip mono">main @ —</span><span class="chip err">unavailable</span><span style="flex:1"></span><button class="btn">↻ Retry</button></div>
+  <div class="need"><span class="ic err">✕</span><div class="grow">This repository has never been fetched (authorization failed).
+    The session continues without its services and commands.</div></div>
 </div>
-
-<!-- ============================================================ D -->
-<h2>D · Settings → Network egress — pending plugin hosts (req 24)</h2>
-<p class="note">The existing allowlist screen gains one section: hosts declared by plugins but not yet
-allowed. Granting is the same deliberate act as adding a host by hand — the declaration itself grants
-nothing.</p>
-<div class="frame wide">
-  <div class="fh">Network egress — requested by plugins</div>
-  <div class="need"><span class="ic">⚠</span><div class="grow"><code class="kbd">fal.run</code> <span class="sub">· requested by tools / imagegen</span></div><button class="btn">Allow (session)</button><button class="btn">Allow (instance)</button></div>
-  <div class="need"><span class="ic">⚠</span><div class="grow"><code class="kbd">api.pixellab.ai</code> <span class="sub">· requested by tools / imagegen</span></div><button class="btn">Allow (session)</button><button class="btn">Allow (instance)</button></div>
+<div class="frame" style="margin-top:14px">
+  <div class="grp"><span class="name">tools</span><span class="chip mono">main @ a1b2c3f</span><span class="chip err">collision</span><span style="flex:1"></span></div>
+  <div class="need"><span class="ic err">✕</span><div class="grow">Service <code class="kbd">requirements</code> is already declared by this
+    project's <code>docker-compose.yml</code>; the plugin service was not started. Fix in <code>shipit.yaml</code>:
+    <code>plugins[tools].overrides.requirements.services.requirements.as: reqs-ui</code></div></div>
 </div>
 
 </body>
