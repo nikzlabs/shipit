@@ -30,7 +30,7 @@ const FIXTURE: PluginReposSnapshot = {
       source: "nikzlabs/shipit",
       ref: "main",
       commit: null,
-      status: "declared",
+      status: "active",
       uses: [{ plugin: "probe", alias: "remote-probe", found: null }],
       issues: [],
     },

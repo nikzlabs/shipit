@@ -168,8 +168,13 @@ deliberately not declared in the fragment, so it stays valid for a plain
 **Install contract** (review finding 7): `install` runs with **cwd = the
 plugin's checkout root inside its writable layer** — a copy-on-write layer
 over the read-only checkout, so `node_modules` and build output land in the
-layer, never in the checkout and never in the project (req 7). Writes outside
-the layer fail. Install runs with the generation's env — `SHIPIT_PLUGIN_COMMIT`
+layer, never in the checkout and never in the project (req 7). **As built**
+(`plugin-generations.ts`), that layer IS the generation directory: a
+per-session, per-commit, disposable checkout under the session state dir
+already confines install output to a place that is neither the shared bare
+cache nor the project, so a separate copy-on-write layer buys nothing.
+Read-only for the *agent* is enforced where it is enforceable — the `:ro` bind
+mount, which lands with the container wiring. Install runs with the generation's env — `SHIPIT_PLUGIN_COMMIT`
 set for a consumer generation, unset under `repo: self` (set by the fixture:
 its install stamp records the commit, and the probe checks the stamp against
 the active generation). Install re-runs when its stamped inputs change: the
@@ -296,6 +301,12 @@ coherent in one UI.
   pass, fail-closed grammar, and the snapshot projection. Filesystem-free so
   the client imports the types; `shipit-config.ts` is the entry point and
   parses trackers first (the reservation order).
+- ✓ `src/server/orchestrator/plugin-generations.ts` — the generation engine:
+  layout under the session state dir (docs/246 — never inside the clone),
+  commit resolution incl. durable pins, staging, install + stamping, atomic
+  symlink publish, pruning. ✓ `services/plugin-activation.ts` is its lifecycle
+  half, triggered from `service-manager-setup.ts` on session activation and on
+  a `shipit.yaml` edit.
 - ✓ `src/server/orchestrator/api-routes-plugin-repos.ts` — browser snapshot
   (the GET exists; refresh endpoints come with generation mechanics); tracker
   registration folds into the existing trackers registry

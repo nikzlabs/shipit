@@ -20,8 +20,13 @@ import { resolveShipitConfig } from "../shared/shipit-config.js";
 import {
   buildPluginReposSnapshot,
   EMPTY_PLUGIN_REPOS,
+  type DeclaredPluginRepo,
   type PluginReposSnapshot,
+  type PluginRepoRuntime,
 } from "../shared/plugin-repos.js";
+import { readActiveGeneration } from "./plugin-generations.js";
+import { getActivationState } from "./services/plugin-activation.js";
+import { sessionStateDirForWorkspace } from "./session-state-dir.js";
 import { getErrorMessage } from "./validation.js";
 
 export async function registerPluginRepoRoutes(
@@ -79,6 +84,10 @@ export async function registerPluginRepoRoutes(
           config.pluginExports,
           consumerRepoUrl,
           config.warnings,
+          // Read-only: the live generation comes off disk and the last
+          // attempt's outcome from memory. A GET never activates anything —
+          // that runs on session activation and on a shipit.yaml edit.
+          readRuntimeState(request.query.sessionId, session.workspaceDir, config.plugins.repos),
         );
       } catch (err) {
         // A malformed *document* (bad YAML, a bad `release` block) must not
@@ -95,6 +104,43 @@ export async function registerPluginRepoRoutes(
       }
     },
   );
+}
+
+/**
+ * What is actually live for each tracked repository: the generation record on
+ * disk (durable — it survives a restart) plus the last attempt's outcome from
+ * the activation service (transient). Never throws; a repository with neither
+ * simply reports nothing and renders as `unavailable`.
+ */
+function readRuntimeState(
+  sessionId: string | undefined,
+  workspaceDir: string,
+  repos: readonly DeclaredPluginRepo[],
+): Record<string, PluginRepoRuntime> {
+  const runtime: Record<string, PluginRepoRuntime> = {};
+  if (!sessionId) return runtime;
+
+  let stateDir: string;
+  try {
+    stateDir = sessionStateDirForWorkspace(workspaceDir);
+  } catch {
+    return runtime;
+  }
+
+  for (const repo of repos) {
+    if (repo.source.kind === "self") continue;
+    const generation = readActiveGeneration(stateDir, repo.name);
+    const attempt = getActivationState(sessionId, repo.name);
+    const entry: PluginRepoRuntime = {};
+    if (generation) {
+      entry.commit = generation.commit;
+      entry.exports = generation.exports;
+    }
+    if (attempt?.activating) entry.activating = true;
+    if (attempt?.error) entry.error = attempt.error;
+    runtime[repo.name] = entry;
+  }
+  return runtime;
 }
 
 function emptySnapshot(consumerRepoUrl: string | null): PluginReposSnapshot {

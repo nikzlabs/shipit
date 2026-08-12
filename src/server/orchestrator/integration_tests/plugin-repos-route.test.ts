@@ -113,7 +113,10 @@ describe("Integration: GET /api/plugin-repos (docs/262)", () => {
     expect(dev.uses).toEqual([{ plugin: "probe", alias: "probe", found: true }]);
 
     const tools = snap.repos.find((r) => r.name === "tools")!;
-    expect(tools).toMatchObject({ source: "nikzlabs/shipit", status: "declared", ref: "main" });
+    // Nothing has been activated in this test (activation is a lifecycle
+    // trigger, never a GET side effect), so the tracked repo reads as
+    // unavailable with no commit — req 13's "session runs without it".
+    expect(tools).toMatchObject({ source: "nikzlabs/shipit", status: "unavailable", ref: "main", commit: null });
     expect(tools.uses).toEqual([{ plugin: "probe", alias: "remote-probe", found: null }]);
   });
 

@@ -266,6 +266,13 @@ export interface RunnerRegistryDeps {
     installOk: boolean;
     installCommands?: string[];
   }) => Promise<DepDirPublishOutcome[]>;
+  /**
+   * docs/262 — plugin-repository activation, forwarded into
+   * `setupServiceManager`. Same construction reason as `publishOverlayBases`:
+   * it needs the bare-cache helpers, which live where the app is bootstrapped.
+   * Optional; absent in test setups, where no plugin repository is declared.
+   */
+  activatePluginRepos?: (sessionId: string, workspaceDir: string) => void;
 }
 
 /**
@@ -302,6 +309,7 @@ export function createRunnerRegistry(
     markSessionAccountExhausted,
     nudgeClaudeOAuthRefresh, onAgentAuthRequired, ensureAgentTokenFresh, runParamsPreps,
     publishOverlayBases,
+    activatePluginRepos,
   } = registryDeps;
 
   return new SessionRunnerRegistry({
@@ -700,6 +708,7 @@ export function createRunnerRegistry(
           broadcastLog,
           credentialStore,
           publishOverlayBases,
+          activatePluginRepos,
         };
         setupServiceManager(runner, setupDeps);
 

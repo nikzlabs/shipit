@@ -7,6 +7,7 @@ import {
   buildPluginReposSnapshot,
   parsePluginExports,
   parsePluginRepos,
+  type PluginRepoRuntime,
 } from "./plugin-repos.js";
 import { parseShipitConfig } from "./shipit-config.js";
 
@@ -328,7 +329,7 @@ describe("buildPluginReposSnapshot", () => {
       { plugin: "missing", alias: "gone", found: false },
     ]);
     expect(dev?.issues).toHaveLength(1);
-    expect(tools).toMatchObject({ source: "nikzlabs/shipit", status: "declared", ref: "main", commit: null });
+    expect(tools).toMatchObject({ source: "nikzlabs/shipit", status: "unavailable", ref: "main", commit: null });
     expect(tools?.uses).toEqual([{ plugin: "probe", alias: "remote", found: null }]);
   });
 
@@ -367,6 +368,52 @@ describe("buildPluginReposSnapshot", () => {
     );
     expect(snapshot.declared).toBe(false);
     expect(snapshot.warnings).toEqual([]);
+  });
+
+  // The four tracked-repo states the card distinguishes (req 15: a failed
+  // refresh over a live prior version is not "never fetched").
+  describe("runtime status projection", () => {
+    const declaration = { repos: [{ repo: "a/b", name: "tools", branch: "main" }], use: [{ plugin: "p", from: "tools" }] };
+    const build = (runtime: Record<string, PluginRepoRuntime>) => {
+      const warnings: string[] = [];
+      const plugins = parsePluginRepos(declaration, NO_TRACKERS, warnings);
+      return buildPluginReposSnapshot(plugins, [], null, warnings, runtime).repos[0];
+    };
+
+    it("a live generation is active, with its exact commit", () => {
+      const card = build({ tools: { commit: "abc123", exports: ["p"] } });
+      expect(card).toMatchObject({ status: "active", commit: "abc123" });
+      // The live generation's manifest is what phase-2 selectors resolve against.
+      expect(card.uses[0].found).toBe(true);
+      expect(card.issues).toEqual([]);
+    });
+
+    it("a selector missing from the live manifest becomes an issue", () => {
+      const card = build({ tools: { commit: "abc123", exports: ["other"] } });
+      expect(card.uses[0].found).toBe(false);
+      expect(card.issues).toHaveLength(1);
+    });
+
+    it("an error over a live generation is degraded, not unavailable", () => {
+      const card = build({ tools: { commit: "abc123", exports: ["p"], error: "authorization failed" } });
+      expect(card).toMatchObject({ status: "degraded", commit: "abc123" });
+      expect(card.issues[0]).toContain("authorization failed");
+    });
+
+    it("an error with nothing live is unavailable", () => {
+      expect(build({ tools: { error: "authorization failed" } })).toMatchObject({
+        status: "unavailable",
+        commit: null,
+      });
+    });
+
+    it("in-flight activation reads as activating", () => {
+      expect(build({ tools: { activating: true } }).status).toBe("activating");
+    });
+
+    it("selectors stay unknown until there is a manifest to check", () => {
+      expect(build({}).uses[0].found).toBeNull();
+    });
   });
 
   it("reports pending: false — the route owns the pending answer", () => {

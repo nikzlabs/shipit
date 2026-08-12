@@ -138,7 +138,7 @@ describe("tab gating and attention (plan §3)", () => {
     source: "a/b",
     ref: "main",
     commit: null,
-    status: "declared" as const,
+    status: "active" as const,
     uses: [],
     issues: [] as string[],
   };

@@ -17,6 +17,7 @@ import { collectAccountAgentEnv } from "./secret-resolver.js";
 import { getErrorMessage } from "./validation.js";
 import { formatOverlayMeasurement, type DepDirPublishOutcome } from "./overlay-publish.js";
 import { isOverlayEligible } from "./overlay-session.js";
+import { clearActivationState } from "./services/plugin-activation.js";
 
 /**
  * Route a `stack_error` from a session's ServiceManager to the per-session
@@ -261,6 +262,15 @@ export interface ServiceSetupDeps {
   serviceEnvDir: string;
   /** docs/192 — durable log store, forwarded to `ServiceManager` for service-log persistence. */
   logStore?: LogStore;
+  /**
+   * docs/262 — bring the session's declared plugin repositories to their
+   * declared versions (checkout + install + atomic activation). Called on the
+   * same two triggers as compose configuration: session activation and a
+   * `shipit.yaml` edit. Fire-and-forget, so a slow plugin fetch never delays
+   * the session opening (req 13). Constructed in `bootstrap-managers.ts`,
+   * where the bare-cache helpers are in scope; absent in test setups.
+   */
+  activatePluginRepos?: (sessionId: string, workspaceDir: string) => void;
   broadcastLog?: (sessionId: string, source: LogSource, text: string) => void;
   /** docs/088 — account-level MCP secrets store. */
   credentialStore?: CredentialStore;
@@ -343,6 +353,17 @@ export function setupServiceManager(
     composeWarnings.delete(runner.sessionId);
     runner.emitMessage({ type: "compose_error", sessionId: runner.sessionId, message: "" });
   }
+
+  // docs/262 — bring declared plugin repositories to their declared versions.
+  // Runs beside install for the same reason install runs regardless of compose
+  // config: a project can declare plugins without declaring a stack. Sits
+  // BELOW the trust gate on purpose — a plugin's `install` is repo-declared
+  // auto-execution exactly like `agent.install`, so an untrusted remote must
+  // not run one (docs/178).
+  deps.activatePluginRepos?.(runner.sessionId, workspaceDir);
+  // The activation state map is process-lived and keyed by session; drop this
+  // session's entries when its runner goes away so session churn can't grow it.
+  runner.on("disposed", () => clearActivationState(runner.sessionId));
 
   // Fire install on the agent container regardless of compose config — projects
   // without a compose stack (like ShipIt itself) still need their dependencies
@@ -804,6 +825,13 @@ export function applyShipitConfigChange(
     composeWarnings.delete(runner.sessionId);
     runner.emitMessage({ type: "compose_error", sessionId: runner.sessionId, message: "" });
   }
+
+  // ---- plugin declarations delta (docs/262) ----
+  // Unconditional: activation is a no-op when the resolved commit is already
+  // live, so the cheap check lives there rather than in a config diff here.
+  // Trust is inherited — this path only runs once a ServiceManager exists,
+  // which `setupServiceManager` creates only past the gate.
+  deps.activatePluginRepos?.(runner.sessionId, workspaceDir);
 
   // ---- agent.install delta ----
   if (runner instanceof ContainerSessionRunner) {

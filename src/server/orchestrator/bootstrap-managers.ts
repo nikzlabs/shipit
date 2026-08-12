@@ -60,6 +60,8 @@ import type { VersionInfo } from "../shared/types.js";
 import type { GenerateText } from "./non-turn-model.js";
 import { makeNonTurnGenerateText } from "./services/non-turn-work.js";
 import { createAutoPushScheduler } from "./services/auto-push-scheduler.js";
+import { activateDeclaredPlugins } from "./services/plugin-activation.js";
+import { ensureBareCache } from "./repo-git.js";
 
 /**
  * Static, process-lifetime metadata captured at startup and surfaced to the
@@ -460,6 +462,25 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   // the worker is about to be SIGKILLed and the multi-hundred-MB stream we are
   // reading is about to die under us. Aborting on `"disposed"` turns that into a
   // prompt cancellation instead of a mid-stream socket kill.
+  // docs/262 — plugin-repository activation. Constructed here for the same
+  // reason `publishOverlayBases` is: it needs `getBareCacheDir` and
+  // `createRepoGit`, which the runner registry does not have. Fire-and-forget
+  // by design — a slow plugin fetch must not delay a session opening (req 13),
+  // and the Plugins tab reports the interim state.
+  const activatePluginRepos = (sessionId: string, workspaceDir: string): void => {
+    void activateDeclaredPlugins(sessionId, workspaceDir, {
+      getBareCacheDir,
+      // Fetching runs here, in the orchestrator, so plugin code never reaches
+      // fetch credentials (req 19).
+      ensureCache: async (cacheDir, repoUrl) => {
+        const { git } = await ensureBareCache(cacheDir, repoUrl, createRepoGit);
+        await git.fetchCache();
+      },
+    }).catch((err: unknown) => {
+      console.warn(`[plugins:${sessionId}] activation failed:`, err);
+    });
+  };
+
   const publishOverlayBases = async ({ runner, session, installOk, installCommands }: {
     runner: ContainerSessionRunner;
     session: SessionInfo;
@@ -547,6 +568,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     onAgentAuthRequired,
     ensureAgentTokenFresh,
     publishOverlayBases,
+    activatePluginRepos,
     logStore,
     ...(dockerSecretsConfig ? { dockerSecretsConfig } : {}),
     serviceEnvDir,
@@ -1038,6 +1060,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     readSystemPromptApp,
     agentRuntime, authManagers, limitsProviders, runParamsPreps,
     publishOverlayBases,
+    activatePluginRepos,
     runnerRegistry,
     repoPrefetcher,
     drainQueueForSession,
