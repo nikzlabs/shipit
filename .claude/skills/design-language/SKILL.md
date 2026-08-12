@@ -110,6 +110,8 @@ import { ICON_SIZE } from "../design-tokens.js";
 
 Motion tokens are defined in `index.css` (shared, not per-theme). Use `transition-[color] duration-[var(--duration-fast)]` instead of Tailwind's `transition-colors` to reference the token. Avoid animating layout properties (`width`, `height`) unless explicitly resizing.
 
+**Do not animate a surface full of text on entry — neither a scale nor a fade.** Both move the text of a large panel, in different ways. A scale moves it geometrically: the fade lands first, so the text is readable while the scale still has ~1% to run and every line slides a pixel or two into place. A fade moves it optically: mid-opacity the element is composited on its own layer, where glyphs are antialiased in grayscale, and on the final frame the layer collapses and they re-render with subpixel antialiasing — the geometry never changes, but the eye reads the change in glyph weight as a settle. `DialogContent` therefore has no entrance animation at all; the overlay's fade carries it. `dialog.test.tsx` guards this. Small surfaces (tooltip, popover, dropdown menu) keep both effects — near their transform origin, holding a line or two, neither is legible.
+
 ## UI Primitives
 
 Shared components in `src/client/components/ui/` using [CVA](https://cva.style) (class-variance-authority) for variant-based styling. Never duplicate token class strings across components — use these primitives instead.
