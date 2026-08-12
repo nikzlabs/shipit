@@ -222,7 +222,9 @@ receipts below keep the original "tools" vocabulary of the early rounds.
     read-only rule (req 7) binds only consuming projects. Nothing, compose
     configuration included, is duplicated to make self-use work: the
     exported definitions are the single source (req 5 applied to the plugin
-    repository itself).
+    repository itself). Activation there uses the same mechanism consumers
+    use — the repository declares itself as a consumer — so dogfooding
+    exercises exactly the path real consumers run.
 
 ## Out of scope (v1)
 
@@ -413,7 +415,9 @@ user's follow-up of 2026-08-12 during the design phase.
   user: a declared plugin must also work as a plugin inside its own
   repository for testing, editable there because it is the same repository,
   with no duplicated compose configuration — editing a plugin should be
-  smooth. → req 27.
+  smooth. → req 27. Follow-up answer, same day: activation in the own repo is
+  by **explicit self-declaration** (the repo declares itself as a consumer;
+  agent recommendation accepted) — no automatic second activation path.
 - **2026-08-12 — Declared hosts, informational** (doc review, round 5).
   Stated directly by the user: a plugin declares the hosts it needs in its
   manifest (otherwise the user cannot know what to add), and ShipIt offers a

@@ -110,6 +110,16 @@ Rules (review findings, both rounds):
   brokerable issue backend, which an arbitrary git URL does not have.
   Other hosts are a later extension, declared with an explicit issue
   backend or with feedback disabled.
+- **Self-use** (req 27): a plugin repository dogfoods its own exports by
+  declaring itself — `repo: self` in a `repos:` entry (with a `name`; no
+  `branch`/`pin`, both are errors) plus ordinary `use:` entries. The
+  "checkout" is the session's own working tree: **editable, live** — no
+  staging, no generations, no refresh (req 12/15 coherence is deliberately
+  traded for liveness; that is the point of dogfooding). Req 7's read-only
+  rule does not apply; no feedback destination is registered (the repo's own
+  issues are already this session's); `/project` and the CLI cwd point at
+  the same working tree. Everything else — services, commands, skills,
+  settings, needs — activates through exactly the consumer path.
 
 ### 1b. Plugin side — `exports.plugins:` (reqs 5, 17, 22, 23, 24, 26)
 

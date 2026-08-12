@@ -22,6 +22,7 @@ Next design slice (server mechanics):
 - [ ] CLI PATH mechanism + collision checks (reqs 17, 20)
 - [ ] Skills disclosure via docs/209 mechanism (req 22)
 - [ ] Feedback-channel registration as issue destination (req 25)
+- [ ] Self-use mode (`repo: self`, req 27): live working-tree activation, no generations/refresh, consumer-path parity for services/CLIs/skills/settings
 - [ ] GitHub App mode: multi-repo token minting for declared plugin repos (req 10)
 
 Implementation: not started.
