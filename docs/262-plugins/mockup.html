@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>docs/262 plugins — UI prototypes</title>
+<style>
+  :root{
+    --bg:#0e1116; --panel:#161b23; --panel-2:#1c2330; --border:#2a3342;
+    --text:#dbe2ec; --muted:#8a97a8; --accent:#5aa9ff; --ok:#39c37f;
+    --chip:#232c3b; --mono:ui-monospace,Menlo,Consolas,monospace;
+  }
+  body{background:var(--bg);color:var(--text);font:14px/1.5 system-ui,sans-serif;margin:0;padding:32px;}
+  h1{font-size:18px} h2{font-size:15px;margin:40px 0 6px}
+  .note{color:var(--muted);font-size:12.5px;max-width:72ch}
+  .frame{background:var(--panel);border:1px solid var(--border);border-radius:10px;max-width:470px;overflow:hidden;margin-top:10px}
+  .fh{padding:8px 14px;font-size:12px;color:var(--muted);border-bottom:1px solid var(--border);letter-spacing:.04em;text-transform:uppercase}
+  .row{display:flex;align-items:center;gap:10px;padding:9px 14px;border-bottom:1px solid var(--border)}
+  .row:last-child{border-bottom:none}
+  .dot{width:8px;height:8px;border-radius:50%;flex:none}
+  .dot.on{background:var(--ok)} .dot.off{background:var(--muted)}
+  .grow{flex:1;min-width:0} .name{font-weight:600}
+  .sub{color:var(--muted);font-size:12px}
+  .chip{background:var(--chip);border:1px solid var(--border);border-radius:20px;padding:1px 9px;font-size:11.5px;color:var(--muted);white-space:nowrap}
+  .chip.plug{color:var(--accent);border-color:#2b4a6f}
+  .btn{background:var(--panel-2);border:1px solid var(--border);color:var(--text);border-radius:7px;padding:3px 11px;font-size:12px;cursor:pointer;white-space:nowrap}
+  .btn.pri{background:#1d3a5f;border-color:#2b567f;color:#cfe6ff}
+  code{font-family:var(--mono);font-size:12px;background:var(--chip);border-radius:4px;padding:1px 5px}
+</style>
+</head>
+<body>
+
+<h1>docs/262 plugin repositories — UI prototypes</h1>
+<p class="note">Two committed prototypes. This file: the services panel (below). The plugin
+<b>instrument panel</b> — versions, refresh, credential/host needs and grants, degraded and
+collision states — lives in a dedicated right-rail <b>Plugins tab</b>, prototyped separately in
+<code>mockup-plugins-tab.html</code> (user decision, 2026-08-12: the chat column's PR card describes
+the work in flight; plugins are session environment and sit with the other right-rail instruments).
+Settings screens are unchanged; there are no plugin transcript cards.</p>
+
+<!-- ============================================================ A -->
+<h2>A · Services panel — origin badge only (reqs 3, 15, 16)</h2>
+<p class="note">Plugin services are ordinary rows in the existing flat list — same start/stop, focus,
+logs, and bulk actions, driven by a structured <code>origin</code> on the service model so every
+drawer path keeps the identity. No group headers; management lives in the Plugins tab.</p>
+<div class="frame">
+  <div class="fh">Services</div>
+  <div class="row"><span class="dot on"></span><div class="grow"><span class="name">dev</span> <span class="sub">· port 5173 · auto</span></div><button class="btn">Stop</button></div>
+  <div class="row"><span class="dot on"></span><div class="grow"><span class="name">requirements</span> <span class="chip plug">reqs</span> <span class="sub">· port 8080 · auto</span></div><button class="btn">Stop</button></div>
+  <div class="row"><span class="dot off"></span><div class="grow"><span class="name">imagegen</span> <span class="chip plug">imagegen</span> <span class="sub">· manual</span></div><button class="btn pri">Start</button></div>
+</div>
+
+</body>
+</html>
