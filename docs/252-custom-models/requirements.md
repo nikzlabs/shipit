@@ -298,6 +298,11 @@ No open questions remain.
     about where it came from changes how it is used. Removing it is a removal: a later
     restart does not bring it back.
 
+21. **The order of a service's credentials is changed by dragging one into place, and that is
+    the only way to change it.** The order is what the rows show, so being first is being at
+    the top; there is no separate command that promotes a credential and no badge naming the
+    one at the top as different in kind.
+
 ## Open questions
 
 _None._
@@ -314,6 +319,15 @@ _None._
   card. Req 19 added. The prose cut with it is listed in `plan.md`; the one item that was not
   merely verbose is the account empty-state box, which printed "No Anthropic subscription
   connected" directly above a connected Anthropic credential.
+
+- 2026-08-12 — Does an account row keep its **Make primary** command, and how is the fallback
+  order changed? **Chosen: drag a row into place, and drop Make primary entirely.** The human
+  asked what Make primary was for and judged it unnecessary. It is: `isPrimary` is not stored,
+  it is computed as position 0 (`orderCredentialRoutes`), and the server verb behind the button
+  is `reorder([this, …rest])` — so with the order under direct manipulation the command is a
+  second way to do one thing, which req 17 already refuses elsewhere on this screen. The
+  "Primary" badge goes with it: the row at the top *is* the primary one, and the routing band
+  says what being at the top means. Req 21 added.
 
 - 2026-08-12 — A deployment-supplied variable (`ANTHROPIC_AUTH_TOKEN`, `DEEPSEEK_API_KEY`)
   creates no credential row: it is invisible in Settings and used only when nothing is stored.
@@ -900,6 +914,11 @@ human, but most of the mechanism did not. What the human actually said, in order
   icon, maybe on the right top corner" → req 19's closing clause. The corner placement is the
   human's; the requirement states only that the models stay reachable without occupying the
   card.
+- "what is 'Make primary'? seems to be not needed. Also, for the order change, let's use drag
+  and drop" → req 21. The judgement is the human's; what the agent contributed is the check
+  that nothing else depends on the command — primary is a computed position, not a stored
+  property — which is why the requirement can say there is no separate promote at all rather
+  than only hiding the button.
 
 Reqs 5 and 13 were changed again on 2026-08-08 from **Codex's** review, under CLAUDE.md's
 cross-backend rule. Same shape as the round below: the findings are the reviewer's, the
