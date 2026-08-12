@@ -1176,12 +1176,24 @@ function AddServiceDialog({
    * fresh one. Doing it from the click instead had none of that — see
    * `onReconnect` in `ServicesPanel`.
    *
-   * Mount-only by an empty dependency list AND by `reconnectAccountId` being
-   * fixed for this dialog's whole life: a reconnect never becomes an add.
+   * **Run-once by a ref, and the deps are omitted deliberately.** `startSignIn`
+   * is re-created every render, so listing it would re-run the effect on every
+   * render, and `useCallback`-ing it to satisfy the rule would add a
+   * memoization whose only purpose is the rule — with its own dependency list
+   * to get wrong. The ref states the actual invariant instead, and states it
+   * unconditionally: whatever re-runs this effect, a reconnect starts exactly
+   * one sign-in.
    */
+  const reconnectStarted = useRef(false);
+  // Two rules, two places: `no-restricted-syntax` reports on the call, and
+  // `exhaustive-deps` reports on the DEPENDENCY ARRAY, so its disable goes
+  // immediately above `}, [])` — same placement as `useSessionActivation.ts`.
   // eslint-disable-next-line no-restricted-syntax -- mount IS the event: this dialog is mounted BY the Reconnect click, and the start must own `startingSignIn`/`left`, which only `startSignIn` does.
   useEffect(() => {
-    if (reconnectAccountId !== undefined) void startSignIn(initialService, initialMode);
+    if (reconnectAccountId === undefined || reconnectStarted.current) return;
+    reconnectStarted.current = true;
+    void startSignIn(initialService, initialMode);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- run-once by `reconnectStarted`; `startSignIn` is re-created each render and must not re-trigger it, and the three props are fixed for this dialog's life (a reconnect never becomes an add)
   }, []);
 
   /**
