@@ -81,7 +81,7 @@ export interface WsAgentAuthComplete {
  * Server → Client (SSE-broadcast): a per-agent auth flow failed or the
  * persisted credentials were revoked. `reason` lets the UI tailor the next
  * step (retry on `timeout`/`denied`/`error`, prompt re-sign-in on
- * `revoked`). (docs/155 Phase 2b)
+ * `revoked`/`missing_credentials`). (docs/155 Phase 2b, docs/153)
  *
  * `duplicate` (docs/150 req 22) is the odd one out: the sign-in itself
  * *succeeded*, and was then refused because the account is already connected.
@@ -94,7 +94,7 @@ export interface WsAgentAuthFailed {
   agentId: AgentId;
   /** Provider-account id whose flow failed (docs/150), when scoped. */
   accountId?: string;
-  reason?: "timeout" | "denied" | "error" | "revoked" | "duplicate";
+  reason?: "timeout" | "denied" | "error" | "revoked" | "missing_credentials" | "duplicate";
   message?: string;
 }
 

@@ -3,6 +3,7 @@ import { renderHook, cleanup, act } from "@testing-library/react";
 import { useServerEvents } from "./useServerEvents.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
+import { useUiStore } from "../stores/ui-store.js";
 
 /**
  * Minimal fake EventSource: captures `addEventListener` handlers so a test can
@@ -66,6 +67,7 @@ describe("useServerEvents — session_agent_started", () => {
       providerAccountAuthErrors: {},
       claudeAuthDiagnostics: {},
     });
+    useUiStore.setState({ toast: null });
   });
 
   afterEach(() => {
@@ -309,6 +311,23 @@ describe("useServerEvents — Claude auth diagnostics", () => {
     // Only B's attempt ended.
     expect(diagnostics["acct-a"]?.phase).toBeNull();
     expect(diagnostics["acct-b"]?.phase).toBe("failed");
+  });
+
+  it("surfaces missing Claude credentials on the exact account", () => {
+    renderHook(() => useServerEvents());
+    const es = FakeEventSource.last!;
+
+    act(() => {
+      es.emit("agent_auth_failed", {
+        agentId: "claude",
+        accountId: "acct-missing",
+        reason: "missing_credentials",
+      });
+    });
+
+    expect(useSettingsStore.getState().providerAccountAuthErrors["claude:acct-missing"])
+      .toBe("Claude credentials are missing. Sign in again.");
+    expect(useUiStore.getState().toast?.message).toBe("Claude credentials are missing. Sign in again.");
   });
 
   // Every sign-in flow is account-scoped since docs/150 req 19, so an unscoped

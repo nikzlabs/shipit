@@ -317,7 +317,7 @@ export function useServerEvents(): void {
       const data = JSON.parse(e.data as string) as {
         agentId: AgentId;
         accountId?: string;
-        reason?: "timeout" | "denied" | "error" | "revoked" | "duplicate";
+        reason?: "timeout" | "denied" | "error" | "revoked" | "missing_credentials" | "duplicate";
         message?: string;
       };
       // docs/150 req 22 — a refused duplicate connect usually DELETES the row
@@ -347,15 +347,19 @@ export function useServerEvents(): void {
         // the path the legacy `auth_required {}` broadcast took for
         // refresher-revoked accounts.
         const claudeFailure = data.message
-          ?? "Claude sign-in failed. You can retry or copy the diagnostic details.";
+          ?? (data.reason === "missing_credentials"
+            ? "Claude credentials are missing. Sign in again."
+            : "Claude sign-in failed. You can retry or copy the diagnostic details.");
         if (data.accountId) {
           useSettingsStore.getState().setProviderAccountAuth("claude", data.accountId, null);
           useSettingsStore.getState().setProviderAccountAuthError("claude", data.accountId, claudeFailure);
           useSettingsStore.getState().finishClaudeAuthDiagnostics(data.accountId, "failed", claudeFailure);
         }
-        if (data.reason === "revoked") {
+        if (data.reason === "revoked" || data.reason === "missing_credentials") {
           useUiStore.getState().setToast({
-            message: data.message ?? "Claude authentication expired. Sign in again.",
+            message: data.message ?? (data.reason === "missing_credentials"
+              ? "Claude credentials are missing. Sign in again."
+              : "Claude authentication expired. Sign in again."),
             action: {
               label: "Sign in",
               onClick: () => {

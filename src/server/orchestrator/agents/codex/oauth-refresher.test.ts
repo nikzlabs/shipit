@@ -421,15 +421,36 @@ describe("CodexOAuthRefresher", () => {
     fs.rmSync(rootDir, { recursive: true, force: true });
   });
 
-  it("returns missing_credentials when source auth.json is absent", async () => {
+  it("marks missing source credentials unauthenticated once and recovers after re-auth", async () => {
     const rig = buildRig({
       accounts: [makeAccount("codex-default")],
     });
     rigs.push(rig);
 
+    const unauthenticated: string[] = [];
+    const reauthenticated: string[] = [];
+    rig.refresher.on("account_unauthenticated", (accountId: string) => unauthenticated.push(accountId));
+    rig.refresher.on("account_reauthenticated", (accountId: string) => reauthenticated.push(accountId));
+
     const [result] = await rig.refresher.refreshNow("codex-default");
+    await rig.refresher.refreshNow("codex-default");
     expect(result!.outcome).toBe("missing_credentials");
     expect(rig.spawnHandle.invocations).toHaveLength(0);
     expect(rig.repushCalls).toEqual([]);
+    expect(unauthenticated).toEqual(["codex-default"]);
+    expect(rig.sseCalls).toContainEqual({
+      event: "agent_auth_failed",
+      data: { agentId: "codex", accountId: "codex-default", reason: "missing_credentials" },
+    });
+    expect(rig.sseCalls.filter((call) => call.event === "agent_auth_failed")).toHaveLength(1);
+
+    writeAuth(
+      path.join(rig.rootDir, "provider-accounts", "codex", "codex-default"),
+      { freshness: Date.now() + 14 * 24 * 60 * 60 * 1000 },
+    );
+    await rig.refresher.refreshNow("codex-default");
+    expect(reauthenticated).toEqual(["codex-default"]);
+    expect(rig.repushCalls).toEqual([{ agentId: "codex", accountId: "codex-default" }]);
+    expect(rig.refresher._inspectForTest("codex-default").emittedUnauthenticated).toBe(false);
   });
 });
