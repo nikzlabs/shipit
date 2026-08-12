@@ -23,10 +23,26 @@
  * The header names the **service** (`Anthropic`), never the harness that
  * happens to drive it (`Claude`). A credential belongs to a service; the
  * harness is a separate axis this feature exists to stop conflating with it.
+ *
+ * **One header line and the credentials — nothing else** (docs/252 req 19).
+ * Measured at 470px, the Anthropic subscription card was 272px holding 39px of
+ * credential, and the DeepSeek key card 148px holding the same 39px. What filled
+ * the rest was a description sentence, an account empty-state box, a sentence
+ * about environment variables and a row of model-id chips that grows with the
+ * catalogue — none of it saying anything about *this* install. Two of those are
+ * deleted at the caller; the two this component owned are gone from here:
+ *
+ * - The `description` prop. "Connect one or more subscriptions. ShipIt fails
+ *   over between them when one runs out." is stated by the routing band, which
+ *   appears exactly when there is something to route between; "Metered — no
+ *   quota to report" is the **API key** pill, one control to the left.
+ * - The chip row, which is **moved rather than deleted**: it becomes the
+ *   `N models` control in the top-right corner, naming them on hover.
  */
 
 import type { ReactNode } from "react";
 import { Badge } from "../ui/badge.js";
+import { WithTooltip } from "../ui/tooltip.js";
 import { BillingModePill, MODE_LABEL } from "../BillingModePill.js";
 import type { BillingMode, ServiceDef } from "../../../server/shared/catalogue/index.js";
 
@@ -44,7 +60,7 @@ export { MODE_LABEL };
 function ServiceAvatar({ service }: { service: ServiceDef }) {
   return (
     <span
-      className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-(--color-border-secondary) bg-(--color-bg-secondary) text-xs font-semibold text-(--color-text-secondary)"
+      className="flex h-5 w-5 shrink-0 items-center justify-center rounded border border-(--color-border-secondary) bg-(--color-bg-secondary) text-[10px] font-semibold text-(--color-text-secondary)"
       aria-hidden="true"
       data-testid={`service-avatar-${service.id}`}
     >
@@ -53,15 +69,49 @@ function ServiceAvatar({ service }: { service: ServiceDef }) {
   );
 }
 
+/**
+ * **The model list, reachable without occupying the card** (docs/252 req 19,
+ * the human's own placement: "a 'models' chip or icon, maybe on the right top
+ * corner").
+ *
+ * The ids were a wrapped row of monospace chips under the credentials — the one
+ * element on the card that grows with ShipIt's catalogue rather than with the
+ * user's setup, so an eight-model service spent three lines saying something
+ * the user reads once and then never again. The count is what is worth a
+ * glance; the names are worth a hover.
+ *
+ * A `<button>` rather than a `<span>`, and not because it does anything: a
+ * tooltip must open on keyboard focus as well as on hover, and only a focusable
+ * element can be tabbed to. `type="button"` keeps it out of any enclosing form.
+ */
+function ModelsControl({ models, testId }: { models: string[]; testId: string }) {
+  return (
+    <WithTooltip
+      side="left"
+      label={
+        <span className="flex max-w-56 flex-col gap-0.5 font-mono text-[10px]">
+          {models.map((id) => <span key={id}>{id}</span>)}
+        </span>
+      }
+    >
+      <button
+        type="button"
+        className="shrink-0 cursor-default rounded px-1 py-0.5 text-[10px] text-(--color-text-tertiary) hover:bg-(--color-bg-hover) hover:text-(--color-text-secondary) focus:outline-none focus-visible:bg-(--color-bg-hover)"
+        data-testid={`service-models-${testId}`}
+      >
+        {models.length} model{models.length === 1 ? "" : "s"}
+      </button>
+    </WithTooltip>
+  );
+}
+
 export function ServiceCard({
   service,
   billingMode,
   credentialCount,
   countNoun,
-  description,
   models,
   routing,
-  routingTitle,
   children,
   testId,
 }: {
@@ -74,16 +124,19 @@ export function ServiceCard({
   credentialCount: number;
   /** "account" for a login-backed mode, "credential" for a supplied secret. */
   countNoun: string;
-  description: string;
   models: string[];
   /**
-   * The shaded band under the body. Given a heading rather than left inline
-   * because these controls answer a different question from the rows above
-   * them ("which of these next?" vs "which do I have?"), and inline radios
-   * between the rows and the chips read as neither.
+   * The shaded band under the body.
+   *
+   * It lost its `routingTitle` with the compaction, and the string did not go
+   * with it: "How ShipIt picks between these accounts" is now the segmented
+   * control's own accessible name (`role="radiogroup"`, in `CredentialRouting`)
+   * rather than a line of uppercase above it. It is deliberately **not** a
+   * tooltip — a tooltip needs a hoverable trigger of its own, the two segments
+   * fill the group's box, so every hover would land on a segment and the
+   * group's tooltip would either never open or fight the one that does.
    */
   routing?: ReactNode;
-  routingTitle?: string;
   children: ReactNode;
   testId: string;
 }) {
@@ -97,52 +150,34 @@ export function ServiceCard({
       className="shrink-0 overflow-hidden rounded-md border border-(--color-border-secondary)"
       data-testid={testId}
     >
-      <div className="space-y-3 p-3">
-        <div className="flex items-start gap-3">
+      <div className="space-y-1.5 p-2">
+        {/* One line: avatar, name, mode, count — and the models control pinned
+            to the far corner, which is the only thing on the card that is about
+            ShipIt's catalogue rather than about the user's setup. */}
+        <div className="flex items-center gap-2">
           <ServiceAvatar service={service} />
-          <div className="min-w-0 flex-1">
-            <div className="flex flex-wrap items-center gap-2">
-              <h3 className="text-sm font-medium text-(--color-text-primary)">{service.name}</h3>
-              <BillingModePill
-                billingMode={billingMode}
-                data-testid={`service-mode-pill-${testId}`}
-              />
-              {credentialCount > 1 && (
-                <Badge className="px-1.5 text-[10px]" data-testid={`service-count-pill-${testId}`}>
-                  {credentialCount} {countNoun}s
-                </Badge>
-              )}
-            </div>
-            <p className="mt-0.5 text-xs text-(--color-text-tertiary)">{description}</p>
-          </div>
+          <h3 className="truncate text-xs font-medium text-(--color-text-primary)">{service.name}</h3>
+          <BillingModePill
+            billingMode={billingMode}
+            data-testid={`service-mode-pill-${testId}`}
+          />
+          {credentialCount > 1 && (
+            <Badge className="px-1.5 text-[10px]" data-testid={`service-count-pill-${testId}`}>
+              {credentialCount} {countNoun}s
+            </Badge>
+          )}
+          <span className="flex-1" />
+          {models.length > 0 && <ModelsControl models={models} testId={testId} />}
         </div>
 
         {children}
-
-        {models.length > 0 && (
-          <div className="flex flex-wrap gap-1">
-            {models.map((id) => (
-              <span
-                key={id}
-                className="rounded border border-(--color-border-secondary) bg-(--color-bg-secondary) px-1.5 py-0.5 font-mono text-[10px] text-(--color-text-tertiary)"
-              >
-                {id}
-              </span>
-            ))}
-          </div>
-        )}
       </div>
 
       {routing && (
         <div
-          className="border-t border-(--color-border-secondary) bg-(--color-bg-secondary) px-3 py-3"
+          className="border-t border-(--color-border-secondary) bg-(--color-bg-secondary) px-2 py-1.5"
           data-testid={`service-routing-${testId}`}
         >
-          {routingTitle && (
-            <p className="mb-2 text-[10px] uppercase tracking-wider text-(--color-text-tertiary)">
-              {routingTitle}
-            </p>
-          )}
           {routing}
         </div>
       )}

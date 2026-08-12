@@ -450,11 +450,15 @@ export class ProviderAccountManager {
    * broadcast site cannot reintroduce it by forgetting to sort.
    *
    * docs/150 req 19 — `isPrimary` is **derived here**, not read from disk.
-   * "Primary" only ever meant "first in the fallback order": `makePrimary` is
-   * implemented as a `reorder`, and `reorder` wrote `isPrimary: index === 0`.
-   * Two fields encoding one fact is two fields that can disagree, so the
-   * stored flag is now ignored on read and stamped from position instead. The
-   * wire shape is unchanged, so the client still reads `account.isPrimary`.
+   * "Primary" only ever meant "first in the fallback order": every writer
+   * stores `false`, and `reorder` used to stamp `isPrimary: index === 0`. Two
+   * fields encoding one fact is two fields that can disagree, so the stored
+   * flag is ignored on read and stamped from position instead.
+   *
+   * docs/252 req 21 finished the thought and deleted the *setter*. `makePrimary`
+   * was `reorder([this, …rest])` behind a button beside the reorder controls —
+   * one fact with two affordances — and dragging a row to the top now says the
+   * same thing. The derived field stays on the wire; nothing in the UI reads it.
    *
    * A row with no `priority` sorts after every row that has one, by stored
    * order. In practice there are none — {@link backfillPriority} runs at boot
@@ -732,20 +736,6 @@ export class ProviderAccountManager {
     });
   }
 
-  /**
-   * Promote an account to the front of the fallback order. Kept as its own verb
-   * (rather than "reorder with this id first") because it is the one-click
-   * affordance the account rows already offer, and expressing it through
-   * `reorder` means "primary" has exactly one definition: position 0.
-   */
-  makePrimary(serviceId: string, accountId: string): CredentialRoute {
-    this.require(serviceId, accountId);
-    const rest = this.accountsInSelectionOrder(serviceId)
-      .map((account) => account.id)
-      .filter((id) => id !== accountId);
-    this.reorder(serviceId, [accountId, ...rest]);
-    return this.require(serviceId, accountId);
-  }
 
   delete(serviceId: string, accountId: string): void {
     const provider = requireHarness(serviceId);

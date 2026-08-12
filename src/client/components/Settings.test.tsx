@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { render, screen, cleanup, fireEvent, waitFor, within } from "@testing-library/react";
+import { render, screen, cleanup, fireEvent, waitFor, within, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Settings, type SettingsProps } from "./Settings.js";
 import { useUiStore } from "../stores/ui-store.js";
@@ -192,7 +192,7 @@ describe("Settings - Services → Anthropic subscription", () => {
   // docs/150 — one login process per provider, so the server rejects a second
   // concurrent sign-in with a 409. Surface that as a disabled affordance rather
   // than letting the user click into the refusal.
-  it("blocks a second concurrent sign-in while one account is authenticating", () => {
+  it("blocks a second concurrent sign-in while one account is authenticating", async () => {
     const now = Date.now();
     // `externalId` is what says a row has connected before — without it these
     // read as sign-in attempts, which the panel does not list (req 17).
@@ -204,32 +204,45 @@ describe("Settings - Services → Anthropic subscription", () => {
 
     render(<Settings {...defaultProps} agentList={[claudeUnauthed]} />);
 
+    // docs/252 req 19 — both verbs live in the row's `\u22ef` now, so the guard is
+    // asserted where the user meets it. Radix renders one menu at a time, so
+    // each row is opened in turn.
+    await userEvent.click(screen.getByLabelText("Manage Account B"));
     // The row that is NOT signing in can't start a competing flow...
-    expect(screen.getByTestId("provider-account-connect-acct-b")).toBeDisabled();
+    expect(screen.getByTestId("provider-account-connect-acct-b")).toHaveAttribute("data-disabled");
+    await userEvent.keyboard("{Escape}");
+
+    await userEvent.click(screen.getByLabelText("Manage Account A"));
     // ...and the one that is keeps its own way out.
-    expect(screen.getByTestId("provider-account-cancel-login-acct-a")).toBeEnabled();
+    expect(screen.getByTestId("provider-account-cancel-login-acct-a")).not.toHaveAttribute("data-disabled");
   });
 
-  // docs/150 — the Claude CLI-output buffer is keyed by account id, so a row
-  // can only ever render its OWN attempt's output. It was one provider-wide
-  // buffer before, which read correctly only because the server refuses a
-  // second concurrent per-provider sign-in; the scoping now lives in the data.
-  it("renders a row's Claude CLI output only on the account that produced it", () => {
+  /**
+   * docs/150 — the Claude CLI-output buffer is keyed by account id, so a
+   * sign-in can only ever render its OWN attempt's output. It was one
+   * provider-wide buffer before, which read correctly only because the server
+   * refuses a second concurrent per-provider sign-in; the scoping lives in the
+   * data now.
+   *
+   * docs/252 req 19 moved WHERE it renders: the challenge left the row for the
+   * add-service dialog's step 3, because `AccountChallenge` returns `null`
+   * until the auth URL arrives and the row showed nothing in between. So the
+   * keying is asserted through the reconnect that opens that dialog — the
+   * account whose sign-in is running gets its own output, and the other
+   * account's rows carry none.
+   */
+  it("renders the Claude CLI output of the account whose sign-in is running, and no other", async () => {
     const now = Date.now();
-    const base = { serviceId: "anthropic" as const, billingMode: "sub" as const, via: "account" as const, isPrimary: false, status: "ready" as const, createdAt: now, updatedAt: now };
+    const base = { serviceId: "anthropic" as const, billingMode: "sub" as const, via: "account" as const, isPrimary: false, status: "ready" as const, externalId: "ext", createdAt: now, updatedAt: now };
     useSettingsStore.getState().setProviderAccounts([
-      { ...base, id: "acct-a", label: "Account A", isPrimary: true },
-      { ...base, id: "acct-b", label: "Account B" },
+      { ...base, id: "acct-a", label: "Account A", isPrimary: true, externalId: "ext-a" },
+      { ...base, id: "acct-b", label: "Account B", externalId: "ext-b" },
     ]);
-    // Both rows carry a live challenge — the condition under which the shared
-    // buffer would have rendered twice.
-    for (const id of ["acct-a", "acct-b"]) {
-      useSettingsStore.getState().setProviderAccountAuth("claude", id, {
-        provider: "claude",
-        accountId: id,
-        verificationUri: `https://claude.ai/oauth/authorize?${id}`,
-      });
-    }
+    useSettingsStore.getState().setProviderAccountAuth("claude", "acct-a", {
+      provider: "claude",
+      accountId: "acct-a",
+      verificationUri: "https://claude.ai/oauth/authorize?acct-a",
+    });
     useSettingsStore.getState().appendClaudeAuthLog("acct-a", {
       attemptId: "attempt-a",
       timestamp: "2026-08-03T00:00:00.000Z",
@@ -237,12 +250,16 @@ describe("Settings - Services → Anthropic subscription", () => {
       source: "claude_stdout",
       message: "A's CLI output.",
     });
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) }));
 
     render(<Settings {...defaultProps} agentList={[claudeUnauthed]} />);
+    await userEvent.click(screen.getByLabelText("Manage Account A"));
+    await userEvent.click(screen.getByTestId("provider-account-connect-acct-a"));
 
-    expect(screen.getByTestId("provider-account-diagnostics-acct-a")).toBeInTheDocument();
+    expect(await screen.findByTestId("provider-account-diagnostics-acct-a")).toBeInTheDocument();
     expect(screen.queryByTestId("provider-account-diagnostics-acct-b")).not.toBeInTheDocument();
     expect(screen.getByText(/A's CLI output\./)).toBeInTheDocument();
+    vi.unstubAllGlobals();
   });
 
   // docs/260 req 3 — disconnecting is one click, even for the last account.
@@ -263,7 +280,8 @@ describe("Settings - Services → Anthropic subscription", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     render(<Settings {...defaultProps} />);
-    await userEvent.click(within(screen.getByTestId("provider-account-row-acct-a")).getByRole("button", { name: "Disconnect" }));
+    await userEvent.click(screen.getByLabelText("Manage Account A"));
+    await userEvent.click(screen.getByTestId("provider-account-disconnect-acct-a"));
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
       "/api/provider-accounts/claude/acct-a",
@@ -296,7 +314,15 @@ describe("Settings - Services → Anthropic subscription", () => {
     expect(screen.queryByTestId("provider-api-key-input-claude")).not.toBeInTheDocument();
   });
 
-  it("renders provider accounts and primary state", () => {
+  /**
+   * docs/252 req 19/21 — the row is `label \u00b7 quota \u00b7 \u22ef`. It was a
+   * permanently-mounted rename input over the account's UUID, with a status
+   * pill and a *Primary* badge beside three ghost buttons; the name is now
+   * text, the badge is gone with the concept (`isPrimary` is stamped on read
+   * from position, so it was never a property to display), and a row that is
+   * fine says nothing at all.
+   */
+  it("renders each account as one line of its own name, with no badge and no field", () => {
     const now = Date.now();
     useSettingsStore.getState().setProviderAccounts([
       {
@@ -322,11 +348,21 @@ describe("Settings - Services → Anthropic subscription", () => {
 
     render(<Settings {...defaultProps} />);
 
-    expect(screen.getByDisplayValue("Primary Anthropic")).toBeInTheDocument();
-    expect(screen.getByDisplayValue("Backup Anthropic")).toBeInTheDocument();
-    expect(screen.getByText("Primary")).toBeInTheDocument();
+    expect(screen.getByText("Primary Anthropic")).toBeInTheDocument();
+    expect(screen.getByText("Backup Anthropic")).toBeInTheDocument();
+    expect(screen.queryByDisplayValue("Primary Anthropic")).not.toBeInTheDocument();
+    expect(screen.queryByText("Primary")).not.toBeInTheDocument();
+    // The account this install cannot authenticate says so, in words.
+    expect(screen.getByTestId("provider-account-row-acct-backup-status"))
+      .toHaveTextContent("reconnect needed");
   });
 
+  /**
+   * docs/252 req 19 — the challenge renders in the add-service dialog, reached
+   * here by *Reconnect*, because that dialog is the one sign-in surface. The
+   * account-scoped code endpoint is what this really pins: a second account's
+   * code must not be submitted against the provider's singleton path.
+   */
   it("renders and submits the scoped Claude authorization flow for an authenticated secondary account", async () => {
     const now = Date.now();
     useSettingsStore.getState().setProviderAccounts([{
@@ -334,7 +370,11 @@ describe("Settings - Services → Anthropic subscription", () => {
       serviceId: "anthropic", billingMode: "sub", via: "account",
       label: "Claude account 2",
       isPrimary: false,
-      status: "authenticating",
+      // `unavailable` rather than `authenticating`: the row is one the user is
+      // about to reconnect, and a row already mid-login offers *Cancel
+      // sign-in* instead. The live challenge below is what the reconnect then
+      // renders in the dialog.
+      status: "unavailable",
       // Authenticated before — the row is re-connecting, not being created. A
       // row with no identity and no successful login is an attempt, and the
       // panel does not list attempts (req 17); the add-service dialog owns
@@ -343,17 +383,26 @@ describe("Settings - Services → Anthropic subscription", () => {
       createdAt: now,
       updatedAt: now,
     }]);
-    useSettingsStore.getState().setProviderAccountAuth("claude", "acct-secondary", {
-      provider: "claude",
-      accountId: "acct-secondary",
-      verificationUri: "https://claude.ai/oauth/authorize?secondary=true",
-    });
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ success: true }) });
     vi.stubGlobal("fetch", fetchMock);
 
     render(<Settings {...defaultProps} agentList={[claudeAuthed]} />);
+    await userEvent.click(screen.getByLabelText("Manage Claude account 2"));
+    await userEvent.click(screen.getByTestId("provider-account-connect-acct-secondary"));
 
-    expect(screen.getByRole("link", { name: "Open Anthropic authentication page" })).toHaveAttribute(
+    // The challenge is seeded AFTER the reconnect starts, which is when it
+    // really arrives — and it has to be: adopting an attempt cancels whatever
+    // login was running against it and clears the challenge that login left, so
+    // a code seeded beforehand is a dead one the dialog is right to drop.
+    act(() => {
+      useSettingsStore.getState().setProviderAccountAuth("claude", "acct-secondary", {
+        provider: "claude",
+        accountId: "acct-secondary",
+        verificationUri: "https://claude.ai/oauth/authorize?secondary=true",
+      });
+    });
+
+    expect(await screen.findByRole("link", { name: "Open Anthropic authentication page" })).toHaveAttribute(
       "href",
       "https://claude.ai/oauth/authorize?secondary=true",
     );
@@ -606,38 +655,56 @@ describe("Settings - Services → OpenAI subscription", () => {
     expect(screen.queryByTestId("provider-toggle-api-key-codex")).not.toBeInTheDocument();
   });
 
-  it("renders a Codex device code on the row that started the sign-in (req 16)", () => {
+  /**
+   * docs/252 req 19 — the device code renders in the add-service dialog, which
+   * *Reconnect* opens on step 3 for this account. Still one implementation for
+   * both providers (docs/150 req 16): `AccountChallenge` shows OpenAI's
+   * device-code variant here and Anthropic's paste variant above.
+   */
+  it("renders a Codex device code in the sign-in it belongs to (req 16)", async () => {
     const now = Date.now();
     useSettingsStore.getState().setProviderAccounts([{
       id: "acct-codex-2",
       serviceId: "openai", billingMode: "sub", via: "account",
       label: "Codex account 2",
       isPrimary: false,
-      status: "authenticating",
+      status: "unavailable",
       externalId: "ext-codex-2",
       createdAt: now,
       updatedAt: now,
     }]);
-    useSettingsStore.getState().setProviderAccountAuth("codex", "acct-codex-2", {
-      provider: "codex",
-      accountId: "acct-codex-2",
-      verificationUri: "https://auth.openai.com/device",
-      userCode: "WXYZ-1234",
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) }));
+    render(<Settings {...defaultProps} agentList={[claudeAuthed, codexInstalled]} />);
+    await userEvent.click(screen.getByLabelText("Manage Codex account 2"));
+    await userEvent.click(screen.getByTestId("provider-account-connect-acct-codex-2"));
+    act(() => {
+      useSettingsStore.getState().setProviderAccountAuth("codex", "acct-codex-2", {
+        provider: "codex",
+        accountId: "acct-codex-2",
+        verificationUri: "https://auth.openai.com/device",
+        userCode: "WXYZ-1234",
+      });
     });
 
-    render(<Settings {...defaultProps} agentList={[claudeAuthed, codexInstalled]} />);
-
-    // The device code belongs to the row, not to a provider-wide card — the
-    // shared row shell renders the device-code variant here and the
-    // code-paste variant for Claude.
-    expect(screen.getByTestId("provider-account-user-code-acct-codex-2")).toHaveTextContent("WXYZ-1234");
+    // The device code belongs to the ACCOUNT, not to a provider-wide card.
+    expect(await screen.findByTestId("provider-account-user-code-acct-codex-2")).toHaveTextContent("WXYZ-1234");
     expect(screen.getByRole("link", { name: "Open OpenAI authentication page" })).toHaveAttribute(
       "href",
       "https://auth.openai.com/device",
     );
+    vi.unstubAllGlobals();
   });
 
-  it("keeps two concurrent row sign-ins independent", () => {
+  /**
+   * Two sign-ins can no longer be on screen at once — the challenge lives in
+   * one modal dialog (docs/252 req 19) and the server runs one login per
+   * provider anyway. What replaces "keep them independent" is the constraint
+   * that makes the question moot: **no challenge renders on a row at all.**
+   * Rebuilding one there is the regression this catches, and it would return
+   * the poorer copy the change removed — `AccountChallenge` renders `null`
+   * until the auth URL lands, so the row would again show nothing in between.
+   */
+  it("renders no challenge on the rows themselves, whatever their state", () => {
     const now = Date.now();
     const base = { serviceId: "openai" as const, billingMode: "sub" as const, via: "account" as const, isPrimary: false, createdAt: now, updatedAt: now };
     useSettingsStore.getState().setProviderAccounts([
@@ -653,8 +720,11 @@ describe("Settings - Services → OpenAI subscription", () => {
 
     render(<Settings {...defaultProps} agentList={[claudeAuthed, codexInstalled]} />);
 
-    expect(screen.getByTestId("provider-account-user-code-acct-a")).toHaveTextContent("AAAA-1111");
-    expect(screen.getByTestId("provider-account-user-code-acct-b")).toHaveTextContent("BBBB-2222");
+    expect(screen.queryByTestId("provider-account-user-code-acct-a")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("provider-account-user-code-acct-b")).not.toBeInTheDocument();
+    // The rows still say what is going on — in a word, which is req 19's rule
+    // for a state that needs attention.
+    expect(screen.getByTestId("provider-account-row-acct-a-status")).toHaveTextContent("signing in");
   });
 });
 

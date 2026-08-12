@@ -597,7 +597,11 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
   });
 
   describe("provider account settings endpoints", () => {
-    it("creates, renames, makes primary, and disconnects provider accounts", async () => {
+    // docs/252 req 21 — "makes primary" is gone from this list, and so is
+    // `POST …/:id/primary`: "primary" was never a property, only position 0,
+    // and the endpoint behind that button was `reorder([this, …rest])`.
+    // Reordering is the verb that survived, and it is what this now exercises.
+    it("creates, renames, reorders, and disconnects provider accounts", async () => {
       const created = await app.inject({
         method: "POST",
         url: "/api/provider-accounts",
@@ -626,10 +630,13 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
       const secondId = (second.json() as { account: { id: string } }).account.id;
 
       const primary = await app.inject({
-        method: "POST",
-        url: `/api/provider-accounts/claude/${secondId}/primary`,
+        method: "PUT",
+        url: "/api/provider-accounts/claude/order",
+        payload: { accountIds: [secondId, accountId] },
       });
       expect(primary.statusCode).toBe(200);
+      // `isPrimary` still crosses the wire, still derived from position — what
+      // went is the UI that read it and the setter that wrote it.
       const primaryAccounts = (primary.json() as { accounts: { id: string; isPrimary: boolean }[] }).accounts;
       expect(primaryAccounts.find((account) => account.id === secondId)?.isPrimary).toBe(true);
       expect(primaryAccounts.find((account) => account.id === accountId)?.isPrimary).toBe(false);

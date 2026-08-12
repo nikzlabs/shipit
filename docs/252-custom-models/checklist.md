@@ -260,3 +260,91 @@ landed ahead of this checklist's per-phase sections.
       on the way: a live three-line tail below the box (the same output twice), then the
       collapsed buffer below the box (two places to look). The whole flow holds one height,
       measured live.
+
+## Compact services panel (reqs 19-21)
+
+- [x] `ServiceCard` compact: header line only, `N models` control top-right with the ids on hover
+- [x] Drop the per-card description prose, the account empty-state box on a card that holds a credential, and the environment-variable sentence
+- [x] Credential row = `label · quota · ⋯`; `SubscriptionLimitPill` reused with `label` optional
+- [x] `⋯` menu: Rename / Reconnect / Disconnect (account), Rename / Replace secret / Remove (key)
+- [x] Rename for a supplied key (the label patch endpoint already exists)
+- [x] Drag-and-drop ordering replaces the carets, for both row types
+- [x] Routing band: segmented control + inline cutoffs, with three existing strings kept verbatim in `WithTooltip`s (`label` widened to `ReactNode`); the band title survives only as the radiogroup's accessible name — no tooltip, it would have no trigger
+- [x] Guard test: all four band strings are still reachable — three as tooltip content, the title as the accessible name
+- [x] Delete `Make primary`: the button, both badges, `POST …/:id/primary`, `makePrimaryProviderAccount`, `ProviderAccountManager.makePrimary`
+- [x] Reconnect opens the **same** `AddServiceDialog` on step 3 (`initialService` + `initialMode` + an existing `signInAccountId`); delete the row's inline challenge
+- [x] Guard test: cancelling a reconnect leaves the account connected and in the same position
+- [x] Guard test: exactly one `add-service-dialog` is mounted, however it was opened — no second dialog for reconnect
+- [x] Adopt environment-delivered credentials into ordinary rows at boot (rotation, remembered deletion, reserved route ids)
+
+Ten defects in all — four found by the work, six by the independent
+cross-backend review (`shipit agent run --role reviewer`, run db1e8614). Recorded because each is a rule that was stated correctly and
+implemented as a near-neighbour of itself:
+
+- [x] **Cancelling a reconnect deleted the account.** `cancel` abandoned
+      whatever `signInAccountId` named, which was right while every id the
+      dialog held was one it had minted. `standDown` asks the ROW instead —
+      `isUnconnectedAttempt`, the same predicate the panel uses to decide what
+      to list — and cancels the login either way. Caught by the guard test
+      above, before the code ran.
+- [x] **`mixedDelivery` read "can hold both" for "holds both."** An
+      account-capable mode with no account and two supplied credentials was
+      treated as a mixed pair, so it offered no order between them and no
+      routing band at all. Unreachable before adoption, because the second
+      string credential was invisible; visible in the dogfood instance the
+      first time it ran. Same correction for the routing pool and for the
+      header count, which said "2 accounts" over two credentials on a card
+      with no account.
+- [x] **Adoption created a second API key**, which `createStringCredential`
+      answers with a 409 — req 12 says keys never fail over. "Behave exactly as
+      if I would add it manually" cuts both ways: an add that would be refused
+      is an adoption that is refused, and the variable stays as shadowed as it
+      already was.
+
+### Found by the independent review
+
+Requirements 19 and 21 were judged met; req 20 was judged **not fully met**, on
+the first of these. All six are fixed.
+
+- [x] **An adopted credential authenticated with the WRONG secret.** Adoption
+      gives a stored row a legacy reserved id on purpose, and the test for "is
+      this a stored route" was `startsWith("cred_")` — a faithful proxy only
+      while every stored row had a minted id. Under it an adopted row was handed
+      the mode's GROUP variable, which always carries the group's FIRST
+      credential, so ordering or failover onto the adopted row authenticated as
+      a different credential than the turn was attributed to. The question is
+      now asked of the store, threaded through all four callers of
+      `serviceRoutingForSelection` as a required parameter — a default would let
+      a forgotten site fail silently, which is the failure being fixed.
+- [x] **Cancelling a reconnect could still delete the account.**
+      `isUnconnectedAttempt` is not sufficient on its own: a login whose identity
+      cannot be read proceeds by design, so a connected account can have no
+      `externalId`, and reconnect moves it to `authenticating` — both clauses,
+      on a working credential. Only the dialog knows whether it MINTED the id
+      (`mintedHere`), and that is now the gate.
+- [x] **The reconnect's login outlived the dialog.** Running `cancel → start`
+      from the click handler detached it from the dialog's `left` ref, so
+      closing mid-flight let the start land afterwards — a login against a
+      hidden row, which is the 409 nobody can clear. The dialog owns it now, via
+      `startSignIn`, from a mount effect (mount IS the Reconnect click).
+- [x] **Reconnect opened on the FAILURE screen.** With the start outside the
+      dialog, `startingSignIn` stayed false, which satisfies `signInStalled` —
+      "The sign-in stopped before the account connected." with a *Try again*,
+      before the first request returned. Two fixes: the dialog owns the start,
+      and `signInStalled` also waits for `reconnectLeftReady`, because the
+      server's `authenticating` broadcast arrives after `startSignIn` resolves.
+      A start that throws sets that flag, so a real failure still reaches its
+      *Try again*.
+- [x] **A stale challenge could mask the state.** `cancelAccountLogin` does not
+      clear `providerAccountAuths`, so the code from a cancelled login rendered
+      as the new one's — and suppressed `signInStalled`, leaving neither a
+      completion nor a retry. The adopt path clears it.
+- [x] **Two-write windows.** `CredentialStore.save()` swallows a write failure,
+      so adoption's (row, provenance) and deletion's (route, removal marker)
+      pairs each had a window whose ORDER decides how it fails. Both reordered
+      so the survivable outcome is the one that happens: provenance before the
+      row (self-heals next boot), marker before the delete (the row is still
+      there and can be removed again, rather than being re-imported).
+- [x] **Reconnect had no title of its own** — "Add a service — Anthropic",
+      which reads as an add and names no account. Now "Reconnect — Anthropic ·
+      Work", as the plan specified.

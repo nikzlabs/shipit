@@ -43,6 +43,7 @@ import {
 } from "../../shared/catalogue/index.js";
 import type { CredentialStore } from "../credential-store.js";
 import { collectServiceCredentialEnv } from "../secret-resolver.js";
+import { envRouteIdFor } from "../service-routing.js";
 import { ServiceError } from "./types.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
 
@@ -324,6 +325,40 @@ export function deleteCredentialRoute(
     );
   }
   const before = deliveredValueFor(credentialStore, route.serviceId, route.billingMode);
+  /**
+   * docs/252 req 20 — **remember the removal of an adopted credential.**
+   *
+   * The deployment's variable is still set, so without this the next boot
+   * re-imports the row the user just deleted and the removal silently never
+   * happened. Recorded against the variable rather than the route id because
+   * the variable is what would re-create it, and matched by the reserved id
+   * `adoptEnvCredentials` writes — so removing a *hand-added* credential of the
+   * same mode records nothing and leaves adoption free to run.
+   */
+  const envName = storageEnvFor(route.serviceId, route.billingMode);
+  const adopted = envName !== undefined && routeId === envRouteIdFor(envName);
+  if (envName && adopted) {
+    credentialStore.setAdoptedEnvCredential(envName, { removed: true });
+    if (process.env[envName] !== undefined) {
+      // Unset it here too, not only at the next boot: every downstream reader
+      // asks `process.env` (`listConfiguredCredentials`, `stringSelectionFor`,
+      // the registry's probes), so leaving it set would keep the credential
+      // working for the rest of this process's life. `syncProcessEnvForMode`
+      // below would only clear it when the value happened to match what the
+      // store delivered.
+      // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- keyed by a catalogue storageEnv name
+      delete process.env[envName];
+    }
+  }
+  /**
+   * **The row goes last.** `CredentialStore.save()` logs and swallows a write
+   * failure, so the marker and the deletion have a window between them, and the
+   * order decides which way it fails. Marker-then-delete fails to "remembered,
+   * but still there" — the row is visible and can be removed again. The other
+   * order fails to a deletion with no memory of it, and the next boot
+   * re-imports the credential the user just removed: req 20's restart guarantee,
+   * broken silently. Found by cross-backend review.
+   */
   credentialStore.deleteCredentialRoute(routeId);
   syncProcessEnvForMode(credentialStore, route.serviceId, route.billingMode, before);
   return { routes: listCredentialRoutes(credentialStore) };

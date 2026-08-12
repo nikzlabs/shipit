@@ -14,6 +14,7 @@
 
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { render, screen, cleanup, fireEvent, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { FailoverCutoffControls, CredentialSelectionModeControl } from "./CredentialRouting.js";
 import { ProviderAccountRows } from "./ProviderAccountRows.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
@@ -74,7 +75,7 @@ const CUTOFF_PROPS = {
 function renderCutoffs() {
   return render(
     <>
-      <ProviderAccountRows provider="claude" agent={agent} />
+      <ProviderAccountRows provider="claude" agent={agent} billingMode="sub" onReconnect={vi.fn()} />
       <FailoverCutoffControls {...CUTOFF_PROPS} />
     </>,
   );
@@ -269,8 +270,80 @@ describe("credential selection mode", () => {
     expect(useUiStore.getState().toast).toBeNull();
   });
 
-  it("names the credentials the way the card does", () => {
+  it("names the credentials the way the card does", async () => {
+    const user = userEvent.setup();
     render(<CredentialSelectionModeControl {...SELECTION_PROPS} noun="credential" />);
-    expect(screen.getByLabelText(/Spread across credentials/)).toBeInTheDocument();
+    await user.hover(screen.getByTestId(`credential-selection-mode-${ROUTING_KEY}-balanced`));
+    expect(await screen.findAllByText("Spread across credentials")).not.toHaveLength(0);
+  });
+});
+
+/**
+ * docs/252 req 19 — **compacting the band must not cost its copy.**
+ *
+ * The band was five lines of prose for two settings, and each sentence is what
+ * makes the choice answerable. Compaction moved every one of them to the
+ * control it was already describing rather than deleting it, and this is the
+ * test that says so: a later tidy-up that drops a tooltip fails here instead of
+ * quietly removing what the compaction promised to keep.
+ *
+ * Three are tooltip content. The fourth — the band's title — is the group's
+ * ACCESSIBLE NAME and deliberately not a tooltip: a tooltip needs a hoverable
+ * trigger of its own, the two segments fill the group's box, so every hover
+ * lands on a segment and the group's tooltip would either never open or fight
+ * the one that does. Inventing an ⓘ beside the control to give it a trigger
+ * would spend a pixel to keep a sentence nobody asked to keep on screen.
+ *
+ * `findAllByText` rather than `findByText` throughout: Radix renders a tooltip's
+ * content twice — the visible copy and a visually-hidden one carrying the aria
+ * description — so the single-match query fails on a tooltip that is working.
+ */
+describe("the routing band keeps all four of its strings (docs/252 req 19)", () => {
+  const SELECTION_PROPS = {
+    serviceId: "anthropic",
+    billingMode: "sub",
+    serviceName: "Anthropic",
+    noun: "account",
+  } as const;
+
+  it("keeps the band title as the group's accessible name", () => {
+    render(<CredentialSelectionModeControl {...SELECTION_PROPS} />);
+    expect(
+      screen.getByRole("radiogroup", { name: "How ShipIt picks between these accounts" }),
+    ).toBeInTheDocument();
+    // …and NOT as a tooltip, which would have no trigger of its own.
+    expect(screen.queryByText("How ShipIt picks between these accounts")).toBeNull();
+  });
+
+  it("keeps each option's full name and hint in that option's own tooltip", async () => {
+    const user = userEvent.setup();
+    render(<CredentialSelectionModeControl {...SELECTION_PROPS} />);
+
+    await user.hover(screen.getByTestId(`credential-selection-mode-${ROUTING_KEY}-strict`));
+    expect(await screen.findAllByText(
+      "New sessions start on the first account with quota left. Best when they differ — "
+      + "a bigger plan first, a smaller one as backup.",
+    )).not.toHaveLength(0);
+
+    await user.unhover(screen.getByTestId(`credential-selection-mode-${ROUTING_KEY}-strict`));
+    await user.hover(screen.getByTestId(`credential-selection-mode-${ROUTING_KEY}-balanced`));
+    // The only label that shortens on screen — its full name leads its tooltip,
+    // so nothing is available only in the short form.
+    expect(await screen.findAllByText("Spread across accounts")).not.toHaveLength(0);
+    expect(await screen.findAllByText(
+      "New sessions go to whichever account has been used least, so quota drains evenly. "
+      + "Best when they are equivalent.",
+    )).not.toHaveLength(0);
+  });
+
+  it("keeps the cutoff explanation on the fields it explains", async () => {
+    const user = userEvent.setup();
+    render(<FailoverCutoffControls {...CUTOFF_PROPS} />);
+
+    await user.hover(screen.getByTestId(`failover-cutoff-${ROUTING_KEY}-session`));
+    expect(await screen.findAllByText(
+      "Start new work on the next account once an account passes these. Accounts past their "
+      + "cutoff are still used when no other account is below one, so nothing is stranded.",
+    )).not.toHaveLength(0);
   });
 });

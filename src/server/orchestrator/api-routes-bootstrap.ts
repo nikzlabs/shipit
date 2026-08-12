@@ -22,7 +22,6 @@ import {
   listProviderAccounts,
   createProviderAccount,
   renameProviderAccount,
-  makePrimaryProviderAccount,
   reorderProviderAccounts,
   deleteProviderAccount,
   startProviderAccountLogin,
@@ -418,28 +417,6 @@ export async function registerBootstrapRoutes(
     },
   );
 
-  app.post<{ Params: { provider: AgentId; accountId: string } }>(
-    "/api/provider-accounts/:provider/:accountId/primary",
-    async (request, reply) => {
-      try {
-        const result = makePrimaryProviderAccount(
-          deps.providerAccountManager,
-          request.params.provider,
-          request.params.accountId,
-        );
-        deps.agentRegistry.refreshAuth(request.params.provider);
-        deps.sseBroadcast("provider_accounts", { accounts: result.accounts });
-        deps.sseBroadcast("agent_list", buildAgentListPayload(deps.agentRegistry, deps.credentialStore, deps.providerAccountManager));
-        return result;
-      } catch (err) {
-        if (err instanceof ServiceError) {
-          reply.code(err.statusCode).send({ error: err.message });
-          return;
-        }
-        reply.code(500).send({ error: `Failed to set primary provider account: ${getErrorMessage(err)}` });
-      }
-    },
-  );
 
   app.delete<{
     Params: { provider: AgentId; accountId: string };

@@ -3052,6 +3052,225 @@ font size suggests (the link is inline, so its line box is 16). It is keyed off
 the dialog opened short on a line of prose and then grew by the height of a panel. Measured
 live, step 3 is 326px from its first frame and does not move when the code lands.
 
+## The compact card (reqs 19, 20, 21)
+
+Agreed from a mock-up before any of it was written (`/persist/services-compact-prototype.html`),
+in the order the earlier round proved cheaper: draw it, agree it, then write it.
+
+**The measurement that started it.** In the dogfood instance at 470px wide, the Anthropic
+subscription card is **272px** and holds **39px** of credential; the DeepSeek key card is
+**148px** and holds the same 39px. The rest is a description sentence (32px), an account
+empty-state box (42px), a sentence about environment variables (48px) and a row of model-id
+chips that grows with the catalogue. Compact, both cards are **~74px**: a header line and the
+credential.
+
+**What goes, and why each one is not merely verbose.**
+
+- *"Connect one or more subscriptions. ShipIt fails over between them when one runs out."* and
+  *"Metered — no quota to report, so this card shows no usage."* — neither says anything about
+  *this* install. The failover rule is stated by the routing band, which appears only when
+  there is something to route between; the metered fact is the **API key** pill.
+- *"No {service} subscription connected. Add one with Add a service."* — printed **above a
+  connected credential** of that same service whenever a card holds a supplied key and no
+  account. Its docstring assumed the only way to reach it was a notice holding an empty card
+  open, which stopped being true when the two delivery shapes became one card.
+- *"Supplied by an environment variable, and used only while no account above is connected —
+  ShipIt does not move onto it when the accounts run out."* — the first clause is **false**: the
+  panel renders it for every `via: "string"` row on an account-backed card, and those rows are
+  ordinary stored credentials with no recorded provenance. The rows that prompted the report
+  were added by hand through the dialog. The second clause is true and is reqs 12/13; it does
+  not need printing on every card to stay true.
+- **The model-id chip row** — moved, not deleted. It becomes a `N models` control in the card's
+  top-right corner naming them on hover (the human's placement).
+
+**A row is `label · quota · ⋯`, whatever it holds.** The account row loses the permanently
+mounted rename input (most of its 120px), the account UUID line, the status pill and three
+ghost buttons; Rename / Reconnect / Disconnect move into the `⋯` menu.
+
+**A healthy row says nothing about its health.** The mock-up first put a `StatusDot` on every
+row — green for ready, amber otherwise — and it is the wrong instinct twice: a green dot on the
+normal case is decoration on every row, restating what the absence of a problem already says,
+and a hue alone is not a message a colour-blind user or a monochrome theme can read. So a ready
+account shows nothing, and the states that need attention say so in words — *reconnect needed*,
+*signing in…* — in `--color-warning` / `--color-error`. This is the same rule as the API-key
+card's cut prose: do not spend a row on "nothing is wrong". A supplied-key row gets the same menu — Rename / Replace secret / Remove — so both row
+types read the same. **Rename on a key row is new**: `PATCH /api/credential-routes/:id` has
+always accepted a label patch, and nothing reaches it after the credential is added.
+
+**Quota is `SubscriptionLimitPill`, not a new readout.** The header's pill is already keyed by
+*route id*, already carries both windows, the elapsed-time marker, the staleness dimming and
+Anthropic's refresh button. The one change it needs is `label` becoming optional: in the header
+it must name its account, in a row the row already does. A key reports no quota, so a key row
+has no pill and nothing explains the absence.
+
+**The routing band's copy is kept — moved into tooltips, not rewritten and not dropped.** The
+band's four strings are what make the choice answerable; compacting the band must not cost them.
+Each one moves to the control it was already describing:
+
+| String (verbatim, from `CredentialRouting.tsx`) | Where it goes |
+|---|---|
+| "How ShipIt picks between these accounts" | The segmented control's accessible name (`role="radiogroup"`) — **no tooltip**, see below |
+| "Use in order" + "New sessions start on the first account with quota left. Best when they differ — a bigger plan first, a smaller one as backup." | Tooltip on the first segment, the option's name as its first line |
+| "Spread across accounts" + "New sessions go to whichever account has been used least, so quota drains evenly. Best when they are equivalent." | Tooltip on the second segment, same shape |
+| "Start new work on the next account once an account passes these. Accounts past their cutoff are still used when no other account is below one, so nothing is stranded." | Tooltip on the two cutoff fields |
+
+Only one on-screen *label* shortens: the second segment reads **Spread evenly**, because it sits
+in a 470px row beside the cutoffs. Its full name "Spread across accounts" leads its own tooltip,
+so nothing is only available in the short form. `{noun}` still interpolates — "credential" on a
+string-delivered mode, "account" on an account-backed one — exactly as today.
+
+**The band title gets no tooltip, because it would have no trigger.** The first draft of this
+table gave "How ShipIt picks between these accounts" a tooltip on the group. The two segments
+fill the group's box, so every hover lands on a segment and the group's tooltip either never
+opens or fights the one that does. A tooltip needs a hoverable trigger of its own, and inventing
+one — an ⓘ beside the control — would add a pixel to save a sentence nobody asked to keep on
+screen. So the string survives only as the control's accessible name: read on focus, costing
+nothing.
+
+`WithTooltip` (Radix) rather than a `title` attribute: it opens on keyboard focus as well as
+hover, and a `title` is unreachable that way. One change to the primitive — `label` widens from
+`string` to `ReactNode`, since two of these carry a bold first line. **A test asserts each of the
+four strings is still reachable from the rendered band** — three as tooltip content, the fourth
+as the group's accessible name — so a later tidy-up cannot quietly delete what the compaction
+promised to keep.
+
+**Ordering is drag-and-drop, and `Make primary` goes (req 21).** "Primary" was never a property.
+`isPrimary` is stamped on read from position (`orderCredentialRoutes`, `index === 0`), every
+writer stores `false`, and the endpoint behind the button is `reorder([this, …rest])`. Its only
+live readers are the button, its disabled guard, and two badges; `backfillPriority` reads the
+derived value once at boot and keeps working. So `POST /api/provider-accounts/:provider/:id/primary`,
+`makePrimaryProviderAccount` and `ProviderAccountManager.makePrimary` are deleted with the
+button — no other caller exists — and the field stays on the wire with no UI consumer.
+
+**Reconnect opens the add-service dialog on its sign-in step, targeted at that account.** Today
+it posts `/login` for the existing row and renders `AccountChallenge` inline in the card, which
+returns `null` until the auth URL arrives — so between the click and the URL the row shows
+nothing at all. That is the same "it looks stuck" gap the dialog's step 3 was built to close,
+and the fix is to have one sign-in surface rather than a second, poorer copy: the waiting
+skeleton, the CLI output buffer, the code field and the failure state all exist there already.
+The row's inline challenge is deleted with it.
+
+**It is the same component, entered differently — not a `ReconnectDialog`.** This is the whole
+point of the change, so it is stated as a constraint rather than left to taste: there is exactly
+**one** dialog in this panel, `AddServiceDialog`, with **one** mount site in `ServicesPanel`.
+Everything reconnect needs is already there:
+
+- `initialService` / `initialMode` skip steps 1 and 2, so the dialog opens on step 3.
+- `signInAccountId` already names "the account this dialog's sign-in belongs to", re-read from
+  the store every render. Reconnect seeds it with an **existing** id instead of one the dialog
+  minted, and starts the login for it — the same `startAccountLogin` call `startSignIn` makes
+  after its create.
+- The title is already computed (`Add a service — {service.name}`), so the verb becomes a prop
+  rather than a second dialog: *Reconnect Anthropic — Work plan*.
+
+What must NOT happen: a copy of step 3 in the row, a second `Dialog` mounted from
+`ProviderAccountRows`, or a "reconnect mode" branch that re-implements the panel. If a change
+looks like it needs one of those, the seam is wrong — the dialog's step 3 is already parameterised
+by `(service, mode, accountId)` and that is the entire input reconnect has.
+
+**The one thing to pin with a test: cancelling a reconnect must not remove the account.** The
+dialog abandons an attempt *it* created; a connected account is not an attempt
+(`isUnconnectedAttempt` is false once it has an `externalId`), so cancel must leave it connected
+and in the same position in the order. A second test asserts the panel renders exactly one
+`add-service-dialog` testid whichever way it was opened, so a future reconnect surface cannot be
+added beside it without turning the suite red.
+
+**Environment-delivered credentials are adopted, not special-cased (req 20).** Today a
+deployment's `ANTHROPIC_AUTH_TOKEN` produces no row: `listCredentialRoutes` returns stored rows
+only, and `stringSelectionFor` reaches the variable solely as a last resort when nothing is
+stored (`service-routing.ts`) — so it is invisible in Settings and cannot be renamed, reordered
+or removed. It becomes an ordinary credential row at boot instead, which is what makes the
+dogfood instance representative of a real install. Three things this has to get right, none of
+them visible in the happy path:
+
+- **Rotation.** The stored copy is written once. A deployment that changes the variable later
+  has a stale copy, so adoption re-reads the variable on each boot and updates the secret of the
+  row it created — unless the user has since replaced it by hand, which wins.
+- **Deletion is a deletion.** The variable is still set after the user removes the row, so
+  adoption must remember the removal rather than re-import it on the next boot.
+- **The reserved route id.** `envRouteIdFor` maps the three legacy variables to ids that pinned
+  session rows already hold (`claude-env-oauth`, `claude-api-key`, `codex-api-key`), so an
+  adopted row keeps that id rather than minting a `cred_…` one, or every session pinned to it
+  is orphaned.
+
+**What building it changed about the design.** Four things, kept here rather
+than quietly folded in, because each is a rule this document already stated and
+the code implemented as a near-neighbour of itself.
+
+- **Cancelling a reconnect must be asked of the ROW, not of the dialog's
+  history.** The dialog abandoned whatever `signInAccountId` named, which was
+  correct while every id it held was one it had minted. Seeding that field with
+  an existing account — the whole of how reconnect works — made it a deletion of
+  the user's working credential. `standDown` asks `isUnconnectedAttempt`, the
+  same predicate the panel uses to decide what to list, and cancels the login
+  either way; anything the panel hides, it cleans up. The guard test this
+  section promised is what found it, before the code was ever run.
+- **`mixedDelivery` and the routing pool read "can" for "does".** Both were
+  `provider !== undefined && …` — "this mode can take an account" — where the
+  question is "does it hold one". An account-capable mode holding two supplied
+  credentials and no account was therefore treated as a mixed pair: no order
+  between them, no routing band, and a header reading "2 accounts" over two
+  things that are not accounts. It was unreachable until req 20, because the
+  second string credential was invisible; the dogfood instance showed it on the
+  first run after adoption.
+- **Adoption obeys the rule an add obeys.** Req 20 is "behave exactly as if I
+  would add the service manually", and adding a second API key by hand is
+  refused with a 409 (req 12: keys never fail over). The first cut adopted past
+  that and put two keys on a card the API allows one of. An add that would be
+  refused is an adoption that is refused — and nothing is lost, because
+  `collectServiceCredentialEnv` already delivers the stored credential, so the
+  deployment's variable was shadowed and unused before adoption existed.
+- **A remembered removal has to leave `process.env`, not just the route list.**
+  `listConfiguredCredentials` and `stringSelectionFor` read the raw variable, so
+  remembering the removal only in the store would have left the credential
+  working and the user's removal a no-op. Unsetting the variable — once, in
+  adoption, and again at the delete — is what makes every downstream reader see
+  the absence without any of them learning what a removal is.
+
+**What the independent review changed.** Six more, on top of the four above, and
+the pattern is the same one: each is a rule stated correctly here and
+implemented as a near-neighbour of itself. The first is the one that mattered.
+
+- **"Is this a stored route" cannot be answered from the id's shape any more.**
+  `isStoredCredentialRouteId` asked `startsWith("cred_")`, which was faithful
+  while every stored row had a minted id — and req 20 breaks that on purpose,
+  because an adopted row keeps a LEGACY reserved id so pinned sessions still
+  resolve. Under the old test an adopted credential answered "not stored" and
+  spawn shaping handed it the mode's **group** variable, which always carries
+  the group's FIRST credential. Order or fail over onto the adopted row and the
+  turn authenticated as one credential while being attributed to another —
+  possibly the one ShipIt had just benched, which is the exact hazard phase 5
+  introduced the per-route variable to remove. The question now goes to the
+  store, as a **required** parameter on `serviceRoutingForSelection`: a default
+  would let a call site that forgot it fail silently, which is the failure.
+- **`isUnconnectedAttempt` is not sufficient to authorise a deletion.** Its own
+  docstring names the hole — an unreadable identity *proceeds*, so a connected
+  account can lack `externalId` — and reconnect supplies the other clause by
+  moving it to `authenticating`. Only the dialog can answer the real question,
+  which is whether it minted the id.
+- **A detached login has no owner.** Running `cancel → start` from the click
+  handler put it outside the dialog's `left` ref *and* outside its
+  `startingSignIn`, which produced two defects at once: a login that could
+  outlive the dialog, and a step 3 that opened on the flow's failure screen.
+  Both go away by routing through `startSignIn`, from a mount effect — mount
+  genuinely is the event here, since the Reconnect click is what mounts it.
+- **`signInStalled` needed the reconnect's own beat.** The server's
+  `authenticating` broadcast lands *after* `startSignIn` resolves, so between
+  them the row is `ready`, nothing pending, nothing starting — the stalled
+  predicate exactly. `reconnectLeftReady` gates it, and a thrown start sets that
+  flag so the real failure still reaches its *Try again*.
+- **Cancelling a login does not clear its challenge**, so a dead code could
+  render as the live one and suppress the stalled state. The adopt path clears it.
+- **Two-write windows have a correct order.** `save()` swallows failures, so
+  adoption's (row, provenance) and deletion's (route, marker) pairs each fail
+  one of two ways. Provenance before row self-heals; marker before delete leaves
+  a removable row rather than re-importing what the user deleted.
+
+**Measured, at the same 470px the compaction was specified against.** The
+DeepSeek key card is **148px → 78px**; the Anthropic subscription card, which
+was 272px holding one credential, is 154px holding *two* and a routing band. A
+credential row is 34px, from 39px for a supplied key and ~120px for an account.
+
 ## Key files
 
 | File | Why it matters |

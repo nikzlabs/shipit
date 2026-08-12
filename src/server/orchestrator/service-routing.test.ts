@@ -501,12 +501,26 @@ describe("envRouteIdFor", () => {
   });
 });
 
+/**
+ * Which route ids the store holds a row for, for `serviceRoutingForSelection`.
+ *
+ * docs/252 req 20 — the question moved from the id's SHAPE to the store,
+ * because adoption gives a stored row one of the legacy reserved ids on purpose
+ * so pinned sessions keep resolving. `cred_ds` is a stored row here; anything
+ * else is a credential that exists only as a deployment variable.
+ */
+const storeHolding = (...ids: string[]) => ({
+  getCredentialRoute: (id: string) =>
+    (ids.includes(id) ? ({ id } as unknown as CredentialRoute) : undefined),
+});
+
 describe("serviceRoutingForSelection", () => {
   it("shapes a string-delivered credential", () => {
     const routing = serviceRoutingForSelection(
       "claude",
       { serviceId: "deepseek", billingMode: "key", modelId: "deepseek-v4-flash" },
       { kind: "reserved", id: "cred_ds" },
+      storeHolding("cred_ds"),
     );
     expect(routing).toMatchObject({
       serviceId: "deepseek",
@@ -523,6 +537,34 @@ describe("serviceRoutingForSelection", () => {
     });
   });
 
+  /**
+   * docs/252 req 20's sharpest edge, and a regression this branch introduced
+   * before it was caught.
+   *
+   * Adoption gives a stored row one of the LEGACY reserved ids on purpose —
+   * `claude-env-oauth`, so sessions pinned to it keep resolving. The old test
+   * for "is this a stored route" was `startsWith("cred_")`, a faithful proxy
+   * only while every stored row had a minted id. Under it, an adopted
+   * credential answered "not stored" and was handed the mode's GROUP variable,
+   * which always carries the group's FIRST credential — so once ordering or
+   * failover moved a session onto the adopted row, the turn authenticated with
+   * a different credential than the one it was attributed to, and possibly with
+   * the very one ShipIt had just benched.
+   */
+  it("sources an ADOPTED credential from its own variable, legacy id and all", () => {
+    expect(
+      serviceRoutingForSelection(
+        "claude",
+        { serviceId: "deepseek", billingMode: "key", modelId: "deepseek-v4-flash" },
+        { kind: "reserved", id: "claude-api-key" },
+        // The store holds a row for it: that, not the id's shape, is what makes
+        // it stored — `collectServiceCredentialEnv` writes a per-route variable
+        // for every stored `via: "string"` row whatever its id.
+        storeHolding("claude-api-key"),
+      ),
+    ).toMatchObject({ credentialSourceEnv: "SHIPIT_CREDENTIAL_CLAUDE_API_KEY" });
+  });
+
   it("keeps the mode's group variable for an ENV-delivered credential", () => {
     // It has no row and no id of its own, so the catalogue's `storageEnv` is the
     // only name it has ever had.
@@ -531,6 +573,7 @@ describe("serviceRoutingForSelection", () => {
         "claude",
         { serviceId: "deepseek", billingMode: "key", modelId: "deepseek-v4-flash" },
         { kind: "reserved", id: "env:DEEPSEEK_API_KEY" },
+        storeHolding(),
       ),
     ).toMatchObject({ credentialSourceEnv: "DEEPSEEK_API_KEY" });
   });
@@ -545,12 +588,13 @@ describe("serviceRoutingForSelection", () => {
         "claude",
         { serviceId: "anthropic", billingMode: "sub", modelId: "claude-opus-5" },
         { kind: "account", id: "acct_1" },
+        storeHolding(),
       ),
     ).toBeUndefined();
   });
 
   it("has nothing to shape for a session with no selection", () => {
-    expect(serviceRoutingForSelection("claude", undefined, null)).toBeUndefined();
+    expect(serviceRoutingForSelection("claude", undefined, null, storeHolding())).toBeUndefined();
   });
 
   it("does not shape an account-capable mode on a guess when no route is resolved", () => {
@@ -562,6 +606,7 @@ describe("serviceRoutingForSelection", () => {
         "claude",
         { serviceId: "anthropic", billingMode: "sub", modelId: "claude-opus-5" },
         undefined,
+        storeHolding(),
       ),
     ).toBeUndefined();
   });
@@ -575,6 +620,7 @@ describe("serviceRoutingForSelection", () => {
         "claude",
         { serviceId: "deepseek", billingMode: "key", modelId: "deepseek-v4-flash" },
         undefined,
+        storeHolding(),
       ),
     ).toMatchObject({ serviceId: "deepseek" });
   });

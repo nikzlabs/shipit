@@ -160,6 +160,7 @@ export async function buildAgentRunParams(
             }
           : undefined,
         args.turnRoute,
+        deps.credentialStore,
       )
     : undefined;
   const sessionKind = sessionInfo?.kind;

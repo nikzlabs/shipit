@@ -706,21 +706,6 @@ export function renameProviderAccount(
   }
 }
 
-export function makePrimaryProviderAccount(
-  providerAccountManager: ProviderAccountManager,
-  provider: AgentId,
-  accountId: string,
-): { account: CredentialRoute; accounts: CredentialRoute[] } {
-  const serviceId = requireAccountService(provider);
-  validateAccountId(accountId);
-  try {
-    const account = providerAccountManager.makePrimary(serviceId, accountId);
-    return { account, accounts: providerAccountManager.list() };
-  } catch (err) {
-    throw providerAccountServiceError(err);
-  }
-}
-
 /**
  * docs/150 req 2 — persist the user's fallback order for a provider.
  *

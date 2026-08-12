@@ -455,7 +455,7 @@ export async function runSubAgent(
   // selection, this says whether the consult needs shaping: an account-delivered
   // credential is the CLI's own login and is left alone, a string-delivered one
   // is materialized and the endpoint set alongside it.
-  const subServiceRouting = serviceRoutingForSelection(subAgentId, subSelection, route);
+  const subServiceRouting = serviceRoutingForSelection(subAgentId, subSelection, route, deps.credentialStore);
 
   console.log(
     `[sub-agent] accepted session=${sessionId} spawn=${spawnId} card=${cardId} agent=${subAgentId} `

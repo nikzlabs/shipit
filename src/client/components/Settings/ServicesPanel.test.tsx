@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { render, screen, cleanup, waitFor, within } from "@testing-library/react";
+import { render, screen, cleanup, waitFor, within, fireEvent, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { CredentialRoute } from "../../../server/shared/types.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
@@ -35,6 +35,37 @@ const claudeAgent = {
 };
 
 const codexAgent = { ...claudeAgent, id: "codex" as const, name: "Codex" };
+
+/**
+ * Open a credential row's `⋯` (docs/252 req 19).
+ *
+ * Every per-credential verb — Rename, Replace secret / Reconnect, Remove /
+ * Disconnect — moved in there, so the tests that used to click a
+ * permanently-rendered button open the menu first. That extra line IS the
+ * compaction: a 39px row holding two controls became a 28px row holding none
+ * until asked.
+ */
+async function openRowMenu(label: string) {
+  await userEvent.click(screen.getByLabelText(`Manage ${label}`));
+}
+
+/**
+ * Drag one row onto another (req 21), through the HTML5 events the grip uses.
+ *
+ * jsdom fires no drag sequence of its own and `userEvent` has no drag verb, so
+ * the three events the hook listens for are dispatched by hand:
+ * `dragstart` on the source's grip, then `dragover` and `drop` on the target
+ * row. `dragover` is not decoration — without its `preventDefault` a real
+ * browser refuses the drop and never fires `drop` at all, so a test that
+ * skipped it would pass over a control that cannot work.
+ */
+function dragRowOnto(sourceId: string, targetId: string) {
+  const dataTransfer = { effectAllowed: "", setData: () => {}, getData: () => sourceId };
+  fireEvent.dragStart(screen.getByTestId(`credential-row-${sourceId}-grip`), { dataTransfer });
+  const target = screen.getByTestId(`credential-row-${targetId}`);
+  fireEvent.dragOver(target, { dataTransfer });
+  fireEvent.drop(target, { dataTransfer });
+}
 
 let fetchCalls: { url: string; method: string; body: unknown }[] = [];
 
@@ -849,13 +880,16 @@ describe("ServicesPanel", () => {
     expect(screen.getByTestId("add-service-save").className).toContain("bg-(--color-accent)");
   });
 
+  // docs/252 req 21 — the carets became one drag grip per row. What is being
+  // pinned is unchanged and is not cosmetic: the FIRST credential of a group is
+  // the one delivered, so moving a row changes which key sessions receive.
   it("reorders a subscription's credentials, which changes which one is delivered", async () => {
     useSettingsStore.getState().setCredentialRoutes([
       route({ id: "cred_1", serviceId: "zai", billingMode: "sub", via: "string", priority: 0, isPrimary: true }),
       route({ id: "cred_2", serviceId: "zai", billingMode: "sub", via: "string", priority: 1 }),
     ]);
     render(<ServicesPanel />);
-    await userEvent.click(screen.getByTestId("credential-move-up-cred_2"));
+    dragRowOnto("cred_2", "cred_1");
     await waitFor(() => {
       const put = fetchCalls.find((c) => c.method === "PUT");
       expect(put?.url).toBe("/api/credential-routes/zai/sub/order");
@@ -895,7 +929,7 @@ describe("ServicesPanel", () => {
       route({ id: "cred_1", serviceId: "deepseek", billingMode: "key", via: "string" }),
     ]);
     render(<ServicesPanel />);
-    expect(screen.queryByTestId("credential-order-cred_1")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("credential-row-cred_1-grip")).not.toBeInTheDocument();
   });
 
   it("removes a credential through the route endpoint", async () => {
@@ -903,6 +937,7 @@ describe("ServicesPanel", () => {
       route({ id: "cred_1", serviceId: "deepseek", billingMode: "key", via: "string" }),
     ]);
     render(<ServicesPanel />);
+    await openRowMenu("cred_1");
     await userEvent.click(screen.getByTestId("credential-remove-cred_1"));
     await waitFor(() => {
       expect(fetchCalls).toContainEqual({
@@ -918,6 +953,7 @@ describe("ServicesPanel", () => {
       route({ id: "cred_1", serviceId: "deepseek", billingMode: "key", via: "string" }),
     ]);
     render(<ServicesPanel />);
+    await openRowMenu("cred_1");
     await userEvent.click(screen.getByTestId("credential-replace-cred_1"));
     await userEvent.type(screen.getByTestId("credential-replace-input-cred_1"), "sk-new");
     await userEvent.click(screen.getByTestId("credential-replace-submit-cred_1"));
@@ -1017,13 +1053,27 @@ describe("ServicesPanel — one card component (docs/252 D2, D7, D8, D9)", () =>
     expect(screen.queryByTestId("credential-selection-mode-anthropic:sub")).not.toBeInTheDocument();
     // No ordering on the tokens: the endpoint would reject a list that omits
     // the account, and they are not in the accounts' failover chain anyway.
-    expect(screen.queryByTestId("credential-order-cred_env_a")).not.toBeInTheDocument();
-    // And the card says what the token actually is.
-    expect(screen.getByTestId("service-string-fallback-anthropic:sub"))
-      .toHaveTextContent(/does not move onto it when the accounts run out/);
+    expect(screen.queryByTestId("credential-row-cred_env_a-grip")).not.toBeInTheDocument();
+    /**
+     * docs/252 req 19/20 — and the card says NOTHING about the token being
+     * environment-supplied, because the sentence it used to print was false:
+     * the panel rendered it for every `via: "string"` row on an account-backed
+     * card, and those rows are ordinary stored credentials with no recorded
+     * provenance. Req 20 also removes the distinction it was reaching for — a
+     * deployment-supplied credential is adopted into an ordinary row at boot.
+     * Its true half (reqs 12/13) is what the two assertions above pin.
+     */
+    expect(screen.queryByTestId("service-string-fallback-anthropic:sub")).not.toBeInTheDocument();
   });
 
-  it("gives the routing controls their own titled band, not an inline block", () => {
+  /**
+   * docs/252 req 19 — the band is still its own band, and still holds both
+   * controls; what went is the uppercase TITLE printed above them. The string
+   * survives as the segmented control's accessible name, which is asserted
+   * where the control lives (`CredentialRouting.test.tsx`) along with the three
+   * tooltips carrying the rest of the copy.
+   */
+  it("gives the routing controls their own band, not an inline block", () => {
     useSettingsStore.getState().setProviderAccounts([
       anthropicAccount("acct_1", true),
       anthropicAccount("acct_2"),
@@ -1031,7 +1081,8 @@ describe("ServicesPanel — one card component (docs/252 D2, D7, D8, D9)", () =>
     render(<ServicesPanel agentList={[claudeAgent]} />);
 
     const band = screen.getByTestId("service-routing-service-card-anthropic:sub");
-    expect(band).toHaveTextContent(/How ShipIt picks between these accounts/i);
+    expect(within(band).getByRole("radiogroup", { name: "How ShipIt picks between these accounts" }))
+      .toBeInTheDocument();
     expect(within(band).getByTestId("credential-selection-mode-anthropic:sub")).toBeInTheDocument();
     expect(within(band).getByTestId("failover-cutoffs-anthropic:sub")).toBeInTheDocument();
   });
@@ -1049,7 +1100,8 @@ describe("ServicesPanel — one card component (docs/252 D2, D7, D8, D9)", () =>
     render(<ServicesPanel />);
 
     const band = screen.getByTestId("service-routing-service-card-zai:sub");
-    expect(band).toHaveTextContent(/How ShipIt picks between these credentials/i);
+    expect(within(band).getByRole("radiogroup", { name: "How ShipIt picks between these credentials" }))
+      .toBeInTheDocument();
     expect(within(band).getByTestId("credential-selection-mode-zai:sub")).toBeInTheDocument();
     expect(screen.queryByTestId("failover-cutoffs-zai:sub")).not.toBeInTheDocument();
   });
@@ -1105,6 +1157,7 @@ describe("ServicesPanel credential-row errors (docs/257 req 5)", () => {
       route({ id: "cred_1", serviceId: "deepseek", billingMode: "key", via: "string" }),
     ]);
     render(<ServicesPanel />);
+    await openRowMenu("cred_1");
     await userEvent.click(screen.getByTestId("credential-remove-cred_1"));
     await waitFor(() => {
       expect(screen.getByTestId("credential-error-cred_1")).toBeInTheDocument();
@@ -1117,6 +1170,7 @@ describe("ServicesPanel credential-row errors (docs/257 req 5)", () => {
       route({ id: "cred_1", serviceId: "deepseek", billingMode: "key", via: "string" }),
     ]);
     render(<ServicesPanel />);
+    await openRowMenu("cred_1");
     await userEvent.click(screen.getByTestId("credential-replace-cred_1"));
     await userEvent.type(screen.getByTestId("credential-replace-input-cred_1"), "sk-new");
     await userEvent.click(screen.getByTestId("credential-replace-submit-cred_1"));
@@ -1161,9 +1215,8 @@ describe("ServicesPanel keeps a card that has something to say (docs/257 req 5)"
     );
 
     render(<ServicesPanel agentList={[claudeAgent]} />);
-    await userEvent.click(
-      within(screen.getByTestId("provider-account-row-acct_1")).getByRole("button", { name: "Disconnect" }),
-    );
+    await openRowMenu("Work");
+    await userEvent.click(screen.getByTestId("provider-account-disconnect-acct_1"));
 
     // Back to "only what you configured": no notice keeps the card mounted,
     // because there is no moved/stranded story to tell (req 3).
@@ -1189,9 +1242,8 @@ describe("ServicesPanel keeps a card that has something to say (docs/257 req 5)"
     );
 
     render(<ServicesPanel agentList={[claudeAgent]} />);
-    await userEvent.click(
-      within(screen.getByTestId("provider-account-row-acct_1")).getByRole("button", { name: "Disconnect" }),
-    );
+    await openRowMenu("Work");
+    await userEvent.click(screen.getByTestId("provider-account-disconnect-acct_1"));
 
     await waitFor(() => {
       expect(screen.getByTestId("provider-account-notice-acct_1"))
@@ -1321,5 +1373,240 @@ describe("ServicesPanel keeps a card that has something to say (docs/257 req 5)"
     // message, not because anything is configured.
     expect(screen.queryByTestId("provider-account-rows-claude")).toBeNull();
     expect(screen.getByTestId("services-empty")).toBeInTheDocument();
+  });
+});
+
+/**
+ * docs/252 req 19 — **reconnect is the add-service dialog, entered differently.**
+ *
+ * Two things this pins, and both are constraints rather than behaviours,
+ * because the whole point of the change is that no second surface appears. The
+ * row used to post `/login` itself and render `AccountChallenge` inline — and
+ * that component returns `null` until the auth URL arrives, so between the
+ * click and the URL the row showed nothing at all. Rebuilding a poorer copy of
+ * step 3 anywhere is the failure mode; these are what make it a red build.
+ */
+describe("reconnect goes through the one dialog (docs/252 req 19)", () => {
+  const now = Date.now();
+  const seedConnected = () => {
+    useSettingsStore.getState().setCredentialRoutes([
+      route({ id: "acct_1", serviceId: "anthropic", billingMode: "sub", via: "account", createdAt: now, updatedAt: now }),
+      route({ id: "acct_2", serviceId: "anthropic", billingMode: "sub", via: "account", createdAt: now, updatedAt: now }),
+    ]);
+    useSettingsStore.getState().setProviderAccounts([
+      { id: "acct_1", serviceId: "anthropic", billingMode: "sub", via: "account", label: "Work", isPrimary: true, status: "ready", externalId: "ext-1", createdAt: now, updatedAt: now },
+      { id: "acct_2", serviceId: "anthropic", billingMode: "sub", via: "account", label: "Personal", isPrimary: false, status: "ready", externalId: "ext-2", createdAt: now, updatedAt: now },
+    ]);
+  };
+
+  it("mounts exactly one add-service dialog, however it was opened", async () => {
+    seedConnected();
+    render(<ServicesPanel agentList={[claudeAgent]} />);
+    expect(screen.queryAllByTestId("add-service-dialog")).toHaveLength(0);
+
+    await openRowMenu("Work");
+    await userEvent.click(screen.getByTestId("provider-account-connect-acct_1"));
+
+    // One dialog — not a `ReconnectDialog` beside it, and not a second copy of
+    // step 3 rendered into the row.
+    expect(screen.queryAllByTestId("add-service-dialog")).toHaveLength(1);
+    // And it opens ON step 3, service and mode already chosen: reconnect knows
+    // both, so making the user pick them again would be a flow, not a shortcut.
+    expect(screen.getByTestId("add-service-step-credential")).toBeInTheDocument();
+    expect(screen.queryByTestId("add-service-step-service")).toBeNull();
+    expect(screen.queryByTestId("add-service-step-mode")).toBeNull();
+  });
+
+  /**
+   * docs/252 req 19, found by cross-backend review: `isUnconnectedAttempt` is
+   * NOT sufficient on its own to decide whether cancel may delete.
+   *
+   * A login whose identity cannot be read **proceeds** by design
+   * (`provider-account-identity.ts`), so a genuinely connected account can have
+   * no `externalId` — and starting a reconnect moves it to `authenticating`,
+   * the predicate's other clause. Both true, on a working credential, and the
+   * first cut deleted it. Only the dialog can answer the real question, which
+   * is whether it MINTED the id (`mintedHere`).
+   */
+  it("keeps a connected account that never reported an identity, mid-reconnect", async () => {
+    const now = Date.now();
+    useSettingsStore.getState().setCredentialRoutes([
+      route({ id: "acct_1", serviceId: "anthropic", billingMode: "sub", via: "account", createdAt: now, updatedAt: now }),
+    ]);
+    // Connected and listed, but with NO `externalId` — an identity that could
+    // not be read, which the login proceeds past by design.
+    const unidentified = { id: "acct_1", serviceId: "anthropic" as const, billingMode: "sub" as const, via: "account" as const, label: "Work", isPrimary: true, createdAt: now, updatedAt: now };
+    useSettingsStore.getState().setProviderAccounts([{ ...unidentified, status: "ready" as const }]);
+
+    render(<ServicesPanel agentList={[claudeAgent]} />);
+    await openRowMenu("Work");
+    await userEvent.click(screen.getByTestId("provider-account-connect-acct_1"));
+
+    // The server's broadcast lands: the row is now `authenticating` with no
+    // identity — both of `isUnconnectedAttempt`'s clauses, on a credential the
+    // user has been using.
+    act(() => {
+      useSettingsStore.getState().setProviderAccounts([{ ...unidentified, status: "authenticating" as const }]);
+    });
+    await userEvent.click(screen.getByText("Cancel"));
+
+    // The login is called off; the credential is not deleted.
+    expect(fetchCalls.filter((c) => c.method === "DELETE")).toEqual([]);
+    expect(fetchCalls.some((c) => c.url.endsWith("/login/cancel"))).toBe(true);
+  });
+
+  /**
+   * The dialog owns the sign-in, so step 3 opens on its WAITING panel. The
+   * first cut fired `cancel → start` from the click handler, leaving the
+   * dialog's `startingSignIn` false — which satisfies `signInStalled`, so
+   * reconnect opened on "The sign-in stopped before the account connected."
+   * with a *Try again*: the flow's failure screen, before the first request had
+   * returned. Found by cross-backend review.
+   */
+  it("opens a reconnect on the waiting panel, never on the stalled one", async () => {
+    seedConnected();
+    render(<ServicesPanel agentList={[claudeAgent]} />);
+
+    await openRowMenu("Work");
+    await userEvent.click(screen.getByTestId("provider-account-connect-acct_1"));
+
+    expect(screen.getByTestId("add-service-signin-starting")).toBeInTheDocument();
+    expect(screen.queryByTestId("add-service-signin-stalled")).toBeNull();
+    // And it says what it is doing, and to which account — the plan's
+    // "Reconnect Anthropic — Work plan", not "Add a service".
+    expect(screen.getByTestId("add-service-title")).toHaveTextContent("Reconnect — Anthropic · Work");
+  });
+
+  /**
+   * The one thing that could go badly wrong. `AddServiceDialog` abandons the
+   * attempt IT created; a connected account is not an attempt
+   * (`isUnconnectedAttempt` is false once it has an `externalId`), so cancelling
+   * a reconnect must leave it connected and exactly where it was in the order.
+   * Deleting the user's working credential because they changed their mind
+   * about re-authenticating would be the worst bug this feature could ship.
+   */
+  it("leaves the account connected and in position when the reconnect is cancelled", async () => {
+    seedConnected();
+    render(<ServicesPanel agentList={[claudeAgent]} />);
+
+    await openRowMenu("Work");
+    await userEvent.click(screen.getByTestId("provider-account-connect-acct_1"));
+    await userEvent.click(screen.getByText("Cancel"));
+
+    expect(screen.queryAllByTestId("add-service-dialog")).toHaveLength(0);
+    // Still listed, still first, still Anthropic's — and no DELETE was sent for
+    // it, which is the assertion that would catch an abandon aimed at the wrong
+    // row rather than merely a store that had not caught up.
+    const rows = screen.getAllByTestId(/^provider-account-row-acct_\d+$/);
+    expect(rows.map((r) => r.getAttribute("data-testid"))).toEqual([
+      "provider-account-row-acct_1",
+      "provider-account-row-acct_2",
+    ]);
+    expect(fetchCalls.filter((c) => c.method === "DELETE")).toEqual([]);
+  });
+});
+
+/**
+ * docs/252 req 19 — the card is a header line and its credentials. Everything
+ * removed here was on every card of its kind and said nothing about *this*
+ * install; the one thing that moved rather than went is the model list.
+ */
+describe("the compact service card (docs/252 req 19)", () => {
+  it("drops the per-card description prose", () => {
+    useSettingsStore.getState().setCredentialRoutes([
+      route({ id: "cred_k", serviceId: "deepseek", billingMode: "key", via: "string" }),
+    ]);
+    render(<ServicesPanel />);
+    const card = screen.getByTestId("service-card-deepseek:key");
+    // The metered fact is the API-key pill, one control to the left.
+    expect(card).not.toHaveTextContent(/Metered — no quota to report/);
+    expect(card).not.toHaveTextContent(/ShipIt fails over between them/);
+  });
+
+  it("moves the model ids into a corner control rather than a chip row", async () => {
+    useSettingsStore.getState().setCredentialRoutes([
+      route({ id: "cred_k", serviceId: "deepseek", billingMode: "key", via: "string" }),
+    ]);
+    render(<ServicesPanel />);
+    const control = screen.getByTestId("service-models-service-card-deepseek:key");
+    // The count is what earns a glance; the names are worth a hover. The chip
+    // row was the one element on the card that grew with ShipIt's catalogue
+    // rather than with the user's setup.
+    expect(control).toHaveTextContent(/^\d+ models?$/);
+
+    await userEvent.hover(control);
+    // Radix renders the content twice — visible plus a hidden aria copy.
+    expect(await screen.findAllByText("deepseek-v4-pro")).not.toHaveLength(0);
+  });
+});
+
+/**
+ * docs/252 req 20's consequence for the panel: **"both shapes" means both
+ * PRESENT, not both possible.**
+ *
+ * `mixedDelivery` read "this mode can take an account, and holds a string",
+ * which is a different question, and adoption turned the difference into a
+ * visible defect. Anthropic's subscription CAN take an account; a deployment
+ * with none and two supplied credentials has a real routing pool of two — and
+ * reading the empty account list as the pool left the card offering no order
+ * between them and no band at all. It was unreachable before adoption, because
+ * the second string credential was invisible.
+ */
+describe("an account-capable mode holding only supplied credentials (docs/252 req 20)", () => {
+  const twoStrings = () => {
+    useSettingsStore.getState().setCredentialRoutes([
+      route({ id: "cred_1", serviceId: "anthropic", billingMode: "sub", via: "string", priority: 0, isPrimary: true, label: "Mine" }),
+      route({ id: "claude-env-oauth", serviceId: "anthropic", billingMode: "sub", via: "string", priority: 1, label: "From the deployment" }),
+    ]);
+  };
+
+  it("routes between them, naming them credentials rather than accounts", () => {
+    twoStrings();
+    render(<ServicesPanel agentList={[claudeAgent]} />);
+
+    // Including the header count: "2 accounts" over two supplied credentials
+    // on a card with no account at all is the exact conflation this feature
+    // exists to remove.
+    expect(screen.getByTestId("service-count-pill-service-card-anthropic:sub"))
+      .toHaveTextContent("2 credentials");
+    const band = screen.getByTestId("service-routing-service-card-anthropic:sub");
+    expect(within(band).getByRole("radiogroup", { name: "How ShipIt picks between these credentials" }))
+      .toBeInTheDocument();
+    // No cutoffs: nothing reports a quota for a string-delivered plan yet
+    // (planning#339), so the control would set a number that can never fire.
+    expect(screen.queryByTestId("failover-cutoffs-anthropic:sub")).not.toBeInTheDocument();
+  });
+
+  it("lets them be reordered, which is what decides the one delivered", async () => {
+    twoStrings();
+    render(<ServicesPanel agentList={[claudeAgent]} />);
+
+    dragRowOnto("claude-env-oauth", "cred_1");
+
+    await waitFor(() => {
+      const put = fetchCalls.find((c) => c.method === "PUT");
+      expect(put?.url).toBe("/api/credential-routes/anthropic/sub/order");
+      expect(put?.body).toEqual({ routeIds: ["claude-env-oauth", "cred_1"] });
+    });
+  });
+
+  /**
+   * And the guard the old reading was protecting stays: with an account AND a
+   * string present they are genuinely not one pool — phase 5 returns an
+   * `all_exhausted` account walk unchanged rather than falling through to the
+   * token — so the strings get no order there. The reorder endpoint would
+   * reject a list omitting the account anyway.
+   */
+  it("still refuses to order the strings once an account is present too", () => {
+    twoStrings();
+    const now = Date.now();
+    useSettingsStore.getState().setProviderAccounts([
+      { id: "acct_1", serviceId: "anthropic", billingMode: "sub", via: "account", label: "Work", isPrimary: true, status: "ready", externalId: "ext-1", createdAt: now, updatedAt: now },
+    ]);
+    render(<ServicesPanel agentList={[claudeAgent]} />);
+
+    expect(screen.queryByTestId("credential-row-cred_1-grip")).not.toBeInTheDocument();
+    expect(screen.getByTestId("service-routing-service-card-anthropic:sub"))
+      .toHaveTextContent(/One account — nothing to route between yet/);
   });
 });
