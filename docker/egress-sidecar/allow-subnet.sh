@@ -46,6 +46,12 @@ allow_one() {
       || ip6tables -A OUTPUT -d "$cidr" -j ACCEPT 2>/dev/null \
       || { log "WARN: could not add ip6 rule for $cidr"; return 0; }
   else
+    # Keep same-session HTTPS inside the session. This RETURN must precede the
+    # catch-all Tier C redirect in nat/OUTPUT, or service names such as `api`
+    # are treated as public SNI and rejected by the allowlist proxy.
+    iptables -t nat -C OUTPUT -d "$cidr" -p tcp --dport 443 -j RETURN 2>/dev/null \
+      || iptables -t nat -I OUTPUT 1 -d "$cidr" -p tcp --dport 443 -j RETURN \
+      || { log "WARN: could not exempt HTTPS for $cidr"; return 0; }
     iptables -C OUTPUT -d "$cidr" -j ACCEPT 2>/dev/null \
       || iptables -A OUTPUT -d "$cidr" -j ACCEPT \
       || { log "WARN: could not add rule for $cidr"; return 0; }

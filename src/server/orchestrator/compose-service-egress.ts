@@ -163,7 +163,14 @@ export async function containComposeServices(opts: ContainComposeServicesOptions
           ? Number(error.statusCode)
           : 0;
         const message = error instanceof Error ? error.message : String(error);
-        if (code !== 403 && !/already exists|already connected/i.test(message)) throw error;
+        if (code === 400 && /GwPriority|unknown field/i.test(message)) {
+          // Docker Engine <28 / API <1.48 has no GwPriority. The internal
+          // session network has no gateway, so this bridge becomes default
+          // without the hint too.
+          await network.connect({ Container: info.Id });
+        } else if (code !== 403 && !/already exists|already connected/i.test(message)) {
+          throw error;
+        }
       }
 
       await installEgressFirewall(opts.docker, {
@@ -222,7 +229,14 @@ export async function containComposeServices(opts: ContainComposeServicesOptions
       // Never resume repository code unless the complete containment stack is
       // ready. Removing the service also makes Compose report the failed start.
       if (opts.refresh) {
-        try { await container.remove({ force: true }); } catch { /* fail closed */ }
+        // Preserve the container and its volumes. Its firewall is still
+        // default-deny; resume only long enough to issue a normal stop.
+        if (paused) {
+          try { await container.unpause(); paused = false; } catch { /* remain frozen and closed */ }
+        }
+        if (!paused) {
+          try { await container.stop({ t: 0 }); } catch { /* fail closed */ }
+        }
       } else {
         try { await container.remove({ force: true }); } catch { /* already gone */ }
       }

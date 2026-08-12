@@ -1,4 +1,5 @@
 ---
+issue: planning#360
 title: Compose service egress containment
 description: Internal-network bootstrap and per-service namespace enforcement for Compose runtime containers.
 ---
@@ -31,4 +32,3 @@ this feature.
 - `src/server/orchestrator/compose-generator.ts` — internal bootstrap network and service hardening.
 - `src/server/orchestrator/session-container.ts` — policy resolution, serialization, and allowlist refresh.
 - `src/server/orchestrator/egress-reload.ts` — parent-scoped agent sidecar reload.
-

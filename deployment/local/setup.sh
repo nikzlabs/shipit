@@ -39,6 +39,13 @@ elif ! docker compose version >/dev/null 2>&1; then
   echo "Error: the Docker Compose v2 plugin ('docker compose') is not available." >&2
   echo "  See https://docs.docker.com/compose/install/" >&2
   missing=1
+else
+  compose_version="$(docker compose version --short 2>/dev/null | sed 's/^v//')"
+  minimum_compose="2.24.4"
+  if [ "$(printf '%s\n%s\n' "$minimum_compose" "$compose_version" | sort -V | head -n1)" != "$minimum_compose" ]; then
+    echo "Error: Docker Compose $minimum_compose or newer is required (found $compose_version)." >&2
+    missing=1
+  fi
 fi
 if [ "$missing" -ne 0 ]; then
   exit 1

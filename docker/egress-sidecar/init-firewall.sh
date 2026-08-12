@@ -44,6 +44,12 @@ done
 log "resolved ${#ips[@]} IP(s) from ${EGRESS_ALLOWED_HOSTS:-<none>}"
 
 # --- 2. Build the ipsets (hash:net holds bare IPs and CIDRs) ----------------
+# A service container can be stopped and started with the same id but a fresh
+# network namespace, and allowlist refresh also reinstalls in-place. Remove the
+# old filter references before replacing the sets so this operation is
+# idempotent (`ipset destroy` returns EBUSY while a rule still references it).
+iptables -F OUTPUT 2>/dev/null || true
+ip6tables -F OUTPUT 2>/dev/null || true
 ipset destroy "$SET4" 2>/dev/null || true
 ipset destroy "$SET6" 2>/dev/null || true
 ipset create "$SET4" hash:net family inet
@@ -160,6 +166,8 @@ log "default-deny OUTPUT policy installed"
 # excluded here (they egress via the uid-:53 filter allow). Inserted at the TOP of
 # nat/OUTPUT so it precedes Docker's own 127.0.0.11 DNAT rules.
 install_dns_redirect() {
+  while iptables -t nat -D OUTPUT -d "$DOCKER_DNS" -p udp --dport 53 -m owner ! --uid-owner "$DNS_UID" -j REDIRECT --to-ports 53 2>/dev/null; do :; done
+  while iptables -t nat -D OUTPUT -d "$DOCKER_DNS" -p tcp --dport 53 -m owner ! --uid-owner "$DNS_UID" -j REDIRECT --to-ports 53 2>/dev/null; do :; done
   iptables -t nat -I OUTPUT 1 -d "$DOCKER_DNS" -p udp --dport 53 -m owner ! --uid-owner "$DNS_UID" -j REDIRECT --to-ports 53
   iptables -t nat -I OUTPUT 1 -d "$DOCKER_DNS" -p tcp --dport 53 -m owner ! --uid-owner "$DNS_UID" -j REDIRECT --to-ports 53
 }
@@ -185,6 +193,7 @@ install_sni_redirect() {
   local rl
   rl="$(cat /proc/sys/net/ipv4/conf/all/route_localnet 2>/dev/null || echo '?')"
   [[ "$rl" == "1" ]] || log "WARN: route_localnet=$rl (expected 1) — SNI redirect may not route to the proxy; ensure the agent container sets net.ipv4.conf.all.route_localnet=1"
+  while iptables -t nat -D OUTPUT -p tcp --dport 443 -m owner ! --uid-owner "$PROXY_UID" -j REDIRECT --to-ports "$PROXY_PORT" 2>/dev/null; do :; done
   iptables -t nat -A OUTPUT -p tcp --dport 443 -m owner ! --uid-owner "$PROXY_UID" -j REDIRECT --to-ports "$PROXY_PORT"
 }
 if [[ -n "$PROXY_UID" ]]; then

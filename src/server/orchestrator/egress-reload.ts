@@ -81,7 +81,12 @@ async function removeByLabel(docker: Docker, label: string, parentId: string): P
     if (list.length === 0) {
       // Upgrade compatibility: old sidecars have no parent label. Remove the
       // legacy session-scoped listener so the replacement can bind its port.
-      list = await docker.listContainers({ all: true, filters: { label: [label] } });
+      const legacy = await docker.listContainers({ all: true, filters: { label: [label] } });
+      list = [];
+      for (const entry of legacy) {
+        const inspected = await docker.getContainer(entry.Id).inspect().catch(() => null);
+        if (!inspected?.Config?.Labels?.["shipit-egress-parent"]) list.push(entry);
+      }
     }
   } catch {
     return;

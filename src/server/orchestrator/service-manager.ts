@@ -432,9 +432,9 @@ export class ServiceManager extends EventEmitter {
   private readonly networkJoinFn?: (networkName: string) => Promise<void>;
   /** docs/128 — periodic agent network-attachment self-heal (see options). */
   private readonly networkHealFn?: (networkName: string) => Promise<void>;
-  private readonly containServicesFn?: (serviceNames: string[]) => Promise<void>;
-  private readonly containServiceDns: boolean;
-  private readonly containServiceProxy: boolean;
+  private containServicesFn?: (serviceNames: string[]) => Promise<void>;
+  private containServiceDns: boolean;
+  private containServiceProxy: boolean;
   /** docs/183 — external service-env root, for teardown cleanup. */
   private readonly serviceEnvDir: string;
   /**
@@ -730,6 +730,21 @@ export class ServiceManager extends EventEmitter {
    */
   setOverlayDepDirs(overlayDepDirs: OverlayDepDirVolume[]): void {
     this.overlayDepDirs = overlayDepDirs;
+  }
+
+  /** Refresh the boot-effective egress policy when a preserved manager is adopted. */
+  updateEgressContainment(
+    containServicesFn: ((serviceNames: string[]) => Promise<void>) | undefined,
+    containServiceDns: boolean,
+    containServiceProxy: boolean,
+  ): boolean {
+    const changed = Boolean(this.containServicesFn) !== Boolean(containServicesFn)
+      || this.containServiceDns !== containServiceDns
+      || this.containServiceProxy !== containServiceProxy;
+    this.containServicesFn = containServicesFn;
+    this.containServiceDns = containServiceDns;
+    this.containServiceProxy = containServiceProxy;
+    return changed;
   }
 
   /**
@@ -1168,7 +1183,7 @@ export class ServiceManager extends EventEmitter {
       if (autoNames.length > 0) {
         await this.withUpInFlight(autoNames, async () => {
           await this.compose.up(autoNames, this.composeLogSink(autoNames));
-          await this.containServicesFn?.(autoNames);
+          await this.containServicesFn?.([...this.services.keys()]);
         });
       }
       this._started = true;
@@ -1245,7 +1260,7 @@ export class ServiceManager extends EventEmitter {
     try {
       await this.withUpInFlight([name], async () => {
         await this.compose.upService(name, this.composeLogSink([name]));
-        await this.containServicesFn?.([name]);
+        await this.containServicesFn?.([...this.services.keys()]);
       });
       // The user stopped this service while the `up` above was still running.
       // Theirs is the later instruction, and `stopService` is already waiting on
@@ -1290,7 +1305,7 @@ export class ServiceManager extends EventEmitter {
       if (this.stoppedByUser.has(name)) return;
       await this.withUpInFlight([name], async () => {
         await this.compose.upService(name, this.composeLogSink([name]));
-        await this.containServicesFn?.([name]);
+        await this.containServicesFn?.([...this.services.keys()]);
       });
       // Stopped mid-restart — see `startService` for why this returns rather
       // than finishing the bring-up.
@@ -1660,7 +1675,7 @@ export class ServiceManager extends EventEmitter {
     try {
       await this.withUpInFlight(autoNames, async () => {
         await this.compose.up(autoNames, this.composeLogSink(autoNames));
-        await this.containServicesFn?.(autoNames);
+        await this.containServicesFn?.([...this.services.keys()]);
       });
       await this.poller.pollOnce();
       // This `up` recreates every container whose env file changed, and it is
@@ -1841,7 +1856,7 @@ export class ServiceManager extends EventEmitter {
     try {
       await this.withUpInFlight([name], async () => {
         await this.compose.upService(name, this.composeLogSink([name]));
-        await this.containServicesFn?.([name]);
+        await this.containServicesFn?.([...this.services.keys()]);
       });
       // See `startService` — first manual-service start is the moment
       // the network actually exists, so re-attempt the orchestrator
@@ -1940,7 +1955,7 @@ export class ServiceManager extends EventEmitter {
     try {
       await this.withUpInFlight(names, async () => {
         await this.compose.up(names, this.composeLogSink(names));
-        await this.containServicesFn?.(names);
+        await this.containServicesFn?.([...this.services.keys()]);
       });
       // First `up` for an otherwise all-gated/all-manual stack is the moment
       // the compose network materializes — attach the orchestrator + agent.

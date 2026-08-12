@@ -535,6 +535,17 @@ function validateServiceSecurity(
     );
   }
 
+  const labels = svc.labels;
+  const labelKeys = Array.isArray(labels)
+    ? labels.map((entry) => typeof entry === "string" ? entry.split("=", 1)[0] : "")
+    : labels && typeof labels === "object" ? Object.keys(labels) : [];
+  const reserved = labelKeys.find((key) => key.startsWith("shipit-egress-"));
+  if (reserved) {
+    throw new ComposeValidationError(
+      `Service \`${name}\`: label \`${reserved}\` uses ShipIt's reserved egress namespace.`,
+    );
+  }
+
   // Reject device passthrough except the exact /dev/kvm mapping (docs/213).
   validateDevices(name, svc, isDevKvmAllowed());
 

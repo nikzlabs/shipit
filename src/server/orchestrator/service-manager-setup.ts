@@ -79,6 +79,9 @@ export function adoptExistingServiceManager(
      * secret store wrapper, or a remoteUrl change between disposals).
      */
     secretsLoader?: () => Promise<Record<string, string>>;
+    containServicesFn?: (serviceNames: string[]) => Promise<void>;
+    containServiceDns?: boolean;
+    containServiceProxy?: boolean;
   },
 ): void {
   const { serviceManagers, composeStopPromises, containerManager, broadcastLog, installPromise, secretsLoader } = deps;
@@ -94,6 +97,20 @@ export function adoptExistingServiceManager(
   //     to the new runner. Defensive — see field doc above.
   if (secretsLoader) {
     mgr.setSecretsLoader(secretsLoader);
+  }
+
+  // Some injected test doubles predate this optional lifecycle seam.
+  const containmentChanged = typeof mgr.updateEgressContainment === "function"
+    ? mgr.updateEgressContainment(
+        deps.containServicesFn,
+        deps.containServiceDns ?? false,
+        deps.containServiceProxy ?? false,
+      )
+    : false;
+  if (containmentChanged) {
+    void mgr.reconcile().catch((error: unknown) => {
+      console.error(`[compose:${runner.sessionId}] containment-policy reconcile failed:`, getErrorMessage(error));
+    });
   }
 
   // 2. Reconnect the new agent container to the existing compose network.
@@ -524,6 +541,9 @@ export function setupServiceManager(
   // See docs/127-restart-agent for the full flow.
   const existing = serviceManagers.get(runner.sessionId);
   if (existing) {
+    const containServicesFn = containerManager?.isEgressContained(runner.sessionId)
+      ? async (serviceNames: string[]) => containerManager.containComposeServices(runner.sessionId, serviceNames)
+      : undefined;
     adoptExistingServiceManager(runner, existing, {
       serviceManagers,
       composeStopPromises,
@@ -531,6 +551,9 @@ export function setupServiceManager(
       broadcastLog,
       installPromise,
       secretsLoader,
+      containServicesFn,
+      containServiceDns: containerManager?.isEgressDnsContained(runner.sessionId) ?? false,
+      containServiceProxy: containerManager?.isEgressProxyContained(runner.sessionId) ?? false,
     });
     // Clear any stale migration warning — compose is now set up (still).
     composeWarnings.delete(runner.sessionId);
