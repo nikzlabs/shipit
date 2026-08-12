@@ -154,7 +154,17 @@ receives data when someone clicks buttons in the previewed pages.
     project may override a value for itself. A project session shows which
     declared credentials a tool requires and whether they are satisfied.
     Onboarding a project therefore stays one declaration (req 5) — never
-    declaration plus copying keys into each project.
+    declaration plus copying keys into each project. The store holds only
+    values the user placed there for tools; it can never resolve ShipIt's own
+    platform credentials — the user's GitHub identity, tracker tokens, or
+    agent tokens.
+24. Tool code gets no network access of its own. A tools declaration never
+    widens a session's network reach: services and companion CLIs from a
+    tools repository reach exactly what equivalent same-repo code could reach
+    under the session's user-managed egress configuration. Wiring a tool that
+    calls external APIs therefore includes adding its hosts to the egress
+    allowlist — a deliberate user act, stated here so it is a known
+    onboarding cost rather than a surprise.
 
 ## Out of scope (v1)
 
@@ -194,7 +204,11 @@ the second half of req 19, the second pinning case in req 8, the
 tool-readable commit in req 15, and the deferred metered-spend item come from
 a second candidate-consumer fit review — the user's image asset pipeline
 (`nicolasalt/design-docs`), posted as a PR comment (2026-08-11) and resolved
-by the user the same day.
+by the user the same day. Requirement 24 and req 23's platform-credential
+sentence come from a boundary exercise — a child session testing whether
+ShipIt's own issue-tracker support could have been built as a shared tool
+(analysis on planning#355, 2026-08-11); the user resolved its two suggestions
+the same day.
 
 ## Open questions
 
@@ -268,3 +282,12 @@ by the user the same day.
   (image-pipeline fit review, finding 3). Answer: **apply both** — second
   pinning case named (→ req 8); the running commit readable by the tool
   itself (→ req 15).
+- **2026-08-11 — Tool network access** (tracker-as-tool boundary exercise,
+  suggestion 1). Answer: **rides the session's user-managed egress
+  allowlist, stated** (the agent recommended tools-declared hosts under the
+  standing grant; the user chose the session allowlist). A tools declaration
+  never widens network reach. → req 24.
+- **2026-08-11 — Platform credentials out of the tool store**
+  (tracker-as-tool boundary exercise, suggestion 2). Answer: **add it** —
+  the tools-repo credential store can never resolve ShipIt's own platform
+  credentials. → req 23 amended.
