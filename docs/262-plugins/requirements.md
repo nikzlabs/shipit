@@ -185,13 +185,19 @@ receipts below keep the original "tools" vocabulary of the early rounds.
     plugin holds only values the user placed there for plugins; it can never
     resolve ShipIt's own platform credentials — the user's GitHub identity,
     tracker tokens, or agent tokens.
-24. Plugin code gets no network access of its own. A plugin declaration never
-    widens a session's network reach: services and companion CLIs from a
-    plugin repository reach exactly what equivalent same-repo code could
-    reach under the session's user-managed egress configuration. Wiring a
-    plugin that calls external APIs therefore includes adding its hosts to
-    the egress allowlist — a deliberate user act, stated here so it is a
-    known onboarding cost rather than a surprise.
+24. Plugin code gets no network access of its own. A plugin **declares** the
+    external hosts its services and CLIs need — so the user never has to
+    reverse-engineer them from failing calls — but the declaration grants
+    nothing: services and companion CLIs reach exactly what equivalent
+    same-repo code could reach under the session's user-managed egress
+    configuration, and a plugin declaration never widens a session's network
+    reach by itself. A project session shows which declared hosts are not
+    yet allowed (the same visibility req 23 gives credentials), and ShipIt
+    offers an affordance to add the declared hosts to the user's egress
+    allowlist — for the session or for the whole ShipIt instance — as a
+    deliberate user act. Wiring a plugin that calls external APIs stays a
+    known, guided onboarding step rather than a surprise or a guessing
+    game.
 25. The agent (or the user) in a project session can report feedback on a
     plugin — a bug, a limitation, a feature request — as an **issue on the
     plugin's own repository**, from within the session. Declaring the plugin
@@ -262,7 +268,9 @@ naming was decided by the user on 2026-08-11; earlier rounds used "tools",
 and quoted historical material below keeps that vocabulary. The req 16
 startup override and requirement 25 (feedback channel) come from the user's
 doc review of 2026-08-12, as do req 22's backend-independence sentence and
-requirement 26 (plugin settings) from its third round.
+requirement 26 (plugin settings) from its third round, the req 23 credential
+scope reduction from its fourth, and req 24's informational host declaration
+from its fifth.
 
 ## Open questions
 
@@ -391,3 +399,11 @@ requirement 26 (plugin settings) from its third round.
   inherited store moved to Out of scope. Supersedes the credential-home half
   of the 2026-08-11 "Tool credentials" resolution; the declared-names half
   (visibility of required/missing keys) stands.
+- **2026-08-12 — Declared hosts, informational** (doc review, round 5).
+  Stated directly by the user: a plugin declares the hosts it needs in its
+  manifest (otherwise the user cannot know what to add), and ShipIt offers a
+  UI affordance to add them to the session or instance allowlist. This
+  refines, not reverses, the 2026-08-11 egress decision: the declaration
+  informs and the affordance guides, but the grant remains a deliberate user
+  act — a declaration still never widens network reach by itself. → req 24
+  amended.
