@@ -25,4 +25,11 @@ Next design slice (server mechanics):
 - [ ] Self-use mode (`repo: self`, req 27): live working-tree activation, no generations/refresh, consumer-path parity for services/CLIs/skills/settings
 - [ ] GitHub App mode: multi-repo token minting for declared plugin repos (req 10)
 
+Verification (plan.md §5 — drives the implementation):
+
+- [ ] Test plugin exported by the ShipIt repo itself, self-declared (`repo: self`, req 27): one tiny service, one CLI, one skill, one setting, one credential name, one host
+- [ ] Dogfood everything but services in the inner instance (`RUNTIME_MODE=local` skips Docker): parsing, generations, tab, needs, CLI wrappers, skills, refresh relay
+- [ ] Service path via integration tests (isTestMode fakes): fragment merge, per-service startup/overrides, origin on service messages, collision failures
+- [ ] One real-instance end-to-end: plugin service + preview + `window.shipit` interaction
+
 Implementation: not started.

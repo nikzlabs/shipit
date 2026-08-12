@@ -273,7 +273,32 @@ coherent in one UI.
 - `src/server/shipit-docs/` — a new `plugins.md` for the agent-facing
   contract, once slice-2 mechanics are settled.
 
-## 5. Deliberately not in this slice
+## 5. Verification: dogfood a plugin inside ShipIt itself
+
+The implementation is driven by a **test plugin exported by the ShipIt repo
+itself** and self-declared (`repo: self`, req 27) — a deliberately small
+export with one tiny service, one CLI, one skill, one declared setting, one
+declared credential name, and one declared host, so every contract in this
+design has a living exercise.
+
+What runs where — the dogfood boundary:
+
+- **Inner dogfood instance** (`RUNTIME_MODE=local`, the `dev` compose
+  service): everything **except compose services and preview** — local mode
+  skips Docker entirely, so plugin services cannot start there. Covered in
+  the inner loop: declaration parsing and phased validation, checkout and
+  generation mechanics, the Plugins tab (gating, warn dot, cards, grants),
+  needs plumbing (`secrets_status` origin, egress rows), CLI wrappers and
+  credential injection, skills materialization, `shipit plugin refresh`
+  through the agent-ops relay.
+- **Integration tests** (`isTestMode`, fakes — the existing pattern): the
+  service path — compose-fragment merge, per-service startup and overrides,
+  origin on `service_list`/`service_status`, collision activation failures.
+- **A real instance**: the one end-to-end that needs Docker — plugin service
+  + preview + `window.shipit` interaction, verified once per milestone
+  rather than per change.
+
+## 6. Deliberately not in this slice
 
 Slice 2 (see `checklist.md`): checkout/bare-cache mechanics and the writable
 layer, generation staging/activation internals, compose-fragment merging and
