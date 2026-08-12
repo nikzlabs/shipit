@@ -36,6 +36,7 @@ const SETTINGS_PATH = path.resolve(
 
 interface ManagedSettings {
   includeCoAuthoredBy?: boolean;
+  disableClaudeAiConnectors?: boolean;
   permissions?: { allow?: string[]; deny?: string[] };
   hooks?: Record<string, unknown>;
 }
@@ -157,6 +158,26 @@ describe("managed-settings.json", () => {
       expect(parsed.pattern).not.toContain(".credentials.json");
       expect(parsed.pattern).not.toContain("/etc/shipit");
     }
+  });
+
+  it("disables the claude.ai connectors", () => {
+    // A session container is headless, so a connector's OAuth flow can never be
+    // completed from inside one — they boot permanently unauthenticated, cost
+    // MCP connect time inside the CLI's 2000ms headless pre-wait at the 0.5-CPU
+    // agent default (the docs/199 failure mode), and add tools the agent cannot
+    // use. The CLI reads this key from every settings source, including the
+    // `--settings` file this one is, and ORs them together.
+    expect(loadSettings().disableClaudeAiConnectors).toBe(true);
+  });
+
+  it("does not try to re-enable connectors with an explicit false anywhere", () => {
+    // The CLI's test is `sources.some(s => s.disableClaudeAiConnectors === true)`.
+    // `false` is therefore not an override — it is indistinguishable from the key
+    // being absent. Making connectors opt-in means OMITTING the key here and
+    // moving the switch to the CLI environment, not writing `false`.
+    const raw = readFileSync(SETTINGS_PATH, "utf8");
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    expect(parsed.disableClaudeAiConnectors).not.toBe(false);
   });
 
   it("keeps the existing hooks and attribution settings intact", () => {

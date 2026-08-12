@@ -125,6 +125,15 @@ that added a dependency reinstalls and restarts the preview automatically.
 Docker Compose containers managed by ShipIt. Define them in
 `docker-compose.yml`. See [compose.md](compose.md) for details.
 
+**claude.ai connectors are off**: the connectors on the signed-in claude.ai
+account (Gmail, Google Calendar, Drive, and similar) are **not** mounted as MCP
+servers here. A session container is headless, so their OAuth flow can never be
+completed from inside one — they would boot permanently unauthenticated, cost
+startup time, and offer tools you cannot use. Do not tell the user to authorize
+them; the capability is disabled by ShipIt, not merely unauthenticated. The MCP
+servers you do get (Playwright, `present`, `voice_note`, and the rest) are
+unaffected.
+
 ## Git LFS
 
 `git-lfs` is installed and its filters are registered system-wide, so a repo that
