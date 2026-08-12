@@ -3085,8 +3085,15 @@ credential.
 
 **A row is `label · quota · ⋯`, whatever it holds.** The account row loses the permanently
 mounted rename input (most of its 120px), the account UUID line, the status pill and three
-ghost buttons; status becomes a dot, and Rename / Reconnect / Disconnect move into the `⋯`
-menu. A supplied-key row gets the same menu — Rename / Replace secret / Remove — so both row
+ghost buttons; Rename / Reconnect / Disconnect move into the `⋯` menu.
+
+**A healthy row says nothing about its health.** The mock-up first put a `StatusDot` on every
+row — green for ready, amber otherwise — and it is the wrong instinct twice: a green dot on the
+normal case is decoration on every row, restating what the absence of a problem already says,
+and a hue alone is not a message a colour-blind user or a monochrome theme can read. So a ready
+account shows nothing, and the states that need attention say so in words — *reconnect needed*,
+*signing in…* — in `--color-warning` / `--color-error`. This is the same rule as the API-key
+card's cut prose: do not spend a row on "nothing is wrong". A supplied-key row gets the same menu — Rename / Replace secret / Remove — so both row
 types read the same. **Rename on a key row is new**: `PATCH /api/credential-routes/:id` has
 always accepted a label patch, and nothing reaches it after the credential is added.
 
