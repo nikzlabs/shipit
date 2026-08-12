@@ -1031,10 +1031,20 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
       payload: { prompt: "x", title: "Switch backend", agent: "codex" },
     });
     expect(res.statusCode).toBe(200);
+    // Read the spawn's own snapshot of the child row, not the row as it stands
+    // now: the response carries what `spawnChildSession` wrote, taken before the
+    // first turn is dispatched. On an install holding a non-native credential,
+    // turn preparation resolves an empty selection to its first eligible model
+    // (planning#353, `session-agent-env.ts`) — a correct write that would race
+    // this assertion and make "no model was inherited" read as a failure.
     const childId = (res.json() as { sessionId: string }).sessionId;
+    const child = (res.json() as { session: { model?: string; serviceId?: string } }).session;
+    // The harness is read from the live row — env prep pins it inside the spawn,
+    // so it is settled by the time the response returns and nothing later moves
+    // it. The snapshot carries no `agentId` for exactly that reason.
     expect(sessionManager.get(childId)?.agentId).toBe("codex");
-    expect(sessionManager.get(childId)?.model).toBeUndefined();
-    expect(sessionManager.get(childId)?.serviceId).toBeUndefined();
+    expect(child.model).toBeUndefined();
+    expect(child.serviceId).toBeUndefined();
 
     // Staying on the parent's own harness still inherits — the guard above is a
     // harness-switch rule, not a blanket "an explicit --agent drops the model".
@@ -1044,8 +1054,7 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
       payload: { prompt: "x", title: "Same backend", agent: "claude" },
     });
     expect(same.statusCode).toBe(200);
-    const sameChildId = (same.json() as { sessionId: string }).sessionId;
-    expect(sessionManager.get(sameChildId)?.model).toBe("claude-opus-4-7");
+    expect((same.json() as { session: { model?: string } }).session.model).toBe("claude-opus-4-7");
   });
 
   it("POST /spawn rejects an unknown agent id with 400", { timeout: 15_000 }, async () => {
@@ -1087,6 +1096,77 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     const childId = (res.json() as { sessionId: string }).sessionId;
     expect(sessionManager.get(childId)?.agentId).toBe("codex");
     expect(sessionManager.get(childId)?.model).toBe("gpt-5.5");
+  });
+
+  it("planning#304 — inheritance cannot hand a child a model its harness can't run", { timeout: 15_000 }, async () => {
+    // The cross-backend rejection above inspects the flags the caller passed, and
+    // the harness-switch rule inspects parent-harness vs child-harness. Neither
+    // asks the question that decides whether the child can run: can the harness
+    // about to spawn run the model on the child's row? This asserts the invariant
+    // at the boundary, so the state is written directly — today's live writers
+    // prevent an incoherent parent row (`set_model` refuses a cross-harness model
+    // on a pinned session, WS connect self-heals a legacy one), which is exactly
+    // why nothing else here can produce one. Without the guard the child inherits
+    // `gpt-5.5` onto Claude Code and its first turn dies the way #304 reported.
+    const parentId = await createParentSession();
+    sessionManager.setAgentId(parentId, "claude");
+    sessionManager.setAgentPinned(parentId);
+    sessionManager.setModel(parentId, "gpt-5.5");
+    expect(sessionManager.get(parentId)?.model).toBe("gpt-5.5");
+
+    // Every assertion reads the spawn response's snapshot of the child row —
+    // what `spawnChildSession` wrote, before the first turn is dispatched. Reading
+    // the row later races turn preparation, which legitimately fills an empty
+    // selection from the install's first eligible model (planning#353).
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: { prompt: "x", title: "Incoherent parent row" },
+    });
+    expect(res.statusCode).toBe(200);
+    // Keep the harness, drop the model — the same self-heal the WS connect path
+    // applies to a pinned session's incoherent row. The empty row resolves to
+    // what this install can actually run at turn time.
+    const childId = (res.json() as { sessionId: string }).sessionId;
+    const child = (res.json() as {
+      session: { model?: string; serviceId?: string; billingMode?: string };
+    }).session;
+    // Harness from the live row (pinned by env prep inside the spawn), selection
+    // from the snapshot (written before the first turn could refine it).
+    expect(sessionManager.get(childId)?.agentId).toBe("claude");
+    expect(child.model).toBeUndefined();
+    expect(child.serviceId).toBeUndefined();
+    expect(child.billingMode).toBeUndefined();
+
+    // Contrast: a coherent parent row on the same harness still inherits, so the
+    // assertions above are the guard firing rather than inheritance being off.
+    sessionManager.setModel(parentId, "claude-sonnet-5");
+    const ok = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: { prompt: "x", title: "Coherent parent row" },
+    });
+    expect(ok.statusCode).toBe(200);
+    expect((ok.json() as { session: { model?: string } }).session.model).toBe("claude-sonnet-5");
+
+    // And an id NO harness lists still inherits: the guard proves a mismatch from
+    // the child harness's own catalogue list, so an unproven id is passed through
+    // exactly as the explicit `--model` check passes a versioned one. (The reason
+    // it asks membership rather than `agentIdForModel`'s single owner is a case
+    // this catalogue cannot yet express — one model offered by both harnesses,
+    // which the ownership answer assigns to whichever sorts first. No fixture can
+    // exercise it while the two lists are disjoint; `catalogue.test.ts` is where a
+    // future overlap would first become visible.)
+    sessionManager.setModel(parentId, "claude-opus-5-20260401");
+    const fwd = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: { prompt: "x", title: "Unlisted parent model" },
+    });
+    expect(fwd.statusCode).toBe(200);
+    expect((fwd.json() as { session: { model?: string } }).session.model).toBe(
+      "claude-opus-5-20260401",
+    );
   });
 
   it("GET /children/:childId surfaces the child's resolved agent + model", { timeout: 15_000 }, async () => {
