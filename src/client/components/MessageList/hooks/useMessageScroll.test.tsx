@@ -200,6 +200,36 @@ describe("useMessageScroll", () => {
     expect(scrollTop).toBe(2500);
   });
 
+  it("leaves growing content alone while the user is selecting text in the transcript", () => {
+    let height = 2000;
+    let scrollTop = 2000;
+
+    const view = render(<Harness messages={[{ role: "assistant", text: "hi" }]} />);
+    const div = view.getByTestId("scroller");
+    Object.defineProperty(div, "scrollHeight", { configurable: true, get: () => height });
+    Object.defineProperty(div, "clientHeight", { configurable: true, get: () => 500 });
+    Object.defineProperty(div, "scrollTop", {
+      configurable: true,
+      get: () => scrollTop,
+      set: (v: number) => {
+        scrollTop = v;
+      },
+    });
+
+    // Mid-drag inside a message. Scrolling now would move the content out from
+    // under the pointer and wreck the selection — which is why the streaming
+    // re-pin already stands down here, and why the observer must too.
+    vi.spyOn(window, "getSelection").mockReturnValue({
+      isCollapsed: false,
+      anchorNode: view.getByTestId("content"),
+    } as unknown as Selection);
+
+    height = 2600; // the streaming message wraps onto another line
+    growContent();
+
+    expect(scrollTop).toBe(2000);
+  });
+
   it("leaves growing content alone once the user has scrolled away", () => {
     let height = 2000;
     let scrollTop = 0;

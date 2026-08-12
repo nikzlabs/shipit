@@ -18,6 +18,21 @@ function scrollToBottom(container: HTMLElement): void {
   container.scrollTop = container.scrollHeight;
 }
 
+/**
+ * Is the user selecting text inside the transcript? Scrolling while they drag
+ * moves the content out from under the pointer and wrecks the selection, so
+ * EVERY auto-scroll path has to stand down until it is gone — the streaming
+ * re-pin and the content observer alike, since during streaming both fire on
+ * roughly every token.
+ */
+function hasActiveSelectionInside(container: HTMLElement | null): boolean {
+  if (!container || typeof window === "undefined") return false;
+  const selection = window.getSelection();
+  return Boolean(
+    selection && !selection.isCollapsed && selection.anchorNode && container.contains(selection.anchorNode),
+  );
+}
+
 function now(): number {
   return typeof performance !== "undefined" ? performance.now() : 0;
 }
@@ -129,7 +144,7 @@ export function useMessageScroll(
     // and never mistakes it for the user scrolling away.
     const observer = typeof ResizeObserver !== "undefined"
       ? new ResizeObserver(() => {
-          if (autoScrollRef.current) scrollToBottom(container);
+          if (autoScrollRef.current && !hasActiveSelectionInside(container)) scrollToBottom(container);
         })
       : null;
     observer?.observe(container);
@@ -157,16 +172,7 @@ export function useMessageScroll(
     const appendedUserMessage = messages.length > previousMessageCount && latestMessage?.role === "user";
 
     if (!autoScrollRef.current && !appendedUserMessage) return;
-    const sel = typeof window !== "undefined" ? window.getSelection() : null;
-    if (
-      sel &&
-      !sel.isCollapsed &&
-      containerRef.current &&
-      sel.anchorNode &&
-      containerRef.current.contains(sel.anchorNode)
-    ) {
-      return;
-    }
+    if (hasActiveSelectionInside(containerRef.current)) return;
     const container = containerRef.current;
     if (!container) return;
 
