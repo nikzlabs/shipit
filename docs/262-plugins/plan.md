@@ -309,6 +309,14 @@ coherent in one UI.
   `PluginReposPanel.tsx`. v0 renders declarations with an honest
   "declared — mechanics pending" state for tracked repos (not counted toward
   the warn dot; the full state set arrives with the slice-2 mechanics).
+  Three race guards, each from the implementation review: foreign-session
+  responses are dropped, a monotonic generation makes same-session refetches
+  **latest-wins** (the seeding fetch and `files_changed` overlap freely), and
+  every read goes through `snapshotForSession` so a snapshot can only gate the
+  session it belongs to. The route reports **`pending`** — evicted or
+  mid-restore checkout — which the store retries with backoff instead of
+  caching, the `declarationsPending` mechanism docs/248 needed for the same
+  reason.
 - `src/server/shared/types/ws-server-messages/service.ts` — structured
   `origin` on service messages; `secrets_status` origin dimension; new
   `plugin_repo_status`.

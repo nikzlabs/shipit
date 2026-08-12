@@ -153,6 +153,43 @@ describe("Integration: GET /api/plugin-repos (docs/262)", () => {
     expect((await snapshot("?sessionId=nope")).declared).toBe(false);
   });
 
+  // "Not yet knowable" must not be cached as "declares nothing" — the client
+  // retries on `pending`, which is what keeps an evicted session's Plugins tab
+  // from vanishing until the next shipit.yaml event.
+  it("reports pending for an evicted session instead of an empty declaration", async () => {
+    writeConfig(DECLARE_FIXTURE);
+    sessionManager.setDiskTier("sess", "evicted");
+    const snap = await snapshot();
+    expect(snap.pending).toBe(true);
+    expect(snap.declared).toBe(false);
+    expect(snap.repos).toEqual([]);
+  });
+
+  it("reports pending when the workspace directory is gone (mid-restore)", async () => {
+    fs.rmSync(workspaceDir, { recursive: true, force: true });
+    expect((await snapshot()).pending).toBe(true);
+    // …and stops once the checkout is back.
+    fs.mkdirSync(workspaceDir, { recursive: true });
+    writeConfig(DECLARE_FIXTURE);
+    const snap = await snapshot();
+    expect(snap.pending).toBe(false);
+    expect(snap.declared).toBe(true);
+  });
+
+  it("a bare `plugins:` key declares intent (the tab must appear)", async () => {
+    writeConfig("plugins:\n");
+    const snap = await snapshot();
+    expect(snap.declared).toBe(true);
+    expect(snap.repos).toEqual([]);
+  });
+
+  it("an exports-only repo returns no declaration and no warnings", async () => {
+    writeConfig("exports:\n  plugins:\n    probe:\n      cli:\n        probe: bin/probe.mjs\n");
+    const snap = await snapshot();
+    expect(snap.declared).toBe(false);
+    expect(snap.warnings).toEqual([]);
+  });
+
   it("a malformed document degrades to a warning, not a 500", async () => {
     writeConfig("plugins: [unclosed\n  - broken yaml");
     const snap = await snapshot();

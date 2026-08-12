@@ -11,8 +11,11 @@
  * generation mechanics.
  */
 
+import fs from "node:fs";
+import path from "node:path";
 import type { FastifyInstance } from "fastify";
 import type { ApiDeps } from "./api-routes.js";
+import type { SessionManager } from "./sessions.js";
 import { resolveShipitConfig } from "../shared/shipit-config.js";
 import {
   buildPluginReposSnapshot,
@@ -42,6 +45,33 @@ export async function registerPluginRepoRoutes(
         return emptySnapshot(consumerRepoUrl);
       }
 
+      // "Not yet knowable" is not "declares nothing" (review finding, and the
+      // exact bug docs/248 hit with trackers): an evicted or mid-restore
+      // checkout would otherwise cache an empty answer and cost the session
+      // its Plugins tab until the next shipit.yaml event.
+      if (areDeclarationsPending(deps.sessionManager, request.query.sessionId)) {
+        return { ...emptySnapshot(consumerRepoUrl), pending: true };
+      }
+
+      // `resolveShipitConfig` collapses every read failure to an empty config,
+      // so a file that exists but cannot be read would report "declares
+      // nothing" with no warning at all — req 13 wants the surface (review
+      // finding). Only an unreadable EXISTING file is a problem; an absent one
+      // genuinely declares nothing.
+      const configPath = path.join(session.workspaceDir, "shipit.yaml");
+      if (fs.existsSync(configPath)) {
+        try {
+          fs.accessSync(configPath, fs.constants.R_OK);
+        } catch (err) {
+          return {
+            ...emptySnapshot(consumerRepoUrl),
+            warnings: [
+              `shipit.yaml exists but could not be read, so no plugin declarations were loaded: ${getErrorMessage(err)}`,
+            ],
+          };
+        }
+      }
+
       try {
         const config = resolveShipitConfig(session.workspaceDir);
         return buildPluginReposSnapshot(
@@ -69,4 +99,25 @@ export async function registerPluginRepoRoutes(
 
 function emptySnapshot(consumerRepoUrl: string | null): PluginReposSnapshot {
   return buildPluginReposSnapshot({ ...EMPTY_PLUGIN_REPOS }, [], consumerRepoUrl, []);
+}
+
+/**
+ * Whether "what does this repository declare?" is *not yet knowable* — the
+ * same test `api-routes-issues.ts` runs for tracker declarations, and for the
+ * same reason: `resolveShipitConfig` degrades a missing checkout to an empty
+ * config, so pending and "declares nothing" are otherwise indistinguishable.
+ *
+ * The authoritative signal is the disk tier, not the directory existing:
+ * `git clone` creates the target directory long before `shipit.yaml` lands, so
+ * a client retrying on `existsSync` would stop on the first retry and cache
+ * the empty answer anyway. `light` keeps its checkout and is not pending; a
+ * session with no workspace declares nothing, permanently.
+ */
+function areDeclarationsPending(
+  sessionManager: SessionManager,
+  sessionId: string | undefined,
+): boolean {
+  const session = sessionId ? sessionManager.get(sessionId) : undefined;
+  if (!session?.workspaceDir) return false;
+  return session.diskTier === "evicted" || !fs.existsSync(session.workspaceDir);
 }

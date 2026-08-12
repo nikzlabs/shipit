@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { handleFilesChanged } from "./files-changed.js";
 import { useIssuesStore } from "../../stores/issues-store.js";
+import { usePluginReposStore } from "../../stores/plugin-repos-store.js";
 import { useSessionStore } from "../../stores/session-store.js";
 import { useUiStore } from "../../stores/ui-store.js";
 import type { HandlerContext } from "./types.js";
@@ -35,6 +36,12 @@ function stubFetch(trackers: TrackerInfo[]): void {
   globalThis.fetch = vi.fn(async (input: string) => {
     const url = input;
     calls.push(url);
+    if (url.startsWith("/api/plugin-repos")) {
+      return {
+        ok: true,
+        json: async () => ({ declared: true, pending: false, consumerRepoUrl: null, repos: [], warnings: [] }),
+      } as Response;
+    }
     const body = url.startsWith("/api/trackers") ? { trackers } : { tracker: trackers[0], issues: [] };
     return { ok: true, json: async () => body } as Response;
   }) as unknown as typeof fetch;
@@ -58,6 +65,28 @@ beforeEach(() => {
 afterEach(() => {
   globalThis.fetch = originalFetch;
   vi.restoreAllMocks();
+});
+
+describe("handleFilesChanged — plugin declarations (docs/262)", () => {
+  it("refetches the plugin snapshot when shipit.yaml changes", async () => {
+    // The snapshot gates the Plugins tab itself, so this refetch happens
+    // whether or not the tab is open.
+    stubFetch([tracker()]);
+    useUiStore.setState({ rightTab: "files" });
+
+    handleFilesChanged(ctx, event(["shipit.yaml"]));
+    await flush();
+
+    expect(calls.some((u) => u.startsWith("/api/plugin-repos"))).toBe(true);
+    expect(usePluginReposStore.getState().snapshot?.declared).toBe(true);
+  });
+
+  it("leaves the plugin snapshot alone for unrelated file changes", async () => {
+    stubFetch([tracker()]);
+    handleFilesChanged(ctx, event(["src/index.ts"]));
+    await flush();
+    expect(calls.some((u) => u.startsWith("/api/plugin-repos"))).toBe(false);
+  });
 });
 
 describe("handleFilesChanged — tracker declarations (planning#323)", () => {

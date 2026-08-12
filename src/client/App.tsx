@@ -70,6 +70,7 @@ import { PluginReposPanel } from "./components/PluginReposPanel.js";
 import {
   pluginsAttention,
   pluginsTabVisible,
+  snapshotForSession,
   usePluginReposStore,
 } from "./stores/plugin-repos-store.js";
 import { FileTree } from "./components/FileTree.js";
@@ -310,7 +311,10 @@ export default function App() {
   // docs/262 — the Plugins tab is gated on plugin intent (a `plugins:` block in
   // shipit.yaml, even an invalid one). Session-scoped store; seeded by the
   // sessionId-keyed effect below and by the files-changed shipit.yaml hook.
-  const pluginSnapshot = usePluginReposStore((s) => s.snapshot);
+  // Read through `snapshotForSession`: the store holds one slot, so pairing
+  // the snapshot with its owning session is what keeps a switch from showing
+  // the previous session's tab, dot and cards (review finding).
+  const pluginSnapshot = usePluginReposStore((s) => snapshotForSession(s, sessionId));
   const showPluginsTab = pluginsTabVisible(pluginSnapshot);
   const rightTab = (() => {
     if (isOpsSession && (rightTabRaw === "preview" || rightTabRaw === "pr"))

@@ -19,9 +19,12 @@ function repos(raw: unknown, trackers: DeclaredTracker[] = NO_TRACKERS) {
 }
 
 describe("parsePluginRepos — grammar", () => {
-  it("absent block → not declared, no warnings", () => {
+  // Presence is the caller's signal (shipit-config gates on `"plugins" in
+  // raw`), so a null/empty value reaching this parser is a bare `plugins:` —
+  // still intent, and it must keep its tab (req 13).
+  it("an empty `plugins:` key still declares intent", () => {
     const { config, warnings } = repos(undefined);
-    expect(config.declared).toBe(false);
+    expect(config.declared).toBe(true);
     expect(config.repos).toEqual([]);
     expect(warnings).toEqual([]);
   });
@@ -79,6 +82,23 @@ describe("parsePluginRepos — grammar", () => {
     const { config, warnings } = repos({ repos: [{ repo: "https://gitlab.com/x/y.git", name: "x" }] });
     expect(config.repos).toEqual([]);
     expect(warnings).toContainEqual(expect.stringContaining("`owner/name` slug or `self`"));
+  });
+
+  // Fail-closed at the use-entry level: a malformed override must never
+  // degrade into different executable semantics (review finding).
+  it.each([
+    ["a non-boolean autostart", { services: { svc: { autostart: "false" } } }, "autostart"],
+    ["an invalid service alias", { services: { svc: { as: "bad name" } } }, "as"],
+    ["an invalid command alias", { commands: { cmd: { as: "bad/name" } } }, "as"],
+    ["a non-scalar setting value", { settings: { root: { nested: true } } }, "settings.root"],
+    ["a non-mapping overrides block", "nope", "overrides"],
+  ])("drops the whole use entry for %s", (_label, overrides, mentions) => {
+    const { config, warnings } = repos({
+      repos: [{ repo: "a/b", name: "tools" }],
+      use: [{ plugin: "x", from: "tools", overrides }],
+    });
+    expect(config.uses).toEqual([]);
+    expect(warnings).toContainEqual(expect.stringContaining(mentions));
   });
 
   it("warns on unknown keys at every level without dropping valid entries", () => {
@@ -215,9 +235,20 @@ describe("parsePluginExports", () => {
       warnings,
     );
     expect(exportsList.map((e) => e.name)).toEqual(["good"]);
-    expect(warnings).toContainEqual(expect.stringContaining("Ignoring exported plugin `bad`"));
-    expect(warnings).toContainEqual(expect.stringContaining("Ignoring exported plugin `escaping`"));
-    expect(warnings).toContainEqual(expect.stringContaining("Ignoring exported plugin `bad-cred`"));
+    // The message quotes the config key so the snapshot projection keeps it.
+    expect(warnings).toContainEqual(expect.stringContaining("`exports.plugins.bad`"));
+    expect(warnings).toContainEqual(expect.stringContaining("`exports.plugins.escaping`"));
+    expect(warnings).toContainEqual(expect.stringContaining("`exports.plugins.bad-cred`"));
+  });
+
+  it("warns on a misspelled setting descriptor key instead of silently losing it", () => {
+    const warnings: string[] = [];
+    const exportsList = parsePluginExports(
+      { plugins: { p: { settings: { greeting: { defualt: "hi" } } } } },
+      warnings,
+    );
+    expect(exportsList).toHaveLength(1);
+    expect(warnings).toContainEqual(expect.stringContaining("settings.greeting.defualt"));
   });
 
   it("hosts must be bare hostnames", () => {
@@ -256,6 +287,13 @@ describe("parseShipitConfig integration (docs/262)", () => {
     const config = parseShipitConfig({ agent: {} });
     expect(config.plugins).toEqual({ declared: false, repos: [], uses: [] });
     expect(config.pluginExports).toEqual([]);
+  });
+
+  it("a bare `plugins:` key (YAML null) declares intent — the tab must appear", () => {
+    // The regression this guards: treating null as absent left the user with
+    // neither a tab nor a warning for a declaration they clearly started.
+    const config = parseShipitConfig({ agent: {}, plugins: null });
+    expect(config.plugins.declared).toBe(true);
   });
 });
 
@@ -302,5 +340,37 @@ describe("buildPluginReposSnapshot", () => {
       ["Unknown key `plugins.foo` in shipit.yaml.", "`agent.memory` is no longer used"],
     );
     expect(snapshot.warnings).toEqual(["Unknown key `plugins.foo` in shipit.yaml."]);
+  });
+
+  it("carries the reason an export was dropped, so a self consumer sees the cause", () => {
+    const warnings: string[] = [];
+    const plugins = parsePluginRepos(
+      { repos: [{ repo: "self", name: "dev" }], use: [{ plugin: "probe", from: "dev" }] },
+      NO_TRACKERS,
+      warnings,
+    );
+    // The export is dropped for a bad path, so the selector can't resolve.
+    const exportsList = parsePluginExports({ plugins: { probe: { compose: "/abs.yml" } } }, warnings);
+    const snapshot = buildPluginReposSnapshot(plugins, exportsList, null, warnings);
+    expect(snapshot.repos[0].issues).toHaveLength(1);
+    expect(snapshot.warnings).toContainEqual(expect.stringContaining("`exports.plugins.probe`"));
+  });
+
+  it("an exports-only repo grows no tab from a manifest warning", () => {
+    // plan §3: the tab renders only when the PROJECT declares plugins. A
+    // plugin author's own manifest warning belongs in the config banner.
+    const snapshot = buildPluginReposSnapshot(
+      { declared: false, repos: [], uses: [] },
+      [],
+      null,
+      ["Ignoring `exports.plugins.broken`: `compose` must be a relative path."],
+    );
+    expect(snapshot.declared).toBe(false);
+    expect(snapshot.warnings).toEqual([]);
+  });
+
+  it("reports pending: false — the route owns the pending answer", () => {
+    const snapshot = buildPluginReposSnapshot({ declared: true, repos: [], uses: [] }, [], null, []);
+    expect(snapshot.pending).toBe(false);
   });
 });

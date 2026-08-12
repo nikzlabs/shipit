@@ -12,6 +12,7 @@ function setSnapshot(snapshot: PluginReposSnapshot | null) {
 
 const FIXTURE: PluginReposSnapshot = {
   declared: true,
+  pending: false,
   consumerRepoUrl: "https://github.com/x/y",
   warnings: [],
   repos: [
