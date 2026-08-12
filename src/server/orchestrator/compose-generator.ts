@@ -94,6 +94,8 @@ export interface ComposeOverrideOptions {
   containEgress?: boolean;
   /** Point Docker DNS at the Tier B loopback resolver during containment setup. */
   containDns?: boolean;
+  /** Tier C is active, so redirected HTTPS needs route_localnet. */
+  containProxy?: boolean;
   /**
    * User-declared top-level named volumes (from the user's compose file).
    * When provided, the override emits a labels overlay for each entry so
@@ -524,6 +526,15 @@ function validateServiceSecurity(
     );
   }
 
+
+  // NET_ADMIN would let repository code flush its namespace firewall. Reject
+  // every capability addition rather than maintain a fragile safe subset.
+  if (Array.isArray(svc.cap_add) && svc.cap_add.length > 0) {
+    throw new ComposeValidationError(
+      `Service \`${name}\`: \`cap_add\` is not allowed. Remove added Linux capabilities.`,
+    );
+  }
+
   // Reject device passthrough except the exact /dev/kvm mapping (docs/213).
   validateDevices(name, svc, isDevKvmAllowed());
 
@@ -785,8 +796,9 @@ export function generateComposeOverride(
       ...(opts.containDns ? { dns: ["127.0.0.1"] } : {}),
       ...(opts.containEgress ? {
         restart: "no",
-        sysctls: { "net.ipv4.conf.all.route_localnet": "1" },
+        security_opt: ["no-new-privileges"],
       } : {}),
+      ...(opts.containProxy ? { sysctls: { "net.ipv4.conf.all.route_localnet": "1" } } : {}),
     };
 
     // docs/150 §7 / #1646 — run compose services as the same UID the session

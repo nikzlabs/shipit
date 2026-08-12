@@ -585,6 +585,7 @@ export function setupServiceManager(
       }
       : undefined,
     containServiceDns: containerManager?.isEgressDnsContained(runner.sessionId) ?? false,
+    containServiceProxy: containerManager?.isEgressProxyContained(runner.sessionId) ?? false,
   });
 
   serviceManagers.set(runner.sessionId, mgr);

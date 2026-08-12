@@ -508,6 +508,10 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     return this.isEgressContained(sessionId) && egressDnsEnabled();
   }
 
+  isEgressProxyContained(sessionId: string): boolean {
+    return this.isEgressContained(sessionId) && egressProxyEnabled();
+  }
+
   /**
    * Apply the owning session's effective egress policy to its running Compose
    * services. Called after every Compose `up`, because that command can replace
@@ -584,28 +588,34 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     const sidecarImage = process.env.SESSION_EGRESS_SIDECAR_IMAGE;
     if (!sidecarImage) return false;
     const sc = this.containers.get(sessionId);
-    if (sc?.status !== "running" || !sc.id) return false;
     const cfg = this.resolveEgressConfig?.(sessionId) ?? { contained: true, extraHosts: [] };
     if (!cfg.contained) return false;
     const reloadResolver = egressDnsEnabled();
     const reloadProxy = egressProxyEnabled();
     if (!reloadResolver && !reloadProxy) return false;
-    await reloadEgressSidecars({
-      docker: this.docker,
-      agentContainerId: sc.id,
-      sessionId,
-      sidecarImage,
-      opsSession: sc.opsSession ?? false,
-      extraHosts: cfg.extraHosts,
-      ...(cfg.base ? { base: cfg.base } : {}),
-      ...(cfg.identityRules ? { identityRules: cfg.identityRules } : {}),
-      baseLabels: this.baseLabels(),
-      reloadResolver,
-      reloadProxy,
-    });
+    if (sc?.status === "running" && sc.id) {
+      await reloadEgressSidecars({
+        docker: this.docker,
+        agentContainerId: sc.id,
+        sessionId,
+        sidecarImage,
+        opsSession: sc.opsSession ?? false,
+        extraHosts: cfg.extraHosts,
+        ...(cfg.base ? { base: cfg.base } : {}),
+        ...(cfg.identityRules ? { identityRules: cfg.identityRules } : {}),
+        baseLabels: this.baseLabels(),
+        reloadResolver,
+        reloadProxy,
+      });
+    }
     // Service sidecars borrow different network namespaces. Refresh each of
     // them with the new effective allowlist as part of the same operation.
-    await this.containComposeServices(sessionId, [], true);
+    try {
+      await this.containComposeServices(sessionId, [], true);
+    } catch (error) {
+      console.error(`[egress:${sessionId}] service allowlist refresh failed closed:`, error);
+      throw error;
+    }
     return true;
   }
 

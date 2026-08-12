@@ -531,3 +531,8 @@ from a service in the same way that it is blocked from the agent container.
 Add required package or API hosts through Settings → Network. An Open session,
 or a deployment with containment explicitly disabled, keeps normal Docker
 egress.
+
+This protection applies to running Compose services, not Dockerfile build
+steps. BuildKit runs build commands in daemon-managed containers before the
+service exists. ShipIt requires Docker Compose 2.24.4 or newer for contained
+service network replacement.

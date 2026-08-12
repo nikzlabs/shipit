@@ -305,6 +305,8 @@ export interface ServiceManagerOptions {
   containServicesFn?: (serviceNames: string[]) => Promise<void>;
   /** Tier B is active, so generated services use its loopback DNS upstream. */
   containServiceDns?: boolean;
+  /** Tier C is active for contained services. */
+  containServiceProxy?: boolean;
   /**
    * Loads user-saved secrets for the session's repo (from SecretStore).
    *
@@ -432,6 +434,7 @@ export class ServiceManager extends EventEmitter {
   private readonly networkHealFn?: (networkName: string) => Promise<void>;
   private readonly containServicesFn?: (serviceNames: string[]) => Promise<void>;
   private readonly containServiceDns: boolean;
+  private readonly containServiceProxy: boolean;
   /** docs/183 — external service-env root, for teardown cleanup. */
   private readonly serviceEnvDir: string;
   /**
@@ -602,6 +605,7 @@ export class ServiceManager extends EventEmitter {
     this.networkHealFn = opts.networkHealFn;
     this.containServicesFn = opts.containServicesFn;
     this.containServiceDns = opts.containServiceDns ?? false;
+    this.containServiceProxy = opts.containServiceProxy ?? false;
     this.serviceEnvDir = opts.serviceEnvDir;
     this.secretsInternalDir = opts.dockerSecretsConfig?.internalDir;
     this.logStore = opts.logStore;
@@ -1104,6 +1108,7 @@ export class ServiceManager extends EventEmitter {
       userNamedVolumes,
       ...(this.containServicesFn ? { containEgress: true } : {}),
       ...(this.containServiceDns ? { containDns: true } : {}),
+      ...(this.containServiceProxy ? { containProxy: true } : {}),
       ...(dockerSecretsBuild ? { dockerSecrets: dockerSecretsBuild } : {}),
       ...(serviceEnvFiles ? { serviceEnvFiles } : {}),
       ...(this.overlayDepDirs.length > 0 ? { overlayDepDirs: this.overlayDepDirs } : {}),
@@ -1636,6 +1641,7 @@ export class ServiceManager extends EventEmitter {
         ...(this.stackName ? { stackName: this.stackName } : {}),
         ...(this.containServicesFn ? { containEgress: true } : {}),
         ...(this.containServiceDns ? { containDns: true } : {}),
+        ...(this.containServiceProxy ? { containProxy: true } : {}),
         ...(this.overlayDepDirs.length > 0 ? { overlayDepDirs: this.overlayDepDirs } : {}),
         dockerSecrets: dockerSecretsBuild,
       };

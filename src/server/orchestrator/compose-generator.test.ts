@@ -181,6 +181,12 @@ services:
     expect(() => parseComposeFile(p, { dockerSocket: false })).toThrow("privileged");
   });
 
+  it("rejects repository-defined Linux capabilities", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `services:\n  web:\n    image: node:20\n    cap_add: [NET_ADMIN]\n`);
+    expect(() => parseComposeFile(p, { dockerSocket: false })).toThrow("cap_add");
+  });
+
   it("rejects network_mode: host", () => {
     const dir = setup();
     const p = writeCompose(dir, `
@@ -402,12 +408,13 @@ describe("generateComposeOverride", () => {
   it("makes the service network internal while egress containment is active", () => {
     const override = generateComposeOverride(
       [{ name: "web", ports: ["5173:5173"] }],
-      { ...baseOpts, containEgress: true, containDns: true },
+      { ...baseOpts, containEgress: true, containDns: true, containProxy: true },
     );
     expect(override).toContain("internal: true");
     expect(override).toContain("127.0.0.1");
     expect(override).toContain("networks: !override");
     expect(override).toContain("restart: no");
+    expect(override).toContain("no-new-privileges");
     expect(override).toContain("net.ipv4.conf.all.route_localnet: \"1\"");
 
     const openOverride = generateComposeOverride(

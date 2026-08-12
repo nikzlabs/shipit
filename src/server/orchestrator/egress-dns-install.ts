@@ -3,7 +3,7 @@
  *
  * Builds the dnsmasq config (via `egress-dns.ts`) and launches the long-lived
  * controlled-resolver sidecar in the agent's netns. Sequencing in
- * `createContainer`: agent starts (with `--dns 127.0.0.1`) → Tier A installer
+ * `createContainer`: agent starts → Tier A installer
  * runs (creates the ipset + locks DNS to the resolver uid) → THIS launches the
  * resolver → health check → ready.
  *

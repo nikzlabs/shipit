@@ -145,7 +145,7 @@ if ! command -v jq &>/dev/null; then
 fi
 
 # --- Configure Docker network address pools ---
-# ShipIt creates one Docker network per session. The default pool (~30 /16 subnets)
+# ShipIt creates two Docker networks per contained Compose session. The default pool (~30 /16 subnets)
 # is easily exhausted, causing "all predefined address pools have been fully subnetted".
 # Expand to use the full 172.16.0.0/12 range with /24 subnets (~4000 networks).
 DAEMON_JSON="/etc/docker/daemon.json"

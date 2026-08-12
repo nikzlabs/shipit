@@ -86,7 +86,7 @@ export async function containComposeServices(opts: ContainComposeServicesOptions
   const parentLabel = `shipit-parent-session=${opts.sessionId}`;
   const containers = await opts.docker.listContainers({ all: true, filters: { label: [parentLabel] } });
   const serviceContainers = containers.filter((entry) =>
-    entry.State === "running" && Boolean(entry.Labels?.["shipit-service-name"])
+    (entry.State === "running" || entry.State === "paused") && Boolean(entry.Labels?.["shipit-service-name"])
       && !entry.Labels?.[EGRESS_RESOLVER_LABEL] && !entry.Labels?.[EGRESS_PROXY_LABEL]
   );
   const liveServiceIds = new Set(serviceContainers.map((entry) => entry.Id));
@@ -126,6 +126,20 @@ export async function containComposeServices(opts: ContainComposeServicesOptions
         // the frozen service is fail-closed; the next Compose up recreates it.
         await container.remove({ force: true });
         throw new Error(`service ${info.Labels?.["shipit-service-name"] ?? info.Id} was left paused during egress setup`);
+      }
+      const serviceStartedAt = Date.parse(inspected.State?.StartedAt ?? "") / 1000;
+      const currentSidecars = containers.filter((entry) =>
+        entry.State === "running"
+          && entry.Labels?.[COMPOSE_EGRESS_SIDECAR_LABEL]
+          && entry.Labels?.["shipit-egress-parent"] === info.Id
+          && (entry.Created ?? 0) >= serviceStartedAt
+      );
+      const hasCurrentResolver = !opts.dnsEnabled
+        || currentSidecars.some((entry) => Boolean(entry.Labels?.[EGRESS_RESOLVER_LABEL]));
+      const hasCurrentProxy = !opts.proxyEnabled
+        || currentSidecars.some((entry) => Boolean(entry.Labels?.[EGRESS_PROXY_LABEL]));
+      if (!opts.refresh && opts.dnsEnabled && Number.isFinite(serviceStartedAt) && hasCurrentResolver && hasCurrentProxy) {
+        continue;
       }
       await container.pause();
       paused = true;
@@ -208,7 +222,7 @@ export async function containComposeServices(opts: ContainComposeServicesOptions
       // Never resume repository code unless the complete containment stack is
       // ready. Removing the service also makes Compose report the failed start.
       if (opts.refresh) {
-        try { await container.stop({ t: 0 }); } catch { /* fail closed */ }
+        try { await container.remove({ force: true }); } catch { /* fail closed */ }
       } else {
         try { await container.remove({ force: true }); } catch { /* already gone */ }
       }
@@ -217,7 +231,7 @@ export async function containComposeServices(opts: ContainComposeServicesOptions
       // Success unpauses above. On failure the container is removed; this is
       // only for a mocked/partial Docker implementation that did not remove it.
       if (paused) {
-        try { await container.stop({ t: 0 }); } catch { /* fail closed */ }
+        try { await container.remove({ force: true }); } catch { /* fail closed */ }
       }
     }
   }

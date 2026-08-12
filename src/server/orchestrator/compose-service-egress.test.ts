@@ -98,7 +98,7 @@ describe("containComposeServices", () => {
     })).rejects.toThrow("egress containment failed for 1 Compose service");
 
     expect(container.unpause).not.toHaveBeenCalled();
-    expect(events).toEqual(["pause", "connect", "remove", "stop"]);
+    expect(events).toEqual(["pause", "connect", "remove", "remove"]);
   });
 
   it("does nothing for an open session", async () => {

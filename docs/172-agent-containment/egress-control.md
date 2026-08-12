@@ -26,6 +26,12 @@ service's network namespace, and only then resumes it. A setup failure removes
 the paused service. Every `compose up` repeats this reconciliation so replacement
 containers cannot silently return with open egress.
 
+This policy covers Compose runtime service containers. Image build steps run in
+Docker daemon-managed BuildKit containers before a service exists and remain a
+separate containment boundary; the repository trust gate controls whether
+ShipIt starts a repo-declared build. The `!override` network replacement needs
+Docker Compose 2.24.4 or newer.
+
 It depends on and composes with **planning#131** (`docs/201-container-api-trust-boundary/`):
 that work default-denies the orchestrator API for container-origin requests, which is
 what makes egress *settings* (the global toggle, the allowlist) safe to mutate from the
