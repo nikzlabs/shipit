@@ -39,7 +39,7 @@ function stubFetch(trackers: TrackerInfo[]): void {
     if (url.startsWith("/api/plugin-repos")) {
       return {
         ok: true,
-        json: async () => ({ declared: true, pending: false, consumerRepoUrl: null, repos: [], warnings: [] }),
+        json: async () => ({ declared: true, pending: false, activating: false, consumerRepoUrl: null, repos: [], warnings: [] }),
       } as Response;
     }
     const body = url.startsWith("/api/trackers") ? { trackers } : { tracker: trackers[0], issues: [] };

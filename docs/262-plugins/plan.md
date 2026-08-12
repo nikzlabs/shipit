@@ -97,7 +97,12 @@ Rules (review findings, both rounds):
 - **Pin durability** (req 8): `pin:` accepts a tag or SHA. On first
   resolution ShipIt records the resolved SHA durably, keyed by the consumer
   declaration, and stays there even if a tag moves (a moved tag warns). Only
-  editing the declaration re-resolves.
+  editing the declaration re-resolves. **The record is orchestrator-wide and
+  keyed by the consuming *project*** (`plugin-pins.ts`), not per session —
+  a per-session store would let two sessions of one project resolve the same
+  moved tag to different commits, which is the drift this requirement
+  forbids. A recorded pin is honored *without* re-resolving, so a tag later
+  deleted or made ambiguous still activates the pinned commit.
 - **Startup** (req 16): the plugin's compose fragment owns per-service
   defaults via the existing `x-shipit-preview` vocabulary; the consumer
   overrides per service. No plugin-level boolean exists.
@@ -171,10 +176,19 @@ over the read-only checkout, so `node_modules` and build output land in the
 layer, never in the checkout and never in the project (req 7). **As built**
 (`plugin-generations.ts`), that layer IS the generation directory: a
 per-session, per-commit, disposable checkout under the session state dir
-already confines install output to a place that is neither the shared bare
+already confines build output to a place that is neither the shared bare
 cache nor the project, so a separate copy-on-write layer buys nothing.
 Read-only for the *agent* is enforced where it is enforceable — the `:ro` bind
-mount, which lands with the container wiring. Install runs with the generation's env — `SHIPIT_PLUGIN_COMMIT`
+mount, which lands with the container wiring.
+
+**Where install runs is a security boundary, not a detail** (implementation
+review). It must NOT run in the orchestrator: that process holds ShipIt's own
+credentials (the PAT in the global git config) and has unrestricted host
+access, so executing a repo-authored `install` string there is strictly more
+privileged than `agent.install`, which runs in the session worker. Install
+therefore runs **in the session container**, with the authority
+`agent.install` already has, and lands with the container wiring; generation
+activation itself runs no plugin-authored code at all. Install runs with the generation's env — `SHIPIT_PLUGIN_COMMIT`
 set for a consumer generation, unset under `repo: self` (set by the fixture:
 its install stamp records the commit, and the probe checks the stamp against
 the active generation). Install re-runs when its stamped inputs change: the

@@ -10,9 +10,9 @@ Design phase (this slice):
 
 Next design slice (server mechanics):
 
-- [x] Checkout mechanics: bare-cache reuse, per-generation checkout in the session state dir, install output confined to the generation directory (reqs 2, 7). **The writable layer is the generation directory itself** — a per-session, per-commit, disposable copy already gives install output a home that pollutes neither the shared cache nor the project, so the CoW layer buys nothing; read-only for the agent is enforced at the `:ro` mount
+- [x] Checkout mechanics: bare-cache reuse (serialized per cache), per-generation checkout in the session state dir (req 2). **The writable layer is the generation directory itself** — a per-session, per-commit, disposable copy already confines any build output, so the CoW layer buys nothing; read-only for the agent is enforced at the `:ro` mount
 - [ ] Mounts: `/plugins/<name>` read-only into the agent container, plus `/project` for services (reqs 2, 21)
-- [x] Generation staging/activation: stage → validate → install → atomic symlink swap; failure keeps the prior generation whole and live; per-repo in-flight serialization (reqs 12, 15). Service prepare/recreate lands with the compose work; old-generation semantics for concurrent CLI calls land with the CLI wrappers
+- [x] Generation staging/activation: stage → validate (incl. phase-2 selectors) → atomic symlink swap; the record lives inside the generation so reads are atomic; failure keeps the prior generation whole and live; a per-repo serial QUEUE (not promise-joining, so a mid-flight declaration edit is never lost); prune never deletes the live generation (reqs 12, 13, 14, 15). Service prepare/recreate lands with the compose work
 - [ ] Per-plugin per-session shared state directory, mounted into services and exposed to CLIs (reqs 17, 18)
 - [ ] Published-port stability per (session, service) so the preview origin survives a fragment port edit (req 18)
 - [ ] Compose-fragment merging + security validation of plugin services, preserving fragment-relative path resolution (paths resolve against the fragment's directory in the checkout — set by the fixture) (reqs 3, 5, 16, 20)
@@ -22,8 +22,8 @@ Next design slice (server mechanics):
 - [ ] CLI PATH mechanism + collision checks (reqs 17, 20)
 - [ ] Skills materialization into each backend's discovery root, namespaced, with refresh re-scan (req 22, docs/209 — one mechanism, one item)
 - [ ] Feedback-channel registration as issue destination (req 25)
-- [x] Pin durability: resolved SHA persisted in `plugins/pins.json` keyed by the consumer declaration; a moved tag warns and does NOT move the plugin; only a declaration edit re-resolves (req 8)
-- [x] Install stamping: re-runs on plugin commit / install string / `install-inputs` CONTENT change, mirroring agent.install's convention (req 7)
+- [x] Pin durability (`plugin-pins.ts`): resolved SHA persisted **orchestrator-wide, keyed by the consuming project's declaration** — not per session, or two sessions of one project could resolve a moved tag differently. A recorded pin is honored without re-resolving (a deleted or now-ambiguous tag still activates), a moved tag warns, writes are atomic, and only a declaration edit re-resolves (req 8)
+- [ ] Plugin `install` execution + stamping (req 7) — deliberately NOT orchestrator-side: an earlier draft ran repo-authored install strings in the orchestrator process with its full environment (ShipIt's PAT, unrestricted host access), which is strictly more privileged than `agent.install`. It lands with the container wiring, where it runs with the authority `agent.install` already has. Stamping (commit / install string / `install-inputs` content) is designed and moves with it
 - [ ] Settings file: validate declared settings + consumer values, materialize the `SHIPIT_SETTINGS` JSON per imported plugin (req 26)
 - [ ] Fetch-authority boundary: repository fetches stay orchestrator-side; guard test that plugin install/services/CLIs cannot reach fetch credentials; standing-grant activation without prompts, identity always visible (req 19)
 - [ ] Self-use mode (`repo: self`, req 27): live working-tree activation, no generations/refresh, consumer-path parity for services/CLIs/skills/settings
@@ -41,7 +41,7 @@ Implementation:
 
 - [x] Generation engine — `plugin-generations.ts`: on-disk layout under the session state dir (docs/246, so a plugin checkout can never be staged into the user's repo), commit resolution (branch tip / pin / durable pin record), staging, install with stamping, atomic symlink publish, old-generation pruning
 - [x] Activation lifecycle — `services/plugin-activation.ts` + wiring through `bootstrap-managers` → `runner-registry-factory` → `service-manager-setup`: runs on session activation and on a `shipit.yaml` edit, fire-and-forget so a slow fetch never delays a session opening (req 13); per-repo independence (req 14); last-attempt state feeds the tab without a GET ever activating anything
-- [x] Snapshot + tab states: `active` (with the exact commit), `activating`, `degraded` (prior generation still live — req 15), `unavailable`; tracked-repo selectors now resolve against the LIVE generation's manifest (phase 2)
+- [x] Snapshot + tab states: `active` (with the exact commit), `activating`, `degraded` (prior generation still live — req 15), `unavailable`; tracked-repo selectors resolve against the LIVE generation's manifest (phase 2). The client re-fetches while any repo is activating, since activation is fire-and-forget and nothing pushes completion — a `plugin_repo_status` WS delta replaces the poll when refresh lands
 
 - [x] Phase-1 declaration parsing — `src/server/shared/plugin-repos.ts` (called from `shipit-config.ts`; trackers parse first): consumer `repos`+`use` grammar, `exports.plugins` manifest, cross-block name reservation with the same-destination alias exception, alias uniqueness, branch/pin exclusivity, `repo: self` rules; nothing fatal (reqs 11, 13, 27; req 20 phase 1)
 - [x] `GET /api/plugin-repos` snapshot — `api-routes-plugin-repos.ts`: per-request config read (issues.trackers precedent), self selectors resolved against the same file's manifest, `consumerRepoUrl`, malformed-document degradation with a warning

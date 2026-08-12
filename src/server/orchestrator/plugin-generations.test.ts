@@ -15,7 +15,6 @@ import {
   activateGeneration,
   activeLinkPath,
   readActiveGeneration,
-  type ActivationOutcome,
 } from "./plugin-generations.js";
 import type { DeclaredPluginRepo } from "../shared/plugin-repos.js";
 
@@ -30,8 +29,16 @@ function repo(over: Partial<DeclaredPluginRepo> = {}): DeclaredPluginRepo {
   return { name: "tools", source: { kind: "github", owner: "acme", repo: "tools" }, ...over };
 }
 
-function deps() {
-  return { stateDir, bareCacheDir, repoUrl: "https://github.com/acme/tools.git", ensureCache };
+function deps(selectedExports: string[] = []) {
+  return {
+    stateDir,
+    bareCacheDir,
+    repoUrl: "https://github.com/acme/tools.git",
+    consumerKey: "https://github.com/acme/app.git",
+    pinStorePath: path.join(tmp, "plugin-pins.json"),
+    selectedExports,
+    ensureCache,
+  };
 }
 
 /** Commit `files` on the origin and return the new SHA. */
@@ -48,11 +55,12 @@ async function commitFiles(files: Record<string, string>, message: string): Prom
   return (await simpleGit(originDir).revparse(["HEAD"])).trim();
 }
 
-/** A manifest exporting one plugin, optionally with an install command. */
-function manifest(opts: { install?: string; inputs?: string[] } = {}): string {
-  const install = opts.install ? `      install: ${opts.install}\n` : "";
-  const inputs = opts.inputs ? `      install-inputs: [${opts.inputs.join(", ")}]\n` : "";
-  return `exports:\n  plugins:\n    probe:\n      cli:\n        probe: bin/probe.mjs\n${install}${inputs}`;
+/** A manifest exporting the named plugins. */
+function manifest(names: string[] = ["probe"]): string {
+  const entries = names
+    .map((n) => `    ${n}:\n      cli:\n        ${n}: bin/${n}.mjs\n`)
+    .join("");
+  return `exports:\n  plugins:\n${entries}`;
 }
 
 beforeEach(async () => {
@@ -156,66 +164,39 @@ describe("pin durability (req 8)", () => {
   });
 });
 
-describe("install (req 7)", () => {
-  it("runs the manifest's install with the generation's commit in the env", async () => {
-    await commitFiles(
-      {
-        "shipit.yaml": manifest({ install: "node -e \"require('fs').writeFileSync('stamp.txt', process.env.SHIPIT_PLUGIN_COMMIT)\"" }),
-      },
-      "add install",
-    );
-    const head = (await simpleGit(originDir).revparse(["HEAD"])).trim();
-
-    const outcome = await activateGeneration(repo({ branch: "main" }), deps());
-    expect(outcome.status).toBe("activated");
-
-    const live = fs.realpathSync(activeLinkPath(stateDir, "tools"));
-    // Install output lands in the generation directory — never in the bare
-    // cache, never in the consuming project.
-    expect(fs.readFileSync(path.join(live, "stamp.txt"), "utf-8")).toBe(head);
-    expect(fs.existsSync(path.join(originDir, "stamp.txt"))).toBe(false);
-    expect(readActiveGeneration(stateDir, "tools")?.installStamp).toBeTruthy();
-  });
-
-  it("a failing install leaves the previous generation active and whole", async () => {
-    await activateGeneration(repo({ branch: "main" }), deps());
-    const good = readActiveGeneration(stateDir, "tools")!.commit;
-
-    await commitFiles({ "shipit.yaml": manifest({ install: "exit 3" }) }, "broken install");
-    const outcome = (await activateGeneration(repo({ branch: "main" }), deps())) as Extract<
-      ActivationOutcome,
-      { status: "failed" }
-    >;
+describe("phase-2 selector validation (plan §1a)", () => {
+  it("a selected export missing from the manifest invalidates the whole generation", async () => {
+    const outcome = await activateGeneration(repo({ branch: "main" }), deps(["ghost"]));
 
     expect(outcome.status).toBe("failed");
-    expect(outcome.reason).toContain("exit 3");
-    expect(outcome.previous?.commit).toBe(good);
-    // Still live, still complete.
+    expect((outcome as { reason: string }).reason).toContain("`ghost`");
+    // Nothing was published — degraded beats partial.
+    expect(readActiveGeneration(stateDir, "tools")).toBeNull();
+    const generations = fs.readdirSync(path.join(stateDir, "plugins", "tools", "generations"));
+    expect(generations).toEqual([]);
+  });
+
+  it("a selected export present in the manifest activates", async () => {
+    const outcome = await activateGeneration(repo({ branch: "main" }), deps(["probe"]));
+    expect(outcome.status).toBe("activated");
+  });
+
+  it("a new commit that drops a selected export keeps the prior generation live", async () => {
+    await activateGeneration(repo({ branch: "main" }), deps(["probe"]));
+    const good = readActiveGeneration(stateDir, "tools")!.commit;
+
+    // The plugin repo renames its export; the consumer still selects the old name.
+    await commitFiles({ "shipit.yaml": manifest(["renamed"]) }, "rename export");
+    const outcome = await activateGeneration(repo({ branch: "main" }), deps(["probe"]));
+
+    expect(outcome.status).toBe("failed");
+    expect((outcome as { previous?: { commit: string } }).previous?.commit).toBe(good);
     expect(readActiveGeneration(stateDir, "tools")?.commit).toBe(good);
+    // The live checkout is still complete.
     expect(fs.existsSync(path.join(fs.realpathSync(activeLinkPath(stateDir, "tools")), "shipit.yaml"))).toBe(true);
     // No staging leftovers.
     const generations = fs.readdirSync(path.join(stateDir, "plugins", "tools", "generations"));
     expect(generations.filter((n) => n.includes(".staging-"))).toEqual([]);
-  });
-
-  it("re-runs install when a declared install-input changes under the same commit", async () => {
-    const install = "node -e \"require('fs').appendFileSync('runs.txt', 'x')\"";
-    await commitFiles(
-      { "shipit.yaml": manifest({ install, inputs: ["deps.lock"] }), "deps.lock": "v1" },
-      "with inputs",
-    );
-    await activateGeneration(repo({ branch: "main" }), deps());
-    const live = fs.realpathSync(activeLinkPath(stateDir, "tools"));
-    expect(fs.readFileSync(path.join(live, "runs.txt"), "utf-8")).toBe("x");
-
-    // Same commit, unchanged inputs — no re-run.
-    await activateGeneration(repo({ branch: "main" }), deps());
-    expect(fs.readFileSync(path.join(live, "runs.txt"), "utf-8")).toBe("x");
-
-    // The input's CONTENT changes in the live checkout: install is stale.
-    fs.writeFileSync(path.join(live, "deps.lock"), "v2");
-    await activateGeneration(repo({ branch: "main" }), deps());
-    expect(fs.readFileSync(path.join(live, "runs.txt"), "utf-8")).toBe("xx");
   });
 });
 
@@ -247,13 +228,33 @@ describe("failure semantics (reqs 13, 15)", () => {
     expect((outcome as { reason: string }).reason).toContain("live working tree");
   });
 
-  it("concurrent activations of one repo share a single staging run", async () => {
+  it("concurrent activations of one repo run in order, not in parallel", async () => {
     const [a, b] = await Promise.all([
       activateGeneration(repo({ branch: "main" }), deps()),
       activateGeneration(repo({ branch: "main" }), deps()),
     ]);
-    // The second call joins the first rather than staging a second checkout.
-    expect(a).toEqual(b);
+    // Serialized: the first stages and publishes, the second sees it live.
+    expect([a.status, b.status]).toEqual(["activated", "unchanged"]);
     expect(readActiveGeneration(stateDir, "tools")).not.toBeNull();
+  });
+
+  // The regression this guards: joining an in-flight promise handed the second
+  // caller the FIRST declaration's outcome, so a shipit.yaml edit landing
+  // mid-activation was silently ignored (review finding 5).
+  it("a declaration edit during activation is not lost", async () => {
+    const first = (await simpleGit(originDir).revparse(["HEAD"])).trim();
+    const second = await commitFiles({ "next.txt": "x" }, "second");
+    await simpleGit(originDir).raw(["branch", "next"]);
+    await simpleGit(bareCacheDir).raw(["fetch", "--all", "--force"]);
+
+    const [pinned, branched] = await Promise.all([
+      activateGeneration(repo({ pin: first }), deps()),
+      activateGeneration(repo({ branch: "next" }), deps()),
+    ]);
+
+    expect(pinned.status).toBe("activated");
+    // The second declaration ran against ITS OWN declaration and won.
+    expect(branched.status).toBe("activated");
+    expect(readActiveGeneration(stateDir, "tools")?.commit).toBe(second);
   });
 });

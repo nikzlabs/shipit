@@ -13,7 +13,7 @@ import type { PluginReposSnapshot } from "../../server/shared/plugin-repos.js";
 const originalFetch = globalThis.fetch;
 
 function snapshot(over: Partial<PluginReposSnapshot> = {}): PluginReposSnapshot {
-  return { declared: true, pending: false, consumerRepoUrl: null, repos: [], warnings: [], ...over };
+  return { declared: true, pending: false, activating: false, consumerRepoUrl: null, repos: [], warnings: [], ...over };
 }
 
 function stubFetch(body: PluginReposSnapshot, status = 200): ReturnType<typeof vi.fn> {

@@ -53,9 +53,13 @@ export const usePluginReposStore = create<PluginReposState>((set) => ({
   fetchSnapshot: async (sessionId: string) => {
     const generation = ++fetchGeneration;
     const applied = await fetchOnce(sessionId, generation, set);
-    // Retry in the background while the checkout can't answer. Resolving now
-    // rather than blocking keeps the caller (a render effect) cheap.
-    if (applied?.pending) void retryWhilePending(sessionId, generation, set);
+    // Retry in the background while the answer is still moving: the checkout
+    // can't answer yet (`pending`), or a repository is mid-activation and
+    // nothing pushes its completion. Resolving now rather than blocking keeps
+    // the caller (a render effect) cheap.
+    if (applied && (applied.pending || applied.activating)) {
+      void retryWhilePending(sessionId, generation, set);
+    }
   },
 
   reset: () => {
@@ -101,7 +105,7 @@ async function retryWhilePending(
     // A dropped response (a newer fetch won) ends this loop — that fetch owns
     // the retry from here.
     if (!snapshot) return;
-    if (!snapshot.pending) return;
+    if (!snapshot.pending && !snapshot.activating) return;
   }
 }
 

@@ -155,6 +155,13 @@ export interface PluginReposSnapshot {
   /** Plugin intent — gates the tab. */
   declared: boolean;
   /**
+   * At least one repository is mid-activation. Activation is fire-and-forget
+   * server-side, so nothing pushes its completion; the client re-fetches while
+   * this is true rather than leaving the card stuck on "activating" until the
+   * next shipit.yaml event (review finding).
+   */
+  activating: boolean;
+  /**
    * The answer is *not yet knowable*: the session's checkout is evicted or
    * mid-restore, so "declares nothing" must not be cached — the client
    * retries instead (the `declarationsPending` precedent, plan §3).
@@ -792,6 +799,7 @@ export function buildPluginReposSnapshot(
   return {
     declared: plugins.declared,
     pending: false,
+    activating: repos.some((r) => r.status === "activating"),
     consumerRepoUrl,
     repos,
     warnings: [...consumerWarnings, ...exportWarnings],
@@ -805,7 +813,10 @@ export function buildPluginReposSnapshot(
  */
 function cardStatus(isSelf: boolean, live: PluginRepoRuntime): PluginRepoStatus {
   if (isSelf) return "self";
-  if (live.commit) return live.error ? "degraded" : "active";
+  // `activating` is checked FIRST (review finding): a refresh running over a
+  // live prior generation is in progress, and reporting it as `active` hid
+  // every refresh that had something to replace.
   if (live.activating) return "activating";
+  if (live.commit) return live.error ? "degraded" : "active";
   return "unavailable";
 }

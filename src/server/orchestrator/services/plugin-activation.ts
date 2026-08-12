@@ -4,7 +4,7 @@
  * The lifecycle half of `plugin-generations.ts`: reads the session's
  * `plugins:` block, brings each tracked repository to its declared version,
  * and remembers the outcome so the browser snapshot can report it without
- * re-running anything (a GET must never trigger an install).
+ * re-running anything (a GET must never trigger activation).
  *
  * Called from the same two moments compose configuration is applied
  * (`service-manager-setup.ts`): session activation, and a `shipit.yaml` edit.
@@ -29,15 +29,25 @@ export interface PluginRepoActivationState {
    * failed but the prior version is still active (req 15's degraded state).
    */
   error?: string;
+  /** Advisory: a moved tag the durable pin overrode (req 8). */
+  warning?: string;
 }
 
 /**
  * Per-session activation state, keyed `sessionId::repoName`. In-memory on
- * purpose: the durable facts (which commit is live, which pin was resolved)
- * are on disk in the generation record, and this only carries the transient
- * "what happened on the last attempt" the UI needs.
+ * purpose: the durable facts (which commit is live) are on disk in the
+ * generation record, and this only carries the transient "what happened on the
+ * last attempt" the UI needs.
  */
 const activationState = new Map<string, PluginRepoActivationState>();
+
+/**
+ * Monotonic per session. Bumped by {@link clearActivationState}, so a
+ * fire-and-forget activation that finishes AFTER its session was disposed
+ * cannot repopulate the map (review finding 8) — its epoch is stale and every
+ * write is dropped.
+ */
+const epochs = new Map<string, number>();
 
 const stateKey = (sessionId: string, repoName: string): string => `${sessionId}::${repoName}`;
 
@@ -46,6 +56,7 @@ export function getActivationState(sessionId: string, repoName: string): PluginR
 }
 
 export function clearActivationState(sessionId: string): void {
+  epochs.set(sessionId, (epochs.get(sessionId) ?? 0) + 1);
   for (const key of [...activationState.keys()]) {
     if (key.startsWith(`${sessionId}::`)) activationState.delete(key);
   }
@@ -54,6 +65,8 @@ export function clearActivationState(sessionId: string): void {
 export interface PluginActivationDeps {
   /** Bare cache directory for a plugin repository's clone URL. */
   getBareCacheDir: (repoUrl: string) => string;
+  /** Orchestrator-wide durable pin store (req 8 — project-scoped, not per session). */
+  pinStorePath: string;
   /** Create/refresh the bare cache. Orchestrator-side, so fetch credentials never leave it (req 19). */
   ensureCache: (cacheDir: string, repoUrl: string) => Promise<void>;
 }
@@ -68,13 +81,23 @@ export async function activateDeclaredPlugins(
   sessionId: string,
   workspaceDir: string,
   deps: PluginActivationDeps,
+  consumerKey?: string,
 ): Promise<void> {
   let repos: DeclaredPluginRepo[];
+  let selectedByRepo: Map<string, string[]>;
   let stateDir: string;
   try {
     const config = resolveShipitConfig(workspaceDir);
     if (!config.plugins.declared) return;
     repos = config.plugins.repos.filter((r) => r.source.kind === "github");
+    // Phase-2 input: which exports this consumer actually selected from each
+    // repository. A selected name the fetched manifest lacks invalidates that
+    // repository's generation (plan §1a).
+    selectedByRepo = new Map();
+    for (const use of config.plugins.uses) {
+      const key = use.from.toLowerCase();
+      selectedByRepo.set(key, [...(selectedByRepo.get(key) ?? []), use.plugin]);
+    }
     stateDir = sessionStateDirForWorkspace(workspaceDir);
   } catch {
     // A malformed document is already reported by the config warning path and
@@ -83,30 +106,42 @@ export async function activateDeclaredPlugins(
   }
   if (repos.length === 0) return;
 
+  const epoch = epochs.get(sessionId) ?? 0;
+  /** Drop any write whose session was disposed (or re-activated) meanwhile. */
+  const setState = (repoName: string, state: PluginRepoActivationState): void => {
+    if ((epochs.get(sessionId) ?? 0) !== epoch) return;
+    activationState.set(stateKey(sessionId, repoName), state);
+  };
+
   await Promise.all(
     repos.map(async (repo) => {
-      const key = stateKey(sessionId, repo.name);
       const existing = readActiveGeneration(stateDir, repo.name) ?? undefined;
-      activationState.set(key, { activating: true, ...(existing ? { generation: existing } : {}) });
+      setState(repo.name, { activating: true, ...(existing ? { generation: existing } : {}) });
 
       const repoUrl = cloneUrl(repo);
       const outcome = await activateGeneration(repo, {
         stateDir,
         bareCacheDir: deps.getBareCacheDir(repoUrl),
         repoUrl,
+        // A project with no remote is identified by its session: two sessions
+        // of an unremoted project are separate projects for pinning purposes.
+        consumerKey: consumerKey ?? `session:${sessionId}`,
+        pinStorePath: deps.pinStorePath,
+        selectedExports: selectedByRepo.get(repo.name.toLowerCase()) ?? [],
         ensureCache: deps.ensureCache,
       });
 
       if (outcome.status === "failed") {
-        activationState.set(key, {
+        setState(repo.name, {
           activating: false,
           error: outcome.reason,
           ...(outcome.previous ? { generation: outcome.previous } : {}),
+          ...(outcome.warning ? { warning: outcome.warning } : {}),
         });
         console.warn(`[plugins:${sessionId}] ${repo.name}: ${outcome.reason}`);
         return;
       }
-      activationState.set(key, { activating: false, generation: outcome.generation });
+      setState(repo.name, { activating: false, generation: outcome.generation });
     }),
   );
 }

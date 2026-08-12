@@ -34,7 +34,7 @@ const ensureCache = async (cacheDir: string, repoUrl: string): Promise<void> => 
   await simpleGit().raw(["clone", "--bare", originDir, cacheDir]);
 };
 
-const deps = () => ({ getBareCacheDir, ensureCache });
+const deps = () => ({ getBareCacheDir, ensureCache, pinStorePath: path.join(tmp, "plugin-pins.json") });
 
 function writeConfig(yaml: string): void {
   fs.writeFileSync(path.join(workspaceDir, "shipit.yaml"), yaml);
@@ -121,5 +121,27 @@ describe("activateDeclaredPlugins", () => {
     const state = getActivationState("sess", "gone");
     expect(state?.error).toBeUndefined();
     expect(state?.generation?.commit).toBeTruthy();
+  });
+});
+
+describe("lifetime and selectors", () => {
+  const declareTools = "plugins:\n  repos:\n    - repo: acme/tools\n      name: tools\n      branch: main\n";
+
+  it("passes the consumer's selectors through — a bad one fails the generation (phase 2)", async () => {
+    writeConfig(`${declareTools}  use:\n    - plugin: ghost\n      from: tools\n`);
+    await activateDeclaredPlugins("sess", workspaceDir, deps());
+
+    const state = getActivationState("sess", "tools");
+    expect(state?.error).toContain("`ghost`");
+    expect(state?.generation).toBeUndefined();
+  });
+
+  it("an activation that finishes after disposal cannot repopulate the state map", async () => {
+    writeConfig(declareTools);
+    const running = activateDeclaredPlugins("sess", workspaceDir, deps());
+    // The session goes away while the fetch/clone is in flight.
+    clearActivationState("sess");
+    await running;
+    expect(getActivationState("sess", "tools")).toBeUndefined();
   });
 });
