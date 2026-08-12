@@ -188,19 +188,29 @@ commit, the install string, or declared install-input files.
 
 ## 3. UI design
 
-Prototypes: [mockup.html](mockup.html) (A–C). The review's simplification
-pass cut the v1 surface to **one authoritative plugin card plus service-row
-badges**; the cut list is recorded on planning#355. **Naming note:** the
-marketplace skills feature already owns `PluginInfo` and `/api/plugins/*`
-(docs/149), so this feature's code namespace is **`PluginRepo*`** and
-**`/api/plugin-repos`**; only the `shipit.yaml` key says `plugins:`.
+Prototypes: [mockup.html](mockup.html) (services list) and
+[mockup-plugins-tab.html](mockup-plugins-tab.html) (the Plugins tab). The
+review's simplification pass first cut the v1 surface to one plugin card plus
+service-row badges; a later user decision (2026-08-12) moved the card out of
+the chat column into a **dedicated right-rail Plugins tab** — the chat
+column's PR card describes the work in flight, while plugins are session
+*environment*, so their instrument panel belongs with the other right-rail
+instruments. The move deletes mechanism: the PR-card strip generalization
+(the PR-conditioned `hasPanelContent` parent change) and the chip-anchored
+popover are both gone. Two rules keep the tab honest: it renders **only when
+the project declares plugins** (zero rail cost otherwise), and **urgency
+escapes the tab** as a warn dot on the tab label, so a closed tab can hide
+information but never a problem. **Naming note:** the marketplace skills
+feature already owns `PluginInfo` and `/api/plugins/*` (docs/149), so this
+feature's code namespace is **`PluginRepo*`** and **`/api/plugin-repos`**;
+only the `shipit.yaml` key says `plugins:`.
 
 | Surface | Mock | Extends | Change |
 |---|---|---|---|
 | Service rows: origin badge (reqs 3, 15, 16) | A | `ServiceList.tsx`, `PreviewServicesDrawer.tsx` | Services get a stable runtime ID, display name, and **structured origin** on `ManagedServiceState` and the service WS messages; every path consumes it — the flat list, the single-service focus card, the log drill-in, bulk actions. A small origin chip renders beside `ModeBadge`. No group headers (reviewed out). Health counts stay over service rows only |
-| **The plugin card** — one per declared repo: ref @ exact SHA, the plugins used from it, needs, grants, refresh, degraded and collision states (reqs 12, 13, 15, 20, 23, 24) | B, C | Chip row in the strip under `PrLifecycleCard` + a card it opens | The strip is PR-conditioned today (`hasPanelContent`, `PrLifecycleCard.tsx:133`) — the parent generalizes to show declared-context chips without a PR. Plugin chips are the collapsible panel's **second row, below the docs/issue row** (mock B1) — the docs row is work-in-flight (turn-cadence), the plugins row is environment (near-static); each row renders only when non-empty. The panel hides entirely when collapsed (`stripShown`, `PrLifecycleCard.tsx:194`) and that is accepted for *quiet* plugins (B3 — near-static identity is one chevron away); an *actionable* state (unsatisfied need, failed refresh, collision) surfaces as a warn pill in the header's right cluster beside the toggle (B4) — the header never collapses, so the pill survives any panel state, and clicking it expands the panel and opens the plugin card. Data: `GET /api/plugin-repos?sessionId` returns one authoritative snapshot (declaration, resolved ref/SHA, exports, needs and their satisfaction, degraded/collision state); WS `plugin_repo_status` carries deltas, has `sessionId`, is stale-session guarded, and the snapshot re-seeds on attach/reload. Grants happen here: "Add key…" deep-links the Secrets tab; "Allow (session)/(instance)" posts to the existing not-container-accessible `POST /api/egress/hosts` with the scope choice. No "commits behind" badge (req 15 wants ref + exact commit, not network polling) |
-| Needs — credentials (req 23) | B | `SecretsTab.tsx` / `DeclaredSecretRow.tsx`, fed by `secrets_status` | `secrets_status.declared` gains an **origin** dimension (it is flat, name-keyed today — `service.ts:117`, and `SecretsTab` save assumes unique names). A project credential and a plugin credential with the same name are **deliberately the same stored secret**; multiple claimants render as one row with claimant chips |
-| Degraded / collision reporting (reqs 13, 20) | C | The plugin card's own states | Two card states, not transcript cards (reviewed out — no new DB columns, stores, or migrations): **degraded** distinguishes "refresh failed — prior version `<sha>` remains active" (req 15) from "never fetched — session runs without this repo's services" (req 13); **collision** names the colliding domain and the exact `overrides…as:` fix |
+| **The Plugins tab** — a right-rail tab holding one card per declared repo: ref @ exact SHA, the plugins used from it, needs, grants, refresh, degraded and collision states (reqs 12, 13, 15, 20, 23, 24) | tab mock 1–3 | The right-rail tab strip (`App.tsx` ~1690–1895, pattern: conditionally shown tabs like PR/Present) | New tab, rendered only when the parsed config declares plugins; a warn dot on the tab label whenever any repo has an actionable state (unsatisfied need, failed refresh, collision), so urgency survives a closed tab. The pane stacks one card per declared repo. Data: `GET /api/plugin-repos?sessionId` returns one authoritative snapshot (declaration, resolved ref/SHA, exports, needs and their satisfaction, degraded/collision state); WS `plugin_repo_status` carries deltas, has `sessionId`, is stale-session guarded, and the snapshot re-seeds on attach/reload. Grants happen here: "Add key…" opens the existing per-repo Project Settings dialog on its Secrets tab (`setProjectSettingsRepoUrl(repoUrl, "secrets")`, same as the missing-secret banner); "Allow (session)/(instance)" posts to the existing not-container-accessible `POST /api/egress/hosts` with the scope choice. The `PrLifecycleCard` and its strip are **untouched**. No "commits behind" badge (req 15 wants ref + exact commit, not network polling) |
+| Needs — credentials (req 23) | tab mock 1 | `SecretsTab.tsx` / `DeclaredSecretRow.tsx`, fed by `secrets_status` | `secrets_status.declared` gains an **origin** dimension (it is flat, name-keyed today — `service.ts:117`, and `SecretsTab` save assumes unique names). A project credential and a plugin credential with the same name are **deliberately the same stored secret**; multiple claimants render as one row with claimant chips |
+| Degraded / collision reporting (reqs 13, 20) | tab mock 2 | Card states inside the Plugins tab | Two card states, not transcript cards (reviewed out — no new DB columns, stores, or migrations): **degraded** distinguishes "refresh failed — prior version `<sha>` remains active" (req 15) from "never fetched — session runs without this repo's services" (req 13); **collision** names the colliding domain and the exact `overrides…as:` fix |
 
 Settings → Network egress is **unchanged** (it is explicitly the global-only
 editor — `SettingsEgress.tsx:135`); the diagnostics panel addition and the
@@ -225,8 +235,9 @@ coherent in one UI.
   `origin` on service messages; `secrets_status` origin dimension; new
   `plugin_repo_status`.
 - `src/client/components/ServiceList.tsx`, `PreviewServicesDrawer.tsx`,
-  `PrLifecycleCard/` (strip generalization), `SecretsTab.tsx` — the
-  extensions in the table above; the plugin card is the one new component.
+  `SecretsTab.tsx` — the
+  extensions in the table above; the Plugins tab pane (registered in the
+  `App.tsx` rail) is the one new component. `PrLifecycleCard/` is untouched.
 - `src/server/shipit-docs/` — a new `plugins.md` for the agent-facing
   contract, once slice-2 mechanics are settled.
 

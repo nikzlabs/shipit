@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>docs/262 — the Plugins tab</title>
+<style>
+  :root{
+    --bg:#0e1116; --panel:#161b23; --panel-2:#1c2330; --border:#2a3342;
+    --text:#dbe2ec; --muted:#8a97a8; --accent:#5aa9ff; --ok:#39c37f;
+    --warn:#e2b93b; --err:#e0655f; --chip:#232c3b; --mono:ui-monospace,Menlo,Consolas,monospace;
+  }
+  body{background:var(--bg);color:var(--text);font:14px/1.5 system-ui,sans-serif;margin:0;padding:32px;}
+  h1{font-size:18px} h2{font-size:15px;margin:40px 0 6px}
+  .note{color:var(--muted);font-size:12.5px;max-width:72ch}
+  .rail{background:var(--panel);border:1px solid var(--border);border-radius:10px;max-width:520px;overflow:hidden;margin-top:10px}
+  .tabs{display:flex;gap:2px;padding:6px 8px 0;border-bottom:1px solid var(--border);font-size:12.5px;color:var(--muted)}
+  .tab{padding:6px 12px 8px;border-radius:8px 8px 0 0;cursor:pointer;position:relative;white-space:nowrap}
+  .tab.active{color:var(--text);background:var(--panel-2);box-shadow:inset 0 -2px 0 var(--accent)}
+  .tab .bdg{position:absolute;top:3px;right:2px;width:8px;height:8px;border-radius:50%;background:var(--warn);border:2px solid var(--panel)}
+  .pane{padding:12px}
+  .card{background:var(--panel-2);border:1px solid var(--border);border-radius:9px;overflow:hidden;margin-bottom:12px}
+  .card:last-child{margin-bottom:0}
+  .ch{display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--border);font-size:12.5px}
+  .ch .name{font-weight:600;color:var(--text)}
+  .chip{background:var(--chip);border:1px solid var(--border);border-radius:20px;padding:1px 9px;font-size:11.5px;color:var(--muted);white-space:nowrap}
+  .chip.mono{font-family:var(--mono)}
+  .chip.warn{color:var(--warn);border-color:#6f5a2b}
+  .chip.err{color:var(--err);border-color:#6f3b38}
+  .chip.ok{color:var(--ok);border-color:#2b5f45}
+  .btn{background:var(--panel);border:1px solid var(--border);color:var(--text);border-radius:7px;padding:3px 11px;font-size:12px;cursor:pointer;white-space:nowrap}
+  .btn.pri{background:#1d3a5f;border-color:#2b567f;color:#cfe6ff}
+  .crow{display:flex;align-items:center;gap:8px;padding:7px 12px;border-bottom:1px solid var(--border);font-size:12.5px}
+  .crow:last-child{border-bottom:none}
+  .crow .ic{flex:none;width:16px;text-align:center;color:var(--warn)}
+  .crow .ic.err{color:var(--err)}
+  .crow .grow{flex:1;min-width:0}
+  .sub{color:var(--muted);font-size:12px}
+  code{font-family:var(--mono);font-size:12px;background:var(--chip);border-radius:4px;padding:1px 5px}
+  .kbd{color:var(--text)}
+  .spread{flex:1}
+</style>
+</head>
+<body>
+
+<h1>docs/262 — the Plugins tab (right rail)</h1>
+<p class="note">The plugin <b>instrument panel</b> lives as its own right-rail tab, beside Preview /
+Files / Issues — not in the chat column, whose PR card describes the work in flight. The tab renders
+<b>only when the project declares plugins</b>; everyone else pays zero rail space. Urgency escapes
+the tab as a warn dot on the tab label, so a closed tab can hide information but never a problem.
+Services themselves stay in Preview's services drawer (req 16 parity) with their origin badges —
+this tab manages the <i>environment</i>: versions, refresh, credentials, hosts, errors.</p>
+
+<h2>1 · The tab, with attention pending — warn dot on the label</h2>
+<div class="rail">
+  <div class="tabs">
+    <span class="tab">Preview</span><span class="tab">Files</span><span class="tab">Issues</span>
+    <span class="tab active">Plugins<span class="bdg"></span></span>
+    <span class="tab">Terminal</span><span class="tab">PR</span>
+  </div>
+  <div class="pane">
+
+    <!-- repo 1: quiet -->
+    <div class="card">
+      <div class="ch">
+        <span class="name">game-tools</span>
+        <span class="chip mono">nicolasalt/game-tools</span>
+        <span class="chip mono">main @ a1b2c3f</span>
+        <span class="chip ok">ok</span>
+        <span class="spread"></span>
+        <button class="btn">↻ Refresh</button>
+      </div>
+      <div class="crow"><div class="grow sub">uses <b>requirements</b> as <code>reqs</code> · <b>imagegen</b> &nbsp;·&nbsp; 1 command (<code>reqs</code>) · 1 skill</div></div>
+    </div>
+
+    <!-- repo 2: needs attention -->
+    <div class="card">
+      <div class="ch">
+        <span class="name">art-kit</span>
+        <span class="chip mono">nicolasalt/art-kit</span>
+        <span class="chip mono">v1.2.0 @ 9d04e11</span>
+        <span class="chip warn">2 needs</span>
+        <span class="spread"></span>
+        <button class="btn">↻ Refresh</button>
+      </div>
+      <div class="crow"><div class="grow sub">uses <b>palette</b> · 1 command (<code>artk</code>)</div></div>
+      <div class="crow"><span class="ic">⚠</span><div class="grow">Credential <code class="kbd">FAL_KEY</code> is not set for this project</div><button class="btn pri">Add key…</button></div>
+      <div class="crow"><span class="ic">⚠</span><div class="grow">Host <code class="kbd">fal.run</code> is not on the egress allowlist</div><button class="btn">Allow (session)</button><button class="btn">Allow (instance)</button></div>
+    </div>
+
+  </div>
+</div>
+<p class="note">"Add key…" opens the existing per-repo Project Settings dialog on its Secrets tab
+(<code>setProjectSettingsRepoUrl(repoUrl, "secrets")</code> — same as the missing-secret banner).
+"Allow" posts to the existing browser-only <code>POST /api/egress/hosts</code> with the scope choice.</p>
+
+<h2>2 · Error states in the same pane — degraded and collision</h2>
+<div class="rail">
+  <div class="tabs">
+    <span class="tab">Preview</span><span class="tab">Files</span><span class="tab">Issues</span>
+    <span class="tab active">Plugins<span class="bdg"></span></span>
+    <span class="tab">Terminal</span><span class="tab">PR</span>
+  </div>
+  <div class="pane">
+
+    <div class="card">
+      <div class="ch">
+        <span class="name">game-tools</span>
+        <span class="chip mono">main @ a1b2c3f</span>
+        <span class="chip warn">refresh failed</span>
+        <span class="spread"></span>
+        <button class="btn">↻ Retry</button>
+      </div>
+      <div class="crow"><span class="ic">⚠</span><div class="grow">Branch <code class="kbd">main</code> could not be fetched (authorization failed).
+        The prior version <code class="kbd">a1b2c3f</code> remains active — files, commands, and services are unchanged.</div></div>
+    </div>
+
+    <div class="card">
+      <div class="ch">
+        <span class="name">art-kit</span>
+        <span class="chip mono">v1.2.0 @ —</span>
+        <span class="chip err">unavailable</span>
+        <span class="spread"></span>
+        <button class="btn">↻ Retry</button>
+      </div>
+      <div class="crow"><span class="ic err">✕</span><div class="grow">This repository has never been fetched (authorization failed).
+        The session continues without its services and commands.</div></div>
+    </div>
+
+    <div class="card">
+      <div class="ch">
+        <span class="name">game-tools</span>
+        <span class="chip mono">main @ a1b2c3f</span>
+        <span class="chip err">collision</span>
+        <span class="spread"></span>
+      </div>
+      <div class="crow"><span class="ic err">✕</span><div class="grow">Service <code class="kbd">requirements</code> is already declared by this
+        project's <code>docker-compose.yml</code>; the plugin service was not started. Fix in <code>shipit.yaml</code>:
+        <code>plugins.use[reqs].overrides.services.requirements.as: reqs-ui</code></div></div>
+    </div>
+
+  </div>
+</div>
+
+<h2>3 · Quiet project — tab present, no dot; undeclared project — no tab at all</h2>
+<div class="rail">
+  <div class="tabs">
+    <span class="tab">Preview</span><span class="tab">Files</span><span class="tab">Issues</span>
+    <span class="tab">Plugins</span>
+    <span class="tab">Terminal</span><span class="tab">PR</span>
+  </div>
+  <div class="pane"><div class="sub" style="padding:2px 2px 6px">Everything satisfied and current — the tab is
+  just there, dotless. A project with no <code>plugins:</code> block never shows the tab.</div></div>
+</div>
+
+</body>
+</html>
