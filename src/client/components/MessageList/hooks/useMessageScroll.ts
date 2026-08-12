@@ -18,6 +18,21 @@ function scrollToBottom(container: HTMLElement): void {
   container.scrollTop = container.scrollHeight;
 }
 
+/**
+ * Is the user selecting text inside the transcript? Scrolling while they drag
+ * moves the content out from under the pointer and wrecks the selection, so
+ * EVERY auto-scroll path has to stand down until it is gone — the streaming
+ * re-pin and the content observer alike, since during streaming both fire on
+ * roughly every token.
+ */
+function hasActiveSelectionInside(container: HTMLElement | null): boolean {
+  if (!container || typeof window === "undefined") return false;
+  const selection = window.getSelection();
+  return Boolean(
+    selection && !selection.isCollapsed && selection.anchorNode && container.contains(selection.anchorNode),
+  );
+}
+
 function now(): number {
   return typeof performance !== "undefined" ? performance.now() : 0;
 }
@@ -64,8 +79,9 @@ function scheduleScrollToBottom(container: HTMLElement, shouldContinue: () => bo
 /**
  * Scroll behavior for the message transcript: keep the conversation pinned to
  * the bottom while the user is near it, anchor on a newly-appended user message,
- * and scroll the current search match into view. Returns the container ref (for
- * the scroll element) and the current-match ref (handed to `HighlightedText` so
+ * and scroll the current search match into view. Returns the container ref (the
+ * scroll element), the content ref (the element wrapping the messages, whose
+ * height is watched) and the current-match ref (handed to `HighlightedText` so
  * the active match can be scrolled to).
  */
 export function useMessageScroll(
@@ -74,9 +90,11 @@ export function useMessageScroll(
   currentMatch: SearchMatch | undefined,
 ): {
   containerRef: React.RefObject<HTMLDivElement | null>;
+  contentRef: React.RefObject<HTMLDivElement | null>;
   currentMatchRef: React.RefObject<HTMLElement | null>;
 } {
   const containerRef = useRef<HTMLDivElement>(null);
+  const contentRef = useRef<HTMLDivElement>(null);
   const autoScrollRef = useRef(true);
   const previousMessageCountRef = useRef(0);
   const currentMatchRef = useRef<HTMLElement | null>(null);
@@ -95,8 +113,7 @@ export function useMessageScroll(
       const near = isNearBottom(container);
       autoScrollRef.current = near;
       // Moving away from the bottom (scrollbar drag, keyboard, momentum) cancels
-      // any forced scroll immediately. Our own programmatic scrolls always land
-      // at the bottom (`near` true), so they never cancel themselves.
+      // any forced scroll immediately.
       if (!near) cancelSettleRef.current?.();
     };
 
@@ -114,12 +131,24 @@ export function useMessageScroll(
     container.addEventListener("wheel", handleManualScroll, { passive: true });
     container.addEventListener("touchmove", handleManualScroll, { passive: true });
 
+    // Two things move the bottom out from under us, and neither fires a scroll
+    // event: the container getting shorter (the composer growing), and the
+    // transcript getting taller. The second is the one that stranded the view —
+    // a message renders as an 80px `content-visibility` placeholder and grows
+    // when it paints, which the container's own box never reflects, so watching
+    // only the container missed it. Watching the content element catches every
+    // height change whenever it lands, including a card that expands long after
+    // the settle loop has given up. It also lands in the same rendering update
+    // as the growth, i.e. BEFORE the scroll event that growth would otherwise
+    // produce, so `handleScroll` never sees a position stranded by our own pin
+    // and never mistakes it for the user scrolling away.
     const observer = typeof ResizeObserver !== "undefined"
       ? new ResizeObserver(() => {
-          if (autoScrollRef.current) scrollToBottom(container);
+          if (autoScrollRef.current && !hasActiveSelectionInside(container)) scrollToBottom(container);
         })
       : null;
     observer?.observe(container);
+    if (contentRef.current) observer?.observe(contentRef.current);
 
     return () => {
       container.removeEventListener("scroll", handleScroll);
@@ -143,16 +172,7 @@ export function useMessageScroll(
     const appendedUserMessage = messages.length > previousMessageCount && latestMessage?.role === "user";
 
     if (!autoScrollRef.current && !appendedUserMessage) return;
-    const sel = typeof window !== "undefined" ? window.getSelection() : null;
-    if (
-      sel &&
-      !sel.isCollapsed &&
-      containerRef.current &&
-      sel.anchorNode &&
-      containerRef.current.contains(sel.anchorNode)
-    ) {
-      return;
-    }
+    if (hasActiveSelectionInside(containerRef.current)) return;
     const container = containerRef.current;
     if (!container) return;
 
@@ -178,5 +198,5 @@ export function useMessageScroll(
     }
   }, [currentMatch]);
 
-  return { containerRef, currentMatchRef };
+  return { containerRef, contentRef, currentMatchRef };
 }
