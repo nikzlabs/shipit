@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { render, screen, cleanup, fireEvent, waitFor, within } from "@testing-library/react";
+import { render, screen, cleanup, fireEvent, waitFor, within, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Settings, type SettingsProps } from "./Settings.js";
 import { useUiStore } from "../stores/ui-store.js";
@@ -383,17 +383,24 @@ describe("Settings - Services → Anthropic subscription", () => {
       createdAt: now,
       updatedAt: now,
     }]);
-    useSettingsStore.getState().setProviderAccountAuth("claude", "acct-secondary", {
-      provider: "claude",
-      accountId: "acct-secondary",
-      verificationUri: "https://claude.ai/oauth/authorize?secondary=true",
-    });
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ success: true }) });
     vi.stubGlobal("fetch", fetchMock);
 
     render(<Settings {...defaultProps} agentList={[claudeAuthed]} />);
     await userEvent.click(screen.getByLabelText("Manage Claude account 2"));
     await userEvent.click(screen.getByTestId("provider-account-connect-acct-secondary"));
+
+    // The challenge is seeded AFTER the reconnect starts, which is when it
+    // really arrives — and it has to be: adopting an attempt cancels whatever
+    // login was running against it and clears the challenge that login left, so
+    // a code seeded beforehand is a dead one the dialog is right to drop.
+    act(() => {
+      useSettingsStore.getState().setProviderAccountAuth("claude", "acct-secondary", {
+        provider: "claude",
+        accountId: "acct-secondary",
+        verificationUri: "https://claude.ai/oauth/authorize?secondary=true",
+      });
+    });
 
     expect(await screen.findByRole("link", { name: "Open Anthropic authentication page" })).toHaveAttribute(
       "href",
@@ -666,17 +673,18 @@ describe("Settings - Services → OpenAI subscription", () => {
       createdAt: now,
       updatedAt: now,
     }]);
-    useSettingsStore.getState().setProviderAccountAuth("codex", "acct-codex-2", {
-      provider: "codex",
-      accountId: "acct-codex-2",
-      verificationUri: "https://auth.openai.com/device",
-      userCode: "WXYZ-1234",
-    });
-
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: true, json: async () => ({}) }));
     render(<Settings {...defaultProps} agentList={[claudeAuthed, codexInstalled]} />);
     await userEvent.click(screen.getByLabelText("Manage Codex account 2"));
     await userEvent.click(screen.getByTestId("provider-account-connect-acct-codex-2"));
+    act(() => {
+      useSettingsStore.getState().setProviderAccountAuth("codex", "acct-codex-2", {
+        provider: "codex",
+        accountId: "acct-codex-2",
+        verificationUri: "https://auth.openai.com/device",
+        userCode: "WXYZ-1234",
+      });
+    });
 
     // The device code belongs to the ACCOUNT, not to a provider-wide card.
     expect(await screen.findByTestId("provider-account-user-code-acct-codex-2")).toHaveTextContent("WXYZ-1234");

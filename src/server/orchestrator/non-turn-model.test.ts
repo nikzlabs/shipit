@@ -39,6 +39,10 @@ function storeWith(routes: CredentialRoute[], pinned?: ModelSelection) {
     // Phase 5 widened `ServiceRoutingCredentialSource` with the selection mode;
     // nothing here reads it, so the stub returns the store's own default.
     getSelectionMode: () => "strict" as const,
+    // docs/252 req 20 widened it again: spawn shaping asks whether a route id
+    // names a STORED row, because an adopted credential keeps a legacy reserved
+    // id and can no longer be recognised by its id's shape.
+    getCredentialRoute: (id: string) => routes.find((r) => r.id === id),
   };
 }
 

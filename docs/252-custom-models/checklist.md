@@ -277,8 +277,8 @@ landed ahead of this checklist's per-phase sections.
 - [x] Guard test: exactly one `add-service-dialog` is mounted, however it was opened — no second dialog for reconnect
 - [x] Adopt environment-delivered credentials into ordinary rows at boot (rotation, remembered deletion, reserved route ids)
 
-Four defects found while building it, three of them by the work rather than by
-review. Recorded because each is a rule that was stated correctly and
+Ten defects in all — four found by the work, six by the independent
+cross-backend review (`shipit agent run --role reviewer`, run db1e8614). Recorded because each is a rule that was stated correctly and
 implemented as a near-neighbour of itself:
 
 - [x] **Cancelling a reconnect deleted the account.** `cancel` abandoned
@@ -300,3 +300,51 @@ implemented as a near-neighbour of itself:
       if I would add it manually" cuts both ways: an add that would be refused
       is an adoption that is refused, and the variable stays as shadowed as it
       already was.
+
+### Found by the independent review
+
+Requirements 19 and 21 were judged met; req 20 was judged **not fully met**, on
+the first of these. All six are fixed.
+
+- [x] **An adopted credential authenticated with the WRONG secret.** Adoption
+      gives a stored row a legacy reserved id on purpose, and the test for "is
+      this a stored route" was `startsWith("cred_")` — a faithful proxy only
+      while every stored row had a minted id. Under it an adopted row was handed
+      the mode's GROUP variable, which always carries the group's FIRST
+      credential, so ordering or failover onto the adopted row authenticated as
+      a different credential than the turn was attributed to. The question is
+      now asked of the store, threaded through all four callers of
+      `serviceRoutingForSelection` as a required parameter — a default would let
+      a forgotten site fail silently, which is the failure being fixed.
+- [x] **Cancelling a reconnect could still delete the account.**
+      `isUnconnectedAttempt` is not sufficient on its own: a login whose identity
+      cannot be read proceeds by design, so a connected account can have no
+      `externalId`, and reconnect moves it to `authenticating` — both clauses,
+      on a working credential. Only the dialog knows whether it MINTED the id
+      (`mintedHere`), and that is now the gate.
+- [x] **The reconnect's login outlived the dialog.** Running `cancel → start`
+      from the click handler detached it from the dialog's `left` ref, so
+      closing mid-flight let the start land afterwards — a login against a
+      hidden row, which is the 409 nobody can clear. The dialog owns it now, via
+      `startSignIn`, from a mount effect (mount IS the Reconnect click).
+- [x] **Reconnect opened on the FAILURE screen.** With the start outside the
+      dialog, `startingSignIn` stayed false, which satisfies `signInStalled` —
+      "The sign-in stopped before the account connected." with a *Try again*,
+      before the first request returned. Two fixes: the dialog owns the start,
+      and `signInStalled` also waits for `reconnectLeftReady`, because the
+      server's `authenticating` broadcast arrives after `startSignIn` resolves.
+      A start that throws sets that flag, so a real failure still reaches its
+      *Try again*.
+- [x] **A stale challenge could mask the state.** `cancelAccountLogin` does not
+      clear `providerAccountAuths`, so the code from a cancelled login rendered
+      as the new one's — and suppressed `signInStalled`, leaving neither a
+      completion nor a retry. The adopt path clears it.
+- [x] **Two-write windows.** `CredentialStore.save()` swallows a write failure,
+      so adoption's (row, provenance) and deletion's (route, removal marker)
+      pairs each had a window whose ORDER decides how it fails. Both reordered
+      so the survivable outcome is the one that happens: provenance before the
+      row (self-heals next boot), marker before the delete (the row is still
+      there and can be removed again, rather than being re-imported).
+- [x] **Reconnect had no title of its own** — "Add a service — Anthropic",
+      which reads as an add and names no account. Now "Reconnect — Anthropic ·
+      Work", as the plan specified.

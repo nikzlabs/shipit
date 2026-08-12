@@ -48,6 +48,10 @@ function storeWith(routes: CredentialRoute[], pins: Partial<Record<ReviewerSlot,
     getCredentialSecret: (id: string) =>
       routes.some((r) => r.id === id && r.via === "string") ? "sk-test" : undefined,
     getSelectionMode: () => "strict" as const,
+    // docs/252 req 20 widened it again: spawn shaping asks whether a route id
+    // names a STORED row, because an adopted credential keeps a legacy reserved
+    // id and can no longer be recognised by its id's shape.
+    getCredentialRoute: (id: string) => routes.find((r) => r.id === id),
   };
 }
 

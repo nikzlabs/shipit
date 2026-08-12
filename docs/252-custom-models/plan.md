@@ -3227,6 +3227,45 @@ the code implemented as a near-neighbour of itself.
   adoption, and again at the delete — is what makes every downstream reader see
   the absence without any of them learning what a removal is.
 
+**What the independent review changed.** Six more, on top of the four above, and
+the pattern is the same one: each is a rule stated correctly here and
+implemented as a near-neighbour of itself. The first is the one that mattered.
+
+- **"Is this a stored route" cannot be answered from the id's shape any more.**
+  `isStoredCredentialRouteId` asked `startsWith("cred_")`, which was faithful
+  while every stored row had a minted id — and req 20 breaks that on purpose,
+  because an adopted row keeps a LEGACY reserved id so pinned sessions still
+  resolve. Under the old test an adopted credential answered "not stored" and
+  spawn shaping handed it the mode's **group** variable, which always carries
+  the group's FIRST credential. Order or fail over onto the adopted row and the
+  turn authenticated as one credential while being attributed to another —
+  possibly the one ShipIt had just benched, which is the exact hazard phase 5
+  introduced the per-route variable to remove. The question now goes to the
+  store, as a **required** parameter on `serviceRoutingForSelection`: a default
+  would let a call site that forgot it fail silently, which is the failure.
+- **`isUnconnectedAttempt` is not sufficient to authorise a deletion.** Its own
+  docstring names the hole — an unreadable identity *proceeds*, so a connected
+  account can lack `externalId` — and reconnect supplies the other clause by
+  moving it to `authenticating`. Only the dialog can answer the real question,
+  which is whether it minted the id.
+- **A detached login has no owner.** Running `cancel → start` from the click
+  handler put it outside the dialog's `left` ref *and* outside its
+  `startingSignIn`, which produced two defects at once: a login that could
+  outlive the dialog, and a step 3 that opened on the flow's failure screen.
+  Both go away by routing through `startSignIn`, from a mount effect — mount
+  genuinely is the event here, since the Reconnect click is what mounts it.
+- **`signInStalled` needed the reconnect's own beat.** The server's
+  `authenticating` broadcast lands *after* `startSignIn` resolves, so between
+  them the row is `ready`, nothing pending, nothing starting — the stalled
+  predicate exactly. `reconnectLeftReady` gates it, and a thrown start sets that
+  flag so the real failure still reaches its *Try again*.
+- **Cancelling a login does not clear its challenge**, so a dead code could
+  render as the live one and suppress the stalled state. The adopt path clears it.
+- **Two-write windows have a correct order.** `save()` swallows failures, so
+  adoption's (row, provenance) and deletion's (route, marker) pairs each fail
+  one of two ways. Provenance before row self-heals; marker before delete leaves
+  a removable row rather than re-importing what the user deleted.
+
 **Measured, at the same 470px the compaction was specified against.** The
 DeepSeek key card is **148px → 78px**; the Anthropic subscription card, which
 was 272px holding one credential, is 154px holding *two* and a routing band. A

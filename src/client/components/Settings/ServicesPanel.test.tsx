@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { render, screen, cleanup, waitFor, within, fireEvent } from "@testing-library/react";
+import { render, screen, cleanup, waitFor, within, fireEvent, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { CredentialRoute } from "../../../server/shared/types.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
@@ -1415,6 +1415,66 @@ describe("reconnect goes through the one dialog (docs/252 req 19)", () => {
     expect(screen.getByTestId("add-service-step-credential")).toBeInTheDocument();
     expect(screen.queryByTestId("add-service-step-service")).toBeNull();
     expect(screen.queryByTestId("add-service-step-mode")).toBeNull();
+  });
+
+  /**
+   * docs/252 req 19, found by cross-backend review: `isUnconnectedAttempt` is
+   * NOT sufficient on its own to decide whether cancel may delete.
+   *
+   * A login whose identity cannot be read **proceeds** by design
+   * (`provider-account-identity.ts`), so a genuinely connected account can have
+   * no `externalId` — and starting a reconnect moves it to `authenticating`,
+   * the predicate's other clause. Both true, on a working credential, and the
+   * first cut deleted it. Only the dialog can answer the real question, which
+   * is whether it MINTED the id (`mintedHere`).
+   */
+  it("keeps a connected account that never reported an identity, mid-reconnect", async () => {
+    const now = Date.now();
+    useSettingsStore.getState().setCredentialRoutes([
+      route({ id: "acct_1", serviceId: "anthropic", billingMode: "sub", via: "account", createdAt: now, updatedAt: now }),
+    ]);
+    // Connected and listed, but with NO `externalId` — an identity that could
+    // not be read, which the login proceeds past by design.
+    const unidentified = { id: "acct_1", serviceId: "anthropic" as const, billingMode: "sub" as const, via: "account" as const, label: "Work", isPrimary: true, createdAt: now, updatedAt: now };
+    useSettingsStore.getState().setProviderAccounts([{ ...unidentified, status: "ready" as const }]);
+
+    render(<ServicesPanel agentList={[claudeAgent]} />);
+    await openRowMenu("Work");
+    await userEvent.click(screen.getByTestId("provider-account-connect-acct_1"));
+
+    // The server's broadcast lands: the row is now `authenticating` with no
+    // identity — both of `isUnconnectedAttempt`'s clauses, on a credential the
+    // user has been using.
+    act(() => {
+      useSettingsStore.getState().setProviderAccounts([{ ...unidentified, status: "authenticating" as const }]);
+    });
+    await userEvent.click(screen.getByText("Cancel"));
+
+    // The login is called off; the credential is not deleted.
+    expect(fetchCalls.filter((c) => c.method === "DELETE")).toEqual([]);
+    expect(fetchCalls.some((c) => c.url.endsWith("/login/cancel"))).toBe(true);
+  });
+
+  /**
+   * The dialog owns the sign-in, so step 3 opens on its WAITING panel. The
+   * first cut fired `cancel → start` from the click handler, leaving the
+   * dialog's `startingSignIn` false — which satisfies `signInStalled`, so
+   * reconnect opened on "The sign-in stopped before the account connected."
+   * with a *Try again*: the flow's failure screen, before the first request had
+   * returned. Found by cross-backend review.
+   */
+  it("opens a reconnect on the waiting panel, never on the stalled one", async () => {
+    seedConnected();
+    render(<ServicesPanel agentList={[claudeAgent]} />);
+
+    await openRowMenu("Work");
+    await userEvent.click(screen.getByTestId("provider-account-connect-acct_1"));
+
+    expect(screen.getByTestId("add-service-signin-starting")).toBeInTheDocument();
+    expect(screen.queryByTestId("add-service-signin-stalled")).toBeNull();
+    // And it says what it is doing, and to which account — the plan's
+    // "Reconnect Anthropic — Work plan", not "Add a service".
+    expect(screen.getByTestId("add-service-title")).toHaveTextContent("Reconnect — Anthropic · Work");
   });
 
   /**

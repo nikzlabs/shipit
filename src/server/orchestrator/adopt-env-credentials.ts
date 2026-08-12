@@ -153,8 +153,18 @@ export function adoptEnvCredentials(
         createdAt: now,
         updatedAt: now,
       };
-      credentialStore.upsertCredentialRouteWithSecret(route, value);
+      /**
+       * **Provenance first, then the row.** `CredentialStore.save()` logs and
+       * swallows a write failure, so these two writes have a window between
+       * them and the ORDER decides which way it fails. Provenance-then-row
+       * fails to "a record of an import that did not happen": the next boot
+       * sees no route, creates it, and rewrites the record — self-healing.
+       * Row-then-provenance fails to an adopted row with no record, which reads
+       * as "the user typed this" forever and silently stops the deployment ever
+       * rotating it. Found by cross-backend review.
+       */
       credentialStore.setAdoptedEnvCredential(mode.storageEnv, { importedValue: value });
+      credentialStore.upsertCredentialRouteWithSecret(route, value);
       result.adopted.push(mode.storageEnv);
       continue;
     }
@@ -165,8 +175,12 @@ export function adoptEnvCredentials(
     const stored = credentialStore.getCredentialSecret(routeId);
     const stillOurs = record !== undefined && stored === record.importedValue;
     if (stillOurs && value !== stored) {
-      credentialStore.setCredentialSecret(routeId, value);
+      // Same ordering rule as the initial import: a record naming a value the
+      // row does not hold makes the next boot's `stillOurs` false, which
+      // declines to rotate. Declining is the safe half — it never overwrites a
+      // secret — and the user can replace it by hand.
       credentialStore.setAdoptedEnvCredential(mode.storageEnv, { importedValue: value });
+      credentialStore.setCredentialSecret(routeId, value);
       result.rotated.push(mode.storageEnv);
     }
   }

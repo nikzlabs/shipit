@@ -55,7 +55,10 @@
  * that hosts it, which is also where someone who wants to pin it goes looking.
  */
 
-import { useRef, useState } from "react";
+// useEffect: a reconnect dialog is MOUNTED by the Reconnect click, so mount is
+// the event that starts its sign-in — see the call site.
+// eslint-disable-next-line no-restricted-imports -- mount-is-the-event, see above
+import { useEffect, useRef, useState } from "react";
 import { PlusIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../../design-tokens.js";
 import type { AgentOption } from "../../agent-types.js";
@@ -176,9 +179,27 @@ function signInIsTheWholeStep(service: ServiceDef, billingMode: BillingMode): bo
  * side, and leaving one running against a row is how the next sign-in ends up
  * refused with a 409 nobody can clear from the UI.
  */
-function standDown(provider: AgentId, account: CredentialRoute | undefined): void {
+function standDown(
+  provider: AgentId,
+  account: CredentialRoute | undefined,
+  /**
+   * **Was this account here before the dialog opened?**
+   *
+   * `isUnconnectedAttempt` alone is not enough, and the hole is one its own
+   * docstring names: a login whose identity cannot be read **proceeds** by
+   * design (`provider-account-identity.ts`), so a genuinely connected account
+   * can have no `externalId` — and starting a reconnect moves it to
+   * `authenticating`, which is the predicate's other clause. Both true, and the
+   * account is deleted. The panel hides such a row too, so it looked consistent
+   * while quietly being a deletion of a working credential.
+   *
+   * The dialog is the one place that can answer this, because it is the only
+   * one that knows whether it minted the id. Found by cross-backend review.
+   */
+  weMintedIt: boolean,
+): void {
   if (!account) return;
-  if (isUnconnectedAttempt(account)) void abandonAccount(provider, account.id);
+  if (weMintedIt && isUnconnectedAttempt(account)) void abandonAccount(provider, account.id);
   else void cancelAccountLogin(provider, account.id);
 }
 
@@ -245,40 +266,26 @@ export function ServicesPanel({ agentList = [] }: { agentList?: AgentOption[] })
       billingMode={billingMode}
       routes={routes.filter((r) => r.serviceId === service.id && r.billingMode === billingMode)}
       agentList={agentList}
-      onReconnect={(accountId) => {
-        /**
-         * **Open the dialog first, then start the login** — in that order, and
-         * both from the click.
-         *
-         * The order is the fix. The row used to post `/login` itself and render
-         * `AccountChallenge` inline, and that component returns `null` until
-         * the auth URL arrives, so the row showed *nothing* between the click
-         * and the URL. Opening first means the dialog's step 3 is on screen
-         * from the first frame, with its waiting panel, its phase message and
-         * its CLI output buffer — the surface built to fill exactly that gap.
-         *
-         * The login runs here rather than inside the dialog because the click
-         * IS the event: a dialog that started its own login would have to do it
-         * on mount, which this codebase spends `eslint-disable` lines avoiding.
-         * `cancelAccountLogin` first, because the CLI outlives the browser and
-         * an adopted attempt may still have one running — without it the start
-         * is a 409.
-         */
-        const provider = accountProviderFor(service, billingMode);
-        if (!provider) return;
-        setDialog({ service, mode: billingMode, accountId });
-        void (async () => {
-          try {
-            await cancelAccountLogin(provider, accountId);
-            await startAccountLogin(provider, accountId);
-          } catch {
-            // Swallowed on purpose: the dialog is already showing this
-            // account's sign-in, and a start that never happened lands there
-            // as the stalled state with its own *Try again* — reporting it
-            // twice would put the same failure on the card behind the modal.
-          }
-        })();
-      }}
+      /**
+       * **Open the dialog. It runs the sign-in.**
+       *
+       * A first cut ran `cancel → start` here, from the click, to avoid a
+       * mount-time effect. Cross-backend review found two defects in that, and
+       * both are the same defect: the sequence had no owner. It was detached
+       * from the dialog's `left` ref, so closing while the cancellation was in
+       * flight let the start land *afterwards* — a login running against a row
+       * with nothing on screen to cancel it, which is exactly the 409 nobody
+       * can clear. And because the dialog's own `startingSignIn` stayed false,
+       * step 3 opened on "The sign-in stopped before the account connected."
+       * with a *Try again* — the failure screen, before the first request had
+       * even returned.
+       *
+       * `startSignIn` already answers both: it sets `startingSignIn`
+       * synchronously, re-reads `left.current` after every await, and its
+       * adopt branch cancels a stale login before starting a fresh one. So the
+       * click's whole job is to open the dialog on the right step.
+       */
+      onReconnect={(accountId) => setDialog({ service, mode: billingMode, accountId })}
     />
   ));
 
@@ -897,6 +904,17 @@ function AddServiceDialog({
   /** The user has left. Read by `startSignIn` after every await — see `cancel`. */
   const left = useRef(false);
   /**
+   * This dialog **created** the account it is signing in.
+   *
+   * The only thing that entitles it to delete one on the way out, and the
+   * question `isUnconnectedAttempt` cannot answer: a login whose identity
+   * cannot be read proceeds by design, so a genuinely connected account can
+   * have no `externalId`, and starting a reconnect moves it to `authenticating`
+   * — both of the predicate's clauses, on a working credential. Seeded `false`
+   * for a reconnect because the account was there first. See {@link standDown}.
+   */
+  const mintedHere = useRef(false);
+  /**
    * **A reconnect has actually taken effect** — the account has been observed
    * to leave `ready`.
    *
@@ -1040,7 +1058,19 @@ function AddServiceDialog({
   const authStatus = useAuthStatus(signInProvider === "claude" ? signInAccountId : undefined);
   const pendingAuth = useSettingsStore((s) => (authKey ? s.providerAccountAuths[authKey] : undefined));
   const authError = useSettingsStore((s) => (authKey ? s.providerAccountAuthErrors[authKey] : undefined));
+  /**
+   * `reconnectLeftReady` is in the test for the same reason `startingSignIn`
+   * is, one beat later. A reconnect starts from a `ready` account, and the
+   * server's `authenticating` broadcast arrives AFTER `startSignIn` resolves —
+   * so in the window between them the row is `ready`, nothing is pending and
+   * nothing is starting, which is this predicate exactly. The dialog flashed
+   * "The sign-in stopped before the account connected." with a *Try again*
+   * over a sign-in that was proceeding normally. For an add it is initialised
+   * `true`, so it changes nothing there; a start that genuinely throws sets it
+   * (see `startSignIn`'s catch), which is what keeps the real failure reachable.
+   */
   const signInStalled = !!signInAccount && !signedIn && !pendingAuth && !startingSignIn
+    && reconnectLeftReady
     && (!!authError || signInAccount.status !== "authenticating");
 
   /**
@@ -1069,6 +1099,11 @@ function AddServiceDialog({
        */
       const existing = adoptableAttempt(known, signInAccountId);
       const account = existing ?? await createAccount(provider, known.map((a) => a.id));
+      // Recorded the moment it is true, and never unset: from here on this
+      // dialog is entitled to delete the row on the way out. A *Try again*
+      // after a failed create adopts what the first attempt made, so the flag
+      // has to survive that adopt rather than be recomputed from `existing`.
+      if (!existing && account) mintedHere.current = true;
       if (!account) {
         setError("Could not start the sign-in — no account was created.");
         return;
@@ -1096,24 +1131,58 @@ function AddServiceDialog({
       // rather than an attempt — deleting it because the user pressed Esc
       // during the round-trip would revoke it. See that function.
       if (left.current) {
-        standDown(provider, account);
+        standDown(provider, account, !existing);
         return;
       }
       // An adopted attempt may still have a login running against it (the CLI
       // outlives the browser). Cancelling first is what makes the challenge
       // this dialog then shows the live one, rather than a 409.
-      if (existing) await cancelAccountLogin(provider, account.id);
+      if (existing) {
+        await cancelAccountLogin(provider, account.id);
+        // …and drop the challenge it left behind. `cancelAccountLogin` is
+        // best-effort and does NOT clear `providerAccountAuths` (the account
+        // row's own cancel does it separately), so a stale code would render as
+        // this sign-in's live challenge and would suppress `signInStalled` —
+        // leaving a dialog with neither a completion nor a *Try again*.
+        useSettingsStore.getState().setProviderAccountAuth(provider, account.id, null);
+      }
       if (left.current) {
-        standDown(provider, account);
+        standDown(provider, account, !existing);
         return;
       }
       await startAccountLogin(provider, account.id);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to start the sign-in");
+      // The reconnect is over and it failed, so stop suppressing the stalled
+      // panel: that is where its *Try again* lives, and without this a failed
+      // start would wait for a broadcast that is never coming.
+      setReconnectLeftReady(true);
     } finally {
       setStartingSignIn(false);
     }
   };
+
+  /**
+   * **A reconnect signs in the moment the dialog opens**, because opening it IS
+   * the user pressing *Reconnect* — this dialog is mounted by that click and by
+   * nothing else, so mount is the event, exactly as it is for the usage pill
+   * the status dropdown mounts.
+   *
+   * Deliberately routed through `startSignIn` rather than posting here: that
+   * function owns `startingSignIn` (so step 3 shows its waiting panel from the
+   * first frame instead of the stalled state), re-reads `left.current` after
+   * every await (so closing the dialog cannot leave a login running against a
+   * hidden row), and its adopt branch cancels a stale login before starting a
+   * fresh one. Doing it from the click instead had none of that — see
+   * `onReconnect` in `ServicesPanel`.
+   *
+   * Mount-only by an empty dependency list AND by `reconnectAccountId` being
+   * fixed for this dialog's whole life: a reconnect never becomes an add.
+   */
+  // eslint-disable-next-line no-restricted-syntax -- mount IS the event: this dialog is mounted BY the Reconnect click, and the start must own `startingSignIn`/`left`, which only `startSignIn` does.
+  useEffect(() => {
+    if (reconnectAccountId !== undefined) void startSignIn(initialService, initialMode);
+  }, []);
 
   /**
    * **Leaving the flow before it finishes abandons it** — by *Cancel*, by Esc,
@@ -1143,7 +1212,7 @@ function AddServiceDialog({
     // account this dialog created is either connected or gone.
     left.current = true;
     if (signInProvider && signInAccountId && !signedIn) {
-      standDown(signInProvider, signInAccount);
+      standDown(signInProvider, signInAccount, mintedHere.current);
     }
     onClose();
   };
@@ -1172,8 +1241,18 @@ function AddServiceDialog({
   return (
     <Dialog open onOpenChange={(isOpen) => { if (!isOpen) cancel(); }}>
       <DialogContent className="max-w-md rounded-lg border-(--color-border-secondary) p-4" data-testid="add-service-dialog">
-        <DialogTitle className="text-sm font-semibold">
-          Add a service{service ? ` — ${service.name}` : ""}
+        {/*
+          The verb names what is happening, and on a reconnect the account
+          names WHICH credential is about to change — the plan asked for
+          "Reconnect Anthropic — Work plan" and the first cut shipped "Add a
+          service — Anthropic", which makes a reconnect read as an add and says
+          nothing about which of two accounts the user is re-authenticating.
+          A prop on one component, not a second dialog.
+        */}
+        <DialogTitle className="text-sm font-semibold" data-testid="add-service-title">
+          {reconnectAccountId === undefined ? "Add a service" : "Reconnect"}
+          {service ? ` — ${service.name}` : ""}
+          {reconnectAccountId !== undefined && signInAccount ? ` · ${signInAccount.label}` : ""}
         </DialogTitle>
 
         {!service && (

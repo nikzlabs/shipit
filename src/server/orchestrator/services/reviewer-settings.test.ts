@@ -59,6 +59,7 @@ function storeWith(routes: CredentialRoute[], pins: Partial<Record<ReviewerSlot,
     getCredentialSecret: (id: string) =>
       routes.some((r) => r.id === id) ? "sk-test" : undefined,
     getSelectionMode: () => "strict" as const,
+    getCredentialRoute: (id: string) => routes.find((r) => r.id === id),
   };
 }
 

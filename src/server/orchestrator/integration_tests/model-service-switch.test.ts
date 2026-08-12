@@ -201,7 +201,18 @@ describe("Integration: mid-session model switching across services (docs/252 pha
     // endpoint, authenticated by OpenRouter's key.
     expect(claude1.lastServiceRouting?.serviceId).toBe("openrouter");
     expect(claude1.lastServiceRouting?.baseUrl).toBe(OPENROUTER_BASE);
-    expect((claude1.lastServiceRouting as AnyMsg)?.credentialSourceEnv).toBe("OPENROUTER_API_KEY");
+    /**
+     * docs/252 req 20 — **its own variable, not the mode's group name.** This
+     * asserted `OPENROUTER_API_KEY` while a deployment variable produced no
+     * stored row and the group name was the only name it had. Adoption gives it
+     * a row at boot, `collectServiceCredentialEnv` writes a per-route variable
+     * for every stored string credential, and spawn shaping sources the pinned
+     * route's own — which is what stops a turn authenticating with a different
+     * credential than the one it is attributed to once a second is added. The
+     * changed expectation IS the requirement.
+     */
+    expect((claude1.lastServiceRouting as AnyMsg)?.credentialSourceEnv)
+      .toBe("SHIPIT_CREDENTIAL_ENV_OPENROUTER_API_KEY");
     claude1.emit("event", {
       type: "result",
       subtype: "success",
@@ -230,7 +241,7 @@ describe("Integration: mid-session model switching across services (docs/252 pha
     const claude2 = await waitForClaude(() => lastClaude, claude1);
     expect(claude2.lastServiceRouting?.serviceId).toBe("vercel");
     expect(claude2.lastServiceRouting?.baseUrl).toBe(VERCEL_BASE);
-    expect((claude2.lastServiceRouting as AnyMsg)?.credentialSourceEnv).toBe("AI_GATEWAY_API_KEY");
+    expect((claude2.lastServiceRouting as AnyMsg)?.credentialSourceEnv).toBe("SHIPIT_CREDENTIAL_ENV_AI_GATEWAY_API_KEY");
     expect(sessionManager.get(sessionId)?.providerRouteId).toBeUndefined();
 
     client.close();

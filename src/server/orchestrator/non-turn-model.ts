@@ -283,7 +283,7 @@ export function resolveNonTurnModel(deps: NonTurnModelDeps): NonTurnResolution {
   };
   const account = selectRouteForSelection(harnessId, selection, routeDeps);
   const route = account.ok ? account.route : null;
-  const serviceRouting = serviceRoutingForSelection(harnessId, selection, route);
+  const serviceRouting = serviceRoutingForSelection(harnessId, selection, route, deps.credentialStore);
   const secret = serviceRouting
     ? credentialSecretForRoute(deps, selection, serviceRouting.credentialSourceEnv, route)
     : undefined;

@@ -45,16 +45,22 @@ import {
 import type { CredentialRoute } from "../shared/types/domain-types/credential-route.js";
 import {
   credentialRouteEnvName,
-  isStoredCredentialRouteId,
   orderCredentialRoutes,
   refusalBlockedUntil,
 } from "../shared/types/domain-types/credential-route.js";
 import type { AccountSelectionMode, ProviderRouteKind } from "../shared/types/domain-types/provider.js";
 
-/** The `CredentialStore` surface this module reads. Narrow so tests can fake it. */
+/**
+ * The `CredentialStore` surface this module reads. Narrow so tests can fake it.
+ *
+ * `getCredentialRoute` joined it with docs/252 req 20: spawn shaping has to ask
+ * whether a route id names a STORED row, and it can no longer answer that from
+ * the id's shape — adoption gives a stored row one of the legacy reserved ids
+ * on purpose, so pinned sessions keep resolving.
+ */
 export type ServiceRoutingCredentialSource = Pick<
   CredentialStore,
-  "listCredentialRoutes" | "getCredentialSecret" | "getSelectionMode"
+  "listCredentialRoutes" | "getCredentialSecret" | "getSelectionMode" | "getCredentialRoute"
 >;
 
 /**
@@ -499,6 +505,21 @@ export function serviceRoutingForSelection(
   harnessId: AgentId,
   selection: ModelSelection | undefined,
   route: ProviderRoute | null | undefined,
+  /**
+   * Which route ids the store actually holds a row for — see
+   * `credentialSourceEnv` below.
+   *
+   * A parameter rather than an id-shape test, because docs/252 req 20 made the
+   * id-shape test wrong: `isStoredCredentialRouteId` asked `startsWith("cred_")`,
+   * which was a faithful proxy only while every stored row had a minted id.
+   * Adoption gives a stored row one of the three LEGACY reserved ids on purpose
+   * (`envRouteIdFor` — sessions are pinned to them), so a stored credential
+   * started answering "not stored" and was delivered the group's variable
+   * instead of its own. Required, not optional: a default would leave every
+   * site that forgot it silently authenticating with the wrong secret, which is
+   * exactly the failure being fixed.
+   */
+  credentialStore: Pick<CredentialStore, "getCredentialRoute">,
 ): ServiceRouting | undefined {
   if (!selection) return undefined;
   if (route?.kind === "account") return undefined;
@@ -529,11 +550,15 @@ export function serviceRoutingForSelection(
     // and delivery puts the group's first credential there; once req 12's
     // failover can move a session onto the second, sourcing from the group name
     // would authenticate with the credential ShipIt had just benched while
-    // attributing the turn to the one it moved to. An env-delivered credential
-    // has no row and no id, so it keeps the group name — which is the only name
-    // it has ever had.
+    // attributing the turn to the one it moved to. A credential that exists
+    // ONLY as a deployment variable has no row, so it keeps the group name —
+    // which is the only name it has ever had, and the name the deployment set.
+    //
+    // req 20 — asked of the STORE, not of the id's shape. `collectServiceCredentialEnv`
+    // writes a per-route variable for every stored `via: "string"` row, whatever
+    // its id, so "has a row" is exactly "has a variable of its own".
     credentialSourceEnv:
-      route?.kind === "reserved" && isStoredCredentialRouteId(route.id)
+      route?.kind === "reserved" && credentialStore.getCredentialRoute(route.id)
         ? credentialRouteEnvName(route.id)
         : shaping.credential.sourceEnv,
     credentialTarget: shaping.credential.target,

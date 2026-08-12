@@ -506,6 +506,7 @@ function buildTarget(
     candidate.harnessId,
     candidate.selection,
     candidate.route,
+    deps.credentialStore,
   );
   const credentialSecret = serviceRouting
     ? credentialSecretForRoute(

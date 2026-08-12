@@ -325,7 +325,6 @@ export function deleteCredentialRoute(
     );
   }
   const before = deliveredValueFor(credentialStore, route.serviceId, route.billingMode);
-  credentialStore.deleteCredentialRoute(routeId);
   /**
    * docs/252 req 20 — **remember the removal of an adopted credential.**
    *
@@ -337,7 +336,8 @@ export function deleteCredentialRoute(
    * same mode records nothing and leaves adoption free to run.
    */
   const envName = storageEnvFor(route.serviceId, route.billingMode);
-  if (envName && routeId === envRouteIdFor(envName)) {
+  const adopted = envName !== undefined && routeId === envRouteIdFor(envName);
+  if (envName && adopted) {
     credentialStore.setAdoptedEnvCredential(envName, { removed: true });
     if (process.env[envName] !== undefined) {
       // Unset it here too, not only at the next boot: every downstream reader
@@ -350,6 +350,16 @@ export function deleteCredentialRoute(
       delete process.env[envName];
     }
   }
+  /**
+   * **The row goes last.** `CredentialStore.save()` logs and swallows a write
+   * failure, so the marker and the deletion have a window between them, and the
+   * order decides which way it fails. Marker-then-delete fails to "remembered,
+   * but still there" — the row is visible and can be removed again. The other
+   * order fails to a deletion with no memory of it, and the next boot
+   * re-imports the credential the user just removed: req 20's restart guarantee,
+   * broken silently. Found by cross-backend review.
+   */
+  credentialStore.deleteCredentialRoute(routeId);
   syncProcessEnvForMode(credentialStore, route.serviceId, route.billingMode, before);
   return { routes: listCredentialRoutes(credentialStore) };
 }

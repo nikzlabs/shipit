@@ -63,6 +63,10 @@ function buildDeps(opts: {
             && (billingMode === undefined || r.billingMode === billingMode),
         ),
       getCredentialSecret: () => "sk-test",
+      // docs/252 req 20 — spawn shaping asks the STORE whether a route id names
+      // a stored row, because an adopted credential keeps a legacy reserved id
+      // and can no longer be recognised by its id's shape.
+      getCredentialRoute: (id: string) => routes.find((r) => r.id === id),
     },
     getRunnerRegistry: () => ({ get: () => (opts.noRunner ? undefined : runner) }),
     chatHistoryManager: {
