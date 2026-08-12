@@ -214,6 +214,15 @@ receipts below keep the original "tools" vocabulary of the early rounds.
     sets nothing. Like the startup override (req 16), settings are
     per-project configuration, not copied definitions — they do not weaken
     req 5.
+27. A plugin works as a plugin **inside its own repository too**: a session
+    on the plugin repository can activate its exported plugins for testing —
+    the same services, commands, skills, settings, and needs a consumer
+    gets. There, the plugin is **editable**: the "checkout" is the session's
+    own working tree, so edits apply live and editing stays smooth — the
+    read-only rule (req 7) binds only consuming projects. Nothing, compose
+    configuration included, is duplicated to make self-use work: the
+    exported definitions are the single source (req 5 applied to the plugin
+    repository itself).
 
 ## Out of scope (v1)
 
@@ -270,7 +279,8 @@ startup override and requirement 25 (feedback channel) come from the user's
 doc review of 2026-08-12, as do req 22's backend-independence sentence and
 requirement 26 (plugin settings) from its third round, the req 23 credential
 scope reduction from its fourth, and req 24's informational host declaration
-from its fifth.
+from its fifth. Requirement 27 (self-use for plugin development) restates the
+user's follow-up of 2026-08-12 during the design phase.
 
 ## Open questions
 
@@ -399,6 +409,11 @@ from its fifth.
   inherited store moved to Out of scope. Supersedes the credential-home half
   of the 2026-08-11 "Tool credentials" resolution; the declared-names half
   (visibility of required/missing keys) stands.
+- **2026-08-12 — Self-use for plugin development.** Stated directly by the
+  user: a declared plugin must also work as a plugin inside its own
+  repository for testing, editable there because it is the same repository,
+  with no duplicated compose configuration — editing a plugin should be
+  smooth. → req 27.
 - **2026-08-12 — Declared hosts, informational** (doc review, round 5).
   Stated directly by the user: a plugin declares the hosts it needs in its
   manifest (otherwise the user cannot know what to add), and ShipIt offers a
