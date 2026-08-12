@@ -3,6 +3,7 @@ import { EventEmitter } from "node:events";
 import { ClaudeAdapter, mapCliMcpStatus } from "./adapter.js";
 import type { ClaudeEvent } from "../../../shared/types.js";
 import type { McpServerStatus } from "../../../shared/types/mcp-types.js";
+import type { AgentRunParams } from "../agent-process.js";
 
 /** Minimal fake ClaudeProcess for testing the adapter in isolation. */
 class FakeInnerProcess extends EventEmitter {
@@ -530,6 +531,186 @@ describe("ClaudeAdapter", () => {
       cacheRead: 270_000,
       cacheWrite: 30_000,
     });
+  });
+
+  it("uses the final assistant call when result iterations are absent", () => {
+    const inner = new FakeInnerProcess();
+    const adapter = new ClaudeAdapter(inner as any);
+    const events: unknown[] = [];
+    adapter.on("event", (e) => events.push(e));
+
+    inner.emit("event", {
+      type: "assistant",
+      message: {
+        content: [{ type: "text", text: "working" }],
+        usage: {
+          input_tokens: 100,
+          cache_read_input_tokens: 180_000,
+          cache_creation_input_tokens: 20_000,
+        },
+      },
+    } satisfies ClaudeEvent);
+    inner.emit("event", {
+      type: "assistant",
+      message: {
+        content: [{ type: "text", text: "done" }],
+        usage: {
+          input_tokens: 120,
+          cache_read_input_tokens: 218_000,
+          cache_creation_input_tokens: 1_000,
+        },
+      },
+    } satisfies ClaudeEvent);
+    inner.emit("event", {
+      type: "result",
+      subtype: "success",
+      session_id: "deepseek-via-claude",
+      usage: {
+        input_tokens: 218_500,
+        output_tokens: 82_700,
+        cache_read_input_tokens: 9_200_000,
+      },
+    } satisfies ClaudeEvent);
+
+    expect(events).toHaveLength(3);
+    expect((events[2] as any).contextTokens).toBe(219_120);
+    expect((events[2] as any).tokens).toMatchObject({
+      input: 218_500,
+      output: 82_700,
+      cacheRead: 9_200_000,
+    });
+  });
+
+  it("does not use nested subagent usage as the main context", () => {
+    const inner = new FakeInnerProcess();
+    const adapter = new ClaudeAdapter(inner as any);
+    const events: unknown[] = [];
+    adapter.on("event", (e) => events.push(e));
+
+    inner.emit("event", {
+      type: "assistant",
+      message: {
+        content: [{ type: "text", text: "main" }],
+        usage: { input_tokens: 50, cache_read_input_tokens: 100_000 },
+      },
+    } satisfies ClaudeEvent);
+    inner.emit("event", {
+      type: "assistant",
+      parent_tool_use_id: "tool-1",
+      message: {
+        content: [{ type: "text", text: "nested" }],
+        usage: { input_tokens: 50, cache_read_input_tokens: 900_000 },
+      },
+    } satisfies ClaudeEvent);
+    inner.emit("event", {
+      type: "result",
+      subtype: "success",
+      session_id: "with-subagent",
+      usage: { input_tokens: 100, output_tokens: 10, cache_read_input_tokens: 1_000_000 },
+    } satisfies ClaudeEvent);
+
+    expect((events[2] as any).contextTokens).toBe(100_050);
+  });
+
+  it("clears assistant context when a new one-shot turn starts", () => {
+    const inner = new FakeInnerProcess();
+    const adapter = new ClaudeAdapter(inner as any);
+    const events: unknown[] = [];
+    adapter.on("event", (e) => events.push(e));
+
+    inner.emit("event", {
+      type: "assistant",
+      message: {
+        content: [{ type: "text", text: "partial" }],
+        usage: { input_tokens: 10, cache_read_input_tokens: 50_000 },
+      },
+    } satisfies ClaudeEvent);
+
+    // Simulate starting another one-shot turn after the prior process ended
+    // abnormally, without emitting a result that would normally clear state.
+    adapter.run({ prompt: "retry", cwd: "/tmp" } as AgentRunParams);
+    inner.emit("event", {
+      type: "result",
+      subtype: "success",
+      session_id: "retry",
+      usage: { input_tokens: 20, output_tokens: 5, cache_read_input_tokens: 80_000 },
+    } satisfies ClaudeEvent);
+
+    expect((events[1] as any).contextTokens).toBeUndefined();
+  });
+
+  it("clears assistant context when a resident process receives new input", () => {
+    const inner = new FakeInnerProcess();
+    const adapter = new ClaudeAdapter(inner as any);
+    const events: unknown[] = [];
+    adapter.on("event", (e) => events.push(e));
+    adapter.on("error", () => undefined);
+    inner.emit("event", {
+      type: "assistant",
+      message: { content: [{ type: "text", text: "partial" }], usage: { input_tokens: 10, cache_read_input_tokens: 50_000 } },
+    } satisfies ClaudeEvent);
+    adapter.sendUserMessage("next turn");
+    inner.emit("event", {
+      type: "result", subtype: "success", session_id: "next",
+      usage: { input_tokens: 20, output_tokens: 5, cache_read_input_tokens: 80_000 },
+    } satisfies ClaudeEvent);
+    const result = events.find((event) => (event as any).type === "agent_result") as any;
+    expect(result.contextTokens).toBeUndefined();
+  });
+
+  it("clears the assistant fallback after each result", () => {
+    const inner = new FakeInnerProcess();
+    const adapter = new ClaudeAdapter(inner as any);
+    const events: unknown[] = [];
+    adapter.on("event", (e) => events.push(e));
+    inner.emit("event", {
+      type: "assistant",
+      message: { content: [{ type: "text", text: "first" }], usage: { input_tokens: 10, cache_read_input_tokens: 50_000 } },
+    } satisfies ClaudeEvent);
+    for (const session_id of ["first", "second"]) {
+      inner.emit("event", {
+        type: "result", subtype: "success", session_id,
+        usage: { input_tokens: 20, output_tokens: 5, cache_read_input_tokens: 80_000 },
+      } satisfies ClaudeEvent);
+    }
+    const results = events.filter((event) => (event as any).type === "agent_result") as any[];
+    expect(results[0].contextTokens).toBe(50_010);
+    expect(results[1].contextTokens).toBeUndefined();
+  });
+
+  it("prefers result iterations over the assistant fallback", () => {
+    const inner = new FakeInnerProcess();
+    const adapter = new ClaudeAdapter(inner as any);
+    const events: unknown[] = [];
+    adapter.on("event", (e) => events.push(e));
+    inner.emit("event", {
+      type: "assistant",
+      message: { content: [{ type: "text", text: "done" }], usage: { input_tokens: 10, cache_read_input_tokens: 50_000 } },
+    } satisfies ClaudeEvent);
+    inner.emit("event", {
+      type: "result", subtype: "success", session_id: "iterations-win",
+      usage: {
+        input_tokens: 20, output_tokens: 5, cache_read_input_tokens: 80_000,
+        iterations: [{ input_tokens: 20, cache_read_input_tokens: 60_000 }],
+      },
+    } satisfies ClaudeEvent);
+    expect((events[1] as any).contextTokens).toBe(60_020);
+  });
+
+  it("ignores assistant usage that has no input context fields", () => {
+    const inner = new FakeInnerProcess();
+    const adapter = new ClaudeAdapter(inner as any);
+    const events: unknown[] = [];
+    adapter.on("event", (e) => events.push(e));
+    inner.emit("event", {
+      type: "assistant",
+      message: { content: [{ type: "text", text: "error" }], usage: { output_tokens: 30 } },
+    } satisfies ClaudeEvent);
+    inner.emit("event", {
+      type: "result", subtype: "success", session_id: "output-only",
+      usage: { input_tokens: 20, output_tokens: 30, cache_read_input_tokens: 80_000 },
+    } satisfies ClaudeEvent);
+    expect((events[1] as any).contextTokens).toBeUndefined();
   });
 
   it("maps error result with error message", () => {

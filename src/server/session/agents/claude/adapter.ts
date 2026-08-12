@@ -73,6 +73,12 @@ export class ClaudeAdapter
   private rateLimitSession: SubscriptionLimitsWindow | null = null;
   private rateLimitWeekly: SubscriptionLimitsWindow | null = null;
 
+  /**
+   * Context occupancy from the latest top-level assistant API call. This is a
+   * fallback for Claude-compatible providers that omit result.usage.iterations.
+   */
+  private latestAssistantContextTokens: number | undefined;
+
   readonly capabilities: AgentCapabilities = {
     supportsResume: true,
     supportsImages: true,
@@ -249,6 +255,16 @@ export class ClaudeAdapter
         }
 
       case "assistant":
+        if (!raw.parent_tool_use_id && raw.message.usage) {
+          const usage = raw.message.usage;
+          const contextTokens =
+            (usage.input_tokens ?? 0) +
+            (usage.cache_read_input_tokens ?? 0) +
+            (usage.cache_creation_input_tokens ?? 0);
+          // An output-only or empty usage object has no context reading. Do
+          // not turn it into an authoritative zero that empties the dial.
+          if (contextTokens > 0) this.latestAssistantContextTokens = contextTokens;
+        }
         return {
           type: "agent_assistant",
           content: raw.message.content,
@@ -291,7 +307,15 @@ export class ClaudeAdapter
             (lastIter.input_tokens ?? 0) +
             (lastIter.cache_read_input_tokens ?? 0) +
             (lastIter.cache_creation_input_tokens ?? 0);
+        } else {
+          // DeepSeek and some other Claude-compatible providers omit the
+          // result-level iteration list. Their assistant events still carry
+          // per-call usage, so the last top-level assistant event is the final
+          // prompt size. Do not fall back to the result totals: those are sums
+          // across calls and can overstate context by orders of magnitude.
+          contextTokens = this.latestAssistantContextTokens;
         }
+        this.latestAssistantContextTokens = undefined;
         // Authoritative context window comes from `modelUsage.<model>.contextWindow`
         // (e.g. Opus 4.7 reports 1_000_000). Falls back to the static map on
         // the receiving end when undefined.
@@ -373,6 +397,10 @@ export class ClaudeAdapter
   }
 
   run(params: AgentRunParams): void {
+    // A resident streaming adapter serves many turns. Clear any reading left
+    // by an abnormal prior turn that ended without a result event before the
+    // next turn starts, or a result with no assistant usage could reuse it.
+    this.latestAssistantContextTokens = undefined;
     if (params.useStreaming) {
       if (this._isStreaming) {
         // Persistent streaming process is already alive — send the next turn
@@ -418,6 +446,9 @@ export class ClaudeAdapter
   }
 
   sendUserMessage(text: string, _opts?: { images?: unknown[] }): void {
+    // Persistent streaming turns enter through this method, not run(). Clear
+    // a reading left by an abnormal prior turn before accepting new input.
+    this.latestAssistantContextTokens = undefined;
     if (this.inner instanceof StreamingClaudeProcess) {
       console.log(
         `[claude-adapter] sendUserMessage → streaming (bytes=${text.length}, text=${JSON.stringify(text.slice(0, 80))})`,
