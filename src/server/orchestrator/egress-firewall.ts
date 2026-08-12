@@ -41,6 +41,7 @@ export const EGRESS_TIER_A_RESOLVE_HOSTS: readonly string[] = [
   "api.anthropic.com",
   "console.anthropic.com",
   "statsig.anthropic.com",
+  "platform.claude.com", // Claude Code subscription authentication
   // Agent APIs — Codex / OpenAI
   "api.openai.com",
   "auth.openai.com",

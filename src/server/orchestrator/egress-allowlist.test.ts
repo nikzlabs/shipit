@@ -144,6 +144,8 @@ describe("buildEgressAllowlist", () => {
   it("allows the core agent / git / registry hosts by default", () => {
     const al = buildEgressAllowlist();
     expect(al.isAllowed("api.anthropic.com")).toBe(true);
+    expect(al.isAllowed("platform.claude.com")).toBe(true);
+    expect(al.isAllowed("other.claude.com")).toBe(false);
     expect(al.isAllowed("github.com")).toBe(true);
     expect(al.isAllowed("api.github.com")).toBe(true);
     expect(al.isAllowed("codeload.github.com")).toBe(true);
@@ -362,6 +364,7 @@ describe("sandboxLifelineBase", () => {
     expect(base).toEqual([...EGRESS_LIFELINE_ALLOWLIST]);
     // The agent's own API is reachable…
     expect(base).toContain(".anthropic.com");
+    expect(base).toContain("platform.claude.com");
     // …but the package registries and git host of the FULL default base are not.
     expect(base).not.toContain(".npmjs.org");
     expect(base).not.toContain(".github.com");

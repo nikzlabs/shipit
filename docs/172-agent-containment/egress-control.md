@@ -67,6 +67,10 @@ scoped to allowed domains. The consequences are the two things this design must 
 Both weaknesses trace to **not controlling DNS**. That is the correction at the center of
 this design.
 
+Claude Code subscription authentication also calls `platform.claude.com`. The built-in
+policy lists that exact host in the standard allowlist, the Network-off lifeline, and the
+Tier A resolver inputs. It deliberately does not allow the broader `.claude.com` suffix.
+
 ## Architecture: netns-sidecar enforcement (resolved)
 
 The agent container runs with `CapDrop: ["ALL"]` (no `NET_ADMIN`) and, since planning#33, as a

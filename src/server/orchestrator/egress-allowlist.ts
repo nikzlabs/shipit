@@ -45,6 +45,7 @@ export const EGRESS_DEFAULT_ALLOWLIST: readonly string[] = [
   // --- Agent API endpoints (Claude / Anthropic) ---
   ".anthropic.com", // api.anthropic.com (inference), console.anthropic.com (OAuth), statsig.anthropic.com
   ".claude.ai", // claude.ai OAuth / subscription endpoints
+  "platform.claude.com", // Claude Code subscription authentication; exact host keeps other claude.com services closed
   // --- Agent API endpoints (Codex / OpenAI) ---
   ".openai.com", // api.openai.com, auth.openai.com
   ".chatgpt.com", // chatgpt.com (Codex subscription auth)
@@ -107,6 +108,7 @@ export const EGRESS_LIFELINE_ALLOWLIST: readonly string[] = [
   // --- Agent API endpoints (Claude / Anthropic) ---
   ".anthropic.com",
   ".claude.ai",
+  "platform.claude.com",
   // --- Agent API endpoints (Codex / OpenAI) ---
   ".openai.com",
   ".chatgpt.com",
