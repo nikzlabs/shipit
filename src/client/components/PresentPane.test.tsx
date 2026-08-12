@@ -10,6 +10,24 @@ import { usePresentStore } from "../stores/present-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 
+// PresentPane → FileContentView → CodeEditor does `import("monaco-editor")`.
+// Unstubbed, that dynamic import keeps resolving Monaco's module graph after
+// this file's environment is torn down, which Vitest reports as an unhandled
+// EnvironmentTeardownError and fails the run even with every test green. Same
+// stub the other Monaco-adjacent suites use.
+vi.mock("monaco-editor", () => ({
+  editor: {
+    create: () => ({
+      dispose: vi.fn(),
+      onMouseDown: () => ({ dispose: vi.fn() }),
+      updateOptions: vi.fn(),
+      changeViewZones: vi.fn(),
+      createDecorationsCollection: vi.fn(),
+      getModel: () => ({ getLineCount: () => 1 }),
+    }),
+  },
+}));
+
 function meta(over: { presentId: string; title?: string; filePath?: string; mimeType?: string }) {
   return {
     presentId: over.presentId,
