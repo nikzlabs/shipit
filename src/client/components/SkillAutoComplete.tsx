@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useMemo } from "react";
 import { useEventListener } from "../hooks/useEventListener.js";
 import { LightningIcon, SparkleIcon } from "@phosphor-icons/react";
 import { PopoverContent } from "./ui/popover.js";
@@ -65,11 +65,14 @@ export function SkillAutoComplete({
   const [selectedIndex, setSelectedIndex] = useState(0);
   const listRef = useRef<HTMLDivElement>(null);
 
-  // Commands first (they're ShipIt-native and few), then skills.
-  const matches: MenuItem[] = [
+  // Commands first (they're ShipIt-native and few), then skills. Memoized
+  // because `handleKeyDown` depends on it and is installed as a window
+  // listener — an unmemoized array would tear down and re-register the
+  // keydown handler on every render of the open menu.
+  const matches: MenuItem[] = useMemo(() => [
     ...filterCommands(commands, query).map((c): MenuItem => ({ kind: "command", name: c.name, description: c.description })),
     ...filterSkills(skills, query).map((s): MenuItem => ({ kind: "skill", name: s.name, description: s.description })),
-  ];
+  ], [commands, skills, query]);
 
   const selectMatch = useCallback(
     (item: MenuItem) => {

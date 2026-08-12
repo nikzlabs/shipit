@@ -246,6 +246,7 @@ export function PresentPane({ isActiveTab, onSendComments, onAskAgentReview, onA
   useEffect(() => {
     if (!isActiveTab) return;
     return () => { discardOutgoing(); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- `discardOutgoing` is captured at effect-setup on purpose so the cleanup targets the OUTGOING file (see above)
   }, [activePresentId, isActiveTab]);
 
   // Keyboard nav scoped to this pane — read latest index via the store rather

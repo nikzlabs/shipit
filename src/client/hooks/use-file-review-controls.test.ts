@@ -321,3 +321,69 @@ describe("useFileReviewControls — send dialog", () => {
     expect(result.current.note).toBe("do not lose me");
   });
 });
+
+describe("useFileReviewControls — discardEmptyDraftNow", () => {
+  /**
+   * Regression guard (surfaced by `react-hooks/exhaustive-deps`): this callback
+   * is captured at effect-setup by its callers, so the cleanup targets the
+   * OUTGOING file. It therefore must not pre-check the captured `draft` — that
+   * value can be arbitrarily stale, and the store is the authoritative
+   * emptiness guard.
+   */
+  it("still discards when the draft arrived after the callback was captured", async () => {
+    const discardEmptyDraft = vi.fn().mockResolvedValue(undefined);
+    act(() => { useFileReviewStore.setState({ discardEmptyDraft }); });
+
+    const { result } = renderHook(() =>
+      useFileReviewControls({ filePath: "docs/x.md", kind: "markdown", content: "# x" }),
+    );
+
+    // Capture the callback while there is no draft yet — the state the
+    // capturing effect sees when the async load is still in flight.
+    act(() => { useFileReviewStore.setState({ draftByKey: {} }); });
+    const captured = result.current.discardEmptyDraftNow;
+
+    // The load lands an empty draft afterwards.
+    act(() => {
+      useFileReviewStore.setState({
+        draftByKey: {
+          "sess_1::docs/x.md": {
+            id: "d1", sessionId: "sess_1", filePath: "docs/x.md",
+            status: "draft", comments: [], createdAt: "", updatedAt: "",
+          } as unknown as FileReview,
+        },
+      });
+    });
+
+    // The stale-captured callback must still reach the store. Pre-checking its
+    // own captured `draft` here would leak the empty draft.
+    act(() => { captured(); });
+    expect(discardEmptyDraft).toHaveBeenCalledWith("sess_1", "docs/x.md");
+  });
+
+  it("leaves the emptiness decision to the store", () => {
+    const discardEmptyDraft = vi.fn().mockResolvedValue(undefined);
+    act(() => { useFileReviewStore.setState({ discardEmptyDraft }); });
+
+    const { result } = renderHook(() =>
+      useFileReviewControls({ filePath: "docs/x.md", kind: "markdown", content: "# x" }),
+    );
+    act(() => { result.current.discardEmptyDraftNow(); });
+
+    // Called unconditionally; `discardEmptyDraft` itself bails on a draft that
+    // is absent or has comments (file-review-store.ts).
+    expect(discardEmptyDraft).toHaveBeenCalled();
+  });
+
+  it("does not call the store for a non-reviewable file", () => {
+    const discardEmptyDraft = vi.fn().mockResolvedValue(undefined);
+    act(() => { useFileReviewStore.setState({ discardEmptyDraft }); });
+
+    const { result } = renderHook(() =>
+      useFileReviewControls({ filePath: "/persist/x.html", kind: "html", content: "<h1/>" }),
+    );
+    act(() => { result.current.discardEmptyDraftNow(); });
+
+    expect(discardEmptyDraft).not.toHaveBeenCalled();
+  });
+});

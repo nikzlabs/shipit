@@ -1,6 +1,7 @@
 import js from "@eslint/js";
 import tseslint from "typescript-eslint";
 import globals from "globals";
+import reactHooks from "eslint-plugin-react-hooks";
 
 // ── Shared `no-restricted-syntax` entries ──────────────────────────────────
 // Factored out so per-file-scope blocks (client, per-agent folders, tests)
@@ -195,6 +196,40 @@ export default tseslint.config(
         RESTRICTED_USEEFFECT,
         ...RESTRICTED_AGENT_ID_LEAK,
       ],
+    },
+  },
+  // ── React hooks rules (client code) ────────────────────────────────────
+  // `rules-of-hooks` catches the bug class that is invisible to review and to
+  // TypeScript: a hook behind a condition or an early return changes the hook
+  // count between renders, so React pairs up the wrong state. It has never
+  // been enforced here, and a real instance (`accountId ? useStore(…) : …` in
+  // the Services panel) reached a diff before a human caught it by eye.
+  //
+  // Both rules are `error` on purpose. `npm run lint` has no `--max-warnings`
+  // budget, so a `warn` here would never fail CI — it would read as
+  // enforcement while changing nothing, which is the state this block exists
+  // to end.
+  //
+  // Deliberately NOT the plugin's `recommended` preset: since v6 that preset
+  // also turns on the React Compiler rules (`refs`, `set-state-in-effect`,
+  // `purity`, `immutability`, …). Those enforce readiness for a compiler this
+  // project does not run — there is no `babel-plugin-react-compiler` in the
+  // Vite config — and they flag ~110 sites that are correct as written under
+  // stock React. Adopting the compiler is its own migration; enabling its
+  // rules first would only add suppressions. So the two classic rules are
+  // listed explicitly, and the preset is left alone.
+  {
+    files: ["src/client/**/*.ts", "src/client/**/*.tsx"],
+    plugins: { "react-hooks": reactHooks },
+    rules: {
+      "react-hooks/rules-of-hooks": "error",
+      // The codebase already restricts `useEffect` and requires a written
+      // justification on each one, so most deliberate dep-array narrowing is
+      // documented in prose right above the effect. Where that is the case
+      // the existing disable comment names this rule too — which turns the
+      // prose into a machine-checked assertion, so a NEW effect that drops a
+      // dep by accident fails CI instead of passing silently.
+      "react-hooks/exhaustive-deps": "error",
     },
   },
   // ── Layer boundary enforcement ──────────────────────────────────────────

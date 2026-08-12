@@ -233,11 +233,20 @@ export function useFileReviewControls({
   }, [sessionId, filePath, sendDraft, onSendComments, composing, note, sending]);
 
   const discardEmptyDraftNow = useCallback(() => {
-    // The store guards on emptiness, so this is a no-op when comments exist.
-    if (sessionId && reviewable && draft?.comments.length === 0) {
+    // Deliberately does NOT pre-check `draft`. Callers capture this callback at
+    // effect-setup so the cleanup targets the OUTGOING file, which means a
+    // captured `draft` can be arbitrarily stale — and the common sequence
+    // (`draft` null while the async load is in flight → an empty draft arrives →
+    // the user navigates away) would then skip the discard entirely and leak the
+    // empty draft. The store re-reads the draft and bails when it is absent or
+    // non-empty (`file-review-store.ts` → `discardEmptyDraft`), so it is the
+    // authoritative guard; calling unconditionally can only ever be a no-op.
+    // Omitting `draft` from the deps also keeps this callback stable across
+    // draft mutations, which is what the capturing effects want.
+    if (sessionId && reviewable) {
       void discardEmptyDraft(sessionId, filePath);
     }
-  }, [sessionId, reviewable, draft, filePath, discardEmptyDraft]);
+  }, [sessionId, reviewable, filePath, discardEmptyDraft]);
 
   return {
     reviewable,

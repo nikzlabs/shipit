@@ -570,6 +570,7 @@ export function IssuesViewer({
     if (!el) return;
     el.scrollTop = initialScrollTop;
     return () => onPersistScroll(el.scrollTop);
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- mount/unmount pair — the captured `initialScrollTop`/`onPersistScroll` are exactly the intended values (see above)
   }, []);
 
   return (
