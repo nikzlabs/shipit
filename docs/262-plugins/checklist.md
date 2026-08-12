@@ -36,4 +36,8 @@ Verification (plan.md §5 — drives the implementation):
 - [ ] Service path via integration tests (isTestMode fakes): fragment merge, per-service startup/overrides, origin on service messages, collision failures
 - [ ] One real-instance end-to-end: plugin service + preview + `window.shipit` interaction
 
-Implementation: not started.
+Implementation:
+
+- [x] Phase-1 declaration parsing — `src/server/shared/plugin-repos.ts` (called from `shipit-config.ts`; trackers parse first): consumer `repos`+`use` grammar, `exports.plugins` manifest, cross-block name reservation with the same-destination alias exception, alias uniqueness, branch/pin exclusivity, `repo: self` rules; nothing fatal (reqs 11, 13, 27; req 20 phase 1)
+- [x] `GET /api/plugin-repos` snapshot — `api-routes-plugin-repos.ts`: per-request config read (issues.trackers precedent), self selectors resolved against the same file's manifest, `consumerRepoUrl`, malformed-document degradation with a warning
+- [x] Plugins tab v0 — `plugin-repos-store.ts` (session-scoped, stale-guarded), `PluginReposPanel.tsx`, App.tsx rail wiring: intent gating incl. warnings-only snapshots (req 13), warn dot via `Tab.badge` with accessible label, effective-tab fallback, `useTabLabelCollapse` dep, session reset, `files_changed` shipit.yaml refetch. Tracked repos render an honest "declared — mechanics pending" state that does NOT count toward the dot (the design's never-fetched means "tried and failed"; the full active/degraded/collision states arrive with the slice-2 mechanics). Verified live in the dogfood inner instance against todo-list's merged fixture.

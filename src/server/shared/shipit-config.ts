@@ -34,6 +34,8 @@ import type { ReleaseMechanism } from "./types/release-types.js";
 import { normalizeLinearTeamKey, parseOwnerRepo } from "./tracker-id.js";
 import type { DeclaredTracker } from "./declared-tracker.js";
 import { declaredTrackerKey } from "./declared-tracker.js";
+import type { PluginExport, PluginReposConfig } from "./plugin-repos.js";
+import { EMPTY_PLUGIN_REPOS, parsePluginExports, parsePluginRepos } from "./plugin-repos.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -182,6 +184,15 @@ export interface ShipitConfig {
    * branch on undefined to get the common "no declarations" case.
    */
   issues: IssuesConfig;
+  /**
+   * docs/262 — the consumer `plugins:` block (declared plugin repositories +
+   * per-plugin `use` entries). Always present; `plugins.declared` records
+   * whether the key existed at all (plugin INTENT — it gates the Plugins tab
+   * even when every entry is invalid, req 13).
+   */
+  plugins: PluginReposConfig;
+  /** docs/262 — the plugin-side `exports.plugins:` manifest. Always present (empty list when absent). */
+  pluginExports: PluginExport[];
   /** Warnings emitted during parsing (unknown keys, migration hints). */
   warnings: string[];
 }
@@ -217,10 +228,8 @@ const KNOWN_TOP_LEVEL_KEYS = new Set([
   "release",
   "issues",
   "x-shipit-host-mounts",
-  // docs/262 — reserved for plugin repositories: the consumer `plugins:` block
-  // and the plugin-side `exports:` manifest. Parsing lands with slice 2; until
-  // then the keys are known-but-ignored so a repo carrying the declaration
-  // (this repo's own test-plugin fixture) doesn't render a migration warning.
+  // docs/262 — plugin repositories: the consumer `plugins:` block and the
+  // plugin-side `exports:` manifest, parsed in plugin-repos.ts.
   "plugins",
   "exports",
 ]);
@@ -273,7 +282,14 @@ export function parseShipitConfig(doc: unknown): ShipitConfig {
   const warnings: string[] = [];
 
   if (doc === null || doc === undefined) {
-    return { agent: { ...AGENT_DEFAULTS, install: [] }, hostMounts: [], issues: { trackers: [] }, warnings };
+    return {
+      agent: { ...AGENT_DEFAULTS, install: [] },
+      hostMounts: [],
+      issues: { trackers: [] },
+      plugins: { ...EMPTY_PLUGIN_REPOS },
+      pluginExports: [],
+      warnings,
+    };
   }
 
   if (typeof doc !== "object" || Array.isArray(doc)) {
@@ -317,10 +333,16 @@ export function parseShipitConfig(doc: unknown): ShipitConfig {
   // ---- issues (docs/248) ----
   const issues = parseIssuesConfig(raw.issues, warnings);
 
+  // ---- plugins + exports (docs/262) ----
+  // Trackers parse first on purpose: repo names and tracker names share one
+  // reservation domain (plan §1a phase 1), and on a collision the tracker wins.
+  const plugins = "plugins" in raw ? parsePluginRepos(raw.plugins, issues.trackers, warnings) : { ...EMPTY_PLUGIN_REPOS };
+  const pluginExports = parsePluginExports(raw.exports, warnings);
+
   // ---- x-shipit-host-mounts (docs/128) ----
   const hostMounts = parseHostMounts(raw["x-shipit-host-mounts"]);
 
-  return { version, agent, compose, release, issues, hostMounts, warnings };
+  return { version, agent, compose, release, issues, plugins, pluginExports, hostMounts, warnings };
 }
 
 const KNOWN_ISSUES_KEYS = new Set(["trackers"]);
@@ -902,7 +924,14 @@ export function resolveShipitConfig(dir: string): ShipitConfig {
     content = fs.readFileSync(yamlPath, "utf-8");
   } catch {
     // File doesn't exist or can't be read — use defaults
-    config = { agent: { ...AGENT_DEFAULTS, install: [] }, hostMounts: [], issues: { trackers: [] }, warnings: [] };
+    config = {
+      agent: { ...AGENT_DEFAULTS, install: [] },
+      hostMounts: [],
+      issues: { trackers: [] },
+      plugins: { ...EMPTY_PLUGIN_REPOS },
+      pluginExports: [],
+      warnings: [],
+    };
   }
 
   if (content !== undefined) {
@@ -917,7 +946,14 @@ export function resolveShipitConfig(dir: string): ShipitConfig {
     }
   } else {
     // Already set above in the catch block, but TypeScript needs this
-    config ??= { agent: { ...AGENT_DEFAULTS, install: [] }, hostMounts: [], issues: { trackers: [] }, warnings: [] };
+    config ??= {
+      agent: { ...AGENT_DEFAULTS, install: [] },
+      hostMounts: [],
+      issues: { trackers: [] },
+      plugins: { ...EMPTY_PLUGIN_REPOS },
+      pluginExports: [],
+      warnings: [],
+    };
   }
 
   return config;

@@ -63,6 +63,7 @@ import { registerBugReportRoutes } from "./api-routes-bug-report.js";
 import { registerProposeActionsRoutes } from "./api-routes-propose-actions.js";
 import { registerEgressRoutes } from "./api-routes-egress.js";
 import { registerIssueRoutes } from "./api-routes-issues.js";
+import { registerPluginRepoRoutes } from "./api-routes-plugin-repos.js";
 import type { SecretStore } from "./secret-store.js";
 import type { EgressAllowlistStore } from "./egress-allowlist-store.js";
 import type { FileReviewStore } from "./review-store.js";
@@ -408,6 +409,7 @@ export async function registerApiRoutes(
   await registerProposeActionsRoutes(app, deps);
   await registerEgressRoutes(app, deps);
   await registerIssueRoutes(app, deps);
+  await registerPluginRepoRoutes(app, deps);
   await registerLimitsRoutes(app, deps);
 
   // Marketplace catalogs (docs/149). Wired only when a store is provided so

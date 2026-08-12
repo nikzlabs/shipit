@@ -1,0 +1,162 @@
+/**
+ * docs/262 — GET /api/plugin-repos: the snapshot behind the Plugins tab.
+ *
+ * Exercises the path a `plugins:` declaration takes end to end: shipit.yaml →
+ * config parser (phase-1 validation) → snapshot projection → the route the tab
+ * fetches. The config is read per request, so an edit must change the answer
+ * on the very next call — that property is asserted, since the client's
+ * files-changed refetch depends on it.
+ */
+
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { buildApp } from "../index.js";
+import { SessionManager } from "../sessions.js";
+import { AuthManager } from "../agents/claude/auth-manager.js";
+import { GitManager } from "../../shared/git.js";
+import type { FastifyInstance } from "fastify";
+import type { DatabaseManager } from "../../shared/database.js";
+import {
+  StubAuthManager,
+  StubGitHubAuthManager,
+  FakeClaudeProcess,
+  createTestDatabaseManager,
+} from "./test-helpers.js";
+import { GitHubAuthManager } from "../github-auth.js";
+import { CredentialStore } from "../credential-store.js";
+import { initGlobalGitConfig } from "../git-config.js";
+import type { PluginReposSnapshot } from "../../shared/plugin-repos.js";
+
+/** The two-repo fixture shape (plan §5): self + a tracked repo by owner/name. */
+const DECLARE_FIXTURE = `
+exports:
+  plugins:
+    probe:
+      cli:
+        probe: test-plugin/cli/probe.mjs
+plugins:
+  repos:
+    - repo: self
+      name: dev
+    - repo: nikzlabs/shipit
+      name: tools
+      branch: main
+  use:
+    - plugin: probe
+      from: dev
+    - plugin: probe
+      from: tools
+      alias: remote-probe
+`;
+
+describe("Integration: GET /api/plugin-repos (docs/262)", () => {
+  let app: FastifyInstance;
+  let tmpDir: string;
+  let workspaceDir: string;
+  let dbManager: DatabaseManager;
+  let sessionManager: SessionManager;
+
+  const writeConfig = (yaml: string) => {
+    fs.writeFileSync(path.join(workspaceDir, "shipit.yaml"), yaml);
+  };
+
+  beforeEach(async () => {
+    dbManager = createTestDatabaseManager();
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-plugin-repos-"));
+    workspaceDir = path.join(tmpDir, "workspace");
+    fs.mkdirSync(workspaceDir, { recursive: true });
+    initGlobalGitConfig(tmpDir);
+
+    sessionManager = new SessionManager(dbManager);
+    app = await buildApp({
+      createGitManager: (dir: string) => new GitManager(dir),
+      sessionManager,
+      authManager: new StubAuthManager() as unknown as AuthManager,
+      githubAuthManager: new StubGitHubAuthManager() as unknown as GitHubAuthManager,
+      agentFactory: () => new FakeClaudeProcess() as never,
+      credentialStore: new CredentialStore(tmpDir),
+      workspaceDir: tmpDir,
+      serveStatic: false,
+    });
+
+    sessionManager.track("sess", "Session", workspaceDir);
+    sessionManager.setRemoteUrl("sess", "https://github.com/code-owner/app.git");
+  });
+
+  afterEach(async () => {
+    await app.close();
+    dbManager.close();
+    fs.rmSync(tmpDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+  });
+
+  const snapshot = async (query = "?sessionId=sess"): Promise<PluginReposSnapshot> => {
+    const res = await app.inject({ method: "GET", url: `/api/plugin-repos${query}` });
+    expect(res.statusCode).toBe(200);
+    return res.json() as PluginReposSnapshot;
+  };
+
+  it("projects the two-fixture declaration into cards", async () => {
+    writeConfig(DECLARE_FIXTURE);
+    const snap = await snapshot();
+
+    expect(snap.declared).toBe(true);
+    expect(snap.consumerRepoUrl).toBe("https://github.com/code-owner/app.git");
+    expect(snap.warnings).toEqual([]);
+    expect(snap.repos).toHaveLength(2);
+
+    const dev = snap.repos.find((r) => r.name === "dev")!;
+    expect(dev).toMatchObject({ source: "self", status: "self", ref: null, commit: null });
+    // Self resolves its selectors against the same file's manifest (its
+    // phase 2 needs no fetch).
+    expect(dev.uses).toEqual([{ plugin: "probe", alias: "probe", found: true }]);
+
+    const tools = snap.repos.find((r) => r.name === "tools")!;
+    expect(tools).toMatchObject({ source: "nikzlabs/shipit", status: "declared", ref: "main" });
+    expect(tools.uses).toEqual([{ plugin: "probe", alias: "remote-probe", found: null }]);
+  });
+
+  it("no plugins block → not declared; the tab has nothing to gate on", async () => {
+    writeConfig("agent:\n  install: npm install\n");
+    const snap = await snapshot();
+    expect(snap.declared).toBe(false);
+    expect(snap.repos).toEqual([]);
+    expect(snap.warnings).toEqual([]);
+  });
+
+  it("an invalid declaration keeps its warning surface (req 13)", async () => {
+    writeConfig("plugins:\n  repos:\n    - repo: not-a-slug\n      name: broken\n");
+    const snap = await snapshot();
+    expect(snap.declared).toBe(true);
+    expect(snap.repos).toEqual([]);
+    expect(snap.warnings).toContainEqual(expect.stringContaining("`owner/name` slug or `self`"));
+  });
+
+  it("a self selector missing from the manifest becomes a card issue", async () => {
+    writeConfig("plugins:\n  repos:\n    - repo: self\n      name: dev\n  use:\n    - plugin: ghost\n      from: dev\n");
+    const snap = await snapshot();
+    const dev = snap.repos[0];
+    expect(dev.uses).toEqual([{ plugin: "ghost", alias: "ghost", found: false }]);
+    expect(dev.issues).toContainEqual(expect.stringContaining("`ghost`"));
+  });
+
+  it("re-reads the file per request — an edit changes the very next answer", async () => {
+    writeConfig("agent: {}\n");
+    expect((await snapshot()).declared).toBe(false);
+    writeConfig(DECLARE_FIXTURE);
+    expect((await snapshot()).declared).toBe(true);
+  });
+
+  it("unknown session or no sessionId → empty snapshot, not an error", async () => {
+    expect((await snapshot("")).declared).toBe(false);
+    expect((await snapshot("?sessionId=nope")).declared).toBe(false);
+  });
+
+  it("a malformed document degrades to a warning, not a 500", async () => {
+    writeConfig("plugins: [unclosed\n  - broken yaml");
+    const snap = await snapshot();
+    expect(snap.repos).toEqual([]);
+    expect(snap.warnings).toContainEqual(expect.stringContaining("could not be parsed"));
+  });
+});

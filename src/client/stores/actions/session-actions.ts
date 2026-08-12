@@ -10,6 +10,7 @@ import { usePrStore } from "../pr-store.js";
 import { useSettingsStore } from "../settings-store.js";
 import { useRepoStore } from "../repo-store.js";
 import { useIssuesStore } from "../issues-store.js";
+import { usePluginReposStore } from "../plugin-repos-store.js";
 import type { AgentId, SessionInfo } from "../../../server/shared/types.js";
 
 /**
@@ -60,6 +61,10 @@ export function resetSessionState() {
   useUiStore.getState().reset();
   usePreviewStore.getState().reset();
   usePresentStore.getState().reset();
+  // docs/262 — the Plugins tab's snapshot is session-scoped; drop it so the
+  // incoming session doesn't briefly gate its tab on the outgoing session's
+  // declarations (App refetches on the sessionId change).
+  usePluginReposStore.getState().reset();
   // Not an unconditional reset: the issues store is repo-scoped, not
   // session-scoped, and only drops its contents when the repo actually changes.
   scopeIssuesToSession();
