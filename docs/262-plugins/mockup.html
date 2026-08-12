@@ -10,8 +10,10 @@
     --warn:#e2b93b; --err:#e0655f; --chip:#232c3b; --mono:ui-monospace,Menlo,Consolas,monospace;
   }
   body{background:var(--bg);color:var(--text);font:14px/1.5 system-ui,sans-serif;margin:0;padding:32px;}
-  h1{font-size:18px} h2{font-size:15px;margin:40px 0 6px} .note{color:var(--muted);font-size:12.5px;max-width:72ch}
+  h1{font-size:18px} h2{font-size:15px;margin:40px 0 6px} h3{font-size:13px;margin:18px 0 4px;color:var(--muted);font-weight:600}
+  .note{color:var(--muted);font-size:12.5px;max-width:72ch}
   .frame{background:var(--panel);border:1px solid var(--border);border-radius:10px;max-width:470px;overflow:hidden;margin-top:10px}
+  .frame.wide{max-width:760px}
   .fh{padding:8px 14px;font-size:12px;color:var(--muted);border-bottom:1px solid var(--border);letter-spacing:.04em;text-transform:uppercase}
   .row{display:flex;align-items:center;gap:10px;padding:9px 14px;border-bottom:1px solid var(--border)}
   .row:last-child{border-bottom:none}
@@ -23,6 +25,7 @@
   .chip.mono{font-family:var(--mono)}
   .chip.plug{color:var(--accent);border-color:#2b4a6f}
   .chip.err{color:var(--err);border-color:#6f3b38}
+  .chip.warn{color:var(--warn);border-color:#6f5a2b}
   .btn{background:var(--panel-2);border:1px solid var(--border);color:var(--text);border-radius:7px;padding:3px 11px;font-size:12px;cursor:pointer;white-space:nowrap}
   .btn.pri{background:#1d3a5f;border-color:#2b567f;color:#cfe6ff}
   .grp{padding:7px 14px;background:var(--panel-2);display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--border);font-size:12px;color:var(--muted)}
@@ -33,7 +36,22 @@
   .need .ic.err{color:var(--err)}
   code{font-family:var(--mono);font-size:12px;background:var(--chip);border-radius:4px;padding:1px 5px}
   .kbd{color:var(--text)}
-  .striprow{display:flex;gap:8px;align-items:center;margin-top:10px}
+  /* --- precise PR-card anatomy --- */
+  .hdr{display:flex;align-items:center;gap:10px;padding:9px 14px}
+  .hdr .title{font-weight:600;font-size:13.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .hdr .right{margin-left:auto;display:flex;align-items:center;gap:6px;flex:none}
+  .prstate{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:var(--ok);flex:none}
+  .prstate .dot{background:var(--ok)}
+  .diff{font-family:var(--mono);font-size:11.5px;flex:none}
+  .diff .add{color:var(--ok)} .diff .del{color:var(--err)}
+  .icon{width:26px;height:24px;display:inline-flex;align-items:center;justify-content:center;border-radius:6px;color:var(--muted);cursor:pointer;font-size:13px}
+  .icon:hover{background:var(--panel-2)}
+  .panel-row{display:flex;flex-wrap:wrap;align-items:center;gap:6px;padding:6px 14px}
+  .panel-row.first{padding-top:8px}
+  .panel-row.last{padding-bottom:10px}
+  .vdiv{width:1px;height:14px;background:var(--border);margin:0 4px;flex:none}
+  .statebar{border-top:1px solid var(--border)}
+  .caption{font-size:11.5px;color:var(--muted);padding:6px 14px 8px;border-top:1px dashed var(--border);background:#12161d}
 </style>
 </head>
 <body>
@@ -57,29 +75,108 @@ drawer path keeps the identity. No group headers.</p>
 </div>
 
 <!-- ============================================================ B -->
-<h2>B · The plugin card (reqs 12, 15, 23, 24)</h2>
-<p class="note">Opened from a chip in the strip under the PR card (the strip generalizes to show
-declared context without a PR). Header: local name, ref @ exact running commit (req 15), Refresh
-(req 12). Body: exports summary, then the <b>needs list</b> — every declared-but-unsatisfied
-credential (req 23) and host (req 24) with its grant affordance. Grants post to existing,
-browser-only endpoints; a satisfied card is quiet.</p>
-<div class="striprow"><span class="chip">planning#355</span><span class="chip">plan.md</span><span class="chip">mockup.html</span><span class="sub">← existing docs/issue chips: work-in-flight row</span></div>
-<div class="striprow"><span class="chip plug">⌁ game-tools · main @ a1b2c3f</span><span class="chip plug" style="color:var(--warn);border-color:#6f5a2b">⌁ art-kit · v1.2 ⚠</span><span class="sub">← plugins: own row below (environment, near-static); click opens the card</span></div>
+<h2>B · Where plugin chips live — the PR card's collapsible panel, precisely (reqs 12, 15, 23, 24)</h2>
+<p class="note">Anatomy matches <code>PrLifecycleCard.tsx</code>: a header bar that never collapses
+(left: PR state, title, diff, branch; right cluster: search · panel chevron · ⋯), and below it the
+collapsible panel (<code>ChangedDocsStrip</code>) that renders <b>only when expanded</b> — desktop
+defaults expanded, mobile collapsed, stored preference wins. Plugin chips are the panel's
+<b>second row</b>, under the docs/issue row. The header gains exactly one new element, and only
+conditionally: a <b>warn pill beside the chevron when a plugin needs attention</b>. Collapsed and
+quiet = no plugin trace, by design — near-static environment info doesn't earn permanent chrome;
+an actionable problem is never hidden by collapsing.</p>
+
+<h3>B1 · Expanded, all plugins quiet</h3>
+<div class="frame wide">
+  <div class="hdr">
+    <span class="prstate"><span class="dot"></span>Open</span>
+    <span class="title">docs: plugin repositories — declaration format &amp; UI design</span>
+    <span class="diff"><span class="add">+412</span> <span class="del">−38</span></span>
+    <span class="chip mono">shipit/vkmila</span>
+    <div class="right"><span class="icon">🔍</span><span class="icon" title="Collapse panel">⌃</span><span class="icon">⋯</span></div>
+  </div>
+  <div class="panel-row first statebar">
+    <span class="chip">Refs <span class="kbd">planning#355</span></span>
+    <span class="vdiv"></span>
+    <span class="chip">📄 262/plan.md <span style="color:var(--warn)">•</span></span>
+    <span class="chip">📄 262/mockup.html <span style="color:var(--warn)">•</span></span>
+  </div>
+  <div class="panel-row last">
+    <span class="chip plug">⌁ game-tools · main @ a1b2c3f</span>
+    <span class="chip plug">⌁ art-kit · v1.2.0 @ 9d04e11</span>
+  </div>
+  <div class="caption">Row 1 — work-in-flight (issues · changed docs), exactly as today. Row 2 — plugins:
+  near-static, stable position, click opens the plugin card (C).</div>
+</div>
+
+<h3>B2 · Expanded, one plugin needs attention</h3>
+<div class="frame wide">
+  <div class="hdr">
+    <span class="prstate"><span class="dot"></span>Open</span>
+    <span class="title">docs: plugin repositories — declaration format &amp; UI design</span>
+    <span class="diff"><span class="add">+412</span> <span class="del">−38</span></span>
+    <span class="chip mono">shipit/vkmila</span>
+    <div class="right"><span class="icon">🔍</span><span class="icon" title="Collapse panel">⌃</span><span class="icon">⋯</span></div>
+  </div>
+  <div class="panel-row first statebar">
+    <span class="chip">Refs <span class="kbd">planning#355</span></span>
+    <span class="vdiv"></span>
+    <span class="chip">📄 262/plan.md <span style="color:var(--warn)">•</span></span>
+  </div>
+  <div class="panel-row last">
+    <span class="chip plug">⌁ game-tools · main @ a1b2c3f</span>
+    <span class="chip warn">⌁ art-kit · v1.2.0 · ⚠ FAL_KEY missing</span>
+  </div>
+  <div class="caption">The chip itself carries the top unmet need; click opens the card with the
+  grant affordances.</div>
+</div>
+
+<h3>B3 · Collapsed, all plugins quiet — no plugin trace (deliberate)</h3>
+<div class="frame wide">
+  <div class="hdr">
+    <span class="prstate"><span class="dot"></span>Open</span>
+    <span class="title">docs: plugin repositories — declaration format &amp; UI design</span>
+    <span class="diff"><span class="add">+412</span> <span class="del">−38</span></span>
+    <span class="chip mono">shipit/vkmila</span>
+    <div class="right"><span class="icon">🔍</span><span class="icon" title="Expand panel">⌄</span><span class="icon">⋯</span></div>
+  </div>
+  <div class="caption">Header only — the whole panel is hidden when collapsed (docs chips too).
+  Healthy, near-static plugin identity doesn't justify a permanent row; it's one chevron away.</div>
+</div>
+
+<h3>B4 · Collapsed, one plugin needs attention — warn pill in the header cluster</h3>
+<div class="frame wide">
+  <div class="hdr">
+    <span class="prstate"><span class="dot"></span>Open</span>
+    <span class="title">docs: plugin repositories — declaration format &amp; UI design</span>
+    <span class="diff"><span class="add">+412</span> <span class="del">−38</span></span>
+    <span class="chip mono">shipit/vkmila</span>
+    <div class="right"><span class="icon">🔍</span><span class="chip warn" style="cursor:pointer">⚠ art-kit</span><span class="icon" title="Expand panel">⌄</span><span class="icon">⋯</span></div>
+  </div>
+  <div class="caption">The header never collapses, so the pill survives any panel state. Click =
+  expand the panel and open the plugin card. Quiet plugins never produce a pill.</div>
+</div>
+
+<!-- ============================================================ C -->
+<h2>C · The plugin card (reqs 12, 15, 23, 24)</h2>
+<p class="note">Opened from a plugin chip (B) — one card per declared repo. Header: repo name, source,
+ref @ exact running commit (req 15), Refresh (req 12). Body: what's used from it, then the
+<b>needs list</b> — every declared-but-unsatisfied credential (req 23) and host (req 24) with its
+grant affordance. Grants post to existing, browser-only endpoints; a satisfied card is quiet.</p>
 <div class="frame">
   <div class="grp"><span class="name">game-tools</span><span class="chip mono">nicolasalt/game-tools</span><span class="chip mono">main @ a1b2c3f</span><span style="flex:1"></span><button class="btn">↻ Refresh</button></div>
-  <div class="row"><div class="grow sub">imports: <b>requirements</b> as <code>reqs</code> · <b>imagegen</b> &nbsp;·&nbsp; 1 command (<code>reqs</code>) · 1 skill</div></div>
+  <div class="row"><div class="grow sub">uses: <b>requirements</b> as <code>reqs</code> · <b>imagegen</b> &nbsp;·&nbsp; 1 command (<code>reqs</code>) · 1 skill</div></div>
   <div class="need"><span class="ic">⚠</span><div class="grow">Credential <code class="kbd">FAL_KEY</code> is not set for this project</div><button class="btn pri">Add key…</button></div>
   <div class="need"><span class="ic">⚠</span><div class="grow">Host <code class="kbd">fal.run</code> is not on the egress allowlist</div><button class="btn">Allow (session)</button><button class="btn">Allow (instance)</button></div>
 </div>
 
-<!-- ============================================================ C -->
-<h2>C · Plugin card states — degraded and collision (reqs 13, 15, 20)</h2>
+<!-- ============================================================ D -->
+<h2>D · Plugin card states — degraded and collision (reqs 13, 15, 20)</h2>
 <p class="note">Card states, not transcript cards. Degraded distinguishes a failed <i>refresh</i>
 (the prior complete generation stays active — req 15) from a repo that never fetched (the session
 degrades visibly and continues — req 13). A collision names its domain and the exact declaration fix
-(req 20).</p>
+(req 20). Each of these states also produces the B4 warn pill.</p>
 <div class="frame">
-  <div class="grp"><span class="name">game-tools</span><span class="chip mono">main @ a1b2c3f</span><span class="chip" style="color:var(--warn)">refresh failed</span><span style="flex:1"></span><button class="btn">↻ Retry</button></div>
+  <div class="grp"><span class="name">game-tools</span><span class="chip mono">main @ a1b2c3f</span><span class="chip warn">refresh failed</span><span style="flex:1"></span><button class="btn">↻ Retry</button></div>
   <div class="need"><span class="ic">⚠</span><div class="grow">Branch <code class="kbd">main</code> could not be fetched (authorization failed).
     The prior version <code class="kbd">a1b2c3f</code> remains active — files, commands, and services are unchanged.</div></div>
 </div>
