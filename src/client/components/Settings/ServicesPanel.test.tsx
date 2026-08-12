@@ -356,6 +356,45 @@ describe("ServicesPanel", () => {
         .toHaveTextContent("Claude CLI output (2)");
     });
 
+    it("takes the sign-in button away with the click, not a moment after", async () => {
+      // The click turns the panel above into the waiting box at once. The
+      // button used to stay through the create request — one frame of blue,
+      // then seven of nothing — which reads as a control that hung around
+      // after the UI had moved on and was then swapped for a disabled Save.
+      let releaseCreate = (): void => {};
+      const createPending = new Promise<void>((resolve) => { releaseCreate = resolve; });
+      const claudeAccount = {
+        id: "acct-anthropic-3",
+        serviceId: "anthropic", billingMode: "sub", via: "account",
+        label: "Anthropic account 3", isPrimary: true, status: "authenticating",
+        createdAt: 1, updatedAt: 1,
+      };
+      vi.stubGlobal("fetch", (url: string, init?: RequestInit) => {
+        fetchCalls.push({ url, method: init?.method ?? "GET", body: init?.body ? JSON.parse(init.body as string) : undefined });
+        const answer = { ok: true, status: 200, json: () => Promise.resolve({ account: claudeAccount, accounts: [claudeAccount] }) };
+        if (url === "/api/provider-accounts" && init?.method === "POST") {
+          return (async () => { await createPending; return answer; })();
+        }
+        return Promise.resolve(answer);
+      });
+
+      render(<ServicesPanel agentList={[claudeAgent]} />);
+      await userEvent.click(screen.getByTestId("services-add-empty"));
+      await userEvent.click(screen.getByTestId("add-service-option-anthropic"));
+      await userEvent.click(screen.getByTestId("add-service-mode-sub"));
+      // Anthropic's subscription takes a key too, so this one is pressed.
+      await userEvent.click(screen.getByTestId("add-service-sign-in"));
+
+      // Still inside the create request: the panel is already the waiting box,
+      // and the button is already gone.
+      expect(screen.getByTestId("add-service-signin-starting")).toBeInTheDocument();
+      expect(screen.queryByTestId("add-service-sign-in")).not.toBeInTheDocument();
+
+      releaseCreate();
+      await waitFor(() => expect(logins()).toBe(1));
+      expect(screen.queryByTestId("add-service-sign-in")).not.toBeInTheDocument();
+    });
+
     it("keeps the output open across the moment the code arrives", async () => {
       // The disclosure is rendered by the waiting panel and then by the
       // challenge — two components, so the element is destroyed and rebuilt at

@@ -1224,41 +1224,43 @@ function AddServiceDialog({
           )}
           {/*
             **While a sign-in is under way there is one button, and it says
-            Cancel.** Where the flow starts itself (req 18) the user is watching
-            a box fill in, and a second button beside it — however it is
-            labelled — is a live control they did not ask for, in the one place
-            where an accidental click restarts the login they are in the middle
-            of. So: nothing during the start, nothing during the wait, nothing
-            while the challenge is up.
+            Cancel** — from the click that starts it, not from the state change
+            after. `startingSignIn` is in the test for that reason: the click
+            turns the panel above into the waiting box immediately, and without
+            this the blue button sat there for a few more frames, through the
+            create request, before vanishing. Sampled per frame it is one frame
+            of blue, seven of nothing, and then whatever comes next — read from
+            the outside as a button that hung around after the UI had moved on
+            and was then swapped for a disabled *Save*.
+
+            The rule is uniform across the two kinds of mode. Where the flow
+            starts itself (req 18) the user is watching a box fill in, and a
+            second button beside it is a live control they did not ask for, in
+            the one place where an accidental click restarts the login they are
+            in the middle of; where the user pressed the button themselves, it
+            has already done its job. Either way: nothing during the start,
+            nothing during the wait, nothing while the challenge is up.
 
             It comes back only when nothing is happening — the attempt stopped,
-            or it never started (no harness, another login in flight) — and even
-            then it is secondary, because the flow's own next step is not a
-            button any more. The cost, chosen knowingly: a login that hangs at
-            `authenticating` without ever sending a code offers no one-press
-            retry, and is recovered the way everything else in this dialog is,
-            by closing it and starting again.
-
-            A mode that also takes a key keeps the old button, primary and
-            labelled to sign in: nothing auto-starts there, so it is still the
-            step's own action rather than a second way to do what is already
-            happening.
+            or it never started (no harness, another login in flight). The cost,
+            chosen knowingly: a login that hangs at `authenticating` without ever
+            sending a code offers no one-press retry, and is recovered the way
+            everything else in this dialog is, by closing it and starting again.
           */}
-          {acceptsAccount && !pendingAuth && !signedIn
-            && (!signInAccount || signInStalled) && !(autoStarts && startingSignIn) && (
+          {acceptsAccount && !pendingAuth && !signedIn && !startingSignIn
+            && (!signInAccount || signInStalled) && (
             <Button
+              // Secondary only where the step signs itself in: there the button
+              // is a recovery, not the way forward. Where the user must press
+              // it, it is the step's own action and stays primary.
               variant={autoStarts ? "secondary" : "primary"}
               size="md"
               className="rounded-md"
-              disabled={startingSignIn || !harnessInstalled || !!blockedBySignIn}
+              disabled={!harnessInstalled || !!blockedBySignIn}
               onClick={() => void startSignIn()}
               data-testid="add-service-sign-in"
             >
-              {startingSignIn
-                ? "Starting..."
-                : signInStalled
-                  ? "Try again"
-                  : `Sign in to ${service?.name ?? "the service"}`}
+              {signInStalled ? "Try again" : `Sign in to ${service?.name ?? "the service"}`}
             </Button>
           )}
         </div>

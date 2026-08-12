@@ -3016,6 +3016,13 @@ pulse alone reads as *stuck* rather than as *working*.
   column the scroll origin *is* the bottom, so a single growing child keeps its end in view
   while a reader who scrolls up stays where they put themselves. An effect assigning
   `scrollTop` on every append would fight them, and this codebase restricts effects anyway.
+- **The sign-in button goes with the click that presses it**, not with the state change a few
+  frames later. `startingSignIn` is in its render test for that reason: the click turns the
+  panel into the waiting box at once, and without it the blue button sat through the create
+  request first — sampled per frame, one frame of blue, seven of nothing, then whatever came
+  next, which reads as a control that hung around after the UI had moved on and was then
+  swapped for a disabled *Save*. The rule is uniform across both kinds of mode now: while a
+  sign-in is under way there is one button and it says Cancel.
 - **Save appears with the field it saves.** It used to render from step 1, where there is
   nothing to save: permanently disabled, and — the mode being unknown that early — `primary`,
   so arriving at a mode with an account path *animated* it from blue to grey. Sampled per
