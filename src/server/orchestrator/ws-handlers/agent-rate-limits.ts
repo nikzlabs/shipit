@@ -1,5 +1,5 @@
 import type { AgentId, SubscriptionLimitsMap } from "../../shared/types.js";
-import { limitsModeKey } from "../../shared/types/usage-limits-types.js";
+import { limitsModeKey, subscriptionWindowIsCurrent } from "../../shared/types/usage-limits-types.js";
 import { nativeServiceForHarness } from "../../shared/catalogue/index.js";
 
 /**
@@ -214,6 +214,7 @@ export function normalizeAgentUsageLimitError(
   agentId: AgentId,
   message: string,
   limits: SubscriptionLimitsMap | undefined,
+  now: number = Date.now(),
 ): string {
   if (!/monthly usage limit/i.test(message)) return message;
 
@@ -234,14 +235,17 @@ export function normalizeAgentUsageLimitError(
   const providerLimits = Object.values(limits?.[modeKey] ?? {});
   const sessionWindows = providerLimits.map((l) => l.session).filter((w) => w !== null);
   if (sessionWindows.length === 0) return message;
+  // docs/260 req 8 — and only on windows that still describe now. A rolled-over
+  // or timestamp-less 100% reading would rewrite a real monthly-limit refusal
+  // into a 5h one and quote a reset instant that has already passed, which is
+  // the opposite of req 6's "report what the provider said".
   if (sessionWindows.some((w) => w.usedPct === null || w.usedPct < 100)) return message;
-  // Report the window that frees up first.
+  if (sessionWindows.some((w) => !subscriptionWindowIsCurrent(w, now))) return message;
+  // Report the window that frees up first. Every window is current here, so
+  // each `resetAt` parses.
   const sessionLimit = sessionWindows.reduce((soonest, w) =>
     Date.parse(w.resetAt) < Date.parse(soonest.resetAt) ? w : soonest);
-  const reset = new Date(sessionLimit.resetAt);
-  const resetText = Number.isNaN(reset.getTime())
-    ? sessionLimit.resetAt
-    : reset.toISOString();
+  const resetText = new Date(sessionLimit.resetAt).toISOString();
   const label = AGENT_LIMIT_LABELS[agentId] ?? agentId;
   return `You've hit ${label}'s 5h usage limit. It resets at ${resetText}.`;
 }

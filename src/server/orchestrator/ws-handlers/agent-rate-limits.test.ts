@@ -50,50 +50,72 @@ const twoAccounts = (
   },
 });
 
+/**
+ * An instant before every `resetAt` these cases use, passed explicitly. The
+ * reclassification now asks whether a window still describes NOW (docs/260
+ * req 8), so a fixed fixture date that quietly slid into the past would make
+ * these cases assert the opposite of what they were written for.
+ */
+const BEFORE_RESET = Date.parse("2026-06-16T00:00:00.000Z");
+
 describe("normalizeAgentUsageLimitError", () => {
   it("leaves a non-usage-limit message untouched", () => {
     const limits = limitsFor("claude", { usedPct: 100, resetAt: "2026-06-16T05:00:00.000Z" });
-    expect(normalizeAgentUsageLimitError("claude", "network error", limits)).toBe("network error");
+    expect(normalizeAgentUsageLimitError("claude", "network error", limits, BEFORE_RESET)).toBe("network error");
   });
 
   it("keeps the upstream text when there is no subscription snapshot", () => {
-    expect(normalizeAgentUsageLimitError("claude", "monthly usage limit reached", undefined)).toBe(
+    expect(normalizeAgentUsageLimitError("claude", "monthly usage limit reached", undefined, BEFORE_RESET)).toBe(
       "monthly usage limit reached",
     );
   });
 
   it("keeps the upstream text when the session window has no reported utilization (usedPct null)", () => {
     const limits = limitsFor("claude", { usedPct: null, resetAt: "2026-06-16T05:00:00.000Z" });
-    expect(normalizeAgentUsageLimitError("claude", "monthly usage limit reached", limits)).toBe(
+    expect(normalizeAgentUsageLimitError("claude", "monthly usage limit reached", limits, BEFORE_RESET)).toBe(
       "monthly usage limit reached",
     );
   });
 
   it("keeps the upstream text when the session window is not yet exhausted (usedPct < 100)", () => {
     const limits = limitsFor("claude", { usedPct: 80, resetAt: "2026-06-16T05:00:00.000Z" });
-    expect(normalizeAgentUsageLimitError("claude", "monthly usage limit reached", limits)).toBe(
+    expect(normalizeAgentUsageLimitError("claude", "monthly usage limit reached", limits, BEFORE_RESET)).toBe(
       "monthly usage limit reached",
     );
   });
 
   it("reclassifies to the 5h-window message when the session window is exhausted", () => {
     const limits = limitsFor("claude", { usedPct: 100, resetAt: "2026-06-16T05:00:00.000Z" });
-    expect(normalizeAgentUsageLimitError("claude", "monthly usage limit reached", limits)).toBe(
+    expect(normalizeAgentUsageLimitError("claude", "monthly usage limit reached", limits, BEFORE_RESET)).toBe(
       "You've hit Claude's 5h usage limit. It resets at 2026-06-16T05:00:00.000Z.",
     );
   });
 
   it("labels the agent by id (Codex) and normalizes the reset time to ISO", () => {
     const limits = limitsFor("codex", { usedPct: 100, resetAt: "2026-06-16T05:00:00.000Z" });
-    expect(normalizeAgentUsageLimitError("codex", "Monthly Usage Limit", limits)).toBe(
+    expect(normalizeAgentUsageLimitError("codex", "Monthly Usage Limit", limits, BEFORE_RESET)).toBe(
       "You've hit Codex's 5h usage limit. It resets at 2026-06-16T05:00:00.000Z.",
     );
   });
 
-  it("falls back to the raw resetAt string when it isn't a parseable date", () => {
+  // docs/260 req 8 — a snapshot is only refreshed by a turn on that account or
+  // by the refresh button, so a 100% reading can outlive its window by hours.
+  // Rewriting a real monthly-limit refusal from one would tell the user the
+  // wrong limit AND quote a reset that has already passed (req 6).
+  it("keeps the upstream text when the exhausted window has already reset", () => {
+    const limits = limitsFor("claude", { usedPct: 100, resetAt: "2026-06-16T05:00:00.000Z" });
+    const afterReset = Date.parse("2026-06-16T06:00:00.000Z");
+    expect(normalizeAgentUsageLimitError("claude", "monthly usage limit", limits, afterReset)).toBe(
+      "monthly usage limit",
+    );
+  });
+
+  it("keeps the upstream text when the reset time is not a parseable date", () => {
+    // No usable reset means no window to attach the percentage to — and the
+    // old behavior quoted the junk string straight back at the user.
     const limits = limitsFor("claude", { usedPct: 100, resetAt: "not-a-date" });
-    expect(normalizeAgentUsageLimitError("claude", "monthly usage limit", limits)).toBe(
-      "You've hit Claude's 5h usage limit. It resets at not-a-date.",
+    expect(normalizeAgentUsageLimitError("claude", "monthly usage limit", limits, BEFORE_RESET)).toBe(
+      "monthly usage limit",
     );
   });
 
@@ -105,7 +127,7 @@ describe("normalizeAgentUsageLimitError", () => {
       { usedPct: 100, resetAt: "2026-06-16T05:00:00.000Z" },
       { usedPct: 12, resetAt: "2026-06-16T09:00:00.000Z" },
     );
-    expect(normalizeAgentUsageLimitError("claude", "monthly usage limit", limits)).toBe(
+    expect(normalizeAgentUsageLimitError("claude", "monthly usage limit", limits, BEFORE_RESET)).toBe(
       "monthly usage limit",
     );
   });
@@ -116,7 +138,7 @@ describe("normalizeAgentUsageLimitError", () => {
       { usedPct: 100, resetAt: "2026-06-16T09:00:00.000Z" },
       { usedPct: 100, resetAt: "2026-06-16T05:00:00.000Z" },
     );
-    expect(normalizeAgentUsageLimitError("claude", "monthly usage limit", limits)).toBe(
+    expect(normalizeAgentUsageLimitError("claude", "monthly usage limit", limits, BEFORE_RESET)).toBe(
       "You've hit Claude's 5h usage limit. It resets at 2026-06-16T05:00:00.000Z.",
     );
   });

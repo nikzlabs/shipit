@@ -19,6 +19,7 @@ import {
   nativeServiceForHarness,
 } from "../shared/catalogue/index.js";
 import { credentialModeKey, orderCredentialRoutes, refusalBlockedUntil } from "../shared/types/domain-types/credential-route.js";
+import { subscriptionWindowIsCurrent } from "../shared/types/usage-limits-types.js";
 import { probeNestedString } from "./agents/agent-auth-base.js";
 
 /**
@@ -878,7 +879,7 @@ export class ProviderAccountManager {
         looksSpent.push(account);
         continue;
       }
-      if (isOverCutoff(limits[account.id], cutoffs)) {
+      if (isOverCutoff(limits[account.id], cutoffs, now)) {
         overCutoff.push(account);
         continue;
       }
@@ -1026,8 +1027,13 @@ export class ProviderAccountManager {
     if (!snapshot || typeof snapshot.fetchedAt !== "number" || !Number.isFinite(snapshot.fetchedAt)) return false;
     const observedAt = typeof account.exhaustedAt === "number" ? account.exhaustedAt : 0;
     if (snapshot.fetchedAt <= observedAt) return false;
+    const now = Date.now();
     for (const key of ["session", "weekly"] as const) {
-      const window = snapshot[key] as { usedPct?: unknown } | null | undefined;
+      const window = snapshot[key] as { usedPct?: unknown; resetAt?: unknown } | null | undefined;
+      // A newer snapshot can still carry one window the provider did not
+      // re-report; if that window has since rolled over, its 100% must not
+      // hold the refusal open against the reading the user just asked for.
+      if (!subscriptionWindowIsCurrent(window, now)) continue;
       if (typeof window?.usedPct === "number" && window.usedPct >= 100) return false;
     }
     this.credentialStore.upsertCredentialRoute({ ...account, exhaustedUntil: null, exhaustedAt: null });
@@ -1419,10 +1425,13 @@ function snapshotExhaustedResetAt(
     const window = limits?.[key] as { usedPct: number | null; resetAt: string } | null | undefined;
     if (window === null || window === undefined) continue;
     if (window.usedPct === null || window.usedPct < 100) continue;
-    const at = Date.parse(window.resetAt);
-    // An exhausted window whose reset already passed is stale, not spent.
-    if (Number.isNaN(at)) resets.push(Number.POSITIVE_INFINITY);
-    else if (at > now) resets.push(at);
+    // A spent window that no longer describes now is stale, not spent — and an
+    // unusable `resetAt` is the worse half of that: it never expires, so it
+    // parked the account in the last tier for the life of the snapshot with no
+    // clock to end it. Both are "not evidence"; the harness's own refusal is
+    // what may bench an account (req 5).
+    if (!subscriptionWindowIsCurrent(window, now)) continue;
+    resets.push(Date.parse(window.resetAt));
   }
   if (resets.length === 0) return null;
   return Math.min(...resets);
@@ -1455,14 +1464,23 @@ function readClaudeAccessToken(file: string): string | null {
  * "unknown counts as usable" rule the exhaustion check uses, for the same
  * reason: Claude reports `usedPct` only above a warning threshold, so treating
  * silence as "past 90%" would demote every healthy account.
+ *
+ * A window that no longer describes now (`subscriptionWindowIsCurrent`) is not
+ * over its cutoff either (docs/260 req 8). Without that rule an account that
+ * hit its 5h limit stayed demoted after the limit reset — permanently, under
+ * strict priority, because the demotion is exactly what kept turns off the
+ * account whose turns are the only source of a fresher reading, and a demoted
+ * account is never reached at all while any account is clear.
  */
 function isOverCutoff(
   limits: { session?: unknown; weekly?: unknown } | undefined,
   cutoffs: FailoverCutoffs,
+  now: number,
 ): boolean {
   for (const [key, cutoff] of [["session", cutoffs.session], ["weekly", cutoffs.weekly]] as const) {
-    const window = limits?.[key] as { usedPct: number | null } | null | undefined;
+    const window = limits?.[key] as { usedPct: number | null; resetAt?: unknown } | null | undefined;
     if (window?.usedPct === null || window?.usedPct === undefined) continue;
+    if (!subscriptionWindowIsCurrent(window, now)) continue;
     if (window.usedPct >= cutoff) return true;
   }
   return false;

@@ -84,6 +84,45 @@ export interface SubscriptionLimits {
 }
 
 /**
+ * Does this window's reading still describe **now**? (docs/260 req 8)
+ *
+ * A percentage describes the window it was measured in. Once `resetAt` passes,
+ * that window is gone and the number is a fact about a period that has ended;
+ * with no usable `resetAt` at all, there is no period to attach it to. Neither
+ * one is evidence about the current window, so neither may answer a routing
+ * question.
+ *
+ * The rule is one function because every reader of a percentage needs it and
+ * they are spread across the manager, the credential store, the rate-limit
+ * normalizer and the client. Reading `usedPct` without it was a genuine bug:
+ * snapshots are **event-fed only** (`limits-registry.ts` polls nothing, by
+ * design — Anthropic's usage API locks out after a handful of calls), so a
+ * reading refreshes when a turn runs on that credential, or when the user
+ * presses refresh. Any rule that demotes a credential on a reading it can no
+ * longer replace is self-sustaining: the demotion keeps turns off the
+ * credential whose turns are the only source of a newer reading. docs/260
+ * removed that shape from the blocking checks; it survived in the ordering
+ * ones until this rule existed.
+ *
+ * Discarding a reading is safe because it only ever means "try this credential
+ * again": a credential that is genuinely spent is refused by the harness, and
+ * that refusal — not telemetry — is the authoritative signal (req 5), bounded
+ * and remembered by refusal memory (req 9).
+ *
+ * This is about **evidence**, not display: `meterDisplay` in
+ * `SubscriptionLimitsBadge.tsx` keeps its own three-way split, because a
+ * rolled-over window and an unreported number look different to a reader.
+ */
+export function subscriptionWindowIsCurrent(
+  window: { resetAt?: unknown } | null | undefined,
+  now: number,
+): boolean {
+  if (typeof window?.resetAt !== "string") return false;
+  const at = Date.parse(window.resetAt);
+  return !Number.isNaN(at) && at > now;
+}
+
+/**
  * Map sent over the wire on every `subscription_limits` SSE broadcast:
  * **`${serviceId}:${billingMode}` → route → limits** (docs/150 req 10,
  * re-keyed by docs/252 req 10).

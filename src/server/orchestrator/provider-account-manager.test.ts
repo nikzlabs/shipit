@@ -1024,6 +1024,72 @@ describe("ProviderAccountManager", () => {
       expect(mgr.selectAccountForTurn("anthropic")).toEqual({ ok: true, route: { kind: "account", id: a } });
     });
 
+    /**
+     * docs/260 req 8 — the move BACK. Snapshots are event-fed only, so an
+     * account nothing routes to never reports again; if its last reading kept
+     * demoting it, the demotion became permanent and strict priority could
+     * never return to the primary. An expired window is not evidence.
+     */
+    describe("an expired window stops counting (docs/260 req 8)", () => {
+      const expired = (usedPct: number | null) => ({
+        usedPct,
+        resetAt: new Date(Date.now() - 60_000).toISOString(),
+      });
+
+      it("routes back to the primary once its short window has reset", () => {
+        const { a, b } = twoReadyAccounts();
+        // A hit its 5h limit and everything moved to B. The window has since
+        // reset; A's snapshot still reads 100 because no turn ran on it.
+        const mgr = mgrWith({ [a]: { session: expired(100) }, [b]: { session: win(10) } });
+
+        expect(mgr.selectAccountForTurn("anthropic")).toEqual({ ok: true, route: { kind: "account", id: a } });
+      });
+
+      it("keeps the demotion while the over-cutoff window is still open", () => {
+        const { a, b } = twoReadyAccounts();
+        const mgr = mgrWith({ [a]: { session: win(92) }, [b]: { session: win(10) } });
+
+        expect(mgr.selectAccountForTurn("anthropic")).toEqual({ ok: true, route: { kind: "account", id: b } });
+      });
+
+      // The 5h window resets many times inside one weekly window, so an
+      // expired session window must not excuse a live weekly one.
+      it("still demotes on a live weekly window when the short one has reset", () => {
+        const { a, b } = twoReadyAccounts();
+        const mgr = mgrWith({
+          [a]: { session: expired(100), weekly: win(95) },
+          [b]: { session: win(10) },
+        });
+
+        expect(mgr.selectAccountForTurn("anthropic")).toEqual({ ok: true, route: { kind: "account", id: b } });
+      });
+
+      // A demotion is not "tried last": `clear[0]` wins outright, so a demoted
+      // account is never reached at all while any account is clear. A reading
+      // with no usable reset time therefore demotes FOREVER — the same trap in
+      // a rarer form, which is why an unusable timestamp is not evidence
+      // either. Being wrong costs one refused attempt (req 5).
+      it("treats an unusable reset time as no evidence, for the cutoff tier", () => {
+        const { a, b } = twoReadyAccounts();
+        const mgr = mgrWith({
+          [a]: { session: { usedPct: 95, resetAt: "not-a-date" } },
+          [b]: { session: win(10) },
+        });
+
+        expect(mgr.selectAccountForTurn("anthropic")).toEqual({ ok: true, route: { kind: "account", id: a } });
+      });
+
+      it("treats an unusable reset time as no evidence, for the spent tier too", () => {
+        const { a, b } = twoReadyAccounts();
+        const mgr = mgrWith({
+          [a]: { session: { usedPct: 100, resetAt: "" } },
+          [b]: { session: win(10) },
+        });
+
+        expect(mgr.selectAccountForTurn("anthropic")).toEqual({ ok: true, route: { kind: "account", id: a } });
+      });
+    });
+
     // docs/260 — the pinned-route probes (`isRouteUsableForTurn`,
     // `classifyRouteForTurn`) are gone with pinning itself: selection answers
     // every routing question, and cutoffs are ordering, never displacement.
@@ -1322,6 +1388,27 @@ describe("ProviderAccountManager", () => {
         expect(store.getCredentialRoute(healthy.id)?.exhaustedUntil).toBeNull();
         // A still-100% reading clears nothing; that account stays blocked.
         expect(store.getCredentialRoute(spent.id)?.exhaustedUntil).not.toBeNull();
+      });
+
+      // A refresh merges per-window: a newer snapshot can advance `fetchedAt`
+      // and still carry one window the provider did not re-report. If that
+      // window has since rolled over, its 100% is about a period that ended and
+      // must not hold the refusal open against the reading the user just asked
+      // for (req 9's "user upgrades their plan and presses refresh").
+      it("a rolled-over 100% window does not hold the refusal open", () => {
+        const { healthy, exhaustedAt } = setupBenchedPair();
+        const quota = withLimits(root, store, {
+          [healthy.id]: {
+            ...windows(exhaustedAt + 1),
+            weekly: { usedPct: 100, resetAt: new Date(Date.now() - 60_000).toISOString() },
+          },
+        });
+
+        expect(quota.selectAccountForTurn("anthropic")).toEqual({
+          ok: true,
+          route: { kind: "account", id: healthy.id },
+        });
+        expect(store.getCredentialRoute(healthy.id)?.exhaustedUntil).toBeNull();
       });
 
       it("a null usedPct counts as HEALTHY — below the warning threshold, not unknown-bad", () => {

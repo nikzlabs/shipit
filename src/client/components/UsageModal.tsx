@@ -5,6 +5,7 @@ import type {
   UsageTotals, WeeklyUsage,
 } from "../../server/shared/types.js";
 import { compareSessionsBySpend, sessionRunningFigure, sessionUsageTokens } from "../../server/shared/types/usage-types.js";
+import { subscriptionWindowIsCurrent } from "../../server/shared/types/usage-limits-types.js";
 import { formatTokenCount, getContextLevel, type ModelInfo } from "../utils/model-info.js";
 import { formatModelName } from "../utils/format-model.js";
 import { RUNNING_FIGURE_TITLE, formatCost, formatEstimate, turnCostDisplay } from "../utils/format-cost.js";
@@ -347,16 +348,26 @@ function UsageHeadline({ totals, testId }: { totals: UsageTotals; testId: string
   );
 }
 
-/** Worst quota window this `(service, mode)` is reporting, or null when it reports none. */
+/**
+ * Worst quota window this `(service, mode)` is reporting, or null when it
+ * reports none.
+ *
+ * A window whose reset has passed is skipped: readings are event-fed, so one
+ * can outlive its window by hours, and showing "97%" for a window that rolled
+ * over reports a limit the user is not actually near. The header pill draws the
+ * same line in `meterDisplay` (docs/161).
+ */
 function worstQuota(
   group: UsageGroup,
   limits: SubscriptionLimitsMap | undefined,
+  now: number = Date.now(),
 ): { pct: number; label: string } | null {
   if (group.kind !== "sub" || !limits) return null;
   let worst: { pct: number; label: string } | null = null;
   for (const snapshot of Object.values(limits[group.key] ?? {})) {
     for (const [label, window] of [["5h window", snapshot.session], ["7d window", snapshot.weekly]] as const) {
       if (window?.usedPct === undefined || window.usedPct === null) continue;
+      if (!subscriptionWindowIsCurrent(window, now)) continue;
       if (!worst || window.usedPct > worst.pct) worst = { pct: window.usedPct, label };
     }
   }

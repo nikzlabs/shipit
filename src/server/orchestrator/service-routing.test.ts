@@ -4,10 +4,16 @@ import {
   envRouteIdFor,
   firstEligibleSelectionForHarness,
   listConfiguredCredentials,
+  residentRouteNeedsRelease,
   selectRouteForSelection,
   serviceRoutingForSelection,
   sessionSpawnIdentity,
 } from "./service-routing.js";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { CredentialStore } from "./credential-store.js";
+import { ProviderAccountManager } from "./provider-account-manager.js";
 import type { CredentialRoute } from "../shared/types/domain-types/credential-route.js";
 import type { AccountSelectionMode } from "../shared/types/domain-types/provider.js";
 import type { AccountSelection } from "./provider-account-manager.js";
@@ -638,5 +644,88 @@ describe("sessionSpawnIdentity — the resident-process boundary", () => {
 
   it("has no opinion about a session the manager does not know", () => {
     expect(desiredSpawnIdentity({ get: () => undefined }, "s1", "claude")).toBeUndefined();
+  });
+});
+
+/**
+ * docs/260 req 8 — the move BACK, at the decision that actually performs it.
+ *
+ * `selectAccountForTurn` choosing the primary again is only half the story:
+ * a session with a resident streaming CLI keeps running on the process's
+ * spawn-time credential until this check retires it. Wired against a real
+ * `ProviderAccountManager` so the whole chain is exercised — snapshot tier,
+ * strict order, release decision — rather than a fake that answers whatever
+ * the test wants to hear.
+ */
+describe("residentRouteNeedsRelease — moving a live session back (docs/260 req 8)", () => {
+  const future = () => new Date(Date.now() + 3_600_000).toISOString();
+  const past = () => new Date(Date.now() - 60_000).toISOString();
+
+  function accountsWithLimits(
+    limits: (ids: { primary: string; secondary: string }) => Record<string, unknown>,
+  ) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-resident-release-"));
+    const credentialStore = new CredentialStore(path.join(root, "credentials.json"));
+    const seed = new ProviderAccountManager({ credentialsDir: root, credentialStore });
+    const primary = seed.create("anthropic", "Primary");
+    const secondary = seed.create("anthropic", "Secondary");
+    seed.setAccountStatus("anthropic", primary.id, "ready");
+    seed.setAccountStatus("anthropic", secondary.id, "ready");
+    const ids = { primary: primary.id, secondary: secondary.id };
+    const providerAccountManager = new ProviderAccountManager({
+      credentialsDir: root,
+      credentialStore,
+      getSubscriptionLimits: () => ({ "anthropic:sub": limits(ids) as never }),
+    });
+    return { root, ids, deps: { credentialStore, providerAccountManager } };
+  }
+
+  const liveSession = {
+    id: "s1",
+    title: "t",
+    createdAt: "",
+    lastUsedAt: "",
+    model: "claude-opus-5",
+    serviceId: "anthropic",
+    billingMode: "sub",
+  } as SessionInfo;
+
+  const residentOn = (id: string, backgroundWork: string[] = []) => ({
+    residentRoute: { kind: "account" as const, id },
+    backgroundWorkDescriptions: backgroundWork,
+  });
+
+  it("retires the secondary's process once the primary's window has reset", () => {
+    // The reported failure: the primary ran out, every session moved to the
+    // secondary, the primary's 5h window reset — and the snapshot still read
+    // 100% because no turn had run on it since.
+    const { ids, deps } = accountsWithLimits(({ primary, secondary }) => ({
+      [primary]: { session: { usedPct: 100, resetAt: past() } },
+      [secondary]: { session: { usedPct: 20, resetAt: future() } },
+    }));
+
+    expect(residentRouteNeedsRelease(liveSession, "claude", residentOn(ids.secondary), deps)).toBe(true);
+  });
+
+  it("leaves the process alone while the primary's window is genuinely spent", () => {
+    const { ids, deps } = accountsWithLimits(({ primary, secondary }) => ({
+      [primary]: { session: { usedPct: 100, resetAt: future() } },
+      [secondary]: { session: { usedPct: 20, resetAt: future() } },
+    }));
+
+    expect(residentRouteNeedsRelease(liveSession, "claude", residentOn(ids.secondary), deps)).toBe(false);
+  });
+
+  // req 13 — the tokens already spent on that work cost more than one turn on
+  // a less-preferred account, so the move waits for the first clean turn.
+  it("does not retire a process holding background work, even when the primary is back", () => {
+    const { ids, deps } = accountsWithLimits(({ primary, secondary }) => ({
+      [primary]: { session: { usedPct: 100, resetAt: past() } },
+      [secondary]: { session: { usedPct: 20, resetAt: future() } },
+    }));
+
+    expect(
+      residentRouteNeedsRelease(liveSession, "claude", residentOn(ids.secondary, ["sub-agent review"]), deps),
+    ).toBe(false);
   });
 });

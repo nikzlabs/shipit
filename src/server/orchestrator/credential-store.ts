@@ -18,6 +18,7 @@ import type {
 } from "../shared/types.js";
 import { credentialModeKey, DEFAULT_SELECTION_MODE, REVIEWER_SLOTS } from "../shared/types.js";
 import { DEFAULT_FAILOVER_CUTOFF } from "../shared/types.js";
+import { subscriptionWindowIsCurrent } from "../shared/types/usage-limits-types.js";
 import type { VoiceDeliveryMode } from "../shared/types/voice-note-types.js";
 import { DEFAULT_VOICE_DELIVERY_MODE } from "../shared/types/voice-note-types.js";
 import {
@@ -670,8 +671,12 @@ export class CredentialStore {
     if (!snapshot || typeof snapshot.fetchedAt !== "number" || !Number.isFinite(snapshot.fetchedAt)) return false;
     const observedAt = typeof route.exhaustedAt === "number" ? route.exhaustedAt : 0;
     if (snapshot.fetchedAt <= observedAt) return false;
+    const now = Date.now();
     for (const key of ["session", "weekly"] as const) {
-      const window = snapshot[key] as { usedPct?: unknown } | null | undefined;
+      const window = snapshot[key] as { usedPct?: unknown; resetAt?: unknown } | null | undefined;
+      // Same rule as the account twin: a window that has rolled over is not
+      // evidence, so it cannot hold the refusal open.
+      if (!subscriptionWindowIsCurrent(window, now)) continue;
       if (typeof window?.usedPct === "number" && window.usedPct >= 100) return false;
     }
     this.upsertCredentialRoute({ ...route, exhaustedUntil: null, exhaustedAt: null });
