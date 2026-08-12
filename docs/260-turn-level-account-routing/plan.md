@@ -45,6 +45,20 @@ preference. Every routed turn asks `ProviderAccountManager.selectAccountForTurn`
   for balanced — not a design-level tiebreak — so a session without a
   resident process still lands on the least-recently-used account, which is
   what spreads new work.
+- **An expired window stops counting (req 8, fixed 2026-08-12).** The move
+  back did not happen in practice under `strict`. The refusal memory and the
+  telemetry-spent tier both ignore a window whose `resetAt` has passed, but
+  `isOverCutoff` did not: it read the last `usedPct` forever. So a primary
+  that hit its 5h limit stayed in the `overCutoff` tier after that limit
+  reset, and `clear[0]` — the secondary — kept winning. Permanently, because
+  snapshots are event-fed (`limits-registry.ts` polls nothing, by design) and
+  the demotion is exactly what kept turns off the account whose turns are the
+  only source of a fresher reading. That is the docs/260 self-blocking shape,
+  surviving in an *ordering* tier instead of a blocking one — which is why
+  removing the hard blocks did not remove it. Fix: `isOverCutoff` skips a
+  window whose reset has passed (`windowHasReset`); an unparseable `resetAt`
+  stays "not expired", which is safe because a demotion only orders an
+  account last and every tier is still tried (req 5).
 - The pre-capture check in `agent-execution.ts` becomes account-agnostic and
   trivial: run selection once before capturing the resident process; if the
   chosen account differs from the process's captured account (section 5),

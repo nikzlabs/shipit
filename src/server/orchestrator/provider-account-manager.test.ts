@@ -1024,6 +1024,59 @@ describe("ProviderAccountManager", () => {
       expect(mgr.selectAccountForTurn("anthropic")).toEqual({ ok: true, route: { kind: "account", id: a } });
     });
 
+    /**
+     * docs/260 req 8 — the move BACK. Snapshots are event-fed only, so an
+     * account nothing routes to never reports again; if its last reading kept
+     * demoting it, the demotion became permanent and strict priority could
+     * never return to the primary. An expired window is not evidence.
+     */
+    describe("an expired window stops counting (docs/260 req 8)", () => {
+      const expired = (usedPct: number | null) => ({
+        usedPct,
+        resetAt: new Date(Date.now() - 60_000).toISOString(),
+      });
+
+      it("routes back to the primary once its short window has reset", () => {
+        const { a, b } = twoReadyAccounts();
+        // A hit its 5h limit and everything moved to B. The window has since
+        // reset; A's snapshot still reads 100 because no turn ran on it.
+        const mgr = mgrWith({ [a]: { session: expired(100) }, [b]: { session: win(10) } });
+
+        expect(mgr.selectAccountForTurn("anthropic")).toEqual({ ok: true, route: { kind: "account", id: a } });
+      });
+
+      it("keeps the demotion while the over-cutoff window is still open", () => {
+        const { a, b } = twoReadyAccounts();
+        const mgr = mgrWith({ [a]: { session: win(92) }, [b]: { session: win(10) } });
+
+        expect(mgr.selectAccountForTurn("anthropic")).toEqual({ ok: true, route: { kind: "account", id: b } });
+      });
+
+      // The 5h window resets many times inside one weekly window, so an
+      // expired session window must not excuse a live weekly one.
+      it("still demotes on a live weekly window when the short one has reset", () => {
+        const { a, b } = twoReadyAccounts();
+        const mgr = mgrWith({
+          [a]: { session: expired(100), weekly: win(95) },
+          [b]: { session: win(10) },
+        });
+
+        expect(mgr.selectAccountForTurn("anthropic")).toEqual({ ok: true, route: { kind: "account", id: b } });
+      });
+
+      // Conservative, and cheap: a demotion only orders an account last, and
+      // every tier is still tried (req 5).
+      it("treats an unparseable reset time as not expired", () => {
+        const { a, b } = twoReadyAccounts();
+        const mgr = mgrWith({
+          [a]: { session: { usedPct: 95, resetAt: "not-a-date" } },
+          [b]: { session: win(10) },
+        });
+
+        expect(mgr.selectAccountForTurn("anthropic")).toEqual({ ok: true, route: { kind: "account", id: b } });
+      });
+    });
+
     // docs/260 — the pinned-route probes (`isRouteUsableForTurn`,
     // `classifyRouteForTurn`) are gone with pinning itself: selection answers
     // every routing question, and cutoffs are ordering, never displacement.

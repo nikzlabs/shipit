@@ -878,7 +878,7 @@ export class ProviderAccountManager {
         looksSpent.push(account);
         continue;
       }
-      if (isOverCutoff(limits[account.id], cutoffs)) {
+      if (isOverCutoff(limits[account.id], cutoffs, now)) {
         overCutoff.push(account);
         continue;
       }
@@ -1444,6 +1444,31 @@ function readClaudeAccessToken(file: string): string | null {
 
 
 /**
+ * Has this window's period already ended?
+ *
+ * A percentage describes the window it was measured in. Once `resetAt` passes,
+ * that window is gone and its number is a fact about a period that no longer
+ * exists — so it must not keep answering questions about the current one.
+ *
+ * This matters because snapshots are **event-fed only** (`limits-registry.ts`:
+ * no polling, by design — Anthropic's usage API locks out on a handful of
+ * calls). A snapshot refreshes when a turn runs on that account, or when the
+ * user presses the refresh button. An account nothing routes to therefore
+ * cannot produce the reading that would make it routable again, which is the
+ * self-blocking shape docs/260 removed from the hard blocks; the same shape
+ * survived in the cutoff tier until this check existed.
+ *
+ * An unparseable `resetAt` reads as "not expired": it is the conservative
+ * answer, and it is cheap, because a demotion only orders an account last —
+ * every tier is still tried (req 5).
+ */
+function windowHasReset(window: { resetAt?: unknown } | null | undefined, now: number): boolean {
+  if (typeof window?.resetAt !== "string") return false;
+  const at = Date.parse(window.resetAt);
+  return !Number.isNaN(at) && at <= now;
+}
+
+/**
  * docs/150 reqs 4–6 — has this account crossed either proactive cutoff?
  *
  * Separate from {@link exhaustedUntil} on purpose: that answers "can this
@@ -1455,14 +1480,23 @@ function readClaudeAccessToken(file: string): string | null {
  * "unknown counts as usable" rule the exhaustion check uses, for the same
  * reason: Claude reports `usedPct` only above a warning threshold, so treating
  * silence as "past 90%" would demote every healthy account.
+ *
+ * An **expired** window is not over its cutoff either (docs/260 req 8). The
+ * exhaustion check has always ignored a spent window whose reset has passed;
+ * this one did not, so an account that hit its 5h limit stayed demoted after
+ * that limit reset — permanently, under strict priority, because the demotion
+ * is exactly what kept turns off the account whose turns are the only source
+ * of a fresher reading. The primary could never be routed back to.
  */
 function isOverCutoff(
   limits: { session?: unknown; weekly?: unknown } | undefined,
   cutoffs: FailoverCutoffs,
+  now: number,
 ): boolean {
   for (const [key, cutoff] of [["session", cutoffs.session], ["weekly", cutoffs.weekly]] as const) {
-    const window = limits?.[key] as { usedPct: number | null } | null | undefined;
+    const window = limits?.[key] as { usedPct: number | null; resetAt?: unknown } | null | undefined;
     if (window?.usedPct === null || window?.usedPct === undefined) continue;
+    if (windowHasReset(window, now)) continue;
     if (window.usedPct >= cutoff) return true;
   }
   return false;
