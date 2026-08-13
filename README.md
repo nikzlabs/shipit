@@ -30,7 +30,7 @@ loop**.
   DeepSeek, OpenRouter, etc.).
   - Supported harnesses: Claude Code and Codex, with OpenCode and Cursor CLI support coming.
 - **The GitHub loop, inline** — work with PRs, CI, deploys, reviews, and issues, without leaving ShipIt.
-- **Runs on Linux, macOS, and Windows** — one command via Docker; Windows through WSL2.
+- **Runs on Linux, macOS, and Windows (WSL2)** — in isolated Docker containers.
 - **Ship from your phone** — mobile-first, with voice.
 
 ## Quickstart
