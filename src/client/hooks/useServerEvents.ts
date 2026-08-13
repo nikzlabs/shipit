@@ -504,9 +504,34 @@ export function useServerEvents(): void {
         // exactly when an auto-configured reviewer re-derives. Absent means an
         // older server, so the store keeps what bootstrap gave it.
         reviewers?: ReviewerSlotView[];
+        /*
+          docs/252 req 9 — the background-work setting and what it resolves to,
+          re-read on every credential change for the same reason `reviewers` is.
+          `null` and absent mean different things here: absent is an older
+          server ("no news", keep what bootstrap gave us), while `null` is this
+          server saying the value is gone — which is the case that matters, since
+          removing the chosen model's credential leaves Settings reporting a
+          harness that background work can no longer reach.
+        */
+        nonTurnModel?: { serviceId: string; billingMode: "sub" | "key"; modelId: string } | null;
+        nonTurnModelResolved?: {
+          serviceId: string;
+          billingMode: "sub" | "key";
+          modelId: string;
+          serviceName: string;
+          label: string;
+          harnessId: string;
+          source: "pinned" | "default";
+        } | null;
       };
       if (data.reviewers) {
         useSettingsStore.getState().setReviewers(data.reviewers);
+      }
+      if (data.nonTurnModel !== undefined || data.nonTurnModelResolved !== undefined) {
+        useSettingsStore.getState().setNonTurnModel(
+          data.nonTurnModel ?? null,
+          data.nonTurnModelResolved ?? null,
+        );
       }
       if (typeof data.canRunTurns === "boolean") {
         useSettingsStore.getState().setCanRunTurns(data.canRunTurns);

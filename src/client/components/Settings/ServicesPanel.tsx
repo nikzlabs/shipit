@@ -103,7 +103,7 @@ import {
   useAllProviderAccounts,
   useProviderAccounts,
 } from "./ProviderAccountRows.js";
-import { MODE_LABEL, NothingToRouteYet, ServiceCard } from "./ServiceCard.js";
+import { MODE_LABEL, ServiceCard } from "./ServiceCard.js";
 import { CredentialSelectionModeControl, FailoverCutoffControls } from "./CredentialRouting.js";
 
 /** Every `(service, mode)` the catalogue declares, flattened in catalogue order. */
@@ -560,6 +560,17 @@ function ServiceModeCard({
   // right. The band's four explanatory strings are kept in tooltips on those
   // same controls (`CredentialRouting`), not deleted with the lines they were
   // on.
+  //
+  // **One credential gets no band either.** It briefly carried a strip reading
+  // "One account — nothing to route between yet. Add a second to choose an
+  // order and a strategy." — the mock-up's D8 cell, adopted in the audit pass
+  // and then rejected on sight in the dogfood instance. It is the same sentence
+  // the key card was denied two paragraphs above: an explanation of an absence,
+  // printed once per single-credential service, every time Settings is opened,
+  // for a capability the user reaches by adding a credential — which is the one
+  // thing the panel's "Add a service" button already offers. The band appears
+  // when there is something to route between, and says nothing when there is
+  // not.
   const routing = !multiple ? undefined : routedCredentials.length > 1 ? (
     <div className="flex flex-wrap items-center justify-between gap-2">
       <CredentialSelectionModeControl
@@ -593,11 +604,6 @@ function ServiceModeCard({
         />
       )}
     </div>
-  ) : routedCredentials.length === 1 ? (
-    // Exactly one, never zero: with none connected the card is already asking
-    // for the first one, and "nothing to route between yet" under that ask
-    // states the obvious twice.
-    <NothingToRouteYet noun={routedNoun} />
   ) : undefined;
 
   // req 17 — **no card action of any kind.** A card shows what is there and

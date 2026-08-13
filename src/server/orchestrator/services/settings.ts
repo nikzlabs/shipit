@@ -9,7 +9,7 @@ import { isAllowedAgentEnvKey } from "../../shared/agent-registry.js";
 import type { AccountSelectionMode, AgentId, CredentialRoute, FailoverCutoffs } from "../../shared/types.js";
 import { credentialModeKey, DEFAULT_FAILOVER_CUTOFF, DEFAULT_SELECTION_MODE, parseCredentialModeKey } from "../../shared/types.js";
 import { allServices, credentialModeForStorageEnv, getMode, getModel, getService, nativeServiceForHarness } from "../../shared/catalogue/index.js";
-import { harnessForNonTurnSelection, resolveNonTurnModel } from "../non-turn-model.js";
+import { firstEligibleNonTurnSelection, harnessForNonTurnSelection, resolveNonTurnModel } from "../non-turn-model.js";
 import { listConfiguredCredentials } from "../service-routing.js";
 import { listCredentialRoutes, upsertSingleStringCredential } from "./credential-routes.js";
 import type { VoiceDeliveryMode } from "../../shared/types/voice-note-types.js";
@@ -127,6 +127,132 @@ export function resolveHarnessOnboarding(
 }
 
 /**
+ * docs/252 req 9 — **the model background work runs on is written once, and
+ * after that only the user changes it.**
+ *
+ * It used to be allowed to stay unset, and unset meant "ShipIt re-decides on
+ * every read". That is a second state, and the screen then had to name it. It
+ * could not: every word for it — *default*, *auto-configured*, *pinned* — needs
+ * a glossary, and the report that produced this change was that the developer
+ * could not read the line either. So the state goes rather than the wording.
+ * The setting now always holds one model the user can see and change, and the
+ * only question left on screen is which model.
+ *
+ * **Only when there is none.** ShipIt never writes over a value, so this cannot
+ * become re-pointing under another name: remove the credential the chosen model
+ * used and the setting still names it, and `resolveNonTurnModel` reports
+ * `pin_unavailable` rather than quietly moving to whatever survived. That is
+ * the trade the requirement asks for — the alternative is a setting that
+ * changes itself, which is what "the default becomes the changeable setting"
+ * rules out.
+ *
+ * **On the READ path, for the reason `resolveHarnessOnboarding` above is**: a
+ * mutation-site seed is a list that a newly-added credential path quietly falls
+ * off — and there are four such paths today (a pasted key, the single-slot
+ * upsert, an account connecting, and boot-time env adoption). Two read paths
+ * call it, and between them they cover every way a credential can arrive:
+ * `getGlobalSettings`, which is every bootstrap, including an install that
+ * already had credentials before this existed; and `buildAgentListPayload`,
+ * which every credential mutation broadcasts through (docs/257 made that the
+ * single canonical producer, with a guard test over its call sites). The second
+ * is not belt-and-braces — cross-backend review found that without it, adding
+ * the first service from an already-open Settings tab left the setting empty
+ * indefinitely, which is precisely the empty-while-a-service-exists state req 9
+ * says cannot happen.
+ *
+ * The window before the first read is not a gap: `resolveNonTurnModel` still
+ * falls back to the first eligible model when nothing is stored, so background
+ * work runs, and it runs on the same model this then writes.
+ *
+ * Two things it deliberately refuses to seed from, both from that review:
+ *
+ *  - **An unfinished sign-in** (`requireReadyAccounts`). The write is permanent
+ *    and the account may be seconds from being deleted by req 17.
+ *  - **A harness the probe does not report installed.** `isHarnessInstalled`
+ *    answers *true for everything* when a deployment ships no install report
+ *    (`installed-harnesses.ts`), so on such an install the catalogue walk can
+ *    pick a model whose CLI is absent. That is survivable while the value is
+ *    re-derived on every read; freezing it is not. So the walk is given the
+ *    `AgentRegistry`'s probed answer instead — and **it keeps walking**: the
+ *    first version of this guard rejected the walk's result, which left an
+ *    install with no report and one harness installed holding no setting at
+ *    all. Found by the second round of cross-backend review.
+ *
+ * What this does NOT fix, because it is not the seed's to fix: the harness is
+ * derived at RUN time (`resolveNonTurnModel`), and that derivation still uses
+ * the permissive `isHarnessInstalled`. On an install with no report it can
+ * therefore still spawn an absent CLI — for any stored selection, seeded or
+ * chosen by hand. That is the pre-existing shape of req 9's derivation and is
+ * unchanged here.
+ */
+export function seedNonTurnModel(
+  credentialStore: CredentialStore | undefined,
+  agentRegistry: AgentRegistry,
+  /**
+   * Injectable because a deployment's environment variables are credentials
+   * too (`listConfiguredCredentials` reads them), so "this install has nothing
+   * configured" is only assertable in a test that can say what the environment
+   * holds.
+   */
+  env: NodeJS.ProcessEnv = process.env,
+): void {
+  if (!credentialStore) return;
+  if (credentialStore.getNonTurnModel()) return;
+  const installed = new Set(agentRegistry.list().filter((a) => a.installed).map((a) => a.id));
+  const first = firstEligibleNonTurnSelection(
+    listConfiguredCredentials(credentialStore, env, { requireReadyAccounts: true }),
+    { isInstalled: (harnessId) => installed.has(harnessId) },
+  );
+  if (!first) return;
+  // Write-once, and honest about a failed write — see `stampNonTurnModel`.
+  credentialStore.stampNonTurnModel(first.selection);
+}
+
+/**
+ * docs/252 req 9 — the background-work setting **and** what it resolves to,
+ * seeded first so the two are never read before the value exists.
+ *
+ * One function because two payloads carry this pair — the settings bootstrap
+ * and the `agent_list` broadcast — and they must not disagree. It is also the
+ * one place the seed is triggered from, so "when is it written?" has a single
+ * answer rather than one per caller.
+ *
+ * Both halves ship, because they are different facts: the setting names a
+ * triple, and the resolution adds the derived harness (req 9) and says whether
+ * that triple can still run at all. A UI holding only the first cannot tell a
+ * working setting from one whose credential went away.
+ */
+export function buildNonTurnModelSettings(
+  agentRegistry: AgentRegistry,
+  credentialStore: CredentialStore | undefined,
+  providerAccountManager: ProviderAccountManager | undefined,
+): { nonTurnModel?: NonTurnModelSelection; nonTurnModelResolved?: NonTurnModelResolved } {
+  seedNonTurnModel(credentialStore, agentRegistry);
+  const nonTurnModel = credentialStore?.getNonTurnModel();
+  const resolution = credentialStore
+    ? resolveNonTurnModel({
+        credentialStore,
+        ...(providerAccountManager ? { providerAccountManager } : {}),
+      })
+    : undefined;
+  const nonTurnModelResolved: NonTurnModelResolved | undefined = resolution?.ok
+    ? {
+        serviceId: resolution.target.selection.serviceId,
+        billingMode: resolution.target.selection.billingMode,
+        modelId: resolution.target.selection.modelId,
+        serviceName: resolution.target.serviceName,
+        label: getModel(resolution.target.selection)?.label ?? resolution.target.selection.modelId,
+        harnessId: resolution.target.harnessId,
+        source: resolution.target.source,
+      }
+    : undefined;
+  return {
+    ...(nonTurnModel ? { nonTurnModel } : {}),
+    ...(nonTurnModelResolved ? { nonTurnModelResolved } : {}),
+  };
+}
+
+/**
  * The canonical `agent_list` SSE payload (docs/257).
  *
  * Every producer of that event goes through here so `canRunTurns` cannot be
@@ -172,11 +298,34 @@ export function buildAgentListPayload(
   canRunTurns: boolean;
   harnessOnboardingCompletedAt?: string;
   reviewers: ReviewerSlotView[];
+  nonTurnModel: NonTurnModelSelection | null;
+  nonTurnModelResolved: NonTurnModelResolved | null;
 } {
+  /*
+    docs/252 req 9 — the background-work setting rides this event for the same
+    reason the reviewer slots do: it is a credential-derived answer displayed in
+    an open Settings tab, and a tab that does not follow a credential change
+    shows the answer from before it. Cross-backend review found both halves of
+    that failing — add the first service and the section still read "Nothing to
+    run it on yet"; remove the chosen model's credential and it still read "Runs
+    on Claude Code" while background work was already failing. Seeding happens
+    through this call too (see `buildNonTurnModelSettings`), which is what makes
+    the first case a write rather than a refresh.
+
+    **`null` rather than an omitted key**, unlike the optional fields above. For
+    those, absent means "no news" and the client keeps what it has — which is
+    right when the server never clears them. This pair the server DOES clear: a
+    resolution disappears the moment the chosen model stops being runnable, and
+    that is exactly the update the open tab needs. An omitted key would be
+    indistinguishable from an older server, so it is spelled out.
+  */
+  const nonTurn = buildNonTurnModelSettings(agentRegistry, credentialStore, providerAccountManager);
   return {
     agents: listAgents(agentRegistry),
     ...resolveHarnessOnboarding(agentRegistry, credentialStore),
     reviewers: buildReviewerSettings({ credentialStore, providerAccountManager }),
+    nonTurnModel: nonTurn.nonTurnModel ?? null,
+    nonTurnModelResolved: nonTurn.nonTurnModelResolved ?? null,
   };
 }
 
@@ -274,29 +423,8 @@ export async function getGlobalSettings(
   // docs/252 phase 2 — every credential the user holds, in selection order per
   // group. Safe to return verbatim: `CredentialRoute` carries no secret.
   const credentialRoutes = credentialStore ? listCredentialRoutes(credentialStore) : [];
-  // docs/252 phase 7 (req 9) — the pin AND what it resolves to. Both, because
-  // they are different facts: the setting is visibly unset until the user picks
-  // something, and what runs today is what the resolver says now.
-  const nonTurnModel = credentialStore?.getNonTurnModel();
-  const nonTurnResolution = credentialStore
-    ? resolveNonTurnModel({
-        credentialStore,
-        ...(providerAccountManager ? { providerAccountManager } : {}),
-      })
-    : undefined;
-  const nonTurnModelResolved: NonTurnModelResolved | undefined =
-    nonTurnResolution?.ok
-      ? {
-          serviceId: nonTurnResolution.target.selection.serviceId,
-          billingMode: nonTurnResolution.target.selection.billingMode,
-          modelId: nonTurnResolution.target.selection.modelId,
-          serviceName: nonTurnResolution.target.serviceName,
-          label: getModel(nonTurnResolution.target.selection)?.label
-            ?? nonTurnResolution.target.selection.modelId,
-          harnessId: nonTurnResolution.target.harnessId,
-          source: nonTurnResolution.target.source,
-        }
-      : undefined;
+  const { nonTurnModel, nonTurnModelResolved } =
+    buildNonTurnModelSettings(agentRegistry, credentialStore, providerAccountManager);
   // docs/261 phase 3 (req 8) — both reviewer slots, each labelled pinned or
   // auto-configured and carrying what it resolves to. The same array rides the
   // `agent_list` SSE (see `buildAgentListPayload`), which is what makes an open
@@ -496,7 +624,18 @@ export async function saveGlobalSettings(
   // and the UI only ever offers eligible rows, so this guards API misuse.
   if (nonTurnModel !== undefined) {
     if (nonTurnModel === null) {
+      /*
+        req 9 (2026-08-13) — `null` is still accepted, and no longer LEAVES the
+        setting empty. Nothing in the UI sends it any more, but a tab left open
+        across a deploy still can, and an empty setting is the state the screen
+        stopped being able to name: background work would go back to re-deciding
+        on every read, which is what "ShipIt does not update it anymore" rules
+        out. So a clear is immediately followed by the same proposal a fresh
+        install gets — one write, one state, and the API keeps its verb.
+        Cross-backend review found the gap.
+      */
       credentialStore.setNonTurnModel(null);
+      seedNonTurnModel(credentialStore, agentRegistry);
     } else {
       const runnable = harnessForNonTurnSelection(
         nonTurnModel,

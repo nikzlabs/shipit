@@ -6,10 +6,15 @@ import { useSettingsStore } from "../../stores/settings-store.js";
 import type { AgentOption } from "../../agent-types.js";
 
 /**
- * docs/252 phase 7 (req 9) — the setting has to be VISIBLE, and its unset state
- * has to read as "follows the install" rather than as an empty control. That is
- * the whole reason a default is acceptable here where a hidden dependency is
- * not: the user can see what background work runs on and change it.
+ * docs/252 req 9 — the setting has to be VISIBLE and changeable.
+ *
+ * It used to also have an unset state, which had to read as "follows the
+ * install" rather than as an empty control. **That state is gone** (2026-08-13):
+ * the server writes the setting the first time the install can run something,
+ * so there is one state, no word to learn for it, and no "ShipIt's default" row
+ * in the menu. The tests that pinned the unset state are replaced below by ones
+ * pinning its absence — a menu that offers only models, and a section that
+ * explains no rule.
  *
  * docs/261 phase 6 (reqs 11, 12, 13) — the control changed from a native
  * `<select>` to the shared `Picker`, with the service ahead of the model. Every
@@ -95,20 +100,47 @@ beforeEach(() => {
 });
 
 describe("BackgroundWorkSection", () => {
-  it("labels the unset state with what it currently resolves to", async () => {
+  /**
+   * The menu offers models and nothing else. Its first row used to be "ShipIt's
+   * default" — the unset state, made selectable so the user could return to it.
+   * With the setting written once there is no such state, and a row offering to
+   * restore it would be an offer ShipIt cannot keep.
+   */
+  it("offers only models, with no row for a default", async () => {
     const user = userEvent.setup();
-    useSettingsStore.getState().setNonTurnModel(null, RESOLVED_FLASH);
+    useSettingsStore.getState().setNonTurnModel(
+      { serviceId: "deepseek", billingMode: "key", modelId: "deepseek-v4-flash" },
+      RESOLVED_FLASH,
+    );
 
     render(<BackgroundWorkSection agentList={agents} />);
     await user.click(screen.getByTestId("background-work-model"));
 
-    const fallback = screen.getByTestId("background-work-model-default");
-    expect(fallback.textContent).toContain("ShipIt's default");
-    // The unset state names what it follows rather than reading as a blank —
-    // which is what stops the default from re-creating the hidden dependency
-    // req 9 exists to remove.
-    expect(fallback.textContent).toContain("DeepSeek");
-    expect(fallback.textContent).toContain("V4 Flash");
+    expect(screen.queryByTestId("background-work-model-default")).toBeNull();
+    expect(screen.queryByText(/ShipIt's default/)).toBeNull();
+    expect(screen.getByTestId("background-work-model-option-deepseek-v4-flash")).toBeTruthy();
+  });
+
+  /**
+   * The section explains the work, not a rule. Every sentence about what the
+   * unset value follows went with the state itself, and the examples stay
+   * examples — the list of things ShipIt runs outside a turn is not closed.
+   */
+  it("describes the work without naming a state or a rule", () => {
+    useSettingsStore.getState().setNonTurnModel(
+      { serviceId: "deepseek", billingMode: "key", modelId: "deepseek-v4-flash" },
+      RESOLVED_FLASH,
+    );
+
+    render(<BackgroundWorkSection agentList={agents} />);
+    const section = screen.getByTestId("background-work-section");
+
+    expect(section.textContent).toContain("such as naming a session");
+    expect(section.textContent).not.toMatch(/default/i);
+    expect(section.textContent).not.toMatch(/pinned/i);
+    // The controls state the service and the model, so the line beneath the
+    // description carries only what they cannot.
+    expect(section.textContent).not.toContain("Currently:");
   });
 
   // The derivation is stated as a fact, never offered as a control.
@@ -118,7 +150,7 @@ describe("BackgroundWorkSection", () => {
 
     render(<BackgroundWorkSection agentList={agents} />);
 
-    expect(screen.getByText(/runs on Claude Code/)).toBeTruthy();
+    expect(screen.getByText(/Runs on Claude Code/)).toBeTruthy();
     expect(screen.queryByTestId("harness-trigger")).toBeNull();
     // One model offered on two installed harnesses is ONE option, not two.
     await user.click(screen.getByTestId("background-work-model"));
@@ -200,7 +232,12 @@ describe("BackgroundWorkSection", () => {
     });
   });
 
-  it("clears the pin when the user picks the default", async () => {
+  /**
+   * Every write from this section is a whole triple. The section could once
+   * send `null` — "clear the setting and follow the install again" — and that
+   * is the state req 9 no longer has, so no interaction here may produce it.
+   */
+  it("never sends a null, because there is no unset state to return to", async () => {
     const user = userEvent.setup();
     const fetchMock = vi.fn(async () => ({ ok: true, json: async () => ({}) }));
     vi.stubGlobal("fetch", fetchMock);
@@ -211,9 +248,12 @@ describe("BackgroundWorkSection", () => {
 
     render(<BackgroundWorkSection agentList={agents} />);
     await user.click(screen.getByTestId("background-work-model"));
-    await user.click(screen.getByTestId("background-work-model-default"));
+    await user.click(screen.getByTestId("background-work-model-option-deepseek-v4"));
+    await user.click(screen.getByTestId("background-work-service-trigger"));
+    await user.click(screen.getByTestId("background-work-service-option-anthropic:sub"));
 
-    expect(bodyOf(fetchMock).nonTurnModel).toBeNull();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    for (const call of [0, 1]) expect(bodyOf(fetchMock, call).nonTurnModel).not.toBeNull();
   });
 
   // Cross-backend review: a pin the install can no longer run is not among the

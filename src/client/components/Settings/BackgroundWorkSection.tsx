@@ -13,11 +13,21 @@
  *    "runs on Claude Code" — rather than offered as a second control, because a
  *    model offered on two installed harnesses must not become a second decision
  *    for the user to make here.
- *  - **Unset is a state, not an empty value.** The first option is "ShipIt's
- *    default", labelled with what that currently resolves to, so the user can
- *    see the setting follows the install instead of pointing at a vendor they
- *    may stop paying for. Making the default *visible* is exactly what stops it
- *    from re-creating the hidden dependency req 9 exists to remove.
+ *  - **There is no second state to explain.** The server writes this setting the
+ *    first time the install can run something (`seedNonTurnModel`), so it always
+ *    holds one model. What the section used to carry instead — a "ShipIt's
+ *    default" row in the menu, a sentence about following the install, and a
+ *    line naming which of the two states was in force — is all gone with the
+ *    state itself. Removing it was the point: every word available for that
+ *    state (*default*, *auto-configured*, *pinned*) needed a glossary, and the
+ *    report that produced the change was that the developer could not read the
+ *    line either.
+ *
+ * **Two rows, not three columns** (2026-08-13). The description used to sit in a
+ * column beside the two controls, wrapping at ~34 characters through seven
+ * lines. It is now above them, full width, and shorter — the controls state the
+ * service and the model, so the line beneath the description carries only what
+ * they cannot: the harness this resolved onto.
  *
  * **docs/261 phase 6 (reqs 11, 12, 13) replaced the control itself.** This was a
  * native `<select>` with `<optgroup>` headers — the one model surface in ShipIt
@@ -72,7 +82,10 @@ export function BackgroundWorkSection({ agentList = [] }: { agentList?: AgentOpt
   const latestWrite = useRef(0);
   const [busy, setBusy] = useState(false);
 
-  const save = async (next: Pin | null) => {
+  // Always a triple, never `null`. Clearing the setting is no longer reachable
+  // from the UI — there is nothing to clear it TO, since an empty setting is the
+  // state this section stopped having. The endpoint still accepts `null`.
+  const save = async (next: Pin) => {
     const write = ++latestWrite.current;
     setBusy(true);
     const prev = useSettingsStore.getState();
@@ -112,10 +125,6 @@ export function BackgroundWorkSection({ agentList = [] }: { agentList?: AgentOpt
     }
   };
 
-  const defaultDetail = resolved?.source === "default"
-    ? `${resolved.serviceName} · ${resolved.label}`
-    : "the first model this install can run";
-
   // A pin the install can no longer run is NOT in `models` — its credential or
   // its harness went away. Without saying so the controls would read as the
   // default while the server still holds the pin and fails it on every session.
@@ -153,22 +162,29 @@ export function BackgroundWorkSection({ agentList = [] }: { agentList?: AgentOpt
   };
 
   return (
-    <div className="space-y-2" data-testid="background-work-section">
-      <h3 className="text-sm font-medium text-(--color-text-primary)">Background work</h3>
-      <div className="flex items-start justify-between gap-4 py-1">
+    <div className="space-y-2.5 py-1" data-testid="background-work-section">
         <div className="min-w-0">
-          <span className="text-sm text-(--color-text-primary)">Model</span>
+          <h3 className="text-sm font-medium text-(--color-text-primary)">Background work</h3>
+          {/*
+            The examples are examples. "Naming a session or writing a
+            pull-request description" is what ShipIt does outside a turn today
+            and is not meant as the list — so the sentence names the category
+            and gives two of them, rather than reading as a promise that no
+            third one exists.
+          */}
           <p className="text-xs text-(--color-text-tertiary)">
-            What ShipIt runs when it names a session or writes a pull-request description —
-            chosen independently of the model any session uses. Left on the default it follows
-            whatever this install can run, so it never points at a service you have stopped
-            paying for.
+            What ShipIt runs for its own work, such as naming a session or writing a
+            pull-request description.
           </p>
           {resolved && (
+            /*
+              The one fact the two controls below do not state. They name the
+              service and the model, so repeating those here would be the same
+              fact twice; the harness is derived from the model (req 9) and has
+              no control of its own, which is exactly why it is said in words.
+            */
             <p className="mt-1 text-[11px] text-(--color-text-tertiary)">
-              Currently: {resolved.serviceName} · {resolved.label}
-              {" · runs on "}
-              {agentList.find((a) => a.id === resolved.harnessId)?.name ?? resolved.harnessId}
+              Runs on {agentList.find((a) => a.id === resolved.harnessId)?.name ?? resolved.harnessId}
             </p>
           )}
           {!resolved && pinnedIsStale && pinned && (
@@ -191,7 +207,13 @@ export function BackgroundWorkSection({ agentList = [] }: { agentList?: AgentOpt
             </p>
           )}
         </div>
-        <div className="flex shrink-0 flex-wrap items-center justify-end gap-2">
+        {/*
+          req 14 — no service, no controls. The row is absent rather than
+          disabled, because an install with nothing configured has nothing to
+          choose between and the line above already says so.
+        */}
+        {(services.length > 0 || (pinnedIsStale && pinned)) && (
+        <div className="flex flex-wrap items-center gap-2">
           <ServiceSelector
             services={services}
             selected={current}
@@ -200,35 +222,34 @@ export function BackgroundWorkSection({ agentList = [] }: { agentList?: AgentOpt
             idPrefix="background-work"
             fallbackLabel={pinnedIsStale && pinned ? pinned.serviceId : "No service"}
           />
-          {/* req 14 — see the Reviewer tab: the default row alone is not a choice. */}
           {serviceModels.length > 0 && (
             <Picker
               label={
-                resolved ? resolved.label : pinnedIsStale && pinned ? pinned.modelId : "Default"
+                resolved ? resolved.label : pinnedIsStale && pinned ? pinned.modelId : "Unavailable"
               }
               ariaLabel="Model for background work"
               triggerTestId="background-work-model"
               menuTestId="background-work-model-menu"
               menuWidth="w-72"
-              align="end"
+              align="start"
               disabled={busy}
             >
               {/*
-                Unset as a labelled option rather than a blank (req 9), first in
-                the list and carrying what it currently resolves to.
+                The models, and nothing else. This menu used to open on a
+                "ShipIt's default" row — the unset state, made selectable so the
+                user could return to it. The setting is written once now
+                (`seedNonTurnModel`), so there is no such state to return to and
+                the menu is the same list every other model menu shows.
               */}
-              <PickerOption
-                label="ShipIt's default"
-                detail={defaultDetail}
-                selected={!pinned}
-                onSelect={() => void save(null)}
-                testId="background-work-model-default"
-              />
               {serviceModels.map((model) => (
                 <PickerOption
                   key={`${serviceKeyOf(model)}:${model.modelId}`}
                   label={model.label}
-                  selected={!!pinned && pinned.modelId === model.modelId}
+                  // Ticked from what is IN FORCE, not from the stored pin. The
+                  // two agree once the setting is written, and on an install
+                  // whose first settings read has not happened yet the
+                  // resolution is what background work would actually use.
+                  selected={current?.modelId === model.modelId}
                   onSelect={() =>
                     void save({
                       serviceId: model.serviceId,
@@ -242,7 +263,7 @@ export function BackgroundWorkSection({ agentList = [] }: { agentList?: AgentOpt
             </Picker>
           )}
         </div>
-      </div>
+      )}
     </div>
   );
 }

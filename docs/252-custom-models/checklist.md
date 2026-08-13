@@ -148,8 +148,11 @@ table — a phase is checked off when its PR has merged.
 
 ## Phase 7 — Non-turn work
 
-- [x] `CredentialStore.nonTurnModel` — the pinned `(service, billing mode, model)`, with
-      unset kept as a distinct state rather than filled in with the resolved answer
+- [x] `CredentialStore.nonTurnModel` — the stored `(service, billing mode, model)`. Phase 7
+      kept **unset** as a distinct state rather than filling it in with the resolved answer;
+      **2026-08-13 reversed that** — `seedNonTurnModel` writes the resolved answer the first
+      time the install can run something, because the second state could not be named on
+      screen. Unset now only describes an install before that first write.
 - [x] `non-turn-model.ts` — the resolver: req 9's derived default (first service, first
       billing mode, first model), the derived harness (first installed harness offering it),
       and the credential route + spawn shaping for it
@@ -365,3 +368,41 @@ the first of these. All six are fixed.
       stored row already held. It now compares by value, and withdraws a
       duplicate it created before the rule existed (narrowly: still its secret,
       still its generated label).
+- [x] **Background work named a state no one could read.** "On the default" /
+      "auto-configured" / "pinned" all needed a glossary, so the state went
+      instead of the wording: `seedNonTurnModel` writes the setting the first
+      time the install can run something, and only the user changes it after
+      that. The menu's "ShipIt's default" row goes with it, the section drops to
+      two rows (description over controls), and the line beneath the description
+      carries only the derived harness. Seeding is narrow — a value is written
+      only when there is none — so a chosen model whose credential goes away is
+      reported, not replaced.
+- [x] **Cross-backend review of that change — six findings, all fixed.** Adding the
+      first service from an open Settings tab never seeded (the seed now also
+      runs from `buildAgentListPayload`, which every credential mutation
+      broadcasts through); the section kept a stale resolution after a
+      credential change (the pair now rides `agent_list`, as the reviewer slots
+      do); a half-finished sign-in could be frozen as the permanent setting
+      (`requireReadyAccounts`); a harness only *assumed* installed could be too
+      (the seed checks the probed registry); a failed disk write was reported as
+      a successful one (`stampNonTurnModel` is atomic and rolls back); and a
+      `null` over the wire left the removed state behind (it re-proposes).
+- [x] **Second review round — two of those fixes missed a path, and one claim
+      was wrong.** The harness guard *declined to write* where the probe and the
+      install report disagreed, leaving no setting at all; it now steers the
+      walk (`HarnessSearchOpts.isInstalled`) instead of rejecting its result.
+      Cancelling a sign-in can reset a row to *ready* and announced only
+      `provider_accounts`, so that install stayed unseeded — the route now emits
+      `agent_list` too (producer census 10 → 11). And the claim that the new
+      store method closes a check/PUT race is withdrawn: Node runs one request
+      at a time and neither sequence yields, so the rollback is the reason the
+      method exists, not atomicity. One residual is recorded in `plan.md` rather
+      than fixed: a stale `agent_list` delivered after a newer PUT re-applies the
+      older value in the browser until the next event.
+- [x] **The single-credential card explained itself, and should say nothing.**
+      "One account — nothing to route between yet. Add a second to choose an
+      order and a strategy." came from the mock-up (audit cell D8) and was
+      rejected on sight. The routing band now appears only when there is
+      something to route between, which is what the code did before the audit
+      pass; `NothingToRouteYet` is deleted and D8 is closed as **(d)**, the
+      mock-up being wrong. Receipt dated 2026-08-13 in `requirements.md`.

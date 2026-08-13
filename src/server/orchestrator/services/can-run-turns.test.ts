@@ -336,10 +336,19 @@ describe("agent_list producers all carry canRunTurns", () => {
     // *Make primary* button, so its broadcast went too. Reordering — the verb
     // that survived — has a producer of its own and is unaffected. This is the
     // disappearing half of what the count is for.
+    //
+    // Ten became eleven with docs/252 req 9's seeding: `POST
+    // /api/provider-accounts/:provider/:id/login/cancel` announced only
+    // `provider_accounts`, and cancelling resets a row to **ready** when the
+    // account already holds credentials — a change in what the install can run,
+    // announced as a change to a row. The background-work setting is seeded and
+    // re-resolved from this payload, so that install sat unseeded until the next
+    // page load. Found by cross-backend review, and the appearing half of what
+    // the count is for.
     const producers = agentListProducers();
     expect(
       producers.length,
       producers.map((p) => `${p.where} — ${p.payload}`).join("\n"),
-    ).toBe(10);
+    ).toBe(11);
   });
 });

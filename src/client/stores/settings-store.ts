@@ -272,13 +272,14 @@ interface SettingsState {
    */
   credentialRoutes: CredentialRoute[];
   /**
-   * docs/252 phase 7 (req 9) — the model the user PINNED for non-turn work
-   * (session naming, pull-request descriptions), or `null` for "follow the
-   * install".
+   * docs/252 req 9 — the model non-turn work (session naming, pull-request
+   * descriptions) runs on.
    *
-   * `null` is a state, not a missing value: it is what makes the setting
-   * visibly derived rather than a hidden dependency on a vendor the user may
-   * stop paying for.
+   * `null` only before the server has ever written one — it seeds the setting
+   * the first time the install can run something, so on any configured install
+   * this holds a triple. It stopped meaning "follow the install" on 2026-08-13:
+   * that was a second state, and no wording for it survived contact with a
+   * reader.
    */
   nonTurnModel: { serviceId: string; billingMode: "sub" | "key"; modelId: string } | null;
   /**

@@ -100,14 +100,14 @@ No open questions remain.
    offered on more than one installed harness does not become a second decision for the
    user to make here.
 
-   That choice is **visible in the UI as its own setting**, and it has a default so
-   nobody has to configure it before ShipIt works. The default is **derived, not a named
-   model**: it is the first model the install can actually run — the first model of the
-   first service and billing mode — so it is never a model whose mode has no credential
-   (req 8) or whose harness was not installed (req 14). A default is acceptable where a hidden
-   dependency is not: the user can see what non-turn work runs on and change it, and
-   until they do it follows whatever the install has rather than pointing at a vendor
-   they may never have used or have stopped paying for.
+   That choice is **visible in the UI as its own setting**, and nobody has to configure it
+   before ShipIt works: **when the first service is configured, ShipIt fills the setting
+   in** with a model that install can run — so it is never a model whose mode has no
+   credential (req 8) or whose harness was not installed (req 14). From that moment it is
+   an ordinary setting that **only the user changes**. ShipIt does not re-point it when
+   services are added or removed, there is no state in which it is empty while a service
+   exists, and the screen therefore has no "default" to name or explain. A model that stops
+   being runnable is **reported**, not replaced.
 
    When that service fails, the surrounding operation still completes with a fallback
    — a session keeps its placeholder title, and a pull request gets a generic
@@ -308,6 +308,30 @@ No open questions remain.
 _None._
 
 ## Resolved questions
+
+- 2026-08-13 — Background work stated which model it runs on and whether that came from the
+  user or from ShipIt. Every word for the second half — "on the default", "auto-configured",
+  "pinned" — needed explaining: *"I don't understand on the default, auto-configured or
+  pinned. Even I, the developer, so I imagine the user would not understand what this
+  means."* **Chosen: remove the state rather than rename it.** *"Let's make it so ShipIt
+  proposes the default whenever the user configures something as the first service, and
+  that's it. The default becomes the changeable setting, so ShipIt does not update it
+  anymore."* Req 9's second paragraph rewritten: the setting is written once, when the first
+  service is configured, and only the user changes it after that. The consequences are
+  deliberate and were stated when the answer was given — a model that stops being runnable is
+  reported rather than silently replaced, and the model menu loses its "ShipIt's default" row,
+  since there is no unset state to return to. Seeding stays narrow — ShipIt writes a value
+  only when there is none — so it cannot become re-pointing under another name.
+
+- 2026-08-13 — Does a card holding one credential explain that there is nothing to route
+  between yet? **Chosen: no — it says nothing at all.** The mock-up carried the strip ("One
+  account — nothing to route between yet. Add a second to choose an order and a strategy."),
+  the UI audit adopted it as D8, and the human rejected it on sight in the dogfood instance:
+  "this is not needed, shouldn't be shown at all when there is only a single account." No
+  requirement changes — req 19 already refuses prose that reads the same on every install, and
+  the argument for keeping this one (a key card can never route, so explaining *that* absence
+  is noise, while this one names a reachable capability) was a carve-out req 19 does not
+  contain. The routing band now appears only when there is something to route between.
 
 - 2026-08-12 — A service card carries four sentences of explanation, an empty-state box and a
   row of model-id chips around a single credential row (272 px for 39 px of credential). How

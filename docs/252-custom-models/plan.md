@@ -2594,6 +2594,13 @@ has two states, and they are not the same thing: **unset** follows the install, 
 is a pin the user chose and ShipIt does not move. Only the second can go stale, and it is
 the one req 9's notice reports on.
 
+> **Superseded on 2026-08-13 — the setting now has one state.** Everything above about
+> *unset* still describes the resolver's fallback, but it is no longer a state the user can
+> be in: `seedNonTurnModel` writes the first eligible model the first time the install can
+> run something, and only the user changes it after that. See
+> *[One state, because the second one could not be named](#one-state-because-the-second-one-could-not-be-named)*.
+> The paragraph is kept because the first-eligible **rule** it defines is what gets written.
+
 A consequence worth accepting rather than designing around: the picker orders by
 capability, so the derived default is likely to be a *large* model doing work — session
 titles, PR descriptions — that a small one does fine. Nothing here says otherwise, and
@@ -3109,6 +3116,18 @@ Anthropic's refresh button. The one change it needs is `label` becoming optional
 it must name its account, in a row the row already does. A key reports no quota, so a key row
 has no pill and nothing explains the absence.
 
+**The routing band appears when there is something to route between, and says nothing when there
+is not.** One credential is the same absence as an API key's, and gets the same treatment: no
+band, no disabled controls, no sentence. The audit's D8 cell was taken the other way for one
+round — the mock-up's strip ("One account — nothing to route between yet. Add a second to choose
+an order and a strategy.") was built, on the argument that a key card can *never* route while
+this one names a capability the user can reach by doing one thing. The human rejected it on
+sight in the dogfood instance, and the argument was the flaw: req 19 refuses prose that reads
+the same on every install, and that distinction is a carve-out the requirement does not contain.
+Adding a credential is what the panel's one "Add a service" button is for; a line per
+single-credential service, on every visit to Settings, is not how it gets found. The receipt is
+dated 2026-08-13 in `requirements.md`.
+
 **The routing band's copy is kept — moved into tooltips, not rewritten and not dropped.** The
 band's four strings are what make the choice answerable; compacting the band must not cost them.
 Each one moves to the control it was already describing:
@@ -3326,6 +3345,104 @@ adoption imported, and whose label ShipIt still generated. Any of those failing
 means the row is the user's, and a duplicate they can see beats one deleted
 behind their back.
 
+### One state, because the second one could not be named
+
+**Background work, 2026-08-13.** The section reported which model it runs on *and* where that
+choice came from — and there was no word for the second half that a reader could use. "On the
+default", "auto-configured", "pinned" were all tried; the report on the third was *"I don't
+understand on the default, auto-configured or pinned. Even I, the developer, so I imagine the
+user would not understand what this means."*
+
+The instinct is to keep renaming. The answer was to **delete the state**: ShipIt writes the
+setting once, when the first service is configured, and only the user changes it afterwards.
+With one state there is nothing to name, and three things fall out of the design rather than
+being tidied up in it — the sentence explaining what the default follows, the line reporting
+which state is in force, and the model menu's "ShipIt's default" row, which existed only so the
+user could get back to the state that no longer exists.
+
+**The seed is on the READ path** (`seedNonTurnModel` in `services/settings.ts`), for the reason
+`resolveHarnessOnboarding` above it already argues: a mutation-site seed is a list that a
+newly-added credential path quietly falls off, and there are four such paths today — a pasted
+key, `upsertSingleStringCredential`, an account connecting, and boot-time env adoption. **Two**
+read paths call it, and between them they cover every way a credential can arrive:
+`getGlobalSettings`, which is every bootstrap, including an install that already had
+credentials before this existed; and `buildAgentListPayload`, which every credential mutation
+broadcasts through. The second was missing in the first cut and cross-backend review found what
+that cost: add the first service from an already-open Settings tab and nothing wrote the
+setting, so the section read "Nothing to run it on yet" over a runnable install — the
+empty-while-a-service-exists state req 9 forbids. The window before the first read is still not
+a gap: `resolveNonTurnModel` falls back to the first eligible model when nothing is stored, so
+background work runs, and it runs on the same model the seed then writes.
+
+**The setting rides `agent_list` too**, for the reason the reviewer slots do (docs/261): an open
+Settings tab that does not follow a credential change shows the answer from before it. The same
+review found the other half of that — remove the chosen model's credential and the section
+still read "Runs on Claude Code" while background work was already failing, because the warning
+is gated on the resolution being absent and the client had never been told it was. The pair
+ships as `null` rather than an omitted key, because for this pair the server *does* clear, and
+an omitted key cannot be told apart from an older server.
+
+**Only when there is none**, never over a value. That single condition is what keeps this from
+becoming re-pointing under another name, and it is the half that carries a cost: remove the
+credential the chosen model used and the setting still names it, so background work fails and
+says so, where an unset setting would have quietly moved to whatever survived. That is the
+trade the requirement asks for — "the default becomes the changeable setting, so ShipIt does
+not update it anymore" — and the warning that reports it is the one that already existed for a
+stale pin.
+
+**Three things it refuses to write, all from that review, and all the same mistake in different
+clothes — making a permanent decision out of something that was never settled.**
+
+- **An unfinished sign-in.** An account row exists from the moment a login starts, and
+  eligibility counts it because routing does. A write that outlives it must not: req 17 deletes
+  an abandoned attempt, and the setting would be left naming a service the user never
+  connected, with nothing to re-point it. `listConfiguredCredentials` grew a
+  `requireReadyAccounts` option for this one caller.
+- **A harness only assumed installed.** `isHarnessInstalled` answers *true for everything* when
+  a deployment ships no install report, so the catalogue walk can pick a model whose CLI is
+  absent. Survivable while the answer is re-derived every read; frozen, it is a permanent
+  failure. The `AgentRegistry` has probed `$PATH`, so the walk is given its answer instead —
+  via `HarnessSearchOpts.isInstalled`, so it **keeps walking**. The first version of this guard
+  rejected the walk's result instead of steering it, which left an install with no report and
+  one harness present holding no setting at all: the empty state req 9 removes, reached by the
+  code that exists to prevent it. A second review round caught that.
+- **A write that did not reach the disk.** `save()` logs and swallows, so a full or read-only
+  credentials directory would leave a value in memory that vanishes on restart — and, if
+  services changed meanwhile, seeds a *different* model next boot with no user action.
+  `CredentialStore.stampNonTurnModel` rolls a failed write back, the same bargain
+  `stampHarnessOnboardingCompleted` strikes one field over. It holds the emptiness check too,
+  so no caller can forget it — but **not** as a concurrency guard: this write-up claimed that
+  and the claim was withdrawn, because Node runs one request at a time and neither sequence
+  yields, so there was never a window for a concurrent PUT to slip into.
+
+**And `null` over the wire re-proposes rather than clearing.** `PUT /api/settings` still accepts
+`nonTurnModel: null`; nothing in the UI sends it, but a tab left open across a deploy can, and
+leaving the setting empty would restore the state this removed. The clear is now followed
+immediately by the same proposal a fresh install gets.
+
+**Cancelling a sign-in is a change in what the install can run.** `cancelAccountAuth` resets a
+row to *ready* when the account already holds credentials on disk, and that route announced it
+as `provider_accounts` alone — a change to a row. Since the seed rides `agent_list`, and since
+the seed deliberately ignores an account that is still `authenticating`, an install whose first
+ready credential arrives by cancelling out of a second sign-in sat unseeded until the next page
+load. The route now emits both. The `agent_list` producer census in `can-run-turns.test.ts`
+moves 10 → 11, which is that guard working as designed.
+
+**One residual, accepted rather than fixed.** The HTTP response to a model change and the
+`agent_list` event are separate transports, so an event *computed* before that write but
+*delivered* after it re-applies the older value in the browser. It needs a credential mutation
+concurrent with the model change, and it corrects itself on the next event or reload; the
+Reviewer tab has carried the identical exposure since docs/261. Closing it properly means
+versioning the payload, which is more mechanism than the window earns — but it is a real
+window, and it is recorded here rather than left for the next reviewer to re-find.
+
+**Two rows, not three columns**, in the same change. The description sat in a column beside the
+controls, wrapping at ~34 characters over seven lines; it is now above them, full width, and
+one sentence. The line beneath it carries only what the two controls cannot state — the derived
+harness — because they already name the service and the model. The description also stopped
+enumerating: "such as naming a session or writing a pull-request description" says the examples
+are examples, since the list of work ShipIt does outside a turn is not closed.
+
 ## Key files
 
 | File | Why it matters |
@@ -3352,11 +3469,11 @@ behind their back.
 | `client/components/Settings/ServicesPanel.tsx` | The card list and `AddServiceDialog` — the one way in (req 17), sign-in included |
 | `client/components/Settings/ProviderAccountRows.tsx` | The rows, plus what the dialog shares with them: `AccountChallenge`, `createAccountAndStartLogin`, `abandonAccount`, `signInBlockedReason` |
 | `orchestrator/session-namer.ts` | Naming's CLI shell-out, now pointed at the resolved selection and reporting its telemetry (req 9) |
-| `client/components/Settings/ServiceCard.tsx` | The **one** card the Services list is built from: chrome only — avatar, service name, billing-mode and count pills, one action, model chips, the shaded routing band. No credential logic |
+| `client/components/Settings/ServiceCard.tsx` | The **one** card the Services list is built from: chrome only — avatar, service name, billing-mode and count pills, the `N models` control, and the routing band when there is something to route between. **No card action** (req 17) and no credential logic |
 | `client/components/Settings/ServicesPanel.tsx` | The list and the add-flow. Decides which bodies go in a card, what the routing band holds, and what a credential of that mode is called |
 | `client/components/Settings/ProviderAccountRows.tsx` | Was `ProviderAccountsCard`. The account rows, the login challenge and their notices — a body, not a card. `AddAccountButton` is its header half |
 | `client/components/Settings/CredentialRouting.tsx` | `CredentialSelectionModeControl` + `FailoverCutoffControls`, keyed by `(service, billing mode)`. Replaced the two copies of the selection mode that wrote the same key |
-| `client/components/Settings/BackgroundWorkSection.tsx` | The visible setting (req 9), with the derived default labelled and the harness shown as a fact |
+| `client/components/Settings/BackgroundWorkSection.tsx` | The visible setting (req 9): one state, seeded by `seedNonTurnModel`, with the derived harness shown as a fact |
 | `client/components/NonTurnFailureCard.tsx` | The dismissible notice; dismissal is state on the persisted row, never its removal |
 
 ## Appendix A — findings from the spike

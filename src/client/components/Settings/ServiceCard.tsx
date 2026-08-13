@@ -184,20 +184,3 @@ export function ServiceCard({
     </div>
   );
 }
-
-/**
- * The subscription card with exactly one credential.
- *
- * Kept, where the API-key card's "no failover here" sentence was cut, because
- * the two absences are not the same absence: a key card can *never* route, so
- * explaining it is noise repeated once per key service, while this one names a
- * capability the user can reach by doing one thing. It sits in the routing slot
- * so the band is where routing always is, present or not.
- */
-export function NothingToRouteYet({ noun }: { noun: string }) {
-  return (
-    <p className="text-xs text-(--color-text-tertiary)" data-testid="service-routing-empty">
-      One {noun} — nothing to route between yet. Add a second to choose an order and a strategy.
-    </p>
-  );
-}
