@@ -497,7 +497,16 @@ are first-wins and scoped to one `executeAgentTurn` call. For a resident
 streaming process the wake turn runs through the *previous* turn's still-attached
 listener closure, so all of them were already tripped and its `agent_result`
 returned early. The executor now listens for `agent_self_wake` itself and hands
-that closure a fresh set — `rearmForSelfWokenTurn`.
+that closure a fresh set — `rearmForCliStartedTurn` (named `rearmForSelfWokenTurn`
+when this shipped; docs/140 Phase 6.11 added a second edge — top-level assistant
+output after a turn's `result` — and renamed it).
+
+**Caveat on edge signal 1 above, added by docs/140 Phase 6.11:** a `system/init`
+is NOT on its own proof that a turn started. The CLI also emits one in reply to a
+`set_permission_mode` control_request, with no turn behind it and no `result` to
+follow — so adopting on a bare init can wedge a session as permanently busy. The
+`task_notification` edge is unaffected (it genuinely precedes a wake turn); the
+init half of this sentence should not be reused as an adoption signal.
 
 Three gates make the re-arm safe, and each is pinned by a test in
 `turn-self-wake-commit.test.ts` that fails without it:
@@ -537,7 +546,7 @@ shell work a supported persistence primitive.
 
 ## Key files
 
-- `src/server/orchestrator/turn-executor.ts` — `rearmForSelfWokenTurn` (§7) and
+- `src/server/orchestrator/turn-executor.ts` — `rearmForCliStartedTurn` (§7) and
   the post-turn guards it re-arms
 - `src/server/orchestrator/turn-self-wake-commit.test.ts` — §7's regression tests
 - `src/server/orchestrator/idle-enforcer.ts` — count-based idle eviction

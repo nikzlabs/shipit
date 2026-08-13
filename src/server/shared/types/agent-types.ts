@@ -225,6 +225,32 @@ export interface AgentCapabilities {
    */
   supportsSteering: boolean;
   /**
+   * Whether the backend's process stays resident BETWEEN turns and can start a
+   * turn ShipIt never asked for — a `Bash(run_in_background)` job finishing
+   * (docs/235), or a live steer it acked too late to apply to the finishing
+   * turn (docs/140 Phase 6.11). The orchestrator adopts such a turn when it
+   * sees top-level assistant output after a `result`, so this flag is what
+   * keeps that inference off backends where the same shape means something
+   * else.
+   *
+   * **Claude: true** — the streaming CLI is one resident process across turns.
+   * **Codex: false** — the app-server is killed at `turn/completed`, and it
+   * routinely emits the turn's FINAL assistant text *after* `turn/completed`
+   * (see the `pendingCommitLink` comment in `agent-listeners.ts`). Those late
+   * events belong to the turn that just ended; adopting them would mark the
+   * session busy for a turn that will never produce another `result`.
+   *
+   * Deliberately NOT `supportsSteering`: both backends steer, but only one
+   * survives its own turn boundary. Deliberately not read from
+   * `AgentProcess.capabilities` either — `ProxyAgentProcess` hardcodes
+   * defaults; resolve it through the agent registry, as `useStreaming` is.
+   *
+   * Optional, and absent means **false**: adoption is an inference about a
+   * backend's process model, and a backend that has not declared one must not
+   * have it guessed on its behalf.
+   */
+  startsOwnTurns?: boolean;
+  /**
    * Whether the agent backend can compact its own context — both summarizing on
    * demand (the `/compact` composer command) and emitting native compaction
    * signals ShipIt renders inline (docs/178). Claude Code: true (the CLI's
@@ -418,13 +444,31 @@ export interface AgentSteerRejectedEvent {
  *
  * A live steer is written to the resident process's stdin while `running` is
  * still `true`, but the CLI only applies a steered message at its next decision
- * point (a tool return). When the model is *wrapping up* there is no next
- * decision point, so a steer injected in that window never lands in the turn —
- * the turn ends with a `result` and the message is silently lost (it stays in
- * the transcript but the agent never acts on it). The CLI echoes every user
- * message it actually accepts into a turn; the orchestrator matches this echo
- * against the steer it sent, and any steer NOT echoed before the turn's
- * `result` is re-queued so it runs as a fresh turn instead of vanishing.
+ * point (a tool return). A steer injected while the model is *wrapping up* has
+ * **three** possible outcomes, not two:
+ *
+ *   1. **It lands in the turn.** The model reaches a decision point, acts on it,
+ *      and the CLI echoes it — the ordinary case.
+ *   2. **It is silently lost.** There is no next decision point left, the turn
+ *      ends with a `result`, and no echo ever arrives. The message would stay in
+ *      the transcript with the agent never acting on it, so the orchestrator
+ *      re-queues every steer NOT echoed before the `result` and runs it as a
+ *      fresh turn instead (`requeueUndeliveredSteers`).
+ *   3. **The CLI takes it and runs it as its OWN turn after the `result`.** The
+ *      echo fires — the CLI accepted the message — but the model applies it in a
+ *      turn that starts *after* the orchestrator has finalized the current one.
+ *      The message is neither lost nor part of the finishing turn, so it must
+ *      NOT be re-queued (that would double-process it); instead the orchestrator
+ *      adopts the follow-on turn when that turn produces its first top-level
+ *      assistant output (`adoptCliStartedTurn` in `agent-listeners.ts`). Nothing
+ *      announces it — the CLI's `init` is emitted for `set_permission_mode` too,
+ *      with no turn behind it — so the model talking is the first proof it
+ *      exists. Observed in production 2026-08-13: the session read as idle for
+ *      5.5 minutes while the agent worked, with no post-turn commit armed for
+ *      its edits.
+ *
+ * So this ack means "the CLI received it", not "the model applied it in the
+ * finishing turn" — outcome 3 is exactly where those two come apart.
  *
  * `text` is the echoed user-message text (the assembled prompt the CLI
  * received). NOT chat content — `agent-listeners` consumes it for ack tracking

@@ -378,6 +378,709 @@ describe("post-turn flow for a self-woken turn", () => {
   });
 
   /**
+   * docs/140 — the OTHER way the CLI starts a turn nobody asked for, and the one
+   * production hit on 2026-08-13: a live steer that arrives as the turn is
+   * wrapping up. The CLI acks it (`--replay-user-messages`), so it is correctly
+   * NOT re-queued — but it had no decision point left to apply it at, so it runs
+   * the message as its own turn once the current one ends. Nothing announces
+   * that turn — there is no `task_notification`, and the CLI's `init` is not
+   * proof of one — so the model producing top-level output is the adoption edge.
+   * Before this the session read as idle for 5.5 minutes and the response's
+   * edits reached git only because an unrelated self-wake happened to re-arm the
+   * flow later.
+   */
+  it("commits a turn the CLI started on its own after acking a late live steer", async () => {
+    const filePath = path.join(repoDir, "file.txt");
+    const h = await runFirstStreamingTurn({
+      onRun: () => fs.writeFileSync(filePath, "turn-1 work\n"),
+    });
+
+    // The user steers while turn 1 is wrapping up, and the CLI echoes it back.
+    h.runner.steeredMessages = [
+      { afterGroupIndex: 1, text: "rename the folder too", assembledPrompt: "rename the folder too" },
+    ];
+    h.agent.emit("event", {
+      type: "agent_assistant",
+      content: [{ type: "text", text: "Both done." }],
+    });
+    h.agent.emit("event", { type: "agent_user_replay", text: "rename the folder too" });
+    expect(h.runner.steeredMessages[0].delivered).toBe(true);
+
+    // Turn 1 ends WITHOUT having applied the steer. Its own flow fires and trips
+    // every guard; the acked steer is left alone (no re-queue).
+    h.agent.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitFor(() => h.settledTurns() === 1, "turn 1 post-turn flow settled");
+    expect(commitSubjects()).toHaveLength(2);
+    expect(h.runner.running).toBe(false);
+    expect(h.runner.queueLength).toBe(0);
+
+    // The CLI now runs the acked steer as its own turn, with NO
+    // `task_notification` anywhere. Its `init` alone changes nothing — see the
+    // `set_permission_mode` test below for why that is deliberate.
+    h.agent.emit("event", { type: "agent_init", agentId: "claude", sessionId: "agent-sid" });
+    await flush();
+    expect(h.runner.running).toBe(false);
+
+    // The model talks: that is the turn, and the adoption edge.
+    fs.writeFileSync(filePath, "steered work\n");
+    h.agent.emit("event", {
+      type: "agent_assistant",
+      content: [{ type: "text", text: "Renamed the folder" }],
+    });
+    await flush();
+    await flush();
+    // The session reads as busy for the response…
+    expect(h.runner.running).toBe(true);
+    // …on a clean accumulator: turn 1's group is gone, so the adopted turn's
+    // `agent_result` cannot re-persist it.
+    expect(h.runner.chatMessageGroups.map((g) => g.text)).toEqual(["Renamed the folder"]);
+
+    h.agent.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+
+    await waitFor(() => h.postTurnPrFlow.mock.calls.length === 2, "cli-started turn post-turn flow ran");
+    const subjects = commitSubjects();
+    expect(subjects).toHaveLength(3);
+    expect(subjects[0]).toBe("Renamed the folder");
+    expect(gitOut("show", "HEAD:file.txt")).toBe("steered work\n");
+    expect(gitOut("status", "--porcelain")).toBe("");
+    expect(h.scheduleAutoPush).toHaveBeenCalledTimes(2);
+    expect(h.runner.running).toBe(false);
+
+    h.runner.dispose({ force: true });
+  });
+
+  /**
+   * Why the edge is the model TALKING and not the CLI's `init`, which looks like
+   * the obvious announcement (docs/235's probe names it as one).
+   * `StreamingClaudeProcess.setPermissionMode` pushes a `set_permission_mode`
+   * control_request, and the CLI answers it with a fresh `init` — no turn, and
+   * so no later `result` to clear `running` again. Steering pushes the mode
+   * change and the message as two independent worker calls, so that init can
+   * land after the finishing turn's `result`. Adopting it would wedge the
+   * session as busy forever.
+   */
+  it("does not adopt a bare post-result init (the set_permission_mode control response)", async () => {
+    const filePath = path.join(repoDir, "file.txt");
+    const h = await runFirstStreamingTurn({
+      onRun: () => fs.writeFileSync(filePath, "turn-1 work\n"),
+    });
+
+    h.agent.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitFor(() => h.settledTurns() === 1, "turn 1 post-turn flow settled");
+    expect(h.runner.running).toBe(false);
+
+    // The control response's init arrives after the turn ended, and no turn follows.
+    h.agent.emit("event", { type: "agent_init", agentId: "claude", sessionId: "agent-sid" });
+    await flush();
+    await flush();
+
+    expect(h.runner.running).toBe(false);
+    expect(h.postTurnPrFlow).toHaveBeenCalledTimes(1);
+
+    h.runner.dispose({ force: true });
+  });
+
+  /**
+   * docs/140 Phase 6.11 — the adoption is gated on a CAPABILITY
+   * (`startsOwnTurns`), not on `useStreaming`, because on Codex the very shape
+   * it keys on means the opposite. Codex steers (so it streams) but its
+   * app-server is killed at `turn/completed`, and it routinely emits the turn's
+   * FINAL assistant text AFTER that — including the synthetic
+   * `isStreamCompletion` event that exists to fix the commit summary. Adopting
+   * those would mark the session busy for a turn that will never produce
+   * another `result`: a permanently busy session.
+   */
+  it("does not adopt a backend that cannot start its own turns (Codex's late final text)", async () => {
+    const filePath = path.join(repoDir, "file.txt");
+    const runner = new SessionRunner({
+      sessionId: "s1",
+      sessionDir: repoDir,
+      defaultAgentId: "claude" as AgentId,
+    });
+    const agent = makeFakeAgent(() => fs.writeFileSync(filePath, "turn-1 work\n"));
+    const drainNext = vi.fn(async () => {});
+    let settledTurns = 0;
+    runner.on("idle", () => { settledTurns += 1; });
+
+    const deps: SystemTurnDeps = {
+      agentFactory: () => agent as unknown as ReturnType<SystemTurnDeps["agentFactory"]>,
+      autoCommit: realAutoCommit,
+      scheduleAutoPush: vi.fn(),
+      postTurnPrFlow: vi.fn(async () => {}),
+      listenerDeps: makeListenerDeps(),
+      buildRunParams: vi.fn().mockResolvedValue({ prompt: "p", cwd: repoDir }),
+    };
+
+    await executeAgentTurn(runner, deps, agent as never, {
+      agentId: "codex" as AgentId,
+      sessionId: "s1",
+      prompt: "p",
+      userText: "do the thing",
+      emitUserEcho: false,
+      persistUserMessage: vi.fn(),
+      isNewSession: false,
+      fallbackTitle: "t",
+      turnStartHeadHash: null,
+      drainNext,
+      emit: () => {},
+      // Codex: steering-capable (so streaming) but NOT resident across turns —
+      // the executor derives that from `agentId` via the harness catalogue.
+      useStreaming: true,
+      emitErrorOnNoResult: true,
+    });
+    await waitFor(() => agent.run.mock.calls.length === 1, "turn 1 started");
+
+    agent.emit("event", {
+      type: "agent_assistant",
+      content: [{ type: "text", text: "." }],
+    });
+    agent.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitFor(() => settledTurns === 1, "turn 1 settled");
+
+    // The turn's real final text arrives AFTER `turn/completed` — the documented
+    // Codex ordering — as the stream-completion re-emit.
+    agent.emit("event", {
+      type: "agent_assistant",
+      content: [{ type: "text", text: "Renamed the folder" }],
+      isStreamCompletion: true,
+    });
+    await flush();
+    await flush();
+
+    // Not a new turn: the session stays idle and nothing is re-armed.
+    expect(runner.running).toBe(false);
+    expect(settledTurns).toBe(1);
+    expect(drainNext).toHaveBeenCalledTimes(1);
+    expect(commitSubjects()).toHaveLength(2);
+
+    runner.dispose({ force: true });
+  });
+
+  /**
+   * The complement of the adoption edge: assistant output that is NOT a new
+   * turn. Mid-turn output is just this turn talking, and a backgrounded
+   * subagent keeps talking after the parent turn's `result` — adopting either
+   * would let the running turn's `agent_result` run the post-turn flow twice.
+   */
+  it("ignores mid-turn output and a backgrounded subagent's output after the result", async () => {
+    const filePath = path.join(repoDir, "file.txt");
+    const h = await runFirstStreamingTurn({
+      onRun: () => fs.writeFileSync(filePath, "mid-turn work\n"),
+    });
+
+    h.agent.emit("event", {
+      type: "agent_assistant",
+      content: [{ type: "text", text: "Working on it" }],
+    });
+    await flush();
+    expect(h.runner.running).toBe(true); // still turn 1, never interrupted
+
+    h.agent.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitFor(() => h.settledTurns() === 1, "post-turn flow settled");
+
+    // A backgrounded Task subagent reports after the parent turn ended. Its
+    // events carry `parentToolUseId` — not a turn.
+    h.agent.emit("event", {
+      type: "agent_assistant",
+      parentToolUseId: "task-1",
+      content: [{ type: "text", text: "subagent still going" }],
+    });
+    await flush();
+    await flush();
+
+    expect(h.runner.running).toBe(false);
+    expect(h.postTurnPrFlow).toHaveBeenCalledTimes(1);
+    expect(h.autoCommit).toHaveBeenCalledTimes(1);
+    expect(h.drainNext).toHaveBeenCalledTimes(1);
+    expect(commitSubjects()).toHaveLength(2);
+
+    h.runner.dispose({ force: true });
+  });
+
+  /**
+   * docs/140 — the finished turn's own post-turn flow must not undo the
+   * adoption. `tryDrain` runs a few awaits after `agent_result` and clears
+   * `running`; a turn adopted inside that window would be put back to IDLE for
+   * its whole response — the original symptom, restored by the fix's own
+   * sequence — and the drain would start a queued turn CONCURRENTLY with the
+   * turn the CLI is running.
+   */
+  it("does not clear running or drain when a CLI-started turn was adopted mid-sequence", async () => {
+    const filePath = path.join(repoDir, "file.txt");
+    const runner = new SessionRunner({
+      sessionId: "s1",
+      sessionDir: repoDir,
+      defaultAgentId: "claude" as AgentId,
+    });
+    const agent = makeFakeAgent(() => fs.writeFileSync(filePath, "turn-1 work\n"));
+
+    // Park the token sync — the step BEFORE `tryDrain` — so the adoption lands
+    // while the finished turn's sequence is still upstream of the drain.
+    let releaseSync: () => void = () => {};
+    let signalSyncEntered: () => void = () => {};
+    const parked = new Promise<void>((r) => { releaseSync = r; });
+    const syncEntered = new Promise<void>((r) => { signalSyncEntered = r; });
+    const finalizeAgentEnv = vi.fn(async () => {
+      signalSyncEntered();
+      await parked;
+    });
+    const drainNext = vi.fn(async () => {});
+
+    const deps: SystemTurnDeps = {
+      agentFactory: () => agent as unknown as ReturnType<SystemTurnDeps["agentFactory"]>,
+      autoCommit: realAutoCommit,
+      scheduleAutoPush: vi.fn(),
+      postTurnPrFlow: vi.fn(async () => {}),
+      finalizeAgentEnv,
+      listenerDeps: makeListenerDeps(),
+      buildRunParams: vi.fn().mockResolvedValue({ prompt: "p", cwd: repoDir }),
+    };
+
+    await executeAgentTurn(runner, deps, agent as never, {
+      agentId: "claude" as AgentId,
+      sessionId: "s1",
+      prompt: "p",
+      userText: "do the thing",
+      emitUserEcho: false,
+      persistUserMessage: vi.fn(),
+      isNewSession: false,
+      fallbackTitle: "t",
+      turnStartHeadHash: null,
+      drainNext,
+      emit: () => {},
+      useStreaming: true,
+      emitErrorOnNoResult: true,
+    });
+    await waitFor(() => agent.run.mock.calls.length === 1, "turn 1 started");
+
+    agent.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await syncEntered;
+
+    // The CLI-started turn begins while turn 1's sequence is parked before its drain.
+    agent.emit("event", {
+      type: "agent_assistant",
+      content: [{ type: "text", text: "Renamed the folder" }],
+    });
+    await flush();
+    expect(runner.running).toBe(true);
+
+    releaseSync();
+    await flush();
+    await flush();
+    await flush();
+
+    // The drain stood down: the session stays busy for the adopted turn, and no
+    // queued turn was started alongside it.
+    expect(runner.running).toBe(true);
+    expect(drainNext).not.toHaveBeenCalled();
+
+    // The adopted turn ends and drains for itself.
+    agent.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitFor(() => drainNext.mock.calls.length === 1, "adopted turn drained");
+    expect(runner.running).toBe(false);
+
+    runner.dispose({ force: true });
+  });
+
+  /**
+   * docs/140 — the re-arm awaits the finished turn's whole post-turn sequence
+   * (commit + PR round-trip), and the CLI is not paused by that await. A short
+   * adopted turn — "rename the folder" is exactly that — can reach its `result`
+   * first; reading the stale guard there would discard it and leave the turn
+   * with no drain, no commit and no settlement: the same bug, one window
+   * narrower. The adopted turn's `result` must therefore WAIT for the hand-over
+   * rather than read a flag that is still the finished turn's.
+   *
+   * Two things overlap here on purpose, and the assertions distinguish them:
+   *
+   *   - The adopted turn's post-turn flow runs (a SECOND drain, and the session
+   *     settles idle). Without the wait, `drainNext` stays at one call forever.
+   *   - The finished turn commits under ITS OWN summary. Adoption clears
+   *     `turnSummary` via `resetRunnerTurnState`, so a commit that read the live
+   *     value here would label turn 1's work "Renamed the folder" — or, with no
+   *     adopted text yet, the "Agent turn" fallback.
+   *
+   * Known residual, asserted rather than wished away: an adopted turn that edits
+   * the tree BEFORE the finished turn's `git add -A` has those edits swept into
+   * the finished turn's commit. The work reaches git (the tree ends clean and
+   * the adopted turn's own commit is then a no-op) — only the attribution is the
+   * previous turn's, for the sub-second window between `result` and the commit.
+   * Fixing that would need per-turn path tracking through `git add -A`; the
+   * outcome is a commit message, not lost work.
+   */
+  it("runs the post-turn flow for an adopted turn that finishes before the re-arm settles", async () => {
+    const filePath = path.join(repoDir, "file.txt");
+    const runner = new SessionRunner({
+      sessionId: "s1",
+      sessionDir: repoDir,
+      defaultAgentId: "claude" as AgentId,
+    });
+    const agent = makeFakeAgent(() => fs.writeFileSync(filePath, "turn-1 work\n"));
+
+    // Turn 1's drain is slow (a queued-turn commit + a GitHub round-trip are
+    // seconds of real work), so the re-arm behind it is still waiting.
+    let releaseDrain: () => void = () => {};
+    let signalDrainEntered: () => void = () => {};
+    const parked = new Promise<void>((r) => { releaseDrain = r; });
+    const drainEntered = new Promise<void>((r) => { signalDrainEntered = r; });
+    let drainCalls = 0;
+    const drainNext = vi.fn(async () => {
+      drainCalls += 1;
+      if (drainCalls === 1) {
+        signalDrainEntered();
+        await parked;
+      }
+    });
+    let settledTurns = 0;
+    runner.on("idle", () => { settledTurns += 1; });
+
+    const deps: SystemTurnDeps = {
+      agentFactory: () => agent as unknown as ReturnType<SystemTurnDeps["agentFactory"]>,
+      autoCommit: realAutoCommit,
+      scheduleAutoPush: vi.fn(),
+      postTurnPrFlow: vi.fn(async () => {}),
+      listenerDeps: makeListenerDeps(),
+      buildRunParams: vi.fn().mockResolvedValue({ prompt: "p", cwd: repoDir }),
+    };
+
+    await executeAgentTurn(runner, deps, agent as never, {
+      agentId: "claude" as AgentId,
+      sessionId: "s1",
+      prompt: "p",
+      userText: "do the thing",
+      emitUserEcho: false,
+      persistUserMessage: vi.fn(),
+      isNewSession: false,
+      fallbackTitle: "t",
+      turnStartHeadHash: null,
+      drainNext,
+      emit: () => {},
+      useStreaming: true,
+      emitErrorOnNoResult: true,
+    });
+    await waitFor(() => agent.run.mock.calls.length === 1, "turn 1 started");
+
+    agent.emit("event", {
+      type: "agent_assistant",
+      content: [{ type: "text", text: "Both done." }],
+    });
+    agent.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await drainEntered;
+
+    // The whole adopted turn — output AND result — lands while the re-arm is
+    // still blocked on turn 1's parked sequence.
+    fs.writeFileSync(filePath, "steered work\n");
+    agent.emit("event", {
+      type: "agent_assistant",
+      content: [{ type: "text", text: "Renamed the folder" }],
+    });
+    await flush();
+    expect(runner.running).toBe(true);
+    agent.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await flush();
+
+    releaseDrain();
+
+    // The adopted turn's result was not discarded: it drained for itself and
+    // settled the session.
+    await waitFor(() => drainCalls === 2, "adopted turn drained for itself");
+    await waitFor(() => settledTurns === 2, "adopted turn settled");
+    expect(runner.running).toBe(false);
+
+    // Turn 1 committed under its own summary, snapshot at its `result` — not
+    // under the adopted turn's text, and not under the "Agent turn" fallback.
+    expect(commitSubjects()[0]).toBe("Both done.");
+    // The work is in git either way, and nothing is left in the tree.
+    expect(gitOut("show", "HEAD:file.txt")).toBe("steered work\n");
+    expect(gitOut("status", "--porcelain")).toBe("");
+
+    runner.dispose({ force: true });
+  });
+
+  /**
+   * docs/140 — the hand-over is not only `agent_result`'s business. An adopted
+   * turn can DIE (adapter error, crash, OOM) while its re-arm is still awaiting
+   * the predecessor's post-turn sequence. Those terminal paths read the
+   * predecessor's latched `drainFired` and already-settled commit memos, so
+   * without waiting they no-op — and the re-arm then clears the memos with no
+   * terminal event left to invoke them, leaving the adopted turn's edits in the
+   * working tree.
+   */
+  it("commits AND finalizes an adopted turn that crashes while the re-arm is pending", async () => {
+    const filePath = path.join(repoDir, "file.txt");
+    const runner = new SessionRunner({
+      sessionId: "s1",
+      sessionDir: repoDir,
+      defaultAgentId: "claude" as AgentId,
+    });
+    const agent = makeFakeAgent(() => fs.writeFileSync(filePath, "turn-1 work\n"));
+
+    // Park turn 1's sequence in its PR round-trip — AFTER its own commit, so
+    // that commit cannot sweep up the adopted turn's edits and mask the bug.
+    // This is the reviewer's exact scenario: "predecessor commit completes but
+    // its PR round-trip keeps `streamingPostTurn` pending".
+    let releasePr: () => void = () => {};
+    let signalPrEntered: () => void = () => {};
+    const parked = new Promise<void>((r) => { releasePr = r; });
+    const prEntered = new Promise<void>((r) => { signalPrEntered = r; });
+    let prCalls = 0;
+    const postTurnPrFlow = vi.fn(async () => {
+      prCalls += 1;
+      if (prCalls === 1) {
+        signalPrEntered();
+        await parked;
+      }
+    });
+
+    const listenerDeps = makeListenerDeps();
+    const deps: SystemTurnDeps = {
+      agentFactory: () => agent as unknown as ReturnType<SystemTurnDeps["agentFactory"]>,
+      autoCommit: realAutoCommit,
+      scheduleAutoPush: vi.fn(),
+      postTurnPrFlow,
+      listenerDeps,
+      buildRunParams: vi.fn().mockResolvedValue({ prompt: "p", cwd: repoDir }),
+    };
+
+    await executeAgentTurn(runner, deps, agent as never, {
+      agentId: "claude" as AgentId,
+      sessionId: "s1",
+      prompt: "p",
+      userText: "do the thing",
+      emitUserEcho: false,
+      persistUserMessage: vi.fn(),
+      isNewSession: false,
+      fallbackTitle: "t",
+      turnStartHeadHash: null,
+      drainNext: vi.fn(async () => {}),
+      emit: () => {},
+      useStreaming: true,
+      emitErrorOnNoResult: true,
+    });
+    await waitFor(() => agent.run.mock.calls.length === 1, "turn 1 started");
+
+    agent.emit("event", {
+      type: "agent_assistant",
+      content: [{ type: "text", text: "Both done." }],
+    });
+    agent.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await prEntered;
+    const finalizedBefore = (listenerDeps.chatHistoryManager.finalizeInProgress as ReturnType<typeof vi.fn>).mock.calls.length;
+    // Turn 1 has already committed its own work; the tree is clean.
+    expect(gitOut("status", "--porcelain")).toBe("");
+
+    // The adopted turn starts, edits the tree, and dies WITHOUT a result while
+    // turn 1's PR round-trip — and so the re-arm behind it — is still pending.
+    agent.emit("event", {
+      type: "agent_assistant",
+      content: [{ type: "text", text: "Renaming the folder" }],
+    });
+    await flush();
+    expect(runner.running).toBe(true);
+    fs.writeFileSync(filePath, "steered work\n");
+    agent.emit("done", 137);
+    await flush();
+
+    releasePr();
+
+    // The crashed turn's edits are in git, not stranded in the working tree,
+    // and under its own summary — its terminal path waited for the hand-over
+    // instead of no-oping on the predecessor's settled commit memo.
+    await waitFor(() => gitOut("status", "--porcelain") === "", "adopted turn's edits committed");
+    expect(gitOut("show", "HEAD:file.txt")).toBe("steered work\n");
+    expect(commitSubjects()[0]).toBe("Renaming the folder");
+    // …and the session does not stay busy for a turn whose process is gone.
+    await waitFor(() => !runner.running, "session settled after the crash");
+
+    // Its ANSWER survives too. `receivedResult` stays true from turn 1, so
+    // without widening the partial-turn finalize this turn's streamed rows would
+    // be left `in_progress` for the next turn's `replaceInProgress` to delete —
+    // the same chat-history loss this phase exists to stop.
+    const finalize = listenerDeps.chatHistoryManager.finalizeInProgress as ReturnType<typeof vi.fn>;
+    expect(finalize.mock.calls.length).toBeGreaterThan(finalizedBefore);
+    const replace = listenerDeps.chatHistoryManager.replaceInProgress as ReturnType<typeof vi.fn>;
+    const lastRows = replace.mock.calls[replace.mock.calls.length - 1]?.[1] as { text?: string }[];
+    expect(lastRows.map((r) => r.text)).toContain("Renaming the folder");
+
+    runner.dispose({ force: true });
+  });
+
+  /**
+   * docs/140 — the same hand-over, reached through the ADAPTER-ERROR path
+   * rather than `done`. A dispatched crash lands here (`codex/adapter.ts`
+   * `initializeAndRun(...).catch`, a worker `agent_error` whose `agent_done`
+   * never arrives), and it has its own drain+commit sequence — which would
+   * otherwise run against the predecessor's settled memos.
+   */
+  it("commits an adopted turn that errors while the re-arm is pending", async () => {
+    const filePath = path.join(repoDir, "file.txt");
+    const runner = new SessionRunner({
+      sessionId: "s1",
+      sessionDir: repoDir,
+      defaultAgentId: "claude" as AgentId,
+    });
+    const agent = makeFakeAgent(() => fs.writeFileSync(filePath, "turn-1 work\n"));
+
+    let releasePr: () => void = () => {};
+    let signalPrEntered: () => void = () => {};
+    const parked = new Promise<void>((r) => { releasePr = r; });
+    const prEntered = new Promise<void>((r) => { signalPrEntered = r; });
+    let prCalls = 0;
+    const postTurnPrFlow = vi.fn(async () => {
+      prCalls += 1;
+      if (prCalls === 1) {
+        signalPrEntered();
+        await parked;
+      }
+    });
+
+    const deps: SystemTurnDeps = {
+      agentFactory: () => agent as unknown as ReturnType<SystemTurnDeps["agentFactory"]>,
+      autoCommit: realAutoCommit,
+      scheduleAutoPush: vi.fn(),
+      postTurnPrFlow,
+      listenerDeps: makeListenerDeps(),
+      buildRunParams: vi.fn().mockResolvedValue({ prompt: "p", cwd: repoDir }),
+    };
+
+    await executeAgentTurn(runner, deps, agent as never, {
+      agentId: "claude" as AgentId,
+      sessionId: "s1",
+      prompt: "p",
+      userText: "do the thing",
+      emitUserEcho: false,
+      persistUserMessage: vi.fn(),
+      isNewSession: false,
+      fallbackTitle: "t",
+      turnStartHeadHash: null,
+      drainNext: vi.fn(async () => {}),
+      emit: () => {},
+      useStreaming: true,
+      emitErrorOnNoResult: true,
+    });
+    await waitFor(() => agent.run.mock.calls.length === 1, "turn 1 started");
+
+    agent.emit("event", {
+      type: "agent_assistant",
+      content: [{ type: "text", text: "Both done." }],
+    });
+    agent.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await prEntered;
+    expect(gitOut("status", "--porcelain")).toBe("");
+
+    agent.emit("event", {
+      type: "agent_assistant",
+      content: [{ type: "text", text: "Renaming the folder" }],
+    });
+    await flush();
+    expect(runner.running).toBe(true);
+    fs.writeFileSync(filePath, "steered work\n");
+    agent.emit("error", new Error("worker agent_error"));
+    await flush();
+
+    releasePr();
+
+    await waitFor(() => gitOut("status", "--porcelain") === "", "errored adopted turn's edits committed");
+    expect(gitOut("show", "HEAD:file.txt")).toBe("steered work\n");
+    expect(commitSubjects()[0]).toBe("Renaming the folder");
+
+    runner.dispose({ force: true });
+  });
+
+  /**
+   * docs/140 — `tryDrain` checks ownership, then AWAITS the queued-turn commit
+   * before draining. The check is stale by the time that await returns: a
+   * CLI-started turn adopted during the commit would otherwise have a queued
+   * turn started concurrently with it, which respawns the agent, removes the
+   * adopted turn's listeners and resets its accumulator mid-response.
+   */
+  it("re-checks ownership after the queued-turn commit before draining", async () => {
+    const filePath = path.join(repoDir, "file.txt");
+    const runner = new SessionRunner({
+      sessionId: "s1",
+      sessionDir: repoDir,
+      defaultAgentId: "claude" as AgentId,
+    });
+    const agent = makeFakeAgent(() => fs.writeFileSync(filePath, "turn-1 work\n"));
+    const drainNext = vi.fn(async () => {});
+
+    // A message is queued behind turn 1, so `tryDrain` commits before draining.
+    runner.enqueue({ text: "next please", execution: "interactive" });
+
+    // Park inside that commit — the window between the ownership check and the
+    // drain — and adopt a CLI-started turn there.
+    let releaseCommit: () => void = () => {};
+    let signalCommitEntered: () => void = () => {};
+    const parked = new Promise<void>((r) => { releaseCommit = r; });
+    const commitEntered = new Promise<void>((r) => { signalCommitEntered = r; });
+    let commits = 0;
+    const autoCommit = vi.fn(async (dir: string, summary: string) => {
+      commits += 1;
+      if (commits === 1) {
+        signalCommitEntered();
+        await parked;
+      }
+      return realAutoCommit(dir, summary);
+    });
+
+    const deps: SystemTurnDeps = {
+      agentFactory: () => agent as unknown as ReturnType<SystemTurnDeps["agentFactory"]>,
+      autoCommit,
+      scheduleAutoPush: vi.fn(),
+      postTurnPrFlow: vi.fn(async () => {}),
+      listenerDeps: makeListenerDeps(),
+      buildRunParams: vi.fn().mockResolvedValue({ prompt: "p", cwd: repoDir }),
+    };
+
+    await executeAgentTurn(runner, deps, agent as never, {
+      agentId: "claude" as AgentId,
+      sessionId: "s1",
+      prompt: "p",
+      userText: "do the thing",
+      emitUserEcho: false,
+      persistUserMessage: vi.fn(),
+      isNewSession: false,
+      fallbackTitle: "t",
+      turnStartHeadHash: null,
+      drainNext,
+      emit: () => {},
+      useStreaming: true,
+      emitErrorOnNoResult: true,
+    });
+    await waitFor(() => agent.run.mock.calls.length === 1, "turn 1 started");
+
+    agent.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await commitEntered;
+
+    // Adopted mid-commit — after `tryDrain` already passed its ownership check.
+    agent.emit("event", {
+      type: "agent_assistant",
+      content: [{ type: "text", text: "Renamed the folder" }],
+    });
+    await flush();
+    expect(runner.running).toBe(true);
+
+    releaseCommit();
+    // Wait for the commit to actually land — `realAutoCommit` shells out to git,
+    // so asserting a few microtasks later would pass vacuously whether or not
+    // the drain stood down.
+    await waitFor(() => commitSubjects().length === 2, "turn 1's queued-turn commit landed");
+    await flush();
+    await flush();
+
+    // The queued turn was NOT started alongside the adopted one.
+    expect(drainNext).not.toHaveBeenCalled();
+    expect(runner.running).toBe(true);
+    expect(runner.queueLength).toBe(1);
+
+    // It drains once the adopted turn ends.
+    agent.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitFor(() => drainNext.mock.calls.length === 1, "queued turn drained after the adopted turn");
+
+    runner.dispose({ force: true });
+  });
+
+  /**
    * Non-streaming turns cannot be woken — the CLI is a one-shot PTY that reaps
    * its background tasks at turn end (docs/235 probe A). Re-arming there would
    * be actively wrong: that path drains at `agent_result` and commits later in

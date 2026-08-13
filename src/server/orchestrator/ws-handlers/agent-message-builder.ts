@@ -205,8 +205,18 @@ export function recordSteeredMessage(
  *      i.e. the model continued past the steer point and acted on it.
  * Only a steer with NEITHER signal fell into the turn-end gap. Requiring both
  * to be absent is deliberately conservative: it never re-queues (and so never
- * double-processes) a steer the agent demonstrably handled, even if the CLI's
- * echo is missing or didn't match.
+ * double-processes) a steer the CLI has taken ownership of, even if the echo is
+ * missing or didn't match.
+ *
+ * The echo means "the CLI accepted this message", NOT "the model applied it in
+ * THIS turn" — those come apart when the ack lands as the turn is wrapping up.
+ * The CLI then runs the message as its OWN turn once the current one ends, which
+ * is a third outcome the original model had no room for (see the outcome list on
+ * `AgentUserReplayEvent`). Leaving such a steer alone here is still right — it is
+ * not lost and must not be re-queued — but the orchestrator has to notice the
+ * turn that follows: `agent-listeners` adopts it when it produces its first
+ * top-level assistant output after the `result` (`adoptCliStartedTurn`), which is
+ * what marks the session busy and arms the post-turn flow for it.
  *
  * Returns the number of steers re-queued (for diagnostics / tests).
  */

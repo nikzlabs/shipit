@@ -83,6 +83,7 @@ import { sessionAutoCommitAllowed } from "./services/auto-commit-gate.js";
 import { emitChatCard, emitNoticeInTurn, emitNoticePostTurn } from "./chat-card-persistence.js";
 import { TURN_COMPLETED, turnErrored, turnInterrupted, turnNoResult, type TurnOutcome } from "./turn-settlement.js";
 import type { AgentInterfaceProvenance } from "../shared/agent-interface-sdk/protocol.js";
+import { getAgentCapabilities } from "../shared/agent-registry.js";
 
 /**
  * Normalized, transport-agnostic description of one turn. The adapters
@@ -266,6 +267,26 @@ export async function executeAgentTurn(
 ): Promise<void> {
   const { agentId, prompt, activity, sessionId, emit } = input;
   const useStreaming = input.useStreaming ?? false;
+  /**
+   * docs/140 Phase 6.11 — may a turn the CLI starts on its own be ADOPTED here
+   * (marked running, given a clean accumulator and its own post-turn flow)?
+   *
+   * Needs BOTH: a resident process (streaming) and a backend whose process
+   * survives its own turn boundary. Codex satisfies the first and not the
+   * second — its app-server is killed at `turn/completed` and it emits the
+   * turn's FINAL assistant text after that, so there the very shape adoption
+   * keys on means "the turn that just ended is still talking".
+   *
+   * DERIVED here from `agentId` rather than passed in by each caller. It is a
+   * compile-time fact about the adapter, and threading it through every entry
+   * point is how one gets missed: the WS path had it and `runDispatchedTurn` —
+   * which also streams, for quick/child/programmatic turns — did not, leaving
+   * the original production bug live on a supported path. Same static lookup
+   * and same reasoning as the dispatch path's `supportsSteering` (docs/163);
+   * deliberately NOT `AgentProcess.capabilities`, which `ProxyAgentProcess`
+   * hardcodes.
+   */
+  const adoptsCliStartedTurns = useStreaming && (getAgentCapabilities(agentId)?.startsOwnTurns ?? false);
   // docs/169 — "none" elides commit/push/PR + queue drain (rebase). Default
   // preserves today's behavior for every other caller.
   const postTurn = input.postTurn ?? "commit-push";
@@ -380,9 +401,9 @@ export async function executeAgentTurn(
   // stale it flips the successor's freshly-recorded cards (the account-failover
   // notice) to `in_progress=0`; the successor's next boundary then re-inserts
   // them from `recordedCards`, and the transcript keeps both copies forever.
-  // Re-captured on a self-wake (see `rearmForSelfWokenTurn`): the wake turn
-  // runs through THESE same closures, so after `agent-listeners` gave it a
-  // fresh epoch the closures adopt it.
+  // Re-captured when the CLI starts a turn of its own (see
+  // `rearmForCliStartedTurn`): that turn runs through THESE same closures, so
+  // after `agent-listeners` gave it a fresh epoch the closures adopt it.
   let thisTurnEpoch = runner?.turnEpoch;
   const turnIsCurrent = (): boolean =>
     !runner || thisTurnEpoch === undefined || runner.turnEpoch === thisTurnEpoch;
@@ -422,6 +443,9 @@ export async function executeAgentTurn(
   // and to the listener's own turn latch (`agent-auth-handler.ts`), both of
   // which drop the duplicate before it reaches this gate at all.
   const willRecoverAuth = (): boolean => {
+    // docs/140 — same reason as `quotaRetryAllowed`: the re-dispatch would re-run
+    // the previous turn's prompt. See `servingAdoptedTurn`.
+    if (servingAdoptedTurn) return false;
     if (!canRecoverAuth) return false;
     automaticRecoveryInProgress = true;
     return true;
@@ -526,6 +550,14 @@ export async function executeAgentTurn(
       // Heal genuinely failed (token revoked / rate-limited / no rotation). The
       // `done` handler stood down for us, so run the same terminal teardown it
       // would have, then return false so the listener surfaces the sign-in card.
+      //
+      // docs/140 — the FOURTH terminal path, and it needs the same hand-over
+      // wait as `agent_result` / `onError` / `done`: without it the teardown
+      // below runs against a predecessor's latched `drainFired` and settled
+      // commit memos, so an adopted turn that fails auth commits nothing and
+      // strands the queue. (`rearmInFlight` is non-null only while a re-arm is
+      // actually running, so the ordinary heal is unchanged.)
+      if (rearmInFlight) await rearmInFlight;
       holdPostTurn();
       try {
         if (runner) runner.running = false;
@@ -660,6 +692,9 @@ export async function executeAgentTurn(
     return credentialFailurePolicyForRoute(agentId, profile.billingMode, profile.serviceId);
   };
   const quotaRetryAllowed = (): boolean => {
+    // docs/140 — never re-dispatch an ADOPTED turn: the prompt this closure
+    // would re-run is the previous turn's. See `servingAdoptedTurn`.
+    if (servingAdoptedTurn) return false;
     const policy = capturedRoutePolicy();
     if (policy) return !policy.stopsOnFailure;
     return !stopsOnCredentialFailure(deps.listenerDeps.sessionManager.get(sessionId));
@@ -881,6 +916,16 @@ export async function executeAgentTurn(
     // this turn's commit.
     onError: async () => {
       agentErrored = true;
+      // docs/140 — an ADOPTED turn can die here (an adapter error, a crashed
+      // process) while its re-arm is still awaiting the predecessor's post-turn
+      // sequence. Without this wait, the steps below run against the
+      // predecessor's latched `drainFired` and already-settled `commitPromise` /
+      // `commitAndPrPromise` — so they no-op, the re-arm clears the memos a
+      // moment later, and no terminal event is left to invoke them: the adopted
+      // turn's edits stay in the working tree. `rearmInFlight` is non-null only
+      // while a re-arm is genuinely running, so the ordinary error path is
+      // unchanged. (Defined below; `onError` fires long after.)
+      if (rearmInFlight) await rearmInFlight;
       holdPostTurn();
       try {
         finishTurn();
@@ -891,6 +936,7 @@ export async function executeAgentTurn(
       }
     },
     ...(input.useStreaming !== undefined ? { useStreaming: input.useStreaming } : {}),
+    ...(adoptsCliStartedTurns ? { adoptsCliStartedTurns: true } : {}),
   });
 
   // For a resumed session (id already known) persist the user row synchronously
@@ -1056,10 +1102,60 @@ export async function executeAgentTurn(
     deps.finalizeAgentEnv?.(sessionId, agentId, capturedCredentialRoute);
   };
 
+  /**
+   * docs/140 — this turn's `turnSummary` as of its `agent_result`, read by
+   * `runCommit`. See the comment there: an adopted CLI-started turn can clear
+   * the live value before the commit runs. Cleared by `rearmForCliStartedTurn`
+   * so the adopted turn commits under its OWN summary.
+   */
+  let resultTurnSummary: string | null = null;
+
+  /**
+   * docs/140 Phase 6.11 — this executor is currently serving a turn the CLI
+   * started on its own, which has not yet produced its own `agent_result`.
+   *
+   * The closure still holds the turn it was INVOKED for — `input.prompt`,
+   * `receivedResult`, the dispatch handle — and an adopted turn shares none of
+   * that. Two consequences, both real:
+   *
+   *  - **No re-dispatch.** The quota failover and the auth-heal retry re-run
+   *    `input.prompt` on a fresh account. That prompt belongs to the turn the
+   *    USER sent; re-running it because an ADOPTED turn hit a limit repeats
+   *    work the agent already did and still doesn't retry what failed. Both
+   *    stand down and let the terminal teardown run instead.
+   *
+   *    **This half is reasoned from the code, not covered by a test** — unlike
+   *    everything else in this phase. Reaching the failover needs the credential
+   *    selection harness (`integration_tests/quota-exhaustion-retry.test.ts`'s
+   *    `prepareAgentEnv` routes) on a STREAMING dispatched turn, which no
+   *    existing harness sets up; a test written against the executor harness
+   *    alone passes with the guard removed, so it would pin nothing. Said out
+   *    loud rather than left implied.
+   *  - **The partial-turn finalize must still fire.** It is gated on
+   *    `!receivedResult`, which stays true from the turn that owns this closure
+   *    (deliberately — see `rearmForCliStartedTurn`), so an adopted turn that
+   *    dies on a bare `done` had its streamed rows left `in_progress` for the
+   *    next turn's `replaceInProgress` to delete. That is the same chat-history
+   *    loss this whole phase exists to stop, one path over.
+   */
+  let servingAdoptedTurn = false;
+
   let drainFired = false;
   const tryDrain = async (): Promise<void> => {
     if (drainFired) return;
     drainFired = true;
+    // docs/140 — stand down when the runner has moved on to a turn that is not
+    // this one. This step runs a few awaits after `agent_result`, and a turn the
+    // CLI starts on its own (a self-wake, or a live steer it acked too late to
+    // apply) is adopted inside that window: `adoptCliStartedTurn` bumps the
+    // epoch and sets `running` back to true. Clearing it again here would put
+    // the session back to IDLE for the whole adopted response — the original
+    // symptom, restored by the fix's own post-turn flow — and draining would
+    // start a queued turn CONCURRENTLY with the one the CLI is running. The
+    // adopted turn drains for itself: `rearmForCliStartedTurn` clears
+    // `drainFired` once this sequence settles. Same reasoning covers a
+    // successor orchestrator turn, which owns the runner for the same reason.
+    if (!turnIsCurrent()) return;
     if (runner) runner.running = false;
     // docs/169 — `postTurn: "none"` (rebase) still clears `running` so the
     // driver can dispatch the next resolution turn, but must NOT drain the
@@ -1084,6 +1180,14 @@ export async function executeAgentTurn(
     // where it was — after the `session_agent_finished` SSE broadcast, which
     // must not be delayed by post-turn work (see `broadcastFinishedIfIdle`).
     if ((runner?.queueLength ?? 0) > 0) await commitOnce();
+    // …and CHECK AGAIN. The commit above is real work (a `git add -A` on a large
+    // tree, plus chat-history bookkeeping), and a turn the CLI starts on its own
+    // can be adopted inside it — the check at the top of this function is stale
+    // by the time we get here. Draining now would start a queued turn CONCURRENTLY
+    // with the adopted one, which respawns the agent, removes the adopted turn's
+    // listeners and resets its accumulator mid-response. The adopted turn drains
+    // for itself once `rearmForCliStartedTurn` clears `drainFired`.
+    if (!turnIsCurrent()) return;
     await input.drainNext();
   };
 
@@ -1097,7 +1201,23 @@ export async function executeAgentTurn(
     if (!runner?.sessionDir) return null;
     // Fallback chain: assistant-derived summary → dispatch activity label →
     // "Agent turn" (the unified default `postTurnCommit` also applies).
-    const summary = runner.turnSummary.split("\n")[0]?.slice(0, 120) || activity || "Agent turn";
+    //
+    // docs/140 — prefer the LIVE summary, and fall back to the value snapshot at
+    // `agent_result` only when the runner has moved on to another turn.
+    //
+    // Both directions have a real failure. The commit is the last step of a
+    // sequence spanning several awaits, and a turn the CLI starts on its own is
+    // adopted inside that window — `adoptCliStartedTurn` runs
+    // `resetRunnerTurnState`, which clears `turnSummary` — so reading live
+    // UNCONDITIONALLY commits this turn's work under "Agent turn", or under the
+    // adopted turn's first line. But reading the snapshot unconditionally breaks
+    // Codex: it emits the turn's final text AFTER `turn/completed` as an
+    // `isStreamCompletion` event whose whole purpose is to replace the last tiny
+    // delta (often ".") as the commit summary, and the snapshot predates it.
+    // `turnIsCurrent()` separates the two: false means the live value belongs to
+    // someone else now.
+    const summarySource = turnIsCurrent() ? runner.turnSummary : (resultTurnSummary ?? runner.turnSummary);
+    const summary = summarySource.split("\n")[0]?.slice(0, 120) || activity || "Agent turn";
     try {
       if (deps.commitTurn) {
         return await deps.commitTurn({
@@ -1284,7 +1404,7 @@ export async function executeAgentTurn(
    * planning#249 — the streaming post-turn sequence currently in flight, assigned in
    * the SAME synchronous block that sets `streamingPostTurnFired`. Anyone who
    * observes that flag as `true` therefore also observes this promise, which is
-   * what lets `rearmForSelfWokenTurn` wait the finished turn's flow out before
+   * what lets `rearmForCliStartedTurn` wait the finished turn's flow out before
    * clearing its memoized commit promises.
    */
   let streamingPostTurn: Promise<void> | null = null;
@@ -1292,18 +1412,29 @@ export async function executeAgentTurn(
   /**
    * planning#249 — hand the guards back to a turn the CLI started on its own.
    *
-   * A `Bash(run_in_background)` job finishing re-invokes the model, and for a
-   * resident streaming process that self-woken turn runs through THIS closure —
-   * the one the finished user turn left attached (listeners are removed only at
-   * the start of the next orchestrator-initiated turn). Every post-turn guard
-   * here is first-wins and scoped to one `executeAgentTurn` call, so the wake
-   * turn's `agent_result` hit `streamingPostTurnFired` and returned early:
-   * no token sync-back, no queue drain, no auto-commit, no push, no PR card.
-   * Production saw two sessions lose a 15-minute `shipit agent run` consult's
-   * edits to this in one hour, and ShipIt's own guidance tells agents to
-   * background that consult — so the wake path is the NORMAL case for
-   * cross-agent review, not a corner. docs/235 §6 deferred this deliberately;
-   * this is that follow-up.
+   * Two edges reach here, and both describe the same thing: the CLI opened a
+   * turn the orchestrator never asked for, on a resident streaming process, so
+   * it runs through THIS closure — the one the finished user turn left attached
+   * (listeners are removed only at the start of the next orchestrator-initiated
+   * turn).
+   *
+   *   - **`agent_self_wake`** (planning#249) — a `Bash(run_in_background)` job
+   *     finishing re-invokes the model.
+   *   - **top-level assistant output after this turn's `result`** (docs/140) —
+   *     the CLI acked a live steer too late to apply it to the finishing turn
+   *     and runs it as the next turn. Nothing announces it — there is no
+   *     `task_notification`, and the CLI's `init` is not proof of a turn (it is
+   *     emitted for `set_permission_mode` too; see `adoptCliStartedTurn`) — so
+   *     before this the orchestrator never learned the turn existed at all.
+   *
+   * Every post-turn guard here is first-wins and scoped to one
+   * `executeAgentTurn` call, so such a turn's `agent_result` hit
+   * `streamingPostTurnFired` and returned early: no token sync-back, no queue
+   * drain, no auto-commit, no push, no PR card. Production saw two sessions lose
+   * a 15-minute `shipit agent run` consult's edits to this in one hour, and
+   * ShipIt's own guidance tells agents to background that consult — so the wake
+   * path is the NORMAL case for cross-agent review, not a corner. docs/235 §6
+   * deferred this deliberately; this is that follow-up.
    *
    * Three things make it safe to re-arm here:
    *
@@ -1323,7 +1454,9 @@ export async function executeAgentTurn(
    *     listener runs. `streamingPostTurnFired` is the executor-local equivalent
    *     — it is set only by this turn's `agent_result` — so `false` means the
    *     turn that owns these guards is still in flight and a re-arm would let a
-   *     duplicate `agent_result` run the whole post-turn flow twice.
+   *     duplicate `agent_result` run the whole post-turn flow twice. The same
+   *     flag is what makes the assistant edge safe: assistant output while the
+   *     turn is still in flight is just this turn talking.
    *
    *   - **After the in-flight sequence settles.** The wake can land in the
    *     window between `streamingPostTurnFired = true` and the finished turn's
@@ -1341,25 +1474,57 @@ export async function executeAgentTurn(
    * later died. Same for `turnCompleteFired`: the wake turn is not the turn a
    * dispatch handle is waiting on, so it must not settle it a second time.
    */
-  const rearmForSelfWokenTurn = async (): Promise<void> => {
-    if (!useStreaming || !streamingPostTurnFired) return;
+  const rearmForCliStartedTurn = async (reason: string): Promise<void> => {
     await postTurnStep("await-post-turn", () => streamingPostTurn ?? Promise.resolve());
-    // A second wake can arrive while we await; the first one through re-arms and
+    // A second edge can arrive while we await (a wake and the wake turn's first
+    // assistant event are separate frames): the first one through re-arms and
     // the rest see the cleared flag and stand down.
     if (!streamingPostTurnFired) return;
-    console.log(`[turn] self-wake for ${sessionId}; re-arming the post-turn flow`);
+    console.log(`[turn] ${reason} for ${sessionId}; re-arming the post-turn flow`);
+    servingAdoptedTurn = true;
     tokenSyncFired = false;
     drainFired = false;
     streamingPostTurnFired = false;
     streamingPostTurn = null;
     commitPromise = null;
     commitAndPrPromise = null;
-    // The wake turn now owns these closures. `agent-listeners` already gave it
-    // a fresh epoch (its `agent_self_wake` branch runs `resetRunnerTurnState`
-    // before this listener fires); adopt it so the wake turn's own teardown —
-    // e.g. `onInterruptedTurn` after a crash — is not mistaken for a stale
+    resultTurnSummary = null;
+    // The adopted turn now owns these closures. `agent-listeners` already gave
+    // it a fresh epoch (`adoptCliStartedTurn` runs `resetRunnerTurnState` before
+    // this listener fires); adopt it so that turn's own teardown — e.g.
+    // `onInterruptedTurn` after a crash — is not mistaken for a stale
     // predecessor's.
     thisTurnEpoch = runner?.turnEpoch;
+  };
+
+  /**
+   * docs/140 — the re-arm currently in flight, so the adopted turn's OWN
+   * `agent_result` can wait for it.
+   *
+   * The re-arm awaits the finished turn's whole post-turn sequence (commit + PR
+   * round-trip: seconds), and the CLI is not paused by that await. A short
+   * adopted turn — "rename the folder" is exactly that — can therefore reach its
+   * `result` while the guards it needs are still latched, hit
+   * `streamingPostTurnFired` and return: no commit, no drain, no PR card, i.e.
+   * precisely the bug this edge exists to fix, one window narrower. Awaiting
+   * here cannot deadlock: a re-arm is only ever created after this turn's own
+   * `result` published `streamingPostTurn`, and nothing in that sequence waits
+   * on a later event.
+   */
+  let rearmInFlight: Promise<void> | null = null;
+  const beginRearm = (reason: string): Promise<void> => {
+    // Non-null ONLY while a re-arm is genuinely in flight. Both halves matter:
+    // the guard keeps the ordinary turn (and every non-streaming one) from
+    // taking an extra microtask hop between `agent_result` and its post-turn
+    // work — `done` follows `agent_result` synchronously on those paths, so an
+    // unconditional await reorders the two — and the reset keeps a settled
+    // re-arm from doing the same to the adopted turn's own result.
+    if (!useStreaming || !streamingPostTurnFired) return Promise.resolve();
+    const pending = rearmForCliStartedTurn(reason).finally(() => {
+      if (rearmInFlight === pending) rearmInFlight = null;
+    });
+    rearmInFlight = pending;
+    return pending;
   };
 
   agent.on("event", async (event: AgentEvent) => {
@@ -1367,10 +1532,35 @@ export async function executeAgentTurn(
     // has already given it a clean accumulator and marked the runner running
     // (docs/235 §6); this gives it a post-turn flow to end on.
     if (event.type === "agent_self_wake") {
-      await rearmForSelfWokenTurn();
+      await beginRearm("self-wake");
+      return;
+    }
+    // docs/140 — the other edge for the same thing: top-level assistant output
+    // after this turn's `result` is the CLI running a live steer it acked too
+    // late to apply to the finishing turn. The `streamingPostTurnFired` guard
+    // inside is what makes this specific to output that arrives AFTER the turn
+    // ended; mid-turn assistant events no-op. Subagent output is excluded — a
+    // backgrounded subagent keeps talking after the parent turn's result and is
+    // not a turn (`agent-listeners` applies the same `parentToolUseId` filter).
+    if (event.type === "agent_assistant") {
+      // The capability gate belongs to THIS edge only. `agent_self_wake` above
+      // needs none: only the Claude adapter emits it, from the CLI's
+      // `task_notification`, so the event's own provenance is the gate (docs/235
+      // behaviour, unchanged). Assistant output has no such provenance — every
+      // backend emits it — so it needs `startsOwnTurns` to mean what it says.
+      if (!adoptsCliStartedTurns) return;
+      if (!event.parentToolUseId) await beginRearm("cli-started turn");
       return;
     }
     if (event.type !== "agent_result") return;
+    // docs/140 — snapshot the commit summary at the ONE instant it is certainly
+    // this turn's. Everything below runs across awaits, and an adopted turn can
+    // clear it in that window (see `runCommit`). Before the `rearmInFlight`
+    // await, which is exactly such a window.
+    if (runner && resultTurnSummary === null) resultTurnSummary = runner.turnSummary;
+    // See `rearmInFlight`: an adopted turn can finish before its re-arm has
+    // handed the guards over. Wait for it rather than reading a stale flag.
+    if (rearmInFlight) await rearmInFlight;
     receivedResult = true;
     // Announce the same fact on the runner. The executor-local `receivedResult`
     // is invisible to the `disposed` / `turn_abandoned` nets in
@@ -1406,6 +1596,12 @@ export async function executeAgentTurn(
         return;
       }
     }
+    // Cleared HERE, not at the top of this handler: the re-dispatch guards above
+    // are exactly what an adopted turn's result must still be judged by, and the
+    // turn is only "finished" once past them. Clearing it later would be wrong
+    // too — the `done` finalize below is widened by this flag, and a turn that
+    // DID produce a result had its rows finalized by `agent-listeners` already.
+    servingAdoptedTurn = false;
     if (useStreaming) {
       if (streamingPostTurnFired) return;
       streamingPostTurnFired = true;
@@ -1417,7 +1613,7 @@ export async function executeAgentTurn(
       //
       // planning#249 — published as `streamingPostTurn` in this same synchronous
       // block so a self-wake landing mid-flow waits it out before re-arming
-      // (see `rearmForSelfWokenTurn`). The sequence and its order are unchanged.
+      // (see `rearmForCliStartedTurn`). The sequence and its order are unchanged.
       //
       // The whole sequence runs under the post-turn hold: `agent-listeners`
       // cleared `running` before this handler was reached, so without it every
@@ -1475,6 +1671,18 @@ export async function executeAgentTurn(
     // terminal step. Without this, the kill's `done` would drain the queue and
     // finalize a turn that is being re-run.
     if (quotaRetryInProgress) return;
+    // docs/140 — an ADOPTED turn can exit here (crash, OOM, SIGTERM) while its
+    // re-arm is still awaiting the predecessor's post-turn sequence. Everything
+    // below reads `drainFired` / `commitPromise` / `commitAndPrPromise` /
+    // `thisTurnEpoch`, all of which are still the predecessor's until the
+    // hand-over completes — so without this wait the adopted turn's partial
+    // edits reach neither the drain nor the commit, and the re-arm then clears
+    // the memos with no terminal event left to invoke them. `rearmInFlight` is
+    // non-null only while a re-arm is genuinely running, so the ordinary exit
+    // takes no extra hop — which matters: on the non-streaming path `done`
+    // follows `agent_result` synchronously, and an unconditional await here
+    // reorders the two.
+    if (rearmInFlight) await rearmInFlight;
     // Hold the runner for the whole terminal sequence below — including the
     // early `return`s, which the `finally` covers. On the non-streaming path
     // this ADOPTS the hold `agent_result` already opened (the latch makes it a
@@ -1656,7 +1864,14 @@ export async function executeAgentTurn(
       // and then `done`, and re-running `replaceInProgress` here after the
       // rows were finalized would append a duplicate copy of the turn.
       if (
-        !receivedResult
+        // docs/140 — `|| servingAdoptedTurn`: `receivedResult` describes the turn
+        // this closure was INVOKED for and deliberately survives an adoption, so
+        // on its own it would skip the finalize for an adopted turn that died
+        // without a result — leaving that turn's streamed rows `in_progress` for
+        // the next turn's `replaceInProgress` to delete. The no-result hook above
+        // stays disarmed (it would re-run the user's original prompt); only the
+        // row finalize is widened.
+        (!receivedResult || servingAdoptedTurn)
         && !sawAuthRequired
         && !agentErrored
         && !input.onInterruptedTurn
