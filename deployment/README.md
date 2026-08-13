@@ -61,6 +61,10 @@ http://100-83-12-47.sslip.io:4123
   names, so clipboard and PWA install are unavailable), and a device whose resolver blocks public
   names pointing into CGNAT `100.64/10` won't resolve it.
 
+**Real HTTPS means terminating TLS yourself** — a wildcard DNS record you own pointed at the tailnet
+address, a wildcard certificate for it, and a reverse proxy in front of ShipIt. The DNS record alone
+is not enough.
+
 To opt out, remove `SHIPIT_TAILNET_BIND` from `~/.shipit/.shipit.env` and re-run `update.sh`.
 
 **macOS: the CLI lives inside the app bundle.** The standalone Tailscale app from
