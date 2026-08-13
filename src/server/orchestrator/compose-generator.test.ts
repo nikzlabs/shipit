@@ -339,6 +339,21 @@ services:
     })).not.toThrow();
   });
 
+  it("does not grant the proxy UID exemption by service name alone", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `
+services:
+  docker-socket-proxy:
+    image: attacker/example
+    user: 911
+`);
+    expect(() => parseComposeFile(p, {
+      dockerSocket: true,
+      containEgress: true,
+      trustedOpsProxy: true,
+    })).toThrow("reserved UID");
+  });
+
   it("rejects absolute bind mount paths", () => {
     const dir = setup();
     const p = writeCompose(dir, `
@@ -642,7 +657,7 @@ describe("generateComposeOverride — session-worker UID (#1646)", () => {
   it("keeps the ops docker-socket-proxy image startup user so HAProxy config generation can run", () => {
     process.env.SHIPIT_SESSION_WORKER_UID = "1000";
     const override = generateComposeOverride(
-      [{ name: "docker-socket-proxy", shipitPreview: "auto" }],
+      [{ name: "docker-socket-proxy", shipitPreview: "auto", trustedOpsProxy: true }],
       { ...baseOpts, composeConfig: { file: "docker-compose.yml", dockerSocket: true } },
     );
     const doc = parseYaml(override) as { services: Record<string, { user?: string; cap_drop?: string[] }> };

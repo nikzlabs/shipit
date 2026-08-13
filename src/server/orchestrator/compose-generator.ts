@@ -26,6 +26,8 @@ import { EGRESS_PROXY_UID } from "./egress-proxy-install.js";
 
 export interface ComposeService {
   name: string;
+  /** True only for the server-authorized, validated ops Docker proxy shape. */
+  trustedOpsProxy?: boolean;
   /** Ports exposed by the service (host:container or just port). */
   ports?: string[];
   /** x-shipit-preview value from the user's compose file. */
@@ -360,6 +362,7 @@ export function parseComposeFile(
 
     result.push({
       name,
+      trustedOpsProxy: isTrustedOpsProxyService(name, svc, opts.trustedOpsProxy ?? false),
       ports,
       shipitPreview,
       dependsOnInstall,
@@ -519,6 +522,37 @@ export function validateDevices(
 /**
  * Validate security constraints for a compose service definition.
  */
+function isTrustedOpsProxyService(
+  name: string,
+  svc: Record<string, unknown>,
+  trustedOpsProxy: boolean,
+): boolean {
+  if (name !== "docker-socket-proxy" || !trustedOpsProxy
+    || svc.image !== "tecnativa/docker-socket-proxy:0.3.0"
+    || svc.command !== undefined || svc.entrypoint !== undefined) return false;
+  const environment = svc.environment;
+  const env: Record<string, unknown> = {};
+  if (Array.isArray(environment)) {
+    for (const item of environment) {
+      if (typeof item !== "string") continue;
+      const separator = item.indexOf("=");
+      if (separator > 0) env[item.slice(0, separator)] = item.slice(separator + 1);
+    }
+  } else if (environment && typeof environment === "object") {
+    Object.assign(env, environment);
+  }
+  const denied = ["POST", "BUILD", "COMMIT", "EXEC", "AUTH", "CONFIGS", "DISTRIBUTION",
+    "GRPC", "NODES", "PLUGINS", "SECRETS", "SERVICES", "SESSION", "SWARM", "SYSTEM", "TASKS"];
+  const hasReadOnlySocket = Array.isArray(svc.volumes) && svc.volumes.some((vol) =>
+    typeof vol === "string"
+      ? /^\/var\/run\/docker\.sock:\/var\/run\/docker\.sock:ro$/.test(vol)
+      : Boolean(vol && typeof vol === "object"
+        && (vol as Record<string, unknown>).source === "/var/run/docker.sock"
+        && (vol as Record<string, unknown>).target === "/var/run/docker.sock"
+        && (vol as Record<string, unknown>).read_only === true));
+  return hasReadOnlySocket && denied.every((key) => String(env[key]) === "0");
+}
+
 function validateServiceSecurity(
   name: string,
   svc: Record<string, unknown>,
@@ -526,25 +560,7 @@ function validateServiceSecurity(
   containEgress: boolean,
   trustedOpsProxy: boolean,
 ): void {
-  const trustedProxyShape = (): boolean => {
-    if (name !== "docker-socket-proxy" || !trustedOpsProxy
-      || svc.image !== "tecnativa/docker-socket-proxy:0.3.0"
-      || svc.command !== undefined || svc.entrypoint !== undefined) return false;
-    const environment = svc.environment;
-    const env: Record<string, unknown> = {};
-    if (Array.isArray(environment)) {
-      for (const item of environment) {
-        if (typeof item !== "string") continue;
-        const separator = item.indexOf("=");
-        if (separator > 0) env[item.slice(0, separator)] = item.slice(separator + 1);
-      }
-    } else if (environment && typeof environment === "object") {
-      Object.assign(env, environment);
-    }
-    const denied = ["POST", "BUILD", "COMMIT", "EXEC", "AUTH", "CONFIGS", "DISTRIBUTION",
-      "GRPC", "NODES", "PLUGINS", "SECRETS", "SERVICES", "SESSION", "SWARM", "SYSTEM", "TASKS"];
-    return denied.every((key) => String(env[key]) === "0");
-  };
+  const trustedProxyShape = isTrustedOpsProxyService(name, svc, trustedOpsProxy);
   // Reject privileged: true
   if (svc.privileged === true) {
     throw new ComposeValidationError(
@@ -629,7 +645,7 @@ function validateServiceSecurity(
         : Boolean(vol && typeof vol === "object"
           && (vol as Record<string, unknown>).target === "/var/run/docker.sock"
           && (vol as Record<string, unknown>).read_only === true);
-      if (isSocket && containEgress && !(trustedProxyShape() && socketReadOnly)) {
+      if (isSocket && containEgress && !(trustedProxyShape && socketReadOnly)) {
         throw new ComposeValidationError(
           `Service \`${name}\`: direct Docker socket access is not allowed with contained egress. `
           + "Use ShipIt's trusted docker-socket-proxy service.",
@@ -664,7 +680,7 @@ function validateServiceSecurity(
       }
     }
   }
-  if (containEgress && name !== "docker-socket-proxy") {
+  if (containEgress && !trustedProxyShape) {
     const containedUser = typeof svc.user === "string" || typeof svc.user === "number"
       ? String(svc.user).trim()
       : "";
@@ -914,7 +930,7 @@ export function generateComposeOverride(
     // read-only Docker security boundary is enforced by the proxy's env
     // allowlist and the read-only socket mount, not by forcing this service to
     // the session worker UID.
-    const preservesImageStartupUser = svc.name === "docker-socket-proxy";
+    const preservesImageStartupUser = svc.trustedOpsProxy === true;
     if (workerUid !== null && svc.user === undefined && !preservesImageStartupUser) {
       entry.user = `${workerUid}:${workerUid}`;
     }
