@@ -1347,6 +1347,11 @@ describe("markProviderAccountUnauthenticated", () => {
       });
 
       expect(providerAccountManager.get("anthropic", account.id)?.status).toBe("auth_failed");
+      // The status that changed belongs to the shared account route, so the
+      // refresh must go out per LOGIN. Asserting the effect alone
+      // (`refreshAuth("claude")`) would also pass a revert to the old
+      // single-harness call, since the fan-out reaches Claude either way.
+      expect(refreshAuthForLogin).toHaveBeenCalledWith("anthropic-oauth");
       expect(refreshAuth).toHaveBeenCalledWith("claude");
       expect(events.find((e) => e.event === "provider_accounts")?.data.accounts)
         .toEqual(expect.arrayContaining([expect.objectContaining({ id: account.id, status: "auth_failed" })]));
@@ -1359,7 +1364,7 @@ describe("markProviderAccountUnauthenticated", () => {
 });
 
 describe("markProviderAccountReauthenticated", () => {
-  function buildRegistry(initialAuth: boolean): { agentRegistry: AgentRegistry; refreshAuth: ReturnType<typeof vi.fn>; getAuth: () => boolean } {
+  function buildRegistry(initialAuth: boolean): { agentRegistry: AgentRegistry; refreshAuth: ReturnType<typeof vi.fn>; refreshAuthForLogin: ReturnType<typeof vi.fn>; getAuth: () => boolean } {
     let hasRunnableModels = initialAuth;
     const refreshAuth = vi.fn((_harnessId?: AgentId) => { hasRunnableModels = true; });
     // Mirrors the real registry: a login refresh fans out to every harness the
@@ -1386,7 +1391,7 @@ describe("markProviderAccountReauthenticated", () => {
         },
       }],
     } as unknown as AgentRegistry;
-    return { agentRegistry, refreshAuth, getAuth: () => hasRunnableModels };
+    return { agentRegistry, refreshAuth, refreshAuthForLogin, getAuth: () => hasRunnableModels };
   }
 
   it("flips a auth_failed account back to ready, refreshes registry auth, and broadcasts the agent list", () => {
@@ -1396,7 +1401,7 @@ describe("markProviderAccountReauthenticated", () => {
       const providerAccountManager = new ProviderAccountManager({ credentialsDir: tmp, credentialStore });
       const account = providerAccountManager.create("anthropic", "Work");
       providerAccountManager.setAccountStatus("anthropic", account.id, "auth_failed");
-      const { agentRegistry, refreshAuth } = buildRegistry(false);
+      const { agentRegistry, refreshAuth, refreshAuthForLogin } = buildRegistry(false);
       const events: { event: string; data: Record<string, unknown> }[] = [];
 
       markProviderAccountReauthenticated({
@@ -1409,6 +1414,8 @@ describe("markProviderAccountReauthenticated", () => {
       });
 
       expect(providerAccountManager.get("anthropic", account.id)?.status).toBe("ready");
+      // See the sibling test: assert the fan-out was chosen, not just its effect.
+      expect(refreshAuthForLogin).toHaveBeenCalledWith("anthropic-oauth");
       expect(refreshAuth).toHaveBeenCalledWith("claude");
       expect(events.find((e) => e.event === "provider_accounts")?.data.accounts)
         .toEqual(expect.arrayContaining([expect.objectContaining({ id: account.id, status: "ready" })]));
@@ -1426,7 +1433,7 @@ describe("markProviderAccountReauthenticated", () => {
       const providerAccountManager = new ProviderAccountManager({ credentialsDir: tmp, credentialStore });
       const account = providerAccountManager.create("anthropic", "Work");
       providerAccountManager.setAccountStatus("anthropic", account.id, "ready");
-      const { agentRegistry, refreshAuth } = buildRegistry(true);
+      const { agentRegistry, refreshAuth, refreshAuthForLogin } = buildRegistry(true);
       const events: { event: string; data: Record<string, unknown> }[] = [];
 
       markProviderAccountReauthenticated({
@@ -1439,6 +1446,8 @@ describe("markProviderAccountReauthenticated", () => {
       });
 
       expect(refreshAuth).not.toHaveBeenCalled();
+      // Idempotent means no refresh at all — neither the fan-out nor a direct one.
+      expect(refreshAuthForLogin).not.toHaveBeenCalled();
       expect(events).toEqual([]);
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });

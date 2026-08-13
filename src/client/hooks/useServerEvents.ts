@@ -292,21 +292,19 @@ export function useServerEvents(): void {
     // revocation). The legacy event names (`auth_required`, `auth_complete`,
     // `codex_auth_*`) are gone; adding a new backend is one variant added to
     // the discriminated `details.kind` union, not three new listeners here.
-    // docs/155: the three SSE auth handlers below dispatch on the runtime
-    // event's `agentId` + `details.kind` to shape each backend's payload into
-    // the account-keyed challenge slice. That's discriminated-union narrowing
-    // of received wire data, not abstraction-leaking dispatch — adding a
-    // backend means adding one more `else if` here for its payload shape. The
-    // disables sit inline so a new backend wires its narrowing without
-    // re-tripping the leak guard.
+    // The handlers below no longer dispatch on WHICH backend sent the event.
+    // They branch only on `details.kind` (the one thing the payloads actually
+    // differ by) and read per-flow wording from `AUTH_COPY`. The eight
+    // `agentId === "claude" | "codex"` branches this replaced were almost
+    // entirely about copy, not control flow — so a new backend is a row in that
+    // table plus, at most, one new `details.kind` variant.
     //
     // docs/150 req 16/19: every subscription sign-in is account-scoped, so an
     // event without `accountId` has no home and is ignored rather than
     // falling back to a provider-wide slot. The provider-wide slots
     // (`sessionStore.authUrl`, `settingsStore.codexDeviceAuth*`) are gone with
-    // the singleton endpoints that fed them. Claude's *diagnostics* are still
-    // provider-wide and are updated regardless — they're a debug buffer, not a
-    // challenge.
+    // the singleton endpoints that fed them. Diagnostics are per account too,
+    // and a flow that records none simply no-ops rather than being gated.
     es.addEventListener("agent_auth_pending", (e: MessageEvent) => {
       const data = JSON.parse(e.data as string) as {
         loginId: LoginIntegrationId;

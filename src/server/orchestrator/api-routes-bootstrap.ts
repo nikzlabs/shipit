@@ -509,7 +509,19 @@ export async function registerBootstrapRoutes(
           this an install whose first ready credential arrives by *cancelling*
           out of a second sign-in would sit unseeded until the next page load.
           Found by the second round of cross-backend review.
+
+          The registry must be recomputed BEFORE that payload is built, or it is
+          assembled from a cache that predates the status change: `agent_list`
+          would announce the row as ready while `hasRunnableModels` and
+          `eligibleModels` still say the install can run nothing. Login-wide for
+          the same reason every other credential change is — the credential now
+          usable is usable by every harness this login serves.
         */
+        const cancelledLogin = loginIntegrationForService(
+          nativeServiceForHarness(request.params.provider),
+        );
+        if (cancelledLogin) deps.agentRegistry.refreshAuthForLogin(cancelledLogin);
+        else deps.agentRegistry.refreshAuth(request.params.provider);
         deps.sseBroadcast("agent_list", buildAgentListPayload(deps.agentRegistry, deps.credentialStore, deps.providerAccountManager));
         return { success: true, account: result.account };
       } catch (err) {

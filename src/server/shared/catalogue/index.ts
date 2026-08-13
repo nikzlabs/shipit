@@ -200,22 +200,27 @@ export function harnessesForLoginIntegration(loginId: LoginIntegrationId): Agent
   const service = serviceId ? getService(serviceId) : undefined;
   if (!service) return [];
   // Only the modes that actually accept THIS login. A service can hold a
-  // subscription and a metered key, and the key mode's styles say nothing about
+  // subscription and a metered key, and the key mode's models say nothing about
   // who can use the account credential this login produces.
-  const styles = new Set<ApiStyle>(
-    service.modes
-      .filter((mode) =>
-        mode.credentials.some((c) => c.via === "account" && c.login === loginId),
-      )
-      .flatMap((mode) => Object.keys(mode.endpoints) as ApiStyle[]),
+  const modes = service.modes.filter((mode) =>
+    mode.credentials.some((c) => c.via === "account" && c.login === loginId),
   );
-  // A shared style is not enough: the credential is account-delivered, so a
-  // harness that declares no account destination could never carry it however
+  // Joined on the MODELS' styles via `resolveStyle`, exactly as
+  // `catalogueEntriesForHarness` does — not on the mode's endpoint keys. The
+  // catalogue only guarantees model style ⊆ endpoint styles, so an endpoint
+  // declared for a style no model uses would include a harness whose eligible
+  // set this login can never change. Two answers to "can this harness run
+  // something here" must not be computed two ways.
+  //
+  // A shared style is still not enough: the credential is account-delivered, so
+  // a harness declaring no account destination could never carry it however
   // well the wire formats line up.
   return HARNESSES.filter(
     (harness) =>
       harness.spawn.credential.account !== undefined
-      && harness.styles.some((style) => styles.has(style)),
+      && modes.some((mode) =>
+        mode.models.some((model) => resolveStyle(harness.id, model) !== undefined),
+      ),
   ).map((harness) => harness.id);
 }
 
