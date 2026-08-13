@@ -1,4 +1,4 @@
-import { ArrowClockwiseIcon, ArrowLeftIcon, ArrowSquareOutIcon, CaretDownIcon, CheckIcon } from "@phosphor-icons/react";
+import { ArrowClockwiseIcon, ArrowLeftIcon, ArrowSquareOutIcon, CaretDownIcon, CheckIcon, HouseIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../../design-tokens.js";
 import {
   DropdownMenu,
@@ -58,6 +58,8 @@ interface PreviewToolbarProps {
   onRefresh: () => void;
   /** Navigate the embedded preview back one step in its session history. */
   onBack: () => void;
+  /** Navigate the embedded preview to its root URL. */
+  onHome: () => void;
   /**
    * Whether the preview has a history entry of its own to go back to.
    * `undefined` means the page hasn't told us (no Navigation API) — the button
@@ -100,6 +102,7 @@ export function PreviewToolbar({
   setErrorPanelOpen,
   onRefresh,
   onBack,
+  onHome,
   canGoBack,
   activeSlotUrl,
   previewPath,
@@ -197,6 +200,27 @@ export function PreviewToolbar({
                 )}
               </span>
             )}
+            {/* Closes the viewport-control group and opens the address-bar one.
+                This separator belongs to PreviewPath's region visually, but is
+                rendered here so Home can sit to the right of it while still
+                appearing when the page has reported no path — the very case
+                (no injected script) where Home's document-load fallback is
+                what the user needs. Rendered whenever the preview runs, so
+                the layout doesn't shift when a path arrives. */}
+            <span className="text-(--color-border-secondary)">|</span>
+            {/* Sits to the right of the separator, adjacent to the address bar
+                (PreviewPath), where a browser puts its home button. */}
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onHome}
+              title="Go to preview root"
+              aria-label="Go to preview root"
+              disabled={!activeSlotUrl}
+              className="h-7 w-7 p-0"
+            >
+              <HouseIcon size={ICON_SIZE.SM} />
+            </Button>
           </>
         )}
       </span>

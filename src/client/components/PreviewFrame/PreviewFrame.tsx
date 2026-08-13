@@ -694,6 +694,31 @@ export function PreviewFrame({
             .get(activeSlotKey)
             ?.contentWindow?.postMessage({ source: "shipit-toolbar", type: "back" }, "*");
         }}
+        onHome={() => {
+          // The iframe is cross-origin, so the parent can't read or write its
+          // `location` — ask the injected preview script (preview-proxy.ts) to
+          // navigate it to the slot's root, the same channel the agent-pointer
+          // effect uses. The script drops the navigation when the page is
+          // already at root, so this never reloads the front page for its own
+          // sake. Slots without that script — a non-proxied local preview, a
+          // 502, an auth-gated response — never reported "loaded", and fall
+          // back to a `src` assignment, which is a document load but arrives.
+          if (!activeSlotKey || !activeSlotUrl) return;
+          const el = iframeRefs.current.get(activeSlotKey);
+          const rootUrl = new URL("/", activeSlotUrl).href;
+          // Targeted at the slot's own origin, never `"*"` — same reasoning as
+          // the pointer effect above. A `WindowProxy` keeps its identity across
+          // origin changes, so a frame that navigated itself somewhere else
+          // still passes the capability gate, and this message carries a URL
+          // (the preview subdomain names the session) rather than the bare
+          // `back`/`reload` verbs. A mismatch drops it in the browser.
+          const expectedOrigin = previewOrigin(activeSlotUrl);
+          if (el?.contentWindow && expectedOrigin && reloadableWindowsRef.current.get(activeSlotKey) === el.contentWindow) {
+            el.contentWindow.postMessage({ source: "shipit-toolbar", type: "navigate", url: rootUrl }, expectedOrigin);
+          } else if (el) {
+            el.src = rootUrl;
+          }
+        }}
         activeSlotUrl={activeSlotUrl}
         previewPath={activePath}
         previewFullUrl={activeFullUrl}
