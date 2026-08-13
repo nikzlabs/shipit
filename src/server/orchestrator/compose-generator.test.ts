@@ -496,7 +496,7 @@ describe("generateComposeOverride", () => {
       { ...baseOpts, containEgress: true, containDns: true, containProxy: true },
     );
     expect(override).toContain("internal: true");
-    expect(override).toContain("127.0.0.1");
+    expect(override).toContain("192.0.2.1");
     expect(override).toContain("networks: !override");
     expect(override).toContain("dns: !override");
     expect(override).toContain("restart: no");
@@ -509,7 +509,7 @@ describe("generateComposeOverride", () => {
       baseOpts,
     );
     expect(openOverride).not.toContain("internal: true");
-    expect(openOverride).not.toContain("127.0.0.1");
+    expect(openOverride).not.toContain("192.0.2.1");
     expect(openOverride).not.toContain("SETUID");
   });
 
@@ -518,7 +518,7 @@ describe("generateComposeOverride", () => {
       [{ name: "web", ports: ["5173:5173"], user: "1001:1001" }],
       { ...baseOpts, containEgress: true, containDns: true },
     );
-    expect(override).toContain("dns: !override\n      - 127.0.0.1");
+    expect(override).toContain("dns: !override\n      - 192.0.2.1");
     expect(override).not.toContain("user: 1000:1000");
   });
 
@@ -683,7 +683,7 @@ describe("generateComposeOverride — session-worker UID (#1646)", () => {
       services: Record<string, { user?: string; dns?: string[] }>;
     };
     expect(contained.services["docker-socket-proxy"].user).toBeUndefined();
-    expect(contained.services["docker-socket-proxy"].dns).toEqual(["127.0.0.1"]);
+    expect(contained.services["docker-socket-proxy"].dns).toEqual(["192.0.2.1"]);
   });
 
   it("honors an explicit user: from the compose file and never overrides it", () => {

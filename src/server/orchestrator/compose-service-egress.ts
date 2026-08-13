@@ -52,7 +52,6 @@ export interface ContainComposeServicesOptions {
   sidecarImage: string;
   config: ResolvedEgressConfig;
   serviceNames: string[];
-  excludedServiceNames?: string[];
   dnsEnabled: boolean;
   proxyEnabled: boolean;
   labels?: Record<string, string>;
@@ -110,11 +109,12 @@ export async function containComposeServices(opts: ContainComposeServicesOptions
   }
   const parentLabel = `shipit-parent-session=${opts.sessionId}`;
   const containers = await opts.docker.listContainers({ all: true, filters: { label: [parentLabel] } });
-  const excludedServiceNames = new Set(opts.excludedServiceNames ?? []);
-  const serviceContainers = containers.filter((entry) =>
+  const allServiceContainers = containers.filter((entry) =>
     (entry.State === "running" || entry.State === "paused") && Boolean(entry.Labels?.["shipit-service-name"])
-      && !excludedServiceNames.has(entry.Labels?.["shipit-service-name"] ?? "")
       && !entry.Labels?.[EGRESS_RESOLVER_LABEL] && !entry.Labels?.[EGRESS_PROXY_LABEL]
+  );
+  const serviceContainers = allServiceContainers.filter((entry) =>
+    entry.Labels?.["shipit-trusted-ops-proxy"] !== "true"
   );
   const liveServiceIds = new Set(serviceContainers.map((entry) => entry.Id));
   const statePrefix = `${opts.sessionId}:`;
@@ -139,8 +139,28 @@ export async function containComposeServices(opts: ContainComposeServicesOptions
   if (!sessionNetworkInfo.Internal) {
     // Never attach the NAT egress bridge to a service whose bootstrap network
     // was reused from Open mode or an older ShipIt version.
-    for (const info of serviceContainers) {
-      try { await opts.docker.getContainer(info.Id).stop({ t: 0 }); } catch { /* fail closed */ }
+    const remediationFailures: Error[] = [];
+    for (const info of allServiceContainers) {
+      const container = opts.docker.getContainer(info.Id);
+      try {
+        await container.stop({ t: 0 });
+      } catch (stopError) {
+        try {
+          await sessionNetwork.disconnect({ Container: info.Id, Force: true });
+        } catch (disconnectError) {
+          try {
+            await container.remove({ force: true });
+          } catch (removeError) {
+            remediationFailures.push(new AggregateError(
+              [stopError, disconnectError, removeError],
+              `could not stop or isolate Compose service ${info.Id}`,
+            ));
+          }
+        }
+      }
+    }
+    if (remediationFailures.length > 0) {
+      throw new AggregateError(remediationFailures, `session network shipit-session-${opts.sessionId} is not internal`);
     }
     throw new Error(`session network shipit-session-${opts.sessionId} is not internal`);
   }
@@ -151,11 +171,11 @@ export async function containComposeServices(opts: ContainComposeServicesOptions
   const discoveredServiceNames = serviceContainers
     .map((entry) => entry.Labels?.["shipit-service-name"])
     .filter((name): name is string => Boolean(name));
-  const internalDomains = [
-    ...new Set([...opts.serviceNames, ...discoveredServiceNames, opts.orchestratorHost ?? os.hostname()]),
-  ];
+  const serviceNames = [...new Set([...opts.serviceNames, ...discoveredServiceNames])];
+  const trustedInternalDomains = [opts.orchestratorHost ?? os.hostname()];
   const policyHash = createHash("sha256").update(JSON.stringify({
-    internalDomains: [...internalDomains].sort(),
+    serviceNames: [...serviceNames].sort(),
+    trustedInternalDomains: [...trustedInternalDomains].sort(),
     extraHosts: [...opts.config.extraHosts].sort(),
     base: opts.config.base,
     identityRules: opts.config.identityRules,
@@ -248,7 +268,8 @@ export async function containComposeServices(opts: ContainComposeServicesOptions
           agentContainerId: info.Id,
           sidecarImage: opts.sidecarImage,
           configB64: buildResolverConfigB64({
-            internalDomains,
+            internalDomains: trustedInternalDomains,
+            unqualifiedInternalNames: serviceNames.length > 0,
             extraDomains: opts.config.extraHosts,
             ...(opts.config.base ? { base: opts.config.base } : {}),
           }),

@@ -588,7 +588,6 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
         sidecarImage,
         config: { ...config, contained },
         serviceNames,
-        ...(sc?.opsSession ? { excludedServiceNames: ["docker-socket-proxy"] } : {}),
         dnsEnabled: egressDnsEnabled(),
         proxyEnabled: egressProxyEnabled(),
         labels: this.baseLabels(),

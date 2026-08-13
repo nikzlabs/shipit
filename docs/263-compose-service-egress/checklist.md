@@ -22,3 +22,4 @@
 - [x] Sixteenth fresh review completed with no important findings.
 - [x] ShipIt API review completed; dependency restart preparation, ops policy, cross-session cache isolation, fail-closed removal, HTTP refresh errors, and Open proxy startup compatibility were addressed.
 - [x] Two ShipIt API follow-up reviews completed; ops-agent containment, paused NAT cleanup, API-socket rejection, trusted-proxy DNS/startup, and visible refresh failures were addressed.
+- [x] Three additional Opus review rounds completed; trusted-label exclusion, deterministic bootstrap DNS, safe internal-name routing, dotted orchestrator resolution, and stale-network remediation were addressed.
