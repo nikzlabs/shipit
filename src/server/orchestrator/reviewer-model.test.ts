@@ -561,8 +561,13 @@ describe("selecting the reviewer furthest from the implementer (req 4)", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.target.selection.serviceId).toBe("deepseek");
-    // Same harness (DeepSeek reaches Claude Code only), different family.
-    expect(result.tier).toBe(2);
+    // DeepSeek reaches BOTH harnesses (Anthropic-Messages and the Responses API,
+    // since 2026-08-13), so its reviewer bends away from the implementer's Claude
+    // harness to Codex — different family AND different harness, the ranking's
+    // ideal. The same-family-but-different-service openrouter slot stays on Claude
+    // and is outranked. Tier 2 is unit-covered in the distance-ranking suite.
+    expect(result.target.harnessId).toBe("codex");
+    expect(result.tier).toBe(1);
   });
 
   // The tie rule: equally distant reviewers go to the first configured one.

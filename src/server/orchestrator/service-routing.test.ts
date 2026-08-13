@@ -182,13 +182,15 @@ describe("firstEligibleSelectionForHarness", () => {
   });
 
   it("is undefined when nothing eligible speaks a style this harness has", () => {
-    // Codex speaks only `openai-responses`; DeepSeek's models declare
+    // Codex speaks only `openai-responses`; GLM's key mode declares
     // `openai-chat-completions` and `anthropic-messages`. So a Codex session on
-    // a DeepSeek-only install genuinely has nothing to run, and `auth_required`
-    // is the honest answer rather than a reroute to a model it cannot drive.
+    // a GLM-only install genuinely has nothing to run, and `auth_required` is the
+    // honest answer rather than a reroute to a model it cannot drive. (DeepSeek
+    // was the original example; it now serves the Responses API, so it reaches
+    // Codex — see catalogue.test.ts.)
     expect(
       firstEligibleSelectionForHarness("codex", {
-        credentialStore: store([route({ id: "cred_1", serviceId: "deepseek" })], { cred_1: "sk-ds" }),
+        credentialStore: store([route({ id: "cred_1", serviceId: "zai" })], { cred_1: "sk-zai" }),
         env: {} as NodeJS.ProcessEnv,
       }),
     ).toBeUndefined();

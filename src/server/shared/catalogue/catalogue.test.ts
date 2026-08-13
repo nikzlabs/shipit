@@ -555,13 +555,15 @@ describe("the harness\u00d7service join", () => {
   });
 
   it("reaches services the harness shares a style with, and no others", () => {
-    // DeepSeek serves Anthropic-Messages and OpenAI chat-completions, and Codex
-    // 0.146.0 speaks ONLY the Responses API (a provider declaring
-    // `wire_api = "chat"` is rejected outright — phase 3 measured this), so
-    // DeepSeek reaches Claude Code and not Codex. Vercel documents a Responses
-    // surface, so it is what reaches Codex today.
+    // DeepSeek serves Anthropic-Messages, OpenAI chat-completions AND the
+    // Responses API natively (confirmed 2026-08-13), and Codex 0.146.0 speaks
+    // ONLY the Responses API (a provider declaring `wire_api = "chat"` is
+    // rejected outright — phase 3 measured this). So DeepSeek now reaches both
+    // harnesses. Vercel documents a Responses surface, so it reaches Codex too;
+    // OpenRouter's Responses surface is unverified, so its models do not.
     expect(catalogueModelIdsForHarness("claude")).toContain("deepseek-v4-flash");
-    expect(catalogueModelIdsForHarness("codex")).not.toContain("deepseek-v4-flash");
+    expect(catalogueModelIdsForHarness("codex")).toContain("deepseek-v4-flash");
+    expect(catalogueModelIdsForHarness("codex")).toContain("deepseek-v4-pro");
     expect(catalogueModelIdsForHarness("codex")).toContain("openai/gpt-5.6-sol");
     expect(catalogueModelIdsForHarness("claude")).toContain("anthropic/claude-opus-5");
     expect(catalogueModelIdsForHarness("codex")).not.toContain("anthropic/claude-opus-5");
@@ -620,6 +622,23 @@ describe("spawn shaping", () => {
     expect(shaping?.credential).toEqual({
       sourceEnv: "DEEPSEEK_API_KEY",
       target: { kind: "env", name: "ANTHROPIC_API_KEY" },
+    });
+  });
+
+  it("materializes DeepSeek's key into Codex's own variable, at its Responses endpoint", () => {
+    // docs/252 phase 3 + 2026-08-13: DeepSeek serves the Responses API, so the
+    // same key lands in `OPENAI_API_KEY` and `codexProviderArgs` writes a block
+    // pointing Codex at `https://api.deepseek.com/v1` (`/responses` appended).
+    const shaping = resolveSpawnShaping("codex", {
+      serviceId: "deepseek",
+      billingMode: "key",
+      modelId: "deepseek-v4-flash",
+    });
+    expect(shaping?.style).toBe("openai-responses");
+    expect(shaping?.endpoint.url).toBe("https://api.deepseek.com/v1");
+    expect(shaping?.credential).toEqual({
+      sourceEnv: "DEEPSEEK_API_KEY",
+      target: { kind: "env", name: "OPENAI_API_KEY" },
     });
   });
 
