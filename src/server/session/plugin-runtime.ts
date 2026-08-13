@@ -30,6 +30,7 @@ import {
   planPluginSkills,
   pluginSkillExcludeEntries,
   resolvePluginSkillSources,
+  sweepStalePluginSkills,
   PLUGIN_SKILL_EXCLUDE_BLOCK,
 } from "./plugin-skills.js";
 
@@ -112,30 +113,41 @@ export function preparePlugins(opts: PreparePluginsOptions): PluginPrepareResult
     },
   );
 
-  // Fail closed on the git side, and only bother a clone that has plugins to
-  // hide: if the exclude cannot be written, materializing would put a copy of
-  // somebody else's repository into the user's next commit, which is the one
-  // thing req 22 rules out. Stale cleanup still runs — removing is always safe.
-  // The exclude names the EXACT directories, so it is written from the plan,
-  // before any of them exists.
-  const planned = planPluginSkills(sources);
-  const excluded = planned.length === 0
-    || !isGitRepo(opts.workspaceDir)
+  const plan = planPluginSkills(sources);
+  result.skillsFailed.push(...plan.failed);
+  const names = plan.planned.map((p) => p.name);
+
+  // Order is load-bearing, in three steps.
+  //
+  // 1. SWEEP FIRST. The exclude lists exact directories, so narrowing it while
+  //    a dropped skill still exists on disk opens a window where a concurrent
+  //    `git add -A` stages it (review finding). Remove, then stop excluding.
+  result.skillsRemoved.push(...sweepStalePluginSkills(opts.workspaceDir, new Set(names)));
+
+  // 2. Rewrite the exclude block — ALWAYS, including to nothing. Skipping the
+  //    rewrite when there is nothing planned left every old exclusion installed
+  //    forever, where it could later hide a directory the user created with the
+  //    same name (review finding).
+  const excluded = !isGitRepo(opts.workspaceDir)
     || ensureGitExcludedBlock(
       opts.workspaceDir,
       PLUGIN_SKILL_EXCLUDE_BLOCK,
-      pluginSkillExcludeEntries(planned.map((p) => p.name)),
+      pluginSkillExcludeEntries(names),
     );
-  const skills = materializePluginSkills(opts.workspaceDir, excluded ? planned : []);
+
+  // 3. Only then write. Fail closed: if the exclude is not in force,
+  //    materializing would put a copy of somebody else's repository into the
+  //    user's next commit, which is the one thing req 22 rules out.
   if (!excluded) {
     result.skillsFailed.push({
       skill: "(all)",
       reason: "could not keep plugin skills out of this clone's git, so none were materialized",
     });
+  } else {
+    const skills = materializePluginSkills(opts.workspaceDir, plan.planned);
+    result.skills.push(...skills.materialized);
+    result.skillsFailed.push(...skills.failed);
   }
-  result.skills.push(...skills.materialized);
-  result.skillsRemoved.push(...skills.removed);
-  result.skillsFailed.push(...skills.failed);
 
   return result;
 }

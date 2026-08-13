@@ -67,8 +67,21 @@ export const PLUGIN_SKILL_EXCLUDE_BLOCK = "shipit plugin skills";
  * half-installed plugin (review finding).
  */
 export function pluginSkillExcludeEntries(names: readonly string[]): string[] {
-  return skillsRoots("").flatMap((rel) => names.map((name) => `/${rel}/${name}/`));
+  return skillsRoots("").flatMap((rel) => [
+    // The staging directories too. They exist only mid-copy, but prepare is
+    // fire-and-forget and can overlap a post-turn `git add -A`, which would
+    // otherwise stage a half-copied third-party tree — and a crash leaves one
+    // behind entirely (review finding). A wildcard is safe HERE, unlike for the
+    // published names: the pattern is a dot-prefixed form of our own namespace
+    // that nothing else plausibly writes.
+    `/${rel}/${STAGING_GLOB}`,
+    ...names.map((name) => `/${rel}/${name}/`),
+  ]);
 }
+
+/** Shape of a staging directory: `.plugins--<name>.staging-<8 hex>`. */
+const STAGING_GLOB = `.${PLUGIN_SKILL_PREFIX}*.staging-*/`;
+const STAGING_RE = new RegExp(`^\\.${PLUGIN_SKILL_PREFIX}.*\\.staging-`);
 
 /**
  * Every harness's skills root, workspace-relative when `workspaceDir` is empty.
@@ -85,6 +98,14 @@ export interface PluginSkillSource {
   alias: string;
   /** Absolute path of the skills directory inside the plugin checkout. */
   skillsDir: string;
+  /**
+   * The checkout the skills dir must stay inside, REALLY — not lexically.
+   * Carried separately because containment is checked with `realpath`: the
+   * manifest's own validation is lexical, so `skills: pkg/skills` where `pkg`
+   * is a symlink out of the checkout passes it and then reads somebody else's
+   * files (review finding).
+   */
+  checkoutDir: string;
 }
 
 export interface PluginSkillsResult {
@@ -121,7 +142,11 @@ export function resolvePluginSkillSources(
     if (!checkoutDir) continue;
     // The manifest parser already rejects absolute paths and traversal, so this
     // join stays inside the checkout.
-    sources.push({ alias: use.alias, skillsDir: path.join(checkoutDir, exported.skills) });
+    sources.push({
+      alias: use.alias,
+      checkoutDir,
+      skillsDir: path.join(checkoutDir, exported.skills),
+    });
   }
   return sources;
 }
@@ -148,29 +173,126 @@ export interface PlannedSkill {
   from: string;
 }
 
+/** What a plan produced: what to write, and what could not be planned at all. */
+export interface PluginSkillPlan {
+  planned: PlannedSkill[];
+  failed: { skill: string; reason: string }[];
+}
+
 /**
  * Work out what would be materialized, WITHOUT writing anything.
  *
  * Separate from the write so the caller can put the exact directory names into
  * the clone's git exclude *before* they exist — the promise that these never
  * enter the project has to hold from the first moment they do.
+ *
+ * This is also where a plan is REJECTED rather than silently degraded: a skills
+ * directory that escapes its checkout, and two imports whose namespaced names
+ * collide. Both used to pass — the first read files outside the plugin, the
+ * second let one copy overwrite the other.
  */
-export function planPluginSkills(sources: readonly PluginSkillSource[]): PlannedSkill[] {
-  const planned: PlannedSkill[] = [];
+export function planPluginSkills(sources: readonly PluginSkillSource[]): PluginSkillPlan {
+  const plan: PluginSkillPlan = { planned: [], failed: [] };
+  const claimed = new Map<string, string>();
+
   for (const source of sources) {
-    for (const skillDir of listSkillDirs(source.skillsDir)) {
-      planned.push({
-        name: namespacedName(source.alias, skillDir),
-        from: path.join(source.skillsDir, skillDir),
+    // Absent and escaping are different problems and get different messages —
+    // one is a plugin that has not shipped what it declared, the other is a
+    // plugin reaching outside its own checkout.
+    if (!fs.existsSync(source.skillsDir)) {
+      // Declared and selected, but the generation does not have it. Silence
+      // here reported a plugin as fully active while shipping none of the
+      // instructions it promised (review finding).
+      plan.failed.push({
+        skill: source.alias,
+        reason: "the declared skills directory does not exist in this generation",
       });
+      continue;
+    }
+    const skillsDir = containedRealPath(source.checkoutDir, source.skillsDir);
+    if (!skillsDir) {
+      plan.failed.push({
+        skill: source.alias,
+        reason: "the declared skills directory resolves outside the plugin checkout",
+      });
+      continue;
+    }
+    const dirs = listSkillDirs(skillsDir);
+    if (dirs === null) {
+      plan.failed.push({
+        skill: source.alias,
+        reason: "the declared skills directory could not be read",
+      });
+      continue;
+    }
+    for (const skillDir of dirs) {
+      const from = containedRealPath(skillsDir, path.join(skillsDir, skillDir));
+      if (!from) {
+        plan.failed.push({
+          skill: `${source.alias}/${skillDir}`,
+          reason: "the skill directory resolves outside the plugin checkout",
+        });
+        continue;
+      }
+      const name = namespacedName(source.alias, skillDir);
+      // A name is claimed once. The hash makes a clash unlikely, not
+      // impossible — and "unlikely" silently overwriting somebody's skill is
+      // not the unambiguous namespace req 20 promises.
+      const owner = claimed.get(name);
+      if (owner !== undefined) {
+        plan.failed.push({
+          skill: `${source.alias}/${skillDir}`,
+          reason: `its namespaced name collides with \`${owner}\``,
+        });
+        continue;
+      }
+      claimed.set(name, `${source.alias}/${skillDir}`);
+      plan.planned.push({ name, from });
     }
   }
-  return planned;
+  return plan;
+}
+
+/** The deepest ancestor of `p` (including `p`) that exists on disk. */
+function nearestExisting(p: string): string {
+  let current = p;
+  while (!fs.existsSync(current)) {
+    const parent = path.dirname(current);
+    if (parent === current) return current;
+    current = parent;
+  }
+  return current;
 }
 
 /**
- * Write the planned skills into each harness's discovery root, and drop the
- * ones this session no longer imports.
+ * `target` resolved through every symlink, but only if it really stays inside
+ * `base` — also resolved. `null` when it escapes or cannot be resolved.
+ *
+ * A lexical check is not enough on either side of this copy. On the source
+ * side the checkout belongs to a third party, so any component of the declared
+ * path may be a link out of it. On the destination side the project may own a
+ * `.claude -> /outside` symlink, which would put every copy beyond the reach of
+ * the git exclude that is supposed to contain them.
+ */
+function containedRealPath(base: string, target: string): string | null {
+  try {
+    const realBase = fs.realpathSync(base);
+    const real = fs.realpathSync(target);
+    const prefix = realBase.endsWith(path.sep) ? realBase : `${realBase}${path.sep}`;
+    return real === realBase || real.startsWith(prefix) ? real : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Write the planned skills into each harness's discovery root.
+ *
+ * **All roots or none.** If any root refuses a skill, the ones that took it are
+ * rolled back. Reporting a partial write as a failure was not enough: the
+ * FILESYSTEM was still backend-specific, so a foreign directory under `.claude`
+ * left the skill present for Codex and absent for Claude — exactly the
+ * per-backend outcome req 22 rules out (review finding).
  *
  * Idempotent, and safe to run on every activation round and container start.
  * Never throws: a skill that cannot be written is reported, not fatal.
@@ -180,21 +302,44 @@ export function materializePluginSkills(
   planned: readonly PlannedSkill[],
 ): PluginSkillsResult {
   const result: PluginSkillsResult = { materialized: [], removed: [], failed: [] };
-  const wanted = new Set(planned.map((p) => p.name));
 
   for (const { name, from } of planned) {
-    const failures = skillsRoots(workspaceDir)
-      .map((root) => writeSkill(from, path.join(root, name), name))
-      .filter((f): f is string => f !== null);
+    const written: string[] = [];
+    const failures: string[] = [];
+    for (const root of skillsRoots(workspaceDir)) {
+      const failure = writeSkill(from, root, name);
+      if (failure) failures.push(failure);
+      else written.push(path.join(root, name));
+    }
+    if (failures.length === 0) {
+      result.materialized.push(name);
+      continue;
+    }
     for (const reason of failures) result.failed.push({ skill: name, reason });
-    // Reported as materialized only when EVERY root got it. A partial write is
-    // a skill the running backend may not see at all — reporting it as done
-    // would hide exactly the case worth knowing about (review finding).
-    if (failures.length === 0) result.materialized.push(name);
+    for (const dir of written) {
+      try {
+        fs.rmSync(dir, { recursive: true, force: true });
+      } catch (err) {
+        console.warn(`[plugins] could not roll back ${dir}: ${getErrorMessage(err)}`);
+      }
+    }
   }
-
-  result.removed.push(...removeStaleSkills(workspaceDir, wanted));
   return result;
+}
+
+/**
+ * Remove materialized skills this session no longer imports, and any staging
+ * directory a previous run left behind.
+ *
+ * Split out of the write so the caller can run it BEFORE rewriting the git
+ * exclude: dropping an exclusion while the directory it covers still exists
+ * opens a window where a concurrent `git add -A` stages it (review finding).
+ */
+export function sweepStalePluginSkills(
+  workspaceDir: string,
+  wanted: ReadonlySet<string>,
+): string[] {
+  return removeStaleSkills(workspaceDir, wanted);
 }
 
 /**
@@ -207,9 +352,16 @@ export function materializePluginSkills(
  * `do-it`. Without the hash the second copy would silently delete the first,
  * which is the opposite of the unambiguous namespace req 20 promises (review
  * finding; the same defect the plugin overlay volume name had).
+ *
+ * **The hash narrows the odds; it does not make the name unique**, and the
+ * first version of this comment claimed that it did. A second reviewer found a
+ * real collision at 6 hex digits in under ten thousand crafted candidates
+ * (`a-._--_-.b` and `a...-.---b` both render `a-b` and hashed alike). It is 12
+ * digits now, but the guarantee comes from `planPluginSkills` REJECTING a
+ * duplicate name outright — a hash width is a defence, not a proof.
  */
 export function namespacedName(alias: string, skill: string): string {
-  const hash = crypto.createHash("sha256").update(`${alias}\u0000${skill}`).digest("hex").slice(0, 6);
+  const hash = crypto.createHash("sha256").update(`${alias}\u0000${skill}`).digest("hex").slice(0, 12);
   return `${PLUGIN_SKILL_PREFIX}${segment(alias)}--${segment(skill)}-${hash}`;
 }
 
@@ -217,13 +369,17 @@ function segment(value: string): string {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "unnamed";
 }
 
-/** Immediate subdirectories of a skills dir that actually hold a `SKILL.md`. */
-function listSkillDirs(skillsDir: string): string[] {
+/**
+ * Immediate subdirectories of a skills dir that actually hold a `SKILL.md`, or
+ * `null` when the directory itself is missing or unreadable — which is a
+ * reportable failure, not an empty result.
+ */
+function listSkillDirs(skillsDir: string): string[] | null {
   let entries: fs.Dirent[];
   try {
     entries = fs.readdirSync(skillsDir, { withFileTypes: true });
   } catch {
-    return []; // no skills dir in this generation — nothing to do
+    return null;
   }
   return entries
     .filter((e) => e.isDirectory() && fs.existsSync(path.join(skillsDir, e.name, "SKILL.md")))
@@ -238,26 +394,33 @@ function listSkillDirs(skillsDir: string): string[] {
  * happens to sit at the same path is left alone and reported, because the
  * alternative is deleting somebody's work to make room for a copy.
  *
- * **Published by rename, never written in place.** The earlier version deleted
- * the live directory and copied into its final path, so an agent reading a
- * skill during a refresh could see an ENOENT or half a tree — and a copy that
- * failed after the delete left an unmarked partial directory, which the
- * ownership check above would then refuse to replace, wedging that skill
- * permanently (review finding). Staging beside the target and renaming closes
- * both: the live directory is replaced in one step, and a failed copy leaves
- * only a staging directory that is cleaned up.
+ * **Published by rename, never written in place** — which is weaker than
+ * atomic, and the first version of this comment claimed it was atomic. The
+ * directory that appears is always COMPLETE, because it is built under a
+ * staging name and arrives by rename. It is not indivisible: `rename(2)`
+ * refuses a non-empty destination, so the old copy is removed first and a
+ * reader in that gap sees no skill rather than half of one. Absent-then-whole
+ * is the failure mode worth having; the shape before this let a reader see a
+ * directory with files missing, and left an unmarked partial behind on failure
+ * that the ownership check then refused to replace, wedging the skill.
  */
-function writeSkill(from: string, to: string, name: string): string | null {
-  const staging = path.join(path.dirname(to), `.${name}.staging-${crypto.randomUUID().slice(0, 8)}`);
+function writeSkill(from: string, root: string, name: string): string | null {
+  const staging = path.join(root, `.${name}.staging-${crypto.randomUUID().slice(0, 8)}`);
+  const to = path.join(root, name);
   try {
+    // Checked BEFORE the mkdir, against the deepest ancestor that already
+    // exists. Creating first and checking after still creates the directory:
+    // a project-owned `.claude -> /outside` with no `/outside/skills` yet was
+    // populated there, entirely beyond the git exclude meant to contain it
+    // (review finding).
+    const workspaceDir = path.dirname(path.dirname(root));
+    if (!containedRealPath(workspaceDir, nearestExisting(root))) {
+      return `\`${root}\` resolves outside the workspace; refusing to write through it`;
+    }
+    fs.mkdirSync(root, { recursive: true });
+
     const owned = ownershipOf(to);
     if (owned === "foreign") return `\`${name}\` already exists and was not created by ShipIt`;
-
-    fs.mkdirSync(path.dirname(to), { recursive: true });
-    // The destination root itself must not be a symlink out of the workspace:
-    // a project-owned `.claude/skills -> /somewhere` would make every path
-    // below it land outside the tree the git exclude covers.
-    if (isSymlink(path.dirname(to))) return `\`${path.dirname(to)}\` is a symlink; refusing to write through it`;
 
     fs.rmSync(staging, { recursive: true, force: true });
     // Symlinks are DROPPED, not followed. `dereference: true` copies a link's
@@ -361,7 +524,7 @@ function rewriteSkillName(skillMdPath: string, name: string): void {
  * Scoped by the `plugins--` prefix AND by the marker file, so neither a user's
  * own skill nor a marketplace-installed one can be touched.
  */
-function removeStaleSkills(workspaceDir: string, wanted: Set<string>): string[] {
+function removeStaleSkills(workspaceDir: string, wanted: ReadonlySet<string>): string[] {
   const removed: string[] = [];
   for (const root of skillsRoots(workspaceDir)) {
     let entries: fs.Dirent[];
@@ -371,6 +534,18 @@ function removeStaleSkills(workspaceDir: string, wanted: Set<string>): string[] 
       continue;
     }
     for (const entry of entries) {
+      // A staging directory is always ours and never wanted: it exists only
+      // between the copy and the rename, so anything still here is the residue
+      // of a run that died (review finding — the `finally` cannot cover a
+      // killed process, and nothing else names these).
+      if (entry.isDirectory() && STAGING_RE.test(entry.name)) {
+        try {
+          fs.rmSync(path.join(root, entry.name), { recursive: true, force: true });
+        } catch (err) {
+          console.warn(`[plugins] could not remove staging dir ${entry.name}: ${getErrorMessage(err)}`);
+        }
+        continue;
+      }
       if (!entry.isDirectory() || !entry.name.startsWith(PLUGIN_SKILL_PREFIX)) continue;
       if (wanted.has(entry.name)) continue;
       const dir = path.join(root, entry.name);

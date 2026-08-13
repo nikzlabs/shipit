@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import simpleGit from "simple-git";
-import { GitManager, ensurePnpmStoreGitExcluded, ensureGitExcluded } from "./git.js";
+import { GitManager, ensurePnpmStoreGitExcluded, ensureGitExcluded, ensureGitExcludedBlock } from "./git.js";
 import { initGlobalGitConfig, setGitIdentity } from "../orchestrator/git-config.js";
 
 describe("GitManager: init & autoCommit", () => {
@@ -257,6 +257,61 @@ describe("GitManager: init & autoCommit", () => {
     for (const entry of [".claude/skills/plugins--*/", ".codex/skills/plugins--*/", ".new-entry/"]) {
       expect(lines.filter((l) => l === entry).length).toBe(1);
     }
+  });
+
+  // docs/262 — the managed block is rewritten as a plugin declaration changes.
+  // Losing a user's own ignore rule here is the worst outcome available: a rule
+  // that was keeping a secret out of a commit would stop doing so.
+  describe("ensureGitExcludedBlock", () => {
+    const BLOCK = "shipit plugin skills";
+
+    it("replaces its own block and leaves the user's lines alone", async () => {
+      await new GitManager(tmpDir).init();
+      const excludePath = path.join(tmpDir, ".git", "info", "exclude");
+      fs.writeFileSync(excludePath, "my-secret-notes/\nbuild-output/\n");
+
+      ensureGitExcludedBlock(tmpDir, BLOCK, ["/a/", "/b/"]);
+      ensureGitExcludedBlock(tmpDir, BLOCK, ["/c/"]);
+      const lines = fs.readFileSync(excludePath, "utf-8").split("\n");
+
+      expect(lines).toContain("my-secret-notes/");
+      expect(lines).toContain("build-output/");
+      expect(lines).toContain("/c/");
+      expect(lines).not.toContain("/a/");
+      expect(lines.filter((l) => l.startsWith("# BEGIN"))).toHaveLength(1);
+    });
+
+    it("clears the block when there is nothing left to exclude", async () => {
+      await new GitManager(tmpDir).init();
+      const excludePath = path.join(tmpDir, ".git", "info", "exclude");
+      fs.writeFileSync(excludePath, "keep-me/\n");
+      ensureGitExcludedBlock(tmpDir, BLOCK, ["/a/"]);
+      ensureGitExcludedBlock(tmpDir, BLOCK, []);
+
+      const text = fs.readFileSync(excludePath, "utf-8");
+      expect(text).toContain("keep-me/");
+      expect(text).not.toContain("/a/");
+      expect(text).not.toContain("BEGIN");
+    });
+
+    it("does not swallow user lines after an orphaned BEGIN marker", async () => {
+      // An interrupted write can leave a BEGIN with no END. Searching the whole
+      // file for an END then treated everything up to the NEXT run's END as
+      // managed — deleting the user's rules in between.
+      await new GitManager(tmpDir).init();
+      const excludePath = path.join(tmpDir, ".git", "info", "exclude");
+      fs.writeFileSync(
+        excludePath,
+        `# BEGIN ${BLOCK} (managed by ShipIt — do not edit)\n/orphaned/\nmy-secret-notes/\n`,
+      );
+
+      ensureGitExcludedBlock(tmpDir, BLOCK, ["/fresh/"]);
+      const text = fs.readFileSync(excludePath, "utf-8");
+
+      expect(text).toContain("my-secret-notes/");
+      expect(text).toContain("/fresh/");
+      expect(text.split("\n").filter((l) => l.startsWith("# BEGIN"))).toHaveLength(1);
+    });
   });
 
   it("ensurePnpmStoreGitExcluded is best-effort on a missing .git (no throw)", () => {

@@ -12,6 +12,7 @@ import path from "node:path";
 import {
   materializePluginSkills,
   planPluginSkills,
+  sweepStalePluginSkills,
   namespacedName,
   pluginSkillExcludeEntries,
   resolvePluginSkillSources,
@@ -30,9 +31,15 @@ const NAMES = {
   renamedProbe: namespacedName("renamed", "probe"),
 };
 
-/** Plan, then write — the two-step the git exclude needs. */
-function materialize(sources: { alias: string; skillsDir: string }[]) {
-  return materializePluginSkills(workspaceDir, planPluginSkills(sources));
+/**
+ * Plan, sweep, then write — the order `preparePlugins` uses, so these tests
+ * exercise the real sequence rather than a shortcut through it.
+ */
+function materialize(sources: { alias: string; skillsDir: string; checkoutDir?: string }[]) {
+  const plan = planPluginSkills(sources.map((s) => ({ checkoutDir, ...s })));
+  const removed = sweepStalePluginSkills(workspaceDir, new Set(plan.planned.map((p) => p.name)));
+  const result = materializePluginSkills(workspaceDir, plan.planned);
+  return { ...result, removed, failed: [...plan.failed, ...result.failed] };
 }
 
 /** Every distinct skills root a harness scans, as absolute paths. */
@@ -112,14 +119,17 @@ describe("materializePluginSkills", () => {
     expect(fs.existsSync(path.join(roots()[0]!, NAMES.probe, "helper.sh"))).toBe(true);
   });
 
-  it("ignores a directory with no SKILL.md, and a missing skills dir", () => {
+  it("ignores a directory with no SKILL.md, but REPORTS a missing skills dir", () => {
+    // Silence on a declared-but-absent skills directory reported a plugin as
+    // fully active while shipping none of the instructions it promised.
     fs.mkdirSync(path.join(checkoutDir, "skills", "not-a-skill"), { recursive: true });
     const result = materialize([
       { alias: "tools", skillsDir: path.join(checkoutDir, "skills") },
       { alias: "gone", skillsDir: path.join(checkoutDir, "nowhere") },
     ]);
     expect(result.materialized).toEqual([]);
-    expect(result.failed).toEqual([]);
+    expect(result.failed.map((f) => f.skill)).toEqual(["gone"]);
+    expect(result.failed[0]?.reason).toContain("does not exist");
   });
 
   it("re-materializes on refresh, replacing the previous generation's copy", () => {
@@ -192,11 +202,11 @@ describe("materializePluginSkills", () => {
 
     expect(result.failed[0]?.reason).toContain("not created by ShipIt");
     expect(fs.readFileSync(path.join(clash, "SKILL.md"), "utf-8")).toContain("hand-written");
-    // NOT reported as materialized, even though the other root took it: a
-    // partial write is a skill the running backend may not see at all, so
-    // calling it done would hide the one case worth knowing about.
+    // All roots or none: the root that DID take the copy is rolled back, so
+    // the skill is not silently present for one backend and absent for the
+    // other — which is the per-backend outcome req 22 rules out.
     expect(result.materialized).toEqual([]);
-    expect(fs.existsSync(path.join(roots()[1]!, NAMES.probe, "SKILL.md"))).toBe(true);
+    expect(fs.existsSync(path.join(roots()[1]!, NAMES.probe))).toBe(false);
   });
 
   // A third-party repository controls this tree. `dereference: true` copied a
@@ -230,7 +240,7 @@ describe("materializePluginSkills", () => {
 
     const result = materialize([{ alias: "tools", skillsDir: path.join(checkoutDir, "skills") }]);
 
-    expect(result.failed.some((f) => f.reason.includes("symlink"))).toBe(true);
+    expect(result.failed.some((f) => f.reason.includes("outside the workspace"))).toBe(true);
     expect(fs.existsSync(path.join(elsewhere, NAMES.probe))).toBe(false);
   });
 
@@ -288,6 +298,65 @@ describe("materializePluginSkills", () => {
     }
   });
 
+  // The declared path is validated lexically by the manifest parser, which
+  // says nothing about what its COMPONENTS are. `skills: pkg/skills` with
+  // `pkg` a symlink out of the checkout read somebody else's files, and the
+  // per-entry copy filter never saw it — it only lstats what it is handed.
+  it("refuses a skills directory reached through a symlinked ancestor", () => {
+    const outside = path.join(tmp, "outside");
+    fs.mkdirSync(path.join(outside, "skills", "probe"), { recursive: true });
+    fs.writeFileSync(path.join(outside, "skills", "probe", "SKILL.md"), "---\nname: probe\n---\n");
+    fs.symlinkSync(outside, path.join(checkoutDir, "pkg"));
+
+    const result = materialize([{ alias: "tools", skillsDir: path.join(checkoutDir, "pkg", "skills") }]);
+
+    expect(result.materialized).toEqual([]);
+    expect(result.failed[0]?.reason).toContain("outside the plugin checkout");
+    expect(fs.existsSync(path.join(roots()[0]!, namespacedName("tools", "probe")))).toBe(false);
+  });
+
+  it("refuses a discovery root reached through a symlinked ancestor", () => {
+    // `.claude -> /outside` with no `/outside/skills` yet: the earlier check
+    // looked only at the final component, so this created and populated a
+    // directory entirely beyond the git exclude meant to contain it.
+    const outside = path.join(tmp, "outside-root");
+    fs.mkdirSync(outside, { recursive: true });
+    fs.symlinkSync(outside, path.join(workspaceDir, ".claude"));
+    writeSkill(path.join(checkoutDir, "skills", "probe"), "probe");
+
+    const result = materialize([{ alias: "tools", skillsDir: path.join(checkoutDir, "skills") }]);
+
+    expect(result.failed.some((f) => f.reason.includes("outside the workspace"))).toBe(true);
+    expect(fs.existsSync(path.join(outside, "skills"))).toBe(false);
+  });
+
+  it("rejects a second skill whose namespaced name collides", () => {
+    // The hash narrows the odds; it does not make the name unique. A second
+    // reviewer found a real collision at 6 hex digits in under ten thousand
+    // crafted candidates, so the guarantee has to come from rejecting the
+    // duplicate rather than from the hash width.
+    writeSkill(path.join(checkoutDir, "skills", "probe"), "probe");
+    const plan = planPluginSkills([
+      { alias: "same", checkoutDir, skillsDir: path.join(checkoutDir, "skills") },
+      { alias: "same", checkoutDir, skillsDir: path.join(checkoutDir, "skills") },
+    ]);
+
+    expect(plan.planned).toHaveLength(1);
+    expect(plan.failed[0]?.reason).toContain("collides");
+  });
+
+  it("sweeps a staging directory a killed run left behind", () => {
+    // The `finally` cannot cover a killed process, and nothing else ever names
+    // these — so without this they accumulate, holding third-party content in
+    // the workspace.
+    const orphan = path.join(roots()[0]!, `.${namespacedName("tools", "probe")}.staging-deadbeef`);
+    fs.mkdirSync(orphan, { recursive: true });
+    fs.writeFileSync(path.join(orphan, "SKILL.md"), "half copied");
+
+    sweepStalePluginSkills(workspaceDir, new Set());
+    expect(fs.existsSync(orphan)).toBe(false);
+  });
+
   it("marks what it wrote", () => {
     writeSkill(path.join(checkoutDir, "skills", "probe"), "probe");
     materialize([{ alias: "tools", skillsDir: path.join(checkoutDir, "skills") }]);
@@ -298,8 +367,8 @@ describe("materializePluginSkills", () => {
 
 describe("namespacedName", () => {
   it("renders an awkward alias or skill name into a usable directory", () => {
-    expect(namespacedName("My Tools", "Do Things!")).toMatch(/^plugins--my-tools--do-things-[0-9a-f]{6}$/);
-    expect(namespacedName("", "")).toMatch(/^plugins--unnamed--unnamed-[0-9a-f]{6}$/);
+    expect(namespacedName("My Tools", "Do Things!")).toMatch(/^plugins--my-tools--do-things-[0-9a-f]{12}$/);
+    expect(namespacedName("", "")).toMatch(/^plugins--unnamed--unnamed-[0-9a-f]{12}$/);
   });
 });
 
@@ -312,8 +381,19 @@ describe("pluginSkillExcludeEntries", () => {
     const entries = pluginSkillExcludeEntries(["plugins--tools--probe-abc123"]);
     expect(entries).toContain("/.claude/skills/plugins--tools--probe-abc123/");
     expect(entries).toContain("/.codex/skills/plugins--tools--probe-abc123/");
-    for (const entry of entries) expect(entry).not.toContain("*");
-    expect(pluginSkillExcludeEntries([])).toEqual([]);
+    // No wildcard among the PUBLISHED names.
+    for (const entry of entries.filter((e) => e.includes("probe"))) {
+      expect(entry).not.toContain("*");
+    }
+    // The staging pattern is the one wildcard, and it is dot-prefixed inside
+    // our own namespace — a half-copied third-party tree must not be stageable
+    // by a `git add -A` that overlaps the copy.
+    expect(entries).toContain("/.claude/skills/.plugins--*.staging-*/");
+    // Even with nothing planned, the staging pattern stays.
+    expect(pluginSkillExcludeEntries([])).toEqual([
+      "/.claude/skills/.plugins--*.staging-*/",
+      "/.codex/skills/.plugins--*.staging-*/",
+    ]);
   });
 });
 
@@ -331,7 +411,9 @@ describe("resolvePluginSkillSources", () => {
       () => checkoutDir,
     );
 
-    expect(sources).toEqual([{ alias: "reqs", skillsDir: path.join(checkoutDir, "pkg", "skills") }]);
+    expect(sources).toEqual([
+      { alias: "reqs", checkoutDir, skillsDir: path.join(checkoutDir, "pkg", "skills") },
+    ]);
   });
 
   it("yields nothing for a repo with no live checkout or no manifest", () => {

@@ -367,8 +367,8 @@ instead of a repeat.
   re-scans on next turn. The docs/209 verification rule applies to future
   backends.
 
-  Six details the implementation settled, the last four after an independent
-  review found each of them. **Every** harness root gets a copy,
+  Details the implementation settled, most of them after two independent review
+  rounds found them. **Every** harness root gets a copy,
   not just the running session's: req 22's "never tied to one backend" is the
   requirement's own wording, and `skillsDirName` additionally drives ShipIt's
   skill picker, so a Codex session with the copy only under `.claude` would
@@ -384,30 +384,44 @@ instead of a repeat.
   installer: kilobytes of markdown, no dangling-link failure mode, and
   re-copying is what makes a refresh take effect.
 
-  **Symlinks in the plugin's tree are dropped, not followed.** The manifest's
-  path validation is lexical — it rejects `..` and absolute paths in the
-  declared `skills:` value and says nothing about what a link *inside* the
-  checkout points at. A dereferencing copy would therefore let a plugin
-  repository ship `skills/x/assets -> /credentials` and have ShipIt copy that
-  content into the workspace. The destination root is checked too: a
-  project-owned `.claude/skills -> /elsewhere` would put every copy outside the
-  tree the exclude covers.
+  **Containment is checked with `realpath`, on both sides, before anything is
+  written.** The manifest's own validation is lexical — it rejects `..` and
+  absolute paths in the declared `skills:` value and says nothing about what any
+  *component* of that path is, nor about what a link inside the checkout points
+  at. So a dereferencing copy let a plugin ship `skills/x/assets ->
+  /credentials`, and `skills: pkg/skills` with `pkg` a symlink out of the
+  checkout read somebody else's files entirely — the per-entry copy filter never
+  saw it, because it only inspects what it is handed. The destination has the
+  mirror problem: a project-owned `.claude -> /outside` put every copy beyond
+  the exclude, and checking only the final path component missed it because the
+  directory was created before the check ran. Both sides now resolve fully — the
+  destination against its deepest existing ancestor — before any `mkdir`.
 
-  **Published by rename, never written in place.** Prepare runs while a turn
-  may be reading these files, so deleting the live directory and copying into
-  its final path exposes an ENOENT or half a tree — and a copy that failed
-  after the delete left an unmarked partial that the ownership check would then
-  refuse to replace, wedging that skill permanently.
+  **Published by rename — which is complete, not atomic.** Prepare runs while a
+  turn may be reading these files, so deleting the live directory and copying
+  into its final path exposes half a tree, and a copy that failed after the
+  delete left an unmarked partial that the ownership check would then refuse to
+  replace, wedging that skill permanently. Staging plus rename fixes both. It
+  does NOT make publication indivisible: `rename(2)` refuses a non-empty
+  destination, so the old copy is removed first and a reader in that gap sees no
+  skill rather than half of one. Absent-then-whole is the failure mode worth
+  having, and calling it "atomic" was an overclaim the second review caught. The
+  staging directories are themselves excluded from git and swept on the next
+  pass, since a killed process cannot run its own cleanup.
 
   **The marker's content is checked, not its name.** A file called
   `.shipit-plugin-skill.json` is something a handwritten skill could plausibly
   contain, and this module deletes what it owns recursively.
 
-  **The namespaced name carries a hash of the exact pair.** The readable
-  rendering collapses punctuation, so the aliases `foo_bar` and `foo-bar` —
-  both valid, both distinct to the parser's uniqueness check — render
-  identically; without the hash the second copy silently deletes the first.
-  The same defect the plugin overlay volume name had.
+  **Duplicate names are rejected; the hash only narrows the odds.** The readable
+  rendering collapses punctuation, so the aliases `foo_bar` and `foo-bar` — both
+  valid, both distinct to the parser's uniqueness check — render identically,
+  and the second copy silently deleted the first. A hash of the exact pair was
+  the first fix and was not enough: the second review produced a real collision
+  at 6 hex digits from under ten thousand crafted candidates (`a-._--_-.b` and
+  `a...-.---b`, reproduced here before being fixed). The width is 12 digits now,
+  but the guarantee is that a plan REFUSES a name already claimed — a hash width
+  is a defence, not a proof.
 
   **The git exclude names the exact directories**, written from the plan before
   any of them exists. A `plugins--*` wildcard would also hide whatever the user
@@ -418,6 +432,17 @@ instead of a repeat.
   (an unmarked directory there is refused as foreign, so the copy never
   happens), and `git add -f` / `git clean -x` / `git stash --all` override any
   ignore, as they do for `.gitignore`.
+
+  **The block is rewritten in a fixed order, and never widens what it hides.**
+  Sweep stale directories FIRST, then narrow the block, then write — dropping an
+  exclusion while the directory it covers still exists opens a window where a
+  concurrent `git add -A` stages it. The rewrite runs on every pass including
+  the empty one, or a dropped declaration leaves its exclusions installed
+  forever, later hiding a directory the user creates with the same name. And an
+  orphaned BEGIN marker (from an interrupted write) must not let the next
+  rewrite treat everything up to its own END as managed: that deletes the user's
+  own ignore rules in between, which is how someone loses a rule that was
+  keeping a secret out of a commit.
 - **Refresh** (reqs 12, 15 — review finding 1): refresh is **generation
   activation**, never in-place mutation. Stage the new checkout, validate
   the manifest, run install, prepare services — then atomically activate:
