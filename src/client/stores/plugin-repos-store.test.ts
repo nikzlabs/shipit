@@ -167,3 +167,34 @@ describe("tab gating and attention (plan §3)", () => {
     expect(pluginsAttention(snapshot({ repos: [{ ...card, issues: ["missing"] }] }))).toBe(true);
   });
 });
+
+describe("activating never leaves the card stuck", () => {
+  beforeEach(() => {
+    usePluginReposStore.setState({ snapshot: null, forSessionId: null });
+    useSessionStore.setState({ sessionId: "sess-a" });
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    vi.restoreAllMocks();
+  });
+
+  it("keeps polling while a repository is activating, then stops", async () => {
+    vi.useFakeTimers();
+    try {
+      let call = 0;
+      const impl = vi.fn(async () => {
+        const activating = call++ < 2;
+        return new Response(JSON.stringify(snapshot({ activating })), { status: 200 });
+      });
+      globalThis.fetch = impl as unknown as typeof fetch;
+
+      await usePluginReposStore.getState().fetchSnapshot("sess-a");
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(impl).toHaveBeenCalledTimes(3);
+      expect(usePluginReposStore.getState().snapshot?.activating).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

@@ -49,6 +49,17 @@ const activationState = new Map<string, PluginRepoActivationState>();
  */
 const epochs = new Map<string, number>();
 
+/**
+ * How many triggers are currently activating each `sessionId::repoName`.
+ *
+ * `activating` has to mean "another result is coming", not "the trigger I
+ * happened to watch has finished" (review finding): two overlapping triggers
+ * would otherwise have the first one clear the flag while the second is still
+ * queued, and a browser polling in that window would stop early and show a
+ * stale card. Only the last trigger out clears it.
+ */
+const inFlight = new Map<string, number>();
+
 const stateKey = (sessionId: string, repoName: string): string => `${sessionId}::${repoName}`;
 
 export function getActivationState(sessionId: string, repoName: string): PluginRepoActivationState | undefined {
@@ -60,7 +71,13 @@ export function clearActivationState(sessionId: string): void {
   for (const key of [...activationState.keys()]) {
     if (key.startsWith(`${sessionId}::`)) activationState.delete(key);
   }
+  for (const key of [...inFlight.keys()]) {
+    if (key.startsWith(`${sessionId}::`)) inFlight.delete(key);
+  }
 }
+
+/** Notified when a session's activation round settles, so the UI can refetch. */
+export type ActivationSettledHook = (sessionId: string) => void;
 
 export interface PluginActivationDeps {
   /** Bare cache directory for a plugin repository's clone URL. */
@@ -69,6 +86,12 @@ export interface PluginActivationDeps {
   pinStorePath: string;
   /** Create/refresh the bare cache. Orchestrator-side, so fetch credentials never leave it (req 19). */
   ensureCache: (cacheDir: string, repoUrl: string) => Promise<void>;
+  /**
+   * Called once per session when every repository in this round has settled.
+   * Activation is fire-and-forget, so without a push the browser can only
+   * poll — and a poll that gives up leaves the card stuck (review finding).
+   */
+  onSettled?: ActivationSettledHook;
 }
 
 /**
@@ -107,14 +130,17 @@ export async function activateDeclaredPlugins(
   if (repos.length === 0) return;
 
   const epoch = epochs.get(sessionId) ?? 0;
+  const isCancelled = (): boolean => (epochs.get(sessionId) ?? 0) !== epoch;
   /** Drop any write whose session was disposed (or re-activated) meanwhile. */
   const setState = (repoName: string, state: PluginRepoActivationState): void => {
-    if ((epochs.get(sessionId) ?? 0) !== epoch) return;
+    if (isCancelled()) return;
     activationState.set(stateKey(sessionId, repoName), state);
   };
 
   await Promise.all(
     repos.map(async (repo) => {
+      const key = stateKey(sessionId, repo.name);
+      inFlight.set(key, (inFlight.get(key) ?? 0) + 1);
       const existing = readActiveGeneration(stateDir, repo.name) ?? undefined;
       setState(repo.name, { activating: true, ...(existing ? { generation: existing } : {}) });
 
@@ -129,7 +155,17 @@ export async function activateDeclaredPlugins(
         pinStorePath: deps.pinStorePath,
         selectedExports: selectedByRepo.get(repo.name.toLowerCase()) ?? [],
         ensureCache: deps.ensureCache,
+        isCancelled,
       });
+
+      // Another trigger is still queued for this repository, so the round is
+      // not over: leave `activating` set and let the last one out report.
+      const remaining = (inFlight.get(key) ?? 1) - 1;
+      if (remaining > 0) {
+        inFlight.set(key, remaining);
+        return;
+      }
+      inFlight.delete(key);
 
       if (outcome.status === "failed") {
         setState(repo.name, {
@@ -141,9 +177,19 @@ export async function activateDeclaredPlugins(
         console.warn(`[plugins:${sessionId}] ${repo.name}: ${outcome.reason}`);
         return;
       }
-      setState(repo.name, { activating: false, generation: outcome.generation });
+      setState(repo.name, {
+        activating: false,
+        generation: outcome.generation,
+        // req 8 — a moved tag that the durable pin overrode is advisory, and
+        // it must reach the user on the SUCCESS path too (review finding).
+        ...(outcome.warning ? { warning: outcome.warning } : {}),
+      });
     }),
   );
+
+  // Tell the browser the round settled, so it refetches instead of polling
+  // until its budget runs out.
+  if (!isCancelled()) deps.onSettled?.(sessionId);
 }
 
 /** The clone URL for a declared repo. GitHub-only in v1 (plan §1a). */

@@ -473,7 +473,11 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   // sessions activating the same plugin repository for the first time would
   // otherwise clone into the same directory concurrently (review finding 7).
   const cacheOps = new Map<string, Promise<void>>();
-  const activatePluginRepos = (sessionId: string, workspaceDir: string): void => {
+  const activatePluginRepos = (
+    sessionId: string,
+    workspaceDir: string,
+    onSettled?: (id: string) => void,
+  ): void => {
     const remoteUrl = sessionManager.get(sessionId)?.remoteUrl;
     void activateDeclaredPlugins(
       sessionId,
@@ -483,6 +487,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
         pinStorePath: pinStorePath(stateDir),
         // Fetching runs here, in the orchestrator, so plugin code never reaches
         // fetch credentials (req 19).
+        ...(onSettled ? { onSettled } : {}),
         ensureCache: (cacheDir, repoUrl) => {
           const previous = cacheOps.get(cacheDir) ?? Promise.resolve();
           // eslint-disable-next-line no-restricted-syntax -- chaining a serial queue in a sync factory

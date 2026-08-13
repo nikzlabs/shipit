@@ -39,7 +39,7 @@ Verification (plan.md §5 — drives the implementation):
 
 Implementation:
 
-- [x] Generation engine — `plugin-generations.ts`: on-disk layout under the session state dir (docs/246, so a plugin checkout can never be staged into the user's repo), commit resolution (branch tip / pin / durable pin record), staging, install with stamping, atomic symlink publish, old-generation pruning
+- [x] Generation engine — `plugin-generations.ts`: on-disk layout under the session state dir (docs/246, so a plugin checkout can never be staged into the user's repo), commit resolution (branch tip / pin / durable pin record), staging, phase-2 selector validation, atomic symlink publish (record inside the generation), old-generation pruning that never deletes the live one, a per-repo serial queue, and cancellation checks so a disposed session's activation publishes nothing. Runs no plugin-authored code
 - [x] Activation lifecycle — `services/plugin-activation.ts` + wiring through `bootstrap-managers` → `runner-registry-factory` → `service-manager-setup`: runs on session activation and on a `shipit.yaml` edit, fire-and-forget so a slow fetch never delays a session opening (req 13); per-repo independence (req 14); last-attempt state feeds the tab without a GET ever activating anything
 - [x] Snapshot + tab states: `active` (with the exact commit), `activating`, `degraded` (prior generation still live — req 15), `unavailable`; tracked-repo selectors resolve against the LIVE generation's manifest (phase 2). The client re-fetches while any repo is activating, since activation is fire-and-forget and nothing pushes completion — a `plugin_repo_status` WS delta replaces the poll when refresh lands
 

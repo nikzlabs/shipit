@@ -28,6 +28,7 @@ import { handleContainerRestarting } from "./container-restarting.js";
 import { handleError } from "./error.js";
 import { handleFileTree } from "./file-tree.js";
 import { handleFilesChanged } from "./files-changed.js";
+import { handlePluginReposUpdated } from "./plugin-repos-updated.js";
 import { handleFullResetComplete } from "./full-reset-complete.js";
 import { handleForkBreadcrumb } from "./fork-breadcrumb.js";
 import { handleGithubStatus } from "./github-status.js";
@@ -149,6 +150,7 @@ export const messageHandlers: MessageHandlerMap = {
   error: handleError,
   file_tree: handleFileTree,
   files_changed: handleFilesChanged,
+  plugin_repos_updated: handlePluginReposUpdated,
   full_reset_complete: handleFullResetComplete,
   fork_breadcrumb: handleForkBreadcrumb,
   git_committed: handleGitCommitted,

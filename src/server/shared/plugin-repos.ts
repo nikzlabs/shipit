@@ -149,6 +149,10 @@ export interface PluginRepoRuntime {
   /** Exported plugin names in the live generation's manifest (phase-2 input). */
   exports?: string[];
   error?: string;
+  /** Advisory — a moved tag the durable pin overrode (req 8). */
+  warning?: string;
+  /** Warnings from parsing the live generation's manifest (req 13 — degrade *visibly*). */
+  manifestWarnings?: string[];
 }
 
 export interface PluginReposSnapshot {
@@ -772,6 +776,9 @@ export function buildPluginReposSnapshot(
     const issues = uses
       .filter((u) => u.found === false)
       .map((u) => `\`${u.plugin}\` is not in this repository's \`exports.plugins\` manifest.`);
+    // Order: the failure first, then advisories, then selector problems.
+    if (live.warning) issues.unshift(live.warning);
+    for (const w of live.manifestWarnings ?? []) issues.unshift(w);
     if (live.error) issues.unshift(live.error);
 
     return {

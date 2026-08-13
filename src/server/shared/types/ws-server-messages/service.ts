@@ -65,6 +65,21 @@ export interface WsServiceList {
   }[];
 }
 
+/**
+ * docs/262 — Server → Client: this session's plugin repositories finished an
+ * activation round, so the browser should refetch `GET /api/plugin-repos`.
+ *
+ * A signal, not a payload: the snapshot is the single authoritative shape and
+ * re-deriving it here would be a second source of truth. It exists because
+ * activation is fire-and-forget — without a push the client can only poll, and
+ * a poll with any budget eventually gives up on a slow fetch and leaves the
+ * card stuck on "activating".
+ */
+export interface WsPluginReposUpdated {
+  type: "plugin_repos_updated";
+  sessionId: string;
+}
+
 /** Server → Client: Docker Compose stack failed to start. */
 export interface WsComposeError {
   type: "compose_error";

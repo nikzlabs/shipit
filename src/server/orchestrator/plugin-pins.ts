@@ -70,6 +70,30 @@ export interface DurablePinArgs {
 }
 
 /**
+ * One critical section per store file, covering **read → resolve → merge →
+ * write**.
+ *
+ * An atomic rename protects the file's integrity, not a read-modify-write
+ * (review finding): repositories are activated concurrently, so two callers
+ * could each read an empty store, each add their own pin, and the second
+ * rename would drop the first. Serializing the whole section is what makes
+ * "first resolution wins" true across concurrent activations, which is the
+ * property req 8 actually needs.
+ */
+const storeLocks = new Map<string, Promise<unknown>>();
+
+function withStoreLock<T>(storePath: string, task: () => Promise<T>): Promise<T> {
+  const previous = storeLocks.get(storePath) ?? Promise.resolve();
+  // eslint-disable-next-line no-restricted-syntax -- Promise two-arg form: run `task` whether the previous holder settled or rejected
+  const next = previous.then(task, task);
+  const tail = next.catch(() => undefined).finally(() => {
+    if (storeLocks.get(storePath) === tail) storeLocks.delete(storePath);
+  });
+  storeLocks.set(storePath, tail);
+  return next;
+}
+
+/**
  * The commit this declaration is pinned to, recording it on first resolution.
  *
  * A recorded pin is returned **without re-resolving**: the point of durability
@@ -78,32 +102,36 @@ export interface DurablePinArgs {
  * Resolution still runs opportunistically to detect a moved tag, but a failure
  * there is not fatal once a commit is recorded.
  */
-export async function resolveDurablePin(
-  args: DurablePinArgs,
-): Promise<{ commit: string; warning?: string }> {
-  const key = declarationPinKey(args.consumerKey, args.repo);
-  const store = read(args.storePath);
-  const recorded = store.pins[key];
+export function resolveDurablePin(args: DurablePinArgs): Promise<{ commit: string; warning?: string }> {
+  return withStoreLock(args.storePath, async () => {
+    const key = declarationPinKey(args.consumerKey, args.repo);
+    const recorded = read(args.storePath).pins[key];
 
-  if (recorded) {
-    try {
-      const current = await args.resolve();
-      if (current !== recorded) {
-        return {
-          commit: recorded,
-          warning:
-            `\`${args.repo.pin}\` now points at ${current.slice(0, 9)} upstream, but this project is `
-            + `pinned to ${recorded.slice(0, 9)}. Edit the declaration to move it.`,
-        };
+    if (recorded) {
+      try {
+        const current = await args.resolve();
+        if (current !== recorded) {
+          return {
+            commit: recorded,
+            warning:
+              `\`${args.repo.pin}\` now points at ${current.slice(0, 9)} upstream, but this project is `
+              + `pinned to ${recorded.slice(0, 9)}. Edit the declaration to move it.`,
+          };
+        }
+      } catch {
+        // The tag is gone or ambiguous now — irrelevant, we have the commit.
       }
-    } catch {
-      // The tag is gone or ambiguous now — irrelevant, we have the commit.
+      return { commit: recorded };
     }
-    return { commit: recorded };
-  }
 
-  const resolved = await args.resolve();
-  store.pins[key] = resolved;
-  await write(args.storePath, store);
-  return { commit: resolved };
+    const resolved = await args.resolve();
+    // Re-read inside the lock: another holder may have recorded this same
+    // declaration while we were resolving, and merging keeps their entries.
+    const store = read(args.storePath);
+    const raced = store.pins[key];
+    if (raced) return { commit: raced };
+    store.pins[key] = resolved;
+    await write(args.storePath, store);
+    return { commit: resolved };
+  });
 }

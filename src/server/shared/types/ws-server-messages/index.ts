@@ -53,6 +53,7 @@ import type {
   WsServiceStatus,
   WsServiceList,
   WsComposeError,
+  WsPluginReposUpdated,
   WsStackError,
   WsComposeNotConfigured,
   WsSecretsStatus,
@@ -247,6 +248,7 @@ export type WsServerMessage =
   | WsSessionMemoryExhausted
   | WsPreviewError
   | WsComposeError
+  | WsPluginReposUpdated
   | WsStackError
   | WsComposeNotConfigured
   | WsSecretsStatus

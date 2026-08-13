@@ -264,13 +264,17 @@ export interface ServiceSetupDeps {
   logStore?: LogStore;
   /**
    * docs/262 — bring the session's declared plugin repositories to their
-   * declared versions (checkout + install + atomic activation). Called on the
+   * declared versions (checkout + activation + atomic activation). Called on the
    * same two triggers as compose configuration: session activation and a
    * `shipit.yaml` edit. Fire-and-forget, so a slow plugin fetch never delays
    * the session opening (req 13). Constructed in `bootstrap-managers.ts`,
    * where the bare-cache helpers are in scope; absent in test setups.
    */
-  activatePluginRepos?: (sessionId: string, workspaceDir: string) => void;
+  activatePluginRepos?: (
+    sessionId: string,
+    workspaceDir: string,
+    onSettled?: (sessionId: string) => void,
+  ) => void;
   broadcastLog?: (sessionId: string, source: LogSource, text: string) => void;
   /** docs/088 — account-level MCP secrets store. */
   credentialStore?: CredentialStore;
@@ -360,7 +364,7 @@ export function setupServiceManager(
   // BELOW the trust gate on purpose — a plugin's `install` is repo-declared
   // auto-execution exactly like `agent.install`, so an untrusted remote must
   // not run one (docs/178).
-  deps.activatePluginRepos?.(runner.sessionId, workspaceDir);
+  deps.activatePluginRepos?.(runner.sessionId, workspaceDir, emitPluginReposUpdated(runner));
   // The activation state map is process-lived and keyed by session; drop this
   // session's entries when its runner goes away so session churn can't grow it.
   runner.on("disposed", () => clearActivationState(runner.sessionId));
@@ -782,6 +786,16 @@ function composeRemovalIsTrustworthy(workspaceDir: string): boolean {
  *  - **`compose:` changed / unchanged** → adopt the new block (if any) and
  *    reconcile, which re-parses the compose file and brings up new services.
  */
+/**
+ * docs/262 — tell attached viewers an activation round settled. `emitMessage`
+ * (not `ctx.send`) so every viewer sees it and a reconnecting one replays it.
+ */
+export function emitPluginReposUpdated(runner: SessionRunnerInterface): (sessionId: string) => void {
+  return (sessionId: string) => {
+    runner.emitMessage({ type: "plugin_repos_updated", sessionId });
+  };
+}
+
 export function applyShipitConfigChange(
   runner: SessionRunnerInterface,
   deps: ServiceSetupDeps,
@@ -831,7 +845,7 @@ export function applyShipitConfigChange(
   // live, so the cheap check lives there rather than in a config diff here.
   // Trust is inherited — this path only runs once a ServiceManager exists,
   // which `setupServiceManager` creates only past the gate.
-  deps.activatePluginRepos?.(runner.sessionId, workspaceDir);
+  deps.activatePluginRepos?.(runner.sessionId, workspaceDir, emitPluginReposUpdated(runner));
 
   // ---- agent.install delta ----
   if (runner instanceof ContainerSessionRunner) {

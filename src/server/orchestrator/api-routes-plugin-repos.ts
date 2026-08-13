@@ -135,9 +135,11 @@ function readRuntimeState(
     if (generation) {
       entry.commit = generation.commit;
       entry.exports = generation.exports;
+      if (generation.manifestWarnings?.length) entry.manifestWarnings = generation.manifestWarnings;
     }
     if (attempt?.activating) entry.activating = true;
     if (attempt?.error) entry.error = attempt.error;
+    if (attempt?.warning) entry.warning = attempt.warning;
     runtime[repo.name] = entry;
   }
   return runtime;

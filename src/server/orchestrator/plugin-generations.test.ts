@@ -13,6 +13,7 @@ import path from "node:path";
 import simpleGit from "simple-git";
 import {
   activateGeneration,
+  activationQueueSize,
   activeLinkPath,
   readActiveGeneration,
 } from "./plugin-generations.js";
@@ -256,5 +257,41 @@ describe("failure semantics (reqs 13, 15)", () => {
     // The second declaration ran against ITS OWN declaration and won.
     expect(branched.status).toBe("activated");
     expect(readActiveGeneration(stateDir, "tools")?.commit).toBe(second);
+  });
+});
+
+describe("cancellation and queue hygiene", () => {
+  it("a cancelled activation publishes nothing", async () => {
+    // The session is archived mid-flight: its state dir may already be gone,
+    // and a staging mkdir would silently re-create it.
+    const outcome = await activateGeneration(repo({ branch: "main" }), {
+      ...deps(),
+      isCancelled: () => true,
+    });
+    expect(outcome.status).toBe("failed");
+    expect(readActiveGeneration(stateDir, "tools")).toBeNull();
+    expect(fs.existsSync(path.join(stateDir, "plugins", "tools", "generations"))).toBe(false);
+  });
+
+  it("releases its queue entry so session churn cannot grow the map", async () => {
+    await activateGeneration(repo({ branch: "main" }), deps());
+    // Drain the microtask/cleanup tail.
+    await new Promise((r) => setTimeout(r, 10));
+    expect(activationQueueSize()).toBe(0);
+  });
+});
+
+describe("manifest warnings (req 13)", () => {
+  it("records a fetched manifest's warnings on the generation", async () => {
+    await commitFiles(
+      { "shipit.yaml": "exports:\n  plugins:\n    probe:\n      cli:\n        probe: bin/probe.mjs\n      surprise: 1\n" },
+      "unknown key",
+    );
+    await activateGeneration(repo({ branch: "main" }), deps());
+
+    const record = readActiveGeneration(stateDir, "tools");
+    expect(record?.exports).toEqual(["probe"]);
+    // Recorded, not just logged — the tab shows it (degrade *visibly*).
+    expect(record?.manifestWarnings.join(" ")).toContain("surprise");
   });
 });

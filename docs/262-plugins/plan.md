@@ -317,8 +317,9 @@ coherent in one UI.
   parses trackers first (the reservation order).
 - ✓ `src/server/orchestrator/plugin-generations.ts` — the generation engine:
   layout under the session state dir (docs/246 — never inside the clone),
-  commit resolution incl. durable pins, staging, install + stamping, atomic
-  symlink publish, pruning. ✓ `services/plugin-activation.ts` is its lifecycle
+  commit resolution incl. durable pins, staging, phase-2 selector validation,
+  atomic symlink publish, pruning. It runs no plugin-authored code — install
+  is container-side (see §1b). ✓ `services/plugin-activation.ts` is its lifecycle
   half, triggered from `service-manager-setup.ts` on session activation and on
   a `shipit.yaml` edit.
 - ✓ `src/server/orchestrator/api-routes-plugin-repos.ts` — browser snapshot

@@ -103,3 +103,50 @@ describe("resolveDurablePin", () => {
     );
   });
 });
+
+describe("concurrent writers", () => {
+  // The regression this guards: read → resolve → write without a critical
+  // section let two concurrent activations each read an empty store and the
+  // second rename drop the first one's pin.
+  it("concurrent first-resolutions all survive", async () => {
+    const repos: DeclaredPluginRepo[] = Array.from({ length: 8 }, (_, i) => ({
+      name: `tools-${i}`,
+      source: { kind: "github", owner: "acme", repo: `tools-${i}` },
+      pin: "v1",
+    }));
+
+    await Promise.all(
+      repos.map((r, i) =>
+        resolveDurablePin({
+          storePath,
+          consumerKey: "proj",
+          repo: r,
+          resolve: async () => {
+            // Yield, so every caller would observe the same empty store under
+            // the old read-modify-write.
+            await new Promise((res) => setTimeout(res, 1));
+            return String(i).repeat(40);
+          },
+        }),
+      ),
+    );
+
+    const pins = JSON.parse(fs.readFileSync(storePath, "utf-8")).pins;
+    expect(Object.keys(pins)).toHaveLength(repos.length);
+  });
+
+  it("two concurrent callers for ONE declaration agree on a single commit", async () => {
+    let calls = 0;
+    const resolve = async (): Promise<string> => {
+      await new Promise((res) => setTimeout(res, 1));
+      calls += 1;
+      return String(calls).repeat(40);
+    };
+
+    const [a, b] = await Promise.all([
+      resolveDurablePin({ storePath, consumerKey: "proj", repo, resolve }),
+      resolveDurablePin({ storePath, consumerKey: "proj", repo, resolve }),
+    ]);
+    expect(a.commit).toBe(b.commit);
+  });
+});

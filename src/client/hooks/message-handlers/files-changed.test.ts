@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { handleFilesChanged } from "./files-changed.js";
+import { handlePluginReposUpdated } from "./plugin-repos-updated.js";
 import { useIssuesStore } from "../../stores/issues-store.js";
 import { usePluginReposStore } from "../../stores/plugin-repos-store.js";
 import { useSessionStore } from "../../stores/session-store.js";
@@ -150,5 +151,21 @@ describe("handleFilesChanged — tracker declarations (planning#323)", () => {
     await flush();
 
     expect(calls.some((u) => u.startsWith("/api/trackers"))).toBe(true);
+  });
+});
+
+describe("handlePluginReposUpdated (docs/262)", () => {
+  it("refetches the snapshot for the active session", async () => {
+    stubFetch([tracker()]);
+    handlePluginReposUpdated(ctx, { type: "plugin_repos_updated", sessionId: "s1" });
+    await flush();
+    expect(calls.some((u) => u.startsWith("/api/plugin-repos"))).toBe(true);
+  });
+
+  it("ignores a push for another session — the store holds one snapshot", async () => {
+    stubFetch([tracker()]);
+    handlePluginReposUpdated(ctx, { type: "plugin_repos_updated", sessionId: "other" });
+    await flush();
+    expect(calls).toEqual([]);
   });
 });

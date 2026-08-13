@@ -72,12 +72,19 @@ export interface GenerationRecord {
   activatedAt: string;
   /** Exported plugin names found in the manifest (phase-2 selector input). */
   exports: string[];
+  /**
+   * Warnings from parsing the fetched repository's manifest (an unknown key, a
+   * dropped export). Recorded rather than only logged, so the Plugins tab can
+   * show them — a degradation the user cannot see is not req 13's "degrade,
+   * visibly" (review finding).
+   */
+  manifestWarnings: string[];
 }
 
 /** What `activateGeneration` did. */
 export type ActivationOutcome =
-  | { status: "unchanged"; generation: GenerationRecord }
-  | { status: "activated"; generation: GenerationRecord }
+  | { status: "unchanged"; generation: GenerationRecord; warning?: string }
+  | { status: "activated"; generation: GenerationRecord; warning?: string }
   | {
       /**
        * Nothing was activated. `previous` — when present — is still whole and
@@ -113,6 +120,13 @@ export interface ActivateDeps {
   selectedExports: readonly string[];
   /** Ensure the bare cache exists and is current. Injected so tests stay offline. */
   ensureCache: (cacheDir: string, repoUrl: string) => Promise<void>;
+  /**
+   * Whether the session this activation belongs to is gone (archived, reset,
+   * disposed). Checked before the two steps that create durable state, so a
+   * slow activation cannot re-create a session's state directory after
+   * cleanup removed it (review finding).
+   */
+  isCancelled?: () => boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -171,16 +185,22 @@ export function readActiveGeneration(stateDir: string, repoName: string): Genera
  */
 const queues = new Map<string, Promise<unknown>>();
 
+/** Live queue entries — exported so a test can prove they are released. */
+export function activationQueueSize(): number {
+  return queues.size;
+}
+
 function enqueue<T>(key: string, task: () => Promise<T>): Promise<T> {
   const previous = queues.get(key) ?? Promise.resolve();
   // eslint-disable-next-line no-restricted-syntax -- Promise two-arg form: run `task` whether the previous entry settled or rejected
   const next = previous.then(task, task);
-  queues.set(
-    key,
-    next.catch(() => undefined).finally(() => {
-      if (queues.get(key) === next) queues.delete(key);
-    }),
-  );
+  // The map holds `tail`, so the cleanup guard must compare against `tail` —
+  // comparing against `next` (the unwrapped promise) can never match, and the
+  // entry would live for the process lifetime (review finding).
+  const tail: Promise<unknown> = next.catch(() => undefined).finally(() => {
+    if (queues.get(key) === tail) queues.delete(key);
+  });
+  queues.set(key, tail);
   return next;
 }
 
@@ -231,13 +251,19 @@ async function activateOnce(repo: DeclaredPluginRepo, deps: ActivateDeps): Promi
 
   // Already live. Nothing is re-staged and nothing in the live tree is
   // touched: repairing a published generation in place is exactly the
-  // partial-state req 15 forbids (review finding 2).
+  // partial-state req 15 forbids (review finding).
   if (previous?.commit === commit) {
     const missing = missingSelectors(deps.selectedExports, previous.exports);
     if (missing.length > 0) {
       return { status: "failed", reason: selectorError(missing), previous, ...warningField };
     }
-    return { status: "unchanged", generation: previous };
+    return { status: "unchanged", generation: previous, ...warningField };
+  }
+
+  // Cancelled before anything durable exists: a session archived mid-fetch
+  // must not have its state directory re-created by the staging `mkdir`.
+  if (deps.isCancelled?.()) {
+    return { status: "failed", reason: "the session went away before activation completed", ...withPrevious };
   }
 
   const finalDir = generationDir(stateDir, repo.name, commit);
@@ -247,7 +273,7 @@ async function activateOnce(repo: DeclaredPluginRepo, deps: ActivateDeps): Promi
     await fsp.mkdir(generationsRoot(stateDir, repo.name), { recursive: true });
     await checkoutCommit(bareCacheDir, stagingDir, commit);
 
-    const exportsList = readManifest(stagingDir);
+    const { exports: exportsList, warnings: manifestWarnings } = readManifest(stagingDir);
     // Phase 2 (plan §1a): a selected export that the fetched manifest does not
     // have invalidates the WHOLE repository generation. Checked before publish,
     // so a bad selector never becomes live.
@@ -263,10 +289,18 @@ async function activateOnce(repo: DeclaredPluginRepo, deps: ActivateDeps): Promi
       ref: declaredRef,
       activatedAt: new Date().toISOString(),
       exports: exportsList.map((e) => e.name),
+      manifestWarnings,
     };
     // The record is written into the staging tree, so the directory that
     // becomes live is complete before it has a name anything reads.
     await fsp.writeFile(path.join(stagingDir, RECORD_FILE), JSON.stringify(record, null, 2));
+
+    // Last check before publishing: everything up to here is confined to a
+    // staging directory that the cleanup below removes.
+    if (deps.isCancelled?.()) {
+      await fsp.rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
+      return { status: "failed", reason: "the session went away before activation completed", ...withPrevious };
+    }
 
     await fsp.rm(finalDir, { recursive: true, force: true });
     await fsp.rename(stagingDir, finalDir);
@@ -274,7 +308,7 @@ async function activateOnce(repo: DeclaredPluginRepo, deps: ActivateDeps): Promi
     await pruneOldGenerations(stateDir, repo.name, commit);
 
     console.log(`[plugins] ${repo.name}: activated ${commit.slice(0, 9)} (${declaredRef})`);
-    return { status: "activated", generation: record };
+    return { status: "activated", generation: record, ...warningField };
   } catch (err) {
     await fsp.rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
     return { status: "failed", reason: message(err), ...withPrevious, ...warningField };
@@ -339,26 +373,26 @@ async function checkoutCommit(bareCacheDir: string, targetDir: string, commit: s
  * way; it simply exports nothing, and a consumer that selected something from
  * it fails the selector check above.
  */
-function readManifest(checkoutDir: string): PluginExport[] {
+function readManifest(checkoutDir: string): { exports: PluginExport[]; warnings: string[] } {
   let raw: string;
   try {
     raw = fs.readFileSync(path.join(checkoutDir, "shipit.yaml"), "utf-8");
   } catch {
-    return [];
+    return { exports: [], warnings: [] };
   }
   const warnings: string[] = [];
   let doc: unknown;
   try {
     doc = parseYaml(raw);
-  } catch {
-    return [];
+  } catch (err) {
+    return { exports: [], warnings: [`This repository's shipit.yaml could not be parsed: ${message(err)}`] };
   }
   const exportsBlock = doc && typeof doc === "object" && !Array.isArray(doc)
     ? (doc as Record<string, unknown>).exports
     : undefined;
-  const parsed = parsePluginExports(exportsBlock, warnings);
+  const exportsList = parsePluginExports(exportsBlock, warnings);
   for (const w of warnings) console.warn(`[plugins] ${checkoutDir}: ${w}`);
-  return parsed;
+  return { exports: exportsList, warnings };
 }
 
 /**
