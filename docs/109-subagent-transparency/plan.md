@@ -460,6 +460,40 @@ The prompt and the final report are unaffected: the prompt was always collapsed,
 and the report stays always-visible — it is the actionable output, and it is
 what the parent agent itself acts on.
 
+## Codex in-process subagents
+
+The pinned Codex app-server schema (0.146.0) declares a
+`collabAgentToolCall/spawnAgent` shape, but a live authenticated run established
+the actual successful-spawn sequence: the parent emits
+`subAgentActivity { kind: "started", agentThreadId, agentPath }`, then the child
+thread streams its own item and turn notifications. No `spawnAgent` collab item
+appeared. An ephemeral-parent probe failed to spawn, which also verified why
+ShipIt's `ephemeral: false` setting is required. Item and turn notifications
+carry a required top-level `threadId`; `CodexEventHandler` records
+`agentThreadId → activity item id` from the observed signal. The activity item
+becomes the visible `Agent` invocation, and its id becomes `parentToolUseId` on
+child narration, command, file-change, MCP, web, and tool-result events. The
+declared `spawnAgent` and `agentsStates` shapes remain compatibility paths, but
+the regression tests use the live sequence. Every route uses the same
+accumulator, persistence, projection, and `SubagentCall` UI as Claude.
+
+The child's terminal `agentMessage`, followed by its `turn/completed`, becomes
+the activity tool's result and supplies the existing final-report panel. Child
+`thread/started`, `turn/started`, token-usage, and
+`turn/completed` notifications cannot overwrite the parent's resume key,
+steering target, accounting, or terminal state. If the parent finishes with an
+unclosed spawn, the card receives a plain fallback result instead of becoming
+permanently blank after reload.
+
+Key files:
+
+- `src/server/session/agents/codex/codex-event-handler.ts` — correlates child
+  threads, emits nested progress, and promotes the terminal child answer.
+- `src/server/session/agents/codex/adapter.test.ts` — protocol-level regression
+  coverage for invocation, progress, and output.
+- `src/client/components/MessageList/MessageToolUse.tsx` and
+  `src/client/components/SubagentCall.tsx` — shared Claude/Codex rendering.
+
 ## Future extensions
 
 - **Pause / cancel a running subagent** without canceling the parent turn.
