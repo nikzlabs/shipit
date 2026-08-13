@@ -150,6 +150,12 @@ if [ "$(printf '%s\n%s\n' "$minimum_compose" "$compose_version" | sort -V | head
   echo "Error: Docker Compose $minimum_compose or newer is required (found $compose_version)." >&2
   exit 1
 fi
+docker_api_version="$(docker version --format '{{.Server.APIVersion}}' 2>/dev/null || true)"
+minimum_docker_api="1.48"
+if [ -z "$docker_api_version" ] || [ "$(printf '%s\n%s\n' "$minimum_docker_api" "$docker_api_version" | sort -V | head -n1)" != "$minimum_docker_api" ]; then
+  echo "Error: Docker Engine API $minimum_docker_api or newer is required (found ${docker_api_version:-unknown})." >&2
+  exit 1
+fi
 
 # --- Configure Docker network address pools ---
 # ShipIt creates two Docker networks per contained Compose session. The default pool (~30 /16 subnets)

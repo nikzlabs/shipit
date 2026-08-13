@@ -595,6 +595,12 @@ function validateServiceSecurity(
       if (!source) continue;
 
       // Docker socket check
+      if (source.includes("/var/run/docker.sock") && containEgress && name !== "docker-socket-proxy") {
+        throw new ComposeValidationError(
+          `Service \`${name}\`: direct Docker socket access is not allowed with contained egress. `
+          + "Use ShipIt's trusted docker-socket-proxy service.",
+        );
+      }
       if (source.includes("/var/run/docker.sock") && !dockerSocket) {
         if (name === "docker-socket-proxy") {
           throw new ComposeValidationError(

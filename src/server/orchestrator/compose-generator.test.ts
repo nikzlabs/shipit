@@ -295,6 +295,19 @@ services:
     expect(services).toHaveLength(1);
   });
 
+  it("rejects direct Docker socket access for contained non-proxy services", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `
+services:
+  web:
+    image: node:20
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+`);
+    expect(() => parseComposeFile(p, { dockerSocket: true, containEgress: true }))
+      .toThrow("direct Docker socket access");
+  });
+
   it("rejects absolute bind mount paths", () => {
     const dir = setup();
     const p = writeCompose(dir, `
