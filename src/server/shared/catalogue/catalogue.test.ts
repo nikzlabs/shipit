@@ -33,6 +33,9 @@ import {
   catalogueModelIdsForHarness,
   eligibleEntriesForHarness,
   harnessCanCarry,
+  harnessCredentialTarget,
+  harnessSupportsMode,
+  harnessSupportsService,
   isSelectionEligible,
   resolveSpawnShaping,
   parseSelection,
@@ -47,7 +50,14 @@ import {
   serializeSelection,
   storageEnvFor,
 } from "./index.js";
-import type { ApiStyle, BillingModeDef, ModelDef, ModelSelection, ServiceDef } from "./index.js";
+import type {
+  ApiStyle,
+  BillingModeDef,
+  HarnessId,
+  ModelDef,
+  ModelSelection,
+  ServiceDef,
+} from "./index.js";
 import { formatModelName } from "../../../client/utils/format-model.js";
 
 /**
@@ -607,6 +617,116 @@ describe("eligibility (req 8)", () => {
     expect(
       harnessCanCarry("claude", { serviceId: "deepseek", billingMode: "key", via: "account" }),
     ).toBe(false);
+  });
+});
+
+describe("support before a credential exists (the add-service table)", () => {
+  it("answers per service what the join and the credential shapes allow", () => {
+    // GLM and OpenRouter serve Anthropic Messages only, so Codex — which speaks
+    // Responses and nothing else — cannot reach them however they are paid for.
+    expect(harnessSupportsService("claude", "zai")).toBe(true);
+    expect(harnessSupportsService("codex", "zai")).toBe(false);
+    expect(harnessSupportsService("claude", "openrouter")).toBe(true);
+    expect(harnessSupportsService("codex", "openrouter")).toBe(false);
+    // …and the mirror image: OpenAI is Responses only.
+    expect(harnessSupportsService("codex", "openai")).toBe(true);
+    expect(harnessSupportsService("claude", "openai")).toBe(false);
+    // Services that serve both styles reach both harnesses.
+    expect(harnessSupportsService("claude", "deepseek")).toBe(true);
+    expect(harnessSupportsService("codex", "deepseek")).toBe(true);
+  });
+
+  it("is the SAME answer eligibility gives once that credential is added", () => {
+    // The point of deriving it from `eligibleEntriesForHarness` rather than
+    // re-stating the rule: the table cannot promise a pairing the picker then
+    // refuses, or refuse one it would have offered.
+    for (const service of allServices()) {
+      for (const mode of service.modes) {
+        for (const harness of allHarnesses()) {
+          const credentials = mode.credentials.map((c) => ({
+            serviceId: service.id,
+            billingMode: mode.kind,
+            via: c.via,
+          }));
+          expect(harnessSupportsMode(harness.id, service.id, mode.kind)).toBe(
+            eligibleEntriesForHarness(harness.id, credentials).length > 0,
+          );
+        }
+      }
+    }
+  });
+
+  it("is not hiding a per-mode or per-shape difference behind one cell", () => {
+    // The cell is per SERVICE and existential: it is a tick when SOME mode and
+    // SOME accepted credential shape would work. The user then picks one mode
+    // and supplies one shape — so a service whose answer differed between them
+    // would be ticked and then offer nothing, which is the promise the table
+    // must not make. No shipped row does, and this fails the moment one does:
+    // that is when the cell has to become per-mode rather than per-service.
+    // Found by cross-backend review, which is also where the reasoning is
+    // recorded (plan.md, req 22).
+    for (const service of allServices()) {
+      for (const harness of allHarnesses()) {
+        const answers = new Set<boolean>();
+        for (const mode of service.modes) {
+          for (const credential of mode.credentials) {
+            answers.add(
+              eligibleEntriesForHarness(harness.id, [
+                { serviceId: service.id, billingMode: mode.kind, via: credential.via },
+              ]).length > 0,
+            );
+          }
+        }
+        expect({ service: service.id, harness: harness.id, answers: answers.size }).toEqual({
+          service: service.id,
+          harness: harness.id,
+          answers: 1,
+        });
+      }
+    }
+  });
+
+  it("a harness that cannot override its endpoint joins only its own vendor", () => {
+    // Eligibility tests styles and credentials, NOT whether the harness can be
+    // pointed at the service's endpoint — so a harness declaring
+    // `endpoint: { kind: "none" }` would be offered a foreign service it can
+    // never route to, in the picker as much as in this table.
+    //
+    // **Vacuous today, deliberately**: neither shipped harness declares `none`.
+    // It is the guard that fires on the day one is added, which is the day
+    // eligibility itself has to grow the third clause.
+    for (const harness of allHarnesses()) {
+      if (harness.spawn.endpoint.kind !== "none") continue;
+      for (const entry of catalogueEntriesForHarness(harness.id)) {
+        expect(entry.selection.serviceId).toBe(harness.nativeService);
+      }
+    }
+  });
+
+  it("never overrides a credential destination for a harness that has no default one", () => {
+    // `harnessCanCarry` refuses a string credential when the harness declares no
+    // string destination, while `spawnCredentialTarget` would have honoured a
+    // service's per-harness override — so such a row would be called
+    // unsupported here and be perfectly spawnable. GLM's override is the live
+    // case and its harness does have a default, which is what keeps the two
+    // answers together. Also found by review.
+    for (const service of allServices()) {
+      for (const mode of service.modes) {
+        for (const credential of mode.credentials) {
+          if (credential.via !== "string") continue;
+          for (const harnessId of Object.keys(credential.targetOverride ?? {})) {
+            expect(harnessCredentialTarget(harnessId as HarnessId, "string")).toBeDefined();
+          }
+        }
+      }
+    }
+  });
+
+  it("says no about a service or mode the catalogue does not have", () => {
+    // A cell for a row that is gone must read as unsupported, never throw and
+    // never quietly claim support.
+    expect(harnessSupportsService("claude", "not-a-service")).toBe(false);
+    expect(harnessSupportsMode("claude", "deepseek", "sub")).toBe(false);
   });
 });
 

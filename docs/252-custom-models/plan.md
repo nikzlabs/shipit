@@ -3463,6 +3463,92 @@ harness — because they already name the service and the model. The description
 enumerating: "such as naming a session or writing a pull-request description" says the examples
 are examples, since the list of work ShipIt does outside a turn is not closed.
 
+### The service list says which harness could run each service (req 22)
+
+**2026-08-13.** Step 1 of *Add a service* listed six services and the billing modes each takes,
+and said nothing about the pairing that decides whether the credential will be usable at all.
+GLM and OpenRouter serve Anthropic Messages and reach only Claude Code; OpenAI serves Responses
+and reaches only Codex. On an install with one harness, a third of the list was a dead end the
+user could only discover **after** buying a key and pasting it — a ShipIt-imposed failure of
+exactly the kind req 1 exists to prevent.
+
+**The answers sit BESIDE the list, and the rows are untouched.** Step 1 is now two columns: the
+service list exactly as it was, and a table of one column per **installed** harness whose rows
+line up with it, plus a caption saying what a tick means.
+
+That distinction is the whole of the human's correction, and the first cut got it wrong — it put
+the tick and the dash *inside* each service button, which grew a control the user presses into a
+place to read facts from and widened every row to do it: *"I meant leaving the panels with the
+services as is, with the separate table on the right."* Two prototypes settled the rest (bare
+columns versus an enclosing panel); the enclosure was dropped because it added chrome to a quiet
+dialog and an alignment constraint between two containers, which it then failed on the first
+attempt by pushing every cell half a row down.
+
+Three consequences worth stating, because each is a thing that could be "tidied" back into a bug:
+
+- **The list keeps its old width** — `basis-[26rem]`, which is `max-w-md` less the dialog's
+  padding — so the rows are byte-for-byte the rows that were there before (measured: 414.0px
+  before, 414.0px after). The dialog is wider by exactly the table: `40.25rem` is 26 of list, the
+  `gap-4`, two `5.5rem` columns with a `gap-1`, and `p-4` twice.
+- **Only step 1 is wide.** Steps 2 and 3 return to `max-w-md`. The dialog visibly changes width
+  once, when a service is picked; the alternative strands a mode choice and a sign-in code in a
+  box half as wide again as their content.
+- **The alignment is a shared row height, never a measurement.** Each cell carries the row
+  button's own metrics — a transparent border, `py-2`, `text-xs` — so neither side is told the
+  other's height, and both columns walk `allServices()` in one order, so row N here is service N
+  there.
+
+**The cell is the picker's own eligibility rule, asked about a credential that does not exist
+yet.** `harnessSupportsMode` (`catalogue/index.ts`) calls `eligibleEntriesForHarness` with a
+*hypothetical* credential of each shape the mode accepts, rather than testing the style join and
+the credential shape independently — the two must be satisfied by the same credential, which is
+the bug `harnessCanCarry`'s docstring records, and a second statement of the rule is a second
+thing to get wrong. A test asserts the two answers agree for every `(service, mode, harness)` in
+the catalogue.
+
+**State the guarantee exactly, because it is existential.** The cell is true when **some** mode
+and **some** accepted credential shape would work, while the user goes on to choose one mode and
+supply one shape. A service whose answer differed between them would be ticked here and offer
+nothing there. Cross-backend review raised that as the central risk, and the answer is a guard
+rather than a per-mode table: no shipped service differs by mode or by shape, and
+`catalogue.test.ts` fails the build on the day one does — which is the day the cell has to become
+per-mode. Building that now would be mechanism for a row that does not exist.
+
+**Two holes the cell inherits from eligibility, both now guarded at their source.** Neither is
+reachable today and neither is this feature's to fix — the picker has them identically — but
+review found them and a silent inheritance is how they stay found only once:
+
+- **Endpoint capability is not part of eligibility.** A harness declaring
+  `spawn.endpoint: { kind: "none" }` can reach only its own vendor, and nothing in
+  `eligibleEntriesForHarness` says so. A test asserts such a harness joins only its
+  `nativeService`; it is vacuous today, deliberately, and fires when the first one is added.
+- **`targetOverride` can outrun `harnessCanCarry`.** A harness with no default string
+  destination is refused a string credential outright, even where the *service* declares a
+  per-harness override that spawn shaping would honour — so it would read as unsupported and be
+  perfectly spawnable. A test asserts no override names a harness lacking a default. GLM's
+  override is the live case, and its harness has one.
+
+Two deliberate narrowings. The columns are the harnesses the install **has** (the same
+`installed` filter `InstalledHarnesses` applies), so an empty agent list — the bootstrap has not
+landed — draws no table rather than a table of dashes. And the tick is **not** a gate: every row
+stays selectable, because a harness can arrive with a later image and refusing the choice would
+make ShipIt the obstacle.
+
+The empty-list case carries a residual review named and this design accepts: a user who opens the
+dialog *and* picks a service inside the window before the agent list lands never sees the table
+for that choice. Closing it means a loading state and disabled rows — mechanism for a window
+that requires clicking through Settings faster than the bootstrap that rendered it — and the
+alternative reading, drawing all catalogue harnesses as columns, would claim harnesses the
+install may not have. Both are worse than the gap.
+
+**The answer is said in words, not only drawn.** Each cell carries `sr-only` text rather than an
+`aria-label` on its span — review found the latter unreliable on a generic role — and the text
+names **both** sides: "Codex cannot run GLM (Z.ai)", never "cannot run". That is load-bearing now
+that the cells live in their own column, away from the service names: a bare "runs" would answer
+a question the listener cannot see. A test asserts the words rather than only the
+`data-supported` attribute, which would have kept passing if both the glyph and the spoken answer
+disappeared.
+
 ## Key files
 
 | File | Why it matters |

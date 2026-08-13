@@ -59,7 +59,7 @@
 // the event that starts its sign-in — see the call site.
 // eslint-disable-next-line no-restricted-imports -- mount-is-the-event, see above
 import { useEffect, useRef, useState } from "react";
-import { PlusIcon } from "@phosphor-icons/react";
+import { CheckIcon, MinusIcon, PlusIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../../design-tokens.js";
 import type { AgentOption } from "../../agent-types.js";
 import type {
@@ -72,6 +72,7 @@ import { credentialModeKey } from "../../../server/shared/types/domain-types/cre
 import {
   allServices,
   harnessForNativeService,
+  harnessSupportsService,
   modeAllowsMultipleCredentials,
   modeCredentialFor,
   modeReportsQuota,
@@ -891,6 +892,82 @@ function StringCredentialRow({
 }
 
 /**
+ * The service list's width on step 1 — **the width it had before the support
+ * table existed**, which is what keeps the rows themselves untouched: `max-w-md`
+ * (28rem) less the dialog's `p-4`. `basis` rather than `w`, so a viewport too
+ * narrow for the pair still shrinks the list instead of overflowing it.
+ */
+const STEP_1_LIST = "min-w-0 grow-0 basis-[26rem]";
+
+/**
+ * One column of step 1's support table, shared by the heads and the cells so the
+ * two cannot drift apart. Measured, not guessed: at `4.5rem` the head "Claude
+ * Code" clipped to "CLAUDE C…". A name longer than both shipped ones truncates
+ * rather than moving the column.
+ */
+const HARNESS_COLUMN = "w-[5.5rem] shrink-0 text-center";
+
+/**
+ * **Can this harness run this service?** — asked of the catalogue, before the
+ * user has configured anything.
+ *
+ * The cell is a fact about the pairing, not about the install's credentials:
+ * GLM and OpenRouter speak Anthropic Messages and reach only Claude Code, OpenAI
+ * speaks Responses and reaches only Codex, and picking a service the one
+ * installed harness cannot drive is a dead end the user could otherwise only
+ * discover after pasting a key. `harnessSupportsService` is the picker's own
+ * eligibility rule asked about a credential that does not exist yet.
+ *
+ * The tick is deliberately not a control — every row is still selectable. A
+ * harness can be added to an image later, and refusing the choice would make
+ * ShipIt the thing standing in the way (req 1). It sits **beside** the row
+ * rather than inside it for the same reason: a row is a thing you press, and
+ * this is a thing you read.
+ */
+function HarnessSupportCell({ harness, service }: { harness: AgentOption; service: ServiceDef }) {
+  // `AgentOption.id` is a bare string on the wire; the cast is this file's
+  // existing idiom for the same bridge (see `ModelPicker`), and an id the
+  // catalogue does not know reads as unsupported rather than throwing.
+  const supported = harnessSupportsService(harness.id as AgentId, service.id);
+  const answer = `${harness.name} ${supported ? "runs" : "cannot run"} ${service.name}`;
+  return (
+    <span
+      // The row button's own box metrics — a transparent border, `py-2`,
+      // `text-xs` — so this cell is exactly as tall as the row it sits beside,
+      // and stays so if the row's padding is ever changed. Alignment by shared
+      // metrics, never by a measured height.
+      className={`${HARNESS_COLUMN} border border-transparent py-2 text-xs`}
+      title={answer}
+      data-testid={`add-service-support-${service.id}-${harness.id}`}
+      data-supported={supported ? "yes" : "no"}
+    >
+      {/*
+        The answer is a glyph and nothing else, so it is also said in words, as
+        `sr-only` TEXT — review found an `aria-label` here unreliable, this span
+        having a generic role.
+
+        **Each cell names BOTH sides**, which is what makes the table readable
+        without looking at it: the cells sit in their own column, away from the
+        service names, so "runs" alone would be an answer to a question the
+        listener cannot see. "Codex cannot run GLM (Z.ai)" stands on its own
+        wherever it is read.
+      */}
+      <span className="sr-only">{answer}</span>
+      {supported ? (
+        <CheckIcon
+          aria-hidden
+          size={ICON_SIZE.SM}
+          weight="bold"
+          className="mx-auto text-(--color-success)"
+        />
+      ) : (
+        <MinusIcon aria-hidden size={ICON_SIZE.SM} className="mx-auto text-(--color-text-tertiary)" />
+      )}
+    </span>
+  );
+}
+
+/**
  * The add-flow: service → billing mode → credential — **the only way any
  * credential is added** (req 17).
  *
@@ -943,7 +1020,10 @@ function AddServiceDialog({
    * the same position**. `cancel` abandons only what this dialog created.
    */
   reconnectAccountId?: string;
-  /** Only to tell whether the harness that runs a sign-in is installed. */
+  /**
+   * Which harnesses this install has: the columns of step 1's support table,
+   * and whether the harness that runs a sign-in is installed.
+   */
   agentList?: AgentOption[];
   onClose: () => void;
 }) {
@@ -1067,6 +1147,17 @@ function AddServiceDialog({
   const harnessInstalled = signInProvider
     ? (agentList.find((a) => a.id === signInProvider)?.installed ?? true)
     : true;
+  /**
+   * The support table's columns: the harnesses this install **has**.
+   *
+   * A harness the image did not install would be a column of facts the user
+   * cannot act on, and the same filter as `InstalledHarnesses` keeps the two
+   * views of "which harnesses are here" from disagreeing. An empty agent list —
+   * the bootstrap has not landed yet — therefore renders no table at all rather
+   * than an empty one, for that component's reason: nothing known yet reads the
+   * same as "none installed" if the empty case is drawn.
+   */
+  const supportHarnesses = agentList.filter((a) => a.installed);
   const adoptable = adoptableAttempt(accounts, signInAccountId);
   /**
    * docs/150 — the provider runs ONE login process, so a second one is a 409.
@@ -1315,7 +1406,22 @@ function AddServiceDialog({
 
   return (
     <Dialog open onOpenChange={(isOpen) => { if (!isOpen) cancel(); }}>
-      <DialogContent className="max-w-md rounded-lg border-(--color-border-secondary) p-4" data-testid="add-service-dialog">
+      {/*
+        **Only step 1 is wide, and it is wider by exactly the table.** The
+        service list keeps the width it always had (`STEP_1_LIST` below), so the
+        rows are untouched and the support table is what the extra room is for;
+        `40.25rem` is that arithmetic — 26rem of list, the `gap-4` between, two
+        `5.5rem` columns with a `gap-1`, and the dialog's own `p-4`.
+
+        Steps 2 and 3 go back to `max-w-md`. The dialog does visibly change width
+        once, when a service is picked, and that is the better of the two costs:
+        the alternative strands a mode choice and a sign-in panel — a sentence
+        and a code — in a box nearly half as wide again as their content.
+      */}
+      <DialogContent
+        className={`${service ? "max-w-md" : "max-w-[40.25rem]"} rounded-lg border-(--color-border-secondary) p-4`}
+        data-testid="add-service-dialog"
+      >
         {/*
           The verb names what is happening, and on a reconnect the account
           names WHICH credential is about to change — the plan asked for
@@ -1331,23 +1437,76 @@ function AddServiceDialog({
         </DialogTitle>
 
         {!service && (
-          <div className="mt-3 space-y-1" data-testid="add-service-step-service">
-            <p className="text-[10px] uppercase tracking-wider text-(--color-text-tertiary)">
-              1 · Which service
-            </p>
-            {allServices().map((s) => (
-              <button
-                key={s.id}
-                onClick={() => pickService(s)}
-                className="flex w-full items-center justify-between gap-3 rounded-md border border-(--color-border-secondary) px-2.5 py-2 text-left text-xs text-(--color-text-primary) hover:bg-(--color-bg-hover)"
-                data-testid={`add-service-option-${s.id}`}
-              >
-                <span className="truncate">{s.name}</span>
-                <span className="shrink-0 text-(--color-text-tertiary)">
-                  {s.modes.map((m) => MODE_LABEL[m.kind]).join(" · ")}
-                </span>
-              </button>
-            ))}
+          <div className="mt-3" data-testid="add-service-step-service">
+            <div className="flex gap-4">
+              {/*
+                The service list, unchanged: the same rows at the same width they
+                had before the table existed. The support answers are NOT in
+                here — putting them inside the row was the first cut and was
+                rejected on sight, because it grows a control the user presses
+                into a place to read facts from.
+              */}
+              <div className={`${STEP_1_LIST} space-y-1`}>
+                <p className="text-[10px] uppercase tracking-wider text-(--color-text-tertiary)">
+                  1 · Which service
+                </p>
+                {allServices().map((s) => (
+                  <button
+                    key={s.id}
+                    onClick={() => pickService(s)}
+                    className="flex w-full items-center justify-between gap-3 rounded-md border border-(--color-border-secondary) px-2.5 py-2 text-left text-xs text-(--color-text-primary) hover:bg-(--color-bg-hover)"
+                    data-testid={`add-service-option-${s.id}`}
+                  >
+                    <span className="truncate">{s.name}</span>
+                    <span className="shrink-0 text-(--color-text-tertiary)">
+                      {s.modes.map((m) => MODE_LABEL[m.kind]).join(" · ")}
+                    </span>
+                  </button>
+                ))}
+              </div>
+
+              {/*
+                The table, beside the list and drawn around nothing: the two
+                columns line up with the rows and that alignment IS the
+                relationship. An enclosing box was prototyped and dropped — it
+                added chrome to a quiet dialog and an alignment constraint
+                between two containers, which it promptly failed.
+
+                **The alignment is a shared row height, not a measurement.** Each
+                cell carries the row button's own box metrics (a transparent
+                border, `py-2`, `text-xs`) so neither side is told the other's
+                height, and both columns walk `allServices()` in one order, so
+                row N here is service N there.
+              */}
+              {supportHarnesses.length > 0 && (
+                <div className="shrink-0 space-y-1" data-testid="add-service-support-table">
+                  <div className="flex gap-1">
+                    {supportHarnesses.map((harness) => (
+                      <span
+                        key={harness.id}
+                        className={`${HARNESS_COLUMN} truncate text-[10px] uppercase tracking-wider text-(--color-text-tertiary)`}
+                        data-testid={`add-service-support-head-${harness.id}`}
+                      >
+                        {harness.name}
+                      </span>
+                    ))}
+                  </div>
+                  {allServices().map((s) => (
+                    <div key={s.id} className="flex gap-1">
+                      {supportHarnesses.map((harness) => (
+                        <HarnessSupportCell key={harness.id} harness={harness} service={s} />
+                      ))}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+            {supportHarnesses.length > 0 && (
+              <p className="pt-2 text-[11px] text-(--color-text-tertiary)">
+                A tick means that harness can run the service&rsquo;s models. A service no column
+                ticks has no harness here to drive it.
+              </p>
+            )}
           </div>
         )}
 

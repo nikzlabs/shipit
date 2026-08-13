@@ -406,3 +406,30 @@ the first of these. All six are fixed.
       something to route between, which is what the code did before the audit
       pass; `NothingToRouteYet` is deleted and D8 is closed as **(d)**, the
       mock-up being wrong. Receipt dated 2026-08-13 in `requirements.md`.
+- [x] **Step 1 says which harness can run each service (req 22).** The *Add a
+      service* dialog carries a column per installed harness with a tick or a
+      dash per service, so a pairing no harness here can run is visible before a
+      key is bought rather than after it is pasted. The cell is
+      `harnessSupportsService` — `eligibleEntriesForHarness` asked about a
+      credential that does not exist yet — and a catalogue test pins that it
+      agrees with eligibility for every `(service, mode, harness)`.
+- [x] **Cross-backend review of that change — three findings taken, three
+      answered.** The cell is existential over a service's modes and credential
+      shapes, so a service that ever differs between them would be ticked and
+      then offer nothing: a guard test now fails the build on that day, rather
+      than a per-mode table built for a row that does not exist. Two holes the
+      cell inherits from eligibility — a harness that cannot override its
+      endpoint, and a `targetOverride` outrunning `harnessCanCarry` — are
+      guarded at their source. The icon-only cell said its answer with an
+      `aria-label` on a generic span, which is unreliable; it is `sr-only` text
+      now, asserted by a test. Declined: a loading state for the window before
+      the agent list arrives (recorded in `plan.md` as an accepted residual).
+      The docs claimed a guarantee wider than the code holds and named two of
+      the four agent-authored clauses; both are corrected.
+- [x] **The table moved out of the rows and beside them.** The first cut put the
+      ticks inside each service button and widened every row to fit them, which
+      is not what was asked for: the rows are unchanged (measured 414.0px before
+      and after) and the answers are a separate two-column table aligned to
+      them, with the dialog wider by exactly that table and only on step 1. Two
+      prototypes decided it; the enclosing panel lost because its own padding
+      pushed the cells out of line with the rows.
