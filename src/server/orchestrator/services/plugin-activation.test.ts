@@ -4,7 +4,7 @@
  * repository fails while another succeeds (req 14 independence).
  */
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -13,6 +13,7 @@ import {
   activateDeclaredPlugins,
   clearActivationState,
   getActivationState,
+  getPluginPrepareFailures,
 } from "./plugin-activation.js";
 
 let tmp: string;
@@ -56,7 +57,8 @@ beforeEach(async () => {
   await git.addConfig("user.name", "Test");
   fs.writeFileSync(
     path.join(originDir, "shipit.yaml"),
-    "exports:\n  plugins:\n    probe:\n      cli:\n        probe: bin/probe.mjs\n",
+    "exports:\n  plugins:\n    probe:\n      cli:\n        probe: bin/probe.mjs\n"
+      + "      settings:\n        greeting:\n          default: hello\n",
   );
   await git.add(".");
   await git.commit("initial");
@@ -120,6 +122,20 @@ describe("activateDeclaredPlugins", () => {
     writeConfig("plugins:\n  repos:\n    - repo: self\n      name: dev\n");
     await activateDeclaredPlugins("sess", workspaceDir, hook);
     expect(settled).toEqual(["sess", "sess"]);
+  });
+
+  // A clone that does not sit at `<sessionDir>/workspace` has no resolvable
+  // state dir (planning#288) — but the settled hook is also what removes
+  // container links for repos the declaration dropped, so a project that
+  // declares nothing must still get it.
+  it("still settles when the session layout has no resolvable state dir", async () => {
+    const flat = path.join(tmp, "flat");
+    fs.mkdirSync(flat, { recursive: true });
+    fs.writeFileSync(path.join(flat, "shipit.yaml"), "agent:\n  install: npm install\n");
+
+    const settled: string[] = [];
+    await activateDeclaredPlugins("sess", flat, { ...deps(), onSettled: (id) => settled.push(id) });
+    expect(settled).toEqual(["sess"]);
   });
 
   it("a malformed shipit.yaml is not fatal", async () => {
@@ -255,5 +271,123 @@ describe("epoch ownership of the in-flight counter", () => {
     clearActivationState("sess");
     await running;
     expect(settled).toEqual([]);
+  });
+});
+
+/**
+ * docs/262 reqs 17, 18, 26 — the per-import primitives ride the same round.
+ * `plugin-state.test.ts` owns their semantics; these guard the WIRING, which is
+ * where they can silently not happen at all: a `repo: self` project activates
+ * no generation, and a refresh must reach the settings file without touching
+ * the state directory beside it.
+ */
+describe("per-import state and settings", () => {
+  const useProbe = "  use:\n    - plugin: probe\n      from: tools\n      alias: p\n";
+  const declareTools = "plugins:\n  repos:\n    - repo: acme/tools\n      name: tools\n      branch: main\n";
+
+  const stateDirFor = (alias: string): string =>
+    path.join(sessionDir, "plugin-data", alias, "state");
+  const settingsFor = (alias: string): string =>
+    path.join(sessionDir, "plugin-data", alias, "settings.json");
+
+  it("prepares them for a tracked import, from the live generation's manifest", async () => {
+    writeConfig(`${declareTools}${useProbe}`);
+    await activateDeclaredPlugins("sess", workspaceDir, deps());
+
+    expect(fs.existsSync(stateDirFor("p"))).toBe(true);
+    expect(JSON.parse(fs.readFileSync(settingsFor("p"), "utf-8"))).toEqual({ greeting: "hello" });
+  });
+
+  it("prepares them for a `repo: self` import, which activates no generation (req 27)", async () => {
+    // This project both exports and consumes — the round has nothing to fetch,
+    // and the primitives must exist anyway.
+    writeConfig(
+      "exports:\n  plugins:\n    probe:\n      settings:\n        greeting:\n          default: hi\n"
+        + "plugins:\n  repos:\n    - repo: self\n      name: dev\n"
+        + "  use:\n    - plugin: probe\n      from: dev\n      alias: here\n",
+    );
+    await activateDeclaredPlugins("sess", workspaceDir, deps());
+
+    expect(fs.existsSync(stateDirFor("here"))).toBe(true);
+    expect(JSON.parse(fs.readFileSync(settingsFor("here"), "utf-8"))).toEqual({ greeting: "hi" });
+  });
+
+  it("a later round updates the settings and keeps the shared state (reqs 12, 18)", async () => {
+    writeConfig(`${declareTools}${useProbe}`);
+    await activateDeclaredPlugins("sess", workspaceDir, deps());
+    fs.writeFileSync(path.join(stateDirFor("p"), "bumps"), "11");
+
+    // The consuming project sets the value the plugin declared a default for.
+    writeConfig(`${declareTools}${useProbe}      overrides:\n        settings:\n          greeting: bonjour\n`);
+    await activateDeclaredPlugins("sess", workspaceDir, deps());
+
+    expect(JSON.parse(fs.readFileSync(settingsFor("p"), "utf-8"))).toEqual({ greeting: "bonjour" });
+    expect(fs.readFileSync(path.join(stateDirFor("p"), "bumps"), "utf-8")).toBe("11");
+  });
+
+  it("keeps them out of the reclaimable state dir, so eviction cannot take them", async () => {
+    writeConfig(`${declareTools}${useProbe}`);
+    await activateDeclaredPlugins("sess", workspaceDir, deps());
+    // `<sessionDir>/state` is in REGENERABLE_SESSION_SUBDIRS: archive and
+    // disk-tier eviction delete it whole, and req 18 says this data survives
+    // both.
+    expect(fs.existsSync(path.join(sessionDir, "state", "plugin-data"))).toBe(false);
+    expect(fs.existsSync(path.join(sessionDir, "plugin-data"))).toBe(true);
+  });
+
+  it("does not prepare anything for a session that was disposed mid-round", async () => {
+    writeConfig(`${declareTools}${useProbe}`);
+    const running = activateDeclaredPlugins("sess", workspaceDir, deps());
+    clearActivationState("sess");
+    await running;
+    expect(fs.existsSync(path.join(sessionDir, "plugin-data"))).toBe(false);
+  });
+
+  // A round holds its declaration for as long as its slowest fetch takes, so an
+  // edit landing in that window is newer than the round that finishes over it.
+  // Settings are derived config: the settlement re-reads the file, so trigger
+  // order — not completion order — decides what is on disk (review finding).
+  it("settles against the CURRENT declaration, not the one the round started with", async () => {
+    writeConfig(`${declareTools}${useProbe}`);
+    const withEditMidRound = {
+      ...deps(),
+      ensureCache: async (cacheDir: string, repoUrl: string): Promise<void> => {
+        // The project edits its settings while this round is still fetching.
+        writeConfig(
+          `${declareTools}${useProbe}      overrides:\n        settings:\n          greeting: bonjour\n`,
+        );
+        await ensureCache(cacheDir, repoUrl);
+      },
+    };
+
+    await activateDeclaredPlugins("sess", workspaceDir, withEditMidRound);
+    expect(JSON.parse(fs.readFileSync(settingsFor("p"), "utf-8"))).toEqual({ greeting: "bonjour" });
+  });
+
+  it("remembers a materialization failure, and forgets it once a round succeeds", async () => {
+    const self = "exports:\n  plugins:\n    probe:\n      settings:\n        greeting:\n          default: hi\n"
+      + "plugins:\n  repos:\n    - repo: self\n      name: dev\n"
+      + "  use:\n    - plugin: probe\n      from: dev\n      alias: here\n";
+    writeConfig(self);
+    await activateDeclaredPlugins("sess", workspaceDir, deps());
+    expect(getPluginPrepareFailures("sess", "dev")).toEqual([]);
+
+    // The value changes and the replacement cannot be written. Nothing can
+    // recompute that from the declaration, so it has to be remembered or the
+    // card reports a healthy plugin running on superseded settings.
+    const rename = vi.spyOn(fs, "renameSync").mockImplementationOnce(() => {
+      throw new Error("ENOSPC: no space left on device");
+    });
+    writeConfig(`${self}      overrides:\n        settings:\n          greeting: bonjour\n`);
+    await activateDeclaredPlugins("sess", workspaceDir, deps());
+    rename.mockRestore();
+
+    expect(getPluginPrepareFailures("sess", "dev").join(" ")).toContain("could not be written");
+    expect(fs.existsSync(settingsFor("here"))).toBe(false);
+
+    // The next healthy round clears it — it describes an attempt, not a state.
+    await activateDeclaredPlugins("sess", workspaceDir, deps());
+    expect(getPluginPrepareFailures("sess", "dev")).toEqual([]);
+    expect(JSON.parse(fs.readFileSync(settingsFor("here"), "utf-8"))).toEqual({ greeting: "bonjour" });
   });
 });

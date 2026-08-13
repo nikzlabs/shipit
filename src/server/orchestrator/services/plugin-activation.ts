@@ -11,6 +11,12 @@
  * Both are fire-and-forget — a slow fetch must not delay a session opening
  * (req 13: the session opens regardless), and the tab reports the interim
  * state.
+ *
+ * It is also where a round's **per-import primitives** are brought up to date
+ * (`plugin-state.ts`: the shared state directory and the validated settings
+ * file, reqs 17, 18, 26). They hang off the end of every round — including a
+ * round that fetched nothing, because a `repo: self` declaration has no
+ * generation and would otherwise never get them.
  */
 
 import {
@@ -19,7 +25,12 @@ import {
   type ActivationOutcome,
   type GenerationRecord,
 } from "../plugin-generations.js";
-import { resolveShipitConfig } from "../../shared/shipit-config.js";
+import {
+  createPluginImportResolver,
+  preparePluginState,
+  sessionRootForWorkspace,
+} from "../plugin-state.js";
+import { resolveShipitConfig, type ShipitConfig } from "../../shared/shipit-config.js";
 import { sessionStateDirForWorkspace } from "../session-state-dir.js";
 import type { DeclaredPluginRepo } from "../../shared/plugin-repos.js";
 
@@ -75,12 +86,27 @@ const epochs = new Map<string, number>();
  */
 const inFlight = new Map<string, number>();
 
+/**
+ * Per-session prepare FAILURES from the last round, keyed `sessionId::repoName`
+ * (reqs 17, 18, 26 — `plugin-state.ts`). Same shape and lifetime as the map
+ * above, and here for the same reason: the durable facts are on disk, and this
+ * carries only what nothing else can reconstruct — that an attempt to write a
+ * plugin's primitives failed. Settings problems that follow from the
+ * declaration are NOT here; the snapshot route recomputes those.
+ */
+const prepareFailures = new Map<string, string[]>();
+
 const stateKey = (sessionId: string, repoName: string): string => `${sessionId}::${repoName}`;
 const flightKey = (sessionId: string, epoch: number, repoName: string): string =>
   `${sessionId}::${epoch}::${repoName}`;
 
 export function getActivationState(sessionId: string, repoName: string): PluginRepoActivationState | undefined {
   return activationState.get(stateKey(sessionId, repoName));
+}
+
+/** Prepare failures from the last round for one repository (`plugin-state.ts`). */
+export function getPluginPrepareFailures(sessionId: string, repoName: string): string[] {
+  return prepareFailures.get(stateKey(sessionId, repoName)) ?? [];
 }
 
 export function clearActivationState(sessionId: string): void {
@@ -90,6 +116,9 @@ export function clearActivationState(sessionId: string): void {
   }
   for (const key of [...inFlight.keys()]) {
     if (key.startsWith(`${sessionId}::`)) inFlight.delete(key);
+  }
+  for (const key of [...prepareFailures.keys()]) {
+    if (key.startsWith(`${sessionId}::`)) prepareFailures.delete(key);
   }
 }
 
@@ -157,16 +186,44 @@ export async function activateDeclaredPlugins(
    * for a per-caller result.
    */
   const outcomes = new Map<string, ActivationOutcome>();
+  let config: ShipitConfig;
   let repos: DeclaredPluginRepo[];
   let selectedByRepo: Map<string, string[]>;
   let stateDir: string;
   try {
-    const config = resolveShipitConfig(workspaceDir);
+    config = resolveShipitConfig(workspaceDir);
+  } catch {
+    // A malformed document is already reported by the config warning path and
+    // by the snapshot route; there is nothing to activate from it.
+    return outcomes;
+  }
+
+  const epoch = epochs.get(sessionId) ?? 0;
+  const isCancelled = (): boolean => (epochs.get(sessionId) ?? 0) !== epoch;
+
+  /**
+   * End of round: refresh the per-import primitives, then tell the world.
+   *
+   * The state directories and settings files (reqs 17, 18, 26) are refreshed
+   * here rather than beside the generation work because they belong to the
+   * *declaration*, not to a fetch: a `repo: self` import has no generation at
+   * all, and a round narrowed to one repository (`shipit plugin refresh
+   * <name>`) must still leave every other import's settings current. Running it
+   * AFTER activation is what makes a refresh reach them — the new commit's
+   * manifest is what the settings are validated against.
+   */
+  const settleRound = (): void => {
+    if (isCancelled()) return;
+    syncPluginState(sessionId, workspaceDir);
+    deps.onSettled?.(sessionId);
+  };
+
+  try {
     // Still settle: a declaration emptied of repos must reach the container, or
     // links for repos that are no longer declared stay addressable until the
     // container is recreated (review finding).
     if (!config.plugins.declared) {
-      settle(sessionId, deps);
+      settleRound();
       return outcomes;
     }
     repos = config.plugins.repos.filter((r) => r.source.kind === "github");
@@ -181,19 +238,22 @@ export async function activateDeclaredPlugins(
       const key = use.from.toLowerCase();
       selectedByRepo.set(key, [...(selectedByRepo.get(key) ?? []), use.plugin]);
     }
+    // Resolved HERE, not beside the config read: an unrecognized session layout
+    // throws (planning#288), and that must not cost a project which declares
+    // nothing the settled hook it used to get — that hook is also what removes
+    // container links for repos the declaration dropped.
     stateDir = sessionStateDirForWorkspace(workspaceDir);
   } catch {
-    // A malformed document is already reported by the config warning path and
-    // by the snapshot route; there is nothing to activate from it.
     return outcomes;
   }
   if (repos.length === 0) {
-    settle(sessionId, deps);
+    // Nothing to fetch — but a `repo: self` declaration lives entirely in this
+    // branch, and it gets the same state directory and settings file a tracked
+    // import does (req 27's consumer-path parity).
+    settleRound();
     return outcomes;
   }
 
-  const epoch = epochs.get(sessionId) ?? 0;
-  const isCancelled = (): boolean => (epochs.get(sessionId) ?? 0) !== epoch;
   /** Drop any write whose session was disposed (or re-activated) meanwhile. */
   const setState = (repoName: string, state: PluginRepoActivationState): void => {
     if (isCancelled()) return;
@@ -263,20 +323,70 @@ export async function activateDeclaredPlugins(
     }),
   );
 
-  // Tell the browser the round settled, so it refetches instead of polling
-  // until its budget runs out.
-  if (!isCancelled()) deps.onSettled?.(sessionId);
+  // Refresh the per-import primitives against whatever is now live, then tell
+  // the browser the round settled so it refetches instead of polling until its
+  // budget runs out. The container's prepare step hangs off the same hook: it
+  // is what REMOVES links for repos the declaration no longer names, which is
+  // why even a round with nothing to activate settles.
+  settleRound();
   return outcomes;
 }
 
 /**
- * Settle a round that had nothing to activate. Still notifies: the container's
- * prepare step is also what REMOVES links for repos the declaration no longer
- * names, so an emptied `plugins:` block must reach it or a dropped repository
- * stays addressable at `/plugins/<name>` until the container is recreated.
+ * Bring every imported plugin's state directory and settings file up to date
+ * (reqs 17, 18, 26 — `plugin-state.ts`).
+ *
+ * Never throws and never fails a round: these are primitives the plugin's own
+ * surfaces read, so a failure to prepare one degrades that plugin, not the
+ * session (req 13). The issues it reports reach the Plugins card through the
+ * snapshot route, which recomputes them from the same pure resolver.
  */
-function settle(sessionId: string, deps: PluginActivationDeps): void {
-  deps.onSettled?.(sessionId);
+function syncPluginState(sessionId: string, workspaceDir: string): void {
+  try {
+    // The declaration is re-read HERE rather than reused from the start of the
+    // round, and that ordering is load-bearing (review finding). A round holds
+    // its config for as long as its slowest repository takes to fetch, so a
+    // second round triggered by an edit in that window could write the new
+    // settings and then have the first round's settlement put the OLD ones
+    // back. Settings are derived config, not a fetch decision: the right answer
+    // is always the current file, so whichever settlement runs last converges
+    // on it instead of resurrecting a superseded declaration.
+    const config = resolveShipitConfig(workspaceDir);
+    const entries = preparePluginState({
+      // The session ROOT, not its state dir: these primitives are durable and
+      // the state dir is reclaimable (see `plugin-state.ts`). Both paths are
+      // resolved here rather than passed in, so a session layout this repo no
+      // longer serves degrades to a logged warning instead of costing the round
+      // its settled hook.
+      sessionDir: sessionRootForWorkspace(workspaceDir),
+      uses: config.plugins.uses,
+      resolver: createPluginImportResolver(
+        config.plugins,
+        config.pluginExports,
+        sessionStateDirForWorkspace(workspaceDir),
+      ),
+    });
+
+    // Resolution issues are recomputed by the snapshot route from the same pure
+    // resolver, so only the FAILURES are remembered — nothing else can
+    // reconstruct "the write did not happen", and a plugin whose settings are
+    // stale must not look healthy (review finding).
+    for (const key of [...prepareFailures.keys()]) {
+      if (key.startsWith(`${sessionId}::`)) prepareFailures.delete(key);
+    }
+    for (const entry of entries) {
+      for (const issue of entry.issues) console.warn(`[plugins:${sessionId}] ${issue}`);
+      if (!entry.failure) continue;
+      console.warn(`[plugins:${sessionId}] ${entry.failure}`);
+      const key = stateKey(sessionId, entry.repo ?? entry.alias);
+      prepareFailures.set(key, [...(prepareFailures.get(key) ?? []), entry.failure]);
+    }
+  } catch (err) {
+    console.warn(
+      `[plugins:${sessionId}] could not prepare plugin state:`,
+      err instanceof Error ? err.message : String(err),
+    );
+  }
 }
 
 /** The clone URL for a declared repo. GitHub-only in v1 (plan §1a). */

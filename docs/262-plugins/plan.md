@@ -329,6 +329,32 @@ instead of a repeat.
   **published port must stay stable per (session, service)** even if a
   tracked commit edits the fragment's port, because the preview origin is
   port-derived and req 18 guarantees origin stability.
+
+  **Implemented** (`plugin-state.ts`), as
+  `<sessionDir>/plugin-data/<alias>/state/`. The container-side names both
+  consumers will use — the mount point and the two env vars — are fixed once in
+  `shared/plugin-contract.ts`, so the compose slice and the CLI slice cannot
+  drift apart on them; the mounts themselves are those slices' work.
+
+  **Not under the session state dir, and that is the whole placement decision.**
+  Everything else this feature writes lives in `<sessionDir>/state/` (docs/246),
+  and putting this there would have been the obvious symmetry — but that whole
+  subtree is in `REGENERABLE_SESSION_SUBDIRS` (`disk-utils.ts`), which archive
+  and disk-tier eviction delete *because* everything in it can be rebuilt. Plugin
+  state cannot be rebuilt, and req 18 lets only a session reset or delete take
+  it. So it sits where the other durable, non-git session data sits — a sibling
+  of `workspace/`, the `uploads/` convention — which the reclaim allowlist
+  deliberately leaves alone and a full reset still removes. It is equally not
+  under `<state>/plugins/`: that root is the read-only store mount, and
+  generation pruning owns everything beneath it.
+
+  **Keyed by alias, prepared on every round.** Two `use:` entries of one plugin
+  are two imports and get two directories. Preparation hangs off the END of an
+  activation round (`plugin-activation.ts`), including a round that fetched
+  nothing — a `repo: self` project activates no generation and would otherwise
+  never get its primitives at all. A dropped `use:` entry KEEPS its state
+  directory: undeclaring an import is neither of the two things req 18 allows to
+  discard state, so re-adding it finds what was there.
 - **Env**: `SHIPIT_PROJECT_DIR`, `SHIPIT_PLUGIN_COMMIT` (per declared repo;
   req 15 — the commit readable by the plugin itself; **unset under
   `repo: self`**, since a live tree corresponds to no exact commit — this is
@@ -340,6 +366,57 @@ instead of a repeat.
   service ShipIt mounts the settings file into the container and points the
   env at the mount. CLI wrappers use absolute entrypoints,
   so no plugin-dir variable is needed.
+
+  **The settings file is implemented** (`plugin-state.ts`), one flat JSON object
+  per import at `<sessionDir>/plugin-data/<alias>/settings.json` — **beside** the
+  state directory, never inside it: that directory is plugin-writable, and a
+  plugin that can rewrite its own validated settings has settings that were
+  never validated. It is written atomically (a service may be reading it while a
+  refresh rewrites it) and re-resolved on every round against the LIVE
+  generation's manifest, which is how a refresh that changes a default reaches
+  the plugin. **Unchanged content is not rewritten** — a mechanic the compose
+  slice depends on: an atomic write gives the file a new inode, a Docker *file*
+  bind mount follows the inode it was created with, and a round runs on every
+  session activation and every `shipit.yaml` edit. Skipping the no-op write means
+  the inode changes only when the settings did, which is also when that slice
+  recreates the service.
+
+  **Validation is fail-closed, and a failure writes nothing.** The plugin's
+  declared defaults apply where the project sets nothing; a declared setting with
+  neither is omitted rather than emitted as null (the manifest has no "required"
+  concept). Two things are errors rather than silent degradations — a value for a
+  name the plugin does not declare, and a value whose type disagrees with the
+  declared default (the only type information a manifest carries). Both are
+  invisible from inside the plugin, which would simply see its default; and req
+  26's own example setting is *the directory a plugin writes the project's
+  durable output into*, so getting it silently wrong writes real files to the
+  wrong place. On an error the import gets NO settings file — including the
+  removal of a now-stale one — and the failure appears as an issue on that
+  repository's card (`settingsIssues`). The card's issues are **recomputed** by
+  the snapshot GET from the same pure resolver rather than remembered from the
+  last round, so a declaration that cannot work says so before anything has run,
+  and the GET still activates nothing.
+
+  Four things the independent review had to force, each confirmed at the source
+  and each a way for this to be quietly wrong. **The settlement re-reads the
+  declaration** rather than using the one its round started with: a round holds
+  its config for as long as its slowest fetch, so an edit landing in that window
+  could be written by the round it triggered and then *reverted* by the older
+  round finishing over it. Settings are derived config, so the current file is
+  always the right answer and the last settlement converges instead of
+  resurrecting a superseded declaration. **A failed write is fail-closed and
+  remembered**: it removes the file it could not replace (otherwise the plugin
+  keeps reading the previous declaration's values — the exact silent wrong-place
+  write this validation exists to stop) and, since nothing can recompute "the
+  write did not happen", the failure is kept per session beside the activation
+  state and merged into the card. **Issues are grouped in a `Map`, not an
+  object**: `constructor` and `toString` are valid declared repository names, and
+  on a plain object every one of them reads back as an inherited function for a
+  repository with no issues at all — truthy, and fatal at the first spread, which
+  turned a valid declaration into "shipit.yaml could not be parsed". **And a
+  number JSON cannot carry is an error**: YAML's `.nan`, `.inf` and an
+  overflowing literal all pass the scalar and type checks and then serialize as
+  `null`, so the plugin would receive neither its declared value nor a number.
 - **CLIs** (reqs 17, 20, 23): exported commands go on the agent's PATH as
   generated wrappers. **The wrapper is ShipIt's, and it is all that runs in the
   agent container**; it brokers an invocation container that mounts the
@@ -565,6 +642,17 @@ coherent in one UI.
   is container-side (see §1b). ✓ `services/plugin-activation.ts` is its lifecycle
   half, triggered from `service-manager-setup.ts` on session activation and on
   a `shipit.yaml` edit.
+- ✓ `src/server/orchestrator/plugin-state.ts` — the per-import primitives
+  (reqs 17, 18, 26): the durable layout under the SESSION ROOT (not the state
+  dir, which eviction reclaims), settings resolution and its two fail-closed
+  errors, the atomic settings write, and the manifest resolver that reads a
+  tracked import from the live generation and a `repo: self` import from the
+  project's own parsed manifest. Prepared from `services/plugin-activation.ts`
+  at the end of every round; its issues are re-derived, not stored, by
+  `api-routes-plugin-repos.ts`. ✓ `src/server/shared/plugin-contract.ts` holds
+  the in-container names both later consumers need (`/plugin-state`,
+  `SHIPIT_PLUGIN_STATE`, `SHIPIT_SETTINGS`), filesystem-free so the session
+  layer can import them.
 - ✓ `src/server/orchestrator/plugin-overlay.ts` — the copy-on-write layer, one
   `type=overlay` Docker volume per generation (lowerdir the pristine checkout,
   upper/work beside it under `work/<sha>/`). Its whole subtlety is that the
