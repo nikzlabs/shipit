@@ -33,6 +33,8 @@ import {
   catalogueModelIdsForHarness,
   eligibleEntriesForHarness,
   harnessCanCarry,
+  harnessSupportsMode,
+  harnessSupportsService,
   isSelectionEligible,
   resolveSpawnShaping,
   parseSelection,
@@ -607,6 +609,50 @@ describe("eligibility (req 8)", () => {
     expect(
       harnessCanCarry("claude", { serviceId: "deepseek", billingMode: "key", via: "account" }),
     ).toBe(false);
+  });
+});
+
+describe("support before a credential exists (the add-service table)", () => {
+  it("answers per service what the join and the credential shapes allow", () => {
+    // GLM and OpenRouter serve Anthropic Messages only, so Codex — which speaks
+    // Responses and nothing else — cannot reach them however they are paid for.
+    expect(harnessSupportsService("claude", "zai")).toBe(true);
+    expect(harnessSupportsService("codex", "zai")).toBe(false);
+    expect(harnessSupportsService("claude", "openrouter")).toBe(true);
+    expect(harnessSupportsService("codex", "openrouter")).toBe(false);
+    // …and the mirror image: OpenAI is Responses only.
+    expect(harnessSupportsService("codex", "openai")).toBe(true);
+    expect(harnessSupportsService("claude", "openai")).toBe(false);
+    // Services that serve both styles reach both harnesses.
+    expect(harnessSupportsService("claude", "deepseek")).toBe(true);
+    expect(harnessSupportsService("codex", "deepseek")).toBe(true);
+  });
+
+  it("is the SAME answer eligibility gives once that credential is added", () => {
+    // The point of deriving it from `eligibleEntriesForHarness` rather than
+    // re-stating the rule: the table cannot promise a pairing the picker then
+    // refuses, or refuse one it would have offered.
+    for (const service of allServices()) {
+      for (const mode of service.modes) {
+        for (const harness of allHarnesses()) {
+          const credentials = mode.credentials.map((c) => ({
+            serviceId: service.id,
+            billingMode: mode.kind,
+            via: c.via,
+          }));
+          expect(harnessSupportsMode(harness.id, service.id, mode.kind)).toBe(
+            eligibleEntriesForHarness(harness.id, credentials).length > 0,
+          );
+        }
+      }
+    }
+  });
+
+  it("says no about a service or mode the catalogue does not have", () => {
+    // A cell for a row that is gone must read as unsupported, never throw and
+    // never quietly claim support.
+    expect(harnessSupportsService("claude", "not-a-service")).toBe(false);
+    expect(harnessSupportsMode("claude", "deepseek", "sub")).toBe(false);
   });
 });
 

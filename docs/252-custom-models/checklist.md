@@ -406,3 +406,10 @@ the first of these. All six are fixed.
       something to route between, which is what the code did before the audit
       pass; `NothingToRouteYet` is deleted and D8 is closed as **(d)**, the
       mock-up being wrong. Receipt dated 2026-08-13 in `requirements.md`.
+- [x] **Step 1 says which harness can run each service (req 22).** The *Add a
+      service* dialog carries a column per installed harness with a tick or a
+      dash per service, so a pairing no harness here can run is visible before a
+      key is bought rather than after it is pasted. The cell is
+      `harnessSupportsService` — `eligibleEntriesForHarness` asked about a
+      credential that does not exist yet — and a catalogue test pins that it
+      agrees with eligibility for every `(service, mode, harness)`.

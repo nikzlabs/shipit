@@ -3443,6 +3443,34 @@ harness — because they already name the service and the model. The description
 enumerating: "such as naming a session or writing a pull-request description" says the examples
 are examples, since the list of work ShipIt does outside a turn is not closed.
 
+### The service list says which harness could run each service (req 22)
+
+**2026-08-13.** Step 1 of *Add a service* listed six services and the billing modes each takes,
+and said nothing about the pairing that decides whether the credential will be usable at all.
+GLM and OpenRouter serve Anthropic Messages and reach only Claude Code; OpenAI serves Responses
+and reaches only Codex. On an install with one harness, a third of the list was a dead end the
+user could only discover **after** buying a key and pasting it — a ShipIt-imposed failure of
+exactly the kind req 1 exists to prevent.
+
+The step now carries a column per **installed** harness — heads beside the "1 · Which service"
+label, a tick or a dash in each row — and a caption saying what a tick means. The dialog widens
+`max-w-md` → `max-w-lg` for the room, at every step rather than only this one, so it does not
+shrink under the user as they move on.
+
+**The cell is the picker's own eligibility rule, asked about a credential that does not exist
+yet.** `harnessSupportsMode` (`catalogue/index.ts`) calls `eligibleEntriesForHarness` with a
+*hypothetical* credential of each shape the mode accepts, rather than testing the style join and
+the credential shape independently — the two must be satisfied by the same credential, which is
+the bug `harnessCanCarry`'s docstring records, and a second statement of the rule is a second
+thing to get wrong. A test asserts the two answers agree for every `(service, mode, harness)` in
+the catalogue, so the table cannot promise a pairing the picker then refuses.
+
+Two deliberate narrowings. The columns are the harnesses the install **has** (the same
+`installed` filter `InstalledHarnesses` applies), so an empty agent list — the bootstrap has not
+landed — draws no table rather than a table of dashes. And the tick is **not** a gate: every row
+stays selectable, because a harness can arrive with a later image and refusing the choice would
+make ShipIt the obstacle.
+
 ## Key files
 
 | File | Why it matters |

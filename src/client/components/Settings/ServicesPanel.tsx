@@ -59,7 +59,7 @@
 // the event that starts its sign-in — see the call site.
 // eslint-disable-next-line no-restricted-imports -- mount-is-the-event, see above
 import { useEffect, useRef, useState } from "react";
-import { PlusIcon } from "@phosphor-icons/react";
+import { CheckIcon, MinusIcon, PlusIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../../design-tokens.js";
 import type { AgentOption } from "../../agent-types.js";
 import type {
@@ -72,6 +72,7 @@ import { credentialModeKey } from "../../../server/shared/types/domain-types/cre
 import {
   allServices,
   harnessForNativeService,
+  harnessSupportsService,
   modeAllowsMultipleCredentials,
   modeCredentialFor,
   modeReportsQuota,
@@ -891,6 +892,57 @@ function StringCredentialRow({
 }
 
 /**
+ * One column of step 1's support table, shared by the heads and the cells so the
+ * two cannot drift apart. Measured, not guessed: at `4.5rem` the head "Claude
+ * Code" clipped to "CLAUDE C…". A name longer than both shipped ones truncates
+ * rather than moving the column.
+ */
+const HARNESS_COLUMN = "w-[5.5rem] shrink-0 text-center";
+
+/**
+ * **Can this harness run this service?** — asked of the catalogue, before the
+ * user has configured anything.
+ *
+ * The cell is a fact about the pairing, not about the install's credentials:
+ * GLM and OpenRouter speak Anthropic Messages and reach only Claude Code, OpenAI
+ * speaks Responses and reaches only Codex, and picking a service the one
+ * installed harness cannot drive is a dead end the user could otherwise only
+ * discover after pasting a key. `harnessSupportsService` is the picker's own
+ * eligibility rule asked about a credential that does not exist yet.
+ *
+ * The tick is deliberately not a control — every row is still selectable. A
+ * harness can be added to an image later, and refusing the choice would make
+ * ShipIt the thing standing in the way (req 1).
+ */
+function HarnessSupportCell({ harness, service }: { harness: AgentOption; service: ServiceDef }) {
+  // `AgentOption.id` is a bare string on the wire; the cast is this file's
+  // existing idiom for the same bridge (see `ModelPicker`), and an id the
+  // catalogue does not know reads as unsupported rather than throwing.
+  const supported = harnessSupportsService(harness.id as AgentId, service.id);
+  return (
+    <span
+      className={HARNESS_COLUMN}
+      // The icon carries the answer visually and nothing else does, so the cell
+      // says it in words for a reader who is not looking at it.
+      aria-label={`${harness.name}: ${supported ? "runs" : "cannot run"} ${service.name}`}
+      title={
+        supported
+          ? `${harness.name} can run ${service.name}'s models`
+          : `${harness.name} cannot run ${service.name}'s models`
+      }
+      data-testid={`add-service-support-${service.id}-${harness.id}`}
+      data-supported={supported ? "yes" : "no"}
+    >
+      {supported ? (
+        <CheckIcon size={ICON_SIZE.SM} weight="bold" className="mx-auto text-(--color-success)" />
+      ) : (
+        <MinusIcon size={ICON_SIZE.SM} className="mx-auto text-(--color-text-tertiary)" />
+      )}
+    </span>
+  );
+}
+
+/**
  * The add-flow: service → billing mode → credential — **the only way any
  * credential is added** (req 17).
  *
@@ -943,7 +995,10 @@ function AddServiceDialog({
    * the same position**. `cancel` abandons only what this dialog created.
    */
   reconnectAccountId?: string;
-  /** Only to tell whether the harness that runs a sign-in is installed. */
+  /**
+   * Which harnesses this install has: the columns of step 1's support table,
+   * and whether the harness that runs a sign-in is installed.
+   */
   agentList?: AgentOption[];
   onClose: () => void;
 }) {
@@ -1067,6 +1122,17 @@ function AddServiceDialog({
   const harnessInstalled = signInProvider
     ? (agentList.find((a) => a.id === signInProvider)?.installed ?? true)
     : true;
+  /**
+   * The support table's columns: the harnesses this install **has**.
+   *
+   * A harness the image did not install would be a column of facts the user
+   * cannot act on, and the same filter as `InstalledHarnesses` keeps the two
+   * views of "which harnesses are here" from disagreeing. An empty agent list —
+   * the bootstrap has not landed yet — therefore renders no table at all rather
+   * than an empty one, for that component's reason: nothing known yet reads the
+   * same as "none installed" if the empty case is drawn.
+   */
+  const supportHarnesses = agentList.filter((a) => a.installed);
   const adoptable = adoptableAttempt(accounts, signInAccountId);
   /**
    * docs/150 — the provider runs ONE login process, so a second one is a 409.
@@ -1315,7 +1381,12 @@ function AddServiceDialog({
 
   return (
     <Dialog open onOpenChange={(isOpen) => { if (!isOpen) cancel(); }}>
-      <DialogContent className="max-w-md rounded-lg border-(--color-border-secondary) p-4" data-testid="add-service-dialog">
+      {/*
+        `max-w-lg`, not `md`: step 1 now carries a harness column per installed
+        harness beside each service. One width for every step, deliberately — the
+        dialog would otherwise shrink under the user as they moved off step 1.
+      */}
+      <DialogContent className="max-w-lg rounded-lg border-(--color-border-secondary) p-4" data-testid="add-service-dialog">
         {/*
           The verb names what is happening, and on a reconnect the account
           names WHICH credential is about to change — the plan asked for
@@ -1332,22 +1403,48 @@ function AddServiceDialog({
 
         {!service && (
           <div className="mt-3 space-y-1" data-testid="add-service-step-service">
-            <p className="text-[10px] uppercase tracking-wider text-(--color-text-tertiary)">
-              1 · Which service
-            </p>
+            {/*
+              The step label and the support table's column heads share one row,
+              so the heads sit directly above the cells they name. `pr-2.5`
+              matches the buttons' own right padding — that, plus one shared
+              column width, is the whole of the alignment.
+            */}
+            <div className="flex items-end gap-3 pr-2.5">
+              <p className="min-w-0 flex-1 text-[10px] uppercase tracking-wider text-(--color-text-tertiary)">
+                1 · Which service
+              </p>
+              {supportHarnesses.map((harness) => (
+                <span
+                  key={harness.id}
+                  className={`${HARNESS_COLUMN} truncate text-[10px] uppercase tracking-wider text-(--color-text-tertiary)`}
+                  data-testid={`add-service-support-head-${harness.id}`}
+                >
+                  {harness.name}
+                </span>
+              ))}
+            </div>
             {allServices().map((s) => (
               <button
                 key={s.id}
                 onClick={() => pickService(s)}
-                className="flex w-full items-center justify-between gap-3 rounded-md border border-(--color-border-secondary) px-2.5 py-2 text-left text-xs text-(--color-text-primary) hover:bg-(--color-bg-hover)"
+                className="flex w-full items-center gap-3 rounded-md border border-(--color-border-secondary) px-2.5 py-2 text-left text-xs text-(--color-text-primary) hover:bg-(--color-bg-hover)"
                 data-testid={`add-service-option-${s.id}`}
               >
-                <span className="truncate">{s.name}</span>
+                <span className="min-w-0 flex-1 truncate">{s.name}</span>
                 <span className="shrink-0 text-(--color-text-tertiary)">
                   {s.modes.map((m) => MODE_LABEL[m.kind]).join(" · ")}
                 </span>
+                {supportHarnesses.map((harness) => (
+                  <HarnessSupportCell key={harness.id} harness={harness} service={s} />
+                ))}
               </button>
             ))}
+            {supportHarnesses.length > 0 && (
+              <p className="pt-1 text-[11px] text-(--color-text-tertiary)">
+                The columns are the harnesses this install has. A tick means that harness can run
+                the service&rsquo;s models; a service no column ticks has nothing here to drive it.
+              </p>
+            )}
           </div>
         )}
 

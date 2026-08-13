@@ -154,6 +154,54 @@ describe("ServicesPanel", () => {
     });
   });
 
+  describe("step 1's harness support table", () => {
+    it("gives every installed harness a column, and says per service which can run it", async () => {
+      render(<ServicesPanel agentList={[claudeAgent, codexAgent]} />);
+      await userEvent.click(screen.getByTestId("services-add-empty"));
+
+      expect(screen.getByTestId("add-service-support-head-claude")).toHaveTextContent("Claude");
+      expect(screen.getByTestId("add-service-support-head-codex")).toHaveTextContent("Codex");
+      // The cell is the catalogue's answer, asked before any credential exists:
+      // GLM speaks Anthropic Messages and reaches only Claude Code, OpenAI
+      // speaks Responses and reaches only Codex, DeepSeek serves both.
+      expect(screen.getByTestId("add-service-support-zai-claude")).toHaveAttribute("data-supported", "yes");
+      expect(screen.getByTestId("add-service-support-zai-codex")).toHaveAttribute("data-supported", "no");
+      expect(screen.getByTestId("add-service-support-openai-claude")).toHaveAttribute("data-supported", "no");
+      expect(screen.getByTestId("add-service-support-openai-codex")).toHaveAttribute("data-supported", "yes");
+      expect(screen.getByTestId("add-service-support-deepseek-claude")).toHaveAttribute("data-supported", "yes");
+      expect(screen.getByTestId("add-service-support-deepseek-codex")).toHaveAttribute("data-supported", "yes");
+    });
+
+    it("gives a harness the image does not have no column at all", async () => {
+      render(<ServicesPanel agentList={[claudeAgent, { ...codexAgent, installed: false }]} />);
+      await userEvent.click(screen.getByTestId("services-add-empty"));
+
+      // A column the user cannot act on is not information — the same filter
+      // `InstalledHarnesses` applies, so the two cannot disagree.
+      expect(screen.getByTestId("add-service-support-head-claude")).toBeInTheDocument();
+      expect(screen.queryByTestId("add-service-support-head-codex")).not.toBeInTheDocument();
+      expect(screen.queryByTestId("add-service-support-zai-codex")).not.toBeInTheDocument();
+    });
+
+    it("draws no table before the agent list has arrived", async () => {
+      render(<ServicesPanel />);
+      await userEvent.click(screen.getByTestId("services-add-empty"));
+
+      // Nothing known yet must not render as "no harness runs anything".
+      expect(screen.queryByTestId("add-service-support-head-claude")).not.toBeInTheDocument();
+      expect(screen.getByTestId("add-service-option-zai")).toBeInTheDocument();
+    });
+
+    it("still lets an unsupported pairing be chosen", async () => {
+      // The tick is a fact, not a gate: harnesses arrive with images, and
+      // refusing the row would make ShipIt the obstacle (req 1).
+      render(<ServicesPanel agentList={[codexAgent]} />);
+      await userEvent.click(screen.getByTestId("services-add-empty"));
+      await userEvent.click(screen.getByTestId("add-service-option-openrouter"));
+      expect(screen.getByTestId("add-service-step-credential")).toBeInTheDocument();
+    });
+  });
+
   it("skips the mode step when a service has only one way in", async () => {
     render(<ServicesPanel />);
     await userEvent.click(screen.getByTestId("services-add-empty"));

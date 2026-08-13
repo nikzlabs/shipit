@@ -407,6 +407,47 @@ export function eligibleEntriesForHarness(
   );
 }
 
+/**
+ * **Could this harness run this mode at all, if it held a credential?** The
+ * question the *Add a service* dialog asks, one step before there is anything to
+ * ask it about: the user is choosing a service and has configured nothing.
+ *
+ * Deliberately expressed as {@link eligibleEntriesForHarness} over a
+ * *hypothetical* credential of each shape the mode accepts, rather than as its
+ * own pair of tests. The two clauses — the style join (req 6) and the
+ * credential-shape check (req 8) — must be satisfied by the SAME credential, and
+ * writing them independently is the exact bug `harnessCanCarry`'s docstring
+ * records. Asking the real predicate about a credential that does not exist yet
+ * cannot drift from it.
+ */
+export function harnessSupportsMode(
+  harnessId: AgentId,
+  serviceId: string,
+  billingMode: BillingMode,
+): boolean {
+  const mode = getMode(serviceId, billingMode);
+  if (!mode) return false;
+  return mode.credentials.some(
+    (credential) =>
+      eligibleEntriesForHarness(harnessId, [{ serviceId, billingMode, via: credential.via }])
+        .length > 0,
+  );
+}
+
+/**
+ * Whether ANY of this service's modes would be runnable on this harness — the
+ * service-level answer the dialog's support table shows per cell.
+ *
+ * Says nothing about whether the harness is *installed*: that is req 14's
+ * separate gate, and the caller's conjunction to make, exactly as for
+ * {@link eligibleEntriesForHarness}.
+ */
+export function harnessSupportsService(harnessId: AgentId, serviceId: string): boolean {
+  const service = getService(serviceId);
+  if (!service) return false;
+  return service.modes.some((mode) => harnessSupportsMode(harnessId, serviceId, mode.kind));
+}
+
 /** Whether this exact triple is offered on this harness with these credentials. */
 export function isSelectionEligible(
   harnessId: AgentId,

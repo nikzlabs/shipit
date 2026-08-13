@@ -303,6 +303,13 @@ No open questions remain.
     the top; there is no separate command that promotes a credential and no badge naming the
     one at the top as different in kind.
 
+22. **Choosing a service says which harnesses can run it.** While the user is choosing a
+    service to add, the screen shows, per service and per harness this install has, whether
+    that harness can run that service's models. The answer is the same one the model picker
+    gives once the credential exists, so what the user is told before they pay for a key is
+    what they get after. It is a statement, not a gate: a service no installed harness can
+    run is still selectable.
+
 ## Open questions
 
 _None._
@@ -943,6 +950,12 @@ human, but most of the mechanism did not. What the human actually said, in order
   that nothing else depends on the command — primary is a computed position, not a stored
   property — which is why the requirement can say there is no separate promote at all rather
   than only hiding the button.
+- "on this dialog, show a table on the right with column per harness, and cells indicating
+  support of a particular service per harness" → req 22. The table, the columns and the cells
+  are the human's, stated over the *Add a service* dialog they were looking at. Two clauses
+  are the agent's and are stated so they can be struck: that the cell must be the same answer
+  eligibility gives later (otherwise the table can promise a pairing the picker refuses), and
+  that an unticked row stays selectable, which follows req 1 rather than anything said.
 
 Reqs 5 and 13 were changed again on 2026-08-08 from **Codex's** review, under CLAUDE.md's
 cross-backend rule. Same shape as the round below: the findings are the reviewer's, the
