@@ -94,11 +94,6 @@ and the self-update systemd units. Updates land from the UI (**Settings → Adva
 Updates**). Fork installs, host-side updates, sizing, access policies, and troubleshooting are all in
 [`deployment/README.md`](deployment/README.md).
 
-## Status
-
-ShipIt is in an early public release state. The project is public source, but not open to outside
-pull requests. Bug reports, feature requests, and design discussion are welcome as GitHub issues.
-
 ## Security
 
 ShipIt runs AI-agent-written code on your repos and infrastructure, so it treats the agent as a
@@ -141,6 +136,6 @@ Built and maintained by Nik Zherebtsov — [LinkedIn](https://www.linkedin.com/i
 
 ## License
 
-Apache 2.0 — see [LICENSE](LICENSE) for details. ShipIt is open-core; when the project opens to
+Apache 2.0 — see [LICENSE](LICENSE) for details. ShipIt is open-core; if the project opens to
 outside pull requests, contributions will require a [Contributor License Agreement](CLA.md) so they
 can also ship in the proprietary enterprise edition.
