@@ -29,6 +29,18 @@ services:
       context: .
       dockerfile: docker/Dockerfile.dogfood
     image: shipit-dogfood:local
+    # REQUIRED in a Contained session (docs/263). A contained service must
+    # declare a numeric, non-root runtime UID that is not the reserved resolver
+    # (911) or proxy (912) UID; `compose-generator.ts` rejects the whole file
+    # otherwise, so one undeclared service stops every other service too.
+    #
+    # 1000 is not a free choice here: it is the `shipit` user the session-worker
+    # image drops to (docs/150 §7), it owns the bind-mounted workspace this
+    # service writes into (`.inner-shipit/`, the Vite cache), and it is exactly
+    # what the generator used to inject for a service with no `user:`. So this
+    # line changes nothing about how the service runs — it states what was
+    # already true, in the form containment can verify before start.
+    user: "1000:1000"
     # No `npm install` here anymore. The `dev` service now shares the agent
     # container's /workspace/node_modules (see volumes below), which
     # `agent.install` populates at session boot — so the deps are already in
@@ -282,6 +294,8 @@ services:
       context: .
       dockerfile: docker/Dockerfile.dogfood
     image: shipit-dogfood:local
+    # Same UID, same reason as `dev` above — see the note there.
+    user: "1000:1000"
     command: >
       sh -c "
       mkdir -p $${SHIPIT_STATE_DIR:-/workspace/.inner-shipit/onboarding} $${AGENT_HOME:-/root} &&
@@ -340,6 +354,9 @@ services:
   # fix can be verified in production ShipIt before the orchestrator ships it.
   sdk-test:
     image: node:24-slim
+    # Same UID, same reason as `dev` above. node images already carry a `node`
+    # user at 1000, so the image runs directly as this UID.
+    user: "1000:1000"
     working_dir: /workspace
     init: true
     # tsx comes from the agent container's bind-mounted node_modules, populated by
@@ -396,7 +413,20 @@ services:
     # (it never overrides a deliberate choice), so the image starts as intended.
     # Nothing here writes to the shared workspace, so the UID-matching rationale
     # doesn't apply.
-    user: androidusr
+    #
+    # NUMERIC, not the name `androidusr`: a Contained session (docs/263) rejects
+    # a non-numeric `user:`, and the rejection fails the WHOLE compose file, so
+    # a named user here also stopped `dev` from starting. 1300:1301 IS
+    # androidusr — the image inherits the user from `appium/appium-docker-android`
+    # (`ARG USERID=1300` / `ARG GROUPID=1301`), and budtmo's own Dockerfile
+    # hardcoded `USER 1300:1301` before it moved to those inherited args. So this
+    # is the same identity, written the way containment can check.
+    #
+    # This makes the file valid; it does not promise the emulator RUNS in a
+    # contained session. The image starts several processes through supervisord
+    # and loses SETUID/SETGID under containment. Use an Open session for the
+    # Android preview until that is verified.
+    user: "1300:1301"
     environment:
       # REQUIRED — without WEB_VNC the image boots the emulator (adb works) but
       # never starts the noVNC web server, so the preview pane stays blank.
@@ -436,8 +466,11 @@ services:
     init: true
     # Unlike `emulator` above, this service deliberately KEEPS ShipIt's
     # session-worker UID: it writes Gradle build output into the shared workspace,
-    # so matching the agent's UID is exactly what we want (docs/150 §7). But that
-    # UID has no home directory inside this image, and both Gradle and adb need a
+    # so matching the agent's UID is exactly what we want (docs/150 §7). It used
+    # to get that UID by injection (no `user:` here); a Contained session needs it
+    # declared, so it is now stated instead of inferred. Same value, same effect.
+    user: "1000:1000"
+    # That UID has no home directory inside this image, and both Gradle and adb need a
     # writable HOME for their caches/keys — so point them at the (UID-owned)
     # workspace instead of a root-owned `/`. Both dirs are gitignored.
     environment:

@@ -667,6 +667,17 @@ describe("generateComposeOverride", () => {
     expect(() => parseComposeFile(reserved, { dockerSocket: false, containEgress: true })).toThrow("reserved UID");
   });
 
+  // ShipIt's own stack has to obey ShipIt's own rule. It stopped obeying it the
+  // day docs/263 landed: no dogfood service declared `user:`, and because the
+  // rejection fails the WHOLE file rather than one service, `shipit service
+  // start dev` died on a stack where only `emulator` was really unfixable.
+  // Reading the repo's real file (not a fixture) is the point — a fixture would
+  // have stayed green through exactly that regression.
+  it("this repository's own compose file is valid in contained mode", () => {
+    const own = path.join(process.cwd(), "docker-compose.yml");
+    expect(() => parseComposeFile(own, { dockerSocket: false, containEgress: true })).not.toThrow();
+  });
+
   it("labels manual services without adding profiles", () => {
     const override = generateComposeOverride(
       [{ name: "db", shipitPreview: "manual" }],
@@ -830,8 +841,9 @@ describe("generateComposeOverride — session-worker UID (#1646)", () => {
   // and keeps startup scripts under /home/androidusr. Forcing the session-worker
   // UID onto it fails at boot with:
   //   sh: /home/androidusr/docker-android/mixins/scripts/run.sh: Permission denied
-  // The canonical recipe declares `user: androidusr`; this pins that a *named*
-  // (non-numeric) user survives the override, not just a numeric one.
+  // The canonical recipe now declares the same user numerically (`1300:1301`),
+  // because a contained session rejects a name it cannot check. A NAME must
+  // still survive the override in an Open session, which is what this pins.
   it("preserves a named user: so images with their own baked-in user still boot", () => {
     process.env.SHIPIT_SESSION_WORKER_UID = "1000";
     const override = generateComposeOverride(
