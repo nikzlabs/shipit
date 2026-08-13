@@ -83,7 +83,16 @@ describe("Integration: plugin feedback (docs/262 req 25)", () => {
    * Fake what an activation left on disk: the generation record the session is
    * running, behind the `active` symlink every reader follows.
    */
-  const writeActiveGeneration = (repoName: string, commit: string, ref = "branch main") => {
+  const writeActiveGeneration = (
+    repoName: string,
+    commit: string,
+    ref = "branch main",
+    // What the generation was built FROM. A record is only this declaration's
+    // when its source still matches what the declaration points at — the name
+    // alone is re-pointable, so `source` is what stops a moved declaration
+    // stamping a report with the previous repository's commit.
+    source = "acme/dev-tools",
+  ) => {
     const repoRoot = path.join(sessionDir, "state", "plugins", repoName);
     const generation = path.join(repoRoot, "generations", commit);
     fs.mkdirSync(generation, { recursive: true });
@@ -91,6 +100,7 @@ describe("Integration: plugin feedback (docs/262 req 25)", () => {
       path.join(generation, ".shipit-generation.json"),
       JSON.stringify({
         repoName,
+        source,
         commit,
         ref,
         activatedAt: new Date().toISOString(),
@@ -264,6 +274,28 @@ describe("Integration: plugin feedback (docs/262 req 25)", () => {
     expect(body).toContain("```diff");
     expect(body).toContain("plugin repository `tools`");
     expect(body).toContain(`branch main @ \`${COMMIT}\``);
+  });
+
+  // The declaration name is not identity: `tools` can be re-pointed at another
+  // repository, and every on-disk path keeps the name. Stamping a report with
+  // whatever `plugins/tools/active` happens to resolve to would attach the
+  // PREVIOUS repository's commit to a report filed on the new one — the exact
+  // mismatch this footer exists to prevent (req 15).
+  it("does not stamp a commit left by a repository the declaration no longer names", async () => {
+    writeConfig(DECLARE_TOOLS);
+    writeActiveGeneration("tools", COMMIT, "branch main", "acme/previous-tools");
+    await attachViewer();
+
+    const res = await fileFeedback({
+      tracker: "github:acme/dev-tools",
+      trackerName: "tools",
+      title: "Broken",
+      body: "it broke",
+    });
+    expect(res.statusCode).toBe(200);
+    const body = filedBody();
+    expect(body).not.toContain(COMMIT);
+    expect(body).toContain("no plugin generation is active");
   });
 
   it("files, and says the version is not active, before a generation exists", async () => {

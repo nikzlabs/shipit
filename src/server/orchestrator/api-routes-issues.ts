@@ -51,6 +51,7 @@ import { parseGitHubRemote } from "./git-utils.js";
 import { resolveShipitConfig, type DeclaredTracker } from "../shared/shipit-config.js";
 import { pluginFeedbackRepos, type PluginFeedbackRepo } from "../shared/plugin-feedback.js";
 import { readActiveGeneration } from "./plugin-generations.js";
+import { destinationKey } from "../shared/plugin-repos.js";
 import { sessionStateDirForWorkspace } from "./session-state-dir.js";
 import { isGitHubTracker } from "../shared/tracker-id.js";
 import { resolveDestinationByName } from "../shared/issue-ref-resolution.js";
@@ -156,7 +157,17 @@ function withRunningCommits(
     return repos;
   }
   return repos.map((repo) => {
-    const generation = readActiveGeneration(stateDir, repo.name);
+    // Keyed by what the declaration POINTS AT, not by its name. The name is
+    // re-pointable and every on-disk path uses it, so a `tools` moved from
+    // `acme/old` to `acme/new` would otherwise stamp this report with the old
+    // repository's commit — the exact mismatch this footer exists to prevent
+    // (req 15). A generation from another repository reads as absent, and the
+    // report says the version was not active instead of inventing one.
+    const generation = readActiveGeneration(
+      stateDir,
+      repo.name,
+      destinationKey({ kind: "github", owner: repo.owner, repo: repo.repo }),
+    );
     if (!generation) return repo;
     return { ...repo, ref: generation.ref, commit: generation.commit };
   });
