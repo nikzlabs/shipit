@@ -42,7 +42,34 @@ export interface WsInstallLog {
 export type ComposeServiceStatus = "stopped" | "starting" | "running" | "error";
 export type ComposeServicePreviewMode = "auto" | "manual";
 
-/** Server → Client: status update for a single compose service. */
+/**
+ * docs/262 req 3 — where a surfaced service came from, when it is not the
+ * project's own compose file. Plugin services are first-class everywhere else,
+ * so this is the only thing that distinguishes them: services keep `name` as
+ * their client identity (it is already collision-checked across the project and
+ * every plugin, req 20, and it is today's control and log address).
+ */
+export interface ComposeServiceOriginView {
+  kind: "plugin";
+  /** The declared plugin repository, as the Plugins card names it. */
+  repo: string;
+  /** The import's local name (`use.alias`). */
+  alias: string;
+  /** The exported plugin's name in that repository's manifest. */
+  plugin: string;
+}
+
+/**
+ * Server → Client: status update for a single compose service.
+ *
+ * `port` is the **browser's** routing key — the number the preview origin
+ * carries (`{sessionId}--{port}.<host>`), which is the container port for a
+ * project service and the pinned published port for a plugin one (docs/262
+ * req 18). The orchestrator resolves it back to the real container port when it
+ * proxies. The agent-facing `url` on `GET /api/sessions/:id/services` is the
+ * other half of that pair and carries the container port, because it is a direct
+ * connection with no proxy in it.
+ */
 export interface WsServiceStatus {
   type: "service_status";
   sessionId: string;
@@ -51,6 +78,8 @@ export interface WsServiceStatus {
   port?: number;
   preview: ComposeServicePreviewMode;
   error?: string;
+  /** docs/262 — present only for a service a plugin provides. */
+  origin?: ComposeServiceOriginView;
 }
 
 /** Server → Client: full list of compose services for a session. */
@@ -60,9 +89,12 @@ export interface WsServiceList {
   services: {
     name: string;
     status: ComposeServiceStatus;
+    /** The browser's routing key — see {@link WsServiceStatus.port}. */
     port?: number;
     preview: ComposeServicePreviewMode;
     error?: string;
+    /** docs/262 — present only for a service a plugin provides. */
+    origin?: ComposeServiceOriginView;
   }[];
 }
 

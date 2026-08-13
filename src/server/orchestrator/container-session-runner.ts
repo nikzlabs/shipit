@@ -42,7 +42,7 @@ import { workerPost, workerGet, workerInstall, workerPushAgentSecrets, workerPos
 import { ProxyAgentProcess } from "./proxy-agent-process.js";
 import type { ProxyAgentRunner } from "./proxy-agent-process.js";
 import { adoptInFlightTurn } from "./turn-adoption.js";
-import type { ServiceManager, ManagedService, SecretsStatusInternalSnapshot } from "./service-manager.js";
+import { originView, type ServiceManager, type ManagedService, type SecretsStatusInternalSnapshot } from "./service-manager.js";
 import { stripAnsi } from "../shared/strip-ansi.js";
 import { SseConnectionManager } from "./sse-connection-manager.js";
 import { BackgroundTaskTracker, type BackgroundTaskInfo } from "./background-task-tracker.js";
@@ -748,7 +748,11 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   private buildDetectedPortsFromServices(mgr: ServiceManager): number[] {
     return mgr.getServices()
       .filter(s => (s.preview === "auto" || s.preview === "manual") && s.status === "running" && s.port)
-      .map(s => s.port!);
+      // docs/262 req 18 — the PUBLISHED port: this list becomes the preview
+      // origin, and a plugin service's origin is pinned for the session's life
+      // while its container port follows the plugin's fragment. The two are the
+      // same number for a project service.
+      .map(s => s.publishedPort ?? s.port!);
   }
 
   // --- Service Manager ---
@@ -774,9 +778,11 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
         sessionId: this.sessionId,
         name: svc.name,
         status: svc.status,
-        port: svc.port,
+        // The browser's routing key (docs/262 req 18) — see `WsServiceStatus.port`.
+        port: svc.publishedPort ?? svc.port,
         preview: svc.preview,
         error: svc.error,
+        ...(svc.origin ? { origin: originView(svc.origin) } : {}),
       });
 
       // When a preview-eligible service changes status, recalculate detected
@@ -810,9 +816,10 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
         services: services.map(s => ({
           name: s.name,
           status: s.status,
-          port: s.port,
+          port: s.publishedPort ?? s.port,
           preview: s.preview,
           error: s.error,
+          ...(s.origin ? { origin: originView(s.origin) } : {}),
         })),
       });
 

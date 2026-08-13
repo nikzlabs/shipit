@@ -29,6 +29,7 @@ import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import path from "node:path";
 import type { ComposeConfig } from "../shared/shipit-config.js";
+import type { ComposeServiceOriginView } from "../shared/types/ws-server-messages/service.js";
 import { killChild } from "../shared/kill-child.js";
 import { truncateTerminalBuffer } from "./terminal-buffer.js";
 import type { LogStore } from "./log-store.js";
@@ -39,8 +40,10 @@ import {
   writeComposeOverride,
   type ComposeOverrideOptions,
   type ComposeService,
+  type ComposeServiceOrigin,
   type OverlayDepDirVolume,
 } from "./compose-generator.js";
+import { toComposeService, type PluginComposeService } from "./plugin-compose.js";
 import { COMPOSE_OVERRIDE_FILE, sessionStateDirForWorkspace } from "./session-state-dir.js";
 import {
   ServiceSecretsResolver,
@@ -84,9 +87,23 @@ export type ServiceStatus = "stopped" | "starting" | "running" | "error";
 export interface ManagedService {
   name: string;
   port?: number;
+  /**
+   * docs/262 req 18 — the port the PREVIEW ORIGIN carries
+   * (`{sessionId}--{publishedPort}.<host>`), which the proxy resolves back to
+   * {@link port} on this service's container.
+   *
+   * For a project service the two are always the same number: its compose file
+   * is the user's, so a change to it is a change the user made. A plugin's
+   * fragment arrives with every tracked-branch commit, so its published port is
+   * pinned per session (`plugin-ports.ts`) and the container port follows the
+   * fragment — the origin stays put while the traffic follows the container.
+   */
+  publishedPort?: number;
   preview: "auto" | "manual";
   status: ServiceStatus;
   error?: string;
+  /** docs/262 req 3 — the plugin this service came from, when it is not the project's own. */
+  origin?: ComposeServiceOrigin;
   /**
    * Whether this service is gated on `agent.install` completing before it
    * starts (`x-shipit-depends-on-install`). Defaults to `true` for
@@ -119,6 +136,16 @@ export interface ManagedService {
    * GH #1509.
    */
   url?: string;
+}
+
+/**
+ * docs/262 — project a service's origin into the shape the client sees. The
+ * fragment's own service name is deliberately dropped: it is what the collision
+ * message needs (it names the key to write `as` under) and not something the
+ * browser has any use for.
+ */
+export function originView(origin: ComposeServiceOrigin): ComposeServiceOriginView {
+  return { kind: "plugin", repo: origin.repo, alias: origin.alias, plugin: origin.plugin };
 }
 
 /**
@@ -439,6 +466,8 @@ export class ServiceManager extends EventEmitter {
   private readonly workspaceSubpath?: string;
   /** docs/183 Phase 5 — per-session overlay dep-dir volumes (set lazily; see setOverlayDepDirs). */
   private overlayDepDirs: OverlayDepDirVolume[];
+  /** docs/262 — plugin services this session surfaces (set lazily; see setPluginServices). */
+  private pluginServices: PluginComposeService[] = [];
   private readonly stackName?: string;
   private readonly opsSession: boolean;
   private readonly networkJoinFn?: (networkName: string) => Promise<void>;
@@ -749,6 +778,23 @@ export class ServiceManager extends EventEmitter {
     this.overlayDepDirs = overlayDepDirs;
   }
 
+  /**
+   * docs/262 — set the plugin services this session surfaces (reqs 3, 5, 16),
+   * already located, validated and named by `plugin-compose.ts`.
+   *
+   * Resolved outside the manager for the same reason `setOverlayDepDirs` is: it
+   * needs Docker and the session's plugin generations, neither of which this
+   * class knows about. Returns whether the set actually CHANGED, so a caller can
+   * skip the reconcile — an activation round settles on every session activation
+   * and every `shipit.yaml` edit, and recreating live containers on each of them
+   * would restart a plugin service that nothing happened to.
+   */
+  setPluginServices(services: PluginComposeService[]): boolean {
+    const changed = JSON.stringify(this.pluginServices) !== JSON.stringify(services);
+    this.pluginServices = services;
+    return changed;
+  }
+
   /** Refresh the boot-effective egress policy when a preserved manager is adopted. */
   updateEgressContainment(
     containServicesFn: ((serviceNames: string[]) => Promise<void>) | undefined,
@@ -1017,8 +1063,30 @@ export class ServiceManager extends EventEmitter {
 
   /** Find the container IP for a service listening on the given port. */
   getContainerIpForPort(port: number): string | undefined {
+    return this.resolvePreviewTarget(port)?.containerIp;
+  }
+
+  /**
+   * Resolve a preview subdomain's port to the container address behind it.
+   *
+   * The two halves are the same number for a project service and may differ for
+   * a plugin one (docs/262 req 18): the subdomain carries the service's PINNED
+   * published port, which stays put for the session's life, while the container
+   * port follows whatever the plugin's current fragment declares. Returning both
+   * is what lets a tracked commit move the port without moving the origin — and
+   * without the proxy having to know anything about plugins.
+   *
+   * Falls back to the container port when no service claims the number as its
+   * published one, so a service recorded before this field existed still routes.
+   */
+  resolvePreviewTarget(port: number): { containerIp: string; port: number } | undefined {
     for (const svc of this.services.values()) {
-      if (svc.port === port && svc.containerIp) return svc.containerIp;
+      if (svc.publishedPort === port && svc.containerIp) {
+        return { containerIp: svc.containerIp, port: svc.port ?? port };
+      }
+    }
+    for (const svc of this.services.values()) {
+      if (svc.port === port && svc.containerIp) return { containerIp: svc.containerIp, port };
     }
     return undefined;
   }
@@ -1120,11 +1188,38 @@ export class ServiceManager extends EventEmitter {
       this.services.set(svc.name, {
         name: svc.name,
         port,
+        // A project service's origin is its own compose file, so there is
+        // nothing to pin: its published port IS its container port.
+        ...(port !== undefined ? { publishedPort: port } : {}),
         preview,
         status: "stopped",
         dependsOnInstall: svc.dependsOnInstall ?? (preview === "auto"),
       });
     }
+
+    // docs/262 reqs 3, 16 — plugin services join the same map, so every control,
+    // status and log path treats them as the first-class services req 3 asks
+    // for. `dependsOnInstall: false`: the consuming project's `agent.install`
+    // has nothing to do with a plugin, whose own install ran before its
+    // generation was published (plan §1b).
+    for (const svc of this.pluginServices) {
+      this.services.set(svc.name, {
+        name: svc.name,
+        ...(svc.port !== undefined ? { port: svc.port } : {}),
+        ...(svc.publishedPort !== undefined ? { publishedPort: svc.publishedPort } : {}),
+        preview: svc.preview,
+        status: "stopped",
+        dependsOnInstall: false,
+        origin: {
+          kind: "plugin",
+          repo: svc.repo,
+          alias: svc.alias,
+          plugin: svc.plugin,
+          sourceName: svc.sourceName,
+        },
+      });
+    }
+    const overrideServices = [...parsedServices, ...this.pluginServices.map(toComposeService)];
 
     // Resolve secrets BEFORE generating the override — the override references
     // per-service env files via `env_file:` and compose detects the file at
@@ -1150,7 +1245,7 @@ export class ServiceManager extends EventEmitter {
       ...(serviceEnvFiles ? { serviceEnvFiles } : {}),
       ...(this.overlayDepDirs.length > 0 ? { overlayDepDirs: this.overlayDepDirs } : {}),
     };
-    const overrideContent = generateComposeOverride(parsedServices, overrideOpts);
+    const overrideContent = generateComposeOverride(overrideServices, overrideOpts);
     writeComposeOverride(this.overrideDir, overrideContent);
 
     // Mark auto services as starting (silently — _startupComplete is false)
@@ -1719,7 +1814,14 @@ export class ServiceManager extends EventEmitter {
         ...(this.overlayDepDirs.length > 0 ? { overlayDepDirs: this.overlayDepDirs } : {}),
         dockerSecrets: dockerSecretsBuild,
       };
-      const overrideContent = generateComposeOverride(parsedServices, overrideOpts);
+      // docs/262 — plugin services must survive this rewrite: the override is
+      // the ONLY place their definitions exist, so regenerating it from the
+      // project's services alone would delete them from the stack on the next
+      // secret save.
+      const overrideContent = generateComposeOverride(
+        [...parsedServices, ...this.pluginServices.map(toComposeService)],
+        overrideOpts,
+      );
       writeComposeOverride(this.overrideDir, overrideContent);
     }
 
