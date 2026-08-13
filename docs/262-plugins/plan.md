@@ -618,13 +618,28 @@ instead of a repeat.
   be silently wrong: the inherited helper list is **reset** first (`credential.
   helper` is multi-valued and git consults helpers in config order, so without
   the reset the global PAT helper answers first and the App token is never
-  reached); the replacement is **URL-scoped** to the repository's host, so a
-  redirect elsewhere gets no answer at all — the host-blind-helper bug class of
-  docs/172 Gap 2; and the token travels in the child process's **environment**,
-  never in argv or in a `https://user:token@host` remote, so it reaches neither
-  `ps` nor the bare cache's on-disk config. `repo-git.test.ts` drives real git
-  for all three, because each one is a git behavior rather than a claim about
-  our code.
+  reached); the replacement is **origin-scoped**, so a redirect elsewhere gets
+  no answer at all — the host-blind-helper bug class of docs/172 Gap 2; and the
+  token travels in the child process's **environment**, never in argv or in a
+  `https://user:token@host` remote, so it reaches neither `ps` nor the bare
+  cache's on-disk config. `repo-git.test.ts` drives real git for all three,
+  because each one is a git behavior rather than a claim about our code — a
+  decoy global helper for the reset, and a loopback server that demands Basic
+  auth for what git actually sent.
+
+  Two more the independent review had to force, both of which made this quietly
+  wrong. **"No credential" is a credential decision, not the absence of one**:
+  the anonymous fetch still resets the helpers and still disables prompts, or a
+  stale global helper answers for a repository ShipIt holds nothing for, and a
+  private repository stalls on a prompt instead of producing req 13's named
+  failure. And **the environment is sanitized, not forwarded whole**: simple-git
+  refuses to spawn when any of ~18 variables is set (`PAGER`, `GIT_ASKPASS`,
+  `GIT_SSH_COMMAND`, `GIT_CONFIG_COUNT`, …), each a way to make git run someone
+  else's code — so a plain `PAGER=cat` in the orchestrator's environment failed
+  **every** credentialed plugin fetch before git ran. They are dropped rather
+  than allowed; the two kept (`GIT_CONFIG_GLOBAL`, `GIT_EDITOR`) are the ones
+  this orchestrator sets on purpose. Dropping `GIT_CONFIG_COUNT` also closes the
+  one config layer that outranks the reset.
 
   Req 19 is unaffected and slightly stronger: the credential is resolved, used
   and dropped inside one `ensureCache` call. Everything the generation engine
@@ -632,14 +647,21 @@ instead of a repeat.
   path has a network credential to reach in the first place.
 
   **A refused fetch is named** (req 13): the message says the repository, which
-  of the two setups was tried, and the one-time act that fixes it — "ShipIt's
-  GitHub App is not installed on `acme/tools`, and the host GitHub token cannot
-  read it either" — plus the sentence the mode difference exists for, that
-  authorizing the project does not cover the plugin repository. It reaches the
-  Plugins card as that repository's activation error. A failure that is *not*
-  credential-shaped (DNS, a truncated transfer) is passed through untouched: a
-  GitHub outage reported as a permissions problem would send the user to fix
-  something that is not broken.
+  of the two setups was tried, and the one-time act that fixes it, plus the
+  sentence the mode difference exists for — that authorizing the project does
+  not cover the plugin repository. It reaches the Plugins card as that
+  repository's activation error. A failure that is *not* credential-shaped (DNS,
+  a truncated transfer) is passed through untouched: a GitHub outage reported as
+  a permissions problem would send the user to fix something that is not broken.
+
+  Naming it accurately is narrower than it looks, and the review caught both
+  ways of overclaiming. GitHub answers **404 for "the App is not installed
+  here" and for "no such repository" alike** — it will not confirm a repository
+  the caller cannot see — so the message says both rather than sending someone
+  to install an App when they mistyped a name. And the token remedy names
+  **both PAT kinds** (a classic token's `repo` scope, a fine-grained token's
+  selected repositories plus Contents read), since this repo supports both and
+  half the users would otherwise be pointed at the wrong setting.
 
   **Known limit, deliberately not fixed here.** Under an App-only install the
   orchestrator's own fetches of the *project* repository still ride the global

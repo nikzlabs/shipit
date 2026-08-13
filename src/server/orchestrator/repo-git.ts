@@ -65,8 +65,14 @@ export interface GitRemoteCredential {
    * credential is offered to no other origin.
    */
   origin: string;
-  username: string;
-  password: string;
+  /**
+   * What to supply. **Omitted means supply nothing** — the inherited helpers
+   * are still reset and prompts are still disabled, so an anonymous fetch is
+   * genuinely anonymous rather than quietly answered by a stale global helper,
+   * and a private repository fails fast with a classifiable message instead of
+   * stalling on a prompt (review finding).
+   */
+  token?: { username: string; password: string };
 }
 
 const CREDENTIAL_ENV_USERNAME = "SHIPIT_GIT_CRED_USERNAME";
@@ -74,6 +80,50 @@ const CREDENTIAL_ENV_PASSWORD = "SHIPIT_GIT_CRED_PASSWORD";
 
 /** A scheme + host (optionally `:port`) and nothing that could reshape a config key. */
 const SAFE_ORIGIN = /^https?:\/\/[A-Za-z0-9.-]+(:\d+)?$/;
+
+/**
+ * Environment variables simple-git refuses to spawn with unless the matching
+ * `unsafe` flag is set — all of them ways to make git run someone else's code.
+ * We drop them instead of allowing them: a bare-cache clone or fetch pages
+ * nothing, diffs nothing, opens no ssh session, and must never reach an askpass
+ * program, since replacing exactly that is the point of the helper below.
+ *
+ * Dropped rather than enumerated as `unsafe` flags because ONE of these present
+ * in the orchestrator's environment fails every credentialed fetch before git
+ * runs — `PAGER=cat` is enough, and it is a variable no deployment thinks of as
+ * git configuration (review finding, P1).
+ *
+ * The two NOT dropped are deliberate: `GIT_CONFIG_GLOBAL` carries the identity
+ * and `safe.directory` this orchestrator sets on purpose, and `GIT_EDITOR` is
+ * set on purpose so git never opens an interactive editor. Their flags stay on.
+ */
+const UNSAFE_GIT_ENV = [
+  "PAGER", "GIT_PAGER",
+  "GIT_ASKPASS", "SSH_ASKPASS",
+  "GIT_SSH", "GIT_SSH_COMMAND",
+  "GIT_PROXY_COMMAND",
+  "GIT_EXTERNAL_DIFF",
+  "GIT_TEMPLATE_DIR",
+  "GIT_SEQUENCE_EDITOR",
+  // Highest-precedence config injection, above GIT_CONFIG_GLOBAL — it could
+  // reinstate a credential helper we just reset. Same reasoning
+  // `server-test-setup.ts` clears these for.
+  "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS",
+];
+
+/**
+ * The environment a credentialed git child gets: ours, minus the variables
+ * above, minus any `GIT_CONFIG_KEY_<n>` / `GIT_CONFIG_VALUE_<n>` pairs the
+ * dropped `GIT_CONFIG_COUNT` addressed.
+ */
+export function sanitizeGitEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const out: NodeJS.ProcessEnv = { ...env };
+  for (const key of UNSAFE_GIT_ENV) Reflect.deleteProperty(out, key);
+  for (const key of Object.keys(out)) {
+    if (/^GIT_CONFIG_(KEY|VALUE)_\d+$/.test(key)) Reflect.deleteProperty(out, key);
+  }
+  return out;
+}
 
 /**
  * The `-c` arguments that make ONE supplied credential the only one git uses,
@@ -97,17 +147,21 @@ const SAFE_ORIGIN = /^https?:\/\/[A-Za-z0-9.-]+(:\d+)?$/;
  *    remote would. git passes its own environment to the helper it shells out
  *    to.
  */
-export function gitCredentialConfig(origin: string): string[] {
+export function gitCredentialConfig(credential: GitRemoteCredential): string[] {
+  const { origin } = credential;
   if (!SAFE_ORIGIN.test(origin)) throw new Error(`Refusing to build a git credential helper for origin "${origin}"`);
+  // The reset alone IS the anonymous case: helpers cleared, nothing offered.
+  if (!credential.token) return ["credential.helper="];
   const helper = `!f() { echo "username=$${CREDENTIAL_ENV_USERNAME}"; echo "password=$${CREDENTIAL_ENV_PASSWORD}"; }; f`;
   return ["credential.helper=", `credential.${origin}.helper=${helper}`];
 }
 
 /** The environment that helper reads the credential out of. */
 export function gitCredentialEnv(credential: GitRemoteCredential): Record<string, string> {
+  if (!credential.token) return {};
   return {
-    [CREDENTIAL_ENV_USERNAME]: credential.username,
-    [CREDENTIAL_ENV_PASSWORD]: credential.password,
+    [CREDENTIAL_ENV_USERNAME]: credential.token.username,
+    [CREDENTIAL_ENV_PASSWORD]: credential.token.password,
   };
 }
 
@@ -126,22 +180,23 @@ export class RepoGit {
     this.repoDir = repoDir;
     this.git = credential
       ? simpleGit(repoDir, {
-        config: gitCredentialConfig(credential.origin),
-        // Three simple-git v3 guards opted out of, all guarding against
-        // *user-supplied* values reaching git. None of these is user-supplied:
-        // the helper is the constant above (host validated, token in the
-        // environment), and the env is our own `process.env` — forwarded so the
-        // child keeps PATH, HOME and `GIT_CONFIG_GLOBAL` (identity,
-        // `safe.directory`), the same false positive `git-utils.ts` documents.
+        config: gitCredentialConfig(credential),
+        // The three simple-git guards this path opts out of, none of them
+        // user-supplied: our own credential helper (host validated, token in
+        // the environment), and the `GIT_CONFIG_GLOBAL` / `GIT_EDITOR` this
+        // orchestrator sets on purpose — the same false positive
+        // `git-utils.ts` documents. Everything else it guards is dropped from
+        // the environment instead (see `sanitizeGitEnv`).
         unsafe: {
           allowUnsafeConfigPaths: true,
           allowUnsafeEditor: true,
           allowUnsafeCredentialHelper: true,
         },
       }).env({
-        ...process.env,
+        ...sanitizeGitEnv(process.env),
         ...gitCredentialEnv(credential),
-        // Fail instead of blocking on a prompt when the credential is refused.
+        // Fail instead of blocking on a prompt when nothing is supplied or the
+        // credential is refused.
         GIT_TERMINAL_PROMPT: "0",
       })
       : simpleGit(repoDir);

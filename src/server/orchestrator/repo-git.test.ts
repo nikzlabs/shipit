@@ -9,6 +9,7 @@ import {
   ensureBareCache,
   gitCredentialConfig,
   gitCredentialEnv,
+  sanitizeGitEnv,
   type GitRemoteCredential,
 } from "./repo-git.js";
 
@@ -219,11 +220,14 @@ describe("per-remote credential (RepoGit credential option)", () => {
 
   /** Ask git what credential it would use for `host`, under our config + env. */
   function askGit(host: string, credential: GitRemoteCredential): string {
-    const args = gitCredentialConfig(credential.origin).flatMap((c) => ["-c", c]);
+    const args = gitCredentialConfig(credential).flatMap((c) => ["-c", c]);
     return execFileSync("git", [...args, "credential", "fill"], {
       input: `protocol=https\nhost=${host}\n\n`,
+      // The same environment the production path builds — including the
+      // sanitizing, without which an inherited `GIT_ASKPASS` answers for a host
+      // the credential was never scoped to.
       env: {
-        ...process.env,
+        ...sanitizeGitEnv(process.env),
         GIT_CONFIG_GLOBAL: globalConfigWithDecoy(),
         GIT_TERMINAL_PROMPT: "0",
         ...gitCredentialEnv(credential),
@@ -234,8 +238,7 @@ describe("per-remote credential (RepoGit credential option)", () => {
 
   const cred: GitRemoteCredential = {
     origin: "https://github.com",
-    username: "x-access-token",
-    password: "ghs_plugin_installation_token",
+    token: { username: "x-access-token", password: "ghs_plugin_installation_token" },
   };
 
   it("overrides the global helper instead of queueing behind it", () => {
@@ -264,8 +267,8 @@ describe("per-remote credential (RepoGit credential option)", () => {
 
     expect(await git.readHead()).toMatch(/^[0-9a-f]{40}$/);
     const config = fs.readFileSync(path.join(cacheDir, "config"), "utf-8");
-    expect(config).not.toContain(cred.password);
-    expect(gitCredentialConfig(cred.origin).join(" ")).not.toContain(cred.password);
+    expect(config).not.toContain(cred.token!.password);
+    expect(gitCredentialConfig(cred).join(" ")).not.toContain(cred.token!.password);
   });
 
   /**
@@ -310,8 +313,7 @@ describe("per-remote credential (RepoGit credential option)", () => {
   it("actually sends the supplied credential — through simple-git, to a real server", async () => {
     const { authorization } = await credentialGitSent((port) => ({
       origin: `http://127.0.0.1:${port}`,
-      username: "x-access-token",
-      password: "ghs_plugin_installation_token",
+      token: { username: "x-access-token", password: "ghs_plugin_installation_token" },
     }));
     expect(authorization).toBeDefined();
     expect(Buffer.from(authorization!.replace("Basic ", ""), "base64").toString("utf8"))
@@ -323,18 +325,77 @@ describe("per-remote credential (RepoGit credential option)", () => {
     // all rather than handing this one to a host it was not minted for.
     const { authorization, requests } = await credentialGitSent(() => ({
       origin: "https://github.com",
-      username: "x-access-token",
-      password: "ghs_plugin_installation_token",
+      token: { username: "x-access-token", password: "ghs_plugin_installation_token" },
     }));
     // git DID ask the server (so this is not vacuously true) and offered nothing.
     expect(requests).toBeGreaterThan(0);
     expect(authorization).toBeUndefined();
   }, 20_000);
 
+  it("supplies nothing — but still resets — when no token is given", async () => {
+    // The anonymous case (`mode: "none"`): a public repository must still
+    // fetch, and a stale global helper must NOT answer for it.
+    expect(gitCredentialConfig({ origin: "https://github.com" })).toEqual(["credential.helper="]);
+    const { authorization, requests } = await credentialGitSent((port) => ({
+      origin: `http://127.0.0.1:${port}`,
+    }));
+    expect(requests).toBeGreaterThan(0);
+    expect(authorization).toBeUndefined();
+  }, 20_000);
+
+  it("survives the environment variables simple-git guards", async () => {
+    // Any one of these present used to fail EVERY credentialed fetch before git
+    // ran — `PAGER=cat` was enough (review finding, P1).
+    const guarded = {
+      PAGER: "cat",
+      GIT_PAGER: "less",
+      GIT_ASKPASS: "/bin/echo",
+      SSH_ASKPASS: "/bin/echo",
+      GIT_SSH_COMMAND: "ssh -v",
+      GIT_EXTERNAL_DIFF: "/bin/echo",
+      GIT_CONFIG_COUNT: "1",
+      GIT_CONFIG_KEY_0: "credential.helper",
+      GIT_CONFIG_VALUE_0: "!f() { echo password=INJECTED; }; f",
+    };
+    const restore = { ...process.env };
+    Object.assign(process.env, guarded);
+    try {
+      const { authorization } = await credentialGitSent((port) => ({
+        origin: `http://127.0.0.1:${port}`,
+        token: { username: "x-access-token", password: "ghs_survives" },
+      }));
+      expect(authorization).toBeDefined();
+      // And the env-injected helper did not win either.
+      expect(Buffer.from(authorization!.replace("Basic ", ""), "base64").toString("utf8"))
+        .toBe("x-access-token:ghs_survives");
+    } finally {
+      for (const key of Object.keys(guarded)) Reflect.deleteProperty(process.env, key);
+      Object.assign(process.env, restore);
+    }
+  }, 20_000);
+
+  it("drops exactly the guarded variables and keeps the deliberate ones", () => {
+    const cleaned = sanitizeGitEnv({
+      PATH: "/usr/bin",
+      GIT_CONFIG_GLOBAL: "/credentials/.gitconfig",
+      GIT_EDITOR: "true",
+      PAGER: "cat",
+      GIT_CONFIG_COUNT: "2",
+      GIT_CONFIG_KEY_0: "x",
+      GIT_CONFIG_VALUE_0: "y",
+    });
+    expect(cleaned).toEqual({
+      PATH: "/usr/bin",
+      // Kept on purpose — identity, `safe.directory`, and no interactive editor.
+      GIT_CONFIG_GLOBAL: "/credentials/.gitconfig",
+      GIT_EDITOR: "true",
+    });
+  });
+
   it("refuses to build a helper for an origin that could reshape the config key", () => {
-    expect(() => gitCredentialConfig("https://github.com")).not.toThrow();
-    expect(() => gitCredentialConfig("https://github.com.helper=x")).toThrow(/Refusing/);
-    expect(() => gitCredentialConfig("github.com")).toThrow(/Refusing/); // no scheme
-    expect(() => gitCredentialConfig("")).toThrow(/Refusing/);
+    expect(() => gitCredentialConfig({ origin: "https://github.com" })).not.toThrow();
+    expect(() => gitCredentialConfig({ origin: "https://github.com.helper=x" })).toThrow(/Refusing/);
+    expect(() => gitCredentialConfig({ origin: "github.com" })).toThrow(/Refusing/); // no scheme
+    expect(() => gitCredentialConfig({ origin: "" })).toThrow(/Refusing/);
   });
 });

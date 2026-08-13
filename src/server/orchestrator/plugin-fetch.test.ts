@@ -66,8 +66,7 @@ describe("resolvePluginFetchCredential", () => {
     expect(resolved.mode).toBe("app");
     expect(resolved.credential).toEqual({
       origin: "https://github.com",
-      username: "x-access-token",
-      password: "ghs_ro",
+      token: { username: "x-access-token", password: "ghs_ro" },
     });
   });
 
@@ -77,7 +76,7 @@ describe("resolvePluginFetchCredential", () => {
       source,
     );
     expect(resolved.mode).toBe("pat");
-    expect(resolved.credential?.password).toBe("ghp_host");
+    expect(resolved.credential?.token?.password).toBe("ghp_host");
     // Kept even though the PAT answered: it is what names the failure if the
     // fetch fails anyway.
     expect(resolved.appFailure).toBe("not_installed");
@@ -89,9 +88,14 @@ describe("resolvePluginFetchCredential", () => {
     expect(resolved.appFailure).toBeUndefined();
   });
 
-  it("resolves to no credential when the host has none — a public repository still fetches", async () => {
+  it("supplies nothing when the host has no credential — but still isolates the fetch", async () => {
     const resolved = await resolvePluginFetchCredential(authority({ pat: null }), source);
-    expect(resolved).toEqual({ mode: "none" });
+    expect(resolved.mode).toBe("none");
+    // A credential DECISION, not the absence of one: helpers reset, nothing
+    // offered — so a stale global helper cannot answer for it, and a public
+    // repository still fetches.
+    expect(resolved.credential).toEqual({ origin: "https://github.com" });
+    expect(resolved.credential?.token).toBeUndefined();
   });
 
   it("mints nothing for a URL it cannot name a repository in", async () => {
@@ -112,6 +116,8 @@ describe("isRepoAccessFailure", () => {
     expect(isRepoAccessFailure(new Error("fatal: Authentication failed for 'https://github.com/a/b.git'"))).toBe(true);
     expect(isRepoAccessFailure(new Error("could not read Username for 'https://github.com'"))).toBe(true);
     expect(isRepoAccessFailure(new Error("terminal prompts disabled"))).toBe(true);
+    // libcurl's phrasing — no "HTTP", no "Forbidden" (review finding).
+    expect(isRepoAccessFailure(new Error("The requested URL returned error: 403"))).toBe(true);
   });
 
   it("does not claim an outage is a permissions problem", () => {
@@ -127,11 +133,13 @@ describe("describePluginFetchFailure", () => {
   it("names the App as the missing authorization, and says the project is not enough", () => {
     const msg = describePluginFetchFailure(
       source,
-      { mode: "pat", appFailure: "not_installed", credential: {} as GitRemoteCredential },
+      { mode: "pat", appFailure: "not_installed", credential: { origin: "https://github.com" } },
       refused,
     ).message;
     expect(msg).toContain("acme/tools");
-    expect(msg).toContain("GitHub App is not installed on acme/tools");
+    // GitHub's 404 does not distinguish "not installed" from "no such repo",
+    // so the message must not either.
+    expect(msg).toContain("either it is not installed on that repository, or no such repository exists");
     expect(msg).toContain("different repository from this project");
     // The git line is kept for debuggability.
     expect(msg).toContain("git:");
@@ -140,7 +148,9 @@ describe("describePluginFetchFailure", () => {
   it("names the token when there is no App at all", () => {
     const msg = describePluginFetchFailure(source, { mode: "pat" }, refused).message;
     expect(msg).toContain("host GitHub token cannot read acme/tools");
+    // Both PAT kinds, because the remedy differs and this repo supports both.
     expect(msg).toContain("`repo` scope");
+    expect(msg).toContain("fine-grained token needs acme/tools among its selected repositories");
   });
 
   it("says a minted token was refused when the App IS installed", () => {
@@ -190,7 +200,10 @@ describe("createPluginRepoFetcher", () => {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
 
-    expect(seen).toEqual([{ origin: "https://github.com", username: "x-access-token", password: "ghs_ro" }]);
+    expect(seen).toEqual([{
+      origin: "https://github.com",
+      token: { username: "x-access-token", password: "ghs_ro" },
+    }]);
     // A tracked branch is resolved to its tip; a minute-old cache would
     // activate a stale commit and make refresh look like a no-op.
     expect(fetchedTtl).toBe(0);
@@ -209,7 +222,7 @@ describe("createPluginRepoFetcher", () => {
     try {
       fs.writeFileSync(path.join(tmp, "HEAD"), "ref: refs/heads/main\n");
       await expect(fetcher(tmp, "https://github.com/acme/tools.git")).rejects.toThrow(
-        /GitHub App is not installed on acme\/tools/,
+        /GitHub App cannot see acme\/tools/,
       );
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
