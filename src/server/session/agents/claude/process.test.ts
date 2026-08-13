@@ -1,17 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
+import { readFileSync, existsSync, unlinkSync } from "node:fs";
 import { ClaudeProcess, StreamingClaudeProcess, applyServiceRouting } from "./process.js";
 import type { ServiceRouting } from "../../../shared/types.js";
 import { agentHome } from "../../../shared/agent-home.js";
 
-// Mock node-pty
-vi.mock("node-pty", () => {
-  return {
-    spawn: vi.fn(),
-  };
-});
-
-// Mock node:child_process.spawn so StreamingClaudeProcess never touches a real
+// Mock node:child_process.spawn so neither process ever touches a real
 // process. The mock returns an EventEmitter with `stdin.write` captured so
 // tests can assert exactly what NDJSON the class wrote.
 vi.mock("node:child_process", async () => {
@@ -33,64 +27,46 @@ vi.mock("../../../shared/strip-ansi.js", () => {
 });
 
 
-import * as pty from "node-pty";
 import * as childProcess from "node:child_process";
-const mockPtySpawn = vi.mocked(pty.spawn);
 const mockChildSpawn = vi.mocked(childProcess.spawn);
 
-/** Minimal ChildProcess fake — captures stdin writes and lets tests fire stdout/stderr/close. */
+/**
+ * Minimal ChildProcess fake — captures stdin writes and lets tests fire
+ * stdout/stderr/close. Both processes spawn over piped stdio — the one-shot
+ * path moved off node-pty so an oversized prompt can't overflow argv — so this
+ * one fake serves both.
+ *
+ * `pid` is set because `killChild()` refuses to signal a process whose pid is
+ * undefined — a fake without one silently no-ops every kill assertion.
+ */
 function createMockChildProcess() {
   const stdoutEmitter = new EventEmitter();
   const stderrEmitter = new EventEmitter();
   const stdinWrites: string[] = [];
-  const stdin = {
-    write: vi.fn((data: string) => {
-      stdinWrites.push(data);
-      return true;
-    }),
-    writable: true,
-    destroyed: false,
-    writableEnded: false,
-  };
+  // An EventEmitter, not a plain object: stdin is where EPIPE surfaces, and an
+  // unhandled stream `error` takes the worker process down with it. A fake that
+  // cannot emit one cannot guard that.
+  const stdin: any = new EventEmitter();
+  stdin.write = vi.fn((data: string) => {
+    stdinWrites.push(data);
+    return true;
+  });
+  stdin.end = vi.fn();
+  stdin.writable = true;
+  stdin.destroyed = false;
+  stdin.writableEnded = false;
   const proc: any = new EventEmitter();
   proc.stdout = stdoutEmitter;
   proc.stderr = stderrEmitter;
   proc.stdin = stdin;
   proc.kill = vi.fn();
+  proc.pid = 12345;
   proc.stdinWrites = stdinWrites;
+  // Helpers mirroring the old PTY fake's, so the one-shot tests read the same.
+  proc.simulateData = (data: string) => stdoutEmitter.emit("data", Buffer.from(data));
+  proc.simulateStderr = (data: string) => stderrEmitter.emit("data", Buffer.from(data));
+  proc.simulateExit = (exitCode: number) => proc.emit("close", exitCode);
   return proc;
-}
-
-/** Callback-based mock matching the IPty interface. */
-function createMockPty() {
-  let onDataCallback: ((data: string) => void) | null = null;
-  let onExitCallback: ((e: { exitCode: number; signal?: number }) => void) | null = null;
-
-  const mock = {
-    onData: vi.fn((cb: (data: string) => void) => {
-      onDataCallback = cb;
-      return { dispose: vi.fn() };
-    }),
-    onExit: vi.fn((cb: (e: { exitCode: number; signal?: number }) => void) => {
-      onExitCallback = cb;
-      return { dispose: vi.fn() };
-    }),
-    write: vi.fn(),
-    kill: vi.fn(),
-    pid: 12345,
-    cols: 200,
-    rows: 24,
-    process: "claude",
-    handleFlowControl: false,
-    // Helpers for tests to simulate data and exit
-    simulateData(data: string) {
-      onDataCallback?.(data);
-    },
-    simulateExit(exitCode: number) {
-      onExitCallback?.({ exitCode });
-    },
-  };
-  return mock;
 }
 
 describe("ClaudeProcess", () => {
@@ -104,9 +80,9 @@ describe("ClaudeProcess", () => {
   });
 
   describe("NDJSON parsing", () => {
-    it("parses complete JSON lines from PTY data", () => {
-      const mockProc = createMockPty();
-      mockPtySpawn.mockReturnValue(mockProc as any);
+    it("parses complete JSON lines from stdout data", () => {
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
       const events: unknown[] = [];
@@ -114,7 +90,7 @@ describe("ClaudeProcess", () => {
 
       claude.run({ prompt: "test prompt" });
 
-      // Simulate PTY data with a complete JSON line
+      // Simulate stdout data with a complete JSON line
       const event = { type: "system", subtype: "init", session_id: "abc123" };
       mockProc.simulateData(`${JSON.stringify(event)  }\n`);
 
@@ -123,8 +99,8 @@ describe("ClaudeProcess", () => {
     });
 
     it("handles multiple events in a single chunk", () => {
-      const mockProc = createMockPty();
-      mockPtySpawn.mockReturnValue(mockProc as any);
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
       const events: unknown[] = [];
@@ -143,8 +119,8 @@ describe("ClaudeProcess", () => {
     });
 
     it("buffers partial lines across chunks", () => {
-      const mockProc = createMockPty();
-      mockPtySpawn.mockReturnValue(mockProc as any);
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
       const events: unknown[] = [];
@@ -167,8 +143,8 @@ describe("ClaudeProcess", () => {
     });
 
     it("skips non-JSON lines", () => {
-      const mockProc = createMockPty();
-      mockPtySpawn.mockReturnValue(mockProc as any);
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
       const events: unknown[] = [];
@@ -183,8 +159,8 @@ describe("ClaudeProcess", () => {
     });
 
     it("skips empty lines", () => {
-      const mockProc = createMockPty();
-      mockPtySpawn.mockReturnValue(mockProc as any);
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
       const events: unknown[] = [];
@@ -199,8 +175,8 @@ describe("ClaudeProcess", () => {
     });
 
     it("drains remaining buffer on process exit", () => {
-      const mockProc = createMockPty();
-      mockPtySpawn.mockReturnValue(mockProc as any);
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
       const events: unknown[] = [];
@@ -225,8 +201,8 @@ describe("ClaudeProcess", () => {
 
   describe("auth detection", () => {
     it("emits auth_required when output contains auth keywords", () => {
-      const mockProc = createMockPty();
-      mockPtySpawn.mockReturnValue(mockProc as any);
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
       let authRequired = false;
@@ -234,7 +210,7 @@ describe("ClaudeProcess", () => {
 
       claude.run({ prompt: "test" });
 
-      // With PTY, auth errors come through the combined data stream
+      // Auth errors can arrive on stdout as non-JSON lines
       mockProc.simulateData("Error: not authenticated\n");
       expect(authRequired).toBe(true);
     });
@@ -251,8 +227,8 @@ describe("ClaudeProcess", () => {
       ];
 
       for (const keyword of keywords) {
-        const mockProc = createMockPty();
-        mockPtySpawn.mockReturnValue(mockProc as any);
+        const mockProc = createMockChildProcess();
+        mockChildSpawn.mockReturnValue(mockProc as any);
 
         const claude = new ClaudeProcess();
         let authRequired = false;
@@ -265,8 +241,8 @@ describe("ClaudeProcess", () => {
     });
 
     it("raises auth_required from the structured events a real unauthenticated run emits", () => {
-      const mockProc = createMockPty();
-      mockPtySpawn.mockReturnValue(mockProc as any);
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
       const events: unknown[] = [];
@@ -343,8 +319,8 @@ describe("ClaudeProcess", () => {
     });
 
     it("still forwards a normal assistant message and a clean result", () => {
-      const mockProc = createMockPty();
-      mockPtySpawn.mockReturnValue(mockProc as any);
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
       const events: unknown[] = [];
@@ -368,28 +344,96 @@ describe("ClaudeProcess", () => {
   });
 
   describe("spawn arguments", () => {
-    it("spawns claude with correct args via node-pty", () => {
-      const mockProc = createMockPty();
-      mockPtySpawn.mockReturnValue(mockProc as any);
+    it("spawns claude over piped stdio in stream-json input mode", () => {
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
       claude.run({ prompt: "hello world", cwd: "/workspace" });
 
-      expect(mockPtySpawn).toHaveBeenCalledWith(
+      expect(mockChildSpawn).toHaveBeenCalledWith(
         "claude",
-        expect.arrayContaining(["-p", "hello world", "--output-format", "stream-json"]),
-        expect.objectContaining({ cwd: "/workspace", name: "xterm-256color" }),
+        expect.arrayContaining([
+          "--print",
+          "--input-format", "stream-json",
+          "--output-format", "stream-json",
+        ]),
+        expect.objectContaining({ cwd: "/workspace", stdio: ["pipe", "pipe", "pipe"] }),
       );
     });
 
+    it("passes the system prompt as a file, keeping it out of argv too", () => {
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
+
+      // The system prompt is the argument most likely to overflow: ShipIt's own
+      // instructions are tens of KB before the unbounded conversation replay a
+      // fork or rewind appends to them.
+      const systemPrompt = `You are ShipIt.\n${"replay ".repeat(30_000)}`;
+      const claude = new ClaudeProcess();
+      claude.run({ prompt: "hi", systemPrompt });
+
+      const args = mockChildSpawn.mock.calls[0][1] as string[];
+      expect(args).not.toContain("--append-system-prompt");
+      expect(args).not.toContain(systemPrompt);
+      const path = args[args.indexOf("--append-system-prompt-file") + 1] as string;
+      expect(readFileSync(path, "utf-8")).toBe(systemPrompt);
+      expect(args).toContain("--exclude-dynamic-system-prompt-sections");
+
+      // …and the temp file does not outlive the process.
+      mockProc.simulateExit(0);
+      expect(existsSync(path)).toBe(false);
+    });
+
+    it("writes no system-prompt file when there is no system prompt", () => {
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
+
+      const claude = new ClaudeProcess();
+      claude.run({ prompt: "hi" });
+
+      const args = mockChildSpawn.mock.calls[0][1] as string[];
+      expect(args).not.toContain("--append-system-prompt-file");
+      expect(args).not.toContain("--exclude-dynamic-system-prompt-sections");
+    });
+
+    it("gives concurrent spawns their own system-prompt file", () => {
+      // Sub-agent spawns run concurrently; two started in the same millisecond
+      // must not share a path, or the first to exit deletes the other's file.
+      const paths = ["a", "b"].map((tag) => {
+        const mockProc = createMockChildProcess();
+        mockChildSpawn.mockReturnValue(mockProc as any);
+        new ClaudeProcess().run({ prompt: "hi", systemPrompt: `system ${tag}` });
+        const args = mockChildSpawn.mock.calls.at(-1)![1] as string[];
+        return args[args.indexOf("--append-system-prompt-file") + 1] as string;
+      });
+
+      expect(paths[0]).not.toBe(paths[1]);
+      expect(readFileSync(paths[0]!, "utf-8")).toBe("system a");
+      expect(readFileSync(paths[1]!, "utf-8")).toBe("system b");
+      paths.forEach((p) => { try { unlinkSync(p!); } catch { /* ignore */ } });
+    });
+
+    it("never puts the prompt in argv (MAX_ARG_STRLEN caps one argument at 128 KiB)", () => {
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
+
+      const claude = new ClaudeProcess();
+      claude.run({ prompt: "hello world", cwd: "/workspace" });
+
+      const args = mockChildSpawn.mock.calls[0][1] as string[];
+      expect(args).not.toContain("hello world");
+      expect(args).not.toContain("-p");
+    });
+
     it("includes --resume flag when sessionId is provided", () => {
-      const mockProc = createMockPty();
-      mockPtySpawn.mockReturnValue(mockProc as any);
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
       claude.run({ prompt: "hello", sessionId: "session-123" });
 
-      expect(mockPtySpawn).toHaveBeenCalledWith(
+      expect(mockChildSpawn).toHaveBeenCalledWith(
         "claude",
         expect.arrayContaining(["--resume", "session-123"]),
         expect.any(Object),
@@ -397,24 +441,24 @@ describe("ClaudeProcess", () => {
     });
 
     it("does not include --resume when no sessionId", () => {
-      const mockProc = createMockPty();
-      mockPtySpawn.mockReturnValue(mockProc as any);
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
       claude.run({ prompt: "hello" });
 
-      const args = mockPtySpawn.mock.calls[0][1] as string[];
+      const args = mockChildSpawn.mock.calls[0][1] as string[];
       expect(args).not.toContain("--resume");
     });
 
     it("uses provided cwd", () => {
-      const mockProc = createMockPty();
-      mockPtySpawn.mockReturnValue(mockProc as any);
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
       claude.run({ prompt: "test", cwd: "/my/project" });
 
-      expect(mockPtySpawn).toHaveBeenCalledWith(
+      expect(mockChildSpawn).toHaveBeenCalledWith(
         "claude",
         expect.any(Array),
         expect.objectContaining({ cwd: "/my/project" }),
@@ -422,13 +466,13 @@ describe("ClaudeProcess", () => {
     });
 
     it("includes --mcp-config flag when mcpConfigPath is provided", () => {
-      const mockProc = createMockPty();
-      mockPtySpawn.mockReturnValue(mockProc as any);
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
       claude.run({ prompt: "test", mcpConfigPath: "/tmp/mcp-config.json" });
 
-      expect(mockPtySpawn).toHaveBeenCalledWith(
+      expect(mockChildSpawn).toHaveBeenCalledWith(
         "claude",
         expect.arrayContaining(["--mcp-config", "/tmp/mcp-config.json"]),
         expect.any(Object),
@@ -436,25 +480,25 @@ describe("ClaudeProcess", () => {
     });
 
     it("does not include --mcp-config when mcpConfigPath is not provided", () => {
-      const mockProc = createMockPty();
-      mockPtySpawn.mockReturnValue(mockProc as any);
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
       claude.run({ prompt: "test" });
 
-      const args = mockPtySpawn.mock.calls[0][1] as string[];
+      const args = mockChildSpawn.mock.calls[0][1] as string[];
       expect(args).not.toContain("--mcp-config");
     });
 
     // docs/217 — reasoning effort via --effort.
     it("includes --effort when reasoningEffort is provided", () => {
-      const mockProc = createMockPty();
-      mockPtySpawn.mockReturnValue(mockProc as any);
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
       claude.run({ prompt: "test", reasoningEffort: "xhigh" });
 
-      expect(mockPtySpawn).toHaveBeenCalledWith(
+      expect(mockChildSpawn).toHaveBeenCalledWith(
         "claude",
         expect.arrayContaining(["--effort", "xhigh"]),
         expect.any(Object),
@@ -462,24 +506,24 @@ describe("ClaudeProcess", () => {
     });
 
     it("does not include --effort when reasoningEffort is absent (CLI default)", () => {
-      const mockProc = createMockPty();
-      mockPtySpawn.mockReturnValue(mockProc as any);
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
       claude.run({ prompt: "test" });
 
-      const args = mockPtySpawn.mock.calls[0][1] as string[];
+      const args = mockChildSpawn.mock.calls[0][1] as string[];
       expect(args).not.toContain("--effort");
     });
 
     it("includes --permission-prompt-tool when permissionPromptTool is provided (docs/193)", () => {
-      const mockProc = createMockPty();
-      mockPtySpawn.mockReturnValue(mockProc as any);
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
       claude.run({ prompt: "test", permissionPromptTool: "mcp__shipit__permission_prompt" });
 
-      expect(mockPtySpawn).toHaveBeenCalledWith(
+      expect(mockChildSpawn).toHaveBeenCalledWith(
         "claude",
         expect.arrayContaining(["--permission-prompt-tool", "mcp__shipit__permission_prompt"]),
         expect.any(Object),
@@ -487,13 +531,13 @@ describe("ClaudeProcess", () => {
     });
 
     it("omits --permission-prompt-tool when not provided", () => {
-      const mockProc = createMockPty();
-      mockPtySpawn.mockReturnValue(mockProc as any);
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
       claude.run({ prompt: "test" });
 
-      const args = mockPtySpawn.mock.calls[0][1] as string[];
+      const args = mockChildSpawn.mock.calls[0][1] as string[];
       expect(args).not.toContain("--permission-prompt-tool");
     });
 
@@ -501,13 +545,13 @@ describe("ClaudeProcess", () => {
       // Settings path is how the orchestrator enables the PR-enforcement
       // Stop hook (docs/129-stop-hook-pr-enforcement). Regression-protect
       // the wiring so the flag actually reaches the CLI.
-      const mockProc = createMockPty();
-      mockPtySpawn.mockReturnValue(mockProc as any);
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
       claude.run({ prompt: "test", settingsPath: "/etc/shipit/managed-settings.json" });
 
-      expect(mockPtySpawn).toHaveBeenCalledWith(
+      expect(mockChildSpawn).toHaveBeenCalledWith(
         "claude",
         expect.arrayContaining(["--settings", "/etc/shipit/managed-settings.json"]),
         expect.any(Object),
@@ -515,61 +559,61 @@ describe("ClaudeProcess", () => {
     });
 
     it("does not include --settings when settingsPath is omitted", () => {
-      const mockProc = createMockPty();
-      mockPtySpawn.mockReturnValue(mockProc as any);
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
       claude.run({ prompt: "test" });
 
-      const args = mockPtySpawn.mock.calls[0][1] as string[];
+      const args = mockChildSpawn.mock.calls[0][1] as string[];
       expect(args).not.toContain("--settings");
     });
 
     it("sets SHIPIT_AUTO_CREATE_PR=1 in the env when autoCreatePr is true", () => {
       // The managed-settings.json Stop hook self-gates on this env var so PR
       // enforcement stays opt-in. See docs/130-block-branch-ops/plan.md.
-      const mockProc = createMockPty();
-      mockPtySpawn.mockReturnValue(mockProc as any);
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
       claude.run({ prompt: "test", autoCreatePr: true });
 
-      const spawnOpts = mockPtySpawn.mock.calls[0][2] as { env: Record<string, string> };
+      const spawnOpts = mockChildSpawn.mock.calls[0][2] as { env: Record<string, string> };
       expect(spawnOpts.env.SHIPIT_AUTO_CREATE_PR).toBe("1");
     });
 
     it("does not set SHIPIT_AUTO_CREATE_PR when autoCreatePr is falsy", () => {
-      const mockProc = createMockPty();
-      mockPtySpawn.mockReturnValue(mockProc as any);
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
       claude.run({ prompt: "test" });
 
-      const spawnOpts = mockPtySpawn.mock.calls[0][2] as { env: Record<string, string> };
+      const spawnOpts = mockChildSpawn.mock.calls[0][2] as { env: Record<string, string> };
       expect(spawnOpts.env.SHIPIT_AUTO_CREATE_PR).toBeUndefined();
     });
 
     it("planning#267 — sets SHIPIT_GUARD_DESTRUCTIVE_GIT=1 when guardDestructiveGit is true", () => {
       // Arms the managed-settings.json PreToolUse hook's destructive-git rule
       // for a session sitting on a merged branch. See docs/130.
-      const mockProc = createMockPty();
-      mockPtySpawn.mockReturnValue(mockProc as any);
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
       claude.run({ prompt: "test", guardDestructiveGit: true });
 
-      const spawnOpts = mockPtySpawn.mock.calls[0][2] as { env: Record<string, string> };
+      const spawnOpts = mockChildSpawn.mock.calls[0][2] as { env: Record<string, string> };
       expect(spawnOpts.env.SHIPIT_GUARD_DESTRUCTIVE_GIT).toBe("1");
     });
 
     it("planning#267 — does not set SHIPIT_GUARD_DESTRUCTIVE_GIT when guardDestructiveGit is falsy", () => {
-      const mockProc = createMockPty();
-      mockPtySpawn.mockReturnValue(mockProc as any);
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
       claude.run({ prompt: "test" });
 
-      const spawnOpts = mockPtySpawn.mock.calls[0][2] as { env: Record<string, string> };
+      const spawnOpts = mockChildSpawn.mock.calls[0][2] as { env: Record<string, string> };
       expect(spawnOpts.env.SHIPIT_GUARD_DESTRUCTIVE_GIT).toBeUndefined();
     });
 
@@ -577,24 +621,24 @@ describe("ClaudeProcess", () => {
     // The default (no resolver) is the containerized/worker path and MUST keep
     // resolving `agentHome()`; that is the regression that would matter most.
     it("spawns with the process-global agentHome() when no resolver is given", () => {
-      const mockProc = createMockPty();
-      mockPtySpawn.mockReturnValue(mockProc as any);
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
       claude.run({ prompt: "test" });
 
-      const spawnOpts = mockPtySpawn.mock.calls[0][2] as { env: Record<string, string> };
+      const spawnOpts = mockChildSpawn.mock.calls[0][2] as { env: Record<string, string> };
       expect(spawnOpts.env.HOME).toBe(agentHome());
     });
 
     it("spawns with the resolver's home when one is given, resolved per spawn", () => {
-      const mockProc = createMockPty();
-      mockPtySpawn.mockReturnValue(mockProc as any);
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
 
       let home = "/credentials/provider-accounts/claude/acct-a";
       const claude = new ClaudeProcess(() => home);
       claude.run({ prompt: "test" });
-      expect((mockPtySpawn.mock.calls[0][2] as { env: Record<string, string> }).env.HOME)
+      expect((mockChildSpawn.mock.calls[0][2] as { env: Record<string, string> }).env.HOME)
         .toBe("/credentials/provider-accounts/claude/acct-a");
 
       // A mid-session failover repoints the session at another account under
@@ -602,7 +646,7 @@ describe("ClaudeProcess", () => {
       // rather than captured at construction.
       home = "/credentials/provider-accounts/claude/acct-b";
       claude.run({ prompt: "again" });
-      expect((mockPtySpawn.mock.calls[1][2] as { env: Record<string, string> }).env.HOME)
+      expect((mockChildSpawn.mock.calls[1][2] as { env: Record<string, string> }).env.HOME)
         .toBe("/credentials/provider-accounts/claude/acct-b");
     });
 
@@ -610,21 +654,21 @@ describe("ClaudeProcess", () => {
     // HOME, so pointing HOME at an account root without this would keep billing
     // metered API usage while the router believed the turn ran on the account.
     it("drops the env-based Anthropic credentials when scoped to an account", () => {
-      const mockProc = createMockPty();
-      mockPtySpawn.mockReturnValue(mockProc as any);
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
       process.env.ANTHROPIC_API_KEY = "sk-metered";
       process.env.ANTHROPIC_AUTH_TOKEN = "oauth-token";
       try {
         new ClaudeProcess(() => "/credentials/provider-accounts/claude/acct-a")
           .run({ prompt: "test" });
-        const env = (mockPtySpawn.mock.calls[0][2] as { env: Record<string, string> }).env;
+        const env = (mockChildSpawn.mock.calls[0][2] as { env: Record<string, string> }).env;
         expect(env.ANTHROPIC_API_KEY).toBeUndefined();
         expect(env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
 
         // A reserved route resolves no account root and must KEEP them — they
         // are its auth.
         new ClaudeProcess().run({ prompt: "test" });
-        const unscoped = (mockPtySpawn.mock.calls[1][2] as { env: Record<string, string> }).env;
+        const unscoped = (mockChildSpawn.mock.calls[1][2] as { env: Record<string, string> }).env;
         expect(unscoped.ANTHROPIC_API_KEY).toBe("sk-metered");
         expect(unscoped.ANTHROPIC_AUTH_TOKEN).toBe("oauth-token");
       } finally {
@@ -634,77 +678,77 @@ describe("ClaudeProcess", () => {
     });
 
     it("falls back to agentHome() when the resolver has no account to name", () => {
-      const mockProc = createMockPty();
-      mockPtySpawn.mockReturnValue(mockProc as any);
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
 
       // A reserved route (API key / env OAuth) has no account root.
       const claude = new ClaudeProcess(() => undefined);
       claude.run({ prompt: "test" });
 
-      const spawnOpts = mockPtySpawn.mock.calls[0][2] as { env: Record<string, string> };
+      const spawnOpts = mockChildSpawn.mock.calls[0][2] as { env: Record<string, string> };
       expect(spawnOpts.env.HOME).toBe(agentHome());
     });
 
     it("maps guarded mode to --permission-mode auto (docs/138)", () => {
       // Deliberate inversion: ShipIt `guarded` → CLI `auto` (classifier-gated).
-      const mockProc = createMockPty();
-      mockPtySpawn.mockReturnValue(mockProc as any);
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
       claude.run({ prompt: "test", permissionMode: "guarded" });
 
-      const args = mockPtySpawn.mock.calls[0][1] as string[];
+      const args = mockChildSpawn.mock.calls[0][1] as string[];
       const idx = args.indexOf("--permission-mode");
       expect(idx).toBeGreaterThanOrEqual(0);
       expect(args[idx + 1]).toBe("auto");
     });
 
     it("maps plan mode to --permission-mode plan", () => {
-      const mockProc = createMockPty();
-      mockPtySpawn.mockReturnValue(mockProc as any);
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
       claude.run({ prompt: "test", permissionMode: "plan" });
 
-      const args = mockPtySpawn.mock.calls[0][1] as string[];
+      const args = mockChildSpawn.mock.calls[0][1] as string[];
       const idx = args.indexOf("--permission-mode");
       expect(args[idx + 1]).toBe("plan");
     });
 
     it("passes no --permission-mode flag for auto mode", () => {
-      const mockProc = createMockPty();
-      mockPtySpawn.mockReturnValue(mockProc as any);
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
       claude.run({ prompt: "test", permissionMode: "auto" });
 
-      const args = mockPtySpawn.mock.calls[0][1] as string[];
+      const args = mockChildSpawn.mock.calls[0][1] as string[];
       expect(args).not.toContain("--permission-mode");
     });
 
     it("keeps the full AUTO_TOOLS allowlist for guarded mode", () => {
       // Guarded reuses AUTO_TOOLS — the CLI classifier (not the allowlist)
       // gates Bash/network. Bash must still be present in the allowlist.
-      const mockProc = createMockPty();
-      mockPtySpawn.mockReturnValue(mockProc as any);
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
       claude.run({ prompt: "test", permissionMode: "guarded" });
 
-      const args = mockPtySpawn.mock.calls[0][1] as string[];
+      const args = mockChildSpawn.mock.calls[0][1] as string[];
       const tools = args[args.indexOf("--allowedTools") + 1];
       expect(tools).toContain("Bash");
       expect(tools).toContain("Write");
     });
 
     it("includes browser tools in allowed tools list", () => {
-      const mockProc = createMockPty();
-      mockPtySpawn.mockReturnValue(mockProc as any);
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
       claude.run({ prompt: "test" });
 
-      const args = mockPtySpawn.mock.calls[0][1] as string[];
+      const args = mockChildSpawn.mock.calls[0][1] as string[];
       const toolsIdx = args.indexOf("--allowedTools");
       const tools = args[toolsIdx + 1];
       expect(tools).toContain("mcp__playwright__");
@@ -723,13 +767,13 @@ describe("ClaudeProcess", () => {
       ["plan" as const, "plan" as const],
       ["guarded" as const, "guarded" as const],
     ])("does NOT allowlist the removed mcp__shipit__submit_review in %s mode", (_label, permissionMode) => {
-      const mockProc = createMockPty();
-      mockPtySpawn.mockReturnValue(mockProc as any);
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
       claude.run({ prompt: "test", permissionMode });
 
-      const args = mockPtySpawn.mock.calls[0][1] as string[];
+      const args = mockChildSpawn.mock.calls[0][1] as string[];
       const tools = args[args.indexOf("--allowedTools") + 1];
       expect(tools.split(",")).not.toContain("mcp__shipit__submit_review");
     });
@@ -741,13 +785,13 @@ describe("ClaudeProcess", () => {
       ["plan" as const, "plan" as const],
       ["guarded" as const, "guarded" as const],
     ])("allowlists mcp__shipit__present in %s mode", (_label, permissionMode) => {
-      const mockProc = createMockPty();
-      mockPtySpawn.mockReturnValue(mockProc as any);
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
       claude.run({ prompt: "test", permissionMode });
 
-      const args = mockPtySpawn.mock.calls[0][1] as string[];
+      const args = mockChildSpawn.mock.calls[0][1] as string[];
       const tools = args[args.indexOf("--allowedTools") + 1];
       expect(tools.split(",")).toContain("mcp__shipit__present");
     });
@@ -760,13 +804,13 @@ describe("ClaudeProcess", () => {
       ["plan" as const, "plan" as const],
       ["guarded" as const, "guarded" as const],
     ])("allowlists mcp__shipit__voice_note in %s mode", (_label, permissionMode) => {
-      const mockProc = createMockPty();
-      mockPtySpawn.mockReturnValue(mockProc as any);
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
       claude.run({ prompt: "test", permissionMode });
 
-      const args = mockPtySpawn.mock.calls[0][1] as string[];
+      const args = mockChildSpawn.mock.calls[0][1] as string[];
       const tools = args[args.indexOf("--allowedTools") + 1];
       expect(tools.split(",")).toContain("mcp__shipit__voice_note");
     });
@@ -781,13 +825,13 @@ describe("ClaudeProcess", () => {
       ["plan" as const, "plan" as const],
       ["guarded" as const, "guarded" as const],
     ])("allowlists mcp__shipit__propose_actions in %s mode", (_label, permissionMode) => {
-      const mockProc = createMockPty();
-      mockPtySpawn.mockReturnValue(mockProc as any);
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
       claude.run({ prompt: "test", permissionMode });
 
-      const args = mockPtySpawn.mock.calls[0][1] as string[];
+      const args = mockChildSpawn.mock.calls[0][1] as string[];
       const tools = args[args.indexOf("--allowedTools") + 1];
       expect(tools.split(",")).toContain("mcp__shipit__propose_actions");
     });
@@ -797,13 +841,13 @@ describe("ClaudeProcess", () => {
     // NOT appear in the allowlist (we list the five model-facing tools by name
     // rather than a `mcp__shipit__*` glob to keep it out).
     it("does NOT allowlist mcp__shipit__permission_prompt", () => {
-      const mockProc = createMockPty();
-      mockPtySpawn.mockReturnValue(mockProc as any);
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
       claude.run({ prompt: "test" });
 
-      const args = mockPtySpawn.mock.calls[0][1] as string[];
+      const args = mockChildSpawn.mock.calls[0][1] as string[];
       const tools = args[args.indexOf("--allowedTools") + 1];
       expect(tools.split(",")).not.toContain("mcp__shipit__permission_prompt");
       expect(tools).not.toContain("mcp__shipit__*");
@@ -816,13 +860,13 @@ describe("ClaudeProcess", () => {
       ["auto", undefined],
       ["plan", "plan"],
     ] as const)("allowlists the Skill tool in %s mode", (_label, permissionMode) => {
-      const mockProc = createMockPty();
-      mockPtySpawn.mockReturnValue(mockProc as any);
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
       claude.run({ prompt: "/my-skill", permissionMode: permissionMode as any });
 
-      const args = mockPtySpawn.mock.calls[0][1] as string[];
+      const args = mockChildSpawn.mock.calls[0][1] as string[];
       const tools = args[args.indexOf("--allowedTools") + 1];
       expect(tools.split(",")).toContain("Skill");
     });
@@ -839,13 +883,13 @@ describe("ClaudeProcess", () => {
       ["plan", "plan"],
       ["guarded", "guarded"],
     ] as const)("allowlists ExitPlanMode in %s mode", (_label, permissionMode) => {
-      const mockProc = createMockPty();
-      mockPtySpawn.mockReturnValue(mockProc as any);
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
       claude.run({ prompt: "test", permissionMode: permissionMode as any });
 
-      const args = mockPtySpawn.mock.calls[0][1] as string[];
+      const args = mockChildSpawn.mock.calls[0][1] as string[];
       const tools = args[args.indexOf("--allowedTools") + 1];
       expect(tools.split(",")).toContain("ExitPlanMode");
     });
@@ -853,8 +897,8 @@ describe("ClaudeProcess", () => {
 
   describe("kill", () => {
     it("kills the running process", () => {
-      const mockProc = createMockPty();
-      mockPtySpawn.mockReturnValue(mockProc as any);
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
       claude.run({ prompt: "test" });
@@ -871,8 +915,8 @@ describe("ClaudeProcess", () => {
   });
 
   describe("error handling", () => {
-    it("emits error event when pty.spawn throws", () => {
-      mockPtySpawn.mockImplementation(() => {
+    it("emits error event when spawn throws", () => {
+      mockChildSpawn.mockImplementation(() => {
         throw new Error("spawn ENOENT");
       });
 
@@ -885,12 +929,200 @@ describe("ClaudeProcess", () => {
       expect(errors).toHaveLength(1);
       expect(errors[0].message).toBe("spawn ENOENT");
     });
+
+    it("surfaces an async exec failure as `error`, not a silent empty run", () => {
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
+
+      const claude = new ClaudeProcess();
+      const errors: Error[] = [];
+      const events: unknown[] = [];
+      claude.on("error", (err: Error) => errors.push(err));
+      claude.on("event", (e) => events.push(e));
+
+      claude.run({ prompt: "test" });
+      // `child_process.spawn` reports a failed exec (E2BIG / ENOENT) here,
+      // asynchronously — the PTY this replaced forked first, so the same
+      // failure arrived as a line of child output and was mistaken for a log.
+      const e2big = Object.assign(new Error("spawn E2BIG"), { code: "E2BIG" });
+      mockProc.emit("error", e2big);
+      mockProc.simulateExit(1);
+
+      expect(errors).toHaveLength(1);
+      expect(errors[0].message).toBe("spawn E2BIG");
+      expect(events).toHaveLength(0);
+    });
+
+    it("emits done with the process exit code", () => {
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
+
+      const claude = new ClaudeProcess();
+      const codes: number[] = [];
+      claude.on("done", (code: number) => codes.push(code));
+
+      claude.run({ prompt: "test" });
+      mockProc.simulateExit(7);
+
+      expect(codes).toEqual([7]);
+    });
+
+    it("surfaces an EPIPE on stdin as `error` instead of crashing the worker", () => {
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
+
+      const claude = new ClaudeProcess();
+      const errors: Error[] = [];
+      const order: string[] = [];
+      claude.on("error", (err: Error) => { errors.push(err); order.push("error"); });
+      claude.on("done", () => order.push("done"));
+
+      claude.run({ prompt: "test" });
+      // The CLI died before draining the prompt. Node reports this on the
+      // STREAM — an unhandled `error` here is an uncaught exception, i.e. the
+      // whole session worker goes down.
+      const epipe = Object.assign(new Error("write EPIPE"), { code: "EPIPE" });
+      expect(() => mockProc.stdin.emit("error", epipe)).not.toThrow();
+      // Held until close, so the drains get to run first.
+      expect(errors).toHaveLength(0);
+
+      mockProc.simulateExit(1);
+      expect(errors).toHaveLength(1);
+      expect(errors[0].message).toBe("write EPIPE");
+      expect(order).toEqual(["error", "done"]);
+    });
+
+    it("lets auth recovery win the race when EPIPE and an auth failure arrive together", () => {
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
+
+      const claude = new ClaudeProcess();
+      const errors: Error[] = [];
+      let authRequired = false;
+      claude.on("error", (err: Error) => errors.push(err));
+      claude.on("auth_required", () => { authRequired = true; });
+
+      claude.run({ prompt: "x".repeat(200_000) });
+      // The commonest cause of an early close is a failed auth. With a large
+      // prompt still flushing, EPIPE beats the stderr line that explains it.
+      mockProc.stdin.emit("error", Object.assign(new Error("write EPIPE"), { code: "EPIPE" }));
+      mockProc.simulateStderr("Error: Not logged in. Please run /login");
+      mockProc.simulateExit(1);
+
+      // `auth_required` owns what the user sees next — the quiet heal-and-retry
+      // or the sign-in card. A generic process error on top would pre-empt it.
+      expect(authRequired).toBe(true);
+      expect(errors).toHaveLength(0);
+    });
+
+    it("raises auth_required from a stderr line, now that stderr is its own stream", () => {
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
+
+      const claude = new ClaudeProcess();
+      let authRequired = false;
+      const logs: { source: string; text: string }[] = [];
+      claude.on("auth_required", () => { authRequired = true; });
+      claude.on("log", (source: string, text: string) => logs.push({ source, text }));
+
+      claude.run({ prompt: "test" });
+      mockProc.simulateStderr("Error: Not logged in. Please run /login\n");
+
+      expect(authRequired).toBe(true);
+      expect(logs).toEqual([{ source: "stderr", text: "Error: Not logged in. Please run /login" }]);
+    });
+
+    it("reassembles a stderr line split across chunks before matching auth phrases", () => {
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
+
+      const claude = new ClaudeProcess();
+      let authRequired = false;
+      claude.on("auth_required", () => { authRequired = true; });
+
+      claude.run({ prompt: "test" });
+      // A pipe splits wherever it likes. Neither half matches a pattern on its
+      // own — checking chunks instead of lines misses the auth failure entirely
+      // and the turn dies as a generic error instead of healing credentials.
+      mockProc.simulateStderr("Error: Not log");
+      expect(authRequired).toBe(false);
+      mockProc.simulateStderr("ged in. Please run /login\n");
+
+      expect(authRequired).toBe(true);
+    });
+
+    it("flushes an unterminated final stderr line on close", () => {
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
+
+      const claude = new ClaudeProcess();
+      let authRequired = false;
+      const logs: { source: string; text: string }[] = [];
+      claude.on("auth_required", () => { authRequired = true; });
+      claude.on("log", (source: string, text: string) => logs.push({ source, text }));
+
+      claude.run({ prompt: "test" });
+      // No trailing newline — the CLI's last line usually has none.
+      mockProc.simulateStderr("Invalid API key");
+      mockProc.simulateExit(1);
+
+      expect(authRequired).toBe(true);
+      expect(logs).toContainEqual({ source: "stderr", text: "Invalid API key" });
+    });
+
+    it("counts stderr as output for the inactivity watchdog", () => {
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
+
+      const claude = new ClaudeProcess();
+      const logs: { source: string; text: string }[] = [];
+      claude.on("log", (source: string, text: string) => logs.push({ source, text }));
+
+      claude.run({ prompt: "test" });
+      mockProc.simulateStderr("compiling…\n");
+      vi.advanceTimersByTime(31_000);
+
+      // The PTY merged the streams, so any output cleared the watchdog. A
+      // "no output in 30 seconds" warning while the CLI is writing to stderr
+      // sends whoever reads the logs after the wrong problem.
+      expect(logs.some((l) => l.source === "server")).toBe(false);
+    });
+  });
+
+  describe("interrupt", () => {
+    it("signals SIGINT and force-kills if the process does not exit", () => {
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
+
+      const claude = new ClaudeProcess();
+      claude.run({ prompt: "test" });
+      claude.interrupt();
+
+      expect(mockProc.kill).toHaveBeenCalledWith("SIGINT");
+
+      vi.advanceTimersByTime(5000);
+      expect(mockProc.kill).toHaveBeenCalledWith("SIGTERM");
+    });
+
+    it("does not force-kill when the process exits within the grace period", () => {
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
+
+      const claude = new ClaudeProcess();
+      claude.run({ prompt: "test" });
+      claude.interrupt();
+      mockProc.simulateExit(130);
+
+      vi.advanceTimersByTime(5000);
+      expect(mockProc.kill).toHaveBeenCalledTimes(1);
+      expect(mockProc.kill).toHaveBeenCalledWith("SIGINT");
+    });
   });
 
   describe("log emission", () => {
-    it("emits log event for non-JSON lines in PTY output", () => {
-      const mockProc = createMockPty();
-      mockPtySpawn.mockReturnValue(mockProc as any);
+    it("emits log event for non-JSON lines in stdout", () => {
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
       const logs: { source: string; text: string }[] = [];
@@ -905,8 +1137,8 @@ describe("ClaudeProcess", () => {
     });
 
     it("does not emit log for valid JSON lines", () => {
-      const mockProc = createMockPty();
-      mockPtySpawn.mockReturnValue(mockProc as any);
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
       const logs: { source: string; text: string }[] = [];
@@ -921,16 +1153,67 @@ describe("ClaudeProcess", () => {
     });
   });
 
-  describe("writeStdin", () => {
-    it("writes data to the PTY", () => {
-      const mockProc = createMockPty();
-      mockPtySpawn.mockReturnValue(mockProc as any);
+  describe("prompt delivery over stdin", () => {
+    it("frames the prompt as a type:user NDJSON line and closes stdin", () => {
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
+
+      const claude = new ClaudeProcess();
+      claude.run({ prompt: "hello world" });
+
+      expect(mockProc.stdinWrites).toHaveLength(1);
+      const line = mockProc.stdinWrites[0] as string;
+      expect(line.endsWith("\n")).toBe(true);
+      expect(JSON.parse(line.trim())).toEqual({
+        type: "user",
+        message: { role: "user", content: [{ type: "text", text: "hello world" }] },
+      });
+      // The EOF is what makes the CLI finish the turn and exit — without it
+      // this "one-shot" process would sit resident and never emit `done`.
+      expect(mockProc.stdin.end).toHaveBeenCalled();
+    });
+
+    it("delivers a prompt far past the 128 KiB argv limit that used to fail exec", () => {
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
+
+      // 200 KB — comfortably past MAX_ARG_STRLEN (131,072), and past the
+      // ~135 KB reviewer prompt that produced four silent empty successes.
+      const huge = "x".repeat(200_000);
+      const claude = new ClaudeProcess();
+      const errors: Error[] = [];
+      claude.on("error", (e: Error) => errors.push(e));
+      claude.run({ prompt: huge });
+
+      expect(errors).toHaveLength(0);
+      const args = mockChildSpawn.mock.calls[0][1] as string[];
+      expect(args.every((a) => a.length < 1000)).toBe(true);
+      expect(JSON.parse((mockProc.stdinWrites[0] as string).trim()).message.content[0].text)
+        .toHaveLength(200_000);
+    });
+
+    it("preserves special characters (quotes, newlines, unicode) via JSON escaping", () => {
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
+
+      const prompt = 'say "hi"\nthen — 🎉 done\ttab';
+      const claude = new ClaudeProcess();
+      claude.run({ prompt });
+
+      expect(JSON.parse((mockProc.stdinWrites[0] as string).trim()).message.content[0].text)
+        .toBe(prompt);
+    });
+
+    it("drops a later writeStdin rather than throwing (stdin is closed by design)", () => {
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
       claude.run({ prompt: "test" });
+      mockProc.stdin.writable = false;
       claude.writeStdin("answer text\n");
 
-      expect(mockProc.write).toHaveBeenCalledWith("answer text\n");
+      expect(mockProc.stdinWrites).toHaveLength(1); // the prompt, nothing after
     });
 
     it("is a no-op if no process is running", () => {
@@ -942,24 +1225,22 @@ describe("ClaudeProcess", () => {
 
   describe("image support", () => {
     it("passes prompt through unchanged (images handled by orchestrator)", () => {
-      const mockProc = createMockPty();
-      mockPtySpawn.mockReturnValue(mockProc as any);
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
       const images = [{ data: "base64data", mediaType: "image/png" }];
       claude.run({ prompt: "describe this", images });
 
-      const args = mockPtySpawn.mock.calls[0][1] as string[];
-      const promptIdx = args.indexOf("-p") + 1;
-      expect(args[promptIdx]).toBe("describe this");
-      expect(mockProc.write).not.toHaveBeenCalled();
+      expect(JSON.parse((mockProc.stdinWrites[0] as string).trim()).message.content[0].text)
+        .toBe("describe this");
     });
   });
 
   describe("inactivity watchdog", () => {
     it("emits warning log after 30 seconds of no output", () => {
-      const mockProc = createMockPty();
-      mockPtySpawn.mockReturnValue(mockProc as any);
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
       const logs: { source: string; text: string }[] = [];
@@ -976,8 +1257,8 @@ describe("ClaudeProcess", () => {
     });
 
     it("clears watchdog when data is received", () => {
-      const mockProc = createMockPty();
-      mockPtySpawn.mockReturnValue(mockProc as any);
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
       const logs: { source: string; text: string }[] = [];
@@ -996,8 +1277,8 @@ describe("ClaudeProcess", () => {
     });
 
     it("clears watchdog on process exit", () => {
-      const mockProc = createMockPty();
-      mockPtySpawn.mockReturnValue(mockProc as any);
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
       const logs: { source: string; text: string }[] = [];
@@ -1016,8 +1297,8 @@ describe("ClaudeProcess", () => {
     });
 
     it("clears watchdog on kill", () => {
-      const mockProc = createMockPty();
-      mockPtySpawn.mockReturnValue(mockProc as any);
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
 
       const claude = new ClaudeProcess();
       const logs: { source: string; text: string }[] = [];
@@ -1154,6 +1435,45 @@ describe("StreamingClaudeProcess", () => {
       };
       expect(parsed.type).toBe("user");
       expect(parsed.message.content[0].text).toBe("go this way instead");
+    });
+  });
+
+  describe("stdin failure policy", () => {
+    it("reports an EPIPE as a log without tearing down the resident session", () => {
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
+
+      const streaming = new StreamingClaudeProcess();
+      const errors: Error[] = [];
+      const logs: { source: string; text: string }[] = [];
+      streaming.on("error", (err: Error) => errors.push(err));
+      streaming.on("log", (source: string, text: string) => logs.push({ source, text }));
+
+      streaming.run({ prompt: "hello" });
+      const epipe = Object.assign(new Error("write EPIPE"), { code: "EPIPE" });
+      // Unhandled, this is an uncaught exception that stops the whole worker.
+      expect(() => mockProc.stdin.emit("error", epipe)).not.toThrow();
+
+      // Log-only on purpose: this process is resident across turns, so one
+      // dropped write must not end a session the user is still working in.
+      expect(errors).toHaveLength(0);
+      expect(logs.some((l) => l.source === "server" && l.text.includes("EPIPE"))).toBe(true);
+    });
+
+    it("passes the system prompt as a file here too", () => {
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
+
+      const streaming = new StreamingClaudeProcess();
+      streaming.run({ prompt: "hi", systemPrompt: "a resident system prompt" });
+
+      const args = mockChildSpawn.mock.calls[0][1] as string[];
+      expect(args).not.toContain("--append-system-prompt");
+      const path = args[args.indexOf("--append-system-prompt-file") + 1] as string;
+      expect(readFileSync(path, "utf-8")).toBe("a resident system prompt");
+
+      mockProc.emit("close", 0);
+      expect(existsSync(path)).toBe(false);
     });
   });
 
@@ -1575,16 +1895,16 @@ describe("service routing (docs/252 phase 3)", () => {
     // provider 401 the user has to interpret. Reachable when a credential
     // write's secrets push failed or timed out (both fail open) between the
     // pick and the turn.
-    const mockProc = createMockPty();
-    mockPtySpawn.mockReturnValue(mockProc as never);
-    mockPtySpawn.mockClear();
+    const mockProc = createMockChildProcess();
+    mockChildSpawn.mockReturnValue(mockProc as never);
+    mockChildSpawn.mockClear();
     delete process.env.DEEPSEEK_API_KEY;
     const proc = new ClaudeProcess();
     const authRequired = vi.fn();
     proc.on("auth_required", authRequired);
     proc.run({ prompt: "hi", cwd: "/workspace", serviceRouting: routing });
     expect(authRequired).toHaveBeenCalledTimes(1);
-    expect(mockPtySpawn).not.toHaveBeenCalled();
+    expect(mockChildSpawn).not.toHaveBeenCalled();
   });
 
   it("is a no-op when there is nothing to shape", () => {
@@ -1598,14 +1918,14 @@ describe("service routing (docs/252 phase 3)", () => {
     // variables the shaping writes, so shaping first would produce a spawn with
     // an endpoint and no credential — a redirected turn that 401s. Driven
     // through the real spawn rather than the helper so it pins the CALL ORDER.
-    const mockProc = createMockPty();
-    mockPtySpawn.mockReturnValue(mockProc as never);
+    const mockProc = createMockChildProcess();
+    mockChildSpawn.mockReturnValue(mockProc as never);
     process.env.DEEPSEEK_API_KEY = "sk-ds";
-    mockPtySpawn.mockClear();
+    mockChildSpawn.mockClear();
     try {
       const proc = new ClaudeProcess(() => "/credentials/provider-accounts/claude/acct_1");
       proc.run({ prompt: "hi", cwd: "/workspace", serviceRouting: routing });
-      const env = mockPtySpawn.mock.calls[0][2]?.env as Record<string, string>;
+      const env = mockChildSpawn.mock.calls[0][2]?.env as Record<string, string>;
       expect(env.ANTHROPIC_API_KEY).toBe("sk-ds");
       expect(env.ANTHROPIC_BASE_URL).toBe("https://api.deepseek.com/anthropic");
     } finally {

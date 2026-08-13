@@ -333,7 +333,49 @@ export function runAgentToCompletion(
         }
       });
 
-      agent.on("done", () => finish());
+      /**
+       * A run that exited non-zero without ever reporting a result is a
+       * failure, not a success.
+       *
+       * `status` used to default to "success" for anything short of an explicit
+       * `agent_result` error or an adapter `error` event — so a CLI that never
+       * started (an E2BIG argv overflow: exec failed, zero events,
+       * non-zero exit) came back `status: "success"`, `text: ""`,
+       * `durationMs: 6`. The caller read that as "the reviewer found nothing",
+       * said so, and retried into the identical wall; nothing in the chain ever
+       * reported an error, and the account-failover loop above never ran because
+       * there was no failure to fail over from.
+       *
+       * The absence of an `agent_result` is the load-bearing condition, not the
+       * absence of text. A backend emits its result at turn end, so a run that
+       * has none never reached one — and a crash mid-turn routinely leaves
+       * *some* assistant text behind ("Let me inspect the files…", then a tool
+       * loop, then exit 1). Requiring empty text would call that a success and
+       * hand the caller a preamble as if it were the answer, which is the same
+       * defect one layer along. Whatever text did arrive is still returned; the
+       * status is what changes.
+       *
+       * The other conditions each exclude a real case:
+       *   - `agent_result` present — the backend reported its own status and
+       *     owns the verdict, including a non-zero exit after a good turn;
+       *   - not cancelled or timed out — those have their own status, and both
+       *     kill the process, which is itself a non-zero exit.
+       */
+      agent.on("done", (exitCode?: number | null) => {
+        if (
+          resultStatus === undefined &&
+          !cancelled &&
+          !timedOut &&
+          typeof exitCode === "number" &&
+          exitCode !== 0
+        ) {
+          resultStatus = "error";
+          resultError ??= `The agent process exited with code ${exitCode} before reporting a result.`;
+          finish("error");
+          return;
+        }
+        finish();
+      });
       agent.on("error", (err: Error) => {
         resultStatus = "error";
         resultError = err.message;

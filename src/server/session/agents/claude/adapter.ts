@@ -4,7 +4,7 @@
  *
  * When params.useStreaming is true (live steering enabled), run() creates a
  * StreamingClaudeProcess that keeps the process alive across turns. Otherwise
- * it creates the legacy PTY ClaudeProcess. (docs/140)
+ * it creates the one-shot ClaudeProcess. (docs/140)
  */
 
 import { EventEmitter } from "node:events";
@@ -458,7 +458,7 @@ export class ClaudeAdapter
     }
     // docs/140 — the orchestrator's steering gate (`runner.isStreamingActive`)
     // should have routed around this branch when the resident process is a
-    // one-shot PTY ClaudeProcess. If we got here, the gate disagrees with the
+    // one-shot ClaudeProcess. If we got here, the gate disagrees with the
     // adapter — silent no-op would make the user's message disappear with no
     // feedback. Log loudly, emit a server-facing log (so the Logs panel shows
     // a clear failure), and emit an `error` so wireAgentListeners surfaces
@@ -495,7 +495,7 @@ export class ClaudeAdapter
 
   /**
    * Change permission mode on the resident process. Only meaningful for the
-   * persistent streaming process — the one-shot PTY path re-applies the mode
+   * persistent streaming process — the one-shot path re-applies the mode
    * at every spawn, so there's nothing to do here. ShipIt → CLI mapping
    * matches what `ClaudeProcess` / `StreamingClaudeProcess` push as
    * `--permission-mode` at spawn: `plan` → `"plan"`, `guarded` → `"auto"`
@@ -513,7 +513,7 @@ export class ClaudeAdapter
    * docs/178 — trigger a context compaction on the resident process by sending
    * the CLI's `/compact` slash command as a user message. Only meaningful on the
    * persistent streaming process (where a message can be injected mid/between
-   * turn without a respawn) — the one-shot PTY path has no resident process to
+   * turn without a respawn) — the one-shot path has no resident process to
    * talk to between turns, so the orchestrator routes that case through
    * `run({ compact: true })` (a fresh `claude -p "/compact" --resume` turn)
    * instead and never calls this. When called on a non-streaming inner we log

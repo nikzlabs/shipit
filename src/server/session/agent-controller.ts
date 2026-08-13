@@ -341,7 +341,7 @@ export class AgentController {
     // POST /agent/permission-mode — change the resident agent's permission
     // mode mid-stream without a restart. The adapter pushes a
     // `set_permission_mode` control_request onto the streaming CLI's stdin;
-    // adapters that don't support mid-stream switching (one-shot PTY) no-op.
+    // adapters that don't support mid-stream switching (one-shot) no-op.
     // See docs/138 / docs/140 for the protocol details. `mode: null` is the
     // wire encoding for ShipIt "auto" (no flag), so the JSON body always
     // travels as a string-or-null.

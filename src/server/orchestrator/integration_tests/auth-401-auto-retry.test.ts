@@ -79,7 +79,16 @@ function feedRealCliOutput(agent: FakeAgent): (raw: string) => void {
   const proc = new EventEmitter() as EventEmitter & Record<string, unknown>;
   proc.stdout = stdout;
   proc.stderr = new EventEmitter();
-  proc.stdin = { write: vi.fn(() => true), writable: true, destroyed: false, writableEnded: false };
+  // An EventEmitter, like the real `ChildProcess.stdin`: the process attaches an
+  // `error` listener to it so an EPIPE cannot crash the worker, and a plain
+  // object has no `.on`.
+  const stdin = new EventEmitter() as EventEmitter & Record<string, unknown>;
+  stdin.write = vi.fn(() => true);
+  stdin.end = vi.fn();
+  stdin.writable = true;
+  stdin.destroyed = false;
+  stdin.writableEnded = false;
+  proc.stdin = stdin;
   proc.kill = vi.fn();
   mockChildSpawn.mockReturnValue(proc as never);
 
