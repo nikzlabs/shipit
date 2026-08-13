@@ -168,8 +168,8 @@ The everyday essentials you'd expect from a serious agent IDE:
   but a small host means fewer sessions can be active at once.
 - The VPS installer targets Ubuntu. Other Linux distributions may work, but the one-command setup
   script is tuned for Ubuntu hosts.
-- The full review-and-ship loop depends on GitHub. You can work locally without it, but PRs, CI,
-  review threads, merge controls, and deploy status require GitHub auth and a GitHub remote.
+- ShipIt runs on GitHub. Repository access, PRs, CI, review threads, merge controls, and deploy
+  status all require GitHub auth and a GitHub remote; there is no local-only mode.
 - Deploy status is read from the GitHub Deployments API. It appears when your hosting provider
   creates GitHub deployments for pushed commits.
 - Voice input and spoken summaries require configuring a supported voice provider for speech
