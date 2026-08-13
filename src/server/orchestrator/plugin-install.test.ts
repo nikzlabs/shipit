@@ -54,7 +54,7 @@ interface CreatedContainer {
  * install container ends: a number is its status code, `"hang"` never finishes
  * on its own (so the timeout path has something to kill).
  */
-function fakeDocker(opts: { exit?: number | "hang"; logs?: string } = {}) {
+function fakeDocker(opts: { exit?: number | "hang"; logs?: string | Buffer } = {}) {
   const containers: CreatedContainer[] = [];
   const createdVolumes: { Name: string; DriverOpts?: Record<string, string> }[] = [];
   const removedVolumes: string[] = [];
@@ -84,7 +84,7 @@ function fakeDocker(opts: { exit?: number | "hang"; logs?: string } = {}) {
           record.killed = true;
           finish({ StatusCode: 137 });
         },
-        logs: async () => Buffer.from(opts.logs ?? ""),
+        logs: async () => (Buffer.isBuffer(opts.logs) ? opts.logs : Buffer.from(opts.logs ?? "")),
         remove: async () => {
           record.removed = true;
         },
@@ -211,6 +211,23 @@ describe("createPluginInstallRunner", () => {
     expect(fs.existsSync(installStampPath(stateDir, "tools", COMMIT))).toBe(false);
     // Still released — a failed install must not strand the volume.
     expect(removedVolumes).toContain(createdVolumes[0]!.Name);
+  });
+
+  // A container without a TTY has its output multiplexed: an 8-byte header per
+  // chunk. Read as text, that framing lands in the middle of the message the
+  // degraded card shows the user.
+  it("strips Docker's stream framing from the reported output", async () => {
+    const payload = Buffer.from("npm ERR! code E404\n");
+    const header = Buffer.alloc(8);
+    header[0] = 2; // stderr
+    header.writeUInt32BE(payload.length, 4);
+    const { docker } = fakeDocker({ exit: 1, logs: Buffer.concat([header, payload]) });
+    const run = createPluginInstallRunner({ docker, image: "worker:test", sessionId: "s1", stateDir });
+
+    const result = await run(job([exportWith("probe", "npm ci")]));
+    expect(result.reason).toContain("npm ERR! code E404");
+    // eslint-disable-next-line no-control-regex -- the framing bytes are the point
+    expect(result.reason).not.toMatch(/[\u0000-\u0008]/);
   });
 
   it("stops at the first failing export rather than installing the rest", async () => {

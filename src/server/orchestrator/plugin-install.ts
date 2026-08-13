@@ -314,7 +314,7 @@ async function waitWithTimeout(
 async function logTail(container: Docker.Container): Promise<string> {
   try {
     const raw = await container.logs({ stdout: true, stderr: true, tail: LOG_TAIL_LINES });
-    const text = raw.toString("utf-8").trim();
+    const text = demultiplex(raw).trim();
     if (!text) return "";
     const clipped = text.length > REASON_MAX_CHARS ? `…${text.slice(-REASON_MAX_CHARS)}` : text;
     return `:\n${clipped}`;
@@ -367,6 +367,34 @@ export async function reapOrphanPluginInstalls(
   }
   if (removed > 0) console.log(`[plugins] removed ${removed} orphan install container(s)`);
   return removed;
+}
+
+/**
+ * Strip Docker's stream framing from a log buffer.
+ *
+ * A container without a TTY — this one — has its output multiplexed: every
+ * chunk carries an 8-byte header (stream id, three zero bytes, then a 32-bit
+ * big-endian length). Reading the buffer as text puts that framing in the
+ * middle of the message, and this text is what the degraded card shows the
+ * user. Anything that does not parse as a frame is returned verbatim, so a TTY
+ * container or an already-decoded buffer is passed through unharmed.
+ */
+function demultiplex(raw: Buffer): string {
+  const parts: Buffer[] = [];
+  let offset = 0;
+  while (offset + 8 <= raw.length) {
+    const stream = raw[offset];
+    // Header shape: a valid frame's stream id is 0/1/2 and bytes 1..3 are zero.
+    if (stream > 2 || raw[offset + 1] !== 0 || raw[offset + 2] !== 0 || raw[offset + 3] !== 0) {
+      return raw.toString("utf-8");
+    }
+    const size = raw.readUInt32BE(offset + 4);
+    if (offset + 8 + size > raw.length) return raw.toString("utf-8");
+    parts.push(raw.subarray(offset + 8, offset + 8 + size));
+    offset += 8 + size;
+  }
+  if (offset !== raw.length) return raw.toString("utf-8");
+  return Buffer.concat(parts).toString("utf-8");
 }
 
 function message(err: unknown): string {
