@@ -925,7 +925,11 @@ coherent in one UI.
   dir, which eviction reclaims), settings resolution and its two fail-closed
   errors, the atomic settings write, and the manifest resolver that reads a
   tracked import from the live generation and a `repo: self` import from the
-  project's own parsed manifest. Prepared from `services/plugin-activation.ts`
+  project's own parsed manifest. Reading a live checkout's manifest goes through
+  the generation engine's `readActiveManifest` — the ONE entry point, shared with
+  `plugin-credentials.ts`; this module had its own copy of that parse until the
+  two slices landed days apart, and a third copy is how a fix to manifest
+  handling starts reaching only some of its readers. Prepared from `services/plugin-activation.ts`
   at the end of every round; its issues are re-derived, not stored, by
   `api-routes-plugin-repos.ts`. ✓ `src/server/shared/plugin-contract.ts` holds
   the in-container names both later consumers need (`/plugin-state`,
