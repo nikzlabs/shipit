@@ -365,6 +365,15 @@ the first of these. All six are fixed.
       stored row already held. It now compares by value, and withdraws a
       duplicate it created before the rule existed (narrowly: still its secret,
       still its generated label).
+- [x] **Background work named a state no one could read.** "On the default" /
+      "auto-configured" / "pinned" all needed a glossary, so the state went
+      instead of the wording: `seedNonTurnModel` writes the setting the first
+      time the install can run something, and only the user changes it after
+      that. The menu's "ShipIt's default" row goes with it, the section drops to
+      two rows (description over controls), and the line beneath the description
+      carries only the derived harness. Seeding is narrow — a value is written
+      only when there is none — so a chosen model whose credential goes away is
+      reported, not replaced.
 - [x] **The single-credential card explained itself, and should say nothing.**
       "One account — nothing to route between yet. Add a second to choose an
       order and a strategy." came from the mock-up (audit cell D8) and was

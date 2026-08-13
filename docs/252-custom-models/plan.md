@@ -2594,6 +2594,13 @@ has two states, and they are not the same thing: **unset** follows the install, 
 is a pin the user chose and ShipIt does not move. Only the second can go stale, and it is
 the one req 9's notice reports on.
 
+> **Superseded on 2026-08-13 — the setting now has one state.** Everything above about
+> *unset* still describes the resolver's fallback, but it is no longer a state the user can
+> be in: `seedNonTurnModel` writes the first eligible model the first time the install can
+> run something, and only the user changes it after that. See
+> *[One state, because the second one could not be named](#one-state-because-the-second-one-could-not-be-named)*.
+> The paragraph is kept because the first-eligible **rule** it defines is what gets written.
+
 A consequence worth accepting rather than designing around: the picker orders by
 capability, so the derived default is likely to be a *large* model doing work — session
 titles, PR descriptions — that a small one does fine. Nothing here says otherwise, and
@@ -3337,6 +3344,45 @@ deletes a credential: only a row adoption created, whose secret is still the one
 adoption imported, and whose label ShipIt still generated. Any of those failing
 means the row is the user's, and a duplicate they can see beats one deleted
 behind their back.
+
+### One state, because the second one could not be named
+
+**Background work, 2026-08-13.** The section reported which model it runs on *and* where that
+choice came from — and there was no word for the second half that a reader could use. "On the
+default", "auto-configured", "pinned" were all tried; the report on the third was *"I don't
+understand on the default, auto-configured or pinned. Even I, the developer, so I imagine the
+user would not understand what this means."*
+
+The instinct is to keep renaming. The answer was to **delete the state**: ShipIt writes the
+setting once, when the first service is configured, and only the user changes it afterwards.
+With one state there is nothing to name, and three things fall out of the design rather than
+being tidied up in it — the sentence explaining what the default follows, the line reporting
+which state is in force, and the model menu's "ShipIt's default" row, which existed only so the
+user could get back to the state that no longer exists.
+
+**The seed is on the READ path** (`seedNonTurnModel` in `services/settings.ts`), for the reason
+`resolveHarnessOnboarding` above it already argues: a mutation-site seed is a list that a
+newly-added credential path quietly falls off, and there are four such paths today — a pasted
+key, `upsertSingleStringCredential`, an account connecting, and boot-time env adoption. One
+write on the settings read covers every way a credential can arrive, including an install that
+already had credentials before this existed. The window before the first read is not a gap:
+`resolveNonTurnModel` still falls back to the first eligible model when nothing is stored, so
+background work runs, and it runs on the same model the seed then writes.
+
+**Only when there is none**, never over a value. That single condition is what keeps this from
+becoming re-pointing under another name, and it is the half that carries a cost: remove the
+credential the chosen model used and the setting still names it, so background work fails and
+says so, where an unset setting would have quietly moved to whatever survived. That is the
+trade the requirement asks for — "the default becomes the changeable setting, so ShipIt does
+not update it anymore" — and the warning that reports it is the one that already existed for a
+stale pin.
+
+**Two rows, not three columns**, in the same change. The description sat in a column beside the
+controls, wrapping at ~34 characters over seven lines; it is now above them, full width, and
+one sentence. The line beneath it carries only what the two controls cannot state — the derived
+harness — because they already name the service and the model. The description also stopped
+enumerating: "such as naming a session or writing a pull-request description" says the examples
+are examples, since the list of work ShipIt does outside a turn is not closed.
 
 ## Key files
 

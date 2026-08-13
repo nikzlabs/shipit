@@ -9,7 +9,7 @@ import { isAllowedAgentEnvKey } from "../../shared/agent-registry.js";
 import type { AccountSelectionMode, AgentId, CredentialRoute, FailoverCutoffs } from "../../shared/types.js";
 import { credentialModeKey, DEFAULT_FAILOVER_CUTOFF, DEFAULT_SELECTION_MODE, parseCredentialModeKey } from "../../shared/types.js";
 import { allServices, credentialModeForStorageEnv, getMode, getModel, getService, nativeServiceForHarness } from "../../shared/catalogue/index.js";
-import { harnessForNonTurnSelection, resolveNonTurnModel } from "../non-turn-model.js";
+import { firstEligibleNonTurnSelection, harnessForNonTurnSelection, resolveNonTurnModel } from "../non-turn-model.js";
 import { listConfiguredCredentials } from "../service-routing.js";
 import { listCredentialRoutes, upsertSingleStringCredential } from "./credential-routes.js";
 import type { VoiceDeliveryMode } from "../../shared/types/voice-note-types.js";
@@ -124,6 +124,54 @@ export function resolveHarnessOnboarding(
   // months later. See `CredentialStore.stampHarnessOnboardingCompleted`.
   const stamped = credentialStore.stampHarnessOnboardingCompleted(new Date().toISOString());
   return stamped ? { canRunTurns, harnessOnboardingCompletedAt: stamped } : { canRunTurns };
+}
+
+/**
+ * docs/252 req 9 — **the model background work runs on is written once, and
+ * after that only the user changes it.**
+ *
+ * It used to be allowed to stay unset, and unset meant "ShipIt re-decides on
+ * every read". That is a second state, and the screen then had to name it. It
+ * could not: every word for it — *default*, *auto-configured*, *pinned* — needs
+ * a glossary, and the report that produced this change was that the developer
+ * could not read the line either. So the state goes rather than the wording.
+ * The setting now always holds one model the user can see and change, and the
+ * only question left on screen is which model.
+ *
+ * **Only when there is none.** ShipIt never writes over a value, so this cannot
+ * become re-pointing under another name: remove the credential the chosen model
+ * used and the setting still names it, and `resolveNonTurnModel` reports
+ * `pin_unavailable` rather than quietly moving to whatever survived. That is
+ * the trade the requirement asks for — the alternative is a setting that
+ * changes itself, which is what "the default becomes the changeable setting"
+ * rules out.
+ *
+ * **On the READ path, for the reason `resolveHarnessOnboarding` above is**: a
+ * mutation-site seed is a list that a newly-added credential path quietly falls
+ * off — and there are four such paths today (a pasted key, the single-slot
+ * upsert, an account connecting, and boot-time env adoption). One read-path
+ * write covers every way a credential can arrive, including the install that
+ * already had credentials before this existed.
+ *
+ * The window before the first read is not a gap: `resolveNonTurnModel` still
+ * falls back to the first eligible model when nothing is stored, so background
+ * work runs, and it runs on the same model this then writes.
+ */
+export function seedNonTurnModel(
+  credentialStore: CredentialStore | undefined,
+  /**
+   * Injectable because a deployment's environment variables are credentials
+   * too (`listConfiguredCredentials` reads them), so "this install has nothing
+   * configured" is only assertable in a test that can say what the environment
+   * holds.
+   */
+  env: NodeJS.ProcessEnv = process.env,
+): void {
+  if (!credentialStore) return;
+  if (credentialStore.getNonTurnModel()) return;
+  const first = firstEligibleNonTurnSelection(listConfiguredCredentials(credentialStore, env));
+  if (!first) return;
+  credentialStore.setNonTurnModel(first.selection);
 }
 
 /**
@@ -274,9 +322,13 @@ export async function getGlobalSettings(
   // docs/252 phase 2 — every credential the user holds, in selection order per
   // group. Safe to return verbatim: `CredentialRoute` carries no secret.
   const credentialRoutes = credentialStore ? listCredentialRoutes(credentialStore) : [];
-  // docs/252 phase 7 (req 9) — the pin AND what it resolves to. Both, because
-  // they are different facts: the setting is visibly unset until the user picks
-  // something, and what runs today is what the resolver says now.
+  // docs/252 req 9 — write the setting if this install has never had one, then
+  // read it back like any other. See `seedNonTurnModel` for why the write is
+  // here and not at the four credential-mutation sites.
+  seedNonTurnModel(credentialStore);
+  // The setting AND what it resolves to. Both, because they are different
+  // facts: the setting names a triple, and the resolution adds the derived
+  // harness and says whether that triple can still run at all.
   const nonTurnModel = credentialStore?.getNonTurnModel();
   const nonTurnResolution = credentialStore
     ? resolveNonTurnModel({
