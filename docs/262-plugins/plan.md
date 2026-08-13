@@ -173,13 +173,11 @@ deliberately not declared in the fragment, so it stays valid for a plain
 **Install contract** (review finding 7): `install` runs with **cwd = the
 plugin's checkout root inside its writable layer** — a copy-on-write layer
 over the read-only checkout, so `node_modules` and build output land in the
-layer, never in the checkout and never in the project (req 7). **As built**
-(`plugin-generations.ts`), that layer IS the generation directory: a
-per-session, per-commit, disposable checkout under the session state dir
-already confines build output to a place that is neither the shared bare
-cache nor the project, so a separate copy-on-write layer buys nothing.
-Read-only for the *agent* is enforced where it is enforceable — the `:ro` bind
-mount, which lands with the container wiring.
+layer, never in the checkout and never in the project (req 7). **Withdrawn (2026-08-13):** an earlier revision claimed that layer IS the
+generation directory, because a per-session, per-commit checkout already
+confines build output — so a copy-on-write layer "buys nothing". It buys req 7,
+whose plain words put install output somewhere that is neither plugin source
+nor project data. The checkout stays pristine; the CoW layer is real.
 
 **Where install runs is a security boundary, not a detail** (implementation
 review). Two attempts were rejected before the answer settled.
@@ -419,10 +417,10 @@ coherent in one UI.
   (the GET exists; refresh endpoints come with generation mechanics); tracker
   registration folds into the existing trackers registry
   (`api-routes-issues.ts`) with destination-based dedup.
-- ✓ `src/server/session/plugin-runtime.ts` — the container half: links each
-  live checkout at `/plugins/<name>` through the read-only store mount, runs
-  each imported plugin's `install` with the generation's env, and stamps it
-  (install string + commit + `install-inputs` content) inside the generation.
+- ✓ `src/server/session/plugin-runtime.ts` — the container half, and ONLY the
+  link surface: it points `/plugins/<name>` at the read-only store mount and
+  removes links the declaration no longer names. It runs no plugin-authored
+  code — install is not here, and must not come back here (§1b).
   Reached over `POST /plugins/prepare` on the worker
   (`session-worker.ts`), which `ContainerSessionRunner.preparePlugins()` calls
   when an activation round settles and when a container becomes ready — the

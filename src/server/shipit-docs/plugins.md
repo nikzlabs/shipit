@@ -53,7 +53,7 @@ grant trades approval for.
 ## What you see in this container
 
 `/plugins/<name>` is the plugin repository's checkout, at the exact commit
-shown in the Plugins tab. Browse it, read it, run things from it.
+shown in the Plugins tab. Browse it and read it.
 
 **It is read-only, deliberately.** Fix a plugin in the plugin's own
 repository, then let this project pick the change up — not by editing the
@@ -65,8 +65,8 @@ mid-session, `/plugins/<name>` points at the new commit with no restart.
 
 ## Plugin code does not run in your container
 
-Everything a plugin *ships* — its `install`, and later its CLIs and services —
-runs in a separate container, with only what it declared: the checkout, its own
+Everything a plugin *ships* — its `install`, its CLIs, its services — is
+designed to run in a separate container, and none of it runs yet, with only what it declared: the checkout, its own
 writable layer, its own credentials.
 
 This is not tidiness. Your container can reach ShipIt's own credential broker

@@ -76,12 +76,12 @@ export type { ProxyAgentRunner } from "./proxy-agent-process.js";
 const INSTALL_POST_TIMEOUT_MS = 180_000;
 
 /**
- * docs/262 — bound for POST /plugins/prepare. Unlike install this call does NOT
- * return early: it runs each imported plugin's `install` before answering, so
- * the bound covers real work rather than a handoff. Generous, but finite so a
- * wedged plugin cannot pin an orchestrator request forever.
+ * docs/262 — bound for POST /plugins/prepare, which only reads the declaration
+ * and maintains symlinks. Short on purpose: there is no plugin-authored work
+ * behind it (install runs in its own container), so anything slower than this
+ * is a wedged worker rather than a long job.
  */
-const PLUGIN_PREPARE_TIMEOUT_MS = 600_000;
+const PLUGIN_PREPARE_TIMEOUT_MS = 30_000;
 
 export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> implements SessionRunnerInterface, ProxyAgentRunner {
   readonly sessionId: string;
@@ -1674,7 +1674,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    */
   /**
    * docs/262 — ask the container to link its plugin checkouts under `/plugins`
-   * and run each imported plugin's `install`. Called when an activation round
+   * (and unlink what is no longer declared). Called when an activation round
    * settles, so the generation the worker reads is already published.
    *
    * Fire-and-forget and never throws: a plugin that will not prepare must not

@@ -325,8 +325,9 @@ export class SessionWorker extends EventEmitter {
   // via the agent factory). An already-running agent does NOT see the
   // change — secret updates take effect on the next agent turn.
   /**
-   * docs/262 — make the session's live plugin checkouts usable: link them under
-   * `/plugins` and run each imported plugin's `install`. The orchestrator calls
+   * docs/262 — make the session's live plugin checkouts reachable: link them
+   * under `/plugins`, and drop links the declaration no longer names. Runs NO
+   * plugin-authored code — install happens in its own container. The orchestrator calls
    * this when an activation round settles and after a refresh; it carries no
    * payload because everything needed is already on disk in this container
    * (the declaration in `/workspace/shipit.yaml`, each manifest in its own

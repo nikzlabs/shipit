@@ -40,9 +40,10 @@ fi
 # `agent.install` and the agent reads fetched CI logs from it, so it needs the
 # same handoff — without it the non-root worker EACCESes on the marker write and
 # every `agent.install` re-runs.
-# /plugin-store (docs/262) is deliberately absent: it is mounted :ro, so the
-# writability probe below skips it anyway, and nothing in this container may
-# write a plugin checkout (req 7).
+# /plugin-store (docs/262) is deliberately absent from this loop: it is mounted
+# :ro, so the writability probe below skips it anyway, and nothing in this
+# container may write a plugin checkout (req 7). /plugins is handled separately
+# just below — it is a plain directory on the container filesystem, not a mount.
 for d in /workspace /uploads /persist /session-state /dep-cache /credentials /home/shipit; do
   case "$d" in
     # Skip the workspace chown when the orchestrator bind-mounted the host source
@@ -76,6 +77,17 @@ for d in /workspace /uploads /persist /session-state /dep-cache /credentials /ho
     chown -R "${UID_GID}:${UID_GID}" "$d"
   fi
 done
+
+# docs/262 — /plugins holds the per-repo symlinks into the read-only plugin
+# store, and the worker creates them AFTER dropping to UID_GID. `/` is
+# root-owned, so without this the mkdir fails EACCES and the agent-facing
+# `/plugins/<name>` path silently never appears. Handled here rather than in the
+# loop above because it is not a mount: it needs no sentinel and no recursive
+# walk, and the loop's sentinel would litter a dot-entry into a directory the
+# agent lists. Under SESSION_READONLY_ROOTFS the orchestrator mounts a tmpfs
+# here instead; this mkdir is then a harmless no-op on it.
+mkdir -p /plugins
+chown "${UID_GID}:${UID_GID}" /plugins
 
 # docs/172 Gap 5 (planning#99) — read-only rootfs. The orchestrator mounts a tmpfs at
 # /home/shipit (the HOME holds writable caches: ~/.npm, ~/.npm-global, ~/.cache,

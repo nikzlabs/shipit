@@ -104,6 +104,24 @@ describe("activateDeclaredPlugins", () => {
     expect(getActivationState("sess", "tools")).toBeUndefined();
   });
 
+  // The container's prepare step is also what REMOVES links for repos that are
+  // no longer declared, so a round with nothing to activate must still settle —
+  // otherwise a dropped repository stays addressable at /plugins/<name> until
+  // the container is recreated (review finding).
+  it("still settles when the declaration names no tracked repos", async () => {
+    const settled: string[] = [];
+    const hook = { ...deps(), onSettled: (id: string) => settled.push(id) };
+
+    writeConfig("agent:\n  install: npm install\n");
+    await activateDeclaredPlugins("sess", workspaceDir, hook);
+    expect(settled).toEqual(["sess"]);
+
+    // Same for a block that parses but leaves nothing tracked.
+    writeConfig("plugins:\n  repos:\n    - repo: self\n      name: dev\n");
+    await activateDeclaredPlugins("sess", workspaceDir, hook);
+    expect(settled).toEqual(["sess", "sess"]);
+  });
+
   it("a malformed shipit.yaml is not fatal", async () => {
     writeConfig("plugins: [unclosed\n  - broken");
     await expect(activateDeclaredPlugins("sess", workspaceDir, deps())).resolves.toBeUndefined();
