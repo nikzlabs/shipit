@@ -49,6 +49,26 @@ Non-turn work has a further wrinkle: `resolveLocalAgentHome` reads the *runner's
 
 The seed prints a `⚠` line for each hazard that applies. `local-agent-credentials.ts` maintains the unscoped fallback home (planning#284) and is not on the per-turn path.
 
+## Testing onboarding — the `onboarding` service, not a wipe
+
+`dev` is a *configured* install and cannot be un-configured. Every key supplied in the outer Settings → Secrets is injected into it, `adoptEnvCredentials` turns each one into a stored credential at boot (docs/252 req 20), and `resolveHarnessOnboarding` then stamps `harnessOnboardingCompletedAt` on the first read — permanently, since nothing clears it. **`DOGFOOD_SEED_CREDENTIALS=0` is not enough**: it stops the seeder POSTing, and adoption still makes rows out of the variables.
+
+So there is a second manual service:
+
+```bash
+shipit service start onboarding      # port 3001; `dev` can stay up on 3000
+```
+
+Two differences from `dev`, and nothing else: **no `x-shipit-secrets` block at all** (declaring a name is what injects the value, so it holds no service credential and no `GITHUB_TOKEN` — onboarding is the flow that runs when they are missing), and **its own `SHIPIT_STATE_DIR`** at `.inner-shipit/onboarding`, which is a separate SQLite db, credential store and agent home. It comes up on "Connect GitHub" with `Agent auth status: claude ✗, codex ✗`.
+
+Reset it to a fresh install — and note that deleting the directory is the *whole* reset, because everything an install remembers hangs off it:
+
+```bash
+shipit service stop onboarding && rm -rf .inner-shipit/onboarding && shipit service start onboarding
+```
+
+Never test onboarding by deleting credentials from inner Settings or wiping `.inner-shipit/` — the first is destructive to the developer's real setup and the second throws away the configured instance they are about to go back to.
+
 ## Seeding
 
 At `dev`-service boot, two background steps run in order, both prefixed `[seed]` in the service logs (`docs/131-dogfood-seed-sessions`):

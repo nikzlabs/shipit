@@ -232,6 +232,85 @@ services:
       - { name: OPENROUTER_API_KEY }
       - { name: AI_GATEWAY_API_KEY }
 
+  # A ShipIt that has never been set up — for testing onboarding (docs/257).
+  #
+  # The problem it solves: the `dev` service is a *configured* install and cannot
+  # be un-configured to look at the first-run experience. Every service key set
+  # in the outer Settings → Secrets is injected into it, `adoptEnvCredentials`
+  # turns each one into a stored credential at boot (docs/252 req 20), and
+  # `resolveHarnessOnboarding` then stamps `harnessOnboardingCompletedAt` on the
+  # first read — permanently, since nothing ever clears it. `DOGFOOD_SEED=0` is
+  # not enough on its own: it stops the seeder POSTing credentials, and adoption
+  # still makes rows out of the variables. The only ways to see onboarding were
+  # to delete the developer's real keys or to wipe `.inner-shipit/`, and both
+  # destroy the thing they were about to go back to.
+  #
+  # So this is a second inner orchestrator with two differences from `dev`, and
+  # nothing else:
+  #
+  #   1. **No `x-shipit-secrets` block at all.** Not an empty one — absent.
+  #      Declaring a name is what injects the value, so declaring none means the
+  #      process holds no service credential and no `GITHUB_TOKEN`. Onboarding
+  #      is exactly the flow that runs when they are missing, so supplying any
+  #      of them would skip the thing under test.
+  #   2. **Its own `SHIPIT_STATE_DIR`**, holding its own SQLite db, credential
+  #      store and agent home. Nested under `.inner-shipit/` so it inherits that
+  #      .gitignore entry rather than needing one of its own.
+  #
+  # Reset it to a fresh install by deleting that directory:
+  #
+  #   shipit service stop onboarding
+  #   rm -rf .inner-shipit/onboarding
+  #   shipit service start onboarding
+  #
+  # `DOGFOOD_SEED=0` is still set, belt and braces: with no secrets there is
+  # nothing for the credential seeder to find, and seeding repos would hand the
+  # instance a repo it is supposed to be asking the user for.
+  #
+  # Manual, like `dev`, and for the same reason — a whole second orchestrator.
+  # Start it with `shipit service start onboarding`; it claims port 3001 so both
+  # can run at once, which is the point: the configured instance stays up.
+  onboarding:
+    # The same image `dev` builds. Naming the build again rather than only
+    # `image:` keeps this service startable on a host where `dev` has never run.
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.dogfood
+    image: shipit-dogfood:local
+    command: >
+      sh -c "
+      mkdir -p $${SHIPIT_STATE_DIR:-/workspace/.inner-shipit/onboarding} $${AGENT_HOME:-/root} &&
+      while [ ! -x node_modules/.bin/vite ]; do
+        echo '[onboarding] waiting for agent.install to populate node_modules…'; sleep 1;
+      done &&
+      PORT=4001 npm run dev &
+      API_PORT=4001 exec npx vite --host 0.0.0.0 --port 3001
+      "
+    working_dir: /workspace
+    init: true
+    environment:
+      RUNTIME_MODE: local
+      WORKSPACE_DIR: /workspace
+      # Everything this instance persists hangs off this one path — the SQLite
+      # db (`app-di.ts`) and, in local mode, the credential store
+      # (`resolveAutoStartDeps` → `<stateDir>/credentials`). A separate path is
+      # therefore a separate ShipIt install, which is the whole mechanism here.
+      SHIPIT_STATE_DIR: /workspace/.inner-shipit/onboarding
+      AGENT_HOME: /workspace/.inner-shipit/onboarding/agent-home
+      # NOT shared with `dev`: two Vite dev servers committing an optimizer run
+      # into one cache dir race on the same directory renames.
+      VITE_CACHE_DIR: /workspace/.inner-shipit/onboarding/vite-cache
+      # See the `dev` service — same inotify limit, same reason.
+      CHOKIDAR_USEPOLLING: "1"
+      CHOKIDAR_INTERVAL: "1000"
+      DOGFOOD_SEED: "0"
+    volumes:
+      - .:/workspace
+    ports:
+      - "3001:3001"
+    x-shipit-preview: manual
+    # No `x-shipit-secrets`. See the note above — its absence is the feature.
+
   # Agent Interface SDK test preview (docs/242).
   #
   # A ~40-line static server whose page reports the live state of `window.shipit`

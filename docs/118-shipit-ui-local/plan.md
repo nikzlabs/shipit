@@ -401,3 +401,35 @@ The outer agent container's `agent.install` (`npm install` on the ShipIt repo) i
 Feature 148 replaces the repo-specific wrapper with the generic worker-side fast-install path: ShipIt's [shipit.yaml](../../shipit.yaml) uses a bare `npm install`, and the session worker can materialize `node_modules` from `/dep-cache/nm-store/<storeKey>` when the lockfile/runtime/install-command key has already been populated. This matters because shell wrappers are intentionally treated as arbitrary side-effectful install commands and bypass the cache.
 
 The old dogfood-only session-worker image and `scripts/agent-install.sh` wrapper have been removed. They added a ShipIt-specific baked dependency tree and created a second install path that bypassed the production cache. The generic cache is now the only supported acceleration path for ShipIt itself.
+
+## A second inner instance for testing onboarding (2026-08-13)
+
+`dev` is a *configured* install and there is no way to un-configure it. Every key supplied in
+the outer Settings → Secrets is injected into it; `adoptEnvCredentials` turns each one into a
+stored credential at boot (docs/252 req 20); `resolveHarnessOnboarding` then stamps
+`harnessOnboardingCompletedAt` on the first read, and nothing ever clears that stamp. So the
+onboarding flow — the one experience every new user has and the hardest to keep honest — was
+only reachable by destroying the developer's own setup.
+
+`DOGFOOD_SEED_CREDENTIALS=0` is **not** the answer, and this is the trap worth writing down: it
+stops the seeder POSTing credentials, and adoption then makes rows out of the same variables
+anyway. Turning off the seeder looks like it worked right up until the instance boots
+credentialed.
+
+So `docker-compose.yml` declares a second manual service, `onboarding`, differing from `dev` in
+exactly two ways:
+
+- **No `x-shipit-secrets` block at all.** Not an empty one — absent. Declaring a name is what
+  injects the value, so the process holds no service credential *and* no `GITHUB_TOKEN`.
+  Onboarding is precisely the flow that runs when those are missing, so supplying any of them
+  would skip the thing under test.
+- **Its own `SHIPIT_STATE_DIR`**, `.inner-shipit/onboarding`. Everything an install remembers
+  hangs off that path — the SQLite db (`app-di.ts`) and, in local mode, the credential store
+  (`resolveAutoStartDeps` → `<stateDir>/credentials`) — so a separate path *is* a separate
+  ShipIt. Nested under `.inner-shipit/` to inherit its `.gitignore` entry, and `rm -rf` on it is
+  the whole reset.
+
+It takes port 3001, so the configured instance stays up on 3000 rather than being traded for
+it. Verified on first boot: `Agent auth status: claude ✗, codex ✗`, `GitHub credentials found:
+false`, a freshly generated encryption key under its own directory, and the UI opening on
+*Connect GitHub* — while `dev` came back up with both its credentials and its repo untouched.
