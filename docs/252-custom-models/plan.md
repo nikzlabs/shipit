@@ -780,9 +780,15 @@ the real binaries (CLI 2.1.220, codex-cli 0.146.0) driving a local HTTP recorder
   captured within the turn: cross-turn memory would be missing at exactly the moments the
   accumulator is not, since the adapter is constructed per turn and the container is destroyed
   on idle while the rollout file survives both. `contextTokens` reads `last` and was always
-  right. Migration `CODEX_ROLLUP_REPAIR_MIGRATION` rebuilds the historical rows — only for
-  chains whose shape proves they are cumulative, because diffing an already-per-turn chain
-  would destroy real billing history.
+  right. Two consequences of subtracting rather than storing the rollup: a **compact-only**
+  run raises the thread total with a model request of its own (measured 1000 → 2000) and now
+  records it, because the next turn's baseline no longer sweeps it up; and one ShipIt session
+  is **not** one Codex thread — a rewind clears `agent_session_id`, so the accumulator
+  restarts with nothing in `usage_turns` to name the seam. Migration
+  `CODEX_ROLLUP_REPAIR_MIGRATION` rebuilds the historical rows, cutting each chain wherever
+  `context_tokens` (real occupancy) falls, which is what a restarted thread — or a compaction
+  — looks like in the data. Every guard in it errs toward leaving a row inflated: diffing an
+  already-per-turn chain destroys real billing history, and a visible wrong number does not.
 
 **What phase 3 found.** Six things, three of which change what a later phase does.
 

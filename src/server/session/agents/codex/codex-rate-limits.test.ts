@@ -159,5 +159,23 @@ describe("CodexRateLimits", () => {
       rl.recordTokenUsage(first);
       expect(rl.turnTokenUsage("turn-1")).toEqual({ usage: first, baselineTotal: undefined });
     });
+
+    // An EMPTY turn id is not a missing one. codex-cli 0.146.0 replays usage
+    // under `turnId: ""` when it cannot associate persisted usage with a
+    // rebuilt turn, so a truthiness test would read the replay as "no id known"
+    // and hand the previous thread's whole rollup to a turn that reported
+    // nothing of its own.
+    it("refuses a replay whose turn id is empty", () => {
+      const rl = new CodexRateLimits();
+      rl.recordTokenUsage(first, "");
+      expect(rl.turnTokenUsage("turn-2")).toBeNull();
+    });
+
+    it("still takes an empty-id replay as the next turn's baseline", () => {
+      const rl = new CodexRateLimits();
+      rl.recordTokenUsage(first, "");
+      rl.recordTokenUsage(second, "turn-2");
+      expect(rl.turnTokenUsage("turn-2")).toEqual({ usage: second, baselineTotal: first.total });
+    });
   });
 });

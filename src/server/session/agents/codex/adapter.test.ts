@@ -1999,6 +1999,61 @@ describe("CodexAdapter", () => {
       expect((events.find((e) => e.type === "agent_compacted") as any).trigger).toBe("manual");
       expect(fakeProc.killed).toBe(true);
     });
+
+    // planning#367 — a compact-only run makes a model request of its own and
+    // raises the thread's rollup. Measured against codex-cli 0.146.0: it gets a
+    // `turn/started` with its own id, the resume replays the previous turn's
+    // snapshot under the OLD id, and the compaction's own snapshots follow under
+    // the new one (total 1000 → 2000, `last` ending at the post-compaction
+    // occupancy). Before the per-turn subtraction those tokens were swept up by
+    // the next turn's cumulative total; now the next turn's baseline excludes
+    // them, so a synthetic result without them would drop them for good.
+    it("records a compact-only run's own tokens in its synthetic result", async () => {
+      adapter = new CodexAdapter(() => false);
+      adapter.on("event", (e) => events.push(e));
+      adapter.run({ prompt: "/compact", cwd: "/workspace", sessionId: "thread-xyz", compact: true });
+
+      await vi.waitFor(() => expect(fakeProc.getRequests().length).toBeGreaterThanOrEqual(1));
+      fakeProc.sendResponse(1, { serverInfo: {} });
+      await vi.waitFor(() => expect(fakeProc.getRequests().length).toBeGreaterThanOrEqual(3));
+      fakeProc.sendResponse(2, { threadId: "thread-xyz" });
+      await vi.waitFor(() => {
+        expect(fakeProc.getRequests().some((r) => r.method === "thread/compact/start")).toBe(true);
+      });
+
+      // The resume replays the previous turn's rollup under its old id…
+      fakeProc.sendNotification("thread/tokenUsage/updated", {
+        threadId: "thread-xyz",
+        turnId: "turn-before",
+        tokenUsage: {
+          total: { inputTokens: 1000, cachedInputTokens: 800, outputTokens: 10 },
+          last: { totalTokens: 1010 },
+          modelContextWindow: 258400,
+        },
+      });
+      // …and the compaction turn reports its own consumption under its own.
+      fakeProc.sendNotification("turn/started", { threadId: "thread-xyz", turn: { id: "turn-compact" } });
+      fakeProc.sendNotification("thread/tokenUsage/updated", {
+        threadId: "thread-xyz",
+        turnId: "turn-compact",
+        tokenUsage: {
+          total: { inputTokens: 2000, cachedInputTokens: 1600, outputTokens: 20 },
+          last: { totalTokens: 5439 },
+          modelContextWindow: 258400,
+        },
+      });
+      fakeProc.sendNotification("item/completed", { item: { type: "contextCompaction", id: "c4" } });
+
+      await vi.waitFor(() => {
+        expect(events.some((e) => e.type === "agent_result")).toBe(true);
+      });
+      expect(events.find((e) => e.type === "agent_result")).toMatchObject({
+        // The compaction's own request — not the thread's running total.
+        tokens: { input: 200, output: 10, cacheRead: 800 },
+        // The post-compaction occupancy, which is the point of the run.
+        contextTokens: 5439,
+      });
+    });
   });
 });
 

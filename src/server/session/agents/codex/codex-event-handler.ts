@@ -453,11 +453,24 @@ export class CodexEventHandler {
           // down. Guard so a stray `turn/completed` can't double-emit.
           if (this.compactSpawnMode && !this.compactionTerminated) {
             this.compactionTerminated = true;
+            // planning#367 — a compact-only run makes a model request of its own
+            // and raises the thread's rollup (measured: 1000 → 2000 against
+            // codex-cli 0.146.0), and the app-server gives it a `turn/started`
+            // with its own id like any other turn. Before the per-turn
+            // subtraction those tokens were swept up — wrongly, along with
+            // everything else — by the next turn's cumulative total; now the
+            // next turn's baseline excludes them, so a result without them
+            // would drop them for good.
+            const compactUsage = this.rateLimits.turnTokenUsage(this.currentTurnId);
             this.ctx.emitEvent({
               type: "agent_result",
               status: "success",
               sessionId: this.threadId ?? "unknown",
               durationMs: Date.now() - this.turnStartTime,
+              tokens: codexTurnTokens(compactUsage?.usage.total, compactUsage?.baselineTotal),
+              // The post-compaction occupancy — the whole point of the run.
+              contextTokens: compactUsage?.usage.last?.totalTokens,
+              contextWindow: this.rateLimits.lastTokenUsage?.modelContextWindow,
             });
             this.ctx.kill();
           }

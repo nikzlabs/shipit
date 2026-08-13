@@ -851,6 +851,8 @@ describe("planning#367 — Codex cumulative rollup repair (real migration)", () 
     output: number | null;
     cacheRead?: number | null;
     cacheWrite?: number | null;
+    /** `last.totalTokens` — real context occupancy, the thread-seam detector. */
+    context?: number | null;
     cost?: number;
     cumulativeCost?: number | null;
     subAgentId?: string | null;
@@ -881,14 +883,14 @@ describe("planning#367 — Codex cumulative rollup repair (real migration)", () 
           `INSERT INTO usage_turns (
              id, session_id, cost_usd, duration_ms,
              input_tokens, output_tokens, cache_read_tokens, cache_create_tokens,
-             cumulative_cost_usd, sub_agent_id,
+             context_tokens, cumulative_cost_usd, sub_agent_id,
              service_id, billing_mode, rate_input, rate_output, rate_cache_read, rate_cache_write)
-           VALUES (?, ?, ?, 1000, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           VALUES (?, ?, ?, 1000, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         )
         .run(
           t.id, t.session, t.cost ?? 0,
           t.input, t.output, t.cacheRead ?? null, t.cacheWrite ?? null,
-          t.cumulativeCost ?? null, t.subAgentId ?? null,
+          t.context ?? null, t.cumulativeCost ?? null, t.subAgentId ?? null,
           attributed ? "openai" : null,
           attributed ? t.billingMode! : null,
           // 1 USD per million input, 2 output, 0.5 cache read, 0 cache write.
@@ -1006,6 +1008,70 @@ describe("planning#367 — Codex cumulative rollup repair (real migration)", () 
       { ...RESUMED_CHAIN[1], id: 3 },
     ]);
     expect(readBack().map((r) => r.input_tokens)).toEqual([200, null, 200]);
+  });
+
+  // A rewind clears `agent_session_id`, so the next turn starts a FRESH Codex
+  // thread inside the same ShipIt session and its accumulator restarts. Nothing
+  // in `usage_turns` names the thread, so without the occupancy seam the run
+  // still reads as one non-decreasing chain and the new thread's first turn is
+  // diffed against the old thread's final rollup — subtracting a total it never
+  // accumulated. Occupancy is what falls at the seam.
+  it("does not subtract across a fresh thread started mid-session", () => {
+    rewindAndSeed([{ id: "codex-1", agentId: "codex" }], [
+      // Thread A, two turns of a growing conversation.
+      { id: 1, session: "codex-1", input: 100, output: 10, context: 5_000 },
+      { id: 2, session: "codex-1", input: 200, output: 20, context: 9_000 },
+      // Thread B after a rewind: occupancy restarts, the rollup does not
+      // happen to fall — so all four token columns still read as increasing.
+      { id: 3, session: "codex-1", input: 300, output: 30, context: 2_000 },
+      { id: 4, session: "codex-1", input: 500, output: 40, context: 6_000 },
+    ]);
+
+    // Thread B's first turn keeps its own rollup (a fresh accumulator makes it
+    // that turn's own figure); everything else is diffed within its thread.
+    expect(readBack().map((r) => r.input_tokens)).toEqual([100, 100, 300, 200]);
+  });
+
+  // A compaction drops occupancy WITHOUT resetting the rollup, so it cuts the
+  // chain too. That leaves one row still holding a running total — the safe
+  // direction: an inflated row a later pass can fix, not a real row diffed away.
+  it("errs toward leaving a row inflated at an occupancy drop it cannot explain", () => {
+    rewindAndSeed([{ id: "codex-1", agentId: "codex" }], [
+      { id: 1, session: "codex-1", input: 100, output: 10, context: 5_000 },
+      { id: 2, session: "codex-1", input: 200, output: 20, context: 1_000 },
+      { id: 3, session: "codex-1", input: 300, output: 30, context: 3_000 },
+    ]);
+    expect(readBack().map((r) => r.input_tokens)).toEqual([100, 200, 100]);
+  });
+
+  // `agent_id` is CURRENT session metadata and `cumulative_cost_usd` was added
+  // without a backfill, so on a row older than the first one that carries a
+  // running total, neither test can tell which harness wrote it. A long-lived
+  // session whose early turns ran Claude and is labelled Codex today would
+  // otherwise have that real per-turn history diffed away.
+  it("refuses a chain reaching back before any row carried a running total", () => {
+    rewindAndSeed(
+      [{ id: "codex-1", agentId: "codex" }, { id: "other", agentId: "claude" }],
+      [
+        ...RESUMED_CHAIN,
+        // A later Claude row, which is what dates the cumulative column.
+        { id: 9, session: "other", input: 50, output: 5, cumulativeCost: 1.5 },
+      ],
+    );
+    expect(readBack().map((r) => r.input_tokens)).toEqual([200, 400, 600, 50]);
+  });
+
+  it("repairs a chain that begins after the cumulative column was in use", () => {
+    // The same shape with the ordering reversed: every Codex row is newer than
+    // the first cumulative row, so the ambiguity does not apply.
+    rewindAndSeed(
+      [{ id: "codex-1", agentId: "codex" }, { id: "other", agentId: "claude" }],
+      [
+        { id: 1, session: "other", input: 50, output: 5, cumulativeCost: 1.5 },
+        ...RESUMED_CHAIN.map((t) => ({ ...t, id: t.id + 10 })),
+      ],
+    );
+    expect(readBack().map((r) => r.input_tokens)).toEqual([50, 200, 200, 200]);
   });
 
   it("is a no-op when re-run, so an earlier step's rewind cannot diff a diffed chain", () => {

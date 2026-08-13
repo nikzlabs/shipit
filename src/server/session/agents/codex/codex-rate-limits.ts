@@ -118,13 +118,16 @@ export class CodexRateLimits {
    * surfacing it would record that turn a second time.
    *
    * Both ids have to be known to refuse — an app-server that sends no `turnId`
-   * gets the snapshot it would have got before.
+   * gets the snapshot it would have got before. "Known" is `!== null`, NOT
+   * truthiness: codex-cli 0.146.0 replays usage under an EMPTY `turnId` when it
+   * cannot associate persisted usage with a rebuilt turn, and reading that as
+   * "no id" would let the replayed rollup be posted as the new turn's own.
    */
   turnTokenUsage(
     turnId: string | null | undefined,
   ): { usage: CodexTokenUsage; baselineTotal: CodexTokenUsage["total"] | undefined } | null {
     if (!this._lastTokenUsage) return null;
-    if (turnId && this._lastTurnId && turnId !== this._lastTurnId) return null;
+    if (turnId && this._lastTurnId !== null && turnId !== this._lastTurnId) return null;
     return { usage: this._lastTokenUsage, baselineTotal: this._baselineTotal };
   }
 

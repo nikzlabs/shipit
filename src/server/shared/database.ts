@@ -1185,21 +1185,45 @@ const MIGRATIONS: Migration[] = [
   // No column says which harness wrote a row, and the two failure modes are not
   // symmetric: leaving a Codex chain inflated is a visible number a later pass
   // can still fix, while diffing a chain that was ALREADY per-turn destroys real
-  // billing history. So a chain is rebuilt only when all three hold:
+  // billing history. So a chain is rebuilt only when all four hold:
   //
   //  1. its session is pinned to Codex (`sessions.agent_id`);
   //  2. no row took a cost from a harness running total (`cumulative_cost_usd`
   //     is NULL throughout) — Claude reports `total_cost_usd` on every turn, so
   //     this alone excludes a Claude chain, and it stays true for a Claude turn
   //     recorded inside a session later switched to Codex;
-  //  3. the chain is non-decreasing in all four token columns, which is what a
+  //  3. no row predates the column that (2) reads. `cumulative_cost_usd` was
+  //     added without a backfill, so on a row older than the first one that
+  //     carries it, NULL says nothing about the harness — and `agent_id` is
+  //     CURRENT session metadata, so a long-lived session whose early turns ran
+  //     Claude can be labelled Codex today. Before that id, the two tests that
+  //     identify a harness both go quiet, so the chain is refused;
+  //  4. the chain is non-decreasing in all four token columns, which is what a
   //     cumulative rollup looks like and what a per-turn series generally does
   //     not.
   //
-  // Anything else is left alone — including a chain whose accumulator genuinely
-  // restarted mid-session (a lost rollout, which fails (3)). Rows with no token
-  // telemetry at all are skipped rather than counted as zeros, so one such turn
-  // cannot disqualify the session around it.
+  // ## One session is not necessarily one thread
+  //
+  // A rewind clears `agent_session_id` (`sessions.clearAgentSessionId`), so the
+  // next turn starts a FRESH Codex thread whose accumulator restarts — inside
+  // the same ShipIt session, with no thread id anywhere in `usage_turns` to say
+  // where the seam is. When the new thread's first rollup happens to exceed the
+  // old thread's last, the whole run still reads as non-decreasing and (4) would
+  // subtract one thread's total from the other's first turn.
+  //
+  // `context_tokens` is the seam detector, and it is already on the row: it
+  // holds `last.totalTokens`, the real occupancy of the context window, which
+  // grows through a thread and DROPS when one starts over. So a chain is cut
+  // wherever occupancy falls, and each piece is diffed only against itself. A
+  // compaction also drops occupancy without resetting the rollup, so it cuts the
+  // chain too — that leaves one row still holding a running total, which is the
+  // safe direction: an inflated row a later pass can fix, rather than a real
+  // row diffed away.
+  //
+  // Anything else is left alone — including a chain whose accumulator restarted
+  // with no occupancy drop to show for it. Rows with no token telemetry at all
+  // are skipped rather than counted as zeros, so one such turn cannot
+  // disqualify the session around it.
   //
   // `cost_usd` is recomputed from the corrected tokens for metered rows only,
   // with the rates persisted on the row — that is precisely where the inflated
@@ -1222,6 +1246,7 @@ const MIGRATIONS: Migration[] = [
       output_tokens: number | null;
       cache_read_tokens: number | null;
       cache_create_tokens: number | null;
+      context_tokens: number | null;
       cost_usd: number;
       cumulative_cost_usd: number | null;
       billing_mode: string | null;
@@ -1234,7 +1259,7 @@ const MIGRATIONS: Migration[] = [
       .prepare(
         `SELECT u.id, u.session_id,
                 u.input_tokens, u.output_tokens, u.cache_read_tokens, u.cache_create_tokens,
-                u.cost_usd, u.cumulative_cost_usd, u.billing_mode,
+                u.context_tokens, u.cost_usd, u.cumulative_cost_usd, u.billing_mode,
                 u.rate_input, u.rate_output, u.rate_cache_read, u.rate_cache_write
          FROM usage_turns u
          JOIN sessions s ON s.id = u.session_id
@@ -1242,6 +1267,14 @@ const MIGRATIONS: Migration[] = [
          ORDER BY u.id`,
       )
       .all() as RepairRow[];
+
+    // Test (3): the first row that ever carried a harness running total. Rows
+    // written before it are from an era when the absence of one meant nothing.
+    // Compared by `id` rather than `created_at` — insertion order, immune to how
+    // a timestamp happens to be formatted.
+    const firstCumulative = (db
+      .prepare("SELECT MIN(id) AS id FROM usage_turns WHERE cumulative_cost_usd IS NOT NULL")
+      .get() as { id: number | null }).id;
 
     const chains = new Map<string, RepairRow[]>();
     for (const row of rows) {
@@ -1264,29 +1297,47 @@ const MIGRATIONS: Migration[] = [
     for (const chain of chains.values()) {
       if (chain.length < 2) continue;
       if (chain.some((row) => row.cumulative_cost_usd !== null)) continue;
-      const cumulative = chain.every((row, i) =>
-        i === 0 || classes.every((c) => (row[c] ?? 0) >= (chain[i - 1][c] ?? 0)));
-      if (!cumulative) continue;
+      if (firstCumulative !== null && chain.some((row) => row.id < firstCumulative)) continue;
 
-      for (const [i, row] of chain.entries()) {
-        const previous = i === 0 ? null : chain[i - 1];
-        const perTurn = Object.fromEntries(
-          classes.map((c) => [c, row[c] === null ? null : Math.max(0, row[c] - (previous?.[c] ?? 0))]),
-        ) as Record<(typeof classes)[number], number | null>;
-        // Money only where the inflated tokens became money: a metered row's
-        // cost was derived from them (`costFromRates` — per-million rates).
-        const metered = row.billing_mode === "key" && row.rate_input !== null;
-        const costUsd = metered
-          ? ((perTurn.input_tokens ?? 0) * row.rate_input!
-            + (perTurn.output_tokens ?? 0) * (row.rate_output ?? 0)
-            + (perTurn.cache_read_tokens ?? 0) * (row.rate_cache_read ?? 0)
-            + (perTurn.cache_create_tokens ?? 0) * (row.rate_cache_write ?? 0)) / 1_000_000
-          : row.cost_usd;
-        update.run(
-          perTurn.input_tokens, perTurn.output_tokens,
-          perTurn.cache_read_tokens, perTurn.cache_create_tokens,
-          costUsd, row.id,
-        );
+      // Cut at every drop in context occupancy — a thread that started over, or
+      // a compaction. Both end the run of one accumulator.
+      const segments: RepairRow[][] = [];
+      for (const row of chain) {
+        const open = segments[segments.length - 1];
+        const previous = open?.[open.length - 1];
+        const continues = previous !== undefined
+          && !(previous.context_tokens !== null && row.context_tokens !== null
+            && row.context_tokens < previous.context_tokens);
+        if (continues) open.push(row);
+        else segments.push([row]);
+      }
+
+      for (const segment of segments) {
+        if (segment.length < 2) continue;
+        const cumulative = segment.every((row, i) =>
+          i === 0 || classes.every((c) => (row[c] ?? 0) >= (segment[i - 1][c] ?? 0)));
+        if (!cumulative) continue;
+
+        for (const [i, row] of segment.entries()) {
+          const previous = i === 0 ? null : segment[i - 1];
+          const perTurn = Object.fromEntries(
+            classes.map((c) => [c, row[c] === null ? null : Math.max(0, row[c] - (previous?.[c] ?? 0))]),
+          ) as Record<(typeof classes)[number], number | null>;
+          // Money only where the inflated tokens became money: a metered row's
+          // cost was derived from them (`costFromRates` — per-million rates).
+          const metered = row.billing_mode === "key" ? row.rate_input : null;
+          const costUsd = metered !== null
+            ? ((perTurn.input_tokens ?? 0) * metered
+              + (perTurn.output_tokens ?? 0) * (row.rate_output ?? 0)
+              + (perTurn.cache_read_tokens ?? 0) * (row.rate_cache_read ?? 0)
+              + (perTurn.cache_create_tokens ?? 0) * (row.rate_cache_write ?? 0)) / 1_000_000
+            : row.cost_usd;
+          update.run(
+            perTurn.input_tokens, perTurn.output_tokens,
+            perTurn.cache_read_tokens, perTurn.cache_create_tokens,
+            costUsd, row.id,
+          );
+        }
       }
     }
   },
