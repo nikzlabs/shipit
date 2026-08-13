@@ -425,6 +425,8 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
   private containerOriginRefreshBackoffUntil = 0;
   private containerOriginRefreshFailed = false;
   private sessionNetworkRanges = new Map<string, { subnet: string; gateway?: string }[]>();
+  private sessionNetworkRangeRefresh?: Promise<void>;
+  private sessionNetworkRangeRefreshBackoffUntil = 0;
   private imageName: string;
   private networkName: string;
   private defaultMemoryLimit: number;
@@ -1239,9 +1241,47 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     }
     const refreshed = this.containerOriginSessions.get(ip);
     if (refreshed) return { sessionId: refreshed };
-    if (this.containerOriginRefreshFailed) throw new Error("container-origin index is unavailable");
+    if (this.containerOriginRefreshFailed) {
+      await this.refreshSessionNetworkRanges();
+      throw new Error("container-origin index is unavailable");
+    }
     this.containerOriginNegative.set(ip, Date.now() + 1_000);
     return undefined;
+  }
+
+  private async refreshSessionNetworkRanges(): Promise<void> {
+    if (Date.now() < this.sessionNetworkRangeRefreshBackoffUntil) return;
+    this.sessionNetworkRangeRefresh ??= (async () => {
+        try {
+          await Promise.race([
+            Promise.all([...this.containers.keys()].map(async (sessionId) => {
+              const inspected = await Promise.allSettled([
+                this.docker.getNetwork(`shipit-session-${sessionId}`).inspect(),
+                this.docker.getNetwork(`shipit-egress-${sessionId}`).inspect(),
+              ]);
+              const ranges = inspected.flatMap((result) => result.status === "fulfilled"
+                ? (result.value.IPAM?.Config ?? [])
+                  .filter((entry): entry is { Subnet: string; Gateway?: string } => Boolean(entry.Subnet))
+                  .map((entry) => ({ subnet: entry.Subnet, ...(entry.Gateway ? { gateway: entry.Gateway } : {}) }))
+                : []);
+              // Preserve the last-known-good ranges when Docker cannot inspect
+              // either network. This fallback exists for Docker outages, so an
+              // outage must never erase it and turn the API guard fail-open.
+              if (ranges.length > 0) this.sessionNetworkRanges.set(sessionId, ranges);
+            })),
+            new Promise<never>((_, reject) => {
+              setTimeout(() => reject(new Error("session-network range lookup timed out")), 1_000).unref();
+            }),
+          ]);
+          this.sessionNetworkRangeRefreshBackoffUntil = Date.now() + 1_000;
+        } catch (error) {
+          console.warn("[container-guard] could not refresh session network ranges:", error);
+          this.sessionNetworkRangeRefreshBackoffUntil = Date.now() + 5_000;
+        } finally {
+          this.sessionNetworkRangeRefresh = undefined;
+        }
+      })();
+    await this.sessionNetworkRangeRefresh;
   }
 
   /** Conservative bridge-origin check used only when Docker lookup is unavailable. */

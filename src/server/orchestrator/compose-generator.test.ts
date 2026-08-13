@@ -374,6 +374,45 @@ services:
     })).not.toThrow();
   });
 
+  it("does not trust an ops proxy that supplies a build definition", () => {
+    const dir = setup();
+    const denied = ["POST", "BUILD", "COMMIT", "EXEC", "AUTH", "CONFIGS", "DISTRIBUTION",
+      "GRPC", "NODES", "PLUGINS", "SECRETS", "SERVICES", "SESSION", "SWARM", "SYSTEM", "TASKS"];
+    const environment = denied.map((key) => `      ${key}: 0`).join("\n");
+    const p = writeCompose(dir, `services:\n  docker-socket-proxy:\n    image: tecnativa/docker-socket-proxy:0.3.0\n    build: .\n    environment:\n${environment}\n    volumes:\n      - /var/run/docker.sock:/var/run/docker.sock:ro\n`);
+    expect(() => parseComposeFile(p, {
+      dockerSocket: true,
+      containEgress: true,
+      trustedOpsProxy: true,
+    })).toThrow("direct Docker socket access");
+  });
+
+  it("does not trust an ops proxy with an extra bind mount", () => {
+    const dir = setup();
+    const denied = ["POST", "BUILD", "COMMIT", "EXEC", "AUTH", "CONFIGS", "DISTRIBUTION",
+      "GRPC", "NODES", "PLUGINS", "SECRETS", "SERVICES", "SESSION", "SWARM", "SYSTEM", "TASKS"];
+    const environment = denied.map((key) => `      ${key}: 0`).join("\n");
+    const p = writeCompose(dir, `services:\n  docker-socket-proxy:\n    image: tecnativa/docker-socket-proxy:0.3.0\n    environment:\n${environment}\n    volumes:\n      - /var/run/docker.sock:/var/run/docker.sock:ro\n      - ./proxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro\n`);
+    expect(() => parseComposeFile(p, {
+      dockerSocket: true,
+      containEgress: true,
+      trustedOpsProxy: true,
+    })).toThrow("direct Docker socket access");
+  });
+
+  it("does not trust an ops proxy with a repository-controlled healthcheck", () => {
+    const dir = setup();
+    const denied = ["POST", "BUILD", "COMMIT", "EXEC", "AUTH", "CONFIGS", "DISTRIBUTION",
+      "GRPC", "NODES", "PLUGINS", "SECRETS", "SERVICES", "SESSION", "SWARM", "SYSTEM", "TASKS"];
+    const environment = denied.map((key) => `      ${key}: 0`).join("\n");
+    const p = writeCompose(dir, `services:\n  docker-socket-proxy:\n    image: tecnativa/docker-socket-proxy:0.3.0\n    environment:\n${environment}\n    healthcheck:\n      test: [CMD-SHELL, 'true']\n    volumes:\n      - /var/run/docker.sock:/var/run/docker.sock:ro\n`);
+    expect(() => parseComposeFile(p, {
+      dockerSocket: true,
+      containEgress: true,
+      trustedOpsProxy: true,
+    })).toThrow("direct Docker socket access");
+  });
+
   it("does not grant the proxy UID exemption by service name alone", () => {
     const dir = setup();
     const p = writeCompose(dir, `

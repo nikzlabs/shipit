@@ -539,7 +539,12 @@ function isTrustedOpsProxyService(
 ): boolean {
   if (name !== "docker-socket-proxy" || !trustedOpsProxy
     || svc.image !== "tecnativa/docker-socket-proxy:0.3.0"
-    || svc.command !== undefined || svc.entrypoint !== undefined) return false;
+    || svc.build !== undefined || svc.command !== undefined || svc.entrypoint !== undefined
+    || svc.configs !== undefined || svc.secrets !== undefined || svc.env_file !== undefined
+    || svc.tmpfs !== undefined || svc.working_dir !== undefined || svc.healthcheck !== undefined
+    || svc.user !== undefined || svc.pid !== undefined || svc.ipc !== undefined
+    || svc.security_opt !== undefined || svc.cap_add !== undefined
+    || svc.network_mode !== undefined) return false;
   const environment = svc.environment;
   const env: Record<string, unknown> = {};
   if (Array.isArray(environment)) {
@@ -553,7 +558,7 @@ function isTrustedOpsProxyService(
   }
   const denied = ["POST", "BUILD", "COMMIT", "EXEC", "AUTH", "CONFIGS", "DISTRIBUTION",
     "GRPC", "NODES", "PLUGINS", "SECRETS", "SERVICES", "SESSION", "SWARM", "SYSTEM", "TASKS"];
-  const hasReadOnlySocket = Array.isArray(svc.volumes) && svc.volumes.some((vol) =>
+  const hasReadOnlySocket = Array.isArray(svc.volumes) && svc.volumes.length === 1 && svc.volumes.some((vol) =>
     typeof vol === "string"
       ? /^\/var\/run\/docker\.sock:\/var\/run\/docker\.sock:ro$/.test(vol)
       : Boolean(vol && typeof vol === "object"

@@ -25,3 +25,4 @@
 - [x] Three additional Opus review rounds completed; trusted-label exclusion, deterministic bootstrap DNS, safe internal-name routing, dotted orchestrator resolution, and stale-network remediation were addressed.
 - [x] Three convergence Opus rounds completed; Compose-service API authorization and its race-safe, bounded container-origin index were addressed.
 - [x] Two substantive Opus rounds addressed interpolation/tag/socket inheritance, preview authorization, exact network-origin classification, and durable diagnostics; the third broker run returned an empty result.
+- [x] Three compact Opus reviews addressed exact trusted-proxy code provenance, fail-closed network setup, bounded restart-safe origin fallback, proxy command-injection fields, and preservation of last-known-good network ranges.

@@ -132,8 +132,6 @@ export async function containComposeServices(opts: ContainComposeServicesOptions
   if (serviceContainers.length === 0) return;
 
   const labels = { ...(opts.labels ?? {}), "shipit-parent-session": opts.sessionId };
-  const network = await ensureEgressNetwork(opts.docker, opts.sessionId, labels);
-  const egressNetworkInfo = await network.inspect();
   const sessionNetwork = opts.docker.getNetwork(`shipit-session-${opts.sessionId}`);
   const sessionNetworkInfo = await sessionNetwork.inspect();
   if (!sessionNetworkInfo.Internal) {
@@ -164,6 +162,8 @@ export async function containComposeServices(opts: ContainComposeServicesOptions
     }
     throw new Error(`session network shipit-session-${opts.sessionId} is not internal`);
   }
+  const network = await ensureEgressNetwork(opts.docker, opts.sessionId, labels);
+  const egressNetworkInfo = await network.inspect();
   const allowedLocalSubnets = [
     ...new Set([...extractNetworkSubnets(sessionNetworkInfo), ...extractNetworkSubnets(egressNetworkInfo)]),
   ];
