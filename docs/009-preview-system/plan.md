@@ -107,7 +107,7 @@ get one at `PreviewFrame.tsx`), so `target="_top"`, `top.location`, and
 `window.open(url, "_top")` can still replace the whole ShipIt page with user
 activation. Sandboxing container previews would close that, at the cost of
 changing behaviour for every previewed app (downloads, popups, top-level OAuth
-redirects) — not attempted here.
+redirects) — not attempted here; tracked as planning#368.
 
 The script reports `canGoBack` on every `path` message, and `PreviewFrame` keeps
 it per slot — the pool leaves other sessions' iframes mounted and reporting, so a
