@@ -37,7 +37,8 @@ loop**.
 
 ### What you need
 
-- [Docker](https://docs.docker.com/get-docker/) with the Compose v2 plugin (`docker compose`).
+- [Docker](https://docs.docker.com/get-docker/) with the Compose v2 plugin (`docker compose`) — for
+  a local install only; the VPS script installs both for you.
 - A [GitHub account](https://github.com/), connected on first run — ShipIt clones repos, pushes
   branches, opens PRs, and reads CI and deploy status through it.
 - Credentials for at least one provider:
