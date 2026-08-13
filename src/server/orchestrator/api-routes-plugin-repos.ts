@@ -140,6 +140,7 @@ function readRuntimeState(
     if (attempt?.activating) entry.activating = true;
     if (attempt?.error) entry.error = attempt.error;
     if (attempt?.warning) entry.warning = attempt.warning;
+    if (attempt?.missingSelectors?.length) entry.missingSelectors = attempt.missingSelectors;
     runtime[repo.name] = entry;
   }
   return runtime;

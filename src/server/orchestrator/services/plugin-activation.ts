@@ -31,6 +31,8 @@ export interface PluginRepoActivationState {
   error?: string;
   /** Advisory: a moved tag the durable pin overrode (req 8). */
   warning?: string;
+  /** Selected exports the declared version lacks, when that is why it failed (phase 2). */
+  missingSelectors?: string[];
 }
 
 /**
@@ -190,6 +192,7 @@ export async function activateDeclaredPlugins(
           error: outcome.reason,
           ...(outcome.previous ? { generation: outcome.previous } : {}),
           ...(outcome.warning ? { warning: outcome.warning } : {}),
+          ...(outcome.missingSelectors?.length ? { missingSelectors: outcome.missingSelectors } : {}),
         });
         console.warn(`[plugins:${sessionId}] ${repo.name}: ${outcome.reason}`);
         return;

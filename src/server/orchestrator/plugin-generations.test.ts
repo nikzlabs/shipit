@@ -171,6 +171,8 @@ describe("phase-2 selector validation (plan §1a)", () => {
 
     expect(outcome.status).toBe("failed");
     expect((outcome as { reason: string }).reason).toContain("`ghost`");
+    // The names travel with the failure so the card states the fact once.
+    expect((outcome as { missingSelectors?: string[] }).missingSelectors).toEqual(["ghost"]);
     // Nothing was published — degraded beats partial.
     expect(readActiveGeneration(stateDir, "tools")).toBeNull();
     const generations = fs.readdirSync(path.join(stateDir, "plugins", "tools", "generations"));
