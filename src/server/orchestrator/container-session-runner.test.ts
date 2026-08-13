@@ -9,6 +9,8 @@ import http from "node:http";
 import type { Socket } from "node:net";
 import { ContainerSessionRunner } from "./container-session-runner.js";
 import { WorkerAbortedError } from "./worker-http.js";
+import { clearActivationState, getPluginPrepareFailures } from "./services/plugin-activation.js";
+import type { WsServerMessage } from "../shared/types.js";
 import {
   DEFAULT_SUB_AGENT_TIMEOUT_MS,
   SUB_AGENT_TRANSPORT_TIMEOUT_MS,
@@ -322,5 +324,134 @@ describe("ContainerSessionRunner — dispose({ preserveAgent }) (docs/113)", () 
 
     for (const s of sockets) s.destroy();
     await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+});
+
+/**
+ * docs/262 req 13 — the container half of plugin prepare has to reach the
+ * Plugins card. The worker knows what it could not materialize; the card is
+ * rendered from the orchestrator's snapshot, so the result has to travel.
+ */
+describe("ContainerSessionRunner — plugin prepare results (docs/262 req 13)", () => {
+  const SESSION = "plugin-prepare-session";
+
+  /** A worker whose `/plugins/prepare` answers with whatever `body` holds. */
+  async function withWorker(
+    body: { current: unknown },
+    run: (runner: ContainerSessionRunner, messages: WsServerMessage[]) => Promise<void>,
+  ): Promise<void> {
+    const server = http.createServer((_req, res) => {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify(body.current));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const addr = server.address();
+    if (typeof addr === "string" || !addr) throw new Error("no server address");
+    const runner = new ContainerSessionRunner({
+      sessionId: SESSION,
+      sessionDir: "/tmp/s1",
+      defaultAgentId: "claude",
+      workerUrl: `http://127.0.0.1:${addr.port}`,
+    });
+    const messages: WsServerMessage[] = [];
+    runner.on("message", (m) => messages.push(m));
+    try {
+      await run(runner, messages);
+    } finally {
+      runner.dispose({ force: true });
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  }
+
+  beforeEach(() => clearActivationState(SESSION));
+  afterEach(() => clearActivationState(SESSION));
+
+  it("puts a skill the container could not materialize on that repository's card", async () => {
+    await withWorker(
+      { current: { skillsFailed: [{ repo: "tools", skill: "reqs/probe", reason: "has no readable SKILL.md" }] } },
+      async (runner, messages) => {
+        vi.spyOn(console, "warn").mockImplementation(() => undefined);
+        await runner.preparePlugins();
+
+        expect(getPluginPrepareFailures(SESSION, "tools")).toEqual([
+          "Skill `reqs/probe`: has no readable SKILL.md",
+        ]);
+        // The settled hook already told the browser to refetch BEFORE this
+        // request went out, so without a second push the tab would render the
+        // snapshot that predates the answer.
+        expect(messages.map((m) => m.type)).toContain("plugin_repos_updated");
+      },
+    );
+  });
+
+  it("says nothing when a healthy prepare changes nothing", async () => {
+    await withWorker({ current: { skillsFailed: [] } }, async (runner, messages) => {
+      await runner.preparePlugins();
+      expect(getPluginPrepareFailures(SESSION, "tools")).toEqual([]);
+      expect(messages).toEqual([]);
+    });
+  });
+
+  it("clears a recorded failure once a later pass reports it fixed", async () => {
+    const body: { current: unknown } = {
+      current: { skillsFailed: [{ repo: "tools", skill: "reqs/probe", reason: "has no readable SKILL.md" }] },
+    };
+    await withWorker(body, async (runner, messages) => {
+      vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      await runner.preparePlugins();
+      expect(getPluginPrepareFailures(SESSION, "tools")).toHaveLength(1);
+
+      // The plugin ships the skill and prepare runs again. The record is
+      // replaced wholesale, so the card stops reporting a problem that is gone
+      // — and the browser is told, because the set moved.
+      body.current = { skillsFailed: [] };
+      messages.length = 0;
+      await runner.preparePlugins();
+
+      expect(getPluginPrepareFailures(SESSION, "tools")).toEqual([]);
+      expect(messages.map((m) => m.type)).toEqual(["plugin_repos_updated"]);
+    });
+  });
+
+  it("keeps each repository's failures apart, and replaces them all at once (req 14)", async () => {
+    const body: { current: unknown } = {
+      current: {
+        skillsFailed: [{ repo: "tools", skill: "reqs/probe", reason: "has no readable SKILL.md" }],
+        linkFailed: [{ repo: "images", reason: "`/plugins/images` already exists" }],
+      },
+    };
+    await withWorker(body, async (runner) => {
+      vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      await runner.preparePlugins();
+      expect(getPluginPrepareFailures(SESSION, "tools")).toHaveLength(1);
+      expect(getPluginPrepareFailures(SESSION, "images")).toEqual(["`/plugins/images` already exists"]);
+
+      // One repository is fixed, the other is not. The container pass is always
+      // whole-declaration, so one response describes both.
+      body.current = { skillsFailed: [{ repo: "tools", skill: "reqs/probe", reason: "has no readable SKILL.md" }] };
+      await runner.preparePlugins();
+      expect(getPluginPrepareFailures(SESSION, "tools")).toHaveLength(1);
+      expect(getPluginPrepareFailures(SESSION, "images")).toEqual([]);
+    });
+  });
+
+  it("leaves the last observed result standing when the container cannot be reached", async () => {
+    await withWorker(
+      { current: { skillsFailed: [{ repo: "tools", skill: "reqs/probe", reason: "has no readable SKILL.md" }] } },
+      async (runner) => {
+        vi.spyOn(console, "warn").mockImplementation(() => undefined);
+        await runner.preparePlugins();
+        expect(getPluginPrepareFailures(SESSION, "tools")).toHaveLength(1);
+
+        // The worker goes away. Nothing reached the container's filesystem, so
+        // what the last successful prepare left there is still what the agent
+        // sees: clearing the record would report health nobody observed.
+        runner.setWorkerUrl("http://127.0.0.1:1");
+        await runner.preparePlugins();
+        expect(getPluginPrepareFailures(SESSION, "tools")).toEqual([
+          "Skill `reqs/probe`: has no readable SKILL.md",
+        ]);
+      },
+    );
   });
 });

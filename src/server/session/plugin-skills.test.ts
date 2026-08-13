@@ -35,8 +35,8 @@ const NAMES = {
  * Plan, sweep, then write — the order `preparePlugins` uses, so these tests
  * exercise the real sequence rather than a shortcut through it.
  */
-function materialize(sources: { alias: string; skillsDir: string; checkoutDir?: string }[]) {
-  const plan = planPluginSkills(sources.map((s) => ({ checkoutDir, ...s })));
+function materialize(sources: { alias: string; skillsDir: string; checkoutDir?: string; repo?: string }[]) {
+  const plan = planPluginSkills(sources.map((s) => ({ repo: "tools", checkoutDir, ...s })));
   const removed = sweepStalePluginSkills(workspaceDir, new Set(plan.planned.map((p) => p.name)));
   const result = materializePluginSkills(workspaceDir, plan.planned);
   return { ...result, removed, failed: [...plan.failed, ...result.failed] };
@@ -119,17 +119,30 @@ describe("materializePluginSkills", () => {
     expect(fs.existsSync(path.join(roots()[0]!, NAMES.probe, "helper.sh"))).toBe(true);
   });
 
-  it("ignores a directory with no SKILL.md, but REPORTS a missing skills dir", () => {
+  it("ignores a non-skill directory beside a real skill, but REPORTS a missing skills dir", () => {
     // Silence on a declared-but-absent skills directory reported a plugin as
     // fully active while shipping none of the instructions it promised.
+    writeSkill(path.join(checkoutDir, "skills", "probe"), "probe");
     fs.mkdirSync(path.join(checkoutDir, "skills", "not-a-skill"), { recursive: true });
     const result = materialize([
       { alias: "tools", skillsDir: path.join(checkoutDir, "skills") },
       { alias: "gone", skillsDir: path.join(checkoutDir, "nowhere") },
     ]);
-    expect(result.materialized).toEqual([]);
+    expect(result.materialized).toEqual([NAMES.probe]);
     expect(result.failed.map((f) => f.skill)).toEqual(["gone"]);
     expect(result.failed[0]?.reason).toContain("does not exist");
+  });
+
+  // The same silent shortfall one step further in: the directory is there and
+  // holds nothing readable, so the plugin promises instructions and ships none.
+  // A clean pass here is exactly what req 13 rules out (review finding).
+  it("reports a skills directory that exists but holds no readable skill", () => {
+    fs.mkdirSync(path.join(checkoutDir, "skills", "not-a-skill"), { recursive: true });
+    const result = materialize([{ alias: "tools", skillsDir: path.join(checkoutDir, "skills") }]);
+    expect(result.materialized).toEqual([]);
+    expect(result.failed).toEqual([
+      { repo: "tools", skill: "tools", reason: expect.stringContaining("no readable skill") },
+    ]);
   });
 
   it("re-materializes on refresh, replacing the previous generation's copy", () => {
@@ -337,8 +350,8 @@ describe("materializePluginSkills", () => {
     // duplicate rather than from the hash width.
     writeSkill(path.join(checkoutDir, "skills", "probe"), "probe");
     const plan = planPluginSkills([
-      { alias: "same", checkoutDir, skillsDir: path.join(checkoutDir, "skills") },
-      { alias: "same", checkoutDir, skillsDir: path.join(checkoutDir, "skills") },
+      { alias: "same", repo: "tools", checkoutDir, skillsDir: path.join(checkoutDir, "skills") },
+      { alias: "same", repo: "tools", checkoutDir, skillsDir: path.join(checkoutDir, "skills") },
     ]);
 
     expect(plan.planned).toHaveLength(1);
@@ -408,21 +421,23 @@ describe("resolvePluginSkillSources", () => {
         { plugin: "probe", from: "tools", alias: "reqs" },
         { plugin: "other", from: "tools", alias: "other" },
       ],
-      () => checkoutDir,
+      () => ({ dir: checkoutDir, repo: "Tools" }),
     );
 
+    // The repo name comes from the resolver, in the DECLARATION's spelling —
+    // not from the `use` entry's `from:`, which matches case-insensitively.
     expect(sources).toEqual([
-      { alias: "reqs", checkoutDir, skillsDir: path.join(checkoutDir, "pkg", "skills") },
+      { alias: "reqs", repo: "Tools", checkoutDir, skillsDir: path.join(checkoutDir, "pkg", "skills") },
     ]);
   });
 
   it("yields nothing for a repo with no live checkout or no manifest", () => {
     expect(resolvePluginSkillSources([{ plugin: "p", from: "tools", alias: "p" }], () => null)).toEqual([]);
-    expect(resolvePluginSkillSources([{ plugin: "p", from: "tools", alias: "p" }], () => checkoutDir)).toEqual([]);
+    expect(resolvePluginSkillSources([{ plugin: "p", from: "tools", alias: "p" }], () => ({ dir: checkoutDir, repo: "tools" }))).toEqual([]);
   });
 
   it("survives a malformed manifest rather than failing the session", () => {
     fs.writeFileSync(path.join(checkoutDir, "shipit.yaml"), "exports: [unclosed\n  - broken");
-    expect(resolvePluginSkillSources([{ plugin: "p", from: "t", alias: "p" }], () => checkoutDir)).toEqual([]);
+    expect(resolvePluginSkillSources([{ plugin: "p", from: "t", alias: "p" }], () => ({ dir: checkoutDir, repo: "tools" }))).toEqual([]);
   });
 });

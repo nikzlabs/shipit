@@ -96,6 +96,14 @@ function skillsRoots(workspaceDir: string): string[] {
 export interface PluginSkillSource {
   /** The consumer's alias for the imported plugin — the namespace key (req 20). */
   alias: string;
+  /**
+   * The DECLARED repository this import comes from, in the declaration's own
+   * spelling. Carried on every source, plan entry and failure so a
+   * materialization problem can be attributed to a plugin card: the card's unit
+   * is the repository, while the failure's unit is one skill of one import
+   * (req 13 — a degradation the user cannot see is not "degrade, visibly").
+   */
+  repo: string;
   /** Absolute path of the skills directory inside the plugin checkout. */
   skillsDir: string;
   /**
@@ -114,7 +122,7 @@ export interface PluginSkillsResult {
   /** Namespaced directories removed because the declaration no longer names them. */
   removed: string[];
   /** Alias/skill pairs that could not be written, with the reason. */
-  failed: { skill: string; reason: string }[];
+  failed: PluginSkillFailure[];
 }
 
 /**
@@ -126,29 +134,41 @@ export interface PluginSkillsResult {
  */
 export function resolvePluginSkillSources(
   uses: readonly { plugin: string; from: string; alias: string }[],
-  checkoutDirFor: (repoName: string) => string | null,
+  checkoutFor: (repoName: string) => PluginCheckout | null,
 ): PluginSkillSource[] {
   const manifests = new Map<string, PluginExport[]>();
   const sources: PluginSkillSource[] = [];
 
   for (const use of uses) {
     const key = use.from.toLowerCase();
-    if (!manifests.has(key)) manifests.set(key, readExports(checkoutDirFor(use.from)));
+    const checkout = checkoutFor(use.from);
+    if (!manifests.has(key)) manifests.set(key, readExports(checkout?.dir ?? null));
     const exported = manifests.get(key)!
       .find((e) => e.name.toLowerCase() === use.plugin.toLowerCase());
     if (!exported?.skills) continue;
 
-    const checkoutDir = checkoutDirFor(use.from);
-    if (!checkoutDir) continue;
+    if (!checkout) continue;
     // The manifest parser already rejects absolute paths and traversal, so this
     // join stays inside the checkout.
     sources.push({
       alias: use.alias,
-      checkoutDir,
-      skillsDir: path.join(checkoutDir, exported.skills),
+      repo: checkout.repo,
+      checkoutDir: checkout.dir,
+      skillsDir: path.join(checkout.dir, exported.skills),
     });
   }
   return sources;
+}
+
+/**
+ * A live checkout, plus the declared repository name it belongs to. The name is
+ * the resolver's to supply rather than the `use` entry's: `from:` matches a
+ * declaration case-insensitively, and the card is keyed by the declaration's
+ * own spelling.
+ */
+export interface PluginCheckout {
+  dir: string;
+  repo: string;
 }
 
 function readExports(checkoutDir: string | null): PluginExport[] {
@@ -171,12 +191,29 @@ function readExports(checkoutDir: string | null): PluginExport[] {
 export interface PlannedSkill {
   name: string;
   from: string;
+  /** Declared repository this skill belongs to — see {@link PluginSkillSource}. */
+  repo: string;
+  /**
+   * How the user knows this skill: `<alias>/<skill>`. The `name` above is a
+   * namespaced directory with a hash on the end, which is the right thing on
+   * disk and the wrong thing to put on a card.
+   */
+  label: string;
+}
+
+/** One thing that could not be made available, attributed to a plugin card. */
+export interface PluginSkillFailure {
+  /** Declared repository the card belongs to. */
+  repo: string;
+  /** `<alias>/<skill>`, or the alias alone when the whole import failed. */
+  skill: string;
+  reason: string;
 }
 
 /** What a plan produced: what to write, and what could not be planned at all. */
 export interface PluginSkillPlan {
   planned: PlannedSkill[];
-  failed: { skill: string; reason: string }[];
+  failed: PluginSkillFailure[];
 }
 
 /**
@@ -204,6 +241,7 @@ export function planPluginSkills(sources: readonly PluginSkillSource[]): PluginS
       // here reported a plugin as fully active while shipping none of the
       // instructions it promised (review finding).
       plan.failed.push({
+        repo: source.repo,
         skill: source.alias,
         reason: "the declared skills directory does not exist in this generation",
       });
@@ -212,6 +250,7 @@ export function planPluginSkills(sources: readonly PluginSkillSource[]): PluginS
     const skillsDir = containedRealPath(source.checkoutDir, source.skillsDir);
     if (!skillsDir) {
       plan.failed.push({
+        repo: source.repo,
         skill: source.alias,
         reason: "the declared skills directory resolves outside the plugin checkout",
       });
@@ -220,16 +259,33 @@ export function planPluginSkills(sources: readonly PluginSkillSource[]): PluginS
     const dirs = listSkillDirs(skillsDir);
     if (dirs === null) {
       plan.failed.push({
+        repo: source.repo,
         skill: source.alias,
         reason: "the declared skills directory could not be read",
       });
       continue;
     }
+    if (dirs.length === 0) {
+      // Declaring `skills:` and shipping nothing readable under it is the same
+      // silent shortfall as declaring a directory that is not there: the plugin
+      // promises agent instructions and delivers none, and reporting zero
+      // skills as a clean pass is what req 13 rules out. A directory whose
+      // children have no `SKILL.md` reads as empty here, which is right — an
+      // unreadable skill is not a skill.
+      plan.failed.push({
+        repo: source.repo,
+        skill: source.alias,
+        reason: "the declared skills directory contains no readable skill",
+      });
+      continue;
+    }
     for (const skillDir of dirs) {
+      const label = `${source.alias}/${skillDir}`;
       const from = containedRealPath(skillsDir, path.join(skillsDir, skillDir));
       if (!from) {
         plan.failed.push({
-          skill: `${source.alias}/${skillDir}`,
+          repo: source.repo,
+          skill: label,
           reason: "the skill directory resolves outside the plugin checkout",
         });
         continue;
@@ -241,13 +297,14 @@ export function planPluginSkills(sources: readonly PluginSkillSource[]): PluginS
       const owner = claimed.get(name);
       if (owner !== undefined) {
         plan.failed.push({
-          skill: `${source.alias}/${skillDir}`,
+          repo: source.repo,
+          skill: label,
           reason: `its namespaced name collides with \`${owner}\``,
         });
         continue;
       }
-      claimed.set(name, `${source.alias}/${skillDir}`);
-      plan.planned.push({ name, from });
+      claimed.set(name, label);
+      plan.planned.push({ name, from, repo: source.repo, label });
     }
   }
   return plan;
@@ -303,7 +360,7 @@ export function materializePluginSkills(
 ): PluginSkillsResult {
   const result: PluginSkillsResult = { materialized: [], removed: [], failed: [] };
 
-  for (const { name, from } of planned) {
+  for (const { name, from, repo, label } of planned) {
     const written: string[] = [];
     const failures: string[] = [];
     for (const root of skillsRoots(workspaceDir)) {
@@ -315,7 +372,7 @@ export function materializePluginSkills(
       result.materialized.push(name);
       continue;
     }
-    for (const reason of failures) result.failed.push({ skill: name, reason });
+    for (const reason of failures) result.failed.push({ repo, skill: label, reason });
     for (const dir of written) {
       try {
         fs.rmSync(dir, { recursive: true, force: true });

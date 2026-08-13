@@ -96,6 +96,25 @@ const inFlight = new Map<string, number>();
  */
 const prepareFailures = new Map<string, string[]>();
 
+/**
+ * The CONTAINER half of prepare, same key and same lifetime (req 13, req 22).
+ *
+ * Prepare has two halves that fail independently: the orchestrator writes each
+ * import's state directory and settings file (above), and the container links
+ * `/plugins/<name>` and materializes each plugin's skills into every harness
+ * discovery root. The second half used to end at a `console.warn` in
+ * `ContainerSessionRunner.preparePlugins()`, so a plugin that shipped none of
+ * the agent instructions it promised still rendered as a healthy card — a
+ * degradation nobody can see is not "degrade, visibly".
+ *
+ * Kept in its OWN map rather than merged into the one above, because the two
+ * are written by different actors at different moments and each replaces only
+ * its own entries: a container prepare that reports nothing must not erase a
+ * settings-write failure the orchestrator recorded microseconds earlier. They
+ * are concatenated on read.
+ */
+const containerFailures = new Map<string, string[]>();
+
 const stateKey = (sessionId: string, repoName: string): string => `${sessionId}::${repoName}`;
 const flightKey = (sessionId: string, epoch: number, repoName: string): string =>
   `${sessionId}::${epoch}::${repoName}`;
@@ -104,9 +123,145 @@ export function getActivationState(sessionId: string, repoName: string): PluginR
   return activationState.get(stateKey(sessionId, repoName));
 }
 
-/** Prepare failures from the last round for one repository (`plugin-state.ts`). */
+/**
+ * Prepare failures from the last round for one repository — both halves
+ * (`plugin-state.ts` orchestrator-side, `plugin-runtime.ts` container-side).
+ *
+ * One accessor on purpose: the snapshot route asks "what could this repository
+ * not be given?", and which process failed to give it is an implementation
+ * detail of the answer, not part of the question.
+ */
 export function getPluginPrepareFailures(sessionId: string, repoName: string): string[] {
-  return prepareFailures.get(stateKey(sessionId, repoName)) ?? [];
+  return [
+    ...(prepareFailures.get(stateKey(sessionId, repoName)) ?? []),
+    ...(containerFailures.get(stateKey(sessionId, repoName)) ?? []),
+  ];
+}
+
+/** One thing the container could not make available, as its prepare reports it. */
+export interface ContainerPrepareFailure {
+  /** Declared repository name, in the declaration's own spelling. */
+  repo: string;
+  /**
+   * `<alias>/<skill>`, the alias alone, or `(all)` — absent when the failure is
+   * the repository's own `/plugins/<name>` link, which names no skill.
+   */
+  skill?: string;
+  reason: string;
+}
+
+/**
+ * Read a `/plugins/prepare` response into attributed failures, DISCARDING
+ * anything that is not one.
+ *
+ * Validated rather than cast, because the worker on the other end is not
+ * necessarily the one this orchestrator shipped with: containers survive an
+ * orchestrator restart and are reconnected (`app-lifecycle.ts`), so a rolling
+ * upgrade leaves a new orchestrator talking to a worker built before failures
+ * carried a `repo`. Casting stored those under a key no card ever looks up
+ * (`sessionId::undefined`) — invisible, and now also displacing whatever the
+ * previous run recorded. Dropping them instead makes an old worker exactly as
+ * silent as it was before this change, which is the honest answer: it is not
+ * reporting less than it knows, it never knew.
+ */
+export function readPrepareFailures(body: unknown, sessionId: string): ContainerPrepareFailure[] {
+  if (!body || typeof body !== "object") return [];
+  const record = body as Record<string, unknown>;
+  const failures: ContainerPrepareFailure[] = [];
+  let dropped = 0;
+
+  const take = (list: unknown, withSkill: boolean): void => {
+    if (!Array.isArray(list)) return;
+    for (const entry of list) {
+      const item = entry && typeof entry === "object" ? entry as Record<string, unknown> : null;
+      const repo = item?.repo;
+      const reason = item?.reason;
+      const skill = item?.skill;
+      if (typeof repo !== "string" || !repo || typeof reason !== "string") {
+        dropped += 1;
+        continue;
+      }
+      failures.push({
+        repo,
+        reason,
+        ...(withSkill && typeof skill === "string" ? { skill } : {}),
+      });
+    }
+  };
+  take(record.skillsFailed, true);
+  take(record.linkFailed, false);
+
+  if (dropped > 0) {
+    console.warn(
+      `[plugins:${sessionId}] dropped ${dropped} prepare failure(s) this container did not attribute `
+      + "to a declared repository — it is probably older than this orchestrator",
+    );
+  }
+  return failures;
+}
+
+/**
+ * Record a container prepare's outcome, once it has one.
+ *
+ * Called BEFORE the request goes out and invoked with the result, so the epoch
+ * is captured at the same moment the container is asked — the pattern the
+ * activation round already uses. A prepare that returns after its session was
+ * disposed (or reactivated) writes nothing: `clearActivationState` has moved
+ * the epoch on, and repopulating the map would leave a dead session's failures
+ * attached to a live one's cards.
+ *
+ * **Only a prepare that actually RAN may call the returned recorder.** The
+ * record is replaced wholesale, which is what makes a fixed problem disappear
+ * on the next round (a refresh re-runs prepare over the whole declaration, so
+ * one pass always describes every repository). The corollary is that a prepare
+ * which could not run — an unreachable worker, a timeout — must leave the
+ * previous record alone rather than clear it: nothing reached the container's
+ * filesystem, so the last successful run is still the truth about what is
+ * materialized there, and clearing it would report health that was never
+ * observed.
+ *
+ * Returns whether the session's recorded set actually changed, so the caller
+ * can tell the browser to refetch only when there is something new to see.
+ */
+export function beginContainerPrepare(
+  sessionId: string,
+): (failures: readonly ContainerPrepareFailure[]) => boolean {
+  const epoch = epochs.get(sessionId) ?? 0;
+  return (failures) => {
+    if ((epochs.get(sessionId) ?? 0) !== epoch) return false;
+
+    const next = new Map<string, string[]>();
+    for (const failure of failures) {
+      const key = stateKey(sessionId, failure.repo);
+      next.set(key, [...(next.get(key) ?? []), formatContainerFailure(failure)]);
+    }
+
+    let changed = false;
+    for (const key of [...containerFailures.keys()]) {
+      if (!key.startsWith(`${sessionId}::`) || next.has(key)) continue;
+      containerFailures.delete(key);
+      changed = true;
+    }
+    for (const [key, messages] of next) {
+      const before = containerFailures.get(key);
+      if (before?.length !== messages.length || before.some((m, i) => m !== messages[i])) changed = true;
+      containerFailures.set(key, messages);
+    }
+    return changed;
+  };
+}
+
+/**
+ * How a container-side failure reads on a plugin card. Two of the three shapes
+ * name no skill and so print no identifier rather than a placeholder: `(all)`
+ * is the whole import set failing at once, and an absent `skill` is the
+ * repository's own link.
+ */
+function formatContainerFailure(failure: ContainerPrepareFailure): string {
+  if (failure.skill === undefined) return failure.reason;
+  return failure.skill === "(all)"
+    ? `Skills: ${failure.reason}`
+    : `Skill \`${failure.skill}\`: ${failure.reason}`;
 }
 
 export function clearActivationState(sessionId: string): void {
@@ -119,6 +274,9 @@ export function clearActivationState(sessionId: string): void {
   }
   for (const key of [...prepareFailures.keys()]) {
     if (key.startsWith(`${sessionId}::`)) prepareFailures.delete(key);
+  }
+  for (const key of [...containerFailures.keys()]) {
+    if (key.startsWith(`${sessionId}::`)) containerFailures.delete(key);
   }
 }
 
