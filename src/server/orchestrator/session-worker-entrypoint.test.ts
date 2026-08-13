@@ -222,6 +222,29 @@ describe("session worker ownership sentinel", () => {
     expect(result.chowns).toEqual([`-R 1000:1000 ${a}`, `-R 1000:1000 ${b}`]);
   });
 
+  // docs/262 — /plugins holds the symlinks into the read-only plugin store. The
+  // worker creates them AFTER the privilege drop, and `/` is root-owned, so
+  // without a handoff here the non-root worker EACCESes and the agent-facing
+  // plugin path silently never appears (found in review; the unit tests used
+  // writable temp dirs and could not see it).
+  //
+  // This runs unprivileged in CI, so `/plugins` genuinely cannot be prepared —
+  // which makes it the exact regression guard that matters: the step is
+  // best-effort, it must NOT abort a boot under `set -e`, and it must say so.
+  it("never fails the boot when /plugins cannot be prepared, and warns instead", () => {
+    const dir = tempDir();
+
+    const result = runEntrypoint([dir], "1000");
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toContain("could not prepare /plugins");
+    // The real mounts still got their handoff — one optional step failing must
+    // not cost the boot anything else.
+    expect(result.chowns).toEqual([`-R 1000:1000 ${dir}`]);
+    // And the worker still starts, under the configured UID.
+    expect(result.gosu[0]).toContain("1000");
+  });
+
   it("re-chowns when a restored sentinel is not owned by the worker UID", () => {
     const dir = tempDir();
     // Stand in for the restored, root-owned sentinel: the marker exists but its

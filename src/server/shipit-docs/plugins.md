@@ -66,8 +66,8 @@ mid-session, `/plugins/<name>` points at the new commit with no restart.
 ## Plugin code does not run in your container
 
 Everything a plugin *ships* — its `install`, its CLIs, its services — is
-designed to run in a separate container, and none of it runs yet, with only what it declared: the checkout, its own
-writable layer, its own credentials.
+designed to run in a separate container, with only what it declared: the
+checkout, its own writable layer, its own credentials. None of it runs yet.
 
 This is not tidiness. Your container can reach ShipIt's own credential broker
 on loopback, so anything running here can obtain a real GitHub token. Plugin

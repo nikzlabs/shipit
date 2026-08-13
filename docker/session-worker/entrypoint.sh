@@ -86,8 +86,15 @@ done
 # walk, and the loop's sentinel would litter a dot-entry into a directory the
 # agent lists. Under SESSION_READONLY_ROOTFS the orchestrator mounts a tmpfs
 # here instead; this mkdir is then a harmless no-op on it.
-mkdir -p /plugins
-chown "${UID_GID}:${UID_GID}" /plugins
+# Best-effort, like the journal block below: this script runs under `set -e`, so
+# an unconditional mkdir/chown here would abort the whole boot on any host where
+# `/` is not writable by this process — taking the agent down over an optional
+# feature. Failures are reported on stderr (the container's `docker logs`) so a
+# missing plugin surface is diagnosable rather than silently absent, which is
+# how the original EACCES bug hid.
+if ! (mkdir -p /plugins && chown "${UID_GID}:${UID_GID}" /plugins) 2>/dev/null; then
+  echo "[shipit] warning: could not prepare /plugins for UID ${UID_GID}; plugin checkouts will not be linked" >&2
+fi
 
 # docs/172 Gap 5 (planning#99) — read-only rootfs. The orchestrator mounts a tmpfs at
 # /home/shipit (the HOME holds writable caches: ~/.npm, ~/.npm-global, ~/.cache,
