@@ -1047,9 +1047,9 @@ describe("ServicesPanel — one card component (docs/252 D2, D7, D8, D9)", () =>
     render(<ServicesPanel agentList={[claudeAgent]} />);
 
     // One account in the pool, so there is nothing to route between — even
-    // though the card holds three credentials.
-    expect(screen.getByTestId("service-routing-service-card-anthropic:sub"))
-      .toHaveTextContent(/One account — nothing to route between yet/);
+    // though the card holds three credentials — and a band with nothing to say
+    // is absent, not explanatory.
+    expect(screen.queryByTestId("service-routing-service-card-anthropic:sub")).not.toBeInTheDocument();
     expect(screen.queryByTestId("credential-selection-mode-anthropic:sub")).not.toBeInTheDocument();
     // No ordering on the tokens: the endpoint would reject a list that omits
     // the account, and they are not in the accounts' failover chain anyway.
@@ -1106,15 +1106,23 @@ describe("ServicesPanel — one card component (docs/252 D2, D7, D8, D9)", () =>
     expect(screen.queryByTestId("failover-cutoffs-zai:sub")).not.toBeInTheDocument();
   });
 
-  it("names a lone subscription's next step, and says nothing on a key card", () => {
+  /**
+   * A single credential and a key are the SAME absence, and the panel treats
+   * them the same way. The lone subscription briefly carried "One credential —
+   * nothing to route between yet. Add a second to choose an order and a
+   * strategy."; it was rejected on sight in the dogfood instance for the reason
+   * req 12 already gives for the key card — a sentence explaining an absence,
+   * printed once per single-credential service on every visit to Settings.
+   */
+  it("says nothing about routing on a lone subscription, or on a key card", () => {
     useSettingsStore.getState().setCredentialRoutes([
       route({ id: "cred_1", serviceId: "zai", billingMode: "sub", via: "string", isPrimary: true }),
       route({ id: "cred_k", serviceId: "deepseek", billingMode: "key", via: "string" }),
     ]);
     render(<ServicesPanel />);
 
-    expect(screen.getByTestId("service-routing-service-card-zai:sub"))
-      .toHaveTextContent(/One credential — nothing to route between yet/);
+    expect(screen.getByTestId("service-card-zai:sub")).toBeInTheDocument();
+    expect(screen.queryByTestId("service-routing-service-card-zai:sub")).not.toBeInTheDocument();
     // req 12: a key card gets no band at all — not a disabled group, not an
     // empty section, and no sentence explaining the absence.
     expect(screen.queryByTestId("service-routing-service-card-deepseek:key")).not.toBeInTheDocument();
@@ -1656,7 +1664,8 @@ describe("an account-capable mode holding only supplied credentials (docs/252 re
     render(<ServicesPanel agentList={[claudeAgent]} />);
 
     expect(screen.queryByTestId("credential-row-cred_1-grip")).not.toBeInTheDocument();
-    expect(screen.getByTestId("service-routing-service-card-anthropic:sub"))
-      .toHaveTextContent(/One account — nothing to route between yet/);
+    // One account is the whole pool, so the band has nothing to hold and is
+    // absent rather than explaining itself.
+    expect(screen.queryByTestId("service-routing-service-card-anthropic:sub")).not.toBeInTheDocument();
   });
 });

@@ -309,6 +309,16 @@ _None._
 
 ## Resolved questions
 
+- 2026-08-13 — Does a card holding one credential explain that there is nothing to route
+  between yet? **Chosen: no — it says nothing at all.** The mock-up carried the strip ("One
+  account — nothing to route between yet. Add a second to choose an order and a strategy."),
+  the UI audit adopted it as D8, and the human rejected it on sight in the dogfood instance:
+  "this is not needed, shouldn't be shown at all when there is only a single account." No
+  requirement changes — req 19 already refuses prose that reads the same on every install, and
+  the argument for keeping this one (a key card can never route, so explaining *that* absence
+  is noise, while this one names a reachable capability) was a carve-out req 19 does not
+  contain. The routing band now appears only when there is something to route between.
+
 - 2026-08-12 — A service card carries four sentences of explanation, an empty-state box and a
   row of model-id chips around a single credential row (272 px for 39 px of credential). How
   compact, and what goes? **Chosen: the compact card, with the model ids moved into a control

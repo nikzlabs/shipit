@@ -3109,6 +3109,18 @@ Anthropic's refresh button. The one change it needs is `label` becoming optional
 it must name its account, in a row the row already does. A key reports no quota, so a key row
 has no pill and nothing explains the absence.
 
+**The routing band appears when there is something to route between, and says nothing when there
+is not.** One credential is the same absence as an API key's, and gets the same treatment: no
+band, no disabled controls, no sentence. The audit's D8 cell was taken the other way for one
+round — the mock-up's strip ("One account — nothing to route between yet. Add a second to choose
+an order and a strategy.") was built, on the argument that a key card can *never* route while
+this one names a capability the user can reach by doing one thing. The human rejected it on
+sight in the dogfood instance, and the argument was the flaw: req 19 refuses prose that reads
+the same on every install, and that distinction is a carve-out the requirement does not contain.
+Adding a credential is what the panel's one "Add a service" button is for; a line per
+single-credential service, on every visit to Settings, is not how it gets found. The receipt is
+dated 2026-08-13 in `requirements.md`.
+
 **The routing band's copy is kept — moved into tooltips, not rewritten and not dropped.** The
 band's four strings are what make the choice answerable; compacting the band must not cost them.
 Each one moves to the control it was already describing:

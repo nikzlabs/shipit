@@ -365,3 +365,10 @@ the first of these. All six are fixed.
       stored row already held. It now compares by value, and withdraws a
       duplicate it created before the rule existed (narrowly: still its secret,
       still its generated label).
+- [x] **The single-credential card explained itself, and should say nothing.**
+      "One account — nothing to route between yet. Add a second to choose an
+      order and a strategy." came from the mock-up (audit cell D8) and was
+      rejected on sight. The routing band now appears only when there is
+      something to route between, which is what the code did before the audit
+      pass; `NothingToRouteYet` is deleted and D8 is closed as **(d)**, the
+      mock-up being wrong. Receipt dated 2026-08-13 in `requirements.md`.
