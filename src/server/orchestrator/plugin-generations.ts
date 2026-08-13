@@ -55,6 +55,14 @@ import { resolveDurablePin } from "./plugin-pins.js";
 /** Subdirectory of the session state dir that holds every plugin checkout. */
 export const PLUGINS_SUBDIR = "plugins";
 
+/**
+ * Per-repo subdirectory holding one writable layer per generation
+ * (`work/<sha>/upper` + `work/<sha>/work`). Named here rather than in
+ * `plugin-overlay.ts` because pruning lives on this side: a layer must be
+ * dropped with the generation it belongs to.
+ */
+export const WORK_SUBDIR = "work";
+
 /** Filename of the generation record, written inside the generation directory. */
 const RECORD_FILE = ".shipit-generation.json";
 
@@ -117,6 +125,14 @@ export interface PluginInstallJob {
   stagingDir: string;
   /** Only the exports this consumer selected; unselected ones are not installed. */
   exports: readonly PluginExport[];
+  /**
+   * Whether the session this install belongs to is gone. Passed INTO the job
+   * rather than only checked around it: an install is the one step here that
+   * runs for minutes, so a session archived while it runs must be able to stop
+   * it — otherwise third-party code keeps running, and its container keeps
+   * holding the generation's volume, long after the session it served.
+   */
+  isCancelled?: () => boolean;
 }
 
 export interface ActivateDeps {
@@ -333,11 +349,26 @@ async function activateOnce(repo: DeclaredPluginRepo, deps: ActivateDeps): Promi
     // Note what is NOT here: the install itself. This module runs no
     // plugin-authored code in-process — `runInstall` is injected, and its
     // implementation puts that code in its own container (req 19).
+    const selected = exportsList.filter((e) =>
+      deps.selectedExports.some((n) => n.toLowerCase() === e.name.toLowerCase()),
+    );
     if (deps.runInstall) {
-      const selected = exportsList.filter((e) =>
-        deps.selectedExports.some((n) => n.toLowerCase() === e.name.toLowerCase()),
-      );
-      const outcome = await deps.runInstall({ stagingDir, commit, repoName: repo.name, exports: selected });
+      // Checked HERE, not only at the two publish gates: fetch, checkout and
+      // manifest validation all take time, so a session disposed during them
+      // would otherwise have reached this line and started minutes of
+      // third-party code — which `prepareLayer` precedes by re-creating the
+      // very state directory cleanup had just removed.
+      if (deps.isCancelled?.()) {
+        await fsp.rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
+        return { status: "failed", reason: "the session went away before activation completed", ...withPrevious };
+      }
+      const outcome = await deps.runInstall({
+        stagingDir,
+        commit,
+        repoName: repo.name,
+        exports: selected,
+        ...(deps.isCancelled ? { isCancelled: deps.isCancelled } : {}),
+      });
       if (!outcome.ok) {
         await fsp.rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
         return {
@@ -349,13 +380,26 @@ async function activateOnce(repo: DeclaredPluginRepo, deps: ActivateDeps): Promi
       }
     }
 
+    // No install runner at all (local/dogfood mode, tests) but a selected
+    // export declares one: the generation is genuinely partial, so say so
+    // rather than reporting it plainly `active`. Publishing anyway is
+    // deliberate — this is the runtime the inner dogfood instance uses, and a
+    // repository that cannot activate there cannot be exercised there either.
+    // Req 13's rule is "degrade visibly", not "refuse".
+    const uninstalled = deps.runInstall
+      ? []
+      : selected.filter((e) => e.install?.trim()).map((e) => e.name);
+    const notInstalled = uninstalled.length > 0
+      ? `${uninstalled.map((n) => `\`${n}\``).join(", ")} declare an install command, which this runtime cannot run — the plugin is active but was not installed.`
+      : undefined;
+
     const record: GenerationRecord = {
       repoName: repo.name,
       commit,
       ref: declaredRef,
       activatedAt: new Date().toISOString(),
       exports: exportsList.map((e) => e.name),
-      manifestWarnings,
+      manifestWarnings: notInstalled ? [...manifestWarnings, notInstalled] : manifestWarnings,
     };
     // The record is written into the staging tree, so the directory that
     // becomes live is complete before it has a name anything reads.
@@ -374,6 +418,9 @@ async function activateOnce(repo: DeclaredPluginRepo, deps: ActivateDeps): Promi
     await pruneOldGenerations(stateDir, repo.name, commit);
 
     console.log(`[plugins] ${repo.name}: activated ${commit.slice(0, 9)} (${declaredRef})`);
+    // The uninstalled warning outranks a moved-tag advisory: one says the
+    // plugin does not fully work, the other that a pin held.
+    if (notInstalled) return { status: "activated", generation: record, warning: notInstalled };
     return { status: "activated", generation: record, ...warningField };
   } catch (err) {
     await fsp.rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
@@ -474,11 +521,22 @@ async function swapActiveLink(stateDir: string, repoName: string, commit: string
 }
 
 /**
- * Drop superseded generations. Re-reads the live link first and skips anything
- * it points at, so a prune can never delete the generation another activation
- * just published (review finding 3). Staging directories belong to whoever is
- * staging them, and a crashed stage's leftovers are swept by the same rule the
- * next time that commit is staged (the `rm` before the rename).
+ * Drop superseded generations, their writable layers, and abandoned staging
+ * trees. Re-reads the live link first and skips anything it points at, so a
+ * prune can never delete the generation another activation just published
+ * (review finding 3).
+ *
+ * **Staging directories are pruned here too.** An earlier version excluded
+ * them, reasoning that a crashed stage's leftovers are swept "the next time
+ * that commit is staged". They are not: each stage picks a fresh random
+ * suffix, and the `rm` before the rename targets the FINAL directory, so an
+ * abandoned `.staging-<uuid>` tree is never named again by anything. Pruning
+ * them here is safe because activation is serialized per (session, repository):
+ * no other stage for this repo can be in flight while this one publishes.
+ *
+ * **And the writable layers.** `work/<sha>` outlives its generation otherwise —
+ * install output for every superseded commit, kept forever, which is the
+ * opposite of what a per-generation layer is for.
  */
 async function pruneOldGenerations(stateDir: string, repoName: string, keepCommit: string): Promise<void> {
   const root = generationsRoot(stateDir, repoName);
@@ -488,6 +546,8 @@ async function pruneOldGenerations(stateDir: string, repoName: string, keepCommi
   } catch {
     // No link yet — keep the commit we just published.
   }
+  const keep = new Set([keepCommit, live]);
+
   let entries: string[];
   try {
     entries = await fsp.readdir(root);
@@ -496,8 +556,22 @@ async function pruneOldGenerations(stateDir: string, repoName: string, keepCommi
   }
   await Promise.all(
     entries
-      .filter((name) => name !== keepCommit && name !== live && !name.includes(".staging-"))
+      .filter((name) => !keep.has(name))
       .map((name) => fsp.rm(path.join(root, name), { recursive: true, force: true }).catch(() => undefined)),
+  );
+
+  // The writable layers, keyed by the same commit names.
+  const workRoot = path.join(repoRoot(stateDir, repoName), WORK_SUBDIR);
+  let layers: string[];
+  try {
+    layers = await fsp.readdir(workRoot);
+  } catch {
+    return; // no layers yet — nothing installed for this repo
+  }
+  await Promise.all(
+    layers
+      .filter((name) => !keep.has(name))
+      .map((name) => fsp.rm(path.join(workRoot, name), { recursive: true, force: true }).catch(() => undefined)),
   );
 }
 

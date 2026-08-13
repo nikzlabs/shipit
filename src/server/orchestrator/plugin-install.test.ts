@@ -1,0 +1,444 @@
+/**
+ * docs/262 — the plugin install container.
+ *
+ * Most of these tests exist because a REVIEWER, not a test, caught the
+ * corresponding defect in the withdrawn PR #2202. Each blocking finding gets an
+ * assertion here, so the same mistake fails a build instead of a review:
+ *
+ *  - install must not see `/credentials`, the worker URL, or this process's
+ *    environment (the credential boundary — req 19);
+ *  - install must not be able to reach the session's own network;
+ *  - the volume must be released when install ends, or the runtime volume for
+ *    the same generation cannot be created over the same upper layer;
+ *  - a failed install must report why, and must not stamp itself as done.
+ */
+
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import type Docker from "dockerode";
+import {
+  createPluginInstallRunner,
+  installCommands,
+  installStampPath,
+  reapOrphanPluginInstalls,
+  PLUGIN_INSTALL_DIR,
+  PLUGIN_INSTALL_NETWORK,
+} from "./plugin-install.js";
+import { clearUntrustedContainerNetworks, isUntrustedContainerIp } from "./api-container-guard.js";
+import { pluginWorkDir } from "./plugin-overlay.js";
+import type { PluginInstallJob } from "./plugin-generations.js";
+import type { PluginExport } from "../shared/plugin-repos.js";
+
+// --- fixtures ---------------------------------------------------------------
+
+function exportWith(name: string, install?: string): PluginExport {
+  return {
+    name,
+    cli: {},
+    installInputs: [],
+    credentials: [],
+    hosts: [],
+    settings: {},
+    ...(install ? { install } : {}),
+  };
+}
+
+interface CreatedContainer {
+  opts: Record<string, unknown>;
+  killed: boolean;
+  removed: boolean;
+}
+
+/**
+ * A daemon that records what it was asked to build. `exit` decides how each
+ * install container ends: a number is its status code, `"hang"` never finishes
+ * on its own (so the timeout path has something to kill).
+ */
+function fakeDocker(opts: { exit?: number | "hang"; logs?: string | Buffer; heldVolume?: boolean } = {}) {
+  const containers: CreatedContainer[] = [];
+  const createdVolumes: { Name: string; DriverOpts?: Record<string, string> }[] = [];
+  const removedVolumes: string[] = [];
+  // A volume "exists" unless we removed it — so the workspace volume, which
+  // this fake never creates, still inspects fine (the daemon-path translation
+  // reads its mountpoint).
+  const deleted = new Set<string>();
+  const live = new Set<string>();
+  const networksCreated: string[] = [];
+
+  const notFound = (): never => {
+    throw Object.assign(new Error("no such thing"), { statusCode: 404 });
+  };
+
+  const docker = {
+    // The install network is created once and inspected for its subnet, which
+    // is what gets declared untrusted.
+    getNetwork: (name: string) => ({
+      inspect: async () => {
+        if (!networksCreated.includes(name)) notFound();
+        return { IPAM: { Config: [{ Subnet: "172.28.0.0/16" }] } };
+      },
+    }),
+    createNetwork: async (spec: { Name: string }) => {
+      networksCreated.push(spec.Name);
+    },
+    createVolume: async (spec: { Name: string; DriverOpts?: Record<string, string> }) => {
+      createdVolumes.push(spec);
+      deleted.delete(spec.Name);
+      live.add(spec.Name);
+    },
+    listVolumes: async () => ({
+      Volumes: [...live].filter((n) => !deleted.has(n)).map((Name) => ({ Name })),
+    }),
+    getVolume: (name: string) => ({
+      inspect: async () => {
+        if (deleted.has(name)) notFound();
+        return { Mountpoint: `/var/lib/docker/volumes/${name}/_data` };
+      },
+      remove: async () => {
+        removedVolumes.push(name);
+        // `heldVolume` models a container still holding it: the removal is
+        // accepted and the volume is still there afterwards.
+        if (opts.heldVolume) return;
+        live.delete(name);
+        deleted.add(name);
+      },
+    }),
+    createContainer: async (createOpts: Record<string, unknown>) => {
+      const record: CreatedContainer = { opts: createOpts, killed: false, removed: false };
+      containers.push(record);
+      let finish: (v: { StatusCode: number }) => void = () => undefined;
+      const waited = new Promise<{ StatusCode: number }>((resolve) => { finish = resolve; });
+      return {
+        start: async () => undefined,
+        wait: async () => {
+          if (opts.exit === "hang") return waited;
+          return { StatusCode: opts.exit ?? 0 };
+        },
+        kill: async () => {
+          record.killed = true;
+          finish({ StatusCode: 137 });
+        },
+        logs: async () => (Buffer.isBuffer(opts.logs) ? opts.logs : Buffer.from(opts.logs ?? "")),
+        remove: async () => {
+          record.removed = true;
+        },
+      };
+    },
+  };
+  return {
+    docker: docker as unknown as Docker,
+    containers,
+    createdVolumes,
+    removedVolumes,
+    networksCreated,
+  };
+}
+
+let stateDir: string;
+let stagingDir: string;
+const COMMIT = "c".repeat(40);
+
+function job(exports: PluginExport[]): PluginInstallJob {
+  return { repoName: "tools", commit: COMMIT, stagingDir, exports };
+}
+
+beforeEach(() => {
+  stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "plugin-install-"));
+  stagingDir = path.join(stateDir, "plugins", "tools", "generations", `${COMMIT}.staging-1234`);
+  fs.mkdirSync(stagingDir, { recursive: true });
+});
+
+afterEach(() => {
+  fs.rmSync(stateDir, { recursive: true, force: true });
+  clearUntrustedContainerNetworks();
+  vi.unstubAllEnvs();
+});
+
+/** The runner over a hand-modified fake daemon. */
+function run2(docker: Docker) {
+  return createPluginInstallRunner({ docker, image: "worker:test", sessionId: "s1", stateDir });
+}
+
+// --- pure helpers -----------------------------------------------------------
+
+describe("installCommands", () => {
+  it("keeps only exports that declare a non-empty install", () => {
+    expect(installCommands([exportWith("a", "npm ci"), exportWith("b"), exportWith("c", "  ")]))
+      .toEqual([{ plugin: "a", command: "npm ci" }]);
+  });
+});
+
+// --- the runner -------------------------------------------------------------
+
+describe("createPluginInstallRunner", () => {
+  it("runs nothing when no selected export declares an install", async () => {
+    const { docker, containers, createdVolumes } = fakeDocker();
+    const run = createPluginInstallRunner({ docker, image: "worker:test", sessionId: "s1", stateDir });
+
+    expect(await run(job([exportWith("probe")]))).toEqual({ ok: true });
+    expect(containers).toHaveLength(0);
+    expect(createdVolumes).toHaveLength(0);
+  });
+
+  it("gives the install container the overlay volume and NOTHING else", async () => {
+    // The finding this encodes: in the agent container, install could read
+    // /credentials and call the worker's loopback credential broker.
+    vi.stubEnv("GITHUB_TOKEN", "ghp-should-never-be-inherited");
+    const { docker, containers } = fakeDocker();
+    const run = createPluginInstallRunner({ docker, image: "worker:test", sessionId: "s1", stateDir });
+
+    expect(await run(job([exportWith("probe", "npm ci")]))).toEqual({ ok: true });
+
+    expect(containers).toHaveLength(1);
+    const opts = containers[0]!.opts as {
+      Env: string[];
+      HostConfig: { Binds: string[]; NetworkMode: string };
+      Entrypoint: string[];
+      Cmd: string[];
+      WorkingDir: string;
+    };
+    // Exactly one mount, and it is the generation's own volume.
+    expect(opts.HostConfig.Binds).toHaveLength(1);
+    expect(opts.HostConfig.Binds[0]).toMatch(new RegExp(`^shipit-.*:${PLUGIN_INSTALL_DIR}$`));
+    // Nothing of the session, and nothing of this process.
+    const env = opts.Env.join("\n");
+    expect(env).not.toContain("ghp-should-never-be-inherited");
+    expect(env).not.toContain("GITHUB_TOKEN");
+    expect(env).not.toMatch(/WORKER|CREDENTIAL|SHIPIT_SESSION/i);
+    expect(opts.Env).toContain(`SHIPIT_PLUGIN_COMMIT=${COMMIT}`);
+    // Its own network, never a session's and never the default bridge — see
+    // the dedicated test below for why that distinction is the security fix.
+    expect(opts.HostConfig.NetworkMode).toBe(PLUGIN_INSTALL_NETWORK);
+    // The worker entrypoint is bypassed: it prepares session mounts this
+    // container deliberately does not have.
+    expect(opts.Entrypoint).toEqual(["/bin/sh", "-c"]);
+    expect(opts.Cmd).toEqual(["npm ci"]);
+    expect(opts.WorkingDir).toBe(PLUGIN_INSTALL_DIR);
+  });
+
+  it("creates the writable layer, and releases the volume when install ends", async () => {
+    const { docker, createdVolumes, removedVolumes, containers } = fakeDocker();
+    const run = createPluginInstallRunner({ docker, image: "worker:test", sessionId: "s1", stateDir });
+
+    expect(await run(job([exportWith("probe", "npm ci")]))).toEqual({ ok: true });
+
+    const work = pluginWorkDir(stateDir, "tools", COMMIT);
+    expect(fs.existsSync(path.join(work, "upper"))).toBe(true);
+    expect(fs.existsSync(path.join(work, "work"))).toBe(true);
+    // The lowerdir is the STAGING tree — install runs before publish.
+    expect(createdVolumes[0]!.DriverOpts!.o).toContain(`lowerdir=${stagingDir}`);
+    // Released on the way out: publish renames the lowerdir, and the runtime
+    // volume is created over the same upper layer, which the kernel forbids
+    // while another mount holds it.
+    expect(removedVolumes).toContain(createdVolumes[0]!.Name);
+    expect(containers[0]!.removed).toBe(true);
+  });
+
+  it("wipes a half-populated layer from an earlier failed install", async () => {
+    const work = pluginWorkDir(stateDir, "tools", COMMIT);
+    fs.mkdirSync(path.join(work, "upper", "node_modules"), { recursive: true });
+    fs.writeFileSync(path.join(work, "upper", "node_modules", "half"), "x");
+
+    const { docker } = fakeDocker();
+    const run = createPluginInstallRunner({ docker, image: "worker:test", sessionId: "s1", stateDir });
+    await run(job([exportWith("probe", "npm ci")]));
+
+    expect(fs.existsSync(path.join(work, "upper", "node_modules"))).toBe(false);
+  });
+
+  it("fails with the command's own output, and stamps nothing", async () => {
+    const { docker, removedVolumes, createdVolumes } = fakeDocker({ exit: 1, logs: "npm ERR! 404 no-such-pkg" });
+    const run = createPluginInstallRunner({ docker, image: "worker:test", sessionId: "s1", stateDir });
+
+    const result = await run(job([exportWith("probe", "npm ci")]));
+    expect(result.ok).toBe(false);
+    expect(result.reason).toContain("`probe`");
+    expect(result.reason).toContain("no-such-pkg");
+    expect(fs.existsSync(installStampPath(stateDir, "tools", COMMIT))).toBe(false);
+    // Still released — a failed install must not strand the volume.
+    expect(removedVolumes).toContain(createdVolumes[0]!.Name);
+  });
+
+  // A container without a TTY has its output multiplexed: an 8-byte header per
+  // chunk. Read as text, that framing lands in the middle of the message the
+  // degraded card shows the user.
+  it("strips Docker's stream framing from the reported output", async () => {
+    const payload = Buffer.from("npm ERR! code E404\n");
+    const header = Buffer.alloc(8);
+    header[0] = 2; // stderr
+    header.writeUInt32BE(payload.length, 4);
+    const { docker } = fakeDocker({ exit: 1, logs: Buffer.concat([header, payload]) });
+    const run = createPluginInstallRunner({ docker, image: "worker:test", sessionId: "s1", stateDir });
+
+    const result = await run(job([exportWith("probe", "npm ci")]));
+    expect(result.reason).toContain("npm ERR! code E404");
+    // eslint-disable-next-line no-control-regex -- the framing bytes are the point
+    expect(result.reason).not.toMatch(/[\u0000-\u0008]/);
+  });
+
+  it("stops at the first failing export rather than installing the rest", async () => {
+    const { docker, containers } = fakeDocker({ exit: 2 });
+    const run = createPluginInstallRunner({ docker, image: "worker:test", sessionId: "s1", stateDir });
+
+    await run(job([exportWith("a", "false"), exportWith("b", "npm ci")]));
+    expect(containers).toHaveLength(1);
+  });
+
+  it("kills an install that outstays the timeout", async () => {
+    const { docker, containers, removedVolumes, createdVolumes } = fakeDocker({ exit: "hang" });
+    const run = createPluginInstallRunner({
+      docker, image: "worker:test", sessionId: "s1", stateDir, timeoutMs: 10,
+    });
+
+    const result = await run(job([exportWith("probe", "sleep 9999")]));
+    expect(result.ok).toBe(false);
+    expect(result.reason).toContain("did not finish");
+    expect(containers[0]!.killed).toBe(true);
+    expect(containers[0]!.removed).toBe(true);
+    expect(removedVolumes).toContain(createdVolumes[0]!.Name);
+  });
+
+  it("skips a second install of the same generation and commands", async () => {
+    const first = fakeDocker();
+    const run1 = createPluginInstallRunner({
+      docker: first.docker, image: "worker:test", sessionId: "s1", stateDir,
+    });
+    await run1(job([exportWith("probe", "npm ci")]));
+    expect(fs.existsSync(installStampPath(stateDir, "tools", COMMIT))).toBe(true);
+
+    const second = fakeDocker();
+    const run2 = createPluginInstallRunner({
+      docker: second.docker, image: "worker:test", sessionId: "s1", stateDir,
+    });
+    expect(await run2(job([exportWith("probe", "npm ci")]))).toEqual({ ok: true });
+    expect(second.containers).toHaveLength(0);
+  });
+
+  it("re-runs when the install command changed", async () => {
+    const first = fakeDocker();
+    await createPluginInstallRunner({
+      docker: first.docker, image: "worker:test", sessionId: "s1", stateDir,
+    })(job([exportWith("probe", "npm ci")]));
+
+    const second = fakeDocker();
+    await createPluginInstallRunner({
+      docker: second.docker, image: "worker:test", sessionId: "s1", stateDir,
+    })(job([exportWith("probe", "npm ci --foreground-scripts")]));
+    expect(second.containers).toHaveLength(1);
+  });
+
+  it("reaps an install container a previous process left behind", async () => {
+    const removed: string[] = [];
+    const docker = {
+      listContainers: async () => [{ Id: "abc123" }],
+      getContainer: (id: string) => ({
+        remove: async () => {
+          removed.push(id);
+        },
+      }),
+    } as unknown as Docker;
+
+    // An install is awaited inside one activation, so a survivor at boot is an
+    // orphan by definition — and until it is removed it holds the generation's
+    // overlay volume, which then cannot be removed either.
+    expect(await reapOrphanPluginInstalls(docker)).toBe(1);
+    expect(removed).toEqual(["abc123"]);
+  });
+
+  // The finding this encodes: on ANY unregistered network the orchestrator's
+  // container-origin guard reads the source IP as a trusted browser/host
+  // caller, so the install could have asked
+  // /api/sessions/<id>/git/credential for a real GitHub token — more API
+  // reach than the agent container it was isolated from.
+  it("denies its own subnet at the orchestrator API before any container joins", async () => {
+    clearUntrustedContainerNetworks();
+    const { docker, networksCreated } = fakeDocker();
+    const run = createPluginInstallRunner({ docker, image: "worker:test", sessionId: "s1", stateDir });
+
+    expect(isUntrustedContainerIp("172.28.0.7")).toBe(false);
+    await run(job([exportWith("probe", "npm ci")]));
+
+    expect(networksCreated).toEqual([PLUGIN_INSTALL_NETWORK]);
+    expect(isUntrustedContainerIp("172.28.0.7")).toBe(true);
+    // A session container's own bridge address is untouched by this.
+    expect(isUntrustedContainerIp("172.18.0.4")).toBe(false);
+  });
+
+  it("refuses to install when its network has no subnet it can deny", async () => {
+    clearUntrustedContainerNetworks();
+    const { docker, containers } = fakeDocker();
+    // A network that reports no IPv4 subnet — nothing to register, so
+    // nothing may run: fail closed.
+    (docker as unknown as { getNetwork: (n: string) => unknown }).getNetwork = () => ({
+      inspect: async () => ({ IPAM: { Config: [] } }),
+    });
+
+    const result = await run2(docker)(job([exportWith("probe", "npm ci")]));
+    expect(result.ok).toBe(false);
+    expect(result.reason).toContain("no IPv4 subnet");
+    expect(containers).toHaveLength(0);
+  });
+
+  it("fails the install when the layer's volume cannot be released", async () => {
+    // Publishing here would produce a generation whose runtime mount cannot be
+    // built: the kernel forbids a second mount over the held upperdir.
+    const { docker } = fakeDocker({ heldVolume: true });
+    const result = await createPluginInstallRunner({
+      docker, image: "worker:test", sessionId: "s1", stateDir,
+    })(job([exportWith("probe", "npm ci")]));
+
+    expect(result.ok).toBe(false);
+    expect(result.reason).toContain("could not be released");
+    expect(fs.existsSync(installStampPath(stateDir, "tools", COMMIT))).toBe(false);
+  });
+
+  it("stops a running install when its session goes away", async () => {
+    const { docker, containers } = fakeDocker({ exit: "hang" });
+    let gone = false;
+    const run = createPluginInstallRunner({
+      docker, image: "worker:test", sessionId: "s1", stateDir, timeoutMs: 60_000,
+    });
+    const running = run({ ...job([exportWith("probe", "sleep 9999")]), isCancelled: () => gone });
+    // Let the wait loop take at least one poll slice.
+    await new Promise((r) => setTimeout(r, 30));
+    gone = true;
+
+    const result = await running;
+    expect(result.ok).toBe(false);
+    expect(result.reason).toContain("session went away");
+    expect(containers[0]!.killed).toBe(true);
+  });
+
+  it("does not start the next export's install once the session is gone", async () => {
+    const { docker, containers } = fakeDocker();
+    const result = await createPluginInstallRunner({
+      docker, image: "worker:test", sessionId: "s1", stateDir,
+    })({
+      ...job([exportWith("a", "npm ci"), exportWith("b", "npm ci")]),
+      isCancelled: () => containers.length >= 1,
+    });
+
+    expect(containers).toHaveLength(1);
+    expect(result.ok).toBe(false);
+  });
+
+  it("translates the layer onto the daemon's view of the state volume", async () => {
+    const { docker, createdVolumes } = fakeDocker();
+    const run = createPluginInstallRunner({
+      docker,
+      image: "worker:test",
+      sessionId: "s1",
+      stateDir,
+      workspaceVolume: "shipit-workspace",
+      stateRoot: stateDir,
+    });
+    await run(job([exportWith("probe", "npm ci")]));
+
+    const o = createdVolumes[0]!.DriverOpts!.o;
+    for (const part of o.split(",")) {
+      expect(part.split("=")[1]).toMatch(/^\/var\/lib\/docker\/volumes\/shipit-workspace\/_data\//);
+    }
+  });
+});

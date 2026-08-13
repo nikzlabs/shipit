@@ -283,6 +283,40 @@ describe("cancellation and queue hygiene", () => {
   });
 });
 
+describe("pruning what a generation leaves behind", () => {
+  it("drops a superseded generation's writable layer with it", async () => {
+    await activateGeneration(repo({ branch: "main" }), deps());
+    const first = readActiveGeneration(stateDir, "tools")!.commit;
+    // The layer an install would have written into.
+    const work = path.join(stateDir, "plugins", "tools", "work");
+    fs.mkdirSync(path.join(work, first, "upper"), { recursive: true });
+
+    await commitFiles({ "second.txt": "x" }, "second");
+    await activateGeneration(repo({ branch: "main" }), deps());
+    const second = readActiveGeneration(stateDir, "tools")!.commit;
+
+    expect(second).not.toBe(first);
+    // Kept forever otherwise: install output for every commit this repo ever had.
+    expect(fs.existsSync(path.join(work, first))).toBe(false);
+  });
+
+  it("sweeps an abandoned staging tree", async () => {
+    // A crashed stage leaves `<sha>.staging-<uuid>`; the next stage of that
+    // same commit removes the FINAL dir, never this one, and its suffix is
+    // random, so nothing ever names it again.
+    await activateGeneration(repo({ branch: "main" }), deps());
+    const generations = path.join(stateDir, "plugins", "tools", "generations");
+    const abandoned = path.join(generations, `${"e".repeat(40)}.staging-deadbeef`);
+    fs.mkdirSync(abandoned, { recursive: true });
+
+    await commitFiles({ "third.txt": "x" }, "third");
+    await activateGeneration(repo({ branch: "main" }), deps());
+
+    expect(fs.existsSync(abandoned)).toBe(false);
+    expect(fs.readdirSync(generations)).toEqual([readActiveGeneration(stateDir, "tools")!.commit]);
+  });
+});
+
 describe("manifest warnings (req 13)", () => {
   it("records a fetched manifest's warnings on the generation", async () => {
     await commitFiles(
@@ -347,6 +381,64 @@ describe("install runs before publish (req 13, req 15)", () => {
     // Only the selected export is offered for install.
     expect(seen!.exports).toEqual(["probe"]);
     expect(readActiveGeneration(stateDir, "tools")?.commit).toBe(seen!.commit);
+  });
+
+  // The session is archived while the fetch/checkout runs. Without a check
+  // here, activation went on to start minutes of third-party code — and its
+  // layer preparation re-created the very state directory cleanup had removed.
+  it("does not start an install for a session that went away mid-fetch", async () => {
+    let started = false;
+    const outcome = await activateGeneration(repo({ branch: "main" }), {
+      ...deps(["probe"]),
+      // Cancellation arrives after staging, before install.
+      isCancelled: (() => {
+        let calls = 0;
+        return () => ++calls > 1;
+      })(),
+      runInstall: async () => {
+        started = true;
+        return { ok: true };
+      },
+    });
+
+    expect(started).toBe(false);
+    expect(outcome.status).toBe("failed");
+    expect(readActiveGeneration(stateDir, "tools")).toBeNull();
+  });
+
+  it("hands the install a way to notice its session went away", async () => {
+    let saw: boolean | undefined;
+    await activateGeneration(repo({ branch: "main" }), {
+      ...deps(["probe"]),
+      isCancelled: () => false,
+      runInstall: async (job) => {
+        saw = typeof job.isCancelled === "function";
+        return { ok: true };
+      },
+    });
+    expect(saw).toBe(true);
+  });
+
+  // Local/dogfood mode has no Docker and therefore no install runner. It still
+  // activates — that runtime has to be able to exercise a plugin at all — but
+  // reporting the generation as plainly `active` would be a lie the probe
+  // catches.
+  it("says so when a selected export declares an install nothing can run", async () => {
+    await commitFiles(
+      { "shipit.yaml": "exports:\n  plugins:\n    probe:\n      install: npm ci\n" },
+      "with install",
+    );
+    const outcome = await activateGeneration(repo({ branch: "main" }), deps(["probe"]));
+
+    expect(outcome.status).toBe("activated");
+    expect((outcome as { warning?: string }).warning).toContain("was not installed");
+    expect(readActiveGeneration(stateDir, "tools")?.manifestWarnings.join(" ")).toContain("`probe`");
+  });
+
+  it("stays quiet when nothing selected declares an install", async () => {
+    const outcome = await activateGeneration(repo({ branch: "main" }), deps(["probe"]));
+    expect(outcome.status).toBe("activated");
+    expect((outcome as { warning?: string }).warning).toBeUndefined();
   });
 
   it("offers nothing to install when the consumer selected nothing", async () => {

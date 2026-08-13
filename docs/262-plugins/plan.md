@@ -219,6 +219,52 @@ the active generation). Install re-runs when its stamped inputs change: the
 plugin commit, the install string, or the content of the manifest's
 `install-inputs` files (the same convention `agent.install` already uses).
 
+**What the container actually gets** (implemented — `plugin-install.ts`): the
+generation's overlay volume at `/plugin` as its ONLY mount, `cwd` there, the
+session-worker image for its toolchain with its ENTRYPOINT bypassed (that
+script prepares session mounts this container does not have), an environment
+of exactly `SHIPIT_PLUGIN_COMMIT` + `HOME=/tmp`, all capabilities dropped,
+`no-new-privileges`, a memory and PID ceiling, and a timeout.
+
+**And its own network — which is a security control, not tidiness** (review
+finding, this round). "Not the session's network" is not enough. Install needs
+outbound access (`npm ci` fetches), outbound includes the host gateway, and
+ShipIt's own API is published there. `api-container-guard.ts` identifies a
+container by its source IP and reads *anything it does not recognise* as a
+browser or host caller — so an install container on the default bridge would
+have had MORE API reach than the agent container it was isolated from: list
+sessions, then ask `/api/sessions/<id>/git/credential`, which returns a real
+GitHub token. The fix is a dedicated network whose whole subnet is declared
+untrusted to that guard, and the subnet is registered when the network is
+created rather than per container after it starts — otherwise the first
+request, which is the one worth making, arrives before the registration. It
+fails closed: no registerable subnet, no install.
+
+The general question of what plugin code may reach *outbound* — the manifest's
+`hosts:` as an enforced allowlist rather than an informational one — is req
+24's open decision, and it now covers this container as well as plugin
+services. What is settled is that ShipIt's own API is not reachable from it. It runs as the session-worker UID — which is why the staging checkout
+is handed to that UID first: overlayfs takes the merged directory's
+permissions from the LOWER dir, so a root-owned checkout would leave the
+plugin root unwritable and every install would fail at its first file. That
+handoff is also what covers a generation staged *after* the session container
+booted, which the entrypoint's boot-time chown cannot reach.
+
+**A runtime with no install runner activates, and says so.** Local/dogfood mode
+has no Docker, so nothing can run a plugin's install there. The generation is
+published anyway — that runtime has to be able to exercise a plugin at all —
+but a selected export with an `install:` it never ran makes the generation
+partial, so the card carries "active but was not installed" rather than a plain
+`active`. Req 13's rule is "degrade visibly", not "refuse" (review finding, this
+round: this path silently reported a partial generation as fully active).
+
+For a consumer generation the commit determines every input, so the stamp is
+not what decides a re-install — a new commit is a new generation and a new
+layer. It exists for the case that is not a new commit: an install that
+succeeded and then had its *publish* fail leaves a populated layer behind, and
+the next attempt re-stages the same commit. The stamp turns that into a no-op
+instead of a repeat.
+
 ## 2. How a plugin is used inside a session
 
 - **Files** (reqs 2, 7): each declared repo is checked out read-only at
@@ -413,6 +459,30 @@ coherent in one UI.
   is container-side (see §1b). ✓ `services/plugin-activation.ts` is its lifecycle
   half, triggered from `service-manager-setup.ts` on session activation and on
   a `shipit.yaml` edit.
+- ✓ `src/server/orchestrator/plugin-overlay.ts` — the copy-on-write layer, one
+  `type=overlay` Docker volume per generation (lowerdir the pristine checkout,
+  upper/work beside it under `work/<sha>/`). Its whole subtlety is that the
+  three dirs are **daemon-host** paths, translated off the state volume's
+  mountpoint the way docs/183 does; the orchestrator's own view is carried
+  separately because it must create upper and work itself. Install and publish
+  share ONE upper layer under two different lowerdirs (staging, then the
+  published generation), so the install volume is removed before the runtime
+  volume is created — the kernel forbids one upperdir backing two mounts. The
+  12-character session prefix in the volume name is what makes an orphan
+  reclaimable by the disk janitor's sweep.
+- ✓ `src/server/orchestrator/plugin-install.ts` — the throwaway install
+  container: the generation's overlay volume at `/plugin` and nothing else, the
+  worker image for its toolchain with its entrypoint bypassed, no inherited
+  environment, capabilities dropped, bounded by a timeout, and its own network
+  whose subnet is denied at ShipIt's API (see §1b). Injected into
+  `activateGeneration` as `runInstall` from `bootstrap-managers`, so neither the
+  generation engine nor the activation service executes plugin-authored code.
+  Also owns the boot-time reap of install containers **and generation volumes**
+  a previous process left behind: no existing sweep covers them (the janitor's
+  volume pass filters on `dangling=true`, which an attached volume is not, and
+  on a later boot it preserves everything belonging to a live session), and an
+  orphan holds the volume open so the next activation of that commit cannot
+  rebuild the mount. It runs BEFORE the janitor's volume pass for that reason.
 - ✓ `src/server/orchestrator/api-routes-plugin-repos.ts` — browser snapshot
   (the GET exists; refresh endpoints come with generation mechanics); tracker
   registration folds into the existing trackers registry

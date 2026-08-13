@@ -22,6 +22,9 @@ import {
   registerContainerOriginGuard,
   isHardDeniedGlobal,
   normalizeRemoteIp,
+  registerUntrustedContainerNetwork,
+  clearUntrustedContainerNetworks,
+  isUntrustedContainerIp,
 } from "./api-container-guard.js";
 
 import { buildApp } from "./index.js";
@@ -220,6 +223,70 @@ describe("registerContainerOriginGuard — request gating", () => {
     expect(secrets.statusCode).toBe(200);
     const bootstrap = await app.inject({ method: "GET", url: "/api/bootstrap", remoteAddress: BROWSER_IP });
     expect(bootstrap.statusCode).toBe(200);
+  });
+});
+
+// docs/262 — a container ShipIt runs but never registers used to be treated as
+// MORE trusted than a session container: "not a known session" reads as
+// "browser or host", which skips all three layers. The plugin installer runs
+// third-party code, so its whole subnet is declared untrusted instead.
+describe("untrusted container networks", () => {
+  afterEach(() => {
+    clearUntrustedContainerNetworks();
+  });
+
+  it("matches addresses inside a registered CIDR and nothing else", () => {
+    expect(registerUntrustedContainerNetwork("172.28.0.0/16")).toBe(true);
+    expect(isUntrustedContainerIp("172.28.0.1")).toBe(true);
+    expect(isUntrustedContainerIp("172.28.255.254")).toBe(true);
+    expect(isUntrustedContainerIp("172.29.0.1")).toBe(false);
+    expect(isUntrustedContainerIp(CONTAINER_IP)).toBe(false);
+    expect(isUntrustedContainerIp("not-an-ip")).toBe(false);
+  });
+
+  it("refuses a CIDR it cannot match, rather than registering a no-op", () => {
+    // An IPv6 subnet would silently match nothing — and a subnet that matches
+    // nothing is a subnet that is not denied.
+    expect(registerUntrustedContainerNetwork("fd00::/64")).toBe(false);
+    expect(registerUntrustedContainerNetwork("172.28.0.0/33")).toBe(false);
+    expect(registerUntrustedContainerNetwork("nonsense")).toBe(false);
+  });
+
+  it("denies the whole API — including routes a session container may reach", async () => {
+    registerUntrustedContainerNetwork("172.28.0.0/16");
+    const app = Fastify({ logger: false });
+    registerContainerOriginGuard(app, {
+      containerManager: {
+        getSessionByContainerIp: (ip: string) =>
+          ip === CONTAINER_IP ? { sessionId: OWN_SESSION } : undefined,
+      },
+    });
+    app.get<{ Params: { id: string } }>(
+      "/api/sessions/:id/git/credential",
+      { config: { containerAccessible: true } },
+      async () => ({ username: "x", password: "secret" }),
+    );
+    app.get("/api/bootstrap", async () => ({ ok: true }));
+    await app.ready();
+
+    for (const url of [`/api/sessions/${OWN_SESSION}/git/credential`, "/api/bootstrap"]) {
+      const res = await app.inject({ method: "GET", url, remoteAddress: "172.28.0.7" });
+      expect(res.statusCode).toBe(403);
+    }
+    // The same routes still behave normally for everyone else.
+    expect((await app.inject({ method: "GET", url: "/api/bootstrap", remoteAddress: BROWSER_IP })).statusCode).toBe(200);
+    await app.close();
+  });
+
+  it("denies even where the guard is otherwise inert (no IP→session map)", async () => {
+    registerUntrustedContainerNetwork("172.28.0.0/16");
+    const app = Fastify({ logger: false });
+    registerContainerOriginGuard(app, {});
+    app.get("/api/bootstrap", async () => ({ ok: true }));
+    await app.ready();
+    const res = await app.inject({ method: "GET", url: "/api/bootstrap", remoteAddress: "172.28.0.7" });
+    expect(res.statusCode).toBe(403);
+    await app.close();
   });
 });
 

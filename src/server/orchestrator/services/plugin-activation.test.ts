@@ -154,6 +154,41 @@ describe("lifetime and selectors", () => {
     expect(state?.generation).toBeUndefined();
   });
 
+  // Install runs in its own container, so the hook is injected from
+  // `bootstrap-managers` and travels through this module untouched. The thread
+  // is worth a guard: a dropped hook is silent — the generation activates,
+  // and only the plugin's own code notices its dependencies were never
+  // installed.
+  it("passes the install hook through, against the staged (unpublished) tree", async () => {
+    writeConfig(`${declareTools}  use:\n    - plugin: probe\n      from: tools\n`);
+    const jobs: { stagingDir: string; exports: string[] }[] = [];
+    await activateDeclaredPlugins("sess", workspaceDir, {
+      ...deps(),
+      runInstall: async (job) => {
+        jobs.push({ stagingDir: job.stagingDir, exports: job.exports.map((e) => e.name) });
+        return { ok: true };
+      },
+    });
+
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0]!.exports).toEqual(["probe"]);
+    expect(jobs[0]!.stagingDir).toContain(".staging-");
+    expect(getActivationState("sess", "tools")?.generation?.commit).toBeTruthy();
+  });
+
+  it("a failed install fails the activation and publishes nothing", async () => {
+    writeConfig(`${declareTools}  use:\n    - plugin: probe\n      from: tools\n`);
+    await activateDeclaredPlugins("sess", workspaceDir, {
+      ...deps(),
+      runInstall: async () => ({ ok: false, reason: "install for `probe` exited 1" }),
+    });
+
+    const state = getActivationState("sess", "tools");
+    expect(state?.error).toContain("exited 1");
+    expect(state?.generation).toBeUndefined();
+    expect(fs.existsSync(path.join(sessionDir, "state", "plugins", "tools", "active"))).toBe(false);
+  });
+
   it("an activation that finishes after disposal cannot repopulate the state map", async () => {
     writeConfig(declareTools);
     const running = activateDeclaredPlugins("sess", workspaceDir, deps());
