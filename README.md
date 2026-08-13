@@ -40,15 +40,7 @@ loop**.
 [Docker](https://docs.docker.com/get-docker/) with the Compose v2 plugin (`docker compose`), for a
 local install — the VPS script installs it for you.
 
-On first run the app asks you to connect:
-
-- a [GitHub account](https://github.com/) — ShipIt clones repos, pushes branches, opens PRs, and
-  reads CI and deploy status through it
-- at least one provider — a subscription ([Claude Pro/Max](https://claude.ai/upgrade), ChatGPT, or a
-  GLM (Z.ai) coding plan) or an API key
-  ([Anthropic](https://console.anthropic.com/settings/keys),
-  [OpenAI](https://platform.openai.com/api-keys), DeepSeek, GLM (Z.ai), OpenRouter, or Vercel AI
-  Gateway)
+A GitHub account and one agent provider account, both connected in the app on first run.
 
 ### Run locally
 
