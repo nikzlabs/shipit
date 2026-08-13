@@ -115,4 +115,67 @@ describe("CodexRateLimits", () => {
       expect(rl.lastTokenUsage?.last?.totalTokens).toBe(130);
     });
   });
+
+  // planning#367 — the app-server's rollup is cumulative for the whole thread,
+  // and `thread/resume` replays the previous turn's snapshot before the new turn
+  // produces one. Both facts are measured against codex-cli 0.146.0.
+  describe("per-turn attribution of a cumulative rollup", () => {
+    const first = { total: { inputTokens: 1000, outputTokens: 10 }, last: { totalTokens: 1000 } };
+    const second = { total: { inputTokens: 2000, outputTokens: 20 }, last: { totalTokens: 1000 } };
+
+    it("makes the replayed snapshot the next turn's baseline", () => {
+      const rl = new CodexRateLimits();
+      // `thread/resume` replays turn 1's snapshot, carrying turn 1's id…
+      rl.recordTokenUsage(first, "turn-1");
+      // …then turn 2 reports the grown rollup under its own id.
+      rl.recordTokenUsage(second, "turn-2");
+
+      expect(rl.turnTokenUsage("turn-2")).toEqual({
+        usage: second,
+        baselineTotal: first.total,
+      });
+    });
+
+    it("has no baseline for the first turn of a thread", () => {
+      const rl = new CodexRateLimits();
+      rl.recordTokenUsage(first, "turn-1");
+      expect(rl.turnTokenUsage("turn-1")).toEqual({ usage: first, baselineTotal: undefined });
+    });
+
+    // The secondary defect: a turn that reported no usage of its own was handed
+    // the replayed snapshot, recording the previous turn's cumulative total (and
+    // its context occupancy) a second time.
+    it("refuses a snapshot belonging to another turn", () => {
+      const rl = new CodexRateLimits();
+      rl.recordTokenUsage(first, "turn-1");
+      expect(rl.turnTokenUsage("turn-2")).toBeNull();
+      // …while the raw snapshot stays available for the context-occupancy
+      // readers that legitimately want the latest one (compaction pre/post).
+      expect(rl.lastTokenUsage).toEqual(first);
+    });
+
+    it("keeps the pre-turnId behaviour when the app-server sends no turn id", () => {
+      const rl = new CodexRateLimits();
+      rl.recordTokenUsage(first);
+      expect(rl.turnTokenUsage("turn-1")).toEqual({ usage: first, baselineTotal: undefined });
+    });
+
+    // An EMPTY turn id is not a missing one. codex-cli 0.146.0 replays usage
+    // under `turnId: ""` when it cannot associate persisted usage with a
+    // rebuilt turn, so a truthiness test would read the replay as "no id known"
+    // and hand the previous thread's whole rollup to a turn that reported
+    // nothing of its own.
+    it("refuses a replay whose turn id is empty", () => {
+      const rl = new CodexRateLimits();
+      rl.recordTokenUsage(first, "");
+      expect(rl.turnTokenUsage("turn-2")).toBeNull();
+    });
+
+    it("still takes an empty-id replay as the next turn's baseline", () => {
+      const rl = new CodexRateLimits();
+      rl.recordTokenUsage(first, "");
+      rl.recordTokenUsage(second, "turn-2");
+      expect(rl.turnTokenUsage("turn-2")).toEqual({ usage: second, baselineTotal: first.total });
+    });
+  });
 });

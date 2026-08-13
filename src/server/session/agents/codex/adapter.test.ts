@@ -839,6 +839,95 @@ describe("CodexAdapter", () => {
     });
   });
 
+  // planning#367 — every token test above drives ONE turn, which is exactly how
+  // this survived: the app-server's `total` is the running rollup for the whole
+  // THREAD, and `thread/resume` restores the accumulator from the rollout file
+  // (which lives in the persistent `~/.codex` volume), so it never resets for
+  // the life of a ShipIt session. Recorded verbatim, turn N of a session posted
+  // the first N turns' tokens — a ~31-turn session read as roughly 11–18× its
+  // real usage, in `atApiRatesUsd` and, on a metered key, in real money.
+  //
+  // ShipIt runs one app-server per turn, so each turn here gets its own adapter
+  // and its own fake process — nothing carries over in memory, which is the
+  // point: the baseline comes from the snapshot `thread/resume` REPLAYS.
+  // Measured against codex-cli 0.146.0 with a local Responses recorder returning
+  // identical usage every call: `total.inputTokens` 1000 → 2000 → 3000 while
+  // `last.inputTokens` stayed 1000.
+  describe("a resumed thread's cumulative token rollup", () => {
+    const THREAD = "thread-abc-123";
+
+    /** Drive one whole ShipIt turn and return its `agent_result`. */
+    async function runTurn(opts: {
+      turnId: string;
+      resume?: boolean;
+      /** Snapshots the app-server pushes, in order, as `[turnId, rollup]`. */
+      snapshots: [string, { inputTokens: number; cachedInputTokens: number; outputTokens: number }][];
+    }): Promise<AgentEvent | undefined> {
+      await createAndInit("Hello", opts.resume ? THREAD : undefined);
+      events.length = 0;
+      for (const [turnId, total] of opts.snapshots) {
+        fakeProc.sendNotification("thread/tokenUsage/updated", {
+          threadId: THREAD,
+          turnId,
+          tokenUsage: { total, last: { totalTokens: 1000 }, modelContextWindow: 272000 },
+        });
+      }
+      fakeProc.sendNotification("turn/completed", {
+        threadId: THREAD,
+        turn: { id: opts.turnId, status: "completed" },
+      });
+      await vi.waitFor(() => {
+        expect(events.some((e) => e.type === "agent_result")).toBe(true);
+      });
+      return events.find((e) => e.type === "agent_result");
+    }
+
+    // The three turns consumed the same thing, so they must record the same
+    // thing — not 1×, 2×, 3×.
+    const ROLLUP_AFTER = [
+      { inputTokens: 1000, cachedInputTokens: 800, outputTokens: 10 },
+      { inputTokens: 2000, cachedInputTokens: 1600, outputTokens: 20 },
+      { inputTokens: 3000, cachedInputTokens: 2400, outputTokens: 30 },
+    ];
+    const ONE_TURN = { input: 200, output: 10, cacheRead: 800 };
+
+    it("records each turn's own tokens across three resumed turns", async () => {
+      const first = await runTurn({ turnId: "turn-1", snapshots: [["turn-1", ROLLUP_AFTER[0]]] });
+      expect(first).toMatchObject({ tokens: ONE_TURN, contextTokens: 1000, contextWindow: 272000 });
+
+      // Turn 2 resumes: the app-server replays turn 1's snapshot under turn 1's
+      // id before turn 2 reports its own. That replay is the baseline.
+      const second = await runTurn({
+        turnId: "turn-2",
+        resume: true,
+        snapshots: [["turn-1", ROLLUP_AFTER[0]], ["turn-2", ROLLUP_AFTER[1]]],
+      });
+      expect(second).toMatchObject({ tokens: ONE_TURN });
+
+      const third = await runTurn({
+        turnId: "turn-3",
+        resume: true,
+        snapshots: [["turn-2", ROLLUP_AFTER[1]], ["turn-3", ROLLUP_AFTER[2]]],
+      });
+      expect(third).toMatchObject({ tokens: ONE_TURN });
+    });
+
+    // The secondary defect: the replayed snapshot is the PREVIOUS turn's
+    // cumulative total and the previous turn's context occupancy. A turn that
+    // reported nothing of its own must record nothing, not that snapshot again.
+    it("records nothing for a turn whose only snapshot is the replayed one", async () => {
+      const result = await runTurn({
+        turnId: "turn-2",
+        resume: true,
+        snapshots: [["turn-1", ROLLUP_AFTER[0]]],
+      });
+      expect((result as { tokens?: unknown }).tokens).toBeUndefined();
+      expect((result as { contextTokens?: unknown }).contextTokens).toBeUndefined();
+      // The model's context window is not turn-scoped, so it still comes through.
+      expect(result).toMatchObject({ contextWindow: 272000 });
+    });
+  });
+
   // Reported nothing and consumed zero are different facts, and a present-but-
   // empty rollup is the first. An all-zero `tokens` block prices to $0 through
   // the catalogue's rates and asserts a Codex turn was free.
@@ -1909,6 +1998,61 @@ describe("CodexAdapter", () => {
       });
       expect((events.find((e) => e.type === "agent_compacted") as any).trigger).toBe("manual");
       expect(fakeProc.killed).toBe(true);
+    });
+
+    // planning#367 — a compact-only run makes a model request of its own and
+    // raises the thread's rollup. Measured against codex-cli 0.146.0: it gets a
+    // `turn/started` with its own id, the resume replays the previous turn's
+    // snapshot under the OLD id, and the compaction's own snapshots follow under
+    // the new one (total 1000 → 2000, `last` ending at the post-compaction
+    // occupancy). Before the per-turn subtraction those tokens were swept up by
+    // the next turn's cumulative total; now the next turn's baseline excludes
+    // them, so a synthetic result without them would drop them for good.
+    it("records a compact-only run's own tokens in its synthetic result", async () => {
+      adapter = new CodexAdapter(() => false);
+      adapter.on("event", (e) => events.push(e));
+      adapter.run({ prompt: "/compact", cwd: "/workspace", sessionId: "thread-xyz", compact: true });
+
+      await vi.waitFor(() => expect(fakeProc.getRequests().length).toBeGreaterThanOrEqual(1));
+      fakeProc.sendResponse(1, { serverInfo: {} });
+      await vi.waitFor(() => expect(fakeProc.getRequests().length).toBeGreaterThanOrEqual(3));
+      fakeProc.sendResponse(2, { threadId: "thread-xyz" });
+      await vi.waitFor(() => {
+        expect(fakeProc.getRequests().some((r) => r.method === "thread/compact/start")).toBe(true);
+      });
+
+      // The resume replays the previous turn's rollup under its old id…
+      fakeProc.sendNotification("thread/tokenUsage/updated", {
+        threadId: "thread-xyz",
+        turnId: "turn-before",
+        tokenUsage: {
+          total: { inputTokens: 1000, cachedInputTokens: 800, outputTokens: 10 },
+          last: { totalTokens: 1010 },
+          modelContextWindow: 258400,
+        },
+      });
+      // …and the compaction turn reports its own consumption under its own.
+      fakeProc.sendNotification("turn/started", { threadId: "thread-xyz", turn: { id: "turn-compact" } });
+      fakeProc.sendNotification("thread/tokenUsage/updated", {
+        threadId: "thread-xyz",
+        turnId: "turn-compact",
+        tokenUsage: {
+          total: { inputTokens: 2000, cachedInputTokens: 1600, outputTokens: 20 },
+          last: { totalTokens: 5439 },
+          modelContextWindow: 258400,
+        },
+      });
+      fakeProc.sendNotification("item/completed", { item: { type: "contextCompaction", id: "c4" } });
+
+      await vi.waitFor(() => {
+        expect(events.some((e) => e.type === "agent_result")).toBe(true);
+      });
+      expect(events.find((e) => e.type === "agent_result")).toMatchObject({
+        // The compaction's own request — not the thread's running total.
+        tokens: { input: 200, output: 10, cacheRead: 800 },
+        // The post-compaction occupancy, which is the point of the run.
+        contextTokens: 5439,
+      });
     });
   });
 });

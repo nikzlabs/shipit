@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { disjointCodexTokens } from "./codex-token-usage.js";
+import { codexTurnTokens, disjointCodexTokens } from "./codex-token-usage.js";
 
 describe("disjointCodexTokens", () => {
   // The measurement this module exists for: codex-cli 0.146.0, fed a Responses
@@ -65,5 +65,56 @@ describe("disjointCodexTokens", () => {
   it("omits cacheWrite when the harness did not report one", () => {
     const tokens = disjointCodexTokens({ inputTokens: 10, outputTokens: 1 });
     expect(tokens).not.toHaveProperty("cacheWrite");
+  });
+});
+
+describe("codexTurnTokens", () => {
+  // The measurement, again with the second trap in it: `@openai/codex` 0.146.0,
+  // one app-server process per turn plus `thread/resume`, fed identical usage
+  // every call. `total.inputTokens` went 1000 → 2000 → 3000 while
+  // `last.inputTokens` stayed 1000 — the rollup is the THREAD's, not the turn's.
+  const TURN = { inputTokens: 1000, outputTokens: 10, cachedInputTokens: 800, cacheWriteInputTokens: 0 };
+  const AFTER_ONE = { inputTokens: 1000, outputTokens: 10, cachedInputTokens: 800, cacheWriteInputTokens: 0 };
+  const AFTER_TWO = { inputTokens: 2000, outputTokens: 20, cachedInputTokens: 1600, cacheWriteInputTokens: 0 };
+  const AFTER_THREE = { inputTokens: 3000, outputTokens: 30, cachedInputTokens: 2400, cacheWriteInputTokens: 0 };
+
+  it("subtracts the previous turn's rollup", () => {
+    // Each of the three turns really consumed the same thing, so each must
+    // record the same thing — not 1×, 2×, 3×.
+    const expected = { input: 200, output: 10, cacheRead: 800, cacheWrite: 0 };
+    expect(codexTurnTokens(AFTER_ONE, undefined)).toEqual(expected);
+    expect(codexTurnTokens(AFTER_TWO, AFTER_ONE)).toEqual(expected);
+    expect(codexTurnTokens(AFTER_THREE, AFTER_TWO)).toEqual(expected);
+  });
+
+  it("is the rollup itself on the first turn of a thread", () => {
+    expect(codexTurnTokens(TURN, undefined)).toEqual(disjointCodexTokens(TURN));
+  });
+
+  // A one-shot (`codex exec --json`) passes no baseline, and must keep getting
+  // the plain split — its thread is one turn long, so the rollup IS the turn's.
+  it("passes an empty baseline through untouched", () => {
+    expect(codexTurnTokens(TURN, {})).toEqual(disjointCodexTokens(TURN));
+  });
+
+  // A rollup below its baseline means the accumulator restarted (a fresh or
+  // reset thread), so `current` is the turn's own usage. Zeros would price the
+  // turn at $0 and assert it was free — the trap this module is written around.
+  it("treats a shrunken rollup as a new baseline, not a negative turn", () => {
+    expect(codexTurnTokens(AFTER_ONE, AFTER_THREE)).toEqual(disjointCodexTokens(AFTER_ONE));
+  });
+
+  it("floors each class at zero", () => {
+    // One class shrank while the rollup as a whole grew — no class may post a
+    // credit against the others.
+    expect(codexTurnTokens(
+      { inputTokens: 5000, outputTokens: 5, cachedInputTokens: 100 },
+      { inputTokens: 1000, outputTokens: 10, cachedInputTokens: 800 },
+    )).toEqual({ input: 4700, output: 0, cacheRead: 0 });
+  });
+
+  it("reports nothing when the turn reported nothing", () => {
+    expect(codexTurnTokens(undefined, AFTER_TWO)).toBeUndefined();
+    expect(codexTurnTokens({}, AFTER_TWO)).toBeUndefined();
   });
 });
