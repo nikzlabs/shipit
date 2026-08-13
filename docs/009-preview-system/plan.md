@@ -55,6 +55,21 @@ visibly disabled rather than silently inert. All three engines ship the API
 (Chrome 102, Safari 18.2, Firefox 147), so this costs a button essentially nobody
 has.
 
+**The same containment covers the previewed page's own traversal, not just the
+toolbar's.** The guard above is reached only by a `shipit-toolbar` message, so an
+app that calls `history.back()` itself — a "< Back" control, a router's
+`goBack()`, a `javascript:history.back()` link — still walked the ShipIt tab back
+and switched the user's active session. The script therefore *replaces*
+`history.back` / `history.forward` / `history.go` with the frame-scoped
+traversal; it is first in `<head>`, so it wins over app code that captures those
+later. `go(delta)` past ±1 has no `canGoBack`-style predicate, so
+`navigation.entries()` is the guard instead: an index outside the frame's own
+entry list is refused rather than traversed, since those entries belong to the
+tab. `go(0)` and a missing delta stay a `location.reload()` — that is what the
+platform does, and a reload never leaves the frame. Measured in Chromium: an
+unpatched cross-origin frame's `history.back()` navigates the *top-level* page,
+the patched one leaves it untouched and still goes back within the frame.
+
 The script reports `canGoBack` on every `path` message, and `PreviewFrame` keeps
 it per slot — the pool leaves other sessions' iframes mounted and reporting, so a
 single shared value would let a background preview at its own base grey out Back

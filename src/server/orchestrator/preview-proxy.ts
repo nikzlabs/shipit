@@ -101,6 +101,37 @@ const HMR_WS_PATCH = `<script>(function(){` +
       `var r=nav[dir]();` +
       `r.committed.catch(swallow);r.finished.catch(swallow)` +
     `};` +
+    // The previewed PAGE's own back button is the same leak as the toolbar's,
+    // and the toolbar guard above does nothing for it: an app that calls
+    // `history.back()` — a "< Back" control, a router's `goBack()`, a
+    // `javascript:history.back()` link — traverses the joint session history
+    // straight past the frame and walks the ShipIt tab back, switching the
+    // user's active session. So the same frame-scoped traversal is installed
+    // over the three History methods that traverse. This script is first in
+    // <head>, so it wins over any app code that captures them later.
+    // `go(0)` (and a missing/NaN delta) is a reload, not a traversal — that is
+    // what the platform does, and it never leaves the frame.
+    `var jump=function(d){` +
+      `d=Math.trunc(Number(d))||0;` +
+      `if(!d){location.reload();return}` +
+      `if(d===-1){travel("back");return}` +
+      `if(d===1){travel("forward");return}` +
+      // A delta past ±1 has no `canGoBack`-style predicate, so the entry list
+      // itself is the guard: an index outside it is a step the frame cannot
+      // take, and refusing is what keeps it off the top-level page.
+      `if(!nav||!nav.entries||!nav.traverseTo)return;` +
+      `try{var es=nav.entries();var ce=nav.currentEntry;` +
+        `if(!es||!ce)return;` +
+        `var t=es[ce.index+d];if(!t)return;` +
+        `var r=nav.traverseTo(t.key);` +
+        `r.committed.catch(swallow);r.finished.catch(swallow)` +
+      `}catch(e3){}` +
+    `};` +
+    // Assignment shadows the prototype method for this document only, and an
+    // engine that refuses it must not take the rest of the script down.
+    `try{history.back=function(){travel("back")};` +
+      `history.forward=function(){travel("forward")};` +
+      `history.go=function(d){jump(d)}}catch(e4){}` +
     // Dispatch an event the browser would have fired for a navigation it
     // performed itself. Guarded per call: an engine missing one of the
     // constructors must not take the rest of `go` down with it.
