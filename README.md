@@ -38,7 +38,6 @@ loop**.
 ### What you need
 
 - [Docker](https://docs.docker.com/get-docker/) with the Compose v2 plugin (`docker compose`).
-  Docker Desktop bundles it; on Linux install `docker-compose-plugin` alongside `docker-ce`.
 - A [GitHub account](https://github.com/), connected on first run — ShipIt clones repos, pushes
   branches, opens PRs, and reads CI and deploy status through it.
 - Credentials for at least one provider:
