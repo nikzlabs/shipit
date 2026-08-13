@@ -19,12 +19,12 @@
      (YouTube/Loom/asciinema or an mp4 in docs/assets/) and link it here as a "▶ Watch the demo" line
      or a clickable thumbnail right under the hero image. -->
 
-ShipIt is a chat-driven IDE for running coding agents through your **real engineering loop**.
+ShipIt is a chat-driven Web IDE for running coding agents through your **real engineering loop**.
 
 - **Parallel sessions in isolated containers** — run many agents at once, each with its own branch
   and workspace, so nothing they do collides.
 - **Web/Android preview per session** — every session runs its own instance of your full app stack,
-  an Android emulator included, so the agent can build, run, and fix before you preview and merge.
+  so the agent can build, run, and fix before you preview and merge.
 - **Bring your own agent** — on the subscription or API key you already have (Anthropic, OpenAI,
   DeepSeek, OpenRouter, etc.).
   - Supported harnesses: Claude Code and Codex, with OpenCode and Cursor CLI support coming.
