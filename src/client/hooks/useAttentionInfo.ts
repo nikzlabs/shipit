@@ -93,7 +93,12 @@ export function computeAttentionReason({
   // merged PR whose row hasn't been regrouped yet must still be silent. This
   // used to sit BELOW the auto-merge branch, so a merged PR carrying a stale
   // auto-merge error kept flagging "Auto-merge needs repo configuration".
+  //
+  // Checks BOTH halves, in either order: the optimistic merge path flips the
+  // card to `merged` while the poller still reports the PR open, and the poller
+  // reports terminal before any card update on the other side.
   if (prState === "merged" || prState === "closed") return null;
+  if (card?.phase === "merged" || card?.phase === "closed") return null;
 
   // CI failure — stay silent while a fix is in flight or queued; speak only
   // when the loop gives up (exhausted) or auto-fix is off entirely.

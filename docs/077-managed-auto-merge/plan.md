@@ -57,16 +57,17 @@ Errors from the managed merge (e.g., "PR has merge conflicts") show as a warning
 |------|------|
 | `src/server/shared/types/github-types.ts` | `managed?`, `settingsUrl?`, `reason?` on `AutoMergeState`, `PrStatusSummary.autoMerge`, and `WsPrLifecycleUpdate.autoMerge` |
 | `src/server/orchestrator/github-auth-prs.ts` | `enableAutoMerge()` maps GitHub's GraphQL errors to actionable `reason` text |
-| `src/server/orchestrator/services/github.ts` | `toggleAutoMerge()` falls back to managed mode on GitHub API failure, threading `result.message` through as `reason` |
+| `src/server/orchestrator/services/github.ts` | `toggleAutoMerge()` falls back to managed mode on GitHub API failure, threading `result.message` through as `reason`; `prWentTerminalDuringCall()` guards both arming writers |
 | `src/server/orchestrator/auto-merge-manager.ts` | `AutoMergeManager.setManaged(…, reason?)` stores `reason`; cleared on disable |
 | `src/server/orchestrator/pr-status-poller.ts` | `handleManagedAutoMerge()` merges via REST when CI passes; `setAutoMergeManaged()` setter forwards `reason`; `attachAutomationState()` projects it onto the SSE summary; `verifyMissingPr`'s terminal branch drops the arming |
 | `src/server/orchestrator/services/pr-lifecycle.ts` | ready/open card emits include `reason` |
 | `src/client/components/PrStatusControls.tsx` | `ManagedMergeInfo` tooltip renders the real `reason` |
 | `src/client/stores/pr-store.ts` | `managed`, `settingsUrl`, `reason` on `PrCardState.autoMerge`; toggle response handler stores `reason`; `applyPrStatusUpdates` retires `autoMergeBySession` on a terminal `prState` |
-| `src/client/stores/pr-store.ts` (selectors) | `selectActiveAutoMerge` / `useActiveAutoMerge` — the arming, but only while the session's PR is non-terminal |
-| `src/client/components/PrActionsMenu.tsx` | reads `useActiveAutoMerge`; hides the toggle on a merged/closed card |
+| `src/client/stores/pr-store.ts` (selectors) | `armedForPrNumber` provenance; `selectActiveAutoMerge` / `useActiveAutoMerge`; toggle write-back race guard |
+| `src/client/components/PrActionsMenu.tsx` | reads `useActiveAutoMerge`; still offers the toggle on a merged/closed card, for the next PR |
 | `src/client/components/SessionSidebar/SessionStatusIndicators.tsx` | `AutoMergeBadge` reads `useActiveAutoMerge` |
 | `src/client/components/pr-detail/PrStatusSection.tsx` | reads `useActiveAutoMerge`; auto-merge lines gated on the open phase |
+| `src/client/components/PrLifecycleCard/` (`phases/OpenPhase.tsx`, `PrStatusActions.tsx`) | the open card's toggle/merge row reads `useActiveAutoMerge` |
 
 ## Edge cases
 
@@ -92,18 +93,22 @@ Dropping the state at the terminal transition fixes both. A re-armed session (do
 
 Tests: `pr-status-poller.test.ts` ("clears auto-merge arming when the PR goes terminal", merged + closed), `pr-store.test.ts` ("clears auto-merge arming when the PR goes merged/closed").
 
-### …and the UI derives it, rather than remembering the transition
+### …and the arming is retired by provenance, not by a remembered transition
 
-Both clears above are **event-driven**: they fire when the terminal transition is *observed*. That left the whole rule resting on one SSE `pr_status` update reaching one browser tab — and when it didn't, the arming was stranded ON forever on a merged PR (reported against v0.3.2: the overflow toggle and the detail panel's "Will merge when CI passes." line both kept reading armed). Nothing self-heals afterwards, because every later broadcast for that session is *also* terminal and terminal summaries carry no `autoMerge` field, which this reducer reads as "unchanged".
+Both clears above are **event-driven**: they fire when the terminal transition is *observed*. That left the whole rule resting on one SSE `pr_status` update reaching one browser tab — and when it didn't, the arming was stranded ON forever on a merged PR (reported against v0.3.2: the overflow toggle and the detail panel's "Will merge when CI passes." line both kept reading armed). Nothing self-heals afterwards, because every later broadcast for that session is *also* terminal and terminal summaries carry no `autoMerge` field, which the reducer reads as "unchanged".
 
-So the rule is now enforced at **read** time as well, on both sides:
+**The write-back races are how the state survived the clear.** Every arming write lands *after* an awaited GitHub round-trip, and a green PR can merge inside that very window:
 
-- **Server** — `attachAutomationState` never attaches `autoMerge` onto a summary whose `prState` is `merged`/`closed`. Same shape as the auto-fix guard directly above it in that function: the manager's state is bookkeeping, not a display flag, and a terminal PR has nothing to auto-merge. A state that outlives its PR can no longer reach any client.
-- **Client** — `selectActiveAutoMerge` / `useActiveAutoMerge` (`pr-store.ts`) return the arming only while the session's current PR is non-terminal, reading BOTH the card phase and `statusBySession.prState` (they converge on different transports; either saying "terminal" is enough). Every surface that renders "auto-merge is on" goes through it: `AutoMergeBadge` (sidebar), `PrActionsMenu`, `PrStatusSection` (detail panel).
+- `toggleAutoMerge()` and `activatePendingAutoMergeForPr()` (`services/github.ts`) called `setAutoMergeEnabled` unconditionally after `enableAutoMerge` returned — **re-creating** the state the poller had just deleted. That is worse than a stale toggle: `activatePendingAutoMergeForPr` reads a lingering `enabled` as a deliberate pre-arm, so the session's *next* PR would merge without the user asking — the exact footgun this doc says was fixed. Both now bail via `prWentTerminalDuringCall()`, which compares **PR numbers**: the last-known summary is legitimately a terminal *older* PR right after `gh pr create` on a chained session (`self-merge-watch.test.ts`), and a bare "is it terminal?" check would refuse to arm the new one. The enable path returns `{ enabled: false }` there, so the client converges on the truth.
+- The client had the same shape: `pr-store.toggleAutoMerge`'s response handler wrote the arming back after the terminal `pr_status` had already retired it — and that write is the **last word**, since no later update carries an `autoMerge` for a merged PR. It now drops the entry instead, but only when the toggle was made *for the PR that has since gone terminal* (see provenance below).
 
-Two consequences worth stating:
+**And the surfaces derive it rather than remembering.** `selectActiveAutoMerge` / `useActiveAutoMerge` (`pr-store.ts`) return the arming only while it can still act; every surface that renders "auto-merge is on" reads it — `AutoMergeBadge` (sidebar), `PrActionsMenu`, `OpenPhase` / `PrMergeActions` (the open card), `PrStatusSection` (detail panel). The server does the same on its side: `attachAutomationState` never attaches `autoMerge` onto a terminal summary — the same belt-and-suspenders the auto-fix block above it applies.
 
-- `PrActionsMenu` no longer offers the auto-merge toggle on a **merged/closed** card — only pre-PR (no card, `creating`, `ready`), where the arming has a next PR to act on. Rendering a toggle whose ON state the selector deliberately suppresses would snap back on click. A session that merged and then picks up new work returns to `ready` (docs/202), where the toggle is available again.
-- `computeAttentionReason` short-circuits on a terminal `prState` *above* the auto-merge branch, so a merged PR carrying a stale `autoMerge.error` no longer flags "Auto-merge needs repo configuration". It previously relied on the sidebar grouping's `resolved` flag, which is computed on a different path.
+**What decides is provenance, not phase.** An arming carries `armedForPrNumber` — client-side only, stamped when it arrives on an open PR's summary or when the user toggles it while a PR is live. An arming stamped for a PR that is no longer the live one is dead; an **unstamped** one is a pre-arm and survives. Phase alone was the obvious rule and it is wrong twice over:
 
-Tests: `pr-status-poller.test.ts` ("never attaches auto-merge state onto a merged/closed summary"), `pr-store.test.ts` (`selectActiveAutoMerge`), `SessionSidebar.test.tsx`, `PrActionsMenu.test.tsx`, `PrDetailPanel.test.tsx`, `useAttentionInfo.test.ts`.
+- It would hide a deliberate pre-arm made from a merged card — a real flow, and the *only* one available to a reused session, because with auto-create-PR on there is no `ready` phase to arm from (`pr-lifecycle.ts` goes creating → open).
+- It would miss the docs/202 re-arm, where the ready card carries the old `autoMerge` forward and `reArm` has already deleted the poller status, so **neither** half says "terminal" any more. The stamp still retires it.
+
+`computeAttentionReason` gets the same floor: it short-circuits on a terminal PR — reading **both** `status.prState` and `card.phase`, since the optimistic merge path flips one before the other — above the auto-merge branch, so a merged PR carrying a stale `autoMerge.error` no longer flags "Auto-merge needs repo configuration".
+
+Tests: `github-auto-merge-arming.test.ts` (both server races, plus the chained-session case the number comparison protects), `pr-status-poller.test.ts` ("never attaches auto-merge state onto a merged/closed summary"), `pr-store.test.ts` (`selectActiveAutoMerge` + the toggle write-back races), `SessionSidebar.test.tsx`, `PrActionsMenu.test.tsx`, `PrDetailPanel.test.tsx`, `useAttentionInfo.test.ts`.

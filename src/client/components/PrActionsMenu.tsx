@@ -53,7 +53,6 @@ export function PrActionsMenu({ sessionId }: { sessionId: string }) {
   const syncDisabled = isAgentRunning || rebaseStatus !== "idle";
   const isOpen = card?.phase === "open";
   const isMerged = card?.phase === "merged";
-  const isTerminal = isMerged || card?.phase === "closed";
 
   const handleCopyBranch = () => {
     if (!headBranch) return;
@@ -73,16 +72,17 @@ export function PrActionsMenu({ sessionId }: { sessionId: string }) {
     }
   };
 
-  // The auto-merge toggle is shown here only for the pre-PR phases (no card
-  // yet, creating, ready) — the open phase shows it inline on the card, and a
-  // terminal PR has nothing left for auto-merge to act on: its arming died with
-  // it (docs/077), and offering a toggle there would render a control whose ON
-  // state we deliberately suppress. A session that merged and then picks up new
-  // work returns to the `ready` phase, where the toggle is available again.
+  // The auto-merge toggle is shown here only for the phases without an inline
+  // row (pre-PR, merged, closed); the open phase shows it inline on the card.
+  // It stays available on a merged/closed card on purpose: that is where a
+  // reused session is armed for its NEXT pull request, and with auto-create-PR
+  // on there is no `ready` phase to do it in (`pr-lifecycle.ts` goes creating →
+  // open). What it must NOT do is show the dead PR's arming — `useActiveAutoMerge`
+  // handles that, so the toggle reads OFF here until the user arms it again.
   // The trigger is always rendered (the menu is a stable home for PR actions);
   // in practice Copy branch name is essentially always available, so it's never
   // empty for a real session.
-  const showAutoMergeToggle = canAutoMerge && !isOpen && !isTerminal;
+  const showAutoMergeToggle = canAutoMerge && !isOpen;
   // Auto-fix pause is relevant whenever the session has a remote and the global
   // auto-fix-CI loop is on — independent of the PR phase (CI runs while open).
   const showAutoFixPause = canAutoMerge && globalAutoFixCi;

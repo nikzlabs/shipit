@@ -1662,6 +1662,31 @@ function parseRepoFromPrUrl(prUrl: string): { owner: string; repo: string } | nu
 }
 
 /**
+ * Did the PR we just acted on reach a terminal state while a GitHub call was in
+ * flight? Every write below lands AFTER an awaited GraphQL round-trip, and the
+ * poller can observe the merge inside that window and drop the arming
+ * (`AutoMergeManager.delete()`, docs/077) — after which an unconditional
+ * `setAutoMergeEnabled` RE-CREATES it for a pull request that no longer exists.
+ * That is what strands the toggle ON in the UI, and worse: a lingering `enabled`
+ * is what `activatePendingAutoMergeForPr` reads as a deliberate pre-arm, so the
+ * session's NEXT pull request merges without the user ever asking.
+ *
+ * Compares PR NUMBERS, not just `prState`. The last-known summary can legitimately
+ * be a terminal OLDER PR — right after `gh pr create` on a chained session the
+ * poller still holds the previous, just-merged PR (see `self-merge-watch.test.ts`)
+ * — and refusing to arm there would break the new PR's activation.
+ */
+function prWentTerminalDuringCall(
+  prStatusPoller: PrStatusPoller,
+  sessionId: string,
+  prNumber: number,
+): boolean {
+  const current = prStatusPoller.getStatus(sessionId);
+  if (current?.prNumber !== prNumber) return false;
+  return current.prState === "merged" || current.prState === "closed";
+}
+
+/**
  * If auto-merge was enabled before a PR existed, apply that preference to the
  * newly-created PR now that GitHub has a pull request number to target.
  */
@@ -1680,6 +1705,10 @@ export async function activatePendingAutoMergeForPr(
 
   const graphqlMethod = GRAPHQL_MERGE_METHOD[autoMergeState.mergeMethod];
   const result = await githubAuth.enableAutoMerge(resolved.owner, resolved.repo, prNumber, graphqlMethod);
+
+  // The PR merged (or was closed) while GitHub was answering — the poller has
+  // already retired the arming, so writing one back here would resurrect it.
+  if (prWentTerminalDuringCall(prStatusPoller, sessionId, prNumber)) return;
 
   if (!result.success) {
     const branchSettingsUrl = `https://github.com/${resolved.owner}/${resolved.repo}/settings/branches`;
@@ -1721,6 +1750,14 @@ export async function toggleAutoMerge(
     const graphqlMethod = GRAPHQL_MERGE_METHOD[mergeMethod];
     const result = await githubAuth.enableAutoMerge(owner, repo, prStatus.prNumber, graphqlMethod);
 
+    // The PR reached its terminal state while GitHub was answering (a green PR
+    // can merge inside this very call). The arming is already retired; re-adding
+    // it would strand the toggle ON and pre-arm the session's next PR. Report
+    // OFF — truthfully, nothing is armed — so the client converges too.
+    if (prWentTerminalDuringCall(prStatusPoller, sessionId, prStatus.prNumber)) {
+      return { enabled: false, mergeMethod };
+    }
+
     if (!result.success) {
       // Fallback: ShipIt-managed auto-merge when GitHub native isn't available.
       // Thread the real GitHub error (`result.message`) through as `reason` so
@@ -1744,7 +1781,11 @@ export async function toggleAutoMerge(
     if (!currentState?.managed) {
       await githubAuth.disableAutoMerge(owner, repo, prStatus.prNumber);
     }
-    prStatusPoller.setAutoMergeEnabled(sessionId, false);
+    // Same window as the enable path: don't re-create a (disabled) entry for a
+    // PR the poller has already retired.
+    if (!prWentTerminalDuringCall(prStatusPoller, sessionId, prStatus.prNumber)) {
+      prStatusPoller.setAutoMergeEnabled(sessionId, false);
+    }
     return { enabled: false, mergeMethod };
   }
 }
