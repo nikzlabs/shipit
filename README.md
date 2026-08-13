@@ -38,13 +38,13 @@ loop**.
 ### What you need
 
 - [Docker](https://docs.docker.com/get-docker/) with the Compose v2 plugin (`docker compose`).
-  Docker Desktop bundles it; on Linux install `docker-compose-plugin` alongside `docker-ce`. ShipIt
-  always runs containerized — there is no bare-metal mode.
-- Credentials for at least one provider — a subscription or an API key works for either harness:
-  - [Claude Pro/Max](https://claude.ai/upgrade) or an
-    [Anthropic API key](https://console.anthropic.com/settings/keys)
-  - a ChatGPT subscription or an [OpenAI API key](https://platform.openai.com/api-keys)
-  - or an API key for DeepSeek, GLM (Z.ai), OpenRouter, or Vercel AI Gateway
+  Docker Desktop bundles it; on Linux install `docker-compose-plugin` alongside `docker-ce`.
+- Credentials for at least one provider:
+  - **Subscriptions** — [Claude Pro/Max](https://claude.ai/upgrade), ChatGPT, or a GLM (Z.ai)
+    coding plan
+  - **API keys** — [Anthropic](https://console.anthropic.com/settings/keys),
+    [OpenAI](https://platform.openai.com/api-keys), DeepSeek, GLM (Z.ai), OpenRouter, or Vercel AI
+    Gateway
 
 ### Run locally
 
