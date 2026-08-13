@@ -55,6 +55,60 @@ visibly disabled rather than silently inert. All three engines ship the API
 (Chrome 102, Safari 18.2, Firefox 147), so this costs a button essentially nobody
 has.
 
+**The same containment covers the previewed page's own traversal, not just the
+toolbar's.** The guard above is reached only by a `shipit-toolbar` message, so an
+app that calls `history.back()` itself — a "< Back" control, a router's
+`goBack()`, a `javascript:history.back()` link — still walked the ShipIt tab back
+and switched the user's active session. The script therefore *replaces*
+`back` / `forward` / `go` with the frame-scoped traversal, and it is first in
+`<head>`, so it wins over app code that captures them later. Measured in
+Chromium: an unpatched cross-origin frame's `history.back()` navigates the
+*top-level* page, the patched one leaves it untouched and still goes back within
+the frame.
+
+Four details, each with a reason:
+
+- **The patch goes on `History.prototype`, not on the `history` instance.** An
+  own property leaves `History.prototype.back.call(history)` as a live route to
+  the joint traversal, and it *shadows* — rather than composes with — a router or
+  instrumentation library that wraps the prototype method later. Falls back to
+  the instance where `History` isn't exposed.
+- **`go(delta)` counts the FRAME's entries, deliberately unlike the platform.**
+  Native `go` counts steps of the joint history, where a nested frame's
+  navigation is also a step — so a native `go(-2)` can land somewhere the app
+  never was, and past the frame's first entry it lands on ShipIt. There is no
+  `canGoBack`-style predicate for `|delta| > 1`, so `navigation.entries()` is
+  both the guard and the counter: an index outside the frame's own list is
+  refused. That is also what a router asking for "two of my entries back" means.
+  `go(0)` and a missing delta stay a `location.reload()`, as natively, and a
+  reload never leaves the frame. The delta goes through `|0`, which is exactly
+  the Web IDL `long` conversion (`go(4294967295)` is `go(-1)`).
+- **`history.length` reports the frame's own entry count** when the Navigation
+  API is available. Unpatched it is the *joint* length (Chromium: one own entry,
+  `length` 9) — which is why nothing here can use it as a guard, and why the
+  `history.length > 1` check an app puts in front of its own back button used to
+  say "yes" on the preview's first page and walk straight into a refusal.
+- **A refusal says so once, via `console.warn`.** It is otherwise invisible:
+  History returns `undefined` and no event fires, so the app's Back button just
+  looks broken. It is a bare `console.warn` rather than a posted
+  `shipit-preview` console message precisely so it reaches devtools without
+  becoming an app error or waking auto-fix.
+
+**The injected script is ASCII-only**, pinned by a test. It is spliced into
+whatever the app serves, and a document with no declared charset renders UTF-8
+characters in it as mojibake.
+
+**Known limits of the containment.** It reaches the documents ShipIt instruments
+— proxied `text/html` `GET` responses. A nested `srcdoc`/third-party iframe
+*inside* the preview, or a document the proxy did not rewrite, keeps the native
+methods and can still traverse the tab. Separately, history is not the only way
+out: container previews render without a `sandbox` attribute (non-container ones
+get one at `PreviewFrame.tsx`), so `target="_top"`, `top.location`, and
+`window.open(url, "_top")` can still replace the whole ShipIt page with user
+activation. Sandboxing container previews would close that, at the cost of
+changing behaviour for every previewed app (downloads, popups, top-level OAuth
+redirects) — not attempted here; tracked as planning#368.
+
 The script reports `canGoBack` on every `path` message, and `PreviewFrame` keeps
 it per slot — the pool leaves other sessions' iframes mounted and reporting, so a
 single shared value would let a background preview at its own base grey out Back

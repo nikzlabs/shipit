@@ -86,6 +86,21 @@ describe("injectPreviewBootstrap", () => {
     const twice = injectPreviewBootstrap(once);
     expect(twice.split(AGENT_INTERFACE_SDK_MARKER)).toHaveLength(2);
   });
+
+  it("keeps the hand-written script ASCII, since we don't control the charset", () => {
+    // We splice bytes into whatever the app serves, and a page with no declared
+    // charset renders our UTF-8 characters as mojibake (seen in Chromium, with
+    // an em dash in a console message).
+    //
+    // Scoped to the first injected script — ours. The SDK script beside it is
+    // `installShipItPageSdk.toString()`, whose exact bytes depend on the
+    // transform (vitest keeps the function's comments, production's esbuild
+    // strips them), so asserting over it would test the transform, not us.
+    const injected = injectPreviewBootstrap("<html><head></head></html>");
+    const ourScript = injected.slice(0, injected.indexOf("</script>"));
+    const nonAscii = Array.from(ourScript).filter((c) => c.charCodeAt(0) > 127);
+    expect(nonAscii).toEqual([]);
+  });
 });
 
 /**
@@ -114,19 +129,32 @@ function runInjectedScript(
     forward: () => unknown;
     navigate: (url: string) => unknown;
     addEventListener: (type: string, fn: (e?: unknown) => void) => void;
+    entries?: () => { key: string }[];
+    currentEntry?: { index: number; key: string };
+    traverseTo?: (key: string) => unknown;
   },
 ) {
   const posted: PostedMessage[] = [];
   const listeners = new Map<string, ((e?: unknown) => void)[]>();
   const pushed: unknown[][] = [];
   const traversed: string[] = [];
-  const history = {
-    state: null,
+  const warnings: string[] = [];
+  // Modelled the way a browser has it — the traversing methods and `length`
+  // live on `History.prototype`, not on the instance — because the script
+  // patches the prototype, and an instance-only fake would let a patch that
+  // misses `History.prototype.back.call(history)` look like it works.
+  // `length` starts at the JOINT length a frame really sees (Chromium: one own
+  // entry, `length` 9), which is what makes it useless as a guard unpatched.
+  const historyProto = {
     pushState: (...args: unknown[]) => { pushed.push(args); return "original-return"; },
     replaceState: (...args: unknown[]) => { pushed.push(args); },
     back: () => { traversed.push("history.back"); },
     forward: () => { traversed.push("history.forward"); },
+    go: (d?: unknown) => { traversed.push(`history.go:${String(d)}`); },
+    length: 9,
   };
+  const history: typeof historyProto & { state: unknown } = Object.create(historyProto);
+  history.state = null;
   const assigned: string[] = [];
   const location = {
     ...initial,
@@ -142,6 +170,7 @@ function runInjectedScript(
     WebSocket: function FakeWebSocket() {},
     navigation,
     parent,
+    History: { prototype: historyProto },
     addEventListener: (type: string, fn: (e?: unknown) => void) => {
       const existing = listeners.get(type) ?? [];
       listeners.set(type, [...existing, fn]);
@@ -172,6 +201,7 @@ function runInjectedScript(
   vm.runInContext(body, vm.createContext({
     window, history, location, URL, WebSocket: window.WebSocket, Promise,
     HashChangeEvent: FakeHashChangeEvent, PopStateEvent: FakePopStateEvent,
+    console: { warn: (...args: unknown[]) => { warnings.push(args.join(" ")); } },
   }));
   // Commands arrive from the embedding window, which is what the script checks.
   const toolbar = (type: string, extra: Record<string, unknown> = {}, source: unknown = parent) => {
@@ -179,13 +209,28 @@ function runInjectedScript(
       fn({ data: { source: "shipit-toolbar", type, ...extra }, source });
     }
   };
-  return { posted, listeners, history, location, pushed, traversed, toolbar, assigned, dispatched };
+  return { posted, listeners, history, historyProto, location, pushed, traversed, toolbar, assigned, dispatched, warnings };
 }
 
-/** A Navigation API stub that records which traversals were attempted. */
-function fakeNavigation(opts: { canGoBack?: boolean; canGoForward?: boolean; rejectWith?: string } = {}) {
+/**
+ * A Navigation API stub that records which traversals were attempted.
+ *
+ * `entries` / `currentIndex` opt into the frame-scoped entry list that a
+ * multi-step `history.go(delta)` traverses through; omitting them models an
+ * engine that has back()/forward() but no traverseTo, which must refuse.
+ */
+function fakeNavigation(
+  opts: {
+    canGoBack?: boolean;
+    canGoForward?: boolean;
+    rejectWith?: string;
+    entries?: string[];
+    currentIndex?: number;
+  } = {},
+) {
   const calls: string[] = [];
   const navListeners = new Map<string, ((e?: unknown) => void)[]>();
+  const entryList = opts.entries?.map((key) => ({ key }));
   return {
     calls,
     navListeners,
@@ -198,6 +243,16 @@ function fakeNavigation(opts: { canGoBack?: boolean; canGoForward?: boolean; rej
       addEventListener: (type: string, fn: (e?: unknown) => void) => {
         navListeners.set(type, [...(navListeners.get(type) ?? []), fn]);
       },
+      ...(entryList
+        ? {
+            entries: () => entryList,
+            currentEntry: {
+              index: opts.currentIndex ?? entryList.length - 1,
+              key: entryList[opts.currentIndex ?? entryList.length - 1].key,
+            },
+            traverseTo: (key: string) => { calls.push(`traverseTo:${key}`); return navResult(opts.rejectWith); },
+          }
+        : {}),
     },
   };
 }
@@ -352,6 +407,188 @@ describe("injected preview script — toolbar history navigation", () => {
       { source: "shipit-preview", type: "path", path: "/", canGoBack: false },
       { source: "shipit-preview", type: "path", path: "/orders/8842", canGoBack: true },
     ]);
+  });
+});
+
+describe("injected preview script — the previewed page's own traversal", () => {
+  // The reported bug: a Back control *inside* the previewed app called
+  // `history.back()`, which traverses the JOINT session history — so with no
+  // entry of its own the frame walked the ShipIt tab back and switched the
+  // user's active session. The toolbar guard does nothing here: this call
+  // comes from the app, not from a `shipit-toolbar` message.
+  it("keeps the page's own history.back() inside the frame", () => {
+    const { calls, nav } = fakeNavigation({ canGoBack: true });
+    const { history, traversed } = runInjectedScript(undefined, nav);
+
+    history.back();
+
+    expect(calls).toEqual(["back"]);
+    // The native method — the one that walks the top-level page — never runs.
+    expect(traversed).toEqual([]);
+  });
+
+  it("does nothing when the page goes back with no entry of its own", () => {
+    const { calls, nav } = fakeNavigation({ canGoBack: false });
+    const { history, traversed } = runInjectedScript(undefined, nav);
+
+    history.back();
+
+    expect(calls).toEqual([]);
+    expect(traversed).toEqual([]);
+  });
+
+  it("applies the same containment to history.forward()", () => {
+    const blocked = fakeNavigation({ canGoForward: false });
+    const blockedRun = runInjectedScript(undefined, blocked.nav);
+    blockedRun.history.forward();
+    expect(blocked.calls).toEqual([]);
+    expect(blockedRun.traversed).toEqual([]);
+
+    const allowed = fakeNavigation({ canGoForward: true });
+    const allowedRun = runInjectedScript(undefined, allowed.nav);
+    allowedRun.history.forward();
+    expect(allowed.calls).toEqual(["forward"]);
+    expect(allowedRun.traversed).toEqual([]);
+  });
+
+  it("routes history.go(-1) / go(1) through the same frame-scoped guard", () => {
+    const { calls, nav } = fakeNavigation({ canGoBack: true, canGoForward: true });
+    const { history, traversed } = runInjectedScript(undefined, nav);
+
+    history.go(-1);
+    history.go(1);
+    history.go("-1");
+
+    expect(calls).toEqual(["back", "forward", "back"]);
+    expect(traversed).toEqual([]);
+  });
+
+  it("traverses a multi-step go(delta) through the frame's own entry list", () => {
+    const { calls, nav } = fakeNavigation({ entries: ["a", "b", "c"], currentIndex: 2 });
+    const { history, traversed } = runInjectedScript(undefined, nav);
+
+    history.go(-2);
+
+    expect(calls).toEqual(["traverseTo:a"]);
+    expect(traversed).toEqual([]);
+  });
+
+  it("refuses a go(delta) that would step outside the frame's entry list", () => {
+    // Exactly the leak, in its multi-step form: the entries the delta would
+    // reach past belong to the ShipIt tab, not to this frame.
+    const { calls, nav } = fakeNavigation({ entries: ["a", "b"], currentIndex: 1 });
+    const { history, traversed } = runInjectedScript(undefined, nav);
+
+    history.go(-5);
+    history.go(3);
+
+    expect(calls).toEqual([]);
+    expect(traversed).toEqual([]);
+  });
+
+  it("refuses a multi-step go(delta) where traverseTo is unavailable", () => {
+    const { calls, nav } = fakeNavigation({ canGoBack: true });
+    const { history, traversed } = runInjectedScript(undefined, nav);
+
+    history.go(-2);
+
+    expect(calls).toEqual([]);
+    expect(traversed).toEqual([]);
+  });
+
+  it("treats go(0) and a missing delta as the reload the platform performs", () => {
+    // A reload never leaves the frame, so it is not guarded — and swallowing it
+    // would break an app that reloads itself this way.
+    const { nav } = fakeNavigation({ canGoBack: false });
+    const { history, traversed } = runInjectedScript(undefined, nav);
+
+    history.go(0);
+    history.go();
+
+    expect(traversed).toEqual(["reload", "reload"]);
+  });
+
+  it("refuses the page's traversal entirely without the Navigation API", () => {
+    // Same no-fallback policy as the toolbar: there is no legacy way to ask
+    // whether *this frame* can go back, so the native call stays unreachable.
+    const { history, traversed } = runInjectedScript(undefined, undefined);
+
+    history.back();
+    history.forward();
+    history.go(-1);
+    history.go(-3);
+
+    expect(traversed).toEqual([]);
+  });
+
+  it("patches the prototype, so a prototype-level call cannot reach the native one", () => {
+    // An own property on `history` would leave this as a live route back to
+    // the joint traversal — the very call the leak needs.
+    const { calls, nav } = fakeNavigation({ canGoBack: true });
+    const { historyProto, history, traversed } = runInjectedScript(undefined, nav);
+
+    historyProto.back.call(history);
+
+    expect(calls).toEqual(["back"]);
+    expect(traversed).toEqual([]);
+  });
+
+  it("converts the delta the way the native long conversion does", () => {
+    // `go(4294967295)` is `go(-1)` natively (Web IDL `long` wraps at 2^32);
+    // treating it as a huge positive delta would silently do nothing.
+    const { calls, nav } = fakeNavigation({ canGoBack: true, canGoForward: true });
+    const { history } = runInjectedScript(undefined, nav);
+
+    history.go(4294967295);
+    history.go(-1.7);
+    history.go("1");
+
+    expect(calls).toEqual(["back", "back", "forward"]);
+  });
+
+  it("reports the frame's own entry count as history.length", () => {
+    // Unpatched this is the JOINT length (9 in the fake), so the
+    // `history.length > 1` guard an app puts in front of its back button says
+    // "yes" at the preview's first page and walks into a refusal.
+    const bare = runInjectedScript(undefined, undefined);
+    expect(bare.history.length).toBe(9);
+
+    const { nav } = fakeNavigation({ entries: ["a"], currentIndex: 0 });
+    const { history } = runInjectedScript(undefined, nav);
+    expect(history.length).toBe(1);
+
+    const deeper = fakeNavigation({ entries: ["a", "b", "c"], currentIndex: 2 });
+    expect(runInjectedScript(undefined, deeper.nav).history.length).toBe(3);
+  });
+
+  it("says once in the console why a refused traversal did nothing", () => {
+    // A refusal is otherwise invisible: History returns undefined and no event
+    // fires, so the app's Back button just looks broken.
+    const { nav } = fakeNavigation({ canGoBack: false });
+    const { history, warnings } = runInjectedScript(undefined, nav);
+
+    history.back();
+    history.back();
+    history.go(-3);
+
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("[ShipIt preview]");
+  });
+
+  it("swallows a rejected traversal so the app's console stays clean", async () => {
+    const rejections: unknown[] = [];
+    const onRejection = (reason: unknown) => rejections.push(reason);
+    process.on("unhandledRejection", onRejection);
+    try {
+      const { nav } = fakeNavigation({ entries: ["a", "b", "c"], currentIndex: 2, rejectWith: "InvalidStateError" });
+      const { history } = runInjectedScript(undefined, nav);
+      history.back();
+      history.go(-2);
+      await new Promise((resolve) => setImmediate(resolve));
+    } finally {
+      process.off("unhandledRejection", onRejection);
+    }
+    expect(rejections).toEqual([]);
   });
 });
 

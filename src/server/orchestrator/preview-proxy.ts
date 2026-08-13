@@ -95,12 +95,83 @@ const HMR_WS_PATCH = `<script>(function(){` +
     // and we never act on the outcome. Swallow both promises rather than
     // spilling an unhandled rejection into the previewed app's console.
     `var swallow=function(){};` +
+    // A refusal below is a no-op the page can't see — it gets History's usual
+    // `undefined` and no event, which reads as "the button is broken". Say why,
+    // once, in the console the developer already has open. Deliberately a bare
+    // `console.warn`: ShipIt's error panel only ingests what a page *posts* as
+    // a `shipit-preview` console message, so this reaches devtools without
+    // showing up as an app error or waking auto-fix.
+    // The text is ASCII on purpose, like the rest of this script: it is
+    // injected into whatever the app serves, and a page served without a
+    // charset renders a UTF-8 em dash here as mojibake (seen in Chromium).
+    `var warned=false;` +
+    `var refuse=function(){if(warned)return;warned=true;try{console.warn(` +
+      `"[ShipIt preview] Ignored a history traversal this preview cannot make on its own. "+` +
+      `"The frame has no entry of its own to move to, so the platform would have traversed "+` +
+      `"the ShipIt page instead, switching the user out of their session.")}catch(e5){}};` +
     `var travel=function(dir){` +
-      `if(!nav)return;` +
-      `if(dir==="back"?!nav.canGoBack:!nav.canGoForward)return;` +
+      `if(!nav){refuse();return}` +
+      `if(dir==="back"?!nav.canGoBack:!nav.canGoForward){refuse();return}` +
       `var r=nav[dir]();` +
       `r.committed.catch(swallow);r.finished.catch(swallow)` +
     `};` +
+    // The previewed PAGE's own back button is the same leak as the toolbar's,
+    // and the toolbar guard above does nothing for it: an app that calls
+    // `history.back()` — a "< Back" control, a router's `goBack()`, a
+    // `javascript:history.back()` link — traverses the joint session history
+    // straight past the frame and walks the ShipIt tab back, switching the
+    // user's active session. So the same frame-scoped traversal is installed
+    // over the three History methods that traverse. This script is first in
+    // <head>, so it wins over any app code that captures them later.
+    // `go(0)` (and a missing/NaN delta) is a reload, not a traversal — that is
+    // what the platform does, and it never leaves the frame.
+    `var jump=function(d){` +
+      // `|0` is exactly the Web IDL `long` conversion the real `go()` performs:
+      // it truncates, folds NaN/undefined/a non-numeric string to 0, and wraps
+      // modulo 2^32 (so `go(4294967295)` is `go(-1)`, as natively). It also
+      // throws on a BigInt, which is what the native conversion does.
+      `d=d|0;` +
+      `if(!d){location.reload();return}` +
+      `if(d===-1){travel("back");return}` +
+      `if(d===1){travel("forward");return}` +
+      // A delta past ±1 has no `canGoBack`-style predicate, so the entry list
+      // itself is the guard: an index outside it is a step the frame cannot
+      // take, and refusing is what keeps it off the top-level page.
+      //
+      // Counting the delta in the FRAME's entries is a deliberate departure
+      // from `history.go`, which counts steps of the *joint* history — a nested
+      // frame's navigation is a step there, so a native `go(-2)` from an app
+      // that made two navigations of its own can land somewhere the app never
+      // was, and past the frame's first entry it lands on the ShipIt page.
+      // Frame-local is both containable and what a router asking for "two of my
+      // entries back" means.
+      `if(!nav||!nav.entries||!nav.traverseTo){refuse();return}` +
+      `try{var es=nav.entries();var ce=nav.currentEntry;` +
+        `if(!es||!ce){refuse();return}` +
+        `var t=es[ce.index+d];if(!t){refuse();return}` +
+        `var r=nav.traverseTo(t.key);` +
+        `r.committed.catch(swallow);r.finished.catch(swallow)` +
+      `}catch(e3){}` +
+    `};` +
+    // Patch the PROTOTYPE, not the instance. An own property on `history`
+    // would leave `History.prototype.back.call(history)` as a live route to the
+    // joint traversal, and would shadow — rather than compose with — a router
+    // or instrumentation library that wraps the prototype method later. Falls
+    // back to the instance where `History` isn't exposed, and an engine that
+    // refuses the write must not take the rest of the script down.
+    `try{var hp=(window.History&&window.History.prototype)||history;` +
+      `hp.back=function(){travel("back")};` +
+      `hp.forward=function(){travel("forward")};` +
+      `hp.go=function(d){jump(d)};` +
+      // `history.length` is the joint length in a frame (measured in Chromium:
+      // one own entry, `length` 9), which is why nothing above can use it as a
+      // guard — and why the `history.length>1` check an app puts in FRONT of
+      // its back button is wrong here, sending it into a refusal. The
+      // Navigation API knows the frame's own count, so report that instead and
+      // the app's own guard starts telling it the truth.
+      `if(nav&&nav.entries)Object.defineProperty(hp,"length",{configurable:true,` +
+        `get:function(){try{return nav.entries().length}catch(e6){return 1}}})` +
+    `}catch(e4){}` +
     // Dispatch an event the browser would have fired for a navigation it
     // performed itself. Guarded per call: an engine missing one of the
     // constructors must not take the rest of `go` down with it.
