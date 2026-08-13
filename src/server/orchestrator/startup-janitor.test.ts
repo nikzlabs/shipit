@@ -273,7 +273,7 @@ describe("runDiskJanitor", () => {
     expect(lsRequests).toHaveLength(1);
     expect(lsRequests[0]).toContain("--filter");
     expect(lsRequests[0]).toContain("dangling=true");
-    expect(lsRequests[0]).toContain("name=shipit-session-");
+    expect(lsRequests[0]).toContain("name=shipit-");
 
     // Only the two orphan networks get rm'd — both the agent-style and
     // compose-style names. The live session's networks, the user-named

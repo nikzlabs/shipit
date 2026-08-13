@@ -56,7 +56,11 @@ import {
 import type { DepDirOverlaySpec } from "./overlay-session.js";
 import { egressEnforceEnabled, allowEgressToSubnets } from "./egress-firewall-install.js";
 import { extractNetworkSubnets } from "./egress-firewall.js";
-import { egressDnsEnabled } from "./egress-dns-install.js";
+import {
+  containComposeServices as applyComposeServiceEgress,
+  invalidateComposeServiceContainment,
+} from "./compose-service-egress.js";
+import { egressDnsEnabled, orchestratorCallbackHost } from "./egress-dns-install.js";
 import { egressProxyEnabled } from "./egress-proxy-install.js";
 import {
   kernelRuntime,
@@ -410,6 +414,19 @@ export const CONTAINER_BUILD_ID_LABEL = "shipit-build-id";
 export class SessionContainerManager extends EventEmitter<SessionContainerManagerEvents> {
   private docker: Docker;
   private containers = new Map<string, SessionContainer>();
+  /** Serialize service containment per session; concurrent Compose starts can overlap. */
+  private composeEgressRuns = new Map<string, Promise<void>>();
+  private composeServiceNames = new Map<string, string[]>();
+  private containerOriginSessions = new Map<string, string>();
+  private containerOriginNegative = new Map<string, number>();
+  private containerOriginRefresh?: Promise<void>;
+  private containerOriginRefreshStartedAt = 0;
+  private containerOriginRefreshedAt = 0;
+  private containerOriginRefreshBackoffUntil = 0;
+  private containerOriginRefreshFailed = false;
+  private sessionNetworkRanges = new Map<string, { subnet: string; gateway?: string }[]>();
+  private sessionNetworkRangeRefresh?: Promise<void>;
+  private sessionNetworkRangeRefreshBackoffUntil = 0;
   private imageName: string;
   private networkName: string;
   private defaultMemoryLimit: number;
@@ -494,6 +511,114 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     return this.docker;
   }
 
+  /** Boot-effective containment used when generating the Compose override. */
+  isEgressContained(sessionId: string): boolean {
+    if (!egressEnforceEnabled()) return false;
+    const sc = this.containers.get(sessionId);
+    return sc?.egressContainedAtStart ?? this.resolveEgressConfig?.(sessionId)?.contained ?? true;
+  }
+
+  isEgressDnsContained(sessionId: string): boolean {
+    return this.isEgressContained(sessionId) && egressDnsEnabled();
+  }
+
+  isEgressProxyContained(sessionId: string): boolean {
+    return this.isEgressContained(sessionId) && egressProxyEnabled();
+  }
+
+  /** Remove the old session bridge before an Open/Contained policy transition. */
+  async resetSessionNetwork(sessionId: string): Promise<void> {
+    const network = this.docker.getNetwork(`shipit-session-${sessionId}`);
+    let info: Docker.NetworkInspectInfo;
+    try { info = await network.inspect(); } catch { return; }
+    for (const containerId of Object.keys(info.Containers ?? {})) {
+      try { await network.disconnect({ Container: containerId, Force: true }); } catch { /* already detached */ }
+    }
+    try { await network.remove(); } catch (error) {
+      const code = error && typeof error === "object" && "statusCode" in error ? Number(error.statusCode) : 0;
+      if (code !== 404) throw error;
+    }
+  }
+
+  /** Recreate a stale Open/Contained bridge before Compose can reuse it. */
+  async ensureSessionNetworkMode(sessionId: string, internal: boolean): Promise<void> {
+    const network = this.docker.getNetwork(`shipit-session-${sessionId}`);
+    let info: Docker.NetworkInspectInfo;
+    try { info = await network.inspect(); } catch { return; }
+    if ((info.Internal ?? false) === internal) return;
+    await this.resetSessionNetwork(sessionId);
+  }
+
+  /** Remove the NAT endpoint from stopped services before Compose starts them. */
+  async prepareComposeServiceStart(sessionId: string, _serviceNames: string[]): Promise<void> {
+    if (!this.isEgressContained(sessionId)) return;
+    try {
+      const networkInfo = await this.docker.getNetwork(`shipit-session-${sessionId}`).inspect();
+      this.sessionNetworkRanges.set(sessionId, (networkInfo.IPAM?.Config ?? [])
+        .filter((entry): entry is { Subnet: string; Gateway?: string } => Boolean(entry.Subnet))
+        .map((entry) => ({ subnet: entry.Subnet, ...(entry.Gateway ? { gateway: entry.Gateway } : {}) })));
+    } catch { /* containment later verifies the network and fails closed */ }
+    const containers = await this.docker.listContainers({
+      all: true,
+      filters: { label: [`shipit-parent-session=${sessionId}`] },
+    });
+    const network = this.docker.getNetwork(`shipit-egress-${sessionId}`);
+    for (const entry of containers) {
+      const serviceName = entry.Labels?.["shipit-service-name"];
+      if (!serviceName || entry.State === "running" || entry.State === "paused") continue;
+      invalidateComposeServiceContainment(sessionId, entry.Id);
+      try {
+        await network.disconnect({ Container: entry.Id, Force: true });
+      } catch (error) {
+        const code = error && typeof error === "object" && "statusCode" in error ? Number(error.statusCode) : 0;
+        const message = error instanceof Error ? error.message : String(error);
+        if (code !== 404 && !/not connected|no such network|not found/i.test(message)) throw error;
+      }
+    }
+  }
+
+  /**
+   * Apply the owning session's effective egress policy to its running Compose
+   * services. Called after every Compose `up`, because that command can replace
+   * containers while preserving service names.
+   */
+  async containComposeServices(sessionId: string, serviceNames: string[], refresh = false): Promise<void> {
+    if (!egressEnforceEnabled()) return;
+    const sidecarImage = process.env.SESSION_EGRESS_SIDECAR_IMAGE;
+    const sc = this.containers.get(sessionId);
+    const config = this.resolveEgressConfig?.(sessionId) ?? { contained: true, extraHosts: [] };
+    const contained = sc?.egressContainedAtStart ?? config.contained;
+    if (!contained) return;
+    if (serviceNames.length > 0) this.composeServiceNames.set(sessionId, [...serviceNames]);
+    if (!sidecarImage) {
+      throw new Error(
+        "Compose egress containment is on but SESSION_EGRESS_SIDECAR_IMAGE is not set",
+      );
+    }
+    const prior = this.composeEgressRuns.get(sessionId) ?? Promise.resolve();
+    const run = (async () => {
+      try { await prior; } catch { /* a failed predecessor must not poison the queue */ }
+      await applyComposeServiceEgress({
+        docker: this.docker,
+        sessionId,
+        sidecarImage,
+        config: { ...config, contained },
+        serviceNames,
+        dnsEnabled: egressDnsEnabled(),
+        proxyEnabled: egressProxyEnabled(),
+        labels: this.baseLabels(),
+        orchestratorHost: orchestratorCallbackHost(),
+        refresh,
+      });
+    })();
+    this.composeEgressRuns.set(sessionId, run);
+    try {
+      await run;
+    } finally {
+      if (this.composeEgressRuns.get(sessionId) === run) this.composeEgressRuns.delete(sessionId);
+    }
+  }
+
   /**
    * docs/262 — the session-worker image, exposed so the plugin install runner
    * can borrow its toolchain (node, npm, git) for a throwaway container. It
@@ -529,25 +654,34 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     const sidecarImage = process.env.SESSION_EGRESS_SIDECAR_IMAGE;
     if (!sidecarImage) return false;
     const sc = this.containers.get(sessionId);
-    if (sc?.status !== "running" || !sc.id) return false;
     const cfg = this.resolveEgressConfig?.(sessionId) ?? { contained: true, extraHosts: [] };
     if (!cfg.contained) return false;
     const reloadResolver = egressDnsEnabled();
     const reloadProxy = egressProxyEnabled();
     if (!reloadResolver && !reloadProxy) return false;
-    await reloadEgressSidecars({
-      docker: this.docker,
-      agentContainerId: sc.id,
-      sessionId,
-      sidecarImage,
-      opsSession: sc.opsSession ?? false,
-      extraHosts: cfg.extraHosts,
-      ...(cfg.base ? { base: cfg.base } : {}),
-      ...(cfg.identityRules ? { identityRules: cfg.identityRules } : {}),
-      baseLabels: this.baseLabels(),
-      reloadResolver,
-      reloadProxy,
-    });
+    if (sc?.status === "running" && sc.id) {
+      await reloadEgressSidecars({
+        docker: this.docker,
+        agentContainerId: sc.id,
+        sessionId,
+        sidecarImage,
+        opsSession: sc.opsSession ?? false,
+        extraHosts: cfg.extraHosts,
+        ...(cfg.base ? { base: cfg.base } : {}),
+        ...(cfg.identityRules ? { identityRules: cfg.identityRules } : {}),
+        baseLabels: this.baseLabels(),
+        reloadResolver,
+        reloadProxy,
+      });
+    }
+    // Service sidecars borrow different network namespaces. Refresh each of
+    // them with the new effective allowlist as part of the same operation.
+    try {
+      await this.containComposeServices(sessionId, this.composeServiceNames.get(sessionId) ?? [], true);
+    } catch (error) {
+      console.error(`[egress:${sessionId}] service allowlist refresh failed closed:`, error);
+      throw error;
+    }
     return true;
   }
 
@@ -1042,6 +1176,135 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
    */
   getSessionByContainerIp(ip: string): SessionContainer | undefined {
     return getSessionByContainerIp(this.containers, ip);
+  }
+
+  /** Resolve agent, Compose-service, and sidecar IPs to their owning session. */
+  async getSessionByAnyContainerIp(ip: string): Promise<{ sessionId: string } | undefined> {
+    const agent = this.getSessionByContainerIp(ip);
+    if (agent) return { sessionId: agent.sessionId };
+    const arrivedAt = Date.now();
+    const cached = this.containerOriginSessions.get(ip);
+    if (cached && arrivedAt - this.containerOriginRefreshedAt <= 1_000) return { sessionId: cached };
+    if ((this.containerOriginNegative.get(ip) ?? 0) > arrivedAt) return undefined;
+
+    const refresh = async (): Promise<void> => {
+      if (Date.now() < this.containerOriginRefreshBackoffUntil) return;
+      if (!this.containerOriginRefresh) {
+        this.containerOriginRefreshStartedAt = Date.now();
+        this.containerOriginRefresh = (async () => {
+        try {
+          const entries = await Promise.race([
+            this.docker.listContainers({
+              filters: { label: ["shipit-parent-session"] },
+            }),
+            new Promise<never>((_, reject) => {
+              setTimeout(() => reject(new Error("container-origin lookup timed out")), 1_000).unref();
+            }),
+          ]);
+          const next = new Map<string, string>();
+          for (const entry of entries) {
+            const sessionId = entry.Labels?.["shipit-parent-session"];
+            if (!sessionId) continue;
+            for (const network of Object.values(entry.NetworkSettings?.Networks ?? {})) {
+              if (network.IPAddress) next.set(network.IPAddress, sessionId);
+            }
+          }
+          this.containerOriginSessions = next;
+          this.containerOriginRefreshedAt = Date.now();
+          this.containerOriginRefreshBackoffUntil = 0;
+          this.containerOriginRefreshFailed = false;
+          for (const [negativeIp, expiresAt] of this.containerOriginNegative) {
+            if (expiresAt <= this.containerOriginRefreshedAt) this.containerOriginNegative.delete(negativeIp);
+          }
+        } catch (error) {
+          console.warn("[container-guard] could not refresh container IP index:", error);
+          this.containerOriginRefreshBackoffUntil = Date.now() + 5_000;
+          this.containerOriginRefreshFailed = true;
+          this.containerOriginNegative.clear();
+        } finally {
+          this.containerOriginRefresh = undefined;
+        }
+        })();
+      }
+      await this.containerOriginRefresh;
+    };
+
+    const joinedRefreshStartedAt = this.containerOriginRefresh
+      ? this.containerOriginRefreshStartedAt
+      : 0;
+    await refresh();
+    // If this request joined a snapshot that started before the request, take a
+    // second snapshot. A service can appear between those two events.
+    if (joinedRefreshStartedAt > 0 && joinedRefreshStartedAt < arrivedAt
+      && Date.now() >= this.containerOriginRefreshBackoffUntil) {
+      await refresh();
+    }
+    const refreshed = this.containerOriginSessions.get(ip);
+    if (refreshed) return { sessionId: refreshed };
+    if (this.containerOriginRefreshFailed) {
+      await this.refreshSessionNetworkRanges();
+      throw new Error("container-origin index is unavailable");
+    }
+    this.containerOriginNegative.set(ip, Date.now() + 1_000);
+    return undefined;
+  }
+
+  private async refreshSessionNetworkRanges(): Promise<void> {
+    if (Date.now() < this.sessionNetworkRangeRefreshBackoffUntil) return;
+    this.sessionNetworkRangeRefresh ??= (async () => {
+        try {
+          await Promise.race([
+            Promise.all([...this.containers.keys()].map(async (sessionId) => {
+              const inspected = await Promise.allSettled([
+                this.docker.getNetwork(`shipit-session-${sessionId}`).inspect(),
+                this.docker.getNetwork(`shipit-egress-${sessionId}`).inspect(),
+              ]);
+              const ranges = inspected.flatMap((result) => result.status === "fulfilled"
+                ? (result.value.IPAM?.Config ?? [])
+                  .filter((entry): entry is { Subnet: string; Gateway?: string } => Boolean(entry.Subnet))
+                  .map((entry) => ({ subnet: entry.Subnet, ...(entry.Gateway ? { gateway: entry.Gateway } : {}) }))
+                : []);
+              // Preserve the last-known-good ranges when Docker cannot inspect
+              // either network. This fallback exists for Docker outages, so an
+              // outage must never erase it and turn the API guard fail-open.
+              if (ranges.length > 0) this.sessionNetworkRanges.set(sessionId, ranges);
+            })),
+            new Promise<never>((_, reject) => {
+              setTimeout(() => reject(new Error("session-network range lookup timed out")), 1_000).unref();
+            }),
+          ]);
+          this.sessionNetworkRangeRefreshBackoffUntil = Date.now() + 1_000;
+        } catch (error) {
+          console.warn("[container-guard] could not refresh session network ranges:", error);
+          this.sessionNetworkRangeRefreshBackoffUntil = Date.now() + 5_000;
+        } finally {
+          this.sessionNetworkRangeRefresh = undefined;
+        }
+      })();
+    await this.sessionNetworkRangeRefresh;
+  }
+
+  /** Conservative bridge-origin check used only when Docker lookup is unavailable. */
+  isLikelySessionContainerIp(ip: string): boolean {
+    const toIpv4 = (value: string): number | null => {
+      const parts = value.split(".").map(Number);
+      if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return null;
+      return parts.reduce((result, part) => (result * 256) + part, 0) >>> 0;
+    };
+    const target = toIpv4(ip);
+    if (target === null) return false;
+    for (const ranges of this.sessionNetworkRanges.values()) {
+      for (const range of ranges) {
+        if (range.gateway === ip) continue;
+        const [baseText, prefixText] = range.subnet.split("/");
+        const base = toIpv4(baseText);
+        const prefix = Number(prefixText);
+        if (base === null || !Number.isInteger(prefix) || prefix < 0 || prefix > 32) continue;
+        const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
+        if ((target & mask) === (base & mask)) return true;
+      }
+    }
+    return false;
   }
 
   // --- Standby container support ---

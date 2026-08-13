@@ -64,6 +64,8 @@ export interface DnsmasqConfigOpts {
    * (they're on the bridge subnet the Tier A firewall already allows by IP).
    */
   internalDomains?: string[];
+  /** Forward only unqualified names to Docker DNS (safe for repository service names). */
+  unqualifiedInternalNames?: boolean;
   ipsetV4?: string;
   ipsetV6?: string;
   resolverUser?: string;
@@ -107,8 +109,12 @@ export function buildDnsmasqConfig(opts: DnsmasqConfigOpts): string {
     for (const up of upstreams) lines.push(`server=/${domain}/${up}`);
     lines.push(`ipset=/${domain}/${ipsetV4},${ipsetV6}`);
   }
-  if (internalDomains.length > 0) {
+  if (internalDomains.length > 0 || opts.unqualifiedInternalNames) {
     lines.push("", "# Internal names → Docker embedded DNS (reached by IP via the bridge allow).");
+    // Compose service discovery uses unqualified names. One unqualified-only
+    // route avoids placing repository-controlled service names into dnsmasq
+    // domain directives, where a name such as `com` would also match *.com.
+    if (opts.unqualifiedInternalNames) lines.push(`server=//${dockerDns}`);
     for (const domain of internalDomains) lines.push(`server=/${domain}/${dockerDns}`);
   }
   lines.push(

@@ -520,3 +520,36 @@ compose: docker-compose.yml
 ```
 
 See [shipit-yaml.md](shipit-yaml.md) for the full shipit.yaml reference.
+
+## Network egress
+
+Compose services follow the owning session's Network setting. In a contained
+session, ShipIt starts services on an internal-only session network, installs
+the standard egress allowlist in each service network namespace, and then gives
+the service its controlled internet route. An unlisted destination is blocked
+from a service in the same way that it is blocked from the agent container.
+Add required package or API hosts through Settings → Network. An Open session,
+or a deployment with containment explicitly disabled, keeps normal Docker
+egress.
+
+This protection applies to running Compose services, not Dockerfile build
+steps. BuildKit runs build commands in daemon-managed containers before the
+service exists. ShipIt requires Docker Compose 2.24.4 or newer for contained
+service network replacement.
+
+Contained services cannot add Linux capabilities, use `deploy.restart_policy`,
+request `use_api_socket`, add lifecycle hooks, or declare labels in ShipIt's
+reserved `shipit-egress-*` namespace. Compose
+`include` and service `extends` are also rejected in contained sessions because
+ShipIt cannot safely validate and override definitions from a second file.
+ShipIt replaces `dns:` and removes `SETUID` and `SETGID` for contained services.
+Each service must declare a numeric, non-root `user:` other than the reserved
+UIDs 911 and 912. The image must run directly as that user. Use an Open session
+for images that require root initialization or an entrypoint privilege drop.
+
+A contained service first starts on an internal network with no public route.
+ShipIt pauses it, installs the allowlist controls, and then resumes it. Do not
+make the entrypoint depend on public network access before setup completes. Put
+dependency installation in `agent.install` or bake it into the image.
+Contained Compose services require Docker Engine 28 or newer (API 1.48) so
+ShipIt can select the controlled egress bridge as the default route.

@@ -31,6 +31,14 @@ describe("parseComposeFile", () => {
     return p;
   }
 
+  function trustedProxyEnvironment(extra = ""): string {
+    const allowed = ["CONTAINERS", "EVENTS", "IMAGES", "INFO", "NETWORKS", "VOLUMES", "VERSION", "PING"];
+    const denied = ["POST", "BUILD", "COMMIT", "EXEC", "AUTH", "CONFIGS", "DISTRIBUTION",
+      "GRPC", "NODES", "PLUGINS", "SECRETS", "SERVICES", "SESSION", "SWARM", "SYSTEM", "TASKS"];
+    return [...allowed.map((key) => `      ${key}: 1`), ...denied.map((key) => `      ${key}: 0`), extra]
+      .filter(Boolean).join("\n");
+  }
+
   it("parses basic service definitions", () => {
     const dir = setup();
     const p = writeCompose(dir, `
@@ -181,6 +189,34 @@ services:
     expect(() => parseComposeFile(p, { dockerSocket: false })).toThrow("privileged");
   });
 
+  it("rejects repository-defined Linux capabilities", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `services:\n  web:\n    image: node:20\n    cap_add: [NET_ADMIN]\n`);
+    expect(() => parseComposeFile(p, { dockerSocket: false, containEgress: true })).toThrow("cap_add");
+  });
+
+  it("rejects reserved egress labels", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `services:\n  web:\n    image: node:20\n    labels:\n      shipit-egress-resolver: forged\n`);
+    expect(() => parseComposeFile(p, { dockerSocket: false, containEgress: true })).toThrow("reserved egress namespace");
+  });
+
+  it("rejects Compose API socket access in contained services", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `services:\n  web:\n    image: node:20\n    use_api_socket: true\n`);
+    expect(() => parseComposeFile(p, { dockerSocket: false, containEgress: true })).toThrow("use_api_socket");
+    expect(() => parseComposeFile(p, { dockerSocket: true, containEgress: true })).toThrow("use_api_socket");
+    expect(() => parseComposeFile(p, { dockerSocket: false })).toThrow("compose.docker-socket");
+    expect(() => parseComposeFile(p, { dockerSocket: true })).not.toThrow();
+  });
+
+  it("rejects lifecycle hooks in contained services", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `services:\n  web:\n    image: node:20\n    post_start:\n      - command: /bin/true\n        privileged: true\n`);
+    expect(() => parseComposeFile(p, { dockerSocket: false, containEgress: true })).toThrow("lifecycle hooks");
+    expect(() => parseComposeFile(p, { dockerSocket: false })).not.toThrow();
+  });
+
   it("rejects network_mode: host", () => {
     const dir = setup();
     const p = writeCompose(dir, `
@@ -243,6 +279,70 @@ services:
     expect(() => parseComposeFile(p, { dockerSocket: false })).toThrow("Docker socket");
   });
 
+  it("rejects interpolation in contained security-sensitive fields", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `
+services:
+  web:
+    image: attacker/example
+    user: "1001"
+    privileged: \${X:-true}
+    volumes:
+      - "\${S:-/var/run/docker.sock}:/var/run/docker.sock"
+`);
+    expect(() => parseComposeFile(p, { dockerSocket: false, containEgress: true }))
+      .toThrow("variable interpolation");
+  });
+
+  it("rejects custom YAML tags in contained service definitions", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `services:\n  web:\n    image: attacker/example\n    user: "1001"\n    privileged: !override true\n`);
+    expect(() => parseComposeFile(p, { dockerSocket: false, containEgress: true }))
+      .toThrow("Custom YAML tags");
+  });
+
+  it("allows exclamation marks in ordinary contained scalar values", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `services:\n  web:\n    image: attacker/example\n    user: "1001"\n    environment:\n      PASSWORD: Str0ng!Password\n`);
+    expect(() => parseComposeFile(p, { dockerSocket: false, containEgress: true }))
+      .not.toThrow();
+  });
+
+  it("rejects resolved YAML tags in contained service definitions", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `services:\n  web:\n    image: attacker/example\n    user: "1001"\n    volumes: !!set\n      ? /var/run/docker.sock:/var/run/docker.sock\n`);
+    expect(() => parseComposeFile(p, { dockerSocket: false, containEgress: true }))
+      .toThrow("Custom YAML tags");
+  });
+
+  it("rejects YAML merge keys in contained service definitions", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `x-base: &base\n  privileged: true\n  cap_add: [NET_ADMIN]\nservices:\n  web:\n    <<: *base\n    image: attacker/example\n    user: "1001"\n`);
+    expect(() => parseComposeFile(p, { dockerSocket: false, containEgress: true }))
+      .toThrow("YAML merge keys");
+  });
+
+  it("resolves YAML merge keys before Open-mode security validation", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `x-base: &base\n  privileged: true\nservices:\n  web:\n    <<: *base\n    image: attacker/example\n`);
+    expect(() => parseComposeFile(p, { dockerSocket: false }))
+      .toThrow("privileged: true");
+  });
+
+  it("rejects a project declaration of the reserved contained network", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `services:\n  web:\n    image: attacker/example\n    user: "1001"\nnetworks:\n  shipit-session:\n    driver: macvlan\n`);
+    expect(() => parseComposeFile(p, { dockerSocket: false, containEgress: true }))
+      .toThrow("reserved `shipit-session` network");
+  });
+
+  it("rejects volumes_from in contained services", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `services:\n  web:\n    image: attacker/example\n    user: "1001"\n    volumes_from: [docker-socket-proxy]\n`);
+    expect(() => parseComposeFile(p, { dockerSocket: true, containEgress: true }))
+      .toThrow("volumes_from");
+  });
+
   it("explains when the ops proxy is missing the server-side ops flag", () => {
     const dir = setup();
     const p = writeCompose(dir, `
@@ -267,6 +367,126 @@ services:
 `);
     const services = parseComposeFile(p, { dockerSocket: true });
     expect(services).toHaveLength(1);
+  });
+
+  it("rejects direct Docker socket access for contained non-proxy services", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `
+services:
+  web:
+    image: node:20
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+`);
+    expect(() => parseComposeFile(p, { dockerSocket: true, containEgress: true }))
+      .toThrow("direct Docker socket access");
+  });
+
+  it("rejects a spoofed proxy name without the server-authoritative ops flag", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `
+services:
+  docker-socket-proxy:
+    image: attacker/example
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+`);
+    expect(() => parseComposeFile(p, { dockerSocket: true, containEgress: true }))
+      .toThrow("direct Docker socket access");
+    expect(() => parseComposeFile(p, {
+      dockerSocket: true,
+      containEgress: true,
+      trustedOpsProxy: true,
+    })).toThrow("direct Docker socket access");
+  });
+
+  it("allows the trusted ops proxy on the internal network in a contained ops session", () => {
+    const dir = setup();
+    const environment = trustedProxyEnvironment();
+    const p = writeCompose(dir, `services:\n  docker-socket-proxy:\n    image: tecnativa/docker-socket-proxy:0.3.0\n    environment:\n${environment}\n    volumes:\n      - /var/run/docker.sock:/var/run/docker.sock:ro\n`);
+    expect(() => parseComposeFile(p, {
+      dockerSocket: true,
+      containEgress: true,
+      trustedOpsProxy: true,
+    })).not.toThrow();
+    expect(() => parseComposeFile(p, {
+      dockerSocket: true,
+      trustedOpsProxy: true,
+    })).not.toThrow();
+  });
+
+  it("does not trust an ops proxy that supplies a build definition", () => {
+    const dir = setup();
+    const environment = trustedProxyEnvironment();
+    const p = writeCompose(dir, `services:\n  docker-socket-proxy:\n    image: tecnativa/docker-socket-proxy:0.3.0\n    build: .\n    environment:\n${environment}\n    volumes:\n      - /var/run/docker.sock:/var/run/docker.sock:ro\n`);
+    expect(() => parseComposeFile(p, {
+      dockerSocket: true,
+      containEgress: true,
+      trustedOpsProxy: true,
+    })).toThrow("direct Docker socket access");
+  });
+
+  it("does not trust an ops proxy with an extra bind mount", () => {
+    const dir = setup();
+    const environment = trustedProxyEnvironment();
+    const p = writeCompose(dir, `services:\n  docker-socket-proxy:\n    image: tecnativa/docker-socket-proxy:0.3.0\n    environment:\n${environment}\n    volumes:\n      - /var/run/docker.sock:/var/run/docker.sock:ro\n      - ./proxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro\n`);
+    expect(() => parseComposeFile(p, {
+      dockerSocket: true,
+      containEgress: true,
+      trustedOpsProxy: true,
+    })).toThrow("direct Docker socket access");
+  });
+
+  it("does not trust an ops proxy with a repository-controlled healthcheck", () => {
+    const dir = setup();
+    const environment = trustedProxyEnvironment();
+    const p = writeCompose(dir, `services:\n  docker-socket-proxy:\n    image: tecnativa/docker-socket-proxy:0.3.0\n    environment:\n${environment}\n    healthcheck:\n      test: [CMD-SHELL, 'true']\n    volumes:\n      - /var/run/docker.sock:/var/run/docker.sock:ro\n`);
+    expect(() => parseComposeFile(p, {
+      dockerSocket: true,
+      containEgress: true,
+      trustedOpsProxy: true,
+    })).toThrow("direct Docker socket access");
+  });
+
+  it("does not trust an ops proxy with an unapproved environment key", () => {
+    const dir = setup();
+    const environment = trustedProxyEnvironment("      ALLOW_START: 1");
+    const p = writeCompose(dir, `services:\n  docker-socket-proxy:\n    image: tecnativa/docker-socket-proxy:0.3.0\n    environment:\n${environment}\n    volumes:\n      - /var/run/docker.sock:/var/run/docker.sock:ro\n`);
+    expect(() => parseComposeFile(p, {
+      dockerSocket: true,
+      containEgress: true,
+      trustedOpsProxy: true,
+    })).toThrow("direct Docker socket access");
+  });
+
+  it("does not trust list-form proxy environment inherited from a project env file", () => {
+    const dir = setup();
+    const allowed = ["CONTAINERS", "EVENTS", "IMAGES", "INFO", "NETWORKS", "VOLUMES", "VERSION", "PING"];
+    const denied = ["POST", "BUILD", "COMMIT", "EXEC", "AUTH", "CONFIGS", "DISTRIBUTION",
+      "GRPC", "NODES", "PLUGINS", "SECRETS", "SERVICES", "SESSION", "SWARM", "SYSTEM", "TASKS"];
+    const environment = [...allowed.map((key) => `      - ${key}=1`),
+      ...denied.map((key) => `      - ${key}=0`), "      - ALLOW_START"].join("\n");
+    const p = writeCompose(dir, `services:\n  docker-socket-proxy:\n    image: tecnativa/docker-socket-proxy:0.3.0\n    environment:\n${environment}\n    volumes:\n      - /var/run/docker.sock:/var/run/docker.sock:ro\n`);
+    expect(() => parseComposeFile(p, {
+      dockerSocket: true,
+      containEgress: true,
+      trustedOpsProxy: true,
+    })).toThrow("direct Docker socket access");
+  });
+
+  it("does not grant the proxy UID exemption by service name alone", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `
+services:
+  docker-socket-proxy:
+    image: attacker/example
+    user: 911
+`);
+    expect(() => parseComposeFile(p, {
+      dockerSocket: true,
+      containEgress: true,
+      trustedOpsProxy: true,
+    })).toThrow("reserved UID");
   });
 
   it("rejects absolute bind mount paths", () => {
@@ -389,7 +609,7 @@ describe("generateComposeOverride", () => {
 
   it("generates override with labels and network", () => {
     const override = generateComposeOverride(
-      [{ name: "web", ports: ["5173:5173"] }],
+      [{ name: "web", ports: ["5173:5173"], user: "1001:1001" }],
       baseOpts,
     );
     expect(override).toContain("shipit-parent-session: test-session-123");
@@ -397,6 +617,54 @@ describe("generateComposeOverride", () => {
     expect(override).toContain("shipit-session");
     expect(override).toContain("shipit-session-test-session-123");
     expect(override).toContain("NET_RAW");
+  });
+
+  it("makes the service network internal while egress containment is active", () => {
+    const override = generateComposeOverride(
+      [{ name: "web", ports: ["5173:5173"], user: "1001:1001" }],
+      { ...baseOpts, containEgress: true, containDns: true, containProxy: true },
+    );
+    expect(override).toContain("internal: true");
+    expect(override).toContain("192.0.2.1");
+    expect(override).toContain("networks: !override");
+    expect(override).toContain("dns: !override");
+    expect(override).toContain("restart: no");
+    expect(override).toContain("no-new-privileges");
+    expect(override).toContain("cap_drop:\n      - NET_RAW\n      - SETUID\n      - SETGID");
+    expect(override).toContain("net.ipv4.conf.all.route_localnet: \"1\"");
+
+    const openOverride = generateComposeOverride(
+      [{ name: "web", ports: ["5173:5173"] }],
+      baseOpts,
+    );
+    expect(openOverride).not.toContain("internal: true");
+    expect(openOverride).not.toContain("192.0.2.1");
+    expect(openOverride).not.toContain("SETUID");
+  });
+
+  it("overrides repository DNS in contained mode", () => {
+    const override = generateComposeOverride(
+      [{ name: "web", ports: ["5173:5173"], user: "1001:1001" }],
+      { ...baseOpts, containEgress: true, containDns: true },
+    );
+    expect(override).toContain("dns: !override\n      - 192.0.2.1");
+    expect(override).not.toContain("user: 1000:1000");
+  });
+
+  it("requires an explicit safe numeric user only in contained mode", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "compose-contained-user-"));
+    const write = (content: string) => {
+      const file = path.join(dir, "docker-compose.yml");
+      fs.writeFileSync(file, content);
+      return file;
+    };
+    const p = write(`services:\n  web:\n    image: postgres:17\n`);
+    expect(() => parseComposeFile(p, { dockerSocket: false, containEgress: true })).toThrow("numeric, non-root");
+    expect(() => parseComposeFile(p, { dockerSocket: false })).not.toThrow();
+    const safe = write(`services:\n  web:\n    image: app:test\n    user: "1001:1001"\n`);
+    expect(() => parseComposeFile(safe, { dockerSocket: false, containEgress: true })).not.toThrow();
+    const reserved = write(`services:\n  web:\n    image: app:test\n    user: "911"\n`);
+    expect(() => parseComposeFile(reserved, { dockerSocket: false, containEgress: true })).toThrow("reserved UID");
   });
 
   it("labels manual services without adding profiles", () => {
@@ -524,12 +792,27 @@ describe("generateComposeOverride — session-worker UID (#1646)", () => {
   it("keeps the ops docker-socket-proxy image startup user so HAProxy config generation can run", () => {
     process.env.SHIPIT_SESSION_WORKER_UID = "1000";
     const override = generateComposeOverride(
-      [{ name: "docker-socket-proxy", shipitPreview: "auto" }],
+      [{ name: "docker-socket-proxy", shipitPreview: "auto", trustedOpsProxy: true }],
       { ...baseOpts, composeConfig: { file: "docker-compose.yml", dockerSocket: true } },
     );
     const doc = parseYaml(override) as { services: Record<string, { user?: string; cap_drop?: string[] }> };
     expect(doc.services["docker-socket-proxy"].user).toBeUndefined();
     expect(doc.services["docker-socket-proxy"].cap_drop).toEqual(["NET_RAW"]);
+
+    const containedOverride = generateComposeOverride(
+      [{ name: "docker-socket-proxy", shipitPreview: "auto", trustedOpsProxy: true }],
+      {
+        ...baseOpts,
+        containEgress: true,
+        containDns: true,
+        composeConfig: { file: "docker-compose.yml", dockerSocket: true },
+      },
+    );
+    const contained = parseYaml(containedOverride) as {
+      services: Record<string, { user?: string; dns?: string[] }>;
+    };
+    expect(contained.services["docker-socket-proxy"].user).toBeUndefined();
+    expect(contained.services["docker-socket-proxy"].dns).toEqual(["192.0.2.1"]);
   });
 
   it("honors an explicit user: from the compose file and never overrides it", () => {

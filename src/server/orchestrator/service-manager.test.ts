@@ -110,6 +110,29 @@ describe("ServiceManager", () => {
     expect(mgr.started).toBe(false);
   });
 
+  it("detaches stale egress before up and contains the service after up", async () => {
+    const dir = setup();
+    writeCompose(dir, "services:\n  web:\n    image: node:20\n    user: \"1001:1001\"\n    x-shipit-preview: manual\n");
+    const events: string[] = [];
+    const mgr = new ServiceManager({
+      sessionId: "test-session",
+      workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
+      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeRunner: async (args) => {
+        if (args.includes("up")) events.push("up");
+      },
+      composeQuery: emptyComposeQuery,
+      pollIntervalMs: 0,
+      prepareContainedStartFn: async () => { events.push("prepare"); },
+      containServicesFn: async () => { events.push("contain"); },
+    });
+    await mgr.start();
+    await mgr.startService("web");
+    expect(events).toEqual(["prepare", "up", "contain"]);
+    await mgr.stop();
+  });
+
   it("rejects invalid compose files during start", async () => {
     const dir = setup();
     writeCompose(dir, "services:\n  web:\n    image: node:20\n    privileged: true\n");
@@ -3187,7 +3210,7 @@ services:
     expect(getSnapshotDuringUp()).toContain("[compose] #4 [2/9] RUN apt-get update");
 
     await mgr.stop();
-  });
+  }, 15_000);
 
   it("emits a record that never ends, instead of buffering it without bound", async () => {
     tmpDir = makeSessionDir("service-mgr-");

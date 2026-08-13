@@ -49,6 +49,16 @@ describe("buildDnsmasqConfig", () => {
     expect(cfg).not.toContain("ipset=/orch.internal/");
   });
 
+  it("routes repository service discovery as unqualified names without domain injection", () => {
+    const cfg = buildDnsmasqConfig({
+      ...base,
+      internalDomains: ["orch.internal"],
+      unqualifiedInternalNames: true,
+    });
+    expect(cfg).toContain("server=//127.0.0.11");
+    expect(cfg).not.toContain("server=/com/");
+  });
+
   it("supports multiple upstreams per domain", () => {
     const cfg = buildDnsmasqConfig({ publicDomains: ["github.com"], publicUpstreams: ["1.1.1.1", "8.8.8.8"] });
     expect(cfg).toContain("server=/github.com/1.1.1.1");

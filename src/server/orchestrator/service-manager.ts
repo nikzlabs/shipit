@@ -301,6 +301,16 @@ export interface ServiceManagerOptions {
    * attached. Omitted in tests / non-container setups.
    */
   networkHealFn?: (networkName: string) => Promise<void>;
+  /** Apply fail-closed egress containment to newly started/recreated services. */
+  containServicesFn?: (serviceNames: string[]) => Promise<void>;
+  /** Tier B is active, so generated services use its loopback DNS upstream. */
+  containServiceDns?: boolean;
+  /** Tier C is active for contained services. */
+  containServiceProxy?: boolean;
+  /** Detach stale NAT endpoints before Compose starts stopped containers. */
+  prepareContainedStartFn?: (serviceNames: string[]) => Promise<void>;
+  /** Recreate a reused session network when its internal mode is stale. */
+  ensureSessionNetworkModeFn?: (internal: boolean) => Promise<void>;
   /**
    * Loads user-saved secrets for the session's repo (from SecretStore).
    *
@@ -426,6 +436,11 @@ export class ServiceManager extends EventEmitter {
   private readonly networkJoinFn?: (networkName: string) => Promise<void>;
   /** docs/128 — periodic agent network-attachment self-heal (see options). */
   private readonly networkHealFn?: (networkName: string) => Promise<void>;
+  private containServicesFn?: (serviceNames: string[]) => Promise<void>;
+  private containServiceDns: boolean;
+  private containServiceProxy: boolean;
+  private readonly ensureSessionNetworkModeFn?: (internal: boolean) => Promise<void>;
+  private prepareContainedStartFn?: (serviceNames: string[]) => Promise<void>;
   /** docs/183 — external service-env root, for teardown cleanup. */
   private readonly serviceEnvDir: string;
   /**
@@ -594,6 +609,11 @@ export class ServiceManager extends EventEmitter {
     this.opsSession = opts.opsSession ?? false;
     this.networkJoinFn = opts.networkJoinFn;
     this.networkHealFn = opts.networkHealFn;
+    this.containServicesFn = opts.containServicesFn;
+    this.containServiceDns = opts.containServiceDns ?? false;
+    this.containServiceProxy = opts.containServiceProxy ?? false;
+    this.ensureSessionNetworkModeFn = opts.ensureSessionNetworkModeFn;
+    this.prepareContainedStartFn = opts.prepareContainedStartFn;
     this.serviceEnvDir = opts.serviceEnvDir;
     this.secretsInternalDir = opts.dockerSecretsConfig?.internalDir;
     this.logStore = opts.logStore;
@@ -718,6 +738,23 @@ export class ServiceManager extends EventEmitter {
    */
   setOverlayDepDirs(overlayDepDirs: OverlayDepDirVolume[]): void {
     this.overlayDepDirs = overlayDepDirs;
+  }
+
+  /** Refresh the boot-effective egress policy when a preserved manager is adopted. */
+  updateEgressContainment(
+    containServicesFn: ((serviceNames: string[]) => Promise<void>) | undefined,
+    containServiceDns: boolean,
+    containServiceProxy: boolean,
+    prepareContainedStartFn?: (serviceNames: string[]) => Promise<void>,
+  ): boolean {
+    const changed = Boolean(this.containServicesFn) !== Boolean(containServicesFn)
+      || this.containServiceDns !== containServiceDns
+      || this.containServiceProxy !== containServiceProxy;
+    this.containServicesFn = containServicesFn;
+    this.containServiceDns = containServiceDns;
+    this.containServiceProxy = containServiceProxy;
+    this.prepareContainedStartFn = prepareContainedStartFn;
+    return changed;
   }
 
   /**
@@ -1049,6 +1086,7 @@ export class ServiceManager extends EventEmitter {
    */
   async start(): Promise<void> {
     this._disposed = false;
+    await this.ensureSessionNetworkModeFn?.(Boolean(this.containServicesFn));
     // Kill any stale compose containers left over from a previous orchestrator
     // run (e.g. ShipIt restart). Uses label filter — no compose files needed.
     try {
@@ -1062,6 +1100,8 @@ export class ServiceManager extends EventEmitter {
     // Parse and validate
     const parsedServices = parseComposeFile(composePath, {
       dockerSocket: this.composeConfig.dockerSocket || this.opsSession,
+      containEgress: Boolean(this.containServicesFn),
+      trustedOpsProxy: this.opsSession,
     });
 
     // Build service map
@@ -1094,6 +1134,9 @@ export class ServiceManager extends EventEmitter {
       workspaceSubpath: this.workspaceSubpath,
       stackName: this.stackName,
       userNamedVolumes,
+      ...(this.containServicesFn ? { containEgress: true } : {}),
+      ...(this.containServiceDns ? { containDns: true } : {}),
+      ...(this.containServiceProxy ? { containProxy: true } : {}),
       ...(dockerSecretsBuild ? { dockerSecrets: dockerSecretsBuild } : {}),
       ...(serviceEnvFiles ? { serviceEnvFiles } : {}),
       ...(this.overlayDepDirs.length > 0 ? { overlayDepDirs: this.overlayDepDirs } : {}),
@@ -1151,7 +1194,11 @@ export class ServiceManager extends EventEmitter {
       // `stopped` and gated services stay `starting` until install completes.
       const autoNames = startNow.map(s => s.name);
       if (autoNames.length > 0) {
-        await this.withUpInFlight(autoNames, () => this.compose.up(autoNames, this.composeLogSink(autoNames)));
+        await this.withUpInFlight(autoNames, async () => {
+          await this.prepareContainedStartFn?.(autoNames);
+          await this.compose.up(autoNames, this.composeLogSink(autoNames));
+          await this.containServicesFn?.([...this.services.keys()]);
+        });
       }
       this._started = true;
 
@@ -1225,7 +1272,11 @@ export class ServiceManager extends EventEmitter {
     this.stoppedByUser.delete(name);
     this.updateServiceStatus(name, "starting");
     try {
-      await this.withUpInFlight([name], () => this.compose.upService(name, this.composeLogSink([name])));
+      await this.withUpInFlight([name], async () => {
+        await this.prepareContainedStartFn?.([name]);
+        await this.compose.upService(name, this.composeLogSink([name]));
+        await this.containServicesFn?.([...this.services.keys()]);
+      });
       // The user stopped this service while the `up` above was still running.
       // Theirs is the later instruction, and `stopService` is already waiting on
       // that `up` to stop whatever it produced — so finishing the start here
@@ -1267,7 +1318,11 @@ export class ServiceManager extends EventEmitter {
       // without this the restart would go on to recreate the container after
       // the service had already been reported stopped (requirement 5).
       if (this.stoppedByUser.has(name)) return;
-      await this.withUpInFlight([name], () => this.compose.upService(name, this.composeLogSink([name])));
+      await this.withUpInFlight([name], async () => {
+        await this.prepareContainedStartFn?.([name]);
+        await this.compose.upService(name, this.composeLogSink([name]));
+        await this.containServicesFn?.([...this.services.keys()]);
+      });
       // Stopped mid-restart — see `startService` for why this returns rather
       // than finishing the bring-up.
       if (this.stoppedByUser.has(name)) return;
@@ -1591,6 +1646,8 @@ export class ServiceManager extends EventEmitter {
       const composePath = path.join(this.workspaceDir, this.composeConfig.file);
       parsedServices = parseComposeFile(composePath, {
         dockerSocket: this.composeConfig.dockerSocket || this.opsSession,
+        containEgress: Boolean(this.containServicesFn),
+        trustedOpsProxy: this.opsSession,
       });
     } catch {
       // Compose file missing or invalid — there's nothing to apply secrets to.
@@ -1615,6 +1672,9 @@ export class ServiceManager extends EventEmitter {
         ...(this.workspaceVolume ? { workspaceVolume: this.workspaceVolume } : {}),
         ...(this.workspaceSubpath ? { workspaceSubpath: this.workspaceSubpath } : {}),
         ...(this.stackName ? { stackName: this.stackName } : {}),
+        ...(this.containServicesFn ? { containEgress: true } : {}),
+        ...(this.containServiceDns ? { containDns: true } : {}),
+        ...(this.containServiceProxy ? { containProxy: true } : {}),
         ...(this.overlayDepDirs.length > 0 ? { overlayDepDirs: this.overlayDepDirs } : {}),
         dockerSecrets: dockerSecretsBuild,
       };
@@ -1631,7 +1691,11 @@ export class ServiceManager extends EventEmitter {
       .map(s => s.name);
     if (autoNames.length === 0) return;
     try {
-      await this.withUpInFlight(autoNames, () => this.compose.up(autoNames, this.composeLogSink(autoNames)));
+      await this.withUpInFlight(autoNames, async () => {
+        await this.prepareContainedStartFn?.(autoNames);
+        await this.compose.up(autoNames, this.composeLogSink(autoNames));
+        await this.containServicesFn?.([...this.services.keys()]);
+      });
       await this.poller.pollOnce();
       // This `up` recreates every container whose env file changed, and it is
       // the one recreate the `onRunning` hook can miss: the replacement can be
@@ -1809,7 +1873,11 @@ export class ServiceManager extends EventEmitter {
     // the flag and the service becomes retryable again.
     if (this.stoppedByUser.has(name)) return;
     try {
-      await this.withUpInFlight([name], () => this.compose.upService(name, this.composeLogSink([name])));
+      await this.withUpInFlight([name], async () => {
+        await this.prepareContainedStartFn?.([name]);
+        await this.compose.upService(name, this.composeLogSink([name]));
+        await this.containServicesFn?.([...this.services.keys()]);
+      });
       // See `startService` — first manual-service start is the moment
       // the network actually exists, so re-attempt the orchestrator
       // network join here too. Idempotent on subsequent retries.
@@ -1905,7 +1973,11 @@ export class ServiceManager extends EventEmitter {
   private async startGatedBatch(names: string[]): Promise<void> {
     if (this._disposed) return;
     try {
-      await this.withUpInFlight(names, () => this.compose.up(names, this.composeLogSink(names)));
+      await this.withUpInFlight(names, async () => {
+        await this.prepareContainedStartFn?.(names);
+        await this.compose.up(names, this.composeLogSink(names));
+        await this.containServicesFn?.([...this.services.keys()]);
+      });
       // First `up` for an otherwise all-gated/all-manual stack is the moment
       // the compose network materializes — attach the orchestrator + agent.
       await this.joinSessionNetwork();

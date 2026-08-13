@@ -178,6 +178,31 @@ describe("adoptExistingServiceManager (docs/127)", () => {
     runner.dispose({ force: true });
   });
 
+  it("stops the old-policy stack before waiting for worker readiness", async () => {
+    const runner = makeRunner("s1");
+    const mgr = makeStubServiceManager() as StubServiceManager & {
+      updateEgressContainment: () => boolean;
+      reconcile: () => Promise<void>;
+    };
+    mgr.updateEgressContainment = () => true;
+    mgr.reconcile = async () => undefined;
+    const cm = buildContainerManager();
+
+    adoptExistingServiceManager(runner, mgr as unknown as ServiceManager, {
+      serviceManagers: new Map(),
+      composeStopPromises: new Map(),
+      containerManager: cm,
+      installPromise: null,
+      containServicesFn: async () => undefined,
+      resetSessionNetwork: async () => undefined,
+    });
+
+    await Promise.resolve();
+    expect(mgr._stopCalls).toBe(1);
+    expect(cm._connectCalls).toHaveLength(0);
+    runner.dispose({ force: true });
+  });
+
   it("disposed handler preserves the manager when preserveComposeOnDispose is true", async () => {
     const runner = makeRunner("s1");
     const mgr = makeStubServiceManager();

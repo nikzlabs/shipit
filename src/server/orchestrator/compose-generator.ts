@@ -12,11 +12,13 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
+import { isScalar, parse as parseYaml, parseDocument, stringify as stringifyYaml, visit } from "yaml";
 import type { ComposeConfig } from "../shared/shipit-config.js";
 import type { SecretRequirement } from "../shared/types/domain-types.js";
 import { sessionWorkerUid } from "./session-worker-uid.js";
 import { COMPOSE_OVERRIDE_FILE } from "./session-state-dir.js";
+import { EGRESS_RESOLVER_UID } from "./egress-dns.js";
+import { EGRESS_PROXY_UID } from "./egress-proxy-install.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -24,6 +26,8 @@ import { COMPOSE_OVERRIDE_FILE } from "./session-state-dir.js";
 
 export interface ComposeService {
   name: string;
+  /** True only for the server-authorized, validated ops Docker proxy shape. */
+  trustedOpsProxy?: boolean;
   /** Ports exposed by the service (host:container or just port). */
   ports?: string[];
   /** x-shipit-preview value from the user's compose file. */
@@ -86,6 +90,16 @@ export interface ComposeOverrideOptions {
   workspaceSubpath?: string;
   /** Docker stack name (e.g. "shipit-dev") — added as a label for cleanup filtering. */
   stackName?: string;
+  /**
+   * Make the session network internal while Compose services are being
+   * contained. A separate private egress bridge is attached only after the
+   * service namespace has received its firewall/resolver/proxy stack.
+   */
+  containEgress?: boolean;
+  /** Point Docker DNS at the Tier B loopback resolver during containment setup. */
+  containDns?: boolean;
+  /** Tier C is active, so redirected HTTPS needs route_localnet. */
+  containProxy?: boolean;
   /**
    * User-declared top-level named volumes (from the user's compose file).
    * When provided, the override emits a labels overlay for each entry so
@@ -234,7 +248,7 @@ export function parseUserNamedVolumes(composePath: string): UserNamedVolume[] {
  */
 export function parseComposeFile(
   composePath: string,
-  opts: { dockerSocket: boolean },
+  opts: { dockerSocket: boolean; containEgress?: boolean; trustedOpsProxy?: boolean },
 ): ComposeService[] {
   let content: string;
   try {
@@ -245,7 +259,28 @@ export function parseComposeFile(
 
   let doc: Record<string, unknown> | null;
   try {
-    doc = parseYaml(content) as Record<string, unknown> | null;
+    if (opts.containEgress) {
+      const parsedDocument = parseDocument(content);
+      let hasExplicitTag = false;
+      let hasMergeKey = false;
+      visit(parsedDocument, {
+        Node: (_key, node) => {
+          if (node.tag !== undefined) hasExplicitTag = true;
+        },
+        Pair: (_key, pair) => {
+          if (isScalar(pair.key) && pair.key.value === "<<") hasMergeKey = true;
+        },
+      });
+      if (hasExplicitTag || parsedDocument.warnings.some((warning) => /unresolved tag/i.test(warning.message))) {
+        throw new ComposeValidationError("Custom YAML tags are not supported for contained services.");
+      }
+      if (hasMergeKey) {
+        throw new ComposeValidationError("YAML merge keys are not supported for contained services.");
+      }
+    }
+    // Compose resolves YAML merge keys. Resolve them here as well so security
+    // validation sees the same effective fields in Open mode.
+    doc = parseYaml(content, { merge: true }) as Record<string, unknown> | null;
   } catch (err) {
     // Surface YAML parse errors as ComposeValidationError so callers (which
     // catch them defensively, e.g. mid-edit / mid-merge reconciles) can log
@@ -257,6 +292,18 @@ export function parseComposeFile(
   }
   if (!doc || typeof doc !== "object") {
     throw new ComposeValidationError("Compose file must be a YAML mapping");
+  }
+  if (opts.containEgress && doc.include !== undefined) {
+    throw new ComposeValidationError("Compose `include` is not supported for contained services.");
+  }
+  if (opts.containEgress) {
+    const networks = doc.networks;
+    if (networks && typeof networks === "object" && !Array.isArray(networks)
+      && Object.hasOwn(networks, "shipit-session")) {
+      throw new ComposeValidationError(
+        "The reserved `shipit-session` network cannot be declared by contained projects.",
+      );
+    }
   }
 
   const services = doc.services as Record<string, Record<string, unknown>> | undefined;
@@ -270,7 +317,16 @@ export function parseComposeFile(
     if (typeof svc !== "object" || svc === null) continue;
 
     // Security validation
-    validateServiceSecurity(name, svc, opts.dockerSocket);
+    if (opts.containEgress && svc.extends !== undefined) {
+      throw new ComposeValidationError(`Service \`${name}\`: \`extends\` is not supported for contained services.`);
+    }
+    validateServiceSecurity(
+      name,
+      svc,
+      opts.dockerSocket,
+      opts.containEgress ?? false,
+      opts.trustedOpsProxy ?? false,
+    );
 
     // Extract ports (supports short syntax "8080:80" and long syntax { published, target })
     const rawPorts = Array.isArray(svc.ports) ? svc.ports : undefined;
@@ -336,6 +392,7 @@ export function parseComposeFile(
 
     result.push({
       name,
+      trustedOpsProxy: isTrustedOpsProxyService(name, svc, opts.trustedOpsProxy ?? false),
       ports,
       shipitPreview,
       dependsOnInstall,
@@ -495,11 +552,74 @@ export function validateDevices(
 /**
  * Validate security constraints for a compose service definition.
  */
+function isTrustedOpsProxyService(
+  name: string,
+  svc: Record<string, unknown>,
+  trustedOpsProxy: boolean,
+): boolean {
+  if (name !== "docker-socket-proxy" || !trustedOpsProxy
+    || svc.image !== "tecnativa/docker-socket-proxy:0.3.0"
+    || svc.build !== undefined || svc.command !== undefined || svc.entrypoint !== undefined
+    || svc.configs !== undefined || svc.secrets !== undefined || svc.env_file !== undefined
+    || svc.tmpfs !== undefined || svc.working_dir !== undefined || svc.healthcheck !== undefined
+    || svc.user !== undefined || svc.pid !== undefined || svc.ipc !== undefined
+    || svc.security_opt !== undefined || svc.cap_add !== undefined
+    || svc.network_mode !== undefined) return false;
+  const environment = svc.environment;
+  const env: Record<string, unknown> = {};
+  // The server-authored template uses map form. List entries without `=` are
+  // resolved from the project environment by Compose, so their effective
+  // values cannot be validated here and must not receive proxy trust.
+  if (Array.isArray(environment)) return false;
+  if (environment && typeof environment === "object") {
+    Object.assign(env, environment);
+  }
+  const allowed = ["CONTAINERS", "EVENTS", "IMAGES", "INFO", "NETWORKS", "VOLUMES", "VERSION", "PING"];
+  const denied = ["POST", "BUILD", "COMMIT", "EXEC", "AUTH", "CONFIGS", "DISTRIBUTION",
+    "GRPC", "NODES", "PLUGINS", "SECRETS", "SERVICES", "SESSION", "SWARM", "SYSTEM", "TASKS"];
+  const expectedKeys = new Set([...allowed, ...denied]);
+  const hasReadOnlySocket = Array.isArray(svc.volumes) && svc.volumes.length === 1 && svc.volumes.some((vol) =>
+    typeof vol === "string"
+      ? /^\/var\/run\/docker\.sock:\/var\/run\/docker\.sock:ro$/.test(vol)
+      : Boolean(vol && typeof vol === "object"
+        && (vol as Record<string, unknown>).source === "/var/run/docker.sock"
+        && (vol as Record<string, unknown>).target === "/var/run/docker.sock"
+        && (vol as Record<string, unknown>).read_only === true));
+  return hasReadOnlySocket
+    && Object.keys(env).length === expectedKeys.size
+    && Object.keys(env).every((key) => expectedKeys.has(key))
+    && allowed.every((key) => String(env[key]) === "1")
+    && denied.every((key) => String(env[key]) === "0");
+}
+
 function validateServiceSecurity(
   name: string,
   svc: Record<string, unknown>,
   dockerSocket: boolean,
+  containEgress: boolean,
+  trustedOpsProxy: boolean,
 ): void {
+  if (containEgress) {
+    const interpolationSensitive = [
+      svc.privileged, svc.volumes, svc.devices, svc.network_mode, svc.user,
+      svc.use_api_socket, svc.deploy, svc.labels, svc.cap_add, svc.post_start,
+      svc.pre_stop, svc.extends,
+      svc.volumes_from,
+    ];
+    const containsInterpolation = (value: unknown): boolean => {
+      if (typeof value === "string") return value.includes("${");
+      if (Array.isArray(value)) return value.some(containsInterpolation);
+      return Boolean(value && typeof value === "object"
+        && Object.entries(value).some(([key, nested]) => key.includes("${") || containsInterpolation(nested)));
+    };
+    if (interpolationSensitive.some(containsInterpolation)) {
+      throw new ComposeValidationError(
+        `Service \`${name}\`: Compose variable interpolation is not allowed in security-sensitive fields `
+        + "for contained services. Use resolved literal values.",
+      );
+    }
+  }
+  const trustedProxyShape = isTrustedOpsProxyService(name, svc, trustedOpsProxy);
   // Reject privileged: true
   if (svc.privileged === true) {
     throw new ComposeValidationError(
@@ -514,6 +634,55 @@ function validateServiceSecurity(
       `Service \`${name}\`: \`network_mode: host\` is not allowed. ` +
       `Use explicit port mappings instead.`,
     );
+  }
+
+
+  // NET_ADMIN would let repository code flush its namespace firewall. Reject
+  // every capability addition rather than maintain a fragile safe subset.
+  if (containEgress && Array.isArray(svc.cap_add) && svc.cap_add.length > 0) {
+    throw new ComposeValidationError(
+      `Service \`${name}\`: \`cap_add\` is not allowed. Remove added Linux capabilities.`,
+    );
+  }
+  if (containEgress && svc.use_api_socket === true) {
+    throw new ComposeValidationError(
+      `Service \`${name}\`: \`use_api_socket: true\` is not allowed for contained services.`,
+    );
+  }
+  if (!dockerSocket && svc.use_api_socket === true) {
+    throw new ComposeValidationError(
+      `Service \`${name}\`: \`use_api_socket: true\` requires \`compose.docker-socket: true\`.`,
+    );
+  }
+  if (containEgress && (svc.post_start !== undefined || svc.pre_stop !== undefined)) {
+    throw new ComposeValidationError(
+      `Service \`${name}\`: Compose lifecycle hooks are not allowed for contained services.`,
+    );
+  }
+  if (containEgress && svc.volumes_from !== undefined) {
+    throw new ComposeValidationError(
+      `Service \`${name}\`: \`volumes_from\` is not allowed for contained services.`,
+    );
+  }
+
+  const labels = svc.labels;
+  const labelKeys = Array.isArray(labels)
+    ? labels.map((entry) => typeof entry === "string" ? entry.split("=", 1)[0] : "")
+    : labels && typeof labels === "object" ? Object.keys(labels) : [];
+  const reserved = containEgress ? labelKeys.find((key) => key.startsWith("shipit-egress-")) : undefined;
+  if (reserved) {
+    throw new ComposeValidationError(
+      `Service \`${name}\`: label \`${reserved}\` uses ShipIt's reserved egress namespace.`,
+    );
+  }
+  const deploy = svc.deploy;
+  if (containEgress && deploy && typeof deploy === "object") {
+    const restartPolicy = (deploy as Record<string, unknown>).restart_policy;
+    if (restartPolicy !== undefined) {
+      throw new ComposeValidationError(
+        `Service \`${name}\`: \`deploy.restart_policy\` is not allowed for contained services.`,
+      );
+    }
   }
 
   // Reject device passthrough except the exact /dev/kvm mapping (docs/213).
@@ -539,7 +708,19 @@ function validateServiceSecurity(
       if (!source) continue;
 
       // Docker socket check
-      if (source.includes("/var/run/docker.sock") && !dockerSocket) {
+      const isSocket = source === "/var/run/docker.sock";
+      const socketReadOnly = typeof vol === "string"
+        ? /^\/var\/run\/docker\.sock:\/var\/run\/docker\.sock:ro$/.test(vol)
+        : Boolean(vol && typeof vol === "object"
+          && (vol as Record<string, unknown>).target === "/var/run/docker.sock"
+          && (vol as Record<string, unknown>).read_only === true);
+      if (isSocket && containEgress && !(trustedProxyShape && socketReadOnly)) {
+        throw new ComposeValidationError(
+          `Service \`${name}\`: direct Docker socket access is not allowed with contained egress. `
+          + "Use ShipIt's trusted docker-socket-proxy service.",
+        );
+      }
+      if (isSocket && !dockerSocket) {
         if (name === "docker-socket-proxy") {
           throw new ComposeValidationError(
             `Service \`${name}\`: Docker socket mount is only allowed for ` +
@@ -566,6 +747,22 @@ function validateServiceSecurity(
           `Bind mounts must stay within the workspace.`,
         );
       }
+    }
+  }
+  if (containEgress && !trustedProxyShape) {
+    const containedUser = typeof svc.user === "string" || typeof svc.user === "number"
+      ? String(svc.user).trim()
+      : "";
+    const containedUid = /^\d+(?::\d+)?$/.test(containedUser)
+      ? Number(containedUser.split(":", 1)[0])
+      : NaN;
+    if (!Number.isInteger(containedUid) || containedUid <= 0
+      || containedUid === EGRESS_RESOLVER_UID || containedUid === EGRESS_PROXY_UID) {
+      throw new ComposeValidationError(
+        `Service \`${name}\`: contained services must declare a numeric, non-root \`user:\` `
+        + `that is not reserved UID ${EGRESS_RESOLVER_UID} or ${EGRESS_PROXY_UID}. `
+        + "Use an image that runs directly as this user, or use an Open session for root-init images.",
+      );
     }
   }
 }
@@ -755,19 +952,37 @@ export function generateComposeOverride(
   const referencedOverlayVolumes = new Set<string>();
 
   for (const svc of services) {
+    const applyServiceContainment = Boolean(opts.containEgress && !svc.trustedOpsProxy);
     const mode = resolvePreviewMode(svc);
     const labels: Record<string, string> = {
       "shipit-parent-session": opts.sessionId,
       "shipit-service-name": svc.name,
       "shipit-preview-mode": mode,
+      // Always write the label so a repository-supplied `true` cannot survive
+      // Compose map merging for an ordinary service.
+      "shipit-trusted-ops-proxy": svc.trustedOpsProxy ? "true" : "false",
     };
     if (opts.stackName) {
       labels["shipit-stack"] = opts.stackName;
     }
     const entry: Record<string, unknown> = {
       labels,
-      networks: ["shipit-session"],
-      cap_drop: ["NET_RAW"],
+      // Replace, do not merge, user-declared networks. A second ordinary
+      // bridge would give repository code a NAT route before containment.
+      networks: opts.containEgress ? "__RESET_NETWORKS__" : ["shipit-session"],
+      cap_drop: applyServiceContainment ? ["NET_RAW", "SETUID", "SETGID"] : ["NET_RAW"],
+      // On an internal Docker network, ordinary routed traffic is blocked but
+      // Docker's embedded DNS can still forward queries through the daemon.
+      // Point its upstream at loopback until the controlled resolver is in the
+      // namespace, closing the pre-pause DNS-tunnelling window.
+      ...(opts.containDns ? { dns: "__RESET_DNS__" } : {}),
+      ...(applyServiceContainment ? {
+        restart: "no",
+        security_opt: ["no-new-privileges"],
+      } : {}),
+      ...(opts.containProxy && !svc.trustedOpsProxy
+        ? { sysctls: { "net.ipv4.conf.all.route_localnet": "1" } }
+        : {}),
     };
 
     // docs/150 §7 / #1646 — run compose services as the same UID the session
@@ -790,7 +1005,8 @@ export function generateComposeOverride(
     // read-only Docker security boundary is enforced by the proxy's env
     // allowlist and the read-only socket mount, not by forcing this service to
     // the session worker UID.
-    const preservesImageStartupUser = svc.name === "docker-socket-proxy";
+    const preservesImageStartupUser = svc.trustedOpsProxy === true
+      || (!opts.containEgress && svc.name === "docker-socket-proxy");
     if (workerUid !== null && svc.user === undefined && !preservesImageStartupUser) {
       entry.user = `${workerUid}:${workerUid}`;
     }
@@ -879,6 +1095,7 @@ export function generateComposeOverride(
     networks: {
       "shipit-session": {
         name: `shipit-session-${opts.sessionId}`,
+        ...(opts.containEgress ? { internal: true } : {}),
       },
     },
   };
@@ -935,6 +1152,8 @@ export function generateComposeOverride(
   // Replace sentinel with !reset tag — Docker Compose's extension to clear
   // inherited array values instead of appending to them.
   yaml = yaml.replace(/ports: __RESET_PORTS__/g, "ports: !reset []");
+  yaml = yaml.replace(/networks: __RESET_NETWORKS__/g, "networks: !override\n      - shipit-session");
+  yaml = yaml.replace(/dns: __RESET_DNS__/g, "dns: !override\n      - 192.0.2.1");
   return `# Generated by ShipIt — do not edit manually.\n# This file is merged with your docker-compose.yml at runtime.\n${yaml}`;
 }
 

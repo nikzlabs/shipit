@@ -87,6 +87,7 @@ describe("normalizeRemoteIp", () => {
 // ---------------------------------------------------------------------------
 
 const CONTAINER_IP = "172.18.0.5";
+const SERVICE_IP = "172.18.0.6";
 const BROWSER_IP = "10.0.0.9";
 const OWN_SESSION = "sess-own";
 
@@ -99,6 +100,8 @@ describe("registerContainerOriginGuard — request gating", () => {
       containerManager: {
         getSessionByContainerIp: (ip: string) =>
           ip === CONTAINER_IP ? { sessionId: OWN_SESSION } : undefined,
+        getSessionByAnyContainerIp: async (ip: string) =>
+          ip === SERVICE_IP ? { sessionId: OWN_SESSION } : undefined,
       },
     });
     // An allowlisted own-session route, a browser-only route, and a hard-denied
@@ -159,6 +162,31 @@ describe("registerContainerOriginGuard — request gating", () => {
     const res = await app.inject({
       method: "GET",
       url: "/api/bootstrap",
+      remoteAddress: CONTAINER_IP,
+    });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it("treats a Compose service IP as a container origin", async () => {
+    const denied = await app.inject({
+      method: "GET",
+      url: "/api/bootstrap",
+      remoteAddress: SERVICE_IP,
+    });
+    expect(denied.statusCode).toBe(403);
+    const own = await app.inject({
+      method: "GET",
+      url: `/api/sessions/${OWN_SESSION}/services`,
+      remoteAddress: SERVICE_IP,
+    });
+    expect(own.statusCode).toBe(200);
+  });
+
+  it("does not bypass the guard for an invalid preview port", async () => {
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/bootstrap",
+      headers: { host: `${OWN_SESSION}--99999.localhost` },
       remoteAddress: CONTAINER_IP,
     });
     expect(res.statusCode).toBe(403);

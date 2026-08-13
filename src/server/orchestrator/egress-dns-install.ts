@@ -3,7 +3,7 @@
  *
  * Builds the dnsmasq config (via `egress-dns.ts`) and launches the long-lived
  * controlled-resolver sidecar in the agent's netns. Sequencing in
- * `createContainer`: agent starts (with `--dns 127.0.0.1`) → Tier A installer
+ * `createContainer`: agent starts → Tier A installer
  * runs (creates the ipset + locks DNS to the resolver uid) → THIS launches the
  * resolver → health check → ready.
  *
@@ -109,6 +109,8 @@ export interface ResolverConfigOpts {
   extraDomains?: string[];
   /** Internal names → Docker embedded DNS. */
   internalDomains?: string[];
+  /** Forward unqualified Compose service names without embedding repo names in directives. */
+  unqualifiedInternalNames?: boolean;
   upstreams?: string[];
   /**
    * Built-in base domains (defaults to {@link EGRESS_DEFAULT_ALLOWLIST}). The
@@ -125,6 +127,7 @@ export function buildResolverConfigB64(opts: ResolverConfigOpts = {}): string {
     publicDomains,
     publicUpstreams: opts.upstreams ?? EGRESS_DNS_DEFAULT_UPSTREAMS,
     internalDomains: opts.internalDomains,
+    unqualifiedInternalNames: opts.unqualifiedInternalNames,
   });
   return Buffer.from(config, "utf-8").toString("base64");
 }

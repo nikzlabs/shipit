@@ -144,8 +144,21 @@ if ! command -v jq &>/dev/null; then
   apt-get install -y -qq jq
 fi
 
+compose_version="$(docker compose version --short 2>/dev/null | sed 's/^v//')"
+minimum_compose="2.24.4"
+if [ "$(printf '%s\n%s\n' "$minimum_compose" "$compose_version" | sort -V | head -n1)" != "$minimum_compose" ]; then
+  echo "Error: Docker Compose $minimum_compose or newer is required (found $compose_version)." >&2
+  exit 1
+fi
+docker_api_version="$(docker version --format '{{.Server.APIVersion}}' 2>/dev/null || true)"
+minimum_docker_api="1.48"
+if [ -z "$docker_api_version" ] || [ "$(printf '%s\n%s\n' "$minimum_docker_api" "$docker_api_version" | sort -V | head -n1)" != "$minimum_docker_api" ]; then
+  echo "Error: Docker Engine API $minimum_docker_api or newer is required (found ${docker_api_version:-unknown})." >&2
+  exit 1
+fi
+
 # --- Configure Docker network address pools ---
-# ShipIt creates one Docker network per session. The default pool (~30 /16 subnets)
+# ShipIt creates two Docker networks per contained Compose session. The default pool (~30 /16 subnets)
 # is easily exhausted, causing "all predefined address pools have been fully subnetted".
 # Expand to use the full 172.16.0.0/12 range with /24 subnets (~4000 networks).
 DAEMON_JSON="/etc/docker/daemon.json"

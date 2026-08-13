@@ -36,7 +36,7 @@ import {
  * Pattern: {uuid}--{port}.anything[:serverPort]
  * Example: 98f05156-7e64-422d-81bc-ba677fda60e0--5173.localhost:3001
  */
-function parsePreviewSubdomain(
+export function parsePreviewSubdomain(
   host: string | undefined,
 ): { sessionId: string; port: number } | null {
   if (!host) return null;

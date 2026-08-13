@@ -441,6 +441,33 @@ describe("SessionContainerManager", () => {
     });
   });
 
+  it("detaches every stopped service before a narrow Compose start can restart dependencies", async () => {
+    const previousEnforce = process.env.SESSION_EGRESS_ENFORCE;
+    process.env.SESSION_EGRESS_ENFORCE = "1";
+    const disconnect = vi.fn(async () => undefined);
+    mockDocker.getNetwork.mockReturnValue({ disconnect } as any);
+    for (const [id, serviceName] of [["web-id", "web"], ["db-id", "db"]] as const) {
+      mockDocker._containers.set(id, {
+        id,
+        started: false,
+        removed: false,
+        labels: {
+          "shipit-parent-session": "test-session-1",
+          "shipit-service-name": serviceName,
+        },
+        inspectResult: { id, NetworkSettings: { Networks: {} } },
+      });
+    }
+
+    await manager.prepareComposeServiceStart("test-session-1", ["web"]);
+    if (previousEnforce === undefined) delete process.env.SESSION_EGRESS_ENFORCE;
+    else process.env.SESSION_EGRESS_ENFORCE = previousEnforce;
+
+    expect(disconnect).toHaveBeenCalledTimes(2);
+    expect(disconnect).toHaveBeenCalledWith({ Container: "web-id", Force: true });
+    expect(disconnect).toHaveBeenCalledWith({ Container: "db-id", Force: true });
+  });
+
   // --- docs/172 Gap 5 (planning#99) — kernel-tier hardening (env-gated, default-OFF) ---
 
   describe("kernel-tier hardening", () => {

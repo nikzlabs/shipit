@@ -138,6 +138,20 @@ describe("egress settings routes", () => {
     expect(reloadEgress).toHaveBeenCalledWith("session-1");
   });
 
+  it("POST /api/egress/hosts reports a fail-closed live refresh failure", async () => {
+    reloadEgress.mockRejectedValueOnce(new Error("refresh failed"));
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/egress/hosts",
+      payload: { host: "api.example.com", scope: "session-1" },
+    });
+    expect(res.statusCode).toBe(503);
+    expect(res.json()).toMatchObject({
+      error: "allowlist saved, but live service refresh failed closed",
+      settings: { hosts: ["api.example.com"] },
+    });
+  });
+
   it("POST /api/egress/hosts 400s on a blank host", async () => {
     const res = await app.inject({ method: "POST", url: "/api/egress/hosts", payload: { host: "  " } });
     expect(res.statusCode).toBe(400);
