@@ -381,6 +381,27 @@ instead of a repeat.
   the inode changes only when the settings did, which is also when that slice
   recreates the service.
 
+  **Mounting it is not a bind — and it is the one mount in this feature whose
+  Engine support is unverified.** In production the session tree lives inside the
+  named workspace volume, so a session path has to travel as a volume mount with
+  `VolumeOptions.Subpath` relative to the volume's root; a plain bind of the
+  orchestrator's `/workspace/...` path silently gets an empty root-owned
+  directory, which dev and dogfood never show (CLI-slice review finding). Every
+  `Subpath` mount that exists today is a **directory** subpath
+  (`container-lifecycle.ts`, `compose-generator.ts`) — and the settings file is a
+  file. That is the same Engine feature, but nothing here exercises it yet, so it
+  needs one check on a real instance. It fails **loudly**: the container refuses
+  to start.
+  **If the daemon rejects a file subpath, no layout change is needed.** Mount
+  `<sessionDir>/plugin-data/<alias>` — a directory — read-only, and point
+  `SHIPIT_SETTINGS` at `<mount>/settings.json`. The consequence to accept is that
+  the plugin then also sees a read-only view of its own state directory under
+  that mount; it is the same data it already has read-write at `/plugin-state`,
+  so nothing is exposed that was not already. What must NOT be done instead is
+  moving the settings file *into* the state directory so one mount serves both:
+  that directory is writable by plugin code, and a plugin that can rewrite its own
+  validated settings has settings that were never validated.
+
   **Validation is fail-closed, and a failure writes nothing.** The plugin's
   declared defaults apply where the project sets nothing; a declared setting with
   neither is omitted rather than emitted as null (the manifest has no "required"
