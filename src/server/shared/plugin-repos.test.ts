@@ -325,12 +325,12 @@ describe("buildPluginReposSnapshot", () => {
     const tools = snapshot.repos.find((r) => r.name === "tools");
     expect(dev).toMatchObject({ source: "self", status: "self", ref: null });
     expect(dev?.uses).toEqual([
-      { plugin: "probe", alias: "probe", found: true },
-      { plugin: "missing", alias: "gone", found: false },
+      { plugin: "probe", alias: "probe", found: true, credentials: [] },
+      { plugin: "missing", alias: "gone", found: false, credentials: [] },
     ]);
     expect(dev?.issues).toHaveLength(1);
     expect(tools).toMatchObject({ source: "nikzlabs/shipit", status: "unavailable", ref: "main", commit: null });
-    expect(tools?.uses).toEqual([{ plugin: "probe", alias: "remote", found: null }]);
+    expect(tools?.uses).toEqual([{ plugin: "probe", alias: "remote", found: null, credentials: [] }]);
   });
 
   it("keeps only plugin/export-shaped warnings", () => {
@@ -439,6 +439,52 @@ describe("buildPluginReposSnapshot", () => {
         "authorization failed",
         "`p` is not in this repository's `exports.plugins` manifest.",
       ]);
+    });
+  });
+
+  // docs/262 req 23 — needs hang off the `use` entry that declares them, so
+  // the card can say WHICH plugin lacks the key.
+  describe("credential needs projection", () => {
+    const declaration = {
+      repos: [{ repo: "a/b", name: "tools", branch: "main" }],
+      use: [
+        { plugin: "palette", from: "tools", alias: "artk" },
+        { plugin: "probe", from: "tools" },
+      ],
+    };
+    const build = (groups: Parameters<typeof buildPluginReposSnapshot>[5]) => {
+      const warnings: string[] = [];
+      const plugins = parsePluginRepos(declaration, NO_TRACKERS, warnings);
+      return buildPluginReposSnapshot(
+        plugins,
+        [],
+        null,
+        warnings,
+        { tools: { commit: "abc123", exports: ["palette", "probe"] } },
+        groups,
+      ).repos[0];
+    };
+
+    it("attaches each group to its own use entry, by alias", () => {
+      const card = build([
+        {
+          repo: "tools",
+          plugin: "palette",
+          alias: "artk",
+          credentials: [{ name: "FAL_KEY", satisfied: false }],
+        },
+      ]);
+      expect(card.uses[0]).toMatchObject({
+        alias: "artk",
+        credentials: [{ name: "FAL_KEY", satisfied: false }],
+      });
+      // A plugin with no declared credentials carries an empty list, not the
+      // other plugin's needs.
+      expect(card.uses[1]).toMatchObject({ alias: "probe", credentials: [] });
+    });
+
+    it("reports no needs when nothing has been resolved yet", () => {
+      expect(build([]).uses.every((u) => u.credentials.length === 0)).toBe(true);
     });
   });
 

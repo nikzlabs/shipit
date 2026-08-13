@@ -220,6 +220,24 @@ export function readActiveGeneration(stateDir: string, repoName: string): Genera
   }
 }
 
+/**
+ * The active generation's own manifest — the `exports.plugins` block of the
+ * commit that is actually running.
+ *
+ * `readActiveGeneration` records export NAMES only, which answers "is this
+ * selector real?" and nothing else. Readers that need what an export
+ * *declares* — its credential names (req 23), later its settings and hosts —
+ * read the manifest itself, through the same `active` symlink so the answer
+ * always belongs to the live commit. Null when nothing is activated; an
+ * unparseable manifest reads as an empty export list, exactly as activation
+ * treats it.
+ */
+export function readActiveManifest(stateDir: string, repoName: string): PluginExport[] | null {
+  const link = activeLinkPath(stateDir, repoName);
+  if (!fs.existsSync(link)) return null;
+  return readManifest(link, false).exports;
+}
+
 // ---------------------------------------------------------------------------
 // Serialization
 // ---------------------------------------------------------------------------
@@ -497,7 +515,13 @@ async function checkoutCommit(bareCacheDir: string, targetDir: string, commit: s
  * way; it simply exports nothing, and a consumer that selected something from
  * it fails the selector check above.
  */
-function readManifest(checkoutDir: string): { exports: PluginExport[]; warnings: string[] } {
+function readManifest(
+  checkoutDir: string,
+  /** Read-only readers pass false: this runs per request, and re-logging the
+   * same manifest warning on every poll says nothing activation did not
+   * already log once. */
+  log = true,
+): { exports: PluginExport[]; warnings: string[] } {
   let raw: string;
   try {
     raw = fs.readFileSync(path.join(checkoutDir, "shipit.yaml"), "utf-8");
@@ -515,7 +539,7 @@ function readManifest(checkoutDir: string): { exports: PluginExport[]; warnings:
     ? (doc as Record<string, unknown>).exports
     : undefined;
   const exportsList = parsePluginExports(exportsBlock, warnings);
-  for (const w of warnings) console.warn(`[plugins] ${checkoutDir}: ${w}`);
+  if (log) for (const w of warnings) console.warn(`[plugins] ${checkoutDir}: ${w}`);
   return { exports: exportsList, warnings };
 }
 

@@ -831,6 +831,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
         declared: snapshot.declared,
         missingByService: snapshot.missingByService,
         missingRequired: snapshot.missingRequired,
+        plugins: snapshot.plugins,
       });
 
       // Phase 3: also push the resolved `agent: true` values into the

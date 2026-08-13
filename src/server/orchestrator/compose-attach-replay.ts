@@ -92,6 +92,7 @@ export function buildComposeAttachReplay(
       declared: secrets.declared,
       missingByService: secrets.missingByService,
       missingRequired: secrets.missingRequired,
+      plugins: secrets.plugins,
     });
   }
 

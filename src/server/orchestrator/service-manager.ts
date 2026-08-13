@@ -47,6 +47,7 @@ import {
   type SecretsStatusInternalSnapshot,
   type DockerSecretsConfig,
 } from "./service-secrets-resolver.js";
+import type { PluginCredentialDeclaration } from "../shared/plugin-credentials.js";
 import { ServicePoller } from "./service-poller.js";
 import { ServiceRetryManager } from "./service-retry-manager.js";
 import { removeSessionServiceEnvDir, removeSessionSecretsDir } from "./secret-resolver.js";
@@ -330,6 +331,13 @@ export interface ServiceManagerOptions {
    * pushed to the worker. Synchronous — `CredentialStore` is an in-memory JSON store.
    */
   accountAgentEnvLoader?: () => Record<string, string>;
+  /**
+   * docs/262 req 23 — the credential NAMES this session's activated plugins
+   * declare. Resolved inside the secret-sync pass against the same project
+   * secret store the compose services use, and reported per plugin on
+   * `secrets_status`. Names only: this never carries a value.
+   */
+  pluginCredentialsLoader?: () => PluginCredentialDeclaration[];
   /**
    * Phase 1 follow-up — Docker-secrets isolation. When configured, secret
    * values are written to per-secret files outside the workspace volume and
@@ -623,6 +631,7 @@ export class ServiceManager extends EventEmitter {
       workspaceDir: opts.workspaceDir,
       ...(opts.secretsLoader ? { secretsLoader: opts.secretsLoader } : {}),
       ...(opts.accountAgentEnvLoader ? { accountAgentEnvLoader: opts.accountAgentEnvLoader } : {}),
+      ...(opts.pluginCredentialsLoader ? { pluginCredentialsLoader: opts.pluginCredentialsLoader } : {}),
       ...(opts.dockerSecretsConfig ? { dockerSecretsConfig: opts.dockerSecretsConfig } : {}),
       serviceEnvDir: opts.serviceEnvDir,
       onSnapshot: (snapshot) => this.emit("secrets_status", snapshot),
@@ -1640,6 +1649,38 @@ export class ServiceManager extends EventEmitter {
    * changes and recreates affected containers. Safe to call when the stack
    * isn't started — env files are written but no compose call happens.
    */
+  /**
+   * docs/262 req 23 — re-resolve the secrets snapshot and re-publish it,
+   * touching NO containers.
+   *
+   * Called when a plugin activation round settles: the set of credential names
+   * the session's plugins declare comes from each repository's live manifest,
+   * so a first activation (or a refresh that renames a credential) changes the
+   * answer, and nothing else would resample it until an unrelated reconcile or
+   * secret save. `refreshSecrets()` is the wrong tool for that — it re-runs
+   * `compose up` for every auto service, so a plugin refresh would restart the
+   * user's app. This is the same sync pass without that half: values are
+   * unchanged, so the env files it rewrites are byte-identical and compose has
+   * nothing to react to.
+   *
+   * A compose file that will not parse returns early rather than syncing an
+   * empty service list — passing `[]` would sweep the env files of the
+   * services that are still running.
+   */
+  async refreshSecretsStatus(): Promise<void> {
+    let parsedServices: ComposeService[];
+    try {
+      parsedServices = parseComposeFile(path.join(this.workspaceDir, this.composeConfig.file), {
+        dockerSocket: this.composeConfig.dockerSocket || this.opsSession,
+        containEgress: Boolean(this.containServicesFn),
+        trustedOpsProxy: this.opsSession,
+      });
+    } catch {
+      return;
+    }
+    await this.secrets.sync(parsedServices);
+  }
+
   async refreshSecrets(): Promise<void> {
     let parsedServices: ComposeService[];
     try {

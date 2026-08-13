@@ -18,6 +18,7 @@ import { getErrorMessage } from "./validation.js";
 import { formatOverlayMeasurement, type DepDirPublishOutcome } from "./overlay-publish.js";
 import { isOverlayEligible } from "./overlay-session.js";
 import { clearActivationState } from "./services/plugin-activation.js";
+import { collectPluginCredentialDeclarations } from "./plugin-credentials.js";
 
 /**
  * Route a `stack_error` from a session's ServiceManager to the per-session
@@ -407,7 +408,11 @@ export function setupServiceManager(
   // no plugin-authored code; when install lands it will run in its own
   // container, and this gate is what keeps an untrusted remote from reaching
   // even the fetch.
-  deps.activatePluginRepos?.(runner.sessionId, workspaceDir, emitPluginReposUpdated(runner));
+  deps.activatePluginRepos?.(
+    runner.sessionId,
+    workspaceDir,
+    emitPluginReposUpdated(runner, deps.serviceManagers),
+  );
   // The activation state map is process-lived and keyed by session; drop this
   // session's entries when its runner goes away so session churn can't grow it.
   runner.on("disposed", () => clearActivationState(runner.sessionId));
@@ -544,6 +549,15 @@ export function setupServiceManager(
     ? () => collectAccountAgentEnv(credentialStore)
     : undefined;
 
+  // docs/262 req 23 — the credential NAMES this session's activated plugins
+  // declare. Read fresh on every secrets pass, from each repository's LIVE
+  // manifest, so a `shipit plugin refresh` that adds a credential shows up
+  // without recreating the session. Names only: satisfaction is decided
+  // against `secretsLoader`'s map — the consuming project's own store — and
+  // never against `accountAgentEnvLoader`, which holds ShipIt's platform
+  // credentials (req 23's boundary).
+  const pluginCredentialsLoader = () => collectPluginCredentialDeclarations(workspaceDir);
+
   // ---- Adoption path: orphaned ServiceManager from a previous runner ----
   //
   // When a `restartAgent` recovery flow disposes the runner with
@@ -599,6 +613,7 @@ export function setupServiceManager(
     opsSession: session?.kind === "ops",
     secretsLoader,
     accountAgentEnvLoader,
+    pluginCredentialsLoader,
     ...(dockerSecretsConfig ? { dockerSecretsConfig } : {}),
     serviceEnvDir,
     ...(logStore ? { logStore } : {}),
@@ -858,9 +873,23 @@ function composeRemovalIsTrustworthy(workspaceDir: string): boolean {
  * docs/262 — tell attached viewers an activation round settled. `emitMessage`
  * (not `ctx.send`) so every viewer sees it and a reconnecting one replays it.
  */
-export function emitPluginReposUpdated(runner: SessionRunnerInterface): (sessionId: string) => void {
+export function emitPluginReposUpdated(
+  runner: SessionRunnerInterface,
+  /**
+   * docs/262 req 23 — the session's ServiceManager, when it has one. A settled
+   * activation can change WHICH credential names the plugins declare (a first
+   * activation, or a refresh that renames one), and `secrets_status` samples
+   * that only inside its own sync pass; without this the Secrets rows keep the
+   * previous declaration until an unrelated reconcile. Container-free — see
+   * `refreshSecretsStatus`.
+   */
+  serviceManagers?: Map<string, ServiceManager>,
+): (sessionId: string) => void {
   return (sessionId: string) => {
     runner.emitMessage({ type: "plugin_repos_updated", sessionId });
+    void serviceManagers?.get(sessionId)?.refreshSecretsStatus().catch((err: unknown) => {
+      console.warn(`[plugins:${sessionId}] secrets status resync failed:`, getErrorMessage(err));
+    });
     // The generation is published by the time this fires, so the container can
     // safely link it. Optional call, not an `in` guard: local
     // mode has no container to prepare, and that is the correct answer there
@@ -919,7 +948,11 @@ export function applyShipitConfigChange(
   // live, so the cheap check lives there rather than in a config diff here.
   // Trust is inherited — this path only runs once a ServiceManager exists,
   // which `setupServiceManager` creates only past the gate.
-  deps.activatePluginRepos?.(runner.sessionId, workspaceDir, emitPluginReposUpdated(runner));
+  deps.activatePluginRepos?.(
+    runner.sessionId,
+    workspaceDir,
+    emitPluginReposUpdated(runner, deps.serviceManagers),
+  );
 
   // ---- agent.install delta ----
   if (runner instanceof ContainerSessionRunner) {

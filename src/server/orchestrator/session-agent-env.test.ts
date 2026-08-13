@@ -1654,6 +1654,7 @@ describe("selectAgentEnvForPush (relocated from agent-execution.ts)", () => {
           missingByService: {},
           missingRequired: [],
           agentNames: [],
+          plugins: [],
         }),
       },
       credentialStore: makeFakeCredentialStore(),
@@ -1689,6 +1690,7 @@ describe("selectAgentEnvForPush (relocated from agent-execution.ts)", () => {
           missingByService: {},
           missingRequired: [],
           agentNames: [],
+          plugins: [],
         }),
       },
       credentialStore: makeFakeCredentialStore({
@@ -1719,6 +1721,7 @@ describe("selectAgentEnvForPush (relocated from agent-execution.ts)", () => {
           missingByService: {},
           missingRequired: [],
           agentNames: [],
+          plugins: [],
         }),
       },
       credentialStore: makeFakeCredentialStore({

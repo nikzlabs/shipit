@@ -26,6 +26,7 @@ import {
 } from "./test-helpers.js";
 import { GitHubAuthManager } from "../github-auth.js";
 import { CredentialStore } from "../credential-store.js";
+import { SecretStore } from "../secret-store.js";
 import { initGlobalGitConfig } from "../git-config.js";
 import type { PluginReposSnapshot } from "../../shared/plugin-repos.js";
 
@@ -57,6 +58,7 @@ describe("Integration: GET /api/plugin-repos (docs/262)", () => {
   let workspaceDir: string;
   let dbManager: DatabaseManager;
   let sessionManager: SessionManager;
+  let credentialStore: CredentialStore;
 
   const writeConfig = (yaml: string) => {
     fs.writeFileSync(path.join(workspaceDir, "shipit.yaml"), yaml);
@@ -70,13 +72,15 @@ describe("Integration: GET /api/plugin-repos (docs/262)", () => {
     initGlobalGitConfig(tmpDir);
 
     sessionManager = new SessionManager(dbManager);
+    credentialStore = new CredentialStore(tmpDir);
     app = await buildApp({
       createGitManager: (dir: string) => new GitManager(dir),
       sessionManager,
       authManager: new StubAuthManager() as unknown as AuthManager,
       githubAuthManager: new StubGitHubAuthManager() as unknown as GitHubAuthManager,
       agentFactory: () => new FakeClaudeProcess() as never,
-      credentialStore: new CredentialStore(tmpDir),
+      credentialStore,
+      databaseManager: dbManager,
       workspaceDir: tmpDir,
       serveStatic: false,
     });
@@ -110,14 +114,14 @@ describe("Integration: GET /api/plugin-repos (docs/262)", () => {
     expect(dev).toMatchObject({ source: "self", status: "self", ref: null, commit: null });
     // Self resolves its selectors against the same file's manifest (its
     // phase 2 needs no fetch).
-    expect(dev.uses).toEqual([{ plugin: "probe", alias: "probe", found: true }]);
+    expect(dev.uses).toEqual([{ plugin: "probe", alias: "probe", found: true, credentials: [] }]);
 
     const tools = snap.repos.find((r) => r.name === "tools")!;
     // Nothing has been activated in this test (activation is a lifecycle
     // trigger, never a GET side effect), so the tracked repo reads as
     // unavailable with no commit — req 13's "session runs without it".
     expect(tools).toMatchObject({ source: "nikzlabs/shipit", status: "unavailable", ref: "main", commit: null });
-    expect(tools.uses).toEqual([{ plugin: "probe", alias: "remote-probe", found: null }]);
+    expect(tools.uses).toEqual([{ plugin: "probe", alias: "remote-probe", found: null, credentials: [] }]);
   });
 
   it("no plugins block → not declared; the tab has nothing to gate on", async () => {
@@ -140,7 +144,7 @@ describe("Integration: GET /api/plugin-repos (docs/262)", () => {
     writeConfig("plugins:\n  repos:\n    - repo: self\n      name: dev\n  use:\n    - plugin: ghost\n      from: dev\n");
     const snap = await snapshot();
     const dev = snap.repos[0];
-    expect(dev.uses).toEqual([{ plugin: "ghost", alias: "ghost", found: false }]);
+    expect(dev.uses).toEqual([{ plugin: "ghost", alias: "ghost", found: false, credentials: [] }]);
     expect(dev.issues).toContainEqual(expect.stringContaining("`ghost`"));
   });
 
@@ -232,6 +236,88 @@ describe("Integration: GET /api/plugin-repos (docs/262)", () => {
     const snap = await snapshot();
     expect(snap.declared).toBe(false);
     expect(snap.warnings).toEqual([]);
+  });
+
+  // docs/262 req 23 — the tab is where a missing key becomes visible, and the
+  // store it resolves against is the CONSUMING project's own.
+  describe("credential needs", () => {
+    const WITH_CREDENTIAL = `
+exports:
+  plugins:
+    probe:
+      credentials: [FAL_KEY]
+plugins:
+  repos:
+    - repo: self
+      name: dev
+  use:
+    - plugin: probe
+      from: dev
+`;
+
+    it("reports an unset credential as an unsatisfied need on its own plugin", async () => {
+      writeConfig(WITH_CREDENTIAL);
+      const snap = await snapshot();
+      expect(snap.repos[0].uses[0]).toMatchObject({
+        alias: "probe",
+        credentials: [{ name: "FAL_KEY", satisfied: false }],
+      });
+    });
+
+    it("flips to satisfied once the value is in THIS project's store", async () => {
+      writeConfig(WITH_CREDENTIAL);
+      // Same database the app's own SecretStore reads.
+      new SecretStore(dbManager).saveSecrets("https://github.com/code-owner/app.git", {
+        FAL_KEY: "fixture-live",
+      });
+      const snap = await snapshot();
+      expect(snap.repos[0].uses[0].credentials).toEqual([{ name: "FAL_KEY", satisfied: true }]);
+    });
+
+    // req 23's platform boundary, end to end: the app under test holds a real,
+    // populated CredentialStore, and the plugin asks for exactly the names
+    // ShipIt keeps there. Every one must still read as a gap.
+    it("ShipIt's own platform credentials never satisfy a plugin, through the route", async () => {
+      writeConfig(`
+exports:
+  plugins:
+    probe:
+      credentials: [GITHUB_TOKEN, LINEAR_API_KEY, ANTHROPIC_API_KEY]
+plugins:
+  repos:
+    - repo: self
+      name: dev
+  use:
+    - plugin: probe
+      from: dev
+`);
+      // `credentialStore` is the very instance this app was built with.
+      credentialStore.setGithubToken("fixture-the-users-github-identity");
+      credentialStore.setLinearToken("fixture-the-users-tracker-token");
+      credentialStore.setAgentEnv("ANTHROPIC_API_KEY", "fixture-the-users-agent-token");
+
+      const snap = await snapshot();
+      expect(snap.repos[0].uses[0].credentials).toEqual([
+        { name: "GITHUB_TOKEN", satisfied: false },
+        { name: "LINEAR_API_KEY", satisfied: false },
+        { name: "ANTHROPIC_API_KEY", satisfied: false },
+      ]);
+      // The platform store really is populated — the gaps are the boundary.
+      expect(credentialStore.getGithubToken()).toBeTruthy();
+      expect(credentialStore.getLinearToken()).toBeTruthy();
+      expect(credentialStore.getAllAgentEnv().ANTHROPIC_API_KEY).toBeTruthy();
+    });
+
+    it("a value stored against another repository does not satisfy it", async () => {
+      // The store trap (plan §3): the plugin repository has its own store, and
+      // a key saved there is a key saved where nothing reads it.
+      writeConfig(WITH_CREDENTIAL);
+      new SecretStore(dbManager).saveSecrets("https://github.com/nikzlabs/shipit.git", {
+        FAL_KEY: "fixture-wrong-store",
+      });
+      const snap = await snapshot();
+      expect(snap.repos[0].uses[0].credentials).toEqual([{ name: "FAL_KEY", satisfied: false }]);
+    });
   });
 
   it("a malformed document degrades to a warning, not a 500", async () => {

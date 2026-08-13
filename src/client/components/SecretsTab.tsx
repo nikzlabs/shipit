@@ -1,7 +1,7 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: clear the pending save-confirmation timer on unmount
 import { useState, useRef, useEffect } from "react";
 import { Button } from "./ui/button.js";
-import { DeclaredSecretRow } from "./DeclaredSecretRow.js";
+import { DeclaredSecretRow, isPlatformProvided } from "./DeclaredSecretRow.js";
 import { SettingsTabPane } from "./Settings/SettingsTabPane.js";
 import { usePreviewStore } from "../stores/preview-store.js";
 
@@ -185,8 +185,10 @@ export function SecretsTab({ repoUrl, onSecretsSave, onSecretsLoad }: SecretsTab
 
     // Declared rows (guaranteed-unique names).
     for (const d of declared) {
-      // Skip platform-sourced rows — they're not user-configurable.
-      if (d.source?.startsWith("platform:")) continue;
+      // Skip platform-sourced rows — they're not user-configurable. A row a
+      // plugin also claims is NOT one of them (docs/262 req 23): it needs a
+      // real value, and the row is editable, so it must save like any other.
+      if (isPlatformProvided(d)) continue;
       const typed = values[d.name];
       if (typeof typed === "string" && typed.length > 0) {
         set[d.name] = typed;
@@ -246,18 +248,20 @@ export function SecretsTab({ repoUrl, onSecretsSave, onSecretsLoad }: SecretsTab
         </p>
       </div>
 
-      {/* Declared secrets (from x-shipit-secrets). Hidden when the repo's
-          compose file declares nothing — the tab shrinks to the custom-only
-          legacy form. */}
+      {/* Declared secrets — `x-shipit-secrets`, plus the credential names
+          activated plugins declare (docs/262 req 23). Hidden when nothing
+          declares anything — the tab shrinks to the custom-only legacy form. */}
       {declared.length > 0 && (
         <section className="space-y-2" data-testid="secrets-declared-section">
           <header className="space-y-1">
             <h4 className="text-xs font-medium uppercase tracking-wide text-(--color-text-secondary)">
-              Declared by your compose file
+              Declared for this project
             </h4>
             <p className="text-xs text-(--color-text-tertiary)">
-              From <code className="px-1 py-0.5 rounded bg-(--color-bg-secondary) text-(--color-text-primary)">x-shipit-secrets</code>.
-              Each value is injected only into the services that listed it.
+              From <code className="px-1 py-0.5 rounded bg-(--color-bg-secondary) text-(--color-text-primary)">x-shipit-secrets</code>, and
+              from the plugins this project uses. Each value is injected only
+              into the services that listed it; a plugin row shows which plugin
+              asked for the name.
             </p>
           </header>
           <div className="space-y-3">

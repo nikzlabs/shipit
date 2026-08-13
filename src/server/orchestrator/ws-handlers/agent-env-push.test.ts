@@ -50,6 +50,7 @@ function makeFakeServiceManager(
       declared: declaredNames.map((name) => ({ name, services: [] })),
       missingByService: {},
       missingRequired: [],
+      plugins: [],
       agentNames: Object.keys(snapshotAgentValues).sort(),
       agentValues: { ...snapshotAgentValues },
     }),

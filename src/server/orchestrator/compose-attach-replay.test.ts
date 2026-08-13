@@ -8,6 +8,7 @@ const emptySnapshot: SecretsStatusInternalSnapshot = {
   missingByService: {},
   missingRequired: [],
   agentNames: [],
+  plugins: [],
   agentValues: {},
 };
 
@@ -46,6 +47,7 @@ describe("buildComposeAttachReplay", () => {
       declared: [{ name: "STRIPE_KEY", required: true, services: ["api"] }],
       missingByService: { api: ["STRIPE_KEY"] },
       missingRequired: ["STRIPE_KEY"],
+      plugins: [],
     });
   });
 
@@ -90,6 +92,7 @@ describe("buildComposeAttachReplay", () => {
         declared: [],
         missingByService: {},
         missingRequired: [],
+        plugins: [],
       },
     ]);
   });

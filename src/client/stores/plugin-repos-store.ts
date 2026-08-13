@@ -139,10 +139,24 @@ export function pluginsTabVisible(snapshot: PluginReposSnapshot | null): boolean
 }
 
 /**
- * The warn dot (plan §3): parse warnings and per-repo issues count; the v0
- * `declared` (mechanics-not-built-yet) status deliberately does not.
+ * The warn dot (plan §3): parse warnings, per-repo issues, and an unsatisfied
+ * plugin credential (req 23) all count; the v0 `declared`
+ * (mechanics-not-built-yet) status deliberately does not.
+ *
+ * A missing key belongs on the dot for the reason the dot exists: the plugin
+ * cannot do its job until the user acts, and a closed tab may hide information
+ * but never a problem.
  */
 export function pluginsAttention(snapshot: PluginReposSnapshot | null): boolean {
   if (!snapshot) return false;
-  return snapshot.warnings.length > 0 || snapshot.repos.some((r) => r.issues.length > 0);
+  return (
+    snapshot.warnings.length > 0 ||
+    snapshot.repos.some(
+      (r) =>
+        r.issues.length > 0 ||
+        // `?? []` — a snapshot cached by an older client build has no
+        // `credentials` on its use entries; a stale shape must not throw here.
+        r.uses.some((u) => (u.credentials ?? []).some((c) => !c.satisfied)),
+    )
+  );
 }

@@ -1557,6 +1557,83 @@ services:
     expect(last.missingRequired).toEqual(["DATABASE_URL"]);
     expect(last.agentNames).toEqual([]); // no value resolved → empty
   });
+
+  // docs/262 req 23 — a settled plugin activation changes WHICH credential
+  // names are declared, and `secrets_status` samples that only in its own sync.
+  it("refreshSecretsStatus re-publishes plugin needs without touching containers", async () => {
+    const dir = setup();
+    writeCompose(dir, `
+services:
+  api:
+    image: node:20
+    ports: ['3000:3000']
+`);
+    // The first sync sees no live generation; the second sees one.
+    let declarations: { repo: string; plugin: string; alias: string; credentials: string[] }[] = [];
+    const composeCalls: string[][] = [];
+    const mgr = new ServiceManager({
+      sessionId: "test-session",
+      workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
+      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeQuery: emptyComposeQuery,
+      composeRunner: (args: string[]) => {
+        composeCalls.push(args);
+        return Promise.reject(new Error("no docker"));
+      },
+      secretsLoader: async () => ({}),
+      pluginCredentialsLoader: () => declarations,
+      pollIntervalMs: 0,
+    });
+
+    const snapshots: SecretsStatusInternalSnapshot[] = [];
+    mgr.on("secrets_status", (snap: SecretsStatusInternalSnapshot) => snapshots.push(snap));
+
+    try { await mgr.start(); } catch { /* expected — no docker */ }
+    expect(snapshots.at(-1)?.plugins).toEqual([]);
+
+    declarations = [{ repo: "art-kit", plugin: "palette", alias: "artk", credentials: ["FAL_KEY"] }];
+    const callsBefore = composeCalls.length;
+    await mgr.refreshSecretsStatus();
+
+    expect(snapshots.at(-1)?.plugins).toEqual([
+      {
+        repo: "art-kit",
+        plugin: "palette",
+        alias: "artk",
+        credentials: [{ name: "FAL_KEY", satisfied: false }],
+      },
+    ]);
+    // The whole point of the narrow method: no `compose up`, so a plugin
+    // refresh never restarts the user's services.
+    expect(composeCalls.length).toBe(callsBefore);
+  });
+
+  it("refreshSecretsStatus leaves the snapshot alone when the compose file will not parse", async () => {
+    // Syncing an empty service list would sweep the env files of services that
+    // are still running.
+    const dir = setup();
+    writeCompose(dir, "services:\n  api:\n    image: node:20\n");
+    const mgr = new ServiceManager({
+      sessionId: "test-session",
+      workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
+      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeQuery: emptyComposeQuery,
+      composeRunner: () => Promise.reject(new Error("no docker")),
+      secretsLoader: async () => ({}),
+      pluginCredentialsLoader: () => [
+        { repo: "art-kit", plugin: "palette", alias: "artk", credentials: ["FAL_KEY"] },
+      ],
+      pollIntervalMs: 0,
+    });
+
+    fs.writeFileSync(path.join(dir, "docker-compose.yml"), "services: [unclosed\n  - broken");
+    const seen: SecretsStatusInternalSnapshot[] = [];
+    mgr.on("secrets_status", (snap: SecretsStatusInternalSnapshot) => seen.push(snap));
+    await mgr.refreshSecretsStatus();
+    expect(seen).toEqual([]);
+  });
 });
 
 // ---------------------------------------------------------------------------

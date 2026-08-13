@@ -2352,7 +2352,21 @@ export default function App() {
               return data.keys;
             }}
             onSecretsSave={(repoUrl, payload) => {
-              apiPut("/api/secrets", { repoUrl, ...payload }).catch(() => {});
+              void (async () => {
+                try {
+                  await apiPut("/api/secrets", { repoUrl, ...payload });
+                } catch {
+                  return;
+                }
+                // docs/262 req 23 — the key just typed may be the one a plugin
+                // was missing, and the Plugins card resolves satisfaction
+                // server-side. Nothing else refetches it: `secrets_status`
+                // feeds the preview store only, and a project with no compose
+                // stack never emits one — so without this the card and its warn
+                // dot keep naming a gap the user has already closed.
+                const id = useSessionStore.getState().sessionId;
+                if (id) await usePluginReposStore.getState().fetchSnapshot(id);
+              })();
             }}
             onClose={() => {
               useUiStore.getState().setProjectSettingsRepoUrl(null);

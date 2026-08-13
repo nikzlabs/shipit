@@ -23,7 +23,12 @@ import {
   type PluginReposSnapshot,
   type PluginRepoRuntime,
 } from "../shared/plugin-repos.js";
+import { resolvePluginCredentials } from "../shared/plugin-credentials.js";
 import { readActiveGeneration } from "./plugin-generations.js";
+import {
+  pluginCredentialDeclarationsFor,
+  loadSatisfiedPluginCredentialNames,
+} from "./plugin-credentials.js";
 import { pluginSettingsIssuesByRepo } from "./plugin-state.js";
 import { getActivationState, getPluginPrepareFailures } from "./services/plugin-activation.js";
 import { sessionStateDirForWorkspace } from "./session-state-dir.js";
@@ -116,6 +121,18 @@ export async function registerPluginRepoRoutes(
 
       try {
         const config = resolveShipitConfig(session.workspaceDir);
+        // req 23 — what each activated plugin declares, resolved against THIS
+        // project's secret store. `consumerRepoUrl` is the same value the
+        // card's "Add key…" writes back to, so the gap the tab names and the
+        // store it opens can never disagree (plan §3's store trap).
+        const credentialGroups = resolvePluginCredentials(
+          pluginCredentialDeclarationsFor(
+            session.workspaceDir,
+            config.plugins,
+            config.pluginExports,
+          ),
+          loadSatisfiedPluginCredentialNames(deps.secretStore, consumerRepoUrl),
+        );
         return buildPluginReposSnapshot(
           config.plugins,
           config.pluginExports,
@@ -127,6 +144,7 @@ export async function registerPluginRepoRoutes(
           // activates anything — that runs on session activation and on a
           // shipit.yaml edit.
           readRuntimeState(request.query.sessionId, session.workspaceDir, config),
+          credentialGroups,
         );
       } catch (err) {
         // A malformed *document* (bad YAML, a bad `release` block) must not

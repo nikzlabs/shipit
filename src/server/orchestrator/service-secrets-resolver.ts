@@ -22,13 +22,25 @@ import {
   type DeclaredSecret,
 } from "./secret-resolver.js";
 import type { ComposeService } from "./compose-generator.js";
+import {
+  pluginClaimantsOf,
+  pluginCredentialNames,
+  resolvePluginCredentials,
+  type PluginCredentialDeclaration,
+  type PluginCredentialGroup,
+} from "../shared/plugin-credentials.js";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
 export interface SecretsStatusSnapshot {
-  /** All declared secrets across all services, de-duplicated by name. */
+  /**
+   * All declared secrets, de-duplicated by name: every `x-shipit-secrets`
+   * entry across all services, plus every credential name an activated plugin
+   * declares (docs/262 req 23). A name claimed by both is ONE entry carrying
+   * both claimant lists — it is one stored secret.
+   */
   declared: DeclaredSecret[];
   /** Service-name → list of declared secrets that have no value (required + optional). */
   missingByService: Record<string, string[]>;
@@ -42,6 +54,19 @@ export interface SecretsStatusSnapshot {
    * secret values into telemetry / logs.
    */
   agentNames: string[];
+  /**
+   * docs/262 req 23 — plugin-declared credential needs, GROUPED per activated
+   * plugin rather than flattened into `declared`. The grouping is the
+   * requirement: a missing key has to read as "the `artk` plugin needs
+   * `FAL_KEY`", which a flat name list cannot say.
+   *
+   * Deliberately NOT folded into `missingRequired`: that list drives the
+   * preview's "configure secrets to run this project" banner, which is about
+   * the project's own services failing to start. A plugin's gap is reported
+   * where the plugin is — on its card in the Plugins tab, and as a claimant on
+   * the settings row — and does not block the project's preview.
+   */
+  plugins: PluginCredentialGroup[];
 }
 
 /**
@@ -117,6 +142,19 @@ export interface ServiceSecretsResolverOptions {
    * reconciles don't spam the log.
    */
   onPlatformSourceWarning?: (serviceName: string, text: string) => void;
+  /**
+   * docs/262 req 23 — what the session's activated plugins declare they need,
+   * read fresh on each sync (a `shipit.yaml` edit or a plugin refresh changes
+   * the answer, and there is nothing to invalidate).
+   *
+   * Only the NAMES arrive here. Satisfaction is decided inside {@link sync}
+   * against the very same `userSecrets` map the compose services resolve
+   * from — the consuming project's own secret store — so a plugin credential
+   * can never resolve from a source a project credential could not. That is
+   * req 23's platform-credential boundary, held by sharing one input rather
+   * than by a second lookup that could drift.
+   */
+  pluginCredentialsLoader?: () => PluginCredentialDeclaration[];
 }
 
 // ---------------------------------------------------------------------------
@@ -132,6 +170,7 @@ export class ServiceSecretsResolver {
   private readonly serviceEnvDir: string;
   private readonly onSnapshot?: (snapshot: SecretsStatusInternalSnapshot) => void;
   private readonly onPlatformSourceWarning?: (serviceName: string, text: string) => void;
+  private readonly pluginCredentialsLoader?: () => PluginCredentialDeclaration[];
   /** (service, name, source) tuples already warned about — see onPlatformSourceWarning. */
   private readonly warnedPlatformSources = new Set<string>();
 
@@ -142,6 +181,7 @@ export class ServiceSecretsResolver {
     missingByService: {},
     missingRequired: [],
     agentNames: [],
+    plugins: [],
     agentValues: {},
   };
   /**
@@ -172,6 +212,7 @@ export class ServiceSecretsResolver {
     this.serviceEnvDir = opts.serviceEnvDir;
     this.onSnapshot = opts.onSnapshot;
     this.onPlatformSourceWarning = opts.onPlatformSourceWarning;
+    this.pluginCredentialsLoader = opts.pluginCredentialsLoader;
   }
 
   /**
@@ -286,11 +327,26 @@ export class ServiceSecretsResolver {
     const missingRequired = [
       ...new Set(Object.values(resolution.missingRequiredByService).flat()),
     ].sort();
+
+    // docs/262 req 23 — plugin-declared credential names, resolved against
+    // `userSecrets`: the consuming project's own secret store, the SAME map
+    // the compose services just resolved from. `mergedAgentValues` — which
+    // carries ShipIt's account-level credentials (provider tokens, MCP OAuth)
+    // — is deliberately not consulted here and must never be: a plugin's
+    // store can never resolve ShipIt's own platform credentials (req 23).
+    const pluginDeclarations = this.loadPluginCredentials();
+    const satisfied = new Set(
+      Object.entries(userSecrets)
+        .filter(([, value]) => typeof value === "string" && value.length > 0)
+        .map(([name]) => name),
+    );
+
     this.snapshot = {
-      declared: resolution.declared,
+      declared: mergePluginClaimants(resolution.declared, pluginDeclarations),
       missingByService: resolution.missingByService,
       missingRequired,
       agentNames: Object.keys(mergedAgentValues).sort(),
+      plugins: resolvePluginCredentials(pluginDeclarations, satisfied),
       agentValues: mergedAgentValues,
     };
     this.synced = true;
@@ -329,6 +385,20 @@ export class ServiceSecretsResolver {
       workspaceDir: this.workspaceDir,
       body: renderAgentEnvBody(mergedAgentValues),
     });
+  }
+
+  /** Never let a plugin declaration failure break the compose secrets pass. */
+  private loadPluginCredentials(): PluginCredentialDeclaration[] {
+    if (!this.pluginCredentialsLoader) return [];
+    try {
+      return this.pluginCredentialsLoader();
+    } catch (err) {
+      console.warn(
+        `[compose:${this.sessionId}] pluginCredentialsLoader failed:`,
+        (err as Error).message,
+      );
+      return [];
+    }
   }
 
   /**
@@ -425,14 +495,51 @@ export class ServiceSecretsResolver {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/**
+ * docs/262 req 23 — fold plugin-declared credential names into the flat
+ * declared list the Secrets settings panel renders.
+ *
+ * Two rules, both from plan §3:
+ *   - A name a compose service ALREADY declares gains plugin claimants; it
+ *     stays one row, because it is one stored secret. The compose metadata
+ *     (`required`, `agent`, description) is authoritative and untouched — a
+ *     plugin never gets to mark a project's secret required.
+ *   - A name only a plugin declares becomes a new row with no consuming
+ *     service, so the user can set it from the same panel instead of hunting
+ *     for where a plugin's key is supposed to go.
+ */
+function mergePluginClaimants(
+  declared: readonly DeclaredSecret[],
+  pluginDeclarations: readonly PluginCredentialDeclaration[],
+): DeclaredSecret[] {
+  if (pluginDeclarations.length === 0) return [...declared];
+
+  const merged = new Map(declared.map((d) => [d.name, { ...d, services: [...d.services] }]));
+  for (const name of pluginCredentialNames(pluginDeclarations)) {
+    const claimants = pluginClaimantsOf(pluginDeclarations, name);
+    const existing = merged.get(name);
+    if (existing) {
+      existing.plugins = claimants;
+    } else {
+      merged.set(name, { name, services: [], plugins: claimants });
+    }
+  }
+  return [...merged.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
 function cloneSnapshot(snapshot: SecretsStatusInternalSnapshot): SecretsStatusInternalSnapshot {
   return {
-    declared: snapshot.declared.map((d) => ({ ...d, services: [...d.services] })),
+    declared: snapshot.declared.map((d) => ({
+      ...d,
+      services: [...d.services],
+      ...(d.plugins ? { plugins: [...d.plugins] } : {}),
+    })),
     missingByService: Object.fromEntries(
       Object.entries(snapshot.missingByService).map(([k, v]) => [k, [...v]]),
     ),
     missingRequired: [...snapshot.missingRequired],
     agentNames: [...snapshot.agentNames],
+    plugins: snapshot.plugins.map((g) => ({ ...g, credentials: g.credentials.map((c) => ({ ...c })) })),
     agentValues: { ...snapshot.agentValues },
   };
 }
