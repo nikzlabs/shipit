@@ -11,6 +11,11 @@
 </p>
 
 <p align="center">
+  <a href="FEATURES.md"><b>Full feature list</b></a> &nbsp;·&nbsp;
+  <a href="https://ship-it.ai/">Website</a>
+</p>
+
+<p align="center">
   <img src="docs/assets/hero.png" alt="ShipIt: chat, live preview, and the inline PR card in one screen" width="900">
 </p>
 
@@ -32,8 +37,6 @@ loop**.
 - **The GitHub loop, inline** — work with PRs, CI, deploys, reviews, and issues, without leaving ShipIt.
 - **Runs on Linux, macOS, and Windows (WSL2)** — in isolated Docker containers.
 - **Ship from your phone** — mobile-first, with voice.
-
-**[See the full feature list →](FEATURES.md)**
 
 ## Quickstart
 
