@@ -19,7 +19,8 @@
      (YouTube/Loom/asciinema or an mp4 in docs/assets/) and link it here as a "▶ Watch the demo" line
      or a clickable thumbnail right under the hero image. -->
 
-ShipIt is a chat-driven Web IDE for running coding agents through your **real engineering loop**.
+ShipIt is a browser-based, chat-driven IDE for running coding agents through your **real engineering
+loop**.
 
 - **Parallel sessions in isolated containers** — run many agents at once, each with its own branch
   and workspace, so nothing they do collides.
