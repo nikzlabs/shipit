@@ -528,6 +528,78 @@ describe("injected preview script — pointer navigation", () => {
   });
 });
 
+describe("injected preview script — home navigation", () => {
+  // The toolbar's Home button sends the ordinary `navigate` command with the
+  // preview's root URL, so what it does is entirely decided in here. These pin
+  // the four shapes the button relies on.
+  const ROOT = "https://preview.localhost:3001/";
+
+  it("performs a real navigation to root from a different path", () => {
+    const { nav, calls } = fakeNavigation();
+    const { toolbar, assigned, pushed } = runInjectedScript(
+      { pathname: "/orders/8842", search: "?tab=open", hash: "" }, nav,
+    );
+
+    toolbar("navigate", { url: ROOT });
+
+    expect(calls).toEqual([`navigate:${ROOT}`]);
+    expect(assigned).toEqual([]);
+    expect(pushed).toEqual([]);
+  });
+
+  it("does nothing when the preview is already at root", () => {
+    // Home must not reload the front page for its own sake — the destination
+    // is where the page already is, so the script drops it.
+    const { nav, calls } = fakeNavigation();
+    const { toolbar, assigned, pushed, dispatched } = runInjectedScript(
+      { pathname: "/", search: "", hash: "" }, nav,
+    );
+
+    toolbar("navigate", { url: ROOT });
+
+    expect(calls).toEqual([]);
+    expect(assigned).toEqual([]);
+    expect(pushed).toEqual([]);
+    expect(dispatched).toEqual([]);
+  });
+
+  it("drops a query on the root path in place, and tells the router", () => {
+    // Same path, so this is the page the user is already on: a rewrite plus a
+    // popstate re-renders it rather than tearing the app down.
+    const { nav, calls } = fakeNavigation();
+    const { toolbar, assigned, pushed, dispatched } = runInjectedScript(
+      { pathname: "/", search: "?tab=open", hash: "" }, nav,
+    );
+
+    toolbar("navigate", { url: ROOT });
+
+    expect(calls).toEqual([]);
+    expect(assigned).toEqual([]);
+    expect(pushed).toEqual([[null, "", ROOT]]);
+    expect(dispatched).toEqual([{ type: "popstate", state: null }]);
+  });
+
+  it("returns a hash router to its root in place", () => {
+    // A hash router's route lives in the fragment, so going home is a fragment
+    // REMOVAL — the one same-document case the browser provides no path for.
+    const { nav, calls } = fakeNavigation();
+    const { toolbar, assigned, pushed, dispatched } = runInjectedScript(
+      { pathname: "/", search: "", hash: "#/orders" }, nav,
+    );
+
+    toolbar("navigate", { url: ROOT });
+
+    expect(calls).toEqual([]);
+    expect(assigned).toEqual([]);
+    expect(pushed).toEqual([[null, "", ROOT]]);
+    expect(dispatched).toEqual([{
+      type: "hashchange",
+      oldURL: "https://preview.localhost:3001/#/orders",
+      newURL: ROOT,
+    }]);
+  });
+});
+
 describe("allowPreviewBootstrapInCsp", () => {
   it("replaces script-src none with exact injected-script hashes", () => {
     const result = allowPreviewBootstrapInCsp("default-src 'self'; script-src 'none'; connect-src 'self'");

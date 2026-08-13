@@ -706,8 +706,15 @@ export function PreviewFrame({
           if (!activeSlotKey || !activeSlotUrl) return;
           const el = iframeRefs.current.get(activeSlotKey);
           const rootUrl = new URL("/", activeSlotUrl).href;
-          if (el?.contentWindow && reloadableWindowsRef.current.get(activeSlotKey) === el.contentWindow) {
-            el.contentWindow.postMessage({ source: "shipit-toolbar", type: "navigate", url: rootUrl }, "*");
+          // Targeted at the slot's own origin, never `"*"` — same reasoning as
+          // the pointer effect above. A `WindowProxy` keeps its identity across
+          // origin changes, so a frame that navigated itself somewhere else
+          // still passes the capability gate, and this message carries a URL
+          // (the preview subdomain names the session) rather than the bare
+          // `back`/`reload` verbs. A mismatch drops it in the browser.
+          const expectedOrigin = previewOrigin(activeSlotUrl);
+          if (el?.contentWindow && expectedOrigin && reloadableWindowsRef.current.get(activeSlotKey) === el.contentWindow) {
+            el.contentWindow.postMessage({ source: "shipit-toolbar", type: "navigate", url: rootUrl }, expectedOrigin);
           } else if (el) {
             el.src = rootUrl;
           }

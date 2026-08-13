@@ -438,11 +438,71 @@ describe("PreviewFrame", () => {
 
     fireEvent.click(screen.getByTitle("Go to preview root"));
 
+    // Targeted at the slot's origin, not "*": a WindowProxy keeps its identity
+    // across origin changes, so the capability gate alone would hand the
+    // session-naming preview URL to a page the preview navigated itself to.
     expect(postMessage).toHaveBeenCalledWith(
       { source: "shipit-toolbar", type: "navigate", url: "http://localhost:5173/" },
-      "*",
+      "http://localhost:5173",
     );
     expect(srcSetter).not.toHaveBeenCalled();
+  });
+
+  it("goes to the origin root even when the slot itself was recreated at a deep path", async () => {
+    // The case the root computation exists for. A slot dropped by LRU eviction
+    // or an unmount is recreated at its *remembered* path, so `activeSlotUrl`
+    // is itself a deep URL — sending the frame there would be a no-op that
+    // looks like a broken button. Without this the suite would still pass if
+    // `new URL("/", activeSlotUrl)` were replaced by `activeSlotUrl`.
+    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    const { unmount } = render(<PreviewFrame preview={preview} sessionId="s1" {...defaultProps} />);
+    const first = (await screen.findByTitle("Live Preview")) as HTMLIFrameElement;
+    window.dispatchEvent(new MessageEvent("message", {
+      data: { source: "shipit-preview", type: "path", path: "/orders/8842?tab=open" },
+      source: first.contentWindow,
+    }));
+    await screen.findByText("/orders/8842");
+    unmount();
+
+    render(<PreviewFrame preview={preview} sessionId="s1" {...defaultProps} />);
+    const iframe = (await screen.findByTitle("Live Preview")) as HTMLIFrameElement;
+    expect(iframe).toHaveAttribute("src", "http://localhost:5173/orders/8842?tab=open");
+    const postMessage = vi.spyOn(iframe.contentWindow!, "postMessage");
+    window.dispatchEvent(new MessageEvent("message", {
+      data: { source: "shipit-preview", type: "loaded" },
+      source: iframe.contentWindow,
+    }));
+
+    fireEvent.click(screen.getByTitle("Go to preview root"));
+
+    expect(postMessage).toHaveBeenCalledWith(
+      { source: "shipit-toolbar", type: "navigate", url: "http://localhost:5173/" },
+      "http://localhost:5173",
+    );
+  });
+
+  it("falls back to a document load at the origin root, not at the slot's deep path", async () => {
+    // Same computation, on the no-injected-script branch.
+    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    const { unmount } = render(<PreviewFrame preview={preview} sessionId="s1" {...defaultProps} />);
+    const first = (await screen.findByTitle("Live Preview")) as HTMLIFrameElement;
+    window.dispatchEvent(new MessageEvent("message", {
+      data: { source: "shipit-preview", type: "path", path: "/deep/route" },
+      source: first.contentWindow,
+    }));
+    await screen.findByText("/deep/route");
+    unmount();
+
+    render(<PreviewFrame preview={preview} sessionId="s1" {...defaultProps} />);
+    const iframe = (await screen.findByTitle("Live Preview")) as HTMLIFrameElement;
+    const srcSetter = vi.fn();
+    Object.defineProperty(iframe, "src", {
+      set: srcSetter, get: () => "http://localhost:5173/deep/route", configurable: true,
+    });
+
+    fireEvent.click(screen.getByTitle("Go to preview root"));
+
+    expect(srcSetter).toHaveBeenCalledWith("http://localhost:5173/");
   });
 
   it("places Home between the device selector and the address bar", async () => {

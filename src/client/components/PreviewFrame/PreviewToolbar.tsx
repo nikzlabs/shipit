@@ -207,6 +207,7 @@ export function PreviewToolbar({
               size="sm"
               onClick={onHome}
               title="Go to preview root"
+              aria-label="Go to preview root"
               disabled={!activeSlotUrl}
               className="h-7 w-7 p-0"
             >
