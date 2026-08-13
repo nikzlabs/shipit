@@ -361,11 +361,11 @@ export function wireAgentListeners(
    *
    *   - **`agent_self_wake`** (docs/235) — a `Bash(run_in_background)` job
    *     finished and the CLI re-invoked the model.
-   *   - **a post-`result` `agent_init`** (docs/140) — the CLI accepted a live
-   *     steer that arrived too late to land in the finishing turn (it acked the
-   *     message, so it is not re-queued) and runs it as its own turn once the
-   *     old one ends. The fresh `init` is the CLI announcing that turn; nothing
-   *     else on the wire does.
+   *   - **top-level assistant output after this turn's `result`** (docs/140) —
+   *     the CLI accepted a live steer that arrived too late to land in the
+   *     finishing turn (it acked the message, so it is not re-queued) and runs
+   *     it as its own turn once the old one ends. Nothing announces that turn;
+   *     the model producing output is the first proof it exists.
    *
    * Either way the runner must read as running for the duration, and the turn
    * needs a CLEAN accumulator — exactly as `turn-executor` gives a
@@ -927,24 +927,6 @@ export function wireAgentListeners(
       // Use the session ID captured at turn start — immune to session switches.
       // Guaranteed non-null by the assert at function entry.
       const turnSessionId = opts.capturedSessionId!;
-      // docs/140 — an init AFTER this wired turn's `result`, on a resident
-      // streaming process, is the CLI opening a turn of its own: the only other
-      // producer of a fresh init is the orchestrator, and it wires new listeners
-      // (with `sawTurnResult` false) for every turn it starts. Production shape:
-      // a live steer the CLI acked too late to apply, which it then runs as the
-      // next turn — see the third outcome documented on `AgentUserReplayEvent`.
-      // Without this the session read as IDLE for the whole response, its
-      // post-turn flow was never armed, and a later `agent_self_wake` could
-      // reset the accumulator mid-response and lose the answer's opening.
-      //
-      // A self-wake reaches `adoptCliStartedTurn` first (its `task_notification`
-      // precedes the init on the wire) and has already set `running`, so this
-      // adopts each CLI-started turn exactly once. Subagent inits and the
-      // post-compaction re-init (docs/178) both arrive mid-turn, where
-      // `runner.running` is still true.
-      if (opts.useStreaming && sawTurnResult && runner && !runner.running) {
-        adoptCliStartedTurn("post-result init");
-      }
       // Record "Agent process started" only when the agent actually
       // starts emitting events — the unconditional broadcastLog at the
       // run() call site fired even when the worker rejected a duplicate
@@ -1043,6 +1025,38 @@ export function wireAgentListeners(
     }
 
     if (event.type === "agent_assistant") {
+      // docs/140 — a TOP-LEVEL assistant event after this wired turn's `result`,
+      // on a resident streaming process, is the CLI producing output for a turn
+      // the orchestrator never started. Production shape: a live steer the CLI
+      // acked too late to apply, which it then runs as the next turn — the third
+      // outcome documented on `AgentUserReplayEvent`. Without adopting it the
+      // session read as IDLE for the whole response, its post-turn flow was
+      // never armed, and a later `agent_self_wake` could reset the accumulator
+      // mid-response and lose the answer's opening.
+      //
+      // The model TALKING is the edge, not the CLI's `init`. An init looks like
+      // the obvious announcement — docs/235's own probe names it — but it is
+      // emitted for `set_permission_mode` too (`StreamingClaudeProcess.setPermissionMode`),
+      // and that control response promises no turn and no later `result` to
+      // clear `running` again. Steering pushes the mode change and the message
+      // as two independent worker calls, so it can land after the finishing
+      // turn's `result` and wedge the session as permanently busy. A top-level
+      // assistant event has no such producer: a backgrounded subagent's carries
+      // `parentToolUseId` (excluded below), and compaction emits none.
+      //
+      // Adoption must happen BEFORE this branch accumulates: `resetRunnerTurnState`
+      // clears `chatMessageGroups` / `turnSummary`, so a reset after the append
+      // would drop the adopted turn's first block. A self-wake reaches
+      // `adoptCliStartedTurn` first (its `task_notification` precedes the turn's
+      // output) and has already set `running`, so each CLI-started turn is
+      // adopted exactly once.
+      if (
+        opts.useStreaming && sawTurnResult && runner && !runner.running
+        && !event.parentToolUseId
+      ) {
+        adoptCliStartedTurn("post-result assistant output");
+      }
+
       // docs/153 Fix 2 — the CLI has produced an assistant content block,
       // so the resumed (or freshly-init'd) session is real. Persist the
       // top-level init's sessionId to the DB now. agent_result's persist

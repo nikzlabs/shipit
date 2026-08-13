@@ -424,19 +424,25 @@ describe("Integration: live steering (docs/140)", () => {
     await drainUntil(client, (m) => m.type === "session_status" && (m as AnyMsg).running === false);
     expect(runner.running).toBe(false);
 
-    // The CLI starts the steer's turn on its own: a fresh init, no
-    // `task_notification`, no `send_message` from the orchestrator.
+    // The CLI starts the steer's turn on its own: no `task_notification`, no
+    // `send_message` from the orchestrator. Its `init` is not the edge — the CLI
+    // emits one for `set_permission_mode` too, with no turn behind it — so the
+    // session stays idle until the model actually talks.
     claude.initSession("late-steer-session");
-    const busy = await drainUntil(client, (m) => m.type === "session_status" && (m as AnyMsg).running === true);
-    expect(busy).toMatchObject({ type: "session_status", running: true });
-    expect(runner.running).toBe(true);
-    // A clean accumulator, so the adopted turn cannot re-persist turn 1's groups.
-    expect(runner.chatMessageGroups).toEqual([]);
+    await new Promise((r) => setTimeout(r, 100));
+    expect(runner.running).toBe(false);
 
     claude.emit("event", {
       type: "assistant",
       message: { content: [{ type: "text", text: "Renamed the folder" }] },
     });
+    const busy = await drainUntil(client, (m) => m.type === "session_status" && (m as AnyMsg).running === true);
+    expect(busy).toMatchObject({ type: "session_status", running: true });
+    expect(runner.running).toBe(true);
+    // A clean accumulator: turn 1's group is gone, so the adopted turn's result
+    // cannot re-persist it.
+    expect(runner.chatMessageGroups.map((g: AnyMsg) => g.text)).toEqual(["Renamed the folder"]);
+
     claude.emit("event", { type: "result", subtype: "success", session_id: "late-steer-session" });
     await drainUntil(client, (m) => m.type === "session_status" && (m as AnyMsg).running === false);
 

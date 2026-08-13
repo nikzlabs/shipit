@@ -510,25 +510,41 @@ landing mid-response sees `running === false`, runs `resetRunnerTurnState`, and
 the next `replaceInProgress` persists only the groups after the reset — the first
 half of the answer is gone from chat history permanently.
 
-Fix: **adopt the turn at its `agent_init`.** A fresh init after this wired turn's
-`result`, on a resident streaming process, is the CLI announcing a turn the
-orchestrator did not start — the same class of event as `agent_self_wake`, and it
-reuses the same docs/235 machinery (`adoptCliStartedTurn` in `agent-listeners.ts`:
-`resetRunnerTurnState` + `running = true` + `session_status running:true`, plus
+Fix: **adopt the turn when the model starts talking.** A top-level
+`agent_assistant` after this wired turn's `result`, on a resident streaming
+process, is the CLI producing output for a turn the orchestrator did not start —
+the same class of event as `agent_self_wake`, and it reuses the same docs/235
+machinery (`adoptCliStartedTurn` in `agent-listeners.ts`: `resetRunnerTurnState`
++ `running = true` + `session_status running:true`, plus
 `rearmForCliStartedTurn` in `turn-executor.ts` for the post-turn flow). The
 un-acked-steer re-queue is untouched — an acked steer must still never be
 re-queued, or it would be double-processed.
 
-Why the init edge rather than **tracking un-consumed acked steers** (the obvious
-alternative — mark the runner "expecting a CLI-side turn" when a steer was acked
-but the turn produced no group after it, then adopt on the next event):
+**Why not the `agent_init`, which looks like the announcement.** It is the
+obvious candidate and docs/235's own probe names it ("a `system/init` arriving
+while no orchestrator turn is in flight ⇒ a turn just started"). It is wrong
+here, and the reason is the second half of the same feature:
+`StreamingClaudeProcess.setPermissionMode` pushes a `set_permission_mode`
+control_request, and **the CLI answers it with a fresh `init`** — no turn behind
+it, and therefore no later `result` to clear `running` again. Steering pushes the
+mode change and the message as two independent worker calls
+(`send-message.ts` → `proxy-agent-process.ts`), so that init can land after the
+finishing turn's `result`. Adopting it would wedge the session as **permanently
+busy** — a worse failure than the one being fixed, since nothing recovers it.
+Assistant output has no such producer: a backgrounded subagent's carries
+`parentToolUseId` (excluded), and compaction emits none. Evidence the model is
+generating output IS the turn; an announcement is only a claim about one.
 
-- The init is **evidence**; an un-consumed ack is a **prediction**. Adoption sets
-  `running = true`, and nothing but a `result` clears it. Predicting a turn that
-  never arrives wedges the session as busy forever; adopting one the CLI has
-  announced cannot.
+Why not **tracking un-consumed acked steers** (the other alternative — mark the
+runner "expecting a CLI-side turn" when a steer was acked but the turn produced
+no group after it, then adopt on the next event):
+
+- Assistant output is **evidence**; an un-consumed ack is a **prediction**.
+  Adoption sets `running = true`, and nothing but a `result` clears it.
+  Predicting a turn that never arrives wedges the session as busy forever;
+  adopting one that is demonstrably running cannot.
 - It is not steer-specific. Any turn the CLI opens on its own — a future hook, a
-  backend that resumes work between turns — is announced the same way, so the
+  backend that resumes work between turns — produces output the same way, so the
   orchestrator stops needing a new detector per cause.
 - It needs no new state on `SteeredMessage` and no new coupling between the
   re-queue predicate and the liveness path. The discriminator is one flag
@@ -536,19 +552,58 @@ but the turn produced no group after it, then adopt on the next event):
   existing `streamingPostTurnFired`.
 
 Safety is the same argument docs/237 made for the wake edge, and rests on
-`resetRunnerTurnState` never running while a turn is genuinely in flight: an init
-arriving *before* this turn's `result` is a subagent's or a post-compaction
-re-init (docs/178), and both are guarded by `runner.running` / the executor's
+`resetRunnerTurnState` never running while a turn is genuinely in flight:
+assistant output arriving *before* this turn's `result` is just this turn
+talking, and is guarded by `runner.running` / the executor's
 `streamingPostTurnFired`. An orchestrator-started turn is never adopted either —
-it wires fresh listeners, so its init lands on a closure that has seen no result.
-Note the production trace shows the reverse hazard was the live one: the 18:42:49
-reset ran precisely *because* `running` was `false` while a real CLI turn WAS in
-flight.
+it wires fresh listeners, so its output lands on a closure that has seen no
+result. Note the production trace shows the reverse hazard was the live one: the
+18:42:49 reset ran precisely *because* `running` was `false` while a real CLI
+turn WAS in flight.
+
+**Three ordering hazards the adoption creates, and what each costs.** Adoption
+lands in the middle of the finished turn's own terminal sequence, so the two
+overlap. Independent review (docs/261 reviewer, Codex) surfaced all three; each
+is now pinned by a test that fails without its fix. They apply to the
+`agent_self_wake` edge too, which has had them since planning#249 — the assistant
+edge is simply frequent enough to make them reachable.
+
+1. **The finished turn's drain undoes the adoption.** `tryDrain` runs a few
+   awaits after `agent_result` and clears `running`. A turn adopted inside that
+   window would be put straight back to IDLE for its whole response — the
+   original symptom, restored by the fix's own sequence — and the drain would
+   start a queued turn CONCURRENTLY with the one the CLI is running. `tryDrain`
+   now stands down when `turnIsCurrent()` is false: the runner has moved on, and
+   the adopted turn drains for itself once `rearmForCliStartedTurn` clears
+   `drainFired`.
+2. **The adopted turn finishes before the re-arm hands the guards over.** The
+   re-arm awaits the finished turn's whole sequence (commit + PR round-trip:
+   seconds), and the CLI is not paused by that await. A short adopted turn —
+   "rename the folder" is exactly that — reached its `result`, hit the still-true
+   `streamingPostTurnFired` and returned: no drain, no commit, no settlement.
+   The `agent_result` handler now awaits any in-flight re-arm (`rearmInFlight`)
+   instead of reading a flag that is still the finished turn's.
+3. **The commit summary is read after the adoption cleared it.**
+   `resetRunnerTurnState` clears `turnSummary`, and the finished turn's commit is
+   the *last* step of its sequence, so it labelled its own work "Agent turn" (or,
+   once the adopted turn had spoken, with ITS first line). The summary is now
+   snapshot at `agent_result` (`resultTurnSummary`) and the snapshot is what
+   `runCommit` uses.
+
+**Known residual, accepted.** An adopted turn that edits the tree BEFORE the
+finished turn's `git add -A` has those edits swept into the finished turn's
+commit. The work reaches git — the tree ends clean and the adopted turn's own
+commit is then a no-op — only the attribution is the previous turn's, for the
+sub-second window between `result` and the commit. Fixing it would mean tracking
+per-turn paths through `git add -A`; the cost of not fixing it is a commit
+message, not lost work. Asserted explicitly in the test rather than wished away.
 
 Coverage: `turn-self-wake-commit.test.ts` (a late-acked steer's CLI-started turn
-commits its own work under its own summary; a mid-turn init changes nothing) and
-`live-steering.test.ts` (the session reads busy, the accumulator is clean, and
-each turn persists once).
+commits its own work under its own summary; a bare post-`result` init does NOT
+adopt; mid-turn output and a backgrounded subagent's output do not adopt; the
+drain stands down after an adoption; an adopted turn that ends before the re-arm
+settles still runs its post-turn flow) and `live-steering.test.ts` (the session
+reads busy, the accumulator is clean, and each turn persists once).
 
 **Phase 6.10 — a mid-session model change never reached the resident process.**
 User report: "if a model was Fable and I change it to Opus, after the turn ends
@@ -640,6 +695,8 @@ pinning trigger/checkmark agreement.
 - `src/server/orchestrator/ws-handlers/agent-listeners.ts` —
   `adoptCliStartedTurn` + `sawTurnResult`: adopt a turn the CLI started on its
   own, from either edge (Phase 6.11). Paired with `rearmForCliStartedTurn` in
-  `turn-executor.ts`, which gives that turn a post-turn flow to end on.
+  `turn-executor.ts`, which gives that turn a post-turn flow to end on — plus the
+  three overlap guards there (`turnIsCurrent()` in `tryDrain`, `rearmInFlight`,
+  `resultTurnSummary`).
 - `src/client/components/MessageInput.tsx`, `QueueIndicator.tsx`,
   `src/client/stores/session-store.ts` — client UX + settings toggle.
