@@ -574,7 +574,7 @@ result. Note the production trace shows the reverse hazard was the live one: the
 18:42:49 reset ran precisely *because* `running` was `false` while a real CLI
 turn WAS in flight.
 
-**Three ordering hazards the adoption creates, and what each costs.** Adoption
+**Five ordering hazards the adoption creates, and what each costs.** Adoption
 lands in the middle of the finished turn's own terminal sequence, so the two
 overlap. Independent review (docs/261 reviewer, Codex) surfaced all three; each
 is now pinned by a test that fails without its fix. They apply to the
@@ -620,7 +620,27 @@ edge is simply frequent enough to make them reachable.
    non-null ONLY while a re-arm is genuinely running, which is load-bearing in
    the other direction: on the non-streaming path `done` follows `agent_result`
    synchronously, and an unconditional await there reorders the two (it broke
-   `quota-exhaustion-retry.test.ts`).
+   `quota-exhaustion-retry.test.ts`). The **failed auth heal** is the fourth such
+   path and waits too.
+
+**And two things an adopted turn must NOT inherit from the closure it borrows.**
+The closure still holds the turn it was invoked for — its prompt, its
+`receivedResult`, its dispatch handle — so `servingAdoptedTurn` marks the window
+in which that state is not this turn's:
+
+- **No re-dispatch.** The quota failover and the auth-heal retry re-run
+  `input.prompt` on a fresh credential. That prompt is the USER's; re-running it
+  because an adopted turn hit a limit repeats work the agent already did and
+  still doesn't retry what failed. Both stand down. (Reasoned from the code and
+  **not** pinned by a test — reaching the failover needs the credential-selection
+  harness on a streaming *dispatched* turn, which no existing harness builds, and
+  a test against the executor harness alone passes with the guard removed.)
+- **The partial-turn finalize must still fire.** It is gated on
+  `!receivedResult`, which deliberately survives an adoption — so an adopted turn
+  that died on a bare `done` had its streamed rows left `in_progress` for the
+  next turn's `replaceInProgress` to delete. That is this phase's own bug, one
+  path over. Only the row finalize is widened; the no-result hook stays disarmed,
+  because arming it would re-run the user's original prompt.
 
 **Known residual, accepted.** An adopted turn that edits the tree BEFORE the
 finished turn's `git add -A` has those edits swept into the finished turn's

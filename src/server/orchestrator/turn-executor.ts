@@ -83,6 +83,7 @@ import { sessionAutoCommitAllowed } from "./services/auto-commit-gate.js";
 import { emitChatCard, emitNoticeInTurn, emitNoticePostTurn } from "./chat-card-persistence.js";
 import { TURN_COMPLETED, turnErrored, turnInterrupted, turnNoResult, type TurnOutcome } from "./turn-settlement.js";
 import type { AgentInterfaceProvenance } from "../shared/agent-interface-sdk/protocol.js";
+import { getAgentCapabilities } from "../shared/agent-registry.js";
 
 /**
  * Normalized, transport-agnostic description of one turn. The adapters
@@ -162,20 +163,6 @@ export interface TurnInput {
    * resident across turns) and `done` only handles process-exit cleanup.
    */
   useStreaming?: boolean;
-  /**
-   * docs/140 Phase 6.11 — this turn runs on a backend whose process survives its
-   * own turn boundary and can start a turn ShipIt never asked for
-   * (`AgentCapabilities.startsOwnTurns`, resolved through the agent registry —
-   * never off `AgentProcess.capabilities`, which `ProxyAgentProcess` hardcodes).
-   * Gates BOTH halves of the adoption: the listener's `adoptCliStartedTurn` and
-   * this executor's `rearmForCliStartedTurn`.
-   *
-   * Separate from `useStreaming` because the two are not the same fact. Codex
-   * steers, so it streams — but its app-server is killed at `turn/completed` and
-   * it emits the turn's FINAL assistant text after that, so on Codex the very
-   * shape adoption keys on means "the turn that just ended is still talking".
-   */
-  adoptsCliStartedTurns?: boolean;
   /**
    * The passed `agent` is a *reused* resident streaming process (docs/140):
    * carry the message in via `sendUserMessage` instead of `/agent/start`.
@@ -280,10 +267,26 @@ export async function executeAgentTurn(
 ): Promise<void> {
   const { agentId, prompt, activity, sessionId, emit } = input;
   const useStreaming = input.useStreaming ?? false;
-  // docs/140 Phase 6.11 — adoption needs BOTH: a resident process (streaming)
-  // and a backend that starts turns of its own. See the input field's docstring
-  // for why Codex satisfies the first and not the second.
-  const adoptsCliStartedTurns = useStreaming && (input.adoptsCliStartedTurns ?? false);
+  /**
+   * docs/140 Phase 6.11 — may a turn the CLI starts on its own be ADOPTED here
+   * (marked running, given a clean accumulator and its own post-turn flow)?
+   *
+   * Needs BOTH: a resident process (streaming) and a backend whose process
+   * survives its own turn boundary. Codex satisfies the first and not the
+   * second — its app-server is killed at `turn/completed` and it emits the
+   * turn's FINAL assistant text after that, so there the very shape adoption
+   * keys on means "the turn that just ended is still talking".
+   *
+   * DERIVED here from `agentId` rather than passed in by each caller. It is a
+   * compile-time fact about the adapter, and threading it through every entry
+   * point is how one gets missed: the WS path had it and `runDispatchedTurn` —
+   * which also streams, for quick/child/programmatic turns — did not, leaving
+   * the original production bug live on a supported path. Same static lookup
+   * and same reasoning as the dispatch path's `supportsSteering` (docs/163);
+   * deliberately NOT `AgentProcess.capabilities`, which `ProxyAgentProcess`
+   * hardcodes.
+   */
+  const adoptsCliStartedTurns = useStreaming && (getAgentCapabilities(agentId)?.startsOwnTurns ?? false);
   // docs/169 — "none" elides commit/push/PR + queue drain (rebase). Default
   // preserves today's behavior for every other caller.
   const postTurn = input.postTurn ?? "commit-push";
@@ -440,6 +443,9 @@ export async function executeAgentTurn(
   // and to the listener's own turn latch (`agent-auth-handler.ts`), both of
   // which drop the duplicate before it reaches this gate at all.
   const willRecoverAuth = (): boolean => {
+    // docs/140 — same reason as `quotaRetryAllowed`: the re-dispatch would re-run
+    // the previous turn's prompt. See `servingAdoptedTurn`.
+    if (servingAdoptedTurn) return false;
     if (!canRecoverAuth) return false;
     automaticRecoveryInProgress = true;
     return true;
@@ -544,6 +550,14 @@ export async function executeAgentTurn(
       // Heal genuinely failed (token revoked / rate-limited / no rotation). The
       // `done` handler stood down for us, so run the same terminal teardown it
       // would have, then return false so the listener surfaces the sign-in card.
+      //
+      // docs/140 — the FOURTH terminal path, and it needs the same hand-over
+      // wait as `agent_result` / `onError` / `done`: without it the teardown
+      // below runs against a predecessor's latched `drainFired` and settled
+      // commit memos, so an adopted turn that fails auth commits nothing and
+      // strands the queue. (`rearmInFlight` is non-null only while a re-arm is
+      // actually running, so the ordinary heal is unchanged.)
+      if (rearmInFlight) await rearmInFlight;
       holdPostTurn();
       try {
         if (runner) runner.running = false;
@@ -678,6 +692,9 @@ export async function executeAgentTurn(
     return credentialFailurePolicyForRoute(agentId, profile.billingMode, profile.serviceId);
   };
   const quotaRetryAllowed = (): boolean => {
+    // docs/140 — never re-dispatch an ADOPTED turn: the prompt this closure
+    // would re-run is the previous turn's. See `servingAdoptedTurn`.
+    if (servingAdoptedTurn) return false;
     const policy = capturedRoutePolicy();
     if (policy) return !policy.stopsOnFailure;
     return !stopsOnCredentialFailure(deps.listenerDeps.sessionManager.get(sessionId));
@@ -919,9 +936,7 @@ export async function executeAgentTurn(
       }
     },
     ...(input.useStreaming !== undefined ? { useStreaming: input.useStreaming } : {}),
-    ...(input.adoptsCliStartedTurns !== undefined
-      ? { adoptsCliStartedTurns: input.adoptsCliStartedTurns }
-      : {}),
+    ...(adoptsCliStartedTurns ? { adoptsCliStartedTurns: true } : {}),
   });
 
   // For a resumed session (id already known) persist the user row synchronously
@@ -1094,6 +1109,36 @@ export async function executeAgentTurn(
    * so the adopted turn commits under its OWN summary.
    */
   let resultTurnSummary: string | null = null;
+
+  /**
+   * docs/140 Phase 6.11 — this executor is currently serving a turn the CLI
+   * started on its own, which has not yet produced its own `agent_result`.
+   *
+   * The closure still holds the turn it was INVOKED for — `input.prompt`,
+   * `receivedResult`, the dispatch handle — and an adopted turn shares none of
+   * that. Two consequences, both real:
+   *
+   *  - **No re-dispatch.** The quota failover and the auth-heal retry re-run
+   *    `input.prompt` on a fresh account. That prompt belongs to the turn the
+   *    USER sent; re-running it because an ADOPTED turn hit a limit repeats
+   *    work the agent already did and still doesn't retry what failed. Both
+   *    stand down and let the terminal teardown run instead.
+   *
+   *    **This half is reasoned from the code, not covered by a test** — unlike
+   *    everything else in this phase. Reaching the failover needs the credential
+   *    selection harness (`integration_tests/quota-exhaustion-retry.test.ts`'s
+   *    `prepareAgentEnv` routes) on a STREAMING dispatched turn, which no
+   *    existing harness sets up; a test written against the executor harness
+   *    alone passes with the guard removed, so it would pin nothing. Said out
+   *    loud rather than left implied.
+   *  - **The partial-turn finalize must still fire.** It is gated on
+   *    `!receivedResult`, which stays true from the turn that owns this closure
+   *    (deliberately — see `rearmForCliStartedTurn`), so an adopted turn that
+   *    dies on a bare `done` had its streamed rows left `in_progress` for the
+   *    next turn's `replaceInProgress` to delete. That is the same chat-history
+   *    loss this whole phase exists to stop, one path over.
+   */
+  let servingAdoptedTurn = false;
 
   let drainFired = false;
   const tryDrain = async (): Promise<void> => {
@@ -1430,13 +1475,13 @@ export async function executeAgentTurn(
    * dispatch handle is waiting on, so it must not settle it a second time.
    */
   const rearmForCliStartedTurn = async (reason: string): Promise<void> => {
-    if (!useStreaming || !streamingPostTurnFired) return;
     await postTurnStep("await-post-turn", () => streamingPostTurn ?? Promise.resolve());
     // A second edge can arrive while we await (a wake and the wake turn's first
     // assistant event are separate frames): the first one through re-arms and
     // the rest see the cleared flag and stand down.
     if (!streamingPostTurnFired) return;
     console.log(`[turn] ${reason} for ${sessionId}; re-arming the post-turn flow`);
+    servingAdoptedTurn = true;
     tokenSyncFired = false;
     drainFired = false;
     streamingPostTurnFired = false;
@@ -1551,6 +1596,12 @@ export async function executeAgentTurn(
         return;
       }
     }
+    // Cleared HERE, not at the top of this handler: the re-dispatch guards above
+    // are exactly what an adopted turn's result must still be judged by, and the
+    // turn is only "finished" once past them. Clearing it later would be wrong
+    // too — the `done` finalize below is widened by this flag, and a turn that
+    // DID produce a result had its rows finalized by `agent-listeners` already.
+    servingAdoptedTurn = false;
     if (useStreaming) {
       if (streamingPostTurnFired) return;
       streamingPostTurnFired = true;
@@ -1813,7 +1864,14 @@ export async function executeAgentTurn(
       // and then `done`, and re-running `replaceInProgress` here after the
       // rows were finalized would append a duplicate copy of the turn.
       if (
-        !receivedResult
+        // docs/140 — `|| servingAdoptedTurn`: `receivedResult` describes the turn
+        // this closure was INVOKED for and deliberately survives an adoption, so
+        // on its own it would skip the finalize for an adopted turn that died
+        // without a result — leaving that turn's streamed rows `in_progress` for
+        // the next turn's `replaceInProgress` to delete. The no-result hook above
+        // stays disarmed (it would re-run the user's original prompt); only the
+        // row finalize is widened.
+        (!receivedResult || servingAdoptedTurn)
         && !sawAuthRequired
         && !agentErrored
         && !input.onInterruptedTurn

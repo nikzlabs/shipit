@@ -390,11 +390,13 @@ describe("Integration: live steering (docs/140)", () => {
     // Production, 2026-08-13: a steer landed as the turn was wrapping up. The
     // CLI acked it — so it was correctly NOT re-queued — but had no decision
     // point left to apply it at, and ran it as its OWN turn after the
-    // orchestrator had already finalized the current one. There is no
-    // `task_notification` on that path, so the fresh `init` is the only
-    // announcement the turn exists. Without adopting it the session read as
-    // idle for the whole response and a later `agent_self_wake` could reset the
-    // accumulator mid-response, losing the answer's opening from history.
+    // orchestrator had already finalized the current one. NOTHING announces
+    // that turn — there is no `task_notification`, and the CLI's `init` is not
+    // proof of one (it emits one for `set_permission_mode` too) — so the model
+    // producing top-level output is the first evidence it exists. Without
+    // adopting it the session read as idle for the whole response and a later
+    // `agent_self_wake` could reset the accumulator mid-response, losing the
+    // answer's opening from history.
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 

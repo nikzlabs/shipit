@@ -666,6 +666,18 @@ export function wireAgentListeners(
       const turnSessionId = opts.capturedSessionId;
       // docs/235 §6 — mark the runner running and hand the wake turn a clean
       // accumulator (only when no turn is in flight; see `adoptCliStartedTurn`).
+      //
+      // NOT gated on `opts.useStreaming`, unlike the assistant edge below, and
+      // that asymmetry is deliberate rather than an oversight. The executor
+      // refuses to re-arm a non-streaming turn, so in principle a wake arriving
+      // between a one-shot turn's `agent_result` and its `done` would set
+      // `running = true` with no flow left to clear it. That state needs an
+      // event the one-shot adapter does not produce — it reaps its background
+      // tasks and exits at turn end (docs/235 probe A) — and gating here would
+      // change docs/235's shipped contract, which
+      // `integration_tests/self-wake-midturn.test.ts` pins on a non-streaming
+      // session. Left as-is: pre-existing, unreachable through the adapter, and
+      // not this phase's to redefine.
       adoptCliStartedTurn("self-wake");
       // docs/109 reqs 10–11 — the SAME event is also the only completion signal
       // a backgrounded subagent ever produces. Its `tool_result` was written
