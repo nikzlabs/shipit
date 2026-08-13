@@ -46,8 +46,8 @@ bash <(curl -fsSL https://raw.githubusercontent.com/nikzlabs/shipit/stable/deplo
 ```
 
 This installs ShipIt under `~/.shipit`, builds the Docker images, and starts it **detached** at
-[http://localhost:4123](http://localhost:4123). Connect GitHub and a provider account once from the
-in-app sign-in flow. Fork installs, custom paths, updates, and stop/uninstall are in
+[http://localhost:4123](http://localhost:4123). Fork installs, custom paths, updates, and
+stop/uninstall are in
 [`deployment/README.md`](deployment/README.md).
 
 #### Reaching a local install from your phone
