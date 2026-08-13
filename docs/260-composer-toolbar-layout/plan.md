@@ -106,6 +106,14 @@ Two levels rather than one flat list because the menu has to survive catalogue g
 
 The harness row does not drill down when the session has pinned it — it renders the lock and the reason inline, as the standalone selector does today.
 
+### The tap that opens the menu must not also pick a row
+
+On a phone this menu opened *already inside the Reasoning panel*, every time, in Quick Capture. The anchor opens on `pointerdown`, but a touch's `click` arrives later and is dispatched at the touch **coordinates** — and the layout moves in between: the tap takes focus off the textarea, the on-screen keyboard retracts, the layout viewport grows, and the menu (anchored *above* the anchor) slides down across the point the finger touched. The row that lands there is the menu's bottom one, which in the root list is Reasoning. Measured in a real browser at 390 px: growing the viewport between `pointerdown` and `click` puts `composer-settings-row-reasoning` under the original tap point, and the ghost click navigates into it.
+
+The guard is in `DropdownMenuContent`, not here: Radix's `MenuItem` has the same hole one layer down (it synthesizes a click for any `pointerup` it never saw a `pointerdown` for), so every dropdown in the app is exposed, not just this one. A row may now be activated only by a gesture that **began inside the menu**; a click carrying pointer coordinates whose `pointerdown` the menu never saw is swallowed. Keyboard activation is untouched (`element.click()` has `detail === 0`), and mouse press-drag-release from the trigger still works, because a mouse — unlike a touch — delivers a real `pointerup` inside the menu.
+
+The permission is armed by that `pointerdown` and **consumed by the click it belongs to**, rather than cleared per opening: Radix keeps the content node alive through the close animation, so a menu closed and reopened quickly is not guaranteed a remount, and `forceMount` would never give one. One pointerdown authorises exactly one activation, which needs no notion of "this opening" to hold.
+
 ## Reuse, not duplication
 
 `ModelSelector` carries ~80 lines of subtle precedence logic (optimistic pick → session model → live model → saved seed → first row) plus the group resolution that keeps the trigger label and the checkmark from contradicting each other. The menu's model panel needs exactly that, and a second copy would drift.
@@ -139,3 +147,4 @@ Everything else keeps its accessible name (req 9): the anchor's `aria-label` nam
 - `src/client/components/ReasoningSelector.tsx` — `compactTrigger` removed.
 - `src/client/components/ContextDial.tsx` — `compact` prop: ring only, no figures.
 - `src/client/hooks/useNarrowContainer.ts` — reused unchanged.
+- `src/client/components/ui/dropdown-menu.tsx` — `DropdownMenuContent`'s opening-gesture guard (see "The tap that opens the menu…"). Shared by every dropdown.

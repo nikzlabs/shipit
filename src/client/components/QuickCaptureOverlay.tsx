@@ -10,7 +10,6 @@ import { useSettingsStore } from "../stores/settings-store.js";
 import { isSelectionEligibleForAgent } from "../agent-types.js";
 import { startQuickSessionInBackground } from "../stores/actions/session-actions.js";
 import {
-  getSavedAgentId,
   getSavedModelId,
   getSavedModelSelection,
   getSavedQuickSessionRepo,
@@ -20,7 +19,8 @@ import {
   saveModelSelection,
   saveQuickSessionRepo,
 } from "../utils/local-storage.js";
-import { agentIdForModel } from "../utils/agent-for-model.js";
+import { newSessionAgentId } from "../utils/new-session-agent.js";
+import { modelRowsFor } from "./ModelPicker.js";
 import { parseRepoLabel } from "../utils/repo-label.js";
 import { useChatDisabledReason } from "../utils/chat-runnable.js";
 import { MessageInput, type SendPayload } from "./MessageInput.js";
@@ -64,6 +64,13 @@ export function QuickCaptureOverlay({
   // irreversible footgun that would silently ship a review-intended PR. It
   // defaults off and the user must opt in every single time.
   const [armAutoMerge, setArmAutoMerge] = useState(false);
+  // The harness and model seeds live in localStorage, which React cannot
+  // subscribe to — and both this overlay and the pickers inside it read them
+  // during render. Bumped after every write below so the read happens again; a
+  // pick that changes only a seed (a harness switch that keeps the model) has
+  // nothing else to re-render on.
+  const [, noteSeedWrite] = useState(0);
+  const seedWritten = () => noteSeedWrite((n) => n + 1);
   const [error, setError] = useState<string | null>(null);
   const restoreFocusRef = useRef<{ element: HTMLTextAreaElement; start: number | null; end: number | null } | null>(null);
   const wasOpenRef = useRef(false);
@@ -73,14 +80,24 @@ export function QuickCaptureOverlay({
   // re-persisted when the picker switches agents in an *unpinned* session, so a
   // user who picks Claude models inside already-pinned sessions keeps a stale
   // `codex` agent key). Sending that stale key would pin the brand-new quick
-  // session to the wrong agent even though the overlay shows Claude. Mirror
-  // useSessionWebSocket.ts and fall back to the saved agent only when the model
-  // is unknown or the agent list hasn't loaded yet. See docs/142 (Problem C)
-  // and docs/166-quick-capture-agent-pin.
-  const selectedAgentId = useMemo(
-    () => agentIdForModel(selectedModel, agentList) ?? getSavedAgentId(),
-    [selectedModel, agentList],
-  );
+  // session to the wrong agent even though the overlay shows Claude. See
+  // docs/142 (Problem C) and docs/166-quick-capture-agent-pin.
+  //
+  // `newSessionAgentId` IS that rule, and this is the creation path it names —
+  // so it is called rather than re-implemented. The overlay used to inline a
+  // copy of it, which meant the harness the picker DISPLAYS (which calls the
+  // shared rule) and the harness the session is CREATED on could disagree the
+  // moment the two stopped matching character for character.
+  //
+  // Read on every render, not memoized: the rule reads localStorage, which
+  // React cannot track, so a dependency list here is a list of things that
+  // *happen* to be written at the same time — and one of them being unchanged
+  // is enough to freeze the answer. That is not hypothetical: a harness switch
+  // that KEEPS the model (below) writes only the harness, so a `selectedModel`
+  // dep would have shown the old harness for exactly the shared-model case the
+  // switch exists for. `seedWrites` below forces the render; this line is then
+  // always current.
+  const selectedAgentId = newSessionAgentId(agentList);
 
   const activeSessionRepo = useMemo(
     () => sessions.find((s) => s.id === sessionId)?.remoteUrl,
@@ -305,12 +322,60 @@ export function QuickCaptureOverlay({
             agents={agentList}
             activeAgentId={selectedAgentId}
             onAgentChange={(agentId) => {
-              // The agent shown/sent is derived from the model (see
-              // `selectedAgentId`); we still persist the picked agent so the
-              // global `vibe-agent-id` preference and ui-store stay in sync,
-              // but the overlay never reads it back as an independent source.
               saveAgentId(agentId);
               useUiStore.getState().setActiveAgentId(agentId);
+              // …and MOVE THE MODEL onto that harness, or the pick is a no-op.
+              // The harness here is derived from the model (see
+              // `selectedAgentId`), and an in-session composer gets away with a
+              // bare `set_agent` because the server re-resolves the session's
+              // model for the new harness. A quick session has no session to
+              // send that to: the creation params carry a model, so leaving the
+              // previous harness's model in place re-derived the harness right
+              // back and the overlay ignored the pick entirely — which is what
+              // "tapping Codex does nothing" was.
+              //
+              // A harness switch is not a model switch, so the current model is
+              // KEPT whenever the new harness runs it — which is exactly the
+              // case that motivated this: the shared models (DeepSeek, GLM,
+              // anything through a gateway) are the ones both harnesses offer.
+              // Same `(service, mode)` first, so the switch cannot silently
+              // re-bill an identical id through another service; then the same
+              // id anywhere on that harness; only then its first row, which is
+              // what the model picker itself falls back to (`rows[0]`), so the
+              // anchor, the Model row and the created session agree.
+              const rows = modelRowsFor(agentList.find((a) => a.id === agentId));
+              const saved = getSavedModelSelection();
+              const next =
+                rows.find(
+                  (r) =>
+                    r.modelId === selectedModel
+                    && r.serviceId === saved?.serviceId
+                    && r.billingMode === saved.billingMode,
+                )
+                ?? rows.find((r) => r.modelId === selectedModel)
+                ?? rows[0];
+              if (next) {
+                if (next.serviceId) {
+                  saveModelSelection({
+                    serviceId: next.serviceId,
+                    billingMode: next.billingMode,
+                    modelId: next.modelId,
+                  });
+                } else {
+                  saveModelId(next.modelId);
+                }
+                // `saveModelSelection` REFUSES a triple this build's catalogue
+                // cannot place, and refuses it silently. The seed is what the
+                // harness is derived from, so a refusal would leave the overlay
+                // showing the old harness while sending the new model. Fall back
+                // to the bare id, which is stored as-is.
+                if (getSavedModelId() !== next.modelId) saveModelId(next.modelId);
+                setSelectedModel(next.modelId);
+              }
+              seedWritten();
+              // Reasoning is per-agent — drop any explicit pick made for the
+              // harness being left, exactly as a model switch does below.
+              setSelectedReasoning(undefined);
             }}
             onModelChange={(selection) => {
               // docs/252 phase 3 — the picker now hands over the whole triple.
@@ -327,6 +392,7 @@ export function QuickCaptureOverlay({
                 saveModelId(selection.modelId);
               }
               setSelectedModel(selection.modelId);
+              seedWritten();
               // Reasoning is per-agent; a model switch can change the agent, so
               // drop the explicit pick and let the new agent's seed take over.
               setSelectedReasoning(undefined);

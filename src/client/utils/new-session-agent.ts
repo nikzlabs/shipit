@@ -26,5 +26,27 @@ import type { AgentOption } from "../agent-types.js";
  * question, and the wrong one when there is no session yet.
  */
 export function newSessionAgentId(agents: AgentOption[]): AgentId {
-  return agentIdForModel(getSavedModelId(), agents) ?? getSavedAgentId();
+  const model = getSavedModelId();
+  const savedAgentId = getSavedAgentId();
+  // docs/252 made "each model belongs to exactly one agent" false: a model
+  // carrying both an Anthropic-messages and an OpenAI style — DeepSeek V4, GLM,
+  // anything reached through OpenRouter or Vercel — is runnable on BOTH
+  // harnesses, and {@link agentIdForModel} answers such a model with whichever
+  // agent sorts first. That silently overrode the user's own harness pick: on a
+  // shared model, picking Codex changed nothing at all.
+  //
+  // So the saved harness breaks the tie, and only the tie: it wins when it can
+  // actually run the saved model, which is precisely the case where deriving an
+  // owner is a coin flip. A model only one harness runs still overrides a stale
+  // saved harness, which is what docs/142 (Problem C) is about.
+  //
+  // "Can run it" is the whole test, so it includes the install: the saved key
+  // outlives a deployment that dropped the harness (req 14) or a credential
+  // that went away, and naming one of those would create a session whose first
+  // turn cannot start.
+  const saved = agents.find((a) => a.id === savedAgentId);
+  if (model && saved?.installed && saved.hasRunnableModels && saved.models.includes(model)) {
+    return savedAgentId;
+  }
+  return agentIdForModel(model, agents) ?? savedAgentId;
 }

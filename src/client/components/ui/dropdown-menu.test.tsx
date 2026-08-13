@@ -1,5 +1,5 @@
-import { describe, expect, it, afterEach } from "vitest";
-import { render, screen, cleanup } from "@testing-library/react";
+import { describe, expect, it, afterEach, vi } from "vitest";
+import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -41,6 +41,75 @@ describe("DropdownMenuContent overflow contract", () => {
 
   it("keeps clipping horizontally so the rounded corners still hold", () => {
     expect(renderOpenMenu()).toHaveClass("overflow-x-hidden");
+  });
+
+  it("ignores the click of the gesture that opened it, but not a real one", () => {
+    // On a phone the tap that opens a menu can activate a row: the browser
+    // sends its `click` at the touch COORDINATES a moment later, and the menu
+    // moves under them in between (in Quick Capture, the on-screen keyboard
+    // retracting grows the layout and slides the menu down across the finger).
+    // Only a gesture that BEGAN inside the menu may select. jsdom has no
+    // layout, so what is asserted here is that rule, not the geometry that
+    // provokes it — the geometry was measured in a real browser at 390px.
+    const onSelect = vi.fn();
+    render(
+      <DropdownMenu defaultOpen>
+        <DropdownMenuTrigger>open</DropdownMenuTrigger>
+        <DropdownMenuContent>
+          <DropdownMenuItem onSelect={onSelect}>one</DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>,
+    );
+    const item = screen.getByText("one");
+
+    // The stray click: pointer coordinates (`detail: 1`), no pointerdown of its own.
+    fireEvent.click(item, { detail: 1 });
+    expect(onSelect).not.toHaveBeenCalled();
+
+    // A tap that starts on the row does select it.
+    fireEvent.pointerDown(item, { pointerType: "touch" });
+    fireEvent.click(item, { detail: 1 });
+    expect(onSelect).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not let one pointerdown authorise a second activation", () => {
+    // The permission is consumed by the click it belongs to, so it cannot be
+    // left armed for a later stray one — which matters because Radix keeps the
+    // content node alive through the close animation, so a quick close/reopen
+    // is not guaranteed the remount a per-opening reset would rely on.
+    const onSelect = vi.fn();
+    render(
+      <DropdownMenu defaultOpen>
+        <DropdownMenuTrigger>open</DropdownMenuTrigger>
+        <DropdownMenuContent>
+          <DropdownMenuItem onSelect={(e) => { e.preventDefault(); onSelect(); }}>one</DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>,
+    );
+    const item = screen.getByText("one");
+
+    fireEvent.pointerDown(item, { pointerType: "touch" });
+    fireEvent.click(item, { detail: 1 });
+    expect(onSelect).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(item, { detail: 1 });
+    expect(onSelect).toHaveBeenCalledTimes(1);
+  });
+
+  it("leaves keyboard selection alone", () => {
+    // Radix synthesizes the keyboard's click from `keydown`, and
+    // `element.click()` carries `detail: 0` — no pointer, nothing to guard.
+    const onSelect = vi.fn();
+    render(
+      <DropdownMenu defaultOpen>
+        <DropdownMenuTrigger>open</DropdownMenuTrigger>
+        <DropdownMenuContent>
+          <DropdownMenuItem onSelect={onSelect}>one</DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>,
+    );
+    fireEvent.keyDown(screen.getByText("one"), { key: "Enter" });
+    expect(onSelect).toHaveBeenCalledTimes(1);
   });
 
   it("lets a call site add classes without dropping the overflow guard", () => {

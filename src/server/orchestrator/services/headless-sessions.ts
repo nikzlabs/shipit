@@ -197,7 +197,22 @@ export async function createHeadlessSession(
   // session to the wrong agent (the pin is write-once). Fall back to the
   // explicit agent only when no model is given or the model is unrecognized.
   // See docs/166-quick-capture-agent-pin.
-  const requestedAgentId = agentIdForModel(opts.model) ?? opts.agent ?? defaultAgentId;
+  //
+  // …EXCEPT when the two do not disagree at all. docs/252 ended "each model
+  // belongs to exactly one harness": `deepseek-v4-flash` and `deepseek-v4-pro`
+  // are in BOTH harnesses' model lists today, and `agentIdForModel` answers
+  // with whichever `AGENT_DEFS` sorts first (claude). Treating that as a
+  // mismatch overrode a harness the caller explicitly asked for and could
+  // actually run — so Quick Capture's harness pick was discarded here, write-
+  // once, after the client had already honoured it. A caller naming a harness
+  // that runs the model is not the stale-key case this guard is for.
+  const explicitAgent = opts.agent;
+  const requestedAgentId =
+    explicitAgent
+    && opts.model
+    && getAgentCapabilities(explicitAgent)?.models.includes(opts.model)
+      ? explicitAgent
+      : (agentIdForModel(opts.model) ?? opts.agent ?? defaultAgentId);
 
   // docs/252 phase 9 (req 14) — and the same defense one step further: the model
   // above is matched against the whole catalogue, and `opts.agent` is whatever
