@@ -52,17 +52,13 @@ stop/uninstall are in [`deployment/README.md`](deployment/README.md).
 
 #### Reaching a local install from your phone
 
-A local install binds to `127.0.0.1`, so it is not reachable from other devices — deliberately,
-since ShipIt has no built-in authentication. To reach it from a phone or another machine over
-[Tailscale](https://tailscale.com/), run:
+TL;DR: a local install binds to loopback, since ShipIt has no built-in authentication — reach it
+over [Tailscale](https://tailscale.com/) with the provided script. More details in
+[`deployment/README.md`](deployment/README.md#reaching-a-local-install-from-another-device-tailscale).
 
 ```bash
 ~/.shipit/deployment/local/tailscale.sh
 ```
-
-That adds a tailnet binding **alongside** loopback and prints the URL to use. The caveats, the LAN
-option, and the opt-out are in
-[`deployment/README.md`](deployment/README.md#reaching-a-local-install-from-another-device-tailscale).
 
 ### Run on a VPS
 
