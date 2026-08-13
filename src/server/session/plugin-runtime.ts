@@ -142,16 +142,32 @@ export function preparePlugins(opts: PreparePluginsOptions): PluginPrepareResult
   // case, which silently found nothing on a case-sensitive filesystem (review
   // finding).
   const declaredNames = new Map(config.plugins.repos.map((r) => [r.name.toLowerCase(), r.name]));
+  // `active` is followed ONCE per pass, and the concrete generation directory
+  // is what travels from here on (sibling finding, docs/262). Publishing swaps
+  // that symlink atomically, so following it repeatedly means one pass can
+  // straddle a refresh: the manifest comes from generation A while the skills
+  // directory resolves in B. `containedRealPath` made that worse than a torn
+  // copy — it resolves base and target independently, so a swap between those
+  // two calls left the base in B and the target in A and reported the plugin as
+  // "resolving outside the plugin checkout", a security-shaped message for a
+  // benign refresh. Pinning makes a pass describe exactly one generation; the
+  // next prepare (which every activation round fires) brings the newer one.
+  //
+  // This pins only the READ side. `/plugins/<name>` still points at the
+  // unresolved `active` path on purpose, so a new generation is visible to the
+  // agent with no re-link — see `linkPlugin`.
+  const resolved = new Map<string, string | null>();
   const sources = resolvePluginSkillSources(
     config.plugins.uses,
     (repoName) => {
       const declared = declaredNames.get(repoName.toLowerCase());
       if (!declared) return null;
-      const active = path.join(storeDir, declared, "active");
+      if (!resolved.has(declared)) resolved.set(declared, realActiveDir(storeDir, declared));
+      const dir = resolved.get(declared) ?? null;
       // The declared spelling travels with the checkout: every downstream
       // failure is attributed to that repository's card, and the card is keyed
       // by the name as the declaration writes it.
-      return fs.existsSync(active) ? { dir: active, repo: declared } : null;
+      return dir ? { dir, repo: declared } : null;
     },
   );
 
@@ -219,6 +235,22 @@ export function preparePlugins(opts: PreparePluginsOptions): PluginPrepareResult
   result.commandsFailed.push(...commands.failed);
 
   return result;
+}
+
+/**
+ * The concrete generation directory a repository's `active` link points at, or
+ * `null` when nothing is published (or the link is dangling mid-prune).
+ *
+ * `realpathSync` rather than `existsSync` + the symlink path: one syscall
+ * answers both "is there a live generation?" and "which one?", and the answer
+ * cannot change under the caller afterwards.
+ */
+function realActiveDir(storeDir: string, repoName: string): string | null {
+  try {
+    return fs.realpathSync(path.join(storeDir, repoName, "active"));
+  } catch {
+    return null;
+  }
 }
 
 /**
