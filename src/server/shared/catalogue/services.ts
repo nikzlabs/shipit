@@ -226,7 +226,14 @@ export const SERVICES = [
   {
     // The founding case: a direct, key-authenticated provider with no
     // subscription of any kind, serving an Anthropic-compatible endpoint
-    // alongside its OpenAI-compatible one.
+    // alongside its OpenAI-compatible ones.
+    //
+    // DeepSeek now serves the Responses API **natively** at the OpenAI SDK base
+    // URL — not a translation proxy — which is what lets its models reach Codex
+    // (verified against the real endpoint on 2026-08-13: both models answer and
+    // run the apply_patch tool loop through codex-cli 0.146.0). The Responses
+    // base URL carries the `/v1` because Codex appends `/responses` to it, the
+    // same convention the OpenAI rows use.
     id: "deepseek",
     name: "DeepSeek",
     modes: [
@@ -234,13 +241,14 @@ export const SERVICES = [
         kind: "key",
         endpoints: {
           [O_CC]: "https://api.deepseek.com",
+          [O_RESP]: "https://api.deepseek.com/v1",
           [A_MSG]: "https://api.deepseek.com/anthropic",
         },
         credentials: [{ via: "string", storageEnv: "DEEPSEEK_API_KEY" }],
         retired: [],
         models: [
-          { id: "deepseek-v4-flash", label: "V4 Flash", ...MODEL_IDENTITIES.deepseekV4Flash, styles: [O_CC, A_MSG], contextWindow: ONE_M, price: DEEPSEEK_PRICES.v4flash },
-          { id: "deepseek-v4-pro", label: "V4 Pro", ...MODEL_IDENTITIES.deepseekV4Pro, styles: [O_CC, A_MSG], contextWindow: ONE_M, price: DEEPSEEK_PRICES.v4pro },
+          { id: "deepseek-v4-flash", label: "V4 Flash", ...MODEL_IDENTITIES.deepseekV4Flash, styles: [O_CC, O_RESP, A_MSG], contextWindow: ONE_M, price: DEEPSEEK_PRICES.v4flash },
+          { id: "deepseek-v4-pro", label: "V4 Pro", ...MODEL_IDENTITIES.deepseekV4Pro, styles: [O_CC, O_RESP, A_MSG], contextWindow: ONE_M, price: DEEPSEEK_PRICES.v4pro },
         ],
       },
     ],

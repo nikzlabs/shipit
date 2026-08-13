@@ -96,9 +96,10 @@ each style it speaks. A model is offered on a harness when the service and the h
 sides hold sets.
 
 The declaration is not bureaucracy — it is the only honest way to express reality. The
-motivating case is DeepSeek, which appears to speak both styles while supporting only
-`deepseek-v4-flash` under Codex (🔍 — [`catalogue.md`](./catalogue.md) carries this as
-research, not as a finding), and Codex additionally wants per-model metadata — a context
+motivating case is DeepSeek, which appeared to speak both styles while supporting only
+`deepseek-v4-flash` under Codex (🔍 — [`catalogue.md`](./catalogue.md) carried this as
+research, not as a finding; *confirmed 2026-08-13, both models — see the dated correction
+to phase 3's survey*), and Codex additionally wants per-model metadata — a context
 window at minimum — beyond a bare id. Under a purely derived rule, a service in that shape
 would list its unsupported model and let the turn fail. Nothing forbids that at runtime — req 8 is only about
 credentials — so the catalogue is where it has to be prevented, by not listing the pair
@@ -754,8 +755,13 @@ the real binaries (CLI 2.1.220, codex-cli 0.146.0) driving a local HTTP recorder
   to `base_url`, so the OpenAI rows' Responses endpoints gained the `/v1` they were missing.
 - **Codex speaks Responses and nothing else.** A provider declaring `wire_api = "chat"` is
   rejected outright. So `openai-chat-completions` is unreachable from Codex however a service
-  declares it, and DeepSeek — which serves Anthropic-Messages and chat-completions — reaches
-  Claude Code and **not** Codex. An earlier reading of this design assumed the opposite.
+  declares it, and DeepSeek — which served only Anthropic-Messages and chat-completions at
+  the time — reached Claude Code and **not** Codex. An earlier reading of this design assumed
+  the opposite. *(Corrected 2026-08-13: DeepSeek now serves the Responses API **natively**
+  — no proxy — for both `deepseek-v4-flash` (from 2026-07-31) and `deepseek-v4-pro`
+  (V4-Pro-0813), specifically to support Codex. The catalogue declares `openai-responses`
+  for both, verified end-to-end through codex-cli 0.146.0 against the real endpoint,
+  including the `apply_patch` tool loop.)*
 - **Codex's `inputTokens` INCLUDES `cachedInputTokens`**, where Claude's are disjoint. Fed a
   response reporting `input_tokens: 1000` with `cached_tokens: 800`, the app-server reports
   both figures unchanged. Left alone that double-charges every cached token at the full input
@@ -2077,9 +2083,9 @@ The split has one real cost and one new interaction, both worth deciding deliber
   on the control that would act on it, and one line per harness in a menu that already lists
   harnesses does not accumulate into clutter.
 - **Switching harness can strand the selected model.** Keep the model when the new harness
-  also offers that exact `(service, billing mode, model)` triple — which is what would carry
-  `deepseek-v4-flash` through a Claude Code → Codex switch, *if* DeepSeek turns out to serve
-  it under both harnesses' styles ([`catalogue.md`](./catalogue.md) marks that unverified) —
+  also offers that exact `(service, billing mode, model)` triple — which is what carries
+  `deepseek-v4-flash` through a Claude Code → Codex switch now that DeepSeek serves the
+  Responses API as well ([`catalogue.md`](./catalogue.md), dated 2026-08-13) —
   and otherwise move to the first eligible model and say so.
   Landing somewhere else silently would contradict req 11; refusing the switch would make an
   enabled control lie. The combined picker never had this case, because there the harness and

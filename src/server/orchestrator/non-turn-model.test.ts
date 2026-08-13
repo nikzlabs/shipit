@@ -80,9 +80,10 @@ describe("resolveNonTurnModel", () => {
     expect(result.target.selection.serviceId).toBe("deepseek");
     expect(result.target.selection.billingMode).toBe("key");
     expect(result.target.source).toBe("default");
-    // DeepSeek speaks Anthropic-Messages and chat-completions; Codex speaks only
-    // Responses, so the derived harness is Claude Code and there is no choice to
-    // offer the user.
+    // DeepSeek now reaches BOTH harnesses (it serves Anthropic-Messages and the
+    // Responses API), so the derived harness is the first INSTALLED one in
+    // catalogue order that can run it — Claude Code. The choice exists, it just
+    // is not offered: the harness is derived, never selected (req 9).
     expect(result.target.harnessId).toBe("claude");
   });
 

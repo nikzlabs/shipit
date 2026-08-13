@@ -713,15 +713,22 @@ export const SERVICES = [
     id: "deepseek", name: "DeepSeek",                      // 🔍 ENTIRE ROW
     modes: [
       { kind: "key",                                       // no subscription exists
-        endpoints: { [O_CC]: "https://api.deepseek.com", [O_RESP]: "https://api.deepseek.com",
+        endpoints: { [O_CC]: "https://api.deepseek.com",
+                     // ✅ 2026-08-13 — Codex appends `/responses` to a provider's base
+                     // URL, so the Responses base carries the `/v1`.
+                     [O_RESP]: "https://api.deepseek.com/v1",
                      [A_MSG]: "https://api.deepseek.com/anthropic" },
         credentials: [{ via: "string", storageEnv: "DEEPSEEK_API_KEY" }],
         retired: [],
         models: [
-          // Only V4 Flash is believed supported under Codex — the founding example of
-          // why req 6 declares models per style rather than deriving them.
+          // ✅ 2026-08-13 — DeepSeek serves the Responses API NATIVELY (no proxy),
+          // specifically to support Codex: `deepseek-v4-flash` from 2026-07-31,
+          // `deepseek-v4-pro` (V4-Pro-0813) from 2026-08-13. Both verified through
+          // codex-cli 0.146.0 against the real endpoint, including the `apply_patch`
+          // tool loop. The founding example of why req 6 declares models per style
+          // rather than deriving them.
           { id: "deepseek-v4-flash", label: "V4 Flash", styles: [O_CC, O_RESP, A_MSG], contextWindow: CONTEXT_TODO, price: PRICE_TODO },
-          { id: "deepseek-v4-pro",   label: "V4 Pro",   styles: [O_CC, A_MSG],         contextWindow: CONTEXT_TODO, price: PRICE_TODO },
+          { id: "deepseek-v4-pro",   label: "V4 Pro",   styles: [O_CC, O_RESP, A_MSG], contextWindow: CONTEXT_TODO, price: PRICE_TODO },
         ] },
     ],
   },
@@ -921,7 +928,10 @@ Every 🔍, but these change the *shape* rather than the contents:
    only if the answer says so.
 4. **Is `claude-fable-5` genuinely unavailable under an Anthropic subscription?** Today's
    `METERED_MODELS` asserts metered billing, not exclusion.
-5. **Which DeepSeek models does its Anthropic-compatible endpoint serve, and do OpenRouter or
-   Vercel speak the Responses API?** The second decides whether a gateway can reach Codex.
+5. **Which DeepSeek models serve the Responses API, and do OpenRouter or Vercel speak it?**
+   **DeepSeek: answered 2026-08-13** — both `deepseek-v4-flash` and `deepseek-v4-pro` serve
+   it natively at `https://api.deepseek.com` (OpenAI SDK path `/v1/responses`), verified
+   through codex-cli 0.146.0. Vercel documents a Responses surface; OpenRouter's is still
+   unverified, so its row declares no `openai-responses`.
 6. **What does GLM's coding plan offer, and how does its auth work?** Phase 2 owns the
    integration and req 15 is unmet until it lands.
