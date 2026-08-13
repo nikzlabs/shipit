@@ -25,6 +25,7 @@
  */
 
 import { EventEmitter } from "node:events";
+import fs from "node:fs";
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import path from "node:path";
@@ -313,6 +314,12 @@ export interface ServiceManagerOptions {
   /** Docker stack name (e.g. "shipit-dev") — propagated to compose labels for cleanup filtering. */
   stackName?: string;
   /**
+   * docs/262 — treat the project's compose file as optional: a project that
+   * declares plugins but no `compose:` block of its own gets a stack made
+   * entirely of plugin services. Off by default.
+   */
+  composeFileOptional?: boolean;
+  /**
    * docs/128 — server-authoritative ops session flag. Allows the hidden ops
    * template's docker-socket-proxy service to mount the host Docker socket even
    * though ordinary sessions cannot enable that by copying workspace files.
@@ -470,6 +477,13 @@ export class ServiceManager extends EventEmitter {
   private pluginServices: PluginComposeService[] = [];
   private readonly stackName?: string;
   private readonly opsSession: boolean;
+  /**
+   * docs/262 — the project's own compose file is allowed to be absent, because
+   * this session's stack comes from its declared plugins (req 5). Set only when
+   * `shipit.yaml` declares no `compose:` block at all; a project that declares
+   * one still fails loudly when its file cannot be read.
+   */
+  private composeFileOptional: boolean;
   private readonly networkJoinFn?: (networkName: string) => Promise<void>;
   /** docs/128 — periodic agent network-attachment self-heal (see options). */
   private readonly networkHealFn?: (networkName: string) => Promise<void>;
@@ -636,6 +650,7 @@ export class ServiceManager extends EventEmitter {
       workspaceDir: opts.workspaceDir,
       composeFile: opts.composeConfig.file,
       overrideFile: path.join(this.overrideDir, COMPOSE_OVERRIDE_FILE),
+      ...(opts.composeFileOptional ? { projectFileOptional: true } : {}),
       ...(opts.composeRunner ? { composeRunner: opts.composeRunner } : {}),
       ...(opts.composeQuery ? { composeQuery: opts.composeQuery } : {}),
     });
@@ -644,6 +659,7 @@ export class ServiceManager extends EventEmitter {
     this.overlayDepDirs = opts.overlayDepDirs ?? [];
     this.stackName = opts.stackName;
     this.opsSession = opts.opsSession ?? false;
+    this.composeFileOptional = opts.composeFileOptional ?? false;
     this.networkJoinFn = opts.networkJoinFn;
     this.networkHealFn = opts.networkHealFn;
     this.containServicesFn = opts.containServicesFn;
@@ -1086,7 +1102,13 @@ export class ServiceManager extends EventEmitter {
       }
     }
     for (const svc of this.services.values()) {
-      if (svc.port === port && svc.containerIp) return { containerIp: svc.containerIp, port };
+      // Only for a service that has no published port of its own. A plugin
+      // service always has one, and its container port must NOT become a second
+      // addressable origin — the whole point of the pin is that there is one
+      // origin, and origin-keyed browser storage can rely on it (req 18).
+      if (svc.publishedPort === undefined && svc.port === port && svc.containerIp) {
+        return { containerIp: svc.containerIp, port };
+      }
     }
     return undefined;
   }
@@ -1174,12 +1196,25 @@ export class ServiceManager extends EventEmitter {
 
     const composePath = path.join(this.workspaceDir, this.composeConfig.file);
 
+    // docs/262 — a project may declare plugins and no stack of its own (req 5:
+    // one declaration). Then there is no project compose file to parse, and the
+    // plugin services below are the whole stack. A project that DID declare
+    // `compose:` still fails loudly on a missing file — see
+    // `composeFileOptional`.
+    if (this.composeFileOptional && !fs.existsSync(composePath) && this.pluginServices.length === 0) {
+      console.log(`[compose:${this.sessionId}] no project compose file and no plugin services — nothing to start`);
+      this._startupComplete = true;
+      return;
+    }
+
     // Parse and validate
-    const parsedServices = parseComposeFile(composePath, {
-      dockerSocket: this.composeConfig.dockerSocket || this.opsSession,
-      containEgress: Boolean(this.containServicesFn),
-      trustedOpsProxy: this.opsSession,
-    });
+    const parsedServices = this.composeFileOptional && !fs.existsSync(composePath)
+      ? []
+      : parseComposeFile(composePath, {
+          dockerSocket: this.composeConfig.dockerSocket || this.opsSession,
+          containEgress: Boolean(this.containServicesFn),
+          trustedOpsProxy: this.opsSession,
+        });
 
     // Build service map
     for (const svc of parsedServices) {
@@ -1633,13 +1668,19 @@ export class ServiceManager extends EventEmitter {
    * Returns true when the config actually changed (the caller can skip work,
    * and the reconcile is a plain compose-file re-read).
    */
-  updateComposeConfig(next: ComposeConfig): boolean {
+  updateComposeConfig(next: ComposeConfig, opts: { fileOptional?: boolean } = {}): boolean {
+    const fileOptional = opts.fileOptional ?? false;
     const changed =
       next.file !== this.composeConfig.file ||
-      next.dockerSocket !== this.composeConfig.dockerSocket;
+      next.dockerSocket !== this.composeConfig.dockerSocket ||
+      // docs/262 — a `compose:` block added to (or removed from) a plugin-only
+      // project changes whether its file may be absent, which changes the
+      // argument vector every later command is built from.
+      fileOptional !== this.composeFileOptional;
     if (!changed) return false;
     this.composeConfig = next;
-    this.compose.setComposeFile(next.file);
+    this.composeFileOptional = fileOptional;
+    this.compose.setComposeFile(next.file, fileOptional);
     return true;
   }
 

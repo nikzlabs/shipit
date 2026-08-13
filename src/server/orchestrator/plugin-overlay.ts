@@ -146,6 +146,23 @@ export function buildPluginOverlaySpec(args: {
 }
 
 /**
+ * Re-root an arbitrary orchestrator path onto the daemon's view of the same
+ * volume, given the roots {@link resolvePluginOverlayRoots} returns.
+ *
+ * Exported for docs/262's compose slice: a plugin service's bind mounts (its
+ * import's state directory and settings file) are resolved by the DAEMON, so
+ * they need the same translation the overlay dirs get. The alternative — a
+ * second copy of this arithmetic beside the mount builder — is the shape that
+ * fails quietly, since a wrong path produces an empty mount rather than an error.
+ */
+export function toDaemonPath(
+  p: string,
+  roots: { volumeMountpoint?: string; stateRoot?: string },
+): string {
+  return daemonPath(p, roots.stateRoot, roots.volumeMountpoint);
+}
+
+/**
  * Re-root an orchestrator path onto the daemon's view of the same volume.
  * Identity when either side is unknown (dev/dogfood bind mounts, where both
  * processes see one path) or when the path is outside the state root — better

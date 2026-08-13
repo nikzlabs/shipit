@@ -20,6 +20,8 @@
  */
 
 import { spawn } from "node:child_process";
+import fs from "node:fs";
+import path from "node:path";
 import { EGRESS_RESOLVER_LABEL } from "./egress-dns-install.js";
 import { EGRESS_PROXY_LABEL } from "./egress-proxy-install.js";
 
@@ -76,6 +78,18 @@ export interface ComposeCliOptions {
    * before, and the generated override contains only absolute paths anyway.
    */
   overrideFile: string;
+  /**
+   * docs/262 — the project's own compose file may legitimately not exist: a
+   * project can declare a plugin and no stack of its own, and req 5 says wiring
+   * a plugin in costs ONE declaration — not a declaration plus an empty compose
+   * file to hang it on. When set, a missing project file is dropped from the
+   * argument vector instead of failing every command, and the generated override
+   * (which is where plugin services live) is the only source.
+   *
+   * Off by default, so a project that declares `compose:` still fails loudly
+   * when its file is missing rather than silently running an empty stack.
+   */
+  projectFileOptional?: boolean;
   /** Optional override for running compose commands (useful for testing). */
   composeRunner?: ComposeRunner;
   /** Optional override for querying compose commands (useful for testing). */
@@ -87,6 +101,7 @@ export class ComposeCli {
   private readonly workspaceDir: string;
   private composeFile: string;
   private readonly overrideFile: string;
+  private projectFileOptional: boolean;
   private readonly runner: ComposeRunner;
   /** Exposed so the poller / direct-spawn callers can run their own queries. */
   readonly query: ComposeQuery;
@@ -96,6 +111,7 @@ export class ComposeCli {
     this.workspaceDir = opts.workspaceDir;
     this.composeFile = opts.composeFile;
     this.overrideFile = opts.overrideFile;
+    this.projectFileOptional = opts.projectFileOptional ?? false;
     this.runner = opts.composeRunner ?? defaultComposeRunner;
     this.query = opts.composeQuery ?? defaultComposeQuery;
   }
@@ -105,19 +121,31 @@ export class ComposeCli {
    * session's `shipit.yaml` changes its `compose:` path mid-session (a git
    * sync/rebase can rewrite it) — see `ServiceManager.updateComposeConfig`.
    */
-  setComposeFile(file: string): void {
+  setComposeFile(file: string, projectFileOptional = false): void {
     this.composeFile = file;
+    this.projectFileOptional = projectFileOptional;
   }
 
   /** Build common compose CLI args with the user file and override. */
   args(...extra: string[]): string[] {
     return [
       "compose",
-      "-f", this.composeFile,
+      ...(this.includeProjectFile() ? ["-f", this.composeFile] : []),
       "-f", this.overrideFile,
       "-p", `shipit-${this.sessionId.slice(0, 12)}`,
       ...extra,
     ];
+  }
+
+  /**
+   * Whether the project's own compose file goes on the command line. Always,
+   * unless it was declared optional and is genuinely absent — see
+   * {@link ComposeCliOptions.projectFileOptional}. The `existsSync` runs only in
+   * that case, so the ordinary project pays nothing for it.
+   */
+  private includeProjectFile(): boolean {
+    if (!this.projectFileOptional) return true;
+    return fs.existsSync(path.resolve(this.workspaceDir, this.composeFile));
   }
 
   /**

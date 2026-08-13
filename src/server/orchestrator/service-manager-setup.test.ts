@@ -155,7 +155,13 @@ describe("applyShipitConfigChange", () => {
     applyShipitConfigChange(runner, makeLiveDeps(mgr));
     await vi.waitFor(() => expect(mgr.reconcile).toHaveBeenCalled());
 
-    expect(mgr.updateComposeConfig).toHaveBeenCalledWith({ file: "docker-compose.yml", dockerSocket: false });
+    // docs/262 — the second argument says whether the project's own compose
+    // file may be absent, which it may only for a project whose stack is its
+    // declared plugins alone.
+    expect(mgr.updateComposeConfig).toHaveBeenCalledWith(
+      { file: "docker-compose.yml", dockerSocket: false },
+      { fileOptional: false },
+    );
     expect(mgr.composeFile).toBe("docker-compose.yml");
   });
 

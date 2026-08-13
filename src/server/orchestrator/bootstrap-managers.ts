@@ -62,6 +62,8 @@ import { makeNonTurnGenerateText } from "./services/non-turn-work.js";
 import { createAutoPushScheduler } from "./services/auto-push-scheduler.js";
 import { activateDeclaredPlugins, type PluginInstallHook } from "./services/plugin-activation.js";
 import { refreshPluginRepos, type PluginRefreshResult } from "./services/plugin-refresh.js";
+import { resolveSessionPluginServices } from "./services/plugin-services.js";
+import type { PluginComposeService } from "./plugin-compose.js";
 import { emitPluginReposUpdated } from "./service-manager-setup.js";
 import { createPluginInstallRunner } from "./plugin-install.js";
 import { runPluginCommand, type PluginCliRequest, type PluginCliResult } from "./plugin-cli-run.js";
@@ -560,6 +562,27 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   };
 
   /**
+   * docs/262 reqs 3, 5, 16, 18, 20 — resolve a session's plugin services.
+   *
+   * Built here for the same reason the install hook is: it needs Docker (a
+   * tracked plugin's own code reaches its services through the generation's
+   * overlay volume) and the orchestrator-visible state root that maps onto the
+   * workspace volume. Without a container manager there is no Docker and no
+   * Compose either, so the whole path is inert rather than partly wired.
+   */
+  const resolvePluginServices = (
+    sessionId: string,
+    workspaceDir: string,
+  ): Promise<PluginComposeService[]> =>
+    resolveSessionPluginServices(sessionId, workspaceDir, {
+      ...(containerManager ? { docker: containerManager.dockerClient } : {}),
+      ...(containerManager?.workspaceVolumeName
+        ? { workspaceVolume: containerManager.workspaceVolumeName, stateRoot: stateDir }
+        : {}),
+      containEgress: containerManager?.isEgressContained(sessionId) ?? false,
+    });
+
+  /**
    * docs/262 req 12 — the awaited half. Same round, same deps; the caller is an
    * agent waiting for an answer rather than a session opening.
    *
@@ -594,7 +617,9 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     // declared further down this function, and the established pattern here
     // for "a callback that only runs after bootstrap" is the holder.
     const runner = registryHolder.ref?.get(sessionId);
-    const onSettled = runner ? emitPluginReposUpdated(runner) : undefined;
+    const onSettled = runner
+      ? emitPluginReposUpdated(runner, { sessionManager, serviceManagers, resolvePluginServices })
+      : undefined;
     return await refreshPluginRepos(
       sessionId,
       workspaceDir,
@@ -745,6 +770,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     ensureAgentTokenFresh,
     publishOverlayBases,
     activatePluginRepos,
+    resolvePluginServices,
     logStore,
     ...(dockerSecretsConfig ? { dockerSecretsConfig } : {}),
     serviceEnvDir,

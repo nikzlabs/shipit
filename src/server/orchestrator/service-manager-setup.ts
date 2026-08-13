@@ -19,6 +19,7 @@ import { formatOverlayMeasurement, type DepDirPublishOutcome } from "./overlay-p
 import { isOverlayEligible } from "./overlay-session.js";
 import { clearActivationState } from "./services/plugin-activation.js";
 import { collectPluginCredentialDeclarations } from "./plugin-credentials.js";
+import type { PluginComposeService } from "./plugin-compose.js";
 
 /**
  * Route a `stack_error` from a session's ServiceManager to the per-session
@@ -220,6 +221,17 @@ export function adoptExistingServiceManager(
 export const COMPOSE_STOP_WAIT_TIMEOUT_MS = 15_000;
 
 /**
+ * docs/262 — the compose configuration a project that declares only plugins
+ * runs under. The file name is conventional and, in this case, deliberately
+ * expected NOT to exist: the manager is told the project file is optional, so
+ * the generated override (which is where plugin services live) is the whole
+ * stack. Naming the conventional file rather than a sentinel means a project
+ * that later adds a `docker-compose.yml` without a `compose:` block still picks
+ * it up, which is what someone writing that file expects to happen.
+ */
+const DEFAULT_COMPOSE_CONFIG = { file: "docker-compose.yml", dockerSocket: false } as const;
+
+/**
  * Register an in-flight `mgr.stop()` so the next `mgr.start()` for the
  * same session awaits it before issuing new compose commands. Without
  * this, the prior runner's `compose down -p shipit-{sid12}` can run in
@@ -316,6 +328,16 @@ export interface ServiceSetupDeps {
     workspaceDir: string,
     onSettled?: (sessionId: string) => void,
   ) => void;
+  /**
+   * docs/262 reqs 3, 5, 16 — resolve the plugin services this session surfaces
+   * (`services/plugin-services.ts`). Constructed in `bootstrap-managers.ts`,
+   * where Docker and the daemon-side path roots are in scope; absent in test
+   * setups and in local mode, which has no Compose at all.
+   */
+  resolvePluginServices?: (
+    sessionId: string,
+    workspaceDir: string,
+  ) => Promise<PluginComposeService[]>;
   broadcastLog?: (sessionId: string, source: LogSource, text: string) => void;
   /** docs/088 — account-level MCP secrets store. */
   credentialStore?: CredentialStore;
@@ -408,11 +430,7 @@ export function setupServiceManager(
   // no plugin-authored code; when install lands it will run in its own
   // container, and this gate is what keeps an untrusted remote from reaching
   // even the fetch.
-  deps.activatePluginRepos?.(
-    runner.sessionId,
-    workspaceDir,
-    emitPluginReposUpdated(runner, deps.serviceManagers),
-  );
+  deps.activatePluginRepos?.(runner.sessionId, workspaceDir, emitPluginReposUpdated(runner, deps));
   // The activation state map is process-lived and keyed by session; drop this
   // session's entries when its runner goes away so session churn can't grow it.
   runner.on("disposed", () => clearActivationState(runner.sessionId));
@@ -508,7 +526,16 @@ export function setupServiceManager(
     }
   }
 
-  if (!shipitConfig.compose) {
+  // docs/262 req 5 — a project that declares plugins gets their services whether
+  // or not it declares a stack of its own: wiring a plugin in costs ONE
+  // declaration, and requiring an otherwise-empty `compose:` block plus a
+  // docker-compose.yml to hang it on would be exactly the per-project
+  // boilerplate that requirement rules out. The manager is created for the
+  // declaration, not for the services — which repository has been fetched, and
+  // what it exports, is not knowable here (activation is fire-and-forget), so
+  // `start()` is what finds nothing to run and says so.
+  const pluginsMayProvideServices = shipitConfig.plugins.uses.length > 0;
+  if (!shipitConfig.compose && !pluginsMayProvideServices) {
     composeNotConfigured.add(runner.sessionId);
     runner.emitMessage({ type: "compose_not_configured", sessionId: runner.sessionId });
     runner.on("disposed", () => composeNotConfigured.delete(runner.sessionId));
@@ -516,6 +543,7 @@ export function setupServiceManager(
   }
   // Compose is now configured — clear stale not-configured flag
   composeNotConfigured.delete(runner.sessionId);
+  const composeConfig = shipitConfig.compose ?? DEFAULT_COMPOSE_CONFIG;
 
   // Workspace volume info for compose volume rewriting: user `.:/workspace`
   // bind mounts must map to the same storage as the agent container.
@@ -606,7 +634,8 @@ export function setupServiceManager(
   const mgr = new ServiceManager({
     sessionId: runner.sessionId,
     workspaceDir,
-    composeConfig: shipitConfig.compose,
+    composeConfig,
+    ...(shipitConfig.compose ? {} : { composeFileOptional: true }),
     workspaceVolume: wsVolume,
     workspaceSubpath: wsSubpath,
     stackName: process.env.DOCKER_STACK,
@@ -771,6 +800,18 @@ export function setupServiceManager(
         console.error(`[overlay:${runner.sessionId}] dep-dir spec resolution failed:`, getErrorMessage(err));
       }
     }
+    // docs/262 — resolve the plugin services this session surfaces before the
+    // first `start()`, so a plugin whose repository is already checked out comes
+    // up with the project's own stack rather than one reconcile later. A
+    // repository still being fetched settles afterwards and reaches the stack
+    // through `emitPluginReposUpdated`.
+    if (deps.resolvePluginServices) {
+      try {
+        mgr.setPluginServices(await deps.resolvePluginServices(runner.sessionId, workspaceDir));
+      } catch (err) {
+        console.error(`[plugins:${runner.sessionId}] service resolution failed:`, getErrorMessage(err));
+      }
+    }
     // The awaits above (a prior stack's `compose down`, worker readiness) can
     // each outlive the runner. Its `disposed` handler has by then dropped the
     // manager from `serviceManagers` and stopped it — but `start()` resets
@@ -873,21 +914,27 @@ function composeRemovalIsTrustworthy(workspaceDir: string): boolean {
  * docs/262 — tell attached viewers an activation round settled. `emitMessage`
  * (not `ctx.send`) so every viewer sees it and a reconnecting one replays it.
  */
+/**
+ * What a settled activation round needs to reach the rest of the session: the
+ * session's ServiceManager (req 23 — a round can change WHICH credential names
+ * the plugins declare, and `secrets_status` samples that only inside its own
+ * sync pass) and the resolver that says what its plugin services now are
+ * (reqs 3, 12).
+ */
+export type PluginServiceRefreshDeps = Pick<
+  ServiceSetupDeps,
+  "sessionManager" | "serviceManagers" | "resolvePluginServices"
+>;
+
 export function emitPluginReposUpdated(
   runner: SessionRunnerInterface,
-  /**
-   * docs/262 req 23 — the session's ServiceManager, when it has one. A settled
-   * activation can change WHICH credential names the plugins declare (a first
-   * activation, or a refresh that renames one), and `secrets_status` samples
-   * that only inside its own sync pass; without this the Secrets rows keep the
-   * previous declaration until an unrelated reconcile. Container-free — see
-   * `refreshSecretsStatus`.
-   */
-  serviceManagers?: Map<string, ServiceManager>,
+  deps: PluginServiceRefreshDeps,
 ): (sessionId: string) => void {
   return (sessionId: string) => {
     runner.emitMessage({ type: "plugin_repos_updated", sessionId });
-    void serviceManagers?.get(sessionId)?.refreshSecretsStatus().catch((err: unknown) => {
+    // req 23 — without this the Secrets rows keep the previous declaration
+    // until an unrelated reconcile. Container-free — see `refreshSecretsStatus`.
+    void deps.serviceManagers.get(sessionId)?.refreshSecretsStatus().catch((err: unknown) => {
       console.warn(`[plugins:${sessionId}] secrets status resync failed:`, getErrorMessage(err));
     });
     // The generation is published by the time this fires, so the container can
@@ -896,7 +943,42 @@ export function emitPluginReposUpdated(
     // rather than a missing capability to work around.
     const container = runner as SessionRunnerInterface & { preparePlugins?: () => Promise<void> };
     void container.preparePlugins?.();
+    // docs/262 reqs 3, 12 — and the same for the session's SERVICES. This is
+    // what makes `shipit plugin refresh` reach a running plugin service: the
+    // round has just published a new generation, so the fragment, its overlay
+    // volume and its commit env are all different from what the stack is
+    // running. Reconciling only on an actual change keeps an ordinary round —
+    // one fires on every session activation and every `shipit.yaml` edit — from
+    // restarting containers that nothing happened to.
+    void refreshPluginServices(runner, deps);
   };
+}
+
+/**
+ * Bring a live stack's plugin services up to date with what is now activated.
+ *
+ * Fire-and-forget and never throws: the activation round is already over, the
+ * card already reports what happened, and a session whose plugin services could
+ * not be reconciled still has its own (req 13).
+ */
+async function refreshPluginServices(
+  runner: SessionRunnerInterface,
+  deps: PluginServiceRefreshDeps,
+): Promise<void> {
+  const mgr = deps.serviceManagers.get(runner.sessionId);
+  if (!mgr || !deps.resolvePluginServices) return;
+  const session = deps.sessionManager.get(runner.sessionId);
+  const workspaceDir = session?.workspaceDir ?? runner.sessionDir;
+  try {
+    const services = await deps.resolvePluginServices(runner.sessionId, workspaceDir);
+    if (!mgr.setPluginServices(services)) return;
+    console.log(
+      `[plugins:${runner.sessionId}] plugin services changed (${services.length}) — reconciling`,
+    );
+    await mgr.reconcile();
+  } catch (err) {
+    console.error(`[plugins:${runner.sessionId}] plugin service reconcile failed:`, getErrorMessage(err));
+  }
 }
 
 export function applyShipitConfigChange(
@@ -948,11 +1030,7 @@ export function applyShipitConfigChange(
   // live, so the cheap check lives there rather than in a config diff here.
   // Trust is inherited — this path only runs once a ServiceManager exists,
   // which `setupServiceManager` creates only past the gate.
-  deps.activatePluginRepos?.(
-    runner.sessionId,
-    workspaceDir,
-    emitPluginReposUpdated(runner, deps.serviceManagers),
-  );
+  deps.activatePluginRepos?.(runner.sessionId, workspaceDir, emitPluginReposUpdated(runner, deps));
 
   // ---- agent.install delta ----
   if (runner instanceof ContainerSessionRunner) {
@@ -973,7 +1051,7 @@ export function applyShipitConfigChange(
   }
 
   // ---- compose delta ----
-  if (!shipitConfig.compose) {
+  if (!shipitConfig.compose && shipitConfig.plugins.uses.length === 0) {
     if (!composeRemovalIsTrustworthy(workspaceDir)) {
       console.warn(
         `[compose:${runner.sessionId}] shipit.yaml unreadable — keeping the running stack`,
@@ -992,9 +1070,13 @@ export function applyShipitConfigChange(
   }
 
   composeNotConfigured.delete(runner.sessionId);
-  if (mgr.updateComposeConfig(shipitConfig.compose)) {
+  // docs/262 — with the `compose:` block gone but plugins still declared, the
+  // stack is the plugin services alone; the project's own file is then allowed
+  // to be absent (req 5, see `setupServiceManager`).
+  const nextComposeConfig = shipitConfig.compose ?? DEFAULT_COMPOSE_CONFIG;
+  if (mgr.updateComposeConfig(nextComposeConfig, { fileOptional: !shipitConfig.compose })) {
     console.log(
-      `[compose:${runner.sessionId}] compose config changed — reconciling against ${shipitConfig.compose.file}`,
+      `[compose:${runner.sessionId}] compose config changed — reconciling against ${nextComposeConfig.file}`,
     );
   }
   void mgr.reconcile().catch((err: unknown) => {

@@ -26,7 +26,7 @@ import type { PrepareRunParamsFn } from "./agent-run-params-prep.js";
 import type { ProviderAccountManager } from "./provider-account-manager.js";
 import type { TurnOutcome } from "./turn-settlement.js";
 import type { AutoPushScheduler } from "./services/auto-push-scheduler.js";
-import { applyShipitConfigChange, emitPluginReposUpdated, setupServiceManager } from "./service-manager-setup.js";
+import { applyShipitConfigChange, emitPluginReposUpdated, setupServiceManager, type ServiceSetupDeps } from "./service-manager-setup.js";
 import { clearActivationState } from "./services/plugin-activation.js";
 import { buildAgentRunParams } from "./session-agent-run-params.js";
 import { applyModelRetirement } from "./model-retirement.js";
@@ -278,6 +278,8 @@ export interface RunnerRegistryDeps {
     workspaceDir: string,
     onSettled?: (sessionId: string) => void,
   ) => void;
+  /** docs/262 — resolve a session's plugin services; forwarded into `setupServiceManager`. */
+  resolvePluginServices?: ServiceSetupDeps["resolvePluginServices"];
 }
 
 /**
@@ -315,6 +317,7 @@ export function createRunnerRegistry(
     nudgeClaudeOAuthRefresh, onAgentAuthRequired, ensureAgentTokenFresh, runParamsPreps,
     publishOverlayBases,
     activatePluginRepos,
+    resolvePluginServices,
   } = registryDeps;
 
   return new SessionRunnerRegistry({
@@ -714,6 +717,7 @@ export function createRunnerRegistry(
           credentialStore,
           publishOverlayBases,
           activatePluginRepos,
+          resolvePluginServices,
         };
         setupServiceManager(runner, setupDeps);
 
@@ -750,7 +754,13 @@ export function createRunnerRegistry(
           const workspaceDir = session?.workspaceDir ?? runner.sessionDir;
           const remoteUrl = session?.remoteUrl;
           if (remoteUrl && !repoStore.isTrusted(remoteUrl)) return;
-          activatePluginRepos(runner.sessionId, workspaceDir, emitPluginReposUpdated(runner));
+          // Local mode holds no ServiceManager, so the services half of the
+          // hook is inert here by construction rather than by omission.
+          activatePluginRepos(
+            runner.sessionId,
+            workspaceDir,
+            emitPluginReposUpdated(runner, { sessionManager, serviceManagers }),
+          );
         };
         activateIfTrusted();
         runner.on("disposed", () => clearActivationState(runner.sessionId));

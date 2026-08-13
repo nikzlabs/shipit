@@ -227,6 +227,24 @@ export interface OverlayDepDirVolume {
   volumeName: string;
 }
 
+/**
+ * The placeholders {@link generateComposeOverride} substitutes for Compose's
+ * `!reset` / `!override` tags AFTER serialization, because the YAML writer
+ * cannot emit them.
+ *
+ * Exported because that post-serialization `replace` is a text pass over the
+ * whole document, so any value that reaches the override carrying one of these
+ * literals would be rewritten mid-string. For the project's own compose file
+ * that is self-inflicted and harmless; for a plugin fragment it is a
+ * third-party string landing in a file ShipIt authors, so `plugin-compose.ts`
+ * refuses them (docs/262).
+ */
+export const OVERRIDE_SENTINELS: readonly string[] = [
+  "__RESET_PORTS__",
+  "__RESET_NETWORKS__",
+  "__RESET_DNS__",
+];
+
 export class ComposeValidationError extends Error {
   constructor(message: string) {
     super(message);

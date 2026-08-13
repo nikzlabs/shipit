@@ -9,9 +9,17 @@
 # the `/plugin-state` state dir, and the SHIPIT_* env are injected by ShipIt,
 # not declared here, so the fragment stays valid for plain `docker compose up`
 # (the probe then reports those contract pieces as absent).
+#
+# A plugin fragment is held to exactly the rules the consuming session applies to
+# its own services (`plugin-compose.ts`), so in a Contained session it must
+# declare a numeric, non-root `user:` like every other service there — see the
+# same note on this repo's own docker-compose.yml. 1000:1000 is the session
+# worker UID, which is also what ShipIt would inject for a service that declared
+# none, so nothing changes in an Open session.
 services:
   probe:
     image: node:22-alpine
+    user: "1000:1000"
     working_dir: /app
     command: node /app/service/server.mjs
     environment:

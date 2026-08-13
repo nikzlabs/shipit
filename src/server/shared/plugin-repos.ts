@@ -184,6 +184,15 @@ export interface PluginRepoRuntime {
    * belongs to one import.
    */
   commandIssues?: string[];
+  /**
+   * Problems with this repository's plugin SERVICES (reqs 3, 20): a compose
+   * fragment that cannot be used, a surfaced service name that collides with
+   * the project's or another plugin's, a plugin whose runtime layer could not
+   * be prepared. Each names its `alias`, for the same reason `settingsIssues`
+   * does — the card's unit is the repository while the problem belongs to one
+   * import.
+   */
+  serviceIssues?: string[];
 }
 
 export interface PluginReposSnapshot {
@@ -831,6 +840,10 @@ export function buildPluginReposSnapshot(
     // that cannot take effect: the declaration asked for something the session
     // is not doing, and nothing inside the plugin can tell.
     issues.push(...(live.commandIssues ?? []));
+    // Services below both: a plugin whose services cannot be surfaced still
+    // gives the session its files, CLIs and skills, so it outranks neither the
+    // plugin being absent nor a declaration that silently takes no effect.
+    issues.push(...(live.serviceIssues ?? []));
     // Order: the failure first, then advisories, then selector problems.
     if (live.warning) issues.unshift(live.warning);
     for (const w of live.manifestWarnings ?? []) issues.unshift(w);

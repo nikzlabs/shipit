@@ -115,6 +115,20 @@ const prepareFailures = new Map<string, string[]>();
  */
 const containerFailures = new Map<string, string[]>();
 
+/**
+ * Per-session SERVICE failures from the last round, keyed the same way (docs/262
+ * reqs 3, 20 — `services/plugin-services.ts`).
+ *
+ * A third map for the same reason the second one exists: each is replaced by its
+ * own writer, so a service round that reports nothing must not erase a settings
+ * or container failure recorded microseconds earlier. What lands here is only
+ * the half the snapshot route CANNOT re-derive — an invalid fragment and a
+ * colliding service name it recomputes from the pure collector; a runtime layer
+ * Docker would not give us is a fact about a round that ran, and a read-only GET
+ * must not go and ask about it.
+ */
+const serviceFailures = new Map<string, string[]>();
+
 const stateKey = (sessionId: string, repoName: string): string => `${sessionId}::${repoName}`;
 const flightKey = (sessionId: string, epoch: number, repoName: string): string =>
   `${sessionId}::${epoch}::${repoName}`;
@@ -270,6 +284,30 @@ function formatContainerFailure(failure: ContainerPrepareFailure): string {
     : `Skill \`${failure.skill}\`: ${failure.reason}`;
 }
 
+/** Service failures from the last round for one repository (`plugin-services.ts`). */
+export function getPluginServiceFailures(sessionId: string, repoName: string): string[] {
+  return serviceFailures.get(stateKey(sessionId, repoName)) ?? [];
+}
+
+/**
+ * Replace this session's recorded service failures with the latest round's.
+ *
+ * Replace, not merge: unlike a prepare failure — which is per import and
+ * accumulates within one round — this is the whole answer for the session, and a
+ * repository that recovered must stop reporting the failure it recovered from.
+ */
+export function recordPluginServiceFailures(
+  sessionId: string,
+  byRepo: ReadonlyMap<string, string[]>,
+): void {
+  for (const key of [...serviceFailures.keys()]) {
+    if (key.startsWith(`${sessionId}::`)) serviceFailures.delete(key);
+  }
+  for (const [repoName, issues] of byRepo) {
+    if (issues.length > 0) serviceFailures.set(stateKey(sessionId, repoName), issues);
+  }
+}
+
 export function clearActivationState(sessionId: string): void {
   epochs.set(sessionId, (epochs.get(sessionId) ?? 0) + 1);
   for (const key of [...activationState.keys()]) {
@@ -283,6 +321,9 @@ export function clearActivationState(sessionId: string): void {
   }
   for (const key of [...containerFailures.keys()]) {
     if (key.startsWith(`${sessionId}::`)) containerFailures.delete(key);
+  }
+  for (const key of [...serviceFailures.keys()]) {
+    if (key.startsWith(`${sessionId}::`)) serviceFailures.delete(key);
   }
 }
 

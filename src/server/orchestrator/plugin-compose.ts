@@ -54,7 +54,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { isScalar, parse as parseYaml, parseDocument, visit } from "yaml";
+import { parse as parseYaml, parseDocument, visit } from "yaml";
 import type { PluginExport, PluginReposConfig, PluginUse } from "../shared/plugin-repos.js";
 import {
   CONTAINER_PLUGIN_SETTINGS_FILE,
@@ -67,7 +67,7 @@ import {
 } from "../shared/plugin-contract.js";
 import { createPluginImportResolver, pluginSettingsPath, pluginStateDir } from "./plugin-state.js";
 import { activeLinkPath } from "./plugin-generations.js";
-import { validateServiceSecurity, type ComposeService } from "./compose-generator.js";
+import { OVERRIDE_SENTINELS, validateServiceSecurity, type ComposeService } from "./compose-generator.js";
 import { chownToSessionWorker } from "./session-worker-uid.js";
 
 // ---------------------------------------------------------------------------
@@ -154,7 +154,7 @@ export const ALLOWED_SERVICE_KEYS: ReadonlySet<string> = new Set([
   "image", "command", "entrypoint", "working_dir", "environment", "volumes",
   "ports", "expose", "depends_on", "healthcheck", "init", "read_only", "tmpfs",
   "user", "stop_grace_period", "stop_signal", "shm_size", "mem_limit",
-  "mem_reservation", "cpus", "pids_limit", "ulimits", "sysctls",
+  "mem_reservation", "cpus", "pids_limit", "ulimits",
   "x-shipit-preview",
 ]);
 
@@ -385,9 +385,6 @@ export function parsePluginFragment(
     Node: (_key, node) => {
       if (node.tag !== undefined) hasExplicitTag = true;
     },
-    Pair: (_key, pair) => {
-      if (isScalar(pair.key) && pair.key.value === "<<") return;
-    },
   });
   if (hasExplicitTag || document.warnings.some((w) => /unresolved tag/i.test(w.message))) {
     throw new PluginFragmentError("its compose fragment uses custom YAML tags, which are not supported.");
@@ -429,7 +426,31 @@ export function parsePluginFragment(
   if (parsed.length === 0) {
     throw new PluginFragmentError("its compose fragment defines no services.");
   }
+
+  // A `depends_on` may only name another service in THIS fragment. Left
+  // unchecked, an unknown name is not a plugin problem but a PROJECT one:
+  // Compose refuses the whole document when a dependency does not resolve, so a
+  // plugin could take the project's own stack down with it — and one that DID
+  // resolve, against a project service, would be a plugin asserting an ordering
+  // over a repository it knows nothing about.
+  const own = new Set(parsed.map((s) => s.name));
+  for (const service of parsed) {
+    for (const target of dependsOnTargets(service.definition.depends_on)) {
+      if (own.has(target)) continue;
+      throw new PluginFragmentError(
+        `its compose service \`${service.name}\` depends on \`${target}\`, which is not a service `
+        + "in the same plugin. A plugin's services may only depend on each other.",
+      );
+    }
+  }
   return parsed;
+}
+
+/** The service names a `depends_on` refers to, in either of Compose's two forms. */
+function dependsOnTargets(raw: unknown): string[] {
+  if (Array.isArray(raw)) return raw.map((entry) => describe(entry));
+  if (raw && typeof raw === "object") return Object.keys(raw as Record<string, unknown>);
+  return [];
 }
 
 function parseFragmentService(
@@ -455,6 +476,19 @@ function parseFragmentService(
   }
   if (svc.image === undefined) {
     throw new PluginFragmentError(`its compose service \`${name}\` declares no \`image:\`.`);
+  }
+
+  // ShipIt substitutes Compose's `!reset`/`!override` tags into the generated
+  // override by text replacement after serialization, so a fragment value
+  // carrying one of those literals would be rewritten inside the document ShipIt
+  // authors. Refused rather than escaped: nothing legitimate contains them, and
+  // an escape would have to survive a pass that runs on the serialized text.
+  for (const sentinel of OVERRIDE_SENTINELS) {
+    if (JSON.stringify(svc).includes(sentinel)) {
+      throw new PluginFragmentError(
+        `its compose service \`${name}\` contains \`${sentinel}\`, which is reserved by ShipIt.`,
+      );
+    }
   }
 
   // The consuming session's own rules, applied to a plugin exactly as they are
@@ -495,11 +529,14 @@ function readPorts(name: string, raw: unknown): number | undefined {
   if (!Array.isArray(raw) || raw.length === 0) {
     throw new PluginFragmentError(`its compose service \`${name}\`: \`ports\` must be a non-empty list.`);
   }
-  const first = raw[0];
+  const first: unknown = raw[0];
+  const target = first && typeof first === "object"
+    ? (first as { target?: unknown }).target
+    : undefined;
   const text = typeof first === "string" || typeof first === "number"
     ? String(first)
-    : first && typeof first === "object" && "target" in (first as object)
-      ? String((first as { target: unknown }).target)
+    : typeof target === "string" || typeof target === "number"
+      ? String(target)
       : undefined;
   if (text === undefined) {
     throw new PluginFragmentError(`its compose service \`${name}\`: \`ports[0]\` is not a port mapping.`);
@@ -540,7 +577,7 @@ function validateFragmentVolumes(name: string, raw: unknown): void {
       if (obj.type !== undefined && obj.type !== "bind") {
         throw new PluginFragmentError(
           `its compose service \`${name}\`: only bind mounts of the plugin's own files are supported `
-          + `(saw \`type: ${String(obj.type)}\`).`,
+          + `(saw \`type: ${describe(obj.type)}\`).`,
         );
       }
       if (typeof obj.source !== "string") {
@@ -574,7 +611,7 @@ function validateFragmentEnvironment(name: string, raw: unknown): void {
     for (const entry of raw) {
       if (typeof entry === "string" && entry.includes("=")) continue;
       throw new PluginFragmentError(
-        `its compose service \`${name}\`: \`environment\` entry \`${String(entry)}\` has no value. `
+        `its compose service \`${name}\`: \`environment\` entry \`${describe(entry)}\` has no value. `
         + "A plugin's environment must be self-contained; credentials are declared by name in its manifest.",
       );
     }
@@ -857,7 +894,7 @@ function normalizeEnvironment(raw: unknown): Record<string, string> {
   if (raw && typeof raw === "object") {
     for (const [key, value] of Object.entries(raw as Record<string, unknown>)) {
       if (value === null || value === undefined) continue;
-      out[key] = String(value);
+      out[key] = describe(value);
     }
   }
   return out;
@@ -923,4 +960,15 @@ function joinPosix(...segments: string[]): string {
 
 function message(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * Render an arbitrary YAML value for a message or an environment entry. Objects
+ * and arrays are JSON, never `[object Object]` — a message that cannot name what
+ * it rejected is not a message the plugin's author can act on.
+ */
+function describe(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (value !== null && typeof value === "object") return JSON.stringify(value);
+  return String(value);
 }
