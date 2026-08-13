@@ -1,3 +1,4 @@
+import { harnessesForLoginIntegration } from "../shared/catalogue/index.js";
 import type { LoginIntegrationId } from "../shared/catalogue/types.js";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
@@ -1123,7 +1124,7 @@ describe("wireEventHandlers — account-scoped auth SSE (docs/150)", () => {
   /** Fake auth manager exposing a settable active account id. */
   class FakeAuthManager extends EventEmitter {
     activeAccountId: string | null = null;
-    readonly agentId: AgentId = "claude";
+    readonly loginId: LoginIntegrationId = "anthropic-oauth";
     getActiveAccountId(): string | null { return this.activeAccountId; }
     start() {}
     cancel() {}
@@ -1311,9 +1312,14 @@ describe("markProviderAccountUnauthenticated", () => {
       const account = providerAccountManager.create("anthropic", "Work");
       providerAccountManager.setAccountStatus("anthropic", account.id, "ready");
       let hasRunnableModels = true;
-      const refreshAuth = vi.fn(() => { hasRunnableModels = false; });
+      const refreshAuth = vi.fn((_harnessId?: AgentId) => { hasRunnableModels = false; });
+      // Same fan-out mirror as `buildRegistry` below.
+      const refreshAuthForLogin = vi.fn((loginId: LoginIntegrationId) => {
+        for (const harnessId of harnessesForLoginIntegration(loginId)) refreshAuth(harnessId);
+      });
       const agentRegistry = {
         refreshAuth,
+        refreshAuthForLogin,
         list: () => [{
           id: "claude",
           name: "Claude Code",
@@ -1355,9 +1361,16 @@ describe("markProviderAccountUnauthenticated", () => {
 describe("markProviderAccountReauthenticated", () => {
   function buildRegistry(initialAuth: boolean): { agentRegistry: AgentRegistry; refreshAuth: ReturnType<typeof vi.fn>; getAuth: () => boolean } {
     let hasRunnableModels = initialAuth;
-    const refreshAuth = vi.fn(() => { hasRunnableModels = true; });
+    const refreshAuth = vi.fn((_harnessId?: AgentId) => { hasRunnableModels = true; });
+    // Mirrors the real registry: a login refresh fans out to every harness the
+    // catalogue says that login serves. Keeping the real mapping here is what
+    // makes the `refreshAuth` assertions below actually exercise the fan-out.
+    const refreshAuthForLogin = vi.fn((loginId: LoginIntegrationId) => {
+      for (const harnessId of harnessesForLoginIntegration(loginId)) refreshAuth(harnessId);
+    });
     const agentRegistry = {
       refreshAuth,
+      refreshAuthForLogin,
       list: () => [{
         id: "claude",
         name: "Claude Code",

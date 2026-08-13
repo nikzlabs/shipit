@@ -1,6 +1,8 @@
 import type { LoginIntegrationId } from "../shared/catalogue/types.js";
 import {
   credentialHarnessForLogin,
+  loginIntegrationForService,
+  nativeServiceForHarness,
   serviceForLoginIntegration,
 } from "../shared/catalogue/index.js";
 import path from "node:path";
@@ -1433,6 +1435,20 @@ export interface EventWiringDeps {
   onCredentialReplaced?: (agentId: AgentId, accountId: string) => void;
 }
 
+/**
+ * Refresh every harness affected by a credential change that a HARNESS noticed.
+ *
+ * The background refreshers are per-CLI, so they hold an `AgentId` — but the
+ * account status they flip belongs to the shared route, so the refresh has to
+ * widen to the login's whole harness set. Falls back to the single harness when
+ * the service declares no login flow, which keeps a key-only service working.
+ */
+function refreshAuthForAccountHarness(agentRegistry: AgentRegistry, agentId: AgentId): void {
+  const loginId = loginIntegrationForService(nativeServiceForHarness(agentId));
+  if (loginId) agentRegistry.refreshAuthForLogin(loginId);
+  else agentRegistry.refreshAuth(agentId);
+}
+
 export function markProviderAccountUnauthenticated(opts: {
   agentId: AgentId;
   accountId: string;
@@ -1448,7 +1464,11 @@ export function markProviderAccountUnauthenticated(opts: {
   } catch (err) {
     console.error(`[auth] failed to mark account ${accountId} auth_failed:`, err);
   }
-  agentRegistry.refreshAuth(agentId);
+  // Fan out. `agentId` names the harness whose refresher rotated the token, but
+  // what changed is the SHARED account route's status — so eligibility must be
+  // recomputed for every harness that login serves, not just the one that
+  // noticed. (Cross-backend review of the login re-key.)
+  refreshAuthForAccountHarness(agentRegistry, agentId);
   sseBroadcast("provider_accounts", { accounts: providerAccountManager.list() });
   sseBroadcast("agent_list", buildAgentListPayload(agentRegistry, credentialStore, providerAccountManager));
 }
@@ -1489,7 +1509,11 @@ export function markProviderAccountReauthenticated(opts: {
     console.error(`[auth] failed to mark account ${accountId} ready:`, err);
     return;
   }
-  agentRegistry.refreshAuth(agentId);
+  // Fan out. `agentId` names the harness whose refresher rotated the token, but
+  // what changed is the SHARED account route's status — so eligibility must be
+  // recomputed for every harness that login serves, not just the one that
+  // noticed. (Cross-backend review of the login re-key.)
+  refreshAuthForAccountHarness(agentRegistry, agentId);
   sseBroadcast("provider_accounts", { accounts: providerAccountManager.list() });
   sseBroadcast("agent_list", buildAgentListPayload(agentRegistry, credentialStore, providerAccountManager));
 }

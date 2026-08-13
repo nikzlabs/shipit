@@ -199,12 +199,24 @@ export function harnessesForLoginIntegration(loginId: LoginIntegrationId): Agent
   const serviceId = serviceForLoginIntegration(loginId);
   const service = serviceId ? getService(serviceId) : undefined;
   if (!service) return [];
+  // Only the modes that actually accept THIS login. A service can hold a
+  // subscription and a metered key, and the key mode's styles say nothing about
+  // who can use the account credential this login produces.
   const styles = new Set<ApiStyle>(
-    service.modes.flatMap((mode) => Object.keys(mode.endpoints) as ApiStyle[]),
+    service.modes
+      .filter((mode) =>
+        mode.credentials.some((c) => c.via === "account" && c.login === loginId),
+      )
+      .flatMap((mode) => Object.keys(mode.endpoints) as ApiStyle[]),
   );
-  return HARNESSES.filter((harness) => harness.styles.some((style) => styles.has(style))).map(
-    (harness) => harness.id,
-  );
+  // A shared style is not enough: the credential is account-delivered, so a
+  // harness that declares no account destination could never carry it however
+  // well the wire formats line up.
+  return HARNESSES.filter(
+    (harness) =>
+      harness.spawn.credential.account !== undefined
+      && harness.styles.some((style) => styles.has(style)),
+  ).map((harness) => harness.id);
 }
 
 export function getMode(serviceId: string, billingMode: BillingMode): BillingModeDef | undefined {
