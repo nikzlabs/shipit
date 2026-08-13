@@ -245,15 +245,15 @@ async function saveCutoff(
     // rather than component state: `saveCutoff` is deliberately a module-level
     // function over the store because it is called from an unmount cleanup,
     // where the component's state and its setters are already gone. The notice
-    // channel is still keyed by harness because cutoffs only ever render on an
+    // channel is keyed by LOGIN FLOW; cutoffs only ever render on an
     // account-backed mode, which always has one.
     /**
-     * The notice channel is keyed by HARNESS, and a string-delivered
+     * The notice channel is keyed by LOGIN FLOW, and a string-delivered
      * subscription need not have one — GLM's coding plan is a subscription with
      * no login flow, and Anthropic's plan can arrive as a supplied token on an
      * install with no account. Re-keying the whole notice map by
      * `(service, mode)` is a larger change than this control warrants, so
-     * without a harness the failure is logged and the field's **rollback** is
+     * without a login the failure is logged and the field's **rollback** is
      * the feedback: the number visibly snaps back to the stored one, which is
      * the same signal the notice accompanies. Weaker, and stated rather than
      * hidden.

@@ -14,9 +14,9 @@ import { stopAllTokenWriteBackWatches } from "./session-token-publisher.js";
 export interface ShutdownDeps {
   startupTimer: ReturnType<typeof setTimeout>;
   /**
-   * Every per-agent auth manager, keyed by agent id. The shutdown hook
-   * iterates this map so adding a new backend doesn't require an explicit
-   * `kill()` line here. (docs/155 Phase 2)
+   * Every login flow, keyed by `LoginIntegrationId`. The shutdown hook iterates
+   * this map so adding a new login flow doesn't require an explicit `kill()`
+   * line here. (docs/155 Phase 2)
    */
   authManagers: Map<LoginIntegrationId, AgentAuthManager>;
   runnerRegistry: SessionRunnerRegistry;

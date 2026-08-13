@@ -149,10 +149,12 @@ function accountServiceIds(): string[] {
 }
 
 /**
- * The harness whose login flow, credential root and auth manager belong to this
- * service — the one axis that is genuinely still per-harness.
+ * The harness whose credential root belongs to this service — the axis that is
+ * genuinely still per-harness.
  *
- * Signing in is the CLI's own flow (`AgentAuthManager` is per-harness) and the
+ * The auth MANAGER is no longer among them: login flows are keyed by
+ * `LoginIntegrationId` (see `AgentAuthManager`). What remains harness-keyed is
+ * where the credentials land, because the
  * credentials it writes land under `provider-accounts/<harness>/<id>`, so these
  * cannot be keyed by service without moving every install's credentials on
  * disk. Everything *else* — which credential a turn takes, the order, the

@@ -437,7 +437,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     readGlobalSystemPrompt(workspaceDir);
 
   // docs/155 Phase 5 — per-agent runtime tables. `buildAgentRuntime()` lives in
-  // `agents/index.ts` and assembles every `Map<AgentId, …>` lookup the
+  // `agents/index.ts` and assembles the lookup tables the
   // orchestrator consumes (auth managers for shutdown / limits rearm / SSE,
   // limits providers for `recordAgentRateLimits`, run-params preps for the
   // shared run-params assembler, system-prompt fragments for
