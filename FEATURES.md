@@ -1,7 +1,7 @@
 # ShipIt features
 
-The full list of what ShipIt does. For what ShipIt is, which agent backends it supports, how to
-install it, and the security model, start at the [README](README.md).
+The full list of what ShipIt does. For what ShipIt is, how to install it, and the security model,
+start at the [README](README.md).
 
 ## Build
 
@@ -150,6 +150,8 @@ The everyday essentials you'd expect from a serious agent IDE:
   conversation into a summarized fork to genuinely shrink the agent's context window
 - **Skill & command invocation** — type `/` in the composer to invoke a project skill, with
   autocomplete
+- **Multiple accounts per provider** — connect several and ShipIt moves to the next one before a
+  usage limit stops you, without interrupting sessions already in flight
 - **Subscription usage** — header badges show your Claude/Codex rate-limit usage (5-hour window,
   weekly cap, reset clock) inline, named per account when you've connected several, with weekly and
   per-month spend trends in the usage detail view

@@ -33,6 +33,8 @@ loop**.
 - **Runs on Linux, macOS, and Windows (WSL2)** — in isolated Docker containers.
 - **Ship from your phone** — mobile-first, with voice.
 
+**[See the full feature list →](FEATURES.md)**
+
 ## Quickstart
 
 ### What you need
@@ -96,46 +98,6 @@ Updates**). Fork installs, host-side updates, sizing, access policies, and troub
 
 ShipIt is in an early public release state. The project is public source, but not open to outside
 pull requests. Bug reports, feature requests, and design discussion are welcome as GitHub issues.
-
-## Why ShipIt exists
-
-Coding agents are the easy part — you already have Claude Code or Codex. The hard part is everything
-around them: an isolated environment per agent, a live app to test against, parallel work that doesn't
-collide, and the full PR → CI → deploy → review loop on your repos. ShipIt is the surface that ties
-all of that together, so you build, review, and ship in one place instead of stitching it together
-yourself.
-
-## Agents
-
-Two separate choices — the harness that runs, and the account that pays for it:
-
-- **Harness** — [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) and
-  [Codex CLI](https://github.com/openai/codex) today; OpenCode and Cursor CLI are coming, and the
-  backend is agent-agnostic by design, so new runtimes can slot in
-- **Provider** — Anthropic and OpenAI on a subscription or an API key, plus DeepSeek, GLM (Z.ai),
-  OpenRouter, and Vercel AI Gateway on an API key
-
-The two are largely independent: a model that speaks both an Anthropic-messages and an OpenAI style —
-DeepSeek, GLM, most of what OpenRouter and Vercel front — runs on either harness. Connect more than
-one account per provider.
-
-**Smooth support for multiple subscriptions.** ShipIt moves to your next account before a usage limit
-stops you, without interrupting sessions already in flight.
-
-## Features
-
-- **Build** — chat-driven edits, Compose-native live preview with HMR, services the agent starts and
-  tails itself, Android builds and snapshot tests, an interactive terminal, and MCP servers.
-- **Plan & track** — Linear and GitHub Issues in one list, a session started straight from an issue,
-  and requirements written down before any code.
-- **Review & ship** — an inline PR card carrying CI, deploys, and review threads; AI descriptions and
-  reviews; automatic follow-up when checks fail, a preview crashes, or the base moves on.
-- **Iterate safely** — every turn auto-commits so git is your undo, parallel sessions never share
-  state, and destructive git is replaced with brokered, recorded operations.
-- **Everywhere** — mobile-first and installable, with voice in and out and a global quick-capture
-  hotkey.
-
-**[See the full feature list →](FEATURES.md)**
 
 ## Known limitations
 
