@@ -17,3 +17,6 @@
 - [x] Eleventh fresh review completed; the Docker socket proxy exception now requires the server-authoritative ops flag, and stopped-service preparation invalidates same-second namespace state.
 - [x] Twelfth fresh review completed; policy transitions stop the prior stack before worker readiness, with regression coverage for the ordering.
 - [x] Thirteenth fresh review completed; contained services now reject incompatible root-init or ambiguous image-user configurations instead of silently overriding their runtime user.
+- [x] Fourteenth fresh review completed; proxy trust now depends on the complete server-authoritative service shape instead of its service name.
+- [x] Fifteenth fresh review completed; Contained mode now rejects the raw-socket ops proxy, removing its root and mutable-image trust from the containment boundary.
+- [x] Sixteenth fresh review completed with no important findings.
