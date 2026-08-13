@@ -583,6 +583,70 @@ instead of a repeat.
   step, and the visible repo/ref/commit identity on the plugin card — in
   every state, including degraded and collision — is the accountability
   surface that replaces approval.
+- **Which credential the fetch uses** (reqs 7, 10, 13) — **implemented**
+  (`plugin-fetch.ts`, the credential half of `repo-git.ts`). Orchestrator-side
+  says *where* the fetch runs; req 10 asks *what it authenticates with*, and the
+  two are not the same question.
+
+  **The host PAT is not the answer, because a plugin repository is a different
+  repository from the project.** Every other orchestrator-side git operation
+  rides one credential — the global helper `git-config.ts` installs, which
+  echoes the PAT for whatever repository git is touching. Under GitHub App mode
+  a token is minted per *installation*, so the token that clones the project
+  neither covers nor names the plugin repository, and on an App-only install
+  that global helper is not configured at all. Left there, a private plugin
+  repository fails with a bare `fatal: Authentication failed` and the user is
+  told nothing about which repository, or which of their two GitHub setups, is
+  the problem.
+
+  So the fetch resolves its own credential, for the plugin repository's own
+  `owner/repo`, in this order: a **read-only App installation token**; else the
+  **host PAT**; else **none**, which is not an error — a public plugin
+  repository must be fetchable by a ShipIt with no GitHub identity, and refusing
+  to try would break that. The PAT fallback under a configured App is the same
+  availability-over-tightness policy `getRepoScopedGitCredential` already
+  applies to the session's own repository.
+
+  **Read-only is req 7 made structural.** The token carries `contents: read` and
+  nothing else — not the `contents: write` and `pull_requests: write` the
+  session's own repository gets — so "a declaration grants a fetch, never a
+  push" is a property of the credential rather than of nobody having called
+  `git push`. The minter caches per (repository, scope), because serving a write
+  token where a read token was asked for would quietly give that back.
+
+  **Three properties of how the token reaches git**, each of which has a way to
+  be silently wrong: the inherited helper list is **reset** first (`credential.
+  helper` is multi-valued and git consults helpers in config order, so without
+  the reset the global PAT helper answers first and the App token is never
+  reached); the replacement is **URL-scoped** to the repository's host, so a
+  redirect elsewhere gets no answer at all — the host-blind-helper bug class of
+  docs/172 Gap 2; and the token travels in the child process's **environment**,
+  never in argv or in a `https://user:token@host` remote, so it reaches neither
+  `ps` nor the bare cache's on-disk config. `repo-git.test.ts` drives real git
+  for all three, because each one is a git behavior rather than a claim about
+  our code.
+
+  Req 19 is unaffected and slightly stronger: the credential is resolved, used
+  and dropped inside one `ensureCache` call. Everything the generation engine
+  does after the fetch is local (`rev-parse`, `clone --local`), so no plugin
+  path has a network credential to reach in the first place.
+
+  **A refused fetch is named** (req 13): the message says the repository, which
+  of the two setups was tried, and the one-time act that fixes it — "ShipIt's
+  GitHub App is not installed on `acme/tools`, and the host GitHub token cannot
+  read it either" — plus the sentence the mode difference exists for, that
+  authorizing the project does not cover the plugin repository. It reaches the
+  Plugins card as that repository's activation error. A failure that is *not*
+  credential-shaped (DNS, a truncated transfer) is passed through untouched: a
+  GitHub outage reported as a permissions problem would send the user to fix
+  something that is not broken.
+
+  **Known limit, deliberately not fixed here.** Under an App-only install the
+  orchestrator's own fetches of the *project* repository still ride the global
+  helper and so have no credential either (App minting today feeds only the
+  in-container credential broker, `api-routes-github.ts`). That is pre-existing
+  and outside this feature; the mechanism this slice adds — a per-remote
+  credential on `RepoGit` — is what a fix would be built from.
 - **Feedback** (req 25 — review finding 12) — **implemented**
   (`shared/plugin-feedback.ts`, `trackers/registry.ts`,
   `services/issues.ts`): each declared repo registers its `name` in the **same
@@ -808,6 +872,14 @@ coherent in one UI.
   carries export NAMES only, which answers "is this selector real?" and nothing
   about what an export *declares* (req 23's credentials, later settings and
   hosts).
+- ✓ `src/server/orchestrator/plugin-fetch.ts` — req 10's credential resolution:
+  the plugin repository's own read-only App installation token, else the host
+  PAT, else none, plus the named failure when none of them reaches it (req 13).
+  It builds the `ensureCache` hook `bootstrap-managers` injects, so the
+  credential exists only for the duration of one fetch. Its mechanism half is
+  ✓ `repo-git.ts`'s `GitRemoteCredential` (a per-instance, host-scoped
+  credential that overrides the global helper) and ✓ `github-app-token.ts`'s
+  read scope (`contents: read` — a declaration grants a fetch, never a push).
 - ✓ `src/server/orchestrator/plugin-state.ts` — the per-import primitives
   (reqs 17, 18, 26): the durable layout under the SESSION ROOT (not the state
   dir, which eviction reclaims), settings resolution and its two fail-closed
@@ -948,4 +1020,5 @@ Slice 2 (see `checklist.md`): compose-fragment merging and
 security validation, port stability per (session, service), plugin `install`
 execution (container-side — see §1b), credential
 injection mechanics, PATH wrapper generation, skills materialization
-mechanics, GitHub App multi-repo minting.
+mechanics. (GitHub App multi-repo minting has since been built — see the
+fetch-authority bullet in §2 and `plugin-fetch.ts`.)

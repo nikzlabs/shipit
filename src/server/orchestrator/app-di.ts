@@ -7,7 +7,7 @@ import { AgentRegistry, isAllowedAgentEnvKey } from "../shared/agent-registry.js
 import { readInstalledHarnesses } from "../shared/installed-harnesses.js";
 import { listConfiguredCredentials } from "./service-routing.js";
 import { collectServiceCredentialEnv } from "./secret-resolver.js";
-import { RepoGit } from "./repo-git.js";
+import { RepoGit, type GitRemoteCredential } from "./repo-git.js";
 import { AuthManager } from "./agents/claude/auth-manager.js";
 import { CodexAuthManager } from "./agents/codex/auth-manager.js";
 import { GitHubAuthManager } from "./github-auth.js";
@@ -118,8 +118,14 @@ export interface AppDeps {
   /**
    * Factory for creating RepoGit instances (bare cache and clone ops).
    * Defaults to `(dir) => new RepoGit(dir)`.
+   *
+   * The optional `credential` overrides the orchestrator's global git
+   * credential helper for this instance only — a plugin repository needs its
+   * OWN credential, not the host PAT the global helper echoes (docs/262 req 10,
+   * `plugin-fetch.ts`). A fake may ignore it; only the plugin fetch path passes
+   * one.
    */
-  createRepoGit?: (repoDir: string) => RepoGit;
+  createRepoGit?: (repoDir: string, credential?: GitRemoteCredential) => RepoGit;
   /** Session manager instance. Defaults to `new SessionManager()`. */
   sessionManager?: SessionManager;
   /** Auth manager instance. Defaults to `new AuthManager()`. */
@@ -253,7 +259,7 @@ export interface ManagerSet {
    */
   localAgentFactory: LocalAgentFactory | undefined;
   createGitManager: (dir: string) => GitManager;
-  createRepoGit: (dir: string) => RepoGit;
+  createRepoGit: (dir: string, credential?: GitRemoteCredential) => RepoGit;
   databaseManager: DatabaseManager;
   sessionManager: SessionManager;
   repoStore: RepoStore;
@@ -429,7 +435,8 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
 
   // ---- Per-session GitManager factory ----
   const createGitManager = deps.createGitManager ?? ((dir: string) => new GitManager(dir));
-  const createRepoGit = deps.createRepoGit ?? ((dir: string) => new RepoGit(dir));
+  const createRepoGit = deps.createRepoGit
+    ?? ((dir: string, credential?: GitRemoteCredential) => new RepoGit(dir, credential));
 
   // ---- Database manager (SQLite) ----
   const databaseManager = deps.databaseManager ?? new DatabaseManager(

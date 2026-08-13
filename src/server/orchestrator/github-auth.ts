@@ -4,7 +4,7 @@ import { existsSync } from "node:fs";
 import type { CredentialStore } from "./credential-store.js";
 import { getErrorMessage } from "../shared/utils.js";
 import { setGitIdentity, setGlobalCredentialHelper, clearGlobalCredentialHelper, CONTAINER_CREDENTIAL_HELPER } from "./git-config.js";
-import { GitHubAppTokenMinter } from "./github-app-token.js";
+import { GitHubAppTokenMinter, type AppTokenMintResult } from "./github-app-token.js";
 // Sub-module imports — delegated implementations
 import { createRepo as createRepoImpl, listUserRepos as listUserReposImpl, searchRepos as searchReposImpl, checkRepoWriteAccess as checkRepoWriteAccessImpl, listOrgs as listOrgsImpl } from "./github-auth-repos.js";
 import { createPullRequest as createPullRequestImpl, findPullRequest as findPullRequestImpl, findPullRequestAnyState as findPullRequestAnyStateImpl, mergePullRequest as mergePullRequestImpl, enableAutoMerge as enableAutoMergeImpl, disableAutoMerge as disableAutoMergeImpl, updatePullRequest as updatePullRequestImpl, addPullRequestComment as addPullRequestCommentImpl, addLabelsToPullRequest as addLabelsToPullRequestImpl, removeLabelFromPullRequest as removeLabelFromPullRequestImpl, markPullRequestReady as markPullRequestReadyImpl, listPullRequests as listPullRequestsImpl, viewPullRequest as viewPullRequestImpl, viewPullRequestResult as viewPullRequestResultImpl, viewPullRequestConversation as viewPullRequestConversationImpl, getPullRequestNodeId as getPullRequestNodeIdImpl } from "./github-auth-prs.js";
@@ -320,6 +320,22 @@ export class GitHubAuthManager extends EventEmitter {
    */
   async mintRepoScopedToken(owner: string, repo: string): Promise<string | null> {
     return this.appTokenMinter.getRepoToken(owner, repo);
+  }
+
+  /**
+   * Mint a **read-only**, single-repo installation token, keeping the reason a
+   * failed mint failed (docs/262 reqs 7, 10, 13).
+   *
+   * This is the plugin-repository path. A plugin declaration is a standing
+   * grant to fetch that repository and nothing more, so the token ShipIt mints
+   * for it carries `contents: read` and cannot push — the read-only checkout of
+   * req 7 is then a property of the credential, not of nobody calling
+   * `git push`. And a plugin repository is a *different* repository from the
+   * session's own, so "the App is not installed there" is a real, nameable
+   * state that the project being authorized says nothing about.
+   */
+  async mintReadOnlyRepoToken(owner: string, repo: string): Promise<AppTokenMintResult> {
+    return this.appTokenMinter.getRepoTokenResult(owner, repo, "read");
   }
 
   /**
