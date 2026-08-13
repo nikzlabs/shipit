@@ -601,11 +601,21 @@ export class CodexEventHandler {
       }
 
       case "subAgentActivity": {
-        if (phase !== "completed") return;
-        const parentId = item.agentThreadId ? this.childThreadParents.get(item.agentThreadId) : undefined;
-        if (parentId && item.kind) {
-          this.emitAssistant([{ type: "text", text: `Subagent ${item.kind}.` }], parentId);
-        }
+        // Verified against a live 0.146.0 app-server run: a successful
+        // `spawn_agent` does NOT emit the schema's `spawnAgent` collab item.
+        // Its observable parent-side invocation is `subAgentActivity/started`,
+        // followed by the child thread's own item and turn notifications.
+        // The activity id is therefore the stable tool-use id for ShipIt's
+        // card, and agentThreadId is the correlation key for child progress.
+        if (phase !== "started" || !item.agentThreadId || item.kind !== "started") return;
+        this.childThreadParents.set(item.agentThreadId, id);
+        this.openSubagentSpawns.add(id);
+        const agentName = item.agentPath?.split("/").filter(Boolean).at(-1);
+        this.emitToolUseOnce(id, "Agent", {
+          agent: item.agentThreadId,
+          subagent_type: "Codex",
+          description: agentName ? `Run ${agentName} subagent` : "Run Codex subagent",
+        });
         break;
       }
 

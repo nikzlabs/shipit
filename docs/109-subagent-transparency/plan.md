@@ -462,21 +462,24 @@ what the parent agent itself acts on.
 
 ## Codex in-process subagents
 
-The pinned Codex app-server schema (0.146.0) sends the model-facing
-`spawn_agent` call as a `collabAgentToolCall` item whose tool is `spawnAgent`
-and whose child ids are in `receiverThreadIds[]`. Item and turn notifications
+The pinned Codex app-server schema (0.146.0) declares a
+`collabAgentToolCall/spawnAgent` shape, but a live authenticated run established
+the actual successful-spawn sequence: the parent emits
+`subAgentActivity { kind: "started", agentThreadId, agentPath }`, then the child
+thread streams its own item and turn notifications. No `spawnAgent` collab item
+appeared. An ephemeral-parent probe failed to spawn, which also verified why
+ShipIt's `ephemeral: false` setting is required. Item and turn notifications
 carry a required top-level `threadId`; `CodexEventHandler` records
-`child thread id → spawn tool-use id` when the spawn starts. It adds that tool
-id as `parentToolUseId` to child narration, command, file-change, MCP, web, and
-tool-result events when the app-server streams them. The parent-side
-`subAgentActivity` and `agentsStates` signals supply lifecycle progress and a
-terminal message even when child detail is not streamed. Both routes use the
-same accumulator, persistence, projection, and `SubagentCall` UI as Claude.
+`agentThreadId → activity item id` from the observed signal. The activity item
+becomes the visible `Agent` invocation, and its id becomes `parentToolUseId` on
+child narration, command, file-change, MCP, web, and tool-result events. The
+declared `spawnAgent` and `agentsStates` shapes remain compatibility paths, but
+the regression tests use the live sequence. Every route uses the same
+accumulator, persistence, projection, and `SubagentCall` UI as Claude.
 
-The completed `spawnAgent` item is only an acceptance status. It is not the
-child's result and is not rendered as one. The child's terminal
-message becomes the parent spawn tool's result, which supplies the existing
-final-report panel. Child `thread/started`, `turn/started`, token-usage, and
+The child's terminal `agentMessage`, followed by its `turn/completed`, becomes
+the activity tool's result and supplies the existing final-report panel. Child
+`thread/started`, `turn/started`, token-usage, and
 `turn/completed` notifications cannot overwrite the parent's resume key,
 steering target, accounting, or terminal state. If the parent finishes with an
 unclosed spawn, the card receives a plain fallback result instead of becoming

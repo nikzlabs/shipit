@@ -63,6 +63,7 @@ export interface CodexItem {
   newThreadId?: string;
   agentStatus?: string;
   agentThreadId?: string;
+  agentPath?: string;
   kind?: string;
 }
 
