@@ -144,6 +144,47 @@ describe("Integration: GET /api/plugin-repos (docs/262)", () => {
     expect(dev.issues).toContainEqual(expect.stringContaining("`ghost`"));
   });
 
+  // req 26 — a settings value that cannot take effect is a card issue, and it
+  // is computed by re-resolving the declaration against the live manifest, so
+  // it shows before any activation round has run.
+  it("a settings value the plugin does not declare becomes a card issue", async () => {
+    writeConfig(
+      "exports:\n  plugins:\n    probe:\n      settings:\n        greeting:\n          default: hello\n"
+        + "plugins:\n  repos:\n    - repo: self\n      name: dev\n"
+        + "  use:\n    - plugin: probe\n      from: dev\n      alias: p\n"
+        + "      overrides:\n        settings:\n          greting: hi\n",
+    );
+    const dev = (await snapshot()).repos[0];
+    expect(dev.issues).toContainEqual(expect.stringContaining("`greting`"));
+    expect(dev.issues[0]).toContain("`p`");
+  });
+
+  // `constructor`, `toString` and friends are valid declared names, and reading
+  // an issues map keyed by repo name on a plain object returns an inherited
+  // FUNCTION for a repository that has no issues at all — truthy, non-zero
+  // `.length`, and fatal at the first spread (review finding).
+  it("a repository named after an Object prototype member is an ordinary card", async () => {
+    writeConfig(
+      "exports:\n  plugins:\n    probe:\n      settings:\n        greeting:\n          default: hello\n"
+        + "plugins:\n  repos:\n    - repo: self\n      name: constructor\n"
+        + "  use:\n    - plugin: probe\n      from: constructor\n      alias: p\n",
+    );
+    const snap = await snapshot();
+    expect(snap.warnings).toEqual([]);
+    expect(snap.repos[0]).toMatchObject({ name: "constructor", status: "self" });
+    expect(snap.repos[0].issues).toEqual([]);
+  });
+
+  it("a valid settings value produces no issue", async () => {
+    writeConfig(
+      "exports:\n  plugins:\n    probe:\n      settings:\n        greeting:\n          default: hello\n"
+        + "plugins:\n  repos:\n    - repo: self\n      name: dev\n"
+        + "  use:\n    - plugin: probe\n      from: dev\n      alias: p\n"
+        + "      overrides:\n        settings:\n          greeting: hi\n",
+    );
+    expect((await snapshot()).repos[0].issues).toEqual([]);
+  });
+
   it("re-reads the file per request — an edit changes the very next answer", async () => {
     writeConfig("agent: {}\n");
     expect((await snapshot()).declared).toBe(false);

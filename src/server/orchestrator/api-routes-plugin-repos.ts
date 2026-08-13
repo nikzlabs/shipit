@@ -16,16 +16,16 @@ import path from "node:path";
 import type { FastifyInstance } from "fastify";
 import type { ApiDeps } from "./api-routes.js";
 import type { SessionManager } from "./sessions.js";
-import { resolveShipitConfig } from "../shared/shipit-config.js";
+import { resolveShipitConfig, type ShipitConfig } from "../shared/shipit-config.js";
 import {
   buildPluginReposSnapshot,
   EMPTY_PLUGIN_REPOS,
-  type DeclaredPluginRepo,
   type PluginReposSnapshot,
   type PluginRepoRuntime,
 } from "../shared/plugin-repos.js";
 import { readActiveGeneration } from "./plugin-generations.js";
-import { getActivationState } from "./services/plugin-activation.js";
+import { pluginSettingsIssuesByRepo } from "./plugin-state.js";
+import { getActivationState, getPluginPrepareFailures } from "./services/plugin-activation.js";
 import { sessionStateDirForWorkspace } from "./session-state-dir.js";
 import { getErrorMessage } from "./validation.js";
 
@@ -121,10 +121,12 @@ export async function registerPluginRepoRoutes(
           config.pluginExports,
           consumerRepoUrl,
           config.warnings,
-          // Read-only: the live generation comes off disk and the last
-          // attempt's outcome from memory. A GET never activates anything —
-          // that runs on session activation and on a shipit.yaml edit.
-          readRuntimeState(request.query.sessionId, session.workspaceDir, config.plugins.repos),
+          // Read-only: the live generation comes off disk, the last attempt's
+          // outcome from memory, and settings problems from a pure re-resolve
+          // of the declaration against the live manifests. A GET never
+          // activates anything — that runs on session activation and on a
+          // shipit.yaml edit.
+          readRuntimeState(request.query.sessionId, session.workspaceDir, config),
         );
       } catch (err) {
         // A malformed *document* (bad YAML, a bad `release` block) must not
@@ -152,7 +154,7 @@ export async function registerPluginRepoRoutes(
 function readRuntimeState(
   sessionId: string | undefined,
   workspaceDir: string,
-  repos: readonly DeclaredPluginRepo[],
+  config: Pick<ShipitConfig, "plugins" | "pluginExports">,
 ): Record<string, PluginRepoRuntime> {
   const runtime: Record<string, PluginRepoRuntime> = {};
   if (!sessionId) return runtime;
@@ -164,20 +166,40 @@ function readRuntimeState(
     return runtime;
   }
 
-  for (const repo of repos) {
-    if (repo.source.kind === "self") continue;
-    const generation = readActiveGeneration(stateDir, repo.name);
-    const attempt = getActivationState(sessionId, repo.name);
+  // req 26 — recomputed, not remembered: the resolver is pure, so this reports
+  // exactly what a prepare pass would refuse to write, including before the
+  // first round has ever run. What CANNOT be recomputed — a directory or file
+  // the last round failed to write — is remembered by the activation service
+  // and merged in; without it a failed write left the plugin running on the
+  // previous declaration's settings with a clean card (review finding).
+  const settingsIssues = pluginSettingsIssuesByRepo(config.plugins, config.pluginExports, stateDir);
+  const issuesFor = (repoName: string): string[] => [
+    ...(settingsIssues.get(repoName) ?? []),
+    ...getPluginPrepareFailures(sessionId, repoName),
+  ];
+
+  for (const repo of config.plugins.repos) {
     const entry: PluginRepoRuntime = {};
-    if (generation) {
-      entry.commit = generation.commit;
-      entry.exports = generation.exports;
-      if (generation.manifestWarnings?.length) entry.manifestWarnings = generation.manifestWarnings;
+    const stateIssues = issuesFor(repo.name);
+    // A `repo: self` import runs the live working tree — no generation, no
+    // activation attempt (req 27). Its settings still resolve against the same
+    // file's own manifest, so it can still have something to say.
+    if (repo.source.kind !== "self") {
+      const generation = readActiveGeneration(stateDir, repo.name);
+      const attempt = getActivationState(sessionId, repo.name);
+      if (generation) {
+        entry.commit = generation.commit;
+        entry.exports = generation.exports;
+        if (generation.manifestWarnings?.length) entry.manifestWarnings = generation.manifestWarnings;
+      }
+      if (attempt?.activating) entry.activating = true;
+      if (attempt?.error) entry.error = attempt.error;
+      if (attempt?.warning) entry.warning = attempt.warning;
+      if (attempt?.missingSelectors?.length) entry.missingSelectors = attempt.missingSelectors;
+    } else if (stateIssues.length === 0) {
+      continue;
     }
-    if (attempt?.activating) entry.activating = true;
-    if (attempt?.error) entry.error = attempt.error;
-    if (attempt?.warning) entry.warning = attempt.warning;
-    if (attempt?.missingSelectors?.length) entry.missingSelectors = attempt.missingSelectors;
+    if (stateIssues.length > 0) entry.settingsIssues = stateIssues;
     runtime[repo.name] = entry;
   }
   return runtime;

@@ -159,6 +159,13 @@ export interface PluginRepoRuntime {
    * failed, so the card can state that fact once (see the issue projection).
    */
   missingSelectors?: string[];
+  /**
+   * Settings this repository's imports declare that cannot be resolved against
+   * the live manifest (req 26 — an undeclared name, a type that disagrees with
+   * the plugin's default). Each names its `alias`, because the card's unit is
+   * the repository while a settings problem belongs to one import.
+   */
+  settingsIssues?: string[];
 }
 
 export interface PluginReposSnapshot {
@@ -788,6 +795,10 @@ export function buildPluginReposSnapshot(
     const issues = uses
       .filter((u) => u.found === false && !named.has(u.plugin.toLowerCase()))
       .map((u) => `\`${u.plugin}\` is not in this repository's \`exports.plugins\` manifest.`);
+    // req 26 — a settings value that cannot take effect. Below the selector
+    // problems: a plugin that is not there at all outranks one whose settings
+    // are wrong.
+    issues.push(...(live.settingsIssues ?? []));
     // Order: the failure first, then advisories, then selector problems.
     if (live.warning) issues.unshift(live.warning);
     for (const w of live.manifestWarnings ?? []) issues.unshift(w);
