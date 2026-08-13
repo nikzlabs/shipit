@@ -33,6 +33,7 @@ Tests use Vitest with two project configs in `vitest.config.ts`:
 ## Server Tests
 
 - Use temp directories (`fs.mkdtempSync`) cleaned up in `afterEach` with `fs.rmSync(tmpDir, { recursive: true, force: true })`.
+- **A server test starts with no credential configured.** `server-test-setup.ts` strips every catalogue `storageEnv` name and every `SHIPIT_CREDENTIAL_*` variable — eagerly, and again before every test. That covers both sources: the ambient environment (a session container exports the user's real keys into the test process, a CI runner has none — the divergence is invisible in CI, which is why `test-env-hermeticity.test.ts` pins it against an injected sentinel), and the suite's own writes (storing a credential through the API assigns its mode's variable in-process, so it would otherwise leak into the next test in the file). A test that *wants* a credential sets it per test or with `vi.stubEnv` — **not in `beforeAll`**, which the strip runs after.
 - Testability is built in. Store-backed managers take a `DatabaseManager` — `SessionManager(dbManager)`, `UsageManager(dbManager)`, `RepoStore(dbManager)` — so a test passes an isolated database rather than a temp file path. Filesystem-backed ones still take a directory: `GitManager(workspaceDir?)`. (The older `sessionsFile?` / `usageFile?` / `ThreadManager` / `DeploymentStore` signatures are gone — persistence moved to SQLite.)
 
 ## Integration Tests

@@ -1,7 +1,13 @@
 /**
  * Server test setup — runs in every server-test worker before the test modules
  * load (registered in `vitest.config.ts` under the `server` project).
- *
+ */
+
+import { beforeEach } from "vitest";
+import { credentialStorageEnvNames } from "./src/server/shared/catalogue/index.js";
+import { CREDENTIAL_ROUTE_ENV_PREFIX } from "./src/server/shared/types/domain-types/credential-route.js";
+
+/**
  * Neutralize host-injected command-line-level git config. Some dev sandboxes
  * export `safe.bareRepository=explicit` (and similar) via git's
  * GIT_CONFIG_COUNT / GIT_CONFIG_KEY_<n> / GIT_CONFIG_VALUE_<n> env protocol —
@@ -58,8 +64,9 @@ if (process.env.SESSION_EGRESS_ENFORCE === undefined) {
  * Stripping it is safe for the whole suite because no server test wants the
  * ambient value — every test needing a token passes a literal one, and the
  * guard's env fallback is exercised through its injectable `env` dep. The
- * literal is spelled out (this file has no imports by design) and is pinned to
- * `WORKER_TOKEN_ENV` by an assertion in `shared/worker-auth.test.ts`.
+ * literal is spelled out — this file imports only side-effect-free catalogue
+ * data (see the credential strip below) — and is pinned to `WORKER_TOKEN_ENV`
+ * by an assertion in `shared/worker-auth.test.ts`.
  *
  * planning#241 made this line LOAD-BEARING, not just a tidy-up — do not narrow it to
  * the guard's own tests. Lifecycle routes (`/agent/start`, `/agent/kill`, …) now
@@ -106,3 +113,68 @@ if (process.env.GIT_ALLOW_PROTOCOL === undefined) {
 if (process.env.GIT_TERMINAL_PROMPT === undefined) {
   process.env.GIT_TERMINAL_PROMPT = "0";
 }
+
+/**
+ * **A server test starts with NO credential configured**, whatever the machine
+ * running it holds.
+ *
+ * Same class as the `SHIPIT_WORKER_TOKEN` strip above, and the same
+ * CI-invisible shape: a ShipIt session container materializes the user's real
+ * credentials into the agent's `process.env` — a catalogue `storageEnv`
+ * (`DEEPSEEK_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, …) per credential group, plus a
+ * `SHIPIT_CREDENTIAL_*` per stored route (docs/252 phase 5) — and the test
+ * process inherits every one of them. CI runners and developer boxes have none,
+ * so service and credential discovery answers a *different question* in the two
+ * places and tests that assert on what an install can run diverge silently.
+ * Four tests across three files did, and none of them names a credential
+ * anywhere:
+ *
+ *   - `reviewer-settings-api` — the second reviewer slot is derived from the
+ *     families the install holds, so an ambient `DEEPSEEK_API_KEY` seeded the
+ *     very service the test then adds to prove re-derivation happens.
+ *   - `agent-spawn-route` — "no reviewer is available" and "Codex is not signed
+ *     in" are both statements about an install with nothing configured; an
+ *     ambient key makes a reviewer resolvable (the spawn then really runs, and
+ *     the test times out) and turns the sign-in refusal into a per-model one.
+ *   - `ask-user-question` — the quota-failover ledger walks every candidate
+ *     credential, so an ambient key adds an attempt the test never feeds.
+ *
+ * Stripped here rather than per test file: "inherits the host's credentials" is
+ * a property of the whole suite, and a per-file save/restore has to be
+ * remembered by every future test that asks what an install can run.
+ *
+ * **Twice, and both are load-bearing.** Eagerly, before the test modules are
+ * imported, because a test file can read the variable at module scope (several
+ * capture `process.env.OPENAI_API_KEY` into a `const` to restore later). And
+ * again before every test, because the ambient environment is not the only
+ * source: a credential written through the API materializes its mode's variable
+ * into THIS process — `setApiKey` and `credential-routes` both assign
+ * `process.env`, deliberately, since `AgentRegistry` and `reservedRouteFor`
+ * probe it — so a test that stores a credential leaves one set for the next
+ * test in its file. `http-mutations.test.ts` does exactly that with
+ * `POST /api/auth/api-key` and restores only `OPENAI_API_KEY`.
+ *
+ * Tests that *exercise* env-delivered credentials are unaffected: they set the
+ * variable themselves, in a `beforeEach` or in the test body, which runs after
+ * this hook and wins. (No test sets one in `beforeAll`, which this WOULD clear
+ * — set it per test, or stub it with `vi.stubEnv`.)
+ *
+ * The name list is DERIVED from the catalogue, so a new service needs no edit
+ * here — the same rule `ALLOWED_ENV_KEYS` follows, and the reason this file
+ * imports at all. Both imports are side-effect-free data.
+ *
+ * Pinned by `shared/test-env-hermeticity.test.ts` against a sentinel credential
+ * the `server` project injects, so CI — which has no real credentials and would
+ * otherwise pass whether or not any of this runs — fails if it regresses.
+ */
+function stripCredentialEnv(): void {
+  for (const name of credentialStorageEnvNames()) {
+    Reflect.deleteProperty(process.env, name);
+  }
+  for (const name of Object.keys(process.env)) {
+    if (name.startsWith(CREDENTIAL_ROUTE_ENV_PREFIX)) Reflect.deleteProperty(process.env, name);
+  }
+}
+
+stripCredentialEnv();
+beforeEach(stripCredentialEnv);
