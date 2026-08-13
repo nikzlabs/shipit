@@ -417,6 +417,12 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
   /** Serialize service containment per session; concurrent Compose starts can overlap. */
   private composeEgressRuns = new Map<string, Promise<void>>();
   private composeServiceNames = new Map<string, string[]>();
+  private containerOriginSessions = new Map<string, string>();
+  private containerOriginNegative = new Map<string, number>();
+  private containerOriginRefresh?: Promise<void>;
+  private containerOriginRefreshStartedAt = 0;
+  private containerOriginRefreshedAt = 0;
+  private containerOriginRefreshBackoffUntil = 0;
   private imageName: string;
   private networkName: string;
   private defaultMemoryLimit: number;
@@ -1160,6 +1166,70 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
    */
   getSessionByContainerIp(ip: string): SessionContainer | undefined {
     return getSessionByContainerIp(this.containers, ip);
+  }
+
+  /** Resolve agent, Compose-service, and sidecar IPs to their owning session. */
+  async getSessionByAnyContainerIp(ip: string): Promise<{ sessionId: string } | undefined> {
+    const agent = this.getSessionByContainerIp(ip);
+    if (agent) return { sessionId: agent.sessionId };
+    const arrivedAt = Date.now();
+    const cached = this.containerOriginSessions.get(ip);
+    if (cached && arrivedAt - this.containerOriginRefreshedAt <= 1_000) return { sessionId: cached };
+    if ((this.containerOriginNegative.get(ip) ?? 0) > arrivedAt) return undefined;
+
+    const refresh = async (): Promise<void> => {
+      if (Date.now() < this.containerOriginRefreshBackoffUntil) return;
+      if (!this.containerOriginRefresh) {
+        this.containerOriginRefreshStartedAt = Date.now();
+        this.containerOriginRefresh = (async () => {
+        try {
+          const entries = await Promise.race([
+            this.docker.listContainers({
+              filters: { label: ["shipit-parent-session"] },
+            }),
+            new Promise<never>((_, reject) => {
+              setTimeout(() => reject(new Error("container-origin lookup timed out")), 1_000).unref();
+            }),
+          ]);
+          const next = new Map<string, string>();
+          for (const entry of entries) {
+            const sessionId = entry.Labels?.["shipit-parent-session"];
+            if (!sessionId) continue;
+            for (const network of Object.values(entry.NetworkSettings?.Networks ?? {})) {
+              if (network.IPAddress) next.set(network.IPAddress, sessionId);
+            }
+          }
+          this.containerOriginSessions = next;
+          this.containerOriginRefreshedAt = Date.now();
+          this.containerOriginRefreshBackoffUntil = 0;
+          for (const [negativeIp, expiresAt] of this.containerOriginNegative) {
+            if (expiresAt <= this.containerOriginRefreshedAt) this.containerOriginNegative.delete(negativeIp);
+          }
+        } catch (error) {
+          console.warn("[container-guard] could not refresh container IP index:", error);
+          this.containerOriginRefreshBackoffUntil = Date.now() + 5_000;
+        } finally {
+          this.containerOriginRefresh = undefined;
+        }
+        })();
+      }
+      await this.containerOriginRefresh;
+    };
+
+    const joinedRefreshStartedAt = this.containerOriginRefresh
+      ? this.containerOriginRefreshStartedAt
+      : 0;
+    await refresh();
+    // If this request joined a snapshot that started before the request, take a
+    // second snapshot. A service can appear between those two events.
+    if (joinedRefreshStartedAt > 0 && joinedRefreshStartedAt < arrivedAt
+      && Date.now() >= this.containerOriginRefreshBackoffUntil) {
+      await refresh();
+    }
+    const refreshed = this.containerOriginSessions.get(ip);
+    if (refreshed) return { sessionId: refreshed };
+    this.containerOriginNegative.set(ip, Date.now() + 1_000);
+    return undefined;
   }
 
   // --- Standby container support ---

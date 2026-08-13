@@ -204,6 +204,7 @@ export interface ContainerGuardDeps {
    */
   containerManager?: {
     getSessionByContainerIp(ip: string): { sessionId: string } | undefined;
+    getSessionByAnyContainerIp?(ip: string): Promise<{ sessionId: string } | undefined>;
   };
 }
 
@@ -254,7 +255,10 @@ export function registerContainerOriginGuard(
     // Inert without an IP→session map (no real containers to gate).
     if (!containerManager) return;
 
-    const caller = ip ? containerManager.getSessionByContainerIp(ip) : undefined;
+    const caller = ip
+      ? containerManager.getSessionByContainerIp(ip)
+        ?? await containerManager.getSessionByAnyContainerIp?.(ip)
+      : undefined;
     // Not a known session container → browser/host origin → unchanged.
     if (!caller) return;
 
