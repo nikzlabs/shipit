@@ -322,6 +322,11 @@ const GOLDEN_CONTAINER_ROUTES = [
   "GET /api/sessions/:id/pr/status",
   "POST /api/sessions/:id/pr/agent-create",
   "POST /api/sessions/:id/git/credential",
+  // docs/262 req 12 — `shipit plugin refresh`, relayed by the worker's
+  // agent-ops surface. Container-reachable on purpose: this IS the agent's
+  // path, and the guard's own session scoping means a container can only
+  // refresh its own session's plugins.
+  "POST /api/sessions/:id/plugin/refresh",
   "PATCH /api/sessions/:id/pr/:number",
   "GET /api/sessions/:id/pr/list",
   "GET /api/sessions/:id/pr/view",

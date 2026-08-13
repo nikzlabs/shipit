@@ -124,6 +124,12 @@ export type PluginInstallHook = NonNullable<Parameters<typeof activateGeneration
  * Activate every tracked repository the session declares. `self` entries are
  * skipped: they run the live working tree and have no generation (req 27).
  *
+ * `onlyRepo` narrows the round to one declared repository, which is what an
+ * explicit `shipit plugin refresh <name>` asks for: re-fetching every other
+ * repository because the agent named one would be a surprise, and a slow one.
+ * Everything else — the per-repo queue, the in-flight counter, the epoch, the
+ * settled hook — is unchanged, so a narrowed round is an ordinary round.
+ *
  * Never throws — each repository fails independently (req 14).
  */
 export async function activateDeclaredPlugins(
@@ -131,6 +137,7 @@ export async function activateDeclaredPlugins(
   workspaceDir: string,
   deps: PluginActivationDeps,
   consumerKey?: string,
+  onlyRepo?: string,
 ): Promise<void> {
   let repos: DeclaredPluginRepo[];
   let selectedByRepo: Map<string, string[]>;
@@ -145,6 +152,9 @@ export async function activateDeclaredPlugins(
       return;
     }
     repos = config.plugins.repos.filter((r) => r.source.kind === "github");
+    if (onlyRepo) {
+      repos = repos.filter((r) => r.name.toLowerCase() === onlyRepo.toLowerCase());
+    }
     // Phase-2 input: which exports this consumer actually selected from each
     // repository. A selected name the fetched manifest lacks invalidates that
     // repository's generation (plan §1a).

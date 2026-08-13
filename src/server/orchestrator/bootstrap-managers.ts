@@ -61,6 +61,7 @@ import type { GenerateText } from "./non-turn-model.js";
 import { makeNonTurnGenerateText } from "./services/non-turn-work.js";
 import { createAutoPushScheduler } from "./services/auto-push-scheduler.js";
 import { activateDeclaredPlugins, type PluginInstallHook } from "./services/plugin-activation.js";
+import { refreshPluginRepos, type PluginRefreshResult } from "./services/plugin-refresh.js";
 import { createPluginInstallRunner } from "./plugin-install.js";
 import { sessionStateDirForWorkspace } from "./session-state-dir.js";
 import { pinStorePath } from "./plugin-pins.js";
@@ -500,45 +501,73 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
         : {}),
     });
   };
+  /**
+   * The activation dependencies, built once per call so the fire-and-forget
+   * trigger and the agent's awaited `shipit plugin refresh` cannot drift into
+   * two different fetch or install policies (docs/262 req 12: refresh IS
+   * activation).
+   */
+  const pluginActivationDeps = (
+    sessionId: string,
+    workspaceDir: string,
+    onSettled?: (id: string) => void,
+  ) => {
+    const runInstall = pluginInstallHook(sessionId, workspaceDir);
+    const remoteUrl = sessionManager.get(sessionId)?.remoteUrl;
+    return {
+      getBareCacheDir,
+      pinStorePath: pinStorePath(stateDir),
+      // Fetching runs here, in the orchestrator, so plugin code never reaches
+      // fetch credentials (req 19).
+      ...(onSettled ? { onSettled } : {}),
+      ...(runInstall ? { runInstall } : {}),
+      // req 8 — pins are durable per consuming PROJECT, so every session of one
+      // repository resolves a pinned tag to the same commit.
+      ...(remoteUrl ? { consumerKey: remoteUrl } : {}),
+      ensureCache: (cacheDir: string, repoUrl: string) => {
+        const previous = cacheOps.get(cacheDir) ?? Promise.resolve();
+        // eslint-disable-next-line no-restricted-syntax -- chaining a serial queue in a sync factory
+        const next = previous
+          .catch(() => undefined)
+          .then(async () => {
+            const { git } = await ensureBareCache(cacheDir, repoUrl, createRepoGit);
+            // ttl 0: activation resolves a branch to its tip, so serving it
+            // from a minute-old cache would activate a stale commit.
+            await git.fetchCache(0);
+          });
+        cacheOps.set(cacheDir, next.catch(() => undefined));
+        return next;
+      },
+    };
+  };
+
   const activatePluginRepos = (
     sessionId: string,
     workspaceDir: string,
     onSettled?: (id: string) => void,
   ): void => {
-    const remoteUrl = sessionManager.get(sessionId)?.remoteUrl;
-    const runInstall = pluginInstallHook(sessionId, workspaceDir);
-    void activateDeclaredPlugins(
-      sessionId,
-      workspaceDir,
-      {
-        getBareCacheDir,
-        pinStorePath: pinStorePath(stateDir),
-        // Fetching runs here, in the orchestrator, so plugin code never reaches
-        // fetch credentials (req 19).
-        ...(onSettled ? { onSettled } : {}),
-        ...(runInstall ? { runInstall } : {}),
-        ensureCache: (cacheDir, repoUrl) => {
-          const previous = cacheOps.get(cacheDir) ?? Promise.resolve();
-          // eslint-disable-next-line no-restricted-syntax -- chaining a serial queue in a sync factory
-          const next = previous
-            .catch(() => undefined)
-            .then(async () => {
-              const { git } = await ensureBareCache(cacheDir, repoUrl, createRepoGit);
-              // ttl 0: activation resolves a branch to its tip, so serving it
-              // from a minute-old cache would activate a stale commit.
-              await git.fetchCache(0);
-            });
-          cacheOps.set(cacheDir, next.catch(() => undefined));
-          return next;
-        },
-      },
-      // req 8 — pins are durable per consuming PROJECT, so every session of one
-      // repository resolves a pinned tag to the same commit.
-      remoteUrl,
-    ).catch((err: unknown) => {
-      console.warn(`[plugins:${sessionId}] activation failed:`, err);
-    });
+    const deps = pluginActivationDeps(sessionId, workspaceDir, onSettled);
+    void activateDeclaredPlugins(sessionId, workspaceDir, deps, deps.consumerKey)
+      .catch((err: unknown) => {
+        console.warn(`[plugins:${sessionId}] activation failed:`, err);
+      });
   };
+
+  /**
+   * docs/262 req 12 — the awaited half. Same round, same deps; the caller is an
+   * agent waiting for an answer rather than a session opening.
+   */
+  const refreshPluginReposForSession = (
+    sessionId: string,
+    workspaceDir: string,
+    repoName?: string,
+    onSettled?: (id: string) => void,
+  ): Promise<PluginRefreshResult> => refreshPluginRepos(
+    sessionId,
+    workspaceDir,
+    pluginActivationDeps(sessionId, workspaceDir, onSettled),
+    repoName,
+  );
 
   const publishOverlayBases = async ({ runner, session, installOk, installCommands }: {
     runner: ContainerSessionRunner;
@@ -1120,6 +1149,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     agentRuntime, authManagers, limitsProviders, runParamsPreps,
     publishOverlayBases,
     activatePluginRepos,
+    refreshPluginReposForSession,
     runnerRegistry,
     repoPrefetcher,
     drainQueueForSession,

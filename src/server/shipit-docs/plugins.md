@@ -108,6 +108,22 @@ in the plugin's own repository instead.
 
 Removing the `use` entry removes the skills.
 
+## Refreshing a plugin repository
+
+A repository declared with a `branch:` tracks that branch, but it only
+re-activates when `shipit.yaml` changes or the session opens. After you push a
+change to the plugin repository, pull it in:
+
+```
+shipit plugin refresh            # every declared repository
+shipit plugin refresh tools      # just this one
+```
+
+It waits for the work and prints the commit each repository moved from and to.
+A failed refresh exits non-zero and leaves the previous version live — so the
+session keeps working, on the OLD version. That distinction is the point of the
+non-zero exit: nothing is broken, but you are not running what you think.
+
 ## Failure behaviour
 
 A plugin repository that cannot be fetched or validated does not stop the
@@ -122,7 +138,6 @@ Declared in the manifest and parsed, but not yet wired into a session:
 - **CLIs** on your `PATH`, with the plugin's credentials injected
 - **Services** from a plugin's compose fragment, and `/project` inside them
 - **Settings** (`SHIPIT_SETTINGS`) and the per-plugin shared state directory
-- **`shipit plugin refresh`**
 - **`repo: self`** — parsed and shown, but it activates no checkout yet
 
 Declaring any of these today is harmless: they are validated, surfaced in the

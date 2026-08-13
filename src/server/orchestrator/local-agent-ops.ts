@@ -68,6 +68,11 @@ const EXACT_ROUTES: Readonly<Record<string, string>> = {
   "run/rerun": "actions/runs/rerun",
   "workflow/list": "actions/workflows",
   "workflow/view": "actions/workflows/view",
+  // docs/262 req 12 — `shipit plugin refresh`. Local mode has no container, so
+  // this host IS the agent-ops surface there; without the entry the shim is
+  // denied in the dogfood instance while working in production, which is
+  // exactly the drift the parity test exists to catch.
+  "plugin/refresh": "plugin/refresh",
 };
 
 /** Per-PR operations reachable as `pr/<number>/<op>`. */
