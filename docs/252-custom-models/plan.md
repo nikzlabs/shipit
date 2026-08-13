@@ -3401,18 +3401,40 @@ clothes — making a permanent decision out of something that was never settled.
 - **A harness only assumed installed.** `isHarnessInstalled` answers *true for everything* when
   a deployment ships no install report, so the catalogue walk can pick a model whose CLI is
   absent. Survivable while the answer is re-derived every read; frozen, it is a permanent
-  failure. The `AgentRegistry` has probed `$PATH`, so where the two disagree the seed declines
-  and the live fallback continues.
+  failure. The `AgentRegistry` has probed `$PATH`, so the walk is given its answer instead —
+  via `HarnessSearchOpts.isInstalled`, so it **keeps walking**. The first version of this guard
+  rejected the walk's result instead of steering it, which left an install with no report and
+  one harness present holding no setting at all: the empty state req 9 removes, reached by the
+  code that exists to prevent it. A second review round caught that.
 - **A write that did not reach the disk.** `save()` logs and swallows, so a full or read-only
   credentials directory would leave a value in memory that vanishes on restart — and, if
   services changed meanwhile, seeds a *different* model next boot with no user action.
-  `CredentialStore.stampNonTurnModel` makes the check-and-write atomic and rolls back a failed
-  write, the same bargain `stampHarnessOnboardingCompleted` strikes one field over.
+  `CredentialStore.stampNonTurnModel` rolls a failed write back, the same bargain
+  `stampHarnessOnboardingCompleted` strikes one field over. It holds the emptiness check too,
+  so no caller can forget it — but **not** as a concurrency guard: this write-up claimed that
+  and the claim was withdrawn, because Node runs one request at a time and neither sequence
+  yields, so there was never a window for a concurrent PUT to slip into.
 
 **And `null` over the wire re-proposes rather than clearing.** `PUT /api/settings` still accepts
 `nonTurnModel: null`; nothing in the UI sends it, but a tab left open across a deploy can, and
 leaving the setting empty would restore the state this removed. The clear is now followed
 immediately by the same proposal a fresh install gets.
+
+**Cancelling a sign-in is a change in what the install can run.** `cancelAccountAuth` resets a
+row to *ready* when the account already holds credentials on disk, and that route announced it
+as `provider_accounts` alone — a change to a row. Since the seed rides `agent_list`, and since
+the seed deliberately ignores an account that is still `authenticating`, an install whose first
+ready credential arrives by cancelling out of a second sign-in sat unseeded until the next page
+load. The route now emits both. The `agent_list` producer census in `can-run-turns.test.ts`
+moves 10 → 11, which is that guard working as designed.
+
+**One residual, accepted rather than fixed.** The HTTP response to a model change and the
+`agent_list` event are separate transports, so an event *computed* before that write but
+*delivered* after it re-applies the older value in the browser. It needs a credential mutation
+concurrent with the model change, and it corrects itself on the next event or reload; the
+Reviewer tab has carried the identical exposure since docs/261. Closing it properly means
+versioning the payload, which is more mechanism than the window earns — but it is a real
+window, and it is recorded here rather than left for the next reviewer to re-find.
 
 **Two rows, not three columns**, in the same change. The description sat in a column beside the
 controls, wrapping at ~34 characters over seven lines; it is now above them, full width, and

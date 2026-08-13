@@ -492,6 +492,18 @@ export async function registerBootstrapRoutes(
           request.params.accountId,
         );
         deps.sseBroadcast("provider_accounts", { accounts: result.accounts });
+        /*
+          docs/252 req 9 — cancelling is a change in what the install can run,
+          not merely a change to a row. `cancelAccountAuth` resets the account
+          to **ready** when it already has credentials on disk (and to
+          `unavailable` when it does not), and this route used to announce that
+          only as an account update. The background-work setting is seeded and
+          re-resolved from `agent_list` (`buildAgentListPayload`), so without
+          this an install whose first ready credential arrives by *cancelling*
+          out of a second sign-in would sit unseeded until the next page load.
+          Found by the second round of cross-backend review.
+        */
+        deps.sseBroadcast("agent_list", buildAgentListPayload(deps.agentRegistry, deps.credentialStore, deps.providerAccountManager));
         return { success: true, account: result.account };
       } catch (err) {
         if (err instanceof ServiceError) {

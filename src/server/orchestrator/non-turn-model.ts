@@ -142,6 +142,29 @@ export interface NonTurnModelDeps {
   env?: NodeJS.ProcessEnv | undefined;
 }
 
+/** Options shared by the harness-eligibility walk and everything built on it. */
+export interface HarnessSearchOpts {
+  /**
+   * Move one harness to the BACK of the search without removing it — docs/261's
+   * reviewer derivation. See {@link harnessForSelection}.
+   */
+  avoidHarnessId?: AgentId;
+  /**
+   * Override "is this harness installed?".
+   *
+   * The default, `isHarnessInstalled`, reads the deployment's install report and
+   * answers **true for everything when there is no report**
+   * (`installed-harnesses.ts`) — deliberately permissive, because a wrong answer
+   * there is corrected on the next read. One caller cannot accept that:
+   * `seedNonTurnModel` writes its answer down, so it passes the probed
+   * `AgentRegistry` instead. Cross-backend review found the first attempt at
+   * that guard *declining to write* when the two disagreed, which left such an
+   * install with no setting at all; the predicate belongs in the walk so it
+   * moves on to a harness that is actually there.
+   */
+  isInstalled?: (harnessId: AgentId) => boolean;
+}
+
 /**
  * The first installed harness that can run `selection` with these credentials,
  * in catalogue order — or `undefined` when none can.
@@ -158,8 +181,9 @@ export interface NonTurnModelDeps {
 export function harnessForNonTurnSelection(
   selection: ModelSelection,
   credentials: readonly ConfiguredCredential[],
+  opts: HarnessSearchOpts = {},
 ): { harnessId: AgentId; selection: ModelSelection } | undefined {
-  return harnessForSelection(selection, credentials);
+  return harnessForSelection(selection, credentials, opts);
 }
 
 /**
@@ -181,7 +205,7 @@ export function harnessForNonTurnSelection(
 export function harnessForSelection(
   selection: ModelSelection,
   credentials: readonly ConfiguredCredential[],
-  opts: { avoidHarnessId?: AgentId } = {},
+  opts: HarnessSearchOpts = {},
 ): { harnessId: AgentId; selection: ModelSelection } | undefined {
   return harnessesForSelection(selection, credentials, opts)[0];
 }
@@ -221,11 +245,12 @@ export function harnessesPreferring(avoidHarnessId?: AgentId): readonly HarnessD
 export function harnessesForSelection(
   selection: ModelSelection,
   credentials: readonly ConfiguredCredential[],
-  opts: { avoidHarnessId?: AgentId } = {},
+  opts: HarnessSearchOpts = {},
 ): { harnessId: AgentId; selection: ModelSelection }[] {
+  const installed = opts.isInstalled ?? isHarnessInstalled;
   const out: { harnessId: AgentId; selection: ModelSelection }[] = [];
   for (const harness of harnessesPreferring(opts.avoidHarnessId)) {
-    if (!isHarnessInstalled(harness.id)) continue;
+    if (!installed(harness.id)) continue;
     if (isSelectionEligible(harness.id, selection, credentials)) {
       out.push({ harnessId: harness.id, selection });
       continue;
@@ -248,6 +273,7 @@ export function harnessesForSelection(
  */
 export function firstEligibleNonTurnSelection(
   credentials: readonly ConfiguredCredential[],
+  opts: HarnessSearchOpts = {},
 ): { harnessId: AgentId; selection: ModelSelection } | undefined {
   for (const service of allServices()) {
     for (const mode of service.modes) {
@@ -255,6 +281,7 @@ export function firstEligibleNonTurnSelection(
         const found = harnessForNonTurnSelection(
           { serviceId: service.id, billingMode: mode.kind, modelId: model.id },
           credentials,
+          opts,
         );
         if (found) return found;
       }

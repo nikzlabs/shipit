@@ -1223,20 +1223,20 @@ export class CredentialStore {
   /**
    * docs/252 req 9 — **write the setting once, and only if the write lands.**
    *
-   * Two things `setNonTurnModel` cannot give the seed, both found by
-   * cross-backend review:
+   * What `setNonTurnModel` cannot give the seed, found by cross-backend review:
+   * **a failed write must not linger in memory.** `save()` logs and swallows, so
+   * a full or read-only credentials directory would leave the process reporting
+   * a stored setting that vanishes on restart — and, if the install's services
+   * changed meanwhile, seeds a *different* model next boot with no user action.
+   * Rolling the field back means the next read simply tries again, which is the
+   * same bargain {@link stampHarnessOnboardingCompleted} strikes one field over.
    *
-   *  - **The check and the write are one operation.** "Is it empty?" and "then
-   *    store this" are asked from a read path that can run concurrently with
-   *    the user's own PUT; keeping them apart leaves a window in which the seed
-   *    overwrites the choice the user just made. Here there is no window.
-   *  - **A failed write does not linger in memory.** `save()` logs and swallows,
-   *    so a full or read-only credentials directory would leave the process
-   *    reporting a stored setting that vanishes on restart — and, if the
-   *    install's services changed meanwhile, seeds a *different* model next
-   *    boot with no user action. Rolling the field back means the next read
-   *    simply tries again, which is the same bargain
-   *    {@link stampHarnessOnboardingCompleted} strikes one field over.
+   * The check lives here too, so a caller cannot forget it — but **not** as a
+   * concurrency guard, and an earlier version of this comment claimed otherwise.
+   * Node runs one request at a time and neither this nor the caller's own
+   * check-then-write yields, so there was never a window between them for a
+   * concurrent PUT to slip into. The second review round was right to strike
+   * that claim.
    *
    * @returns what the setting holds afterwards — the existing value if there
    *   was one, the written value on success, `undefined` when the write failed.

@@ -387,6 +387,18 @@ the first of these. All six are fixed.
       (the seed checks the probed registry); a failed disk write was reported as
       a successful one (`stampNonTurnModel` is atomic and rolls back); and a
       `null` over the wire left the removed state behind (it re-proposes).
+- [x] **Second review round — two of those fixes missed a path, and one claim
+      was wrong.** The harness guard *declined to write* where the probe and the
+      install report disagreed, leaving no setting at all; it now steers the
+      walk (`HarnessSearchOpts.isInstalled`) instead of rejecting its result.
+      Cancelling a sign-in can reset a row to *ready* and announced only
+      `provider_accounts`, so that install stayed unseeded — the route now emits
+      `agent_list` too (producer census 10 → 11). And the claim that the new
+      store method closes a check/PUT race is withdrawn: Node runs one request
+      at a time and neither sequence yields, so the rollback is the reason the
+      method exists, not atomicity. One residual is recorded in `plan.md` rather
+      than fixed: a stale `agent_list` delivered after a newer PUT re-applies the
+      older value in the browser until the next event.
 - [x] **The single-credential card explained itself, and should say nothing.**
       "One account — nothing to route between yet. Add a second to choose an
       order and a strategy." came from the mock-up (audit cell D8) and was

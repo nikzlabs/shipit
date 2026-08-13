@@ -172,9 +172,18 @@ export function resolveHarnessOnboarding(
  *    answers *true for everything* when a deployment ships no install report
  *    (`installed-harnesses.ts`), so on such an install the catalogue walk can
  *    pick a model whose CLI is absent. That is survivable while the value is
- *    re-derived on every read; freezing it is not. The `AgentRegistry` has
- *    probed `$PATH`, so when the two disagree this declines to write and the
- *    live fallback continues — no worse than before, and never wrong forever.
+ *    re-derived on every read; freezing it is not. So the walk is given the
+ *    `AgentRegistry`'s probed answer instead — and **it keeps walking**: the
+ *    first version of this guard rejected the walk's result, which left an
+ *    install with no report and one harness installed holding no setting at
+ *    all. Found by the second round of cross-backend review.
+ *
+ * What this does NOT fix, because it is not the seed's to fix: the harness is
+ * derived at RUN time (`resolveNonTurnModel`), and that derivation still uses
+ * the permissive `isHarnessInstalled`. On an install with no report it can
+ * therefore still spawn an absent CLI — for any stored selection, seeded or
+ * chosen by hand. That is the pre-existing shape of req 9's derivation and is
+ * unchanged here.
  */
 export function seedNonTurnModel(
   credentialStore: CredentialStore | undefined,
@@ -189,12 +198,13 @@ export function seedNonTurnModel(
 ): void {
   if (!credentialStore) return;
   if (credentialStore.getNonTurnModel()) return;
+  const installed = new Set(agentRegistry.list().filter((a) => a.installed).map((a) => a.id));
   const first = firstEligibleNonTurnSelection(
     listConfiguredCredentials(credentialStore, env, { requireReadyAccounts: true }),
+    { isInstalled: (harnessId) => installed.has(harnessId) },
   );
   if (!first) return;
-  if (!agentRegistry.list().some((a) => a.id === first.harnessId && a.installed)) return;
-  // Atomic, and honest about a failed write — see `stampNonTurnModel`.
+  // Write-once, and honest about a failed write — see `stampNonTurnModel`.
   credentialStore.stampNonTurnModel(first.selection);
 }
 

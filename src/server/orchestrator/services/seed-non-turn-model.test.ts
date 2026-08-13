@@ -198,15 +198,38 @@ describe("seedNonTurnModel", () => {
    * read; freezing it is not. The registry has probed `$PATH`, so where the two
    * disagree the seed declines and the live fallback continues.
    */
-  it("declines to freeze a harness the registry does not report installed", async () => {
+  it("does not freeze a harness the registry says is absent", async () => {
     const { seedNonTurnModel } = await import("./settings.js");
     const { store, writes } = storeWith([
       route({ serviceId: "anthropic", billingMode: "sub", via: "account", status: "ready" }),
     ]);
 
+    // Anthropic's subscription runs on Claude Code alone, and the registry says
+    // Claude is not installed. Nothing to seed — and nothing wrongly seeded.
     seedNonTurnModel(store, registry(["codex"]), {});
 
     expect(writes).toEqual([]);
+  });
+
+  /**
+   * The second review round: the first version of the guard above REJECTED the
+   * walk's result instead of steering it, so an install with no install report
+   * and one harness present ended up with no setting at all — the empty state
+   * req 9 removes, reached by the code that exists to prevent it.
+   */
+  it("keeps walking to a harness that is installed, rather than declining", async () => {
+    const { seedNonTurnModel } = await import("./settings.js");
+    const { store, writes } = storeWith([
+      // Two credentials: one whose model only Claude can run, and one whose
+      // model Codex can. Claude leads the catalogue, and is absent.
+      route({ serviceId: "anthropic", billingMode: "sub", via: "account", status: "ready" }),
+      route({ serviceId: "openai", billingMode: "key" }),
+    ]);
+
+    seedNonTurnModel(store, registry(["codex"]), {});
+
+    expect(writes).toHaveLength(1);
+    expect(writes[0]).toMatchObject({ serviceId: "openai", billingMode: "key" });
   });
 
   /**
