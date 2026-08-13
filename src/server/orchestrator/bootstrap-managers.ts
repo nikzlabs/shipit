@@ -66,7 +66,7 @@ import { emitPluginReposUpdated } from "./service-manager-setup.js";
 import { createPluginInstallRunner } from "./plugin-install.js";
 import { sessionStateDirForWorkspace } from "./session-state-dir.js";
 import { pinStorePath } from "./plugin-pins.js";
-import { ensureBareCache } from "./repo-git.js";
+import { createPluginRepoFetcher } from "./plugin-fetch.js";
 
 /**
  * Static, process-lifetime metadata captured at startup and surfaced to the
@@ -477,6 +477,12 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   // sessions activating the same plugin repository for the first time would
   // otherwise clone into the same directory concurrently (review finding 7).
   const cacheOps = new Map<string, Promise<void>>();
+  // docs/262 req 10 — the fetch resolves the PLUGIN repository's own credential
+  // (a read-only App installation token, else the host PAT, else none) rather
+  // than riding the orchestrator's global helper, which only ever echoes the
+  // PAT. A plugin repository is a different repository from the project, so
+  // under GitHub App mode the project's token does not cover it.
+  const fetchPluginRepo = createPluginRepoFetcher({ authority: githubAuthManager, createRepoGit });
   // docs/262 — a plugin's `install` runs in a container of its own, holding
   // only that generation's overlay volume. Built per session because the
   // staging directory it installs against lives in that session's state dir.
@@ -525,17 +531,15 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
       // req 8 — pins are durable per consuming PROJECT, so every session of one
       // repository resolves a pinned tag to the same commit.
       ...(remoteUrl ? { consumerKey: remoteUrl } : {}),
+      // The queue stays here (it is about two sessions racing on one cache
+      // directory); WHICH credential the fetch uses is `plugin-fetch.ts`'s, and
+      // is resolved per call so a re-minted App token is always the current one.
       ensureCache: (cacheDir: string, repoUrl: string) => {
         const previous = cacheOps.get(cacheDir) ?? Promise.resolve();
         // eslint-disable-next-line no-restricted-syntax -- chaining a serial queue in a sync factory
         const next = previous
           .catch(() => undefined)
-          .then(async () => {
-            const { git } = await ensureBareCache(cacheDir, repoUrl, createRepoGit);
-            // ttl 0: activation resolves a branch to its tip, so serving it
-            // from a minute-old cache would activate a stale commit.
-            await git.fetchCache(0);
-          });
+          .then(() => fetchPluginRepo(cacheDir, repoUrl));
         cacheOps.set(cacheDir, next.catch(() => undefined));
         return next;
       },

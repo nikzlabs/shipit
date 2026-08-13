@@ -2,8 +2,16 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { execSync } from "node:child_process";
-import { RepoGit, ensureBareCache } from "./repo-git.js";
+import { execSync, execFileSync } from "node:child_process";
+import http from "node:http";
+import {
+  RepoGit,
+  ensureBareCache,
+  gitCredentialConfig,
+  gitCredentialEnv,
+  sanitizeGitEnv,
+  type GitRemoteCredential,
+} from "./repo-git.js";
 
 let tmpDir: string;
 let remoteDir: string;
@@ -189,5 +197,205 @@ describe("RepoGit overlay publish oracle (docs/183)", () => {
     const c1 = advanceRemote(seedDir, remoteUrl, "# moved\n");
     await cacheGit.fetchCache(0);
     expect(await cacheGit.resolveDefaultBranchCommit()).toBe(c1);
+  });
+});
+
+/**
+ * docs/262 req 10 — the per-instance credential. These drive REAL git, because
+ * every part of the mechanism that can be wrong is a git behavior: whether the
+ * inherited helper list is actually reset, whether a URL-scoped helper matches,
+ * and whether the helper git shells out to inherits our environment.
+ */
+describe("per-remote credential (RepoGit credential option)", () => {
+  /** A global gitconfig with a decoy helper — this stands in for the host PAT. */
+  function globalConfigWithDecoy(): string {
+    const file = path.join(tmpDir, "decoy.gitconfig");
+    fs.writeFileSync(
+      file,
+      "[credential]\n\thelper = \"!f() { echo \\\"username=x-access-token\\\"; "
+        + "echo \\\"password=DECOY-HOST-PAT\\\"; }; f\"\n",
+    );
+    return file;
+  }
+
+  /** Ask git what credential it would use for `host`, under our config + env. */
+  function askGit(host: string, credential: GitRemoteCredential): string {
+    const args = gitCredentialConfig(credential).flatMap((c) => ["-c", c]);
+    return execFileSync("git", [...args, "credential", "fill"], {
+      input: `protocol=https\nhost=${host}\n\n`,
+      // The same environment the production path builds — including the
+      // sanitizing, without which an inherited `GIT_ASKPASS` answers for a host
+      // the credential was never scoped to.
+      env: {
+        ...sanitizeGitEnv(process.env),
+        GIT_CONFIG_GLOBAL: globalConfigWithDecoy(),
+        GIT_TERMINAL_PROMPT: "0",
+        ...gitCredentialEnv(credential),
+      },
+      encoding: "utf-8",
+    });
+  }
+
+  const cred: GitRemoteCredential = {
+    origin: "https://github.com",
+    token: { username: "x-access-token", password: "ghs_plugin_installation_token" },
+  };
+
+  it("overrides the global helper instead of queueing behind it", () => {
+    // Without the reset the global helper answers first and the App token is
+    // never reached — which on an App-only install means no credential at all.
+    const answer = askGit("github.com", cred);
+    expect(answer).toContain("password=ghs_plugin_installation_token");
+    expect(answer).not.toContain("DECOY-HOST-PAT");
+  });
+
+  it("offers the credential to its own host only", () => {
+    // A host-blind helper hands the token to whatever host git asks about
+    // (docs/172 Gap 2). Another host must get no answer at all — with prompts
+    // disabled, that is a failure, not a silent leak.
+    expect(() => askGit("evil.example", cred)).toThrow();
+  });
+
+  it("keeps the token out of argv and out of the repository config", async () => {
+    const cacheDir = path.join(tmpDir, "cache-credential");
+    fs.mkdirSync(cacheDir, { recursive: true });
+    // A file:// remote needs no credential, so this also proves the extra
+    // config and environment do not disturb an ordinary fetch.
+    const git = new RepoGit(cacheDir, cred);
+    await git.cloneBare(remoteUrl);
+    await git.fetchCache(0);
+
+    expect(await git.readHead()).toMatch(/^[0-9a-f]{40}$/);
+    const config = fs.readFileSync(path.join(cacheDir, "config"), "utf-8");
+    expect(config).not.toContain(cred.token!.password);
+    expect(gitCredentialConfig(cred).join(" ")).not.toContain(cred.token!.password);
+  });
+
+  /**
+   * The end-to-end proof, through `RepoGit` and simple-git rather than a git
+   * command this test composed itself: a server that demands Basic auth records
+   * what git actually sent. Everything in between — simple-git's `-c` handling,
+   * `.env()`, the helper, the scoping — is exercised for real.
+   */
+  async function credentialGitSent(
+    credentialFor: (port: number) => GitRemoteCredential,
+  ): Promise<{ authorization: string | undefined; requests: number }> {
+    const seen: string[] = [];
+    let requests = 0;
+    const server = http.createServer((req, res) => {
+      requests += 1;
+      if (req.headers.authorization) seen.push(req.headers.authorization);
+      res.writeHead(401, { "WWW-Authenticate": "Basic realm=\"git\"" });
+      res.end("no");
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const port = (server.address() as { port: number }).port;
+    // `server-test-setup.ts` pins GIT_ALLOW_PROTOCOL to `file` so no test pays
+    // for a network round-trip. This server IS the loopback, and http is the
+    // only transport it can speak without a certificate — so opt in for the
+    // duration, and put the guard back.
+    const allowed = process.env.GIT_ALLOW_PROTOCOL;
+    process.env.GIT_ALLOW_PROTOCOL = "file:http";
+    try {
+      const cacheDir = path.join(tmpDir, `cache-http-${port}`);
+      fs.mkdirSync(cacheDir, { recursive: true });
+      const git = new RepoGit(cacheDir, credentialFor(port));
+      // Always refused — what matters is what git offered on the way.
+      await git.cloneBare(`http://127.0.0.1:${port}/plugin.git`).catch(() => undefined);
+    } finally {
+      if (allowed === undefined) Reflect.deleteProperty(process.env, "GIT_ALLOW_PROTOCOL");
+      else process.env.GIT_ALLOW_PROTOCOL = allowed;
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+    return { authorization: seen[0], requests };
+  }
+
+  it("actually sends the supplied credential — through simple-git, to a real server", async () => {
+    const { authorization } = await credentialGitSent((port) => ({
+      origin: `http://127.0.0.1:${port}`,
+      token: { username: "x-access-token", password: "ghs_plugin_installation_token" },
+    }));
+    expect(authorization).toBeDefined();
+    expect(Buffer.from(authorization!.replace("Basic ", ""), "base64").toString("utf8"))
+      .toBe("x-access-token:ghs_plugin_installation_token");
+  }, 20_000);
+
+  it("sends nothing when the request is for another origin", async () => {
+    // Same server, credential scoped elsewhere: git offers no credential at
+    // all rather than handing this one to a host it was not minted for.
+    const { authorization, requests } = await credentialGitSent(() => ({
+      origin: "https://github.com",
+      token: { username: "x-access-token", password: "ghs_plugin_installation_token" },
+    }));
+    // git DID ask the server (so this is not vacuously true) and offered nothing.
+    expect(requests).toBeGreaterThan(0);
+    expect(authorization).toBeUndefined();
+  }, 20_000);
+
+  it("supplies nothing — but still resets — when no token is given", async () => {
+    // The anonymous case (`mode: "none"`): a public repository must still
+    // fetch, and a stale global helper must NOT answer for it.
+    expect(gitCredentialConfig({ origin: "https://github.com" })).toEqual(["credential.helper="]);
+    const { authorization, requests } = await credentialGitSent((port) => ({
+      origin: `http://127.0.0.1:${port}`,
+    }));
+    expect(requests).toBeGreaterThan(0);
+    expect(authorization).toBeUndefined();
+  }, 20_000);
+
+  it("survives the environment variables simple-git guards", async () => {
+    // Any one of these present used to fail EVERY credentialed fetch before git
+    // ran — `PAGER=cat` was enough (review finding, P1).
+    const guarded = {
+      PAGER: "cat",
+      GIT_PAGER: "less",
+      GIT_ASKPASS: "/bin/echo",
+      SSH_ASKPASS: "/bin/echo",
+      GIT_SSH_COMMAND: "ssh -v",
+      GIT_EXTERNAL_DIFF: "/bin/echo",
+      GIT_CONFIG_COUNT: "1",
+      GIT_CONFIG_KEY_0: "credential.helper",
+      GIT_CONFIG_VALUE_0: "!f() { echo password=INJECTED; }; f",
+    };
+    const restore = { ...process.env };
+    Object.assign(process.env, guarded);
+    try {
+      const { authorization } = await credentialGitSent((port) => ({
+        origin: `http://127.0.0.1:${port}`,
+        token: { username: "x-access-token", password: "ghs_survives" },
+      }));
+      expect(authorization).toBeDefined();
+      // And the env-injected helper did not win either.
+      expect(Buffer.from(authorization!.replace("Basic ", ""), "base64").toString("utf8"))
+        .toBe("x-access-token:ghs_survives");
+    } finally {
+      for (const key of Object.keys(guarded)) Reflect.deleteProperty(process.env, key);
+      Object.assign(process.env, restore);
+    }
+  }, 20_000);
+
+  it("drops exactly the guarded variables and keeps the deliberate ones", () => {
+    const cleaned = sanitizeGitEnv({
+      PATH: "/usr/bin",
+      GIT_CONFIG_GLOBAL: "/credentials/.gitconfig",
+      GIT_EDITOR: "true",
+      PAGER: "cat",
+      GIT_CONFIG_COUNT: "2",
+      GIT_CONFIG_KEY_0: "x",
+      GIT_CONFIG_VALUE_0: "y",
+    });
+    expect(cleaned).toEqual({
+      PATH: "/usr/bin",
+      // Kept on purpose — identity, `safe.directory`, and no interactive editor.
+      GIT_CONFIG_GLOBAL: "/credentials/.gitconfig",
+      GIT_EDITOR: "true",
+    });
+  });
+
+  it("refuses to build a helper for an origin that could reshape the config key", () => {
+    expect(() => gitCredentialConfig({ origin: "https://github.com" })).not.toThrow();
+    expect(() => gitCredentialConfig({ origin: "https://github.com.helper=x" })).toThrow(/Refusing/);
+    expect(() => gitCredentialConfig({ origin: "github.com" })).toThrow(/Refusing/); // no scheme
+    expect(() => gitCredentialConfig({ origin: "" })).toThrow(/Refusing/);
   });
 });
