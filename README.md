@@ -136,6 +136,4 @@ Built and maintained by Nik Zherebtsov — [LinkedIn](https://www.linkedin.com/i
 
 ## License
 
-Apache 2.0 — see [LICENSE](LICENSE) for details. ShipIt is open-core; if the project opens to
-outside pull requests, contributions will require a [Contributor License Agreement](CLA.md) so they
-can also ship in the proprietary enterprise edition.
+Apache 2.0 — see [LICENSE](LICENSE) for details.
