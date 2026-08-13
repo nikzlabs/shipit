@@ -3,6 +3,7 @@
  * Handles: GET /bootstrap, settings, auth, reset.
  */
 
+import { loginIntegrationForService, nativeServiceForHarness } from "../shared/catalogue/index.js";
 import type { FastifyInstance } from "fastify";
 import { releaseResidentForCredentialChange } from "./resident-spawn-guard.js";
 import type { AgentId } from "../shared/types.js";
@@ -441,7 +442,13 @@ export async function registerBootstrapRoutes(
             ...(replacementAccountId ? { replacementAccountId } : {}),
           },
         );
-        deps.agentRegistry.refreshAuth(request.params.provider);
+        // Fan out: the credential this row provided is gone for every
+        // harness that could use it, not only the one that owned the flow.
+        const disconnectedLogin = loginIntegrationForService(
+          nativeServiceForHarness(request.params.provider),
+        );
+        if (disconnectedLogin) deps.agentRegistry.refreshAuthForLogin(disconnectedLogin);
+        else deps.agentRegistry.refreshAuth(request.params.provider);
         deps.sseBroadcast("provider_accounts", { accounts: result.accounts });
         deps.sseBroadcast("agent_list", buildAgentListPayload(deps.agentRegistry, deps.credentialStore, deps.providerAccountManager));
         return result;
@@ -550,7 +557,7 @@ export async function registerBootstrapRoutes(
         // docs/155 Phase 2b — unified SSE event family. Setting an API key
         // is the "authentication finished" signal for Claude; the client's
         // `agent_auth_complete` handler refreshes the agent list.
-        deps.sseBroadcast("agent_auth_complete", { agentId: "claude" });
+        deps.sseBroadcast("agent_auth_complete", { loginId: "anthropic-oauth" });
         deps.sseBroadcast("credential_routes", { routes: listCredentialRoutes(deps.credentialStore) });
         return { success: true };
       } catch (err) {
@@ -593,7 +600,7 @@ export async function registerBootstrapRoutes(
         );
         clearApiKey(deps.credentialStore);
         propagateCredentialChange();
-        deps.agentRegistry.refreshAuth("claude");
+        deps.agentRegistry.refreshAuthForLogin("anthropic-oauth");
         // docs/257 — a provider-wide sign-out can remove the LAST credential on
         // the install, so this is one of the sites where `canRunTurns` must ride
         // the broadcast: omit it and the composer stays enabled over an install
@@ -656,7 +663,7 @@ export async function registerBootstrapRoutes(
         // (legacy). Running it before the guard would abort someone's sign-in
         // for a sign-out that then 409s.
         deps.codexAuthManager.cancel();
-        deps.agentRegistry.refreshAuth("codex");
+        deps.agentRegistry.refreshAuthForLogin("openai-chatgpt");
         // docs/257 — same as the Claude sign-out above: the last credential can
         // go here, so the payload carries `canRunTurns`. The hand-rolled agent
         // list this replaced had also drifted from `listAgents` (no `reasoning`).

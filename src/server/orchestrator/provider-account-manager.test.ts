@@ -1,3 +1,4 @@
+import type { LoginIntegrationId } from "../shared/catalogue/types.js";
 import { REFUSAL_REPROBE_MS, refusalBlockedUntil } from "../shared/types/domain-types/credential-route.js";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
@@ -7,7 +8,6 @@ import path from "node:path";
 import { CredentialStore } from "./credential-store.js";
 import { accountServiceForHarness, ProviderAccountManager } from "./provider-account-manager.js";
 import type { AgentAuthManager, AgentAuthStartOptions, AgentAuthScopeOptions } from "./agent-auth-manager.js";
-import type { AgentId } from "../shared/types.js";
 
 /**
  * Minimal fake {@link AgentAuthManager} that records the scoped options it was
@@ -21,7 +21,7 @@ class FakeAuthManager extends EventEmitter implements AgentAuthManager {
   codeCalls: string[] = [];
   configured = false;
   hasSubmitCode = true;
-  constructor(readonly agentId: AgentId) { super(); }
+  constructor(readonly loginId: LoginIntegrationId) { super(); }
   /**
    * Mirrors the real managers: one process per provider, so `start` claims the
    * scope and `cancel` releases it. Tests that never start a flow see `null`,
@@ -503,9 +503,9 @@ describe("ProviderAccountManager", () => {
   describe("account-scoped auth flows (docs/150)", () => {
     function setup() {
       const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
-      const claude = new FakeAuthManager("claude");
-      const codex = new FakeAuthManager("codex");
-      mgr.attachAuthManagers(new Map([["claude", claude], ["codex", codex]]));
+      const claude = new FakeAuthManager("anthropic-oauth");
+      const codex = new FakeAuthManager("openai-chatgpt");
+      mgr.attachAuthManagers(new Map([["anthropic-oauth", claude], ["openai-chatgpt", codex]]));
       const account = mgr.create("anthropic", "Work");
       return { mgr, claude, codex, account };
     }

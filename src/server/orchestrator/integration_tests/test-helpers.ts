@@ -259,7 +259,9 @@ export class TestClient {
  * checkCredentials() always returns false.
  */
 export class StubAuthManager extends EventEmitter {
-  readonly agentId = "claude" as const;
+  // The auth-manager map is keyed off this (`buildAgentRuntime`), so a stub
+  // without it registers under `undefined` and every lookup 500s.
+  readonly loginId = "anthropic-oauth" as const;
   authenticated = true; // Tests assume auth is already done
   checkCredentials() { return this.authenticated; }
   startOAuthFlow() { /* no-op */ }

@@ -132,7 +132,7 @@ describe("ProviderAccountRows inline results and errors (docs/257 req 5)", () =>
     // error would have used (docs/150 req 22). It was a global toast.
     renderRows();
     act(() => {
-      useSettingsStore.getState().setProviderAccountNotice("claude", {
+      useSettingsStore.getState().setProviderAccountNotice("anthropic-oauth", {
         kind: "error",
         message: "That account is already connected.",
       });
@@ -148,7 +148,7 @@ describe("ProviderAccountRows inline results and errors (docs/257 req 5)", () =>
   it("scopes an external notice to its own provider", () => {
     renderRows("codex");
     act(() => {
-      useSettingsStore.getState().setProviderAccountNotice("claude", { kind: "error", message: "Claude's problem" });
+      useSettingsStore.getState().setProviderAccountNotice("anthropic-oauth", { kind: "error", message: "Claude's problem" });
     });
     expect(screen.queryByTestId("provider-accounts-notice-codex")).toBeNull();
   });

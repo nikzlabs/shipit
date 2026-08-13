@@ -48,7 +48,7 @@ import type {
   AgentAuthStartOptions,
   AgentAuthScopeOptions,
 } from "../../agent-auth-manager.js";
-import type { AgentId } from "../../../shared/types.js";
+import type { LoginIntegrationId } from "../../../shared/catalogue/types.js";
 import type { AgentAuthPendingDetails } from "../../../shared/types/ws-server-messages.js";
 
 // ---- Public types ----
@@ -287,7 +287,7 @@ export interface CodexAuthManagerOptions {
 }
 
 export class CodexAuthManager extends EventEmitter implements AgentAuthManager {
-  readonly agentId: AgentId = "codex";
+  readonly loginId: LoginIntegrationId = "openai-chatgpt";
 
   private proc: ChildProcess | null = null;
   private timeoutHandle: ReturnType<typeof setTimeout> | null = null;
@@ -646,7 +646,7 @@ export class CodexAuthManager extends EventEmitter implements AgentAuthManager {
     this.lastPendingEvent = ev;
     this.emit("codex_auth_pending", ev);
     // Normalized AgentAuthManager event — the orchestrator's SSE wiring
-    // rebroadcasts this as `agent_auth_pending` with `agentId: "codex"`,
+    // rebroadcasts this as `agent_auth_pending` with `loginId: "openai-chatgpt"`,
     // replacing the legacy `codex_auth_pending` SSE event family.
     this.emit("pending", {
       kind: "device-code",

@@ -32,6 +32,11 @@ table — a phase is checked off when its PR has merged.
 - [x] One writer per credential — `setApiKey` and `set_agent_env` write through
 - [x] Onboarding still connects a credential and reaches a runnable model
 - [x] Cross-backend review, findings applied (see `plan.md`)
+- [x] Re-key `AgentAuthManager` from `AgentId` to `LoginIntegrationId` — the map, the
+      `ProviderAccountManager` lookups, the `agent_auth_*` wire payloads, and the client
+      store/Settings key. Deferred out of phase 2 (the type was declared and unread); done
+      now. The credential ROOT on disk stays harness-keyed on purpose, and a completed
+      sign-in fans out via `refreshAuthForLogin` instead of naming one harness.
 - [ ] GLM's `zai-plan-usage` quota reader — tracked as **planning#339**. **Unblocked by
       phase 6** — a provider now declares its own `(serviceId, billingMode)` and the registry
       indexes on it, so this is an addition rather than a change. Req 15 stays unmet on

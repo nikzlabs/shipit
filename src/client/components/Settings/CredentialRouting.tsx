@@ -54,6 +54,7 @@
 // handler can observe.
 // eslint-disable-next-line no-restricted-imports -- unmount flush, see above
 import { useEffect, useRef, useState } from "react";
+import { loginForProvider } from "./ProviderAccountRows.js";
 import type { AgentId } from "../../../server/shared/types.js";
 import { credentialModeKey } from "../../../server/shared/types/domain-types/credential-route.js";
 import type { BillingMode } from "../../../server/shared/catalogue/index.js";
@@ -257,8 +258,9 @@ async function saveCutoff(
      * the same signal the notice accompanies. Weaker, and stated rather than
      * hidden.
      */
-    if (provider) {
-      useSettingsStore.getState().setProviderAccountNotice(provider, {
+    const loginId = provider ? loginForProvider(provider) : undefined;
+    if (loginId) {
+      useSettingsStore.getState().setProviderAccountNotice(loginId, {
         kind: "error",
         message: `Failed to update ${serviceName} failover cutoff`,
       });

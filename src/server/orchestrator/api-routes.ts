@@ -5,6 +5,7 @@
  * the original `registerApiRoutes()` signature for backwards compatibility.
  */
 
+import type { LoginIntegrationId } from "../shared/catalogue/types.js";
 import type { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
 import type { SessionManager } from "./sessions.js";
 import type { RepoStore } from "./repo-store.js";
@@ -142,7 +143,7 @@ export interface ApiDeps {
    * the WS `AppCtx` (built from `ApiDeps`) can dispatch `auth_required` to
    * the failing turn's backend instead of always restarting Claude OAuth.
    */
-  authManagers: Map<AgentId, AgentAuthManager>;
+  authManagers: Map<LoginIntegrationId, AgentAuthManager>;
   /**
    * docs/155 Phase 3 — per-agent run-params prep hooks. Threaded through so
    * the WS path can inject the right backend-specific fields (Claude's

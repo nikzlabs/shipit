@@ -1,3 +1,4 @@
+import type { LoginIntegrationId } from "../../shared/catalogue/types.js";
 import type { WsServerMessage, LogSource } from "../../shared/types.js";
 import type { GitManager } from "../../shared/git.js";
 import type { RepoGit } from "../repo-git.js";
@@ -112,7 +113,7 @@ export interface AppCtx {
    * `auth_required` dispatch in `agent-listeners.ts` — the failing turn's
    * backend gets its own auth flow restarted, not Claude's.
    */
-  authManagers: Map<AgentId, AgentAuthManager>;
+  authManagers: Map<LoginIntegrationId, AgentAuthManager>;
   /**
    * Per-agent run-params prep hooks (docs/155 Phase 3). Each backend's hook
    * injects its own Claude-only / Codex-only fields onto `AgentRunParams`

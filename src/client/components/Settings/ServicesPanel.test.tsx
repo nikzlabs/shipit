@@ -191,8 +191,8 @@ describe("ServicesPanel", () => {
       await userEvent.click(screen.getByTestId("add-service-mode-sub"));
 
       await waitFor(() => expect(logins()).toBe(1));
-      useSettingsStore.getState().setProviderAccountAuth("codex", "acct-openai-1", {
-        provider: "codex",
+      useSettingsStore.getState().setProviderAccountAuth("openai-chatgpt", "acct-openai-1", {
+        loginId: "openai-chatgpt",
         accountId: "acct-openai-1",
         verificationUri: "https://auth.openai.com/device",
         userCode: "WXYZ-1234",
@@ -294,8 +294,8 @@ describe("ServicesPanel", () => {
       expect(screen.queryByTestId("add-service-sign-in")).not.toBeInTheDocument();
       expect(footer()).toContain("Cancel");
 
-      useSettingsStore.getState().setProviderAccountAuth("codex", "acct-openai-1", {
-        provider: "codex", accountId: "acct-openai-1",
+      useSettingsStore.getState().setProviderAccountAuth("openai-chatgpt", "acct-openai-1", {
+        loginId: "openai-chatgpt", accountId: "acct-openai-1",
         verificationUri: "https://auth.openai.com/device", userCode: "WXYZ-1234",
       });
       await waitFor(() => expect(
@@ -374,8 +374,8 @@ describe("ServicesPanel", () => {
       expect(buffer).not.toHaveAttribute("open");
 
       // The box becomes the real thing, and the buffer is there to open.
-      useSettingsStore.getState().setProviderAccountAuth("claude", "acct-anthropic-1", {
-        provider: "claude", accountId: "acct-anthropic-1",
+      useSettingsStore.getState().setProviderAccountAuth("anthropic-oauth", "acct-anthropic-1", {
+        loginId: "anthropic-oauth", accountId: "acct-anthropic-1",
         verificationUri: "https://claude.ai/oauth/authorize",
       });
       await waitFor(() => expect(
@@ -463,8 +463,8 @@ describe("ServicesPanel", () => {
       await userEvent.click(within(buffer).getByText(/Claude CLI output/));
       expect(screen.getByTestId("provider-account-diagnostics-acct-anthropic-2")).toHaveAttribute("open");
 
-      useSettingsStore.getState().setProviderAccountAuth("claude", "acct-anthropic-2", {
-        provider: "claude", accountId: "acct-anthropic-2",
+      useSettingsStore.getState().setProviderAccountAuth("anthropic-oauth", "acct-anthropic-2", {
+        loginId: "anthropic-oauth", accountId: "acct-anthropic-2",
         verificationUri: "https://claude.ai/oauth/authorize",
       });
 
@@ -572,8 +572,8 @@ describe("ServicesPanel", () => {
 
     // And the challenge renders HERE — the same component the row renders,
     // inside the dialog the user is already in.
-    useSettingsStore.getState().setProviderAccountAuth("codex", "acct-openai-1", {
-      provider: "codex",
+    useSettingsStore.getState().setProviderAccountAuth("openai-chatgpt", "acct-openai-1", {
+      loginId: "openai-chatgpt",
       accountId: "acct-openai-1",
       verificationUri: "https://auth.openai.com/device",
       userCode: "WXYZ-1234",
@@ -691,8 +691,8 @@ describe("ServicesPanel", () => {
     // The mode click starts the sign-in (req 18) — no second press.
     await userEvent.click(screen.getByTestId("add-service-mode-sub"));
 
-    useSettingsStore.getState().setProviderAccountAuth("codex", "acct-openai-1", {
-      provider: "codex",
+    useSettingsStore.getState().setProviderAccountAuth("openai-chatgpt", "acct-openai-1", {
+      loginId: "openai-chatgpt",
       accountId: "acct-openai-1",
       verificationUri: "https://auth.openai.com/device",
       userCode: "WXYZ-1234",
@@ -702,8 +702,8 @@ describe("ServicesPanel", () => {
     ).toBeInTheDocument());
 
     // What the failure event does: clear the challenge, file the reason.
-    useSettingsStore.getState().setProviderAccountAuth("codex", "acct-openai-1", null);
-    useSettingsStore.getState().setProviderAccountAuthError("codex", "acct-openai-1", "That code expired.");
+    useSettingsStore.getState().setProviderAccountAuth("openai-chatgpt", "acct-openai-1", null);
+    useSettingsStore.getState().setProviderAccountAuthError("openai-chatgpt", "acct-openai-1", "That code expired.");
 
     await waitFor(() => expect(screen.getByTestId("add-service-signin-stalled")).toHaveTextContent("That code expired."));
     expect(screen.getByTestId("add-service-sign-in")).toHaveTextContent("Try again");
@@ -1131,7 +1131,7 @@ describe("ServicesPanel — one card component (docs/252 D2, D7, D8, D9)", () =>
   it("says nothing about routing on a subscription with no credential yet", () => {
     // req 17 leaves exactly one way for a card to be on screen with no
     // credential: a notice holding it open after the last account went.
-    useSettingsStore.getState().setProviderAccountNotice("claude", {
+    useSettingsStore.getState().setProviderAccountNotice("anthropic-oauth", {
       kind: "info", message: "Disconnected.",
     });
     render(<ServicesPanel agentList={[claudeAgent]} />);
@@ -1372,7 +1372,7 @@ describe("ServicesPanel keeps a card that has something to say (docs/257 req 5)"
 
   it("drops the card again once the notice is dismissed", async () => {
     useSettingsStore.getState().setProviderAccounts([]);
-    useSettingsStore.getState().setProviderAccountNotice("claude", { kind: "info", message: "Disconnected." });
+    useSettingsStore.getState().setProviderAccountNotice("anthropic-oauth", { kind: "info", message: "Disconnected." });
     render(<ServicesPanel agentList={[claudeAgent]} />);
     expect(screen.getByTestId("provider-account-rows-claude")).toBeInTheDocument();
 

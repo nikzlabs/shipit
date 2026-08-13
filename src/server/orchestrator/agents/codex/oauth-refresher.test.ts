@@ -280,7 +280,7 @@ describe("CodexOAuthRefresher", () => {
     // left), so without this the revoked row would keep reading "ready".
     expect(rig.sseCalls).toContainEqual({
       event: "agent_auth_failed",
-      data: { agentId: "codex", accountId: "codex-default", reason: "revoked" },
+      data: { loginId: "openai-chatgpt", accountId: "codex-default", reason: "revoked" },
     });
   });
 
@@ -440,7 +440,7 @@ describe("CodexOAuthRefresher", () => {
     expect(unauthenticated).toEqual(["codex-default"]);
     expect(rig.sseCalls).toContainEqual({
       event: "agent_auth_failed",
-      data: { agentId: "codex", accountId: "codex-default", reason: "missing_credentials" },
+      data: { loginId: "openai-chatgpt", accountId: "codex-default", reason: "missing_credentials" },
     });
     expect(rig.sseCalls.filter((call) => call.event === "agent_auth_failed")).toHaveLength(1);
 

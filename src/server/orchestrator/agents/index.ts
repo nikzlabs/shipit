@@ -1,9 +1,10 @@
 /**
  * Per-agent runtime tables (docs/155 Phase 5).
  *
- * `buildAgentRuntime()` assembles the four `Map<AgentId, …>` lookup tables the
- * orchestrator consumes at runtime — auth managers, limits providers,
- * run-params prep hooks, system-prompt fragments. Each table draws from the
+ * `buildAgentRuntime()` assembles the four lookup tables the orchestrator
+ * consumes at runtime — auth managers (keyed by `LoginIntegrationId`), limits
+ * providers, run-params prep hooks and system-prompt fragments (keyed by
+ * `AgentId`). Each table draws from the
  * per-agent barrels (`./claude/`, `./codex/`), so adding a new backend is
  * one new folder + one entry per table here.
  *
@@ -15,6 +16,7 @@
  */
 
 import type { AgentId } from "../../shared/types.js";
+import type { LoginIntegrationId } from "../../shared/catalogue/types.js";
 import type { AgentAuthManager } from "../agent-auth-manager.js";
 import type { LimitsProvider } from "./types.js";
 import type { PrepareRunParamsFn } from "../agent-run-params-prep.js";
@@ -37,8 +39,8 @@ export interface BuildAgentRuntimeDeps {
 }
 
 export interface AgentRuntime {
-  /** Auth managers keyed by agent id. See `AgentAuthManager`. */
-  authManagers: Map<AgentId, AgentAuthManager>;
+  /** Auth managers keyed by LOGIN FLOW. See `AgentAuthManager`. */
+  authManagers: Map<LoginIntegrationId, AgentAuthManager>;
   /** Subscription rate-limit providers keyed by agent id. */
   limitsProviders: Map<AgentId, LimitsProvider>;
   /** Pure run-params prep hooks keyed by agent id. */
@@ -57,10 +59,12 @@ export interface AgentRuntime {
  * barrel above, then appending one entry to each map.
  */
 export function buildAgentRuntime(deps: BuildAgentRuntimeDeps): AgentRuntime {
-  const authManagers = new Map<AgentId, AgentAuthManager>([
-    ["claude", deps.authManager],
-    ["codex", deps.codexAuthManager],
-  ]);
+  // Keyed by LOGIN FLOW, not by harness — see `AgentAuthManager`. The key is
+  // each manager's own `loginId`, so the table cannot disagree with the
+  // managers it holds.
+  const authManagers = new Map<LoginIntegrationId, AgentAuthManager>(
+    [deps.authManager, deps.codexAuthManager].map((mgr) => [mgr.loginId, mgr]),
+  );
 
   const limitsProviders = new Map<AgentId, LimitsProvider>([
     ["claude", new claude.ClaudeLimitsProvider({

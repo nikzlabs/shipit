@@ -1,3 +1,8 @@
+import type { LoginIntegrationId } from "../shared/catalogue/types.js";
+import {
+  credentialHarnessForLogin,
+  serviceForLoginIntegration,
+} from "../shared/catalogue/index.js";
 import path from "node:path";
 import fs from "node:fs/promises";
 import type { Server as HttpServer } from "node:http";
@@ -1394,7 +1399,7 @@ export interface EventWiringDeps {
    * migration, token re-push, agent_list broadcast). Adding a new backend
    * is one entry here. (docs/155 Phase 2 + 2b)
    */
-  authManagers: Map<AgentId, AgentAuthManager>;
+  authManagers: Map<LoginIntegrationId, AgentAuthManager>;
   githubAuthManager: GitHubAuthManager;
   agentRegistry: AgentRegistry;
   /** Used to re-register the default provider-account row after a fresh sign-in. */
@@ -1561,7 +1566,11 @@ export function wireEventHandlers(eventDeps: EventWiringDeps): void {
   // per-agent events (`auth_url`, `codex_auth_pending`, …) keep firing on
   // the concrete classes for back-compat with the unit tests and any
   // remaining direct listeners, but no SSE wiring depends on them.
-  for (const [agentId, mgr] of authManagers) {
+  for (const [loginId, mgr] of authManagers) {
+    // Three different questions, three different keys — see `AgentAuthManager`.
+    const serviceId = serviceForLoginIntegration(loginId);
+    // The CLI that runs this flow and owns the credential files it writes.
+    const credentialHarness = credentialHarnessForLogin(loginId);
     mgr.on("progress", (payload: AgentAuthProgressPayload) => {
       sseBroadcast("agent_auth_progress", payload);
     });
@@ -1575,7 +1584,7 @@ export function wireEventHandlers(eventDeps: EventWiringDeps): void {
       // (read synchronously here, while the flow is still active) so the
       // matching Settings row surfaces the pending URL/code.
       const accountId = mgr.getActiveAccountId() ?? undefined;
-      sseBroadcast("agent_auth_pending", { agentId, ...(accountId ? { accountId } : {}), details });
+      sseBroadcast("agent_auth_pending", { loginId, ...(accountId ? { accountId } : {}), details });
     });
 
     mgr.on("complete", () => {
@@ -1594,11 +1603,13 @@ export function wireEventHandlers(eventDeps: EventWiringDeps): void {
         // here rather than on the next turn: once the row goes `ready` it is
         // selectable, and a duplicate account is worst precisely when it gets
         // picked as a failover target for the account it duplicates.
-        const refusal = refuseIfAlreadyConnected(agentId, accountId, providerAccountManager);
+        const refusal = credentialHarness
+          ? refuseIfAlreadyConnected(credentialHarness, accountId, providerAccountManager)
+          : null;
         if (refusal) {
-          agentRegistry.refreshAuth(agentId);
+          agentRegistry.refreshAuthForLogin(loginId);
           sseBroadcast("agent_auth_failed", {
-            agentId,
+            loginId,
             accountId,
             reason: "duplicate",
             message: refusal,
@@ -1612,43 +1623,43 @@ export function wireEventHandlers(eventDeps: EventWiringDeps): void {
         // load-bearing: `ready` with a stale exhaustion stamp can make routing
         // report that every account is exhausted after a healthy re-login.
         try {
-          providerAccountManager.clearAccountExhaustion(accountServiceForHarness(agentId), accountId);
-          eventDeps.onCredentialReplaced?.(agentId, accountId);
-          providerAccountManager.setAccountStatus(accountServiceForHarness(agentId), accountId, "ready");
+          providerAccountManager.clearAccountExhaustion(serviceId!, accountId);
+          if (credentialHarness) eventDeps.onCredentialReplaced?.(credentialHarness, accountId);
+          providerAccountManager.setAccountStatus(serviceId!, accountId, "ready");
         } catch (err) {
           console.error(`[auth] failed to mark account ${accountId} ready:`, err);
           return;
         }
       } else {
-        console.warn(`[auth] ${agentId} reported a completed sign-in with no account scope; nothing to mark ready`);
+        console.warn(`[auth] ${loginId} reported a completed sign-in with no account scope; nothing to mark ready`);
       }
-      agentRegistry.refreshAuth(agentId);
-      repushTokenToPinnedSessions(agentId, accountId);
-      sseBroadcast("agent_auth_complete", { agentId, ...(accountId ? { accountId } : {}) });
+      agentRegistry.refreshAuthForLogin(loginId);
+      if (credentialHarness) repushTokenToPinnedSessions(credentialHarness, accountId);
+      sseBroadcast("agent_auth_complete", { loginId, ...(accountId ? { accountId } : {}) });
       sseBroadcast("agent_list", buildAgentListPayload(agentRegistry, credentialStore, providerAccountManager));
       sseBroadcast("provider_accounts", { accounts: providerAccountManager.list() });
     });
 
     mgr.on("failed", (payload?: AgentAuthFailedPayload) => {
       const accountId = mgr.getActiveAccountId() ?? undefined;
-      console.log(`[${agentId}-auth] flow failed:`, payload?.reason ?? "", payload?.message ?? "");
+      console.log(`[${loginId}] flow failed:`, payload?.reason ?? "", payload?.message ?? "");
       if (accountId) {
         // docs/150 — record the scoped failure on the row so Settings shows
         // "auth failed" instead of a stuck "authenticating" spinner.
         try {
-          providerAccountManager.setAccountStatus(accountServiceForHarness(agentId), accountId, "auth_failed");
+          providerAccountManager.setAccountStatus(serviceId!, accountId, "auth_failed");
         } catch (err) {
           console.error(`[auth] failed to mark account ${accountId} auth_failed:`, err);
         }
         sseBroadcast("provider_accounts", { accounts: providerAccountManager.list() });
       }
       sseBroadcast("agent_auth_failed", {
-        agentId,
+        loginId,
         ...(accountId ? { accountId } : {}),
         ...(payload?.reason ? { reason: payload.reason } : {}),
         ...(payload?.message ? { message: payload.message } : {}),
       });
-      agentRegistry.refreshAuth(agentId);
+      agentRegistry.refreshAuthForLogin(loginId);
       sseBroadcast("agent_list", buildAgentListPayload(agentRegistry, credentialStore, providerAccountManager));
     });
   }

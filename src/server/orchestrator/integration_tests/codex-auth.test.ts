@@ -9,9 +9,9 @@
  *   POST /api/provider-accounts/codex/:accountId/login
  *     -> CodexAuthManager spawns (faked) `codex login --device-auth`
  *     -> stdout prints the verification URL + user code
- *     -> SSE `agent_auth_pending` { agentId: "codex", accountId, details: { kind: "device-code", ... } }
+ *     -> SSE `agent_auth_pending` { loginId: "openai-chatgpt", accountId, details: { kind: "device-code", ... } }
  *   fake codex writes auth.json + exits 0
- *     -> SSE `agent_auth_complete` { agentId: "codex" }
+ *     -> SSE `agent_auth_complete` { loginId: "openai-chatgpt" }
  *     -> agentRegistry.refreshAuth("codex") flips hasRunnableModels
  *     -> SSE `agent_list` with codex hasRunnableModels: true
  *
@@ -307,8 +307,8 @@ describe("Integration: Codex device-auth flow (HTTP -> SSE -> agent_list)", () =
     fakeProc.stdout.push(Buffer.from(CANONICAL_OUTPUT, "utf-8"));
     const pending = await sse.waitFor(
       "agent_auth_pending",
-      (d) => (d as { agentId?: string }).agentId === "codex",
-    ) as { agentId: string; accountId?: string; details: { kind: string; verificationUri: string; userCode: string; expiresInSec: number } };
+      (d) => (d as { loginId?: string }).loginId === "openai-chatgpt",
+    ) as { loginId: string; accountId?: string; details: { kind: string; verificationUri: string; userCode: string; expiresInSec: number } };
     // docs/150 reqs 16/19 — the challenge must name its account. The client
     // files it under that row and has no provider-wide slot to fall back to,
     // so an unqualified event is dropped and the row sits blank forever.
@@ -326,8 +326,8 @@ describe("Integration: Codex device-auth flow (HTTP -> SSE -> agent_list)", () =
     // Completion broadcast, then agent_list with codex hasRunnableModels: true.
     const complete = await sse.waitFor(
       "agent_auth_complete",
-      (d) => (d as { agentId?: string }).agentId === "codex",
-    ) as { agentId: string; accountId?: string };
+      (d) => (d as { loginId?: string }).loginId === "openai-chatgpt",
+    ) as { loginId: string; accountId?: string };
     expect(complete.accountId).toBe(accountId);
     const after = await sse.waitFor(
       "agent_list",
@@ -349,7 +349,7 @@ describe("Integration: Codex device-auth flow (HTTP -> SSE -> agent_list)", () =
     fakeProc.stdout.push(Buffer.from(CANONICAL_OUTPUT, "utf-8"));
     await sse.waitFor(
       "agent_auth_pending",
-      (d) => (d as { agentId?: string }).agentId === "codex",
+      (d) => (d as { loginId?: string }).loginId === "openai-chatgpt",
     );
 
     // CLI exits non-zero without writing credentials.
@@ -357,8 +357,8 @@ describe("Integration: Codex device-auth flow (HTTP -> SSE -> agent_list)", () =
 
     const failed = await sse.waitFor(
       "agent_auth_failed",
-      (d) => (d as { agentId?: string }).agentId === "codex",
-    ) as { agentId: string; accountId?: string; reason: string; message: string };
+      (d) => (d as { loginId?: string }).loginId === "openai-chatgpt",
+    ) as { loginId: string; accountId?: string; reason: string; message: string };
     expect(failed.accountId).toBeDefined();
     expect(failed.reason).toBe("error");
     expect(failed.message).toMatch(/code 1/);
@@ -379,7 +379,7 @@ describe("Integration: Codex device-auth flow (HTTP -> SSE -> agent_list)", () =
     fakeProc.stdout.push(Buffer.from(CANONICAL_OUTPUT, "utf-8"));
     await sse.waitFor(
       "agent_auth_pending",
-      (d) => (d as { agentId?: string }).agentId === "codex",
+      (d) => (d as { loginId?: string }).loginId === "openai-chatgpt",
     );
 
     // A second start against the running flow re-emits the cached pending
@@ -389,8 +389,8 @@ describe("Integration: Codex device-auth flow (HTTP -> SSE -> agent_list)", () =
 
     const replay = await sse.waitFor(
       "agent_auth_pending",
-      (d) => (d as { agentId?: string }).agentId === "codex",
-    ) as { agentId: string; details: { kind: string; userCode: string } };
+      (d) => (d as { loginId?: string }).loginId === "openai-chatgpt",
+    ) as { loginId: string; details: { kind: string; userCode: string } };
     expect(replay.details.userCode).toBe("K8RE-8MIGC");
   });
 });

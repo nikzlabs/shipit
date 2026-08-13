@@ -1,3 +1,4 @@
+import type { LoginIntegrationId } from "../shared/catalogue/types.js";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -1141,9 +1142,9 @@ describe("wireEventHandlers — account-scoped auth SSE (docs/150)", () => {
     const mgr = new FakeAuthManager();
     const events: { event: string; data: Record<string, unknown> }[] = [];
     wireEventHandlers({
-      authManagers: new Map<AgentId, AgentAuthManager>([["claude", mgr as unknown as AgentAuthManager]]),
+      authManagers: new Map<LoginIntegrationId, AgentAuthManager>([["anthropic-oauth", mgr as unknown as AgentAuthManager]]),
       githubAuthManager: new EventEmitter() as unknown as GitHubAuthManager,
-      agentRegistry: { refreshAuth: () => {}, list: () => [] } as unknown as AgentRegistry,
+      agentRegistry: { refreshAuth: () => {}, refreshAuthForLogin: () => {}, list: () => [] } as unknown as AgentRegistry,
       providerAccountManager,
       sseBroadcast: (event, data) => events.push({ event, data: data as Record<string, unknown> }),
       credentialsDir: tmp,
@@ -1165,7 +1166,7 @@ describe("wireEventHandlers — account-scoped auth SSE (docs/150)", () => {
 
     expect(providerAccountManager.get("anthropic", account.id)?.status).toBe("ready");
     const complete = events.find((e) => e.event === "agent_auth_complete");
-    expect(complete?.data).toMatchObject({ agentId: "claude", accountId: account.id });
+    expect(complete?.data).toMatchObject({ loginId: "anthropic-oauth", accountId: account.id });
   });
 
   it("clears the replaced credential's exhaustion before making the row selectable", () => {
@@ -1222,7 +1223,7 @@ describe("wireEventHandlers — account-scoped auth SSE (docs/150)", () => {
     expect(events.filter((e) => e.event === "agent_auth_complete")).toHaveLength(1);
     expect(providerAccountManager.list("anthropic").map((a) => a.id)).toEqual([account.id]);
     const failed = events.filter((e) => e.event === "agent_auth_failed").at(-1);
-    expect(failed?.data).toMatchObject({ agentId: "claude", accountId: second.id, reason: "duplicate" });
+    expect(failed?.data).toMatchObject({ loginId: "anthropic-oauth", accountId: second.id, reason: "duplicate" });
     expect(String(failed?.data.message)).toContain("already connected");
   });
 
@@ -1233,7 +1234,7 @@ describe("wireEventHandlers — account-scoped auth SSE (docs/150)", () => {
 
     expect(providerAccountManager.get("anthropic", account.id)?.status).toBe("auth_failed");
     const failed = events.find((e) => e.event === "agent_auth_failed");
-    expect(failed?.data).toMatchObject({ agentId: "claude", accountId: account.id, reason: "error" });
+    expect(failed?.data).toMatchObject({ loginId: "anthropic-oauth", accountId: account.id, reason: "error" });
   });
 
   it("scoped pending qualifies the SSE with accountId", () => {
@@ -1242,21 +1243,21 @@ describe("wireEventHandlers — account-scoped auth SSE (docs/150)", () => {
     mgr.emit("pending", { kind: "code-paste-url", verificationUri: "https://example.com" });
 
     const pending = events.find((e) => e.event === "agent_auth_pending");
-    expect(pending?.data).toMatchObject({ agentId: "claude", accountId: account.id });
+    expect(pending?.data).toMatchObject({ loginId: "anthropic-oauth", accountId: account.id });
   });
 
   it("rebroadcasts auth progress and log diagnostics", () => {
     const { mgr, events, account } = setup();
     mgr.activeAccountId = account.id;
     mgr.emit("progress", {
-      agentId: "claude",
+      loginId: "anthropic-oauth",
       accountId: account.id,
       attemptId: "attempt-1",
       phase: "waiting_for_url",
       message: "Waiting for Claude CLI.",
     });
     mgr.emit("log", {
-      agentId: "claude",
+      loginId: "anthropic-oauth",
       accountId: account.id,
       attemptId: "attempt-1",
       timestamp: "2026-07-11T00:00:00.000Z",
@@ -1266,13 +1267,13 @@ describe("wireEventHandlers — account-scoped auth SSE (docs/150)", () => {
     });
 
     expect(events.find((e) => e.event === "agent_auth_progress")?.data).toMatchObject({
-      agentId: "claude",
+      loginId: "anthropic-oauth",
       accountId: account.id,
       attemptId: "attempt-1",
       phase: "waiting_for_url",
     });
     expect(events.find((e) => e.event === "agent_auth_log")?.data).toMatchObject({
-      agentId: "claude",
+      loginId: "anthropic-oauth",
       accountId: account.id,
       attemptId: "attempt-1",
       source: "shipit",
@@ -1292,7 +1293,7 @@ describe("wireEventHandlers — account-scoped auth SSE (docs/150)", () => {
     mgr.emit("complete");
 
     const complete = events.find((e) => e.event === "agent_auth_complete");
-    expect(complete?.data).toMatchObject({ agentId: "claude" });
+    expect(complete?.data).toMatchObject({ loginId: "anthropic-oauth" });
     expect(complete?.data.accountId).toBeUndefined();
     // No row invented (the old `else` called migrateDefaultAccounts here) and
     // none flipped to ready off an unattributable completion.

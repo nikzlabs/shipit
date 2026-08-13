@@ -12,12 +12,13 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { EventEmitter } from "node:events";
 import type { AgentId, AgentCapabilities } from "./types/agent-types.js";
-import type { BillingMode } from "./catalogue/types.js";
+import type { BillingMode, LoginIntegrationId } from "./catalogue/types.js";
 import {
   HARNESSES,
   catalogueModelIdsForHarness,
   credentialStorageEnvNames,
   eligibleEntriesForHarness,
+  harnessesForLoginIntegration,
   type ConfiguredCredential,
 } from "./catalogue/index.js";
 import { readInstalledHarnesses } from "./installed-harnesses.js";
@@ -412,6 +413,27 @@ export class AgentRegistry extends EventEmitter<AgentRegistryEvents> {
     if (wasRunnable && !info.hasRunnableModels) {
       this.emit("sign-out", id);
     }
+  }
+
+  /**
+   * Refresh every harness a completed sign-in on `loginId` can change the
+   * answer for.
+   *
+   * **Not a convenience wrapper — it is the reason the auth managers re-keyed.**
+   * `refreshAuth` is correctly keyed by harness ("can this CLI run a model
+   * now?"), but the CALLER only knows which login flow finished. While every
+   * login serves exactly one harness the two are indistinguishable, so the old
+   * `refreshAuth(agentId)` call sites read as correct and were correct by
+   * coincidence. A provider-neutral harness signed in against an existing
+   * service breaks that coincidence silently: the credential changes for two
+   * harnesses and only one re-evaluates.
+   *
+   * Routing the fan-out through the catalogue means the set widens on its own
+   * when such a harness is declared, instead of needing every call site found
+   * again. See `harnessesForLoginIntegration`.
+   */
+  refreshAuthForLogin(loginId: LoginIntegrationId): void {
+    for (const harnessId of harnessesForLoginIntegration(loginId)) this.refreshAuth(harnessId);
   }
 
   /**

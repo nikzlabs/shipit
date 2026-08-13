@@ -1,5 +1,6 @@
+import type { LoginIntegrationId } from "../../server/shared/catalogue/types.js";
 import { create } from "zustand";
-import type { AgentId, CredentialRoute, PermissionMode, FileContextRef } from "../../server/shared/types.js";
+import type { CredentialRoute, PermissionMode, FileContextRef } from "../../server/shared/types.js";
 import type { ReviewerSlotView } from "../../server/shared/types/agent-types.js";
 import {
   getSavedNotifyOnFinish, saveNotifyOnFinish,
@@ -35,8 +36,15 @@ import type { AgentAuthPhase } from "../../server/shared/types/ws-server-message
  * `agent_auth_complete` / `agent_auth_failed`. See
  * docs/119-codex-subscription-auth/plan.md and docs/155 Phase 2b.
  */
+/**
+ * Keyed by the LOGIN FLOW that produced the challenge, not by the harness that
+ * will consume the credential — matching the `agent_auth_*` wire shape. The
+ * writer (the SSE handler) and the readers (the Settings rows) must agree on
+ * this key or a challenge silently renders nowhere, which is why the parameter
+ * is typed rather than a bare string.
+ */
 export interface ProviderAccountAuth {
-  provider: AgentId;
+  loginId: LoginIntegrationId;
   accountId: string;
   verificationUri: string;
   userCode?: string;
@@ -52,8 +60,8 @@ export interface ProviderAccountAuth {
  * device code on account A's row. Keying by provider *and* account id keeps
  * each row's challenge, error, and completion independent.
  */
-export function providerAccountAuthKey(provider: AgentId, accountId: string): string {
-  return `${provider}:${accountId}`;
+export function providerAccountAuthKey(loginId: LoginIntegrationId, accountId: string): string {
+  return `${loginId}:${accountId}`;
 }
 
 /** Immutably set `key` to `value`, or drop it entirely when `value` is null. */
@@ -156,7 +164,7 @@ interface SettingsState {
    *  - A failover cutoff is flushed from an **unmount cleanup**, where the
    *    component's state and setters are already gone.
    */
-  providerAccountNotices: Partial<Record<AgentId, ProviderAccountNotice>>;
+  providerAccountNotices: Partial<Record<LoginIntegrationId, ProviderAccountNotice>>;
   hasSystemPrompt: boolean;
   systemPromptContent: string;
   /**
@@ -327,7 +335,7 @@ interface SettingsState {
   /** docs/257 req 9 — replace the server-persisted onboarding-completed stamp. */
   setHarnessOnboardingCompletedAt: (at: string | null) => void;
   /** docs/257 req 5 — set or clear a provider's card-level notice. */
-  setProviderAccountNotice: (provider: AgentId, notice: ProviderAccountNotice | null) => void;
+  setProviderAccountNotice: (loginId: LoginIntegrationId, notice: ProviderAccountNotice | null) => void;
   setHasSystemPrompt: (has: boolean) => void;
   setSystemPromptContent: (content: string) => void;
   setMaxIdleContainers: (n: number) => void;
@@ -391,9 +399,9 @@ interface SettingsState {
    */
   setReviewers: (reviewers: ReviewerSlotView[]) => void;
   /** Set (or clear, with `null`) one account's in-flight sign-in challenge. */
-  setProviderAccountAuth: (provider: AgentId, accountId: string, auth: ProviderAccountAuth | null) => void;
+  setProviderAccountAuth: (loginId: LoginIntegrationId, accountId: string, auth: ProviderAccountAuth | null) => void;
   /** Set (or clear, with `null`) one account's last sign-in failure message. */
-  setProviderAccountAuthError: (provider: AgentId, accountId: string, message: string | null) => void;
+  setProviderAccountAuthError: (loginId: LoginIntegrationId, accountId: string, message: string | null) => void;
   /**
    * Update the permission mode. When `sessionId` is provided, the change is
    * scoped to that session only. When `sessionId` is undefined (e.g. on the
@@ -473,13 +481,13 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 
   setHarnessOnboardingCompletedAt: (at) => set({ harnessOnboardingCompletedAt: at }),
 
-  setProviderAccountNotice: (provider, notice) =>
+  setProviderAccountNotice: (loginId, notice) =>
     set((state) => ({
       providerAccountNotices: notice === null
         ? Object.fromEntries(
-            Object.entries(state.providerAccountNotices).filter(([id]) => id !== provider),
+            Object.entries(state.providerAccountNotices).filter(([id]) => id !== loginId),
           )
-        : { ...state.providerAccountNotices, [provider]: notice },
+        : { ...state.providerAccountNotices, [loginId]: notice },
     })),
 
   setHasSystemPrompt: (has) => set({ hasSystemPrompt: has }),
@@ -664,19 +672,19 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   setCredentialRoutes: (routes) => set({ credentialRoutes: routes }),
   setNonTurnModel: (pinned, resolved) => set({ nonTurnModel: pinned, nonTurnModelResolved: resolved }),
   setReviewers: (reviewers) => set({ reviewers }),
-  setProviderAccountAuth: (provider, accountId, auth) =>
+  setProviderAccountAuth: (loginId, accountId, auth) =>
     set((state) => ({
       providerAccountAuths: withKey(
         state.providerAccountAuths,
-        providerAccountAuthKey(provider, accountId),
+        providerAccountAuthKey(loginId, accountId),
         auth,
       ),
     })),
-  setProviderAccountAuthError: (provider, accountId, message) =>
+  setProviderAccountAuthError: (loginId, accountId, message) =>
     set((state) => ({
       providerAccountAuthErrors: withKey(
         state.providerAccountAuthErrors,
-        providerAccountAuthKey(provider, accountId),
+        providerAccountAuthKey(loginId, accountId),
         message,
       ),
     })),

@@ -328,7 +328,7 @@ export class CodexOAuthRefresher extends EventEmitter {
     // files sign-in state per account and has no provider-wide slot left to
     // fall back to, so an unqualified `agent_auth_failed` is dropped: the row
     // of the account that was actually revoked would keep reading "ready".
-    this.deps.sseBroadcast("agent_auth_failed", { agentId: "codex", accountId, reason });
+    this.deps.sseBroadcast("agent_auth_failed", { loginId: "openai-chatgpt", accountId, reason });
   }
 
   /** Clear the terminal-state latch when re-auth wrote a healthy source file. */

@@ -1,3 +1,4 @@
+import { serviceForLoginIntegration } from "../shared/catalogue/index.js";
 import path from "node:path";
 import Docker from "dockerode";
 import type { AgentId, DockerMemoryStats } from "../shared/types.js";
@@ -957,7 +958,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
         credentialStore,
       });
     });
-    authManagers.get("codex")?.on("complete", () => {
+    authManagers.get("openai-chatgpt")?.on("complete", () => {
       codexRefresher.refreshNow().catch((err: unknown) => {
         console.error("[codex-oauth-refresh] post-auth refresh failed:", err);
       });
@@ -994,8 +995,16 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     // `complete` event fires alongside each backend's legacy
     // `auth_complete` / `codex_auth_complete` emit so existing per-agent SSE
     // wiring is untouched. (docs/155 Phase 2)
-    for (const [agentId, mgr] of authManagers) {
-      const provider = limitsProviders.get(agentId);
+    // Pair each login flow with the quota provider for the SUBSCRIPTION it
+    // authenticates, matching on what both sides declare — the login's service
+    // and the provider's own `(serviceId, billingMode)`. The previous pairing
+    // went through a shared `AgentId` key, which only lined the two up because
+    // each harness happened to have one vendor.
+    for (const [loginId, mgr] of authManagers) {
+      const loginServiceId = serviceForLoginIntegration(loginId);
+      const provider = [...limitsProviders.values()].find(
+        (candidate) => candidate.serviceId === loginServiceId && candidate.billingMode === "sub",
+      );
       if (!provider) continue;
       const modeKey = limitsModeKey(provider);
       mgr.on("complete", () => {

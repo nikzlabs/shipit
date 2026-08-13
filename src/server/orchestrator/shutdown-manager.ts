@@ -1,7 +1,7 @@
+import type { LoginIntegrationId } from "../shared/catalogue/types.js";
 import type { Server as HttpServer } from "node:http";
 import type { FastifyInstance } from "fastify";
 import type { AgentAuthManager } from "./agent-auth-manager.js";
-import type { AgentId } from "../shared/types.js";
 import type { SessionRunnerRegistry } from "./session-runner.js";
 import type { SessionContainerManager } from "./session-container.js";
 import type { DatabaseManager } from "../shared/database.js";
@@ -18,7 +18,7 @@ export interface ShutdownDeps {
    * iterates this map so adding a new backend doesn't require an explicit
    * `kill()` line here. (docs/155 Phase 2)
    */
-  authManagers: Map<AgentId, AgentAuthManager>;
+  authManagers: Map<LoginIntegrationId, AgentAuthManager>;
   runnerRegistry: SessionRunnerRegistry;
   /**
    * Pending post-turn auto-pushes. Session-keyed and app-scoped rather than
