@@ -58,7 +58,9 @@ describe("canonicalizeTool", () => {
     expect(canonicalizeTool("codex", "mcpToolCall")).toBe("mcp");
     expect(canonicalizeTool("codex", "dynamicToolCall")).toBe("mcp");
     expect(canonicalizeTool("codex", "collabToolCall")).toBe("agent");
+    expect(canonicalizeTool("codex", "collabAgentToolCall")).toBe("agent");
     expect(canonicalizeTool("codex", "spawn_agent")).toBe("agent");
+    expect(canonicalizeTool("codex", "spawnAgent")).toBe("agent");
     expect(canonicalizeTool("codex", "webSearch")).toBe("web_search");
     expect(canonicalizeTool("codex", "imageView")).toBe("image_view");
     expect(canonicalizeTool("codex", "tool_search")).toBe("tool_search");

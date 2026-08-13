@@ -1137,10 +1137,13 @@ describe("CodexAdapter", () => {
 
     fakeProc.sendNotification("item/started", {
       item: {
-        type: "collabToolCall",
+        type: "collabAgentToolCall",
         id: "agent-001",
-        tool: "spawn_agent",
-        newThreadId: "thread-child-1",
+        tool: "spawnAgent",
+        receiverThreadIds: ["thread-child-1"],
+        senderThreadId: "thread-abc-123",
+        status: "inProgress",
+        agentsStates: { "thread-child-1": { status: "running" } },
         prompt: "Review the session lifecycle code.\nFocus on reconnect behavior.",
       },
     });
@@ -1164,6 +1167,181 @@ describe("CodexAdapter", () => {
           },
         },
       ],
+    });
+  });
+
+  it("nests Codex child-thread progress and final output under the spawn call", async () => {
+    await createAndInit("Hello");
+    events.length = 0;
+
+    fakeProc.sendNotification("item/started", {
+      item: {
+        type: "collabAgentToolCall",
+        id: "agent-001",
+        tool: "spawnAgent",
+        receiverThreadIds: ["thread-child-1"],
+        senderThreadId: "thread-abc-123",
+        status: "inProgress",
+        agentsStates: { "thread-child-1": { status: "running" } },
+        prompt: "Inspect the reconnect path.",
+      },
+    });
+    fakeProc.sendNotification("thread/started", {
+      thread: { id: "thread-child-1", agentNickname: "Scout", agentRole: "explorer" },
+    });
+    fakeProc.sendNotification("turn/started", {
+      threadId: "thread-child-1",
+      turn: { id: "child-turn-1" },
+    });
+    fakeProc.sendNotification("item/started", {
+      threadId: "thread-child-1",
+      item: { type: "commandExecution", id: "child-shell-1", command: "rg reconnect src" },
+    });
+    fakeProc.sendNotification("item/completed", {
+      threadId: "thread-child-1",
+      item: {
+        type: "commandExecution",
+        id: "child-shell-1",
+        command: "rg reconnect src",
+        aggregatedOutput: "3 matches",
+        exitCode: 0,
+      },
+    });
+    fakeProc.sendNotification("item/agentMessage/delta", {
+      threadId: "thread-child-1",
+      itemId: "child-message-1",
+      delta: "Reconnect is safe.",
+    });
+    fakeProc.sendNotification("item/completed", {
+      threadId: "thread-child-1",
+      item: { type: "agentMessage", id: "child-message-1", text: "Reconnect is safe." },
+    });
+    fakeProc.sendNotification("item/completed", {
+      item: {
+        type: "collabAgentToolCall",
+        id: "agent-001",
+        tool: "spawnAgent",
+        receiverThreadIds: ["thread-child-1"],
+        senderThreadId: "thread-abc-123",
+        status: "completed",
+        agentsStates: { "thread-child-1": { status: "completed", message: "Reconnect is safe." } },
+      },
+    });
+
+    await vi.waitFor(() => expect(events).toHaveLength(5));
+    expect(events[1]).toMatchObject({
+      type: "agent_assistant",
+      parentToolUseId: "agent-001",
+      content: [{ type: "tool_use", id: "child-shell-1", name: "shell" }],
+    });
+    expect(events[2]).toMatchObject({
+      type: "agent_tool_result",
+      parentToolUseId: "agent-001",
+      content: [{ type: "tool_result", tool_use_id: "child-shell-1", content: "3 matches" }],
+    });
+    expect(events[3]).toMatchObject({
+      type: "agent_assistant",
+      parentToolUseId: "agent-001",
+      content: [{ type: "text", text: "Reconnect is safe." }],
+    });
+    expect(events[4]).toMatchObject({
+      type: "agent_tool_result",
+      content: [{ type: "tool_result", tool_use_id: "agent-001", content: "Reconnect is safe." }],
+    });
+
+    fakeProc.sendNotification("turn/completed", {
+      threadId: "thread-child-1",
+      turn: { id: "child-turn-1", status: "completed" },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(events).toHaveLength(5);
+    expect(events.some((event) => event.type === "agent_result")).toBe(false);
+
+    fakeProc.sendNotification("turn/completed", {
+      threadId: "thread-abc-123",
+      turn: { id: "parent-turn-1", status: "completed" },
+    });
+    await vi.waitFor(() => expect(events).toHaveLength(6));
+    expect(events[5]).toMatchObject({
+      type: "agent_result",
+      status: "success",
+      sessionId: "thread-abc-123",
+    });
+  });
+
+  it("closes a resultless Codex spawn card before the parent turn ends", async () => {
+    await createAndInit("Hello");
+    events.length = 0;
+
+    fakeProc.sendNotification("item/started", {
+      threadId: "thread-abc-123",
+      item: {
+        type: "collabAgentToolCall",
+        id: "agent-orphan",
+        tool: "spawnAgent",
+        receiverThreadIds: ["thread-child-orphan"],
+        senderThreadId: "thread-abc-123",
+        status: "inProgress",
+        agentsStates: { "thread-child-orphan": { status: "running" } },
+        prompt: "Investigate in the background.",
+      },
+    });
+    fakeProc.sendNotification("turn/completed", {
+      threadId: "thread-abc-123",
+      turn: { id: "parent-turn-1", status: "completed" },
+    });
+
+    await vi.waitFor(() => expect(events).toHaveLength(3));
+    expect(events[1]).toMatchObject({
+      type: "agent_tool_result",
+      content: [{
+        type: "tool_result",
+        tool_use_id: "agent-orphan",
+        content: "Subagent ended without a final response.",
+      }],
+    });
+    expect(events[2]).toMatchObject({ type: "agent_result", sessionId: "thread-abc-123" });
+  });
+
+  it("marks an errored Codex child result as an error", async () => {
+    await createAndInit("Hello");
+    events.length = 0;
+
+    fakeProc.sendNotification("item/started", {
+      threadId: "thread-abc-123",
+      item: {
+        type: "collabAgentToolCall",
+        id: "agent-failed",
+        tool: "spawnAgent",
+        receiverThreadIds: ["thread-child-failed"],
+        senderThreadId: "thread-abc-123",
+        status: "inProgress",
+        agentsStates: { "thread-child-failed": { status: "running" } },
+        prompt: "Check the build.",
+      },
+    });
+    fakeProc.sendNotification("item/completed", {
+      threadId: "thread-abc-123",
+      item: {
+        type: "collabAgentToolCall",
+        id: "wait-failed",
+        tool: "wait",
+        receiverThreadIds: ["thread-child-failed"],
+        senderThreadId: "thread-abc-123",
+        status: "failed",
+        agentsStates: { "thread-child-failed": { status: "errored", message: "Build failed." } },
+      },
+    });
+
+    await vi.waitFor(() => expect(events).toHaveLength(4));
+    expect(events[3]).toMatchObject({
+      type: "agent_tool_result",
+      content: [{
+        type: "tool_result",
+        tool_use_id: "agent-failed",
+        content: "Build failed.",
+        is_error: true,
+      }],
     });
   });
 

@@ -122,6 +122,18 @@ export class CodexEventHandler {
   private emittedToolUseIds = new Set<string>();
 
   /**
+   * Codex app-server streams child-thread items on the same connection as the
+   * parent turn. Relate each child thread to the `spawn_agent` item that made
+   * it so those events use ShipIt's existing nested-subagent transcript path.
+   */
+  private childThreadParents = new Map<string, string>();
+
+  /** Spawn calls for which the child has already produced its final answer. */
+  private completedSubagentReports = new Set<string>();
+  private openSubagentSpawns = new Set<string>();
+  private latestSubagentMessages = new Map<string, string>();
+
+  /**
    * docs/178 — true once ShipIt has asked this app-server to compact (via
    * `compact()` or a `compact`-flagged run). Codex emits no manual/auto field on
    * its `contextCompaction` items, so the adapter labels the normalized event by
@@ -176,6 +188,10 @@ export class CodexEventHandler {
     this.turnStartTime = Date.now();
     this.cwd = cwd;
     this.emittedToolUseIds.clear();
+    this.childThreadParents.clear();
+    this.completedSubagentReports.clear();
+    this.openSubagentSpawns.clear();
+    this.latestSubagentMessages.clear();
   }
 
   // ---- Server→client request handling ----
@@ -267,7 +283,10 @@ export class CodexEventHandler {
         // CLI 0.132.x nests the id under `thread.id`; older shape had a
         // top-level `threadId`. Accept both.
         const thread = params.thread as { id?: string } | undefined;
-        this.threadId = thread?.id ?? (params.threadId as string) ?? this.threadId;
+        // The response to thread/start or thread/resume already establishes
+        // the parent id. Child agents also announce thread/started on this
+        // connection, so never replace a known parent resume key here.
+        this.threadId ??= thread?.id ?? (params.threadId as string) ?? null;
         break;
       }
 
@@ -275,6 +294,7 @@ export class CodexEventHandler {
         // Turn has begun — capture its id so live steering can pass it as
         // `expectedTurnId` on `turn/steer`. The v2 shape nests it under
         // `turn.id`; accept a top-level `turnId` defensively.
+        if (!this.isParentThread(params)) break;
         const turn = params.turn as { id?: string } | undefined;
         this.currentTurnId = turn?.id ?? (params.turnId as string) ?? this.currentTurnId;
         break;
@@ -294,6 +314,7 @@ export class CodexEventHandler {
       }
 
       case "thread/tokenUsage/updated": {
+        if (!this.isParentThread(params)) break;
         this.rateLimits.recordTokenUsage(params.tokenUsage as CodexTokenUsage | undefined);
         break;
       }
@@ -305,22 +326,40 @@ export class CodexEventHandler {
       }
 
       case "item/started": {
-        this.handleItem(params, "started");
+        this.handleItem(params, "started", this.parentToolUseIdFor(params));
         break;
       }
 
       case "item/completed": {
-        this.handleItem(params, "completed");
+        this.handleItem(params, "completed", this.parentToolUseIdFor(params));
         break;
       }
 
       case "item/agentMessage/delta": {
         // Incremental text delta for streaming
-        this.handleMessageDelta(params);
+        this.handleMessageDelta(params, this.parentToolUseIdFor(params));
         break;
       }
 
       case "turn/completed": {
+        // Child turns finish on the parent's app-server stream too. Their
+        // terminal state belongs to the spawn card; it must not terminate the
+        // parent ShipIt turn.
+        const parentToolUseId = this.parentToolUseIdFor(params);
+        if (parentToolUseId) {
+          if (!this.completedSubagentReports.has(parentToolUseId)) {
+            const turn = params.turn as { status?: string } | undefined;
+            const status = turn?.status ?? (params.status as string) ?? "completed";
+            const answer = this.latestSubagentMessages.get(parentToolUseId);
+            this.emitSubagentReport(parentToolUseId, answer ?? (
+              status === "completed"
+                ? "Subagent completed without a final response."
+                : `Subagent ended with status: ${status}`
+            ), status !== "completed");
+          }
+          break;
+        }
+        this.finishUnclosedSubagents();
         this.handleTurnCompleted(params);
         break;
       }
@@ -345,7 +384,11 @@ export class CodexEventHandler {
    * pre-0.132 `role:"assistant"`/`function_call`/`function_call_output` shapes
    * this adapter used to parse no longer appear on the wire. See CodexItem.
    */
-  private handleItem(params: Record<string, unknown>, phase: "started" | "completed"): void {
+  private handleItem(
+    params: Record<string, unknown>,
+    phase: "started" | "completed",
+    parentToolUseId?: string,
+  ): void {
     const item = (params.item ?? params) as CodexItem;
     const id = item.id ?? `codex-${Date.now()}`;
 
@@ -363,15 +406,22 @@ export class CodexEventHandler {
           // completion so the orchestrator can replace turnSummary without
           // double-counting accumulatedText / message groups.
           if (item.text) {
-            this.ctx.emitEvent({
-              type: "agent_assistant",
-              content: [{ type: "text", text: item.text }],
-              isStreamCompletion: true,
-            });
+            if (parentToolUseId) {
+              this.latestSubagentMessages.set(parentToolUseId, item.text);
+            } else {
+              this.ctx.emitEvent({
+                type: "agent_assistant",
+                content: [{ type: "text", text: item.text }],
+                isStreamCompletion: true,
+              });
+            }
           }
           return;
         }
-        if (item.text) this.emitAssistant([{ type: "text", text: item.text }]);
+        if (item.text) {
+          this.emitAssistant([{ type: "text", text: item.text }], parentToolUseId);
+          if (parentToolUseId) this.latestSubagentMessages.set(parentToolUseId, item.text);
+        }
         return;
       }
 
@@ -411,14 +461,14 @@ export class CodexEventHandler {
 
       case "commandExecution": {
         if (phase === "started") {
-          this.emitToolUseOnce(id, "shell", { command: unwrapShellCommand(item.command ?? ""), cwd: item.cwd });
+          this.emitToolUseOnce(id, "shell", { command: unwrapShellCommand(item.command ?? ""), cwd: item.cwd }, parentToolUseId);
         } else {
-          this.emitToolUseOnce(id, "shell", { command: unwrapShellCommand(item.command ?? ""), cwd: item.cwd });
+          this.emitToolUseOnce(id, "shell", { command: unwrapShellCommand(item.command ?? ""), cwd: item.cwd }, parentToolUseId);
           const out = item.aggregatedOutput ?? "";
           const exit = item.exitCode;
           const content =
             exit !== null && exit !== undefined && exit !== 0 ? `${out}\n[exit code: ${exit}]` : out;
-          this.emitToolResult(id, content);
+          this.emitToolResult(id, content, parentToolUseId);
         }
         return;
       }
@@ -444,10 +494,10 @@ export class CodexEventHandler {
             // `files` kept for back-compat; `changes` carries per-file diffs.
             input: { files: changes.map((c) => c.path), changes },
           },
-        ]);
+        ], parentToolUseId);
         this.emittedToolUseIds.add(id);
         const summary = changes.map((c) => `${c.kind} ${c.path}`).join("\n");
-        this.emitToolResult(id, summary || "applied");
+        this.emitToolResult(id, summary || "applied", parentToolUseId);
         return;
       }
 
@@ -476,11 +526,11 @@ export class CodexEventHandler {
           ? normalizeMcpToolName(item.server, item.tool)
           : item.tool ?? "tool";
         if (phase === "started") {
-          this.emitToolUseOnce(id, toolName, input);
+          this.emitToolUseOnce(id, toolName, input, parentToolUseId);
         } else {
-          this.emitToolUseOnce(id, toolName, input);
+          this.emitToolUseOnce(id, toolName, input, parentToolUseId);
           const payload = item.result ?? item.error ?? "";
-          this.emitToolResult(id, typeof payload === "string" ? payload : JSON.stringify(payload));
+          this.emitToolResult(id, typeof payload === "string" ? payload : JSON.stringify(payload), parentToolUseId);
         }
         break;
       }
@@ -488,20 +538,22 @@ export class CodexEventHandler {
       case "webSearch": {
         const normalized = normalizeWebSearchItem(item);
         if (phase === "started") {
-          this.emitToolUseOnce(id, normalized.name, normalized.input);
+          this.emitToolUseOnce(id, normalized.name, normalized.input, parentToolUseId);
         } else {
-          this.emitToolUseOnce(id, normalized.name, normalized.input);
+          this.emitToolUseOnce(id, normalized.name, normalized.input, parentToolUseId);
           const payload = item.result ?? item.error;
           this.emitToolResult(
             id,
             typeof payload === "string" && payload.length > 0
               ? payload
               : normalized.summary,
+            parentToolUseId,
           );
         }
         break;
       }
 
+      case "collabAgentToolCall":
       case "collabToolCall": {
         // docs/125 — subagent orchestration (`spawn_agent`, `send_input`,
         // `wait`, `close_agent`, …). Surface it as a tool call so the review
@@ -509,9 +561,12 @@ export class CodexEventHandler {
         // `Task` tool renders. The review output is the subagent's final text,
         // which the parent surfaces in chat (docs/220) — no write-back tool.
         if (phase === "started") {
-          if (item.tool === "spawn_agent") {
+          if (item.tool === "spawnAgent" || item.tool === "spawn_agent") {
+            const childThreadIds = item.receiverThreadIds ?? [item.receiverThreadId ?? item.newThreadId].filter((v): v is string => !!v);
+            for (const childThreadId of childThreadIds) this.childThreadParents.set(childThreadId, id);
+            this.openSubagentSpawns.add(id);
             this.emitToolUseOnce(id, "Agent", {
-              agent: item.receiverThreadId ?? item.newThreadId,
+              agent: childThreadIds[0],
               subagent_type: "Codex",
               description: summarizeCodexSubagentPrompt(item.prompt),
               prompt: item.prompt,
@@ -520,9 +575,12 @@ export class CodexEventHandler {
           }
           this.emitToolUseOnce(id, item.tool ?? "collab", { agent: item.receiverThreadId ?? item.newThreadId, prompt: item.prompt });
         } else {
-          if (item.tool === "spawn_agent") {
+          if (item.tool === "spawnAgent" || item.tool === "spawn_agent") {
+            const childThreadIds = item.receiverThreadIds ?? [item.receiverThreadId ?? item.newThreadId].filter((v): v is string => !!v);
+            for (const childThreadId of childThreadIds) this.childThreadParents.set(childThreadId, id);
+            this.openSubagentSpawns.add(id);
             this.emitToolUseOnce(id, "Agent", {
-              agent: item.receiverThreadId ?? item.newThreadId,
+              agent: childThreadIds[0],
               subagent_type: "Codex",
               description: summarizeCodexSubagentPrompt(item.prompt),
               prompt: item.prompt,
@@ -530,7 +588,23 @@ export class CodexEventHandler {
           } else {
             this.emitToolUseOnce(id, item.tool ?? "collab", { agent: item.receiverThreadId ?? item.newThreadId, prompt: item.prompt });
           }
-          this.emitToolResult(id, item.agentStatus ?? item.status ?? "done");
+          // `spawn_agent` completes when the child is accepted, not when its
+          // work is done. The child's terminal agentMessage/turn supplies the
+          // real result later; rendering this status would mark the card done
+          // while the child still runs.
+          if (item.tool !== "spawnAgent" && item.tool !== "spawn_agent") {
+            this.emitToolResult(id, item.agentStatus ?? item.status ?? "done");
+          }
+          this.captureCollabAgentResults(item);
+        }
+        break;
+      }
+
+      case "subAgentActivity": {
+        if (phase !== "completed") return;
+        const parentId = item.agentThreadId ? this.childThreadParents.get(item.agentThreadId) : undefined;
+        if (parentId && item.kind) {
+          this.emitAssistant([{ type: "text", text: `Subagent ${item.kind}.` }], parentId);
         }
         break;
       }
@@ -563,22 +637,30 @@ export class CodexEventHandler {
   }
 
   /** Emit an assistant event with the given content blocks. */
-  private emitAssistant(content: AgentContentBlock[]): void {
-    this.ctx.emitEvent({ type: "agent_assistant", content });
+  private emitAssistant(content: AgentContentBlock[], parentToolUseId?: string): void {
+    this.ctx.emitEvent({ type: "agent_assistant", content, parentToolUseId });
   }
 
   /** Emit one tool_use block for a Codex item id, synthesizing starts as needed. */
-  private emitToolUseOnce(id: string, name: string, input: Record<string, unknown>): void {
+  private emitToolUseOnce(
+    id: string,
+    name: string,
+    input: Record<string, unknown>,
+    parentToolUseId?: string,
+  ): void {
     if (this.emittedToolUseIds.has(id)) return;
     this.emittedToolUseIds.add(id);
-    this.emitAssistant([{ type: "tool_use", id, name, input }]);
+    this.emitAssistant([{ type: "tool_use", id, name, input }], parentToolUseId);
   }
 
   /** Emit a tool-result event for the given tool_use id. */
-  private emitToolResult(toolUseId: string, content: string): void {
+  private emitToolResult(toolUseId: string, content: string, parentToolUseId?: string, isError = false): void {
+    const block: Record<string, unknown> = { type: "tool_result", tool_use_id: toolUseId, content };
+    if (isError) block.is_error = true;
     this.ctx.emitEvent({
       type: "agent_tool_result",
-      content: [{ type: "tool_result", tool_use_id: toolUseId, content }],
+      content: [block],
+      ...(parentToolUseId ? { parentToolUseId } : {}),
     });
   }
 
@@ -587,12 +669,47 @@ export class CodexEventHandler {
    * delivers `delta` as a plain string with the item's `itemId`; we record the
    * id so the matching `item/completed` agentMessage isn't re-emitted.
    */
-  private handleMessageDelta(params: Record<string, unknown>): void {
+  private handleMessageDelta(params: Record<string, unknown>, parentToolUseId?: string): void {
     const delta = params.delta;
     if (typeof delta !== "string" || delta.length === 0) return;
     const itemId = params.itemId as string | undefined;
     if (itemId) this.streamedAgentItems.add(itemId);
-    this.emitAssistant([{ type: "text", text: delta }]);
+    this.emitAssistant([{ type: "text", text: delta }], parentToolUseId);
+  }
+
+  /** Resolve the child thread carried by a v2 notification to its spawn call. */
+  private parentToolUseIdFor(params: Record<string, unknown>): string | undefined {
+    const thread = params.thread as { id?: string } | undefined;
+    const threadId = (params.threadId as string | undefined) ?? thread?.id;
+    return threadId ? this.childThreadParents.get(threadId) : undefined;
+  }
+
+  private isParentThread(params: Record<string, unknown>): boolean {
+    const notificationThreadId = params.threadId as string | undefined;
+    return !notificationThreadId || !this.threadId || notificationThreadId === this.threadId;
+  }
+
+  /** Put a child's terminal assistant message in the spawn card's report slot. */
+  private emitSubagentReport(parentToolUseId: string, text: string, isError = false): void {
+    if (this.completedSubagentReports.has(parentToolUseId)) return;
+    this.completedSubagentReports.add(parentToolUseId);
+    this.openSubagentSpawns.delete(parentToolUseId);
+    this.emitToolResult(parentToolUseId, text, undefined, isError);
+  }
+
+  private captureCollabAgentResults(item: CodexItem): void {
+    for (const [threadId, state] of Object.entries(item.agentsStates ?? {})) {
+      const parentId = this.childThreadParents.get(threadId);
+      if (!parentId || !state.message || !["completed", "errored", "interrupted", "shutdown"].includes(state.status ?? "")) continue;
+      this.emitSubagentReport(parentId, state.message, state.status === "errored");
+    }
+  }
+
+  private finishUnclosedSubagents(): void {
+    for (const parentId of this.openSubagentSpawns) {
+      const answer = this.latestSubagentMessages.get(parentId);
+      this.emitSubagentReport(parentId, answer ?? "Subagent ended without a final response.");
+    }
   }
 
   /** Handle turn completion — emit agent_result. */

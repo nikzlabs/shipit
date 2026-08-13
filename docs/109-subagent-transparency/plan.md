@@ -460,6 +460,37 @@ The prompt and the final report are unaffected: the prompt was always collapsed,
 and the report stays always-visible — it is the actionable output, and it is
 what the parent agent itself acts on.
 
+## Codex in-process subagents
+
+The pinned Codex app-server schema (0.146.0) sends the model-facing
+`spawn_agent` call as a `collabAgentToolCall` item whose tool is `spawnAgent`
+and whose child ids are in `receiverThreadIds[]`. Item and turn notifications
+carry a required top-level `threadId`; `CodexEventHandler` records
+`child thread id → spawn tool-use id` when the spawn starts. It adds that tool
+id as `parentToolUseId` to child narration, command, file-change, MCP, web, and
+tool-result events when the app-server streams them. The parent-side
+`subAgentActivity` and `agentsStates` signals supply lifecycle progress and a
+terminal message even when child detail is not streamed. Both routes use the
+same accumulator, persistence, projection, and `SubagentCall` UI as Claude.
+
+The completed `spawnAgent` item is only an acceptance status. It is not the
+child's result and is not rendered as one. The child's terminal
+message becomes the parent spawn tool's result, which supplies the existing
+final-report panel. Child `thread/started`, `turn/started`, token-usage, and
+`turn/completed` notifications cannot overwrite the parent's resume key,
+steering target, accounting, or terminal state. If the parent finishes with an
+unclosed spawn, the card receives a plain fallback result instead of becoming
+permanently blank after reload.
+
+Key files:
+
+- `src/server/session/agents/codex/codex-event-handler.ts` — correlates child
+  threads, emits nested progress, and promotes the terminal child answer.
+- `src/server/session/agents/codex/adapter.test.ts` — protocol-level regression
+  coverage for invocation, progress, and output.
+- `src/client/components/MessageList/MessageToolUse.tsx` and
+  `src/client/components/SubagentCall.tsx` — shared Claude/Codex rendering.
+
 ## Future extensions
 
 - **Pause / cancel a running subagent** without canceling the parent turn.
