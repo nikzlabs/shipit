@@ -143,6 +143,20 @@ export function credentialOwnerForRouteId(
 export function listConfiguredCredentials(
   credentialStore: ServiceRoutingCredentialSource,
   env: NodeJS.ProcessEnv = process.env,
+  /**
+   * docs/252 req 9 — **for a decision that is written down, `authenticating` is
+   * not configured.**
+   *
+   * The default (`false`) counts an in-flight sign-in, and that is right for
+   * everything that reads this: the account exists, routing accepts it, and a
+   * picker that hid the model would flicker it back seconds later. It is wrong
+   * for exactly one caller — `seedNonTurnModel`, whose write is permanent. Load
+   * Settings while a sign-in is half-finished and the seed would freeze that
+   * service; req 17 then deletes the abandoned account, and the setting is left
+   * naming a service the user never connected, which nothing re-points because
+   * re-pointing is the thing req 9 removed. Found by cross-backend review.
+   */
+  opts: { requireReadyAccounts?: boolean } = {},
 ): ConfiguredCredential[] {
   const out: ConfiguredCredential[] = [];
   const seen = new Set<string>();
@@ -167,6 +181,7 @@ export function listConfiguredCredentials(
     if (route.via === "account" && route.status !== "ready" && route.status !== "authenticating") {
       continue;
     }
+    if (opts.requireReadyAccounts && route.via === "account" && route.status !== "ready") continue;
     add(route.serviceId, route.billingMode, route.via);
   }
   for (const service of servicesWithStringCredentials()) {

@@ -148,8 +148,11 @@ table — a phase is checked off when its PR has merged.
 
 ## Phase 7 — Non-turn work
 
-- [x] `CredentialStore.nonTurnModel` — the pinned `(service, billing mode, model)`, with
-      unset kept as a distinct state rather than filled in with the resolved answer
+- [x] `CredentialStore.nonTurnModel` — the stored `(service, billing mode, model)`. Phase 7
+      kept **unset** as a distinct state rather than filling it in with the resolved answer;
+      **2026-08-13 reversed that** — `seedNonTurnModel` writes the resolved answer the first
+      time the install can run something, because the second state could not be named on
+      screen. Unset now only describes an install before that first write.
 - [x] `non-turn-model.ts` — the resolver: req 9's derived default (first service, first
       billing mode, first model), the derived harness (first installed harness offering it),
       and the credential route + spawn shaping for it
@@ -374,6 +377,16 @@ the first of these. All six are fixed.
       carries only the derived harness. Seeding is narrow — a value is written
       only when there is none — so a chosen model whose credential goes away is
       reported, not replaced.
+- [x] **Cross-backend review of that change — six findings, all fixed.** Adding the
+      first service from an open Settings tab never seeded (the seed now also
+      runs from `buildAgentListPayload`, which every credential mutation
+      broadcasts through); the section kept a stale resolution after a
+      credential change (the pair now rides `agent_list`, as the reviewer slots
+      do); a half-finished sign-in could be frozen as the permanent setting
+      (`requireReadyAccounts`); a harness only *assumed* installed could be too
+      (the seed checks the probed registry); a failed disk write was reported as
+      a successful one (`stampNonTurnModel` is atomic and rolls back); and a
+      `null` over the wire left the removed state behind (it re-proposes).
 - [x] **The single-credential card explained itself, and should say nothing.**
       "One account — nothing to route between yet. Add a second to choose an
       order and a strategy." came from the mock-up (audit cell D8) and was

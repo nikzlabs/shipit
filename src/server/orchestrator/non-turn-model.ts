@@ -18,18 +18,23 @@
  *    is arbitrary and that is acceptable here: the work is a session title and a
  *    PR description, every harness that can run a model runs it, and req 9's
  *    notice already covers the failure.
- *  - **The default is a rule, not a stored value.** Unset means *the first
- *    eligible model in the picker's own ordering* — first service, first billing
- *    mode, first model — resolved at the point the work runs. A named default
- *    would point at a vendor the install may have no credential for, which is
- *    exactly the install this feature exists to create (a user whose only
- *    credential is a DeepSeek key), and every session title would fail from day
- *    one. A derived default removes the failure by construction instead of
- *    reporting it, and it self-heals the original incident: when a subscription
- *    lapses, an unset default moves to whatever the install still has.
- *  - **Set and unset are different states.** Unset follows the install; set is a
- *    pin ShipIt does not move. Only the second can go stale, and it is the one
- *    req 9's failure notice reports on.
+ *  - **The default is a rule, not a stored value** — *and since 2026-08-13 the
+ *    rule runs once, not on every read.* It is still "the first eligible model
+ *    in the picker's own ordering" (first service, first billing mode, first
+ *    model), which is why a named default was refused: it would point at a
+ *    vendor the install may have no credential for — exactly the install this
+ *    feature exists to create, a user whose only credential is a DeepSeek key —
+ *    and every session title would fail from day one. What changed is WHEN the
+ *    rule is applied. `seedNonTurnModel` (`services/settings.ts`) writes its
+ *    answer the first time the install can run something, and the setting is
+ *    the user's from then on.
+ *  - **There is one state, and this fallback is not a second one.** The `!pinned`
+ *    branch below is what answers a caller that runs before the first settings
+ *    read; it resolves to the same model the seed goes on to write. It is no
+ *    longer reachable as a state the user is left in, which is why the screen no
+ *    longer has a word for it. The cost is deliberate: a stored selection whose
+ *    credential lapses is reported (`pin_unavailable`), where an unset one used
+ *    to move quietly to whatever the install still had.
  *
  * Eligibility is the same conjunction the picker uses — an installed harness
  * (req 14) whose service holds a credential for that billing mode (req 8) — and

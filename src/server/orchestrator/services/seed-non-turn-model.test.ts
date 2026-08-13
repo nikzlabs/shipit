@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { CredentialRoute } from "../../shared/types.js";
 import type { ModelSelection } from "../../shared/catalogue/index.js";
 import type { CredentialStore } from "../credential-store.js";
+import type { AgentRegistry } from "../../shared/agent-registry.js";
 
 /**
  * docs/252 req 9 — **the setting is written once, and ShipIt never writes over
@@ -14,14 +15,18 @@ import type { CredentialStore } from "../credential-store.js";
  * back, which is the whole of *"the default becomes the changeable setting, so
  * ShipIt does not update it anymore."*
  *
+ * The last three cases are cross-backend review findings, and each is a way for
+ * a *permanent* write to be made from something that was never a settled fact:
+ * a sign-in still in flight, a harness only assumed installed, and a write that
+ * never reached the disk.
+ *
  * The real catalogue drives every case, as in `non-turn-model.test.ts`: what is
  * seeded is "the first eligible model in the picker's own ordering", which is a
  * statement about that catalogue rather than about a fixture.
  */
 
-function route(over: Pick<CredentialRoute, "serviceId" | "billingMode">): CredentialRoute {
+function route(over: Partial<CredentialRoute> & Pick<CredentialRoute, "serviceId" | "billingMode">): CredentialRoute {
   return {
-    ...over,
     id: `${over.serviceId}-${over.billingMode}`,
     via: "string",
     status: "ready",
@@ -30,11 +35,29 @@ function route(over: Pick<CredentialRoute, "serviceId" | "billingMode">): Creden
     label: "test",
     createdAt: 0,
     updatedAt: 0,
+    ...over,
   };
 }
 
+/** Every harness installed, which is the uninteresting case for the seed. */
+function registry(installed: string[] = ["claude", "codex"]): AgentRegistry {
+  return {
+    list: () => ["claude", "codex"].map((id) => ({
+      id,
+      name: id,
+      installed: installed.includes(id),
+      hasRunnableModels: true,
+      capabilities: { models: [], supportsReview: true, supportsSteering: true, supportsCompaction: true, supportedPermissionModes: ["auto"], skillInvocationPrefix: "/" },
+    })),
+  } as unknown as AgentRegistry;
+}
+
 /** A store that records what was written, so "wrote nothing" is assertable. */
-function storeWith(routes: CredentialRoute[], stored?: ModelSelection) {
+function storeWith(
+  routes: CredentialRoute[],
+  stored?: ModelSelection,
+  opts: { writeFails?: boolean } = {},
+) {
   const writes: (ModelSelection | null)[] = [];
   let current = stored;
   const store = {
@@ -42,6 +65,15 @@ function storeWith(routes: CredentialRoute[], stored?: ModelSelection) {
     setNonTurnModel: (next: ModelSelection | null) => {
       writes.push(next);
       current = next ?? undefined;
+    },
+    // The real method is atomic and rolls back a failed write — modelled here,
+    // because the seed's promise depends on both halves.
+    stampNonTurnModel: (next: ModelSelection) => {
+      if (current) return current;
+      writes.push(next);
+      if (opts.writeFails) return undefined;
+      current = next;
+      return next;
     },
     listCredentialRoutes: (serviceId?: string, billingMode?: string) =>
       routes.filter(
@@ -54,7 +86,7 @@ function storeWith(routes: CredentialRoute[], stored?: ModelSelection) {
     getCredentialRoute: (id: string) => routes.find((r) => r.id === id),
     getFailoverCutoffs: () => ({ session: 90, weekly: 90 }),
   } as unknown as CredentialStore;
-  return { store, writes };
+  return { store, writes, read: () => current };
 }
 
 describe("seedNonTurnModel", () => {
@@ -74,7 +106,7 @@ describe("seedNonTurnModel", () => {
     const { seedNonTurnModel } = await import("./settings.js");
     const { store, writes } = storeWith([route({ serviceId: "deepseek", billingMode: "key" })]);
 
-    seedNonTurnModel(store, {});
+    seedNonTurnModel(store, registry(), {});
 
     expect(writes).toHaveLength(1);
     expect(writes[0]).toMatchObject({ serviceId: "deepseek", billingMode: "key" });
@@ -92,9 +124,9 @@ describe("seedNonTurnModel", () => {
     const { seedNonTurnModel } = await import("./settings.js");
     const { store, writes } = storeWith([route({ serviceId: "deepseek", billingMode: "key" })]);
 
-    seedNonTurnModel(store, {});
-    seedNonTurnModel(store, {});
-    seedNonTurnModel(store, {});
+    seedNonTurnModel(store, registry(), {});
+    seedNonTurnModel(store, registry(), {});
+    seedNonTurnModel(store, registry(), {});
 
     expect(writes).toHaveLength(1);
   });
@@ -113,7 +145,7 @@ describe("seedNonTurnModel", () => {
       chosen,
     );
 
-    seedNonTurnModel(store, {});
+    seedNonTurnModel(store, registry(), {});
 
     expect(writes).toEqual([]);
     expect(store.getNonTurnModel()).toEqual(chosen);
@@ -123,14 +155,83 @@ describe("seedNonTurnModel", () => {
     const { seedNonTurnModel } = await import("./settings.js");
     const { store, writes } = storeWith([]);
 
-    seedNonTurnModel(store, {});
+    seedNonTurnModel(store, registry(), {});
 
     expect(writes).toEqual([]);
     expect(store.getNonTurnModel()).toBeUndefined();
   });
 
+  /**
+   * Cross-backend review — an account row exists from the moment a login
+   * STARTS. Eligibility counts it, correctly, because routing does; a
+   * permanent write must not, because req 17 deletes an abandoned attempt and
+   * nothing would then re-point the setting away from a service the user never
+   * connected.
+   */
+  it("does not seed from a sign-in that has not finished", async () => {
+    const { seedNonTurnModel } = await import("./settings.js");
+    const { store, writes } = storeWith([
+      route({ serviceId: "anthropic", billingMode: "sub", via: "account", status: "authenticating" }),
+    ]);
+
+    seedNonTurnModel(store, registry(), {});
+
+    expect(writes).toEqual([]);
+  });
+
+  it("seeds from the same account once it is ready", async () => {
+    const { seedNonTurnModel } = await import("./settings.js");
+    const { store, writes } = storeWith([
+      route({ serviceId: "anthropic", billingMode: "sub", via: "account", status: "ready" }),
+    ]);
+
+    seedNonTurnModel(store, registry(), {});
+
+    expect(writes).toHaveLength(1);
+    expect(writes[0]).toMatchObject({ serviceId: "anthropic", billingMode: "sub" });
+  });
+
+  /**
+   * Cross-backend review — `isHarnessInstalled` answers true for EVERYTHING on
+   * a deployment that ships no install report, so the catalogue walk can pick a
+   * model whose CLI is absent. Survivable while the answer is re-derived every
+   * read; freezing it is not. The registry has probed `$PATH`, so where the two
+   * disagree the seed declines and the live fallback continues.
+   */
+  it("declines to freeze a harness the registry does not report installed", async () => {
+    const { seedNonTurnModel } = await import("./settings.js");
+    const { store, writes } = storeWith([
+      route({ serviceId: "anthropic", billingMode: "sub", via: "account", status: "ready" }),
+    ]);
+
+    seedNonTurnModel(store, registry(["codex"]), {});
+
+    expect(writes).toEqual([]);
+  });
+
+  /**
+   * Cross-backend review — `save()` logs and swallows, so a full or read-only
+   * credentials directory would leave a value in memory that vanishes on
+   * restart, and the next boot could seed a DIFFERENT model with no user
+   * action. `stampNonTurnModel` rolls back instead, which makes the next read
+   * try again.
+   */
+  it("leaves nothing behind when the write fails", async () => {
+    const { seedNonTurnModel } = await import("./settings.js");
+    const { store, writes, read } = storeWith(
+      [route({ serviceId: "deepseek", billingMode: "key" })],
+      undefined,
+      { writeFails: true },
+    );
+
+    seedNonTurnModel(store, registry(), {});
+
+    expect(writes).toHaveLength(1);
+    expect(read()).toBeUndefined();
+  });
+
   it("tolerates an install with no credential store at all", async () => {
     const { seedNonTurnModel } = await import("./settings.js");
-    expect(() => { seedNonTurnModel(undefined, {}); }).not.toThrow();
+    expect(() => { seedNonTurnModel(undefined, registry(), {}); }).not.toThrow();
   });
 });

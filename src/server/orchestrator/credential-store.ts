@@ -1170,11 +1170,18 @@ export class CredentialStore {
   // ---- Non-turn work's model (docs/252 phase 7, req 9) ----
 
   /**
-   * The user's explicit pin for non-turn work, or `undefined` for "follow the
-   * install" — see {@link CredentialData.nonTurnModel}. Deliberately NOT
-   * resolved here: the derived default is a rule evaluated where the work runs
-   * (`non-turn-model.ts`), so the two states stay distinguishable all the way to
-   * the UI, which is what req 9's *visible* setting requires.
+   * The model non-turn work runs on, or `undefined` when this install has not
+   * been given one yet — see {@link CredentialData.nonTurnModel}.
+   *
+   * **`undefined` is a bootstrap state, not a user-facing one** (2026-08-13).
+   * It used to mean "follow the install", a second state the UI had to name and
+   * could not; `seedNonTurnModel` now writes a value the first time the install
+   * can run something, so the only readers who see `undefined` are the ones
+   * running before that first write. `resolveNonTurnModel` still answers them
+   * with the first eligible model — the same one the seed goes on to store.
+   *
+   * Deliberately NOT resolved here: which harness runs it is derived where the
+   * work runs (`non-turn-model.ts`).
    */
   getNonTurnModel(): ModelSelection | undefined {
     const stored = this.data.nonTurnModel;
@@ -1211,6 +1218,49 @@ export class CredentialStore {
     }
     this.data.nonTurnModel = { ...selection };
     this.save();
+  }
+
+  /**
+   * docs/252 req 9 — **write the setting once, and only if the write lands.**
+   *
+   * Two things `setNonTurnModel` cannot give the seed, both found by
+   * cross-backend review:
+   *
+   *  - **The check and the write are one operation.** "Is it empty?" and "then
+   *    store this" are asked from a read path that can run concurrently with
+   *    the user's own PUT; keeping them apart leaves a window in which the seed
+   *    overwrites the choice the user just made. Here there is no window.
+   *  - **A failed write does not linger in memory.** `save()` logs and swallows,
+   *    so a full or read-only credentials directory would leave the process
+   *    reporting a stored setting that vanishes on restart — and, if the
+   *    install's services changed meanwhile, seeds a *different* model next
+   *    boot with no user action. Rolling the field back means the next read
+   *    simply tries again, which is the same bargain
+   *    {@link stampHarnessOnboardingCompleted} strikes one field over.
+   *
+   * @returns what the setting holds afterwards — the existing value if there
+   *   was one, the written value on success, `undefined` when the write failed.
+   */
+  stampNonTurnModel(selection: ModelSelection): ModelSelection | undefined {
+    const existing = this.getNonTurnModel();
+    if (existing) return existing;
+    if (!selectionExists(selection)) {
+      throw new Error(
+        `No catalogue entry for ${selection.serviceId}/${selection.billingMode}/${selection.modelId}`,
+      );
+    }
+    this.data.nonTurnModel = { ...selection };
+    try {
+      this.writeToDisk();
+    } catch (err) {
+      delete this.data.nonTurnModel;
+      console.error(
+        "[credential-store] Failed to record the background-work model:",
+        getErrorMessage(err),
+      );
+      return undefined;
+    }
+    return { ...selection };
   }
 
   // ---- The two reviewers (docs/261, reqs 1, 4, 5, 8) ----
