@@ -59,7 +59,11 @@ So there is a second manual service:
 shipit service start onboarding      # port 3001; `dev` can stay up on 3000
 ```
 
-Two differences from `dev`, and nothing else: **no `x-shipit-secrets` block at all** (declaring a name is what injects the value, so it holds no service credential and no `GITHUB_TOKEN` — onboarding is the flow that runs when they are missing), and **its own `SHIPIT_STATE_DIR`** at `.inner-shipit/onboarding`, which is a separate SQLite db, credential store and agent home. It comes up on "Connect GitHub" with `Agent auth status: claude ✗, codex ✗`.
+Two differences from `dev`, and nothing else. It declares **`GITHUB_TOKEN` and no service credential** — a name in `x-shipit-secrets` is what injects the value, so the list *is* the mechanism; GitHub is supplied because the subject is the **services** onboarding and re-pasting a token to reach it is friction rather than coverage. And it has **its own `SHIPIT_STATE_DIR`** at `.inner-shipit/onboarding`: a separate SQLite db, credential store and agent home. It comes up on *"Add a service, and the chat starts working"*, both harnesses reading `no model it can run yet`, composer disabled.
+
+**Never add a catalogue `storageEnv` to that block.** One line added in good faith turns the fresh instance into a second configured one — the variable is adopted into a stored credential at boot and the install stamps itself onboarded — and the symptom is an absence: the panel under test simply never appears. `scripts/seed-inner-credentials.test.ts` asserts exact membership so this fails the build instead.
+
+It seeds nothing (`DOGFOOD_SEED=0`), so the repo list starts empty too. If you would rather have a repo waiting, swap that for `DOGFOOD_SEED_CREDENTIALS: "0"`, which keeps the credential half off whatever is declared.
 
 Reset it to a fresh install — and note that deleting the directory is the *whole* reset, because everything an install remembers hangs off it:
 

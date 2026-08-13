@@ -248,11 +248,14 @@ services:
   # So this is a second inner orchestrator with two differences from `dev`, and
   # nothing else:
   #
-  #   1. **No `x-shipit-secrets` block at all.** Not an empty one — absent.
-  #      Declaring a name is what injects the value, so declaring none means the
-  #      process holds no service credential and no `GITHUB_TOKEN`. Onboarding
-  #      is exactly the flow that runs when they are missing, so supplying any
-  #      of them would skip the thing under test.
+  #   1. **`GITHUB_TOKEN` and nothing else.** Declaring a name is what injects
+  #      the value, so this one line is the whole difference between "signed in
+  #      to GitHub" and "holds no service credential". The thing under test is
+  #      the SERVICES onboarding — connect a subscription or paste a key — and
+  #      making the developer re-paste a GitHub token before reaching it every
+  #      time is friction, not coverage. Adding a catalogue `storageEnv` name
+  #      here would defeat the whole service, so a test forbids it; see
+  #      `scripts/seed-inner-credentials.test.ts`.
   #   2. **Its own `SHIPIT_STATE_DIR`**, holding its own SQLite db, credential
   #      store and agent home. Nested under `.inner-shipit/` so it inherits that
   #      .gitignore entry rather than needing one of its own.
@@ -263,9 +266,11 @@ services:
   #   rm -rf .inner-shipit/onboarding
   #   shipit service start onboarding
   #
-  # `DOGFOOD_SEED=0` is still set, belt and braces: with no secrets there is
-  # nothing for the credential seeder to find, and seeding repos would hand the
-  # instance a repo it is supposed to be asking the user for.
+  # `DOGFOOD_SEED=0` is still set: with no service secret there is nothing for
+  # the credential seeder to find, and seeding repos would hand the instance a
+  # repo it is supposed to be asking the user for. Flip it to
+  # `DOGFOOD_SEED_CREDENTIALS: "0"` if you would rather the repo were already
+  # there — that keeps the credential half off no matter what is declared above.
   #
   # Manual, like `dev`, and for the same reason — a whole second orchestrator.
   # Start it with `shipit service start onboarding`; it claims port 3001 so both
@@ -309,7 +314,11 @@ services:
     ports:
       - "3001:3001"
     x-shipit-preview: manual
-    # No `x-shipit-secrets`. See the note above — its absence is the feature.
+    # ⚠ GITHUB_TOKEN, and never a service credential. Every name absent from
+    # this list is a name this instance does not hold, which is the entire
+    # mechanism — see the note above and the guard test that pins it.
+    x-shipit-secrets:
+      - { name: GITHUB_TOKEN }
 
   # Agent Interface SDK test preview (docs/242).
   #

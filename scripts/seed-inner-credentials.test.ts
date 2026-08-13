@@ -275,3 +275,47 @@ describe("the dev service's x-shipit-secrets block", () => {
     expect(declared).toEqual([...new Set(declared)]);
   });
 });
+
+/**
+ * The mirror image of the guard above, and the whole reason the `onboarding`
+ * service exists (docs/118).
+ *
+ * That service is a ShipIt that has never been set up, so the first-run flow
+ * can be exercised without deleting the developer's real keys. What makes it
+ * uncredentialed is precisely what it does NOT declare: a name in
+ * `x-shipit-secrets` is what injects the value, `adoptEnvCredentials` turns an
+ * injected service variable into a stored credential at boot (docs/252 req 20),
+ * and `resolveHarnessOnboarding` then stamps the install as onboarded —
+ * permanently, since nothing clears that stamp.
+ *
+ * So a single line added here in good faith ("it needs a key to be useful")
+ * silently converts the fresh instance into a second configured one, and the
+ * symptom is an absence: the panel under test never appears. `GITHUB_TOKEN` is
+ * allowed and deliberate — the services onboarding is the subject, and making
+ * the developer re-paste a GitHub token to reach it is friction rather than
+ * coverage. Every catalogue `storageEnv` is not.
+ *
+ * Unlike the `dev` block, exact-membership IS asserted here: this list has no
+ * legitimate reason to grow, and the failure it prevents is invisible.
+ */
+describe("the onboarding service's x-shipit-secrets block", () => {
+  const compose = parse(readFileSync(path.join(REPO_ROOT, "docker-compose.yml"), "utf8")) as {
+    services: Record<string, { "x-shipit-secrets"?: { name: string }[] }>;
+  };
+  const declared = (compose.services.onboarding["x-shipit-secrets"] ?? []).map((e) => e.name);
+
+  it("declares no service credential at all", () => {
+    const offenders = credentialStorageEnvNames().filter((name) => declared.includes(name));
+    expect(
+      offenders,
+      `docker-compose.yml's \`onboarding\` service declares ${offenders.join(", ")}, which is`
+      + " injected, adopted into a stored credential at boot, and stamps the install as"
+      + " onboarded. The service exists to be uncredentialed — that is what makes the"
+      + " first-run flow reachable. Test that credential in `dev` instead.",
+    ).toEqual([]);
+  });
+
+  it("declares GitHub and nothing else", () => {
+    expect(declared).toEqual(["GITHUB_TOKEN"]);
+  });
+});

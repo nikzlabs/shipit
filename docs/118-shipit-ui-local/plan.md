@@ -419,10 +419,14 @@ credentialed.
 So `docker-compose.yml` declares a second manual service, `onboarding`, differing from `dev` in
 exactly two ways:
 
-- **No `x-shipit-secrets` block at all.** Not an empty one — absent. Declaring a name is what
-  injects the value, so the process holds no service credential *and* no `GITHUB_TOKEN`.
-  Onboarding is precisely the flow that runs when those are missing, so supplying any of them
-  would skip the thing under test.
+- **`GITHUB_TOKEN`, and no service credential.** A name in `x-shipit-secrets` is what injects
+  the value, so that list *is* the mechanism: every catalogue `storageEnv` absent from it is a
+  credential this instance does not hold. GitHub is supplied deliberately — the subject is the
+  **services** onboarding, and making the developer re-paste a GitHub token before reaching it
+  every time is friction rather than coverage. The block is pinned by exact membership in
+  `scripts/seed-inner-credentials.test.ts`, because one service key added here in good faith
+  ("it needs a key to be useful") turns the fresh instance into a second configured one, and
+  the symptom is an *absence*: the panel under test never appears.
 - **Its own `SHIPIT_STATE_DIR`**, `.inner-shipit/onboarding`. Everything an install remembers
   hangs off that path — the SQLite db (`app-di.ts`) and, in local mode, the credential store
   (`resolveAutoStartDeps` → `<stateDir>/credentials`) — so a separate path *is* a separate
@@ -430,6 +434,12 @@ exactly two ways:
   the whole reset.
 
 It takes port 3001, so the configured instance stays up on 3000 rather than being traded for
-it. Verified on first boot: `Agent auth status: claude ✗, codex ✗`, `GitHub credentials found:
-false`, a freshly generated encryption key under its own directory, and the UI opening on
-*Connect GitHub* — while `dev` came back up with both its credentials and its repo untouched.
+it. It seeds nothing (`DOGFOOD_SEED=0`), so the repo list starts empty as well; swapping that
+for `DOGFOOD_SEED_CREDENTIALS: "0"` leaves a repo waiting while keeping the credential half off
+whatever is declared.
+
+Verified: with no secrets at all it opened on *Connect GitHub*; with `GITHUB_TOKEN` supplied it
+opens directly on *"Add a service, and the chat starts working"*, both harnesses reading `no
+model it can run yet` and the composer disabled — `GitHub credentials found: true`, `Agent auth
+status: claude ✗, codex ✗`, its own freshly generated encryption key. `dev` came back up with
+both its credentials and its repo untouched.
