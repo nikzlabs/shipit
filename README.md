@@ -21,8 +21,8 @@
 
 ShipIt is a chat-driven IDE for running coding agents through your **real engineering loop**.
 
-- **Parallel & isolated sessions** — run many agents at once, each with its own branch, container,
-  and chat history, so nothing they do collides.
+- **Parallel sessions in isolated containers** — run many agents at once, each with its own branch
+  and workspace, so nothing they do collides.
 - **Preview per session** — every session runs its own instance of your full app stack, so the agent
   can build, run, and fix before you preview and merge.
 - **Bring your own agent** — Claude Code or Codex, on the subscription or API key you already have.
