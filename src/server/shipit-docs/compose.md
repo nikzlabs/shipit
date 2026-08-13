@@ -542,11 +542,10 @@ request `use_api_socket`, add lifecycle hooks, or declare labels in ShipIt's
 reserved `shipit-egress-*` namespace. Compose
 `include` and service `extends` are also rejected in contained sessions because
 ShipIt cannot safely validate and override definitions from a second file.
-ShipIt also replaces `dns:` and `user:` for contained services. It runs the
-service as the session worker UID (UID 1000 on legacy installs) and removes
-`SETUID` and `SETGID`. If an image requires a different startup user or must
-drop privileges in its entrypoint, use an Open session or adjust the image to
-run directly as the contained UID.
+ShipIt replaces `dns:` and removes `SETUID` and `SETGID` for contained services.
+Each service must declare a numeric, non-root `user:` other than the reserved
+UIDs 911 and 912. The image must run directly as that user. Use an Open session
+for images that require root initialization or an entrypoint privilege drop.
 
 A contained service first starts on an internal network with no public route.
 ShipIt pauses it, installs the allowlist controls, and then resumes it. Do not

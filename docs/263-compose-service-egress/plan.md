@@ -16,11 +16,11 @@ Repository-defined networks are replaced with Compose's `!override` tag. This
 requires Docker Compose 2.24.4 or newer. Capability additions are rejected, and
 contained services receive `no-new-privileges`, because either escape would let
 service code alter or bypass the namespace firewall.
-Repository-defined DNS and runtime users are replaced while containment is
-active. Services run as the session worker UID, or UID 1000 on legacy installs,
-and lose `SETUID` and `SETGID`. Thus repository images cannot assume resolver
-or proxy UIDs that the namespace firewall trusts. Open sessions keep repository
-settings. Before a stopped service starts again, ShipIt detaches its old egress
+Repository-defined DNS is replaced while containment is active. Services must
+declare a numeric, non-root, non-reserved runtime UID and lose `SETUID` and
+`SETGID`. Thus repository images cannot assume resolver or proxy UIDs that the
+namespace firewall trusts. Root-init images require an Open session. Before a
+stopped service starts again, ShipIt detaches its old egress
 bridge endpoint so it cannot run with a fresh namespace and stale NAT access.
 
 ## Scope boundary

@@ -459,7 +459,7 @@ describe("generateComposeOverride", () => {
 
   it("generates override with labels and network", () => {
     const override = generateComposeOverride(
-      [{ name: "web", ports: ["5173:5173"] }],
+      [{ name: "web", ports: ["5173:5173"], user: "1001:1001" }],
       baseOpts,
     );
     expect(override).toContain("shipit-parent-session: test-session-123");
@@ -471,7 +471,7 @@ describe("generateComposeOverride", () => {
 
   it("makes the service network internal while egress containment is active", () => {
     const override = generateComposeOverride(
-      [{ name: "web", ports: ["5173:5173"] }],
+      [{ name: "web", ports: ["5173:5173"], user: "1001:1001" }],
       { ...baseOpts, containEgress: true, containDns: true, containProxy: true },
     );
     expect(override).toContain("internal: true");
@@ -494,11 +494,27 @@ describe("generateComposeOverride", () => {
 
   it("overrides repository DNS in contained mode", () => {
     const override = generateComposeOverride(
-      [{ name: "web", ports: ["5173:5173"] }],
+      [{ name: "web", ports: ["5173:5173"], user: "1001:1001" }],
       { ...baseOpts, containEgress: true, containDns: true },
     );
     expect(override).toContain("dns: !override\n      - 127.0.0.1");
-    expect(override).toContain("user: 1000:1000");
+    expect(override).not.toContain("user: 1000:1000");
+  });
+
+  it("requires an explicit safe numeric user only in contained mode", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "compose-contained-user-"));
+    const write = (content: string) => {
+      const file = path.join(dir, "docker-compose.yml");
+      fs.writeFileSync(file, content);
+      return file;
+    };
+    const p = write(`services:\n  web:\n    image: postgres:17\n`);
+    expect(() => parseComposeFile(p, { dockerSocket: false, containEgress: true })).toThrow("numeric, non-root");
+    expect(() => parseComposeFile(p, { dockerSocket: false })).not.toThrow();
+    const safe = write(`services:\n  web:\n    image: app:test\n    user: "1001:1001"\n`);
+    expect(() => parseComposeFile(safe, { dockerSocket: false, containEgress: true })).not.toThrow();
+    const reserved = write(`services:\n  web:\n    image: app:test\n    user: "911"\n`);
+    expect(() => parseComposeFile(reserved, { dockerSocket: false, containEgress: true })).toThrow("reserved UID");
   });
 
   it("labels manual services without adding profiles", () => {

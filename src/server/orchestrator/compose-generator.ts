@@ -17,6 +17,8 @@ import type { ComposeConfig } from "../shared/shipit-config.js";
 import type { SecretRequirement } from "../shared/types/domain-types.js";
 import { sessionWorkerUid } from "./session-worker-uid.js";
 import { COMPOSE_OVERRIDE_FILE } from "./session-state-dir.js";
+import { EGRESS_RESOLVER_UID } from "./egress-dns.js";
+import { EGRESS_PROXY_UID } from "./egress-proxy-install.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -662,6 +664,22 @@ function validateServiceSecurity(
       }
     }
   }
+  if (containEgress && name !== "docker-socket-proxy") {
+    const containedUser = typeof svc.user === "string" || typeof svc.user === "number"
+      ? String(svc.user).trim()
+      : "";
+    const containedUid = /^\d+(?::\d+)?$/.test(containedUser)
+      ? Number(containedUser.split(":", 1)[0])
+      : NaN;
+    if (!Number.isInteger(containedUid) || containedUid <= 0
+      || containedUid === EGRESS_RESOLVER_UID || containedUid === EGRESS_PROXY_UID) {
+      throw new ComposeValidationError(
+        `Service \`${name}\`: contained services must declare a numeric, non-root \`user:\` `
+        + `that is not reserved UID ${EGRESS_RESOLVER_UID} or ${EGRESS_PROXY_UID}. `
+        + "Use an image that runs directly as this user, or use an Open session for root-init images.",
+      );
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -897,14 +915,7 @@ export function generateComposeOverride(
     // allowlist and the read-only socket mount, not by forcing this service to
     // the session worker UID.
     const preservesImageStartupUser = svc.name === "docker-socket-proxy";
-    if (opts.containEgress && !preservesImageStartupUser) {
-      // Resolver/proxy UIDs are trusted inside the shared network namespace.
-      // Repository-controlled image users therefore cannot survive in
-      // contained mode. A non-reserved fixed UID plus SETUID/SETGID drops
-      // makes that trust boundary independent of image /etc/passwd content.
-      const containedUid = workerUid === 911 || workerUid === 912 ? 1000 : (workerUid ?? 1000);
-      entry.user = `${containedUid}:${containedUid}`;
-    } else if (workerUid !== null && svc.user === undefined && !preservesImageStartupUser) {
+    if (workerUid !== null && svc.user === undefined && !preservesImageStartupUser) {
       entry.user = `${workerUid}:${workerUid}`;
     }
 

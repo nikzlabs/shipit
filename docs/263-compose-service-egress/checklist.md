@@ -16,3 +16,4 @@
 - [x] Tenth fresh review completed; raw Docker socket access is limited to the trusted proxy service and local/VPS installers enforce Docker Engine API 1.48.
 - [x] Eleventh fresh review completed; the Docker socket proxy exception now requires the server-authoritative ops flag, and stopped-service preparation invalidates same-second namespace state.
 - [x] Twelfth fresh review completed; policy transitions stop the prior stack before worker readiness, with regression coverage for the ordering.
+- [x] Thirteenth fresh review completed; contained services now reject incompatible root-init or ambiguous image-user configurations instead of silently overriding their runtime user.

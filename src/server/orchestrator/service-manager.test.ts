@@ -112,7 +112,7 @@ describe("ServiceManager", () => {
 
   it("detaches stale egress before up and contains the service after up", async () => {
     const dir = setup();
-    writeCompose(dir, "services:\n  web:\n    image: node:20\n    x-shipit-preview: manual\n");
+    writeCompose(dir, "services:\n  web:\n    image: node:20\n    user: \"1001:1001\"\n    x-shipit-preview: manual\n");
     const events: string[] = [];
     const mgr = new ServiceManager({
       sessionId: "test-session",
