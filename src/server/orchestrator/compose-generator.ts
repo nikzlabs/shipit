@@ -680,7 +680,13 @@ function validateServiceSecurity(
       }
     }
   }
-  if (containEgress && !trustedProxyShape) {
+  if (containEgress && trustedProxyShape) {
+    throw new ComposeValidationError(
+      `Service \`${name}\`: the ops Docker proxy is not allowed with contained egress. `
+      + "Use an Open ops session for read-only Docker access.",
+    );
+  }
+  if (containEgress) {
     const containedUser = typeof svc.user === "string" || typeof svc.user === "number"
       ? String(svc.user).trim()
       : "";
@@ -930,7 +936,7 @@ export function generateComposeOverride(
     // read-only Docker security boundary is enforced by the proxy's env
     // allowlist and the read-only socket mount, not by forcing this service to
     // the session worker UID.
-    const preservesImageStartupUser = svc.trustedOpsProxy === true;
+    const preservesImageStartupUser = svc.trustedOpsProxy === true && !opts.containEgress;
     if (workerUid !== null && svc.user === undefined && !preservesImageStartupUser) {
       entry.user = `${workerUid}:${workerUid}`;
     }

@@ -326,7 +326,7 @@ services:
     })).toThrow("direct Docker socket access");
   });
 
-  it("allows only the server-authoritative read-only ops proxy shape", () => {
+  it("rejects even the trusted ops proxy when egress is contained", () => {
     const dir = setup();
     const denied = ["POST", "BUILD", "COMMIT", "EXEC", "AUTH", "CONFIGS", "DISTRIBUTION",
       "GRPC", "NODES", "PLUGINS", "SECRETS", "SERVICES", "SESSION", "SWARM", "SYSTEM", "TASKS"];
@@ -335,6 +335,10 @@ services:
     expect(() => parseComposeFile(p, {
       dockerSocket: true,
       containEgress: true,
+      trustedOpsProxy: true,
+    })).toThrow("not allowed with contained egress");
+    expect(() => parseComposeFile(p, {
+      dockerSocket: true,
       trustedOpsProxy: true,
     })).not.toThrow();
   });
