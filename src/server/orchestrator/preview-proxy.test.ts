@@ -86,6 +86,21 @@ describe("injectPreviewBootstrap", () => {
     const twice = injectPreviewBootstrap(once);
     expect(twice.split(AGENT_INTERFACE_SDK_MARKER)).toHaveLength(2);
   });
+
+  it("keeps the hand-written script ASCII, since we don't control the charset", () => {
+    // We splice bytes into whatever the app serves, and a page with no declared
+    // charset renders our UTF-8 characters as mojibake (seen in Chromium, with
+    // an em dash in a console message).
+    //
+    // Scoped to the first injected script — ours. The SDK script beside it is
+    // `installShipItPageSdk.toString()`, whose exact bytes depend on the
+    // transform (vitest keeps the function's comments, production's esbuild
+    // strips them), so asserting over it would test the transform, not us.
+    const injected = injectPreviewBootstrap("<html><head></head></html>");
+    const ourScript = injected.slice(0, injected.indexOf("</script>"));
+    const nonAscii = Array.from(ourScript).filter((c) => c.charCodeAt(0) > 127);
+    expect(nonAscii).toEqual([]);
+  });
 });
 
 /**
@@ -123,14 +138,23 @@ function runInjectedScript(
   const listeners = new Map<string, ((e?: unknown) => void)[]>();
   const pushed: unknown[][] = [];
   const traversed: string[] = [];
-  const history = {
-    state: null,
+  const warnings: string[] = [];
+  // Modelled the way a browser has it — the traversing methods and `length`
+  // live on `History.prototype`, not on the instance — because the script
+  // patches the prototype, and an instance-only fake would let a patch that
+  // misses `History.prototype.back.call(history)` look like it works.
+  // `length` starts at the JOINT length a frame really sees (Chromium: one own
+  // entry, `length` 9), which is what makes it useless as a guard unpatched.
+  const historyProto = {
     pushState: (...args: unknown[]) => { pushed.push(args); return "original-return"; },
     replaceState: (...args: unknown[]) => { pushed.push(args); },
     back: () => { traversed.push("history.back"); },
     forward: () => { traversed.push("history.forward"); },
     go: (d?: unknown) => { traversed.push(`history.go:${String(d)}`); },
+    length: 9,
   };
+  const history: typeof historyProto & { state: unknown } = Object.create(historyProto);
+  history.state = null;
   const assigned: string[] = [];
   const location = {
     ...initial,
@@ -146,6 +170,7 @@ function runInjectedScript(
     WebSocket: function FakeWebSocket() {},
     navigation,
     parent,
+    History: { prototype: historyProto },
     addEventListener: (type: string, fn: (e?: unknown) => void) => {
       const existing = listeners.get(type) ?? [];
       listeners.set(type, [...existing, fn]);
@@ -176,6 +201,7 @@ function runInjectedScript(
   vm.runInContext(body, vm.createContext({
     window, history, location, URL, WebSocket: window.WebSocket, Promise,
     HashChangeEvent: FakeHashChangeEvent, PopStateEvent: FakePopStateEvent,
+    console: { warn: (...args: unknown[]) => { warnings.push(args.join(" ")); } },
   }));
   // Commands arrive from the embedding window, which is what the script checks.
   const toolbar = (type: string, extra: Record<string, unknown> = {}, source: unknown = parent) => {
@@ -183,7 +209,7 @@ function runInjectedScript(
       fn({ data: { source: "shipit-toolbar", type, ...extra }, source });
     }
   };
-  return { posted, listeners, history, location, pushed, traversed, toolbar, assigned, dispatched };
+  return { posted, listeners, history, historyProto, location, pushed, traversed, toolbar, assigned, dispatched, warnings };
 }
 
 /**
@@ -493,6 +519,60 @@ describe("injected preview script — the previewed page's own traversal", () =>
     history.go(-3);
 
     expect(traversed).toEqual([]);
+  });
+
+  it("patches the prototype, so a prototype-level call cannot reach the native one", () => {
+    // An own property on `history` would leave this as a live route back to
+    // the joint traversal — the very call the leak needs.
+    const { calls, nav } = fakeNavigation({ canGoBack: true });
+    const { historyProto, history, traversed } = runInjectedScript(undefined, nav);
+
+    historyProto.back.call(history);
+
+    expect(calls).toEqual(["back"]);
+    expect(traversed).toEqual([]);
+  });
+
+  it("converts the delta the way the native long conversion does", () => {
+    // `go(4294967295)` is `go(-1)` natively (Web IDL `long` wraps at 2^32);
+    // treating it as a huge positive delta would silently do nothing.
+    const { calls, nav } = fakeNavigation({ canGoBack: true, canGoForward: true });
+    const { history } = runInjectedScript(undefined, nav);
+
+    history.go(4294967295);
+    history.go(-1.7);
+    history.go("1");
+
+    expect(calls).toEqual(["back", "back", "forward"]);
+  });
+
+  it("reports the frame's own entry count as history.length", () => {
+    // Unpatched this is the JOINT length (9 in the fake), so the
+    // `history.length > 1` guard an app puts in front of its back button says
+    // "yes" at the preview's first page and walks into a refusal.
+    const bare = runInjectedScript(undefined, undefined);
+    expect(bare.history.length).toBe(9);
+
+    const { nav } = fakeNavigation({ entries: ["a"], currentIndex: 0 });
+    const { history } = runInjectedScript(undefined, nav);
+    expect(history.length).toBe(1);
+
+    const deeper = fakeNavigation({ entries: ["a", "b", "c"], currentIndex: 2 });
+    expect(runInjectedScript(undefined, deeper.nav).history.length).toBe(3);
+  });
+
+  it("says once in the console why a refused traversal did nothing", () => {
+    // A refusal is otherwise invisible: History returns undefined and no event
+    // fires, so the app's Back button just looks broken.
+    const { nav } = fakeNavigation({ canGoBack: false });
+    const { history, warnings } = runInjectedScript(undefined, nav);
+
+    history.back();
+    history.back();
+    history.go(-3);
+
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("[ShipIt preview]");
   });
 
   it("swallows a rejected traversal so the app's console stays clean", async () => {
