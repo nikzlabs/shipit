@@ -49,6 +49,30 @@ Non-turn work has a further wrinkle: `resolveLocalAgentHome` reads the *runner's
 
 The seed prints a `⚠` line for each hazard that applies. `local-agent-credentials.ts` maintains the unscoped fallback home (planning#284) and is not on the per-turn path.
 
+## Testing onboarding — the `onboarding` service, not a wipe
+
+`dev` is a *configured* install and cannot be un-configured. Every key supplied in the outer Settings → Secrets is injected into it, `adoptEnvCredentials` turns each one into a stored credential at boot (docs/252 req 20), and `resolveHarnessOnboarding` then stamps `harnessOnboardingCompletedAt` on the first read — permanently, since nothing clears it. **`DOGFOOD_SEED_CREDENTIALS=0` is not enough**: it stops the seeder POSTing, and adoption still makes rows out of the variables.
+
+So there is a second manual service:
+
+```bash
+shipit service start onboarding      # port 3001; `dev` can stay up on 3000
+```
+
+Two differences from `dev`, and nothing else. It declares **`GITHUB_TOKEN` and no service credential** — a name in `x-shipit-secrets` is what injects the value, so the list *is* the mechanism; GitHub is supplied because the subject is the **services** onboarding and re-pasting a token to reach it is friction rather than coverage. And it has **its own `SHIPIT_STATE_DIR`** at `.inner-shipit/onboarding`: a separate SQLite db, credential store and agent home. It comes up on *"Add a service, and the chat starts working"*, both harnesses reading `no model it can run yet`, composer disabled.
+
+**Never add a catalogue `storageEnv` to that block.** One line added in good faith turns the fresh instance into a second configured one — the variable is adopted into a stored credential at boot and the install stamps itself onboarded — and the symptom is an absence: the panel under test simply never appears. `scripts/seed-inner-credentials.test.ts` asserts exact membership so this fails the build instead.
+
+It seeds nothing (`DOGFOOD_SEED=0`), so the repo list starts empty too. If you would rather have a repo waiting, swap that for `DOGFOOD_SEED_CREDENTIALS: "0"`, which keeps the credential half off whatever is declared.
+
+Reset it to a fresh install — and note that deleting the directory is the *whole* reset, because everything an install remembers hangs off it:
+
+```bash
+shipit service stop onboarding && rm -rf .inner-shipit/onboarding && shipit service start onboarding
+```
+
+Never test onboarding by deleting credentials from inner Settings or wiping `.inner-shipit/` — the first is destructive to the developer's real setup and the second throws away the configured instance they are about to go back to.
+
 ## Seeding
 
 At `dev`-service boot, two background steps run in order, both prefixed `[seed]` in the service logs (`docs/131-dogfood-seed-sessions`):
