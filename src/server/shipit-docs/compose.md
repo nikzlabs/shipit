@@ -538,7 +538,8 @@ service exists. ShipIt requires Docker Compose 2.24.4 or newer for contained
 service network replacement.
 
 Contained services cannot add Linux capabilities, use `deploy.restart_policy`,
-or declare labels in ShipIt's reserved `shipit-egress-*` namespace. Compose
+request `use_api_socket`, add lifecycle hooks, or declare labels in ShipIt's
+reserved `shipit-egress-*` namespace. Compose
 `include` and service `extends` are also rejected in contained sessions because
 ShipIt cannot safely validate and override definitions from a second file.
 ShipIt also replaces `dns:` and `user:` for contained services. It runs the
@@ -551,3 +552,5 @@ A contained service first starts on an internal network with no public route.
 ShipIt pauses it, installs the allowlist controls, and then resumes it. Do not
 make the entrypoint depend on public network access before setup completes. Put
 dependency installation in `agent.install` or bake it into the image.
+Contained Compose services require Docker Engine 28 or newer (API 1.48) so
+ShipIt can select the controlled egress bridge as the default route.

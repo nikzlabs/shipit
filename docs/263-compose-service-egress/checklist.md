@@ -12,3 +12,4 @@
 - [x] Sixth fresh review completed; trusted-UID isolation, DNS replacement, stale network repair, serialized adoption transitions, subnet failure handling, and Tier A idempotency were addressed.
 - [x] Seventh fresh review completed; stopped-container restart escape, contained force-recreation, narrow trusted-UID validation, health-gated DNS deadlock, stable refresh domains, and non-destructive widening refresh were addressed.
 - [x] Eighth fresh review completed; targeted pre-start NAT detachment replaced dependency recreation, repository image users can no longer assume trusted UIDs, common health-gated dependencies remain supported, refresh failure is explicit, and both local bridge subnets bypass Tier C.
+- [x] Ninth fresh review completed; Compose API-socket and lifecycle-hook escapes are rejected, Docker Engine API 1.48 is required for deterministic gateway priority, and unrelated network-connect authorization errors now fail closed.

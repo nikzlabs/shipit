@@ -541,6 +541,16 @@ function validateServiceSecurity(
       `Service \`${name}\`: \`cap_add\` is not allowed. Remove added Linux capabilities.`,
     );
   }
+  if (containEgress && svc.use_api_socket === true) {
+    throw new ComposeValidationError(
+      `Service \`${name}\`: \`use_api_socket: true\` is not allowed for contained services.`,
+    );
+  }
+  if (containEgress && (svc.post_start !== undefined || svc.pre_stop !== undefined)) {
+    throw new ComposeValidationError(
+      `Service \`${name}\`: Compose lifecycle hooks are not allowed for contained services.`,
+    );
+  }
 
   const labels = svc.labels;
   const labelKeys = Array.isArray(labels)

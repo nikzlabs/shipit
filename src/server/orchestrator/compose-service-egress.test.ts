@@ -41,6 +41,7 @@ function fakeDocker(events: string[]) {
     inspect: vi.fn(async () => ({ Internal: true, IPAM: { Config: [{ Subnet: "172.30.0.0/24" }] } })),
   };
   const docker = {
+    version: vi.fn(async () => ({ ApiVersion: "1.48" })),
     listContainers: vi.fn(async () => [{
       Id: "service-1",
       State: "running",
@@ -132,6 +133,37 @@ describe("containComposeServices", () => {
     expect(installFirewall).toHaveBeenCalled();
     expect(container.remove).not.toHaveBeenCalled();
     expect(container.unpause).toHaveBeenCalled();
+  });
+
+  it("fails closed on an unrelated network authorization error", async () => {
+    const events: string[] = [];
+    const { docker, network, container } = fakeDocker(events);
+    network.connect.mockRejectedValueOnce(Object.assign(new Error("authorization denied"), { statusCode: 403 }));
+    await expect(containComposeServices({
+      docker,
+      sessionId: "session-1",
+      sidecarImage: "egress:test",
+      config: { contained: true, extraHosts: [] },
+      serviceNames: ["web"],
+      dnsEnabled: false,
+      proxyEnabled: false,
+    })).rejects.toThrow("egress containment failed for 1 Compose service");
+    expect(container.stop).toHaveBeenCalled();
+  });
+
+  it("rejects Docker engines without gateway-priority support", async () => {
+    const events: string[] = [];
+    const { docker } = fakeDocker(events);
+    vi.mocked(docker.version).mockResolvedValueOnce({ ApiVersion: "1.47" } as never);
+    await expect(containComposeServices({
+      docker,
+      sessionId: "session-1",
+      sidecarImage: "egress:test",
+      config: { contained: true, extraHosts: [] },
+      serviceNames: ["web"],
+      dnsEnabled: false,
+      proxyEnabled: false,
+    })).rejects.toThrow("API 1.48 or newer");
   });
 
   it("fails closed when the intra-session subnet cannot be reopened", async () => {

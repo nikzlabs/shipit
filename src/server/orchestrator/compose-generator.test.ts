@@ -193,6 +193,20 @@ services:
     expect(() => parseComposeFile(p, { dockerSocket: false, containEgress: true })).toThrow("reserved egress namespace");
   });
 
+  it("rejects Compose API socket access in contained services", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `services:\n  web:\n    image: node:20\n    use_api_socket: true\n`);
+    expect(() => parseComposeFile(p, { dockerSocket: false, containEgress: true })).toThrow("use_api_socket");
+    expect(() => parseComposeFile(p, { dockerSocket: false })).not.toThrow();
+  });
+
+  it("rejects lifecycle hooks in contained services", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `services:\n  web:\n    image: node:20\n    post_start:\n      - command: /bin/true\n        privileged: true\n`);
+    expect(() => parseComposeFile(p, { dockerSocket: false, containEgress: true })).toThrow("lifecycle hooks");
+    expect(() => parseComposeFile(p, { dockerSocket: false })).not.toThrow();
+  });
+
   it("rejects network_mode: host", () => {
     const dir = setup();
     const p = writeCompose(dir, `

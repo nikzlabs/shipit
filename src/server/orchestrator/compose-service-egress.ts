@@ -56,6 +56,12 @@ function egressNetworkName(sessionId: string): string {
   return `${COMPOSE_EGRESS_NETWORK_PREFIX}${sessionId}`;
 }
 
+function apiVersionAtLeast(actual: string, minimumMajor: number, minimumMinor: number): boolean {
+  const [major, minor] = actual.split(".").map(Number);
+  return Number.isFinite(major) && Number.isFinite(minor)
+    && (major > minimumMajor || (major === minimumMajor && minor >= minimumMinor));
+}
+
 async function ensureEgressNetwork(
   docker: Docker,
   sessionId: string,
@@ -86,6 +92,12 @@ async function ensureEgressNetwork(
  */
 export async function containComposeServices(opts: ContainComposeServicesOptions): Promise<void> {
   if (!opts.config.contained) return;
+  const engineVersion = await opts.docker.version();
+  if (!apiVersionAtLeast(engineVersion.ApiVersion, 1, 48)) {
+    throw new Error(
+      `Compose service egress containment requires Docker Engine API 1.48 or newer; found ${engineVersion.ApiVersion}`,
+    );
+  }
   const parentLabel = `shipit-parent-session=${opts.sessionId}`;
   const containers = await opts.docker.listContainers({ all: true, filters: { label: [parentLabel] } });
   const serviceContainers = containers.filter((entry) =>
@@ -190,16 +202,8 @@ export async function containComposeServices(opts: ContainComposeServicesOptions
           EndpointConfig: { GwPriority: 1 },
         } as Docker.NetworkConnectOptions);
       } catch (error) {
-        const code = error && typeof error === "object" && "statusCode" in error
-          ? Number(error.statusCode)
-          : 0;
         const message = error instanceof Error ? error.message : String(error);
-        if (code === 400 && /GwPriority|unknown field/i.test(message)) {
-          // Docker Engine <28 / API <1.48 has no GwPriority. The internal
-          // session network has no gateway, so this bridge becomes default
-          // without the hint too.
-          await network.connect({ Container: info.Id });
-        } else if (code !== 403 && !/already exists|already connected/i.test(message)) {
+        if (!/already exists|already connected/i.test(message)) {
           throw error;
         }
       }
