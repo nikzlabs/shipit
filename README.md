@@ -19,17 +19,18 @@
      (YouTube/Loom/asciinema or an mp4 in docs/assets/) and link it here as a "▶ Watch the demo" line
      or a clickable thumbnail right under the hero image. -->
 
-ShipIt is a browser-based, chat-driven IDE for running coding agents through your **real engineering
-loop**.
+ShipIt is a browser-based, chat-driven IDE for running coding agents through your
+**real engineering loop**.
 
 - **Parallel sessions in isolated containers** — run many agents at once, each with its own branch
   and workspace, so nothing they do collides.
-- **Web/Android preview per session** — every session runs its own instance of your full app stack,
-  so the agent can build, run, and fix before you preview and merge.
+- **Web/Android preview per session** — every session runs its own instance of your full app
+  stack, so the agent can build, run, and fix before you preview and merge.
 - **Bring your own agent** — on the subscription or API key you already have (Anthropic, OpenAI,
   DeepSeek, OpenRouter, etc.).
   - Supported harnesses: Claude Code and Codex, with OpenCode and Cursor CLI support coming.
-- **The GitHub loop, inline** — work with PRs, CI, deploys, reviews, and issues, without leaving ShipIt.
+- **The GitHub loop, inline** — work with PRs, CI, deploys, reviews, and issues, without leaving
+  ShipIt.
 - **Runs on Linux, macOS, and Windows (WSL2)** — in isolated Docker containers.
 - **Ship from your phone** — mobile-first, with voice.
 
@@ -47,13 +48,12 @@ bash <(curl -fsSL https://raw.githubusercontent.com/nikzlabs/shipit/stable/deplo
 
 This installs ShipIt under `~/.shipit`, builds the Docker images, and starts it **detached** at
 [http://localhost:4123](http://localhost:4123). Fork installs, custom paths, updates, and
-stop/uninstall are in
-[`deployment/README.md`](deployment/README.md).
+stop/uninstall are in [`deployment/README.md`](deployment/README.md).
 
 #### Reaching a local install from your phone
 
-A local install binds to `127.0.0.1`, so it is not reachable from other devices — deliberately, since
-ShipIt has no built-in authentication. To reach it from a phone or another machine over
+A local install binds to `127.0.0.1`, so it is not reachable from other devices — deliberately,
+since ShipIt has no built-in authentication. To reach it from a phone or another machine over
 [Tailscale](https://tailscale.com/), run:
 
 ```bash
@@ -77,10 +77,10 @@ RAM minimum (16 GB recommended), since each active session runs its own containe
 sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/nikzlabs/shipit/stable/deployment/vps/setup.sh)"
 ```
 
-It asks which access path you want, then handles the rest — Docker, clone, host limits, image builds,
-and the self-update systemd units. Updates land from the UI (**Settings → Advanced → Software
-Updates**). Fork installs, host-side updates, sizing, access policies, and troubleshooting are all in
-[`deployment/README.md`](deployment/README.md).
+It asks which access path you want, then handles the rest — Docker, clone, host limits, image
+builds, and the self-update systemd units. Updates land from the UI
+(**Settings → Advanced → Software Updates**). Fork installs, host-side updates, sizing, access
+policies, and troubleshooting are all in [`deployment/README.md`](deployment/README.md).
 
 ## Security
 
@@ -105,7 +105,7 @@ limitations — is in [SECURITY-MODEL.md](SECURITY-MODEL.md).
 
 ## Features
 
-Everything ShipIt does, and its known limitations, are in [FEATURES.md](FEATURES.md).
+The full feature list and known limitations are in [FEATURES.md](FEATURES.md).
 
 ## Contributing
 
@@ -119,6 +119,6 @@ how ShipIt defends its trust boundaries (and the risks it has accepted), see
 
 ---
 
-[ship-it.ai](https://ship-it.ai/) · Apache 2.0 ([LICENSE](LICENSE)) · Built and maintained by
-Nik Zherebtsov · [LinkedIn](https://www.linkedin.com/in/nikolayz/) ·
+[ship-it.ai](https://ship-it.ai/) · Apache 2.0 ([LICENSE](LICENSE)) · Built and maintained by Nik
+Zherebtsov · [LinkedIn](https://www.linkedin.com/in/nikolayz/) ·
 [GitHub](https://github.com/nicolasalt)
