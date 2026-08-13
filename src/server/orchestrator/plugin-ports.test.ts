@@ -76,8 +76,8 @@ describe("resolvePublishedPorts", () => {
     expect(readded.get("probe")).toBe(4820);
   });
 
-  it("gives a service with no declared port a band allocation", () => {
-    const ports = resolvePublishedPorts(sessionDir, [{ service: "worker" }]);
+  it("gives a service whose declared port is unusable a band allocation", () => {
+    const ports = resolvePublishedPorts(sessionDir, [{ service: "worker", containerPort: 0 }]);
     expect(ports.get("worker")).toBe(PLUGIN_PORT_BAND_START);
   });
 

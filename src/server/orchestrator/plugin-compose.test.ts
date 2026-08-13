@@ -105,7 +105,6 @@ function build(fragments: PluginFragmentService[], overrides: {
 } = {}): ReturnType<typeof buildPluginComposeServices> {
   return buildPluginComposeServices(fragments, {
     sessionDir,
-    sessionDirDaemon: sessionDir,
     workspaceDir,
     ...overrides,
     pluginVolumes: new Map(),
@@ -198,6 +197,33 @@ services:
     const { services, issuesByRepo } = collect(SELF_USE, defaultManifest(), {
       projectServiceNames: ["worker"],
     });
+    expect(services).toHaveLength(0);
+    expect(issuesByRepo.get("mine")).toHaveLength(1);
+  });
+
+  it("withholds a repository's OTHER imports too — a stack activates as a unit", () => {
+    fs.mkdirSync(path.join(workspaceDir, "tools", "other"), { recursive: true });
+    fs.writeFileSync(path.join(workspaceDir, "tools", "other", "docker-compose.yml"),
+      "services:\n  other:\n    image: node:22-alpine\n");
+    const manifest = `
+plugins:
+  probe:
+    compose: tools/probe/docker-compose.yml
+  other:
+    compose: tools/other/docker-compose.yml
+`;
+    const { services, issuesByRepo } = collect(`
+repos:
+  - repo: self
+    name: mine
+use:
+  - plugin: probe
+    from: mine
+  - plugin: other
+    from: mine
+`, manifest, { projectServiceNames: ["probe"] });
+    // `other` is perfectly valid on its own; it is withheld because the
+    // repository it comes from cannot activate as a whole.
     expect(services).toHaveLength(0);
     expect(issuesByRepo.get("mine")).toHaveLength(1);
   });
@@ -386,6 +412,20 @@ describe("buildPluginComposeServices", () => {
     });
   });
 
+  it("mounts the plugin's own tree read-only at /plugin, the path every surface uses", () => {
+    const { services } = collect(SELF_USE);
+    const volumes = build(services).services[0].definition.volumes as Record<string, unknown>[];
+    // A `cli:` entrypoint is declared relative to the repository ROOT, so this
+    // is the repo root — not the fragment's directory, which is what the
+    // fragment's own `.` resolves to.
+    expect(volumes).toContainEqual({
+      type: "bind",
+      source: workspaceDir,
+      target: "/plugin",
+      read_only: true,
+    });
+  });
+
   it("mounts the project at /project and the import's state dir read-write (reqs 18, 21)", () => {
     const { services } = collect(SELF_USE);
     const built = build(services);
@@ -417,6 +457,64 @@ describe("buildPluginComposeServices", () => {
       .toMatchObject({ SHIPIT_SETTINGS: "/plugin-settings.json" });
   });
 
+  // In production the session tree lives inside a named volume, so a plain bind
+  // of the orchestrator's path makes Docker create an empty, root-owned
+  // directory — `/plugin-state` would not be the state the CLI writes to, and
+  // dev would work perfectly the whole time.
+  it("mounts the state dir and settings file through the workspace volume, not as binds", () => {
+    fs.mkdirSync(path.join(sessionDir, "plugin-data", "probe"), { recursive: true });
+    fs.writeFileSync(path.join(sessionDir, "plugin-data", "probe", "settings.json"), "{}\n");
+    const { services } = collect(SELF_USE);
+    const built = buildPluginComposeServices(services, {
+      sessionDir,
+      sessionSubpath: "sessions/abc",
+      workspaceDir,
+      workspaceVolume: "shipit_workspace",
+      workspaceSubpath: "sessions/abc/workspace",
+      pluginVolumes: new Map(),
+      publishedPorts: new Map(),
+    });
+    const volumes = built.services[0].definition.volumes as Record<string, unknown>[];
+    expect(volumes).toContainEqual({
+      type: "volume",
+      source: "shipit-workspace",
+      target: "/plugin-state",
+      volume: { subpath: "sessions/abc/plugin-data/probe/state" },
+    });
+    // A FILE subpath, which the daemon supports (it stats the resolved path and
+    // binds a file as a file). Its parent is the plugin's writable state, so
+    // mounting that instead would hand the plugin its own settings to rewrite.
+    expect(volumes).toContainEqual({
+      type: "volume",
+      source: "shipit-workspace",
+      target: "/plugin-settings.json",
+      volume: { subpath: "sessions/abc/plugin-data/probe/settings.json" },
+      read_only: true,
+    });
+  });
+
+  it("fingerprints the settings so a change recreates the container (req 26)", () => {
+    const settings = path.join(sessionDir, "plugin-data", "probe", "settings.json");
+    fs.mkdirSync(path.dirname(settings), { recursive: true });
+    fs.writeFileSync(settings, `{"greeting":"hi"}\n`);
+    const { services } = collect(SELF_USE);
+    const first = build(services).services[0].settingsFingerprint;
+    expect(first).toBeTruthy();
+
+    fs.writeFileSync(settings, `{"greeting":"hello"}\n`);
+    const second = build(collect(SELF_USE).services).services[0].settingsFingerprint;
+    expect(second).not.toBe(first);
+
+    // It rides a label, which is what makes Compose treat the service as
+    // changed — the mount PATH is identical either way.
+    const yaml = generateComposeOverride([toComposeService(build(services).services[0])], {
+      sessionId: "session-1",
+      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+    });
+    const doc = parseYaml(yaml) as { services: Record<string, { labels: Record<string, string> }> };
+    expect(doc.services.probe.labels["shipit-plugin-settings"]).toBe(second);
+  });
+
   it("names the contract in the environment, without a commit for a self import (req 15)", () => {
     const { services } = collect(SELF_USE);
     const env = build(services).services[0].definition.environment as Record<string, string>;
@@ -433,7 +531,6 @@ describe("buildPluginComposeServices", () => {
     const tracked = { ...services[0], self: false, commit: "abc123" };
     const built = buildPluginComposeServices([tracked], {
       sessionDir,
-      sessionDirDaemon: sessionDir,
       workspaceDir,
       pluginVolumes: new Map([["mine", "shipit-x_plugin-mine"]]),
       publishedPorts: new Map(),
@@ -456,7 +553,6 @@ describe("buildPluginComposeServices", () => {
     const tracked = { ...services[0], self: false, commit: "abc123" };
     const built = buildPluginComposeServices([tracked], {
       sessionDir,
-      sessionDirDaemon: sessionDir,
       workspaceDir,
       pluginVolumes: new Map(),
       publishedPorts: new Map(),
@@ -512,7 +608,6 @@ describe("override emission", () => {
     const tracked = { ...services[0], self: false, commit: "abc123" };
     const built = buildPluginComposeServices([tracked], {
       sessionDir,
-      sessionDirDaemon: sessionDir,
       workspaceDir,
       pluginVolumes: new Map([["mine", "shipit-x_plugin-mine"]]),
       publishedPorts: new Map(),

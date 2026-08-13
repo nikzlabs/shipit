@@ -371,20 +371,99 @@ instead of a repeat.
   key allowlist above. A pass-through `environment: [- SOME_NAME]` entry is
   refused for the same reason as the escaping.
 
-  **A plugin's services are all-or-nothing.** One unusable service — an invalid
-  fragment, a name that collides with the project's or another plugin's — drops
-  every service of that import with the reason on the repository's card. Half a
-  plugin is the partial state req 15 forbids, and for a plugin whose UI and CLI
-  share state (req 17) it is also the confusing one. The collision message names
-  the domain and the fix (`overrides.services.<name>.as`), and the snapshot GET
-  **recomputes** it from the same pure collector rather than remembering it, so a
-  declaration that cannot work says so before anything has run.
+  **A repository's services are all-or-nothing.** One unusable service — an
+  invalid fragment, a name that collides with the project's or another plugin's
+  — withholds every service that repository provides, with the reason on its
+  card; the prior generation stays live, so nothing is torn down to say so
+  (req 15). This is the phase-3 rule as §1a states it, and it is deliberately
+  **not** the rule for commands, which are withheld individually: a compose stack
+  is not a set of independent services, while a command name is just a name. The
+  collision message names the domain and the fix
+  (`overrides.services.<name>.as`), and the snapshot GET **recomputes** it from
+  the same pure collector rather than remembering it, so a declaration that
+  cannot work says so before anything has run.
+
+  **Session paths are mounted as volume subpaths, never as binds — and that is
+  a production-only trap, so it is written down rather than left to be
+  rediscovered.** In production the whole session tree lives inside a named
+  volume the daemon knows nothing about, so a bind of the orchestrator's
+  `/workspace/sessions/<id>/…` makes Docker silently create an EMPTY,
+  ROOT-OWNED directory: `/project` would not be the project and `/plugin-state`
+  would not be the state the CLI writes to, while dev and dogfood worked
+  perfectly the whole time. `container-lifecycle.ts` mounts workspace,
+  credentials, uploads and scratch through `VolumeOptions.Subpath` for exactly
+  this reason. The state directory and settings file need their own subpath
+  keyed off the session ROOT, since `plugin-data/` is a sibling of `workspace/`
+  rather than under it. The settings file is mounted **as a file**, which the
+  daemon supports from API 1.45 — below the Engine 28 docs/263 already requires
+  — and mounting its parent instead would hand the plugin its own settings to
+  rewrite.
+
+  **A settings change recreates the service, via a label.** The settings file is
+  rewritten only when its content changes, so a change means a NEW INODE — and a
+  file bind mount follows the inode it was created with, leaving a running
+  container reading a file nothing writes to any more. The mount path is
+  identical either way, so neither the reconcile decision nor Compose's own
+  changed-service test would notice. A digest of the content rides a
+  `shipit-plugin-settings` label, which changes both answers at once.
+
+  **Mounts come from `shared/plugin-contract.ts`, and the plugin tree is one
+  volume per generation.** A service gets the merged tree at
+  `/plugin` — the same path the install and CLI-invocation containers use, so a
+  `cli:` entrypoint declared relative to the repository root resolves identically
+  on every surface — plus `/project`, `/plugin-state` and the settings file. The
+  volume itself is obtained through `ensurePluginRuntimeOverlay`, an **ensure**
+  rather than a create, because the kernel forbids one upperdir backing two
+  independently created overlay mounts and the CLI container asks for the same
+  volume. `/plugin` is mounted **read-only** for a service: req 7 keeps the
+  plugin source unmodified, and a service's writable surfaces are `/plugin-state`
+  and `/project`, not the layer its own CLI runs out of.
+
+  **Two gaps this slice found and did NOT close, both because closing them here
+  would build the wrong half of a shared mechanism.**
+
+  *No consumer lease over a live generation.* A refresh publishes the new
+  generation and `pruneOldGenerations` immediately deletes the superseded
+  checkout and its writable layer — while a plugin service container is still
+  holding an overlay whose lowerdir is that directory. docs/183's own findings
+  record what that does: merged `readdir` starts returning empty while path
+  lookups still resolve, silently corrupting the running container. The same
+  window belongs to CLI invocation containers, so the fix is ONE lease across
+  both surfaces (prune waits for its consumers), not a service-only version.
+
+  *A rejected fragment does not keep the prior generation live.* Phase 3 runs
+  when services are resolved, which is AFTER `activateGeneration` has published
+  and pruned. So a tracked commit whose fragment fails validation still becomes
+  the live generation — its files, CLIs and skills move, its services are
+  withheld — which is the partial version req 15 forbids, and it contradicts
+  §1a's "an activation failure keeps the prior generation active". Closing it
+  means running the fragment check as a pre-publish gate inside activation,
+  beside the phase-2 selector check, where the command-collision half will want
+  to live too.
+
+  **Egress is unchanged on this surface.** Plugin service containers ride the
+  session's existing posture, whatever `containComposeServices` gives the
+  project's own services. Req 24 is one decision covering the install container,
+  the CLI invocation container and services, and closing it on one surface alone
+  is how the three drift — in particular, joining a plugin container to the
+  agent's network namespace would re-expose the worker's loopback credential
+  broker and break req 19.
 
   **A project that declares plugins and no `compose:` block of its own still
-  gets their services** (req 5's "one declaration"). Its compose file is then
-  allowed to be absent and is dropped from the argument vector; the generated
-  override is the whole stack. A project that DID declare `compose:` still fails
-  loudly on a missing file.
+  gets their services** (req 5's "one declaration"). It then has NO project
+  compose file — not "one that may be missing": keying it on whether a
+  conventional `docker-compose.yml` happens to exist would start a stack the
+  project never declared, and the collision domain would not know about those
+  services either. The generated override is the whole stack.
+
+  **The project's compose file is re-validated before every `up`, not only at
+  start.** A plugin service gets `/project` read-write (reqs 18, 21), so
+  third-party code can now rewrite that file — and a manual start, a restart,
+  an OOM or install retry, and the gate release all re-read it from disk. Left
+  as it was, the rewritten file would run with none of the checks it was
+  admitted under: `privileged: true`, a Docker-socket bind, an absolute host
+  path. Every `compose up` in the manager goes through one function, which is
+  where the check lives.
 - **Workspace handle** (req 21): plugin *services* get the consuming
   project's workspace mounted at the fixed path **`/project`**; plugin *CLIs*
   run in the agent container with **cwd = the project workspace**, which

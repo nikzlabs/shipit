@@ -23,7 +23,6 @@
  * is what makes `shipit plugin refresh` (req 12) reach the running services.
  */
 
-import fsp from "node:fs/promises";
 import path from "node:path";
 import type Docker from "dockerode";
 import { parseComposeFile } from "../compose-generator.js";
@@ -34,26 +33,28 @@ import {
   type PluginFragmentService,
 } from "../plugin-compose.js";
 import {
-  buildPluginOverlaySpec,
-  createPluginOverlay,
+  ensurePluginRuntimeOverlay,
   removePluginOverlay,
   resolvePluginOverlayRoots,
-  toDaemonPath,
-  type PluginOverlaySpec,
 } from "../plugin-overlay.js";
-import { volumeExists } from "../overlay-volume.js";
-import { activeLinkPath } from "../plugin-generations.js";
 import { resolvePublishedPorts } from "../plugin-ports.js";
 import { sessionRootForWorkspace } from "../plugin-state.js";
 import { sessionStateDirForWorkspace } from "../session-state-dir.js";
-import { chownToSessionWorker } from "../session-worker-uid.js";
 import { resolveShipitConfig, type ShipitConfig } from "../../shared/shipit-config.js";
 import { recordPluginServiceFailures } from "./plugin-activation.js";
 
 export interface PluginServiceDeps {
   /** Absent where there is no Docker (local/dogfood mode, tests). */
   docker?: Docker;
-  /** Name of the workspace volume, and the orchestrator root that maps onto it. */
+  /**
+   * Name of the workspace volume, and the orchestrator root that maps onto it.
+   *
+   * The caller reads this from the container manager, which is where the
+   * daemon-path translation `plugin-install.ts` already takes it from — and it
+   * is the same `WORKSPACE_VOLUME` that `setupServiceManager` hands the
+   * ServiceManager, so a plugin service's `shipit-workspace` mount and the
+   * override's declaration of that volume can only be present together.
+   */
   workspaceVolume?: string;
   stateRoot?: string;
   /** Whether this session contains Compose-service egress (docs/263). */
@@ -115,18 +116,22 @@ export async function resolveSessionPluginServices(
   // req 18 — pinned per (session, service). Project ports are reserved: theirs
   // is both an origin and a real container port, so of the two only a plugin's
   // is ShipIt's to move.
+  //
+  // Only services that DECLARE a port ask for one. A worker with no `ports:` is
+  // not previewable, and handing it a band number would make the client — which
+  // treats any running service with a port as previewable — offer an origin
+  // that resolves to nothing (review finding).
   const publishedPorts = resolvePublishedPorts(
     sessionDir,
-    fragments.map((f) => ({
-      service: f.name,
-      ...(f.port !== undefined ? { containerPort: f.port } : {}),
-    })),
+    fragments
+      .filter((f) => f.port !== undefined)
+      .map((f) => ({ service: f.name, containerPort: f.port! })),
     project.ports,
   );
 
   const built = buildPluginComposeServices(fragments, {
     sessionDir,
-    sessionDirDaemon: toDaemonPath(sessionDir, roots),
+    ...(sessionSubpath(sessionDir, deps) ? { sessionSubpath: sessionSubpath(sessionDir, deps)! } : {}),
     workspaceDir,
     ...(deps.workspaceVolume ? { workspaceVolume: deps.workspaceVolume } : {}),
     ...(workspaceSubpath(workspaceDir, deps) ? { workspaceSubpath: workspaceSubpath(workspaceDir, deps)! } : {}),
@@ -145,6 +150,15 @@ export async function resolveSessionPluginServices(
 function workspaceSubpath(workspaceDir: string, deps: PluginServiceDeps): string | undefined {
   if (!deps.workspaceVolume) return undefined;
   return workspaceDir.replace(/^\/workspace\//, "");
+}
+
+/**
+ * The same, for the session ROOT — `plugin-data/` is a sibling of `workspace/`,
+ * so it needs its own subpath rather than one derived from the clone's.
+ */
+function sessionSubpath(sessionDir: string, deps: PluginServiceDeps): string | undefined {
+  if (!deps.workspaceVolume) return undefined;
+  return sessionDir.replace(/^\/workspace\//, "");
 }
 
 /**
@@ -200,18 +214,23 @@ async function ensurePluginVolumes(
   const docker = deps.docker;
   if (!docker) return volumes;
 
-  const tracked = new Map<string, string>();
+  const tracked = new Map<string, { commit: string; checkoutDir: string }>();
   for (const fragment of fragments) {
-    if (!fragment.self && fragment.commit) tracked.set(fragment.repo, fragment.commit);
+    if (!fragment.self && fragment.commit) {
+      tracked.set(fragment.repo, { commit: fragment.commit, checkoutDir: fragment.checkoutDir });
+    }
   }
 
-  for (const [repoName, commit] of tracked) {
+  for (const [repoName, { commit, checkoutDir }] of tracked) {
     try {
-      // The REAL generation directory, not the `active` symlink: it is the
-      // overlay's lowerdir, and the daemon-path translation below is a string
-      // rewrite that cannot follow a link.
-      const checkoutDir = await fsp.realpath(activeLinkPath(stateDir, repoName));
-      const spec = buildPluginOverlaySpec({
+      // `checkoutDir` is the ALREADY-RESOLVED generation the fragment and the
+      // commit were read from — resolving `active` again here is how a volume
+      // named for one commit ends up with another commit's lowerdir.
+      // ENSURE, not create. The CLI invocation container asks for the same
+      // volume, and the kernel forbids one upperdir backing two independently
+      // created overlay mounts — so there is exactly one creator, shared
+      // (`plugin-overlay.ts`), and both surfaces attach what it returns.
+      const volumeName = await ensurePluginRuntimeOverlay(docker, {
         sessionId,
         repoName,
         commit,
@@ -219,12 +238,8 @@ async function ensurePluginVolumes(
         checkoutDir,
         ...roots,
       });
-      if (!(await volumeExists(docker, spec.volumeName))) {
-        await prepareRuntimeLayer(spec);
-        await createPluginOverlay(docker, spec);
-      }
-      volumes.set(repoName, spec.volumeName);
-      await dropSupersededVolumes(docker, sessionId, repoName, spec.volumeName);
+      volumes.set(repoName, volumeName);
+      await dropSupersededVolumes(docker, sessionId, repoName, volumeName);
     } catch (err) {
       console.warn(
         `[plugins:${sessionId}] ${repoName}: could not prepare the plugin's runtime layer:`,
@@ -233,22 +248,6 @@ async function ensurePluginVolumes(
     }
   }
   return volumes;
-}
-
-/**
- * Give the runtime mount what overlayfs demands, WITHOUT touching the upper
- * layer: that is where `install` wrote, and this is the mount whose whole
- * purpose is to merge it over the checkout. Only the workdir is reset — it is
- * the kernel's own scratch space and holds nothing anybody wrote.
- */
-async function prepareRuntimeLayer(spec: PluginOverlaySpec): Promise<void> {
-  await fsp.mkdir(spec.orchDirs.upperdir, { recursive: true });
-  await fsp.rm(spec.orchDirs.workdir, { recursive: true, force: true });
-  await fsp.mkdir(spec.orchDirs.workdir, { recursive: true });
-  // Plugin services run as the session-worker uid; the orchestrator is root.
-  chownToSessionWorker(path.dirname(spec.orchDirs.upperdir));
-  chownToSessionWorker(spec.orchDirs.upperdir);
-  chownToSessionWorker(spec.orchDirs.workdir);
 }
 
 /**

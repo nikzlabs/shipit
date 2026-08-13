@@ -10,6 +10,7 @@ export const handleServiceList: Handler<WsServiceList> = (_ctx, data) => {
       port: s.port,
       preview: s.preview,
       error: s.error,
+      ...(s.origin ? { origin: s.origin } : {}),
     })),
   );
 };

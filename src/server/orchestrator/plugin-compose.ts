@@ -52,21 +52,38 @@
  *    fragment is asked for an `image:` and told why.
  */
 
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { parse as parseYaml, parseDocument, visit } from "yaml";
-import type { PluginExport, PluginReposConfig, PluginUse } from "../shared/plugin-repos.js";
+import type {
+  DeclaredPluginRepo,
+  PluginExport,
+  PluginReposConfig,
+  PluginUse,
+} from "../shared/plugin-repos.js";
 import {
   CONTAINER_PLUGIN_SETTINGS_FILE,
   CONTAINER_PLUGIN_STATE_DIR,
+  CONTAINER_PLUGIN_DIR,
   CONTAINER_PROJECT_DIR,
   PLUGIN_COMMIT_ENV,
   PLUGIN_SETTINGS_ENV,
   PLUGIN_STATE_ENV,
   PLUGIN_PROJECT_ENV,
 } from "../shared/plugin-contract.js";
-import { createPluginImportResolver, pluginSettingsPath, pluginStateDir } from "./plugin-state.js";
-import { activeLinkPath } from "./plugin-generations.js";
+import {
+  pluginSettingsPath,
+  pluginStateDir,
+  PLUGIN_DATA_SUBDIR,
+  PLUGIN_SETTINGS_FILE,
+  PLUGIN_STATE_SUBDIR,
+} from "./plugin-state.js";
+import {
+  activeLinkPath,
+  readGenerationManifestAt,
+  readGenerationRecordAt,
+} from "./plugin-generations.js";
 import { OVERRIDE_SENTINELS, validateServiceSecurity, type ComposeService } from "./compose-generator.js";
 import { chownToSessionWorker } from "./session-worker-uid.js";
 
@@ -103,6 +120,12 @@ export interface PluginFragmentService {
   self: boolean;
   /** The live generation's commit, for a tracked repository (req 15). */
   commit?: string;
+  /**
+   * The concrete tree this was read from — an already-resolved generation
+   * directory, never the `active` symlink. Carried so the overlay volume's
+   * lowerdir is the SAME generation the fragment and commit came from.
+   */
+  checkoutDir: string;
 }
 
 export interface PluginFragmentResolution {
@@ -191,10 +214,13 @@ export function collectPluginFragments(
     issuesByRepo.set(repo, [...(issuesByRepo.get(repo) ?? []), issue]);
   };
 
-  const resolver = createPluginImportResolver(opts.plugins, opts.selfExports, opts.stateDir);
-  const selfByName = new Map(
-    opts.plugins.repos.map((r) => [r.name.toLowerCase(), r.source.kind === "self"]),
-  );
+  // ONE snapshot per declared repository, resolved once (see
+  // {@link RepoSnapshot}). Everything below reads from it rather than following
+  // `active` again.
+  const snapshots = new Map<string, RepoSnapshot>();
+  for (const repo of opts.plugins.repos) {
+    snapshots.set(repo.name.toLowerCase(), snapshotRepo(repo, opts));
+  }
   // req 20 phase 3: one name domain across the project and every plugin. Seeded
   // with the project's own services, which always win — they are the thing the
   // consumer did not import and cannot be asked to rename.
@@ -202,20 +228,18 @@ export function collectPluginFragments(
   for (const name of opts.projectServiceNames) claimed.set(name.toLowerCase(), "this project");
 
   for (const use of opts.plugins.uses) {
-    const repoName = resolver.repoNameFor(use);
+    const snapshot = snapshots.get(use.from.toLowerCase());
     // An unknown `from:` is a parse-phase problem the parser already surfaced.
-    if (!repoName) continue;
-    const exported = resolver.exportFor(use);
-    // Not knowable yet (never fetched) or not exported — the card says so
-    // already, from the generation record and the selector check.
+    // A repository with no live generation is not knowable yet — the card says
+    // so already, from the generation record and the selector check.
+    if (!snapshot?.root) continue;
+    const repoName = snapshot.name;
+    const exported = snapshot.exports.find((e) => e.name.toLowerCase() === use.plugin.toLowerCase());
     if (!exported?.compose) continue;
-
-    const self = selfByName.get(repoName.toLowerCase()) ?? false;
-    const root = self ? opts.workspaceDir : activeLinkPath(opts.stateDir, repoName);
 
     let parsed: ParsedFragmentService[];
     try {
-      parsed = parsePluginFragment(path.join(root, exported.compose), opts.containEgress);
+      parsed = parsePluginFragment(path.join(snapshot.root, exported.compose), opts.containEgress);
     } catch (err) {
       addIssue(repoName, `\`${use.alias}\`: ${message(err)}`);
       continue;
@@ -240,7 +264,6 @@ export function collectPluginFragments(
     }
 
     const fragmentDir = path.posix.dirname(exported.compose);
-    const commit = self ? undefined : readCommit(opts.stateDir, repoName);
     for (const { name, source } of claimedHere) {
       claimed.set(name.toLowerCase(), `the plugin \`${use.alias}\``);
       services.push({
@@ -253,13 +276,26 @@ export function collectPluginFragments(
         ...(source.port !== undefined ? { port: source.port } : {}),
         definition: source.definition,
         fragmentDir: fragmentDir === "." ? "" : fragmentDir,
-        self,
-        ...(commit ? { commit } : {}),
+        self: snapshot.self,
+        checkoutDir: snapshot.root,
+        ...(snapshot.commit ? { commit: snapshot.commit } : {}),
       });
     }
   }
 
-  return { services, issuesByRepo };
+  // A repository's services activate as a UNIT (plan §1a phase 3, ruling of
+  // 2026-08-13): one unusable service withholds every service that repository
+  // provides, not just its own import's. A compose stack is not a set of
+  // independent services — the ones that came up would be running against a
+  // stack the declaration cannot produce — and the prior generation stays live
+  // either way (req 15), so nothing is torn down to say so.
+  //
+  // This is deliberately NOT the rule for commands, which are withheld
+  // individually. The asymmetry is the difference between a stack and a name.
+  return {
+    services: services.filter((s) => !issuesByRepo.has(s.repo)),
+    issuesByRepo,
+  };
 }
 
 /**
@@ -334,15 +370,55 @@ function rewriteDependsOn(
   return definition;
 }
 
-function readCommit(stateDir: string, repoName: string): string | undefined {
-  try {
-    const raw = fs.readFileSync(path.join(activeLinkPath(stateDir, repoName), ".shipit-generation.json"), "utf-8");
-    const record: unknown = JSON.parse(raw);
-    const commit = record && typeof record === "object" ? (record as { commit?: unknown }).commit : undefined;
-    return typeof commit === "string" ? commit : undefined;
-  } catch {
-    return undefined;
+/**
+ * One declared repository as ONE round sees it.
+ *
+ * Built by resolving `active` exactly once, because the alternative is not
+ * merely repetitive but wrong: a refresh can publish a new generation between
+ * two reads, and following the link four times could produce a manifest from
+ * generation A, a service definition from B, a `SHIPIT_PLUGIN_COMMIT` from C and
+ * an overlay whose lowerdir is D. The symlink swap is atomic per read; nothing
+ * makes separate reads coherent with each other (review finding). One
+ * `realpath` fixes the generation for the whole round, and every later consumer
+ * is handed that concrete directory.
+ */
+interface RepoSnapshot {
+  /** The declaration's own spelling — the unit the card groups by. */
+  name: string;
+  /** The concrete tree to read from, or null when nothing is live yet. */
+  root: string | null;
+  self: boolean;
+  /** The generation's exported plugins, read from that same tree. */
+  exports: readonly PluginExport[];
+  /** The generation's commit (req 15); absent for `repo: self`. */
+  commit?: string;
+}
+
+function snapshotRepo(
+  repo: DeclaredPluginRepo,
+  opts: CollectPluginFragmentsOptions,
+): RepoSnapshot {
+  if (repo.source.kind === "self") {
+    // req 27 — the live working tree, which corresponds to no exact commit.
+    return { name: repo.name, root: opts.workspaceDir, self: true, exports: opts.selfExports };
   }
+  let root: string;
+  try {
+    root = fs.realpathSync(activeLinkPath(opts.stateDir, repo.name));
+  } catch {
+    return { name: repo.name, root: null, self: false, exports: [] };
+  }
+  // Both read from the directory `active` ALREADY resolved to, never from the
+  // link again — that is the whole point of the snapshot, and the generation
+  // engine offers the directory-scoped readers for exactly this.
+  const commit = readGenerationRecordAt(root)?.commit;
+  return {
+    name: repo.name,
+    root,
+    self: false,
+    exports: readGenerationManifestAt(root),
+    ...(commit ? { commit } : {}),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -449,7 +525,7 @@ export function parsePluginFragment(
 /** The service names a `depends_on` refers to, in either of Compose's two forms. */
 function dependsOnTargets(raw: unknown): string[] {
   if (Array.isArray(raw)) return raw.map((entry) => describe(entry));
-  if (raw && typeof raw === "object") return Object.keys(raw as Record<string, unknown>);
+  if (raw && typeof raw === "object") return Object.keys(raw);
   return [];
 }
 
@@ -641,19 +717,42 @@ export interface PluginComposeService {
   definition: Record<string, unknown>;
   /** Volumes the override must declare `external: true` for. */
   externalVolumes: string[];
+  /**
+   * Fingerprint of the validated settings file's CONTENT (req 26), or absent
+   * when the import has none.
+   *
+   * It exists to make a settings change visible twice, because nothing else
+   * makes it visible at all. The settings file is written atomically and only
+   * when its content actually changed, so a change gives it a NEW INODE — and a
+   * file bind mount follows the inode it was created with, so a running
+   * container goes on reading the file nobody writes to any more. The mount path
+   * is identical either way, so neither the reconcile decision
+   * (`setPluginServices`) nor Compose's own "has this service changed?" test
+   * would notice. Carried into a label, it changes both answers together: the
+   * round reconciles, and Compose recreates the container that has to re-open
+   * the file.
+   */
+  settingsFingerprint?: string;
 }
 
 export interface PluginMountOptions {
   /** The session ROOT (`<sessionsRoot>/<id>`) — `plugin-data/` lives here. */
   sessionDir: string;
   /**
-   * The DAEMON's view of {@link sessionDir}. In production the orchestrator sees
-   * the session tree inside its own container while the daemon sees a volume
-   * mountpoint, and a bind source is resolved by the daemon — the same
-   * translation `plugin-overlay.ts` documents, and the same one the staged
-   * secrets entrypoint already relies on (planning#287). Identity in dev.
+   * The session root's path INSIDE the workspace volume (`sessions/<id>`), when
+   * there is one.
+   *
+   * A subpath, never a host path, and that is the whole point. In production the
+   * session tree lives inside a named volume the daemon knows nothing about, so
+   * a plain bind of the orchestrator's `/workspace/sessions/<id>/…` makes Docker
+   * silently create an EMPTY, ROOT-OWNED directory — `/plugin-state` would not
+   * be the state the CLI writes to, and `/project` would not be the project.
+   * Dev and dogfood would work perfectly the whole time, because there the paths
+   * are real. `container-lifecycle.ts` mounts workspace, credentials, uploads
+   * and scratch this way for exactly this reason; absent here means dev, where a
+   * bind of the real path is correct.
    */
-  sessionDirDaemon: string;
+  sessionSubpath?: string;
   workspaceDir: string;
   /** Docker volume holding the workspace, when the orchestrator runs containerized. */
   workspaceVolume?: string;
@@ -706,10 +805,12 @@ export function buildPluginComposeServices(
     for (const entry of asArray(fragment.definition.volumes)) {
       volumes.push(rewriteFragmentVolume(entry, fragment, opts, volumeName));
     }
+    volumes.push(pluginTreeMount(fragment, opts, volumeName));
     volumes.push(projectMount(opts));
     volumes.push(...pluginDataMounts(fragment.alias, opts));
     definition.volumes = volumes;
 
+    const settingsFingerprint = fingerprintSettings(fragment.alias, opts);
     definition.environment = {
       ...normalizeEnvironment(fragment.definition.environment),
       ...pluginEnvironment(fragment, opts),
@@ -733,6 +834,7 @@ export function buildPluginComposeServices(
       // survives untouched (see the module note).
       definition: escapeDollars(definition) as Record<string, unknown>,
       externalVolumes,
+      ...(settingsFingerprint ? { settingsFingerprint } : {}),
     });
   }
 
@@ -788,6 +890,43 @@ function rewriteFragmentVolume(
   };
 }
 
+/**
+ * The plugin's own tree at {@link CONTAINER_PLUGIN_DIR} — the one path every
+ * surface that runs plugin code mounts it at, so a `cli:` entrypoint declared
+ * relative to the repository root resolves identically in a CLI invocation and
+ * in a service (`plugin-contract.ts`).
+ *
+ * **Read-only**, unlike the install container's view of the same volume. Req 7
+ * keeps the plugin source unmodified, and a service's writable surfaces are
+ * `/plugin-state` (session-scoped state, req 18) and `/project` (durable output,
+ * reqs 18, 21) — not the layer its CLI is running out of.
+ *
+ * The volume root IS the repository root, so no subpath: the fragment's own
+ * relative mounts are the ones anchored at the fragment's directory.
+ */
+function pluginTreeMount(
+  fragment: PluginFragmentService,
+  opts: PluginMountOptions,
+  volumeName: string | undefined,
+): Record<string, unknown> {
+  if (volumeName) {
+    return { type: "volume", source: volumeName, target: CONTAINER_PLUGIN_DIR, read_only: true };
+  }
+  // A `repo: self` import has no generation: its tree is the session's own
+  // working copy, which is also its `/project` (req 27 — the plugin repository
+  // IS the consuming project there).
+  if (opts.workspaceVolume) {
+    return {
+      type: "volume",
+      source: "shipit-workspace",
+      target: CONTAINER_PLUGIN_DIR,
+      ...(opts.workspaceSubpath ? { volume: { subpath: opts.workspaceSubpath } } : {}),
+      read_only: true,
+    };
+  }
+  return { type: "bind", source: opts.workspaceDir, target: CONTAINER_PLUGIN_DIR, read_only: true };
+}
+
 /** req 21 — the consuming project's workspace, at the one path every plugin can name. */
 function projectMount(opts: PluginMountOptions): Record<string, unknown> {
   if (opts.workspaceVolume) {
@@ -805,16 +944,28 @@ function projectMount(opts: PluginMountOptions): Record<string, unknown> {
  * The import's two primitives (`plugin-state.ts`): its shared state directory,
  * read-WRITE, and its validated settings file, read-ONLY.
  *
- * The settings file is mounted only when it exists. A bind source that does not
- * exist is created by the daemon as an empty DIRECTORY, which would both give
- * the plugin a settings path it cannot parse and leave a directory where the
- * next validated write expects a file.
+ * Both live at `<sessionDir>/plugin-data/<alias>/…`, a SIBLING of `workspace/`,
+ * so neither is workspace-relative and neither may be an absolute bind — see
+ * {@link PluginMountOptions.sessionSubpath} for what a bind would silently do in
+ * production. They get the same volume+subpath shape the agent container's own
+ * mounts use, keyed off the session root instead of the workspace.
+ *
+ * The settings file is mounted **as a file**, which the daemon supports: it
+ * stats the resolved path and binds a file as a file
+ * (`daemon/volume/safepath/join_linux.go`), from API 1.45 — below the Engine 28
+ * docs/263 already requires. Mounting its parent instead would hand the plugin
+ * a directory it can write, and settings a plugin can rewrite were never
+ * validated.
+ *
+ * It is mounted only when it EXISTS: a mount source that does not is created as
+ * an empty directory, which would both give the plugin a settings path it cannot
+ * parse and leave a directory where the next validated write expects a file.
  *
  * The state directory is created here when it is missing, rather than skipped,
- * because the opposite failure is the harmful one: the daemon would create it
- * owned by root and the plugin — which runs as the session-worker uid — could
- * not write the one surface req 18 gives it. `preparePluginState` owns it in the
- * steady state; this is the ordering case where a stack starts before the first
+ * because the opposite failure is the harmful one: it would be created owned by
+ * root and the plugin — which runs as the session-worker uid — could not write
+ * the one surface req 18 gives it. `preparePluginState` owns it in the steady
+ * state; this is the ordering case where a stack starts before the first
  * activation round has settled.
  */
 function pluginDataMounts(alias: string, opts: PluginMountOptions): Record<string, unknown>[] {
@@ -823,23 +974,49 @@ function pluginDataMounts(alias: string, opts: PluginMountOptions): Record<strin
   try {
     fs.mkdirSync(stateDir, { recursive: true });
     chownToSessionWorker(stateDir);
-    mounts.push({
-      type: "bind",
-      source: pluginStateDir(opts.sessionDirDaemon, alias),
+    mounts.push(sessionMount(opts, `${PLUGIN_DATA_SUBDIR}/${alias}/${PLUGIN_STATE_SUBDIR}`, {
+      hostPath: stateDir,
       target: CONTAINER_PLUGIN_STATE_DIR,
-    });
+    }));
   } catch (err) {
     console.warn(`[plugins] could not prepare ${stateDir}:`, message(err));
   }
-  if (fs.existsSync(pluginSettingsPath(opts.sessionDir, alias))) {
-    mounts.push({
-      type: "bind",
-      source: pluginSettingsPath(opts.sessionDirDaemon, alias),
+  const settingsPath = pluginSettingsPath(opts.sessionDir, alias);
+  if (fs.existsSync(settingsPath)) {
+    mounts.push(sessionMount(opts, `${PLUGIN_DATA_SUBDIR}/${alias}/${PLUGIN_SETTINGS_FILE}`, {
+      hostPath: settingsPath,
       target: CONTAINER_PLUGIN_SETTINGS_FILE,
-      read_only: true,
-    });
+      readOnly: true,
+    }));
   }
   return mounts;
+}
+
+/**
+ * Mount something under the session root: through the workspace volume when the
+ * orchestrator runs containerized, and as an ordinary bind in dev, where the
+ * daemon and this process see the same filesystem.
+ */
+function sessionMount(
+  opts: PluginMountOptions,
+  relative: string,
+  spec: { hostPath: string; target: string; readOnly?: boolean },
+): Record<string, unknown> {
+  if (opts.workspaceVolume && opts.sessionSubpath) {
+    return {
+      type: "volume",
+      source: "shipit-workspace",
+      target: spec.target,
+      volume: { subpath: joinPosix(opts.sessionSubpath, relative) },
+      ...(spec.readOnly ? { read_only: true } : {}),
+    };
+  }
+  return {
+    type: "bind",
+    source: spec.hostPath,
+    target: spec.target,
+    ...(spec.readOnly ? { read_only: true } : {}),
+  };
 }
 
 /**
@@ -861,6 +1038,19 @@ function pluginEnvironment(
   }
   if (fragment.commit) env[PLUGIN_COMMIT_ENV] = fragment.commit;
   return env;
+}
+
+/** A short digest of the settings file's content — see `settingsFingerprint`. */
+function fingerprintSettings(alias: string, opts: PluginMountOptions): string | undefined {
+  try {
+    return crypto
+      .createHash("sha256")
+      .update(fs.readFileSync(pluginSettingsPath(opts.sessionDir, alias)))
+      .digest("hex")
+      .slice(0, 16);
+  } catch {
+    return undefined; // no settings file — nothing to notice a change in
+  }
 }
 
 function readVolumeEntry(
@@ -929,6 +1119,7 @@ function escapeDollars(value: unknown): unknown {
 export function toComposeService(svc: PluginComposeService): ComposeService {
   const declaredUser = svc.definition.user;
   return {
+    ...(svc.settingsFingerprint ? { settingsFingerprint: svc.settingsFingerprint } : {}),
     name: svc.name,
     origin: {
       kind: "plugin",

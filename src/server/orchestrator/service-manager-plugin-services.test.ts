@@ -52,7 +52,7 @@ function pluginService(overrides: Partial<PluginComposeService> = {}): PluginCom
 
 function createManager(
   workspaceDir: string,
-  opts: { composeRunner?: ComposeRunner; composeFileOptional?: boolean } = {},
+  opts: { composeRunner?: ComposeRunner; noProjectCompose?: boolean } = {},
 ): ServiceManager {
   return new ServiceManager({
     sessionId: "11111111-2222-3333-4444-555555555555",
@@ -62,7 +62,7 @@ function createManager(
     composeRunner: opts.composeRunner ?? (async () => {}),
     composeQuery: emptyQuery,
     pollIntervalMs: 0,
-    ...(opts.composeFileOptional ? { composeFileOptional: true } : {}),
+    ...(opts.noProjectCompose ? { noProjectCompose: true } : {}),
   });
 }
 
@@ -160,11 +160,46 @@ describe("plugin services in the compose stack", () => {
     expect(mgr.setPluginServices([pluginService({ port: 5000 })])).toBe(true);
   });
 
+  // A plugin service gets `/project` read-write (reqs 18, 21), so third-party
+  // code can rewrite the project's own compose file — and every later `up`
+  // re-reads it from disk. Validating only at start() would execute the
+  // rewritten file with none of the checks it was admitted under.
+  it("refuses a later `up` when the project's compose file stopped validating", async () => {
+    const workspaceDir = setup("services:\n  web:\n    image: node:20\n    x-shipit-preview: manual\n");
+    const mgr = createManager(workspaceDir);
+    await mgr.start();
+
+    fs.writeFileSync(
+      path.join(workspaceDir, "docker-compose.yml"),
+      "services:\n  web:\n    image: node:20\n    privileged: true\n",
+    );
+    await expect(mgr.startService("web")).rejects.toThrow(/privileged/);
+    expect(mgr.getService("web")?.status).toBe("error");
+    await mgr.stop();
+  });
+
+  it("never runs a compose file the project did not declare", async () => {
+    // A conventional `docker-compose.yml` that no `compose:` block names is not
+    // this session's stack, and declaring a plugin must not turn it into one.
+    const workspaceDir = setup("services:\n  web:\n    image: node:20\n    ports: ['3000:3000']\n");
+    const commands: string[][] = [];
+    const mgr = createManager(workspaceDir, {
+      noProjectCompose: true,
+      composeRunner: async (args) => { commands.push(args); },
+    });
+    mgr.setPluginServices([pluginService()]);
+    await mgr.start();
+
+    expect(mgr.getServices().map((s) => s.name)).toEqual(["probe"]);
+    expect(commands.flat()).not.toContain("docker-compose.yml");
+    await mgr.stop();
+  });
+
   it("runs a stack made only of plugin services when the project declares no compose file (req 5)", async () => {
     const workspaceDir = setup(); // no docker-compose.yml at all
     const commands: string[][] = [];
     const mgr = createManager(workspaceDir, {
-      composeFileOptional: true,
+      noProjectCompose: true,
       composeRunner: async (args) => { commands.push(args); },
     });
     mgr.setPluginServices([pluginService()]);
@@ -183,7 +218,7 @@ describe("plugin services in the compose stack", () => {
     const workspaceDir = setup();
     const commands: string[][] = [];
     const mgr = createManager(workspaceDir, {
-      composeFileOptional: true,
+      noProjectCompose: true,
       composeRunner: async (args) => { commands.push(args); },
     });
     await mgr.start();

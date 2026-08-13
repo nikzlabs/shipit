@@ -25,7 +25,6 @@
  */
 
 import { EventEmitter } from "node:events";
-import fs from "node:fs";
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import path from "node:path";
@@ -314,11 +313,12 @@ export interface ServiceManagerOptions {
   /** Docker stack name (e.g. "shipit-dev") — propagated to compose labels for cleanup filtering. */
   stackName?: string;
   /**
-   * docs/262 — treat the project's compose file as optional: a project that
-   * declares plugins but no `compose:` block of its own gets a stack made
-   * entirely of plugin services. Off by default.
+   * docs/262 — this project declares no `compose:` block, so it HAS no compose
+   * file of its own and its stack is its plugins' services alone (req 5). Off by
+   * default; see {@link ComposeCliOptions.noProjectFile} for why this is not
+   * "the file may be missing".
    */
-  composeFileOptional?: boolean;
+  noProjectCompose?: boolean;
   /**
    * docs/128 — server-authoritative ops session flag. Allows the hidden ops
    * template's docker-socket-proxy service to mount the host Docker socket even
@@ -478,12 +478,12 @@ export class ServiceManager extends EventEmitter {
   private readonly stackName?: string;
   private readonly opsSession: boolean;
   /**
-   * docs/262 — the project's own compose file is allowed to be absent, because
-   * this session's stack comes from its declared plugins (req 5). Set only when
-   * `shipit.yaml` declares no `compose:` block at all; a project that declares
-   * one still fails loudly when its file cannot be read.
+   * docs/262 — this session has no project compose file at all: `shipit.yaml`
+   * declares no `compose:` block, and the stack is its plugins' services (req 5).
+   * A project that DOES declare one still fails loudly when its file cannot be
+   * read.
    */
-  private composeFileOptional: boolean;
+  private noProjectCompose: boolean;
   private readonly networkJoinFn?: (networkName: string) => Promise<void>;
   /** docs/128 — periodic agent network-attachment self-heal (see options). */
   private readonly networkHealFn?: (networkName: string) => Promise<void>;
@@ -650,7 +650,7 @@ export class ServiceManager extends EventEmitter {
       workspaceDir: opts.workspaceDir,
       composeFile: opts.composeConfig.file,
       overrideFile: path.join(this.overrideDir, COMPOSE_OVERRIDE_FILE),
-      ...(opts.composeFileOptional ? { projectFileOptional: true } : {}),
+      ...(opts.noProjectCompose ? { noProjectFile: true } : {}),
       ...(opts.composeRunner ? { composeRunner: opts.composeRunner } : {}),
       ...(opts.composeQuery ? { composeQuery: opts.composeQuery } : {}),
     });
@@ -659,7 +659,7 @@ export class ServiceManager extends EventEmitter {
     this.overlayDepDirs = opts.overlayDepDirs ?? [];
     this.stackName = opts.stackName;
     this.opsSession = opts.opsSession ?? false;
-    this.composeFileOptional = opts.composeFileOptional ?? false;
+    this.noProjectCompose = opts.noProjectCompose ?? false;
     this.networkJoinFn = opts.networkJoinFn;
     this.networkHealFn = opts.networkHealFn;
     this.containServicesFn = opts.containServicesFn;
@@ -1197,24 +1197,18 @@ export class ServiceManager extends EventEmitter {
     const composePath = path.join(this.workspaceDir, this.composeConfig.file);
 
     // docs/262 — a project may declare plugins and no stack of its own (req 5:
-    // one declaration). Then there is no project compose file to parse, and the
-    // plugin services below are the whole stack. A project that DID declare
-    // `compose:` still fails loudly on a missing file — see
-    // `composeFileOptional`.
-    if (this.composeFileOptional && !fs.existsSync(composePath) && this.pluginServices.length === 0) {
+    // one declaration). There is then no project compose file to parse at all,
+    // declared or otherwise, and the plugin services below are the whole stack.
+    if (this.noProjectCompose && this.pluginServices.length === 0) {
       console.log(`[compose:${this.sessionId}] no project compose file and no plugin services — nothing to start`);
       this._startupComplete = true;
       return;
     }
 
     // Parse and validate
-    const parsedServices = this.composeFileOptional && !fs.existsSync(composePath)
+    const parsedServices = this.noProjectCompose
       ? []
-      : parseComposeFile(composePath, {
-          dockerSocket: this.composeConfig.dockerSocket || this.opsSession,
-          containEgress: Boolean(this.containServicesFn),
-          trustedOpsProxy: this.opsSession,
-        });
+      : this.parseProjectCompose(composePath);
 
     // Build service map
     for (const svc of parsedServices) {
@@ -1668,19 +1662,19 @@ export class ServiceManager extends EventEmitter {
    * Returns true when the config actually changed (the caller can skip work,
    * and the reconcile is a plain compose-file re-read).
    */
-  updateComposeConfig(next: ComposeConfig, opts: { fileOptional?: boolean } = {}): boolean {
-    const fileOptional = opts.fileOptional ?? false;
+  updateComposeConfig(next: ComposeConfig, opts: { noProjectCompose?: boolean } = {}): boolean {
+    const noProjectCompose = opts.noProjectCompose ?? false;
     const changed =
       next.file !== this.composeConfig.file ||
       next.dockerSocket !== this.composeConfig.dockerSocket ||
       // docs/262 — a `compose:` block added to (or removed from) a plugin-only
-      // project changes whether its file may be absent, which changes the
-      // argument vector every later command is built from.
-      fileOptional !== this.composeFileOptional;
+      // project changes whether there is a project file at all, which changes
+      // the argument vector every later command is built from.
+      noProjectCompose !== this.noProjectCompose;
     if (!changed) return false;
     this.composeConfig = next;
-    this.composeFileOptional = fileOptional;
-    this.compose.setComposeFile(next.file, fileOptional);
+    this.noProjectCompose = noProjectCompose;
+    this.compose.setComposeFile(next.file, noProjectCompose);
     return true;
   }
 
@@ -1820,12 +1814,9 @@ export class ServiceManager extends EventEmitter {
   async refreshSecrets(): Promise<void> {
     let parsedServices: ComposeService[];
     try {
-      const composePath = path.join(this.workspaceDir, this.composeConfig.file);
-      parsedServices = parseComposeFile(composePath, {
-        dockerSocket: this.composeConfig.dockerSocket || this.opsSession,
-        containEgress: Boolean(this.containServicesFn),
-        trustedOpsProxy: this.opsSession,
-      });
+      parsedServices = this.noProjectCompose
+        ? []
+        : this.parseProjectCompose(path.join(this.workspaceDir, this.composeConfig.file));
     } catch {
       // Compose file missing or invalid — there's nothing to apply secrets to.
       return;
@@ -1897,12 +1888,48 @@ export class ServiceManager extends EventEmitter {
   // -----------------------------------------------------------------------
 
   /**
+   * Parse and security-validate the project's own compose file.
+   *
+   * One place, because it is re-run before every `docker compose up` (see
+   * {@link withUpInFlight}) and not only at `start()`. docs/262 is what forces
+   * that: plugin services get the project workspace read-write at `/project`
+   * (reqs 18, 21), so third-party code can now REWRITE this file — and every
+   * later `up` (a manual start, a restart, an OOM or install retry, the gate
+   * release) re-reads it from disk. Validating it only at `start()` left a
+   * window in which a rewritten file was executed with none of the checks it
+   * was admitted under: `privileged: true`, a Docker-socket bind, an absolute
+   * host path. The file is small and the parse is cheap; the window is not.
+   */
+  private parseProjectCompose(composePath: string): ComposeService[] {
+    return parseComposeFile(composePath, {
+      dockerSocket: this.composeConfig.dockerSocket || this.opsSession,
+      containEgress: Boolean(this.containServicesFn),
+      trustedOpsProxy: this.opsSession,
+    });
+  }
+
+  /**
+   * Refuse to run `docker compose up` against a project compose file that no
+   * longer passes validation — see {@link parseProjectCompose} for why it can
+   * change under us. Throws the `ComposeValidationError` verbatim, so the
+   * caller reports the real reason on the service it was starting.
+   */
+  private assertProjectComposeStillValid(): void {
+    if (this.noProjectCompose) return;
+    this.parseProjectCompose(path.join(this.workspaceDir, this.composeConfig.file));
+  }
+
+  /**
    * Mark `names` as having a `compose up` in flight for the duration of `fn`
    * (planning#316). Every `compose up`/`up <service>` call goes through this so the
    * poller can tell "this service has no container because it is still coming
    * up" from "this service's container disappeared".
    */
   private async withUpInFlight<T>(names: string[], fn: () => Promise<T>): Promise<T> {
+    // BEFORE the bookkeeping below, so a refused `up` leaves no in-flight
+    // exemption behind. Every `compose up` in this class goes through here,
+    // which is what makes this the one place the check has to live.
+    this.assertProjectComposeStillValid();
     for (const name of names) {
       this.upInFlight.set(name, (this.upInFlight.get(name) ?? 0) + 1);
       // A new container is on its way, so the address we hold describes the

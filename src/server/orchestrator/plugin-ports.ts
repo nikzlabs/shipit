@@ -53,8 +53,12 @@ const PLUGIN_PORT_BAND_END = 65_000;
 export interface PublishedPortRequest {
   /** The SURFACED service name — the one the session addresses it by. */
   service: string;
-  /** The port the service's own definition serves on, if it declares one. */
-  containerPort?: number;
+  /**
+   * The port the service's own definition serves on. Required: a service that
+   * declares none is not previewable, and giving it a published port would
+   * advertise an origin with nothing behind it.
+   */
+  containerPort: number;
 }
 
 export function pluginPortsPath(sessionDir: string): string {
@@ -99,7 +103,7 @@ export function resolvePublishedPorts(
   // otherwise the first free number in the band.
   for (const { service, containerPort } of requests) {
     if (assigned.has(service)) continue;
-    const port = containerPort !== undefined && isUsablePort(containerPort) && !taken.has(containerPort)
+    const port = isUsablePort(containerPort) && !taken.has(containerPort)
       ? containerPort
       : allocate(taken);
     if (port === null) continue; // band exhausted — the caller drops the service

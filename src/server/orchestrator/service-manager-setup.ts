@@ -221,13 +221,16 @@ export function adoptExistingServiceManager(
 export const COMPOSE_STOP_WAIT_TIMEOUT_MS = 15_000;
 
 /**
- * docs/262 — the compose configuration a project that declares only plugins
- * runs under. The file name is conventional and, in this case, deliberately
- * expected NOT to exist: the manager is told the project file is optional, so
- * the generated override (which is where plugin services live) is the whole
- * stack. Naming the conventional file rather than a sentinel means a project
- * that later adds a `docker-compose.yml` without a `compose:` block still picks
- * it up, which is what someone writing that file expects to happen.
+ * docs/262 — the placeholder compose configuration a project that declares only
+ * plugins runs under. The manager is told there is NO project compose file, so
+ * this path is never opened and never put on a command line; it exists because
+ * `ComposeConfig` is not optional downstream, and it names the conventional file
+ * only so a log line reads sensibly.
+ *
+ * It must NOT become "run `docker-compose.yml` if it happens to be there": a
+ * repository that adds a plugin has not asked ShipIt to start a stack it never
+ * declared, and the collision domain (req 20) would not know about those
+ * services either (review finding).
  */
 const DEFAULT_COMPOSE_CONFIG = { file: "docker-compose.yml", dockerSocket: false } as const;
 
@@ -635,7 +638,7 @@ export function setupServiceManager(
     sessionId: runner.sessionId,
     workspaceDir,
     composeConfig,
-    ...(shipitConfig.compose ? {} : { composeFileOptional: true }),
+    ...(shipitConfig.compose ? {} : { noProjectCompose: true }),
     workspaceVolume: wsVolume,
     workspaceSubpath: wsSubpath,
     stackName: process.env.DOCKER_STACK,
@@ -805,45 +808,50 @@ export function setupServiceManager(
     // up with the project's own stack rather than one reconcile later. A
     // repository still being fetched settles afterwards and reaches the stack
     // through `emitPluginReposUpdated`.
-    if (deps.resolvePluginServices) {
+    // Resolution AND the start go through the session's stack queue together
+    // (see `serializeStackOp`): a plugin round that settles between them would
+    // otherwise reconcile into a start that is still running.
+    await serializeStackOp(runner.sessionId, async () => {
+      if (deps.resolvePluginServices) {
+        try {
+          mgr.setPluginServices(await deps.resolvePluginServices(runner.sessionId, workspaceDir));
+        } catch (err) {
+          console.error(`[plugins:${runner.sessionId}] service resolution failed:`, getErrorMessage(err));
+        }
+      }
+      // The awaits above (a prior stack's `compose down`, worker readiness) can
+      // each outlive the runner. Its `disposed` handler has by then dropped the
+      // manager from `serviceManagers` and stopped it — but `start()` resets
+      // `_disposed` and re-arms the poll loop, so going ahead here would leave an
+      // orphaned manager polling Docker for a session nobody owns, with nothing
+      // left to stop it. Checked as late as possible, immediately before the call.
+      if (runner instanceof ContainerSessionRunner && runner.disposed) {
+        console.log(`[compose:${runner.sessionId}] runner disposed before compose start — skipping`);
+        return;
+      }
       try {
-        mgr.setPluginServices(await deps.resolvePluginServices(runner.sessionId, workspaceDir));
+        await mgr.start();
+        console.log(`[compose:${runner.sessionId}] Compose stack started`);
       } catch (err) {
-        console.error(`[plugins:${runner.sessionId}] service resolution failed:`, getErrorMessage(err));
+        const errMsg = getErrorMessage(err);
+        console.error(`[compose:${runner.sessionId}] Failed to start compose stack:`, errMsg);
+        mgr.startError = errMsg;
+        runner.emitMessage({
+          type: "compose_error",
+          sessionId: runner.sessionId,
+          message: errMsg,
+        });
+        // Also record into the per-session log ring so the Logs panel and the
+        // future diagnostics endpoint (docs/124-session-rescue-and-diagnostics)
+        // see the failure. Without this, the user gets the PreviewFrame banner
+        // but the Logs panel is silent — a viewer who attaches after the fact
+        // (or files a bug report) has no record of why the stack didn't come
+        // up.
+        if (broadcastLog) {
+          broadcastLog(runner.sessionId, "server", `[compose] Failed to start: ${errMsg}`);
+        }
       }
-    }
-    // The awaits above (a prior stack's `compose down`, worker readiness) can
-    // each outlive the runner. Its `disposed` handler has by then dropped the
-    // manager from `serviceManagers` and stopped it — but `start()` resets
-    // `_disposed` and re-arms the poll loop, so going ahead here would leave an
-    // orphaned manager polling Docker for a session nobody owns, with nothing
-    // left to stop it. Checked as late as possible, immediately before the call.
-    if (runner instanceof ContainerSessionRunner && runner.disposed) {
-      console.log(`[compose:${runner.sessionId}] runner disposed before compose start — skipping`);
-      return;
-    }
-    try {
-      await mgr.start();
-      console.log(`[compose:${runner.sessionId}] Compose stack started`);
-    } catch (err) {
-      const errMsg = getErrorMessage(err);
-      console.error(`[compose:${runner.sessionId}] Failed to start compose stack:`, errMsg);
-      mgr.startError = errMsg;
-      runner.emitMessage({
-        type: "compose_error",
-        sessionId: runner.sessionId,
-        message: errMsg,
-      });
-      // Also record into the per-session log ring so the Logs panel and the
-      // future diagnostics endpoint (docs/124-session-rescue-and-diagnostics)
-      // see the failure. Without this, the user gets the PreviewFrame banner
-      // but the Logs panel is silent — a viewer who attaches after the fact
-      // (or files a bug report) has no record of why the stack didn't come
-      // up.
-      if (broadcastLog) {
-        broadcastLog(runner.sessionId, "server", `[compose] Failed to start: ${errMsg}`);
-      }
-    }
+    });
   })();
 }
 
@@ -969,16 +977,52 @@ async function refreshPluginServices(
   if (!mgr || !deps.resolvePluginServices) return;
   const session = deps.sessionManager.get(runner.sessionId);
   const workspaceDir = session?.workspaceDir ?? runner.sessionDir;
+  const resolve = deps.resolvePluginServices;
   try {
-    const services = await deps.resolvePluginServices(runner.sessionId, workspaceDir);
-    if (!mgr.setPluginServices(services)) return;
-    console.log(
-      `[plugins:${runner.sessionId}] plugin services changed (${services.length}) — reconciling`,
-    );
-    await mgr.reconcile();
+    // Inside the queue, not before it: this rounds's answer must be compared
+    // against what the stack has ACTUALLY consumed. Resolving first and queueing
+    // second would compare against a `start()` that has not read the services
+    // yet, and then reconcile a stack that already has them.
+    await serializeStackOp(runner.sessionId, async () => {
+      const services = await resolve(runner.sessionId, workspaceDir);
+      if (!mgr.setPluginServices(services)) return;
+      console.log(
+        `[plugins:${runner.sessionId}] plugin services changed (${services.length}) — reconciling`,
+      );
+      await mgr.reconcile();
+    });
   } catch (err) {
     console.error(`[plugins:${runner.sessionId}] plugin service reconcile failed:`, getErrorMessage(err));
   }
+}
+
+/**
+ * Per-session serial queue for operations that rebuild a session's compose
+ * stack — today the first `start()` and any plugin-service reconcile.
+ *
+ * Neither is reentrant, and the two genuinely race: plugin activation is
+ * fire-and-forget, so a repository that finishes fetching while the first
+ * `docker compose up` is still running settles right in the middle of it. Left
+ * unserialized, that round would set the new services, see a manager that has
+ * not finished starting, and either reconcile into an in-flight start or skip —
+ * and skipping means the services it just resolved reach nothing until some
+ * later round happens to change them again.
+ *
+ * Chained rather than joined, for the reason `plugin-generations.ts` gives its
+ * own queue: every trigger must run against the state it was given, in order,
+ * and the last one always wins. A failing link never poisons the next.
+ */
+const stackOps = new Map<string, Promise<unknown>>();
+
+function serializeStackOp<T>(sessionId: string, op: () => Promise<T>): Promise<T> {
+  const previous = stackOps.get(sessionId) ?? Promise.resolve();
+  // eslint-disable-next-line no-restricted-syntax -- Promise two-arg form: run `op` whether the previous entry settled or rejected
+  const next = previous.then(op, op);
+  const tail: Promise<unknown> = next.catch(() => undefined).finally(() => {
+    if (stackOps.get(sessionId) === tail) stackOps.delete(sessionId);
+  });
+  stackOps.set(sessionId, tail);
+  return next;
 }
 
 export function applyShipitConfigChange(
@@ -1074,12 +1118,17 @@ export function applyShipitConfigChange(
   // stack is the plugin services alone; the project's own file is then allowed
   // to be absent (req 5, see `setupServiceManager`).
   const nextComposeConfig = shipitConfig.compose ?? DEFAULT_COMPOSE_CONFIG;
-  if (mgr.updateComposeConfig(nextComposeConfig, { fileOptional: !shipitConfig.compose })) {
+  if (mgr.updateComposeConfig(nextComposeConfig, { noProjectCompose: !shipitConfig.compose })) {
     console.log(
       `[compose:${runner.sessionId}] compose config changed — reconciling against ${nextComposeConfig.file}`,
     );
   }
-  void mgr.reconcile().catch((err: unknown) => {
+  // Through the same queue as the first start and the plugin-settled reconcile:
+  // `reconcile()` clears the service map, the poller, the log followers and the
+  // in-flight bookkeeping before calling `start()`, so two of them overlapping
+  // is not a harmless duplicate refresh (review finding). A burst of file events
+  // is coalesced into an ordered sequence.
+  void serializeStackOp(runner.sessionId, () => mgr.reconcile()).catch((err: unknown) => {
     const errMsg = getErrorMessage(err);
     console.error(`[compose:${runner.sessionId}] Reconcile after config change failed:`, errMsg);
     mgr.startError = errMsg;

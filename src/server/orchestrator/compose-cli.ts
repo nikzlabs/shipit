@@ -20,8 +20,6 @@
  */
 
 import { spawn } from "node:child_process";
-import fs from "node:fs";
-import path from "node:path";
 import { EGRESS_RESOLVER_LABEL } from "./egress-dns-install.js";
 import { EGRESS_PROXY_LABEL } from "./egress-proxy-install.js";
 
@@ -79,17 +77,19 @@ export interface ComposeCliOptions {
    */
   overrideFile: string;
   /**
-   * docs/262 — the project's own compose file may legitimately not exist: a
-   * project can declare a plugin and no stack of its own, and req 5 says wiring
-   * a plugin in costs ONE declaration — not a declaration plus an empty compose
-   * file to hang it on. When set, a missing project file is dropped from the
-   * argument vector instead of failing every command, and the generated override
-   * (which is where plugin services live) is the only source.
+   * docs/262 — this project declares NO compose file of its own, so the stack is
+   * its plugins' services alone (req 5: wiring a plugin in costs one
+   * declaration, not a declaration plus an empty compose file to hang it on).
+   * The project file is then left off the argument vector entirely and the
+   * generated override is the only source.
    *
-   * Off by default, so a project that declares `compose:` still fails loudly
-   * when its file is missing rather than silently running an empty stack.
+   * Deliberately "absent", not "optional": keying it on whether a conventional
+   * `docker-compose.yml` happens to EXIST would start a stack the project never
+   * declared — ShipIt runs a compose file because `shipit.yaml` names it, and a
+   * repository that adds a plugin has not asked for that to change (review
+   * finding).
    */
-  projectFileOptional?: boolean;
+  noProjectFile?: boolean;
   /** Optional override for running compose commands (useful for testing). */
   composeRunner?: ComposeRunner;
   /** Optional override for querying compose commands (useful for testing). */
@@ -101,7 +101,7 @@ export class ComposeCli {
   private readonly workspaceDir: string;
   private composeFile: string;
   private readonly overrideFile: string;
-  private projectFileOptional: boolean;
+  private noProjectFile: boolean;
   private readonly runner: ComposeRunner;
   /** Exposed so the poller / direct-spawn callers can run their own queries. */
   readonly query: ComposeQuery;
@@ -111,7 +111,7 @@ export class ComposeCli {
     this.workspaceDir = opts.workspaceDir;
     this.composeFile = opts.composeFile;
     this.overrideFile = opts.overrideFile;
-    this.projectFileOptional = opts.projectFileOptional ?? false;
+    this.noProjectFile = opts.noProjectFile ?? false;
     this.runner = opts.composeRunner ?? defaultComposeRunner;
     this.query = opts.composeQuery ?? defaultComposeQuery;
   }
@@ -121,31 +121,20 @@ export class ComposeCli {
    * session's `shipit.yaml` changes its `compose:` path mid-session (a git
    * sync/rebase can rewrite it) — see `ServiceManager.updateComposeConfig`.
    */
-  setComposeFile(file: string, projectFileOptional = false): void {
+  setComposeFile(file: string, noProjectFile = false): void {
     this.composeFile = file;
-    this.projectFileOptional = projectFileOptional;
+    this.noProjectFile = noProjectFile;
   }
 
   /** Build common compose CLI args with the user file and override. */
   args(...extra: string[]): string[] {
     return [
       "compose",
-      ...(this.includeProjectFile() ? ["-f", this.composeFile] : []),
+      ...(this.noProjectFile ? [] : ["-f", this.composeFile]),
       "-f", this.overrideFile,
       "-p", `shipit-${this.sessionId.slice(0, 12)}`,
       ...extra,
     ];
-  }
-
-  /**
-   * Whether the project's own compose file goes on the command line. Always,
-   * unless it was declared optional and is genuinely absent — see
-   * {@link ComposeCliOptions.projectFileOptional}. The `existsSync` runs only in
-   * that case, so the ordinary project pays nothing for it.
-   */
-  private includeProjectFile(): boolean {
-    if (!this.projectFileOptional) return true;
-    return fs.existsSync(path.resolve(this.workspaceDir, this.composeFile));
   }
 
   /**

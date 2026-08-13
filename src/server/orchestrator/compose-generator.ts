@@ -103,6 +103,13 @@ export interface ComposeService {
    */
   externalVolumes?: string[];
   /**
+   * docs/262 req 26 — digest of this service's validated settings file. Emitted
+   * as a label so that a settings change, which alters nothing else Compose can
+   * see, still counts as a changed service definition and recreates the
+   * container. See `PluginComposeService.settingsFingerprint`.
+   */
+  settingsFingerprint?: string;
+  /**
    * Explicit `user:` declared by the service in the user's compose file, if any.
    * When set, ShipIt honors it and does NOT inject the session-worker UID
    * (see {@link generateComposeOverride}). Captured as a string so both the
@@ -1027,6 +1034,9 @@ export function generateComposeOverride(
     };
     if (opts.stackName) {
       labels["shipit-stack"] = opts.stackName;
+    }
+    if (svc.settingsFingerprint) {
+      labels["shipit-plugin-settings"] = svc.settingsFingerprint;
     }
     const entry: Record<string, unknown> = {
       // docs/262 — a plugin service has no definition in the user's compose
