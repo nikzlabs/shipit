@@ -426,3 +426,10 @@ the first of these. All six are fixed.
       the agent list arrives (recorded in `plan.md` as an accepted residual).
       The docs claimed a guarantee wider than the code holds and named two of
       the four agent-authored clauses; both are corrected.
+- [x] **The table moved out of the rows and beside them.** The first cut put the
+      ticks inside each service button and widened every row to fit them, which
+      is not what was asked for: the rows are unchanged (measured 414.0px before
+      and after) and the answers are a separate two-column table aligned to
+      them, with the dialog wider by exactly that table and only on step 1. Two
+      prototypes decided it; the enclosing panel lost because its own padding
+      pushed the cells out of line with the rows.

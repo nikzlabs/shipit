@@ -303,12 +303,14 @@ No open questions remain.
     the top; there is no separate command that promotes a credential and no badge naming the
     one at the top as different in kind.
 
-22. **Choosing a service says which harnesses can run it.** While the user is choosing a
-    service to add, the screen shows, per service and per harness this install has, whether
-    that harness can run that service's models. The answer is the same one the model picker
-    gives once the credential exists, so what the user is told before they pay for a key is
-    what they get after. It is a statement, not a gate: a service no installed harness can
-    run is still selectable.
+22. **Choosing a service says which harnesses can run it, in a table beside the list.** While
+    the user is choosing a service to add, the screen shows, per service and per harness this
+    install has, whether that harness can run that service's models. It is a **separate table
+    to the right**: the service rows themselves are unchanged — same content, same width — and
+    the answers are not moved inside them. The answer is the same one the model picker gives
+    once the credential exists, so what the user is told before they pay for a key is what they
+    get after. It is a statement, not a gate: a service no installed harness can run is still
+    selectable.
 
 ## Open questions
 
@@ -961,6 +963,13 @@ human, but most of the mechanism did not. What the human actually said, in order
   harness" as it was asked for, and cross-backend review was right to name them — they are here
   because a column the install cannot act on, and a table of dashes meaning "not known yet", both
   say something false.
+- "I meant leaving the panels with the services as is, with the separate table on the right. You
+  extended the panels and included the support inside these panels, which is not what I wanted"
+  → req 22's second sentence. The first cut read "table" as a set of columns *within* each row,
+  which widened every row to carry them; the requirement now says the placement outright,
+  because it was the part the agent was free to get wrong and did. "Same width" is the human's
+  too, from the follow-up: *"these boxes should remain of the same width they were before your
+  changes."*
 
 Reqs 5 and 13 were changed again on 2026-08-08 from **Codex's** review, under CLAUDE.md's
 cross-backend rule. Same shape as the round below: the findings are the reviewer's, the

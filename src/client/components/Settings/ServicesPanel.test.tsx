@@ -172,17 +172,38 @@ describe("ServicesPanel", () => {
       expect(screen.getByTestId("add-service-support-deepseek-codex")).toHaveAttribute("data-supported", "yes");
     });
 
-    it("says the answer in words, not only as a glyph", async () => {
+    it("says the answer in words, naming both sides", async () => {
       // `data-supported` alone would keep passing if the tick and the spoken
-      // answer both vanished. The words are real text inside the row's button,
-      // so they reach the button's accessible name — an `aria-label` on the
-      // cell's generic span would not reliably. Found by review.
+      // answer both vanished. Each cell names the harness AND the service
+      // because the cells sit in their own column, away from the service names
+      // — "runs" alone would answer a question the listener cannot see.
+      render(<ServicesPanel agentList={[claudeAgent, codexAgent]} />);
+      await userEvent.click(screen.getByTestId("services-add-empty"));
+
+      expect(screen.getByTestId("add-service-support-zai-claude")).toHaveTextContent(
+        "Claude runs GLM (Z.ai)",
+      );
+      expect(screen.getByTestId("add-service-support-zai-codex")).toHaveTextContent(
+        "Codex cannot run GLM (Z.ai)",
+      );
+    });
+
+    it("keeps the answers OUT of the row the user presses", async () => {
+      // The shape the human asked for, and the one this got wrong first time:
+      // the service rows stay as they were and the table is a separate thing
+      // beside them. A row that swallowed the cells again would pass every
+      // assertion above, so this is the one that pins the layout.
       render(<ServicesPanel agentList={[claudeAgent, codexAgent]} />);
       await userEvent.click(screen.getByTestId("services-add-empty"));
 
       const row = screen.getByTestId("add-service-option-zai");
-      expect(row).toHaveTextContent("Claude runs GLM (Z.ai)");
-      expect(row).toHaveTextContent("Codex cannot run GLM (Z.ai)");
+      expect(row).not.toHaveTextContent("runs");
+      expect(row).toHaveTextContent("GLM (Z.ai)");
+      expect(
+        within(screen.getByTestId("add-service-support-table")).getByTestId(
+          "add-service-support-zai-claude",
+        ),
+      ).toBeInTheDocument();
     });
 
     it("gives a harness the image does not have no column at all", async () => {

@@ -3452,10 +3452,31 @@ and reaches only Codex. On an install with one harness, a third of the list was 
 user could only discover **after** buying a key and pasting it — a ShipIt-imposed failure of
 exactly the kind req 1 exists to prevent.
 
-The step now carries a column per **installed** harness — heads beside the "1 · Which service"
-label, a tick or a dash in each row — and a caption saying what a tick means. The dialog widens
-`max-w-md` → `max-w-lg` for the room, at every step rather than only this one, so it does not
-shrink under the user as they move on.
+**The answers sit BESIDE the list, and the rows are untouched.** Step 1 is now two columns: the
+service list exactly as it was, and a table of one column per **installed** harness whose rows
+line up with it, plus a caption saying what a tick means.
+
+That distinction is the whole of the human's correction, and the first cut got it wrong — it put
+the tick and the dash *inside* each service button, which grew a control the user presses into a
+place to read facts from and widened every row to do it: *"I meant leaving the panels with the
+services as is, with the separate table on the right."* Two prototypes settled the rest (bare
+columns versus an enclosing panel); the enclosure was dropped because it added chrome to a quiet
+dialog and an alignment constraint between two containers, which it then failed on the first
+attempt by pushing every cell half a row down.
+
+Three consequences worth stating, because each is a thing that could be "tidied" back into a bug:
+
+- **The list keeps its old width** — `basis-[26rem]`, which is `max-w-md` less the dialog's
+  padding — so the rows are byte-for-byte the rows that were there before (measured: 414.0px
+  before, 414.0px after). The dialog is wider by exactly the table: `40.25rem` is 26 of list, the
+  `gap-4`, two `5.5rem` columns with a `gap-1`, and `p-4` twice.
+- **Only step 1 is wide.** Steps 2 and 3 return to `max-w-md`. The dialog visibly changes width
+  once, when a service is picked; the alternative strands a mode choice and a sign-in code in a
+  box half as wide again as their content.
+- **The alignment is a shared row height, never a measurement.** Each cell carries the row
+  button's own metrics — a transparent border, `py-2`, `text-xs` — so neither side is told the
+  other's height, and both columns walk `allServices()` in one order, so row N here is service N
+  there.
 
 **The cell is the picker's own eligibility rule, asked about a credential that does not exist
 yet.** `harnessSupportsMode` (`catalogue/index.ts`) calls `eligibleEntriesForHarness` with a
@@ -3500,12 +3521,13 @@ that requires clicking through Settings faster than the bootstrap that rendered 
 alternative reading, drawing all catalogue harnesses as columns, would claim harnesses the
 install may not have. Both are worse than the gap.
 
-**The answer is said in words, not only drawn.** Each cell carries `sr-only` text
-("Codex cannot run GLM (Z.ai)") rather than an `aria-label` on its span: the span has a generic
-role, where `aria-label` is unreliable, while real text inside the row's button always
-contributes to the button's accessible name. Review found that too, and a test now asserts the
-words rather than only the `data-supported` attribute — which would have kept passing if both the
-glyph and the spoken answer disappeared.
+**The answer is said in words, not only drawn.** Each cell carries `sr-only` text rather than an
+`aria-label` on its span — review found the latter unreliable on a generic role — and the text
+names **both** sides: "Codex cannot run GLM (Z.ai)", never "cannot run". That is load-bearing now
+that the cells live in their own column, away from the service names: a bare "runs" would answer
+a question the listener cannot see. A test asserts the words rather than only the
+`data-supported` attribute, which would have kept passing if both the glyph and the spoken answer
+disappeared.
 
 ## Key files
 
