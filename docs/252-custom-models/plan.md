@@ -769,6 +769,20 @@ the real binaries (CLI 2.1.220, codex-cli 0.146.0) driving a local HTTP recorder
   figure. Normalized at the adapter boundary (`codex-event-handler.ts`) so the pricing code can
   assume disjointness rather than each reader re-deriving it. The app-server also reports
   `cacheWriteInputTokens`, which ShipIt now carries.
+- **Codex's `total` is the rollup for the whole THREAD, not for the turn** (planning#367,
+  found in production 2026-08-13). `thread/resume` restores the accumulator from the rollout
+  file in the persistent `~/.codex` volume, so it never resets for the life of a session and
+  every row held a running total: a ~31-turn session read as roughly 11–18× its real usage, in
+  `atApiRatesUsd`, in the token series — and, on a metered key where `cost_usd` is derived from
+  these columns, in real money. `codexTurnTokens` (`shared/codex-token-usage.ts`) now does for
+  tokens what `UsageManager.record` already did for a cumulative COST. The baseline it
+  subtracts is the snapshot `thread/resume` REPLAYS under the previous turn's `turnId`,
+  captured within the turn: cross-turn memory would be missing at exactly the moments the
+  accumulator is not, since the adapter is constructed per turn and the container is destroyed
+  on idle while the rollout file survives both. `contextTokens` reads `last` and was always
+  right. Migration `CODEX_ROLLUP_REPAIR_MIGRATION` rebuilds the historical rows — only for
+  chains whose shape proves they are cumulative, because diffing an already-per-turn chain
+  would destroy real billing history.
 
 **What phase 3 found.** Six things, three of which change what a later phase does.
 

@@ -35,6 +35,12 @@
  * `spawn-routing.ts` gives for its own move: a second implementation is how the
  * two boundaries end up disagreeing. A reader downstream of either should never
  * re-derive it.
+ *
+ * The second trap is `total` itself: it is the running rollup for the whole
+ * THREAD, not for the turn. `codexTurnTokens` is what turns one into the other;
+ * see its own doc. `disjointCodexTokens` stays the plain split, because the
+ * orchestrator's `codex exec --json` reader is a ONE-SHOT — its thread is one
+ * turn long, so its rollup already is that turn's.
  */
 
 /**
@@ -92,5 +98,59 @@ export function disjointCodexTokens(
     output: outputTokens ?? 0,
     cacheRead: cachedInputTokens,
     ...(cacheWriteInputTokens !== undefined ? { cacheWrite: cacheWriteInputTokens } : {}),
+  };
+}
+
+/** Every class of a disjoint row, added up. */
+function totalOf(tokens: DisjointTokens): number {
+  return tokens.input + tokens.output + (tokens.cacheRead ?? 0) + (tokens.cacheWrite ?? 0);
+}
+
+/**
+ * planning#367 — ONE TURN's tokens, from the app-server's CUMULATIVE thread
+ * rollup and the rollup as it stood before the turn began.
+ *
+ * `thread/tokenUsage/updated`'s `total` accumulates over the whole thread, and
+ * `thread/resume` RESTORES the accumulator from the rollout file — which lives
+ * in `~/.codex`, a persistent volume — so it never resets for the life of a
+ * ShipIt session. Recording it as the turn's own tokens made every
+ * `SUM(usage_turns)` a sum of running totals: `sum(C_i)` where the true figure
+ * is `C_N`, i.e. roughly `(N+1)/2 ×` for flat turns and worse for growing ones.
+ * Measured against `@openai/codex` 0.146.0 driving a local Responses recorder
+ * that returns identical usage every call, one process per turn plus
+ * `thread/resume` (ShipIt's own model): `total.inputTokens` went 1000 → 2000 →
+ * 3000 while `last.inputTokens` stayed 1000.
+ *
+ * This is the token half of the conversion `UsageManager.record` already does
+ * for a cumulative COST, and it follows the same two rules:
+ *
+ *  - **`max(0, …)` per class**, so a rollup that somehow shrank in one class
+ *    cannot post a credit against the others;
+ *  - **a shrunken rollup is a new baseline, not a negative turn** — when the
+ *    current total is below the baseline the accumulator restarted (a fresh or
+ *    reset thread), and `current` is itself the turn's usage. Collapsing that to
+ *    zeros would assert the turn was free, which is the wrong-number trap
+ *    `disjointCodexTokens` is written to avoid.
+ *
+ * No baseline (the first turn of a thread, and every one-shot run) means the
+ * rollup already is the turn's own.
+ */
+export function codexTurnTokens(
+  cumulative: CodexReportedTokens | undefined,
+  baseline: CodexReportedTokens | undefined,
+): DisjointTokens | undefined {
+  const current = disjointCodexTokens(cumulative);
+  if (!current) return undefined;
+  const before = disjointCodexTokens(baseline);
+  if (!before || totalOf(current) < totalOf(before)) return current;
+  return {
+    input: Math.max(0, current.input - before.input),
+    output: Math.max(0, current.output - before.output),
+    cacheRead: current.cacheRead === undefined
+      ? undefined
+      : Math.max(0, current.cacheRead - (before.cacheRead ?? 0)),
+    ...(current.cacheWrite !== undefined
+      ? { cacheWrite: Math.max(0, current.cacheWrite - (before.cacheWrite ?? 0)) }
+      : {}),
   };
 }

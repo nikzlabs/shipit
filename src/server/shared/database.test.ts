@@ -6,6 +6,7 @@ import {
   COLOR_BACKFILL_MIGRATION,
   MODEL_SELECTION_MIGRATION,
   USAGE_ATTRIBUTION_MIGRATION,
+  CODEX_ROLLUP_REPAIR_MIGRATION,
   DatabaseManager,
 } from "./database.js";
 import { REPO_COLOR_ASSIGNMENT_ORDER } from "./repo-colors.js";
@@ -817,5 +818,208 @@ describe("docs/252 — usage attribution columns (real migration)", () => {
     expect(() => insert([])).not.toThrow();
     expect(() => insert(ATTRIBUTION)).not.toThrow();
     m.close();
+  });
+});
+
+/**
+ * planning#367 — the repair of Codex turns recorded as the app-server's
+ * cumulative thread rollup.
+ *
+ * A data migration's failure modes are both silent and both expensive: leaving a
+ * Codex chain inflated keeps a session showing many times its real usage, and
+ * diffing a chain that was already per-turn destroys real billing history. So
+ * the real migration runs against seeded rows here — the eligible shape and, at
+ * least as importantly, every shape it must refuse.
+ */
+describe("planning#367 — Codex cumulative rollup repair (real migration)", () => {
+  let file: string;
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "shipit-357-rollup-"));
+    file = join(dir, "test.db");
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  interface TurnSeed {
+    id: number;
+    session: string;
+    input: number | null;
+    output: number | null;
+    cacheRead?: number | null;
+    cacheWrite?: number | null;
+    cost?: number;
+    cumulativeCost?: number | null;
+    subAgentId?: string | null;
+    /** Set together with the four rates, per the table's all-or-none CHECK. */
+    billingMode?: "sub" | "key";
+  }
+
+  /**
+   * Seed sessions and usage rows, then rewind to this step so re-opening runs
+   * the real migration. The column is dropped as well as the version rewound:
+   * its presence is the migration's own re-run guard.
+   */
+  function rewindAndSeed(sessions: { id: string; agentId: string }[], turns: TurnSeed[]): void {
+    const m = new DatabaseManager(file);
+    m.db.exec("ALTER TABLE usage_turns DROP COLUMN cumulative_tokens_repaired");
+    for (const s of sessions) {
+      m.db
+        .prepare(
+          `INSERT INTO sessions (id, title, created_at, last_used_at, agent_id)
+           VALUES (?, ?, '2026-01-01', '2026-01-01', ?)`,
+        )
+        .run(s.id, s.id, s.agentId);
+    }
+    for (const t of turns) {
+      const attributed = t.billingMode !== undefined;
+      m.db
+        .prepare(
+          `INSERT INTO usage_turns (
+             id, session_id, cost_usd, duration_ms,
+             input_tokens, output_tokens, cache_read_tokens, cache_create_tokens,
+             cumulative_cost_usd, sub_agent_id,
+             service_id, billing_mode, rate_input, rate_output, rate_cache_read, rate_cache_write)
+           VALUES (?, ?, ?, 1000, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(
+          t.id, t.session, t.cost ?? 0,
+          t.input, t.output, t.cacheRead ?? null, t.cacheWrite ?? null,
+          t.cumulativeCost ?? null, t.subAgentId ?? null,
+          attributed ? "openai" : null,
+          attributed ? t.billingMode! : null,
+          // 1 USD per million input, 2 output, 0.5 cache read, 0 cache write.
+          attributed ? 1 : null, attributed ? 2 : null, attributed ? 0.5 : null, attributed ? 0 : null,
+        );
+    }
+    m.db.pragma(`user_version = ${CODEX_ROLLUP_REPAIR_MIGRATION}`);
+    m.close();
+  }
+
+  function readBack(): Record<string, number | null>[] {
+    const m = new DatabaseManager(file);
+    const rows = m.db
+      .prepare(
+        `SELECT id, input_tokens, output_tokens, cache_read_tokens, cache_create_tokens,
+                cost_usd, cumulative_tokens_repaired
+         FROM usage_turns ORDER BY id`,
+      )
+      .all() as Record<string, number | null>[];
+    m.close();
+    return rows;
+  }
+
+  // The measured shape: identical consumption every turn, reported as a rollup
+  // that grows 1× 2× 3× because `thread/resume` restores the accumulator.
+  const RESUMED_CHAIN: TurnSeed[] = [
+    { id: 1, session: "codex-1", input: 200, output: 10, cacheRead: 800 },
+    { id: 2, session: "codex-1", input: 400, output: 20, cacheRead: 1600 },
+    { id: 3, session: "codex-1", input: 600, output: 30, cacheRead: 2400 },
+  ];
+
+  it("rebuilds the per-turn tokens of a resumed Codex chain", () => {
+    rewindAndSeed([{ id: "codex-1", agentId: "codex" }], RESUMED_CHAIN);
+
+    // Each row now holds what its own turn consumed, so the session's SUM is the
+    // LAST rollup (600/30/2400) instead of three running totals summed (1200 …).
+    expect(readBack()).toEqual([
+      { id: 1, input_tokens: 200, output_tokens: 10, cache_read_tokens: 800, cache_create_tokens: null, cost_usd: 0, cumulative_tokens_repaired: 1 },
+      { id: 2, input_tokens: 200, output_tokens: 10, cache_read_tokens: 800, cache_create_tokens: null, cost_usd: 0, cumulative_tokens_repaired: 1 },
+      { id: 3, input_tokens: 200, output_tokens: 10, cache_read_tokens: 800, cache_create_tokens: null, cost_usd: 0, cumulative_tokens_repaired: 1 },
+    ]);
+  });
+
+  // The half that was real money: on a metered key `cost_usd` is derived from
+  // these very columns, so an inflated token count was an inflated bill.
+  it("recomputes a metered row's cost from the corrected tokens", () => {
+    rewindAndSeed(
+      [{ id: "codex-1", agentId: "codex" }],
+      RESUMED_CHAIN.map((t, i) => ({
+        ...t,
+        billingMode: "key" as const,
+        // What `costFromRates` charged for the inflated rollup.
+        cost: ((i + 1) * 200 * 1 + (i + 1) * 10 * 2 + (i + 1) * 800 * 0.5) / 1_000_000,
+      })),
+    );
+
+    // 200 × 1 + 10 × 2 + 800 × 0.5 per million, for each turn alike.
+    const perTurn = (200 * 1 + 10 * 2 + 800 * 0.5) / 1_000_000;
+    expect(readBack().map((r) => r.cost_usd)).toEqual([perTurn, perTurn, perTurn]);
+  });
+
+  it("leaves a subscription row's cost alone — it spent nothing to begin with", () => {
+    rewindAndSeed(
+      [{ id: "codex-1", agentId: "codex" }],
+      RESUMED_CHAIN.map((t) => ({ ...t, billingMode: "sub" as const })),
+    );
+    expect(readBack().map((r) => r.cost_usd)).toEqual([0, 0, 0]);
+  });
+
+  // Everything below is a chain the migration must NOT touch. Each is a shape
+  // whose rows are already per-turn, where diffing would delete real usage.
+  it("refuses a Claude session, whose rows were never cumulative", () => {
+    rewindAndSeed([{ id: "claude-1", agentId: "claude" }],
+      RESUMED_CHAIN.map((t) => ({ ...t, session: "claude-1" })));
+    expect(readBack().map((r) => r.input_tokens)).toEqual([200, 400, 600]);
+    expect(readBack().map((r) => r.cumulative_tokens_repaired)).toEqual([null, null, null]);
+  });
+
+  it("refuses a chain whose cost came from a harness running total", () => {
+    // `cumulative_cost_usd` is the mark of a harness that bills its own vendor
+    // and reports per-turn tokens — the exact case this repair must not touch.
+    rewindAndSeed([{ id: "codex-1", agentId: "codex" }],
+      RESUMED_CHAIN.map((t, i) => ({ ...t, cumulativeCost: i + 1 })));
+    expect(readBack().map((r) => r.input_tokens)).toEqual([200, 400, 600]);
+  });
+
+  it("refuses a chain that is not shaped like a running total", () => {
+    rewindAndSeed([{ id: "codex-1", agentId: "codex" }], [
+      { id: 1, session: "codex-1", input: 600, output: 30 },
+      { id: 2, session: "codex-1", input: 400, output: 20 },
+    ]);
+    expect(readBack().map((r) => r.input_tokens)).toEqual([600, 400]);
+  });
+
+  it("refuses a lone turn, which has nothing to subtract", () => {
+    rewindAndSeed([{ id: "codex-1", agentId: "codex" }], [RESUMED_CHAIN[0]]);
+    expect(readBack()).toMatchObject([{ input_tokens: 200, cumulative_tokens_repaired: null }]);
+  });
+
+  // A consult is spawned with no thread to resume, so its rollup already is that
+  // run's own. Two consults in one session are two conversations, not a chain.
+  it("refuses sub-agent consults", () => {
+    rewindAndSeed([{ id: "codex-1", agentId: "codex" }],
+      RESUMED_CHAIN.map((t) => ({ ...t, subAgentId: "codex" })));
+    expect(readBack().map((r) => r.input_tokens)).toEqual([200, 400, 600]);
+  });
+
+  // A turn that reported no telemetry carries no rollup, so it takes no part in
+  // the sequence — and must not disqualify the session around it by reading as
+  // a drop to zero.
+  it("steps over a turn with no telemetry instead of breaking the chain", () => {
+    rewindAndSeed([{ id: "codex-1", agentId: "codex" }], [
+      RESUMED_CHAIN[0],
+      { id: 2, session: "codex-1", input: null, output: null },
+      { ...RESUMED_CHAIN[1], id: 3 },
+    ]);
+    expect(readBack().map((r) => r.input_tokens)).toEqual([200, null, 200]);
+  });
+
+  it("is a no-op when re-run, so an earlier step's rewind cannot diff a diffed chain", () => {
+    rewindAndSeed([{ id: "codex-1", agentId: "codex" }], RESUMED_CHAIN);
+    expect(readBack().map((r) => r.input_tokens)).toEqual([200, 200, 200]);
+
+    // Migration tests rewind `user_version` to re-run a specific step, which
+    // re-runs every step after it too. Without the guard the repaired chain —
+    // still non-decreasing, since every turn cost the same — would be diffed a
+    // second time into 200, 0, 0.
+    const m = new DatabaseManager(file);
+    m.db.pragma(`user_version = ${CODEX_ROLLUP_REPAIR_MIGRATION}`);
+    m.close();
+
+    expect(readBack().map((r) => r.input_tokens)).toEqual([200, 200, 200]);
   });
 });

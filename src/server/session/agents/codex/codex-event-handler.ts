@@ -24,7 +24,7 @@ import type {
   PermissionRequester,
 } from "../agent-process.js";
 import type { CodexRateLimits, CodexTokenUsage } from "./codex-rate-limits.js";
-import { disjointCodexTokens } from "../../../shared/codex-token-usage.js";
+import { codexTurnTokens } from "../../../shared/codex-token-usage.js";
 import {
   buildCodexPermissionInput,
   contentToAddedDiff,
@@ -315,7 +315,13 @@ export class CodexEventHandler {
 
       case "thread/tokenUsage/updated": {
         if (!this.isParentThread(params)) break;
-        this.rateLimits.recordTokenUsage(params.tokenUsage as CodexTokenUsage | undefined);
+        // planning#367 — the `turnId` is what separates this turn's rollup from
+        // the one `thread/resume` replays from the previous turn. See
+        // `CodexRateLimits.recordTokenUsage`.
+        this.rateLimits.recordTokenUsage(
+          params.tokenUsage as CodexTokenUsage | undefined,
+          params.turnId as string | undefined,
+        );
         break;
       }
 
@@ -730,27 +736,35 @@ export class CodexEventHandler {
     // `agent_result`.
     if (this.compactionTerminated) return;
     // v2 nests status under `turn`; older shape had a top-level `status`.
-    const turn = params.turn as { status?: string } | undefined;
+    const turn = params.turn as { id?: string; status?: string } | undefined;
     const status = turn?.status ?? (params.status as string) ?? "completed";
-    const usage = this.rateLimits.lastTokenUsage;
+    const completedTurnId = turn?.id ?? (params.turnId as string | undefined) ?? this.currentTurnId;
+    // planning#367 — the rollup THIS turn produced, or null when the only one
+    // held is the previous turn's, replayed by `thread/resume`.
+    const turnUsage = this.rateLimits.turnTokenUsage(completedTurnId);
     const durationMs = Date.now() - this.turnStartTime;
 
     this.ctx.emitEvent({
       type: "agent_result",
       status: status === "completed" ? "success" : "error",
       sessionId: this.threadId ?? "unknown",
-      // `total` is the cumulative turn rollup (billing); `last.totalTokens` is
-      // the real context-window occupancy (input + cache from the final call).
+      // `total` is the cumulative rollup for the whole THREAD (billing);
+      // `last.totalTokens` is the real context-window occupancy (input + cache
+      // from the final call), which is per-call and needs no conversion.
       // docs/252 phase 3 — normalized to the DISJOINT convention at the adapter
       // boundary, because Codex's `inputTokens` INCLUDES `cachedInputTokens`
       // and ShipIt's pricing code assumes the classes never overlap. The rule
       // and the measurement behind it are in `shared/codex-token-usage.ts`;
       // planning#341 moved them there once the orchestrator's own `codex exec
       // --json` shell-out became a second reader of the same overlapping
-      // figures under different key names.
-      tokens: disjointCodexTokens(usage?.total),
-      contextTokens: usage?.last?.totalTokens,
-      contextWindow: usage?.modelContextWindow,
+      // figures under different key names, and planning#367 added the
+      // cumulative→per-turn subtraction that the "rollup" in the first line
+      // has always needed.
+      tokens: codexTurnTokens(turnUsage?.usage.total, turnUsage?.baselineTotal),
+      contextTokens: turnUsage?.usage.last?.totalTokens,
+      // Not turn-scoped — it is the model's window, so the latest snapshot
+      // answers for it even on a turn that reported no usage of its own.
+      contextWindow: this.rateLimits.lastTokenUsage?.modelContextWindow,
       durationMs,
       error: status !== "completed" ? `Turn ended with status: ${status}` : undefined,
     });

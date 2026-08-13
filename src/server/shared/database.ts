@@ -1157,6 +1157,139 @@ const MIGRATIONS: Migration[] = [
     if (columns.some((c) => c.name === "credential_route_id")) return;
     db.exec("ALTER TABLE usage_turns ADD COLUMN credential_route_id TEXT");
   },
+  // planning#367 — rebuild the per-turn token counts of Codex turns that were
+  // recorded as the app-server's CUMULATIVE thread rollup.
+  //
+  // `thread/tokenUsage/updated`'s `total` accumulates over the whole thread, and
+  // `thread/resume` restores the accumulator from the rollout file in the
+  // persistent `~/.codex` volume, so it never reset for the life of a session.
+  // Every row therefore holds the running total, and every SUM over the four
+  // token columns over-counted by about `(N+1)/2` for N flat turns — worse for
+  // turns that grow with the conversation. A ~31-turn session read as roughly
+  // 11–18× its real usage, in the context dial, the token series, the "at API
+  // rates" comparison and — on a metered key, where `cost_usd` is derived from
+  // these very columns — in real money.
+  //
+  // The data is fully recoverable BECAUSE each row holds a running total: the
+  // per-turn figure is `row − previous row`, the same `max(0, current −
+  // previous)` rule `UsageManager.record` already applies to a cumulative COST,
+  // over one conversation's rows ordered by `id`.
+  //
+  // The conversation here is the PRIMARY agent's (`sub_agent_id IS NULL`). A
+  // sub-agent consult is spawned with no thread to resume, so its app-server
+  // starts a fresh thread whose rollup already is that run's own — there is
+  // nothing to subtract, and diffing two unrelated consults would invent one.
+  //
+  // ## What is eligible, and why the test is so narrow
+  //
+  // No column says which harness wrote a row, and the two failure modes are not
+  // symmetric: leaving a Codex chain inflated is a visible number a later pass
+  // can still fix, while diffing a chain that was ALREADY per-turn destroys real
+  // billing history. So a chain is rebuilt only when all three hold:
+  //
+  //  1. its session is pinned to Codex (`sessions.agent_id`);
+  //  2. no row took a cost from a harness running total (`cumulative_cost_usd`
+  //     is NULL throughout) — Claude reports `total_cost_usd` on every turn, so
+  //     this alone excludes a Claude chain, and it stays true for a Claude turn
+  //     recorded inside a session later switched to Codex;
+  //  3. the chain is non-decreasing in all four token columns, which is what a
+  //     cumulative rollup looks like and what a per-turn series generally does
+  //     not.
+  //
+  // Anything else is left alone — including a chain whose accumulator genuinely
+  // restarted mid-session (a lost rollout, which fails (3)). Rows with no token
+  // telemetry at all are skipped rather than counted as zeros, so one such turn
+  // cannot disqualify the session around it.
+  //
+  // `cost_usd` is recomputed from the corrected tokens for metered rows only,
+  // with the rates persisted on the row — that is precisely where the inflated
+  // figure became money. A subscription row's `cost_usd` is already 0 and its
+  // "at API rates" comparison is recomputed at read time from these columns, so
+  // fixing the tokens fixes it.
+  //
+  // The added column is provenance AND the re-run guard the steps above use: its
+  // presence ends this migration before the rebuild, so a migration test that
+  // rewinds `user_version` cannot diff an already-diffed chain a second time.
+  (db) => {
+    const columns = db.prepare("PRAGMA table_info(usage_turns)").all() as { name: string }[];
+    if (columns.some((c) => c.name === "cumulative_tokens_repaired")) return;
+    db.exec("ALTER TABLE usage_turns ADD COLUMN cumulative_tokens_repaired INTEGER");
+
+    interface RepairRow {
+      id: number;
+      session_id: string;
+      input_tokens: number | null;
+      output_tokens: number | null;
+      cache_read_tokens: number | null;
+      cache_create_tokens: number | null;
+      cost_usd: number;
+      cumulative_cost_usd: number | null;
+      billing_mode: string | null;
+      rate_input: number | null;
+      rate_output: number | null;
+      rate_cache_read: number | null;
+      rate_cache_write: number | null;
+    }
+    const rows = db
+      .prepare(
+        `SELECT u.id, u.session_id,
+                u.input_tokens, u.output_tokens, u.cache_read_tokens, u.cache_create_tokens,
+                u.cost_usd, u.cumulative_cost_usd, u.billing_mode,
+                u.rate_input, u.rate_output, u.rate_cache_read, u.rate_cache_write
+         FROM usage_turns u
+         JOIN sessions s ON s.id = u.session_id
+         WHERE s.agent_id = 'codex' AND u.sub_agent_id IS NULL
+         ORDER BY u.id`,
+      )
+      .all() as RepairRow[];
+
+    const chains = new Map<string, RepairRow[]>();
+    for (const row of rows) {
+      // No telemetry at all is not a zero-token turn — it carries no rollup, so
+      // it takes no part in the sequence and is left untouched.
+      const reported = [row.input_tokens, row.output_tokens, row.cache_read_tokens, row.cache_create_tokens];
+      if (reported.every((v) => v === null)) continue;
+      const chain = chains.get(row.session_id);
+      if (chain) chain.push(row);
+      else chains.set(row.session_id, [row]);
+    }
+
+    const classes = ["input_tokens", "output_tokens", "cache_read_tokens", "cache_create_tokens"] as const;
+    const update = db.prepare(
+      `UPDATE usage_turns
+       SET input_tokens = ?, output_tokens = ?, cache_read_tokens = ?, cache_create_tokens = ?,
+           cost_usd = ?, cumulative_tokens_repaired = 1
+       WHERE id = ?`,
+    );
+    for (const chain of chains.values()) {
+      if (chain.length < 2) continue;
+      if (chain.some((row) => row.cumulative_cost_usd !== null)) continue;
+      const cumulative = chain.every((row, i) =>
+        i === 0 || classes.every((c) => (row[c] ?? 0) >= (chain[i - 1][c] ?? 0)));
+      if (!cumulative) continue;
+
+      for (const [i, row] of chain.entries()) {
+        const previous = i === 0 ? null : chain[i - 1];
+        const perTurn = Object.fromEntries(
+          classes.map((c) => [c, row[c] === null ? null : Math.max(0, row[c] - (previous?.[c] ?? 0))]),
+        ) as Record<(typeof classes)[number], number | null>;
+        // Money only where the inflated tokens became money: a metered row's
+        // cost was derived from them (`costFromRates` — per-million rates).
+        const metered = row.billing_mode === "key" && row.rate_input !== null;
+        const costUsd = metered
+          ? ((perTurn.input_tokens ?? 0) * row.rate_input!
+            + (perTurn.output_tokens ?? 0) * (row.rate_output ?? 0)
+            + (perTurn.cache_read_tokens ?? 0) * (row.rate_cache_read ?? 0)
+            + (perTurn.cache_create_tokens ?? 0) * (row.rate_cache_write ?? 0)) / 1_000_000
+          : row.cost_usd;
+        update.run(
+          perTurn.input_tokens, perTurn.output_tokens,
+          perTurn.cache_read_tokens, perTurn.cache_create_tokens,
+          costUsd, row.id,
+        );
+      }
+    }
+  },
 ];
 
 /**
@@ -1201,6 +1334,13 @@ export const MODEL_SELECTION_MIGRATION = 68;
  * `MODEL_SELECTION_MIGRATION`.
  */
 export const USAGE_ATTRIBUTION_MIGRATION = 69;
+
+/**
+ * 0-based index of the planning#367 Codex cumulative-rollup repair in
+ * `MIGRATIONS`. Frozen and exported for its own migration test, per the note on
+ * `MODEL_SELECTION_MIGRATION`.
+ */
+export const CODEX_ROLLUP_REPAIR_MIGRATION = 73;
 
 export class DatabaseManager {
   readonly db: DatabaseInstance;
