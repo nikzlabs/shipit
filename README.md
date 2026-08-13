@@ -30,6 +30,7 @@ loop**.
   DeepSeek, OpenRouter, etc.).
   - Supported harnesses: Claude Code and Codex, with OpenCode and Cursor CLI support coming.
 - **The GitHub loop, inline** — work with PRs, CI, deploys, reviews, and issues, without leaving ShipIt.
+- **Runs on Linux, macOS, and Windows** — one command via Docker; Windows through WSL2.
 - **Ship from your phone** — mobile-first, with voice.
 
 ## Quickstart
@@ -45,10 +46,12 @@ loop**.
   - a ChatGPT subscription or an [OpenAI API key](https://platform.openai.com/api-keys)
   - or an API key for DeepSeek, GLM (Z.ai), OpenRouter, or Vercel AI Gateway
 
-### Try it locally
+### Run locally
 
-Use local Docker when you want to run ShipIt on your own machine — Linux, macOS, or Windows via
-[WSL2](https://learn.microsoft.com/windows/wsl/install). Use the VPS path for the always-on setup.
+Run ShipIt on your own machine — Linux, macOS, or Windows via
+[WSL2](https://learn.microsoft.com/windows/wsl/install). This is a full install rather than a trial
+mode: same sessions, same previews, same PR loop as on a server. What it can't do is keep working
+while your machine is asleep.
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/nikzlabs/shipit/stable/deployment/local/setup.sh)
@@ -87,10 +90,11 @@ note that this puts an agent with a shell and your repositories on that network 
 of it, so only do it on a network you control. A host firewall is not a reliable substitute: on Linux,
 Docker's published-port rules bypass `ufw`, and on macOS the application firewall is off by default.
 
-### Run it on a VPS
+### Run on a VPS
 
-Use the VPS path for the intended always-on setup: agents, previews, and CI follow-up work keep
-running even when your laptop is closed.
+Pick this when you want ShipIt always on: agents, previews, and CI follow-up work keep running with
+your laptop closed, and you pick the session back up from any device. Uptime is the only difference —
+the product is the same either way.
 
 ShipIt ships with a one-command provisioning script for Ubuntu hosts. It installs Docker, raises the
 inotify limits sessions need, and can put ShipIt behind a
