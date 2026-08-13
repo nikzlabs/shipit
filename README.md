@@ -70,17 +70,9 @@ ShipIt has no built-in authentication. To reach it from a phone or another machi
 ~/.shipit/deployment/local/tailscale.sh
 ```
 
-That adds a tailnet binding **alongside** loopback (localhost keeps working, and ShipIt still starts
-when Tailscale is down) and prints a URL of the form `http://100-x-y-z.sslip.io:4123`.
-
-Use that URL rather than the raw `http://100.x.y.z:4123` — previews need the wildcard subdomain a raw
-IP can't carry. That caveat, the HTTPS trade-offs, and the opt-out are in
+That adds a tailnet binding **alongside** loopback and prints the URL to use. The caveats, the LAN
+option, and the opt-out are in
 [`deployment/README.md`](deployment/README.md#reaching-a-local-install-from-another-device-tailscale).
-
-To expose ShipIt on your LAN instead, set `SHIPIT_BIND_ADDR=0.0.0.0` in `~/.shipit/.shipit.env` — but
-note that this puts an agent with a shell and your repositories on that network with nothing in front
-of it, so only do it on a network you control. A host firewall is not a reliable substitute: on Linux,
-Docker's published-port rules bypass `ufw`, and on macOS the application firewall is off by default.
 
 ### Run on a VPS
 
