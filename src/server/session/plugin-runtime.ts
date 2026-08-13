@@ -24,11 +24,13 @@ import path from "node:path";
 import { CONTAINER_PLUGINS_DIR, CONTAINER_PLUGIN_STORE_DIR } from "../shared/fs-constants.js";
 import { resolveShipitConfig } from "../shared/shipit-config.js";
 import { getErrorMessage } from "../shared/utils.js";
-import { ensureGitExcluded } from "../shared/git.js";
+import { ensureGitExcludedBlock } from "../shared/git.js";
 import {
   materializePluginSkills,
+  planPluginSkills,
   pluginSkillExcludeEntries,
   resolvePluginSkillSources,
+  PLUGIN_SKILL_EXCLUDE_BLOCK,
 } from "./plugin-skills.js";
 
 export interface PluginPrepareResult {
@@ -94,21 +96,37 @@ export function preparePlugins(opts: PreparePluginsOptions): PluginPrepareResult
   // the links: idempotent, and re-run on every activation round, which is what
   // makes a refresh take effect. Kept out of the user's repository by a
   // per-clone git exclude rather than by editing their `.gitignore`.
+  // `from:` matches a declared repo case-insensitively (`plugin-repos.ts`), but
+  // the checkout directory is named with the declaration's own spelling — so
+  // resolve through the declaration rather than trusting the `use` entry's
+  // case, which silently found nothing on a case-sensitive filesystem (review
+  // finding).
+  const declaredNames = new Map(config.plugins.repos.map((r) => [r.name.toLowerCase(), r.name]));
   const sources = resolvePluginSkillSources(
     config.plugins.uses,
     (repoName) => {
-      const active = path.join(storeDir, repoName, "active");
+      const declared = declaredNames.get(repoName.toLowerCase());
+      if (!declared) return null;
+      const active = path.join(storeDir, declared, "active");
       return fs.existsSync(active) ? active : null;
     },
   );
+
   // Fail closed on the git side, and only bother a clone that has plugins to
   // hide: if the exclude cannot be written, materializing would put a copy of
   // somebody else's repository into the user's next commit, which is the one
   // thing req 22 rules out. Stale cleanup still runs — removing is always safe.
-  const excluded = sources.length === 0
+  // The exclude names the EXACT directories, so it is written from the plan,
+  // before any of them exists.
+  const planned = planPluginSkills(sources);
+  const excluded = planned.length === 0
     || !isGitRepo(opts.workspaceDir)
-    || ensureGitExcluded(opts.workspaceDir, pluginSkillExcludeEntries());
-  const skills = materializePluginSkills(opts.workspaceDir, excluded ? sources : []);
+    || ensureGitExcludedBlock(
+      opts.workspaceDir,
+      PLUGIN_SKILL_EXCLUDE_BLOCK,
+      pluginSkillExcludeEntries(planned.map((p) => p.name)),
+    );
+  const skills = materializePluginSkills(opts.workspaceDir, excluded ? planned : []);
   if (!excluded) {
     result.skillsFailed.push({
       skill: "(all)",

@@ -71,6 +71,65 @@ export function ensureGitExcluded(repoDir: string, entries: readonly string[]): 
   }
 }
 
+/**
+ * Replace a delimited, ShipIt-owned block inside `.git/info/exclude`.
+ *
+ * {@link ensureGitExcluded} appends and never removes, which is right for a
+ * fixed pattern like `.pnpm-store/`. docs/262's plugin skills need the
+ * opposite: the entries are the EXACT directories materialized right now, so
+ * they change as a declaration changes and stale ones must go.
+ *
+ * Exact names rather than a wildcard is the point. A pattern broad enough to
+ * cover "whatever ShipIt might write" also hides whatever the USER happens to
+ * name that way — an untracked directory of theirs, or a marketplace plugin
+ * whose own path-scoped `git add` would then fail as an ignored path. Listing
+ * what was actually written can hide nothing else.
+ *
+ * Returns whether the block is in force. Never throws.
+ */
+export function ensureGitExcludedBlock(
+  repoDir: string,
+  blockName: string,
+  entries: readonly string[],
+): boolean {
+  const begin = `# BEGIN ${blockName} (managed by ShipIt — do not edit)`;
+  const end = `# END ${blockName}`;
+  const excludePath = path.join(repoDir, ".git", "info", "exclude");
+  try {
+    let contents = "";
+    try {
+      contents = fs.readFileSync(excludePath, "utf-8");
+    } catch {
+      // info/exclude may not exist yet — fall through to create it.
+    }
+    const lines = contents.split("\n");
+    const from = lines.indexOf(begin);
+    const to = lines.indexOf(end);
+    const kept = from !== -1 && to > from
+      ? [...lines.slice(0, from), ...lines.slice(to + 1)]
+      : lines;
+    const block = entries.length > 0 ? [begin, ...entries, end] : [];
+    const next = [...trimTrailingBlanks(kept), ...block].join("\n");
+    const normalized = next.endsWith("\n") || next === "" ? next : `${next}\n`;
+    if (normalized === contents) return true;
+    fs.mkdirSync(path.dirname(excludePath), { recursive: true });
+    fs.writeFileSync(excludePath, normalized);
+    return true;
+  } catch (err) {
+    console.warn(
+      `[git] failed to write the ${blockName} exclude block to ${excludePath}:`,
+      err instanceof Error ? err.message : String(err),
+    );
+    return false;
+  }
+}
+
+function trimTrailingBlanks(lines: readonly string[]): string[] {
+  const out = [...lines];
+  while (out.length > 0 && out[out.length - 1].trim() === "") out.pop();
+  return out;
+}
+
 export interface GitCommitInfo {
   hash: string;
   message: string;

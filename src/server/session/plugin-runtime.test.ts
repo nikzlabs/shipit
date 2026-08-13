@@ -10,6 +10,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { preparePlugins } from "./plugin-runtime.js";
+import { namespacedName } from "./plugin-skills.js";
 
 let tmp: string;
 let workspaceDir: string;
@@ -130,10 +131,10 @@ describe("preparePlugins — skills (req 22)", () => {
 
     const result = preparePlugins(opts());
 
-    expect(result.skills).toEqual(["plugins--probe--probe"]);
+    const name = namespacedName("probe", "probe");
+    expect(result.skills).toEqual([name]);
     for (const dir of [".claude", ".codex"]) {
-      expect(fs.existsSync(path.join(workspaceDir, dir, "skills", "plugins--probe--probe", "SKILL.md")))
-        .toBe(true);
+      expect(fs.existsSync(path.join(workspaceDir, dir, "skills", name, "SKILL.md"))).toBe(true);
     }
   });
 
@@ -142,7 +143,7 @@ describe("preparePlugins — skills (req 22)", () => {
     publishGeneration("tools", "a".repeat(40), SKILLS_MANIFEST, {
       "pkg/skills/probe/SKILL.md": "---\nname: probe\n---\n\nBody.\n",
     });
-    expect(preparePlugins(opts()).skills).toEqual(["plugins--reqs--probe"]);
+    expect(preparePlugins(opts()).skills).toEqual([namespacedName("reqs", "probe")]);
   });
 
   it("does not materialize a plugin the consumer declared but never imported", () => {
@@ -172,7 +173,7 @@ describe("preparePlugins — skills (req 22)", () => {
     const staged = execFileSync("git", ["diff", "--cached", "--name-only"], { cwd: workspaceDir }).toString();
 
     expect(staged).toContain("shipit.yaml");
-    expect(staged).not.toContain("plugins--probe--probe");
+    expect(staged).not.toContain(namespacedName("probe", "probe"));
     // And the project's own skills are still perfectly visible to git.
     fs.mkdirSync(path.join(workspaceDir, ".claude", "skills", "mine"), { recursive: true });
     fs.writeFileSync(path.join(workspaceDir, ".claude", "skills", "mine", "SKILL.md"), "---\nname: mine\n---\n");
@@ -199,7 +200,8 @@ describe("preparePlugins — skills (req 22)", () => {
 
     expect(result.skills).toEqual([]);
     expect(result.skillsFailed[0]?.reason).toContain("out of this clone's git");
-    expect(fs.existsSync(path.join(workspaceDir, ".claude", "skills", "plugins--probe--probe"))).toBe(false);
+    expect(fs.existsSync(path.join(workspaceDir, ".claude", "skills", namespacedName("probe", "probe"))))
+      .toBe(false);
     // The link surface is unaffected — only the skills are withheld.
     expect(result.linked).toEqual(["tools"]);
   });
@@ -214,8 +216,9 @@ describe("preparePlugins — skills (req 22)", () => {
     fs.writeFileSync(path.join(workspaceDir, "shipit.yaml"), "agent:\n  install: npm install\n");
     const result = preparePlugins(opts());
 
-    expect(result.skillsRemoved).toEqual(["plugins--probe--probe"]);
-    expect(fs.existsSync(path.join(workspaceDir, ".claude", "skills", "plugins--probe--probe"))).toBe(false);
+    expect(result.skillsRemoved).toEqual([namespacedName("probe", "probe")]);
+    expect(fs.existsSync(path.join(workspaceDir, ".claude", "skills", namespacedName("probe", "probe"))))
+      .toBe(false);
   });
 });
 
