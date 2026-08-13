@@ -41,18 +41,14 @@ describe("Integration: reviewer settings over HTTP (docs/261 phase 3)", () => {
   let tmpDir: string;
   let credentialStore: CredentialStore;
   let dbManager: DatabaseManager;
-  let savedOpenAIKey: string | undefined;
-  let savedAnthropicKey: string | undefined;
 
   beforeEach(async () => {
     dbManager = createTestDatabaseManager();
-    // Both cleared so the install starts with NO credential — the reviewers are
-    // then whatever this test seeds, not whatever the host happens to export.
-    savedOpenAIKey = process.env.OPENAI_API_KEY;
-    savedAnthropicKey = process.env.ANTHROPIC_API_KEY;
-    delete process.env.OPENAI_API_KEY;
-    delete process.env.ANTHROPIC_API_KEY;
-
+    // This install starts with NO credential, so the reviewers below are
+    // whatever this test seeds — neither what the host exports nor what the
+    // previous test's `addCredential` left in `process.env`. Both are
+    // `server-test-setup.ts`'s job for the whole server suite; clearing two
+    // variables here as well would imply the other six are somebody else's.
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-reviewer-api-"));
     initGlobalGitConfig(tmpDir);
     setGitIdentity("Test User", "test@test.com");
@@ -82,10 +78,6 @@ describe("Integration: reviewer settings over HTTP (docs/261 phase 3)", () => {
     } catch {
       // Ignore cleanup errors
     }
-    if (savedOpenAIKey !== undefined) process.env.OPENAI_API_KEY = savedOpenAIKey;
-    else delete process.env.OPENAI_API_KEY;
-    if (savedAnthropicKey !== undefined) process.env.ANTHROPIC_API_KEY = savedAnthropicKey;
-    else delete process.env.ANTHROPIC_API_KEY;
   });
 
   /** Store an API-key credential through the real route, as the UI does. */

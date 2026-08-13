@@ -1,0 +1,63 @@
+/**
+ * The pin for `server-test-setup.ts`'s credential strip.
+ *
+ * A ShipIt session container materializes the user's real credentials into the
+ * agent's `process.env` — a catalogue `storageEnv` per credential group, plus a
+ * `SHIPIT_CREDENTIAL_*` per stored route (docs/252 phase 5). CI runners and
+ * developer boxes have none, so any test asking "what can this install run"
+ * answered differently in the two places: `reviewer-settings-api`,
+ * `agent-spawn-route` (twice) and `ask-user-question` all passed in CI while
+ * failing inside a container, and none of them names a credential anywhere.
+ *
+ * The strip alone cannot be tested where there is nothing to strip, which is
+ * exactly CI. So the `server` project injects a sentinel of each shape
+ * (`vitest.config.ts` → `env`) and this file asserts both halves:
+ *
+ *   - the sentinels are GONE, so the strip still runs;
+ *   - the marker is PRESENT, so the injection still happens.
+ *
+ * Without the second assertion, deleting the injection would leave this file
+ * passing and the strip unverified again — the same shape as the bug.
+ */
+
+import { describe, it, expect } from "vitest";
+import { credentialStorageEnvNames } from "./catalogue/index.js";
+import { CREDENTIAL_ROUTE_ENV_PREFIX } from "./types/domain-types/credential-route.js";
+
+describe("server test environment is hermetic", () => {
+  it("still injects the ambient-credential sentinels", () => {
+    expect(
+      process.env.SHIPIT_TEST_AMBIENT_ENV_MARKER,
+      "the `server` project's `env` block in vitest.config.ts no longer injects the sentinel "
+        + "credentials, so nothing here proves server-test-setup.ts strips them",
+    ).toBe("1");
+  });
+
+  it("strips every catalogue credential variable", () => {
+    for (const name of credentialStorageEnvNames()) {
+      expect(process.env[name], `${name} leaked into a server test`).toBeUndefined();
+    }
+  });
+
+  it("strips every per-route credential variable", () => {
+    const leaked = Object.keys(process.env).filter((n) =>
+      n.startsWith(CREDENTIAL_ROUTE_ENV_PREFIX),
+    );
+    expect(leaked, `${CREDENTIAL_ROUTE_ENV_PREFIX}* leaked into a server test`).toEqual([]);
+  });
+
+  /**
+   * The strip runs before EVERY test, not only once per file: a credential
+   * written through the API assigns its mode's variable in this process
+   * (`setApiKey`, `credential-routes`), so a test that stores one would
+   * otherwise hand the next test in its file an install that is already
+   * configured.
+   */
+  it("re-strips between tests in the same file", () => {
+    process.env.ANTHROPIC_API_KEY = "sk-ant-written-by-a-test";
+  });
+
+  it("sees no credential from the preceding test", () => {
+    expect(process.env.ANTHROPIC_API_KEY).toBeUndefined();
+  });
+});
