@@ -31,9 +31,9 @@ const mockChildSpawn = vi.mocked(childProcess.spawn);
 
 /**
  * Minimal ChildProcess fake — captures stdin writes and lets tests fire
- * stdout/stderr/close. Both processes spawn over piped stdio (docs/262 moved
- * the one-shot path off node-pty so an oversized prompt can't overflow argv),
- * so this one fake serves both.
+ * stdout/stderr/close. Both processes spawn over piped stdio — the one-shot
+ * path moved off node-pty so an oversized prompt can't overflow argv — so this
+ * one fake serves both.
  *
  * `pid` is set because `killChild()` refuses to signal a process whose pid is
  * undefined — a fake without one silently no-ops every kill assertion.
@@ -42,16 +42,18 @@ function createMockChildProcess() {
   const stdoutEmitter = new EventEmitter();
   const stderrEmitter = new EventEmitter();
   const stdinWrites: string[] = [];
-  const stdin = {
-    write: vi.fn((data: string) => {
-      stdinWrites.push(data);
-      return true;
-    }),
-    end: vi.fn(),
-    writable: true,
-    destroyed: false,
-    writableEnded: false,
-  };
+  // An EventEmitter, not a plain object: stdin is where EPIPE surfaces, and an
+  // unhandled stream `error` takes the worker process down with it. A fake that
+  // cannot emit one cannot guard that.
+  const stdin: any = new EventEmitter();
+  stdin.write = vi.fn((data: string) => {
+    stdinWrites.push(data);
+    return true;
+  });
+  stdin.end = vi.fn();
+  stdin.writable = true;
+  stdin.destroyed = false;
+  stdin.writableEnded = false;
   const proc: any = new EventEmitter();
   proc.stdout = stdoutEmitter;
   proc.stderr = stderrEmitter;
@@ -359,7 +361,7 @@ describe("ClaudeProcess", () => {
       );
     });
 
-    it("docs/262 — never puts the prompt in argv (MAX_ARG_STRLEN is 128 KiB)", () => {
+    it("never puts the prompt in argv (MAX_ARG_STRLEN caps one argument at 128 KiB)", () => {
       const mockProc = createMockChildProcess();
       mockChildSpawn.mockReturnValue(mockProc as any);
 
@@ -875,7 +877,7 @@ describe("ClaudeProcess", () => {
       expect(errors[0].message).toBe("spawn ENOENT");
     });
 
-    it("docs/262 — surfaces an async exec failure as `error`, not a silent empty run", () => {
+    it("surfaces an async exec failure as `error`, not a silent empty run", () => {
       const mockProc = createMockChildProcess();
       mockChildSpawn.mockReturnValue(mockProc as any);
 
@@ -912,6 +914,25 @@ describe("ClaudeProcess", () => {
       expect(codes).toEqual([7]);
     });
 
+    it("surfaces an EPIPE on stdin as `error` instead of crashing the worker", () => {
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
+
+      const claude = new ClaudeProcess();
+      const errors: Error[] = [];
+      claude.on("error", (err: Error) => errors.push(err));
+
+      claude.run({ prompt: "test" });
+      // The CLI died before draining the prompt. Node reports this on the
+      // STREAM — an unhandled `error` here is an uncaught exception, i.e. the
+      // whole session worker goes down.
+      const epipe = Object.assign(new Error("write EPIPE"), { code: "EPIPE" });
+      expect(() => mockProc.stdin.emit("error", epipe)).not.toThrow();
+
+      expect(errors).toHaveLength(1);
+      expect(errors[0].message).toBe("write EPIPE");
+    });
+
     it("raises auth_required from a stderr line, now that stderr is its own stream", () => {
       const mockProc = createMockChildProcess();
       mockChildSpawn.mockReturnValue(mockProc as any);
@@ -927,6 +948,62 @@ describe("ClaudeProcess", () => {
 
       expect(authRequired).toBe(true);
       expect(logs).toEqual([{ source: "stderr", text: "Error: Not logged in. Please run /login" }]);
+    });
+
+    it("reassembles a stderr line split across chunks before matching auth phrases", () => {
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
+
+      const claude = new ClaudeProcess();
+      let authRequired = false;
+      claude.on("auth_required", () => { authRequired = true; });
+
+      claude.run({ prompt: "test" });
+      // A pipe splits wherever it likes. Neither half matches a pattern on its
+      // own — checking chunks instead of lines misses the auth failure entirely
+      // and the turn dies as a generic error instead of healing credentials.
+      mockProc.simulateStderr("Error: Not log");
+      expect(authRequired).toBe(false);
+      mockProc.simulateStderr("ged in. Please run /login\n");
+
+      expect(authRequired).toBe(true);
+    });
+
+    it("flushes an unterminated final stderr line on close", () => {
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
+
+      const claude = new ClaudeProcess();
+      let authRequired = false;
+      const logs: { source: string; text: string }[] = [];
+      claude.on("auth_required", () => { authRequired = true; });
+      claude.on("log", (source: string, text: string) => logs.push({ source, text }));
+
+      claude.run({ prompt: "test" });
+      // No trailing newline — the CLI's last line usually has none.
+      mockProc.simulateStderr("Invalid API key");
+      mockProc.simulateExit(1);
+
+      expect(authRequired).toBe(true);
+      expect(logs).toContainEqual({ source: "stderr", text: "Invalid API key" });
+    });
+
+    it("counts stderr as output for the inactivity watchdog", () => {
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
+
+      const claude = new ClaudeProcess();
+      const logs: { source: string; text: string }[] = [];
+      claude.on("log", (source: string, text: string) => logs.push({ source, text }));
+
+      claude.run({ prompt: "test" });
+      mockProc.simulateStderr("compiling…\n");
+      vi.advanceTimersByTime(31_000);
+
+      // The PTY merged the streams, so any output cleared the watchdog. A
+      // "no output in 30 seconds" warning while the CLI is writing to stderr
+      // sends whoever reads the logs after the wrong problem.
+      expect(logs.some((l) => l.source === "server")).toBe(false);
     });
   });
 
@@ -994,7 +1071,7 @@ describe("ClaudeProcess", () => {
     });
   });
 
-  describe("prompt delivery over stdin (docs/262)", () => {
+  describe("prompt delivery over stdin", () => {
     it("frames the prompt as a type:user NDJSON line and closes stdin", () => {
       const mockProc = createMockChildProcess();
       mockChildSpawn.mockReturnValue(mockProc as any);

@@ -182,7 +182,7 @@ describe("runAgentToCompletion", () => {
     expect(res.error).toBe("crashed");
   });
 
-  it("docs/262 — a non-zero exit with no result event and no output is an error, not an empty success", async () => {
+  it("treats a non-zero exit with no result event and no output as an error, not an empty success", async () => {
     const agent = new FakeAgent();
     const handle = runAgentToCompletion(agent as never, { prompt: "p", cwd: "/w" }, Date.now());
     // The shape of a CLI that never started: no events at all, then a non-zero
@@ -195,11 +195,25 @@ describe("runAgentToCompletion", () => {
     expect(res.error).toContain("exited with code 1");
   });
 
-  it("keeps a non-zero exit a success when the run actually answered", async () => {
+  it("reports a crash that leaked a preamble as an error, keeping the partial text", async () => {
+    const agent = new FakeAgent();
+    const handle = runAgentToCompletion(agent as never, { prompt: "p", cwd: "/w" }, Date.now());
+    // A run that starts talking, works, then dies before its result event. The
+    // preamble is not an answer — calling this a success hands the caller
+    // "Let me inspect the files…" as if it were the review.
+    agent.emit("event", assistant("Let me inspect the files…"));
+    agent.emit("done", 1);
+    const res = await handle.promise;
+    expect(res.status).toBe("error");
+    expect(res.text).toBe("Let me inspect the files…");
+    expect(res.error).toContain("exited with code 1");
+  });
+
+  it("keeps a clean exit a success", async () => {
     const agent = new FakeAgent();
     const handle = runAgentToCompletion(agent as never, { prompt: "p", cwd: "/w" }, Date.now());
     agent.emit("event", assistant("Here are the findings."));
-    agent.emit("done", 143);
+    agent.emit("done", 0);
     const res = await handle.promise;
     expect(res.status).toBe("success");
     expect(res.text).toBe("Here are the findings.");

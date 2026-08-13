@@ -269,6 +269,8 @@ function frameUserMessage(text: string): string {
 export class ClaudeProcess extends EventEmitter {
   private proc: ChildProcess | null = null;
   private buffer = "";
+  /** Separate line buffer for stderr — see the stderr handler in {@link run}. */
+  private stderrBuffer = "";
   private watchdog: ReturnType<typeof setTimeout> | null = null;
   /** Per-turn latch — see {@link consumeAuthFailureEvent}. */
   private authRaisedThisTurn = false;
@@ -540,6 +542,7 @@ export class ClaudeProcess extends EventEmitter {
     }
 
     this.buffer = "";
+    this.stderrBuffer = "";
 
     // Inactivity watchdog: warn if no output within 30 seconds
     this.watchdog = setTimeout(() => {
@@ -562,14 +565,16 @@ export class ClaudeProcess extends EventEmitter {
     // text the merged PTY stream used to route through `drainLines`'s non-JSON
     // branch — so the auth check has to run here too or an unauthenticated
     // one-shot turn stops raising `auth_required`.
+    //
+    // Buffered into LINES, never checked chunk-by-chunk. A pipe splits wherever
+    // it likes, so "Not logged in" can arrive as "Not log" + "ged in" and match
+    // no pattern in either half — the PTY path never had that problem because
+    // it reassembled lines before matching. Clearing the watchdog here too
+    // keeps its "no output in 30s" warning honest: stderr is output.
     this.proc.stderr?.on("data", (chunk: Buffer) => {
-      const trimmed = stripAnsi(chunk.toString("utf-8")).trim();
-      if (!trimmed) return;
-      if (textIndicatesAuthFailure(trimmed)) {
-        this.raiseAuthRequiredOnce();
-      }
-      console.warn("[claude] stderr:", trimmed.slice(0, 200));
-      this.emit("log", "stderr", trimmed);
+      this.clearWatchdog();
+      this.stderrBuffer += stripAnsi(chunk.toString("utf-8"));
+      this.drainStderrLines();
     });
 
     // A failure to exec the CLI (E2BIG on an oversized argv, ENOENT on a
@@ -581,10 +586,26 @@ export class ClaudeProcess extends EventEmitter {
       this.emit("error", err);
     });
 
+    // EPIPE from the write below lands on the STREAM, not on the child, and an
+    // unhandled stream `error` takes down the whole worker process. The window
+    // is real: a 200 KB prompt flushes across several ticks, so a CLI that dies
+    // early (bad flags, a startup auth failure) can close the read end
+    // mid-write. Report it as a failed run — at this point in the turn the
+    // prompt provably never landed, which is the one thing that must not be
+    // mistaken for an empty success.
+    this.proc.stdin?.on("error", (err: NodeJS.ErrnoException) => {
+      this.clearWatchdog();
+      console.warn(`[claude] stdin error (${err.code ?? "unknown"}): the prompt did not reach the CLI`);
+      this.emit("error", err);
+    });
+
     this.proc.on("close", (exitCode) => {
       this.clearWatchdog();
       // Drain any remaining buffer, flushing the final (possibly unterminated) line
       this.drainLines(true);
+      // Same for stderr: the CLI's last line often has no trailing newline, and
+      // an auth complaint stranded in the buffer raises no `auth_required`.
+      this.drainStderrLines(true);
       this.emit("done", exitCode ?? 0);
       this.proc = null;
     });
@@ -593,6 +614,22 @@ export class ClaudeProcess extends EventEmitter {
     // further messages are coming, so it finishes this turn and exits.
     this.writeStdin(frameUserMessage(prompt));
     this.proc.stdin?.end();
+  }
+
+  /** Emit complete stderr lines, running the auth check on each. */
+  private drainStderrLines(flush = false): void {
+    const lines = this.stderrBuffer.split("\n");
+    this.stderrBuffer = flush ? "" : (lines.pop() ?? "");
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      if (textIndicatesAuthFailure(trimmed)) {
+        this.raiseAuthRequiredOnce();
+      }
+      console.warn("[claude] stderr:", trimmed.slice(0, 200));
+      this.emit("log", "stderr", trimmed);
+    }
   }
 
   /** Write data to the running process's stdin. */
@@ -612,6 +649,15 @@ export class ClaudeProcess extends EventEmitter {
    * is the same request without a terminal in the way. stdin is already closed
    * by then, so a `control_request` interrupt (the resident process's route) is
    * not available here.
+   *
+   * KNOWN DIFFERENCE: a PTY delivered Ctrl+C to the foreground process GROUP,
+   * so a wedged tool descendant took the signal too. This signals the CLI only
+   * — the same semantics {@link StreamingClaudeProcess} has always had — so a
+   * descendant that survives its parent can still hold the stdout pipe open and
+   * delay `close` (and therefore `done`). Escalating to `detached` + a
+   * process-group kill changes teardown and orphaning behaviour for every
+   * one-shot turn, so it belongs in its own change rather than here; the
+   * sub-agent wall-clock cap resolves independently of `done` regardless.
    */
   interrupt(): void {
     if (!this.proc) return;
@@ -867,6 +913,17 @@ export class StreamingClaudeProcess extends EventEmitter {
     this.proc.on("error", (err) => {
       this.clearWatchdog();
       this.emit("error", err);
+    });
+
+    // EPIPE on a write lands on the STREAM, not on the child, and an unhandled
+    // stream `error` takes down the worker process. `writeToStdin`'s guards
+    // catch a stdin that is already closed; they cannot catch one that closes
+    // mid-write. Log-only here, deliberately: this process is resident across
+    // turns, so emitting `error` would tear down a session over a single
+    // dropped write, and `writeToStdin` already reports drops the same way.
+    this.proc.stdin?.on("error", (err: NodeJS.ErrnoException) => {
+      console.warn(`[streaming-claude] stdin error (${err.code ?? "unknown"}) — message DROPPED`);
+      this.emit("log", "server", `Write to the Claude CLI failed (${err.code ?? "unknown"}). The message was not delivered.`);
     });
 
     this.proc.on("close", (exitCode) => {
