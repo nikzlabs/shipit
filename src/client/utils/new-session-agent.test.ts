@@ -45,4 +45,25 @@ describe("newSessionAgentId", () => {
   it("defaults to claude with nothing saved", () => {
     expect(newSessionAgentId(agents)).toBe("claude");
   });
+
+  it("lets the saved harness break the tie on a model both can run", () => {
+    // docs/252 ended "each model belongs to exactly one agent": a model with
+    // both an Anthropic-messages and an OpenAI style — DeepSeek V4, GLM,
+    // anything through OpenRouter — is runnable on either harness, and deriving
+    // an owner then just returns whichever sorts first. That out-voted the
+    // user's own harness pick, so picking Codex on such a model did nothing.
+    const shared = [agent("claude", ["deepseek-v4-pro"]), agent("codex", ["deepseek-v4-pro"])];
+    localStorage.setItem("vibe-model-id", "deepseek-v4-pro");
+    localStorage.setItem("vibe-agent-id", "codex");
+    expect(newSessionAgentId(shared)).toBe("codex");
+    localStorage.setItem("vibe-agent-id", "claude");
+    expect(newSessionAgentId(shared)).toBe("claude");
+  });
+
+  it("still lets the model override a saved harness that cannot run it", () => {
+    // The tie-break is only a tie-break — docs/142 Problem C is unchanged.
+    localStorage.setItem("vibe-agent-id", "claude");
+    localStorage.setItem("vibe-model-id", "gpt-5.6-sol");
+    expect(newSessionAgentId(agents)).toBe("codex");
+  });
 });

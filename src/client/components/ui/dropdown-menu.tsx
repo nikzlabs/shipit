@@ -1,4 +1,12 @@
-import { forwardRef, type ComponentPropsWithoutRef, type ComponentRef, type ReactNode } from "react";
+import {
+  forwardRef,
+  useCallback,
+  useRef,
+  type ComponentPropsWithoutRef,
+  type ComponentRef,
+  type ReactNode,
+  type Ref,
+} from "react";
 import * as DropdownMenuPrimitive from "@radix-ui/react-dropdown-menu";
 import { cn } from "../../utils/cn.js";
 
@@ -25,13 +33,86 @@ type DropdownMenuContentProps = ComponentPropsWithoutRef<typeof DropdownMenuPrim
   portaled?: boolean;
 };
 
+/** Forward a ref of either shape, so a wrapper can also use the node itself. */
+function assignRef<T>(ref: Ref<T> | undefined, node: T | null): void {
+  if (typeof ref === "function") ref(node);
+  else if (ref) (ref as { current: T | null }).current = node;
+}
+
 const DropdownMenuContent = forwardRef<
   ComponentRef<typeof DropdownMenuPrimitive.Content>,
   DropdownMenuContentProps
->(({ className, sideOffset = 4, collisionPadding = 8, portaled = true, ...props }, ref) => {
+>((
+  {
+    className,
+    sideOffset = 4,
+    collisionPadding = 8,
+    portaled = true,
+    // Pulled out of the spread so the guards below cannot be overwritten by a
+    // caller's own capture handler — they compose with it instead.
+    onPointerDownCapture,
+    onPointerUpCapture,
+    onClickCapture,
+    ...props
+  },
+  ref,
+) => {
+  // ── The tap that OPENS a menu must never also activate a row ──────────────
+  //
+  // The trigger opens on `pointerdown`, but a touch produces its `click` a
+  // moment later — and that click is dispatched at the touch COORDINATES, at
+  // whatever is under them by then. On a phone that is routinely a menu row:
+  // tapping the composer's settings anchor moves focus off the textarea, the
+  // on-screen keyboard retracts, the layout grows back, and the menu — anchored
+  // above the trigger — slides DOWN across the point the finger touched. The
+  // ghost click then lands on the menu's bottom row and the menu appears to
+  // open already inside a sub-panel (measured in Quick Capture: the Reasoning
+  // row, every time). Radix has the same hole one layer down: `MenuItem`
+  // synthesizes a click on any `pointerup` it receives without a matching
+  // `pointerdown`.
+  //
+  // So a row is activated only by a gesture that BEGAN inside this menu.
+  // Anything else — a click with pointer coordinates (`detail > 0`) whose
+  // pointerdown we never saw — is the opening gesture spilling over, and is
+  // swallowed. Keyboard activation is unaffected: `element.click()` carries
+  // `detail === 0`.
+  //
+  // Press-drag-release from the trigger onto a row still works with a MOUSE,
+  // which is where that idiom comes from: a mouse drag ends with a real
+  // `pointerup` INSIDE the menu, and we accept that as "the gesture is here
+  // now". A touch never delivers one (the pointer is implicitly captured by the
+  // trigger), which is exactly the difference this leans on.
+  const gestureStartedInside = useRef(false);
+  const setContentRef = useCallback(
+    (node: ComponentRef<typeof DropdownMenuPrimitive.Content> | null) => {
+      // Radix mounts a fresh content element per opening, so this is the
+      // per-open reset: nothing has been pressed inside it yet.
+      gestureStartedInside.current = false;
+      assignRef(ref, node);
+    },
+    [ref],
+  );
+
   const content: ReactNode = (
     <DropdownMenuPrimitive.Content
-      ref={ref}
+      ref={setContentRef}
+      onPointerDownCapture={(e) => {
+        gestureStartedInside.current = true;
+        onPointerDownCapture?.(e);
+      }}
+      onPointerUpCapture={(e) => {
+        if (e.pointerType !== "touch") gestureStartedInside.current = true;
+        else if (!gestureStartedInside.current) e.stopPropagation();
+        onPointerUpCapture?.(e);
+      }}
+      onClickCapture={(e) => {
+        if (e.detail > 0 && !gestureStartedInside.current) {
+          e.preventDefault();
+          e.stopPropagation();
+          return;
+        }
+        onClickCapture?.(e);
+      }}
       sideOffset={sideOffset}
       collisionPadding={collisionPadding}
       className={cn(

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { render, screen, cleanup, fireEvent, waitFor } from "@testing-library/react";
+import { act, render, screen, cleanup, fireEvent, waitFor } from "@testing-library/react";
 import type { ComponentProps } from "react";
 import { QuickCaptureOverlay } from "./QuickCaptureOverlay.js";
 import type { MessageInput } from "./MessageInput.js";
@@ -310,6 +310,43 @@ describe("QuickCaptureOverlay", () => {
     );
     // The picker also shows the derived agent, so display and send agree.
     expect(lastMessageInputProps?.activeAgentId).toBe("claude");
+
+    localStorage.removeItem("vibe-agent-id");
+    localStorage.removeItem("vibe-model-id");
+  });
+
+  it("moves the model onto a picked harness, so the pick is not a no-op", () => {
+    // The reported bug: on a quick session, tapping Codex changed nothing at
+    // all. The harness here is DERIVED from the model, so persisting the agent
+    // key alone left the previous harness's model in place and the derivation
+    // handed back the harness the user had just moved away from.
+    localStorage.setItem("vibe-agent-id", "claude");
+    localStorage.setItem("vibe-model-id", "claude-opus-4-8");
+    useUiStore.setState({
+      agentList: [
+        { id: "claude", name: "Claude", installed: true, hasRunnableModels: true, models: ["claude-opus-4-8"], supportsReview: true },
+        { id: "codex", name: "Codex", installed: true, hasRunnableModels: true, models: ["gpt-5.5", "gpt-5.3-codex"], supportsReview: true },
+      ],
+    });
+    useRepoStore.setState({
+      repos: [repo("https://github.com/acme/app.git")],
+      activeRepoUrl: "https://github.com/acme/app.git",
+    });
+    openOverlay();
+
+    render(<QuickCaptureOverlay onAddRepo={vi.fn()} />);
+    expect(lastMessageInputProps?.activeAgentId).toBe("claude");
+
+    act(() => lastMessageInputProps?.onAgentChange?.("codex"));
+
+    // The picker now names Codex — and names Codex's first model, which is what
+    // the model picker itself falls back to, so anchor and Model row agree.
+    expect(lastMessageInputProps?.activeAgentId).toBe("codex");
+    fireEvent.click(screen.getByRole("button", { name: "Send mock" }));
+    expect(startQuickSessionMock).toHaveBeenCalledWith(
+      expect.objectContaining({ agent: "codex", model: "gpt-5.5" }),
+      expect.any(Function),
+    );
 
     localStorage.removeItem("vibe-agent-id");
     localStorage.removeItem("vibe-model-id");

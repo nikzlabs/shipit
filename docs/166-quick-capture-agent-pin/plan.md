@@ -1,4 +1,5 @@
 ---
+issue: planning#365
 description: Quick Capture overlay derives the agent from the selected model so a stale vibe-agent-id can't pin a new session to the wrong agent.
 ---
 
@@ -139,6 +140,45 @@ was previously read-but-unused (`_hasActiveSession`); it now drives the lock.
 **Test.** `src/client/components/ModelAgentSelector.test.tsx` — with a pinned
 background session in the store but `hasActiveSession={false}`, the other
 agent's rows stay enabled.
+
+## Follow-up — deriving the harness left the harness picker with nothing to write
+
+The fix above assumed what its own key file says: "the model dropdown is the
+only model/agent control in the UI — there is no standalone agent switcher".
+docs/252 built one. From then on, tapping **Codex** in a quick session did
+nothing at all: `onAgentChange` wrote `vibe-agent-id` and the ui-store, the
+overlay derived the harness from the (unchanged) model, and the derivation
+handed the previous harness straight back — to the display *and* to the
+creation params. The in-session composer gets away with a bare `set_agent`
+because the server re-resolves that session's model for the new harness; a
+quick session has no session to send it to, so the model it is created with is
+the last word.
+
+Two things were wrong, and both are fixed:
+
+- **A harness pick now moves the model onto that harness** — the picked
+  harness's first eligible row, which is exactly what the model picker itself
+  falls back to (`rows[0]`), persisted like any other model pick so the picker
+  reads it back. Nothing about the "model is the source of truth" rule changes:
+  the pick is expressed *in* the model, which is the only thing the creation
+  path carries.
+- **A model no longer decides the harness when both can run it.** docs/252 also
+  ended "each model belongs to exactly one agent" — a model carrying both an
+  Anthropic-messages and an OpenAI style (DeepSeek V4, GLM, anything through
+  OpenRouter or Vercel) is runnable on either harness, and `agentIdForModel`
+  answers with whichever agent sorts first. On such a model the harness pick was
+  unwinnable. `newSessionAgentId` now lets the saved harness break that tie, and
+  only that tie: a model only one harness runs still overrides a stale saved
+  harness, which is Problem C above.
+
+The overlay also stopped re-implementing `newSessionAgentId` and now calls it,
+so the harness the picker displays and the harness the session is created on
+cannot drift apart — which is the same failure this doc opened with, one level
+up.
+
+Tests: `QuickCaptureOverlay.test.tsx` (a picked harness reaches the creation
+params, with its own model), `new-session-agent.test.ts` (the tie-break, and
+that it stays a tie-break).
 
 ## Related
 

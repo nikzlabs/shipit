@@ -10,7 +10,6 @@ import { useSettingsStore } from "../stores/settings-store.js";
 import { isSelectionEligibleForAgent } from "../agent-types.js";
 import { startQuickSessionInBackground } from "../stores/actions/session-actions.js";
 import {
-  getSavedAgentId,
   getSavedModelId,
   getSavedModelSelection,
   getSavedQuickSessionRepo,
@@ -20,7 +19,8 @@ import {
   saveModelSelection,
   saveQuickSessionRepo,
 } from "../utils/local-storage.js";
-import { agentIdForModel } from "../utils/agent-for-model.js";
+import { newSessionAgentId } from "../utils/new-session-agent.js";
+import { modelRowsFor } from "./ModelPicker.js";
 import { parseRepoLabel } from "../utils/repo-label.js";
 import { useChatDisabledReason } from "../utils/chat-runnable.js";
 import { MessageInput, type SendPayload } from "./MessageInput.js";
@@ -73,13 +73,20 @@ export function QuickCaptureOverlay({
   // re-persisted when the picker switches agents in an *unpinned* session, so a
   // user who picks Claude models inside already-pinned sessions keeps a stale
   // `codex` agent key). Sending that stale key would pin the brand-new quick
-  // session to the wrong agent even though the overlay shows Claude. Mirror
-  // useSessionWebSocket.ts and fall back to the saved agent only when the model
-  // is unknown or the agent list hasn't loaded yet. See docs/142 (Problem C)
-  // and docs/166-quick-capture-agent-pin.
+  // session to the wrong agent even though the overlay shows Claude. See
+  // docs/142 (Problem C) and docs/166-quick-capture-agent-pin.
+  //
+  // `newSessionAgentId` IS that rule, and this is the creation path it names —
+  // so it is called rather than re-implemented. The overlay used to inline a
+  // copy of it, which meant the harness the picker DISPLAYS (which calls the
+  // shared rule) and the harness the session is CREATED on could disagree the
+  // moment the two stopped matching character for character. `selectedModel` is
+  // the deliberate cache-buster: the rule reads localStorage, which React
+  // cannot track, and every model/harness pick below writes it.
   const selectedAgentId = useMemo(
-    () => agentIdForModel(selectedModel, agentList) ?? getSavedAgentId(),
-    [selectedModel, agentList],
+    () => newSessionAgentId(agentList),
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- `selectedModel` is unreferenced by design — it re-reads the non-reactive localStorage seed after each pick (see above)
+    [agentList, selectedModel],
   );
 
   const activeSessionRepo = useMemo(
@@ -305,12 +312,38 @@ export function QuickCaptureOverlay({
             agents={agentList}
             activeAgentId={selectedAgentId}
             onAgentChange={(agentId) => {
-              // The agent shown/sent is derived from the model (see
-              // `selectedAgentId`); we still persist the picked agent so the
-              // global `vibe-agent-id` preference and ui-store stay in sync,
-              // but the overlay never reads it back as an independent source.
               saveAgentId(agentId);
               useUiStore.getState().setActiveAgentId(agentId);
+              // …and MOVE THE MODEL onto that harness, or the pick is a no-op.
+              // The harness here is derived from the model (see
+              // `selectedAgentId`), and an in-session composer gets away with a
+              // bare `set_agent` because the server re-resolves the session's
+              // model for the new harness. A quick session has no session to
+              // send that to: the creation params carry a model, so leaving the
+              // previous harness's model in place re-derived the harness right
+              // back and the overlay ignored the pick entirely — which is what
+              // "tapping Codex does nothing" was.
+              //
+              // The new harness's FIRST eligible row is exactly what the model
+              // picker falls back to (`rows[0]`), so the anchor, the Model row
+              // and the created session all name the same model. Persisted like
+              // any other model pick, because the picker reads the seed back.
+              const next = modelRowsFor(agentList.find((a) => a.id === agentId))[0];
+              if (next) {
+                if (next.serviceId) {
+                  saveModelSelection({
+                    serviceId: next.serviceId,
+                    billingMode: next.billingMode,
+                    modelId: next.modelId,
+                  });
+                } else {
+                  saveModelId(next.modelId);
+                }
+                setSelectedModel(next.modelId);
+              }
+              // Reasoning is per-agent — drop any explicit pick made for the
+              // harness being left, exactly as a model switch does below.
+              setSelectedReasoning(undefined);
             }}
             onModelChange={(selection) => {
               // docs/252 phase 3 — the picker now hands over the whole triple.
