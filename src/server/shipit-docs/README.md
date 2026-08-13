@@ -18,6 +18,7 @@ platform capabilities.
 | [sandbox-session.md](sandbox-session.md) | Sandbox session — empty `/workspace`, the git/docker/network capabilities, how to clone & open PRs per-repo, persistence |
 | [issues.md](issues.md) | Tracker-neutral issue access — `shipit issue view/list/comment/edit/status/assign` (GitHub + Linear), do-then-surface writes with Undo |
 | [skills.md](skills.md) | Skill directory layout — hand-written vs ShipIt-installed, install markers, auto-commit |
+| [plugins.md](plugins.md) | Plugin repositories — declaring another repo's tools, the read-only `/plugins/<name>` checkout, plugin env and install |
 | [design-docs.md](design-docs.md) | Feature docs — frontmatter format, status values, structure |
 | [present.md](present.md) | `present` tool — show throwaway, non-git artifacts (HTML/SVG/markdown/images) in the Present tab without committing them to the workspace |
 | [chat-links.md](chat-links.md) | Clickable pointers in chat — `shipit-preview://<service>/<path>` and `shipit-present:<file>#<fragment>` open a specific place in the user's app or a presented artifact |

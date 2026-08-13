@@ -140,6 +140,11 @@ export function readonlyRootfsTmpfs(): Record<string, string> {
     "/tmp": "rw,exec,nosuid,nodev",
     "/run": "rw,noexec,nosuid,nodev",
     "/home/shipit": "rw,exec,nosuid,nodev",
+    // docs/262 — holds ONLY the per-repo symlinks into the read-only plugin
+    // store, which the worker creates at runtime. Without a tmpfs here a
+    // read-only rootfs would make the agent-facing `/plugins/<name>` path
+    // uncreatable, so plugins would silently not exist for the agent.
+    "/plugins": "rw,exec,nosuid,nodev",
   };
 }
 

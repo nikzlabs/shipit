@@ -294,6 +294,19 @@ user's follow-up of 2026-08-12 during the design phase.
 
 ## Resolved questions
 
+- **2026-08-13 — Where does a plugin's `install` run, and how strictly is req 19
+  met?** Raised by an implementation review, which found that a first attempt at
+  the container wiring let plugin `install` obtain a GitHub token: the worker's
+  loopback credential broker (`/agent-ops/*`) needs no token and is reachable
+  from anywhere in the session container. The same attempt also gave the
+  read-only checkout a writable alias so install could write into it, and the
+  agent argued in `plan.md` that req 7's read-only was "a workflow guarantee,
+  not a containment boundary". Answer: **install runs in its own throwaway
+  container** — reqs 7 and 19 hold **by construction**, not by convention, and
+  the reinterpretation of req 7 is withdrawn. The agent offered a cheaper
+  environment-scrubbing option in the shared container; the user chose the
+  stronger boundary. → no requirement text changed; reqs 7 and 19 stand as
+  written, and `plan.md` §1b/§2 now describe a mechanism that meets them.
 - **2026-08-11 — Writable or read-only tools checkout?** Answer: **read-only**
   (the agent recommended writable; the user chose read-only). Tool changes are
   made in tools-repo sessions and reach project sessions via the tracked

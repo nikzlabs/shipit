@@ -173,22 +173,46 @@ deliberately not declared in the fragment, so it stays valid for a plain
 **Install contract** (review finding 7): `install` runs with **cwd = the
 plugin's checkout root inside its writable layer** — a copy-on-write layer
 over the read-only checkout, so `node_modules` and build output land in the
-layer, never in the checkout and never in the project (req 7). **As built**
-(`plugin-generations.ts`), that layer IS the generation directory: a
-per-session, per-commit, disposable checkout under the session state dir
-already confines build output to a place that is neither the shared bare
-cache nor the project, so a separate copy-on-write layer buys nothing.
-Read-only for the *agent* is enforced where it is enforceable — the `:ro` bind
-mount, which lands with the container wiring.
+layer, never in the checkout and never in the project (req 7). **Withdrawn (2026-08-13):** an earlier revision claimed that layer IS the
+generation directory, because a per-session, per-commit checkout already
+confines build output — so a copy-on-write layer "buys nothing". It buys req 7,
+whose plain words put install output somewhere that is neither plugin source
+nor project data. The checkout stays pristine; the CoW layer is real.
 
 **Where install runs is a security boundary, not a detail** (implementation
-review). It must NOT run in the orchestrator: that process holds ShipIt's own
+review). Two attempts were rejected before the answer settled.
+
+It must NOT run in the **orchestrator**: that process holds ShipIt's own
 credentials (the PAT in the global git config) and has unrestricted host
 access, so executing a repo-authored `install` string there is strictly more
-privileged than `agent.install`, which runs in the session worker. Install
-therefore runs **in the session container**, with the authority
-`agent.install` already has, and lands with the container wiring; generation
-activation itself runs no plugin-authored code at all. Install runs with the generation's env — `SHIPIT_PLUGIN_COMMIT`
+privileged than `agent.install`.
+
+It must also NOT run in the **agent container**, which was the second attempt
+and is the one that shipped as a blocked PR. The reasoning that it inherits
+"the authority `agent.install` already has" was true and beside the point:
+`agent.install` is the project's OWN command, while a plugin's install string
+comes from a third-party repository. In that container it can read
+`/credentials`, inherit provider and project secrets from the worker's
+environment, and — the finding that decided it — call the worker's
+**loopback** credential broker (`/agent-ops/*`, which requires no worker
+token) to obtain a real GitHub token. Scrubbing the environment does not close
+that: the route is listening either way.
+
+So install runs in **its own throwaway container** (user decision, 2026-08-13),
+holding only what it needs: the staging checkout read-only, its copy-on-write
+upper layer read-write, and nothing else — no `/credentials` mount, no worker
+URL, no orchestrator callback env, no session network. Reqs 7 and 19 then hold
+**by construction** rather than by convention, which is what this document
+already claimed before anything enforced it. Generation activation itself still
+runs no plugin-authored code in-process.
+
+**Install runs BEFORE publish.** Stage → validate the manifest → run install in
+its own container → *then* atomically activate. The blocked attempt inverted
+this: it published, pruned the prior generation, and only then installed
+fire-and-forget, discarding the result — so a failed install left a broken
+commit reported as `active` with nothing to fall back to. With the correct
+order a failed install is just a failed activation: the prior generation stays
+whole and live, and the card degrades visibly (req 13). Install runs with the generation's env — `SHIPIT_PLUGIN_COMMIT`
 set for a consumer generation, unset under `repo: self` (set by the fixture:
 its install stamp records the commit, and the probe checks the stamp against
 the active generation). Install re-runs when its stamped inputs change: the
@@ -200,6 +224,50 @@ plugin commit, the install string, or the content of the manifest's
 - **Files** (reqs 2, 7): each declared repo is checked out read-only at
   `/plugins/<repo-name>` in the agent container (browsable by the agent),
   with the per-repo writable layer described above.
+
+  **Mount the store, not the generation.** The obvious shape (bind
+  `<state>/plugins/<name>/active` at `/plugins/<name>:ro`) is wrong for one
+  reason: Docker resolves a bind source's symlinks at container-creation time,
+  so the mount would pin the generation that was live when the session opened
+  and a refresh (req 12) could never reach the agent without recreating its
+  container. Instead the session's whole plugin root is mounted **read-only**
+  at `/plugin-store` and the container makes `/plugins/<name>` a symlink to
+  `/plugin-store/<name>/active`. Both hops resolve *inside* the container on
+  every access, so swapping the `active` symlink on the host is visible
+  immediately — which is what refresh needs.
+
+  **The agent container gets no writable view of a checkout, at any path**
+  (req 7). A first attempt mounted the same root a second time read-write so
+  the in-container install could write `node_modules`, and argued req 7 down to
+  a workflow guarantee to fit. That reinterpretation is **withdrawn**
+  (requirements.md, resolved 2026-08-13): a writable alias of a read-only
+  surface is not read-only, and the requirement is not the design's to narrow.
+  Install writes into a copy-on-write upper layer belonging to a different
+  container — see §1b.
+
+  **The merged view lives in a Docker volume, not on the host** (resolved
+  2026-08-13 by consultation, against the code). Req 7 keeps the checkout
+  pristine, so a plugin's own code needs checkout + install output merged. That
+  merged tree is NOT constructible where the `active` symlink could point at
+  it: a host-side overlayfs mount needs `CAP_SYS_ADMIN`, which the orchestrator
+  does not have (`docker/local/prod/compose.yml`), and docs/183 rejected the
+  privileged variant on containment grounds. What docs/183 *does* build is the
+  piece that works here — a `local` driver volume with `type=overlay`
+  (`overlay-volume.ts`), where the DAEMON performs the mount when a container
+  attaches it, and which several containers can share coherently
+  (`docs/183-overlay-dep-store/FINDINGS.md`). Note the orchestrator's own view
+  of that volume is upper/storage, never the merged tree.
+
+  So, per generation: lowerdir = the pristine checkout, upper/work = per-
+  generation runtime storage, and ONE named overlay volume shared by the
+  installer, the services, and the CLI-invocation containers. Per generation,
+  never per repository — a volume's driver options are fixed while consumers
+  hold it, and one upperdir must not back two independently created mounts.
+
+  The agent container keeps seeing only pristine source through
+  `/plugins/<name>`. That is the whole reason it stays browsable and
+  refresh-follows-instantly, and it is enough: nothing the agent itself runs
+  needs the merged tree.
 - **Workspace handle** (req 21): plugin *services* get the consuming
   project's workspace mounted at the fixed path **`/project`**; plugin *CLIs*
   run in the agent container with **cwd = the project workspace**, which
@@ -227,9 +295,22 @@ plugin commit, the install string, or the content of the manifest's
   env at the mount. CLI wrappers use absolute entrypoints,
   so no plugin-dir variable is needed.
 - **CLIs** (reqs 17, 20, 23): exported commands go on the agent's PATH as
-  generated wrappers. A wrapper injects the plugin's declared credentials
-  into that command's environment only — plugin credentials never enter the
-  agent's general environment.
+  generated wrappers. **The wrapper is ShipIt's, and it is all that runs in the
+  agent container**; it brokers an invocation container that mounts the
+  generation's overlay volume, `/project`, the plugin's state dir, and only the
+  plugin's declared credentials. Plugin credentials never enter the agent's
+  general environment, and plugin code never runs beside the loopback
+  credential broker — the same boundary as `install` (§1b), for the same
+  reason.
+
+  This corrects an earlier version of this bullet, which had the command itself
+  running in the agent container while §"Fetch authority" simultaneously said
+  plugin code must not run there. Req 17 only promises the agent can invoke the
+  command *inside the project session*; it says nothing about sharing the
+  agent's container, so a transparent wrapper keeps the promised UX. Per-call
+  container start costs latency; a credential-blind persistent runner is a
+  later optimisation, and `docker exec` into the agent or a service container
+  is not an acceptable shortcut — it re-opens the boundary.
 - **Skills** (req 22 — review finding 5): checkout alone discloses nothing —
   ShipIt's skill listing scans only the workspace skill dirs, and Codex
   reading `.claude/skills` is observed harness behavior, not a guarantee
@@ -255,10 +336,20 @@ plugin commit, the install string, or the content of the manifest's
   agent-ops host allowlists routes explicitly (`local-agent-ops.ts`), so the
   relay must be added there too, with the parity test extended.
 - **Fetch authority and the standing grant** (req 19): repository fetches
-  run **orchestrator-side** (the bare cache), so fetch credentials never
-  exist inside the session container — plugin `install`, services, and CLIs
-  cannot read them, by construction, and a guard test owns that boundary
-  (slice 2). The standing grant means activation never prompts: a new
+  run **orchestrator-side** (the bare cache), so fetch credentials are never
+  *stored* inside the session container.
+
+  **That is not sufficient on its own, and this document asserted for two
+  slices that it was.** A credential does not have to be stored somewhere to
+  be obtainable there: the worker's loopback broker (`/agent-ops/*`, no worker
+  token required) hands a live GitHub token to any local caller, so "never
+  written into the container" and "unreachable from inside the container" are
+  different claims. Only the second one is req 19. It holds for plugin code
+  because plugin code does not run in that container at all — `install` gets
+  its own container with no worker URL and no session network (§1b), and CLIs
+  and services inherit the same rule when they land. A guard test owns the
+  boundary and must exercise the broker path specifically, not just the
+  environment. The standing grant means activation never prompts: a new
   tracked-branch commit stages, validates, and activates with no approval
   step, and the visible repo/ref/commit identity on the plugin card — in
   every state, including degraded and collision — is the accountability
@@ -326,6 +417,18 @@ coherent in one UI.
   (the GET exists; refresh endpoints come with generation mechanics); tracker
   registration folds into the existing trackers registry
   (`api-routes-issues.ts`) with destination-based dedup.
+- ✓ `src/server/session/plugin-runtime.ts` — the container half, and ONLY the
+  link surface: it points `/plugins/<name>` at the read-only store mount and
+  removes links the declaration no longer names. It runs no plugin-authored
+  code — install is not here, and must not come back here (§1b).
+  Reached over `POST /plugins/prepare` on the worker
+  (`session-worker.ts`), which `ContainerSessionRunner.preparePlugins()` calls
+  when an activation round settles and when a container becomes ready — the
+  latter because a restarted container loses its links while the generations
+  they address survive. The single read-only mount is built in
+  `container-lifecycle.ts`; `/plugins` itself is created and handed to the
+  worker UID by the entrypoint, and appears in `container-hardening.ts`'s tmpfs
+  set for the read-only-rootfs case.
 - `src/server/session/agent-shim/shipit-plugin.ts` + a worker agent-ops
   relay route — the agent's `shipit plugin refresh` transport (orchestrator
   API routes are container-denied; the shim goes through the worker like

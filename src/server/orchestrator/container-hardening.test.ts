@@ -131,7 +131,10 @@ describe("read-only rootfs", () => {
     const tmpfs = readonlyRootfsTmpfs();
     // The image-rootfs writable paths come back as tmpfs; the persistent
     // bind/volume mounts (/workspace, /credentials, …) are NOT re-listed here.
-    expect(Object.keys(tmpfs).sort()).toEqual(["/home/shipit", "/run", "/tmp"]);
+    // docs/262 added /plugins: it holds only the symlinks the worker creates
+    // into the read-only plugin store, so under a read-only rootfs it must be
+    // writable or the agent-facing plugin path cannot exist at all.
+    expect(Object.keys(tmpfs).sort()).toEqual(["/home/shipit", "/plugins", "/run", "/tmp"]);
     expect(tmpfs["/tmp"]).toContain("exec");
     expect(tmpfs["/tmp"]).not.toContain("noexec");
     // npm-global installs executables under ~/.npm-global/bin → home must exec.

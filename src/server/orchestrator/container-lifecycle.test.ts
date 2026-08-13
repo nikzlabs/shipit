@@ -65,6 +65,28 @@ describe("buildMounts", () => {
     expect(result.mounts).toHaveLength(0);
   });
 
+  // docs/262 — read-only, and read-only ONLY: an earlier revision added a
+  // writable twin for the in-container install runner, which made req 7's
+  // guarantee decorative. Install moved to its own container instead.
+  it("docs/262: mounts the plugin root read-only, with no writable view", () => {
+    const result = buildMounts(baseConfig(), undefined, undefined);
+    expect(result.binds).toContain("/workspace/sessions/sess-1/state/plugins:/plugin-store:ro");
+    expect(result.binds.some((b) => b.includes("/state/plugins:") && b.endsWith(":rw"))).toBe(false);
+    // Never a per-generation mount: Docker resolves a bind source's symlinks at
+    // creation, so that shape would pin one generation and make refresh
+    // invisible until the container was recreated.
+    expect(result.binds.some((b) => b.includes("/generations/"))).toBe(false);
+    expect(result.binds.some((b) => b.includes("/active:"))).toBe(false);
+  });
+
+  it("docs/262: stays read-only under a volume-backed session too", () => {
+    const result = buildMounts(baseConfig(), "shipit-state", undefined);
+    const ro = result.mounts.find((m) => m.Target === "/plugin-store");
+    expect(ro?.ReadOnly).toBe(true);
+    expect(ro?.VolumeOptions?.Subpath).toBe("sessions/sess-1/state/plugins");
+    expect(result.mounts.every((m) => m.Target !== "/plugin-store-rw")).toBe(true);
+  });
+
   it("docs/138: mounts the per-session credentials subpath when credentialsVolume is set", () => {
     const result = buildMounts(baseConfig(), undefined, "shipit-credentials");
     const credMount = result.mounts.find((m) => m.Target === "/credentials");

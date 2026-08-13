@@ -488,7 +488,10 @@ describe("SessionContainerManager", () => {
       await manager.create(buildConfig());
       const call = mockDocker.createContainer.mock.calls[0][0];
       expect(call.HostConfig.ReadonlyRootfs).toBe(true);
-      expect(Object.keys(call.HostConfig.Tmpfs).sort()).toEqual(["/home/shipit", "/run", "/tmp"]);
+      // docs/262 — `/plugins` joins the set: it holds the symlinks the worker
+      // creates into the read-only plugin store, so a read-only rootfs would
+      // otherwise leave the agent-facing plugin path uncreatable.
+      expect(Object.keys(call.HostConfig.Tmpfs).sort()).toEqual(["/home/shipit", "/plugins", "/run", "/tmp"]);
       expect(call.Env).toContain("SHIPIT_READONLY_HOME=1");
     });
 

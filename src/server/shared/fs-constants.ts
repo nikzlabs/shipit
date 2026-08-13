@@ -31,6 +31,26 @@ export const CONTAINER_SESSION_STATE_DIR = "/session-state";
  */
 export const DEP_CACHE_CONTAINER_PATH = "/dep-cache";
 
+/**
+ * docs/262 — where a session's plugin checkouts appear inside the agent
+ * container. Two paths, and **both are read-only**: the agent container never
+ * gets a writable view of a plugin checkout at any path (req 7). Plugin code
+ * that must write runs elsewhere, against a copy-on-write overlay volume
+ * (plan §1b).
+ *
+ * - {@link CONTAINER_PLUGINS_DIR} — the **agent-facing** surface, and the only
+ *   one a plugin author or an agent should ever be told about. Holds one
+ *   symlink per declared repo, pointing into the store below.
+ * - {@link CONTAINER_PLUGIN_STORE_DIR} — the session's whole plugin root. The
+ *   symlinks resolve through it, so swapping a generation's `active` link on
+ *   the host is visible in-container at once (req 12's refresh, with no
+ *   container recreation). Mounting a generation directly would instead pin
+ *   whichever one was live at container creation, since Docker resolves a bind
+ *   source's symlinks then.
+ */
+export const CONTAINER_PLUGINS_DIR = "/plugins";
+export const CONTAINER_PLUGIN_STORE_DIR = "/plugin-store";
+
 /** Generated compose merge file (`docker compose -f … -f <this>`). */
 export const COMPOSE_OVERRIDE_FILE = "compose.override.yml";
 /** Install-skip marker, written in-container after `agent.install` succeeds. */

@@ -361,9 +361,12 @@ export function setupServiceManager(
   // docs/262 — bring declared plugin repositories to their declared versions.
   // Runs beside install for the same reason install runs regardless of compose
   // config: a project can declare plugins without declaring a stack. Sits
-  // BELOW the trust gate on purpose — a plugin's `install` is repo-declared
-  // auto-execution exactly like `agent.install`, so an untrusted remote must
-  // not run one (docs/178).
+  // BELOW the trust gate on purpose — fetching and activating a repository a
+  // `shipit.yaml` names is repo-declared behaviour exactly like `agent.install`,
+  // so an untrusted remote must not get it (docs/178). Activation itself runs
+  // no plugin-authored code; when install lands it will run in its own
+  // container, and this gate is what keeps an untrusted remote from reaching
+  // even the fetch.
   deps.activatePluginRepos?.(runner.sessionId, workspaceDir, emitPluginReposUpdated(runner));
   // The activation state map is process-lived and keyed by session; drop this
   // session's entries when its runner goes away so session churn can't grow it.
@@ -793,6 +796,12 @@ function composeRemovalIsTrustworthy(workspaceDir: string): boolean {
 export function emitPluginReposUpdated(runner: SessionRunnerInterface): (sessionId: string) => void {
   return (sessionId: string) => {
     runner.emitMessage({ type: "plugin_repos_updated", sessionId });
+    // The generation is published by the time this fires, so the container can
+    // safely link it. Optional call, not an `in` guard: local
+    // mode has no container to prepare, and that is the correct answer there
+    // rather than a missing capability to work around.
+    const container = runner as SessionRunnerInterface & { preparePlugins?: () => Promise<void> };
+    void container.preparePlugins?.();
   };
 }
 

@@ -123,7 +123,13 @@ export async function activateDeclaredPlugins(
   let stateDir: string;
   try {
     const config = resolveShipitConfig(workspaceDir);
-    if (!config.plugins.declared) return;
+    // Still settle: a declaration emptied of repos must reach the container, or
+    // links for repos that are no longer declared stay addressable until the
+    // container is recreated (review finding).
+    if (!config.plugins.declared) {
+      settle(sessionId, deps);
+      return;
+    }
     repos = config.plugins.repos.filter((r) => r.source.kind === "github");
     // Phase-2 input: which exports this consumer actually selected from each
     // repository. A selected name the fetched manifest lacks invalidates that
@@ -139,7 +145,10 @@ export async function activateDeclaredPlugins(
     // by the snapshot route; there is nothing to activate from it.
     return;
   }
-  if (repos.length === 0) return;
+  if (repos.length === 0) {
+    settle(sessionId, deps);
+    return;
+  }
 
   const epoch = epochs.get(sessionId) ?? 0;
   const isCancelled = (): boolean => (epochs.get(sessionId) ?? 0) !== epoch;
@@ -210,6 +219,16 @@ export async function activateDeclaredPlugins(
   // Tell the browser the round settled, so it refetches instead of polling
   // until its budget runs out.
   if (!isCancelled()) deps.onSettled?.(sessionId);
+}
+
+/**
+ * Settle a round that had nothing to activate. Still notifies: the container's
+ * prepare step is also what REMOVES links for repos the declaration no longer
+ * names, so an emptied `plugins:` block must reach it or a dropped repository
+ * stays addressable at `/plugins/<name>` until the container is recreated.
+ */
+function settle(sessionId: string, deps: PluginActivationDeps): void {
+  deps.onSettled?.(sessionId);
 }
 
 /** The clone URL for a declared repo. GitHub-only in v1 (plan §1a). */
