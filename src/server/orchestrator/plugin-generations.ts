@@ -105,6 +105,20 @@ export type ActivationOutcome =
       missingSelectors?: string[];
     };
 
+/**
+ * One repository's install work for a generation that is staged but not yet
+ * published. `stagingDir` is a directory nothing else can see yet, so an
+ * install that fails or is abandoned leaves no trace.
+ */
+export interface PluginInstallJob {
+  repoName: string;
+  commit: string;
+  /** The staged checkout — NOT a published generation. */
+  stagingDir: string;
+  /** Only the exports this consumer selected; unselected ones are not installed. */
+  exports: readonly PluginExport[];
+}
+
 export interface ActivateDeps {
   /** The session's state dir (`sessionStateDir(sessionDir)`). */
   stateDir: string;
@@ -135,6 +149,17 @@ export interface ActivateDeps {
    * cleanup removed it (review finding).
    */
   isCancelled?: () => boolean;
+  /**
+   * Run the selected plugins' `install` against the STAGING checkout, before
+   * anything is published. Injected, because this module deliberately runs no
+   * plugin-authored code in its own process — the implementation puts that
+   * code in its own container, where ShipIt's credentials and the worker's
+   * loopback credential broker are both out of reach (req 19).
+   *
+   * Omitted (tests, and any caller with nothing to install) → the step is
+   * skipped and activation behaves exactly as before.
+   */
+  runInstall?: (job: PluginInstallJob) => Promise<{ ok: boolean; reason?: string }>;
 }
 
 // ---------------------------------------------------------------------------
@@ -295,6 +320,33 @@ async function activateOnce(repo: DeclaredPluginRepo, deps: ActivateDeps): Promi
         ...withPrevious,
         ...warningField,
       };
+    }
+
+    // Install runs HERE — against the staging tree, before anything is
+    // published (plan §1b). An earlier revision published first and installed
+    // afterwards, fire-and-forget: a failed install then left the new commit
+    // live with the prior generation already pruned, so the session had a
+    // plugin that was reported `active` and did not work. In this order a
+    // failed install is simply a failed activation, and req 15's "the prior
+    // version remains active" holds for it like any other failure.
+    //
+    // Note what is NOT here: the install itself. This module runs no
+    // plugin-authored code in-process — `runInstall` is injected, and its
+    // implementation puts that code in its own container (req 19).
+    if (deps.runInstall) {
+      const selected = exportsList.filter((e) =>
+        deps.selectedExports.some((n) => n.toLowerCase() === e.name.toLowerCase()),
+      );
+      const outcome = await deps.runInstall({ stagingDir, commit, repoName: repo.name, exports: selected });
+      if (!outcome.ok) {
+        await fsp.rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
+        return {
+          status: "failed",
+          reason: outcome.reason ?? "plugin install failed",
+          ...withPrevious,
+          ...warningField,
+        };
+      }
     }
 
     const record: GenerationRecord = {

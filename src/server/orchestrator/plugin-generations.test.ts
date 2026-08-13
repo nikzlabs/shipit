@@ -297,3 +297,67 @@ describe("manifest warnings (req 13)", () => {
     expect(record?.manifestWarnings.join(" ")).toContain("surprise");
   });
 });
+
+/**
+ * The ordering the blocked first attempt inverted: it published, pruned the
+ * prior generation, THEN installed fire-and-forget and dropped the result — so
+ * a failed install left a broken commit reported as `active` with no fallback.
+ */
+describe("install runs before publish (req 13, req 15)", () => {
+  it("a failed install publishes nothing and leaves the prior generation live", async () => {
+    // A good generation first, with no install step.
+    await activateGeneration(repo({ branch: "main" }), deps(["probe"]));
+    const before = readActiveGeneration(stateDir, "tools");
+    expect(before?.commit).toBeTruthy();
+
+    // Now a new commit whose install fails.
+    await commitFiles({ "second.txt": "x" }, "second");
+    const outcome = await activateGeneration(repo({ branch: "main" }), {
+      ...deps(["probe"]),
+      runInstall: async () => ({ ok: false, reason: "npm ci exited 1" }),
+    });
+
+    expect(outcome.status).toBe("failed");
+    expect((outcome as { reason: string }).reason).toContain("npm ci exited 1");
+    // The live generation is untouched — same commit, still readable.
+    expect(readActiveGeneration(stateDir, "tools")?.commit).toBe(before?.commit);
+    // And the staging tree is gone rather than left half-built.
+    const generations = fs.readdirSync(path.join(stateDir, "plugins", "tools", "generations"));
+    expect(generations).toEqual([before!.commit]);
+  });
+
+  it("install sees the STAGING dir, not a published generation", async () => {
+    let seen: { stagingDir: string; commit: string; exports: string[] } | null = null;
+    await activateGeneration(repo({ branch: "main" }), {
+      ...deps(["probe"]),
+      runInstall: async (job) => {
+        seen = {
+          stagingDir: job.stagingDir,
+          commit: job.commit,
+          exports: job.exports.map((e) => e.name),
+        };
+        // Nothing is live yet at the moment install runs — that is the point.
+        expect(readActiveGeneration(stateDir, "tools")).toBeNull();
+        return { ok: true };
+      },
+    });
+
+    expect(seen!.stagingDir).toContain(".staging-");
+    expect(seen!.commit).toMatch(/^[0-9a-f]{40}$/);
+    // Only the selected export is offered for install.
+    expect(seen!.exports).toEqual(["probe"]);
+    expect(readActiveGeneration(stateDir, "tools")?.commit).toBe(seen!.commit);
+  });
+
+  it("offers nothing to install when the consumer selected nothing", async () => {
+    let calledWith: string[] | null = null;
+    await activateGeneration(repo({ branch: "main" }), {
+      ...deps([]),
+      runInstall: async (job) => {
+        calledWith = job.exports.map((e) => e.name);
+        return { ok: true };
+      },
+    });
+    expect(calledWith).toEqual([]);
+  });
+});
