@@ -49,7 +49,7 @@ import path from "node:path";
 import simpleGit from "simple-git";
 import { parse as parseYaml } from "yaml";
 import type { DeclaredPluginRepo, PluginExport } from "../shared/plugin-repos.js";
-import { parsePluginExports } from "../shared/plugin-repos.js";
+import { parsePluginExports, destinationKey } from "../shared/plugin-repos.js";
 import { resolveDurablePin } from "./plugin-pins.js";
 
 /** Subdirectory of the session state dir that holds every plugin checkout. */
@@ -72,6 +72,16 @@ const SHA_RE = /^[0-9a-f]{40}$/i;
 /** The record written inside each generation directory. */
 export interface GenerationRecord {
   repoName: string;
+  /**
+   * What the declaration pointed at when this generation was built —
+   * `owner/repo` lowercased (`destinationKey`). The NAME is not identity: a
+   * consumer can re-point `tools` from `acme/old` to `acme/new`, and every
+   * on-disk path is keyed by the name, so without this field the old
+   * repository's generation stays live under the new declaration and every
+   * reader — the Plugins tab, the feedback footer, `SHIPIT_PLUGIN_COMMIT` —
+   * reports the new repository at the old repository's commit.
+   */
+  source: string;
   /** The exact commit this generation was built from (req 15). */
   commit: string;
   /** What the consumer declared: `branch main`, `pin v1.2.0`, … */
@@ -235,16 +245,28 @@ export function readGenerationManifestAt(generationDir: string): PluginExport[] 
 }
 
 /**
- * The active generation's record, or null when nothing is activated.
+ * The active generation's record, or null when nothing is activated — or when
+ * what is activated came from a DIFFERENT repository than `expectedSource`.
  *
  * One resolution: the record is read *through* the symlink, so the directory
  * and its record can never disagree, and a concurrent prune cannot open a
  * window where a live repository reports nothing. Callers needing MORE than
  * the record should resolve the link themselves and use the `…At` readers
  * above — see their docstring for why.
+ *
+ * `expectedSource` is required rather than optional on purpose: every caller
+ * has the declaration in hand, and an optional check is one every caller can
+ * forget. A record written before the field existed has no `source`, so it
+ * reads as a mismatch and the next activation re-stages it — cheaper than
+ * trusting a generation whose origin nothing recorded.
  */
-export function readActiveGeneration(stateDir: string, repoName: string): GenerationRecord | null {
-  return readGenerationRecordAt(activeLinkPath(stateDir, repoName));
+export function readActiveGeneration(
+  stateDir: string,
+  repoName: string,
+  expectedSource: string,
+): GenerationRecord | null {
+  const record = readGenerationRecordAt(activeLinkPath(stateDir, repoName));
+  return record?.source === expectedSource ? record : null;
 }
 
 /**
@@ -258,11 +280,20 @@ export function readActiveGeneration(stateDir: string, repoName: string): Genera
  * always belongs to the live commit. Null when nothing is activated; an
  * unparseable manifest reads as an empty export list, exactly as activation
  * treats it.
+ *
+ * It takes `expectedSource` for the same reason {@link readActiveGeneration}
+ * does, and it is the same symlink: a re-pointed declaration would otherwise
+ * validate this consumer's selectors, settings and declared credentials against
+ * the PREVIOUS repository's manifest. The record is what carries the source, so
+ * the check runs there and the manifest is only read once it passes.
  */
-export function readActiveManifest(stateDir: string, repoName: string): PluginExport[] | null {
-  const link = activeLinkPath(stateDir, repoName);
-  if (!fs.existsSync(link)) return null;
-  return readGenerationManifestAt(link);
+export function readActiveManifest(
+  stateDir: string,
+  repoName: string,
+  expectedSource: string,
+): PluginExport[] | null {
+  if (!readActiveGeneration(stateDir, repoName, expectedSource)) return null;
+  return readGenerationManifestAt(activeLinkPath(stateDir, repoName));
 }
 
 // ---------------------------------------------------------------------------
@@ -325,7 +356,18 @@ export async function activateGeneration(
 
 async function activateOnce(repo: DeclaredPluginRepo, deps: ActivateDeps): Promise<ActivationOutcome> {
   const { stateDir, bareCacheDir, repoUrl } = deps;
-  const previous = readActiveGeneration(stateDir, repo.name) ?? undefined;
+  const source = destinationKey(repo.source);
+  // A declaration re-pointed at a different repository keeps every on-disk path
+  // (they are keyed by NAME), so the previous repository's generation would
+  // otherwise stay live under the new declaration. Reading it as absent is not
+  // enough — the `active` symlink still resolves, so the container keeps linking
+  // `/plugins/<name>` at the old repository's files. Retire it here, BEFORE the
+  // fetch that can fail: req 15's "keep the prior generation live" means the
+  // prior generation of THIS plugin, and a stranger's files are not a
+  // degradation of it. The declaration then reads as unavailable until the new
+  // source activates, which is the honest state.
+  await retireForeignGeneration(stateDir, repo.name, source);
+  const previous = readActiveGeneration(stateDir, repo.name, source) ?? undefined;
   const withPrevious = previous ? { previous } : {};
   const declaredRef = repo.pin ? `pin ${repo.pin}` : `branch ${repo.branch ?? "(default)"}`;
 
@@ -451,6 +493,7 @@ async function activateOnce(repo: DeclaredPluginRepo, deps: ActivateDeps): Promi
 
     const record: GenerationRecord = {
       repoName: repo.name,
+      source,
       commit,
       ref: declaredRef,
       activatedAt: new Date().toISOString(),
@@ -568,6 +611,37 @@ function readManifest(
   const exportsList = parsePluginExports(exportsBlock, warnings);
   if (log) for (const w of warnings) console.warn(`[plugins] ${checkoutDir}: ${w}`);
   return { exports: exportsList, warnings };
+}
+
+/**
+ * Drop everything a PREVIOUS repository left under this declaration's name.
+ *
+ * Only runs when the live record names a different source (or names none —
+ * a record written before the field existed). Removing the `active` symlink is
+ * the load-bearing half: while it resolves, the container's prepare pass keeps
+ * linking `/plugins/<name>` at the old repository's checkout, whatever any
+ * reader believes. The generations and their writable layers go with it, since
+ * nothing can ever name them again.
+ */
+async function retireForeignGeneration(
+  stateDir: string,
+  repoName: string,
+  expectedSource: string,
+): Promise<void> {
+  let record: GenerationRecord;
+  try {
+    const raw = await fsp.readFile(path.join(activeLinkPath(stateDir, repoName), RECORD_FILE), "utf-8");
+    record = JSON.parse(raw) as GenerationRecord;
+  } catch {
+    return; // nothing live (or unreadable) — the normal activation path handles it
+  }
+  if (record.source === expectedSource) return;
+
+  await fsp.rm(activeLinkPath(stateDir, repoName), { force: true });
+  await Promise.all([
+    fsp.rm(generationsRoot(stateDir, repoName), { recursive: true, force: true }),
+    fsp.rm(path.join(repoRoot(stateDir, repoName), WORK_SUBDIR), { recursive: true, force: true }),
+  ]);
 }
 
 /**

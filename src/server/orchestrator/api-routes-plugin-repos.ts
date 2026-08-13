@@ -19,6 +19,7 @@ import type { SessionManager } from "./sessions.js";
 import { resolveShipitConfig, type ShipitConfig } from "../shared/shipit-config.js";
 import {
   buildPluginReposSnapshot,
+  destinationKey,
   EMPTY_PLUGIN_REPOS,
   type PluginReposSnapshot,
   type PluginRepoRuntime,
@@ -257,7 +258,7 @@ function readRuntimeState(
     // activation attempt (req 27). Its settings still resolve against the same
     // file's own manifest, so it can still have something to say.
     if (repo.source.kind !== "self") {
-      const generation = readActiveGeneration(stateDir, repo.name);
+      const generation = readActiveGeneration(stateDir, repo.name, destinationKey(repo.source));
       const attempt = getActivationState(sessionId, repo.name);
       if (generation) {
         entry.commit = generation.commit;

@@ -33,6 +33,7 @@ import {
 import { resolveShipitConfig, type ShipitConfig } from "../../shared/shipit-config.js";
 import { sessionStateDirForWorkspace } from "../session-state-dir.js";
 import type { DeclaredPluginRepo } from "../../shared/plugin-repos.js";
+import { destinationKey } from "../../shared/plugin-repos.js";
 
 /** What the tab shows for one tracked repository, beyond what's on disk. */
 export interface PluginRepoActivationState {
@@ -428,7 +429,7 @@ export async function activateDeclaredPlugins(
     repos.map(async (repo) => {
       const key = flightKey(sessionId, epoch, repo.name);
       inFlight.set(key, (inFlight.get(key) ?? 0) + 1);
-      const existing = readActiveGeneration(stateDir, repo.name) ?? undefined;
+      const existing = readActiveGeneration(stateDir, repo.name, destinationKey(repo.source)) ?? undefined;
       setState(repo.name, { activating: true, ...(existing ? { generation: existing } : {}) });
 
       const repoUrl = cloneUrl(repo);
