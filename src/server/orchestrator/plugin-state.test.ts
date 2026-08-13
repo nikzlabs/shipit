@@ -377,11 +377,29 @@ describe("createPluginImportResolver", () => {
     };
   }
 
-  /** Publish a generation the way `plugin-generations.ts` does. */
-  function publishGeneration(repoName: string, yaml: string): void {
+  /**
+   * Publish a generation the way `plugin-generations.ts` does — manifest AND
+   * record. The record is what carries the SOURCE, and every reader through the
+   * `active` symlink checks it: the generation is filed under the declaration's
+   * name, which is re-pointable, so a manifest read without it can answer with
+   * the previous repository's exports.
+   */
+  function publishGeneration(repoName: string, yaml: string, source = "acme/tools"): void {
     const gen = path.join(stateDir, "plugins", repoName, "generations", "abc123");
     fs.mkdirSync(gen, { recursive: true });
     fs.writeFileSync(path.join(gen, "shipit.yaml"), yaml);
+    fs.writeFileSync(
+      path.join(gen, ".shipit-generation.json"),
+      JSON.stringify({
+        repoName,
+        source,
+        commit: "abc123",
+        ref: "branch main",
+        activatedAt: new Date().toISOString(),
+        exports: ["requirements"],
+        manifestWarnings: [],
+      }),
+    );
     fs.symlinkSync(path.join("generations", "abc123"), path.join(stateDir, "plugins", repoName, "active"));
   }
 
@@ -402,6 +420,19 @@ describe("createPluginImportResolver", () => {
     const { exportFor, repoNameFor } = createPluginImportResolver(config(), [], stateDir);
     expect(exportFor(makeUse({ from: "GAME-TOOLS" }))?.name).toBe("requirements");
     expect(repoNameFor(makeUse({ from: "GAME-TOOLS" }))).toBe("Game-Tools");
+  });
+
+  // A declaration re-pointed at another repository keeps its name, and the
+  // checkout is filed under that name — so without the source check this would
+  // validate the consumer's settings against the PREVIOUS repository's manifest.
+  it("ignores a live generation left by a repository the declaration no longer names", () => {
+    publishGeneration(
+      "Game-Tools",
+      "exports:\n  plugins:\n    requirements:\n      settings:\n        root:\n          default: docs\n",
+      "acme/previous-tools",
+    );
+    const { exportFor } = createPluginImportResolver(config(), [], stateDir);
+    expect(exportFor(makeUse({ from: "game-tools" }))).toBeNull();
   });
 
   it("reads a `repo: self` import from the project's own parsed manifest", () => {
