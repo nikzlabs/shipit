@@ -459,6 +459,34 @@ instead of a repeat.
   are not the agent's path. In the dogfood inner instance, local mode's
   agent-ops host allowlists routes explicitly (`local-agent-ops.ts`), so the
   relay must be added there too, with the parity test extended.
+
+  **Implemented** (`services/plugin-refresh.ts`, `agent-shim/shipit-plugin.ts`).
+  Refresh is the SAME round a `shipit.yaml` edit runs — the deps are built by
+  one factory in `bootstrap-managers`, so the fire-and-forget trigger and the
+  awaited verb cannot drift into two fetch or install policies. What refresh
+  adds is that it awaits the round and reports before/after. Three details the
+  implementation settled: it narrows to ONE declared repository when the agent
+  names one (re-fetching the others would be a surprise, and a slow one);
+  before/after are read from disk on both sides rather than inferred from the
+  activation outcome, because the live commit is a fact about the filesystem;
+  and a `repo: self` name is refused with its own message, since it IS the
+  working tree and "nothing happened" would read as success. The call uses the
+  UNBOUNDED transport — a refresh can fetch, check out, and run that plugin's
+  install, so a default deadline would abort work that is still running.
+
+  Three more the review had to force, each of which made the verb quietly
+  wrong. **It passes the settled hook**, which is not decoration: that hook also
+  calls the container's `preparePlugins()`, so without it a refresh swapped the
+  generation on disk, printed `activated`, and left the session looking at the
+  old one — the refresh never reached the agent, which is the entire point.
+  **It is below the trust gate** (docs/178): automatic activation sits under
+  `repoStore.isTrusted()` because fetching a plugin repository and running its
+  install is repo-declared auto-execution, and a verb the agent can invoke must
+  not be the way around that. And **the report comes from this round's own
+  returned outcome**, not the shared activation-state map — that map belongs to
+  the UI and is owned by whichever round finishes last, so with a second
+  trigger queued a refresh whose install had just failed read back as
+  `unchanged` and exited zero.
 - **Fetch authority and the standing grant** (req 19): repository fetches
   run **orchestrator-side** (the bare cache), so fetch credentials are never
   *stored* inside the session container.

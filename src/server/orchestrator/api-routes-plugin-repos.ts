@@ -33,6 +33,43 @@ export async function registerPluginRepoRoutes(
   app: FastifyInstance,
   deps: ApiDeps,
 ): Promise<void> {
+  // POST /api/sessions/:id/plugin/refresh — docs/262 req 12, the agent's
+  // `shipit plugin refresh [name]`, relayed by the worker's agent-ops surface.
+  //
+  // `containerAccessible` because this IS the agent's path: orchestrator routes
+  // are default-denied to containers, and the browser's `/api/plugin-repos`
+  // snapshot above is deliberately not it (a GET must never activate anything).
+  // The guard's own session scoping means a container can only ever refresh its
+  // own session's plugins.
+  app.post<{ Params: { id: string }; Body: { repo?: string } }>(
+    "/api/sessions/:id/plugin/refresh",
+    { config: { containerAccessible: true } },
+    async (request, reply) => {
+      const session = deps.sessionManager.get(request.params.id);
+      if (!session?.workspaceDir) {
+        reply.code(404).send({ error: "Session not found" });
+        return;
+      }
+      if (!deps.refreshPluginReposForSession) {
+        reply.code(501).send({ error: "This runtime cannot refresh plugin repositories." });
+        return;
+      }
+      const result = await deps.refreshPluginReposForSession(
+        request.params.id,
+        session.workspaceDir,
+        request.body?.repo?.trim() || undefined,
+      );
+      // A named repository that is not declared is the caller's mistake, not a
+      // server failure — 400 so the shim can print the declared names instead
+      // of a stack of rows it did not ask for.
+      if (result.error) {
+        reply.code(400).send({ error: result.error });
+        return;
+      }
+      return result;
+    },
+  );
+
   // GET /api/plugin-repos?sessionId — one snapshot: declaration, per-repo
   // cards, parse warnings, and the consuming project's remote (the secret
   // store "Add key…" must write to — plan §3).

@@ -304,6 +304,13 @@ export function registerAgentOpsRoutes(
   );
 
   // ---------------------------------------------------------------------------
+  // POST /agent-ops/plugin/refresh — docs/262 req 12. `shipit plugin refresh
+  // [name]` re-activates a declared plugin repository and waits for the answer.
+  // Unbounded: the round can fetch, check out, and run the plugin's install, so
+  // a default deadline would abort a refresh that is still working.
+  app.post<{ Body: { repo?: string } }>("/agent-ops/plugin/refresh", async (request, reply) =>
+    relay("POST", "/plugin/refresh", { repo: request.body?.repo }, reply, { timeoutMs: 0 }));
+
   // Tracker-neutral issue access (docs/175 read + docs/177 write)
   //
   // These back the `shipit issue view|list|create|comment|edit|status|assign`

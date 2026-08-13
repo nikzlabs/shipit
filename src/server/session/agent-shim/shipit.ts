@@ -93,6 +93,7 @@ import {
 export { parseFlags, type ShimIO };
 
 import { handleBranchResetToBase, RESET_USAGE } from "./shipit-branch.js";
+import { runPlugin } from "./shipit-plugin.js";
 
 const SHIM_NAME = "shipit (ShipIt)";
 
@@ -212,6 +213,16 @@ Releases (docs/214 — deterministic, merge-triggered; CI publishes):
   proposes the rc; re-run with --confirm to cut + push the vX.Y.Z-rc.N tag
   (a tag push is always confirmation-gated). There is no 'release tag',
   'release publish', or 'release push' — publishing is CI's job.
+
+Plugin repositories (docs/262 — tools this project consumes from another repo):
+  shipit plugin refresh [repo-name] [--json]
+
+  Brings a declared plugin repository to its declared version NOW, and waits.
+  Use it after pushing a change to the plugin repository — otherwise a tracked
+  branch only re-activates when shipit.yaml changes or the session opens.
+  Prints the before and after commit per repository. A failed refresh leaves
+  the previous version live and exits non-zero, so the session keeps working —
+  on the OLD version.
 
 Compose services (docs/238 — start the services declared in docker-compose.yml):
   shipit service list    [--json]
@@ -650,6 +661,14 @@ export async function runShim(
 
   if (command === "branch") {
     await dispatchBranch(args.slice(1), deps, io);
+    return;
+  }
+
+  // docs/262 req 12 — the plugin verb. Its own handler rather than a branch of
+  // the service dispatch: a plugin repository is not a Compose service, and the
+  // two surfaces share nothing but the transport.
+  if (command === "plugin" || command === "plugins") {
+    await runPlugin(args.slice(1), { ...deps, io });
     return;
   }
 

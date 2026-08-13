@@ -160,9 +160,10 @@ export interface ActivateDeps {
   ensureCache: (cacheDir: string, repoUrl: string) => Promise<void>;
   /**
    * Whether the session this activation belongs to is gone (archived, reset,
-   * disposed). Checked before the two steps that create durable state, so a
-   * slow activation cannot re-create a session's state directory after
-   * cleanup removed it (review finding).
+   * disposed). Checked before each step that creates durable state, which
+   * NARROWS the window in which a slow activation re-creates a session's state
+   * directory after cleanup removed it — it does not close it (review finding;
+   * see the check before staging for the exact gap).
    */
   isCancelled?: () => boolean;
   /**
@@ -311,6 +312,16 @@ async function activateOnce(repo: DeclaredPluginRepo, deps: ActivateDeps): Promi
 
   // Cancelled before anything durable exists: a session archived mid-fetch
   // must not have its state directory re-created by the staging `mkdir`.
+  //
+  // **This narrows the window; it does not close it** (review finding — an
+  // earlier comment here claimed the stronger thing). Disposal can land between
+  // this check and the `mkdir` below, and then the recursive `mkdir` recreates
+  // the parent directories cleanup had just removed; the cancellation cleanup
+  // further down removes the staging tree but not those parents. The same
+  // shape exists between the last check and the publish. What the epoch DOES
+  // guarantee is that no in-memory state is resurrected for a disposed
+  // session; a filesystem barrier would need the disposal path itself to
+  // participate, which it does not today.
   if (deps.isCancelled?.()) {
     return { status: "failed", reason: "the session went away before activation completed", ...withPrevious };
   }

@@ -13,7 +13,12 @@
  * state.
  */
 
-import { activateGeneration, readActiveGeneration, type GenerationRecord } from "../plugin-generations.js";
+import {
+  activateGeneration,
+  readActiveGeneration,
+  type ActivationOutcome,
+  type GenerationRecord,
+} from "../plugin-generations.js";
 import { resolveShipitConfig } from "../../shared/shipit-config.js";
 import { sessionStateDirForWorkspace } from "../session-state-dir.js";
 import type { DeclaredPluginRepo } from "../../shared/plugin-repos.js";
@@ -124,6 +129,12 @@ export type PluginInstallHook = NonNullable<Parameters<typeof activateGeneration
  * Activate every tracked repository the session declares. `self` entries are
  * skipped: they run the live working tree and have no generation (req 27).
  *
+ * `onlyRepo` narrows the round to one declared repository, which is what an
+ * explicit `shipit plugin refresh <name>` asks for: re-fetching every other
+ * repository because the agent named one would be a surprise, and a slow one.
+ * Everything else — the per-repo queue, the in-flight counter, the epoch, the
+ * settled hook — is unchanged, so a narrowed round is an ordinary round.
+ *
  * Never throws — each repository fails independently (req 14).
  */
 export async function activateDeclaredPlugins(
@@ -131,7 +142,21 @@ export async function activateDeclaredPlugins(
   workspaceDir: string,
   deps: PluginActivationDeps,
   consumerKey?: string,
-): Promise<void> {
+  onlyRepo?: string,
+): Promise<Map<string, ActivationOutcome>> {
+  /**
+   * THIS call's own outcome per repository.
+   *
+   * Deliberately separate from the shared state map below, which is the UI's
+   * "latest attempt" and is overwritten by whichever round finishes last. An
+   * awaited caller (`shipit plugin refresh`) needs the result of the round IT
+   * ran: with two rounds in flight, the shared map can already say
+   * `activating: true` for the next one by the time this one formats its
+   * answer, so a failed refresh read back as `unchanged` and exited 0 (review
+   * finding). The counter still governs the shared flag; it cannot stand in
+   * for a per-caller result.
+   */
+  const outcomes = new Map<string, ActivationOutcome>();
   let repos: DeclaredPluginRepo[];
   let selectedByRepo: Map<string, string[]>;
   let stateDir: string;
@@ -142,9 +167,12 @@ export async function activateDeclaredPlugins(
     // container is recreated (review finding).
     if (!config.plugins.declared) {
       settle(sessionId, deps);
-      return;
+      return outcomes;
     }
     repos = config.plugins.repos.filter((r) => r.source.kind === "github");
+    if (onlyRepo) {
+      repos = repos.filter((r) => r.name.toLowerCase() === onlyRepo.toLowerCase());
+    }
     // Phase-2 input: which exports this consumer actually selected from each
     // repository. A selected name the fetched manifest lacks invalidates that
     // repository's generation (plan §1a).
@@ -157,11 +185,11 @@ export async function activateDeclaredPlugins(
   } catch {
     // A malformed document is already reported by the config warning path and
     // by the snapshot route; there is nothing to activate from it.
-    return;
+    return outcomes;
   }
   if (repos.length === 0) {
     settle(sessionId, deps);
-    return;
+    return outcomes;
   }
 
   const epoch = epochs.get(sessionId) ?? 0;
@@ -200,6 +228,10 @@ export async function activateDeclaredPlugins(
         // must not strand `activating: true` forever if that ever changes.
         outcome = { status: "failed", reason: err instanceof Error ? err.message : String(err) };
       }
+      // Recorded BEFORE the counter check below, which returns early when
+      // another trigger is queued — that early return is about the shared UI
+      // flag, and must not cost this caller its own answer.
+      outcomes.set(repo.name, outcome);
 
       // Another trigger is still queued for this repository, so the round is
       // not over: leave `activating` set and let the last one out report.
@@ -234,6 +266,7 @@ export async function activateDeclaredPlugins(
   // Tell the browser the round settled, so it refetches instead of polling
   // until its budget runs out.
   if (!isCancelled()) deps.onSettled?.(sessionId);
+  return outcomes;
 }
 
 /**

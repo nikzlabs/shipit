@@ -64,6 +64,7 @@ import { registerProposeActionsRoutes } from "./api-routes-propose-actions.js";
 import { registerEgressRoutes } from "./api-routes-egress.js";
 import { registerIssueRoutes } from "./api-routes-issues.js";
 import { registerPluginRepoRoutes } from "./api-routes-plugin-repos.js";
+import type { PluginRefreshResult } from "./services/plugin-refresh.js";
 import type { SecretStore } from "./secret-store.js";
 import type { EgressAllowlistStore } from "./egress-allowlist-store.js";
 import type { FileReviewStore } from "./review-store.js";
@@ -113,6 +114,18 @@ export interface ApiDeps {
   credentialsDir?: string;
   usageManager: UsageManager;
   runnerRegistry: SessionRunnerRegistry;
+  /**
+   * docs/262 req 12 — run a plugin-repository refresh and WAIT for it, for the
+   * agent's `shipit plugin refresh`. Optional: a runtime without the plugin
+   * wiring (tests) simply has no refresh verb, and the route says so rather
+   * than pretending it worked.
+   */
+  refreshPluginReposForSession?: (
+    sessionId: string,
+    workspaceDir: string,
+    repoName?: string,
+    onSettled?: (id: string) => void,
+  ) => Promise<PluginRefreshResult>;
   /**
    * Drop a session's pending debounced auto-push (`services/auto-push-scheduler.ts`).
    * Only ever called after a synchronous push has replaced it — the agent's own

@@ -42,6 +42,14 @@ describe("mapAgentOpsPath", () => {
     expect(mapAgentOpsPath("/agent-ops/workflow/view")).toBe("actions/workflows/view");
   });
 
+  // docs/262 req 12 — the dogfood instance has no container, so this host IS
+  // the agent-ops surface there. A missing entry means `shipit plugin refresh`
+  // works in production and is denied in the inner instance, which is exactly
+  // the drift this allowlist keeps making visible.
+  it("maps the plugin refresh route the `shipit plugin` shim emits", () => {
+    expect(mapAgentOpsPath("/agent-ops/plugin/refresh")).toBe("plugin/refresh");
+  });
+
   it("still denies the CI verbs the shim never emits", () => {
     // `rerun` was unbundled from these three deliberately — dispatch chooses new
     // workflow content, cancel/delete destroy state. Nothing here should map.

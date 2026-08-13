@@ -124,7 +124,8 @@ describe("activateDeclaredPlugins", () => {
 
   it("a malformed shipit.yaml is not fatal", async () => {
     writeConfig("plugins: [unclosed\n  - broken");
-    await expect(activateDeclaredPlugins("sess", workspaceDir, deps())).resolves.toBeUndefined();
+    // Resolves with an empty outcome map — nothing to activate, nothing thrown.
+    await expect(activateDeclaredPlugins("sess", workspaceDir, deps())).resolves.toEqual(new Map());
   });
 
   it("re-running after a failure recovers without restarting the session", async () => {
