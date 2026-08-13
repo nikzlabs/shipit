@@ -25,7 +25,9 @@ ShipIt is a chat-driven IDE for running coding agents through your **real engine
   and workspace, so nothing they do collides.
 - **Preview per session** — every session runs its own instance of your full app stack, so the agent
   can build, run, and fix before you preview and merge.
-- **Bring your own agent** — Claude Code or Codex, on the subscription or API key you already have.
+- **Bring your own agent** — on the subscription or API key you already have (Anthropic, OpenAI,
+  DeepSeek, OpenRouter, etc.). Supported harnesses: Claude Code and Codex, with OpenCode and Cursor
+  CLI support coming.
 - **Runs where you want** — one command on your laptop, or on an always-on server you own. There is
   no ShipIt account and no ShipIt server in the middle: the instance is yours, and it connects
   straight to your GitHub and your agent provider.
@@ -39,10 +41,11 @@ ShipIt is a chat-driven IDE for running coding agents through your **real engine
 - [Docker](https://docs.docker.com/get-docker/) with the Compose v2 plugin (`docker compose`).
   Docker Desktop bundles it; on Linux install `docker-compose-plugin` alongside `docker-ce`. ShipIt
   always runs containerized — there is no bare-metal mode.
-- Credentials for at least one agent backend — a subscription or an API key works for either:
-  - Claude Code: [Claude Pro/Max](https://claude.ai/upgrade) or an
+- Credentials for at least one provider — a subscription or an API key works for either harness:
+  - [Claude Pro/Max](https://claude.ai/upgrade) or an
     [Anthropic API key](https://console.anthropic.com/settings/keys)
-  - Codex: a ChatGPT subscription or an [OpenAI API key](https://platform.openai.com/api-keys)
+  - a ChatGPT subscription or an [OpenAI API key](https://platform.openai.com/api-keys)
+  - or an API key for DeepSeek, GLM (Z.ai), OpenRouter, or Vercel AI Gateway
 
 ### Try it locally
 
@@ -54,8 +57,8 @@ bash <(curl -fsSL https://raw.githubusercontent.com/nikzlabs/shipit/stable/deplo
 ```
 
 This installs ShipIt under `~/.shipit`, builds the Docker images, and starts it **detached** at
-[http://localhost:4123](http://localhost:4123). Sign in to Claude Code or Codex once from the in-app
-provider flow. Fork installs, custom paths, updates, and stop/uninstall are in
+[http://localhost:4123](http://localhost:4123). Connect a provider account once from the in-app
+sign-in flow. Fork installs, custom paths, updates, and stop/uninstall are in
 [`deployment/README.md`](deployment/README.md).
 
 #### Reaching a local install from your phone
@@ -110,7 +113,7 @@ Updates**). Fork installs, host-side updates, sizing, access policies, and troub
 ### After first boot
 
 1. Connect GitHub so ShipIt can clone repos, push branches, open PRs, and read CI status.
-2. Pick Claude Code or Codex as the agent backend.
+2. Pick the harness (Claude Code or Codex) and the account it runs on.
 3. Start a session from an existing repository, or create a new project from a template.
 4. Describe the change you want; ShipIt creates an isolated container, branch, chat history, and
    workspace for that session.
@@ -135,12 +138,17 @@ yourself.
 
 ## Agents
 
-Connect more than one account per provider — and the agent harness is pluggable:
+Two separate choices — the harness that runs, and the account that pays for it:
 
-- [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) — Claude Pro/Max subscription or
-  an Anthropic API key
-- [Codex CLI](https://github.com/openai/codex) — ChatGPT subscription or an OpenAI API key
-- More to come — the backend is agent-agnostic by design, so new runtimes can slot in
+- **Harness** — [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code) and
+  [Codex CLI](https://github.com/openai/codex) today; OpenCode and Cursor CLI are coming, and the
+  backend is agent-agnostic by design, so new runtimes can slot in
+- **Provider** — Anthropic and OpenAI on a subscription or an API key, plus DeepSeek, GLM (Z.ai),
+  OpenRouter, and Vercel AI Gateway on an API key
+
+The two are largely independent: a model that speaks both an Anthropic-messages and an OpenAI style —
+DeepSeek, GLM, most of what OpenRouter and Vercel front — runs on either harness. Connect more than
+one account per provider.
 
 **Smooth support for multiple subscriptions.** ShipIt moves to your next account before a usage limit
 stops you, without interrupting sessions already in flight.
