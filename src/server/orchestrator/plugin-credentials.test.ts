@@ -38,11 +38,35 @@ function makeSession(shipitYaml: string): { sessionDir: string; workspaceDir: st
   return { sessionDir, workspaceDir };
 }
 
-/** A published generation for `repoName`, carrying its own manifest. */
-function publishGeneration(sessionDir: string, repoName: string, manifestYaml: string): void {
-  const commitDir = path.join(sessionDir, "state", "plugins", repoName, "generations", "a".repeat(40));
+/**
+ * A published generation for `repoName`, carrying its own manifest AND the
+ * record activation writes beside it. The record is not decoration: it names the
+ * repository the generation was built FROM, and every reader through the
+ * `active` symlink checks it, because the declaration name it is filed under is
+ * re-pointable.
+ */
+function publishGeneration(
+  sessionDir: string,
+  repoName: string,
+  manifestYaml: string,
+  source = "nicolasalt/art-kit",
+): void {
+  const commit = "a".repeat(40);
+  const commitDir = path.join(sessionDir, "state", "plugins", repoName, "generations", commit);
   fs.mkdirSync(commitDir, { recursive: true });
   fs.writeFileSync(path.join(commitDir, "shipit.yaml"), manifestYaml);
+  fs.writeFileSync(
+    path.join(commitDir, ".shipit-generation.json"),
+    JSON.stringify({
+      repoName,
+      source,
+      commit,
+      ref: "branch main",
+      activatedAt: new Date().toISOString(),
+      exports: ["palette"],
+      manifestWarnings: [],
+    }),
+  );
   fs.symlinkSync(commitDir, path.join(sessionDir, "state", "plugins", repoName, "active"));
 }
 
@@ -79,6 +103,24 @@ describe("plugin credential resolution — the consuming project's store (req 23
     expect(collectPluginCredentialDeclarations(session.workspaceDir)).toEqual([
       { repo: "art-kit", plugin: "palette", alias: "artk", credentials: ["FAL_KEY"] },
     ]);
+  });
+
+  // The name is filed on disk; the repository it points at is not. Answering
+  // from a generation another repository left would tell this project to supply
+  // THAT repository's credential names — a gap it can never close, against a
+  // plugin it no longer uses.
+  it("reports nothing when the live generation came from a repository the declaration no longer names", () => {
+    const session = track(
+      makeSession(`plugins:\n  repos:\n    - repo: nicolasalt/art-kit\n      name: art-kit\n      branch: main\n  use:\n    - plugin: palette\n      from: art-kit\n      alias: artk\n`),
+    );
+    publishGeneration(
+      session.sessionDir,
+      "art-kit",
+      `exports:\n  plugins:\n    palette:\n      credentials: [FAL_KEY]\n`,
+      "nicolasalt/previous-art-kit",
+    );
+
+    expect(collectPluginCredentialDeclarations(session.workspaceDir)).toEqual([]);
   });
 
   it("a self-declared repository reads its own working tree (req 27)", () => {
@@ -222,7 +264,7 @@ describe("liveManifestReader", () => {
     try {
       const read = liveManifestReader(
         workspaceDir,
-        [{ name: "art-kit", source: { kind: "github" } }],
+        [{ name: "art-kit", source: { kind: "github", owner: "acme", repo: "art-kit" } }],
         [],
       );
       expect(read("art-kit")).toBeNull();
