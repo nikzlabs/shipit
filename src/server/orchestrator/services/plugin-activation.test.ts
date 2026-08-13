@@ -11,7 +11,9 @@ import path from "node:path";
 import simpleGit from "simple-git";
 import {
   activateDeclaredPlugins,
+  beginContainerPrepare,
   clearActivationState,
+  readPrepareFailures,
   getActivationState,
   getPluginPrepareFailures,
 } from "./plugin-activation.js";
@@ -389,5 +391,126 @@ describe("per-import state and settings", () => {
     await activateDeclaredPlugins("sess", workspaceDir, deps());
     expect(getPluginPrepareFailures("sess", "dev")).toEqual([]);
     expect(JSON.parse(fs.readFileSync(settingsFor("here"), "utf-8"))).toEqual({ greeting: "bonjour" });
+  });
+});
+
+/**
+ * docs/262 req 13 + req 22 — the CONTAINER half of prepare. It runs in the
+ * session worker, so its result has to travel back here to be seen at all;
+ * before this it stopped at a `console.warn` and the card stayed clean while
+ * the agent was missing instructions the plugin promised.
+ */
+describe("container prepare failures", () => {
+  const failure = (repo: string, skill: string, reason: string) => ({ repo, skill, reason });
+
+  it("records what the container could not materialize, on the repository's card", () => {
+    beginContainerPrepare("sess")([
+      failure("tools", "reqs/probe", "`plugins--reqs--probe-abc` has no readable SKILL.md"),
+    ]);
+
+    expect(getPluginPrepareFailures("sess", "tools")).toEqual([
+      "Skill `reqs/probe`: `plugins--reqs--probe-abc` has no readable SKILL.md",
+    ]);
+    // req 14 — one repository's failure is not another's.
+    expect(getPluginPrepareFailures("sess", "other")).toEqual([]);
+  });
+
+  it("drops the skill identifier for an all-imports failure, which names none", () => {
+    beginContainerPrepare("sess")([failure("tools", "(all)", "could not keep them out of git")]);
+    expect(getPluginPrepareFailures("sess", "tools")).toEqual(["Skills: could not keep them out of git"]);
+  });
+
+  it("replaces the whole record, so a fixed problem stops being reported", () => {
+    beginContainerPrepare("sess")([failure("tools", "reqs/probe", "no readable SKILL.md")]);
+    // Prepare is always whole-declaration, so one clean pass describes every
+    // repository — including the ones it now has nothing to say about.
+    expect(beginContainerPrepare("sess")([])).toBe(true);
+    expect(getPluginPrepareFailures("sess", "tools")).toEqual([]);
+  });
+
+  it("reports whether anything changed, so an unchanged pass pushes no refetch", () => {
+    expect(beginContainerPrepare("sess")([])).toBe(false);
+    expect(beginContainerPrepare("sess")([failure("tools", "a/b", "x")])).toBe(true);
+    // The identical result again — prepare runs on every round and every
+    // container start, and the healthy case is by far the common one.
+    expect(beginContainerPrepare("sess")([failure("tools", "a/b", "x")])).toBe(false);
+    expect(beginContainerPrepare("sess")([failure("tools", "a/b", "y")])).toBe(true);
+  });
+
+  it("does not write a result that arrives after the session was disposed", () => {
+    // The container is asked, the session is disposed and recreated, and only
+    // then does the answer come back. Its epoch is stale, so it writes nothing
+    // — the same rule the activation state map follows.
+    const record = beginContainerPrepare("sess");
+    clearActivationState("sess");
+    expect(record([failure("tools", "a/b", "x")])).toBe(false);
+    expect(getPluginPrepareFailures("sess", "tools")).toEqual([]);
+  });
+
+  it("carries a link failure, which names no skill", () => {
+    // The repository's own `/plugins/<name>` could not be made — nothing of it
+    // is in the workspace, and the card is the only place that can say so.
+    beginContainerPrepare("sess")([
+      { repo: "tools", reason: "`/plugins/tools` already exists and is not a link ShipIt made" },
+    ]);
+    expect(getPluginPrepareFailures("sess", "tools")).toEqual([
+      "`/plugins/tools` already exists and is not a link ShipIt made",
+    ]);
+  });
+
+  it("keeps both halves of prepare on the card at once", async () => {
+    // The orchestrator half failed to write a settings file and the container
+    // half failed to materialize a skill. They are recorded by different actors
+    // at different moments, and neither may erase the other.
+    const self = "exports:\n  plugins:\n    probe:\n      settings:\n        greeting:\n          default: hi\n"
+      + "plugins:\n  repos:\n    - repo: self\n      name: dev\n"
+      + "  use:\n    - plugin: probe\n      from: dev\n      alias: here\n";
+    writeConfig(self);
+    const rename = vi.spyOn(fs, "renameSync").mockImplementationOnce(() => {
+      throw new Error("ENOSPC: no space left on device");
+    });
+    await activateDeclaredPlugins("sess", workspaceDir, deps());
+    rename.mockRestore();
+    beginContainerPrepare("sess")([failure("dev", "here/probe", "no readable SKILL.md")]);
+
+    const issues = getPluginPrepareFailures("sess", "dev");
+    expect(issues).toHaveLength(2);
+    expect(issues[0]).toContain("could not be written");
+    expect(issues[1]).toBe("Skill `here/probe`: no readable SKILL.md");
+  });
+});
+
+/**
+ * The worker on the other end of `/plugins/prepare` is not necessarily the one
+ * this orchestrator shipped with: containers survive an orchestrator restart
+ * and are reconnected, so a rolling upgrade puts a new orchestrator in front of
+ * an old worker (review finding).
+ */
+describe("readPrepareFailures", () => {
+  it("reads both failure lists out of a prepare response", () => {
+    expect(readPrepareFailures({
+      linked: ["tools"],
+      skillsFailed: [{ repo: "tools", skill: "reqs/probe", reason: "no SKILL.md" }],
+      linkFailed: [{ repo: "other", reason: "already exists" }],
+    }, "sess")).toEqual([
+      { repo: "tools", skill: "reqs/probe", reason: "no SKILL.md" },
+      { repo: "other", reason: "already exists" },
+    ]);
+  });
+
+  it("drops a failure the container could not attribute to a repository", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    // What a worker built before failures carried a `repo` sends. Casting it
+    // stored the failure under `sessionId::undefined`, which no card looks up —
+    // invisible, and displacing whatever the previous run recorded.
+    expect(readPrepareFailures({ skillsFailed: [{ skill: "probe", reason: "no SKILL.md" }] }, "sess"))
+      .toEqual([]);
+    expect(warn).toHaveBeenCalled();
+  });
+
+  it("survives a response that is not a prepare result at all", () => {
+    expect(readPrepareFailures(undefined, "sess")).toEqual([]);
+    expect(readPrepareFailures("nope", "sess")).toEqual([]);
+    expect(readPrepareFailures({ skillsFailed: "nope" }, "sess")).toEqual([]);
   });
 });

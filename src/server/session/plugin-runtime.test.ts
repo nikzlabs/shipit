@@ -104,7 +104,8 @@ describe("preparePlugins — the agent-facing surface", () => {
   it("does nothing when the project declares no plugins", () => {
     fs.writeFileSync(path.join(workspaceDir, "shipit.yaml"), "agent:\n  install: npm install\n");
     expect(preparePlugins(opts())).toEqual({
-      linked: [], missing: [], unlinked: [], skills: [], skillsRemoved: [], skillsFailed: [],
+      linked: [], missing: [], unlinked: [], linkFailed: [],
+      skills: [], skillsRemoved: [], skillsFailed: [],
     });
   });
 
@@ -117,6 +118,21 @@ describe("preparePlugins — the agent-facing surface", () => {
     const result = preparePlugins(opts());
     expect(result.linked).toEqual([]);
     expect(fs.readFileSync(path.join(pluginsDir, "tools"), "utf8")).toBe("not ours");
+    // …and SAYS so. A refusal that returns a bare `false` nobody reads renders
+    // as a healthy card with none of the repository behind it (review finding).
+    expect(result.linkFailed).toEqual([
+      { repo: "tools", reason: expect.stringContaining("not a link ShipIt made") },
+    ]);
+  });
+
+  it("does not report a repo with no live generation as a link failure", () => {
+    // Declared, not yet fetched. The card already shows that as `unavailable`
+    // from the generation state — reporting it here too would say one ordinary
+    // fact twice, as an error.
+    declare();
+    const result = preparePlugins(opts());
+    expect(result.missing).toEqual(["tools"]);
+    expect(result.linkFailed).toEqual([]);
   });
 });
 
@@ -200,10 +216,55 @@ describe("preparePlugins — skills (req 22)", () => {
 
     expect(result.skills).toEqual([]);
     expect(result.skillsFailed[0]?.reason).toContain("out of this clone's git");
+    // Attributed, so the orchestrator can put it on a card (req 13). One
+    // exclude file, but the consequence belongs to each repository that was
+    // going to get skills — and to no other.
+    expect(result.skillsFailed).toEqual([
+      { repo: "tools", skill: "(all)", reason: expect.stringContaining("out of this clone's git") },
+    ]);
     expect(fs.existsSync(path.join(workspaceDir, ".claude", "skills", namespacedName("probe", "probe"))))
       .toBe(false);
     // The link surface is unaffected — only the skills are withheld.
     expect(result.linked).toEqual(["tools"]);
+  });
+
+  // req 13 — the orchestrator turns this list into card issues, and a card is
+  // keyed by the DECLARED repository name. A failure that names only the skill
+  // has nowhere to render, which is how this half of prepare used to reach
+  // nothing but the log.
+  it("attributes a failure to the declared repository, in the declaration's spelling", () => {
+    // `from:` matches case-insensitively, so the `use` entry's spelling is not
+    // the card's key — the declaration's is.
+    declare(
+      "plugins:\n  repos:\n    - repo: acme/tools\n      name: Tools\n      branch: main\n"
+      + "  use:\n    - plugin: probe\n      from: tools\n      alias: reqs\n",
+    );
+    // Declared `skills:` that this generation does not ship — a plugin
+    // promising instructions it did not deliver.
+    publishGeneration("Tools", "a".repeat(40), SKILLS_MANIFEST);
+
+    expect(preparePlugins(opts()).skillsFailed).toEqual([
+      { repo: "Tools", skill: "reqs", reason: expect.stringContaining("does not exist in this generation") },
+    ]);
+  });
+
+  it("names a write failure by `<alias>/<skill>`, not by its namespaced directory", () => {
+    declare(DECLARATION.replace("      from: tools\n", "      from: tools\n      alias: reqs\n"));
+    publishGeneration("tools", "a".repeat(40), SKILLS_MANIFEST, {
+      "pkg/skills/probe/SKILL.md": "---\nname: probe\n---\n\nBody.\n",
+    });
+    // Somebody else's directory is already at the published name, so the copy
+    // is refused rather than deleting their work.
+    const foreign = path.join(workspaceDir, ".claude", "skills", namespacedName("reqs", "probe"));
+    fs.mkdirSync(foreign, { recursive: true });
+    fs.writeFileSync(path.join(foreign, "SKILL.md"), "---\nname: mine\n---\n");
+
+    const failed = preparePlugins(opts()).skillsFailed;
+    // The hashed directory name is right on disk and wrong on a card; the user
+    // knows this skill as the import alias plus the skill's own name.
+    expect(failed[0]?.repo).toBe("tools");
+    expect(failed[0]?.skill).toBe("reqs/probe");
+    expect(failed[0]?.reason).toContain("not created by ShipIt");
   });
 
   it("removes materialized skills when the import is dropped", () => {

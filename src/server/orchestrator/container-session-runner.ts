@@ -51,6 +51,7 @@ import { getAgentDisplayName } from "../shared/agent-registry.js";
 import { TurnAccumulator } from "./turn-accumulator.js";
 import type { CommittedBodyIds } from "./transcript-projection.js";
 import { TerminalBufferManager } from "./terminal-buffer-manager.js";
+import { beginContainerPrepare, readPrepareFailures } from "./services/plugin-activation.js";
 
 // ---------------------------------------------------------------------------
 // Barrel re-exports for backwards compatibility
@@ -1674,37 +1675,53 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    */
   /**
    * docs/262 — ask the container to link its plugin checkouts under `/plugins`
-   * (and unlink what is no longer declared). Called when an activation round
-   * settles, so the generation the worker reads is already published.
+   * (and unlink what is no longer declared), materialize each imported plugin's
+   * skills, and CARRY THE RESULT BACK to the Plugins card. Called when an
+   * activation round settles, so the generation the worker reads is already
+   * published, and again whenever a container comes up.
    *
    * Fire-and-forget and never throws: a plugin that will not prepare must not
    * take the session down with it (req 13). Only container runners have this —
    * local mode runs the agent in-process with no container to mount into, so
    * the whole container-side surface is absent there by design.
+   *
+   * req 13 — degrade *visibly*. A skill that could not be materialized is a
+   * plugin that silently does less than it says, so the failure travels to the
+   * same card the orchestrator half's failures reach; it used to end at the
+   * `console.warn` below and go nowhere the user could see.
    */
   async preparePlugins(): Promise<void> {
     await this._workerReady;
     if (this._disposed) return;
+    // Captured BEFORE the request, so a result arriving after this session was
+    // disposed and recreated is dropped rather than written onto the new one.
+    const record = beginContainerPrepare(this.sessionId);
+    let result: unknown;
     try {
       this.assertWorkerReachable("/plugins/prepare");
-      const result = await workerPost(this.workerUrl, "/plugins/prepare", undefined, {
+      result = await workerPost(this.workerUrl, "/plugins/prepare", undefined, {
         timeoutMs: PLUGIN_PREPARE_TIMEOUT_MS,
-      }) as { skillsFailed?: { skill: string; reason: string }[] } | undefined;
-      // req 13 — degrade *visibly*. A skill that could not be materialized is
-      // a plugin that silently does less than it says, so the failure has to
-      // leave a trace somewhere; discarding the response body left none at all
-      // (review finding). The Plugins card has no channel for container-side
-      // prepare state yet — that is tracked in the checklist — so the log is
-      // the honest interim, not the destination.
-      for (const failure of result?.skillsFailed ?? []) {
-        console.warn(`[plugins:${this.sessionId}] skill ${failure.skill}: ${failure.reason}`);
-      }
+      });
     } catch (err) {
+      // Deliberately NOT recorded as "no failures". Nothing reached the
+      // container, so whatever the last successful prepare left there is still
+      // what the agent sees: clearing the record would replace an observed
+      // problem with health nobody observed, and inventing one would attach a
+      // transport error to every plugin card. The previous record stands.
       console.warn(
         `[plugins:${this.sessionId}] container prepare failed:`,
         err instanceof Error ? err.message : String(err),
       );
+      return;
     }
+    const failures = readPrepareFailures(result, this.sessionId);
+    for (const failure of failures) {
+      console.warn(`[plugins:${this.sessionId}] ${failure.skill ?? "link"}: ${failure.reason}`);
+    }
+    // Only when the recorded set moved: prepare runs on every activation round
+    // and every container start, and the healthy case is by far the common one.
+    // An unconditional push would double the tab's refetches to say nothing.
+    if (record(failures)) this.emitMessage({ type: "plugin_repos_updated", sessionId: this.sessionId });
   }
 
   async runInstall(commands: string[]): Promise<{ ok: boolean }> {

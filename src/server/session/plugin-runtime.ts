@@ -32,6 +32,7 @@ import {
   resolvePluginSkillSources,
   sweepStalePluginSkills,
   PLUGIN_SKILL_EXCLUDE_BLOCK,
+  type PluginSkillFailure,
 } from "./plugin-skills.js";
 
 export interface PluginPrepareResult {
@@ -41,12 +42,27 @@ export interface PluginPrepareResult {
   missing: string[];
   /** Links removed because the declaration no longer names that repo. */
   unlinked: string[];
+  /**
+   * Declared repositories whose live checkout could not be made reachable at
+   * `/plugins/<name>`. Reported for the same reason `skillsFailed` is: a repo
+   * that silently never linked renders as a perfectly healthy card while
+   * nothing of it is in the workspace (req 2, req 13). Distinct from `missing`,
+   * which is the ordinary "activation has not published a generation yet" state
+   * the card already shows as `unavailable`.
+   */
+  linkFailed: { repo: string; reason: string }[];
   /** Namespaced skill directories written into each harness's discovery root (req 22). */
   skills: string[];
   /** Materialized skills removed because the declaration no longer imports them. */
   skillsRemoved: string[];
-  /** Skills that could not be written — reported, never fatal. */
-  skillsFailed: { skill: string; reason: string }[];
+  /**
+   * Skills that could not be written — reported, never fatal. Each names the
+   * declared repository it belongs to, because this list is what the
+   * orchestrator turns into card issues (req 13): a failure it cannot attribute
+   * to a repository has nowhere to render, which is how this half of prepare
+   * used to reach nothing but the log.
+   */
+  skillsFailed: PluginSkillFailure[];
 }
 
 export interface PreparePluginsOptions {
@@ -67,7 +83,8 @@ export function preparePlugins(opts: PreparePluginsOptions): PluginPrepareResult
   const pluginsDir = opts.pluginsDir ?? CONTAINER_PLUGINS_DIR;
   const storeDir = opts.storeDir ?? CONTAINER_PLUGIN_STORE_DIR;
   const result: PluginPrepareResult = {
-    linked: [], missing: [], unlinked: [], skills: [], skillsRemoved: [], skillsFailed: [],
+    linked: [], missing: [], unlinked: [], linkFailed: [],
+    skills: [], skillsRemoved: [], skillsFailed: [],
   };
 
   const config = resolveShipitConfig(opts.workspaceDir);
@@ -84,7 +101,9 @@ export function preparePlugins(opts: PreparePluginsOptions): PluginPrepareResult
       result.missing.push(repo.name);
       continue;
     }
-    if (linkPlugin(pluginsDir, repo.name, target)) result.linked.push(repo.name);
+    const failure = linkPlugin(pluginsDir, repo.name, target);
+    if (failure) result.linkFailed.push({ repo: repo.name, reason: failure });
+    else result.linked.push(repo.name);
   }
 
   // A repo dropped from the declaration must stop being addressable — including
@@ -109,7 +128,10 @@ export function preparePlugins(opts: PreparePluginsOptions): PluginPrepareResult
       const declared = declaredNames.get(repoName.toLowerCase());
       if (!declared) return null;
       const active = path.join(storeDir, declared, "active");
-      return fs.existsSync(active) ? active : null;
+      // The declared spelling travels with the checkout: every downstream
+      // failure is attributed to that repository's card, and the card is keyed
+      // by the name as the declaration writes it.
+      return fs.existsSync(active) ? { dir: active, repo: declared } : null;
     },
   );
 
@@ -139,10 +161,18 @@ export function preparePlugins(opts: PreparePluginsOptions): PluginPrepareResult
   //    materializing would put a copy of somebody else's repository into the
   //    user's next commit, which is the one thing req 22 rules out.
   if (!excluded) {
-    result.skillsFailed.push({
-      skill: "(all)",
-      reason: "could not keep plugin skills out of this clone's git, so none were materialized",
-    });
+    // Attributed to every repository that had something planned, and to no
+    // others: the exclude is one file, but the consequence is per repository —
+    // "none were materialized" is only a degradation for a card that expected
+    // skills. A repository with nothing planned is unaffected and must not grow
+    // an issue about a mechanism it does not use.
+    for (const repo of new Set(plan.planned.map((p) => p.repo))) {
+      result.skillsFailed.push({
+        repo,
+        skill: "(all)",
+        reason: "could not keep plugin skills out of this clone's git, so none were materialized",
+      });
+    }
   } else {
     const skills = materializePluginSkills(opts.workspaceDir, plan.planned);
     result.skills.push(...skills.materialized);
@@ -192,8 +222,12 @@ function removeStaleLinks(pluginsDir: string, wanted: Set<string>): string[] {
  * this symlink, then the store's own `active` symlink — so activating a new
  * generation on the host is visible here immediately, with no remount and no
  * container recreation (plan §2).
+ *
+ * Returns a reason on failure, `null` on success. It used to return a bare
+ * boolean whose `false` was dropped on the floor, so a repository that never
+ * became reachable rendered as a healthy card with nothing behind it.
  */
-function linkPlugin(pluginsDir: string, name: string, target: string): boolean {
+function linkPlugin(pluginsDir: string, name: string, target: string): string | null {
   const link = path.join(pluginsDir, name);
   try {
     fs.mkdirSync(pluginsDir, { recursive: true });
@@ -205,13 +239,15 @@ function linkPlugin(pluginsDir: string, name: string, target: string): boolean {
     } catch {
       current = null;
     }
-    if (current === target) return true;
+    if (current === target) return null;
     if (current !== null) fs.unlinkSync(link);
-    else if (fs.existsSync(link)) return false; // a real file/dir — refuse to clobber
+    // A real file/dir — refuse to clobber it, and say so.
+    else if (fs.existsSync(link)) return `\`${link}\` already exists and is not a link ShipIt made`;
     fs.symlinkSync(target, link);
-    return true;
+    return null;
   } catch (err) {
-    console.warn(`[plugins] could not link ${link}: ${getErrorMessage(err)}`);
-    return false;
+    const reason = getErrorMessage(err);
+    console.warn(`[plugins] could not link ${link}: ${reason}`);
+    return reason;
   }
 }

@@ -520,6 +520,118 @@ instead of a repeat.
   rewrite treat everything up to its own END as managed: that deletes the user's
   own ignore rules in between, which is how someone loses a rule that was
   keeping a secret out of a commit.
+
+  **The container's prepare result travels back to the card** (req 13 —
+  implemented: `services/plugin-activation.ts`,
+  `container-session-runner.ts`). Prepare has two halves that fail
+  independently: the orchestrator writes each import's state directory and
+  settings file, and the container links `/plugins/<name>` and materializes the
+  skills. Only the first half was ever visible. The second ended at a
+  `console.warn` in `preparePlugins()`, so a plugin that shipped none of the
+  agent instructions it promised still rendered as a healthy card — and a
+  degradation the user cannot see is not the "clearly reports … and why" req 13
+  asks for. The channel already existed (`prepareFailures`, keyed by session and
+  repository, merged into the snapshot by the route); what was missing was the
+  result travelling into it. Four decisions the implementation settled:
+
+  - **The worker returns an attributed failure list, not a boolean.** Every
+    source, plan entry and failure now carries the DECLARED repository name in
+    the declaration's own spelling — `from:` matches case-insensitively, so the
+    `use` entry's spelling is not the card's key. It also carries a readable
+    `<alias>/<skill>` label beside the namespaced directory name: the hashed
+    directory is the right identifier on disk and the wrong one on a card. The
+    single "could not keep them out of git" failure is attributed to each
+    repository that had skills planned and to no other — one exclude file, but
+    the consequence belongs per repository, and a repository shipping no skills
+    must not grow an issue about a mechanism it does not use.
+
+    **`linkPlugin` reports too, and two more silent shortfalls are now
+    failures** (review findings). The link step returned a bare `false` nobody
+    read, so a repository whose `/plugins/<name>` refused to be created — a real
+    file already sitting there — rendered as a perfectly healthy card with none
+    of the repository behind it. And a declared `skills:` directory that EXISTS
+    but holds nothing readable was a clean pass: the plugin promises agent
+    instructions and ships none, which is the same shortfall as declaring a
+    directory that is not there. A declared repository with no live generation
+    is deliberately NOT among these: the card already renders that as
+    `unavailable` from the generation state, and repeating it here would state
+    one ordinary fact twice, as an error.
+  - **The response is validated, not cast** (review finding). Containers survive
+    an orchestrator restart and are reconnected, so a rolling upgrade puts a new
+    orchestrator in front of a worker built before failures carried a `repo`.
+    Casting stored those under `sessionId::undefined` — a key no card looks up,
+    and one that displaced whatever the previous run had recorded. Unattributable
+    entries are dropped with a log line instead, which leaves an old worker
+    exactly as silent as it was before this change: it is not reporting less
+    than it knows, it never knew.
+  - **The two halves are recorded in separate maps and concatenated on read.**
+    They are written by different processes at different moments, and each
+    replaces only its own entries; merging them into one map would let a clean
+    container prepare erase a settings-write failure recorded microseconds
+    earlier. The snapshot route is unchanged — it asks "what could this
+    repository not be given?", and which process failed to give it is a detail
+    of the answer, not part of the question.
+  - **Only a prepare that actually RAN may write the record, and it replaces the
+    session's whole set.** Wholesale replacement is what makes a fixed problem
+    disappear, and it is safe because the container pass is always
+    whole-declaration even when the round that triggered it was narrowed to one
+    repository (`shipit plugin refresh <name>`). The corollary is the
+    unreachable case: a prepare that could not run leaves the previous record
+    alone rather than clearing it, because nothing reached the container's
+    filesystem — the last successful pass is still the truth about what is
+    materialized there, and clearing it would report health nobody observed.
+    Inventing a failure instead would attach a transport error to every plugin
+    card. A stale record therefore cannot outlive its session: the epoch is
+    captured before the request (so a result arriving after disposal writes
+    nothing, exactly as the activation state map does), `clearActivationState`
+    drops it on disposal, and a container RESTART re-runs prepare through
+    `setWorkerUrl` and overwrites it.
+  - **The result pushes a `plugin_repos_updated` only when the recorded set
+    moved.** The settled hook emits that message and *then* fires the container
+    prepare, so the browser's refetch predates the answer and a first push
+    cannot carry it. An unconditional second push would double the tab's
+    refetches to say nothing, since prepare runs on every activation round and
+    every container start and the healthy case dominates.
+
+  **Four limits, stated rather than closed.** Each was confirmed at the source;
+  each fix costs more than the gap does.
+
+  - **`shipit plugin refresh` returns before the container prepare its round
+    triggered has finished**, so its printed rows never carry container-side
+    failures — the card catches up seconds later on the push above. Awaiting it
+    would make a deliberately fire-and-forget hook blocking. This keeps both
+    halves symmetric: prepare failures of either half report on the card,
+    neither in the refresh row.
+  - **A cleanup failure for a repository the declaration no longer names has
+    nowhere to render.** A stale `/plugins/<name>` link or a materialized skill
+    that could not be swept stays logged only, because the snapshot iterates the
+    CURRENT declaration and the dropped repository has no card. Surfacing it
+    needs a tombstone or a session-level warning — a surface, not a field — and
+    that is its own piece of work rather than a line in this one.
+  - **Runner disposal clears the record while the container's filesystem may
+    outlive it.** `clearActivationState` fires on every runner `disposed` event,
+    and an idle-disposed container is later reconnected without a fresh
+    `setWorkerUrl`. The record is restored by the activation round that runs
+    when the session is next set up, so the window is "disposed, not yet
+    reactivated" — during which nothing is reading the tab. The orchestrator
+    half has had exactly this lifetime since it was written; making the
+    container half durable alone would make the two disagree.
+  - **A timeout is ambiguous, and is treated as "did not run".** The 30-second
+    deadline destroys the orchestrator's request socket; it does not cancel the
+    worker, which may finish the pass afterwards. So the preserved record can be
+    stale in either direction until the next prepare — which runs on every
+    activation round and every container start. Resolving it properly needs a
+    queryable prepare revision on the worker, which is more protocol than a
+    30-second copy of markdown warrants.
+
+  A fifth was considered and deliberately left alone: **overlapping prepares are
+  not ordered.** Two triggers each capture the same epoch, and whichever
+  response lands last wins. The worker serializes its own work and queues one
+  follow-up, so responses normally return in work order; an orchestrator-side
+  invocation counter would narrow the window without reflecting actual worker
+  execution order, which is mechanism that reads like a guarantee and is not.
+  The correct fix is a worker-issued revision, and the bug it would fix is a
+  card that is wrong until the next prepare.
 - **Refresh** (reqs 12, 15 — review finding 1): refresh is **generation
   activation**, never in-place mutation. Stage the new checkout, validate
   the manifest, run install, prepare services — then atomically activate:
