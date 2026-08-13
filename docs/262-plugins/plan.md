@@ -613,9 +613,64 @@ only the `shipit.yaml` key says `plugins:`.
 |---|---|---|---|
 | Service rows: origin badge (reqs 3, 15, 16) | A | `ServiceList.tsx`, `PreviewServicesDrawer.tsx` | Services keep `name` as their client identity (it is already globally collision-checked, req 20, and it is today's control/log address) and gain only a **structured `origin`** field on `ManagedServiceState` and the service WS messages — the runtime-ID/display-name layer was reviewed out (round-two finding 9). A small origin chip renders beside `ModeBadge` in every drawer path. No group headers. Health counts stay over service rows only |
 | **The Plugins tab** — a right-rail tab holding one card per declared repo: ref @ exact SHA, the plugins used from it, needs, grants, refresh, degraded and collision states (reqs 12, 13, 15, 20, 23, 24) | tab mock 1–3 | The right-rail tab strip (`App.tsx` ~1690–1895; `Tab.badge` slot for the warn dot) | New tab, gated on **plugin intent, not on valid repos** (round-two finding 2): a `plugins:` block that parses to zero valid repos still shows the tab, and parse warnings, never-fetched, and unavailable states all count toward the warn dot — otherwise an invalid declaration erases its own warning surface (req 13). The dot uses the existing `Tab.badge` slot with an accessible label ("Plugins — attention required"). Client state is a **session-scoped store** (not pane-local): seeded from the snapshot on attach/reload, stale-session guarded, refetched by the `files-changed` shipit.yaml hook, feeding the dot while the pane is closed; when the tab disappears (declaration edited away, session switch to a plugin-less repo) an effective-tab fallback coerces `rightTab` to Preview/Files, and the tab joins `useTabLabelCollapse`'s dependency key. Mobile needs nothing separate — the same right panel renders under Workspace. Data: `GET /api/plugin-repos?sessionId` returns one authoritative snapshot (declaration incl. **`consumerRepoUrl`**, resolved ref/SHA, exports, needs and their satisfaction, degraded/collision state); WS `plugin_repos_updated` (as built) carries a `sessionId`-scoped **signal** that an activation round settled; the client refetches the snapshot rather than the message carrying a second copy of it. Grants happen here: **"Add key…" opens the Project Settings dialog on the CONSUMING project's secret store** — `setProjectSettingsRepoUrl(consumerRepoUrl, "secrets")`; passing the plugin repo's URL would save the key into the wrong store, since that call selects the store `/api/secrets` writes to (round-two finding 1). "Allow (session)/(instance)" posts to the existing not-container-accessible `POST /api/egress/hosts` with the scope choice. The `PrLifecycleCard` and its strip are **untouched**. No "commits behind" badge (req 15 wants ref + exact commit, not network polling) |
-| Needs — credentials (req 23) | tab mock 1 | `SecretsTab.tsx` / `DeclaredSecretRow.tsx`, fed by `secrets_status` | `secrets_status.declared` gains an **origin** dimension (it is flat, name-keyed today — `service.ts:117`, and `SecretsTab` save assumes unique names). A project credential and a plugin credential with the same name are **deliberately the same stored secret**; multiple claimants render as one row with claimant chips |
+| Needs — credentials (req 23) ✓ | tab mock 1 | `SecretsTab.tsx` / `DeclaredSecretRow.tsx`, fed by `secrets_status`; the card's need rows, fed by the snapshot | **Built.** Two surfaces, one resolution (`shared/plugin-credentials.ts`). The **card** carries needs on the `use` entry that declares them (`PluginRepoUseView.credentials`), so an unset key reads as "`artk` needs `FAL_KEY`" — grouped per plugin, which is the requirement; a flat list cannot name the claimant. The **settings row** gets the origin dimension `secrets_status.declared` lacked (it is flat, name-keyed — `service.ts:117`, and `SecretsTab` save assumes unique names): entries gain `plugins: string[]`, and `secrets_status` gains a grouped `plugins` array. A project credential and a plugin credential with the same name are **deliberately the same stored secret** — one row, both claimant lists, the compose metadata (`required`, `agent`, description) untouched. A plugin-only name becomes a settable row with no consuming service. Plugin needs deliberately stay OUT of `missingRequired`: that list drives the preview's blocking "configure secrets" banner, which is about the project's own services failing to start; a plugin's gap belongs on the plugin's card and on the tab's warn dot. **Where satisfaction comes from is the security property** — see the boundary note below |
 | Needs — hosts (req 24) | tab mock 1 | The plugin card's needs rows, over the existing `POST /api/egress/hosts` (global or session scope; browser-only) | "Host not allowed" is evaluated against the **agent container's** allowlist — where companion CLIs run — because today's containment lives in the agent's netns while compose service containers have unrestricted egress (docs/172 residual). The need-row therefore names the blocked claimant (e.g. "blocks `artk`") rather than asserting one repository-level truth across both execution surfaces (round-two finding 4). Whether plugin *services* get their own containment is an explicit slice-2 decision, not a side effect of compose validation. Grant endpoints stay browser-only, so plugin code cannot self-grant |
 | Degraded / collision reporting (reqs 13, 20) | tab mock 2 | Card states inside the Plugins tab | **One card per declared repo, always** — simultaneous problems compose as multiple issue rows under one header whose status chip shows the worst state (round-two finding 8). Every card state, including degraded and collision, keeps the full `owner/repo` + ref @ commit identity visible (req 19 — the identity is what the standing grant trades approval for). **Degraded** distinguishes "refresh failed — prior version `<sha>` remains active" (req 15) from "never fetched — session runs without this repo's services" (req 13); **collision** names the colliding domain and the fix as "under the `use` entry whose alias is `<alias>`" (a `use` entry is a YAML sequence item, so there is no bracket path). A card states each fact **once**: a phase-2 failure names the selectors the declared version lacks, so the snapshot's own "not in this repository's `exports.plugins` manifest" line is suppressed for exactly those names (the failure carries them as `missingSelectors`) — it still fires when the attempt failed for another reason and the LIVE generation is what lacks the selector. Found by dogfooding the spine, not by review. Not transcript cards — no new DB columns, stores, or migrations |
+
+**The credential boundary is held by construction, not by convention** (req 23,
+last sentence: a plugin's store "can never resolve ShipIt's own platform
+credentials"). There is exactly ONE producer of the satisfied-name set —
+`loadSatisfiedPluginCredentialNames` — and its shape is the property:
+
+- It reads **`SecretStore`**, the per-repository store of values the user typed
+  into Settings → Secrets. ShipIt's platform credentials live in a different
+  store entirely (`CredentialStore`: GitHub identity, tracker tokens,
+  agent/provider routes, MCP OAuth), which `plugin-credentials.ts` does not
+  import and whose type the parameter does not admit.
+- It is keyed by the **consuming session's** `remoteUrl` — the same value the
+  card's "Add key…" writes back to, so the gap named and the store opened can
+  never disagree. That is the store trap below, on the read side.
+- It returns **names only**: values are read to test emptiness and discarded,
+  so nothing downstream is in a position to leak one.
+- On the `secrets_status` path the boundary is held by *sharing one input*
+  rather than by a second lookup that could drift: satisfaction is decided
+  against the very `userSecrets` map the compose services just resolved from.
+  `accountAgentEnvLoader`'s values (the user's provider tokens, MCP OAuth) are
+  merged into `agentValues` only, and never consulted for a plugin.
+
+`plugin-credentials.test.ts` proves it with a populated `CredentialStore` beside
+an empty project store: a plugin declaring `GITHUB_TOKEN`, `LINEAR_API_KEY`,
+`ANTHROPIC_API_KEY` and `MCP_PLATFORM_NOTION` reports all four as gaps while
+every one of them is really set on the platform side. A value the *user* placed
+in the project store under such a name is theirs and does resolve — the
+boundary is about ShipIt's credentials, not about reserved names.
+
+**Keeping both surfaces current** (implementation review). The card is fetched,
+so it is current by construction — but only if something refetches it: saving a
+key from "Add key…" now refetches the snapshot, because nothing else would and
+the card would keep naming a gap the user had just closed. `secrets_status`
+is *pushed*, and it samples plugin declarations only inside its own sync pass,
+so a first activation or a refresh that renames a credential would leave the
+settings rows on the previous declaration until an unrelated reconcile. The
+settled-activation hook therefore calls `ServiceManager.refreshSecretsStatus()`
+— deliberately NOT `refreshSecrets()`, which re-runs `compose up` for every auto
+service and would make a plugin refresh restart the user's app.
+
+One coverage limit remains, stated rather than hidden: `secrets_status` exists
+only for a session that has a compose stack, so a plugin-consuming project with
+no compose file of its own gets its needs from the Plugins tab alone until
+compose-fragment merging (slice 2) gives it a stack. The snapshot path has no
+such dependency, so the named gap and its "Add key…" are never missing there —
+only the settings-row claimant chips are.
+
+**An accepted, self-correcting skew**: within one snapshot request the active
+manifest (credential names) and the generation record (commit) are two reads of
+the same `active` symlink, so an activation swapping between them can render
+commit A's identity beside commit B's credential names. Coupling the two reads
+would mean threading one resolved generation path through the credential
+collector, which both surfaces share; the window is one request wide, the client
+is already polling while `activating` is true, and the next response is
+coherent. Recorded here rather than left for a reader to rediscover.
 
 Settings → Network egress is **unchanged** (it is explicitly the global-only
 editor — `SettingsEgress.tsx:135`); the diagnostics panel addition and the
@@ -635,13 +690,26 @@ coherent in one UI.
   pass, fail-closed grammar, and the snapshot projection. Filesystem-free so
   the client imports the types; `shipit-config.ts` is the entry point and
   parses trackers first (the reservation order).
+- ✓ `src/server/shared/plugin-credentials.ts` — req 23's pure half: collect
+  each activated plugin's declared credential names from the LIVE manifest,
+  resolve them against a name set, and project claimants. Filesystem-free (the
+  client imports the types). A repository with no live manifest reports
+  *nothing*, never "needs nothing" — "not knowable" must not read as satisfied.
+- ✓ `src/server/orchestrator/plugin-credentials.ts` — its store-facing half and
+  the single sanctioned satisfaction source
+  (`loadSatisfiedPluginCredentialNames`); see the boundary note in §3. Feeds
+  both the snapshot route and `service-secrets-resolver.ts`.
 - ✓ `src/server/orchestrator/plugin-generations.ts` — the generation engine:
   layout under the session state dir (docs/246 — never inside the clone),
   commit resolution incl. durable pins, staging, phase-2 selector validation,
   atomic symlink publish, pruning. It runs no plugin-authored code — install
   is container-side (see §1b). ✓ `services/plugin-activation.ts` is its lifecycle
   half, triggered from `service-manager-setup.ts` on session activation and on
-  a `shipit.yaml` edit.
+  a `shipit.yaml` edit. `readActiveManifest` reads the live commit's own
+  `exports.plugins` through the same `active` symlink: the generation record
+  carries export NAMES only, which answers "is this selector real?" and nothing
+  about what an export *declares* (req 23's credentials, later settings and
+  hosts).
 - ✓ `src/server/orchestrator/plugin-state.ts` — the per-import primitives
   (reqs 17, 18, 26): the durable layout under the SESSION ROOT (not the state
   dir, which eviction reclaims), settings resolution and its two fail-closed
@@ -714,7 +782,8 @@ coherent in one UI.
   caching, the `declarationsPending` mechanism docs/248 needed for the same
   reason.
 - `src/server/shared/types/ws-server-messages/service.ts` — structured
-  `origin` on service messages; `secrets_status` origin dimension; new
+  `origin` on service messages; ✓ `secrets_status`'s plugin dimension
+  (`declared[].plugins` claimants + the grouped `plugins` array); ✓ new
   `plugin_repos_updated`.
 - `src/client/components/ServiceList.tsx`, `PreviewServicesDrawer.tsx`,
   `SecretsTab.tsx` — the

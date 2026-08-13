@@ -166,6 +166,18 @@ describe("tab gating and attention (plan §3)", () => {
     expect(pluginsAttention(snapshot({ warnings: ["w"] }))).toBe(true);
     expect(pluginsAttention(snapshot({ repos: [{ ...card, issues: ["missing"] }] }))).toBe(true);
   });
+
+  it("an unsatisfied plugin credential fires the dot (req 23)", () => {
+    const use = (satisfied: boolean) => ({
+      plugin: "palette",
+      alias: "artk",
+      found: true,
+      credentials: [{ name: "FAL_KEY", satisfied }],
+    });
+    // A closed tab may hide information, never a gap the user must close.
+    expect(pluginsAttention(snapshot({ repos: [{ ...card, uses: [use(false)] }] }))).toBe(true);
+    expect(pluginsAttention(snapshot({ repos: [{ ...card, uses: [use(true)] }] }))).toBe(false);
+  });
 });
 
 describe("activating never leaves the card stuck", () => {

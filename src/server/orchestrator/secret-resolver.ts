@@ -142,6 +142,14 @@ export interface PlatformSourceWarning {
 export interface DeclaredSecret extends SecretRequirement {
   /** Names of services that listed this secret in `x-shipit-secrets`. */
   services: string[];
+  /**
+   * docs/262 req 23 — aliases of activated plugins that declare this name.
+   * The second claimant dimension beside `services`: a project credential and
+   * a plugin credential of the same name are deliberately the SAME stored
+   * secret, so the settings row lists every claimant instead of the name
+   * appearing twice. Absent when no plugin claims it.
+   */
+  plugins?: string[];
 }
 
 // ---------------------------------------------------------------------------

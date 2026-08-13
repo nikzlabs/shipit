@@ -17,6 +17,7 @@
 
 import { parseOwnerRepo } from "./tracker-id.js";
 import type { DeclaredTracker } from "./declared-tracker.js";
+import type { PluginCredentialGroup, PluginCredentialNeed } from "./plugin-credentials.js";
 
 // ---------------------------------------------------------------------------
 // Config types (what shipit.yaml declares)
@@ -111,6 +112,15 @@ export interface PluginRepoUseView {
   plugin: string;
   alias: string;
   found: boolean | null;
+  /**
+   * req 23 — the credential names this plugin declares, each resolved against
+   * the CONSUMING project's own secret store. Grouped under the plugin that
+   * declares them (not flattened onto the card) so an unsatisfied name reads
+   * as "`artk` needs `FAL_KEY`" rather than as an anonymous missing key.
+   * Empty when the plugin declares none, and when the repository has no live
+   * manifest to read — "not knowable" is never reported as "needs nothing".
+   */
+  credentials: PluginCredentialNeed[];
 }
 
 /**
@@ -767,8 +777,17 @@ export function buildPluginReposSnapshot(
   consumerRepoUrl: string | null,
   warnings: readonly string[],
   runtime: Readonly<Record<string, PluginRepoRuntime>> = {},
+  /**
+   * req 23 — per-plugin credential needs, already resolved against the
+   * consuming project's store by the caller (`plugin-credentials.ts`). Passed
+   * in rather than computed here for the reason the whole module is
+   * filesystem-free: satisfaction is a store read, and this projection stays
+   * pure. Keyed onto `use` entries by alias, which is unique per project.
+   */
+  credentialGroups: readonly PluginCredentialGroup[] = [],
 ): PluginReposSnapshot {
   const selfExports = new Set(pluginExports.map((e) => e.name.toLowerCase()));
+  const needsByAlias = new Map(credentialGroups.map((g) => [g.alias.toLowerCase(), g.credentials]));
 
   const repos: PluginRepoCardView[] = plugins.repos.map((repo) => {
     const isSelf = repo.source.kind === "self";
@@ -784,6 +803,7 @@ export function buildPluginReposSnapshot(
         plugin: u.plugin,
         alias: u.alias,
         found: manifest ? manifest.has(u.plugin.toLowerCase()) : null,
+        credentials: needsByAlias.get(u.alias.toLowerCase()) ?? [],
       }));
 
     // A phase-2 failure already says which selectors the declared version

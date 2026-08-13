@@ -1,9 +1,10 @@
 // docs/262 — the Plugins tab pane: cards, identity, warnings, issue rows.
 
 import { describe, it, expect, afterEach } from "vitest";
-import { render, cleanup, screen } from "@testing-library/react";
+import { render, cleanup, screen, fireEvent } from "@testing-library/react";
 import { PluginReposPanel } from "./PluginReposPanel.js";
 import { usePluginReposStore } from "../stores/plugin-repos-store.js";
+import { useUiStore } from "../stores/ui-store.js";
 import type { PluginReposSnapshot } from "../../server/shared/plugin-repos.js";
 
 function setSnapshot(snapshot: PluginReposSnapshot | null) {
@@ -23,7 +24,7 @@ const FIXTURE: PluginReposSnapshot = {
       ref: null,
       commit: null,
       status: "self",
-      uses: [{ plugin: "probe", alias: "probe", found: true }],
+      uses: [{ plugin: "probe", alias: "probe", found: true, credentials: [] }],
       issues: [],
     },
     {
@@ -32,7 +33,7 @@ const FIXTURE: PluginReposSnapshot = {
       ref: "main",
       commit: null,
       status: "active",
-      uses: [{ plugin: "probe", alias: "remote-probe", found: null }],
+      uses: [{ plugin: "probe", alias: "remote-probe", found: null, credentials: [] }],
       issues: [],
     },
   ],
@@ -42,6 +43,7 @@ describe("PluginReposPanel", () => {
   afterEach(() => {
     cleanup();
     setSnapshot(null);
+    useUiStore.getState().setProjectSettingsRepoUrl(null);
   });
 
   it("renders one card per declared repo with the identity always visible (req 19)", () => {
@@ -74,7 +76,7 @@ describe("PluginReposPanel", () => {
       repos: [
         {
           ...FIXTURE.repos[0],
-          uses: [{ plugin: "ghost", alias: "ghost", found: false }],
+          uses: [{ plugin: "ghost", alias: "ghost", found: false, credentials: [] }],
           issues: ["`ghost` is not in this repository's `exports.plugins` manifest."],
         },
       ],
@@ -88,5 +90,59 @@ describe("PluginReposPanel", () => {
     setSnapshot({ ...FIXTURE, repos: [{ ...FIXTURE.repos[1], uses: [] }] });
     render(<PluginReposPanel />);
     expect(screen.getByText(/files only — no plugins activated/)).toBeTruthy();
+  });
+
+  // docs/262 req 23 — a missing key is a visible, NAMED gap.
+  describe("credential needs", () => {
+    const withNeeds = (credentials: { name: string; satisfied: boolean }[]): PluginReposSnapshot => ({
+      ...FIXTURE,
+      repos: [
+        {
+          ...FIXTURE.repos[1],
+          uses: [{ plugin: "palette", alias: "artk", found: true, credentials }],
+        },
+      ],
+    });
+
+    it("names the credential and the plugin that needs it", () => {
+      setSnapshot(withNeeds([{ name: "FAL_KEY", satisfied: false }]));
+      render(<PluginReposPanel />);
+      const row = screen.getByTestId("plugin-credential-need-artk-FAL_KEY");
+      expect(row.textContent).toContain("FAL_KEY");
+      expect(row.textContent).toContain("artk");
+      expect(screen.getByText("1 need")).toBeTruthy();
+    });
+
+    it("a satisfied credential is stated, not silently dropped", () => {
+      // req 23 asks for "which credentials … and whether they are satisfied":
+      // a set key is reported quietly; only a gap gets an action row.
+      setSnapshot(withNeeds([{ name: "FAL_KEY", satisfied: true }]));
+      render(<PluginReposPanel />);
+      expect(screen.queryByTestId("plugin-credential-need-artk-FAL_KEY")).toBeNull();
+      expect(screen.queryByText("1 need")).toBeNull();
+      const set = screen.getByTestId("plugin-credentials-set");
+      expect(set.textContent).toContain("FAL_KEY");
+      expect(set.textContent).toContain("artk");
+    });
+
+    it("'Add key…' opens the CONSUMING project's secret store, never the plugin repo's", () => {
+      // plan §3's store trap: `setProjectSettingsRepoUrl` selects the store
+      // `/api/secrets` writes to, so the plugin repository's URL would save the
+      // key where nothing reads it.
+      setSnapshot(withNeeds([{ name: "FAL_KEY", satisfied: false }]));
+      render(<PluginReposPanel />);
+      fireEvent.click(screen.getByText("Add key…"));
+
+      const ui = useUiStore.getState();
+      expect(ui.projectSettingsRepoUrl).toBe("https://github.com/x/y");
+      expect(ui.projectSettingsTab).toBe("secrets");
+    });
+
+    it("offers no button when the session has no repository to save into", () => {
+      setSnapshot({ ...withNeeds([{ name: "FAL_KEY", satisfied: false }]), consumerRepoUrl: null });
+      render(<PluginReposPanel />);
+      expect(screen.getByTestId("plugin-credential-need-artk-FAL_KEY")).toBeTruthy();
+      expect(screen.queryByText("Add key…")).toBeNull();
+    });
   });
 });

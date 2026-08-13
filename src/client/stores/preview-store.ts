@@ -4,6 +4,7 @@ import type { PreviewStatus } from "../components/PreviewFrame.js";
 import type { DevicePreset } from "../components/device-presets.js";
 import type { ComposeServiceStatus, ComposeServicePreviewMode } from "../../server/shared/types/ws-server-messages.js";
 import type { SecretRequirement } from "../../server/shared/types/domain-types.js";
+import type { PluginCredentialGroup } from "../../server/shared/plugin-credentials.js";
 
 // ---- Compose service state ----
 
@@ -55,8 +56,12 @@ export const PREVIEW_LINK_INTENT_TTL_MS = 120_000;
 
 // ---- Secrets state (087-reusable-preview-secrets, Phase 2) ----
 
-/** A declared secret aggregated across all services that referenced it. */
-export type DeclaredSecretState = SecretRequirement & { services: string[] };
+/**
+ * A declared secret aggregated across every claimant that referenced it:
+ * compose services, and — docs/262 req 23 — activated plugins, by alias. A
+ * name claimed by both is one row, because it is one stored secret.
+ */
+export type DeclaredSecretState = SecretRequirement & { services: string[]; plugins?: string[] };
 
 /**
  * Snapshot of declared secrets for the current session — driven by the
@@ -68,12 +73,19 @@ export interface SecretsState {
   declared: DeclaredSecretState[];
   missingByService: Record<string, string[]>;
   missingRequired: string[];
+  /**
+   * docs/262 req 23 — plugin-declared credentials, grouped per activated
+   * plugin. Optional so a client restored from an older snapshot (or a
+   * pre-plugin server) reads as "no plugin needs" rather than crashing.
+   */
+  plugins?: PluginCredentialGroup[];
 }
 
 const emptySecretsState: SecretsState = {
   declared: [],
   missingByService: {},
   missingRequired: [],
+  plugins: [],
 };
 
 export interface StartupStep {

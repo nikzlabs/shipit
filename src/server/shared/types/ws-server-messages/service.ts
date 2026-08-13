@@ -1,4 +1,5 @@
 import type { SecretRequirement } from "../domain-types.js";
+import type { PluginCredentialGroup } from "../../plugin-credentials.js";
 
 // ---- Install status messages (server → client) ----
 
@@ -132,8 +133,14 @@ export interface WsComposeNotConfigured {
 export interface WsSecretsStatus {
   type: "secrets_status";
   sessionId: string;
-  /** All declared secrets across all services, de-duplicated by name. */
-  declared: (SecretRequirement & { services: string[] })[];
+  /**
+   * All declared secrets, de-duplicated by name: every service's
+   * `x-shipit-secrets` entries, plus every credential name an activated plugin
+   * declares (docs/262 req 23). A name claimed by both is ONE row carrying
+   * both claimant lists — deliberately, because it is one stored secret.
+   * `services` is empty on a row only a plugin claims.
+   */
+  declared: (SecretRequirement & { services: string[]; plugins?: string[] })[];
   /** Service name → secret names declared but not present (required + optional). */
   missingByService: Record<string, string[]>;
   /**
@@ -141,6 +148,19 @@ export interface WsSecretsStatus {
    * value was found. Empty list = no banner.
    */
   missingRequired: string[];
+  /**
+   * docs/262 req 23 — plugin-declared credentials GROUPED per activated
+   * plugin, each name carrying whether this project has a value for it. The
+   * grouping is what makes a missing key a *named* gap ("`artk` needs
+   * `FAL_KEY`") instead of an anonymous entry in a flat list.
+   *
+   * Values come from the consuming project's own secret store and nothing
+   * else; ShipIt's platform credentials can never satisfy one of these.
+   *
+   * Not part of `missingRequired`: that list drives the preview's blocking
+   * "configure secrets" banner, which is about the project's own services.
+   */
+  plugins: PluginCredentialGroup[];
 }
 
 /**
