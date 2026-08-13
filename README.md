@@ -37,16 +37,18 @@ loop**.
 
 ### What you need
 
-- [Docker](https://docs.docker.com/get-docker/) with the Compose v2 plugin (`docker compose`) — for
-  a local install only; the VPS script installs both for you.
-- A [GitHub account](https://github.com/), connected on first run — ShipIt clones repos, pushes
-  branches, opens PRs, and reads CI and deploy status through it.
-- Credentials for at least one provider:
-  - **Subscriptions** — [Claude Pro/Max](https://claude.ai/upgrade), ChatGPT, or a GLM (Z.ai)
-    coding plan
-  - **API keys** — [Anthropic](https://console.anthropic.com/settings/keys),
-    [OpenAI](https://platform.openai.com/api-keys), DeepSeek, GLM (Z.ai), OpenRouter, or Vercel AI
-    Gateway
+**On the host, before you install** — [Docker](https://docs.docker.com/get-docker/) with the Compose
+v2 plugin (`docker compose`). Local installs only; the VPS script installs both for you.
+
+**In the app, on first run** — a [GitHub account](https://github.com/) (ShipIt clones repos, pushes
+branches, opens PRs, and reads CI and deploy status through it), and credentials for at least one
+provider:
+
+- **Subscriptions** — [Claude Pro/Max](https://claude.ai/upgrade), ChatGPT, or a GLM (Z.ai) coding
+  plan
+- **API keys** — [Anthropic](https://console.anthropic.com/settings/keys),
+  [OpenAI](https://platform.openai.com/api-keys), DeepSeek, GLM (Z.ai), OpenRouter, or Vercel AI
+  Gateway
 
 ### Run locally
 
