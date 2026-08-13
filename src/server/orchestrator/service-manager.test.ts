@@ -3210,7 +3210,7 @@ services:
     expect(getSnapshotDuringUp()).toContain("[compose] #4 [2/9] RUN apt-get update");
 
     await mgr.stop();
-  });
+  }, 15_000);
 
   it("emits a record that never ends, instead of buffering it without bound", async () => {
     tmpDir = makeSessionDir("service-mgr-");

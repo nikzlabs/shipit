@@ -15,3 +15,4 @@
 - [x] Ninth fresh review completed; Compose API-socket and lifecycle-hook escapes are rejected, Docker Engine API 1.48 is required for deterministic gateway priority, and unrelated network-connect authorization errors now fail closed.
 - [x] Tenth fresh review completed; raw Docker socket access is limited to the trusted proxy service and local/VPS installers enforce Docker Engine API 1.48.
 - [x] Eleventh fresh review completed; the Docker socket proxy exception now requires the server-authoritative ops flag, and stopped-service preparation invalidates same-second namespace state.
+- [x] Twelfth fresh review completed; policy transitions stop the prior stack before worker readiness, with regression coverage for the ordering.

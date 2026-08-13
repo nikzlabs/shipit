@@ -117,6 +117,17 @@ export function adoptExistingServiceManager(
         deps.prepareContainedStartFn,
       )
     : false;
+  // Stop the old-policy stack immediately. In particular, Open→Contained must
+  // not leave repository services on their old NAT networks while a new worker
+  // is still starting. `stop()` preserves volumes; reconcile starts the stack
+  // again only after the network mode is reset.
+  const policyTransition = containmentChanged
+    ? mgr.stop().catch((error: unknown) => {
+        const normalized = error instanceof Error ? error : new Error(String(error));
+        mgr.emit("stack_error", normalized);
+        throw normalized;
+      })
+    : Promise.resolve();
   // 2. Reconnect the new agent container to the existing compose network.
   //    The old container was destroyed; the network outlived it (compose
   //    only removes networks on `down`, which we deliberately skipped).
@@ -144,6 +155,7 @@ export function adoptExistingServiceManager(
       .whenWorkerReady()
       .then(async () => {
         if (containmentChanged) {
+          await policyTransition;
           await deps.resetSessionNetwork?.();
           await mgr.reconcile();
         }
@@ -154,16 +166,10 @@ export function adoptExistingServiceManager(
         if (msg.includes("already exists")) return;
         const error = err instanceof Error ? err : new Error(msg);
         mgr.emit("stack_error", error);
-        // A failed Open→Contained transition must not leave the prior open
-        // stack running. Preserve its volumes for a later retry.
-        if (containmentChanged && deps.containServicesFn) {
-          void mgr.stop().catch((stopError: unknown) => {
-            mgr.emit("stack_error", stopError instanceof Error ? stopError : new Error(String(stopError)));
-          });
-        }
       });
   } else if (containmentChanged) {
     void (async () => {
+      await policyTransition;
       await deps.resetSessionNetwork?.();
       await mgr.reconcile();
     })().catch((error: unknown) => {
