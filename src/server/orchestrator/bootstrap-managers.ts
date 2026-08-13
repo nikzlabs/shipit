@@ -60,7 +60,9 @@ import type { VersionInfo } from "../shared/types.js";
 import type { GenerateText } from "./non-turn-model.js";
 import { makeNonTurnGenerateText } from "./services/non-turn-work.js";
 import { createAutoPushScheduler } from "./services/auto-push-scheduler.js";
-import { activateDeclaredPlugins } from "./services/plugin-activation.js";
+import { activateDeclaredPlugins, type PluginInstallHook } from "./services/plugin-activation.js";
+import { createPluginInstallRunner } from "./plugin-install.js";
+import { sessionStateDirForWorkspace } from "./session-state-dir.js";
 import { pinStorePath } from "./plugin-pins.js";
 import { ensureBareCache } from "./repo-git.js";
 
@@ -473,12 +475,38 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   // sessions activating the same plugin repository for the first time would
   // otherwise clone into the same directory concurrently (review finding 7).
   const cacheOps = new Map<string, Promise<void>>();
+  // docs/262 — a plugin's `install` runs in a container of its own, holding
+  // only that generation's overlay volume. Built per session because the
+  // staging directory it installs against lives in that session's state dir.
+  // No container manager (local mode, tests) means no Docker, so no install
+  // hook: activation then behaves exactly as it did before install existed.
+  const pluginInstallHook = (sessionId: string, workspaceDir: string): PluginInstallHook | undefined => {
+    if (!containerManager) return undefined;
+    let sessionStateDir: string;
+    try {
+      sessionStateDir = sessionStateDirForWorkspace(workspaceDir);
+    } catch {
+      return undefined; // a workspace whose layout has no state dir has no generations either
+    }
+    return createPluginInstallRunner({
+      docker: containerManager.dockerClient,
+      image: containerManager.workerImageName,
+      sessionId,
+      stateDir: sessionStateDir,
+      // Both omitted in dev/dogfood bind-mount mode, where the daemon and this
+      // process see the same paths and no translation is needed.
+      ...(containerManager.workspaceVolumeName
+        ? { workspaceVolume: containerManager.workspaceVolumeName, stateRoot: stateDir }
+        : {}),
+    });
+  };
   const activatePluginRepos = (
     sessionId: string,
     workspaceDir: string,
     onSettled?: (id: string) => void,
   ): void => {
     const remoteUrl = sessionManager.get(sessionId)?.remoteUrl;
+    const runInstall = pluginInstallHook(sessionId, workspaceDir);
     void activateDeclaredPlugins(
       sessionId,
       workspaceDir,
@@ -488,6 +516,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
         // Fetching runs here, in the orchestrator, so plugin code never reaches
         // fetch credentials (req 19).
         ...(onSettled ? { onSettled } : {}),
+        ...(runInstall ? { runInstall } : {}),
         ensureCache: (cacheDir, repoUrl) => {
           const previous = cacheOps.get(cacheDir) ?? Promise.resolve();
           // eslint-disable-next-line no-restricted-syntax -- chaining a serial queue in a sync factory

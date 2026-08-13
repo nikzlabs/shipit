@@ -65,9 +65,10 @@ mid-session, `/plugins/<name>` points at the new commit with no restart.
 
 ## Plugin code does not run in your container
 
-Everything a plugin *ships* — its `install`, its CLIs, its services — is
-designed to run in a separate container, with only what it declared: the
-checkout, its own writable layer, its own credentials. None of it runs yet.
+Everything a plugin *ships* — its `install`, its CLIs, its services — runs in a
+separate container, with only what it declared: the checkout, its own writable
+layer, its own credentials. `install` works this way today; CLIs and services
+are not built yet.
 
 This is not tidiness. Your container can reach ShipIt's own credential broker
 on loopback, so anything running here can obtain a real GitHub token. Plugin
@@ -80,6 +81,18 @@ The practical consequence for you: `/plugins/<name>` shows plugin **source**.
 It does not show a plugin's installed dependencies, because those live in a
 layer that belongs to the plugin's own execution environment, not to yours.
 
+## Install
+
+A plugin's `install` command runs once per commit, in a container that holds
+one thing: the plugin's checkout merged with its own writable layer. It runs
+**before** the new commit goes live, so an install that fails is simply a
+failed refresh — the previous commit stays active and the Plugins tab reports
+why, with the command's own output.
+
+You will not see the result. Dependencies and build output land in that
+writable layer, which belongs to the plugin's execution environment; your
+`/plugins/<name>` still shows plain source.
+
 ## Failure behaviour
 
 A plugin repository that cannot be fetched or validated does not stop the
@@ -91,7 +104,6 @@ succeeds or fails on its own.
 
 Declared in the manifest and parsed, but not yet wired into a session:
 
-- **Install** — declared and validated, but nothing runs it yet
 - **CLIs** on your `PATH`, with the plugin's credentials injected
 - **Skills** materialized into the agent's discovery root
 - **Services** from a plugin's compose fragment, and `/project` inside them

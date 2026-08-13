@@ -104,7 +104,21 @@ export interface PluginActivationDeps {
    * poll — and a poll that gives up leaves the card stuck (review finding).
    */
   onSettled?: ActivationSettledHook;
+  /**
+   * Run the selected plugins' `install` against a STAGED generation, before
+   * anything is published (plan §1b). Injected all the way from
+   * `bootstrap-managers`, because the implementation needs Docker — install
+   * runs in a container of its own, and neither this module nor
+   * `plugin-generations.ts` executes plugin-authored code (req 19).
+   *
+   * Omitted where there is no Docker (local mode, tests): the step is skipped
+   * and activation is exactly what it was before.
+   */
+  runInstall?: PluginInstallHook;
 }
+
+/** The install hook's shape, taken from the generation engine that calls it. */
+export type PluginInstallHook = NonNullable<Parameters<typeof activateGeneration>[1]["runInstall"]>;
 
 /**
  * Activate every tracked repository the session declares. `self` entries are
@@ -179,6 +193,7 @@ export async function activateDeclaredPlugins(
           selectedExports: selectedByRepo.get(repo.name.toLowerCase()) ?? [],
           ensureCache: deps.ensureCache,
           isCancelled,
+          ...(deps.runInstall ? { runInstall: deps.runInstall } : {}),
         });
       } catch (err) {
         // `activateGeneration` is documented never to throw, but the counter

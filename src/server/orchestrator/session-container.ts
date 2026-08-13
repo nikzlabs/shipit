@@ -495,6 +495,26 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
   }
 
   /**
+   * docs/262 — the session-worker image, exposed so the plugin install runner
+   * can borrow its toolchain (node, npm, git) for a throwaway container. It
+   * bypasses the image's entrypoint and mounts none of a session's paths, so
+   * this is a toolchain reference, not a session container.
+   */
+  get workerImageName(): string {
+    return this.imageName;
+  }
+
+  /**
+   * The workspace state volume's name, or `undefined` in dev/dogfood, where the
+   * state dir is a bind mount. Exposed for the same reason as the image: the
+   * plugin overlay volume's paths must be translated onto the DAEMON's view of
+   * this volume, and only the manager knows which volume that is.
+   */
+  get workspaceVolumeName(): string | undefined {
+    return this.workspaceVolume;
+  }
+
+  /**
    * docs/172 (planning#92) — apply a newly-added durable allowlist host to a RUNNING,
    * contained session by relaunching the Tier B resolver + Tier C proxy with the
    * regenerated config, so the host resolves (DNS + ipset auto-pin) and its SNI

@@ -87,10 +87,23 @@ describe("pluginOverlayVolumeName", () => {
   });
 
   it("keeps the session-prefixed shape orphan collection looks for", () => {
-    expect(pluginOverlayVolumeName(base.sessionId, "tools", base.commit)).toMatch(/^shipit-0123abcd_plugin-tools-a{12}$/);
+    expect(pluginOverlayVolumeName(base.sessionId, "tools", base.commit))
+      .toMatch(/^shipit-0123abcd-456_plugin-tools-a{12}$/);
+  });
+
+  // Verified against the sweep itself, not against the convention as described:
+  // `sweepOrphanSessionVolumes` matches this exact pattern and compares the
+  // capture with `sessionId.slice(0, 12)`. An 8-character prefix — the first
+  // version of this name — does not match at all, so an orphaned volume would
+  // never be reclaimed.
+  it("is reclaimable by the disk janitor's orphan sweep", () => {
+    const name = pluginOverlayVolumeName(base.sessionId, "tools", base.commit);
+    const match = /^shipit-([a-f0-9-]{12})_/.exec(name);
+    expect(match?.[1]).toBe(base.sessionId.slice(0, 12));
   });
 
   it("renders an awkward repo name into something a volume name can hold", () => {
-    expect(pluginOverlayVolumeName(base.sessionId, "My Tools/v2!", base.commit)).toMatch(/^shipit-0123abcd_plugin-my-tools-v2-a{12}$/);
+    expect(pluginOverlayVolumeName(base.sessionId, "My Tools/v2!", base.commit))
+      .toMatch(/^shipit-0123abcd-456_plugin-my-tools-v2-a{12}$/);
   });
 });

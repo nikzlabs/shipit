@@ -219,6 +219,26 @@ the active generation). Install re-runs when its stamped inputs change: the
 plugin commit, the install string, or the content of the manifest's
 `install-inputs` files (the same convention `agent.install` already uses).
 
+**What the container actually gets** (implemented — `plugin-install.ts`): the
+generation's overlay volume at `/plugin` as its ONLY mount, `cwd` there, the
+session-worker image for its toolchain with its ENTRYPOINT bypassed (that
+script prepares session mounts this container does not have), an environment
+of exactly `SHIPIT_PLUGIN_COMMIT` + `HOME=/tmp`, the default bridge network,
+all capabilities dropped, `no-new-privileges`, a memory and PID ceiling, and a
+timeout. It runs as the session-worker UID — which is why the staging checkout
+is handed to that UID first: overlayfs takes the merged directory's
+permissions from the LOWER dir, so a root-owned checkout would leave the
+plugin root unwritable and every install would fail at its first file. That
+handoff is also what covers a generation staged *after* the session container
+booted, which the entrypoint's boot-time chown cannot reach.
+
+For a consumer generation the commit determines every input, so the stamp is
+not what decides a re-install — a new commit is a new generation and a new
+layer. It exists for the case that is not a new commit: an install that
+succeeded and then had its *publish* fail leaves a populated layer behind, and
+the next attempt re-stages the same commit. The stamp turns that into a no-op
+instead of a repeat.
+
 ## 2. How a plugin is used inside a session
 
 - **Files** (reqs 2, 7): each declared repo is checked out read-only at
@@ -413,6 +433,26 @@ coherent in one UI.
   is container-side (see §1b). ✓ `services/plugin-activation.ts` is its lifecycle
   half, triggered from `service-manager-setup.ts` on session activation and on
   a `shipit.yaml` edit.
+- ✓ `src/server/orchestrator/plugin-overlay.ts` — the copy-on-write layer, one
+  `type=overlay` Docker volume per generation (lowerdir the pristine checkout,
+  upper/work beside it under `work/<sha>/`). Its whole subtlety is that the
+  three dirs are **daemon-host** paths, translated off the state volume's
+  mountpoint the way docs/183 does; the orchestrator's own view is carried
+  separately because it must create upper and work itself. Install and publish
+  share ONE upper layer under two different lowerdirs (staging, then the
+  published generation), so the install volume is removed before the runtime
+  volume is created — the kernel forbids one upperdir backing two mounts. The
+  12-character session prefix in the volume name is what makes an orphan
+  reclaimable by the disk janitor's sweep.
+- ✓ `src/server/orchestrator/plugin-install.ts` — the throwaway install
+  container: the generation's overlay volume at `/plugin` and nothing else, the
+  worker image for its toolchain with its entrypoint bypassed, no inherited
+  environment, no session network, capabilities dropped, bounded by a timeout.
+  Injected into `activateGeneration` as `runInstall` from `bootstrap-managers`,
+  so neither the generation engine nor the activation service executes
+  plugin-authored code. Also owns the boot-time reap of install containers a
+  previous process left behind — one holds its generation's volume open, so an
+  orphan blocks the next activation of that commit.
 - ✓ `src/server/orchestrator/api-routes-plugin-repos.ts` — browser snapshot
   (the GET exists; refresh endpoints come with generation mechanics); tracker
   registration folds into the existing trackers registry

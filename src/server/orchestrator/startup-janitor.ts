@@ -115,6 +115,7 @@ import path from "node:path";
 import fs from "node:fs/promises";
 import type Docker from "dockerode";
 import { reapOrphanEgressSidecars } from "./egress-orphan-reaper.js";
+import { reapOrphanPluginInstalls } from "./plugin-install.js";
 import type { SessionManager } from "./sessions.js";
 import type { RepoStore } from "./repo-store.js";
 import type { GitHubAuthManager } from "./github-auth.js";
@@ -217,6 +218,8 @@ export interface DiskJanitorResult {
   logDirsRemoved: number;
   /** planning#224 — egress sidecars (docs/172) whose netns parent is gone or stopped. */
   orphanEgressSidecarsRemoved: number;
+  /** docs/262 — plugin install containers left behind by a previous process. */
+  orphanPluginInstallsRemoved: number;
 }
 
 /**
@@ -244,6 +247,7 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
     credentialDirsRemoved: 0,
     logDirsRemoved: 0,
     orphanEgressSidecarsRemoved: 0,
+    orphanPluginInstallsRemoved: 0,
   };
   const runDocker = deps.runDocker ?? defaultRunDocker;
   const paceMs = deps.paceMs ?? 0;
@@ -317,6 +321,18 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
     } catch (err) {
       console.warn("[disk-janitor] orphan egress-sidecar sweep failed:", getMessage(err));
     }
+
+    // docs/262 — plugin install containers. Same liveness-free test as above,
+    // for a stronger reason: an install cannot outlive the process that awaited
+    // it, so at boot any survivor is an orphan — and it holds its generation's
+    // overlay volume open until it is removed.
+    try {
+      result.orphanPluginInstallsRemoved = await reapOrphanPluginInstalls(
+        deps.docker, { paceMs },
+      );
+    } catch (err) {
+      console.warn("[disk-janitor] orphan plugin-install sweep failed:", getMessage(err));
+    }
   }
 
   if (
@@ -347,7 +363,8 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
     + `orphan-branches=${result.orphanBranchesRemoved} `
     + `credential-dirs=${result.credentialDirsRemoved} `
     + `log-dirs=${result.logDirsRemoved} `
-    + `orphan-egress-sidecars=${result.orphanEgressSidecarsRemoved}`,
+    + `orphan-egress-sidecars=${result.orphanEgressSidecarsRemoved} `
+    + `orphan-plugin-installs=${result.orphanPluginInstallsRemoved}`,
   );
   return result;
 }

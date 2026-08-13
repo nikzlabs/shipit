@@ -63,11 +63,17 @@ export interface PluginOverlaySpec extends OverlaySpec {
 /**
  * Name a generation's volume. Keyed by session AND commit: per generation,
  * never per repository, because a volume's driver options cannot change while
- * consumers hold it. The `shipit-<session-prefix>_` shape matches the existing
- * convention so orphan collection can find these the same way.
+ * consumers hold it.
+ *
+ * **The 12-character session prefix is load-bearing, not cosmetic.** The disk
+ * janitor's orphan sweep matches `^shipit-([a-f0-9-]{12})_` and compares the
+ * captured prefix against `sessionId.slice(0, 12)` for every live session
+ * (`sweepOrphanSessionVolumes`, startup-janitor.ts). A shorter prefix does not
+ * match the pattern at all, so a crash-orphaned volume would never be
+ * reclaimed — it would simply accumulate.
  */
 export function pluginOverlayVolumeName(sessionId: string, repoName: string, commit: string): string {
-  return `shipit-${sessionId.slice(0, 8)}_plugin-${safeSegment(repoName)}-${commit.slice(0, 12)}`;
+  return `shipit-${sessionId.slice(0, 12)}_plugin-${safeSegment(repoName)}-${commit.slice(0, 12)}`;
 }
 
 /** A volume-name-safe rendering of a declared repo name. */
