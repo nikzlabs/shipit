@@ -145,3 +145,61 @@ describe("lifetime and selectors", () => {
     expect(getActivationState("sess", "tools")).toBeUndefined();
   });
 });
+
+describe("epoch ownership of the in-flight counter", () => {
+  const declareTools = "plugins:\n  repos:\n    - repo: acme/tools\n      name: tools\n      branch: main\n";
+
+  // The regression this guards: counters keyed without the epoch let a stale
+  // round's decrement land on a NEW round's counter, so the new round's first
+  // trigger cleared `activating` while its second was still queued.
+  it("a stale round cannot clear a newer round's activating flag", async () => {
+    writeConfig(declareTools);
+
+    const stale = activateDeclaredPlugins("sess", workspaceDir, deps());
+    clearActivationState("sess"); // the session is disposed and recreated
+
+    const fresh = Promise.all([
+      activateDeclaredPlugins("sess", workspaceDir, deps()),
+      activateDeclaredPlugins("sess", workspaceDir, deps()),
+    ]);
+
+    await stale;
+    await fresh;
+
+    // Both new triggers settled, so the flag is down and the generation is live.
+    const state = getActivationState("sess", "tools");
+    expect(state?.activating).toBe(false);
+    expect(state?.generation?.commit).toBeTruthy();
+  });
+
+  it("leaves activating set while a second trigger is still queued", async () => {
+    writeConfig(declareTools);
+    const first = activateDeclaredPlugins("sess", workspaceDir, deps());
+    const second = activateDeclaredPlugins("sess", workspaceDir, deps());
+    await first;
+    await second;
+    expect(getActivationState("sess", "tools")?.activating).toBe(false);
+  });
+
+  it("notifies onSettled once the round finishes", async () => {
+    writeConfig(declareTools);
+    const settled: string[] = [];
+    await activateDeclaredPlugins("sess", workspaceDir, {
+      ...deps(),
+      onSettled: (id) => settled.push(id),
+    });
+    expect(settled).toEqual(["sess"]);
+  });
+
+  it("does not notify onSettled for a disposed session", async () => {
+    writeConfig(declareTools);
+    const settled: string[] = [];
+    const running = activateDeclaredPlugins("sess", workspaceDir, {
+      ...deps(),
+      onSettled: (id) => settled.push(id),
+    });
+    clearActivationState("sess");
+    await running;
+    expect(settled).toEqual([]);
+  });
+});

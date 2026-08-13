@@ -754,12 +754,18 @@ export function createRunnerRegistry(
         };
         activateIfTrusted();
         runner.on("disposed", () => clearActivationState(runner.sessionId));
-        if ("onComposeConfigChanged" in runner) {
-          (runner as { onComposeConfigChanged?: () => void }).onComposeConfigChanged = activateIfTrusted;
-        }
-        if ("rerunServiceSetup" in runner) {
-          (runner as { rerunServiceSetup?: () => void }).rerunServiceSetup = activateIfTrusted;
-        }
+        // The container path re-activates on `onComposeConfigChanged`, which
+        // `reevaluateWorkspaceConfig` fires — both are ContainerSessionRunner
+        // only, and local mode has no in-container file watcher to drive them
+        // (third-review finding). A turn ending is the local signal that files
+        // may have changed: in local mode the agent IS the only editor, and
+        // re-activation is a cheap no-op when the resolved commit is unchanged.
+        runner.on("idle", activateIfTrusted);
+        // Assigned unconditionally, not behind an `in` guard: the trust
+        // endpoint reads this property off the runner instance, and the local
+        // runner class doesn't declare it — so the guard silently skipped it
+        // and accepting trust left an open local session inactive.
+        (runner as { rerunServiceSetup?: () => void }).rerunServiceSetup = activateIfTrusted;
       }
     },
   });

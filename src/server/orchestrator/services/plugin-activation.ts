@@ -50,17 +50,27 @@ const activationState = new Map<string, PluginRepoActivationState>();
 const epochs = new Map<string, number>();
 
 /**
- * How many triggers are currently activating each `sessionId::repoName`.
+ * How many triggers are currently activating each repository, keyed
+ * `sessionId::epoch::repoName`.
  *
  * `activating` has to mean "another result is coming", not "the trigger I
- * happened to watch has finished" (review finding): two overlapping triggers
- * would otherwise have the first one clear the flag while the second is still
- * queued, and a browser polling in that window would stop early and show a
- * stale card. Only the last trigger out clears it.
+ * happened to watch has finished": two overlapping triggers would otherwise
+ * have the first one clear the flag while the second is still queued, and a
+ * browser polling in that window would stop early and show a stale card. Only
+ * the last trigger out clears it.
+ *
+ * **The epoch is part of the key** (third-review finding): with a bare
+ * `sessionId::repoName`, a stale activation from a disposed round could
+ * decrement a *newer* round's counter after the session was recreated,
+ * letting that round's first trigger clear `activating` while its second was
+ * still queued. Keying by epoch makes a dead round's decrement land on its
+ * own dead key, where nothing reads it.
  */
 const inFlight = new Map<string, number>();
 
 const stateKey = (sessionId: string, repoName: string): string => `${sessionId}::${repoName}`;
+const flightKey = (sessionId: string, epoch: number, repoName: string): string =>
+  `${sessionId}::${epoch}::${repoName}`;
 
 export function getActivationState(sessionId: string, repoName: string): PluginRepoActivationState | undefined {
   return activationState.get(stateKey(sessionId, repoName));
@@ -139,24 +149,31 @@ export async function activateDeclaredPlugins(
 
   await Promise.all(
     repos.map(async (repo) => {
-      const key = stateKey(sessionId, repo.name);
+      const key = flightKey(sessionId, epoch, repo.name);
       inFlight.set(key, (inFlight.get(key) ?? 0) + 1);
       const existing = readActiveGeneration(stateDir, repo.name) ?? undefined;
       setState(repo.name, { activating: true, ...(existing ? { generation: existing } : {}) });
 
       const repoUrl = cloneUrl(repo);
-      const outcome = await activateGeneration(repo, {
-        stateDir,
-        bareCacheDir: deps.getBareCacheDir(repoUrl),
-        repoUrl,
-        // A project with no remote is identified by its session: two sessions
-        // of an unremoted project are separate projects for pinning purposes.
-        consumerKey: consumerKey ?? `session:${sessionId}`,
-        pinStorePath: deps.pinStorePath,
-        selectedExports: selectedByRepo.get(repo.name.toLowerCase()) ?? [],
-        ensureCache: deps.ensureCache,
-        isCancelled,
-      });
+      let outcome: Awaited<ReturnType<typeof activateGeneration>>;
+      try {
+        outcome = await activateGeneration(repo, {
+          stateDir,
+          bareCacheDir: deps.getBareCacheDir(repoUrl),
+          repoUrl,
+          // A project with no remote is identified by its session: two sessions
+          // of an unremoted project are separate projects for pinning purposes.
+          consumerKey: consumerKey ?? `session:${sessionId}`,
+          pinStorePath: deps.pinStorePath,
+          selectedExports: selectedByRepo.get(repo.name.toLowerCase()) ?? [],
+          ensureCache: deps.ensureCache,
+          isCancelled,
+        });
+      } catch (err) {
+        // `activateGeneration` is documented never to throw, but the counter
+        // must not strand `activating: true` forever if that ever changes.
+        outcome = { status: "failed", reason: err instanceof Error ? err.message : String(err) };
+      }
 
       // Another trigger is still queued for this repository, so the round is
       // not over: leave `activating` set and let the last one out report.
@@ -181,7 +198,7 @@ export async function activateDeclaredPlugins(
         activating: false,
         generation: outcome.generation,
         // req 8 — a moved tag that the durable pin overrode is advisory, and
-        // it must reach the user on the SUCCESS path too (review finding).
+        // it must reach the user on the SUCCESS path too.
         ...(outcome.warning ? { warning: outcome.warning } : {}),
       });
     }),
