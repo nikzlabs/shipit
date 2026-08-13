@@ -381,24 +381,32 @@ instead of a repeat.
   the inode changes only when the settings did, which is also when that slice
   recreates the service.
 
-  **Mounting it is not a bind — and it is the one mount in this feature whose
-  Engine support is unverified.** In production the session tree lives inside the
-  named workspace volume, so a session path has to travel as a volume mount with
-  `VolumeOptions.Subpath` relative to the volume's root; a plain bind of the
-  orchestrator's `/workspace/...` path silently gets an empty root-owned
-  directory, which dev and dogfood never show (CLI-slice review finding). Every
-  `Subpath` mount that exists today is a **directory** subpath
-  (`container-lifecycle.ts`, `compose-generator.ts`) — and the settings file is a
-  file. That is the same Engine feature, but nothing here exercises it yet, so it
-  needs one check on a real instance. It fails **loudly**: the container refuses
-  to start.
-  **If the daemon rejects a file subpath, no layout change is needed.** Mount
-  `<sessionDir>/plugin-data/<alias>` — a directory — read-only, and point
-  `SHIPIT_SETTINGS` at `<mount>/settings.json`. The consequence to accept is that
-  the plugin then also sees a read-only view of its own state directory under
-  that mount; it is the same data it already has read-write at `/plugin-state`,
-  so nothing is exposed that was not already. What must NOT be done instead is
-  moving the settings file *into* the state directory so one mount serves both:
+  **Mounting it is a volume subpath, not a bind.** In production the session tree
+  lives inside the named workspace volume, so a session path has to travel as a
+  volume mount with `VolumeOptions.Subpath` relative to the volume's root; a plain
+  bind of the orchestrator's `/workspace/...` path silently gets an empty
+  root-owned directory, which dev and dogfood never show (CLI-slice review
+  finding). Every other `Subpath` mount in this repo is a **directory** subpath
+  (`container-lifecycle.ts`, `compose-generator.ts`) and this one is a **file**,
+  which raised the question of whether the Engine supports it at all.
+
+  **It does — settled at the daemon's source, not by inference.**
+  `VolumeOptions.Subpath` resolves through `safepath.Join`, whose
+  `tempMountPoint` fstats the resolved path and branches on `S_IFDIR`: a directory
+  gets `os.MkdirTemp`, and anything else gets `os.CreateTemp` — a regular file. A
+  regular-file subpath is explicitly supported rather than incidental. The version
+  floor is API 1.45 (Engine 26); docs/263 already requires Engine 28 / API 1.48
+  for contained Compose services, so every runtime that can host a plugin service
+  is above it.
+
+  The alternative, kept because an eventuality understood is cheaper than one
+  rediscovered: were a runtime ever to refuse a file subpath, **no layout change
+  is needed** — mount `<sessionDir>/plugin-data/<alias>`, a directory, read-only
+  and point `SHIPIT_SETTINGS` at `<mount>/settings.json`. The plugin then also
+  sees a read-only view of its own state directory under that mount, which is the
+  same data it already has read-write at `/plugin-state`, so nothing is exposed
+  that was not already. What must NOT be done instead — the load-bearing half —
+  is moving the settings file *into* the state directory so one mount serves both:
   that directory is writable by plugin code, and a plugin that can rewrite its own
   validated settings has settings that were never validated.
 
