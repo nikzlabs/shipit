@@ -155,3 +155,22 @@ The everyday essentials you'd expect from a serious agent IDE:
 - **Subscription usage** — header badges show your Claude/Codex rate-limit usage (5-hour window,
   weekly cap, reset clock) inline, named per account when you've connected several, with weekly and
   per-month spend trends in the usage detail view
+
+## Known limitations
+
+- ShipIt is a single-tenant tool you run yourself, with no built-in authentication today. If you
+  expose it on the internet, put it behind Cloudflare Zero Trust, Tailscale, or another access layer
+  you control; the VPS install script can help configure Cloudflare Tunnel/Zero Trust and Tailscale
+  during setup.
+- Expect meaningful Docker resource use: local production startup rebuilds ShipIt images, and each
+  active session runs an agent container plus any Compose services your project declares. Session
+  containers are sized automatically from the host's capacity, so there's normally nothing to tune —
+  but a small host means fewer sessions can be active at once.
+- The VPS installer targets Ubuntu. Other Linux distributions may work, but the one-command setup
+  script is tuned for Ubuntu hosts.
+- The full review-and-ship loop depends on GitHub. You can work locally without it, but PRs, CI,
+  review threads, merge controls, and deploy status require GitHub auth and a GitHub remote.
+- Deploy status is read from the GitHub Deployments API. It appears when your hosting provider
+  creates GitHub deployments for pushed commits.
+- Voice input and spoken summaries require configuring a supported voice provider for speech
+  services.
