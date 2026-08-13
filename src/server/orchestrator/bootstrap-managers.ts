@@ -442,7 +442,10 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   // limits providers for `recordAgentRateLimits`, run-params preps for the
   // shared run-params assembler, system-prompt fragments for
   // `agent-instructions.ts`). Adding a backend = one new folder under
-  // `agents/<id>/` + one entry per table inside `buildAgentRuntime()`.
+  // `agents/<id>/` + one entry per HARNESS-keyed table inside
+  // `buildAgentRuntime()`. `authManagers` is the exception: it is keyed by
+  // `LoginIntegrationId`, so a harness that signs in through a login flow that
+  // already exists adds nothing to it.
   const agentRuntime = buildAgentRuntime({
     authManager,
     codexAuthManager,

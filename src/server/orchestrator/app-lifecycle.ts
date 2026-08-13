@@ -1397,9 +1397,10 @@ export interface EventWiringDeps {
   /**
    * Every login flow, keyed by `LoginIntegrationId`. Drives the auth wiring
    * loop — pending/complete/failed SSE rebroadcasts plus the common
-   * post-completion bookkeeping (registry refresh, provider-account migration,
-   * token re-push, agent_list broadcast). Adding a new login flow is one entry
-   * here. (docs/155 Phase 2 + 2b)
+   * post-completion bookkeeping (duplicate refusal, account status and
+   * exhaustion, login-wide registry refresh, token re-push, agent_list
+   * broadcast). Adding a new login flow is one entry here.
+   * (docs/155 Phase 2 + 2b)
    */
   authManagers: Map<LoginIntegrationId, AgentAuthManager>;
   githubAuthManager: GitHubAuthManager;

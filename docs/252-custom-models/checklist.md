@@ -85,7 +85,8 @@ table — a phase is checked off when its PR has merged.
 - [x] Delete the `ProviderAccount` projection. Closed as **planning#342**, on its own,
       because no phase needed it: each re-keyed what it *read*, not what the router is
       *built from*. The router's credential-row verbs now take a `serviceId`, the harness
-      survives only where a login flow or a credential root is the subject, and
+      survives only where a credential root is the subject (the login flow re-keyed too —
+      see the entry above), and
       `ProviderAccount` and both adapters are gone. See `plan.md` →
       *Retiring the `ProviderAccount` projection*.
 - [x] Replace the first-credential delivery within one mode. Closed in **phase 5**: every

@@ -245,8 +245,8 @@ async function saveCutoff(
     // rather than component state: `saveCutoff` is deliberately a module-level
     // function over the store because it is called from an unmount cleanup,
     // where the component's state and its setters are already gone. The notice
-    // channel is keyed by LOGIN FLOW; cutoffs only ever render on an
-    // account-backed mode, which always has one.
+    // channel is keyed by LOGIN FLOW — see the block below for what that means
+    // when the mode has no login at all.
     /**
      * The notice channel is keyed by LOGIN FLOW, and a string-delivered
      * subscription need not have one — GLM's coding plan is a subscription with

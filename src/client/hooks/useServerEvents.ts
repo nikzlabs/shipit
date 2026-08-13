@@ -285,13 +285,14 @@ export function useServerEvents(): void {
       useRepoStore.getState().updateRepoWarmSession(data.url, data.sessionId);
     });
 
-    // ---- Unified per-agent auth events (docs/155 Phase 2b) ----
-    // The orchestrator broadcasts one event family for every backend's
+    // ---- Unified auth events (docs/155 Phase 2b) ----
+    // The orchestrator broadcasts one event family for every LOGIN FLOW's
     // sign-in lifecycle: `agent_auth_pending` (sign-in card content arriving),
     // `agent_auth_complete` (success), `agent_auth_failed` (failure or
     // revocation). The legacy event names (`auth_required`, `auth_complete`,
-    // `codex_auth_*`) are gone; adding a new backend is one variant added to
-    // the discriminated `details.kind` union, not three new listeners here.
+    // `codex_auth_*`) are gone. A new BACKEND may need nothing here at all — it
+    // can sign in through a flow that already exists; a new FLOW is one variant
+    // added to the discriminated `details.kind` union, not three new listeners.
     // The handlers below no longer dispatch on WHICH backend sent the event.
     // They branch only on `details.kind` (the one thing the payloads actually
     // differ by) and read per-flow wording from `AUTH_COPY`. The eight
