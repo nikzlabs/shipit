@@ -970,7 +970,7 @@ describe("ClaudeAdapter", () => {
 
   describe("setPermissionMode (docs/138)", () => {
     it("is a no-op when the inner process is not a StreamingClaudeProcess", () => {
-      // The one-shot PTY ClaudeProcess re-applies the mode at every spawn —
+      // The one-shot ClaudeProcess re-applies the mode at every spawn —
       // there's nothing to push mid-process. Adapter must not throw or
       // misroute a control_request to the wrong inner.
       const inner = new FakeInnerProcess();

@@ -182,6 +182,47 @@ describe("runAgentToCompletion", () => {
     expect(res.error).toBe("crashed");
   });
 
+  it("docs/262 — a non-zero exit with no result event and no output is an error, not an empty success", async () => {
+    const agent = new FakeAgent();
+    const handle = runAgentToCompletion(agent as never, { prompt: "p", cwd: "/w" }, Date.now());
+    // The shape of a CLI that never started: no events at all, then a non-zero
+    // exit. This resolved `status: "success"`, `text: ""` — so the caller
+    // reported "the reviewer found nothing" and retried into the same wall.
+    agent.emit("done", 1);
+    const res = await handle.promise;
+    expect(res.status).toBe("error");
+    expect(res.text).toBe("");
+    expect(res.error).toContain("exited with code 1");
+  });
+
+  it("keeps a non-zero exit a success when the run actually answered", async () => {
+    const agent = new FakeAgent();
+    const handle = runAgentToCompletion(agent as never, { prompt: "p", cwd: "/w" }, Date.now());
+    agent.emit("event", assistant("Here are the findings."));
+    agent.emit("done", 143);
+    const res = await handle.promise;
+    expect(res.status).toBe("success");
+    expect(res.text).toBe("Here are the findings.");
+  });
+
+  it("lets the backend's own agent_result verdict stand over the exit code", async () => {
+    const agent = new FakeAgent();
+    const handle = runAgentToCompletion(agent as never, { prompt: "p", cwd: "/w" }, Date.now());
+    agent.emit("event", result(0.01, 1000, "success"));
+    agent.emit("done", 1);
+    const res = await handle.promise;
+    expect(res.status).toBe("success");
+  });
+
+  it("still reports cancelled — not error — when a cancel produces the non-zero exit", async () => {
+    const agent = new FakeAgent();
+    const handle = runAgentToCompletion(agent as never, { prompt: "p", cwd: "/w" }, Date.now());
+    handle.cancel();
+    agent.emit("done", 143);
+    const res = await handle.promise;
+    expect(res.status).toBe("cancelled");
+  });
+
   it("cancel() kills the agent and resolves with status cancelled", async () => {
     const agent = new FakeAgent();
     const handle = runAgentToCompletion(agent as never, { prompt: "p", cwd: "/w" }, Date.now());

@@ -333,7 +333,43 @@ export function runAgentToCompletion(
         }
       });
 
-      agent.on("done", () => finish());
+      /**
+       * A run that produced NOTHING and exited non-zero is a failure, not an
+       * empty success.
+       *
+       * `status` used to default to "success" for anything short of an explicit
+       * `agent_result` error or an adapter `error` event — so a CLI that never
+       * started (the docs/262 E2BIG argv overflow: exec failed, zero events,
+       * non-zero exit) came back `status: "success"`, `text: ""`,
+       * `durationMs: 6`. The caller read that as "the reviewer found nothing",
+       * said so, and retried into the identical wall; nothing in the chain ever
+       * reported an error, and the account-failover loop above never ran because
+       * there was no failure to fail over from.
+       *
+       * All three conditions are required, and each excludes a real case:
+       *   - no `agent_result` — a backend that reported its own status owns the
+       *     verdict, including a non-zero exit after a successful turn;
+       *   - no text — a run killed after answering keeps its answer;
+       *   - not cancelled or timed out — those have their own status, and both
+       *     kill the process, which is itself a non-zero exit.
+       */
+      agent.on("done", (exitCode?: number | null) => {
+        const producedNothing = completedMessages.length === 0 && lastFullText === "";
+        if (
+          resultStatus === undefined &&
+          producedNothing &&
+          !cancelled &&
+          !timedOut &&
+          typeof exitCode === "number" &&
+          exitCode !== 0
+        ) {
+          resultStatus = "error";
+          resultError ??= `The agent process exited with code ${exitCode} without producing any output.`;
+          finish("error");
+          return;
+        }
+        finish();
+      });
       agent.on("error", (err: Error) => {
         resultStatus = "error";
         resultError = err.message;

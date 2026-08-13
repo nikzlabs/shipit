@@ -1,5 +1,3 @@
-import * as pty from "node-pty";
-import type { IPty } from "node-pty";
 import { EventEmitter } from "node:events";
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
@@ -255,8 +253,21 @@ export interface ClaudeRunOptions {
   permissionPromptTool?: string;
 }
 
+/**
+ * Frame one prompt as the NDJSON `user` message the CLI's
+ * `--input-format stream-json` mode reads off stdin. Shared by both processes
+ * so the one-shot and the resident path put the identical bytes on the wire.
+ */
+function frameUserMessage(text: string): string {
+  const msg = {
+    type: "user",
+    message: { role: "user", content: [{ type: "text", text }] },
+  };
+  return `${JSON.stringify(msg)}\n`;
+}
+
 export class ClaudeProcess extends EventEmitter {
-  private proc: IPty | null = null;
+  private proc: ChildProcess | null = null;
   private buffer = "";
   private watchdog: ReturnType<typeof setTimeout> | null = null;
   /** Per-turn latch — see {@link consumeAuthFailureEvent}. */
@@ -273,7 +284,7 @@ export class ClaudeProcess extends EventEmitter {
 
   /**
    * Raise `auth_required` at most once per turn. One auth failure emits two
-   * auth-shaped events plus (on a PTY) possibly a raw stderr line; the signal's
+   * auth-shaped events plus possibly a raw stderr line; the signal's
    * consumers re-dispatch the turn, so raising it twice runs the turn twice.
    */
   private raiseAuthRequiredOnce(): void {
@@ -286,8 +297,38 @@ export class ClaudeProcess extends EventEmitter {
    * Send a prompt to Claude CLI in print mode with streaming JSON output.
    * Emits "event" for each parsed NDJSON line and "done" when the process exits.
    *
-   * Uses node-pty to allocate a real PTY so the CLI behaves as if invoked
-   * from an interactive terminal (avoids hangs caused by piped stdin).
+   * ## The prompt travels on stdin, never in argv
+   *
+   * This path used to spawn `claude -p <prompt>` over a PTY, putting the WHOLE
+   * prompt in a single argv element. Linux caps one argument at
+   * `MAX_ARG_STRLEN` = 32 pages = 131,072 bytes — a limit `getconf ARG_MAX`
+   * does not describe and no amount of total-size headroom raises. A prompt at
+   * or past that made `execvp` fail with E2BIG, and because node-pty forks
+   * before it execs, the failure arrived as a line of *child output*
+   * ("execvp(3) failed.: Argument list too long") rather than a spawn error:
+   * the CLI never started, emitted no event at all, and the run was reported as
+   * an empty success. `shipit agent run --role reviewer` hit this on every
+   * review whose prompt carried a diff of any size (~131 KB and up), four times
+   * in one session before it was diagnosed.
+   *
+   * So the prompt is delivered exactly as {@link StreamingClaudeProcess}
+   * delivers it — as an NDJSON `user` message on piped stdin under
+   * `--input-format stream-json` — which has no size limit. stdin is closed
+   * immediately afterwards: that EOF is what makes the CLI finish the turn and
+   * exit, keeping this path one-shot (the resident process keeps stdin open
+   * precisely to stay alive). Verified against CLI 2.1.221: a 200 KB prompt
+   * completes and exits 0.
+   *
+   * Piped stdio is also what makes an exec failure *loud*. `child_process.spawn`
+   * reports E2BIG (and ENOENT) as an `error` event on the child, which this
+   * class forwards as `error` — the one signal both the turn executor and
+   * `runAgentToCompletion` already map to a failed run.
+   *
+   * The PTY it replaces was there to dodge a different problem: with `-p
+   * <prompt>` the CLI still waits ~3s on piped stdin ("no stdin data received
+   * in 3s, proceeding without it") because a prompt could arrive there too. In
+   * `--input-format stream-json` mode stdin IS the declared input, so there is
+   * nothing to wait for and nothing to hang on.
    *
    * Images are handled by the orchestrator before reaching this method —
    * they're saved to the host uploads directory and referenced in the prompt.
@@ -349,8 +390,14 @@ export class ClaudeProcess extends EventEmitter {
       ? PLAN_TOOLS
       : withUserMcp(AUTO_TOOLS);
 
+    // `--replay-user-messages` is deliberately NOT passed (the resident process
+    // does pass it): its echo exists so live steering can ack a mid-turn
+    // message, and this path sends exactly one message before closing stdin.
+    // Adding it would put an `agent_user_replay` event into a contract that
+    // never had one.
     const args = [
-      "-p", prompt,
+      "--print",
+      "--input-format", "stream-json",
       "--output-format", "stream-json",
       "--verbose",
       "--allowedTools", tools,
@@ -406,7 +453,12 @@ export class ClaudeProcess extends EventEmitter {
       args.push("--exclude-dynamic-system-prompt-sections");
     }
 
-    console.log("[claude] spawning:", "claude", args.join(" ").slice(0, 200), "| cwd:", cwd);
+    // The prompt is no longer in argv, so log its size separately — that number
+    // is what a "the run produced nothing" report needs first.
+    console.log(
+      "[claude] spawning:", "claude", args.join(" ").slice(0, 200),
+      `| promptBytes=${Buffer.byteLength(prompt)} | cwd:`, cwd,
+    );
 
     // Build the spawn env. We start from `process.env` (so the CLI inherits
     // PATH, NODE-related vars, etc.) but explicitly normalize the
@@ -476,12 +528,10 @@ export class ClaudeProcess extends EventEmitter {
     }
 
     try {
-      this.proc = pty.spawn("claude", args, {
-        name: "xterm-256color",
-        cols: 200,
-        rows: 24,
+      this.proc = spawn("claude", args, {
         cwd,
         env: spawnEnv,
+        stdio: ["pipe", "pipe", "pipe"],
       });
     } catch (err) {
       this.emit("error", err instanceof Error ? err : new Error(String(err)));
@@ -498,44 +548,75 @@ export class ClaudeProcess extends EventEmitter {
       this.watchdog = null;
     }, 30_000);
 
-    // PTY combines stdout and stderr into a single data stream.
-    // Strip ANSI codes, then use drainLines() to separate JSON events from log text.
-    this.proc.onData((data: string) => {
-      if (this.watchdog) {
-        clearTimeout(this.watchdog);
-        this.watchdog = null;
-      }
-
-      const cleaned = stripAnsi(data);
-      this.buffer += cleaned;
+    // stdout carries the NDJSON event stream. ANSI is stripped defensively —
+    // the CLI emits none on a pipe, but a stray control sequence would break
+    // JSON.parse for the whole line.
+    this.proc.stdout?.on("data", (chunk: Buffer) => {
+      this.clearWatchdog();
+      this.buffer += stripAnsi(chunk.toString("utf-8"));
       this.drainLines();
     });
 
-    this.proc.onExit(({ exitCode }) => {
-      if (this.watchdog) {
-        clearTimeout(this.watchdog);
-        this.watchdog = null;
+    // stderr is its own stream now that this is not a PTY. It carries no
+    // events, but it does carry the CLI's startup auth complaints — the same
+    // text the merged PTY stream used to route through `drainLines`'s non-JSON
+    // branch — so the auth check has to run here too or an unauthenticated
+    // one-shot turn stops raising `auth_required`.
+    this.proc.stderr?.on("data", (chunk: Buffer) => {
+      const trimmed = stripAnsi(chunk.toString("utf-8")).trim();
+      if (!trimmed) return;
+      if (textIndicatesAuthFailure(trimmed)) {
+        this.raiseAuthRequiredOnce();
       }
+      console.warn("[claude] stderr:", trimmed.slice(0, 200));
+      this.emit("log", "stderr", trimmed);
+    });
+
+    // A failure to exec the CLI (E2BIG on an oversized argv, ENOENT on a
+    // missing binary) arrives here, asynchronously. Forwarding it is what turns
+    // a CLI that never started into a failed run rather than a silent
+    // zero-output success.
+    this.proc.on("error", (err) => {
+      this.clearWatchdog();
+      this.emit("error", err);
+    });
+
+    this.proc.on("close", (exitCode) => {
+      this.clearWatchdog();
       // Drain any remaining buffer, flushing the final (possibly unterminated) line
       this.drainLines(true);
-      this.emit("done", exitCode);
+      this.emit("done", exitCode ?? 0);
       this.proc = null;
     });
+
+    // Deliver the prompt, then close stdin: the EOF is what tells the CLI no
+    // further messages are coming, so it finishes this turn and exits.
+    this.writeStdin(frameUserMessage(prompt));
+    this.proc.stdin?.end();
   }
 
   /** Write data to the running process's stdin. */
   writeStdin(data: string): void {
-    if (this.proc) {
-      this.proc.write(data);
+    if (!this.proc?.stdin?.writable) {
+      // Expected after the prompt is delivered — stdin is closed on purpose.
+      console.warn(`[claude] writeStdin: stdin not writable — ${data.length} bytes dropped`);
+      return;
     }
+    this.proc.stdin.write(data);
   }
 
-  /** Send Ctrl+C to the running process, with a force-kill fallback after 5s. */
+  /**
+   * Ask the running process to stop, with a force-kill fallback after 5s.
+   *
+   * SIGINT is the signal a PTY's Ctrl+C used to generate; sending it directly
+   * is the same request without a terminal in the way. stdin is already closed
+   * by then, so a `control_request` interrupt (the resident process's route) is
+   * not available here.
+   */
   interrupt(): void {
     if (!this.proc) return;
 
-    // Send Ctrl+C (ETX) character to the PTY
-    this.proc.write("\x03");
+    killChild(this.proc, "SIGINT");
 
     // If the process doesn't exit within 5 seconds, force kill
     const forceKillTimer = setTimeout(() => {
@@ -546,20 +627,24 @@ export class ClaudeProcess extends EventEmitter {
     }, 5000);
 
     // Clear the force-kill timer when the process exits normally
-    this.proc.onExit(() => {
+    this.proc.once("close", () => {
       clearTimeout(forceKillTimer);
     });
   }
 
   /** Kill the running process if any. */
   kill(): void {
+    this.clearWatchdog();
+    if (this.proc) {
+      killChild(this.proc, "SIGTERM");
+      this.proc = null;
+    }
+  }
+
+  private clearWatchdog(): void {
     if (this.watchdog) {
       clearTimeout(this.watchdog);
       this.watchdog = null;
-    }
-    if (this.proc) {
-      this.proc.kill();
-      this.proc = null;
     }
   }
 
@@ -591,7 +676,7 @@ export class ClaudeProcess extends EventEmitter {
         this.emit("event", event);
       } catch {
         // Not valid JSON — relay as log output.
-        // With a PTY, auth-related messages also arrive here (merged stream).
+        // Auth-related messages can also arrive here rather than on stderr.
         if (textIndicatesAuthFailure(trimmed)) {
           this.raiseAuthRequiredOnce();
         }
@@ -606,12 +691,13 @@ export class ClaudeProcess extends EventEmitter {
  * StreamingClaudeProcess — persistent Claude CLI process using
  * --input-format stream-json for live steering (docs/140).
  *
- * Unlike ClaudeProcess (PTY, one-shot per turn), this class:
+ * Unlike ClaudeProcess (one-shot per turn), this class:
  * - Spawns once and keeps the process alive across turns.
  * - Sends user messages as NDJSON on stdin.
  * - Treats `result` events as turn-end without killing the process.
  * - Emits `done` only when the process actually exits (on kill/dispose).
- * - Uses piped stdio (not PTY) since stream-json input is designed for pipes.
+ * - Keeps stdin OPEN, which is what keeps the process alive between turns
+ *   (the one-shot path closes it to make the CLI exit after one turn).
  */
 export class StreamingClaudeProcess extends EventEmitter {
   private proc: ChildProcess | null = null;
@@ -680,7 +766,7 @@ export class StreamingClaudeProcess extends EventEmitter {
     if (reasoningEffort) args.push("--effort", reasoningEffort);
     if (settingsPath) args.push("--settings", settingsPath);
     if (systemPrompt) {
-      // See the PTY-spawn branch above for why we use --append-system-prompt
+      // See ClaudeProcess.run above for why we use --append-system-prompt
       // and --exclude-dynamic-system-prompt-sections instead of --system-prompt.
       args.push("--append-system-prompt", systemPrompt);
       args.push("--exclude-dynamic-system-prompt-sections");
@@ -799,11 +885,7 @@ export class StreamingClaudeProcess extends EventEmitter {
     // this resident process raises `auth_required` again. `run()` reaches this
     // method too, so this is the single reset point for both entry paths.
     this.authRaisedThisTurn = false;
-    const msg = {
-      type: "user",
-      message: { role: "user", content: [{ type: "text", text }] },
-    };
-    const line = `${JSON.stringify(msg)}\n`;
+    const line = frameUserMessage(text);
     // docs/140 diag — log bytes written + a text snippet so a live-steering
     // bug repro shows whether the NDJSON line actually reached the CLI's
     // stdin. Paired with the `[claude-adapter]` log one frame up and the
@@ -829,7 +911,7 @@ export class StreamingClaudeProcess extends EventEmitter {
     this.writeToStdin(`${JSON.stringify(msg)}\n`);
 
     // docs/140 — DO NOT force-kill the process on a streaming interrupt. Unlike
-    // the PTY one-shot path (where Ctrl+C genuinely exits the CLI), a streaming
+    // the one-shot path (where SIGINT genuinely exits the CLI), a streaming
     // `control_request` interrupt is graceful by design: the CLI ends the
     // current turn with a `result` (subtype `error_during_execution`) and keeps
     // the persistent process alive for the next message. A 5s force-kill timer
