@@ -57,15 +57,13 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import { parse as parseYaml } from "yaml";
 import {
-  parsePluginExports,
   type DeclaredPluginRepo,
   type PluginExport,
   type PluginReposConfig,
   type PluginUse,
 } from "../shared/plugin-repos.js";
-import { activeLinkPath } from "./plugin-generations.js";
+import { readActiveManifest } from "./plugin-generations.js";
 import { chownToSessionWorker, sessionWorkerUid } from "./session-worker-uid.js";
 import { sessionStateDirForWorkspace } from "./session-state-dir.js";
 
@@ -286,32 +284,19 @@ export function createPluginImportResolver(
         cache.set(
           key,
           repo.source.kind === "self"
+            // req 27 — a self repo's manifest IS this same file, already parsed.
             ? [...selfExports]
-            : readGenerationExports(activeLinkPath(stateDir, repo.name)),
+            // The generation engine owns reading a live checkout's manifest
+            // (`readActiveManifest`, non-logging: this runs per request and
+            // activation already logged any warning once). `null` — no live
+            // generation — collapses to "no exports", which the caller reads as
+            // "nothing to validate against" either way.
+            : readActiveManifest(stateDir, repo.name) ?? [],
         );
       }
       return cache.get(key)!.find((e) => e.name.toLowerCase() === use.plugin.toLowerCase()) ?? null;
     },
   };
-}
-
-/**
- * Parse a live generation's own `shipit.yaml`. Warnings are dropped here on
- * purpose — the generation record already carries them to the card
- * (`manifestWarnings`), and repeating them per import would state one fact once
- * per `use:` entry.
- */
-function readGenerationExports(checkoutDir: string): PluginExport[] {
-  try {
-    const raw = fs.readFileSync(path.join(checkoutDir, "shipit.yaml"), "utf-8");
-    const doc: unknown = parseYaml(raw);
-    const block = doc && typeof doc === "object" && !Array.isArray(doc)
-      ? (doc as Record<string, unknown>).exports
-      : undefined;
-    return parsePluginExports(block, []);
-  } catch {
-    return [];
-  }
 }
 
 // ---------------------------------------------------------------------------

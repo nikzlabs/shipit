@@ -925,7 +925,18 @@ coherent in one UI.
   dir, which eviction reclaims), settings resolution and its two fail-closed
   errors, the atomic settings write, and the manifest resolver that reads a
   tracked import from the live generation and a `repo: self` import from the
-  project's own parsed manifest. Prepared from `services/plugin-activation.ts`
+  project's own parsed manifest. Reading a live checkout's manifest goes through
+  the generation engine's `readActiveManifest` — the one **orchestrator-side**
+  entry point, shared with `plugin-credentials.ts`; this module had its own copy
+  of that parse until the two slices landed days apart, and a third copy is how a
+  fix to manifest handling starts reaching only some of its readers. The
+  container keeps a reader of its own (`session/plugin-skills.ts` →
+  `readExports`) and that is **by design, not an oversight**: `eslint.config.js`
+  makes `session/` ↔ `orchestrator/` imports a hard error in both directions,
+  type imports included, because they are different processes — and for plugins
+  it is also the "the orchestrator says *when*, never *what*" split. So: fold an
+  orchestrator-side reader into `readActiveManifest`; do not try to fold the
+  container's. Prepared from `services/plugin-activation.ts`
   at the end of every round; its issues are re-derived, not stored, by
   `api-routes-plugin-repos.ts`. ✓ `src/server/shared/plugin-contract.ts` holds
   the in-container names both later consumers need (`/plugin-state`,
