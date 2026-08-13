@@ -1,5 +1,5 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
-import { usePrStore } from "./pr-store.js";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { usePrStore, selectActiveAutoMerge } from "./pr-store.js";
 import type { PrCardState } from "./pr-store.js";
 import type { PrStatusSummary } from "../../server/shared/types/github-types.js";
 
@@ -281,8 +281,10 @@ describe("pr-store", () => {
       const autoMerge = { enabled: true, mergeMethod: "squash" as const };
       usePrStore.getState().applyPrStatusUpdates([makePrStatus({ autoMerge })]);
 
-      expect(usePrStore.getState().autoMergeBySession.s1).toEqual(autoMerge);
-      expect(usePrStore.getState().cardBySession.s1?.autoMerge).toEqual(autoMerge);
+      // `toMatchObject`: the reducer also stamps the arming with the PR it
+      // arrived on (`armedForPrNumber`) — see `selectActiveAutoMerge`.
+      expect(usePrStore.getState().autoMergeBySession.s1).toMatchObject(autoMerge);
+      expect(usePrStore.getState().cardBySession.s1?.autoMerge).toMatchObject(autoMerge);
     });
 
     // The arming belongs to ONE pull request. The server drops its own state at
@@ -530,6 +532,145 @@ describe("pr-store", () => {
 
       expect(err).toBe("No open pull request to close");
       expect(fetchMock).not.toHaveBeenCalled();
+    });
+  });
+
+  // The read-time half of "an arming dies with its pull request" (docs/077).
+  // The reducer above retires the arming when it OBSERVES the terminal update;
+  // these hold the rule even when that observation never lands — the case that
+  // stranded the toggle ON on a merged PR — so every surface (sidebar badge, PR
+  // overflow toggle, open card, detail panel) agrees without depending on one
+  // SSE event having arrived. Provenance, not phase: an arming stamped for a PR
+  // that is no longer live is dead; an UNSTAMPED one is a deliberate pre-arm for
+  // the next PR and survives, which is how a reused merged session is armed.
+  describe("selectActiveAutoMerge", () => {
+    const armed = { enabled: true, mergeMethod: "squash" as const };
+
+    it("returns the arming for an open PR", () => {
+      usePrStore.getState().applyPrStatusUpdates([makePrStatus({ autoMerge: armed })]);
+      expect(selectActiveAutoMerge(usePrStore.getState(), "s1")).toMatchObject(armed);
+    });
+
+    it("stamps an arming that arrives on an open PR with that PR's number", () => {
+      usePrStore.getState().applyPrStatusUpdates([makePrStatus({ prNumber: 7, autoMerge: armed })]);
+      expect(usePrStore.getState().autoMergeBySession.s1?.armedForPrNumber).toBe(7);
+    });
+
+    it("returns a pre-PR arming when no card exists yet", () => {
+      usePrStore.setState({ autoMergeBySession: { s1: armed } });
+      expect(selectActiveAutoMerge(usePrStore.getState(), "s1")).toEqual(armed);
+    });
+
+    it.each(["merged", "closed"] as const)(
+      "hides an arming the store still holds once the card phase is %s",
+      (phase) => {
+        usePrStore.getState().updateCard("s1", makeCard(phase));
+        usePrStore.setState({
+          autoMergeBySession: { s1: { ...armed, armedForPrNumber: 1 } },
+        });
+
+        expect(selectActiveAutoMerge(usePrStore.getState(), "s1")).toBeUndefined();
+      },
+    );
+
+    it.each(["merged", "closed"] as const)(
+      "hides an arming once the poller reports the PR %s, even with a stale open card",
+      (prState) => {
+        usePrStore.getState().updateCard(
+          "s1",
+          makeCard("open", { autoMerge: { ...armed, armedForPrNumber: 1 } }),
+        );
+        usePrStore.setState({ statusBySession: { s1: makePrStatus({ prState }) } });
+
+        expect(selectActiveAutoMerge(usePrStore.getState(), "s1")).toBeUndefined();
+      },
+    );
+
+    // docs/202 — a re-armed session's ready card carries the old card's
+    // `autoMerge` forward, and `reArm` deletes the poller status, so NEITHER
+    // half says "terminal" any more. The stamp is what still retires it.
+    it("hides a merged PR's arming carried onto a re-armed ready card", () => {
+      usePrStore.getState().applyPrStatusUpdates([
+        makePrStatus({ prNumber: 41, autoMerge: armed }),
+      ]);
+      usePrStore.getState().applyPrStatusUpdates([makePrStatus({ prNumber: 41, prState: "merged" })]);
+      // The arming survives the merge (e.g. a late toggle response wrote it back).
+      usePrStore.setState({ autoMergeBySession: { s1: { ...armed, armedForPrNumber: 41 } } });
+      // Re-armed: status cleared, card back to a ready phase.
+      usePrStore.setState({ statusBySession: {} });
+      usePrStore.getState().updateCard("s1", {
+        cardId: "pr-card-s1",
+        phase: "ready",
+        previousMergedPr: { number: 41, url: "u", title: "t", baseBranch: "main" },
+      });
+
+      expect(selectActiveAutoMerge(usePrStore.getState(), "s1")).toBeUndefined();
+    });
+
+    it("keeps a fresh pre-arm made from a merged card", () => {
+      usePrStore.getState().applyPrStatusUpdates([makePrStatus({ prState: "merged" })]);
+      // Armed AFTER the merge, for the next PR — no stamp, so it is not the
+      // dead PR's arming and must survive.
+      usePrStore.setState({ autoMergeBySession: { s1: armed } });
+
+      expect(selectActiveAutoMerge(usePrStore.getState(), "s1")).toEqual(armed);
+    });
+  });
+
+  // The toggle's HTTP response is the LAST word for a session whose PR merged
+  // (no further `pr_status` update ever carries an `autoMerge` field), so a
+  // response that lands after the terminal update must not write the arming
+  // back — that is what stranded the flag. The server refuses the same window.
+  describe("toggleAutoMerge write-back races", () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it("drops the arming when the PR went terminal during the round-trip", async () => {
+      usePrStore.getState().applyPrStatusUpdates([makePrStatus()]);
+      globalThis.fetch = vi.fn().mockImplementation(async () => {
+        // The merge is observed while the request is in flight.
+        usePrStore.getState().applyPrStatusUpdates([makePrStatus({ prState: "merged" })]);
+        return { ok: true, status: 200, json: async () => ({ enabled: true, mergeMethod: "squash" }) };
+      }) as typeof fetch;
+
+      await usePrStore.getState().toggleAutoMerge("s1", true);
+
+      expect(usePrStore.getState().autoMergeBySession.s1).toBeUndefined();
+      expect(usePrStore.getState().cardBySession.s1?.autoMerge).toBeUndefined();
+      expect(selectActiveAutoMerge(usePrStore.getState(), "s1")).toBeUndefined();
+    });
+
+    it("stamps the arming with the live PR on the normal path", async () => {
+      usePrStore.getState().applyPrStatusUpdates([makePrStatus({ prNumber: 7 })]);
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({ enabled: true, mergeMethod: "squash" }),
+      }) as typeof fetch;
+
+      await usePrStore.getState().toggleAutoMerge("s1", true);
+
+      expect(usePrStore.getState().autoMergeBySession.s1).toMatchObject({
+        enabled: true,
+        armedForPrNumber: 7,
+      });
+    });
+
+    it("leaves a merged-card pre-arm unstamped so it survives for the next PR", async () => {
+      usePrStore.getState().applyPrStatusUpdates([makePrStatus({ prState: "merged" })]);
+      globalThis.fetch = vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({ enabled: true, mergeMethod: "squash" }),
+      }) as typeof fetch;
+
+      await usePrStore.getState().toggleAutoMerge("s1", true);
+
+      // The response write-back is skipped on a terminal PR, so the optimistic
+      // (unstamped) arming stands — and stays visible as a pre-arm.
+      expect(selectActiveAutoMerge(usePrStore.getState(), "s1")).toMatchObject({ enabled: true });
+      expect(usePrStore.getState().autoMergeBySession.s1?.armedForPrNumber).toBeUndefined();
     });
   });
 });

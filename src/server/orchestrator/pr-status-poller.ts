@@ -691,7 +691,14 @@ export class PrStatusPoller {
       };
     }
     const mergeState = this.autoMerge.get(summary.sessionId);
-    if (mergeState) {
+    // Never attach an arming onto a TERMINAL summary. The arming belongs to one
+    // pull request and is dropped when that PR goes merged/closed
+    // (`verifyMissingPr`), so this is normally moot — but it is the same
+    // belt-and-suspenders the auto-fix block above applies: if the state ever
+    // outlives its PR (a delete that didn't run, an arming re-created between
+    // the merge and the observation), the client must not be told that a merged
+    // PR is still waiting to auto-merge. That is what strands the toggle ON.
+    if (mergeState && summary.prState !== "merged" && summary.prState !== "closed") {
       result = {
         ...result,
         autoMerge: {

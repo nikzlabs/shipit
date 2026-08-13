@@ -1,7 +1,7 @@
 import { CloudArrowDownIcon, GitMergeIcon, HardDrivesIcon, CheckCircleIcon, XCircleIcon, CircleNotchIcon, WrenchIcon } from "@phosphor-icons/react";
 import { AUTO_MERGE_ICON_CLASS, ICON_SIZE } from "../../design-tokens.js";
 import { useSessionStore } from "../../stores/session-store.js";
-import { usePrStore } from "../../stores/pr-store.js";
+import { usePrStore, useActiveAutoMerge } from "../../stores/pr-store.js";
 import { useCiDisplay } from "../../hooks/useCiDisplay.js";
 import type { SessionInfo } from "../../../server/shared/types.js";
 
@@ -65,7 +65,10 @@ export function SessionStatusDot({ sessionId }: { sessionId: string }) {
  * themes).
  */
 export function AutoMergeBadge({ sessionId }: { sessionId: string }) {
-  const autoMerge = usePrStore((s) => s.autoMergeBySession[sessionId] ?? s.cardBySession[sessionId]?.autoMerge);
+  // `useActiveAutoMerge`, not the raw maps: an arming belongs to one pull
+  // request, so a merged/closed PR shows no badge even if the arming is still
+  // sitting in the store (docs/077).
+  const autoMerge = useActiveAutoMerge(sessionId);
   if (!(autoMerge?.enabled ?? false)) return null;
   return (
     <span className={`shrink-0 flex ml-auto ${AUTO_MERGE_ICON_CLASS}`} title="Auto-merge enabled">

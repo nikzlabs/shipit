@@ -77,6 +77,17 @@ export interface PrCardState {
     /** The real GitHub error that triggered the managed-merge fallback. */
     reason?: string;
     error?: { code: string; message: string; settingsUrl: string };
+    /**
+     * Which pull request this arming belongs to — client-side provenance, never
+     * sent by the server. An arming is armed per PR (docs/077), so this is what
+     * lets `selectActiveAutoMerge` tell a DEAD arming (its PR merged) from a
+     * live pre-arm for the NEXT one, which looks identical otherwise.
+     *
+     * Stamped when the arming arrives on an open PR's summary, or when the user
+     * toggles it while a PR is open. Left `undefined` for a pre-arm — armed
+     * before any PR exists, or from a merged/closed card for the next one.
+     */
+    armedForPrNumber?: number;
   };
   /**
    * docs/146 — auto-resolve-conflicts state (open phase). Populated from
@@ -322,7 +333,13 @@ export const usePrStore = create<PrState>((set, get) => ({
           // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
           delete nextAutoMerge[update.sessionId];
         } else if (update.autoMerge) {
-          nextAutoMerge[update.sessionId] = update.autoMerge;
+          // Stamp the arming with the PR it arrived on, so a later card that
+          // carries it forward (a re-armed session's ready card) can be told
+          // apart from a genuine pre-arm. See `selectActiveAutoMerge`.
+          nextAutoMerge[update.sessionId] = {
+            ...update.autoMerge,
+            armedForPrNumber: update.prNumber,
+          };
         }
 
         // Update the inline card to reflect poller data
@@ -371,7 +388,7 @@ export const usePrStore = create<PrState>((set, get) => ({
             },
             checks: update.checks,
             autoFix: update.autoFix,
-            autoMerge: update.autoMerge ?? nextAutoMerge[update.sessionId],
+            autoMerge: nextAutoMerge[update.sessionId] ?? update.autoMerge,
             ...(update.autoResolve !== undefined ? { autoResolve: update.autoResolve } : {}),
             // Preserve last-known conversation when an update omits it (light poll).
             issueComments: update.issueComments ?? existing?.issueComments,
@@ -863,13 +880,19 @@ export const usePrStore = create<PrState>((set, get) => ({
     // sits on the old value until the server round-trip + SSE poll lands.
     const prevAutoMerge = get().autoMergeBySession[sessionId];
     const prevCardAutoMerge = get().cardBySession[sessionId]?.autoMerge;
+    // Which PR this toggle is for, captured at send time. `undefined` means the
+    // user is pre-arming for the NEXT pull request (none yet, or the current one
+    // has merged) — the distinction the response handler needs below.
+    const armedForPrNumber = livePrNumber(get(), sessionId);
 
     set((state) => {
       const existing = state.cardBySession[sessionId];
-      const base = state.autoMergeBySession[sessionId]
-        ?? existing?.autoMerge
+      const base = selectActiveAutoMerge(state, sessionId)
         ?? { enabled: false, mergeMethod: "squash" as const };
-      const optimistic = { ...base, enabled };
+      // Stamp the arming with the PR it is being made for — the live one, or
+      // nothing when the user is pre-arming (no PR yet, or the current one has
+      // merged and this is meant for the next). See `selectActiveAutoMerge`.
+      const optimistic = { ...base, enabled, armedForPrNumber };
       return {
         autoMergeBySession: {
           ...state.autoMergeBySession,
@@ -920,12 +943,35 @@ export const usePrStore = create<PrState>((set, get) => ({
       const data = await res.json() as { enabled: boolean; mergeMethod: "squash" | "merge" | "rebase"; managed?: boolean; reason?: string };
       set((state) => {
         const existing = state.cardBySession[sessionId];
+        // This toggle was for a live PR that has since reached its terminal
+        // state — a green PR can merge inside this very call — so the terminal
+        // `pr_status` has already retired the arming. Writing the response back
+        // on top would resurrect it, and this write is the LAST word (no further
+        // update ever carries an `autoMerge` for a merged PR), which is exactly
+        // how the toggle got stranded ON. Drop the entry instead; the server
+        // refuses the same window. A toggle made with NO live PR is a pre-arm
+        // for the next one and is deliberately left alone.
+        if (armedForPrNumber !== undefined && isPrTerminal(state, sessionId)) {
+          const cleared = { ...state.autoMergeBySession };
+          // eslint-disable-next-line @typescript-eslint/no-dynamic-delete
+          delete cleared[sessionId];
+          return {
+            autoMergeBySession: cleared,
+            cardBySession: {
+              ...state.cardBySession,
+              ...(existing ? { [sessionId]: { ...existing, autoMerge: undefined } } : {}),
+            },
+          };
+        }
         const autoMerge = {
           ...state.autoMergeBySession[sessionId],
           enabled: data.enabled,
           mergeMethod: data.mergeMethod,
           managed: data.managed,
           reason: data.reason,
+          // The PR this toggle was made for — so the arming is retired with that
+          // PR rather than read as a pre-arm for the next one.
+          armedForPrNumber,
         };
         return {
           autoMergeBySession: {
@@ -982,3 +1028,67 @@ export const usePrStore = create<PrState>((set, get) => ({
     set({ importSearchResults: data.repos });
   },
 }));
+
+// ---- Derived selectors ----
+
+/**
+ * True when the session's CURRENT pull request has reached a terminal state
+ * (merged, or closed without merging).
+ *
+ * Reads BOTH halves of the model because they converge on different transports:
+ * the card phase is what the inline card renders, `statusBySession.prState` is
+ * the poller's own last word. Either saying "terminal" is enough — an arming
+ * that outlives its PR must not be rendered because one channel lagged.
+ */
+export function isPrTerminal(state: PrState, sessionId: string): boolean {
+  const phase = state.cardBySession[sessionId]?.phase;
+  if (phase === "merged" || phase === "closed") return true;
+  const prState = state.statusBySession[sessionId]?.prState;
+  return prState === "merged" || prState === "closed";
+}
+
+/**
+ * The number of the pull request an arming made right now would belong to, or
+ * `undefined` when there is none to act on (no PR yet, or a terminal one).
+ */
+function livePrNumber(state: PrState, sessionId: string): number | undefined {
+  if (isPrTerminal(state, sessionId)) return undefined;
+  return state.cardBySession[sessionId]?.pr?.number ?? state.statusBySession[sessionId]?.prNumber;
+}
+
+/**
+ * The auto-merge arming that can still act on this session — the arming for the
+ * PR that is currently open, or a pre-arm waiting for the next PR to exist.
+ *
+ * Every surface that renders "auto-merge is on" (sidebar badge, PR overflow
+ * toggle, open card, detail panel) reads THIS rather than the raw maps, so the
+ * rule that an arming dies with its pull request (docs/077) holds by
+ * construction instead of depending on the terminal `pr_status` update being
+ * observed. Missing that one event used to strand the toggle ON forever.
+ *
+ * Provenance, not phase, is what decides: hiding every arming on a terminal card
+ * would also hide a deliberate pre-arm for the NEXT PR, which is a real flow (a
+ * merged session picking up new work never passes back through `ready` when
+ * auto-create-PR is on — `pr-lifecycle.ts` goes creating → open). So an arming
+ * stamped for a PR that is no longer the live one is dead; an unstamped one is a
+ * pre-arm and survives.
+ *
+ * Returns `undefined` — never a fresh object — so the zustand subscription
+ * stays reference-stable.
+ */
+export function selectActiveAutoMerge(
+  state: PrState,
+  sessionId: string,
+): NonNullable<PrCardState["autoMerge"]> | undefined {
+  const arming = state.autoMergeBySession[sessionId] ?? state.cardBySession[sessionId]?.autoMerge;
+  if (!arming) return undefined;
+  if (arming.armedForPrNumber === undefined) return arming;
+  return arming.armedForPrNumber === livePrNumber(state, sessionId) ? arming : undefined;
+}
+
+/** Hook form of {@link selectActiveAutoMerge}. */
+export function useActiveAutoMerge(
+  sessionId: string,
+): NonNullable<PrCardState["autoMerge"]> | undefined {
+  return usePrStore((s) => selectActiveAutoMerge(s, sessionId));
+}

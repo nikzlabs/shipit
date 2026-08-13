@@ -915,6 +915,16 @@ describe("SessionSidebar", () => {
       expect(screen.queryByTitle(/CI failed/)).toBeNull();
     });
 
+    const mergedPr = {
+      number: 42,
+      title: "Shipped",
+      url: "https://github.com/o/r/pull/42",
+      baseBranch: "main",
+      headBranch: "feature",
+      insertions: 1,
+      deletions: 0,
+    };
+
     it("shows the auto-merge badge alongside the CI status when auto-merge is armed", () => {
       const card: PrCardState = {
         cardId: "card-1",
@@ -937,6 +947,38 @@ describe("SessionSidebar", () => {
       usePrStore.setState({ autoMergeBySession: { "s1": { enabled: true, mergeMethod: "squash" } } });
 
       const sessions = [baseSession({ id: "s1", title: "Armed pre-PR session", remoteUrl: repoA.url })];
+      render(<SessionSidebar {...defaultProps} sessions={sessions} currentSessionId="s2" />);
+
+      expect(screen.getByTitle("Auto-merge enabled")).toBeTruthy();
+    });
+
+    it("shows no auto-merge indicator once the arming's PR has merged", () => {
+      // The arming belongs to the merged PR (docs/077) — `armedForPrNumber`
+      // says so. The reducer normally retires it on the terminal update; the
+      // badge must ALSO stay off when that update was missed and the entry is
+      // still sitting in the store.
+      const card: PrCardState = { cardId: "card-1", phase: "merged", pr: mergedPr };
+      usePrStore.setState({
+        cardBySession: { "s1": card },
+        autoMergeBySession: { "s1": { enabled: true, mergeMethod: "squash", armedForPrNumber: 42 } },
+      });
+
+      const sessions = [baseSession({ id: "s1", title: "Merged session", remoteUrl: repoA.url })];
+      render(<SessionSidebar {...defaultProps} sessions={sessions} currentSessionId="s2" />);
+
+      expect(screen.queryByTitle(/Auto-merge enabled/)).toBeNull();
+    });
+
+    it("keeps the indicator for a merged session armed for its NEXT PR", () => {
+      // Armed after the merge, from the card's overflow menu — no
+      // `armedForPrNumber`, so it is a pre-arm and not the dead PR's arming.
+      const card: PrCardState = { cardId: "card-1", phase: "merged", pr: mergedPr };
+      usePrStore.setState({
+        cardBySession: { "s1": card },
+        autoMergeBySession: { "s1": { enabled: true, mergeMethod: "squash" } },
+      });
+
+      const sessions = [baseSession({ id: "s1", title: "Re-armed session", remoteUrl: repoA.url })];
       render(<SessionSidebar {...defaultProps} sessions={sessions} currentSessionId="s2" />);
 
       expect(screen.getByTitle("Auto-merge enabled")).toBeTruthy();

@@ -14,7 +14,7 @@
 
 import { ArrowsClockwiseIcon, CopyIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
-import { usePrStore } from "../stores/pr-store.js";
+import { usePrStore, useActiveAutoMerge } from "../stores/pr-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { useGitStore } from "../stores/git-store.js";
 import { useSessionStore } from "../stores/session-store.js";
@@ -26,7 +26,7 @@ import { AutoFixPauseToggle, AutoMergeToggle, ClosePrDropdownItem, useClosePr } 
 
 export function PrActionsMenu({ sessionId }: { sessionId: string }) {
   const card = usePrStore((s) => s.cardBySession[sessionId]);
-  const autoMerge = usePrStore((s) => s.autoMergeBySession[sessionId] ?? s.cardBySession[sessionId]?.autoMerge);
+  const autoMerge = useActiveAutoMerge(sessionId);
   const session = useSessionStore((s) => s.sessions.find((sess) => sess.id === sessionId));
   const setToast = useUiStore((s) => s.setToast);
   const startRebase = useGitStore((s) => s.startRebase);
@@ -74,6 +74,11 @@ export function PrActionsMenu({ sessionId }: { sessionId: string }) {
 
   // The auto-merge toggle is shown here only for the phases without an inline
   // row (pre-PR, merged, closed); the open phase shows it inline on the card.
+  // It stays available on a merged/closed card on purpose: that is where a
+  // reused session is armed for its NEXT pull request, and with auto-create-PR
+  // on there is no `ready` phase to do it in (`pr-lifecycle.ts` goes creating →
+  // open). What it must NOT do is show the dead PR's arming — `useActiveAutoMerge`
+  // handles that, so the toggle reads OFF here until the user arms it again.
   // The trigger is always rendered (the menu is a stable home for PR actions);
   // in practice Copy branch name is essentially always available, so it's never
   // empty for a real session.

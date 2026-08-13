@@ -148,6 +148,42 @@ describe("PrActionsMenu", () => {
     expect(screen.queryByRole("menuitem", { name: "Close pull request" })).toBeNull();
   });
 
+  // docs/077 — the arming belongs to one pull request. The toggle STAYS on a
+  // terminal card (that is where a reused session arms its next PR), but it must
+  // not wear the dead PR's arming: `useActiveAutoMerge` retires an arming
+  // stamped for a PR that is no longer live, even when the store still holds it
+  // because the terminal `pr_status` update was never observed.
+  it.each(["merged", "closed"] as const)(
+    "offers the Auto-merge toggle on a %s PR, reading OFF despite a stale arming",
+    async (phase) => {
+      const user = userEvent.setup();
+      useSessionStore.setState({ sessions: [makeSession({ id: "s1" })] });
+      usePrStore.setState({
+        cardBySession: { s1: { ...openCard, phase } },
+        autoMergeBySession: { s1: { enabled: true, mergeMethod: "squash", armedForPrNumber: 42 } },
+      });
+      render(<PrActionsMenu sessionId="s1" />);
+
+      await user.click(screen.getByLabelText("Pull request actions"));
+      const toggle = screen.getByRole("button", { name: /Auto-merge/ });
+      expect(toggle).toHaveAttribute("title", "Enable auto-merge");
+    },
+  );
+
+  it("shows a fresh pre-arm made after the merge as ON", async () => {
+    const user = userEvent.setup();
+    useSessionStore.setState({ sessions: [makeSession({ id: "s1" })] });
+    usePrStore.setState({
+      cardBySession: { s1: { ...openCard, phase: "merged" } },
+      // No `armedForPrNumber` — armed for the NEXT PR, not the merged one.
+      autoMergeBySession: { s1: { enabled: true, mergeMethod: "squash" } },
+    });
+    render(<PrActionsMenu sessionId="s1" />);
+
+    await user.click(screen.getByLabelText("Pull request actions"));
+    expect(screen.getByRole("button", { name: /Auto-merge/ })).toHaveAttribute("title", "Disable auto-merge");
+  });
+
   it("resets a merged PR branch to its base instead of rebasing it", async () => {
     const user = userEvent.setup();
     useSessionStore.setState({ sessions: [makeSession({ id: "s1" })] });
