@@ -94,11 +94,8 @@ Updates**). Fork installs, host-side updates, sizing, access policies, and troub
 
 ## Status
 
-ShipIt is in an early public release state. The core loop is live: create isolated sessions, work against your repositories, run Compose-backed previews, open
-PRs, track CI and deploy status from GitHub, and continue from desktop or mobile.
-
-The project is public source, but not yet open to outside pull requests. Bug reports, feature
-requests, and design discussion are welcome as GitHub issues.
+ShipIt is in an early public release state. The project is public source, but not yet open to outside
+pull requests. Bug reports, feature requests, and design discussion are welcome as GitHub issues.
 
 ## Why ShipIt exists
 
