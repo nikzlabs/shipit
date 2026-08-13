@@ -982,3 +982,49 @@ export const usePrStore = create<PrState>((set, get) => ({
     set({ importSearchResults: data.repos });
   },
 }));
+
+// ---- Derived selectors ----
+
+/**
+ * True when the session's CURRENT pull request has reached a terminal state
+ * (merged, or closed without merging).
+ *
+ * Reads BOTH halves of the model because they converge on different transports:
+ * the card phase is what the inline card renders, `statusBySession.prState` is
+ * the poller's own last word. Either saying "terminal" is enough — an arming
+ * that outlives its PR must not be rendered because one channel lagged.
+ */
+function isPrTerminal(state: PrState, sessionId: string): boolean {
+  const phase = state.cardBySession[sessionId]?.phase;
+  if (phase === "merged" || phase === "closed") return true;
+  const prState = state.statusBySession[sessionId]?.prState;
+  return prState === "merged" || prState === "closed";
+}
+
+/**
+ * The auto-merge arming that can still act on this session — i.e. the arming
+ * for a PR that is still open, or a pre-PR arming waiting for the next one.
+ *
+ * Every surface that renders "auto-merge is on" (sidebar badge, PR overflow
+ * toggle, detail panel) reads THIS rather than the raw maps, so the rule that
+ * an arming dies with its pull request (docs/077) holds by construction instead
+ * of depending on the terminal `pr_status` update being observed. Missing that
+ * one event used to strand the toggle ON forever on a merged PR.
+ *
+ * Returns `undefined` — never a fresh object — so the zustand subscription
+ * stays reference-stable.
+ */
+export function selectActiveAutoMerge(
+  state: PrState,
+  sessionId: string,
+): NonNullable<PrCardState["autoMerge"]> | undefined {
+  if (isPrTerminal(state, sessionId)) return undefined;
+  return state.autoMergeBySession[sessionId] ?? state.cardBySession[sessionId]?.autoMerge;
+}
+
+/** Hook form of {@link selectActiveAutoMerge}. */
+export function useActiveAutoMerge(
+  sessionId: string,
+): NonNullable<PrCardState["autoMerge"]> | undefined {
+  return usePrStore((s) => selectActiveAutoMerge(s, sessionId));
+}

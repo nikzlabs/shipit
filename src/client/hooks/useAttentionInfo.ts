@@ -88,6 +88,13 @@ export function computeAttentionReason({
   // resolve signal, so a row in "Recently resolved" never wears the bar.
   if (resolved) return null;
 
+  // Same rule, read from the PR's own state rather than the sidebar grouping's
+  // `resolved` signal — the two are computed on different transports and a
+  // merged PR whose row hasn't been regrouped yet must still be silent. This
+  // used to sit BELOW the auto-merge branch, so a merged PR carrying a stale
+  // auto-merge error kept flagging "Auto-merge needs repo configuration".
+  if (prState === "merged" || prState === "closed") return null;
+
   // CI failure — stay silent while a fix is in flight or queued; speak only
   // when the loop gives up (exhausted) or auto-fix is off entirely.
   if (checks?.state === "failure") {
@@ -111,8 +118,6 @@ export function computeAttentionReason({
   }
 
   if (checks?.state === "pending") return null;
-
-  if (prState === "merged" || prState === "closed") return null;
 
   // Agent idle on an open PR with nothing blocking: if auto-merge owns the
   // merge, the user delegated it and has nothing to do until it merges (→

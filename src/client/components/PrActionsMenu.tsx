@@ -14,7 +14,7 @@
 
 import { ArrowsClockwiseIcon, CopyIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
-import { usePrStore } from "../stores/pr-store.js";
+import { usePrStore, useActiveAutoMerge } from "../stores/pr-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { useGitStore } from "../stores/git-store.js";
 import { useSessionStore } from "../stores/session-store.js";
@@ -26,7 +26,7 @@ import { AutoFixPauseToggle, AutoMergeToggle, ClosePrDropdownItem, useClosePr } 
 
 export function PrActionsMenu({ sessionId }: { sessionId: string }) {
   const card = usePrStore((s) => s.cardBySession[sessionId]);
-  const autoMerge = usePrStore((s) => s.autoMergeBySession[sessionId] ?? s.cardBySession[sessionId]?.autoMerge);
+  const autoMerge = useActiveAutoMerge(sessionId);
   const session = useSessionStore((s) => s.sessions.find((sess) => sess.id === sessionId));
   const setToast = useUiStore((s) => s.setToast);
   const startRebase = useGitStore((s) => s.startRebase);
@@ -53,6 +53,7 @@ export function PrActionsMenu({ sessionId }: { sessionId: string }) {
   const syncDisabled = isAgentRunning || rebaseStatus !== "idle";
   const isOpen = card?.phase === "open";
   const isMerged = card?.phase === "merged";
+  const isTerminal = isMerged || card?.phase === "closed";
 
   const handleCopyBranch = () => {
     if (!headBranch) return;
@@ -72,12 +73,16 @@ export function PrActionsMenu({ sessionId }: { sessionId: string }) {
     }
   };
 
-  // The auto-merge toggle is shown here only for the phases without an inline
-  // row (pre-PR, merged, closed); the open phase shows it inline on the card.
+  // The auto-merge toggle is shown here only for the pre-PR phases (no card
+  // yet, creating, ready) — the open phase shows it inline on the card, and a
+  // terminal PR has nothing left for auto-merge to act on: its arming died with
+  // it (docs/077), and offering a toggle there would render a control whose ON
+  // state we deliberately suppress. A session that merged and then picks up new
+  // work returns to the `ready` phase, where the toggle is available again.
   // The trigger is always rendered (the menu is a stable home for PR actions);
   // in practice Copy branch name is essentially always available, so it's never
   // empty for a real session.
-  const showAutoMergeToggle = canAutoMerge && !isOpen;
+  const showAutoMergeToggle = canAutoMerge && !isOpen && !isTerminal;
   // Auto-fix pause is relevant whenever the session has a remote and the global
   // auto-fix-CI loop is on — independent of the PR phase (CI runs while open).
   const showAutoFixPause = canAutoMerge && globalAutoFixCi;

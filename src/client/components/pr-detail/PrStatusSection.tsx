@@ -21,7 +21,7 @@ import {
 } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../../design-tokens.js";
 import type { PrReviewDecision } from "../../../server/shared/types.js";
-import { usePrStore } from "../../stores/pr-store.js";
+import { usePrStore, useActiveAutoMerge } from "../../stores/pr-store.js";
 import { useGitStore } from "../../stores/git-store.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
 import type { PrCardState } from "../../stores/pr-store.js";
@@ -119,7 +119,10 @@ export function PrStatusSection({ sessionId, card }: { sessionId: string; card: 
   const checks = card.checks ?? (status ? status.checks : undefined);
   const ciDisplay = useCiDisplay(checks);
   const autoFix = card.autoFix;
-  const autoMerge = card.autoMerge;
+  // The arming that can still act, not whatever the card last carried: on a
+  // merged/closed PR this is `undefined`, so neither the toggle nor the "Will
+  // merge when CI passes." line survives the merge (docs/077).
+  const autoMerge = useActiveAutoMerge(sessionId);
   const isCiFailed = ciDisplay.kind === "failure";
   const isCiPassed = ciDisplay.kind === "success";
   const isCiNone = ciDisplay.kind === "none";
@@ -163,12 +166,12 @@ export function PrStatusSection({ sessionId, card }: { sessionId: string; card: 
         </div>
       )}
 
-      {autoMerge?.enabled && !isCiPassed && !isCiNone && (
+      {card.phase === "open" && autoMerge?.enabled && !isCiPassed && !isCiNone && (
         <div className="text-xs text-(--color-text-secondary)">
           Will merge when CI passes.
         </div>
       )}
-      {autoMerge?.error && (
+      {card.phase === "open" && autoMerge?.error && (
         <div className="flex items-center gap-1 text-xs text-(--color-warning)">
           <WarningIcon size={12} /> {autoMerge.error.message}
         </div>

@@ -179,6 +179,29 @@ describe("computeAttentionReason", () => {
       ).toBe("Auto-merge needs repo configuration");
     });
 
+    it.each(["merged", "closed"] as const)(
+      "stays silent on a %s PR still carrying an auto-merge error",
+      (prState) => {
+        // The arming died with the PR (docs/077). A blocker that no longer has
+        // anything to block must not keep the session flagged.
+        expect(
+          computeAttentionReason(
+            inputs({
+              status: status({ prState }),
+              card: card({
+                phase: "merged",
+                autoMerge: {
+                  enabled: true,
+                  mergeMethod: "squash",
+                  error: { code: "no_branch_protection", message: "x", settingsUrl: "y" },
+                },
+              }),
+            }),
+          ),
+        ).toBeNull();
+      },
+    );
+
     it("stays silent on an idle clean open PR when auto-merge owns the merge", () => {
       expect(
         computeAttentionReason(

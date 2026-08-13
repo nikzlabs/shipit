@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
-import { usePrStore } from "./pr-store.js";
+import { usePrStore, selectActiveAutoMerge } from "./pr-store.js";
 import type { PrCardState } from "./pr-store.js";
 import type { PrStatusSummary } from "../../server/shared/types/github-types.js";
 
@@ -531,5 +531,47 @@ describe("pr-store", () => {
       expect(err).toBe("No open pull request to close");
       expect(fetchMock).not.toHaveBeenCalled();
     });
+  });
+
+  // The read-time half of "an arming dies with its pull request" (docs/077).
+  // The reducer above retires the arming when it OBSERVES the terminal update;
+  // this selector holds the rule even when that observation never lands — the
+  // case that stranded the toggle ON on a merged PR — so every surface (sidebar
+  // badge, PR overflow toggle, detail panel) agrees without depending on one
+  // SSE event having arrived.
+  describe("selectActiveAutoMerge", () => {
+    const armed = { enabled: true, mergeMethod: "squash" as const };
+
+    it("returns the arming for an open PR", () => {
+      usePrStore.getState().applyPrStatusUpdates([makePrStatus({ autoMerge: armed })]);
+      expect(selectActiveAutoMerge(usePrStore.getState(), "s1")).toEqual(armed);
+    });
+
+    it("returns a pre-PR arming when no card exists yet", () => {
+      usePrStore.setState({ autoMergeBySession: { s1: armed } });
+      expect(selectActiveAutoMerge(usePrStore.getState(), "s1")).toEqual(armed);
+    });
+
+    it.each(["merged", "closed"] as const)(
+      "hides an arming the store still holds once the card phase is %s",
+      (phase) => {
+        usePrStore.getState().updateCard("s1", makeCard(phase));
+        usePrStore.setState({ autoMergeBySession: { s1: armed } });
+
+        expect(selectActiveAutoMerge(usePrStore.getState(), "s1")).toBeUndefined();
+      },
+    );
+
+    it.each(["merged", "closed"] as const)(
+      "hides an arming once the poller reports the PR %s, even with a stale open card",
+      (prState) => {
+        usePrStore.getState().updateCard("s1", makeCard("open", { autoMerge: armed }));
+        usePrStore.setState({
+          statusBySession: { s1: makePrStatus({ prState }) },
+        });
+
+        expect(selectActiveAutoMerge(usePrStore.getState(), "s1")).toBeUndefined();
+      },
+    );
   });
 });

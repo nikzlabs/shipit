@@ -1842,6 +1842,75 @@ describe("PrStatusPoller", () => {
       expect(all[0]).toMatchObject({ sessionId: "archived-1", prState: "merged" });
     });
 
+    // docs/077 — an arming belongs to ONE pull request and is dropped when that
+    // PR goes terminal. This is the belt-and-suspenders half, mirroring the
+    // auto-fix "never attach over a green rollup" guard: should the state ever
+    // outlive its PR, no client may be told a merged PR is still waiting to
+    // auto-merge — that is what strands the toggle ON in the UI.
+    it.each(["merged", "closed"] as const)(
+      "never attaches auto-merge state onto a %s summary",
+      (prState) => {
+        const persisted = [{
+          sessionId: "s1",
+          prNumber: 7,
+          prUrl: "u",
+          prTitle: "t",
+          prState,
+          baseBranch: "main",
+          headBranch: "h",
+          insertions: 0,
+          deletions: 0,
+          checks: { state: "success" as const, total: 1, passed: 1, failed: 0, pending: 0 },
+          mergeable: "unknown" as const,
+          autoMergeEnabled: false,
+        }];
+        githubAuth = makeGitHubAuth();
+        sessionManager = {
+          list: () => [],
+          get: () => undefined,
+          setPrStatus: vi.fn(),
+          getAllPrStatuses: vi.fn().mockReturnValue(persisted),
+        } as unknown as SessionManager;
+
+        poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast });
+        poller.loadPersisted();
+        poller.setAutoMergeEnabled("s1", true);
+
+        expect(poller.getAutoMergeState("s1")?.enabled).toBe(true);
+        expect(poller.getAllStatuses()[0].autoMerge).toBeUndefined();
+      },
+    );
+
+    it("attaches auto-merge state onto an open summary", () => {
+      const persisted = [{
+        sessionId: "s1",
+        prNumber: 7,
+        prUrl: "u",
+        prTitle: "t",
+        prState: "open" as const,
+        baseBranch: "main",
+        headBranch: "h",
+        insertions: 0,
+        deletions: 0,
+        checks: { state: "success" as const, total: 1, passed: 1, failed: 0, pending: 0 },
+        mergeable: "unknown" as const,
+        autoMergeEnabled: false,
+      }];
+      githubAuth = makeGitHubAuth();
+      sessionManager = {
+        list: () => [],
+        get: () => undefined,
+        setPrStatus: vi.fn(),
+        getAllPrStatuses: vi.fn().mockReturnValue(persisted),
+      } as unknown as SessionManager;
+
+      poller = new PrStatusPoller({ githubAuth, sessionManager, sseBroadcast });
+      poller.loadPersisted();
+      poller.setAutoMergeEnabled("s1", true);
+
+      expect(poller.getAllStatuses()[0].autoMerge?.enabled).toBe(true);
+    });
+
     it("loadPersisted strips runtime-only autoFix/autoMerge fields", () => {
       const persistedWithRuntime = [{
         sessionId: "s1",

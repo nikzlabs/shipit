@@ -942,6 +942,22 @@ describe("SessionSidebar", () => {
       expect(screen.getByTitle("Auto-merge enabled")).toBeTruthy();
     });
 
+    it("shows no auto-merge indicator once the PR has merged", () => {
+      // The arming belongs to the merged PR (docs/077). The reducer normally
+      // retires it on the terminal update; the badge must ALSO stay off when
+      // that update was missed and the entry is still sitting in the store.
+      const card: PrCardState = { cardId: "card-1", phase: "merged" };
+      usePrStore.setState({
+        cardBySession: { "s1": card },
+        autoMergeBySession: { "s1": { enabled: true, mergeMethod: "squash" } },
+      });
+
+      const sessions = [baseSession({ id: "s1", title: "Merged session", remoteUrl: repoA.url })];
+      render(<SessionSidebar {...defaultProps} sessions={sessions} currentSessionId="s2" />);
+
+      expect(screen.queryByTitle(/Auto-merge enabled/)).toBeNull();
+    });
+
     it("shows no auto-merge indicator when the preference is off", () => {
       usePrStore.setState({ autoMergeBySession: { "s1": { enabled: false, mergeMethod: "squash" } } });
 

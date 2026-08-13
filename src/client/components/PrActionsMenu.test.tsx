@@ -148,6 +148,33 @@ describe("PrActionsMenu", () => {
     expect(screen.queryByRole("menuitem", { name: "Close pull request" })).toBeNull();
   });
 
+  // docs/077 — the arming belongs to one pull request. On a merged/closed card
+  // there is nothing left for it to act on, so the menu offers no toggle and
+  // renders no ON state, even when the store still holds the arming because the
+  // terminal `pr_status` update was never observed.
+  it.each(["merged", "closed"] as const)("omits the Auto-merge toggle on a %s PR", async (phase) => {
+    const user = userEvent.setup();
+    useSessionStore.setState({ sessions: [makeSession({ id: "s1" })] });
+    usePrStore.setState({
+      cardBySession: { s1: { ...openCard, phase } },
+      autoMergeBySession: { s1: { enabled: true, mergeMethod: "squash" } },
+    });
+    render(<PrActionsMenu sessionId="s1" />);
+
+    await user.click(screen.getByLabelText("Pull request actions"));
+    expect(screen.queryByText("Auto-merge")).toBeNull();
+  });
+
+  it("still offers the Auto-merge toggle pre-PR (armed for the next one)", async () => {
+    const user = userEvent.setup();
+    useSessionStore.setState({ sessions: [makeSession({ id: "s1" })] });
+    usePrStore.setState({ cardBySession: { s1: { ...openCard, phase: "ready" } } });
+    render(<PrActionsMenu sessionId="s1" />);
+
+    await user.click(screen.getByLabelText("Pull request actions"));
+    expect(screen.getByText("Auto-merge")).toBeInTheDocument();
+  });
+
   it("resets a merged PR branch to its base instead of rebasing it", async () => {
     const user = userEvent.setup();
     useSessionStore.setState({ sessions: [makeSession({ id: "s1" })] });
