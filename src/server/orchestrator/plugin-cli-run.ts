@@ -66,8 +66,13 @@ import {
 } from "../shared/plugin-contract.js";
 import { CONTAINER_WORKSPACE_DIR } from "../shared/fs-constants.js";
 import { planPluginCommands } from "../shared/plugin-cli.js";
+import type { PluginExport } from "../shared/plugin-repos.js";
 import { resolveShipitConfig } from "../shared/shipit-config.js";
-import { activeLinkPath, readActiveGeneration } from "./plugin-generations.js";
+import {
+  activeLinkPath,
+  readGenerationManifestAt,
+  readGenerationRecordAt,
+} from "./plugin-generations.js";
 import { ensureUntrustedPluginNetwork, waitForContainerExit } from "./plugin-container.js";
 import { ensurePluginRuntimeOverlay, resolvePluginOverlayRoots } from "./plugin-overlay.js";
 import {
@@ -180,8 +185,44 @@ export async function runPluginCommand(
   }
   const resolver = createPluginImportResolver(config.plugins, config.pluginExports, stateDir);
   const repoName = resolver.repoNameFor(use);
-  const exported = resolver.exportFor(use);
-  if (!repoName || !exported) {
+  if (!repoName) {
+    return refuse(`\`${req.alias}\` has no live plugin version right now — refresh it, or check the Plugins tab.`);
+  }
+  const repo = config.plugins.repos.find((r) => r.name === repoName);
+  const isSelf = repo?.source.kind === "self";
+
+  // **Resolve `active` exactly ONCE, here, and read every fact about the live
+  // generation out of that one answer** (sibling report, docs/262). Docker
+  // resolves a bind source and a `volume.subpath` at container-CREATION time,
+  // and each of `readActiveManifest`, `readActiveGeneration` and a `realpath`
+  // for the lowerdir follows the symlink independently — so a refresh landing
+  // between them produced an entrypoint from generation A, a
+  // `SHIPIT_PLUGIN_COMMIT` and volume NAME from B, and a lowerdir from C. That
+  // last pair is the damaging one: a volume named for B whose lower tree is C's
+  // and whose writable layer is B's, left on disk under B's name for every
+  // later caller. Pinning the directory first makes the whole call describe one
+  // generation or fail.
+  let pinned: PinnedGeneration | null = null;
+  if (!isSelf) {
+    try {
+      pinned = pinGeneration(stateDir, repoName);
+    } catch (err) {
+      return refuse(`\`${repoName}\`'s active checkout could not be resolved: ${message(err)}`);
+    }
+    if (!pinned) {
+      return refuse(`\`${repoName}\` has no active version in this session yet — run \`shipit plugin refresh ${repoName}\`.`);
+    }
+  }
+
+  // For THIS repository the manifest comes from the pinned directory, never
+  // from a fresh symlink read — the entrypoint the container runs and the tree
+  // it is mounted from have to be the same generation. Other repositories keep
+  // the resolver: they contribute only to the collision verdict below, where a
+  // slightly older read cannot corrupt a mount.
+  const exported = pinned
+    ? pinned.exports.find((e) => e.name.toLowerCase() === use.plugin.toLowerCase()) ?? null
+    : resolver.exportFor(use);
+  if (!exported) {
     return refuse(`\`${req.alias}\` has no live plugin version right now — refresh it, or check the Plugins tab.`);
   }
 
@@ -189,10 +230,16 @@ export async function runPluginCommand(
   // declaration may have changed since it was written; the requirement is that
   // an ambiguous name is reported rather than run. No `isTaken` — see the
   // module docstring: the PATH that matters is the agent container's.
-  const plan = planPluginCommands(config.plugins.uses, (u) => ({
-    repo: resolver.repoNameFor(u),
-    exported: resolver.exportFor(u),
-  }));
+  const plan = planPluginCommands(config.plugins.uses, (u) => {
+    const uRepo = resolver.repoNameFor(u);
+    if (pinned && uRepo === repoName) {
+      return {
+        repo: uRepo,
+        exported: pinned.exports.find((e) => e.name.toLowerCase() === u.plugin.toLowerCase()) ?? null,
+      };
+    }
+    return { repo: uRepo, exported: resolver.exportFor(u) };
+  });
   const surfaced = plan.commands.find(
     (c) => c.alias.toLowerCase() === use.alias.toLowerCase()
       && c.declared.toLowerCase() === req.command.toLowerCase(),
@@ -206,38 +253,25 @@ export async function runPluginCommand(
     );
   }
 
-  const repo = config.plugins.repos.find((r) => r.name === repoName);
-  const isSelf = repo?.source.kind === "self";
-
   // The plugin's own tree. Tracked: the generation's overlay volume, so the CLI
   // sees the SAME merged checkout+install-output the installer produced. Self:
   // the working tree itself, live and writable — req 27's whole point.
   const mounts: MountSpec[] = [];
   let commit: string | null = null;
-  if (isSelf) {
+  if (!pinned) {
     mounts.push(sessionPathMount(deps, deps.workspaceDir, CONTAINER_PLUGIN_DIR, false));
   } else {
-    const generation = readActiveGeneration(stateDir, repoName);
-    if (!generation) {
-      return refuse(`\`${repoName}\` has no active version in this session yet — run \`shipit plugin refresh ${repoName}\`.`);
-    }
-    commit = generation.commit;
-    let checkoutDir: string;
-    try {
-      // Through the `active` symlink, so the volume's lowerdir and the record
-      // read above can never disagree about which generation this is.
-      checkoutDir = fs.realpathSync(activeLinkPath(stateDir, repoName));
-    } catch (err) {
-      return refuse(`\`${repoName}\`'s active checkout could not be resolved: ${message(err)}`);
-    }
+    commit = pinned.commit;
     try {
       const roots = await resolvePluginOverlayRoots(deps.docker, deps.workspaceVolume, deps.stateRoot);
       const volume = await ensurePluginRuntimeOverlay(deps.docker, {
         sessionId: deps.sessionId,
         repoName,
-        commit: generation.commit,
+        // Both from the SAME pinned directory, so the volume's name and its
+        // lowerdir can never describe two different generations.
+        commit: pinned.commit,
         stateDir,
-        checkoutDir,
+        checkoutDir: pinned.dir,
         ...roots,
       });
       // A NAMED volume, so it needs no path translation: the daemon already
@@ -309,6 +343,37 @@ export async function runPluginCommand(
     // orchestrator's log.
     return refuse(`\`${surfaced.name}\` could not be started (${entry}): ${message(err)}`);
   }
+}
+
+/**
+ * One live generation, resolved ONCE: its concrete directory, the commit its
+ * record names, and the manifest that directory carries.
+ *
+ * Everything downstream reads from this rather than from the `active` symlink,
+ * which is what keeps the entrypoint, the commit, the volume name and the
+ * lowerdir describing one generation — see the call site for the failure the
+ * per-fact reads produced.
+ */
+interface PinnedGeneration {
+  dir: string;
+  commit: string;
+  exports: PluginExport[];
+}
+
+/**
+ * Resolve `active` and read the generation behind it. `null` when the
+ * repository has no live generation; throws only when the link exists but
+ * cannot be resolved, which the caller reports as its own failure.
+ */
+function pinGeneration(stateDir: string, repoName: string): PinnedGeneration | null {
+  const link = activeLinkPath(stateDir, repoName);
+  if (!fs.existsSync(link)) return null;
+  const dir = fs.realpathSync(link);
+  const record = readGenerationRecordAt(dir);
+  // A directory with no readable record is not a generation this may run: the
+  // commit is req 15's identity, and inventing one would mis-name the volume.
+  if (!record) return null;
+  return { dir, commit: record.commit, exports: readGenerationManifestAt(dir) };
 }
 
 /**
