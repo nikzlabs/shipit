@@ -72,6 +72,30 @@ describe("DropdownMenuContent overflow contract", () => {
     expect(onSelect).toHaveBeenCalledTimes(1);
   });
 
+  it("does not let one pointerdown authorise a second activation", () => {
+    // The permission is consumed by the click it belongs to, so it cannot be
+    // left armed for a later stray one — which matters because Radix keeps the
+    // content node alive through the close animation, so a quick close/reopen
+    // is not guaranteed the remount a per-opening reset would rely on.
+    const onSelect = vi.fn();
+    render(
+      <DropdownMenu defaultOpen>
+        <DropdownMenuTrigger>open</DropdownMenuTrigger>
+        <DropdownMenuContent>
+          <DropdownMenuItem onSelect={(e) => { e.preventDefault(); onSelect(); }}>one</DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>,
+    );
+    const item = screen.getByText("one");
+
+    fireEvent.pointerDown(item, { pointerType: "touch" });
+    fireEvent.click(item, { detail: 1 });
+    expect(onSelect).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(item, { detail: 1 });
+    expect(onSelect).toHaveBeenCalledTimes(1);
+  });
+
   it("leaves keyboard selection alone", () => {
     // Radix synthesizes the keyboard's click from `keydown`, and
     // `element.click()` carries `detail: 0` — no pointer, nothing to guard.

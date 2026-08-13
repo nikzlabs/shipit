@@ -82,11 +82,18 @@ const DropdownMenuContent = forwardRef<
   // `pointerup` INSIDE the menu, and we accept that as "the gesture is here
   // now". A touch never delivers one (the pointer is implicitly captured by the
   // trigger), which is exactly the difference this leans on.
+  //
+  // The flag is armed by a pointerdown inside and CONSUMED by the click it
+  // belongs to, rather than cleared per opening: Radix keeps the same content
+  // node alive through the close animation, so a menu closed and reopened
+  // quickly is not guaranteed a remount (and `forceMount`, which no call site
+  // uses today, would never remount at all). One pointerdown authorises exactly
+  // one activation, which needs no notion of "this opening" to be correct.
   const gestureStartedInside = useRef(false);
   const setContentRef = useCallback(
     (node: ComponentRef<typeof DropdownMenuPrimitive.Content> | null) => {
-      // Radix mounts a fresh content element per opening, so this is the
-      // per-open reset: nothing has been pressed inside it yet.
+      // Belt and braces on the remount path — a fresh node has had nothing
+      // pressed inside it.
       gestureStartedInside.current = false;
       assignRef(ref, node);
     },
@@ -111,6 +118,7 @@ const DropdownMenuContent = forwardRef<
           e.stopPropagation();
           return;
         }
+        gestureStartedInside.current = false;
         onClickCapture?.(e);
       }}
       sideOffset={sideOffset}

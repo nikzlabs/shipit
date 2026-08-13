@@ -154,22 +154,33 @@ because the server re-resolves that session's model for the new harness; a
 quick session has no session to send it to, so the model it is created with is
 the last word.
 
-Two things were wrong, and both are fixed:
+Three things were wrong, and all three are fixed:
 
-- **A harness pick now moves the model onto that harness** — the picked
-  harness's first eligible row, which is exactly what the model picker itself
-  falls back to (`rows[0]`), persisted like any other model pick so the picker
-  reads it back. Nothing about the "model is the source of truth" rule changes:
-  the pick is expressed *in* the model, which is the only thing the creation
-  path carries.
+- **A harness pick now moves the model onto that harness.** It KEEPS the current
+  model when the new harness runs it — a harness switch is not a model switch,
+  and the shared models below are exactly the ones both harnesses offer — with
+  the same `(service, billing mode)` preferred so the switch cannot silently
+  re-bill an identical id through another service. Only when the harness cannot
+  run it does the model become that harness's first eligible row, which is what
+  the model picker itself falls back to (`rows[0]`). Nothing about the "model is
+  the source of truth" rule changes: the pick is expressed *in* the model, which
+  is the only thing the creation path carries.
 - **A model no longer decides the harness when both can run it.** docs/252 also
-  ended "each model belongs to exactly one agent" — a model carrying both an
-  Anthropic-messages and an OpenAI style (DeepSeek V4, GLM, anything through
-  OpenRouter or Vercel) is runnable on either harness, and `agentIdForModel`
-  answers with whichever agent sorts first. On such a model the harness pick was
-  unwinnable. `newSessionAgentId` now lets the saved harness break that tie, and
-  only that tie: a model only one harness runs still overrides a stale saved
-  harness, which is Problem C above.
+  ended "each model belongs to exactly one agent" — `deepseek-v4-flash` and
+  `deepseek-v4-pro` are in both harnesses' model lists today, and
+  `agentIdForModel` answers with whichever agent sorts first. On such a model
+  the harness pick was unwinnable. `newSessionAgentId` now lets the saved
+  harness break that tie, and only that tie: a model only one harness runs still
+  overrides a stale saved harness (Problem C above), and a saved harness this
+  deployment did not install — or that has no credential — never wins it.
+- **The server was discarding the pick after the client honoured it.** The
+  defense-in-depth guard added above resolves
+  `agentIdForModel(opts.model) ?? opts.agent`, so for a shared model it returned
+  Claude and overrode an explicit `agent: "codex"` — write-once, at creation.
+  That guard exists for a caller whose agent *disagrees* with its model; a
+  caller naming a harness that runs the model is not that case, so an explicit
+  agent that can run the submitted model is now honoured. Everything else, and
+  the installed-harness fallback after it (req 14), is unchanged.
 
 The overlay also stopped re-implementing `newSessionAgentId` and now calls it,
 so the harness the picker displays and the harness the session is created on
@@ -177,8 +188,11 @@ cannot drift apart — which is the same failure this doc opened with, one level
 up.
 
 Tests: `QuickCaptureOverlay.test.tsx` (a picked harness reaches the creation
-params, with its own model), `new-session-agent.test.ts` (the tie-break, and
-that it stays a tie-break).
+params, with its own model; and a shared model survives the switch),
+`new-session-agent.test.ts` (the tie-break, that it stays a tie-break, and that
+an uninstalled or credential-less harness never wins it),
+`quick-capture-headless.test.ts` (the server honours a harness that can run the
+submitted model, and still overrides one that cannot).
 
 ## Related
 

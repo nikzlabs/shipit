@@ -60,6 +60,22 @@ describe("newSessionAgentId", () => {
     expect(newSessionAgentId(shared)).toBe("claude");
   });
 
+  it("does not let an uninstalled or credential-less harness win the tie", () => {
+    // The saved key outlives the install: a deployment that dropped the harness
+    // (req 14), or a credential that went away, would otherwise seed a session
+    // whose very first turn cannot start.
+    const shared = (codex: Partial<AgentOption>) => [
+      agent("claude", ["deepseek-v4-pro"]),
+      { ...agent("codex", ["deepseek-v4-pro"]), ...codex },
+    ];
+    localStorage.setItem("vibe-model-id", "deepseek-v4-pro");
+    localStorage.setItem("vibe-agent-id", "codex");
+    expect(newSessionAgentId(shared({ installed: false }))).toBe("claude");
+    expect(newSessionAgentId(shared({ hasRunnableModels: false }))).toBe("claude");
+    // …and it does win once the harness is actually there.
+    expect(newSessionAgentId(shared({}))).toBe("codex");
+  });
+
   it("still lets the model override a saved harness that cannot run it", () => {
     // The tie-break is only a tie-break — docs/142 Problem C is unchanged.
     localStorage.setItem("vibe-agent-id", "claude");

@@ -310,6 +310,36 @@ describe("Integration: quick-capture headless sessions", () => {
     });
   });
 
+  it("honours the requested harness when it can run the model (both can)", { timeout: 15_000 }, async () => {
+    // The other half of the rule above, and the one that made Quick Capture's
+    // harness picker look broken: docs/252 ended "each model belongs to exactly
+    // one harness", so `deepseek-v4-pro` is in BOTH lists and `agentIdForModel`
+    // answers with whichever sorts first (claude). Deriving there is not
+    // defending against a mismatch — there is none — it is discarding a harness
+    // the caller asked for and can actually run, write-once.
+    await waitFor(() => !!repoStore.get(REPO_URL)?.warmSessionId, 10_000, "warm session");
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/sessions/headless",
+      payload: {
+        repoUrl: REPO_URL,
+        initialPrompt: "Run this on Codex",
+        branch: "quick/agent-honoured",
+        agent: "codex",
+        model: "deepseek-v4-pro",
+      },
+    });
+
+    expect(res.statusCode, res.body).toBe(200);
+    const body = res.json() as { sessionId: string };
+    expect(sessionManager.get(body.sessionId)).toMatchObject({
+      model: "deepseek-v4-pro",
+      agentId: "codex",
+      agentPinned: true,
+    });
+  });
+
   it("arms auto-merge at creation when armAutoMerge is true (docs/175)", { timeout: 15_000 }, async () => {
     // The pre-PR arm path requires GitHub auth (`toggleAutoMerge` throws 401
     // otherwise). Authenticate the stub, then create an armed quick session and

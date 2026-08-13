@@ -64,6 +64,13 @@ export function QuickCaptureOverlay({
   // irreversible footgun that would silently ship a review-intended PR. It
   // defaults off and the user must opt in every single time.
   const [armAutoMerge, setArmAutoMerge] = useState(false);
+  // The harness and model seeds live in localStorage, which React cannot
+  // subscribe to — and both this overlay and the pickers inside it read them
+  // during render. Bumped after every write below so the read happens again; a
+  // pick that changes only a seed (a harness switch that keeps the model) has
+  // nothing else to re-render on.
+  const [, noteSeedWrite] = useState(0);
+  const seedWritten = () => noteSeedWrite((n) => n + 1);
   const [error, setError] = useState<string | null>(null);
   const restoreFocusRef = useRef<{ element: HTMLTextAreaElement; start: number | null; end: number | null } | null>(null);
   const wasOpenRef = useRef(false);
@@ -80,14 +87,17 @@ export function QuickCaptureOverlay({
   // so it is called rather than re-implemented. The overlay used to inline a
   // copy of it, which meant the harness the picker DISPLAYS (which calls the
   // shared rule) and the harness the session is CREATED on could disagree the
-  // moment the two stopped matching character for character. `selectedModel` is
-  // the deliberate cache-buster: the rule reads localStorage, which React
-  // cannot track, and every model/harness pick below writes it.
-  const selectedAgentId = useMemo(
-    () => newSessionAgentId(agentList),
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- `selectedModel` is unreferenced by design — it re-reads the non-reactive localStorage seed after each pick (see above)
-    [agentList, selectedModel],
-  );
+  // moment the two stopped matching character for character.
+  //
+  // Read on every render, not memoized: the rule reads localStorage, which
+  // React cannot track, so a dependency list here is a list of things that
+  // *happen* to be written at the same time — and one of them being unchanged
+  // is enough to freeze the answer. That is not hypothetical: a harness switch
+  // that KEEPS the model (below) writes only the harness, so a `selectedModel`
+  // dep would have shown the old harness for exactly the shared-model case the
+  // switch exists for. `seedWrites` below forces the render; this line is then
+  // always current.
+  const selectedAgentId = newSessionAgentId(agentList);
 
   const activeSessionRepo = useMemo(
     () => sessions.find((s) => s.id === sessionId)?.remoteUrl,
@@ -324,11 +334,26 @@ export function QuickCaptureOverlay({
               // back and the overlay ignored the pick entirely — which is what
               // "tapping Codex does nothing" was.
               //
-              // The new harness's FIRST eligible row is exactly what the model
-              // picker falls back to (`rows[0]`), so the anchor, the Model row
-              // and the created session all name the same model. Persisted like
-              // any other model pick, because the picker reads the seed back.
-              const next = modelRowsFor(agentList.find((a) => a.id === agentId))[0];
+              // A harness switch is not a model switch, so the current model is
+              // KEPT whenever the new harness runs it — which is exactly the
+              // case that motivated this: the shared models (DeepSeek, GLM,
+              // anything through a gateway) are the ones both harnesses offer.
+              // Same `(service, mode)` first, so the switch cannot silently
+              // re-bill an identical id through another service; then the same
+              // id anywhere on that harness; only then its first row, which is
+              // what the model picker itself falls back to (`rows[0]`), so the
+              // anchor, the Model row and the created session agree.
+              const rows = modelRowsFor(agentList.find((a) => a.id === agentId));
+              const saved = getSavedModelSelection();
+              const next =
+                rows.find(
+                  (r) =>
+                    r.modelId === selectedModel
+                    && r.serviceId === saved?.serviceId
+                    && r.billingMode === saved.billingMode,
+                )
+                ?? rows.find((r) => r.modelId === selectedModel)
+                ?? rows[0];
               if (next) {
                 if (next.serviceId) {
                   saveModelSelection({
@@ -339,8 +364,15 @@ export function QuickCaptureOverlay({
                 } else {
                   saveModelId(next.modelId);
                 }
+                // `saveModelSelection` REFUSES a triple this build's catalogue
+                // cannot place, and refuses it silently. The seed is what the
+                // harness is derived from, so a refusal would leave the overlay
+                // showing the old harness while sending the new model. Fall back
+                // to the bare id, which is stored as-is.
+                if (getSavedModelId() !== next.modelId) saveModelId(next.modelId);
                 setSelectedModel(next.modelId);
               }
+              seedWritten();
               // Reasoning is per-agent — drop any explicit pick made for the
               // harness being left, exactly as a model switch does below.
               setSelectedReasoning(undefined);
@@ -360,6 +392,7 @@ export function QuickCaptureOverlay({
                 saveModelId(selection.modelId);
               }
               setSelectedModel(selection.modelId);
+              seedWritten();
               // Reasoning is per-agent; a model switch can change the agent, so
               // drop the explicit pick and let the new agent's seed take over.
               setSelectedReasoning(undefined);

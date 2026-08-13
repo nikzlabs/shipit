@@ -112,6 +112,8 @@ On a phone this menu opened *already inside the Reasoning panel*, every time, in
 
 The guard is in `DropdownMenuContent`, not here: Radix's `MenuItem` has the same hole one layer down (it synthesizes a click for any `pointerup` it never saw a `pointerdown` for), so every dropdown in the app is exposed, not just this one. A row may now be activated only by a gesture that **began inside the menu**; a click carrying pointer coordinates whose `pointerdown` the menu never saw is swallowed. Keyboard activation is untouched (`element.click()` has `detail === 0`), and mouse press-drag-release from the trigger still works, because a mouse — unlike a touch — delivers a real `pointerup` inside the menu.
 
+The permission is armed by that `pointerdown` and **consumed by the click it belongs to**, rather than cleared per opening: Radix keeps the content node alive through the close animation, so a menu closed and reopened quickly is not guaranteed a remount, and `forceMount` would never give one. One pointerdown authorises exactly one activation, which needs no notion of "this opening" to hold.
+
 ## Reuse, not duplication
 
 `ModelSelector` carries ~80 lines of subtle precedence logic (optimistic pick → session model → live model → saved seed → first row) plus the group resolution that keeps the trigger label and the checkmark from contradicting each other. The menu's model panel needs exactly that, and a second copy would drift.
