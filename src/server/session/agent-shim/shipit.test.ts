@@ -3684,3 +3684,99 @@ describe("shipit branch reset-to-base --force", () => {
     expect(out.stderr).toContain("git reset --hard");
   });
 });
+
+// ---------------------------------------------------------------------------
+// shipit issue → a declared plugin repository (docs/262 req 25)
+// ---------------------------------------------------------------------------
+
+describe("shipit issue — plugin repository feedback (docs/262 req 25)", () => {
+  /** What the orchestrator reports for a project that declares one plugin repo. */
+  const WITH_PLUGIN = {
+    destinations: [
+      { id: "github", kind: "github", key: "session/repo" },
+      { id: "github:acme/planning", kind: "github", key: "acme/planning", name: "planning" },
+      {
+        id: "github:acme/dev-tools",
+        kind: "github",
+        key: "acme/dev-tools",
+        name: "tools",
+        origin: "plugin",
+        pluginNames: ["tools"],
+      },
+    ],
+    warnings: [],
+  };
+
+  it("files feedback through the ordinary create, addressed by the plugin repo's name", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["issue", "create", "--tracker", "tools", "--title", "reqs drops --root", "-b", "repro…"],
+      {
+        "GET /agent-ops/issue/trackers": { status: 200, body: WITH_PLUGIN },
+        "POST /agent-ops/issue/create": {
+          status: 200,
+          body: { ok: true, summary: "created acme/dev-tools#12", identifier: "tools#12" },
+        },
+      },
+    );
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0]).toMatchObject({
+      path: "/agent-ops/issue/create",
+      body: { tracker: "github:acme/dev-tools", trackerName: "tools", title: "reqs drops --root" },
+    });
+  });
+
+  it("resolves a reference to an issue on the plugin repository", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "view", "tools#12"], {
+      "GET /agent-ops/issue/trackers": { status: 200, body: WITH_PLUGIN },
+      "GET /agent-ops/issue/view": { status: 200, body: { issue: { identifier: "tools#12", title: "T" } } },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].path).toContain("tracker=github%3Aacme%2Fdev-tools");
+  });
+
+  // Declared BOTH ways: one destination, two names, and the name typed is what
+  // reaches the orchestrator — it is what decides whether this is feedback.
+  it("reports the plugin name when it aliases a tracker of the same repository", async () => {
+    const BOTH = {
+      destinations: [
+        { id: "github", kind: "github", key: "session/repo" },
+        {
+          id: "github:acme/dev-tools",
+          kind: "github",
+          key: "acme/dev-tools",
+          name: "planning",
+          pluginNames: ["tools"],
+        },
+      ],
+      warnings: [],
+    };
+    const { run } = makeRunner();
+    const out = await run(["issue", "create", "--tracker", "tools", "--title", "T", "-b", "B"], {
+      "GET /agent-ops/issue/trackers": { status: 200, body: BOTH },
+      "POST /agent-ops/issue/create": { status: 200, body: { ok: true, summary: "created", identifier: "tools#1" } },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].body).toMatchObject({ tracker: "github:acme/dev-tools", trackerName: "tools" });
+
+    // …and the tracker name still reaches it unchanged.
+    const { run: run2 } = makeRunner();
+    const out2 = await run2(["issue", "create", "--tracker", "planning", "--title", "T", "-b", "B"], {
+      "GET /agent-ops/issue/trackers": { status: 200, body: BOTH },
+      "POST /agent-ops/issue/create": { status: 200, body: { ok: true, summary: "created", identifier: "planning#1" } },
+    });
+    expect(out2.calls[0].body).toMatchObject({ trackerName: "planning" });
+  });
+
+  it("names the plugin repositories when a create addresses an undeclared name", async () => {
+    const { run } = makeRunner();
+    const out = await run(["issue", "create", "--tracker", "nope", "--title", "T", "-b", "B"], {
+      "GET /agent-ops/issue/trackers": { status: 200, body: WITH_PLUGIN },
+    });
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("Declared trackers: planning.");
+    expect(out.stderr).toContain("tools");
+    expect(out.calls).toHaveLength(0);
+  });
+});

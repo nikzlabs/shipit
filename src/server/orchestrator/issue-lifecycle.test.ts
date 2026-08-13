@@ -373,3 +373,62 @@ describe("markIssueStartedFromSeed — started at seed time", () => {
     expect(calls).toHaveLength(0);
   });
 });
+
+/**
+ * docs/262 req 25 — a declared plugin repository is a feedback destination, so a
+ * project PR's `Closes` must not complete an issue on it: req 7 keeps the plugin
+ * read-only, so whatever that merge contained, it was not the fix.
+ */
+describe("applyMergedPrIssueRefs — a plugin repository is not closable (docs/262 req 25)", () => {
+  const DECLARES_PLUGIN =
+    "plugins:\n  repos:\n    - repo: acme/dev-tools\n      name: tools\n      branch: main\n";
+
+  it("refuses `Closes tools#12`, leaves the issue open, and says why", async () => {
+    const { deps, calls, appended } = makeHarness("open", false, DECLARES_PLUGIN);
+    await applyMergedPrIssueRefs(deps, mergedPr("Closes tools#12"));
+
+    // Nothing was written to the plugin repository at all.
+    expect(calls.filter((c) => c.method !== "GET")).toHaveLength(0);
+    expect(appended.filter((m) => m.issueWrite)).toHaveLength(0);
+    // …and the refusal is visible, not a log line (req 19's accountability rule).
+    const note = appended.find((m) => m.text.includes("tools#12"));
+    expect(note?.text).toContain("plugin repository");
+    expect(note?.text).toContain("Refs");
+  });
+
+  // `Refs` is what the author meant, and it still works: the plugin maintainer
+  // gets the consumer's merged PR on the report.
+  it("still posts a Refs progress comment on a plugin repository", async () => {
+    const { deps, calls, appended } = makeHarness("open", false, DECLARES_PLUGIN);
+    await applyMergedPrIssueRefs(deps, mergedPr("Refs tools#12"));
+
+    const comment = calls.find((c) => c.method === "POST" && c.url.includes("/comments"));
+    expect(comment?.url).toContain("/repos/acme/dev-tools/issues/12/comments");
+    expect(appended.filter((m) => m.issueWrite)).toHaveLength(1);
+  });
+
+  // The guard keys off the NAME the pointer used, so a repository declared both
+  // ways behaves as the pointer asked — both directions.
+  it("refuses the plugin name on a repository declared both ways", async () => {
+    const { deps, calls, appended } = makeHarness(
+      "open",
+      false,
+      `issues:\n  trackers:\n    - kind: github\n      repo: acme/dev-tools\n      name: planning\n${DECLARES_PLUGIN}`,
+    );
+    await applyMergedPrIssueRefs(deps, mergedPr("Closes tools#12"));
+    expect(calls.filter((c) => c.method !== "GET")).toHaveLength(0);
+    expect(appended.find((m) => m.text.includes("tools#12"))?.text).toContain("plugin repository");
+  });
+
+  it("still closes a repository the project also declares as a tracker", async () => {
+    const { deps, calls } = makeHarness(
+      "open",
+      false,
+      `issues:\n  trackers:\n    - kind: github\n      repo: acme/dev-tools\n      name: planning\n${DECLARES_PLUGIN}`,
+    );
+    await applyMergedPrIssueRefs(deps, mergedPr("Closes planning#12"));
+    const patch = calls.find((c) => c.method === "PATCH");
+    expect(patch?.url).toContain("/repos/acme/dev-tools/issues/12");
+    expect(patch?.body).toMatchObject({ state: "closed" });
+  });
+});

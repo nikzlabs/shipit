@@ -1425,3 +1425,89 @@ describe("label editing (planning#88)", () => {
     ).rejects.toMatchObject({ statusCode: 409 });
   });
 });
+
+/**
+ * docs/262 req 25 — filing feedback on a declared plugin repository. The path is
+ * the ordinary `create`; what the destination adds is the session's plugin
+ * context, stamped server-side because the agent cannot read the running commit
+ * from the staged checkout it browses.
+ */
+describe("plugin repository feedback (docs/262 req 25)", () => {
+  const PLUGIN_CTX: GitHubTrackerContext = {
+    token: "ghp_test",
+    repo: { owner: "octocat", repo: "hello-world" },
+    pluginRepos: [
+      { name: "tools", owner: "acme", repo: "dev-tools", ref: "branch main", commit: "9f2a1b3" },
+    ],
+  };
+  const store = () => tmpStore();
+
+  it("files on the plugin's own repository and stamps the running commit", async () => {
+    const fetchImpl = ghFetch();
+    const out = await createIssueForTracker(
+      store(),
+      "github:acme/dev-tools",
+      "reqs CLI drops --root",
+      "## Reproduction\n1. run `reqs --root docs`",
+      {},
+      fetchImpl,
+      PLUGIN_CTX,
+    );
+    expect(out.verb).toBe("create");
+    const [url, init] = fetchImpl.mock.calls.find(([, i]) => i?.method === "POST")!;
+    // The plugin's repository, not the session's own — req 25's whole point.
+    expect(url as string).toContain("/repos/acme/dev-tools/issues");
+    const body = JSON.parse(init!.body as string).body as string;
+    expect(body).toContain("## Reproduction");
+    expect(body).toContain("plugin repository `tools`");
+    expect(body).toContain("branch main @ `9f2a1b3`");
+  });
+
+  it("leaves a declared tracker's issues alone", async () => {
+    const fetchImpl = ghFetch();
+    await createIssueForTracker(store(), "github", "Plain issue", "no footer", {}, fetchImpl, {
+      ...PLUGIN_CTX,
+    });
+    const [, init] = fetchImpl.mock.calls.find(([, i]) => i?.method === "POST")!;
+    expect(JSON.parse(init!.body as string).body).toBe("no footer");
+  });
+
+  // A repository the project declares BOTH ways is one of its own trackers, and
+  // an ordinary planning issue filed there must not grow plugin context.
+  it("does not stamp a repository that is also a declared tracker", async () => {
+    const fetchImpl = ghFetch();
+    await createIssueForTracker(
+      store(),
+      "github:acme/dev-tools",
+      "Plain issue",
+      "no footer",
+      {},
+      fetchImpl,
+      {
+        ...PLUGIN_CTX,
+        declared: [{ kind: "github", name: "planning", owner: "acme", repo: "dev-tools" }],
+      },
+    );
+    const [, init] = fetchImpl.mock.calls.find(([, i]) => i?.method === "POST")!;
+    expect(JSON.parse(init!.body as string).body).toBe("no footer");
+  });
+
+  it("files, and says so, when no generation is active yet", async () => {
+    const fetchImpl = ghFetch();
+    await createIssueForTracker(store(), "github:acme/dev-tools", "t", "b", {}, fetchImpl, {
+      ...PLUGIN_CTX,
+      pluginRepos: [{ name: "tools", owner: "acme", repo: "dev-tools", ref: "branch main" }],
+    });
+    const [, init] = fetchImpl.mock.calls.find(([, i]) => i?.method === "POST")!;
+    expect(JSON.parse(init!.body as string).body).toContain("no plugin generation is active");
+  });
+
+  it("fails closed on a name nothing declares, naming the plugin repositories", async () => {
+    await expect(
+      createIssueForTracker(store(), "github:acme/other", "t", "b", {}, ghFetch(), PLUGIN_CTX),
+    ).rejects.toMatchObject({
+      statusCode: 404,
+      message: expect.stringContaining("plugin repositories"),
+    });
+  });
+});

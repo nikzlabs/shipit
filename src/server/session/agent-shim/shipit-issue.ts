@@ -31,10 +31,18 @@
  *    no unnamed fallback, because for a public code repository the unnamed
  *    destination is the *public* repo: a forgotten flag would file a planning
  *    issue publicly. To file into its own repository, a repository declares it.
+ *
+ * docs/262 req 25 adds one more kind of destination to that same set: a declared
+ * **plugin repository**, under the name of its `plugins.repos` entry. Declaring
+ * the plugin is what grants the channel, and it is the ordinary `create` path —
+ * no second issue command, and the token still never enters this container. The
+ * orchestrator stamps the running plugin commit onto the report, because the
+ * checkout the agent browses is a staged export with no `HEAD` to read.
  */
 
 import {
   describeDeclaredNames,
+  matchedDestinationName,
   resolveDestinationByName,
   resolveIssueRef,
 } from "../../shared/issue-ref-resolution.js";
@@ -187,9 +195,15 @@ function requireDestination(
   if (!found.ok) {
     fail(io, `shipit issue ${verb}: ${found.message}`);
   }
+  // docs/262 req 25 — report the name that MATCHED, which differs from the
+  // destination's primary name only for a plugin repository aliased onto a
+  // tracker the project also declares. There the choice of name is the intent
+  // (feedback on the plugin vs an issue on my tracker), so the orchestrator has
+  // to see the one that was typed.
+  const matched = matchedDestinationName(found.destination, name);
   return {
     tracker: found.destination.id,
-    ...(found.destination.name ? { trackerName: found.destination.name } : {}),
+    ...(matched ? { trackerName: matched } : {}),
   };
 }
 

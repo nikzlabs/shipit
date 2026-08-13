@@ -49,6 +49,9 @@ import type { SessionManager } from "./sessions.js";
 import type { TrackerId, TrackerIssue, IssueWriteCard, IssueRefCard } from "../shared/types.js";
 import { parseGitHubRemote } from "./git-utils.js";
 import { resolveShipitConfig, type DeclaredTracker } from "../shared/shipit-config.js";
+import { pluginFeedbackRepos, type PluginFeedbackRepo } from "../shared/plugin-feedback.js";
+import { readActiveGeneration } from "./plugin-generations.js";
+import { sessionStateDirForWorkspace } from "./session-state-dir.js";
 import { isGitHubTracker } from "../shared/tracker-id.js";
 import { resolveDestinationByName } from "../shared/issue-ref-resolution.js";
 import { getErrorMessage } from "./validation.js";
@@ -70,11 +73,12 @@ export function resolveGitHubTrackerContext(
   const token = githubAuthManager.getToken();
   const session = sessionId ? sessionManager.get(sessionId) : undefined;
   const parsed = session?.remoteUrl ? parseGitHubRemote(session.remoteUrl) : null;
-  const { trackers, warnings } = readDeclaredTrackers(session?.workspaceDir);
+  const { trackers, plugins, warnings } = readDeclaredTrackers(session?.workspaceDir);
   return {
     token,
     repo: parsed ? { owner: parsed.owner, repo: parsed.repo } : null,
     declared: trackers,
+    pluginRepos: plugins,
     warnings,
   };
 }
@@ -95,15 +99,27 @@ export function resolveGitHubTrackerContext(
  */
 function readDeclaredTrackers(
   workspaceDir: string | undefined,
-): { trackers: DeclaredTracker[]; warnings: string[] } {
-  if (!workspaceDir) return { trackers: [], warnings: [] };
+): { trackers: DeclaredTracker[]; plugins: PluginFeedbackRepo[]; warnings: string[] } {
+  if (!workspaceDir) return { trackers: [], plugins: [], warnings: [] };
   try {
     const config = resolveShipitConfig(workspaceDir);
     // Only the declaration-shaped warnings are carried forward (req 8) — the
     // agent asked about trackers, not about a stale `agent.memory` key.
     return {
       trackers: config.issues.trackers,
-      warnings: config.warnings.filter((w) => w.includes("issues.")),
+      // docs/262 req 25 — the same read answers "which plugin repositories can
+      // this session file feedback on", because the two declarations live in
+      // one file and share one name space (plan §1a).
+      plugins: withRunningCommits(workspaceDir, pluginFeedbackRepos(config.plugins)),
+      // …and its warnings ride along for the same reason the tracker ones do
+      // (review finding): a `plugins.repos` entry dropped for a name collision
+      // takes its feedback destination with it, so `--tracker tools` fails with
+      // "no such tracker" and nothing anywhere says why. Only the `repos:`
+      // warnings — a broken `use:` entry or export is the Plugins tab's
+      // business, not this CLI's.
+      warnings: config.warnings.filter(
+        (w) => w.includes("issues.") || w.includes("plugins.repos"),
+      ),
     };
   } catch (err) {
     // A malformed *document* (bad YAML, a bad `release` block) degrades to "no
@@ -112,9 +128,38 @@ function readDeclaredTrackers(
     // repository simply declares nothing.
     return {
       trackers: [],
+      plugins: [],
       warnings: [`shipit.yaml could not be parsed, so no tracker declarations were read: ${getErrorMessage(err)}`],
     };
   }
+}
+
+/**
+ * docs/262 reqs 15, 25 — stamp each feedback destination with the commit this
+ * session is actually running from that repository, read off the live
+ * generation record. A repository with no generation yet keeps its declared ref
+ * and no commit: a report filed then still files, and says the version was not
+ * active rather than inventing one.
+ *
+ * Never throws. The commit is context on a report, so a session-state-dir
+ * problem must not be able to fail an issue operation.
+ */
+function withRunningCommits(
+  workspaceDir: string,
+  repos: PluginFeedbackRepo[],
+): PluginFeedbackRepo[] {
+  if (repos.length === 0) return repos;
+  let stateDir: string;
+  try {
+    stateDir = sessionStateDirForWorkspace(workspaceDir);
+  } catch {
+    return repos;
+  }
+  return repos.map((repo) => {
+    const generation = readActiveGeneration(stateDir, repo.name);
+    if (!generation) return repo;
+    return { ...repo, ref: generation.ref, commit: generation.commit };
+  });
 }
 
 /**
@@ -1057,7 +1102,12 @@ export async function registerIssueRoutes(
       // stamp the card's issueId from the created issue.
       const dedup = { verb: "create", content: JSON.stringify({ title, body: body ?? "", labels: labels ?? [], priority: priority ?? null, parent: parentToSet ?? null, createMissingLabels: createMissingLabels === true }) };
       return handleWrite(request.params.sessionId, tracker, trackerName, "", reply, "Failed to create issue", dedup, (github) =>
-        createIssueForTracker(credentialStore, tracker, title, body ?? "", { labels, priority, parent: parentToSet, createMissingLabels: createMissingLabels === true }, trackerFetchImpl, github),
+        // `trackerName` rides along because it is the create's *intent*, not
+        // only a display detail: for a repository declared both as a tracker and
+        // as a plugin repository, the name chosen is what says whether this is
+        // plugin feedback (docs/262 req 25). `rejectMismatchedTrackerName` has
+        // already verified it resolves to `tracker`.
+        createIssueForTracker(credentialStore, tracker, title, body ?? "", { labels, priority, parent: parentToSet, createMissingLabels: createMissingLabels === true, ...(trackerName ? { trackerName } : {}) }, trackerFetchImpl, github),
       );
     },
   );

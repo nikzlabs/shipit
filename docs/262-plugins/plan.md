@@ -583,12 +583,110 @@ instead of a repeat.
   step, and the visible repo/ref/commit identity on the plugin card — in
   every state, including degraded and collision — is the accountability
   surface that replaces approval.
-- **Feedback** (req 25 — review finding 12): each declared repo registers
-  its `name` in the **same tracker registry** the issue shim and Issues UI
-  resolve (`GET /api/trackers`) — a separate registry would leave
-  `shipit issue create --tracker game-tools` unresolvable. One destination
-  per repository, however many plugins are used from it. Filing stays
+- **Feedback** (req 25 — review finding 12) — **implemented**
+  (`shared/plugin-feedback.ts`, `trackers/registry.ts`,
+  `services/issues.ts`): each declared repo registers its `name` in the **same
+  tracker registry** the issue shim and Issues UI resolve — a separate registry
+  would leave `shipit issue create --tracker game-tools` unresolvable, and a
+  second issue path beside `shipit issue` would be a second thing to keep
+  brokered. One destination per repository, however many plugins are used from
+  it: feedback is about the repository that would have to fix it. Filing stays
   brokered; the token stays out of the container.
+
+  **How the destination is named, and how it is distinguished** (the decision
+  this slice owed):
+
+  - **Named by the `repos:` entry's `name`** — no new syntax, and no per-plugin
+    destination. That name is already reserved across the tracker namespace in
+    phase 1, which is what makes `--tracker game-tools` unambiguous by
+    construction rather than by a second uniqueness rule.
+  - **Distinguished by `origin: "plugin"` on the destination, not by a
+    narrower capability.** The registry entry is **unlisted**: a plugin
+    repository is a dependency, not where the project's work is tracked, so it
+    mints no Issues tab and an unqualified `list` never means it. Everything
+    else — adapter, brokering, token boundary, reference forms — is identical to
+    a declared tracker. A project that genuinely wants the tab declares the
+    repository in `issues.trackers` as well; both names then resolve to the one
+    destination.
+  - **Rejected: a create-only capability** on plugin destinations. It reads
+    safer and is not: undo of a create closes the issue it just filed, so a
+    create-only destination ships a card whose Undo fails, and it removes the
+    list/view a report needs to avoid duplicating one. It also buys no
+    authority: whoever can add a `plugins.repos` entry can add an
+    `issues.trackers` entry to the same file, so the restriction filters
+    accidents, not privilege — and it filters them by breaking a working
+    button. The agent-facing docs say what the channel is for instead.
+  - **A repository declared BOTH ways stays ONE destination**, with the plugin
+    name carried as an alias (`pluginNames`). This is not tidiness: two *named*
+    destinations sharing one `owner/repo` make the canonical form
+    `owner/repo#42` **ambiguous** (`resolveParsedIssueRef` fails closed on
+    exactly that), so registering a second one would break a tracker that was
+    already working. Matched case-insensitively, since a tracker id preserves
+    the casing its declaration was written in.
+  - **In that one case the NAME used is the intent, and it survives
+    resolution** (review finding). One destination, two declared names:
+    `--tracker tools` is feedback on the plugin, `--tracker planning` is an
+    issue on the project's own tracker, and every plugin-specific behavior —
+    the context footer, the `Closes` guard below — keys on the name rather than
+    on the destination. Resolution therefore reports the name that *matched*
+    (`matchedDestinationName`), where docs/248 otherwise normalizes to the
+    destination's primary name; collapsing it there silently dropped req 25's
+    own case, and left an Undo's re-point check unable to see the name its card
+    recorded (`destinationForName` now matches aliases too).
+  - **`repo: self` registers nothing** — its issues are already this session's
+    own repository, which every session reaches without a declaration
+    (docs/248 req 12).
+
+  **The report carries the session's context, stamped server-side.** A create
+  addressed at a plugin destination gets a footer with the repository's declared
+  ref and the **exact commit the session is running** (req 15), read from the
+  live generation record. The agent cannot obtain that commit itself — the
+  checkout it browses is a staged export with no `HEAD` — and asking it to
+  remember would make req 25's "can carry the running commit" a convention. The
+  repro and the proposed diff stay the author's: they are the body, and this is
+  a footer under it. The footer follows the name the create was addressed
+  through, so an ordinary issue filed on a project tracker never grows plugin
+  context, and a report addressed at the plugin name always does.
+
+  Two limits, both stated rather than papered over:
+
+  - **The generation store is keyed by declaration name, not by repository**
+    (`GenerationRecord` carries `repoName`, no `owner/repo`), so while a
+    re-pointed `repos:` entry's new generation is still activating — or has
+    failed — the live generation belongs to the *previous* repository, and its
+    commit is what the footer would carry. The Plugins tab has the same gap for
+    the same reason (its card pairs the new source with the old commit), so the
+    fix belongs to the generation record, not here: record the source
+    repository in it and ignore a generation whose repository no longer matches
+    the declaration.
+  - **A replayed create is deduped on the body as the caller wrote it**
+    (`handleWrite`'s key hashes the request, not the stamped result), so an
+    identical report filed twice inside the 10-minute window is collapsed even
+    if the plugin refreshed between the two. That is the wanted behavior:
+    the window exists to stop a crash-retry filing the same issue twice on
+    someone else's tracker, and a duplicate report is worse than a report whose
+    footer names the commit that was live when it was first filed.
+
+  **Req 7 is untouched.** A destination is an issue-API address; nothing on this
+  path touches a git remote, a branch or a push, and the checkout stays
+  read-only. The integration test asserts the plugin repository's issues
+  endpoint is the *only* thing the filing reaches.
+
+  **One consequence req 7 forced a guard for**: a merged project PR whose body
+  says `Closes tools#12` would otherwise complete an issue on the plugin
+  repository (docs/194 resolves `Closes` through exactly these destinations).
+  Req 7 says the fix cannot have been in that merge — a project session never
+  changes a plugin — so `issue-lifecycle.ts` refuses the completion for a
+  plugin-addressed pointer and surfaces why, in the transcript, rather than
+  closing a third party's report on the strength of an unrelated merge. `Refs`
+  is unaffected and is the pointer that means what the author meant.
+
+  **The user's half of req 25 is chat** (principle §5): the user reports
+  feedback by asking the agent, which is the actor. No feedback button is added
+  to the Plugins tab. One known consequence of the no-tab decision: an inline
+  `game-tools#12` in a transcript renders as plain text rather than a badge,
+  because the client derives its destinations from the tab list — the write
+  card itself still opens the filed issue inline, so nothing links out.
 
 ## 3. UI design
 
@@ -681,6 +779,15 @@ coherent in one UI.
   (the GET exists; refresh endpoints come with generation mechanics); tracker
   registration folds into the existing trackers registry
   (`api-routes-issues.ts`) with destination-based dedup.
+- ✓ `src/server/shared/plugin-feedback.ts` — req 25's pure half: a
+  `plugins.repos` entry → a feedback destination, and the session-context
+  footer. Filesystem-free like its neighbours, so the orchestrator reads the
+  live generation and hands the commit in. `trackers/registry.ts` registers the
+  destinations (unlisted, `origin: "plugin"`, aliasing onto a tracker
+  declaration of the same repository); `services/issues.ts` stamps the footer on
+  a create; `api-routes-issues.ts` reads the declaration and the running commit
+  in the same pass it already reads `issues.trackers`. No new route and no new
+  agent verb — `shipit issue create --tracker <repo-name>` is the whole surface.
 - ✓ `src/server/session/plugin-runtime.ts` — the container half: it points
   `/plugins/<name>` at the read-only store mount, removes links the declaration
   no longer names, and materializes each imported plugin's skills
