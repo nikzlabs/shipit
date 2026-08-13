@@ -346,7 +346,7 @@ export class SessionWorker extends EventEmitter {
 
   private enqueuePluginPrepare(): Promise<PluginPrepareResult> {
     if (!this._pluginPrepare) {
-      this._pluginPrepare = preparePlugins({ workspaceDir: this.workspaceDir }).finally(() => {
+      this._pluginPrepare = Promise.resolve(preparePlugins({ workspaceDir: this.workspaceDir })).finally(() => {
         this._pluginPrepare = null;
       });
       return this._pluginPrepare;

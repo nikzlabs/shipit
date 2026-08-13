@@ -63,31 +63,22 @@ refresh, and reach nobody.
 The path follows the live generation. When a plugin repository is refreshed
 mid-session, `/plugins/<name>` points at the new commit with no restart.
 
-## Environment
+## Plugin code does not run in your container
 
-A plugin's own code — its `install`, and later its CLIs and services — runs
-with:
+Everything a plugin *ships* — its `install`, and later its CLIs and services —
+runs in a separate container, with only what it declared: the checkout, its own
+writable layer, its own credentials.
 
-| Variable | Meaning |
-|---|---|
-| `SHIPIT_PROJECT_DIR` | The consuming project's workspace (`/workspace`) |
-| `SHIPIT_PLUGIN_COMMIT` | The exact commit of the live checkout. **Unset** when the plugin runs from a live working tree (`repo: self`), which has no exact commit |
+This is not tidiness. Your container can reach ShipIt's own credential broker
+on loopback, so anything running here can obtain a real GitHub token. Plugin
+code comes from another repository, so it runs where that is not reachable.
+Expect the same rule to apply to plugin CLIs when they land: the command on
+your `PATH` will be a ShipIt wrapper, and the plugin's own code will run
+elsewhere.
 
-## Install
-
-If a plugin declares `install`, ShipIt runs it inside this container with
-`cwd` set to that plugin repository's checkout root, so `node_modules` and
-build output land in the disposable per-session checkout rather than in your
-project.
-
-It re-runs when — and only when — the commit, the install string, or the
-content of the declared `install-inputs` changes. A failed install is not
-recorded as done, so it is retried rather than silently skipped.
-
-Install runs with the same authority `agent.install` has. It deliberately does
-**not** receive ShipIt's repository-fetch credentials: those live in the
-orchestrator and never enter this container at all, so plugin code cannot use
-them to reach anything.
+The practical consequence for you: `/plugins/<name>` shows plugin **source**.
+It does not show a plugin's installed dependencies, because those live in a
+layer that belongs to the plugin's own execution environment, not to yours.
 
 ## Failure behaviour
 
@@ -100,6 +91,7 @@ succeeds or fails on its own.
 
 Declared in the manifest and parsed, but not yet wired into a session:
 
+- **Install** — declared and validated, but nothing runs it yet
 - **CLIs** on your `PATH`, with the plugin's credentials injected
 - **Skills** materialized into the agent's discovery root
 - **Services** from a plugin's compose fragment, and `/project` inside them

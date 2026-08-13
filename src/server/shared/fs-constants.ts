@@ -33,24 +33,23 @@ export const DEP_CACHE_CONTAINER_PATH = "/dep-cache";
 
 /**
  * docs/262 — where a session's plugin checkouts appear inside the agent
- * container. Three paths, because one mount cannot be both read-only for the
- * agent and writable for `install`, and because a bind mount pins its source's
- * symlinks at creation time (plan §2 "as built"):
+ * container. Two paths, and **both are read-only**: the agent container never
+ * gets a writable view of a plugin checkout at any path (req 7). Plugin code
+ * that must write runs elsewhere, against a copy-on-write overlay volume
+ * (plan §1b).
  *
  * - {@link CONTAINER_PLUGINS_DIR} — the **agent-facing** surface, and the only
  *   one a plugin author or an agent should ever be told about. Holds one
- *   symlink per declared repo, pointing into the read-only store.
- * - {@link CONTAINER_PLUGIN_STORE_DIR} — the session's whole plugin root,
- *   read-only. The symlinks above resolve through it, so swapping a
- *   generation's `active` link on the host is visible in-container at once
- *   (req 12's refresh, with no container recreation).
- * - {@link CONTAINER_PLUGIN_STORE_RW_DIR} — the same host directory, writable,
- *   used ONLY by the install runner so `node_modules` can land in the
- *   generation. Not an agent surface.
+ *   symlink per declared repo, pointing into the store below.
+ * - {@link CONTAINER_PLUGIN_STORE_DIR} — the session's whole plugin root. The
+ *   symlinks resolve through it, so swapping a generation's `active` link on
+ *   the host is visible in-container at once (req 12's refresh, with no
+ *   container recreation). Mounting a generation directly would instead pin
+ *   whichever one was live at container creation, since Docker resolves a bind
+ *   source's symlinks then.
  */
 export const CONTAINER_PLUGINS_DIR = "/plugins";
 export const CONTAINER_PLUGIN_STORE_DIR = "/plugin-store";
-export const CONTAINER_PLUGIN_STORE_RW_DIR = "/plugin-store-rw";
 
 /** Generated compose merge file (`docker compose -f … -f <this>`). */
 export const COMPOSE_OVERRIDE_FILE = "compose.override.yml";

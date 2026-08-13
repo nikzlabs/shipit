@@ -65,13 +65,13 @@ describe("buildMounts", () => {
     expect(result.mounts).toHaveLength(0);
   });
 
-  // docs/262 — the plugin store is mounted twice on purpose: read-only is the
-  // agent's path (req 7), writable exists only so the in-container install
-  // runner can write `node_modules` into the generation.
-  it("docs/262: mounts the plugin root read-only AND writable", () => {
+  // docs/262 — read-only, and read-only ONLY: an earlier revision added a
+  // writable twin for the in-container install runner, which made req 7's
+  // guarantee decorative. Install moved to its own container instead.
+  it("docs/262: mounts the plugin root read-only, with no writable view", () => {
     const result = buildMounts(baseConfig(), undefined, undefined);
     expect(result.binds).toContain("/workspace/sessions/sess-1/state/plugins:/plugin-store:ro");
-    expect(result.binds).toContain("/workspace/sessions/sess-1/state/plugins:/plugin-store-rw:rw");
+    expect(result.binds.some((b) => b.includes("/state/plugins:") && b.endsWith(":rw"))).toBe(false);
     // Never a per-generation mount: Docker resolves a bind source's symlinks at
     // creation, so that shape would pin one generation and make refresh
     // invisible until the container was recreated.
@@ -79,15 +79,12 @@ describe("buildMounts", () => {
     expect(result.binds.some((b) => b.includes("/active:"))).toBe(false);
   });
 
-  it("docs/262: keeps the read-only/writable split under a volume-backed session", () => {
+  it("docs/262: stays read-only under a volume-backed session too", () => {
     const result = buildMounts(baseConfig(), "shipit-state", undefined);
     const ro = result.mounts.find((m) => m.Target === "/plugin-store");
-    const rw = result.mounts.find((m) => m.Target === "/plugin-store-rw");
     expect(ro?.ReadOnly).toBe(true);
-    expect(rw?.ReadOnly).toBe(false);
-    // Same subpath, two views of one directory.
     expect(ro?.VolumeOptions?.Subpath).toBe("sessions/sess-1/state/plugins");
-    expect(rw?.VolumeOptions?.Subpath).toBe(ro?.VolumeOptions?.Subpath);
+    expect(result.mounts.every((m) => m.Target !== "/plugin-store-rw")).toBe(true);
   });
 
   it("docs/138: mounts the per-session credentials subpath when credentialsVolume is set", () => {

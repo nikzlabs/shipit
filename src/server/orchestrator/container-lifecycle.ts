@@ -20,7 +20,6 @@ import {
 } from "./session-container.js";
 import {
   CONTAINER_PLUGIN_STORE_DIR,
-  CONTAINER_PLUGIN_STORE_RW_DIR,
   CONTAINER_WORKSPACE_DIR,
   DEP_CACHE_CONTAINER_PATH,
 } from "../shared/fs-constants.js";
@@ -350,36 +349,31 @@ export function buildMounts(
     binds.push(`${sessionSharedStateDir(config.sessionStateDir)}:${CONTAINER_SESSION_STATE_DIR}:rw`);
   }
 
-  // docs/262 — the session's plugin root, mounted TWICE (plan §2 "as built").
-  // The read-only view is what `/plugins/<name>` symlinks resolve through, so
-  // the agent cannot edit a plugin from the consuming session (req 7); the
-  // writable view exists only so the in-container install runner can put
-  // `node_modules` in the generation. Mounting each generation directly would
-  // have been simpler and wrong: Docker resolves a bind source's symlinks at
-  // creation, which would pin whichever generation was live when the session
-  // opened and leave refresh (req 12) invisible until the container was
-  // recreated. Mounting the ROOT keeps both hops — `<name>/active` →
-  // `generations/<sha>` — inside the container, where they resolve per access.
+  // docs/262 — the session's plugin root, mounted READ-ONLY. `/plugins/<name>`
+  // symlinks resolve through it, so the agent can browse a plugin but cannot
+  // edit one from the consuming session (req 7). There is deliberately NO
+  // writable view of this at any path: an earlier revision added one so an
+  // in-container install could write `node_modules`, which made the read-only
+  // guarantee decorative. Plugin code that writes runs in its own container
+  // against an overlay volume instead (plan §1b).
+  //
+  // Mounting each generation directly would have been simpler and wrong:
+  // Docker resolves a bind source's symlinks at creation, which would pin
+  // whichever generation was live when the session opened and leave refresh
+  // (req 12) invisible until the container was recreated. Mounting the ROOT
+  // keeps both hops — `<name>/active` → `generations/<sha>` — inside the
+  // container, where they resolve per access.
   const hostPluginsRoot = pluginsRoot(config.sessionStateDir);
   if (workspaceVolume) {
-    const pluginsRelPath = hostPluginsRoot.replace(/^\/workspace\//, "");
     mounts.push({
       Type: "volume",
       Source: workspaceVolume,
       Target: CONTAINER_PLUGIN_STORE_DIR,
       ReadOnly: true,
-      VolumeOptions: { Subpath: pluginsRelPath },
-    });
-    mounts.push({
-      Type: "volume",
-      Source: workspaceVolume,
-      Target: CONTAINER_PLUGIN_STORE_RW_DIR,
-      ReadOnly: false,
-      VolumeOptions: { Subpath: pluginsRelPath },
+      VolumeOptions: { Subpath: hostPluginsRoot.replace(/^\/workspace\//, "") },
     });
   } else {
     binds.push(`${hostPluginsRoot}:${CONTAINER_PLUGIN_STORE_DIR}:ro`);
-    binds.push(`${hostPluginsRoot}:${CONTAINER_PLUGIN_STORE_RW_DIR}:rw`);
   }
 
   // Mount the per-repo dependency cache so npm/yarn/pnpm share downloaded

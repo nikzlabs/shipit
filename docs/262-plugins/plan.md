@@ -246,6 +246,30 @@ plugin commit, the install string, or the content of the manifest's
   surface is not read-only, and the requirement is not the design's to narrow.
   Install writes into a copy-on-write upper layer belonging to a different
   container — see §1b.
+
+  **The merged view lives in a Docker volume, not on the host** (resolved
+  2026-08-13 by consultation, against the code). Req 7 keeps the checkout
+  pristine, so a plugin's own code needs checkout + install output merged. That
+  merged tree is NOT constructible where the `active` symlink could point at
+  it: a host-side overlayfs mount needs `CAP_SYS_ADMIN`, which the orchestrator
+  does not have (`docker/local/prod/compose.yml`), and docs/183 rejected the
+  privileged variant on containment grounds. What docs/183 *does* build is the
+  piece that works here — a `local` driver volume with `type=overlay`
+  (`overlay-volume.ts`), where the DAEMON performs the mount when a container
+  attaches it, and which several containers can share coherently
+  (`docs/183-overlay-dep-store/FINDINGS.md`). Note the orchestrator's own view
+  of that volume is upper/storage, never the merged tree.
+
+  So, per generation: lowerdir = the pristine checkout, upper/work = per-
+  generation runtime storage, and ONE named overlay volume shared by the
+  installer, the services, and the CLI-invocation containers. Per generation,
+  never per repository — a volume's driver options are fixed while consumers
+  hold it, and one upperdir must not back two independently created mounts.
+
+  The agent container keeps seeing only pristine source through
+  `/plugins/<name>`. That is the whole reason it stays browsable and
+  refresh-follows-instantly, and it is enough: nothing the agent itself runs
+  needs the merged tree.
 - **Workspace handle** (req 21): plugin *services* get the consuming
   project's workspace mounted at the fixed path **`/project`**; plugin *CLIs*
   run in the agent container with **cwd = the project workspace**, which
@@ -273,9 +297,22 @@ plugin commit, the install string, or the content of the manifest's
   env at the mount. CLI wrappers use absolute entrypoints,
   so no plugin-dir variable is needed.
 - **CLIs** (reqs 17, 20, 23): exported commands go on the agent's PATH as
-  generated wrappers. A wrapper injects the plugin's declared credentials
-  into that command's environment only — plugin credentials never enter the
-  agent's general environment.
+  generated wrappers. **The wrapper is ShipIt's, and it is all that runs in the
+  agent container**; it brokers an invocation container that mounts the
+  generation's overlay volume, `/project`, the plugin's state dir, and only the
+  plugin's declared credentials. Plugin credentials never enter the agent's
+  general environment, and plugin code never runs beside the loopback
+  credential broker — the same boundary as `install` (§1b), for the same
+  reason.
+
+  This corrects an earlier version of this bullet, which had the command itself
+  running in the agent container while §"Fetch authority" simultaneously said
+  plugin code must not run there. Req 17 only promises the agent can invoke the
+  command *inside the project session*; it says nothing about sharing the
+  agent's container, so a transparent wrapper keeps the promised UX. Per-call
+  container start costs latency; a credential-blind persistent runner is a
+  later optimisation, and `docker exec` into the agent or a service container
+  is not an acceptable shortcut — it re-opens the boundary.
 - **Skills** (req 22 — review finding 5): checkout alone discloses nothing —
   ShipIt's skill listing scans only the workspace skill dirs, and Codex
   reading `.claude/skills` is observed harness behavior, not a guarantee
