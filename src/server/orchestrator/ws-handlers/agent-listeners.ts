@@ -249,6 +249,19 @@ export interface WireListenersOpts {
    * of letting the user steer their answer in.
    */
   useStreaming?: boolean;
+  /**
+   * docs/140 Phase 6.11 — this turn runs on a backend whose process survives its
+   * own turn boundary and can start a turn ShipIt never asked for
+   * (`AgentCapabilities.startsOwnTurns`, resolved through the agent registry).
+   * Gates `adoptCliStartedTurn`'s assistant edge.
+   *
+   * NOT `useStreaming`: Codex steers, so it streams — but its app-server is
+   * killed at `turn/completed` and it emits the turn's FINAL assistant text
+   * after that, so there the adoption shape means "the turn that just ended is
+   * still talking", and adopting would mark the session busy for a turn that
+   * will never produce another `result`.
+   */
+  adoptsCliStartedTurns?: boolean;
 }
 
 /**
@@ -348,8 +361,8 @@ export function wireAgentListeners(
   // docs/140 — true once the turn these listeners were wired for has produced
   // its `agent_result`. On a resident streaming process the listeners stay
   // attached across turns (they are replaced only when the orchestrator starts
-  // the NEXT turn), so any `agent_init` observed after this flag is set belongs
-  // to a turn the CLI started on its own. See `adoptCliStartedTurn`.
+  // the NEXT turn), so top-level assistant output observed after this flag is
+  // set belongs to a turn the CLI started on its own. See `adoptCliStartedTurn`.
   let sawTurnResult = false;
 
   /**
@@ -1040,9 +1053,15 @@ export function wireAgentListeners(
       // and that control response promises no turn and no later `result` to
       // clear `running` again. Steering pushes the mode change and the message
       // as two independent worker calls, so it can land after the finishing
-      // turn's `result` and wedge the session as permanently busy. A top-level
-      // assistant event has no such producer: a backgrounded subagent's carries
-      // `parentToolUseId` (excluded below), and compaction emits none.
+      // turn's `result` and wedge the session as permanently busy.
+      //
+      // On a backend that starts its own turns, a top-level assistant event has
+      // no such benign producer: a backgrounded subagent's carries
+      // `parentToolUseId` (excluded below), and compaction emits none. That
+      // clause is exactly what `opts.adoptsCliStartedTurns` carries — on Codex
+      // the same shape means the opposite (its app-server is killed at
+      // `turn/completed` and emits the turn's final text after it), which is why
+      // the gate is a capability and not `useStreaming`.
       //
       // Adoption must happen BEFORE this branch accumulates: `resetRunnerTurnState`
       // clears `chatMessageGroups` / `turnSummary`, so a reset after the append
@@ -1051,7 +1070,7 @@ export function wireAgentListeners(
       // output) and has already set `running`, so each CLI-started turn is
       // adopted exactly once.
       if (
-        opts.useStreaming && sawTurnResult && runner && !runner.running
+        opts.adoptsCliStartedTurns && sawTurnResult && runner && !runner.running
         && !event.parentToolUseId
       ) {
         adoptCliStartedTurn("post-result assistant output");

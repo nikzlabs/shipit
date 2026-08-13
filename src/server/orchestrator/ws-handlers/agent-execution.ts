@@ -280,6 +280,11 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
   // a new one.
   const agentInfo = ctx.agentRegistry.get(agentId);
   const useStreaming = ctx.credentialStore.getLiveSteering() && (agentInfo?.capabilities.supportsSteering ?? false);
+  // docs/140 Phase 6.11 — whether a turn this backend starts on its own may be
+  // ADOPTED (marked running, given a post-turn flow). Resolved from the registry
+  // here, next to `useStreaming`, for the same reason: `ProxyAgentProcess`
+  // hardcodes its capabilities, so the process itself cannot be asked.
+  const adoptsCliStartedTurns = useStreaming && (agentInfo?.capabilities.startsOwnTurns ?? false);
   // docs/260 — a resident streaming process holds its spawn-time credential in
   // memory, so a turn that selection would route to a DIFFERENT credential has
   // to kill it. Env-prep owns the switch, but it runs inside
@@ -698,6 +703,7 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
       drainNext,
       emit,
       useStreaming,
+      adoptsCliStartedTurns,
       reuseExistingAgent: existingAgent !== null,
       emitErrorOnNoResult: true,
       onInterruptedTurn,

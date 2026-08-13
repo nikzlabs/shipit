@@ -214,9 +214,9 @@ export function recordSteeredMessage(
  * is a third outcome the original model had no room for (see the outcome list on
  * `AgentUserReplayEvent`). Leaving such a steer alone here is still right — it is
  * not lost and must not be re-queued — but the orchestrator has to notice the
- * turn that follows: `agent-listeners` adopts it at the post-`result` `agent_init`
- * (`adoptCliStartedTurn`), which is what marks the session busy and arms the
- * post-turn flow for it.
+ * turn that follows: `agent-listeners` adopts it when it produces its first
+ * top-level assistant output after the `result` (`adoptCliStartedTurn`), which is
+ * what marks the session busy and arms the post-turn flow for it.
  *
  * Returns the number of steers re-queued (for diagnostics / tests).
  */

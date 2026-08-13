@@ -74,6 +74,9 @@ export const HARNESSES = [
       },
       supportsReview: true,
       supportsSteering: true,
+      // docs/140 Phase 6.11 — the streaming CLI is ONE resident process across
+      // turns, so it can start one ShipIt never asked for.
+      startsOwnTurns: true,
       supportsCompaction: true,
       skillsDirName: ".claude",
       skillInvocationPrefix: "/",
@@ -132,6 +135,10 @@ export const HARNESSES = [
       // both backends.
       supportsReview: true,
       supportsSteering: true,
+      // docs/140 Phase 6.11 — the app-server is killed at `turn/completed`, and
+      // it emits the turn's final assistant text AFTER that. Those late events
+      // belong to the turn that just ended, not to a new one.
+      startsOwnTurns: false,
       supportsCompaction: true,
       skillsDirName: ".codex",
       skillInvocationPrefix: "$",

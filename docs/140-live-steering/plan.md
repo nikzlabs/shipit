@@ -520,6 +520,19 @@ machinery (`adoptCliStartedTurn` in `agent-listeners.ts`: `resetRunnerTurnState`
 un-acked-steer re-queue is untouched — an acked steer must still never be
 re-queued, or it would be double-processed.
 
+The edge is gated on a **capability**, `AgentCapabilities.startsOwnTurns`
+(Claude true, Codex false), resolved through the agent registry beside
+`useStreaming` — never off `AgentProcess.capabilities`, which `ProxyAgentProcess`
+hardcodes. `useStreaming` is the wrong gate: Codex steers, so it streams, but its
+app-server is killed at `turn/completed` and it routinely emits the turn's FINAL
+assistant text *after* that (the `pendingCommitLink` comment in
+`agent-listeners.ts` documents the ordering; the synthetic `isStreamCompletion`
+re-emit exists precisely because of it). On Codex the adoption shape therefore
+means "the turn that just ended is still talking", and adopting it would mark the
+session busy for a turn that will never produce another `result` — a permanently
+busy session. `agent_self_wake` needs no such gate: only the Claude adapter emits
+it, so the event's own provenance is the gate.
+
 **Why not the `agent_init`, which looks like the announcement.** It is the
 obvious candidate and docs/235's own probe names it ("a `system/init` arriving
 while no orchestrator turn is in flight ⇒ a turn just started"). It is wrong
@@ -587,8 +600,27 @@ edge is simply frequent enough to make them reachable.
    `resetRunnerTurnState` clears `turnSummary`, and the finished turn's commit is
    the *last* step of its sequence, so it labelled its own work "Agent turn" (or,
    once the adopted turn had spoken, with ITS first line). The summary is now
-   snapshot at `agent_result` (`resultTurnSummary`) and the snapshot is what
-   `runCommit` uses.
+   snapshot at `agent_result` (`resultTurnSummary`), and `runCommit` prefers the
+   LIVE value, falling back to the snapshot only when `turnIsCurrent()` is false.
+   Preferring the snapshot unconditionally would re-break Codex, whose late
+   `isStreamCompletion` event exists to replace a one-character final delta as
+   the commit message.
+4. **The ownership check is stale by the time the drain runs.** `tryDrain` checks
+   `turnIsCurrent()`, then *awaits the queued-turn commit* — real work, on a real
+   tree — before calling `drainNext()`. A turn adopted inside that await would
+   still have a queued turn started alongside it, which respawns the agent,
+   removes the adopted turn's listeners and resets its accumulator mid-response.
+   It now re-checks after the commit.
+5. **`agent_result` is not the only terminal path.** An adopted turn that dies
+   (adapter error, crash, OOM) reached the executor's `error` / `done` handlers,
+   which read the predecessor's still-latched `drainFired` and already-settled
+   commit memos — so they no-op, and the re-arm then clears the memos with no
+   terminal event left to invoke them: the adopted turn's edits stay in the
+   working tree. Both paths now wait for the hand-over too. `rearmInFlight` is
+   non-null ONLY while a re-arm is genuinely running, which is load-bearing in
+   the other direction: on the non-streaming path `done` follows `agent_result`
+   synchronously, and an unconditional await there reorders the two (it broke
+   `quota-exhaustion-retry.test.ts`).
 
 **Known residual, accepted.** An adopted turn that edits the tree BEFORE the
 finished turn's `git add -A` has those edits swept into the finished turn's
