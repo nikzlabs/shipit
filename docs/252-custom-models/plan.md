@@ -3463,13 +3463,49 @@ yet.** `harnessSupportsMode` (`catalogue/index.ts`) calls `eligibleEntriesForHar
 the credential shape independently — the two must be satisfied by the same credential, which is
 the bug `harnessCanCarry`'s docstring records, and a second statement of the rule is a second
 thing to get wrong. A test asserts the two answers agree for every `(service, mode, harness)` in
-the catalogue, so the table cannot promise a pairing the picker then refuses.
+the catalogue.
+
+**State the guarantee exactly, because it is existential.** The cell is true when **some** mode
+and **some** accepted credential shape would work, while the user goes on to choose one mode and
+supply one shape. A service whose answer differed between them would be ticked here and offer
+nothing there. Cross-backend review raised that as the central risk, and the answer is a guard
+rather than a per-mode table: no shipped service differs by mode or by shape, and
+`catalogue.test.ts` fails the build on the day one does — which is the day the cell has to become
+per-mode. Building that now would be mechanism for a row that does not exist.
+
+**Two holes the cell inherits from eligibility, both now guarded at their source.** Neither is
+reachable today and neither is this feature's to fix — the picker has them identically — but
+review found them and a silent inheritance is how they stay found only once:
+
+- **Endpoint capability is not part of eligibility.** A harness declaring
+  `spawn.endpoint: { kind: "none" }` can reach only its own vendor, and nothing in
+  `eligibleEntriesForHarness` says so. A test asserts such a harness joins only its
+  `nativeService`; it is vacuous today, deliberately, and fires when the first one is added.
+- **`targetOverride` can outrun `harnessCanCarry`.** A harness with no default string
+  destination is refused a string credential outright, even where the *service* declares a
+  per-harness override that spawn shaping would honour — so it would read as unsupported and be
+  perfectly spawnable. A test asserts no override names a harness lacking a default. GLM's
+  override is the live case, and its harness has one.
 
 Two deliberate narrowings. The columns are the harnesses the install **has** (the same
 `installed` filter `InstalledHarnesses` applies), so an empty agent list — the bootstrap has not
 landed — draws no table rather than a table of dashes. And the tick is **not** a gate: every row
 stays selectable, because a harness can arrive with a later image and refusing the choice would
 make ShipIt the obstacle.
+
+The empty-list case carries a residual review named and this design accepts: a user who opens the
+dialog *and* picks a service inside the window before the agent list lands never sees the table
+for that choice. Closing it means a loading state and disabled rows — mechanism for a window
+that requires clicking through Settings faster than the bootstrap that rendered it — and the
+alternative reading, drawing all catalogue harnesses as columns, would claim harnesses the
+install may not have. Both are worse than the gap.
+
+**The answer is said in words, not only drawn.** Each cell carries `sr-only` text
+("Codex cannot run GLM (Z.ai)") rather than an `aria-label` on its span: the span has a generic
+role, where `aria-label` is unreliable, while real text inside the row's button always
+contributes to the button's accessible name. Review found that too, and a test now asserts the
+words rather than only the `data-supported` attribute — which would have kept passing if both the
+glyph and the spoken answer disappeared.
 
 ## Key files
 

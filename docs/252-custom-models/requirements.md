@@ -952,10 +952,15 @@ human, but most of the mechanism did not. What the human actually said, in order
   than only hiding the button.
 - "on this dialog, show a table on the right with column per harness, and cells indicating
   support of a particular service per harness" → req 22. The table, the columns and the cells
-  are the human's, stated over the *Add a service* dialog they were looking at. Two clauses
-  are the agent's and are stated so they can be struck: that the cell must be the same answer
-  eligibility gives later (otherwise the table can promise a pairing the picker refuses), and
-  that an unticked row stays selectable, which follows req 1 rather than anything said.
+  are the human's, stated over the *Add a service* dialog they were looking at. Four things are
+  the agent's and are stated so they can be struck: that the cell must be the same answer
+  eligibility gives later (otherwise the table can promise a pairing the picker refuses); that an
+  unticked row stays selectable, which follows req 1 rather than anything said; that the columns
+  are the **installed** harnesses rather than every harness the catalogue knows; and that no
+  table is drawn at all until the agent list has arrived. The last two narrow "column per
+  harness" as it was asked for, and cross-backend review was right to name them — they are here
+  because a column the install cannot act on, and a table of dashes meaning "not known yet", both
+  say something false.
 
 Reqs 5 and 13 were changed again on 2026-08-08 from **Codex's** review, under CLAUDE.md's
 cross-backend rule. Same shape as the round below: the findings are the reviewer's, the

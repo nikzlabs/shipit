@@ -172,6 +172,19 @@ describe("ServicesPanel", () => {
       expect(screen.getByTestId("add-service-support-deepseek-codex")).toHaveAttribute("data-supported", "yes");
     });
 
+    it("says the answer in words, not only as a glyph", async () => {
+      // `data-supported` alone would keep passing if the tick and the spoken
+      // answer both vanished. The words are real text inside the row's button,
+      // so they reach the button's accessible name — an `aria-label` on the
+      // cell's generic span would not reliably. Found by review.
+      render(<ServicesPanel agentList={[claudeAgent, codexAgent]} />);
+      await userEvent.click(screen.getByTestId("services-add-empty"));
+
+      const row = screen.getByTestId("add-service-option-zai");
+      expect(row).toHaveTextContent("Claude runs GLM (Z.ai)");
+      expect(row).toHaveTextContent("Codex cannot run GLM (Z.ai)");
+    });
+
     it("gives a harness the image does not have no column at all", async () => {
       render(<ServicesPanel agentList={[claudeAgent, { ...codexAgent, installed: false }]} />);
       await userEvent.click(screen.getByTestId("services-add-empty"));

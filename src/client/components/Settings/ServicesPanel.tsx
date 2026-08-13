@@ -919,24 +919,33 @@ function HarnessSupportCell({ harness, service }: { harness: AgentOption; servic
   // existing idiom for the same bridge (see `ModelPicker`), and an id the
   // catalogue does not know reads as unsupported rather than throwing.
   const supported = harnessSupportsService(harness.id as AgentId, service.id);
+  const answer = `${harness.name} ${supported ? "runs" : "cannot run"} ${service.name}`;
   return (
     <span
       className={HARNESS_COLUMN}
-      // The icon carries the answer visually and nothing else does, so the cell
-      // says it in words for a reader who is not looking at it.
-      aria-label={`${harness.name}: ${supported ? "runs" : "cannot run"} ${service.name}`}
-      title={
-        supported
-          ? `${harness.name} can run ${service.name}'s models`
-          : `${harness.name} cannot run ${service.name}'s models`
-      }
+      title={answer}
       data-testid={`add-service-support-${service.id}-${harness.id}`}
       data-supported={supported ? "yes" : "no"}
     >
+      {/*
+        The answer is a glyph and nothing else, so it is also said in words —
+        as `sr-only` TEXT rather than as `aria-label` on this span. Review
+        caught that: the span has a generic role, where `aria-label` is
+        unreliable, whereas real text inside the enclosing button always
+        contributes to its accessible name. The listening user hears the whole
+        row — "GLM (Z.ai), Subscription · API key, Claude Code runs GLM (Z.ai),
+        Codex cannot run GLM (Z.ai)" — which is the choice they are making.
+      */}
+      <span className="sr-only">{answer}</span>
       {supported ? (
-        <CheckIcon size={ICON_SIZE.SM} weight="bold" className="mx-auto text-(--color-success)" />
+        <CheckIcon
+          aria-hidden
+          size={ICON_SIZE.SM}
+          weight="bold"
+          className="mx-auto text-(--color-success)"
+        />
       ) : (
-        <MinusIcon size={ICON_SIZE.SM} className="mx-auto text-(--color-text-tertiary)" />
+        <MinusIcon aria-hidden size={ICON_SIZE.SM} className="mx-auto text-(--color-text-tertiary)" />
       )}
     </span>
   );

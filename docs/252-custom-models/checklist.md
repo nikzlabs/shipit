@@ -413,3 +413,16 @@ the first of these. All six are fixed.
       `harnessSupportsService` — `eligibleEntriesForHarness` asked about a
       credential that does not exist yet — and a catalogue test pins that it
       agrees with eligibility for every `(service, mode, harness)`.
+- [x] **Cross-backend review of that change — three findings taken, three
+      answered.** The cell is existential over a service's modes and credential
+      shapes, so a service that ever differs between them would be ticked and
+      then offer nothing: a guard test now fails the build on that day, rather
+      than a per-mode table built for a row that does not exist. Two holes the
+      cell inherits from eligibility — a harness that cannot override its
+      endpoint, and a `targetOverride` outrunning `harnessCanCarry` — are
+      guarded at their source. The icon-only cell said its answer with an
+      `aria-label` on a generic span, which is unreliable; it is `sr-only` text
+      now, asserted by a test. Declined: a loading state for the window before
+      the agent list arrives (recorded in `plan.md` as an accepted residual).
+      The docs claimed a guarantee wider than the code holds and named two of
+      the four agent-authored clauses; both are corrected.
