@@ -95,6 +95,14 @@ export type ActivationOutcome =
       previous?: GenerationRecord;
       /** A moved tag that the durable pin overrode (req 8) — advisory, not fatal. */
       warning?: string;
+      /**
+       * The selected exports the declared version does not have, when THIS is
+       * why the attempt failed (phase 2). `reason` already names them; the
+       * names travel separately so the snapshot can tell that its own
+       * per-selector message would only repeat the failure (verified live in
+       * the dogfood instance: the card stated one fact twice).
+       */
+      missingSelectors?: string[];
     };
 
 export interface ActivateDeps {
@@ -255,7 +263,7 @@ async function activateOnce(repo: DeclaredPluginRepo, deps: ActivateDeps): Promi
   if (previous?.commit === commit) {
     const missing = missingSelectors(deps.selectedExports, previous.exports);
     if (missing.length > 0) {
-      return { status: "failed", reason: selectorError(missing), previous, ...warningField };
+      return { status: "failed", reason: selectorError(missing), missingSelectors: missing, previous, ...warningField };
     }
     return { status: "unchanged", generation: previous, ...warningField };
   }
@@ -280,7 +288,13 @@ async function activateOnce(repo: DeclaredPluginRepo, deps: ActivateDeps): Promi
     const missing = missingSelectors(deps.selectedExports, exportsList.map((e) => e.name));
     if (missing.length > 0) {
       await fsp.rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
-      return { status: "failed", reason: selectorError(missing), ...withPrevious, ...warningField };
+      return {
+        status: "failed",
+        reason: selectorError(missing),
+        missingSelectors: missing,
+        ...withPrevious,
+        ...warningField,
+      };
     }
 
     const record: GenerationRecord = {

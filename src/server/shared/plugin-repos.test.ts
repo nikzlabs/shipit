@@ -414,6 +414,32 @@ describe("buildPluginReposSnapshot", () => {
     it("selectors stay unknown until there is a manifest to check", () => {
       expect(build({}).uses[0].found).toBeNull();
     });
+
+    // Found live in the dogfood instance: a pinned version that does not export
+    // the selected plugin produced two bullets for one fact — the phase-2
+    // failure and this projection's own generic message.
+    it("states a failed selector once, not twice", () => {
+      const card = build({
+        tools: {
+          commit: "abc123",
+          exports: ["other"],
+          error: "`p` is not exported by this repository at the declared version.",
+          missingSelectors: ["p"],
+        },
+      });
+      expect(card.status).toBe("degraded");
+      expect(card.uses[0].found).toBe(false);
+      expect(card.issues).toEqual(["`p` is not exported by this repository at the declared version."]);
+    });
+
+    it("still reports a live-manifest gap when the attempt failed for another reason", () => {
+      // A fetch failure plus a newly declared selector: two different facts.
+      const card = build({ tools: { commit: "abc123", exports: ["other"], error: "authorization failed" } });
+      expect(card.issues).toEqual([
+        "authorization failed",
+        "`p` is not in this repository's `exports.plugins` manifest.",
+      ]);
+    });
   });
 
   it("reports pending: false — the route owns the pending answer", () => {

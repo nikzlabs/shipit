@@ -153,6 +153,12 @@ export interface PluginRepoRuntime {
   warning?: string;
   /** Warnings from parsing the live generation's manifest (req 13 — degrade *visibly*). */
   manifestWarnings?: string[];
+  /**
+   * Selected exports the failed attempt's version does not have — `error`
+   * already names them. Present only when a phase-2 selector check is what
+   * failed, so the card can state that fact once (see the issue projection).
+   */
+  missingSelectors?: string[];
 }
 
 export interface PluginReposSnapshot {
@@ -773,8 +779,14 @@ export function buildPluginReposSnapshot(
         found: manifest ? manifest.has(u.plugin.toLowerCase()) : null,
       }));
 
+    // A phase-2 failure already says which selectors the declared version
+    // lacks, so repeating it here would state one fact twice on the card
+    // (found live in the dogfood instance). The generic message still fires for
+    // a selector the LIVE generation lacks when the attempt failed for some
+    // other reason — a fetch failure plus a newly added selector, say.
+    const named = new Set((live.missingSelectors ?? []).map((n) => n.toLowerCase()));
     const issues = uses
-      .filter((u) => u.found === false)
+      .filter((u) => u.found === false && !named.has(u.plugin.toLowerCase()))
       .map((u) => `\`${u.plugin}\` is not in this repository's \`exports.plugins\` manifest.`);
     // Order: the failure first, then advisories, then selector problems.
     if (live.warning) issues.unshift(live.warning);
