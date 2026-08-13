@@ -380,9 +380,9 @@ export async function executeAgentTurn(
   // stale it flips the successor's freshly-recorded cards (the account-failover
   // notice) to `in_progress=0`; the successor's next boundary then re-inserts
   // them from `recordedCards`, and the transcript keeps both copies forever.
-  // Re-captured on a self-wake (see `rearmForSelfWokenTurn`): the wake turn
-  // runs through THESE same closures, so after `agent-listeners` gave it a
-  // fresh epoch the closures adopt it.
+  // Re-captured when the CLI starts a turn of its own (see
+  // `rearmForCliStartedTurn`): that turn runs through THESE same closures, so
+  // after `agent-listeners` gave it a fresh epoch the closures adopt it.
   let thisTurnEpoch = runner?.turnEpoch;
   const turnIsCurrent = (): boolean =>
     !runner || thisTurnEpoch === undefined || runner.turnEpoch === thisTurnEpoch;
@@ -1284,7 +1284,7 @@ export async function executeAgentTurn(
    * planning#249 — the streaming post-turn sequence currently in flight, assigned in
    * the SAME synchronous block that sets `streamingPostTurnFired`. Anyone who
    * observes that flag as `true` therefore also observes this promise, which is
-   * what lets `rearmForSelfWokenTurn` wait the finished turn's flow out before
+   * what lets `rearmForCliStartedTurn` wait the finished turn's flow out before
    * clearing its memoized commit promises.
    */
   let streamingPostTurn: Promise<void> | null = null;
@@ -1292,18 +1292,27 @@ export async function executeAgentTurn(
   /**
    * planning#249 — hand the guards back to a turn the CLI started on its own.
    *
-   * A `Bash(run_in_background)` job finishing re-invokes the model, and for a
-   * resident streaming process that self-woken turn runs through THIS closure —
-   * the one the finished user turn left attached (listeners are removed only at
-   * the start of the next orchestrator-initiated turn). Every post-turn guard
-   * here is first-wins and scoped to one `executeAgentTurn` call, so the wake
-   * turn's `agent_result` hit `streamingPostTurnFired` and returned early:
-   * no token sync-back, no queue drain, no auto-commit, no push, no PR card.
-   * Production saw two sessions lose a 15-minute `shipit agent run` consult's
-   * edits to this in one hour, and ShipIt's own guidance tells agents to
-   * background that consult — so the wake path is the NORMAL case for
-   * cross-agent review, not a corner. docs/235 §6 deferred this deliberately;
-   * this is that follow-up.
+   * Two edges reach here, and both describe the same thing: the CLI opened a
+   * turn the orchestrator never asked for, on a resident streaming process, so
+   * it runs through THIS closure — the one the finished user turn left attached
+   * (listeners are removed only at the start of the next orchestrator-initiated
+   * turn).
+   *
+   *   - **`agent_self_wake`** (planning#249) — a `Bash(run_in_background)` job
+   *     finishing re-invokes the model.
+   *   - **a post-`result` `agent_init`** (docs/140) — the CLI acked a live steer
+   *     too late to apply it to the finishing turn and runs it as the next turn.
+   *     Nothing else on the wire announces it: there is no `task_notification`,
+   *     so before this the orchestrator never learned the turn existed at all.
+   *
+   * Every post-turn guard here is first-wins and scoped to one
+   * `executeAgentTurn` call, so such a turn's `agent_result` hit
+   * `streamingPostTurnFired` and returned early: no token sync-back, no queue
+   * drain, no auto-commit, no push, no PR card. Production saw two sessions lose
+   * a 15-minute `shipit agent run` consult's edits to this in one hour, and
+   * ShipIt's own guidance tells agents to background that consult — so the wake
+   * path is the NORMAL case for cross-agent review, not a corner. docs/235 §6
+   * deferred this deliberately; this is that follow-up.
    *
    * Three things make it safe to re-arm here:
    *
@@ -1323,7 +1332,10 @@ export async function executeAgentTurn(
    *     listener runs. `streamingPostTurnFired` is the executor-local equivalent
    *     — it is set only by this turn's `agent_result` — so `false` means the
    *     turn that owns these guards is still in flight and a re-arm would let a
-   *     duplicate `agent_result` run the whole post-turn flow twice.
+   *     duplicate `agent_result` run the whole post-turn flow twice. The same
+   *     flag is what makes the `agent_init` edge safe: an init while the turn is
+   *     still in flight is a subagent's or a post-compaction re-init (docs/178),
+   *     never a new turn.
    *
    *   - **After the in-flight sequence settles.** The wake can land in the
    *     window between `streamingPostTurnFired = true` and the finished turn's
@@ -1341,23 +1353,24 @@ export async function executeAgentTurn(
    * later died. Same for `turnCompleteFired`: the wake turn is not the turn a
    * dispatch handle is waiting on, so it must not settle it a second time.
    */
-  const rearmForSelfWokenTurn = async (): Promise<void> => {
+  const rearmForCliStartedTurn = async (reason: string): Promise<void> => {
     if (!useStreaming || !streamingPostTurnFired) return;
     await postTurnStep("await-post-turn", () => streamingPostTurn ?? Promise.resolve());
-    // A second wake can arrive while we await; the first one through re-arms and
-    // the rest see the cleared flag and stand down.
+    // A second edge can arrive while we await (a wake and the wake turn's own
+    // init are two frames): the first one through re-arms and the rest see the
+    // cleared flag and stand down.
     if (!streamingPostTurnFired) return;
-    console.log(`[turn] self-wake for ${sessionId}; re-arming the post-turn flow`);
+    console.log(`[turn] ${reason} for ${sessionId}; re-arming the post-turn flow`);
     tokenSyncFired = false;
     drainFired = false;
     streamingPostTurnFired = false;
     streamingPostTurn = null;
     commitPromise = null;
     commitAndPrPromise = null;
-    // The wake turn now owns these closures. `agent-listeners` already gave it
-    // a fresh epoch (its `agent_self_wake` branch runs `resetRunnerTurnState`
-    // before this listener fires); adopt it so the wake turn's own teardown —
-    // e.g. `onInterruptedTurn` after a crash — is not mistaken for a stale
+    // The adopted turn now owns these closures. `agent-listeners` already gave
+    // it a fresh epoch (`adoptCliStartedTurn` runs `resetRunnerTurnState` before
+    // this listener fires); adopt it so that turn's own teardown — e.g.
+    // `onInterruptedTurn` after a crash — is not mistaken for a stale
     // predecessor's.
     thisTurnEpoch = runner?.turnEpoch;
   };
@@ -1367,7 +1380,16 @@ export async function executeAgentTurn(
     // has already given it a clean accumulator and marked the runner running
     // (docs/235 §6); this gives it a post-turn flow to end on.
     if (event.type === "agent_self_wake") {
-      await rearmForSelfWokenTurn();
+      await rearmForCliStartedTurn("self-wake");
+      return;
+    }
+    // docs/140 — the other edge for the same thing: a fresh init after this
+    // turn's `result`, with no `task_notification` in front of it, is the CLI
+    // running a live steer it acked too late to apply to the finishing turn.
+    // The `streamingPostTurnFired` guard inside is what makes this specific to a
+    // post-result init; mid-turn inits (subagents, post-compaction) no-op.
+    if (event.type === "agent_init") {
+      await rearmForCliStartedTurn("cli-started turn");
       return;
     }
     if (event.type !== "agent_result") return;
@@ -1417,7 +1439,7 @@ export async function executeAgentTurn(
       //
       // planning#249 — published as `streamingPostTurn` in this same synchronous
       // block so a self-wake landing mid-flow waits it out before re-arming
-      // (see `rearmForSelfWokenTurn`). The sequence and its order are unchanged.
+      // (see `rearmForCliStartedTurn`). The sequence and its order are unchanged.
       //
       // The whole sequence runs under the post-turn hold: `agent-listeners`
       // cleared `running` before this handler was reached, so without it every

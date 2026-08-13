@@ -378,6 +378,102 @@ describe("post-turn flow for a self-woken turn", () => {
   });
 
   /**
+   * docs/140 — the OTHER way the CLI starts a turn nobody asked for, and the one
+   * production hit on 2026-08-13: a live steer that arrives as the turn is
+   * wrapping up. The CLI acks it (`--replay-user-messages`), so it is correctly
+   * NOT re-queued — but it had no decision point left to apply it at, so it runs
+   * the message as its own turn once the current one ends. There is no
+   * `task_notification` on that path: the fresh `agent_init` is the only
+   * announcement. Before this the session read as idle for 5.5 minutes and the
+   * response's edits reached git only because an unrelated self-wake happened to
+   * re-arm the flow later.
+   */
+  it("commits a turn the CLI started on its own after acking a late live steer", async () => {
+    const filePath = path.join(repoDir, "file.txt");
+    const h = await runFirstStreamingTurn({
+      onRun: () => fs.writeFileSync(filePath, "turn-1 work\n"),
+    });
+
+    // The user steers while turn 1 is wrapping up, and the CLI echoes it back.
+    h.runner.steeredMessages = [
+      { afterGroupIndex: 1, text: "rename the folder too", assembledPrompt: "rename the folder too" },
+    ];
+    h.agent.emit("event", {
+      type: "agent_assistant",
+      content: [{ type: "text", text: "Both done." }],
+    });
+    h.agent.emit("event", { type: "agent_user_replay", text: "rename the folder too" });
+    expect(h.runner.steeredMessages[0].delivered).toBe(true);
+
+    // Turn 1 ends WITHOUT having applied the steer. Its own flow fires and trips
+    // every guard; the acked steer is left alone (no re-queue).
+    h.agent.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitFor(() => h.settledTurns() === 1, "turn 1 post-turn flow settled");
+    expect(commitSubjects()).toHaveLength(2);
+    expect(h.runner.running).toBe(false);
+    expect(h.runner.queueLength).toBe(0);
+
+    // The CLI now runs the acked steer as its own turn — a fresh init, and NO
+    // `task_notification` anywhere.
+    h.agent.emit("event", { type: "agent_init", agentId: "claude", sessionId: "agent-sid" });
+    await flush();
+    await flush();
+    // The session reads as busy for the response…
+    expect(h.runner.running).toBe(true);
+    // …on a clean accumulator, so its output can't re-persist turn 1's groups.
+    expect(h.runner.chatMessageGroups).toEqual([]);
+
+    fs.writeFileSync(filePath, "steered work\n");
+    h.agent.emit("event", {
+      type: "agent_assistant",
+      content: [{ type: "text", text: "Renamed the folder" }],
+    });
+    h.agent.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+
+    await waitFor(() => h.postTurnPrFlow.mock.calls.length === 2, "cli-started turn post-turn flow ran");
+    const subjects = commitSubjects();
+    expect(subjects).toHaveLength(3);
+    expect(subjects[0]).toBe("Renamed the folder");
+    expect(gitOut("show", "HEAD:file.txt")).toBe("steered work\n");
+    expect(gitOut("status", "--porcelain")).toBe("");
+    expect(h.scheduleAutoPush).toHaveBeenCalledTimes(2);
+    expect(h.runner.running).toBe(false);
+
+    h.runner.dispose({ force: true });
+  });
+
+  /**
+   * The complement: an init that is NOT a new turn. Subagents and the docs/178
+   * post-compaction re-init both emit one mid-turn, where re-arming would let the
+   * running turn's `agent_result` run the whole post-turn flow twice — a
+   * duplicate commit attempt and a duplicate PR round-trip.
+   */
+  it("ignores a mid-turn init and runs the post-turn flow exactly once", async () => {
+    const filePath = path.join(repoDir, "file.txt");
+    const h = await runFirstStreamingTurn({
+      onRun: () => fs.writeFileSync(filePath, "mid-turn work\n"),
+    });
+
+    // A subagent (or a post-compaction re-init) mid-turn.
+    h.agent.emit("event", { type: "agent_init", agentId: "claude", sessionId: "agent-sid" });
+    await flush();
+    expect(h.runner.running).toBe(true); // still turn 1, never interrupted
+
+    h.agent.emit("event", { type: "agent_result", status: "success", sessionId: "agent-sid" });
+    await waitFor(() => h.settledTurns() === 1, "post-turn flow settled");
+    await flush();
+    await flush();
+
+    expect(h.postTurnPrFlow).toHaveBeenCalledTimes(1);
+    expect(h.autoCommit).toHaveBeenCalledTimes(1);
+    expect(h.drainNext).toHaveBeenCalledTimes(1);
+    expect(commitSubjects()).toHaveLength(2);
+    expect(h.runner.running).toBe(false);
+
+    h.runner.dispose({ force: true });
+  });
+
+  /**
    * Non-streaming turns cannot be woken — the CLI is a one-shot PTY that reaps
    * its background tasks at turn end (docs/235 probe A). Re-arming there would
    * be actively wrong: that path drains at `agent_result` and commits later in

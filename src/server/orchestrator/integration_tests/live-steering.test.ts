@@ -386,6 +386,73 @@ describe("Integration: live steering (docs/140)", () => {
     client.close();
   });
 
+  it("adopts the turn the CLI runs for a steer it acked too late to apply (docs/140)", async () => {
+    // Production, 2026-08-13: a steer landed as the turn was wrapping up. The
+    // CLI acked it — so it was correctly NOT re-queued — but had no decision
+    // point left to apply it at, and ran it as its OWN turn after the
+    // orchestrator had already finalized the current one. There is no
+    // `task_notification` on that path, so the fresh `init` is the only
+    // announcement the turn exists. Without adopting it the session read as
+    // idle for the whole response and a later `agent_self_wake` could reset the
+    // accumulator mid-response, losing the answer's opening from history.
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+
+    client.send({ type: "send_message", text: "Do the first thing", sessionId: client.sessionId });
+    const claude = await waitForClaude(() => lastClaude);
+    claude.initSession("late-steer-session");
+
+    claude.emit("event", {
+      type: "assistant",
+      message: { content: [{ type: "text", text: "First thing done" }] },
+    });
+
+    // The user steers as the turn wraps up; the CLI echoes it (the ack).
+    client.send({ type: "send_message", text: "now rename the folder", sessionId: client.sessionId });
+    await drainUntil(client, (m) => m.type === "message_steered");
+    const runner = (app as any).runnerRegistry.get(client.sessionId);
+    const echoText = runner.steeredMessages[0].assembledPrompt as string;
+    claude.emit("event", {
+      type: "user",
+      isReplay: true,
+      message: { content: [{ type: "text", text: echoText }] },
+    });
+    expect(runner.steeredMessages[0].delivered).toBe(true);
+
+    // The turn ends without having acted on the steer.
+    claude.emit("event", { type: "result", subtype: "success", session_id: "late-steer-session" });
+    await drainUntil(client, (m) => m.type === "session_status" && (m as AnyMsg).running === false);
+    expect(runner.running).toBe(false);
+
+    // The CLI starts the steer's turn on its own: a fresh init, no
+    // `task_notification`, no `send_message` from the orchestrator.
+    claude.initSession("late-steer-session");
+    const busy = await drainUntil(client, (m) => m.type === "session_status" && (m as AnyMsg).running === true);
+    expect(busy).toMatchObject({ type: "session_status", running: true });
+    expect(runner.running).toBe(true);
+    // A clean accumulator, so the adopted turn cannot re-persist turn 1's groups.
+    expect(runner.chatMessageGroups).toEqual([]);
+
+    claude.emit("event", {
+      type: "assistant",
+      message: { content: [{ type: "text", text: "Renamed the folder" }] },
+    });
+    claude.emit("event", { type: "result", subtype: "success", session_id: "late-steer-session" });
+    await drainUntil(client, (m) => m.type === "session_status" && (m as AnyMsg).running === false);
+
+    // Each turn persisted once — the steered bubble sits at its true position at
+    // the end of turn 1, and the adopted turn's answer follows it.
+    const shape = chatHistoryManager.load(client.sessionId).map((m) => ({ role: m.role, text: m.text }));
+    expect(shape).toEqual([
+      { role: "user", text: "Do the first thing" },
+      { role: "assistant", text: "First thing done" },
+      { role: "user", text: "now rename the folder" },
+      { role: "assistant", text: "Renamed the folder" },
+    ]);
+
+    client.close();
+  });
+
   it("reuses the persistent streaming agent for the next top-level turn (no new process, no SIGTERM)", async () => {
     // Regression: under live steering the orchestrator USED TO clear the
     // runner's agent reference on `agent_result`, so the next top-level

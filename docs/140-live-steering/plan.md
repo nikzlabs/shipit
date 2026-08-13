@@ -471,6 +471,85 @@ re-queued — the `[steer-requeue]` / `[steer-send]` diagnostics make such a rep
 visible, and the escalation lever is to drop the echo from the delivered
 predicate and rely on the assistant-activity signal alone.
 
+**Validated in production, 2026-08-13 — the assumption is half wrong, and the
+escalation lever named above would have been the wrong fix.** See Phase 6.11.
+
+**Phase 6.11 — the CLI echoes a steer it will run as its OWN turn.**
+The production trace (host `shipit-shipit-1`, session `a26ddd2e`, branch
+`shipit/imagegen-shipit-plugin--rw8i2`) is exactly the shape 6.9 wondered about,
+and it disproves the two-outcome model the ack was designed against:
+
+```
+18:26:04  [env-prep] … turn=yes                 <- the orchestrator turn starts
+18:37:17  [steer-send] streamingActive=true      <- the user steers, late in the turn
+18:37:17  [steered] recordSteeredMessage afterGroupIndex=57
+          [streaming-claude] sendUserMessage NDJSON bytes=264
+~18:37:22 result                                 <- the turn ends WITHOUT applying it
+18:37:24  post-turn commit ("Both done, on PR #7.")
+          (no [steer-requeue] line — the CLI acked, so 6.9 correctly left it alone)
+          (no further env-prep … turn=yes — the orchestrator never started a turn)
+18:42:49  [turn] self-wake …; re-arming the post-turn flow   <- an UNRELATED background
+                                                                task rescues the flow
+18:43:53  commit ("Done, on PR #7.")
+```
+
+So there is a **third** outcome: the CLI accepts the steer (hence the echo, hence
+correctly no re-queue) but has no decision point left in the finishing turn, and
+runs it as a turn **of its own** after the `result`. The echo means *received*,
+not *applied in this turn* — the inference in `requeueUndeliveredSteers`'s
+docstring that an ack proves the agent "demonstrably handled" it was wrong at the
+seam. The message is neither lost (6.9's case) nor part of the finishing turn.
+
+Nothing told the orchestrator that turn existed. Three consequences, all in the
+trace above: `runner.running` stayed `false` for the ~5.5 minutes the agent
+worked, so the UI showed the session **idle** (the user-reported symptom); the
+post-turn flow — auto-commit, push, drain, `session_agent_finished` — was never
+armed for that response, so its edits reached git only because an unrelated
+`agent_self_wake` re-armed it 5 minutes later; and, worst, a `agent_self_wake`
+landing mid-response sees `running === false`, runs `resetRunnerTurnState`, and
+the next `replaceInProgress` persists only the groups after the reset — the first
+half of the answer is gone from chat history permanently.
+
+Fix: **adopt the turn at its `agent_init`.** A fresh init after this wired turn's
+`result`, on a resident streaming process, is the CLI announcing a turn the
+orchestrator did not start — the same class of event as `agent_self_wake`, and it
+reuses the same docs/235 machinery (`adoptCliStartedTurn` in `agent-listeners.ts`:
+`resetRunnerTurnState` + `running = true` + `session_status running:true`, plus
+`rearmForCliStartedTurn` in `turn-executor.ts` for the post-turn flow). The
+un-acked-steer re-queue is untouched — an acked steer must still never be
+re-queued, or it would be double-processed.
+
+Why the init edge rather than **tracking un-consumed acked steers** (the obvious
+alternative — mark the runner "expecting a CLI-side turn" when a steer was acked
+but the turn produced no group after it, then adopt on the next event):
+
+- The init is **evidence**; an un-consumed ack is a **prediction**. Adoption sets
+  `running = true`, and nothing but a `result` clears it. Predicting a turn that
+  never arrives wedges the session as busy forever; adopting one the CLI has
+  announced cannot.
+- It is not steer-specific. Any turn the CLI opens on its own — a future hook, a
+  backend that resumes work between turns — is announced the same way, so the
+  orchestrator stops needing a new detector per cause.
+- It needs no new state on `SteeredMessage` and no new coupling between the
+  re-queue predicate and the liveness path. The discriminator is one flag
+  (`sawTurnResult`, set where `running` is already cleared) plus the executor's
+  existing `streamingPostTurnFired`.
+
+Safety is the same argument docs/237 made for the wake edge, and rests on
+`resetRunnerTurnState` never running while a turn is genuinely in flight: an init
+arriving *before* this turn's `result` is a subagent's or a post-compaction
+re-init (docs/178), and both are guarded by `runner.running` / the executor's
+`streamingPostTurnFired`. An orchestrator-started turn is never adopted either —
+it wires fresh listeners, so its init lands on a closure that has seen no result.
+Note the production trace shows the reverse hazard was the live one: the 18:42:49
+reset ran precisely *because* `running` was `false` while a real CLI turn WAS in
+flight.
+
+Coverage: `turn-self-wake-commit.test.ts` (a late-acked steer's CLI-started turn
+commits its own work under its own summary; a mid-turn init changes nothing) and
+`live-steering.test.ts` (the session reads busy, the accumulator is clean, and
+each turn persists once).
+
 **Phase 6.10 — a mid-session model change never reached the resident process.**
 User report: "if a model was Fable and I change it to Opus, after the turn ends
 it is shown as Fable again, but the drop-down shows Opus." Root cause is the
@@ -558,5 +637,9 @@ pinning trigger/checkmark agreement.
 - `src/server/orchestrator/resident-model-guard.ts` — release the resident
   process when the session's model no longer matches its spawn-time `--model`
   (Phase 6.10); paired with `runner.appliedModel`, set in `turn-executor.ts`.
+- `src/server/orchestrator/ws-handlers/agent-listeners.ts` —
+  `adoptCliStartedTurn` + `sawTurnResult`: adopt a turn the CLI started on its
+  own, from either edge (Phase 6.11). Paired with `rearmForCliStartedTurn` in
+  `turn-executor.ts`, which gives that turn a post-turn flow to end on.
 - `src/client/components/MessageInput.tsx`, `QueueIndicator.tsx`,
   `src/client/stores/session-store.ts` — client UX + settings toggle.

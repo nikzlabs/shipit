@@ -83,7 +83,15 @@ Tracks remaining work for `docs/140-live-steering`. See `plan.md` for design.
 - [x] Track per-steer `assembledPrompt` + `delivered` on `SteeredMessage`; match the ack (backend-agnostic) in `agent-listeners.ts`
 - [x] `requeueUndeliveredSteers` at `agent_result` (before finalize) re-queues steers that were neither acked nor followed by a later assistant group — runs them as the next turn
 - [x] Tests: `live-steering.test.ts` (gap steer re-queued + resent; acked steer not re-queued), `adapter.test.ts` (replay echo → `agent_user_replay`)
-- [ ] **Validate in production** that a gap-steer is genuinely un-echoed (the fix's assumption). Watch the `[steer-requeue]`/`[steer-send]` logs; if the CLI echoes received-but-unapplied steers, drop the echo from the delivered predicate and rely on the assistant-activity signal alone.
+- [x] **Validate in production** that a gap-steer is genuinely un-echoed (the fix's assumption). **Done 2026-08-13 — half of it does not hold**, and the escalation lever written here was the wrong fix. The CLI *does* echo a steer it received but did not apply to the finishing turn: it accepts the message and runs it as a turn **of its own** after the `result` (production trace in plan.md "Phase 6.11"). Dropping the echo from the delivered predicate would therefore double-process the message, not rescue it. The re-queue predicate is unchanged; what was missing is that the orchestrator never learned the CLI-started turn existed — fixed by adopting it at its post-`result` `agent_init`.
+
+## Phase 6.11 — adopt a turn the CLI starts on its own (docs/140 plan.md "Phase 6.11")
+
+- [x] `adoptCliStartedTurn` in `agent-listeners.ts`: one helper behind both edges (`agent_self_wake` and a post-`result` `agent_init`), reusing the docs/235 machinery — `resetRunnerTurnState` (only when no turn is in flight) + `running = true` + `session_status running:true`
+- [x] `sawTurnResult` on the wired listeners as the discriminator: an init before this turn's `result` is a subagent's or a post-compaction re-init, never a new turn
+- [x] `rearmForCliStartedTurn` in `turn-executor.ts` (renamed from `rearmForSelfWokenTurn`) also fires on `agent_init`, so the adopted turn gets its own auto-commit, push, drain and PR card
+- [x] Correct the now-wrong model comments: `requeueUndeliveredSteers` ("demonstrably handled") and `AgentUserReplayEvent` (two outcomes → three)
+- [x] Tests: `turn-self-wake-commit.test.ts` (CLI-started turn commits its own work; mid-turn init is ignored), `live-steering.test.ts` (busy session, clean accumulator, each turn persisted once)
 
 ## Phase 7 — post-stabilization cleanup (deferred until after Phase 6 soaks)
 

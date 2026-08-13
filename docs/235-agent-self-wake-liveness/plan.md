@@ -497,7 +497,9 @@ are first-wins and scoped to one `executeAgentTurn` call. For a resident
 streaming process the wake turn runs through the *previous* turn's still-attached
 listener closure, so all of them were already tripped and its `agent_result`
 returned early. The executor now listens for `agent_self_wake` itself and hands
-that closure a fresh set — `rearmForSelfWokenTurn`.
+that closure a fresh set — `rearmForCliStartedTurn` (named `rearmForSelfWokenTurn`
+when this shipped; docs/140 Phase 6.11 added a second edge, a post-`result`
+`agent_init`, and renamed it).
 
 Three gates make the re-arm safe, and each is pinned by a test in
 `turn-self-wake-commit.test.ts` that fails without it:
@@ -537,7 +539,7 @@ shell work a supported persistence primitive.
 
 ## Key files
 
-- `src/server/orchestrator/turn-executor.ts` — `rearmForSelfWokenTurn` (§7) and
+- `src/server/orchestrator/turn-executor.ts` — `rearmForCliStartedTurn` (§7) and
   the post-turn guards it re-arms
 - `src/server/orchestrator/turn-self-wake-commit.test.ts` — §7's regression tests
 - `src/server/orchestrator/idle-enforcer.ts` — count-based idle eviction

@@ -418,13 +418,28 @@ export interface AgentSteerRejectedEvent {
  *
  * A live steer is written to the resident process's stdin while `running` is
  * still `true`, but the CLI only applies a steered message at its next decision
- * point (a tool return). When the model is *wrapping up* there is no next
- * decision point, so a steer injected in that window never lands in the turn —
- * the turn ends with a `result` and the message is silently lost (it stays in
- * the transcript but the agent never acts on it). The CLI echoes every user
- * message it actually accepts into a turn; the orchestrator matches this echo
- * against the steer it sent, and any steer NOT echoed before the turn's
- * `result` is re-queued so it runs as a fresh turn instead of vanishing.
+ * point (a tool return). A steer injected while the model is *wrapping up* has
+ * **three** possible outcomes, not two:
+ *
+ *   1. **It lands in the turn.** The model reaches a decision point, acts on it,
+ *      and the CLI echoes it — the ordinary case.
+ *   2. **It is silently lost.** There is no next decision point left, the turn
+ *      ends with a `result`, and no echo ever arrives. The message would stay in
+ *      the transcript with the agent never acting on it, so the orchestrator
+ *      re-queues every steer NOT echoed before the `result` and runs it as a
+ *      fresh turn instead (`requeueUndeliveredSteers`).
+ *   3. **The CLI takes it and runs it as its OWN turn after the `result`.** The
+ *      echo fires — the CLI accepted the message — but the model applies it in a
+ *      turn that starts *after* the orchestrator has finalized the current one.
+ *      The message is neither lost nor part of the finishing turn, so it must
+ *      NOT be re-queued (that would double-process it); instead the orchestrator
+ *      adopts the follow-on turn when the CLI announces it with a fresh
+ *      `agent_init` (`adoptCliStartedTurn` in `agent-listeners.ts`). Observed in
+ *      production 2026-08-13: the session read as idle for 5.5 minutes while the
+ *      agent worked, with no post-turn commit armed for its edits.
+ *
+ * So this ack means "the CLI received it", not "the model applied it in the
+ * finishing turn" — outcome 3 is exactly where those two come apart.
  *
  * `text` is the echoed user-message text (the assembled prompt the CLI
  * received). NOT chat content — `agent-listeners` consumes it for ack tracking
