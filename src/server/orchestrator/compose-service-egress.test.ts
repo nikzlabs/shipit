@@ -38,6 +38,7 @@ function fakeDocker(events: string[]) {
   };
   const network = {
     connect: vi.fn(async () => { events.push("connect"); }),
+    disconnect: vi.fn(async () => undefined),
     inspect: vi.fn(async () => ({ Internal: true, IPAM: { Config: [{ Subnet: "172.30.0.0/24" }] } })),
   };
   const docker = {
@@ -100,6 +101,26 @@ describe("containComposeServices", () => {
 
     expect(container.unpause).toHaveBeenCalled();
     expect(events).toEqual(["pause", "connect", "unpause", "stop"]);
+  });
+
+  it("force-removes a service when stop and NAT detach both fail", async () => {
+    const events: string[] = [];
+    const { docker, container, network } = fakeDocker(events);
+    installFirewall.mockRejectedValueOnce(new Error("iptables failed"));
+    container.stop.mockRejectedValueOnce(new Error("stop failed"));
+    network.disconnect = vi.fn(async () => { throw new Error("disconnect failed"); });
+
+    await expect(containComposeServices({
+      docker,
+      sessionId: "session-1",
+      sidecarImage: "egress:test",
+      config: { contained: true, extraHosts: [] },
+      serviceNames: ["web"],
+      dnsEnabled: true,
+      proxyEnabled: true,
+    })).rejects.toThrow("egress containment failed for 1 Compose service");
+
+    expect(container.remove).toHaveBeenCalledWith({ force: true });
   });
 
   it("does nothing for an open session", async () => {

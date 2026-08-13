@@ -540,9 +540,8 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
   }
 
   /** Remove the NAT endpoint from stopped services before Compose starts them. */
-  async prepareComposeServiceStart(sessionId: string, serviceNames: string[]): Promise<void> {
+  async prepareComposeServiceStart(sessionId: string, _serviceNames: string[]): Promise<void> {
     if (!this.isEgressContained(sessionId)) return;
-    const wanted = new Set(serviceNames);
     const containers = await this.docker.listContainers({
       all: true,
       filters: { label: [`shipit-parent-session=${sessionId}`] },
@@ -550,8 +549,8 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     const network = this.docker.getNetwork(`shipit-egress-${sessionId}`);
     for (const entry of containers) {
       const serviceName = entry.Labels?.["shipit-service-name"];
-      if (!serviceName || !wanted.has(serviceName) || entry.State === "running" || entry.State === "paused") continue;
-      invalidateComposeServiceContainment(entry.Id);
+      if (!serviceName || entry.State === "running" || entry.State === "paused") continue;
+      invalidateComposeServiceContainment(sessionId, entry.Id);
       try {
         await network.disconnect({ Container: entry.Id, Force: true });
       } catch (error) {
@@ -589,6 +588,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
         sidecarImage,
         config: { ...config, contained },
         serviceNames,
+        ...(sc?.opsSession ? { excludedServiceNames: ["docker-socket-proxy"] } : {}),
         dnsEnabled: egressDnsEnabled(),
         proxyEnabled: egressProxyEnabled(),
         labels: this.baseLabels(),

@@ -590,6 +590,11 @@ function validateServiceSecurity(
       `Service \`${name}\`: \`use_api_socket: true\` is not allowed for contained services.`,
     );
   }
+  if (!dockerSocket && svc.use_api_socket === true) {
+    throw new ComposeValidationError(
+      `Service \`${name}\`: \`use_api_socket: true\` requires \`compose.docker-socket: true\`.`,
+    );
+  }
   if (containEgress && (svc.post_start !== undefined || svc.pre_stop !== undefined)) {
     throw new ComposeValidationError(
       `Service \`${name}\`: Compose lifecycle hooks are not allowed for contained services.`,
@@ -680,13 +685,7 @@ function validateServiceSecurity(
       }
     }
   }
-  if (containEgress && trustedProxyShape) {
-    throw new ComposeValidationError(
-      `Service \`${name}\`: the ops Docker proxy is not allowed with contained egress. `
-      + "Use an Open ops session for read-only Docker access.",
-    );
-  }
-  if (containEgress) {
+  if (containEgress && !trustedProxyShape) {
     const containedUser = typeof svc.user === "string" || typeof svc.user === "number"
       ? String(svc.user).trim()
       : "";
@@ -889,6 +888,7 @@ export function generateComposeOverride(
   const referencedOverlayVolumes = new Set<string>();
 
   for (const svc of services) {
+    const applyServiceContainment = Boolean(opts.containEgress && !svc.trustedOpsProxy);
     const mode = resolvePreviewMode(svc);
     const labels: Record<string, string> = {
       "shipit-parent-session": opts.sessionId,
@@ -903,17 +903,19 @@ export function generateComposeOverride(
       // Replace, do not merge, user-declared networks. A second ordinary
       // bridge would give repository code a NAT route before containment.
       networks: opts.containEgress ? "__RESET_NETWORKS__" : ["shipit-session"],
-      cap_drop: opts.containEgress ? ["NET_RAW", "SETUID", "SETGID"] : ["NET_RAW"],
+      cap_drop: applyServiceContainment ? ["NET_RAW", "SETUID", "SETGID"] : ["NET_RAW"],
       // On an internal Docker network, ordinary routed traffic is blocked but
       // Docker's embedded DNS can still forward queries through the daemon.
       // Point its upstream at loopback until the controlled resolver is in the
       // namespace, closing the pre-pause DNS-tunnelling window.
       ...(opts.containDns ? { dns: "__RESET_DNS__" } : {}),
-      ...(opts.containEgress ? {
+      ...(applyServiceContainment ? {
         restart: "no",
         security_opt: ["no-new-privileges"],
       } : {}),
-      ...(opts.containProxy ? { sysctls: { "net.ipv4.conf.all.route_localnet": "1" } } : {}),
+      ...(opts.containProxy && !svc.trustedOpsProxy
+        ? { sysctls: { "net.ipv4.conf.all.route_localnet": "1" } }
+        : {}),
     };
 
     // docs/150 §7 / #1646 — run compose services as the same UID the session
@@ -936,7 +938,8 @@ export function generateComposeOverride(
     // read-only Docker security boundary is enforced by the proxy's env
     // allowlist and the read-only socket mount, not by forcing this service to
     // the session worker UID.
-    const preservesImageStartupUser = svc.trustedOpsProxy === true && !opts.containEgress;
+    const preservesImageStartupUser = svc.trustedOpsProxy === true
+      || (!opts.containEgress && svc.name === "docker-socket-proxy");
     if (workerUid !== null && svc.user === undefined && !preservesImageStartupUser) {
       entry.user = `${workerUid}:${workerUid}`;
     }

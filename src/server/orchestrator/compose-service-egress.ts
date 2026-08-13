@@ -37,9 +37,13 @@ export const COMPOSE_EGRESS_SIDECAR_LABEL = "shipit-egress-service-sidecar";
 export const COMPOSE_EGRESS_POLICY_LABEL = "shipit-egress-policy-hash";
 const containedServiceState = new Map<string, string>();
 
+function containmentStateKey(sessionId: string, containerId: string): string {
+  return `${sessionId}:${containerId}`;
+}
+
 /** A stopped container gets a new netns on start even when its id is stable. */
-export function invalidateComposeServiceContainment(containerId: string): void {
-  containedServiceState.delete(containerId);
+export function invalidateComposeServiceContainment(sessionId: string, containerId: string): void {
+  containedServiceState.delete(containmentStateKey(sessionId, containerId));
 }
 
 export interface ContainComposeServicesOptions {
@@ -48,6 +52,7 @@ export interface ContainComposeServicesOptions {
   sidecarImage: string;
   config: ResolvedEgressConfig;
   serviceNames: string[];
+  excludedServiceNames?: string[];
   dnsEnabled: boolean;
   proxyEnabled: boolean;
   labels?: Record<string, string>;
@@ -105,13 +110,18 @@ export async function containComposeServices(opts: ContainComposeServicesOptions
   }
   const parentLabel = `shipit-parent-session=${opts.sessionId}`;
   const containers = await opts.docker.listContainers({ all: true, filters: { label: [parentLabel] } });
+  const excludedServiceNames = new Set(opts.excludedServiceNames ?? []);
   const serviceContainers = containers.filter((entry) =>
     (entry.State === "running" || entry.State === "paused") && Boolean(entry.Labels?.["shipit-service-name"])
+      && !excludedServiceNames.has(entry.Labels?.["shipit-service-name"] ?? "")
       && !entry.Labels?.[EGRESS_RESOLVER_LABEL] && !entry.Labels?.[EGRESS_PROXY_LABEL]
   );
   const liveServiceIds = new Set(serviceContainers.map((entry) => entry.Id));
-  for (const containerId of containedServiceState.keys()) {
-    if (!liveServiceIds.has(containerId)) containedServiceState.delete(containerId);
+  const statePrefix = `${opts.sessionId}:`;
+  for (const stateKey of containedServiceState.keys()) {
+    if (!stateKey.startsWith(statePrefix)) continue;
+    const containerId = stateKey.slice(statePrefix.length);
+    if (!liveServiceIds.has(containerId)) containedServiceState.delete(stateKey);
   }
   for (const entry of containers) {
     if (!entry.Labels?.[COMPOSE_EGRESS_SIDECAR_LABEL]) continue;
@@ -156,6 +166,7 @@ export async function containComposeServices(opts: ContainComposeServicesOptions
   const failures: Error[] = [];
   for (const info of serviceContainers) {
     const container = opts.docker.getContainer(info.Id);
+    const stateKey = containmentStateKey(opts.sessionId, info.Id);
     const sidecarLabels = {
       ...labels,
       "shipit-egress-parent": info.Id,
@@ -185,7 +196,7 @@ export async function containComposeServices(opts: ContainComposeServicesOptions
         || currentSidecars.some((entry) => Boolean(entry.Labels?.[EGRESS_RESOLVER_LABEL]));
       const hasCurrentProxy = !opts.proxyEnabled
         || currentSidecars.some((entry) => Boolean(entry.Labels?.[EGRESS_PROXY_LABEL]));
-      const hasCurrentFirewall = containedServiceState.get(info.Id) === `${startedAt}:${policyHash}`;
+      const hasCurrentFirewall = containedServiceState.get(stateKey) === `${startedAt}:${policyHash}`;
       if (!opts.refresh && Number.isFinite(serviceStartedAt) && hasCurrentFirewall
         && hasCurrentResolver && hasCurrentProxy) {
         continue;
@@ -262,22 +273,37 @@ export async function containComposeServices(opts: ContainComposeServicesOptions
       }
       await container.unpause();
       paused = false;
-      containedServiceState.set(info.Id, `${startedAt}:${policyHash}`);
+      containedServiceState.set(stateKey, `${startedAt}:${policyHash}`);
     } catch (error) {
       // Never resume repository code unless the complete containment stack is
       // ready.
       // Preserve the container and anonymous volumes. Its bootstrap network is
       // internal or its firewall is default-deny, so stopping is fail-closed.
-      if (paused) {
-        try { await container.unpause(); paused = false; } catch { /* remain frozen and closed */ }
+      let routeDetached: boolean;
+      try {
+        await network.disconnect({ Container: info.Id, Force: true });
+        routeDetached = true;
+      } catch (disconnectError) {
+        const code = disconnectError && typeof disconnectError === "object" && "statusCode" in disconnectError
+          ? Number(disconnectError.statusCode)
+          : 0;
+        const message = disconnectError instanceof Error ? disconnectError.message : String(disconnectError);
+        routeDetached = code === 404 || /not connected|no such network|not found/i.test(message);
       }
-      if (!paused) {
-        try { await container.stop({ t: 0 }); } catch { /* fail closed */ }
-        if (!opts.refresh) {
-          try { await network.disconnect({ Container: info.Id, Force: true }); } catch { /* already detached */ }
+      if (!routeDetached) {
+        try {
+          await container.remove({ force: true });
+          paused = false;
+        } catch { /* leave the workload paused when Docker rejects both actions */ }
+      } else if (paused) {
+        try { await container.unpause(); paused = false; } catch { /* remain frozen and closed */ }
+        if (!paused) {
+          try { await container.stop({ t: 0 }); } catch {
+            try { await container.remove({ force: true }); } catch { /* route is detached and closed */ }
+          }
         }
       }
-      containedServiceState.delete(info.Id);
+      containedServiceState.delete(stateKey);
       failures.push(error instanceof Error ? error : new Error(String(error)));
     } finally {
       // Success unpauses above. This fallback applies only when stopping the

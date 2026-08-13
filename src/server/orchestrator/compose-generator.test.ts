@@ -197,7 +197,9 @@ services:
     const dir = setup();
     const p = writeCompose(dir, `services:\n  web:\n    image: node:20\n    use_api_socket: true\n`);
     expect(() => parseComposeFile(p, { dockerSocket: false, containEgress: true })).toThrow("use_api_socket");
-    expect(() => parseComposeFile(p, { dockerSocket: false })).not.toThrow();
+    expect(() => parseComposeFile(p, { dockerSocket: true, containEgress: true })).toThrow("use_api_socket");
+    expect(() => parseComposeFile(p, { dockerSocket: false })).toThrow("compose.docker-socket");
+    expect(() => parseComposeFile(p, { dockerSocket: true })).not.toThrow();
   });
 
   it("rejects lifecycle hooks in contained services", () => {
@@ -326,7 +328,7 @@ services:
     })).toThrow("direct Docker socket access");
   });
 
-  it("rejects even the trusted ops proxy when egress is contained", () => {
+  it("allows the trusted ops proxy on the internal network in a contained ops session", () => {
     const dir = setup();
     const denied = ["POST", "BUILD", "COMMIT", "EXEC", "AUTH", "CONFIGS", "DISTRIBUTION",
       "GRPC", "NODES", "PLUGINS", "SECRETS", "SERVICES", "SESSION", "SWARM", "SYSTEM", "TASKS"];
@@ -336,7 +338,7 @@ services:
       dockerSocket: true,
       containEgress: true,
       trustedOpsProxy: true,
-    })).toThrow("not allowed with contained egress");
+    })).not.toThrow();
     expect(() => parseComposeFile(p, {
       dockerSocket: true,
       trustedOpsProxy: true,
@@ -667,6 +669,21 @@ describe("generateComposeOverride — session-worker UID (#1646)", () => {
     const doc = parseYaml(override) as { services: Record<string, { user?: string; cap_drop?: string[] }> };
     expect(doc.services["docker-socket-proxy"].user).toBeUndefined();
     expect(doc.services["docker-socket-proxy"].cap_drop).toEqual(["NET_RAW"]);
+
+    const containedOverride = generateComposeOverride(
+      [{ name: "docker-socket-proxy", shipitPreview: "auto", trustedOpsProxy: true }],
+      {
+        ...baseOpts,
+        containEgress: true,
+        containDns: true,
+        composeConfig: { file: "docker-compose.yml", dockerSocket: true },
+      },
+    );
+    const contained = parseYaml(containedOverride) as {
+      services: Record<string, { user?: string; dns?: string[] }>;
+    };
+    expect(contained.services["docker-socket-proxy"].user).toBeUndefined();
+    expect(contained.services["docker-socket-proxy"].dns).toEqual(["127.0.0.1"]);
   });
 
   it("honors an explicit user: from the compose file and never overrides it", () => {

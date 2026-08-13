@@ -26,6 +26,10 @@ export const OPS_TEMPLATE_ID = "ops";
  */
 const DOCKER_COMPOSE_YML = `# docs/128 — read-only Docker access for the ops session.
 #
+# In Contained mode the agent remains contained. This server-authorized proxy
+# stays on the internal session network and is excluded from the runtime egress
+# bridge because it needs no internet route.
+#
 # This proxy is the ONLY place the host Docker socket is mounted. The agent
 # container reaches it over TCP (DOCKER_HOST=tcp://docker-socket-proxy:2375,
 # set automatically by the orchestrator for kind="ops" sessions) and can only

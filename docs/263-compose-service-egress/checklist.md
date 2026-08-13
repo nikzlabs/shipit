@@ -20,3 +20,5 @@
 - [x] Fourteenth fresh review completed; proxy trust now depends on the complete server-authoritative service shape instead of its service name.
 - [x] Fifteenth fresh review completed; Contained mode now rejects the raw-socket ops proxy, removing its root and mutable-image trust from the containment boundary.
 - [x] Sixteenth fresh review completed with no important findings.
+- [x] ShipIt API review completed; dependency restart preparation, ops policy, cross-session cache isolation, fail-closed removal, HTTP refresh errors, and Open proxy startup compatibility were addressed.
+- [x] Two ShipIt API follow-up reviews completed; ops-agent containment, paused NAT cleanup, API-socket rejection, trusted-proxy DNS/startup, and visible refresh failures were addressed.

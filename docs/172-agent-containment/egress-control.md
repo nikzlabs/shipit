@@ -15,6 +15,10 @@ once approval friction is removed this is the load-bearing environment-layer def
 
 ## Compose service coverage
 
+In a contained ops session, the agent remains contained. Its server-authorized
+Docker proxy stays on the internal session network and is excluded from the
+runtime egress bridge because it needs no internet route.
+
 Compose-managed services use the same effective Contained/Open policy and host
 allowlist as the agent container (docs/263). For a contained session, ShipIt
 generates the session Compose network as `internal` and points Docker DNS at

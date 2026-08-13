@@ -20,6 +20,7 @@ import { persistCardTransition } from "../chat-card-persistence.js";
 import { allowEgressHost } from "../egress-policy.js";
 import { EGRESS_GLOBAL_SCOPE } from "../egress-allowlist-store.js";
 import type { PersistedEgressPrompt } from "../chat-history.js";
+import { agentLogAppend } from "../log-emit.js";
 
 type EgressCtx = ConnectionCtx &
   RunnerCtx &
@@ -50,6 +51,7 @@ export function handleEgressDecision(ctx: EgressCtx, msg: WsEgressDecision): voi
     ctx.egressAllowlistStore?.addHost(EGRESS_GLOBAL_SCOPE, host);
     void ctx.containerManager?.reloadEgress(sessionId).catch((error: unknown) => {
       const message = `Allowlist saved, but running services were stopped because policy refresh failed: ${error instanceof Error ? error.message : String(error)}`;
+      runner.emitMessage(agentLogAppend("server", `[compose] Stack error: ${message}`));
       runner.emitMessage({ type: "stack_error", sessionId, message });
     });
   }
