@@ -35,25 +35,19 @@ loop**.
 
 ## Quickstart
 
-### What you need
-
-[Docker](https://docs.docker.com/get-docker/) with the Compose v2 plugin (`docker compose`), for a
-local install — the VPS script installs it for you.
-
-A GitHub account and one agent provider account, both connected in the app on first run.
-
 ### Run locally
 
 Run ShipIt on your own machine — Linux, macOS, or Windows via
 [WSL2](https://learn.microsoft.com/windows/wsl/install).
 
 ```bash
+# Needs Docker Desktop, or Docker Engine with the Compose v2 plugin (`docker compose`)
 bash <(curl -fsSL https://raw.githubusercontent.com/nikzlabs/shipit/stable/deployment/local/setup.sh)
 ```
 
 This installs ShipIt under `~/.shipit`, builds the Docker images, and starts it **detached** at
-[http://localhost:4123](http://localhost:4123). Connect a provider account once from the in-app
-sign-in flow. Fork installs, custom paths, updates, and stop/uninstall are in
+[http://localhost:4123](http://localhost:4123). Connect GitHub and a provider account once from the
+in-app sign-in flow. Fork installs, custom paths, updates, and stop/uninstall are in
 [`deployment/README.md`](deployment/README.md).
 
 #### Reaching a local install from your phone
