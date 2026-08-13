@@ -246,3 +246,73 @@ describe("resolveDestinationByName", () => {
     expect(found.reason).toBe("ambiguous");
   });
 });
+
+/**
+ * docs/262 req 25 — a declared plugin repository is a reachable destination
+ * under its `plugins.repos` name. It resolves like any other; what it must not
+ * do is disturb the trackers that were already there.
+ */
+describe("plugin repository destinations (docs/262 req 25)", () => {
+  const TOOLS: TrackerDestination = {
+    id: "github:acme/dev-tools",
+    kind: "github",
+    key: "acme/dev-tools",
+    name: "tools",
+    origin: "plugin",
+    pluginNames: ["tools"],
+  };
+
+  it("resolves a plugin repository by its declared name", () => {
+    const found = resolveDestinationByName([OWN, PLANNING, TOOLS], "tools");
+    expect(found.ok).toBe(true);
+    if (!found.ok) return;
+    expect(found.destination.id).toBe("github:acme/dev-tools");
+  });
+
+  it("resolves `tools#42` and the canonical address to the same issue", () => {
+    const named = ok(resolveIssueRef("tools#42", [OWN, PLANNING, TOOLS]));
+    const canonical = ok(resolveIssueRef("acme/dev-tools#42", [OWN, PLANNING, TOOLS]));
+    expect(named.tracker).toBe("github:acme/dev-tools");
+    expect(canonical.tracker).toBe("github:acme/dev-tools");
+    expect(named.issueId).toBe("42");
+  });
+
+  // The reason the registry aliases instead of registering a second
+  // destination: two NAMED destinations with one backend identity make the
+  // canonical form ambiguous, which would break the tracker that already worked.
+  it("keeps a repository that is both tracker and plugin repo addressable by both names, unambiguously", () => {
+    const both: TrackerDestination = { ...PLANNING, pluginNames: ["tools"] };
+    expect(resolveDestinationByName([OWN, both], "planning").ok).toBe(true);
+    const viaPlugin = resolveDestinationByName([OWN, both], "tools");
+    expect(viaPlugin.ok).toBe(true);
+    if (viaPlugin.ok) expect(viaPlugin.destination.id).toBe("github:acme/planning");
+    expect(ok(resolveIssueRef("acme/planning#42", [OWN, both])).tracker).toBe("github:acme/planning");
+  });
+
+  // The alias is what the reference USED, and it survives resolution: the
+  // choice of name is the statement of intent, so erasing it would erase that.
+  it("keeps the plugin name a reference used on a repository declared both ways", () => {
+    const both: TrackerDestination = { ...PLANNING, pluginNames: ["tools"] };
+    const viaPlugin = ok(resolveIssueRef("tools#42", [OWN, both]));
+    expect(viaPlugin).toMatchObject({ trackerName: "tools", identifier: "tools#42" });
+    const viaTracker = ok(resolveIssueRef("planning#42", [OWN, both]));
+    expect(viaTracker).toMatchObject({ trackerName: "planning", identifier: "planning#42" });
+  });
+
+  it("names plugin repositories separately from trackers when a reference fails", () => {
+    const found = resolveDestinationByName([OWN, PLANNING, TOOLS], "nope");
+    expect(found.ok).toBe(false);
+    if (found.ok) return;
+    expect(found.message).toContain("Declared trackers: planning.");
+    expect(found.message).toContain("plugin repositories");
+    expect(found.message).toContain("tools");
+  });
+
+  it("still says the repository declares no trackers when it only declares plugins", () => {
+    const found = resolveDestinationByName([OWN, TOOLS], "nope");
+    expect(found.ok).toBe(false);
+    if (found.ok) return;
+    expect(found.message).toContain("declares no issue trackers");
+    expect(found.message).toContain("tools");
+  });
+});

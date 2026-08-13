@@ -187,6 +187,16 @@ Issues (tracker-neutral; docs/175 + docs/177 + docs/187 + docs/248):
   previous values. There is no 'label delete' (undo would mint a fresh label no
   issue carries) — delete in the tracker's own UI if one truly must go.
 
+  A declared PLUGIN REPOSITORY (docs/262) is addressable the same way, under the
+  name in its 'plugins.repos' entry — that is how you report a bug, a limitation
+  or a feature request about a plugin you are USING: 'shipit issue create
+  --tracker <plugin-repo-name> ...' files it on the plugin's own repository, and
+  ShipIt appends the exact plugin commit this session runs. Put the reproduction
+  and any proposed fix (as a diff) in the body. A project session still never
+  pushes to a plugin repository — filing an issue is the whole channel. A plugin
+  repository gets no Issues tab: it is a dependency, not one of this project's
+  trackers. Declare it in 'issues.trackers' too if you want one.
+
   'labels'/'statuses' list the tracker's valid label names and status targets so
   you can pick one before a create/edit/status write instead of guessing. 'list
   --json' omits each issue's body by default to save tokens — pass --full to

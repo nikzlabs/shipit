@@ -124,6 +124,42 @@ A failed refresh exits non-zero and leaves the previous version live — so the
 session keeps working, on the OLD version. That distinction is the point of the
 non-zero exit: nothing is broken, but you are not running what you think.
 
+## Reporting a problem with a plugin
+
+A plugin misbehaving is not something to work around locally, and not something
+to fix in `/plugins/<name>` — that checkout is read-only and reaches nobody.
+File it on the **plugin's own repository**, from here:
+
+```
+shipit issue create --tracker tools --title "reqs CLI drops the --root flag" --body-file - <<'EOF'
+## What happened
+...
+## Reproduction
+1. ...
+## Proposed fix
+```diff
+...
+```
+EOF
+```
+
+`--tracker` takes the name from the `plugins.repos` entry — declaring the
+repository is what grants the channel, and nothing else has to be configured.
+The tracker token stays orchestrator-side, exactly as for a declared tracker.
+
+**ShipIt appends the exact plugin commit this session is running** to the body,
+so you do not have to find it (and cannot get it wrong — the checkout is a
+staged export with no `HEAD` to read). Everything else is yours: what happened,
+how to reproduce it, and a proposed fix as a diff.
+
+Filing an issue is the **whole** channel. A project session never pushes to a
+plugin repository and opens no PR there; make the fix in a session on the plugin
+repository itself, then `shipit plugin refresh` here to test it.
+
+A plugin repository is not one of this project's trackers, so it gets no Issues
+tab and `shipit issue list` does not default to it. If a repository really is
+both, declare it in `issues.trackers` as well — both names then address it.
+
 ## Failure behaviour
 
 A plugin repository that cannot be fetched or validated does not stop the

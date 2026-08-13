@@ -91,6 +91,28 @@ planning issue publicly. The same rule applies to the `shipit issue label` verbs
 which mutate a tracker's label configuration. To let `create` reach its own
 issues, a repository declares itself and gives it a name.
 
+### Declared plugin repositories are destinations too
+
+If this project declares a **plugin repository** (`plugins.repos` in
+`shipit.yaml` — see `plugins.md`), that repository is addressable here under the
+name of its declaration, so you can report a bug, a limitation or a feature
+request about a plugin you are using:
+
+```
+shipit issue create --tracker tools --title "reqs CLI drops --root" --body-file - < report.md
+```
+
+Declaring the plugin is what grants the channel — nothing else is configured,
+and the token stays orchestrator-side like any other. **ShipIt appends the exact
+plugin commit this session runs** to the body; put the reproduction and any
+proposed fix (as a diff) in the body yourself.
+
+Two things it is not. It is not one of this project's trackers: it renders no
+Issues tab, and an unqualified `list` never means it. And it is not a way to
+change the plugin — a project session never pushes to a plugin repository;
+filing the issue is the whole channel. If a repository is genuinely both,
+declare it under `issues.trackers` as well and both names will address it.
+
 ## Reading (read-only)
 
 ```

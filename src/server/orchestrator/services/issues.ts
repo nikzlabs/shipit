@@ -35,6 +35,13 @@ import {
   type GitHubTrackerContext,
 } from "../trackers/index.js";
 import type { TrackerDestination } from "../../shared/declared-tracker.js";
+import { describeDeclaredNames } from "../../shared/issue-ref-resolution.js";
+import {
+  addressedAsPluginRepo,
+  pluginFeedbackTrackerId,
+  withPluginFeedbackContext,
+  type PluginFeedbackRepo,
+} from "../../shared/plugin-feedback.js";
 import { ServiceError } from "./types.js";
 
 /**
@@ -58,15 +65,10 @@ export function isDuplicateStatus(name?: string): boolean {
  * retrying blind, and states plainly that there is no fallback.
  */
 function undeclaredTrackerMessage(trackerId: string, registry: TrackerRegistry): string {
-  const names = registry
-    .destinations()
-    .map((d) => d.name)
-    .filter((n): n is string => Boolean(n));
-  const declared =
-    names.length > 0
-      ? `Declared trackers: ${names.join(", ")}.`
-      : "This repository declares no issue trackers — add an `issues.trackers` entry to shipit.yaml.";
-  return `\`${trackerId}\` is not a tracker this repository declares, and ShipIt has no implicit tracker to fall back to. ${declared}`;
+  // Shared with the shim's own fail-closed messages so one repository describes
+  // itself the same way everywhere — including its plugin repositories, which
+  // are reachable destinations but not trackers (docs/262 req 25).
+  return `\`${trackerId}\` is not a tracker this repository declares, and ShipIt has no implicit tracker to fall back to. ${describeDeclaredNames(registry.destinations())}`;
 }
 
 /**
@@ -218,7 +220,15 @@ function resolveConfiguredTracker(
   fetchImpl?: FetchImpl,
   github?: GitHubTrackerContext,
 ): Tracker {
-  const registry = buildTrackerRegistry(credentialStore, fetchImpl, github);
+  return resolveConfiguredTrackerIn(
+    buildTrackerRegistry(credentialStore, fetchImpl, github),
+    trackerId,
+  );
+}
+
+/** The same resolution against a registry the caller already built — for a
+ * write that also has to ask what KIND of destination it resolved to. */
+function resolveConfiguredTrackerIn(registry: TrackerRegistry, trackerId: string): Tracker {
   const tracker = registry.get(trackerId as TrackerId);
   if (!tracker) throw new ServiceError(404, undeclaredTrackerMessage(trackerId, registry));
   if (!tracker.isConfigured()) {
@@ -763,21 +773,60 @@ async function createMissingLabels(tracker: Tracker, names: string[]): Promise<L
 }
 
 /**
+ * docs/262 req 25 — the plugin repository a create is filing feedback on, when
+ * that is what it is doing.
+ *
+ * Keyed on **the name the create was addressed through** — see
+ * `addressedAsPluginRepo` for why the destination alone is not enough.
+ */
+function pluginFeedbackTarget(
+  registry: TrackerRegistry,
+  trackerId: string,
+  addressedAs: string | undefined,
+  github?: GitHubTrackerContext,
+): PluginFeedbackRepo | undefined {
+  const destination = registry.destinationFor(trackerId as TrackerId);
+  if (!addressedAsPluginRepo(destination, addressedAs)) return undefined;
+  const name = addressedAs?.trim().toLowerCase();
+  const repos = (github?.pluginRepos ?? []).filter(
+    (r) => pluginFeedbackTrackerId(r).toLowerCase() === trackerId.toLowerCase(),
+  );
+  return name ? repos.find((r) => r.name.toLowerCase() === name) ?? repos[0] : repos[0];
+}
+
+/**
  * Create a new issue in the tracker's bound scope (docs/187). Unlike the other
  * writes there is no prior state to snapshot — the undo target is the new
  * issue's own id, and undo cancels/closes it. The route stamps `card.issueId`
  * from `outcome.issue.id`.
+ *
+ * When the create is addressed at a declared **plugin repository** (docs/262
+ * req 25), the session's plugin context — repository name, declared ref, exact
+ * running commit — is appended to the body here rather than left to the caller.
+ * The agent cannot read that commit from the checkout it browses, and req 25
+ * asks the report to carry it; server-side is also the only place that knows it
+ * for the UI path as well as the shim's.
  */
 export async function createIssueForTracker(
   credentialStore: CredentialStore,
   trackerId: string,
   title: string,
   body: string,
-  opts: { labels?: string[]; priority?: string; parent?: string; createMissingLabels?: boolean } = {},
+  opts: {
+    labels?: string[];
+    priority?: string;
+    parent?: string;
+    createMissingLabels?: boolean;
+    /** The declared name the create was addressed through (docs/262 req 25). */
+    trackerName?: string;
+  } = {},
   fetchImpl?: FetchImpl,
   github?: GitHubTrackerContext,
 ): Promise<IssueWriteOutcome> {
-  const tracker = resolveConfiguredTracker(credentialStore, trackerId, fetchImpl, github);
+  const registry = buildTrackerRegistry(credentialStore, fetchImpl, github);
+  const tracker = resolveConfiguredTrackerIn(registry, trackerId);
+  const feedbackRepo = pluginFeedbackTarget(registry, trackerId, opts.trackerName, github);
+  const finalBody = feedbackRepo ? withPluginFeedbackContext(body, feedbackRepo) : body;
   // Opt-in only (planning#232): mint unknown labels BEFORE the create so label
   // resolution can't reject them. Without the flag an unknown label still fails
   // (with the label-create hint) — a typo must not silently spawn a label.
@@ -789,7 +838,7 @@ export async function createIssueForTracker(
   try {
     issue = await tracker.createIssue({
       title,
-      body,
+      body: finalBody,
       ...(opts.labels && opts.labels.length > 0 ? { labels: opts.labels } : {}),
       ...(opts.priority !== undefined ? { priority: opts.priority } : {}),
       ...(opts.parent !== undefined ? { parent: opts.parent } : {}),

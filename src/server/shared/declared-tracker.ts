@@ -111,6 +111,33 @@ export interface TrackerDestination {
   /** The backend's own identity: GitHub `owner/repo`, Linear team key. */
   key?: string;
   kind: DeclaredTracker["kind"];
+  /**
+   * docs/262 req 25 — this destination exists because the repository declared a
+   * plugin *repository*, not because it declared a tracker. It is reachable the
+   * same way and brokered the same way; what it is not is one of the project's
+   * own trackers, so it renders no Issues tab (see `RegistryEntry.listed`) and
+   * error messages name it as a feedback destination.
+   */
+  origin?: "plugin";
+  /**
+   * docs/262 req 25 — the `plugins.repos[].name`s that also address this
+   * destination. Normally one, equal to `name`. It differs when a repository is
+   * BOTH a declared tracker and a declared plugin repository: the two names then
+   * share one destination rather than minting a second, because two named
+   * destinations with the same backend identity would make the canonical form
+   * (`owner/repo#42`) ambiguous and break the tracker that was already there.
+   */
+  pluginNames?: string[];
+}
+
+/**
+ * Whether this destination is reachable *only* because a plugin repository was
+ * declared (docs/262 req 25). A tracker destination that merely carries plugin
+ * aliases is not one: the repository declared it as a tracker, which is the
+ * stronger statement, and it keeps its tab and its wording.
+ */
+export function isPluginFeedbackDestination(dest: TrackerDestination): boolean {
+  return dest.origin === "plugin";
 }
 
 /** Build a {@link TrackerDestination} from a declaration. */

@@ -46,6 +46,7 @@ import { buildTrackerRegistry, type GitHubTrackerContext } from "./trackers/inde
 import { parseIssueRef } from "../shared/issue-ref.js";
 import { resolveParsedIssueRef } from "../shared/issue-ref-resolution.js";
 import type { TrackerDestination } from "../shared/declared-tracker.js";
+import { addressedAsPluginRepo } from "../shared/plugin-feedback.js";
 import { isGitHubTracker } from "../shared/tracker-id.js";
 import { parsePrBodyIssueRefs } from "../shared/pr-issue-refs.js";
 
@@ -353,6 +354,28 @@ export async function applyMergedPrIssueRefs(
   for (const parsedRef of closes) {
     const ref = resolveRef(parsedRef);
     if (!ref) continue;
+    // docs/262 req 25 — a declared plugin repository is a FEEDBACK destination.
+    // Merging a project PR cannot have fixed a plugin: req 7 keeps the plugin
+    // checkout read-only and a project session never pushes there, so the fix
+    // by definition landed somewhere else. Completing the issue anyway would
+    // close a third party's report on the strength of an unrelated merge, so
+    // this refuses and says why rather than acting. `Refs` still works and is
+    // the pointer that means what the author meant here.
+    //
+    // Keyed on the NAME the pointer used, so a repository the project declares
+    // both ways behaves as the pointer asked: `Closes planning#12` completes an
+    // issue on the project's own tracker, `Closes tools#12` does not.
+    const destination = destinations.find((d) => d.id === ref.tracker);
+    if (addressedAsPluginRepo(destination, ref.trackerName)) {
+      surfaceLifecycleFailure(
+        deps,
+        info.sessionId,
+        `${info.prNumber}:${ref.identifier}:plugin-closes`,
+        `PR #${info.prNumber} says it closes \`${ref.identifier}\`, but \`${ref.trackerName ?? ref.tracker}\` is a declared plugin repository, not one of this project's trackers. ` +
+          "A project session never changes a plugin, so ShipIt left that issue open — fix it in the plugin's own repository, and use `Refs` here to leave a reference.",
+      );
+      continue;
+    }
     const issueId = ref.issueId;
     // Status flip + provenance card — guarded so a reconnect-driven re-fire
     // can't re-promote an already-completed issue or re-card it.
