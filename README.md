@@ -94,7 +94,7 @@ Updates**). Fork installs, host-side updates, sizing, access policies, and troub
 
 ## Status
 
-ShipIt is in an early public release state. The project is public source, but not yet open to outside
+ShipIt is in an early public release state. The project is public source, but not open to outside
 pull requests. Bug reports, feature requests, and design discussion are welcome as GitHub issues.
 
 ## Why ShipIt exists
