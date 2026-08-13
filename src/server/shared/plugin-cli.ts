@@ -171,8 +171,16 @@ export function planPluginCommands(
 
     for (const [declared, entry] of Object.entries(exported.cli)) {
       const override = findOverride(use, declared);
+      if (override.ambiguous) {
+        addIssue(
+          issueKey,
+          `\`${use.alias}\`: \`overrides.commands\` renames \`${declared}\` more than once `
+          + "(the keys differ only in case), so it is not on PATH. Keep one.",
+        );
+        continue;
+      }
       claims.push({
-        name: override ?? declared,
+        name: override.as ?? declared,
         alias: use.alias,
         repo,
         plugin: exported.name,
@@ -251,10 +259,20 @@ export function planPluginCommands(
  * The consumer's rename for one declared command, matched case-insensitively —
  * the same rule `from:` and `plugin:` selectors use, so a project cannot lose a
  * rename to a capitalization the manifest happens to prefer.
+ *
+ * Two keys that differ only in case are **ambiguous, not a tie to break**
+ * (review finding): the parser accepts `reqs:` and `REQS:` as distinct YAML
+ * keys, and picking the first match would let declaration order silently decide
+ * which rename applies. `{ ambiguous: true }` refuses the command instead, for
+ * the same reason a contested name refuses every claimant — a command whose
+ * name was chosen by something the user cannot see is not one to run.
  */
-function findOverride(use: PluginUse, declared: string): string | undefined {
-  for (const [name, override] of Object.entries(use.overrides.commands)) {
-    if (name.toLowerCase() === declared.toLowerCase()) return override.as;
-  }
-  return undefined;
+function findOverride(
+  use: PluginUse,
+  declared: string,
+): { as?: string; ambiguous?: true } {
+  const matches = Object.entries(use.overrides.commands)
+    .filter(([name]) => name.toLowerCase() === declared.toLowerCase());
+  if (matches.length > 1) return { ambiguous: true };
+  return matches.length === 1 ? { ...(matches[0][1].as ? { as: matches[0][1].as } : {}) } : {};
 }

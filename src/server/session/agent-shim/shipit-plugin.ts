@@ -136,10 +136,21 @@ async function exec(args: string[], deps: RunDeps): Promise<void> {
   }
 
   // From here the shim is a pipe: the plugin's own streams and its own exit
-  // code, unchanged. Nothing is appended — a caller parsing the output must
-  // see exactly what the command wrote.
+  // code, unchanged. Nothing is appended to them — a caller parsing the output
+  // must see exactly what the command wrote.
   if (typeof res.body.stdout === "string" && res.body.stdout) deps.io.stdout(res.body.stdout);
   if (typeof res.body.stderr === "string" && res.body.stderr) deps.io.stderr(res.body.stderr);
+
+  // A ShipIt REFUSAL rides a 2xx — the route always answers in the command's
+  // own shape so a caller never has to tell a transport failure from a command
+  // failure — so `error` has to be printed here or it is printed nowhere. It
+  // was not, and the agent got exit 126 with no output at all: a stale wrapper
+  // after a collision, a repository whose trust was revoked, a missing
+  // generation, all silent (review finding). It goes to stderr, so it never
+  // contaminates a caller parsing stdout.
+  if (typeof res.body.error === "string" && res.body.error) {
+    deps.io.stderr(res.body.error.endsWith("\n") ? res.body.error : `${res.body.error}\n`);
+  }
   const code = typeof res.body.exitCode === "number" ? res.body.exitCode : 1;
   deps.io.exit(code);
 }

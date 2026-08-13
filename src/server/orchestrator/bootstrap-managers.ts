@@ -645,6 +645,10 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
           workspaceDir,
           consumerRepoUrl: remoteUrl,
           secretStore,
+          // A session archived, reset or deleted mid-call must stop the
+          // command: otherwise third-party code keeps the project and state
+          // mounts, and its network, for the rest of the timeout.
+          isCancelled: () => !sessionManager.get(sessionId),
           ...(containerManager.workspaceVolumeName
             ? { workspaceVolume: containerManager.workspaceVolumeName, stateRoot: stateDir }
             : {}),

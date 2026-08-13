@@ -225,16 +225,36 @@ describe("shipit plugin exec", () => {
     expect(res.exitCode).toBe(3);
   });
 
-  it("reports a ShipIt refusal as ShipIt's, not as the command's output", async () => {
+  // A ShipIt REFUSAL rides a 2xx — the route answers in the command's own shape
+  // so a caller never has to tell a transport failure from a command failure.
+  // The shim therefore has to print `error` itself, and did not: the agent got
+  // exit 126 with no output at all (review finding).
+  it("prints a refusal that arrives on a 2xx, and keeps its exit code", async () => {
     const { run } = makeRunner();
     const res = await run(
       ["plugin", "exec", "--alias", "ghost", "--command", "reqs", "--"],
-      { [EXEC]: { status: 400, body: { error: "`ghost` is not a plugin this project imports" } } },
+      {
+        [EXEC]: {
+          status: 200,
+          body: { error: "`ghost` is not a plugin this project imports", exitCode: 126, stdout: "", stderr: "" },
+        },
+      },
+    );
+
+    expect(res.exitCode).toBe(126);
+    expect(res.stderr).toContain("is not a plugin this project imports");
+    expect(res.stdout).toBe("");
+  });
+
+  it("reports a transport failure as ShipIt's, not as the command's output", async () => {
+    const { run } = makeRunner();
+    const res = await run(
+      ["plugin", "exec", "--alias", "reqs", "--command", "reqs", "--"],
+      { [EXEC]: { status: 502, body: { error: "the orchestrator is restarting" } } },
     );
 
     expect(res.exitCode).not.toBe(0);
-    expect(res.stderr).toContain("is not a plugin this project imports");
-    expect(res.stdout).toBe("");
+    expect(res.stderr).toContain("the orchestrator is restarting");
   });
 
   it("refuses a call with no alias or command rather than guessing", async () => {

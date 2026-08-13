@@ -33,6 +33,16 @@
  * running the ambiguous one*, so the run boundary re-derives the same plan and
  * refuses with the same message.
  *
+ * The recheck covers the two domains this side can know — a name two imports
+ * claim, and a name ShipIt reserves. It does NOT re-run the **PATH** probe: the
+ * PATH that matters belongs to the agent container, which the orchestrator
+ * cannot see. That domain is enforced where it is knowable, by the wrapper
+ * generator refusing to write the file (`session/plugin-cli.ts`); a shadowing
+ * name therefore never becomes a wrapper, and normal shell lookup runs the
+ * program that was already there. What is left uncovered is a direct
+ * `shipit plugin exec` for such a name, which is not the ambiguity req 20 is
+ * about — nothing there is ambiguous, the caller named one import explicitly.
+ *
  * Output is **buffered**, not streamed. Two hops of NDJSON relaying is real
  * machinery, and the plan already accepts per-call latency here ("a
  * credential-blind persistent runner is a later optimisation"). The cost is
@@ -114,6 +124,14 @@ export interface PluginCliDeps {
   workspaceVolume?: string;
   stateRoot?: string;
   timeoutMs?: number;
+  /**
+   * Whether the session this call belongs to is gone (archived, reset,
+   * disposed). Without it the `"cancelled"` branch below is unreachable and a
+   * hung command keeps its project and state mounts, and its network, for the
+   * full timeout after the session it served stopped existing — which is
+   * precisely why `install` takes the same hook (review finding).
+   */
+  isCancelled?: () => boolean;
 }
 
 export interface PluginCliRequest {
@@ -169,7 +187,8 @@ export async function runPluginCommand(
 
   // req 20, at the run boundary. The wrapper that called us is a file, and the
   // declaration may have changed since it was written; the requirement is that
-  // an ambiguous name is reported rather than run.
+  // an ambiguous name is reported rather than run. No `isTaken` — see the
+  // module docstring: the PATH that matters is the agent container's.
   const plan = planPluginCommands(config.plugins.uses, (u) => ({
     repo: resolver.repoNameFor(u),
     exported: resolver.exportFor(u),
@@ -193,10 +212,10 @@ export async function runPluginCommand(
   // The plugin's own tree. Tracked: the generation's overlay volume, so the CLI
   // sees the SAME merged checkout+install-output the installer produced. Self:
   // the working tree itself, live and writable — req 27's whole point.
-  let pluginMount: string;
+  const mounts: MountSpec[] = [];
   let commit: string | null = null;
   if (isSelf) {
-    pluginMount = `${deps.workspaceDir}:${CONTAINER_PLUGIN_DIR}`;
+    mounts.push(sessionPathMount(deps, deps.workspaceDir, CONTAINER_PLUGIN_DIR, false));
   } else {
     const generation = readActiveGeneration(stateDir, repoName);
     if (!generation) {
@@ -221,7 +240,10 @@ export async function runPluginCommand(
         checkoutDir,
         ...roots,
       });
-      pluginMount = `${volume}:${CONTAINER_PLUGIN_DIR}`;
+      // A NAMED volume, so it needs no path translation: the daemon already
+      // knows where it is, which is exactly why install could get away with one
+      // bind and this cannot.
+      mounts.push({ Type: "volume", Source: volume, Target: CONTAINER_PLUGIN_DIR, ReadOnly: false });
     } catch (err) {
       return refuse(`\`${repoName}\`'s plugin tree could not be prepared: ${message(err)}`);
     }
@@ -243,12 +265,11 @@ export async function runPluginCommand(
   const hostSettings = pluginSettingsPath(sessionRoot, use.alias);
   const hasSettings = fs.existsSync(hostSettings);
 
-  const binds = [
-    pluginMount,
-    `${deps.workspaceDir}:${CONTAINER_PROJECT_DIR}`,
-    `${hostStateDir}:${CONTAINER_PLUGIN_STATE_DIR}`,
-    ...(hasSettings ? [`${hostSettings}:${CONTAINER_PLUGIN_SETTINGS_FILE}:ro`] : []),
-  ];
+  mounts.push(sessionPathMount(deps, deps.workspaceDir, CONTAINER_PROJECT_DIR, false));
+  mounts.push(sessionPathMount(deps, hostStateDir, CONTAINER_PLUGIN_STATE_DIR, false));
+  if (hasSettings) {
+    mounts.push(sessionPathMount(deps, hostSettings, CONTAINER_PLUGIN_SETTINGS_FILE, true));
+  }
 
   const env = [
     `${PLUGIN_PROJECT_ENV}=${CONTAINER_PROJECT_DIR}`,
@@ -273,7 +294,7 @@ export async function runPluginCommand(
   const entry = path.posix.join(CONTAINER_PLUGIN_DIR, surfaced.entry);
   try {
     return await execute(deps, {
-      binds,
+      mounts,
       env,
       entry,
       args: req.args,
@@ -288,6 +309,62 @@ export async function runPluginCommand(
     // orchestrator's log.
     return refuse(`\`${surfaced.name}\` could not be started (${entry}): ${message(err)}`);
   }
+}
+
+/**
+ * One mount, in whichever form the runtime actually has.
+ *
+ * **This is not cosmetic, and a plain bind is wrong in production** (review
+ * finding). The orchestrator sees a session under its own `/workspace/...`; in
+ * production that whole tree lives inside a named volume the daemon knows
+ * nothing about, so handing those paths to Docker as bind sources creates
+ * empty, root-owned directories instead of the project — `/project` would not
+ * be the project and `/plugin-state` would not be the state a plugin service is
+ * writing to, which is reqs 17, 18, 21 and 27 all silently untrue. The
+ * established translation is a volume mount with `VolumeOptions.Subpath`
+ * (`container-lifecycle.ts`, and `compose-generator.ts` for service
+ * containers); this mirrors it.
+ *
+ * The subpath is taken relative to `stateRoot` — the orchestrator-visible root
+ * of that volume — rather than a hardcoded `/workspace/`, which is the same
+ * pair `resolvePluginOverlayRoots` already threads through for the overlay's
+ * daemon paths. Both must be present for the volume form: `workspaceVolume`
+ * alone cannot say where the volume begins.
+ *
+ * `install` sidesteps all of this because its ONE mount is a named volume, and
+ * a name needs no translation. Every other mount here is a session path.
+ */
+interface MountSpec {
+  Type: "bind" | "volume";
+  Source: string;
+  Target: string;
+  ReadOnly?: boolean;
+  VolumeOptions?: { Subpath?: string };
+}
+
+export function sessionPathMount(
+  deps: Pick<PluginCliDeps, "workspaceVolume" | "stateRoot">,
+  hostPath: string,
+  target: string,
+  readOnly: boolean,
+): MountSpec {
+  const root = deps.stateRoot?.replace(/\/$/, "");
+  const inside = root && (hostPath === root || hostPath.startsWith(`${root}/`));
+  if (!deps.workspaceVolume || !inside) {
+    // Dev / dogfood: the state dir is a bind mount and the daemon sees the same
+    // paths this process does, so the identity translation is the correct one.
+    // A path OUTSIDE the volume gets the same treatment for the same reason
+    // `daemonPath` passes it through — better unchanged than silently rewritten
+    // to somewhere unrelated.
+    return { Type: "bind", Source: hostPath, Target: target, ReadOnly: readOnly };
+  }
+  return {
+    Type: "volume",
+    Source: deps.workspaceVolume,
+    Target: target,
+    ReadOnly: readOnly,
+    VolumeOptions: { Subpath: path.relative(root, hostPath) },
+  };
 }
 
 /**
@@ -348,7 +425,7 @@ export function mapWorkingDir(workspaceDir: string, cwd: string | undefined): st
 }
 
 interface ExecuteSpec {
-  binds: string[];
+  mounts: MountSpec[];
   env: string[];
   entry: string;
   args: string[];
@@ -377,7 +454,10 @@ async function execute(deps: PluginCliDeps, spec: ExecuteSpec): Promise<PluginCl
     StdinOnce: true,
     Tty: false,
     HostConfig: {
-      Binds: spec.binds,
+      // Cast the same way `container-lifecycle.ts` does: dockerode's
+      // `MountSettings` demands every `VolumeOptions` field, while the daemon
+      // accepts `Subpath` alone.
+      Mounts: spec.mounts as unknown as Docker.MountSettings[],
       NetworkMode: PLUGIN_CLI_NETWORK,
       AutoRemove: false, // removed below, after the exit code is read
       CapDrop: ["ALL"],
@@ -404,7 +484,7 @@ async function execute(deps: PluginCliDeps, spec: ExecuteSpec): Promise<PluginCl
     // EOF terminates whether or not the caller piped anything.
     stream.end(spec.stdin);
 
-    const code = await waitForContainerExit(container, timeoutMs);
+    const code = await waitForContainerExit(container, timeoutMs, deps.isCancelled);
     // `wait` can resolve before the attach stream has delivered its last
     // chunk — the container is gone and the bytes are still in flight — so a
     // command that prints one line and exits could report nothing at all.

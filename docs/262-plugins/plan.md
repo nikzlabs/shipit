@@ -518,12 +518,43 @@ instead of a repeat.
   un-trusted since the wrapper was written must stop executing, and this is the
   only place that can notice.
 
-  Two things this slice does **not** settle. Egress: the invocation container
-  has its own network with unrestricted outbound, which is what `install`
-  already has and what plugin *service* containers have today — so req 24's
-  enforcement question now covers three surfaces rather than two, and it stays
-  one decision, not three. And output shape: a long-running command shows
-  nothing until it exits.
+  Three things this slice does **not** settle, all of them found by the
+  independent review and all of them cross-slice.
+
+  **A refresh can delete a generation out from under a running mount.**
+  Publication prunes the previous checkout and its writable layer immediately
+  (`plugin-generations.ts`), and nothing holds a consumer lease — so a CLI
+  started against commit A, or a service container attached to it, can have its
+  lowerdir removed mid-run. `overlay-volume.ts` records that deleting a live
+  lowerdir can make merged reads come back empty. This bullet earlier promised
+  "a CLI invoked mid-refresh runs the old generation or fails with
+  `refreshing`"; the first half is what happens, the second is not implemented.
+  The fix is a **consumer lease spanning both CLI invocations and service
+  containers** — one mechanism, not two, which is why it is not this slice's to
+  invent. Related and milder: a generation's runtime volume is not removed when
+  its generation is pruned, so volumes accumulate per refresh until the session
+  is archived (session teardown and the boot reap both cover them; nothing
+  in-session does).
+
+  **Egress.** The invocation container has its own network with unrestricted
+  outbound — which is what `install` already has and what plugin *service*
+  containers have today. So req 24's enforcement question now covers three
+  surfaces rather than two, and it stays one decision, not three. Joining a
+  plugin container to the agent's network namespace is **not** the fix: it
+  re-exposes the worker's loopback credential broker and breaks req 19.
+
+  **The PATH-shadow refusal reaches the log, not the card.** Cross-plugin
+  collisions and reserved names are recomputed by the snapshot and appear on the
+  card. The third domain — a name the agent container's PATH already resolves —
+  is knowable only inside the container, so it rides the `/plugins/prepare`
+  response (`commandsRefused`, `commandsFailed`) and is logged by
+  `ContainerSessionRunner.preparePlugins()`, the same interim its `skillsFailed`
+  neighbour uses. The destination is the container-side prepare channel the
+  checklist already tracks. Until then, a plugin exporting a name like `curl` is
+  withheld and says so only in the orchestrator log.
+
+  And one accepted limitation, not a gap: output is buffered, so a long-running
+  command shows nothing until it exits.
 - **Skills** (req 22 — review finding 5) — **implemented**
   (`session/plugin-skills.ts`): checkout alone discloses nothing — ShipIt's
   skill listing scans only the workspace skill dirs, and Codex reading

@@ -106,6 +106,18 @@ describe("planPluginCommands", () => {
     expect(plan.issues.size).toBe(0);
   });
 
+  // The parser accepts `reqs:` and `REQS:` as distinct YAML keys, so picking
+  // the first match would let declaration order silently decide which rename
+  // applies (review finding).
+  it("refuses a command whose rename is declared twice in different cases", () => {
+    const plan = planPluginCommands(
+      [use("reqs", "requirements", "game-tools", { reqs: { as: "one" }, REQS: { as: "two" } })],
+      table({ reqs: { repo: "game-tools", exported: exported("requirements", { reqs: "cli" }) } }),
+    );
+    expect(plan.commands).toEqual([]);
+    expect(plan.issues.get("game-tools")![0]).toContain("more than once");
+  });
+
   it("refuses a name ShipIt reserves, even where no binary exists", () => {
     expect(RESERVED_PLUGIN_COMMANDS.has("shipit")).toBe(true);
     const plan = planPluginCommands(

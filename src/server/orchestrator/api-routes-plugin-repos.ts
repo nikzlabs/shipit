@@ -101,8 +101,11 @@ export async function registerPluginRepoRoutes(
         reply.code(501).send({ error: "This runtime cannot run plugin commands (it has no container runtime)." });
         return;
       }
-      const alias = request.body?.alias?.trim();
-      const command = request.body?.command?.trim();
+      // `typeof` before `.trim()`: the body is agent-supplied JSON, and
+      // `{"alias": {}}` would otherwise throw and become a 500 where a 400 is
+      // the answer (review finding).
+      const alias = typeof request.body?.alias === "string" ? request.body.alias.trim() : "";
+      const command = typeof request.body?.command === "string" ? request.body.command.trim() : "";
       if (!alias || !command) {
         reply.code(400).send({ error: "`alias` and `command` are required." });
         return;

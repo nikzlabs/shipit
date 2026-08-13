@@ -83,9 +83,23 @@ function publishGeneration(manifest = MANIFEST): void {
 
 interface Created { opts: Record<string, unknown> }
 
+interface Mount {
+  Type: string;
+  Source: string;
+  Target: string;
+  ReadOnly?: boolean;
+  VolumeOptions?: { Subpath?: string };
+}
+
+function mountFor(host: { Mounts: Mount[] }, target: string): Mount | undefined {
+  return host.Mounts.find((m) => m.Target === target);
+}
+
 function fakeDocker(opts: { exit?: number; stdout?: string; stderr?: string } = {}) {
   const containers: Created[] = [];
-  const volumes = new Set<string>();
+  // The workspace volume already exists in production; the overlay's daemon-path
+  // translation inspects it for its mountpoint.
+  const volumes = new Set<string>(["shipit-ws"]);
   const networks: string[] = [];
   const notFound = (): never => {
     throw Object.assign(new Error("no such thing"), { statusCode: 404 });
@@ -162,10 +176,12 @@ describe("runPluginCommand — the container it builds", () => {
     expect(result.stdout).toBe("ok\n");
 
     const created = fake.containers[0].opts;
-    const host = created.HostConfig as { Binds: string[]; NetworkMode: string; CapDrop: string[] };
-    expect(host.Binds.some((b) => b.endsWith(":/plugin"))).toBe(true);
-    expect(host.Binds).toContain(`${workspaceDir}:/project`);
-    expect(host.Binds).toContain(`${path.join(sessionDir, "plugin-data", "reqs", "state")}:/plugin-state`);
+    const host = created.HostConfig as { Mounts: Mount[]; NetworkMode: string; CapDrop: string[] };
+    expect(mountFor(host, "/plugin")?.Type).toBe("volume");
+    expect(mountFor(host, "/project")).toMatchObject({ Type: "bind", Source: workspaceDir });
+    expect(mountFor(host, "/plugin-state")).toMatchObject({
+      Type: "bind", Source: path.join(sessionDir, "plugin-data", "reqs", "state"),
+    });
     // The plugin's own entrypoint, resolved inside its own tree — and its args
     // handed over untouched.
     expect(created.Entrypoint).toEqual(["/plugin/cli/index.mjs"]);
@@ -174,6 +190,39 @@ describe("runPluginCommand — the container it builds", () => {
     expect(host.NetworkMode).toBe(PLUGIN_CLI_NETWORK);
     expect(host.CapDrop).toEqual(["ALL"]);
     expect((created.Labels as Record<string, string>)[PLUGIN_CLI_LABEL]).toBe("s1");
+  });
+
+  // The defect a review found: the orchestrator sees a session under its own
+  // `/workspace/...`, which in production lives INSIDE a named volume the
+  // daemon knows nothing about. Handing those paths over as bind sources
+  // creates empty, root-owned directories — `/project` would not be the project
+  // and `/plugin-state` would not be the state a plugin service writes to.
+  it("translates session paths onto the workspace volume in the production layout", async () => {
+    declareConsumer();
+    publishGeneration();
+    const fake = fakeDocker();
+
+    // `stateRoot` is the orchestrator-visible root of the named volume; the
+    // temp session tree stands in for a session under it.
+    const stateRoot = path.dirname(sessionDir);
+    const rel = path.basename(sessionDir);
+    await runPluginCommand(
+      deps(fake.docker, { workspaceVolume: "shipit-ws", stateRoot }),
+      call,
+    );
+
+    const host = fake.containers[0]?.opts.HostConfig as { Mounts: Mount[] } | undefined;
+    expect(host).toBeDefined();
+    expect(mountFor(host!, "/project")).toMatchObject({
+      Type: "volume", Source: "shipit-ws", VolumeOptions: { Subpath: `${rel}/workspace` },
+    });
+    expect(mountFor(host!, "/plugin-state")).toMatchObject({
+      Type: "volume", Source: "shipit-ws",
+      VolumeOptions: { Subpath: `${rel}/plugin-data/reqs/state` },
+    });
+    // The plugin's own tree is a NAMED volume either way — a name needs no
+    // translation, which is why `install`'s single mount could be a bind.
+    expect(mountFor(host!, "/plugin")?.Type).toBe("volume");
   });
 
   // req 19 — the whole reason a companion CLI does not run in the agent
@@ -186,8 +235,8 @@ describe("runPluginCommand — the container it builds", () => {
     await runPluginCommand(deps(fake.docker), call);
 
     const env = fake.containers[0].opts.Env as string[];
-    const binds = (fake.containers[0].opts.HostConfig as { Binds: string[] }).Binds;
-    expect(binds.some((b) => b.includes("/credentials"))).toBe(false);
+    const mounts = (fake.containers[0].opts.HostConfig as { Mounts: Mount[] }).Mounts;
+    expect(mounts.some((m) => m.Source.includes("/credentials") || m.Target.includes("/credentials"))).toBe(false);
     for (const name of ["GITHUB_TOKEN", "WORKER_URL", "SHIPIT_AGENT_OPS_URL", "ORCHESTRATOR_URL", "PATH"]) {
       expect(env.some((e) => e.startsWith(`${name}=`))).toBe(false);
     }
@@ -251,8 +300,10 @@ describe("runPluginCommand — the container it builds", () => {
 
     await runPluginCommand(deps(fake.docker), call);
 
-    const host = fake.containers[0].opts.HostConfig as { Binds: string[] };
-    expect(host.Binds).toContain(`${settings}:/plugin-settings.json:ro`);
+    const host = fake.containers[0].opts.HostConfig as { Mounts: Mount[] };
+    expect(mountFor(host, "/plugin-settings.json")).toMatchObject({
+      Type: "bind", Source: settings, ReadOnly: true,
+    });
     expect(fake.containers[0].opts.Env as string[]).toContain("SHIPIT_SETTINGS=/plugin-settings.json");
   });
 
@@ -279,7 +330,8 @@ exports:
 
     expect(result.error).toBeUndefined();
     const created = fake.containers[0].opts;
-    expect((created.HostConfig as { Binds: string[] }).Binds).toContain(`${workspaceDir}:/plugin`);
+    expect(mountFor(created.HostConfig as { Mounts: Mount[] }, "/plugin"))
+      .toMatchObject({ Type: "bind", Source: workspaceDir });
     expect((created.Env as string[]).some((e) => e.startsWith("SHIPIT_PLUGIN_COMMIT"))).toBe(false);
   });
 });
