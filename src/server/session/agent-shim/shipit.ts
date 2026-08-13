@@ -238,17 +238,19 @@ Compose services (docs/238 — start the services declared in docker-compose.yml
   compose file and ShipIt reconciles it.
 
 Sub-agents (docs/144 — spawn another agent for a one-shot sub-task):
-  shipit agent run --role reviewer --prompt-file FILE [--json]
+  shipit agent run --role reviewer [--model NAME] [--effort LEVEL] --prompt-file FILE [--json]
   shipit agent run --agent claude|codex --service S --billing-mode sub|key
                    --model M --effort E --prompt-file FILE [--json]
   shipit agent result [RUN-ID] [--wait [--timeout SECONDS]] [--json]
 
-  There are two ways to say what the run happens on, and they do not mix
-  (docs/261). '--role reviewer' asks ShipIt for the reviewer the USER
+  There are three ways to say what the run happens on, and they do not mix
+  (docs/261, docs/263). '--role reviewer' asks ShipIt for the reviewer the USER
   configured — you name the role, never the reviewer, and supply no service,
-  model or harness. Prefer it for a second opinion: which model reviews is a
-  ShipIt setting, not your call. Anything else names EVERY parameter — the
-  harness, the service, the billing mode, the model and the reasoning level.
+  billing mode or harness. Prefer it for a second opinion: which model reviews is a
+  ShipIt setting, not your call. The role may carry '--model' and/or '--effort'
+  for values the user explicitly named, passed through verbatim; ShipIt resolves
+  the service, billing mode and harness. Anything else names EVERY parameter —
+  the harness, the service, the billing mode, the model and the reasoning level.
   Nothing is filled in from a stored default, so an incomplete call is refused
   rather than quietly completed from somewhere you cannot see.
 

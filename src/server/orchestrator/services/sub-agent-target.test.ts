@@ -136,13 +136,13 @@ describe("parseSubAgentSpawnTarget — the role path (req 6)", () => {
   });
 
   // Naming a role AND a reviewer is asking two different questions; the design
-  // separates them rather than letting one silently win.
+  // separates them rather than letting one silently win. The harness, service
+  // and billing mode are resolved by ShipIt, so they cannot ride the role; the
+  // two docs/263 overrides (model, effort) can, as per-review choices.
   for (const [field, flag] of [
     ["agentId", "--agent"],
     ["serviceId", "--service"],
     ["billingMode", "--billing-mode"],
-    ["modelId", "--model"],
-    ["reasoningEffort", "--effort"],
   ]) {
     it(`refuses a role combined with ${flag}`, async () => {
       const { parseSubAgentSpawnTarget } = await import("./sub-agent-target.js");
@@ -152,9 +152,45 @@ describe("parseSubAgentSpawnTarget — the role path (req 6)", () => {
     });
   }
 
+  it("carries a user-named model through as an override (docs/263)", async () => {
+    const { parseSubAgentSpawnTarget } = await import("./sub-agent-target.js");
+    expect(parseSubAgentSpawnTarget({ role: "reviewer", modelId: "GPT-5.6" })).toEqual({
+      kind: "role",
+      role: "reviewer",
+      modelName: "GPT-5.6",
+    });
+  });
+
+  it("carries a user-named reasoning level through as an override (docs/263)", async () => {
+    const { parseSubAgentSpawnTarget } = await import("./sub-agent-target.js");
+    expect(parseSubAgentSpawnTarget({ role: "reviewer", reasoningEffort: "high" })).toEqual({
+      kind: "role",
+      role: "reviewer",
+      reasoningEffort: "high",
+    });
+  });
+
+  it("carries both overrides together (docs/263)", async () => {
+    const { parseSubAgentSpawnTarget } = await import("./sub-agent-target.js");
+    expect(
+      parseSubAgentSpawnTarget({ role: "reviewer", modelId: "GPT-5.6", reasoningEffort: "high" }),
+    ).toEqual({ kind: "role", role: "reviewer", modelName: "GPT-5.6", reasoningEffort: "high" });
+  });
+
   it("refuses an unknown role by name rather than ignoring it", async () => {
     const { parseSubAgentSpawnTarget } = await import("./sub-agent-target.js");
     expect(() => parseSubAgentSpawnTarget({ role: "critic" })).toThrow(/critic/);
+  });
+
+  // docs/263 req 2 — a blank override is a NAMED value that cannot run, not an
+  // absence. Absence means "ShipIt resolves it"; a blank means the user named
+  // nothing and must be refused rather than silently run at the default.
+  it("refuses a blank override rather than silently running the default", async () => {
+    const { parseSubAgentSpawnTarget } = await import("./sub-agent-target.js");
+    expect(() => parseSubAgentSpawnTarget({ role: "reviewer", modelId: "  " })).toThrow(/blank/);
+    expect(() => parseSubAgentSpawnTarget({ role: "reviewer", reasoningEffort: "" })).toThrow(
+      /blank/,
+    );
   });
 });
 
@@ -295,6 +331,123 @@ describe("resolveSubAgentSpawnTarget", () => {
         { credentialStore: storeWith([]), env: {} },
       ),
     ).toThrow(/No reviewer is available/);
+  });
+
+  // ---- docs/263 — the role carries a model and/or effort the user named ----
+
+  // reqs 1–3 — the named model is resolved against the real catalogue and the
+  // install: ShipIt picks the service, billing mode and harness, and captures
+  // the route here so the card can report who paid.
+  it("resolves a user-named model to a routed reviewer (docs/263)", async () => {
+    installAll();
+    const { resolveSubAgentSpawnTarget } = await import("./sub-agent-target.js");
+    const resolved = resolveSubAgentSpawnTarget(
+      { kind: "role", role: "reviewer", modelName: "GPT-5.6 Sol" },
+      { harnessId: "claude" },
+      { credentialStore: storeWith([OPENAI_KEY, ANTHROPIC_KEY]), env: {} },
+    );
+    expect(resolved.harnessId).toBe("codex");
+    expect(resolved.selection).toMatchObject({ serviceId: "openai", modelId: "gpt-5.6-sol" });
+    // req 5 — complete: a named reviewer carries a level (the harness default).
+    expect(resolved.reasoningEffort).toBe("high");
+    // req 3 — who pays is captured at admission, not re-derived by the spawn.
+    expect(resolved.route).toBeDefined();
+    // A named reviewer belongs to no slot.
+    expect(resolved.reviewer).toBeUndefined();
+  });
+
+  // The model name matches by label too, and the harness preference is a
+  // preference, not a filter: a model only the implementer's own harness can
+  // run still resolves on it (docs/261, docs/263 req 5 Scope) — the human named
+  // it, which lifts the distance guarantee just as a pin does.
+  it("resolves a label-only name onto a model only the implementer's harness can run", async () => {
+    installAll();
+    const { resolveSubAgentSpawnTarget } = await import("./sub-agent-target.js");
+    const resolved = resolveSubAgentSpawnTarget(
+      { kind: "role", role: "reviewer", modelName: "V4 Flash" },
+      { harnessId: "claude" },
+      { credentialStore: storeWith([DEEPSEEK_KEY]), env: {} },
+    );
+    expect(resolved.harnessId).toBe("claude");
+    expect(resolved.selection.modelId).toBe("deepseek-v4-flash");
+  });
+
+  it("applies an effort the user named onto the resolved reviewer (docs/263)", async () => {
+    installAll();
+    const { resolveSubAgentSpawnTarget } = await import("./sub-agent-target.js");
+    const resolved = resolveSubAgentSpawnTarget(
+      { kind: "role", role: "reviewer", modelName: "GPT-5.6 Sol", reasoningEffort: "medium" },
+      { harnessId: "claude" },
+      { credentialStore: storeWith([OPENAI_KEY]), env: {} },
+    );
+    expect(resolved.reasoningEffort).toBe("medium");
+  });
+
+  it("applies an effort the user named to the configured reviewer (docs/263)", async () => {
+    installAll();
+    const { resolveSubAgentSpawnTarget } = await import("./sub-agent-target.js");
+    const resolved = resolveSubAgentSpawnTarget(
+      { kind: "role", role: "reviewer", reasoningEffort: "high" },
+      {
+        harnessId: "claude",
+        selection: { serviceId: "anthropic", billingMode: "key", modelId: "claude-opus-5" },
+      },
+      { credentialStore: storeWith([OPENAI_KEY, ANTHROPIC_KEY]), env: {} },
+    );
+    // The slot path still reports which reviewer ran and why.
+    expect(resolved.reviewer?.slot).toBeTruthy();
+    expect(resolved.reasoningEffort).toBe("high");
+  });
+
+  // Req 7's rule, applied to the override: a level the resolved harness does
+  // not offer is an error, not a silently dropped flag.
+  it("refuses an effort the resolved harness does not offer (docs/263)", async () => {
+    installAll();
+    const { resolveSubAgentSpawnTarget } = await import("./sub-agent-target.js");
+    expect(() =>
+      resolveSubAgentSpawnTarget(
+        { kind: "role", role: "reviewer", modelName: "GPT-5.6 Sol", reasoningEffort: "ludicrous" },
+        { harnessId: "claude" },
+        { credentialStore: storeWith([OPENAI_KEY]), env: {} },
+      ),
+    ).toThrow(/ludicrous/);
+  });
+
+  it("refuses a model name nothing matches, listing the catalogue (docs/263)", async () => {
+    installAll();
+    const { resolveSubAgentSpawnTarget } = await import("./sub-agent-target.js");
+    expect(() =>
+      resolveSubAgentSpawnTarget(
+        { kind: "role", role: "reviewer", modelName: "Fictional Model X" },
+        { harnessId: "claude" },
+        { credentialStore: storeWith([OPENAI_KEY]), env: {} },
+      ),
+    ).toThrow(/No model matches "Fictional Model X"/);
+  });
+
+  it("refuses a model name that spans several models (docs/263)", async () => {
+    installAll();
+    const { resolveSubAgentSpawnTarget } = await import("./sub-agent-target.js");
+    // "GPT-5.6" substrings Sol/Terra/Luna — three canonical models.
+    expect(() =>
+      resolveSubAgentSpawnTarget(
+        { kind: "role", role: "reviewer", modelName: "GPT-5.6" },
+        { harnessId: "claude" },
+        { credentialStore: storeWith([OPENAI_KEY]), env: {} },
+      ),
+    ).toThrow(/matches more than one model/);
+  });
+
+  it("refuses a named model no credential on the install can run (docs/263)", async () => {
+    installAll();
+    const { resolveSubAgentSpawnTarget } = await import("./sub-agent-target.js");
+    expect(() =>
+      resolveSubAgentSpawnTarget(
+        { kind: "role", role: "reviewer", modelName: "GLM-5.2" },
+        { harnessId: "claude" },
+        { credentialStore: storeWith([OPENAI_KEY]), env: {} },
+      ),
+    ).toThrow(/No service on this install can run GLM-5.2/);
   });
 });
 

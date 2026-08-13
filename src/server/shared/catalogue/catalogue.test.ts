@@ -30,6 +30,7 @@ import {
   modelIdentityFor,
   normalizeModelIdForIdentity,
   modesOfferingModel,
+  modelsNamed,
   catalogueModelIdsForHarness,
   eligibleEntriesForHarness,
   harnessCanCarry,
@@ -757,6 +758,43 @@ describe("resolving a bare model id", () => {
       { serviceId: "anthropic", billingMode: "key" },
     ]);
     expect(modesOfferingModel("nope")).toEqual([]);
+  });
+});
+
+describe("modelsNamed — docs/263's human-word-to-catalogue matching", () => {
+  it("matches an exact id first", () => {
+    expect(modelsNamed("glm-5.2").map((m) => m.id)).toContain("glm-5.2");
+  });
+
+  it("matches an exact label, case-insensitively", () => {
+    const ids = modelsNamed("gpt-5.6 sol").map((m) => m.id);
+    expect(ids).toContain("gpt-5.6-sol");
+  });
+
+  it("matches by substring when neither id nor label is exact", () => {
+    const matches = modelsNamed("terra");
+    // One canonical model under its vendor and gateway spellings — the caller
+    // disambiguates by canonical key, which is what makes this a single model.
+    expect(new Set(matches.map((m) => m.canonicalModelKey)).size).toBe(1);
+    expect(matches.map((m) => m.id)).toContain("gpt-5.6-terra");
+  });
+
+  it("deduplicates one model offered by several services", () => {
+    // "Opus 5" is offered by anthropic and by the gateways — one model.
+    const matches = modelsNamed("Opus 5");
+    const ids = new Set(matches.map((m) => m.id));
+    expect(ids.size).toBe(matches.length);
+    expect(new Set(matches.map((m) => m.canonicalModelKey)).size).toBe(1);
+  });
+
+  it("spans several canonical models for a name that substrings several", () => {
+    expect(new Set(modelsNamed("GPT-5.6").map((m) => m.canonicalModelKey)).size).toBeGreaterThan(1);
+  });
+
+  it("returns nothing for a blank or unmatched name", () => {
+    expect(modelsNamed("")).toEqual([]);
+    expect(modelsNamed("   ")).toEqual([]);
+    expect(modelsNamed("Fictional Model X")).toEqual([]);
   });
 });
 

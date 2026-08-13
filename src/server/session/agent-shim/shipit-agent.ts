@@ -7,12 +7,16 @@
  * shell-evaluated. The shim forwards its inherited SHIPIT_AGENT_DEPTH so the
  * orchestrator's recursion guard can reject a sub-agent spawning a sub-agent.
  *
- * docs/261 — WHO runs is said one of two ways, and they do not mix. `--role
- * reviewer` names the role and leaves the reviewer to ShipIt's own settings
- * (req 6): a review is no longer "a review-shaped prompt handed to whichever
- * backend the repository's markdown named". Anything else names every parameter
- * — harness, service, billing mode, model, reasoning level — and an omission is
- * refused rather than completed from a stored default (req 7).
+ * docs/261 + docs/263 — WHO runs is said three ways, and they do not mix.
+ * `--role reviewer` names the role and leaves the reviewer to ShipIt's own
+ * settings (req 6): a review is no longer "a review-shaped prompt handed to
+ * whichever backend the repository's markdown named". A role may carry the two
+ * per-review overrides (docs/263 reqs 1–2) — `--model NAME` and/or `--effort
+ * LEVEL`, passed through verbatim from what the USER named — and ShipIt resolves
+ * the model's service, billing mode and harness (req 3); the harness, service
+ * and billing mode may not be named alongside a role. Anything else names every
+ * parameter — harness, service, billing mode, model, reasoning level — and an
+ * omission is refused rather than completed from a stored default (req 7).
  *
  * `result` re-reads a finished run's persisted consult card — the SAME artifact
  * the UI renders. Two reasons it exists (planning#247): the caller can confirm its
@@ -73,18 +77,22 @@ const EXPLICIT_FLAGS = [
 
 const ROLE_HINT =
   "To ask for a review without naming a reviewer, use: --role reviewer "
-  + "(ShipIt resolves who reviews, from its own settings).";
+  + "(ShipIt resolves who reviews, from its own settings; you may pass through "
+  + "a --model and/or --effort the user named).";
 
 /**
- * docs/261 reqs 6 + 7 — turn the parsed flags into the spawn target's half of
- * the request body, refusing anything in between.
+ * docs/261 reqs 6 + 7, docs/263 reqs 1–2 — turn the parsed flags into the spawn
+ * target's half of the request body, refusing anything in between.
  *
- * Two rules, and the asymmetry is the point. A **role** names nothing else: a
- * call carrying both is asking two different questions (who should review this?
- * and: run exactly this model), so it is refused rather than reconciled. An
- * **explicit** call names all five: an omission is an error, never a silent
- * completion from a stored default the caller cannot see. That refusal is the
- * whole reason `SubAgentDefaults` could be deleted rather than re-keyed.
+ * Three rules, and the asymmetry is the point. A **role** may carry the two
+ * per-review overrides — `--model` and `--effort`, passed through verbatim from
+ * what the USER named — because the caller is relaying a human's words, not
+ * choosing a reviewer. A role may NOT carry the harness, service or billing
+ * mode: those are resolved by ShipIt, so naming them alongside the role is
+ * asking two different questions. An **explicit** call names all five: an
+ * omission is an error, never a silent completion from a stored default the
+ * caller cannot see. That refusal is the whole reason `SubAgentDefaults` could
+ * be deleted rather than re-keyed.
  *
  * The server enforces both again — this shim is not the only caller, and a
  * client-side check is a message, not a guarantee. What it buys is the message:
@@ -95,24 +103,51 @@ function spawnTargetPayload(
   io: RunDeps["io"],
 ): Record<string, unknown> {
   const role = values.role;
-  const named = EXPLICIT_FLAGS.filter((f) => values[f.key] !== undefined);
 
   if (role !== undefined) {
-    if (named.length > 0) {
-      fail(
-        io,
-        `shipit agent run: --role cannot be combined with ${named.map((f) => f.flag).join(", ")}. `
-          + "--role asks ShipIt for the configured reviewer; the explicit flags name one yourself. "
-          + "Pass one or the other.",
-      );
-    }
     if (!SUB_AGENT_ROLES.includes(role as SubAgentRole)) {
       fail(
         io,
         `shipit agent run: unknown role "${role}". Known roles: ${SUB_AGENT_ROLES.join(", ")}.`,
       );
     }
-    return { role };
+    const forbidden = EXPLICIT_FLAGS.filter(
+      (f) => f.key !== "model" && f.key !== "effort" && values[f.key] !== undefined,
+    );
+    if (forbidden.length > 0) {
+      fail(
+        io,
+        `shipit agent run: --role cannot be combined with ${forbidden.map((f) => f.flag).join(", ")}. `
+          + "The harness, service and billing mode are resolved by ShipIt; you may name a model "
+          + "(--model) and/or a reasoning level (--effort) alongside --role reviewer. "
+          + "Pass only what the user named.",
+      );
+    }
+    const overrides: Record<string, unknown> = { role };
+    // A blank override is a named value that cannot run — not an absence (the
+    // server refuses it again; this is the message half). Absence means "ShipIt
+    // resolves it"; `--effort ""` means the user named nothing.
+    if (values.model !== undefined) {
+      if (!values.model.trim()) {
+        fail(
+          io,
+          "shipit agent run: --role reviewer: --model was supplied as a blank value. "
+            + "Name a model, or omit --model to have ShipIt resolve it.",
+        );
+      }
+      overrides.modelId = values.model;
+    }
+    if (values.effort !== undefined) {
+      if (!values.effort.trim()) {
+        fail(
+          io,
+          "shipit agent run: --role reviewer: --effort was supplied as a blank value. "
+            + "Name a level, or omit --effort to have ShipIt resolve it.",
+        );
+      }
+      overrides.reasoningEffort = values.effort;
+    }
+    return overrides;
   }
 
   const missing = EXPLICIT_FLAGS.filter((f) => !values[f.key]?.trim());

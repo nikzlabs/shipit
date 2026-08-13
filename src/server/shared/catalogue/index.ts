@@ -489,6 +489,42 @@ export function resolveSpawnShaping(
 }
 
 /**
+ * The catalogue models a user's name refers to, in catalogue order.
+ *
+ * Three tiers, first non-empty wins: an exact id, then an exact label
+ * (case-insensitive), then a case-insensitive substring over id and label.
+ * Deduplicated by id, so one model offered by two services appears once.
+ *
+ * The caller decides ambiguity: matches spanning more than one
+ * `canonicalModelKey` mean the name is not one model; a single key identifies
+ * it. docs/263 — the user names a model in chat, and this is where a human word
+ * meets the catalogue.
+ */
+export function modelsNamed(name: string): ModelDef[] {
+  const lower = name.trim().toLowerCase();
+  if (!lower) return [];
+  const all: ModelDef[] = [];
+  for (const service of SERVICES) {
+    for (const mode of service.modes) {
+      for (const model of mode.models) all.push(model);
+    }
+  }
+  const byId = all.filter((m) => m.id === name);
+  const matches = byId.length > 0
+    ? byId
+    : all.filter((m) => m.label.toLowerCase() === lower);
+  const source = matches.length > 0 ? matches : all.filter(
+    (m) => m.id.toLowerCase().includes(lower) || m.label.toLowerCase().includes(lower),
+  );
+  const seen = new Set<string>();
+  return source.filter((m) => {
+    if (seen.has(m.id)) return false;
+    seen.add(m.id);
+    return true;
+  });
+}
+
+/**
  * Every `(service, mode)` pair that declares this exact model id, in catalogue
  * order. The basis for resolving a stored bare id — and for the session
  * migration's "prefer `sub`, but only among the modes that actually offer this

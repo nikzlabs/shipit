@@ -94,15 +94,19 @@ describe("composeReviewMessage — role mode (consult card, docs/220 + docs/261)
     // The regression this pins: ShipIt generating `--agent <backend>` in its own
     // words, which is exactly the reviewer choice the role took away from the
     // client. Matched as "flag followed by a VALUE" so the message may still
-    // name the flags it forbids ("no --agent, no --model") — the bug is a
-    // generated command that passes one, not prose that mentions one. The whole
-    // explicit set, not just `--agent`: a role call carrying any of them is
-    // refused at the edge, so all five must stay out of the generated command.
-    for (const flag of ["--agent", "--service", "--billing-mode", "--model", "--effort"]) {
+    // name the flags it forbids ("no --agent, no --service") — the bug is a
+    // generated command that passes one, not prose that mentions one.
+    for (const flag of ["--agent", "--service", "--billing-mode"]) {
       expect(msg, `role message must not pass ${flag}`).not.toMatch(
         new RegExp(`${flag}\\s+\\S`),
       );
     }
+    // docs/263 — the two overrides may be NAMED as pass-through options (the
+    // agent may relay a model/level the user named), but never bound to a value
+    // inside the role invocation the message ships: that would be the client
+    // choosing the reviewer in its own words, the same regression as `--agent`.
+    expect(msg).not.toMatch(/run --role reviewer --model\s+\S/);
+    expect(msg).not.toMatch(/run --role reviewer --effort\s+\S/);
     // ShipIt surfaces the reviewer's output in the consult card; the parent records nothing
     expect(msg).toContain("consult card");
     expect(msg).not.toContain("submit_review");

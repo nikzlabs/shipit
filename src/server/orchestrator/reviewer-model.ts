@@ -62,8 +62,10 @@ import {
   getHarness,
   getService,
   modelIdentityFor,
+  modelsNamed,
   sameCanonicalModel,
   sameModelFamily,
+  type CanonicalModelKey,
   type ConfiguredCredential,
   type ModelIdentity,
   type ModelSelection,
@@ -95,8 +97,15 @@ export const REVIEWER_DEFAULT_EFFORT: Record<AgentId, string> = {
   codex: "high",
 };
 
-/** Where a slot's answer came from — req 8's visible state. */
-export type ReviewerSource = "pinned" | "auto";
+/** Where a reviewer target's answer came from. */
+export type ReviewerSource = "pinned" | "auto" | "named";
+
+/**
+ * Where a *slot's* answer came from — req 8's visible state. Narrower than
+ * {@link ReviewerSource}: a slot is either a user pin or derived, never
+ * "named", which is a per-request target belonging to no slot (docs/263).
+ */
+export type ReviewerSlotSource = "pinned" | "auto";
 
 /** A rung of the ranking above; lower is further from the implementer. */
 export type ReviewerTier = 1 | 2 | 3 | 4 | 5 | 6;
@@ -114,7 +123,12 @@ export type ReviewerTier = 1 | 2 | 3 | 4 | 5 | 6;
  * cross-backend review found).
  */
 export interface ReviewerTarget {
-  readonly slot: ReviewerSlot;
+  /**
+   * Which configured slot this reviewer is. Absent for a **named** reviewer
+   * (docs/263): the user named the model, so it belongs to no slot — `source`
+   * is `"named"` and no slot can claim it.
+   */
+  readonly slot?: ReviewerSlot;
   readonly source: ReviewerSource;
   /** Derived (req 3), never stored — and preferring a harness that is not the implementer's. */
   readonly harnessId: AgentId;
@@ -133,7 +147,7 @@ export interface ReviewerTarget {
 
 /** One slot as it currently stands — req 8's "auto-configured or pinned, and what it resolves to". */
 export type ReviewerSlotResolution =
-  | { slot: ReviewerSlot; source: ReviewerSource; target: ReviewerTarget; pin?: ReviewerPin }
+  | { slot: ReviewerSlot; source: ReviewerSlotSource; target: ReviewerTarget; pin?: ReviewerPin }
   /** Pinned to something this install cannot run right now. */
   | { slot: ReviewerSlot; source: "pinned"; target: null; pin: ReviewerPin; reason: "pin_unavailable" }
   /** Nothing at all is runnable — no installed harness has a credentialed, routable model. */
@@ -296,6 +310,68 @@ export function selectReviewer(
   };
 }
 
+/**
+ * docs/263 reqs 1–3 — resolve a user-named model to a routed, complete reviewer
+ * target, or say why the name cannot run.
+ *
+ * The human named the model; ShipIt derives who pays (req 3). Matching goes
+ * through {@link modelsNamed}; a name spanning several canonical models is
+ * refused as ambiguous, and an unknown name carries the catalogue's labels —
+ * the refusal is the discovery mechanism, since the agent has no other way to
+ * learn what can be named. The routed offering is picked in catalogue order,
+ * preferring a harness that is not the implementer's, so a model only the
+ * implementer's own harness can run still resolves: the human chose it, which
+ * lifts the distance guarantee exactly as a pin does (req 5, Scope).
+ *
+ * The returned target is frozen and, like {@link selectReviewer}'s, is what
+ * retries, attribution and the transcript card must read — one resolution at
+ * admission, never re-derived mid-run.
+ */
+export type NamedReviewerResult =
+  | { ok: true; target: ReviewerTarget }
+  | {
+      ok: false;
+      reason: "unknown_model" | "ambiguous_model" | "no_route";
+      /** Labels to guide the caller: the full catalogue for unknown, the matches for ambiguous. */
+      candidates: string[];
+    };
+
+export function resolveReviewerByName(
+  modelName: string,
+  implementer: ImplementerContext,
+  deps: ReviewerModelDeps,
+): NamedReviewerResult {
+  const matches = modelsNamed(modelName);
+  if (matches.length === 0) {
+    return { ok: false, reason: "unknown_model", candidates: allModelLabels() };
+  }
+  const keys = new Set(matches.map((m) => m.canonicalModelKey));
+  if (keys.size > 1) {
+    return {
+      ok: false,
+      reason: "ambiguous_model",
+      candidates: [...new Set(matches.map((m) => m.label))],
+    };
+  }
+  const key = [...keys][0];
+  const credentials = listConfiguredCredentials(deps.credentialStore, deps.env ?? process.env);
+  const candidate = firstRoutableForKey(key, credentials, deps, implementer.harnessId);
+  if (!candidate) {
+    return { ok: false, reason: "no_route", candidates: [matches[0].label] };
+  }
+  return {
+    ok: true,
+    target: freezeTarget({
+      source: "named",
+      harnessId: candidate.harnessId,
+      selection: candidate.selection,
+      reasoningEffort: defaultEffortFor(candidate.harnessId),
+      route: candidate.route,
+      deps,
+    }),
+  };
+}
+
 // ---- Internals -------------------------------------------------------------
 
 /**
@@ -304,7 +380,7 @@ export function selectReviewer(
  */
 interface SlotPlan {
   slot: ReviewerSlot;
-  source: ReviewerSource;
+  source: ReviewerSlotSource;
   pin?: ReviewerPin;
   /** Absent only when nothing at all is runnable on this install. */
   selection?: ModelSelection;
@@ -481,6 +557,51 @@ function firstRoutable(
   return undefined;
 }
 
+/**
+ * The first routable offering of a canonical model, in catalogue order —
+ * docs/263's "ShipIt chooses the service and billing mode" (req 3). Collapses
+ * every id sharing the key (`glm-5.2` and `glm-5.2[1m]`, vendor and gateway),
+ * which is exactly the same-model notion the distance ranking uses.
+ */
+function firstRoutableForKey(
+  key: CanonicalModelKey,
+  credentials: readonly ConfiguredCredential[],
+  deps: ReviewerModelDeps,
+  avoidHarnessId: AgentId | undefined,
+): ReviewerCandidate | undefined {
+  for (const service of allServices()) {
+    for (const mode of service.modes) {
+      for (const model of mode.models) {
+        if (model.canonicalModelKey !== key) continue;
+        const found = firstRoutable(
+          { serviceId: service.id, billingMode: mode.kind, modelId: model.id },
+          credentials,
+          deps,
+          avoidHarnessId,
+        );
+        if (found) return found;
+      }
+    }
+  }
+  return undefined;
+}
+
+/** Every distinct model label in the catalogue, in catalogue order. */
+function allModelLabels(): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const service of allServices()) {
+    for (const mode of service.modes) {
+      for (const model of mode.models) {
+        if (seen.has(model.label)) continue;
+        seen.add(model.label);
+        out.push(model.label);
+      }
+    }
+  }
+  return out;
+}
+
 /** Turn a slot's plan into a routed, complete target — or say why there is none. */
 function resolveSlotPlan(
   plan: SlotPlan,
@@ -510,38 +631,62 @@ function buildTarget(
   candidate: ReviewerCandidate,
   deps: ReviewerModelDeps,
 ): ReviewerTarget {
-  const serviceRouting = serviceRoutingForSelection(
-    candidate.harnessId,
-    candidate.selection,
-    candidate.route,
-    deps.credentialStore,
-  );
-  const credentialSecret = serviceRouting
-    ? credentialSecretForRoute(
-        deps,
-        candidate.selection,
-        serviceRouting.credentialSourceEnv,
-        candidate.route,
-      )
-    : undefined;
-  return Object.freeze({
+  return freezeTarget({
     slot: plan.slot,
     source: plan.source,
     harnessId: candidate.harnessId,
-    // Frozen COPIES, not the resolver's own objects: `selection` may be the
-    // caller's pin or a catalogue-derived successor, and `route` comes from the
-    // account walk — freezing either in place would reach outside this target,
-    // and freezing neither would leave the "immutable through retries"
-    // guarantee true of the wrapper only.
-    selection: Object.freeze({ ...candidate.selection }),
+    selection: candidate.selection,
     // Req 5 — a derived reviewer is COMPLETE. The level follows the harness that
     // was actually derived, so a slot that bent away from the implementer runs
     // at that harness's default rather than at the other one's.
     reasoningEffort: plan.pin?.reasoningEffort ?? defaultEffortFor(candidate.harnessId),
-    serviceName: getService(candidate.selection.serviceId)?.name ?? candidate.selection.serviceId,
-    route: Object.freeze({ ...candidate.route }),
-    // `serviceRouting` is built fresh by `serviceRoutingForSelection` and is
-    // reachable from nowhere else, so it is frozen in place.
+    route: candidate.route,
+    deps,
+  });
+}
+
+/**
+ * Freeze a resolved reviewer target — the one place every frozen-copy rule
+ * lives, shared by the slot path and the named path (docs/263).
+ *
+ * Frozen COPIES, not the resolver's own objects: `selection` may be the caller's
+ * pin or a catalogue-derived successor, and `route` comes from the account walk
+ * — freezing either in place would reach outside this target, and freezing
+ * neither would leave the "immutable through retries" guarantee true of the
+ * wrapper only. `serviceRouting` is built fresh by `serviceRoutingForSelection`
+ * and is reachable from nowhere else, so it is frozen in place.
+ */
+function freezeTarget(opts: {
+  slot?: ReviewerSlot;
+  source: ReviewerSource;
+  harnessId: AgentId;
+  selection: ModelSelection;
+  reasoningEffort: string;
+  route: ProviderRoute;
+  deps: ReviewerModelDeps;
+}): ReviewerTarget {
+  const serviceRouting = serviceRoutingForSelection(
+    opts.harnessId,
+    opts.selection,
+    opts.route,
+    opts.deps.credentialStore,
+  );
+  const credentialSecret = serviceRouting
+    ? credentialSecretForRoute(
+        opts.deps,
+        opts.selection,
+        serviceRouting.credentialSourceEnv,
+        opts.route,
+      )
+    : undefined;
+  return Object.freeze({
+    ...(opts.slot !== undefined ? { slot: opts.slot } : {}),
+    source: opts.source,
+    harnessId: opts.harnessId,
+    selection: Object.freeze({ ...opts.selection }),
+    reasoningEffort: opts.reasoningEffort,
+    serviceName: getService(opts.selection.serviceId)?.name ?? opts.selection.serviceId,
+    route: Object.freeze({ ...opts.route }),
     ...(serviceRouting ? { serviceRouting: Object.freeze(serviceRouting) } : {}),
     ...(credentialSecret ? { credentialSecret } : {}),
   });

@@ -1,7 +1,7 @@
 ---
 issue: planning#362
 title: Per-review reviewer choice — requirements
-description: A user can ask, in chat, for a review on a specific model, effort, or harness; ShipIt resolves the rest.
+description: A user can ask, in chat, for a review on a specific model or reasoning level; ShipIt resolves the rest.
 ---
 
 # 263 — Per-review reviewer choice: requirements
@@ -20,8 +20,8 @@ level, and the prompts forbid it from guessing.
 
 ## Requirements
 
-1. The user can ask for a review, in chat, that names a specific **model**, **reasoning
-   level**, and/or **harness** — rather than only the two configured reviewers.
+1. The user can ask for a review, in chat, that names a specific **model** and/or
+   **reasoning level** — rather than only the two configured reviewers.
 
    *"I want to be able to tell the agent to review with a specific model and parameters and
    so on."* There is no UI control for the reviewer; the request is made through chat.
@@ -32,8 +32,7 @@ level, and the prompts forbid it from guessing.
 
 3. Naming a **model** without naming who pays still runs that model. ShipIt chooses the
    service and billing mode from the offerings of that model this install can run, and the
-   review **reports the choice**. The user can then change it by naming the service or
-   billing mode in the next request.
+   review **reports the choice**.
 
 4. The review **reports what actually ran** — model, service, billing mode, harness and
    reasoning level — as every review does (docs/261 req 9).
@@ -48,15 +47,15 @@ The Settings surface is untouched — a named reviewer is a per-request choice, 
 configuration. Docs/261's distance ranking keeps its role for the bare role (req 5): the
 override path is the human choosing, which lifts the ranking's guarantee just as a pin does.
 
-## Open questions
+## Resolved questions
 
-- **What does naming a harness mean?** The user says "review with Codex". Two readings:
-  (a) **swap** — run the would-be-chosen reviewer's model on the Codex harness, refusing
-  when that harness cannot run it; (b) **axis** — choose the best distant model the Codex
-  harness can run. A third option: (c) defer harness naming to a later version and support
-  model + effort first.
+- 2026-08-13 — **What does naming a harness mean?** **Chosen: defer.** V1 supports naming a
+  model and/or a reasoning level; naming a harness ("review with Codex") falls back to the
+  role, and the agent tells the user which configured reviewer ran. Harness naming was the
+  ambiguous axis — "swap" and "axis" read the same sentence two ways — and the model is the
+  user's stated need, so it is deferred rather than guessed.
 
-- **Are service and billing mode nameable, or always derived?** The user names "GPT-5.6 on a
-  subscription". Two readings: (a) **any subset** of the parameters is nameable and the
-  unnamed ones are derived; (b) **derived only** — naming a model always derives the service
-  and billing mode, and only model, effort and harness are nameable.
+- 2026-08-13 — **Are service and billing mode nameable, or always derived?** **Chosen:
+  derived only.** Naming a model always derives the service and billing mode from the
+  offerings of that model this install can run; the review reports the choice (req 3). The
+  user does not name who pays in a request.

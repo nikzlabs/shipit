@@ -39,8 +39,10 @@ export interface AgentReasoningCapability {
  *
  * A role is the **implicit** path: the caller names what it wants done and
  * ShipIt resolves who does it, from settings the user owns. It supplies no
- * service, no model and no harness — asking for a review and choosing the
- * reviewer are two different things, and only the first belongs to the agent.
+ * service, no billing mode and no harness; it may carry a model name and/or
+ * reasoning level the user named, passed through verbatim (docs/263). Asking
+ * for a review and choosing the reviewer are two different things, and only the
+ * first belongs to the agent — ShipIt resolves the rest.
  *
  * One role today. It is a list rather than a literal because the CLI has to
  * reject an unknown role by name, and a second role (a summarizer, a test
@@ -50,13 +52,20 @@ export const SUB_AGENT_ROLES = ["reviewer"] as const;
 export type SubAgentRole = (typeof SUB_AGENT_ROLES)[number];
 
 /**
- * docs/261 req 7 — what a one-shot `shipit agent run` runs on.
+ * docs/261 req 7 — what a one-shot `shipit agent run` runs on, with docs/263's
+ * per-review overrides.
  *
- * Exactly two shapes, and the asymmetry between them is the feature:
+ * Three shapes, and the asymmetry between them is the feature:
  *
  *  - **`role`** — resolved from ShipIt's settings (req 6). The caller names
- *    nothing else, and naming a role *and* an explicit parameter is refused
- *    rather than reconciled: they are answers to two different questions.
+ *    nothing else; naming a role *and* an explicit parameter other than the
+ *    two docs/263 overrides is refused rather than reconciled, because they are
+ *    answers to two different questions.
+ *  - **`role` + `modelName`/`reasoningEffort`** (docs/263 reqs 1–2) — the
+ *    caller passes through a model name and/or reasoning level the USER named
+ *    in chat, verbatim. `modelName` is a human name to resolve against the
+ *    catalogue — never a finished id — and the service, billing mode and
+ *    harness are derived by ShipIt (req 3). The agent supplies nothing itself.
  *  - **`explicit`** — the caller states everything, and an omission is an
  *    **error** rather than a silent completion from a stored default the caller
  *    cannot see (req 7). That is why every field here is required: a
@@ -68,7 +77,7 @@ export type SubAgentRole = (typeof SUB_AGENT_ROLES)[number];
  * its own arguments. `shipit session create` is untouched by this type.
  */
 export type SubAgentSpawnTarget =
-  | { kind: "role"; role: SubAgentRole }
+  | { kind: "role"; role: SubAgentRole; modelName?: string; reasoningEffort?: string }
   | {
       kind: "explicit";
       /** The harness that runs (req 3's `--agent`). */

@@ -6,6 +6,10 @@
  *
  *  - a **role** (`--role reviewer`) names what it wants done and lets ShipIt
  *    resolve who does it, from settings the user owns (req 6);
+ *  - a **role plus overrides** (`--role reviewer --model NAME --effort LEVEL`)
+ *    passes through a model name and/or reasoning level the USER named in chat
+ *    (docs/263 req 1); ShipIt resolves the model's service and billing mode and
+ *    the harness (req 3), so the caller never guesses a value it was not handed;
  *  - an **explicit** call names everything — harness, service, billing mode,
  *    model and reasoning level — and an omission is **refused** rather than
  *    completed from a stored default the caller cannot see (req 7).
@@ -42,8 +46,10 @@ import type { ModelSelection } from "../../shared/catalogue/types.js";
 import { getHarness, getModel, selectionExists } from "../../shared/catalogue/index.js";
 import type { ProviderRoute } from "../provider-account-manager.js";
 import {
+  resolveReviewerByName,
   selectReviewer,
   type ImplementerContext,
+  type NamedReviewerResult,
   type ReviewerModelDeps,
   type ReviewerSource,
   type ReviewerTier,
@@ -74,24 +80,36 @@ function str(value: unknown): string | undefined {
 }
 
 /**
+ * docs/263 — the two fields a role may carry, the per-review overrides. The
+ * other three (harness, service, billing mode) are resolved by ShipIt and are
+ * refused alongside a role rather than silently derived.
+ */
+const ROLE_OVERRIDE_FIELDS = new Set(["modelId", "reasoningEffort"]);
+
+/**
  * Read a spawn request's target, refusing everything in between (req 7).
  *
- * Three refusals, each a different way of asking two questions at once:
- * a role **and** an explicit parameter; an unknown role; and an explicit call
- * missing any of its five. The last is the one the design exists for — a
- * half-specified call that gets silently filled in is precisely the failure mode
- * `SubAgentDefaults` was.
+ * The refusals, each a different way of asking two questions at once: a role
+ * **and** one of the three non-override parameters; an unknown role; and an
+ * explicit call missing any of its five. The last is the one the design exists
+ * for — a half-specified call that gets silently filled in is precisely the
+ * failure mode `SubAgentDefaults` was. A role **and** `modelId`/`reasoningEffort`
+ * is not refused: that is docs/263's per-review override, where the caller
+ * passes through a model name and/or level the USER named (req 1).
  */
 export function parseSubAgentSpawnTarget(body: SubAgentSpawnTargetBody): SubAgentSpawnTarget {
   const role = str(body.role);
-  const named = EXPLICIT_FIELDS.filter((f) => body[f.field] !== undefined);
 
   if (role !== undefined) {
-    if (named.length > 0) {
+    const forbidden = EXPLICIT_FIELDS.filter(
+      (f) => !ROLE_OVERRIDE_FIELDS.has(f.field) && body[f.field] !== undefined,
+    );
+    if (forbidden.length > 0) {
       throw new ServiceError(
         400,
-        `A role cannot be combined with ${named.map((f) => f.flag).join(", ")}. `
-          + "--role asks ShipIt for the configured reviewer; the explicit flags name one yourself.",
+        `A role cannot be combined with ${forbidden.map((f) => f.flag).join(", ")}. `
+          + "The harness, service and billing mode are resolved by ShipIt; you may name a model "
+          + "(--model) and/or a reasoning level (--effort) alongside --role reviewer.",
       );
     }
     if (!(SUB_AGENT_ROLES as readonly string[]).includes(role)) {
@@ -100,7 +118,30 @@ export function parseSubAgentSpawnTarget(body: SubAgentSpawnTargetBody): SubAgen
         `Unknown role "${role}". Known roles: ${SUB_AGENT_ROLES.join(", ")}.`,
       );
     }
-    return { kind: "role", role: role as SubAgentRole };
+    // A blank override is a named value that cannot run — not an absence.
+    // Absence means "ShipIt resolves it"; a blank `--effort ""` means "a value
+    // was named but is empty", which must refuse rather than silently run the
+    // reviewer's default (req 2).
+    for (const [field, flag] of [
+      ["modelId", "--model"],
+      ["reasoningEffort", "--effort"],
+    ] as const) {
+      if (body[field] !== undefined && str(body[field]) === undefined) {
+        throw new ServiceError(
+          400,
+          `--role reviewer: ${flag} was supplied as a blank value. Name a value, `
+            + `or omit ${flag} to have ShipIt resolve it.`,
+        );
+      }
+    }
+    const modelName = str(body.modelId);
+    const reasoningEffort = str(body.reasoningEffort);
+    return {
+      kind: "role",
+      role: role as SubAgentRole,
+      ...(modelName ? { modelName } : {}),
+      ...(reasoningEffort ? { reasoningEffort } : {}),
+    };
   }
 
   const missing = EXPLICIT_FIELDS.filter((f) => str(body[f.field]) === undefined);
@@ -145,7 +186,9 @@ export interface ResolvedSpawnTarget {
   reasoningEffort: string;
   route?: ProviderRoute;
   /**
-   * Set for a role — the ranking's own account of itself, for the log line.
+   * Set for a bare role — the ranking's own account of itself, for the log
+   * line. A named reviewer (docs/263) belongs to no slot, so `reviewer` is
+   * absent on that path.
    *
    * Deliberately NOT on the consult card. Phase 4 persists what the consult RAN
    * ON (`SubAgentConsultCard.runOn`: service, mode, model, effort, beside the
@@ -155,7 +198,8 @@ export interface ResolvedSpawnTarget {
    * to read a card. Settings is where the reviewers explain themselves (phase 3).
    */
   reviewer?: {
-    slot: ReviewerSlot;
+    /** Absent only for a named reviewer, which belongs to no slot (docs/263). */
+    slot?: ReviewerSlot;
     source: ReviewerSource;
     tier: ReviewerTier;
     tierBasis: "model-and-harness" | "harness-only";
@@ -199,18 +243,30 @@ export function resolveSubAgentSpawnTarget(
           + `"${target.billingMode}" billing mode.`,
       );
     }
-    const options = getHarness(target.subAgentId)?.capabilities.reasoning?.options ?? [];
-    if (options.length > 0 && !options.some((o) => o.value === target.reasoningEffort)) {
-      throw new ServiceError(
-        400,
-        `Invalid --effort "${target.reasoningEffort}" for ${target.subAgentId}. `
-          + `Valid levels: ${options.map((o) => o.value).join(", ")}.`,
-      );
-    }
+    assertValidEffort(target.subAgentId, target.reasoningEffort);
     return {
       harnessId: target.subAgentId,
       selection,
       reasoningEffort: target.reasoningEffort,
+    };
+  }
+
+  // docs/263 reqs 1–3 — a user-named model and/or effort rides the role. A
+  // named model is resolved against the catalogue and this install (who pays is
+  // derived, req 3); the bare role resolves the configured reviewer as before.
+  // Either way the effort override is validated against the FINAL harness — the
+  // one place a level can be checked, after the harness is known.
+  const effortOverride = target.reasoningEffort;
+
+  if (target.modelName) {
+    const named = resolveReviewerByName(target.modelName, implementer, deps);
+    if (!named.ok) throw new ServiceError(400, namedReviewerMessage(named, target.modelName));
+    const base = named.target;
+    return {
+      harnessId: base.harnessId,
+      selection: base.selection,
+      reasoningEffort: applyEffortOverride(base.harnessId, effortOverride, base.reasoningEffort),
+      route: base.route,
     };
   }
 
@@ -225,7 +281,11 @@ export function resolveSubAgentSpawnTarget(
   return {
     harnessId: chosen.target.harnessId,
     selection: chosen.target.selection,
-    reasoningEffort: chosen.target.reasoningEffort,
+    reasoningEffort: applyEffortOverride(
+      chosen.target.harnessId,
+      effortOverride,
+      chosen.target.reasoningEffort,
+    ),
     route: chosen.target.route,
     reviewer: {
       slot: chosen.target.slot,
@@ -234,6 +294,52 @@ export function resolveSubAgentSpawnTarget(
       tierBasis: chosen.tierBasis,
     },
   };
+}
+
+/**
+ * Req 7's effort check, in one place — docs/261's rule that an unrecognized
+ * level is refused rather than passed through, shared by the explicit call and
+ * docs/263's per-review override (where the level must be valid for the harness
+ * the model actually resolved to).
+ */
+function assertValidEffort(harnessId: AgentId, effort: string): void {
+  const options = getHarness(harnessId)?.capabilities.reasoning?.options ?? [];
+  if (options.length > 0 && !options.some((o) => o.value === effort)) {
+    throw new ServiceError(
+      400,
+      `Invalid --effort "${effort}" for ${harnessId}. `
+        + `Valid levels: ${options.map((o) => o.value).join(", ")}.`,
+    );
+  }
+}
+
+/** docs/263 — apply a named effort override onto a resolved reviewer's level. */
+function applyEffortOverride(
+  harnessId: AgentId,
+  override: string | undefined,
+  fallback: string,
+): string {
+  if (override === undefined) return fallback;
+  assertValidEffort(harnessId, override);
+  return override;
+}
+
+/** Turn a named-reviewer refusal into the message the caller meets (req 3). */
+function namedReviewerMessage(
+  result: Extract<NamedReviewerResult, { ok: false }>,
+  modelName: string,
+): string {
+  switch (result.reason) {
+    case "unknown_model":
+      return `No model matches "${modelName}". Available model labels: ${result.candidates.join(", ")}. `
+        + "Name one exactly, or use --role reviewer alone to have ShipIt choose.";
+    case "ambiguous_model":
+      return `"${modelName}" matches more than one model: ${result.candidates.join(", ")}. `
+        + "Name one exactly.";
+    case "no_route":
+      return `No service on this install can run ${result.candidates[0]} right now. `
+        + "Connect a service that offers it in Settings, or use --role reviewer alone.";
+  }
 }
 
 /**

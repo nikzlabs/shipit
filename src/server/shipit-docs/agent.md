@@ -11,14 +11,19 @@ shape you use depends on whether you were handed a complete target:
 
 - **You were not → name the ROLE.** `--role reviewer` asks for a review and lets
   ShipIt pick the reviewer, from settings the user owns. This is the normal case.
+- **The user named a model and/or a reasoning level → carry it on the ROLE.**
+  `--role reviewer --model NAME --effort LEVEL` passes through verbatim what the
+  user said; ShipIt resolves the model's service, billing mode and harness from
+  this install, and reports what ran on the consult card. Pass through exactly
+  the values the user named — nothing more.
 - **You were → name EVERYTHING.** An explicit run states the harness, the
   service, the billing mode, the model and the reasoning level. Nothing is filled
   in from a stored default, so an incomplete call is refused. A repository that
   names all five is overriding ShipIt's reviewer, which is allowed; that review
   is an ordinary explicit call.
 
-The two do not mix, and a call in between is rejected with an error naming what
-is missing (docs/261).
+The three shapes do not mix, and a call in between is rejected with an error
+naming what is wrong (docs/261, docs/263).
 
 ## When to use it
 
@@ -32,12 +37,14 @@ Recognize the intent and run the command yourself. There is no slash command and
 no button — the natural-language request is the trigger.
 
 **Do not choose the reviewer yourself, and do not guess to fill the explicit
-shape out.** If the user names a backend ("review this with Codex") without
-naming a service, a billing mode, a model and an effort, use `--role reviewer`:
-which model reviews is a ShipIt setting, not a judgement call you make per turn,
-and it is what keeps the reviewer distant from the implementer when the
-implementer changes. Tell the user which reviewer actually ran and that ShipIt's
-own reviewer settings are where they change it.
+shape out.** If the user names a model and/or a reasoning level ("review this
+with GPT-5.6", "review it at high effort"), pass those values through verbatim:
+`--role reviewer --model "GPT-5.6" --effort high`. Never add values they did not
+name — the service, billing mode and harness are ShipIt's to resolve. If the user
+names only a backend ("review this with Codex") without naming a model and an
+effort, use `--role reviewer` alone: which model reviews is a ShipIt setting, not
+a judgement call you make per turn. Tell the user which reviewer actually ran and
+that ShipIt's own reviewer settings are where they change it.
 
 **Never reach for the raw `codex` / `claude` CLI to do this.** Per-agent
 credential isolation mounts only *your* pinned agent's credentials in this
@@ -59,7 +66,7 @@ is for a *different* agent (or a deliberately fresh-context helper).
 ## The command
 
 ```
-shipit agent run --role reviewer --prompt-file FILE [--json]
+shipit agent run --role reviewer [--model NAME] [--effort LEVEL] --prompt-file FILE [--json]
 shipit agent run --agent claude|codex --service S --billing-mode sub|key \
                  --model M --effort LEVEL --prompt-file FILE [--json]
 shipit agent result [RUN-ID] [--wait [--timeout SECONDS]] [--json]
@@ -81,9 +88,12 @@ different harness, degrading to the best difference the install actually offers.
 The reviewer is resolved and routed once, when the spawn is admitted, so a retry
 cannot quietly move the review onto a different model.
 
-`--role` may not be combined with any of the five explicit flags — a call
-carrying both is asking two different questions ("who should review this?" and
-"run exactly this model"), and is refused.
+`--role reviewer` may carry a **model** (`--model NAME`) and/or a **reasoning
+level** (`--effort LEVEL`) that the user named (docs/263). NAME is a human name —
+an id, a label, or part of one — resolved against the catalogue; ShipIt derives
+the service, billing mode and harness, and the consult card reports them. It may
+NOT carry `--agent`, `--service` or `--billing-mode`, which ShipIt resolves, and
+it may not be combined with the full explicit shape.
 
 ### The explicit run — all five, or nothing
 
@@ -112,7 +122,7 @@ on" differently. Keep them apart:
 
 | Path | What it runs on |
 |---|---|
-| `shipit agent run --role reviewer` | ShipIt's reviewer settings resolve it |
+| `shipit agent run --role reviewer` | ShipIt's reviewer settings resolve it (`--model`/`--effort` overrides ride the role) |
 | `shipit agent run` (explicit) | Named in full at the call; an omission is refused |
 | `shipit session create` | **Inherited from you**, with partial override (`--agent`, `--model`) |
 

@@ -342,6 +342,15 @@ export async function runSubAgent(
       + `model=${resolvedTarget.selection.serviceId}/${resolvedTarget.selection.billingMode}/`
       + `${resolvedTarget.selection.modelId} effort=${resolvedTarget.reasoningEffort}`,
     );
+  } else if (target.kind === "role" && target.modelName) {
+    // docs/263 — the user named the model; no slot was ranked, so the slot log
+    // does not apply. The same fields, minus the ranking's own account of itself.
+    console.log(
+      `[sub-agent] reviewer-by-name session=${sessionId} name=${target.modelName} `
+        + `harness=${subAgentId} `
+        + `model=${resolvedTarget.selection.serviceId}/${resolvedTarget.selection.billingMode}/`
+        + `${resolvedTarget.selection.modelId} effort=${resolvedTarget.reasoningEffort}`,
+    );
   }
 
   // §3 — the agent must be registered and authed. Re-probe first so a just-

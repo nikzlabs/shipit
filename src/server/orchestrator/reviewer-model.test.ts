@@ -703,3 +703,115 @@ describe("selecting the reviewer furthest from the implementer (req 4)", () => {
     expect(result.target.serviceName).toBe("DeepSeek");
   });
 });
+
+describe("resolveReviewerByName — docs/263 reqs 1–3", () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.doUnmock("../shared/installed-harnesses.js");
+  });
+
+  const installAll = () =>
+    vi.doMock("../shared/installed-harnesses.js", () => ({
+      isHarnessInstalled: () => true,
+      readInstalledHarnesses: () => ["claude", "codex"],
+    }));
+
+  const implementer = { harnessId: "claude" as const };
+
+  // req 3 — the user named the model; ShipIt derives who pays and the harness,
+  // and captures the route for the card. req 5 — the reviewer is complete.
+  it("resolves a model name to a routed, harness-derived target", async () => {
+    installAll();
+    const { resolveReviewerByName } = await import("./reviewer-model.js");
+    const result = resolveReviewerByName("GPT-5.6 Sol", implementer, {
+      credentialStore: storeWith([OPENAI_KEY]),
+      env: {},
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.target.harnessId).toBe("codex");
+    expect(result.target.selection).toEqual({
+      serviceId: "openai",
+      billingMode: "key",
+      modelId: "gpt-5.6-sol",
+    });
+    expect(result.target.reasoningEffort).toBeTruthy();
+    // A named reviewer belongs to no slot, and its source says so.
+    expect(result.target.source).toBe("named");
+    expect(result.target.slot).toBeUndefined();
+    // Deeply frozen — the same contract as selectReviewer's target.
+    expect(Object.isFrozen(result.target)).toBe(true);
+    expect(Object.isFrozen(result.target.selection)).toBe(true);
+  });
+
+  // Same-model-across-gateway: "GLM-5.2" names one canonical model offered by
+  // zai and by openrouter; with only the gateway credentialed, who pays is the
+  // gateway (req 3's "offerings this install can run").
+  it("collapses vendor and gateway spellings of one model", async () => {
+    installAll();
+    const { resolveReviewerByName } = await import("./reviewer-model.js");
+    const result = resolveReviewerByName("GLM-5.2", implementer, {
+      credentialStore: storeWith([OPENROUTER_KEY]),
+      env: {},
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.target.selection).toEqual({
+      serviceId: "openrouter",
+      billingMode: "key",
+      modelId: "z-ai/glm-5.2",
+    });
+  });
+
+  it("resolves by substring when the match is unique", async () => {
+    installAll();
+    const { resolveReviewerByName } = await import("./reviewer-model.js");
+    const result = resolveReviewerByName("terra", implementer, {
+      credentialStore: storeWith([OPENAI_KEY]),
+      env: {},
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.target.selection.modelId).toBe("gpt-5.6-terra");
+  });
+
+  it("refuses a name that matches nothing, listing the catalogue", async () => {
+    installAll();
+    const { resolveReviewerByName } = await import("./reviewer-model.js");
+    const result = resolveReviewerByName("Fictional Model X", implementer, {
+      credentialStore: storeWith([OPENAI_KEY]),
+      env: {},
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe("unknown_model");
+    expect(result.candidates.length).toBeGreaterThan(0);
+  });
+
+  it("refuses a name that spans several models", async () => {
+    installAll();
+    const { resolveReviewerByName } = await import("./reviewer-model.js");
+    const result = resolveReviewerByName("GPT-5.6", implementer, {
+      credentialStore: storeWith([OPENAI_KEY]),
+      env: {},
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe("ambiguous_model");
+  });
+
+  it("refuses a model no credential on the install can run", async () => {
+    installAll();
+    const { resolveReviewerByName } = await import("./reviewer-model.js");
+    const result = resolveReviewerByName("GLM-5.2", implementer, {
+      credentialStore: storeWith([OPENAI_KEY]),
+      env: {},
+    });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe("no_route");
+  });
+});

@@ -2951,13 +2951,52 @@ describe("runShim — agent run", () => {
 
   // The two ways of saying what a run happens on are answers to two different
   // questions (req 6), so a call making both is refused rather than reconciled —
-  // and refused BEFORE the prompt is read, so nothing is spawned.
+  // and refused BEFORE the prompt is read, so nothing is spawned. docs/263: the
+  // harness, service and billing mode are resolved by ShipIt and so stay refused;
+  // a model and/or effort the user named ride the role (carried verbatim, the
+  // server resolves them).
   it("refuses --role combined with an explicit parameter", async () => {
     const { run } = makeRunner();
     const file = await promptFile("review");
     const out = await run(["agent", "run", "--role", "reviewer", "--agent", "codex", "--prompt-file", file]);
     expect(out.exitCode).not.toBe(0);
     expect(out.stderr).toContain("--role cannot be combined with --agent");
+    expect(out.calls).toHaveLength(0);
+  });
+
+  it("carries a user-named model and effort on the role (docs/263)", async () => {
+    const { run } = makeRunner();
+    const file = await promptFile("review");
+    const out = await run([
+      "agent", "run", "--role", "reviewer", "--model", "GPT-5.6 Sol", "--effort", "high",
+      "--prompt-file", file,
+    ], {
+      "POST /agent-ops/agent/spawn": {
+        status: 200,
+        body: { status: "success", text: "looks fine", truncated: false, durationMs: 10, costUsd: 0 },
+      },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].body).toMatchObject({
+      role: "reviewer",
+      modelId: "GPT-5.6 Sol",
+      reasoningEffort: "high",
+      prompt: "review",
+      depth: 0,
+    });
+    for (const key of ["agentId", "serviceId", "billingMode"]) {
+      expect(out.calls[0].body).not.toHaveProperty(key);
+    }
+  });
+
+  it("refuses a blank override rather than silently running the default (docs/263)", async () => {
+    const { run } = makeRunner();
+    const file = await promptFile("review");
+    const out = await run([
+      "agent", "run", "--role", "reviewer", "--effort", "", "--prompt-file", file,
+    ]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.stderr).toContain("blank");
     expect(out.calls).toHaveLength(0);
   });
 
