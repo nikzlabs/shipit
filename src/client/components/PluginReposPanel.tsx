@@ -53,16 +53,39 @@ export function PluginReposPanel() {
   );
 }
 
+/** The status chip's words — the card's one-line answer to "is this live?". */
+const STATUS_LABEL: Record<PluginRepoCardView["status"], string | null> = {
+  // Healthy states carry no chip: the absence of one means "fine" (mock §3).
+  self: null,
+  active: null,
+  activating: "activating…",
+  // req 15 — a failed refresh over a live prior version is not "never fetched".
+  degraded: "stale",
+  unavailable: "unavailable",
+};
+
 function PluginRepoCard({ repo }: { repo: PluginRepoCardView }) {
   const isSelf = repo.status === "self";
+  const statusLabel = STATUS_LABEL[repo.status];
   return (
     <div className="rounded-lg border border-(--color-border-primary) bg-(--color-bg-secondary) overflow-hidden">
       <div className="flex flex-wrap items-center gap-2 border-b border-(--color-border-primary) px-3 py-2 text-sm">
         <span className="font-semibold">{repo.name}</span>
         {/* req 19 — the repo identity stays visible in every card state. */}
         <Chip mono>{isSelf ? "self · live working tree" : repo.source}</Chip>
-        {!isSelf && <Chip mono>{`${repo.ref ?? "default branch"} @ ${repo.commit ?? "—"}`}</Chip>}
-        {repo.issues.length > 0 && <Chip tone="warn">{`${repo.issues.length} problem${repo.issues.length > 1 ? "s" : ""}`}</Chip>}
+        {!isSelf && (
+          <Chip mono>{`${repo.ref ?? "default branch"} @ ${repo.commit ? repo.commit.slice(0, 9) : "—"}`}</Chip>
+        )}
+        {statusLabel ? (
+          <Chip tone={repo.status === "unavailable" ? "error" : "warn"}>{statusLabel}</Chip>
+        ) : (
+          // A healthy status still needs a marker when the repo has problems of
+          // its own (a selector that names no exported plugin, say) — otherwise
+          // the header reads "fine" over a card full of issue rows.
+          repo.issues.length > 0 && (
+            <Chip tone="warn">{`${repo.issues.length} problem${repo.issues.length > 1 ? "s" : ""}`}</Chip>
+          )
+        )}
       </div>
 
       {repo.uses.length > 0 ? (
@@ -97,10 +120,20 @@ function PluginRepoCard({ repo }: { repo: PluginRepoCardView }) {
         </div>
       ))}
 
-      {!isSelf && (
+      {!isSelf && repo.status === "active" && (
         <div className="border-t border-(--color-border-primary) px-3 py-2 text-xs text-(--color-text-tertiary)">
-          Declared — checkout and activation land with the plugin mechanics under development
-          (docs/262). Files, commands, and services from this repository are not available yet.
+          Checked out at this exact commit. Commands, skills, and services from this repository
+          land with the remaining plugin mechanics (docs/262).
+        </div>
+      )}
+      {!isSelf && repo.status === "degraded" && (
+        <div className="border-t border-(--color-border-primary) px-3 py-2 text-xs text-(--color-text-tertiary)">
+          The prior version stays active — files and commands are unchanged.
+        </div>
+      )}
+      {!isSelf && repo.status === "unavailable" && (
+        <div className="border-t border-(--color-border-primary) px-3 py-2 text-xs text-(--color-text-tertiary)">
+          The session continues without this repository.
         </div>
       )}
       {isSelf && (
@@ -120,14 +153,16 @@ function Chip({
 }: {
   children: React.ReactNode;
   mono?: boolean;
-  tone?: "warn";
+  tone?: "warn" | "error";
 }) {
   return (
     <span
       className={`inline-flex items-center rounded-full border px-2 py-0.5 text-xs whitespace-nowrap ${
-        tone === "warn"
-          ? "border-(--color-warning) text-(--color-warning)"
-          : "border-(--color-border-primary) text-(--color-text-tertiary)"
+        tone === "error"
+          ? "border-(--color-error) text-(--color-error)"
+          : tone === "warn"
+            ? "border-(--color-warning) text-(--color-warning)"
+            : "border-(--color-border-primary) text-(--color-text-tertiary)"
       } ${mono ? "font-mono" : ""}`}
     >
       {children}

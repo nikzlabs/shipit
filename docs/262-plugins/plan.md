@@ -97,7 +97,12 @@ Rules (review findings, both rounds):
 - **Pin durability** (req 8): `pin:` accepts a tag or SHA. On first
   resolution ShipIt records the resolved SHA durably, keyed by the consumer
   declaration, and stays there even if a tag moves (a moved tag warns). Only
-  editing the declaration re-resolves.
+  editing the declaration re-resolves. **The record is orchestrator-wide and
+  keyed by the consuming *project*** (`plugin-pins.ts`), not per session —
+  a per-session store would let two sessions of one project resolve the same
+  moved tag to different commits, which is the drift this requirement
+  forbids. A recorded pin is honored *without* re-resolving, so a tag later
+  deleted or made ambiguous still activates the pinned commit.
 - **Startup** (req 16): the plugin's compose fragment owns per-service
   defaults via the existing `x-shipit-preview` vocabulary; the consumer
   overrides per service. No plugin-level boolean exists.
@@ -168,8 +173,22 @@ deliberately not declared in the fragment, so it stays valid for a plain
 **Install contract** (review finding 7): `install` runs with **cwd = the
 plugin's checkout root inside its writable layer** — a copy-on-write layer
 over the read-only checkout, so `node_modules` and build output land in the
-layer, never in the checkout and never in the project (req 7). Writes outside
-the layer fail. Install runs with the generation's env — `SHIPIT_PLUGIN_COMMIT`
+layer, never in the checkout and never in the project (req 7). **As built**
+(`plugin-generations.ts`), that layer IS the generation directory: a
+per-session, per-commit, disposable checkout under the session state dir
+already confines build output to a place that is neither the shared bare
+cache nor the project, so a separate copy-on-write layer buys nothing.
+Read-only for the *agent* is enforced where it is enforceable — the `:ro` bind
+mount, which lands with the container wiring.
+
+**Where install runs is a security boundary, not a detail** (implementation
+review). It must NOT run in the orchestrator: that process holds ShipIt's own
+credentials (the PAT in the global git config) and has unrestricted host
+access, so executing a repo-authored `install` string there is strictly more
+privileged than `agent.install`, which runs in the session worker. Install
+therefore runs **in the session container**, with the authority
+`agent.install` already has, and lands with the container wiring; generation
+activation itself runs no plugin-authored code at all. Install runs with the generation's env — `SHIPIT_PLUGIN_COMMIT`
 set for a consumer generation, unset under `repo: self` (set by the fixture:
 its install stamp records the commit, and the probe checks the stamp against
 the active generation). Install re-runs when its stamped inputs change: the
@@ -273,7 +292,7 @@ only the `shipit.yaml` key says `plugins:`.
 | Surface | Mock | Extends | Change |
 |---|---|---|---|
 | Service rows: origin badge (reqs 3, 15, 16) | A | `ServiceList.tsx`, `PreviewServicesDrawer.tsx` | Services keep `name` as their client identity (it is already globally collision-checked, req 20, and it is today's control/log address) and gain only a **structured `origin`** field on `ManagedServiceState` and the service WS messages — the runtime-ID/display-name layer was reviewed out (round-two finding 9). A small origin chip renders beside `ModeBadge` in every drawer path. No group headers. Health counts stay over service rows only |
-| **The Plugins tab** — a right-rail tab holding one card per declared repo: ref @ exact SHA, the plugins used from it, needs, grants, refresh, degraded and collision states (reqs 12, 13, 15, 20, 23, 24) | tab mock 1–3 | The right-rail tab strip (`App.tsx` ~1690–1895; `Tab.badge` slot for the warn dot) | New tab, gated on **plugin intent, not on valid repos** (round-two finding 2): a `plugins:` block that parses to zero valid repos still shows the tab, and parse warnings, never-fetched, and unavailable states all count toward the warn dot — otherwise an invalid declaration erases its own warning surface (req 13). The dot uses the existing `Tab.badge` slot with an accessible label ("Plugins — attention required"). Client state is a **session-scoped store** (not pane-local): seeded from the snapshot on attach/reload, stale-session guarded, refetched by the `files-changed` shipit.yaml hook, feeding the dot while the pane is closed; when the tab disappears (declaration edited away, session switch to a plugin-less repo) an effective-tab fallback coerces `rightTab` to Preview/Files, and the tab joins `useTabLabelCollapse`'s dependency key. Mobile needs nothing separate — the same right panel renders under Workspace. Data: `GET /api/plugin-repos?sessionId` returns one authoritative snapshot (declaration incl. **`consumerRepoUrl`**, resolved ref/SHA, exports, needs and their satisfaction, degraded/collision state); WS `plugin_repo_status` carries deltas with `sessionId`. Grants happen here: **"Add key…" opens the Project Settings dialog on the CONSUMING project's secret store** — `setProjectSettingsRepoUrl(consumerRepoUrl, "secrets")`; passing the plugin repo's URL would save the key into the wrong store, since that call selects the store `/api/secrets` writes to (round-two finding 1). "Allow (session)/(instance)" posts to the existing not-container-accessible `POST /api/egress/hosts` with the scope choice. The `PrLifecycleCard` and its strip are **untouched**. No "commits behind" badge (req 15 wants ref + exact commit, not network polling) |
+| **The Plugins tab** — a right-rail tab holding one card per declared repo: ref @ exact SHA, the plugins used from it, needs, grants, refresh, degraded and collision states (reqs 12, 13, 15, 20, 23, 24) | tab mock 1–3 | The right-rail tab strip (`App.tsx` ~1690–1895; `Tab.badge` slot for the warn dot) | New tab, gated on **plugin intent, not on valid repos** (round-two finding 2): a `plugins:` block that parses to zero valid repos still shows the tab, and parse warnings, never-fetched, and unavailable states all count toward the warn dot — otherwise an invalid declaration erases its own warning surface (req 13). The dot uses the existing `Tab.badge` slot with an accessible label ("Plugins — attention required"). Client state is a **session-scoped store** (not pane-local): seeded from the snapshot on attach/reload, stale-session guarded, refetched by the `files-changed` shipit.yaml hook, feeding the dot while the pane is closed; when the tab disappears (declaration edited away, session switch to a plugin-less repo) an effective-tab fallback coerces `rightTab` to Preview/Files, and the tab joins `useTabLabelCollapse`'s dependency key. Mobile needs nothing separate — the same right panel renders under Workspace. Data: `GET /api/plugin-repos?sessionId` returns one authoritative snapshot (declaration incl. **`consumerRepoUrl`**, resolved ref/SHA, exports, needs and their satisfaction, degraded/collision state); WS `plugin_repos_updated` (as built) carries a `sessionId`-scoped **signal** that an activation round settled; the client refetches the snapshot rather than the message carrying a second copy of it. Grants happen here: **"Add key…" opens the Project Settings dialog on the CONSUMING project's secret store** — `setProjectSettingsRepoUrl(consumerRepoUrl, "secrets")`; passing the plugin repo's URL would save the key into the wrong store, since that call selects the store `/api/secrets` writes to (round-two finding 1). "Allow (session)/(instance)" posts to the existing not-container-accessible `POST /api/egress/hosts` with the scope choice. The `PrLifecycleCard` and its strip are **untouched**. No "commits behind" badge (req 15 wants ref + exact commit, not network polling) |
 | Needs — credentials (req 23) | tab mock 1 | `SecretsTab.tsx` / `DeclaredSecretRow.tsx`, fed by `secrets_status` | `secrets_status.declared` gains an **origin** dimension (it is flat, name-keyed today — `service.ts:117`, and `SecretsTab` save assumes unique names). A project credential and a plugin credential with the same name are **deliberately the same stored secret**; multiple claimants render as one row with claimant chips |
 | Needs — hosts (req 24) | tab mock 1 | The plugin card's needs rows, over the existing `POST /api/egress/hosts` (global or session scope; browser-only) | "Host not allowed" is evaluated against the **agent container's** allowlist — where companion CLIs run — because today's containment lives in the agent's netns while compose service containers have unrestricted egress (docs/172 residual). The need-row therefore names the blocked claimant (e.g. "blocks `artk`") rather than asserting one repository-level truth across both execution surfaces (round-two finding 4). Whether plugin *services* get their own containment is an explicit slice-2 decision, not a side effect of compose validation. Grant endpoints stay browser-only, so plugin code cannot self-grant |
 | Degraded / collision reporting (reqs 13, 20) | tab mock 2 | Card states inside the Plugins tab | **One card per declared repo, always** — simultaneous problems compose as multiple issue rows under one header whose status chip shows the worst state (round-two finding 8). Every card state, including degraded and collision, keeps the full `owner/repo` + ref @ commit identity visible (req 19 — the identity is what the standing grant trades approval for). **Degraded** distinguishes "refresh failed — prior version `<sha>` remains active" (req 15) from "never fetched — session runs without this repo's services" (req 13); **collision** names the colliding domain and the fix as "under the `use` entry whose alias is `<alias>`" (a `use` entry is a YAML sequence item, so there is no bracket path). Not transcript cards — no new DB columns, stores, or migrations |
@@ -286,7 +305,7 @@ multi-host `EgressPromptCard` variant were reviewed out of v1.
 copied: per-request config read behind `GET /api/plugin-repos`, the
 `files-changed` handler refetches on `shipit.yaml` edits (with the
 `declarationsPending` guard against caching an empty read), and the
-`plugin_repo_status` WS message keeps user- and agent-triggered refreshes
+`plugin_repos_updated` WS message keeps user- and agent-triggered refreshes
 coherent in one UI.
 
 ## 4. Key files (anticipated; ✓ = exists)
@@ -296,6 +315,13 @@ coherent in one UI.
   pass, fail-closed grammar, and the snapshot projection. Filesystem-free so
   the client imports the types; `shipit-config.ts` is the entry point and
   parses trackers first (the reservation order).
+- ✓ `src/server/orchestrator/plugin-generations.ts` — the generation engine:
+  layout under the session state dir (docs/246 — never inside the clone),
+  commit resolution incl. durable pins, staging, phase-2 selector validation,
+  atomic symlink publish, pruning. It runs no plugin-authored code — install
+  is container-side (see §1b). ✓ `services/plugin-activation.ts` is its lifecycle
+  half, triggered from `service-manager-setup.ts` on session activation and on
+  a `shipit.yaml` edit.
 - ✓ `src/server/orchestrator/api-routes-plugin-repos.ts` — browser snapshot
   (the GET exists; refresh endpoints come with generation mechanics); tracker
   registration folds into the existing trackers registry
@@ -319,7 +345,7 @@ coherent in one UI.
   reason.
 - `src/server/shared/types/ws-server-messages/service.ts` — structured
   `origin` on service messages; `secrets_status` origin dimension; new
-  `plugin_repo_status`.
+  `plugin_repos_updated`.
 - `src/client/components/ServiceList.tsx`, `PreviewServicesDrawer.tsx`,
   `SecretsTab.tsx` — the
   extensions in the table above; the Plugins tab pane (registered in the
@@ -368,8 +394,12 @@ What runs where — the dogfood boundary:
 
 ## 6. Deliberately not in this slice
 
-Slice 2 (see `checklist.md`): checkout/bare-cache mechanics and the writable
-layer, generation staging/activation internals, compose-fragment merging and
-security validation, port stability per (session, service), credential
+*(This section describes the DESIGN slice. Checkout/bare-cache mechanics and
+generation staging/activation have since been built — see §4's ✓ entries and
+`checklist.md`.)*
+
+Slice 2 (see `checklist.md`): compose-fragment merging and
+security validation, port stability per (session, service), plugin `install`
+execution (container-side — see §1b), credential
 injection mechanics, PATH wrapper generation, skills materialization
 mechanics, GitHub App multi-repo minting.

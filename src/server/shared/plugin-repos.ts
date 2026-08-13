@@ -114,31 +114,57 @@ export interface PluginRepoUseView {
 }
 
 /**
- * One card in the Plugins tab. v0 statuses, honest about what exists:
+ * One card in the Plugins tab:
  * - `"self"` — the live working tree (req 27); no ref/commit by design.
- * - `"declared"` — a tracked repo whose checkout/generation mechanics are not
- *   built yet. Deliberately NOT an error state and NOT counted toward the warn
- *   dot: the design's never-fetched state means "tried and failed", which is
- *   not what "the feature is still being built" is. The full state set
- *   (active/degraded/collision/unavailable) arrives with the slice-2 mechanics.
+ * - `"active"` — a generation is live; `commit` is its exact SHA (req 15).
+ * - `"activating"` — staging/installing right now.
+ * - `"degraded"` — the latest attempt failed but a prior generation is still
+ *   live and whole; `commit` is that prior one (req 15).
+ * - `"unavailable"` — nothing was ever activated for this repository (req 13).
  */
+export type PluginRepoStatus = "self" | "active" | "activating" | "degraded" | "unavailable";
+
 export interface PluginRepoCardView {
   name: string;
   /** `"self"` or `"owner/repo"` — always visible on the card (req 19). */
   source: string;
   /** `branch @ …` / `pin @ …` display source; null for self. */
   ref: string | null;
-  /** Exact commit once generations exist; null until then and for self. */
+  /** The live generation's exact commit; null for self and when nothing is live. */
   commit: string | null;
-  status: "self" | "declared";
+  status: PluginRepoStatus;
   uses: PluginRepoUseView[];
-  /** Problems attached to this repo (e.g. a self selector missing from the manifest). */
+  /** Problems attached to this repo (a failed activation, a missing selector). */
   issues: string[];
+}
+
+/**
+ * What the orchestrator knows about a tracked repository beyond its
+ * declaration. Passed into {@link buildPluginReposSnapshot} so the projection
+ * stays pure and testable — the route reads the live generation off disk.
+ */
+export interface PluginRepoRuntime {
+  activating?: boolean;
+  commit?: string;
+  /** Exported plugin names in the live generation's manifest (phase-2 input). */
+  exports?: string[];
+  error?: string;
+  /** Advisory — a moved tag the durable pin overrode (req 8). */
+  warning?: string;
+  /** Warnings from parsing the live generation's manifest (req 13 — degrade *visibly*). */
+  manifestWarnings?: string[];
 }
 
 export interface PluginReposSnapshot {
   /** Plugin intent — gates the tab. */
   declared: boolean;
+  /**
+   * At least one repository is mid-activation. Activation is fire-and-forget
+   * server-side, so nothing pushes its completion; the client re-fetches while
+   * this is true rather than leaving the card stuck on "activating" until the
+   * next shipit.yaml event (review finding).
+   */
+  activating: boolean;
   /**
    * The answer is *not yet knowable*: the session's checkout is evicted or
    * mid-restore, so "declares nothing" must not be cached — the client
@@ -727,27 +753,40 @@ export function buildPluginReposSnapshot(
   pluginExports: readonly PluginExport[],
   consumerRepoUrl: string | null,
   warnings: readonly string[],
+  runtime: Readonly<Record<string, PluginRepoRuntime>> = {},
 ): PluginReposSnapshot {
-  const exportNames = new Set(pluginExports.map((e) => e.name.toLowerCase()));
+  const selfExports = new Set(pluginExports.map((e) => e.name.toLowerCase()));
 
   const repos: PluginRepoCardView[] = plugins.repos.map((repo) => {
     const isSelf = repo.source.kind === "self";
+    const live = runtime[repo.name] ?? {};
+    // Selector resolution (phase 2): a self repo's manifest is this same file;
+    // a tracked repo's is the live generation's. Both are `null` — "not yet
+    // knowable" — until there is a manifest to check against.
+    const manifest = isSelf ? selfExports : live.exports ? new Set(live.exports.map((n) => n.toLowerCase())) : null;
+
     const uses = plugins.uses
       .filter((u) => u.from.toLowerCase() === repo.name.toLowerCase())
       .map((u) => ({
         plugin: u.plugin,
         alias: u.alias,
-        found: isSelf ? exportNames.has(u.plugin.toLowerCase()) : null,
+        found: manifest ? manifest.has(u.plugin.toLowerCase()) : null,
       }));
+
     const issues = uses
       .filter((u) => u.found === false)
       .map((u) => `\`${u.plugin}\` is not in this repository's \`exports.plugins\` manifest.`);
+    // Order: the failure first, then advisories, then selector problems.
+    if (live.warning) issues.unshift(live.warning);
+    for (const w of live.manifestWarnings ?? []) issues.unshift(w);
+    if (live.error) issues.unshift(live.error);
+
     return {
       name: repo.name,
-      source: repo.source.kind === "self" ? "self" : `${repo.source.owner}/${repo.source.repo}`,
+      source: isSelf ? "self" : `${(repo.source as { owner: string }).owner}/${(repo.source as { repo: string }).repo}`,
       ref: isSelf ? null : repo.pin ?? repo.branch ?? "default branch",
-      commit: null,
-      status: isSelf ? ("self" as const) : ("declared" as const),
+      commit: live.commit ?? null,
+      status: cardStatus(isSelf, live),
       uses,
       issues,
     };
@@ -767,8 +806,24 @@ export function buildPluginReposSnapshot(
   return {
     declared: plugins.declared,
     pending: false,
+    activating: repos.some((r) => r.status === "activating"),
     consumerRepoUrl,
     repos,
     warnings: [...consumerWarnings, ...exportWarnings],
   };
+}
+
+/**
+ * `degraded` is the distinction req 15 asks for: a failed refresh that left a
+ * prior generation live is NOT the same as never having fetched at all, and
+ * the two read differently on the card.
+ */
+function cardStatus(isSelf: boolean, live: PluginRepoRuntime): PluginRepoStatus {
+  if (isSelf) return "self";
+  // `activating` is checked FIRST (review finding): a refresh running over a
+  // live prior generation is in progress, and reporting it as `active` hid
+  // every refresh that had something to replace.
+  if (live.activating) return "activating";
+  if (live.commit) return live.error ? "degraded" : "active";
+  return "unavailable";
 }

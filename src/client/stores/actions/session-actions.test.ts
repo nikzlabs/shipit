@@ -176,7 +176,7 @@ describe("resumeSessionInternal", () => {
   it("drops the plugin declarations on switch", () => {
     useSessionStore.setState({ sessionId: "session-a" });
     usePluginReposStore.setState({
-      snapshot: { declared: true, pending: false, consumerRepoUrl: null, repos: [], warnings: [] },
+      snapshot: { declared: true, pending: false, activating: false, consumerRepoUrl: null, repos: [], warnings: [] },
       forSessionId: "session-a",
     });
 

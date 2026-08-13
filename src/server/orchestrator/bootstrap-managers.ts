@@ -60,6 +60,9 @@ import type { VersionInfo } from "../shared/types.js";
 import type { GenerateText } from "./non-turn-model.js";
 import { makeNonTurnGenerateText } from "./services/non-turn-work.js";
 import { createAutoPushScheduler } from "./services/auto-push-scheduler.js";
+import { activateDeclaredPlugins } from "./services/plugin-activation.js";
+import { pinStorePath } from "./plugin-pins.js";
+import { ensureBareCache } from "./repo-git.js";
 
 /**
  * Static, process-lifetime metadata captured at startup and surfaced to the
@@ -460,6 +463,54 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   // the worker is about to be SIGKILLed and the multi-hundred-MB stream we are
   // reading is about to die under us. Aborting on `"disposed"` turns that into a
   // prompt cancellation instead of a mid-stream socket kill.
+  // docs/262 — plugin-repository activation. Constructed here for the same
+  // reason `publishOverlayBases` is: it needs `getBareCacheDir` and
+  // `createRepoGit`, which the runner registry does not have. Fire-and-forget
+  // by design — a slow plugin fetch must not delay a session opening (req 13),
+  // and the Plugins tab reports the interim state.
+  // One in-flight cache operation per bare cache. `ensureBareCache` documents
+  // that callers serialize it (it rm's and re-clones a corrupt cache), and two
+  // sessions activating the same plugin repository for the first time would
+  // otherwise clone into the same directory concurrently (review finding 7).
+  const cacheOps = new Map<string, Promise<void>>();
+  const activatePluginRepos = (
+    sessionId: string,
+    workspaceDir: string,
+    onSettled?: (id: string) => void,
+  ): void => {
+    const remoteUrl = sessionManager.get(sessionId)?.remoteUrl;
+    void activateDeclaredPlugins(
+      sessionId,
+      workspaceDir,
+      {
+        getBareCacheDir,
+        pinStorePath: pinStorePath(stateDir),
+        // Fetching runs here, in the orchestrator, so plugin code never reaches
+        // fetch credentials (req 19).
+        ...(onSettled ? { onSettled } : {}),
+        ensureCache: (cacheDir, repoUrl) => {
+          const previous = cacheOps.get(cacheDir) ?? Promise.resolve();
+          // eslint-disable-next-line no-restricted-syntax -- chaining a serial queue in a sync factory
+          const next = previous
+            .catch(() => undefined)
+            .then(async () => {
+              const { git } = await ensureBareCache(cacheDir, repoUrl, createRepoGit);
+              // ttl 0: activation resolves a branch to its tip, so serving it
+              // from a minute-old cache would activate a stale commit.
+              await git.fetchCache(0);
+            });
+          cacheOps.set(cacheDir, next.catch(() => undefined));
+          return next;
+        },
+      },
+      // req 8 — pins are durable per consuming PROJECT, so every session of one
+      // repository resolves a pinned tag to the same commit.
+      remoteUrl,
+    ).catch((err: unknown) => {
+      console.warn(`[plugins:${sessionId}] activation failed:`, err);
+    });
+  };
+
   const publishOverlayBases = async ({ runner, session, installOk, installCommands }: {
     runner: ContainerSessionRunner;
     session: SessionInfo;
@@ -547,6 +598,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     onAgentAuthRequired,
     ensureAgentTokenFresh,
     publishOverlayBases,
+    activatePluginRepos,
     logStore,
     ...(dockerSecretsConfig ? { dockerSecretsConfig } : {}),
     serviceEnvDir,
@@ -1038,6 +1090,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     readSystemPromptApp,
     agentRuntime, authManagers, limitsProviders, runParamsPreps,
     publishOverlayBases,
+    activatePluginRepos,
     runnerRegistry,
     repoPrefetcher,
     drainQueueForSession,

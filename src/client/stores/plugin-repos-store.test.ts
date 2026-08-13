@@ -13,7 +13,7 @@ import type { PluginReposSnapshot } from "../../server/shared/plugin-repos.js";
 const originalFetch = globalThis.fetch;
 
 function snapshot(over: Partial<PluginReposSnapshot> = {}): PluginReposSnapshot {
-  return { declared: true, pending: false, consumerRepoUrl: null, repos: [], warnings: [], ...over };
+  return { declared: true, pending: false, activating: false, consumerRepoUrl: null, repos: [], warnings: [], ...over };
 }
 
 function stubFetch(body: PluginReposSnapshot, status = 200): ReturnType<typeof vi.fn> {
@@ -138,7 +138,7 @@ describe("tab gating and attention (plan §3)", () => {
     source: "a/b",
     ref: "main",
     commit: null,
-    status: "declared" as const,
+    status: "active" as const,
     uses: [],
     issues: [] as string[],
   };
@@ -165,5 +165,36 @@ describe("tab gating and attention (plan §3)", () => {
     expect(pluginsAttention(snapshot({ repos: [card] }))).toBe(false);
     expect(pluginsAttention(snapshot({ warnings: ["w"] }))).toBe(true);
     expect(pluginsAttention(snapshot({ repos: [{ ...card, issues: ["missing"] }] }))).toBe(true);
+  });
+});
+
+describe("activating never leaves the card stuck", () => {
+  beforeEach(() => {
+    usePluginReposStore.setState({ snapshot: null, forSessionId: null });
+    useSessionStore.setState({ sessionId: "sess-a" });
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    vi.restoreAllMocks();
+  });
+
+  it("keeps polling while a repository is activating, then stops", async () => {
+    vi.useFakeTimers();
+    try {
+      let call = 0;
+      const impl = vi.fn(async () => {
+        const activating = call++ < 2;
+        return new Response(JSON.stringify(snapshot({ activating })), { status: 200 });
+      });
+      globalThis.fetch = impl as unknown as typeof fetch;
+
+      await usePluginReposStore.getState().fetchSnapshot("sess-a");
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(impl).toHaveBeenCalledTimes(3);
+      expect(usePluginReposStore.getState().snapshot?.activating).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

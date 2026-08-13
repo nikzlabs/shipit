@@ -26,7 +26,8 @@ import type { PrepareRunParamsFn } from "./agent-run-params-prep.js";
 import type { ProviderAccountManager } from "./provider-account-manager.js";
 import type { TurnOutcome } from "./turn-settlement.js";
 import type { AutoPushScheduler } from "./services/auto-push-scheduler.js";
-import { applyShipitConfigChange, setupServiceManager } from "./service-manager-setup.js";
+import { applyShipitConfigChange, emitPluginReposUpdated, setupServiceManager } from "./service-manager-setup.js";
+import { clearActivationState } from "./services/plugin-activation.js";
 import { buildAgentRunParams } from "./session-agent-run-params.js";
 import { applyModelRetirement } from "./model-retirement.js";
 import {
@@ -266,6 +267,17 @@ export interface RunnerRegistryDeps {
     installOk: boolean;
     installCommands?: string[];
   }) => Promise<DepDirPublishOutcome[]>;
+  /**
+   * docs/262 — plugin-repository activation, forwarded into
+   * `setupServiceManager`. Same construction reason as `publishOverlayBases`:
+   * it needs the bare-cache helpers, which live where the app is bootstrapped.
+   * Optional; absent in test setups, where no plugin repository is declared.
+   */
+  activatePluginRepos?: (
+    sessionId: string,
+    workspaceDir: string,
+    onSettled?: (sessionId: string) => void,
+  ) => void;
 }
 
 /**
@@ -302,6 +314,7 @@ export function createRunnerRegistry(
     markSessionAccountExhausted,
     nudgeClaudeOAuthRefresh, onAgentAuthRequired, ensureAgentTokenFresh, runParamsPreps,
     publishOverlayBases,
+    activatePluginRepos,
   } = registryDeps;
 
   return new SessionRunnerRegistry({
@@ -700,6 +713,7 @@ export function createRunnerRegistry(
           broadcastLog,
           credentialStore,
           publishOverlayBases,
+          activatePluginRepos,
         };
         setupServiceManager(runner, setupDeps);
 
@@ -722,6 +736,36 @@ export function createRunnerRegistry(
             setupServiceManager(runner, setupDeps);
           };
         }
+      } else if (activatePluginRepos) {
+        // docs/262 — local mode has no ServiceManager, but plugin repositories
+        // are not a compose feature: checkout, generations, and refresh are
+        // exactly what plan §5 asks the inner dogfood instance to exercise, and
+        // gating them behind the Docker path skipped them there entirely
+        // (review finding). Only compose services can't run locally.
+        //
+        // The trust gate is re-applied here rather than inherited, since this
+        // path does not run `setupServiceManager`.
+        const activateIfTrusted = () => {
+          const session = sessionManager.get(runner.sessionId);
+          const workspaceDir = session?.workspaceDir ?? runner.sessionDir;
+          const remoteUrl = session?.remoteUrl;
+          if (remoteUrl && !repoStore.isTrusted(remoteUrl)) return;
+          activatePluginRepos(runner.sessionId, workspaceDir, emitPluginReposUpdated(runner));
+        };
+        activateIfTrusted();
+        runner.on("disposed", () => clearActivationState(runner.sessionId));
+        // The container path re-activates on `onComposeConfigChanged`, which
+        // `reevaluateWorkspaceConfig` fires — both are ContainerSessionRunner
+        // only, and local mode has no in-container file watcher to drive them
+        // (third-review finding). A turn ending is the local signal that files
+        // may have changed: in local mode the agent IS the only editor, and
+        // re-activation is a cheap no-op when the resolved commit is unchanged.
+        runner.on("idle", activateIfTrusted);
+        // Assigned unconditionally, not behind an `in` guard: the trust
+        // endpoint reads this property off the runner instance, and the local
+        // runner class doesn't declare it — so the guard silently skipped it
+        // and accepting trust left an open local session inactive.
+        (runner as { rerunServiceSetup?: () => void }).rerunServiceSetup = activateIfTrusted;
       }
     },
   });
