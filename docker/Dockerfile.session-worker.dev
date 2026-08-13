@@ -197,6 +197,12 @@ EXPOSE 9100
 COPY docker/session-worker/profile-node-pin.sh /etc/profile.d/10-shipit-node.sh
 RUN chmod 0644 /etc/profile.d/10-shipit-node.sh
 
+# docs/262 req 17 — same login-shell problem, for the generated companion-CLI
+# wrappers the worker writes into /plugin-bin. Appended rather than prepended;
+# see the snippet for why.
+COPY docker/session-worker/profile-plugin-bin.sh /etc/profile.d/11-shipit-plugin-bin.sh
+RUN chmod 0644 /etc/profile.d/11-shipit-plugin-bin.sh
+
 COPY docker/session-worker/entrypoint.sh /usr/local/bin/shipit-entrypoint
 RUN chmod 0755 /usr/local/bin/shipit-entrypoint
 ENTRYPOINT ["/usr/local/bin/shipit-entrypoint"]

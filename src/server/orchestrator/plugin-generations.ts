@@ -205,19 +205,46 @@ export function activeLinkPath(stateDir: string, repoName: string): string {
 }
 
 /**
- * The active generation's record, or null when nothing is activated.
+ * One generation's record, read from a CONCRETE generation directory.
  *
- * One resolution: the record is read *through* the symlink, so the directory
- * and its record can never disagree, and a concurrent prune cannot open a
- * window where a live repository reports nothing.
+ * The directory-scoped form exists because a caller that needs several facts
+ * about the live generation — its record, its manifest, its directory as an
+ * overlay lowerdir — must resolve `active` **once** and read all of them out of
+ * that one answer. Following the symlink per fact lets a refresh landing
+ * between two of them return a commit from generation B and a checkout from C,
+ * and the CLI invocation container then gets a volume named for B whose
+ * lowerdir is C's tree (sibling report, docs/262). Whoever resolves the link is
+ * responsible for holding onto the result.
  */
-export function readActiveGeneration(stateDir: string, repoName: string): GenerationRecord | null {
+export function readGenerationRecordAt(generationDir: string): GenerationRecord | null {
   try {
-    const raw = fs.readFileSync(path.join(activeLinkPath(stateDir, repoName), RECORD_FILE), "utf-8");
+    const raw = fs.readFileSync(path.join(generationDir, RECORD_FILE), "utf-8");
     return JSON.parse(raw) as GenerationRecord;
   } catch {
     return null;
   }
+}
+
+/**
+ * That same generation's own manifest, from a CONCRETE directory. Non-logging,
+ * like {@link readActiveManifest}: this runs per request and activation already
+ * logged any warning once.
+ */
+export function readGenerationManifestAt(generationDir: string): PluginExport[] {
+  return readManifest(generationDir, false).exports;
+}
+
+/**
+ * The active generation's record, or null when nothing is activated.
+ *
+ * One resolution: the record is read *through* the symlink, so the directory
+ * and its record can never disagree, and a concurrent prune cannot open a
+ * window where a live repository reports nothing. Callers needing MORE than
+ * the record should resolve the link themselves and use the `…At` readers
+ * above — see their docstring for why.
+ */
+export function readActiveGeneration(stateDir: string, repoName: string): GenerationRecord | null {
+  return readGenerationRecordAt(activeLinkPath(stateDir, repoName));
 }
 
 /**
@@ -235,7 +262,7 @@ export function readActiveGeneration(stateDir: string, repoName: string): Genera
 export function readActiveManifest(stateDir: string, repoName: string): PluginExport[] | null {
   const link = activeLinkPath(stateDir, repoName);
   if (!fs.existsSync(link)) return null;
-  return readManifest(link, false).exports;
+  return readGenerationManifestAt(link);
 }
 
 // ---------------------------------------------------------------------------

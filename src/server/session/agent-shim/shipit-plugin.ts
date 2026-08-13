@@ -23,7 +23,7 @@
  * is still working and report a failure that did not happen.
  */
 
-import { asString, fail, parseFlags, success } from "./shim-common.js";
+import { asString, fail, parseFlags, readStdin, success } from "./shim-common.js";
 import { formatError, type RunDeps } from "./shipit.js";
 
 /** One repository's before/after, as the orchestrator reports it. */
@@ -53,7 +53,13 @@ const HELP = `Usage: shipit plugin refresh [repo-name] [--json]
 Bring a declared plugin repository to its declared version now — the same
 activation a shipit.yaml edit runs, awaited, with before/after commits.
 
-With no name, every declared repository is refreshed.`;
+With no name, every declared repository is refreshed.
+
+  shipit plugin exec --alias <alias> --command <name> [-- args...]
+
+Run one imported plugin's companion CLI (docs/262 req 17). You do not normally
+type this: each surfaced command has a generated wrapper on PATH that calls it,
+and the wrapper's name is what a plugin's docs tell you to run.`;
 
 export async function runPlugin(args: string[], deps: RunDeps): Promise<void> {
   const [action, ...rest] = args;
@@ -61,10 +67,112 @@ export async function runPlugin(args: string[], deps: RunDeps): Promise<void> {
     success(deps.io, HELP);
     return;
   }
+  if (action === "exec") {
+    await exec(rest, deps);
+    return;
+  }
   if (action !== "refresh") {
     fail(deps.io, `Unknown \`shipit plugin\` action \`${action}\`.\n\n${HELP}`);
   }
   await refresh(rest, deps);
+}
+
+/**
+ * `shipit plugin exec` — docs/262 req 17, the other end of a generated wrapper
+ * (`session/plugin-cli.ts`).
+ *
+ * The command itself runs in an invocation container the orchestrator builds;
+ * this process only carries the call. That is the whole point of the wrapper:
+ * plugin code never runs in the agent container, where the worker's loopback
+ * credential broker is reachable (plan §2, "CLIs" — the same boundary
+ * `install` has).
+ *
+ * Three things travel with the call and nothing else does. The **argv after
+ * `--`**, verbatim: a plugin's own flags must not be interpreted here, so the
+ * separator is honored before any parsing. The **working directory**, so a
+ * cwd-addressed tool behaves as it would if it had run beside the agent — the
+ * orchestrator re-roots it under `/project`. And **stdin**, when there is any,
+ * so `--body-file -` works the way it does for every other shim.
+ */
+async function exec(args: string[], deps: RunDeps): Promise<void> {
+  // The separator FIRST: everything after it is the plugin's, including things
+  // that look like our own flags (`--json`, `--alias`). A wrapper always emits
+  // it, so its absence just means the caller passed no arguments.
+  const sep = args.indexOf("--");
+  const own = sep === -1 ? args : args.slice(0, sep);
+  const passthrough = sep === -1 ? [] : args.slice(sep + 1);
+
+  const { values, unsupported, positional } = parseFlags(own, {
+    values: { "--alias": "alias", "--command": "command" },
+  });
+  if (unsupported.length > 0 || positional.length > 0) {
+    fail(deps.io, `Unsupported argument for \`shipit plugin exec\`: ${unsupported[0] ?? positional[0]}\n\n${HELP}`);
+  }
+  if (!values.alias || !values.command) {
+    fail(deps.io, `\`shipit plugin exec\` needs \`--alias\` and \`--command\`.\n\n${HELP}`);
+  }
+
+  const res = await deps.call(
+    "POST",
+    "/agent-ops/plugin/exec",
+    {
+      alias: values.alias,
+      command: values.command,
+      args: passthrough,
+      cwd: process.cwd(),
+      stdin: await readOptionalStdin(),
+    },
+    deps.env,
+    // Unbounded, like refresh: a companion CLI is a real program and may run
+    // for minutes. A deadline here would kill a call whose container is still
+    // working and report a failure that did not happen.
+    0,
+  );
+
+  // A transport or authorization failure is ShipIt's, not the plugin's, so it
+  // is reported as one rather than folded into the command's own output.
+  if (res.status < 200 || res.status >= 300) {
+    fail(deps.io, formatError(res, `Could not run \`${values.command}\`.`));
+  }
+
+  // From here the shim is a pipe: the plugin's own streams and its own exit
+  // code, unchanged. Nothing is appended to them — a caller parsing the output
+  // must see exactly what the command wrote.
+  if (typeof res.body.stdout === "string" && res.body.stdout) deps.io.stdout(res.body.stdout);
+  if (typeof res.body.stderr === "string" && res.body.stderr) deps.io.stderr(res.body.stderr);
+
+  // A ShipIt REFUSAL rides a 2xx — the route always answers in the command's
+  // own shape so a caller never has to tell a transport failure from a command
+  // failure — so `error` has to be printed here or it is printed nowhere. It
+  // was not, and the agent got exit 126 with no output at all: a stale wrapper
+  // after a collision, a repository whose trust was revoked, a missing
+  // generation, all silent (review finding). It goes to stderr, so it never
+  // contaminates a caller parsing stdout.
+  if (typeof res.body.error === "string" && res.body.error) {
+    deps.io.stderr(res.body.error.endsWith("\n") ? res.body.error : `${res.body.error}\n`);
+  }
+  const code = typeof res.body.exitCode === "number" ? res.body.exitCode : 1;
+  deps.io.exit(code);
+}
+
+/**
+ * Whatever is piped in, or the empty string.
+ *
+ * A short idle deadline rather than the shim default: this runs on EVERY
+ * companion-CLI call, and the overwhelmingly common case is a caller with no
+ * stdin at all. A closed pipe or `/dev/null` reaches EOF immediately, so the
+ * deadline only ever fires for an inherited pipe nobody writes to — where
+ * waiting fifteen seconds to send an empty string would be a hang the agent
+ * cannot explain. Once any byte arrives the deadline is off, so a large
+ * heredoc is never clipped.
+ */
+async function readOptionalStdin(): Promise<string> {
+  if (process.stdin.isTTY) return "";
+  try {
+    return await readStdin(process.stdin, 2000);
+  } catch {
+    return "";
+  }
 }
 
 async function refresh(args: string[], deps: RunDeps): Promise<void> {

@@ -311,6 +311,21 @@ export function registerAgentOpsRoutes(
   app.post<{ Body: { repo?: string } }>("/agent-ops/plugin/refresh", async (request, reply) =>
     relay("POST", "/plugin/refresh", { repo: request.body?.repo }, reply, { timeoutMs: 0 }));
 
+  // POST /agent-ops/plugin/exec — docs/262 req 17. The other end of a generated
+  // companion-CLI wrapper: the command runs in an invocation container the
+  // orchestrator builds, never here. Unbounded for the same reason refresh is —
+  // a plugin's CLI is a real program and may run for minutes.
+  app.post<{
+    Body: { alias?: string; command?: string; args?: string[]; cwd?: string; stdin?: string };
+  }>("/agent-ops/plugin/exec", async (request, reply) =>
+    relay("POST", "/plugin/exec", {
+      alias: request.body?.alias,
+      command: request.body?.command,
+      args: request.body?.args,
+      cwd: request.body?.cwd,
+      stdin: request.body?.stdin,
+    }, reply, { timeoutMs: 0 }));
+
   // Tracker-neutral issue access (docs/175 read + docs/177 write)
   //
   // These back the `shipit issue view|list|create|comment|edit|status|assign`

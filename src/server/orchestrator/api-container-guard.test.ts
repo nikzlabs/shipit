@@ -355,6 +355,12 @@ const GOLDEN_CONTAINER_ROUTES = [
   // path, and the guard's own session scoping means a container can only
   // refresh its own session's plugins.
   "POST /api/sessions/:id/plugin/refresh",
+  // docs/262 req 17 — `shipit plugin exec`, the target of every generated
+  // companion-CLI wrapper. Same rationale as refresh, and the same scoping: a
+  // container can only run its own session's plugin commands. The command
+  // itself does NOT run in the calling container — this route builds an
+  // invocation container that holds no ShipIt credential (plan §2).
+  "POST /api/sessions/:id/plugin/exec",
   "PATCH /api/sessions/:id/pr/:number",
   "GET /api/sessions/:id/pr/list",
   "GET /api/sessions/:id/pr/view",

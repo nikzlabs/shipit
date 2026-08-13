@@ -25,6 +25,7 @@ import { CONTAINER_PLUGINS_DIR, CONTAINER_PLUGIN_STORE_DIR } from "../shared/fs-
 import { resolveShipitConfig } from "../shared/shipit-config.js";
 import { getErrorMessage } from "../shared/utils.js";
 import { ensureGitExcludedBlock } from "../shared/git.js";
+import { preparePluginCommands, type PluginCommandIssue } from "./plugin-cli.js";
 import {
   materializePluginSkills,
   planPluginSkills,
@@ -63,12 +64,30 @@ export interface PluginPrepareResult {
    * used to reach nothing but the log.
    */
   skillsFailed: PluginSkillFailure[];
+  /** Companion-CLI commands now on the agent's PATH (reqs 17, 20). */
+  commands: string[];
+  /** Wrappers removed because the declaration no longer surfaces them. */
+  commandsRemoved: string[];
+  /**
+   * Names deliberately not surfaced (req 20 — a collision, a reserved name, or
+   * a name the agent container's PATH already resolves). Attributed to the
+   * declared repository for the same reason `skillsFailed` is: this is the ONLY
+   * surface that can carry the PATH-dependent half, which the snapshot cannot
+   * recompute.
+   */
+  commandsRefused: PluginCommandIssue[];
+  /** Wrappers that could not be written — reported, never fatal. */
+  commandsFailed: PluginCommandIssue[];
 }
 
 export interface PreparePluginsOptions {
   workspaceDir: string;
   pluginsDir?: string;
   storeDir?: string;
+  /** Where companion-CLI wrappers are written (reqs 17, 20). */
+  binDir?: string;
+  /** The `shipit` shim every wrapper execs. */
+  shimPath?: string;
 }
 
 /**
@@ -85,6 +104,7 @@ export function preparePlugins(opts: PreparePluginsOptions): PluginPrepareResult
   const result: PluginPrepareResult = {
     linked: [], missing: [], unlinked: [], linkFailed: [],
     skills: [], skillsRemoved: [], skillsFailed: [],
+    commands: [], commandsRemoved: [], commandsRefused: [], commandsFailed: [],
   };
 
   const config = resolveShipitConfig(opts.workspaceDir);
@@ -178,6 +198,25 @@ export function preparePlugins(opts: PreparePluginsOptions): PluginPrepareResult
     result.skills.push(...skills.materialized);
     result.skillsFailed.push(...skills.failed);
   }
+
+  // reqs 17, 20 — the companion CLIs. Same lifecycle as the links and the
+  // skills: idempotent, swept against the current declaration, re-run on every
+  // round so a refresh reaches the agent. Deliberately independent of the git
+  // exclude above — a wrapper lives outside the workspace and can never enter
+  // the user's commit, so a repository whose exclude could not be written still
+  // gets its commands.
+  const commands = preparePluginCommands({
+    workspaceDir: opts.workspaceDir,
+    plugins: config.plugins,
+    selfExports: config.pluginExports,
+    ...(opts.binDir ? { binDir: opts.binDir } : {}),
+    ...(opts.storeDir ? { storeDir: opts.storeDir } : {}),
+    ...(opts.shimPath ? { shimPath: opts.shimPath } : {}),
+  });
+  result.commands.push(...commands.commands);
+  result.commandsRemoved.push(...commands.removed);
+  result.commandsRefused.push(...commands.refused);
+  result.commandsFailed.push(...commands.failed);
 
   return result;
 }

@@ -39,8 +39,10 @@
  */
 
 import crypto from "node:crypto";
+import fs from "node:fs";
 import path from "node:path";
 import type Docker from "dockerode";
+import { chownToSessionWorker } from "./session-worker-uid.js";
 import {
   createOverlayVolume,
   removeOverlayVolume,
@@ -176,6 +178,72 @@ export async function resolvePluginOverlayRoots(
  */
 export async function createPluginOverlay(docker: Docker, spec: PluginOverlaySpec): Promise<void> {
   await createOverlayVolume(docker, spec, { [PLUGIN_OVERLAY_LABEL]: spec.volumeName });
+}
+
+/**
+ * The **runtime** volume for a published generation: the same upper layer
+ * install wrote into, now under the published checkout as its lowerdir.
+ *
+ * Idempotent, and shared on purpose — the CLI invocation container
+ * (`plugin-cli-run.ts`) and, when it lands, a plugin service both attach ONE
+ * volume per generation. Creating a second one over the same upperdir is not an
+ * option the kernel offers, so "ensure" rather than "create" is the only shape
+ * that lets two independent callers ask for it.
+ *
+ * Existing → returned untouched. Absent → the upper and work directories are
+ * created if they are missing (a plugin with no `install` never had them) and
+ * handed to the session-worker UID, which is what every consumer runs as. The
+ * directories are never *cleared*: that is install's job, before it writes, and
+ * doing it here would delete the install output this volume exists to expose.
+ *
+ * **Serialized per volume name, which is not optional** (review finding).
+ * `createOverlayVolume` deliberately REMOVES an existing volume of the same
+ * name before creating it, so that a crash-stale one cannot wire a session to
+ * the wrong lowerdir. That is right for its own caller and fatal here: two
+ * first-consumers of one generation — a service and a CLI, exactly the pair
+ * this helper exists for — both see "missing", and the second one deletes the
+ * volume the first just created, or gets a 409 because the first has already
+ * attached it. The queue makes the check-then-create one step.
+ */
+const ensureQueues = new Map<string, Promise<void>>();
+export async function ensurePluginRuntimeOverlay(
+  docker: Docker,
+  args: {
+    sessionId: string;
+    repoName: string;
+    commit: string;
+    stateDir: string;
+    /** The PUBLISHED generation directory — resolve `active` before calling. */
+    checkoutDir: string;
+    volumeMountpoint?: string;
+    stateRoot?: string;
+  },
+): Promise<string> {
+  const spec = buildPluginOverlaySpec(args);
+  const previous = ensureQueues.get(spec.volumeName) ?? Promise.resolve();
+  // eslint-disable-next-line no-restricted-syntax -- chaining a serial queue; awaiting `previous` here would be the race
+  const work = previous.then(async () => {
+    if (await volumeExists(docker, spec.volumeName)) return;
+    for (const dir of [spec.orchDirs.upperdir, spec.orchDirs.workdir]) {
+      fs.mkdirSync(dir, { recursive: true });
+      chownToSessionWorker(dir);
+    }
+    chownToSessionWorker(path.dirname(spec.orchDirs.upperdir));
+    await createPluginOverlay(docker, spec);
+  });
+  // The QUEUE holds a never-rejecting tail, so one caller's failure does not
+  // reject the next caller's `previous`; `work` is what this caller awaits.
+  const tail = work.catch(() => undefined);
+  ensureQueues.set(spec.volumeName, tail);
+  try {
+    await work;
+  } finally {
+    // Drop the entry only when nothing queued behind this call — otherwise the
+    // map grows one key per generation for the life of the process.
+    await tail;
+    if (ensureQueues.get(spec.volumeName) === tail) ensureQueues.delete(spec.volumeName);
+  }
+  return spec.volumeName;
 }
 
 /**

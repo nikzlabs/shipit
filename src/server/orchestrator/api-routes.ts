@@ -65,6 +65,7 @@ import { registerEgressRoutes } from "./api-routes-egress.js";
 import { registerIssueRoutes } from "./api-routes-issues.js";
 import { registerPluginRepoRoutes } from "./api-routes-plugin-repos.js";
 import type { PluginRefreshResult } from "./services/plugin-refresh.js";
+import type { PluginCliRequest, PluginCliResult } from "./plugin-cli-run.js";
 import type { SecretStore } from "./secret-store.js";
 import type { EgressAllowlistStore } from "./egress-allowlist-store.js";
 import type { FileReviewStore } from "./review-store.js";
@@ -126,6 +127,17 @@ export interface ApiDeps {
     repoName?: string,
     onSettled?: (id: string) => void,
   ) => Promise<PluginRefreshResult>;
+  /**
+   * docs/262 req 17 — run one imported plugin's companion CLI in an invocation
+   * container (`plugin-cli-run.ts`). Optional for the same reason refresh is:
+   * a runtime with no Docker (local mode, tests) cannot run one, and the route
+   * says so instead of pretending it did.
+   */
+  runPluginCommandForSession?: (
+    sessionId: string,
+    workspaceDir: string,
+    request: PluginCliRequest,
+  ) => Promise<PluginCliResult>;
   /**
    * Drop a session's pending debounced auto-push (`services/auto-push-scheduler.ts`).
    * Only ever called after a synchronous push has replaced it — the agent's own

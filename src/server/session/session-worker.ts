@@ -65,6 +65,7 @@ import { TerminalController } from "./terminal-controller.js";
 import { FileWatcherController } from "./file-watcher-controller.js";
 import { InstallController } from "./install-controller.js";
 import { preparePlugins, type PluginPrepareResult } from "./plugin-runtime.js";
+import { ensurePluginBinOnPath } from "./plugin-cli.js";
 
 export type { WorkerSSEEvent } from "./sse-broadcaster.js";
 export type { WorkerAgentFactory } from "./agent-controller.js";
@@ -163,6 +164,14 @@ export class SessionWorker extends EventEmitter {
       ?? CONTAINER_SESSION_STATE_DIR;
     this._createOrchestratorClient = deps.createOrchestratorClient;
     this._workerToken = deps.workerToken;
+
+    // docs/262 req 17 — the companion-CLI wrapper directory goes on PATH here,
+    // not only when a prepare round writes into it. Everything this worker
+    // spawns inherits `process.env.PATH` at spawn time, and nothing orders the
+    // first prepare before the first agent process; asserting it once at
+    // construction makes the ordering irrelevant. Appending an empty (or
+    // absent) directory costs nothing.
+    ensurePluginBinOnPath();
 
     const broadcast = (event: WorkerSSEEvent): void => this.sse.broadcast(event);
 

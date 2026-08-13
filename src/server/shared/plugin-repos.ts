@@ -176,6 +176,14 @@ export interface PluginRepoRuntime {
    * the repository while a settings problem belongs to one import.
    */
   settingsIssues?: string[];
+  /**
+   * Companion-CLI commands this repository's imports could not surface (req 20
+   * — a name claimed twice, a reserved name, a name already on the agent's
+   * PATH). Each names its `alias` and the `overrides.commands.<x>.as` that
+   * resolves it, because the card's unit is the repository while a command
+   * belongs to one import.
+   */
+  commandIssues?: string[];
 }
 
 export interface PluginReposSnapshot {
@@ -819,6 +827,10 @@ export function buildPluginReposSnapshot(
     // problems: a plugin that is not there at all outranks one whose settings
     // are wrong.
     issues.push(...(live.settingsIssues ?? []));
+    // req 20 — a command that is not on PATH. Same class as a settings value
+    // that cannot take effect: the declaration asked for something the session
+    // is not doing, and nothing inside the plugin can tell.
+    issues.push(...(live.commandIssues ?? []));
     // Order: the failure first, then advisories, then selector problems.
     if (live.warning) issues.unshift(live.warning);
     for (const w of live.manifestWarnings ?? []) issues.unshift(w);

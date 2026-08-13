@@ -5,8 +5,13 @@
  */
 
 import { describe, it, expect } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import type Docker from "dockerode";
 import {
   buildPluginOverlaySpec,
+  ensurePluginRuntimeOverlay,
   pluginOverlayVolumeName,
   pluginWorkDir,
 } from "./plugin-overlay.js";
@@ -105,5 +110,89 @@ describe("pluginOverlayVolumeName", () => {
   it("renders an awkward repo name into something a volume name can hold", () => {
     expect(pluginOverlayVolumeName(base.sessionId, "My Tools/v2!", base.commit))
       .toMatch(/^shipit-0123abcd-456_plugin-my-tools-v2-[0-9a-f]{8}-a{12}$/);
+  });
+});
+
+/**
+ * `ensurePluginRuntimeOverlay` is deliberately an *ensure*: the CLI invocation
+ * container and a plugin service both attach ONE volume per generation, and the
+ * kernel forbids one upperdir backing two independently created overlay mounts.
+ * So two first-consumers arriving together is the ordinary case, not an edge —
+ * and `createOverlayVolume` REMOVES an existing same-name volume before
+ * creating it, which is what makes the naive check-then-create destructive
+ * (review finding).
+ */
+describe("ensurePluginRuntimeOverlay", () => {
+  function fakeDocker() {
+    const live = new Set<string>();
+    const creates: string[] = [];
+    const removes: string[] = [];
+    const notFound = (): never => {
+      throw Object.assign(new Error("no such volume"), { statusCode: 404 });
+    };
+    const docker = {
+      createVolume: async (spec: { Name: string }) => {
+        creates.push(spec.Name);
+        live.add(spec.Name);
+      },
+      getVolume: (name: string) => ({
+        inspect: async () => {
+          if (!live.has(name)) notFound();
+          return { Mountpoint: `/var/lib/docker/volumes/${name}/_data` };
+        },
+        remove: async () => {
+          // 404 when absent, like the daemon — `createOverlayVolume` calls
+          // remove-if-exists unconditionally, and counting those would hide the
+          // destructive case this test is about.
+          if (!live.has(name)) notFound();
+          removes.push(name);
+          live.delete(name);
+        },
+      }),
+    };
+    return { docker: docker as unknown as Docker, creates, removes };
+  }
+
+  const args = (stateDir: string) => ({
+    sessionId: base.sessionId,
+    repoName: "tools",
+    commit: base.commit,
+    stateDir,
+    checkoutDir: path.join(stateDir, "plugins", "tools", "generations", base.commit),
+  });
+
+  it("creates the volume exactly once for concurrent first consumers", async () => {
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "plugin-overlay-"));
+    try {
+      const { docker, creates, removes } = fakeDocker();
+      const [a, b] = await Promise.all([
+        ensurePluginRuntimeOverlay(docker, args(stateDir)),
+        ensurePluginRuntimeOverlay(docker, args(stateDir)),
+      ]);
+
+      expect(a).toBe(b);
+      // Without the queue both callers see "missing" and the second one deletes
+      // the volume the first just created.
+      expect(creates).toHaveLength(1);
+      expect(removes).toEqual([]);
+      // And the layer it points at is there, uncleared — install output
+      // lives in `upper/` and this must never be the thing that wipes it.
+      expect(fs.existsSync(path.join(pluginWorkDir(stateDir, "tools", base.commit), "upper"))).toBe(true);
+    } finally {
+      fs.rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it("returns an existing volume untouched", async () => {
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "plugin-overlay-"));
+    try {
+      const { docker, creates, removes } = fakeDocker();
+      await ensurePluginRuntimeOverlay(docker, args(stateDir));
+      await ensurePluginRuntimeOverlay(docker, args(stateDir));
+      expect(creates).toHaveLength(1);
+      expect(removes).toEqual([]);
+    } finally {
+      fs.rmSync(stateDir, { recursive: true, force: true });
+    }
   });
 });

@@ -188,3 +188,79 @@ describe("shipit plugin refresh", () => {
     expect(res.calls).toHaveLength(0);
   });
 });
+
+/**
+ * `shipit plugin exec` (docs/262 req 17) — the other end of a generated
+ * wrapper. Its whole job is to be a transparent pipe, so the properties worth
+ * asserting are the ones a wrapper would break by being clever: the plugin's
+ * own argv survives untouched past `--`, its output is not decorated, and its
+ * exit code is the shim's.
+ */
+const EXEC = "POST /agent-ops/plugin/exec";
+
+describe("shipit plugin exec", () => {
+  it("passes the plugin's argv through `--` untouched, on the unbounded transport", async () => {
+    const { run } = makeRunner();
+    const res = await run(
+      ["plugin", "exec", "--alias", "reqs", "--command", "reqs", "--", "list", "--json", "--alias", "x"],
+      { [EXEC]: { status: 200, body: { exitCode: 0, stdout: "", stderr: "" } } },
+    );
+
+    expect(res.calls[0]).toMatchObject({ method: "POST", path: "/agent-ops/plugin/exec", timeoutMs: 0 });
+    // `--json` and `--alias` after the separator are the PLUGIN's flags. Parsing
+    // them here would silently rewrite the command the agent asked for.
+    expect((res.calls[0].body as { args: string[] }).args).toEqual(["list", "--json", "--alias", "x"]);
+    expect(res.calls[0].body).toMatchObject({ alias: "reqs", command: "reqs" });
+  });
+
+  it("is a pipe: the command's own streams and its own exit code", async () => {
+    const { run } = makeRunner();
+    const res = await run(
+      ["plugin", "exec", "--alias", "reqs", "--command", "reqs", "--"],
+      { [EXEC]: { status: 200, body: { exitCode: 3, stdout: "out", stderr: "err" } } },
+    );
+
+    expect(res.stdout).toBe("out");
+    expect(res.stderr).toBe("err");
+    expect(res.exitCode).toBe(3);
+  });
+
+  // A ShipIt REFUSAL rides a 2xx — the route answers in the command's own shape
+  // so a caller never has to tell a transport failure from a command failure.
+  // The shim therefore has to print `error` itself, and did not: the agent got
+  // exit 126 with no output at all (review finding).
+  it("prints a refusal that arrives on a 2xx, and keeps its exit code", async () => {
+    const { run } = makeRunner();
+    const res = await run(
+      ["plugin", "exec", "--alias", "ghost", "--command", "reqs", "--"],
+      {
+        [EXEC]: {
+          status: 200,
+          body: { error: "`ghost` is not a plugin this project imports", exitCode: 126, stdout: "", stderr: "" },
+        },
+      },
+    );
+
+    expect(res.exitCode).toBe(126);
+    expect(res.stderr).toContain("is not a plugin this project imports");
+    expect(res.stdout).toBe("");
+  });
+
+  it("reports a transport failure as ShipIt's, not as the command's output", async () => {
+    const { run } = makeRunner();
+    const res = await run(
+      ["plugin", "exec", "--alias", "reqs", "--command", "reqs", "--"],
+      { [EXEC]: { status: 502, body: { error: "the orchestrator is restarting" } } },
+    );
+
+    expect(res.exitCode).not.toBe(0);
+    expect(res.stderr).toContain("the orchestrator is restarting");
+  });
+
+  it("refuses a call with no alias or command rather than guessing", async () => {
+    const { run } = makeRunner();
+    const res = await run(["plugin", "exec", "--alias", "reqs"], {});
+    expect(res.exitCode).not.toBe(0);
+    expect(res.calls).toHaveLength(0);
+  });
+});
