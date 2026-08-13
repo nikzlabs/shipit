@@ -425,9 +425,10 @@ coherent in one UI.
   (`session-worker.ts`), which `ContainerSessionRunner.preparePlugins()` calls
   when an activation round settles and when a container becomes ready — the
   latter because a restarted container loses its links while the generations
-  they address survive. The mounts themselves are built in
-  `container-lifecycle.ts`, with `/plugins` in `container-hardening.ts`'s tmpfs
-  set and `/plugin-store-rw` in the entrypoint's UID handoff.
+  they address survive. The single read-only mount is built in
+  `container-lifecycle.ts`; `/plugins` itself is created and handed to the
+  worker UID by the entrypoint, and appears in `container-hardening.ts`'s tmpfs
+  set for the read-only-rootfs case.
 - `src/server/session/agent-shim/shipit-plugin.ts` + a worker agent-ops
   relay route — the agent's `shipit plugin refresh` transport (orchestrator
   API routes are container-denied; the shim goes through the worker like

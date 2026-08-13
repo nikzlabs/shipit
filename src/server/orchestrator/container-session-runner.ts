@@ -325,7 +325,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     // a RESTART leaves published generations with nothing addressing them, and
     // the activation-settled hook does not fire again for a session whose
     // declarations did not change. Re-linking here covers that; it is cheap and
-    // idempotent, and an install whose stamp still matches is skipped.
+    // idempotent — it reads the declaration and maintains symlinks, nothing more.
     void this.preparePlugins();
   }
 
