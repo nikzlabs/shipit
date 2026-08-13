@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { EventEmitter } from "node:events";
+import { readFileSync, existsSync, unlinkSync } from "node:fs";
 import { ClaudeProcess, StreamingClaudeProcess, applyServiceRouting } from "./process.js";
 import type { ServiceRouting } from "../../../shared/types.js";
 import { agentHome } from "../../../shared/agent-home.js";
@@ -359,6 +360,58 @@ describe("ClaudeProcess", () => {
         ]),
         expect.objectContaining({ cwd: "/workspace", stdio: ["pipe", "pipe", "pipe"] }),
       );
+    });
+
+    it("passes the system prompt as a file, keeping it out of argv too", () => {
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
+
+      // The system prompt is the argument most likely to overflow: ShipIt's own
+      // instructions are tens of KB before the unbounded conversation replay a
+      // fork or rewind appends to them.
+      const systemPrompt = `You are ShipIt.\n${"replay ".repeat(30_000)}`;
+      const claude = new ClaudeProcess();
+      claude.run({ prompt: "hi", systemPrompt });
+
+      const args = mockChildSpawn.mock.calls[0][1] as string[];
+      expect(args).not.toContain("--append-system-prompt");
+      expect(args).not.toContain(systemPrompt);
+      const path = args[args.indexOf("--append-system-prompt-file") + 1] as string;
+      expect(readFileSync(path, "utf-8")).toBe(systemPrompt);
+      expect(args).toContain("--exclude-dynamic-system-prompt-sections");
+
+      // …and the temp file does not outlive the process.
+      mockProc.simulateExit(0);
+      expect(existsSync(path)).toBe(false);
+    });
+
+    it("writes no system-prompt file when there is no system prompt", () => {
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
+
+      const claude = new ClaudeProcess();
+      claude.run({ prompt: "hi" });
+
+      const args = mockChildSpawn.mock.calls[0][1] as string[];
+      expect(args).not.toContain("--append-system-prompt-file");
+      expect(args).not.toContain("--exclude-dynamic-system-prompt-sections");
+    });
+
+    it("gives concurrent spawns their own system-prompt file", () => {
+      // Sub-agent spawns run concurrently; two started in the same millisecond
+      // must not share a path, or the first to exit deletes the other's file.
+      const paths = ["a", "b"].map((tag) => {
+        const mockProc = createMockChildProcess();
+        mockChildSpawn.mockReturnValue(mockProc as any);
+        new ClaudeProcess().run({ prompt: "hi", systemPrompt: `system ${tag}` });
+        const args = mockChildSpawn.mock.calls.at(-1)![1] as string[];
+        return args[args.indexOf("--append-system-prompt-file") + 1] as string;
+      });
+
+      expect(paths[0]).not.toBe(paths[1]);
+      expect(readFileSync(paths[0]!, "utf-8")).toBe("system a");
+      expect(readFileSync(paths[1]!, "utf-8")).toBe("system b");
+      paths.forEach((p) => { try { unlinkSync(p!); } catch { /* ignore */ } });
     });
 
     it("never puts the prompt in argv (MAX_ARG_STRLEN caps one argument at 128 KiB)", () => {
@@ -920,7 +973,9 @@ describe("ClaudeProcess", () => {
 
       const claude = new ClaudeProcess();
       const errors: Error[] = [];
-      claude.on("error", (err: Error) => errors.push(err));
+      const order: string[] = [];
+      claude.on("error", (err: Error) => { errors.push(err); order.push("error"); });
+      claude.on("done", () => order.push("done"));
 
       claude.run({ prompt: "test" });
       // The CLI died before draining the prompt. Node reports this on the
@@ -928,9 +983,36 @@ describe("ClaudeProcess", () => {
       // whole session worker goes down.
       const epipe = Object.assign(new Error("write EPIPE"), { code: "EPIPE" });
       expect(() => mockProc.stdin.emit("error", epipe)).not.toThrow();
+      // Held until close, so the drains get to run first.
+      expect(errors).toHaveLength(0);
 
+      mockProc.simulateExit(1);
       expect(errors).toHaveLength(1);
       expect(errors[0].message).toBe("write EPIPE");
+      expect(order).toEqual(["error", "done"]);
+    });
+
+    it("lets auth recovery win the race when EPIPE and an auth failure arrive together", () => {
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
+
+      const claude = new ClaudeProcess();
+      const errors: Error[] = [];
+      let authRequired = false;
+      claude.on("error", (err: Error) => errors.push(err));
+      claude.on("auth_required", () => { authRequired = true; });
+
+      claude.run({ prompt: "x".repeat(200_000) });
+      // The commonest cause of an early close is a failed auth. With a large
+      // prompt still flushing, EPIPE beats the stderr line that explains it.
+      mockProc.stdin.emit("error", Object.assign(new Error("write EPIPE"), { code: "EPIPE" }));
+      mockProc.simulateStderr("Error: Not logged in. Please run /login");
+      mockProc.simulateExit(1);
+
+      // `auth_required` owns what the user sees next — the quiet heal-and-retry
+      // or the sign-in card. A generic process error on top would pre-empt it.
+      expect(authRequired).toBe(true);
+      expect(errors).toHaveLength(0);
     });
 
     it("raises auth_required from a stderr line, now that stderr is its own stream", () => {
@@ -1353,6 +1435,45 @@ describe("StreamingClaudeProcess", () => {
       };
       expect(parsed.type).toBe("user");
       expect(parsed.message.content[0].text).toBe("go this way instead");
+    });
+  });
+
+  describe("stdin failure policy", () => {
+    it("reports an EPIPE as a log without tearing down the resident session", () => {
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
+
+      const streaming = new StreamingClaudeProcess();
+      const errors: Error[] = [];
+      const logs: { source: string; text: string }[] = [];
+      streaming.on("error", (err: Error) => errors.push(err));
+      streaming.on("log", (source: string, text: string) => logs.push({ source, text }));
+
+      streaming.run({ prompt: "hello" });
+      const epipe = Object.assign(new Error("write EPIPE"), { code: "EPIPE" });
+      // Unhandled, this is an uncaught exception that stops the whole worker.
+      expect(() => mockProc.stdin.emit("error", epipe)).not.toThrow();
+
+      // Log-only on purpose: this process is resident across turns, so one
+      // dropped write must not end a session the user is still working in.
+      expect(errors).toHaveLength(0);
+      expect(logs.some((l) => l.source === "server" && l.text.includes("EPIPE"))).toBe(true);
+    });
+
+    it("passes the system prompt as a file here too", () => {
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as any);
+
+      const streaming = new StreamingClaudeProcess();
+      streaming.run({ prompt: "hi", systemPrompt: "a resident system prompt" });
+
+      const args = mockChildSpawn.mock.calls[0][1] as string[];
+      expect(args).not.toContain("--append-system-prompt");
+      const path = args[args.indexOf("--append-system-prompt-file") + 1] as string;
+      expect(readFileSync(path, "utf-8")).toBe("a resident system prompt");
+
+      mockProc.emit("close", 0);
+      expect(existsSync(path)).toBe(false);
     });
   });
 

@@ -1,6 +1,8 @@
 import { EventEmitter } from "node:events";
 import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
+import fs from "node:fs";
+import { randomUUID } from "node:crypto";
 import { killChild } from "../../../shared/kill-child.js";
 import type { ClaudeEvent, ImageAttachment, PermissionMode, ServiceRouting } from "../../../shared/types.js";
 import { stripAnsi } from "../../../shared/strip-ansi.js";
@@ -254,6 +256,39 @@ export interface ClaudeRunOptions {
 }
 
 /**
+ * Hand the system prompt to the CLI as a FILE, never as an argv element.
+ *
+ * `--append-system-prompt <text>` has the same 131,072-byte `MAX_ARG_STRLEN`
+ * ceiling that the prompt itself used to hit, and the system prompt is the
+ * argument most likely to reach it: ShipIt's own instructions are already tens
+ * of kilobytes before anything is added, and `session-agent-run-params.ts`
+ * appends the UNBOUNDED conversation replay to this same value on fork, rewind
+ * and unresumable-conversation recovery. So the exact failure fixed for the
+ * prompt was still reachable here, on a different trigger.
+ *
+ * `--append-system-prompt-file` takes the identical content with no size limit.
+ * It carries no entry of its own in `claude --help` — only a passing mention —
+ * so it is worth stating that it is verified working against CLI 2.1.221, the
+ * version `docker/agent-cli/package-lock.json` pins exactly. A CLI bump is a
+ * deliberate edit in this repo, which is where a change to it would be caught.
+ *
+ * Returns the path; the caller owns deleting it when the process exits.
+ */
+function writeSystemPromptFile(text: string): string {
+  // randomUUID, not a timestamp: sub-agent spawns run concurrently and two
+  // that started in the same millisecond must not share (or delete) one file.
+  const path = `/tmp/claude-system-prompt-${randomUUID()}.txt`;
+  fs.writeFileSync(path, text, "utf-8");
+  return path;
+}
+
+/** Best-effort unlink of a temp file; a leftover must never fail a turn. */
+function removeFileQuietly(path: string | null): void {
+  if (!path) return;
+  try { fs.unlinkSync(path); } catch { /* already gone */ }
+}
+
+/**
  * Frame one prompt as the NDJSON `user` message the CLI's
  * `--input-format stream-json` mode reads off stdin. Shared by both processes
  * so the one-shot and the resident path put the identical bytes on the wire.
@@ -271,6 +306,13 @@ export class ClaudeProcess extends EventEmitter {
   private buffer = "";
   /** Separate line buffer for stderr — see the stderr handler in {@link run}. */
   private stderrBuffer = "";
+  /** Temp file backing `--append-system-prompt-file`; deleted when the process exits. */
+  private systemPromptFile: string | null = null;
+  /**
+   * A stdin write that failed, held until `close` rather than reported at once.
+   * See the stdin handler in {@link run} for why the delay is load-bearing.
+   */
+  private stdinFailure: Error | null = null;
   private watchdog: ReturnType<typeof setTimeout> | null = null;
   /** Per-turn latch — see {@link consumeAuthFailureEvent}. */
   private authRaisedThisTurn = false;
@@ -451,7 +493,11 @@ export class ClaudeProcess extends EventEmitter {
       // (cwd, git status, env, memory paths) out of the cached prefix and into
       // the first user message. `--exclude-dynamic-system-prompt-sections` is
       // a no-op with `--system-prompt`, which is why we don't use that flag.
-      args.push("--append-system-prompt", effectiveSystemPrompt);
+      //
+      // The `-file` variant, not the inline one — see {@link writeSystemPromptFile}
+      // for why this argument is the one most likely to overflow argv.
+      this.systemPromptFile = writeSystemPromptFile(effectiveSystemPrompt);
+      args.push("--append-system-prompt-file", this.systemPromptFile);
       args.push("--exclude-dynamic-system-prompt-sections");
     }
 
@@ -536,6 +582,8 @@ export class ClaudeProcess extends EventEmitter {
         stdio: ["pipe", "pipe", "pipe"],
       });
     } catch (err) {
+      removeFileQuietly(this.systemPromptFile);
+      this.systemPromptFile = null;
       this.emit("error", err instanceof Error ? err : new Error(String(err)));
       this.proc = null;
       return;
@@ -543,6 +591,7 @@ export class ClaudeProcess extends EventEmitter {
 
     this.buffer = "";
     this.stderrBuffer = "";
+    this.stdinFailure = null;
 
     // Inactivity watchdog: warn if no output within 30 seconds
     this.watchdog = setTimeout(() => {
@@ -596,7 +645,15 @@ export class ClaudeProcess extends EventEmitter {
     this.proc.stdin?.on("error", (err: NodeJS.ErrnoException) => {
       this.clearWatchdog();
       console.warn(`[claude] stdin error (${err.code ?? "unknown"}): the prompt did not reach the CLI`);
-      this.emit("error", err);
+      // HELD, not emitted here. The commonest reason the CLI closes the read
+      // end early is that it failed auth and exited — and with a large prompt
+      // still flushing, EPIPE can beat the stderr line that says so. Emitting
+      // straight away wins that race and tears the turn down as a generic
+      // process error, so the auth phrase arrives after the slot is gone: no
+      // `auth_required`, no quiet heal-and-retry, no sign-in card, just an
+      // error the user cannot act on. Reported below instead, once stderr has
+      // been drained and the auth signal has had its chance.
+      this.stdinFailure = err;
     });
 
     this.proc.on("close", (exitCode) => {
@@ -606,6 +663,14 @@ export class ClaudeProcess extends EventEmitter {
       // Same for stderr: the CLI's last line often has no trailing newline, and
       // an auth complaint stranded in the buffer raises no `auth_required`.
       this.drainStderrLines(true);
+      // Now that the drains have had their say, a held stdin failure is safe to
+      // report — unless this turn already raised `auth_required`, which owns
+      // what the user sees next and must not be shouted over.
+      if (this.stdinFailure && !this.authRaisedThisTurn) {
+        this.emit("error", this.stdinFailure);
+      }
+      removeFileQuietly(this.systemPromptFile);
+      this.systemPromptFile = null;
       this.emit("done", exitCode ?? 0);
       this.proc = null;
     });
@@ -685,6 +750,8 @@ export class ClaudeProcess extends EventEmitter {
       killChild(this.proc, "SIGTERM");
       this.proc = null;
     }
+    removeFileQuietly(this.systemPromptFile);
+    this.systemPromptFile = null;
   }
 
   private clearWatchdog(): void {
@@ -748,6 +815,8 @@ export class ClaudeProcess extends EventEmitter {
 export class StreamingClaudeProcess extends EventEmitter {
   private proc: ChildProcess | null = null;
   private buffer = "";
+  /** Temp file backing `--append-system-prompt-file`; deleted when the process exits. */
+  private systemPromptFile: string | null = null;
   private watchdog: ReturnType<typeof setTimeout> | null = null;
   private requestIdCounter = 0;
 
@@ -814,7 +883,10 @@ export class StreamingClaudeProcess extends EventEmitter {
     if (systemPrompt) {
       // See ClaudeProcess.run above for why we use --append-system-prompt
       // and --exclude-dynamic-system-prompt-sections instead of --system-prompt.
-      args.push("--append-system-prompt", systemPrompt);
+      // The `-file` variant for the same reason — the resident process gets the
+      // same replay-inflated system prompt on a fork or a rewind.
+      this.systemPromptFile = writeSystemPromptFile(systemPrompt);
+      args.push("--append-system-prompt-file", this.systemPromptFile);
       args.push("--exclude-dynamic-system-prompt-sections");
     }
 
@@ -889,6 +961,8 @@ export class StreamingClaudeProcess extends EventEmitter {
         stdio: ["pipe", "pipe", "pipe"],
       });
     } catch (err) {
+      removeFileQuietly(this.systemPromptFile);
+      this.systemPromptFile = null;
       this.emit("error", err instanceof Error ? err : new Error(String(err)));
       return;
     }
@@ -929,6 +1003,8 @@ export class StreamingClaudeProcess extends EventEmitter {
     this.proc.on("close", (exitCode) => {
       this.clearWatchdog();
       this.drainLines(true);
+      removeFileQuietly(this.systemPromptFile);
+      this.systemPromptFile = null;
       this.emit("done", exitCode ?? 0);
       this.proc = null;
     });
@@ -1005,6 +1081,8 @@ export class StreamingClaudeProcess extends EventEmitter {
       killChild(this.proc, "SIGTERM");
       this.proc = null;
     }
+    removeFileQuietly(this.systemPromptFile);
+    this.systemPromptFile = null;
   }
 
   private writeToStdin(data: string): void {
