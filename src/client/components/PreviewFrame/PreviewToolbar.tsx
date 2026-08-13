@@ -200,8 +200,16 @@ export function PreviewToolbar({
                 )}
               </span>
             )}
-            {/* Sits between the viewport controls and the address bar (PreviewPath),
-                mirroring a browser's home button. */}
+            {/* Closes the viewport-control group and opens the address-bar one.
+                This separator belongs to PreviewPath's region visually, but is
+                rendered here so Home can sit to the right of it while still
+                appearing when the page has reported no path — the very case
+                (no injected script) where Home's document-load fallback is
+                what the user needs. Rendered whenever the preview runs, so
+                the layout doesn't shift when a path arrives. */}
+            <span className="text-(--color-border-secondary)">|</span>
+            {/* Sits to the right of the separator, adjacent to the address bar
+                (PreviewPath), where a browser puts its home button. */}
             <Button
               variant="ghost"
               size="sm"

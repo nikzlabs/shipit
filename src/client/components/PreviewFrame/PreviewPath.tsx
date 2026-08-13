@@ -20,6 +20,10 @@ interface PreviewPathProps {
  * device selectors for width. Content is left-aligned (req 5): the path starts
  * at a fixed x position, so it stays where the eye last found it instead of
  * drifting as the route changes length.
+ *
+ * The separator that opens this region is rendered by PreviewToolbar, not here:
+ * the Home button sits between it and the path, and must stay visible when this
+ * component renders nothing because no path was ever reported.
  */
 export function PreviewPath({ path, fullUrl }: PreviewPathProps) {
   const [copied, setCopied] = useState(false);
@@ -55,7 +59,6 @@ export function PreviewPath({ path, fullUrl }: PreviewPathProps) {
 
   return (
     <div className="flex-1 min-w-0 flex items-center gap-1">
-      <span className="text-(--color-border-secondary) shrink-0">|</span>
       <button
         onClick={() => void copy()}
         title={fullUrl ?? path}

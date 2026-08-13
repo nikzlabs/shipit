@@ -505,9 +505,12 @@ describe("PreviewFrame", () => {
     expect(srcSetter).toHaveBeenCalledWith("http://localhost:5173/");
   });
 
-  it("places Home between the device selector and the address bar", async () => {
+  it("places Home right of the address-bar separator, between it and the path", async () => {
+    // The requested arrangement is `| Responsive ⌄ | (home) /orders`: Home
+    // belongs to the address-bar group, not to the viewport controls, so the
+    // separator has to fall on its LEFT.
     const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
-    render(<PreviewFrame preview={preview} {...defaultProps} />);
+    const { container } = render(<PreviewFrame preview={preview} {...defaultProps} />);
     const device = screen.getByLabelText("Select device viewport");
     const home = screen.getByTitle("Go to preview root");
     // The address-bar chip only renders once the page reports a path.
@@ -517,11 +520,40 @@ describe("PreviewFrame", () => {
       source: iframe.contentWindow,
     }));
     const path = await screen.findByLabelText(/Copy preview URL/);
+    const separators = [...container.querySelectorAll("span")]
+      .filter((el) => el.children.length === 0 && el.textContent === "|");
 
     const follows = (a: Element, b: Element) =>
       (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
     expect(follows(device, home)).toBe(true);
     expect(follows(home, path)).toBe(true);
+    // Exactly one separator sits between the device selector and Home — the
+    // one that opens the address-bar group. Asserting it is what distinguishes
+    // this arrangement from Home sitting inside the viewport-control cluster.
+    expect(separators.filter((s) => follows(device, s) && follows(s, home))).toHaveLength(1);
+    expect(separators.filter((s) => follows(home, s))).toHaveLength(0);
+  });
+
+  it("keeps Home when the page has reported no path at all", async () => {
+    // The separator is rendered by the toolbar rather than by PreviewPath
+    // precisely so this holds: PreviewPath renders nothing without a path, and
+    // a preview with no injected script never reports one — which is exactly
+    // the case where Home's document-load fallback is the only thing that
+    // works. Nesting Home in PreviewPath would hide it there.
+    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    const { container } = render(<PreviewFrame preview={preview} {...defaultProps} />);
+    await screen.findByTitle("Live Preview");
+
+    expect(screen.queryByLabelText(/Copy preview URL/)).not.toBeInTheDocument();
+    const home = screen.getByTitle("Go to preview root");
+    expect(home).toBeEnabled();
+    // ...and still behind its separator, so the layout doesn't shift when a
+    // path finally arrives.
+    const separators = [...container.querySelectorAll("span")]
+      .filter((el) => el.children.length === 0 && el.textContent === "|");
+    expect(separators.some((s) =>
+      (s.compareDocumentPosition(home) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0,
+    )).toBe(true);
   });
 
   it("falls back to a document load at root when Home is clicked and the preview script never loaded", async () => {
