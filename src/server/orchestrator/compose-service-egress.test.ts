@@ -134,6 +134,22 @@ describe("containComposeServices", () => {
     expect(container.unpause).toHaveBeenCalled();
   });
 
+  it("fails closed when the intra-session subnet cannot be reopened", async () => {
+    const events: string[] = [];
+    const { docker, container } = fakeDocker(events);
+    allowSubnets.mockRejectedValueOnce(new Error("subnet rule failed"));
+    await expect(containComposeServices({
+      docker,
+      sessionId: "session-1",
+      sidecarImage: "egress:test",
+      config: { contained: true, extraHosts: [] },
+      serviceNames: ["web"],
+      dnsEnabled: false,
+      proxyEnabled: false,
+    })).rejects.toThrow("egress containment failed for 1 Compose service");
+    expect(container.stop).toHaveBeenCalledWith({ t: 0 });
+  });
+
   it("removes a service left paused by an interrupted containment pass", async () => {
     const events: string[] = [];
     const { docker, container } = fakeDocker(events);

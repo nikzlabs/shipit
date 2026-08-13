@@ -413,6 +413,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
   private containers = new Map<string, SessionContainer>();
   /** Serialize service containment per session; concurrent Compose starts can overlap. */
   private composeEgressRuns = new Map<string, Promise<void>>();
+  private composeServiceNames = new Map<string, string[]>();
   private imageName: string;
   private networkName: string;
   private defaultMemoryLimit: number;
@@ -526,6 +527,37 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     }
   }
 
+  /** Recreate a stale Open/Contained bridge before Compose can reuse it. */
+  async ensureSessionNetworkMode(sessionId: string, internal: boolean): Promise<void> {
+    const network = this.docker.getNetwork(`shipit-session-${sessionId}`);
+    let info: Docker.NetworkInspectInfo;
+    try { info = await network.inspect(); } catch { return; }
+    if ((info.Internal ?? false) === internal) return;
+    await this.resetSessionNetwork(sessionId);
+  }
+
+  /** Remove the NAT endpoint from stopped services before Compose starts them. */
+  async prepareComposeServiceStart(sessionId: string, serviceNames: string[]): Promise<void> {
+    if (!this.isEgressContained(sessionId)) return;
+    const wanted = new Set(serviceNames);
+    const containers = await this.docker.listContainers({
+      all: true,
+      filters: { label: [`shipit-parent-session=${sessionId}`] },
+    });
+    const network = this.docker.getNetwork(`shipit-egress-${sessionId}`);
+    for (const entry of containers) {
+      const serviceName = entry.Labels?.["shipit-service-name"];
+      if (!serviceName || !wanted.has(serviceName) || entry.State === "running" || entry.State === "paused") continue;
+      try {
+        await network.disconnect({ Container: entry.Id, Force: true });
+      } catch (error) {
+        const code = error && typeof error === "object" && "statusCode" in error ? Number(error.statusCode) : 0;
+        const message = error instanceof Error ? error.message : String(error);
+        if (code !== 404 && !/not connected|no such network|not found/i.test(message)) throw error;
+      }
+    }
+  }
+
   /**
    * Apply the owning session's effective egress policy to its running Compose
    * services. Called after every Compose `up`, because that command can replace
@@ -538,6 +570,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     const config = this.resolveEgressConfig?.(sessionId) ?? { contained: true, extraHosts: [] };
     const contained = sc?.egressContainedAtStart ?? config.contained;
     if (!contained) return;
+    if (serviceNames.length > 0) this.composeServiceNames.set(sessionId, [...serviceNames]);
     if (!sidecarImage) {
       throw new Error(
         "Compose egress containment is on but SESSION_EGRESS_SIDECAR_IMAGE is not set",
@@ -625,7 +658,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     // Service sidecars borrow different network namespaces. Refresh each of
     // them with the new effective allowlist as part of the same operation.
     try {
-      await this.containComposeServices(sessionId, [], true);
+      await this.containComposeServices(sessionId, this.composeServiceNames.get(sessionId) ?? [], true);
     } catch (error) {
       console.error(`[egress:${sessionId}] service allowlist refresh failed closed:`, error);
       throw error;

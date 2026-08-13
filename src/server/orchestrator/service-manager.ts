@@ -307,6 +307,10 @@ export interface ServiceManagerOptions {
   containServiceDns?: boolean;
   /** Tier C is active for contained services. */
   containServiceProxy?: boolean;
+  /** Detach stale NAT endpoints before Compose starts stopped containers. */
+  prepareContainedStartFn?: (serviceNames: string[]) => Promise<void>;
+  /** Recreate a reused session network when its internal mode is stale. */
+  ensureSessionNetworkModeFn?: (internal: boolean) => Promise<void>;
   /**
    * Loads user-saved secrets for the session's repo (from SecretStore).
    *
@@ -435,6 +439,8 @@ export class ServiceManager extends EventEmitter {
   private containServicesFn?: (serviceNames: string[]) => Promise<void>;
   private containServiceDns: boolean;
   private containServiceProxy: boolean;
+  private readonly ensureSessionNetworkModeFn?: (internal: boolean) => Promise<void>;
+  private prepareContainedStartFn?: (serviceNames: string[]) => Promise<void>;
   /** docs/183 — external service-env root, for teardown cleanup. */
   private readonly serviceEnvDir: string;
   /**
@@ -606,6 +612,8 @@ export class ServiceManager extends EventEmitter {
     this.containServicesFn = opts.containServicesFn;
     this.containServiceDns = opts.containServiceDns ?? false;
     this.containServiceProxy = opts.containServiceProxy ?? false;
+    this.ensureSessionNetworkModeFn = opts.ensureSessionNetworkModeFn;
+    this.prepareContainedStartFn = opts.prepareContainedStartFn;
     this.serviceEnvDir = opts.serviceEnvDir;
     this.secretsInternalDir = opts.dockerSecretsConfig?.internalDir;
     this.logStore = opts.logStore;
@@ -737,6 +745,7 @@ export class ServiceManager extends EventEmitter {
     containServicesFn: ((serviceNames: string[]) => Promise<void>) | undefined,
     containServiceDns: boolean,
     containServiceProxy: boolean,
+    prepareContainedStartFn?: (serviceNames: string[]) => Promise<void>,
   ): boolean {
     const changed = Boolean(this.containServicesFn) !== Boolean(containServicesFn)
       || this.containServiceDns !== containServiceDns
@@ -744,6 +753,7 @@ export class ServiceManager extends EventEmitter {
     this.containServicesFn = containServicesFn;
     this.containServiceDns = containServiceDns;
     this.containServiceProxy = containServiceProxy;
+    this.prepareContainedStartFn = prepareContainedStartFn;
     return changed;
   }
 
@@ -1076,6 +1086,7 @@ export class ServiceManager extends EventEmitter {
    */
   async start(): Promise<void> {
     this._disposed = false;
+    await this.ensureSessionNetworkModeFn?.(Boolean(this.containServicesFn));
     // Kill any stale compose containers left over from a previous orchestrator
     // run (e.g. ShipIt restart). Uses label filter — no compose files needed.
     try {
@@ -1183,6 +1194,7 @@ export class ServiceManager extends EventEmitter {
       const autoNames = startNow.map(s => s.name);
       if (autoNames.length > 0) {
         await this.withUpInFlight(autoNames, async () => {
+          await this.prepareContainedStartFn?.(autoNames);
           await this.compose.up(autoNames, this.composeLogSink(autoNames));
           await this.containServicesFn?.([...this.services.keys()]);
         });
@@ -1260,6 +1272,7 @@ export class ServiceManager extends EventEmitter {
     this.updateServiceStatus(name, "starting");
     try {
       await this.withUpInFlight([name], async () => {
+        await this.prepareContainedStartFn?.([name]);
         await this.compose.upService(name, this.composeLogSink([name]));
         await this.containServicesFn?.([...this.services.keys()]);
       });
@@ -1305,6 +1318,7 @@ export class ServiceManager extends EventEmitter {
       // the service had already been reported stopped (requirement 5).
       if (this.stoppedByUser.has(name)) return;
       await this.withUpInFlight([name], async () => {
+        await this.prepareContainedStartFn?.([name]);
         await this.compose.upService(name, this.composeLogSink([name]));
         await this.containServicesFn?.([...this.services.keys()]);
       });
@@ -1676,6 +1690,7 @@ export class ServiceManager extends EventEmitter {
     if (autoNames.length === 0) return;
     try {
       await this.withUpInFlight(autoNames, async () => {
+        await this.prepareContainedStartFn?.(autoNames);
         await this.compose.up(autoNames, this.composeLogSink(autoNames));
         await this.containServicesFn?.([...this.services.keys()]);
       });
@@ -1857,6 +1872,7 @@ export class ServiceManager extends EventEmitter {
     if (this.stoppedByUser.has(name)) return;
     try {
       await this.withUpInFlight([name], async () => {
+        await this.prepareContainedStartFn?.([name]);
         await this.compose.upService(name, this.composeLogSink([name]));
         await this.containServicesFn?.([...this.services.keys()]);
       });
@@ -1956,6 +1972,7 @@ export class ServiceManager extends EventEmitter {
     if (this._disposed) return;
     try {
       await this.withUpInFlight(names, async () => {
+        await this.prepareContainedStartFn?.(names);
         await this.compose.up(names, this.composeLogSink(names));
         await this.containServicesFn?.([...this.services.keys()]);
       });

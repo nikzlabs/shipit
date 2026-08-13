@@ -83,6 +83,7 @@ export function adoptExistingServiceManager(
     containServiceDns?: boolean;
     containServiceProxy?: boolean;
     resetSessionNetwork?: () => Promise<void>;
+    prepareContainedStartFn?: (serviceNames: string[]) => Promise<void>;
   },
 ): void {
   const { serviceManagers, composeStopPromises, containerManager, broadcastLog, installPromise, secretsLoader } = deps;
@@ -100,23 +101,22 @@ export function adoptExistingServiceManager(
     mgr.setSecretsLoader(secretsLoader);
   }
 
+  // Bind errors before starting any asynchronous adoption work so a policy
+  // transition failure is visible to the session.
+  const stackErrorListener = (err: Error) => {
+    handleStackError(runner, err, broadcastLog);
+  };
+  mgr.on("stack_error", stackErrorListener);
+
   // Some injected test doubles predate this optional lifecycle seam.
   const containmentChanged = typeof mgr.updateEgressContainment === "function"
     ? mgr.updateEgressContainment(
         deps.containServicesFn,
         deps.containServiceDns ?? false,
         deps.containServiceProxy ?? false,
+        deps.prepareContainedStartFn,
       )
     : false;
-  if (containmentChanged) {
-    void (async () => {
-      await deps.resetSessionNetwork?.();
-      await mgr.reconcile();
-    })().catch((error: unknown) => {
-      console.error(`[compose:${runner.sessionId}] containment-policy reconcile failed:`, getErrorMessage(error));
-    });
-  }
-
   // 2. Reconnect the new agent container to the existing compose network.
   //    The old container was destroyed; the network outlived it (compose
   //    only removes networks on `down`, which we deliberately skipped).
@@ -142,24 +142,37 @@ export function adoptExistingServiceManager(
     // eslint-disable-next-line no-restricted-syntax -- fire-and-forget after async readiness signal
     void runner
       .whenWorkerReady()
-      .then(() => containerManager.connectToNetwork(runner.sessionId, networkName))
+      .then(async () => {
+        if (containmentChanged) {
+          await deps.resetSessionNetwork?.();
+          await mgr.reconcile();
+        }
+        await containerManager.connectToNetwork(runner.sessionId, networkName);
+      })
       .catch((err: unknown) => {
         const msg = err instanceof Error ? err.message : String(err);
-        if (!msg.includes("already exists")) {
-          console.warn(
-            `[compose:${runner.sessionId}] reconnect to ${networkName} failed:`,
-            msg,
-          );
+        if (msg.includes("already exists")) return;
+        const error = err instanceof Error ? err : new Error(msg);
+        mgr.emit("stack_error", error);
+        // A failed Open→Contained transition must not leave the prior open
+        // stack running. Preserve its volumes for a later retry.
+        if (containmentChanged && deps.containServicesFn) {
+          void mgr.stop().catch((stopError: unknown) => {
+            mgr.emit("stack_error", stopError instanceof Error ? stopError : new Error(String(stopError)));
+          });
         }
       });
+  } else if (containmentChanged) {
+    void (async () => {
+      await deps.resetSessionNetwork?.();
+      await mgr.reconcile();
+    })().catch((error: unknown) => {
+      mgr.emit("stack_error", error instanceof Error ? error : new Error(getErrorMessage(error)));
+    });
   }
 
   // 3. Re-bind stack_error to the new runner so error logs route to the
   //    right place.
-  const stackErrorListener = (err: Error) => {
-    handleStackError(runner, err, broadcastLog);
-  };
-  mgr.on("stack_error", stackErrorListener);
 
   // 4. Re-arm the install-running gate for the new container's install.
   //    Same race story as initial setup: a compose service that reads
@@ -561,6 +574,9 @@ export function setupServiceManager(
       resetSessionNetwork: containerManager
         ? async () => containerManager.resetSessionNetwork(runner.sessionId)
         : undefined,
+      prepareContainedStartFn: containerManager?.isEgressContained(runner.sessionId)
+        ? async (serviceNames: string[]) => containerManager.prepareComposeServiceStart(runner.sessionId, serviceNames)
+        : undefined,
     });
     // Clear any stale migration warning — compose is now set up (still).
     composeWarnings.delete(runner.sessionId);
@@ -616,6 +632,12 @@ export function setupServiceManager(
       : undefined,
     containServiceDns: containerManager?.isEgressDnsContained(runner.sessionId) ?? false,
     containServiceProxy: containerManager?.isEgressProxyContained(runner.sessionId) ?? false,
+    ensureSessionNetworkModeFn: containerManager
+      ? async (internal: boolean) => containerManager.ensureSessionNetworkMode(runner.sessionId, internal)
+      : undefined,
+    prepareContainedStartFn: containerManager?.isEgressContained(runner.sessionId)
+      ? async (serviceNames: string[]) => containerManager.prepareComposeServiceStart(runner.sessionId, serviceNames)
+      : undefined,
   });
 
   serviceManagers.set(runner.sessionId, mgr);

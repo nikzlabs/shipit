@@ -110,6 +110,29 @@ describe("ServiceManager", () => {
     expect(mgr.started).toBe(false);
   });
 
+  it("detaches stale egress before up and contains the service after up", async () => {
+    const dir = setup();
+    writeCompose(dir, "services:\n  web:\n    image: node:20\n    x-shipit-preview: manual\n");
+    const events: string[] = [];
+    const mgr = new ServiceManager({
+      sessionId: "test-session",
+      workspaceDir: dir,
+      serviceEnvDir: serviceEnvOf(dir),
+      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeRunner: async (args) => {
+        if (args.includes("up")) events.push("up");
+      },
+      composeQuery: emptyComposeQuery,
+      pollIntervalMs: 0,
+      prepareContainedStartFn: async () => { events.push("prepare"); },
+      containServicesFn: async () => { events.push("contain"); },
+    });
+    await mgr.start();
+    await mgr.startService("web");
+    expect(events).toEqual(["prepare", "up", "contain"]);
+    await mgr.stop();
+  });
+
   it("rejects invalid compose files during start", async () => {
     const dir = setup();
     writeCompose(dir, "services:\n  web:\n    image: node:20\n    privileged: true\n");

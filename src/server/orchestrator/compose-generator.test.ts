@@ -419,8 +419,10 @@ describe("generateComposeOverride", () => {
     expect(override).toContain("internal: true");
     expect(override).toContain("127.0.0.1");
     expect(override).toContain("networks: !override");
+    expect(override).toContain("dns: !override");
     expect(override).toContain("restart: no");
     expect(override).toContain("no-new-privileges");
+    expect(override).toContain("cap_drop:\n      - NET_RAW\n      - SETUID\n      - SETGID");
     expect(override).toContain("net.ipv4.conf.all.route_localnet: \"1\"");
 
     const openOverride = generateComposeOverride(
@@ -429,6 +431,16 @@ describe("generateComposeOverride", () => {
     );
     expect(openOverride).not.toContain("internal: true");
     expect(openOverride).not.toContain("127.0.0.1");
+    expect(openOverride).not.toContain("SETUID");
+  });
+
+  it("overrides repository DNS in contained mode", () => {
+    const override = generateComposeOverride(
+      [{ name: "web", ports: ["5173:5173"] }],
+      { ...baseOpts, containEgress: true, containDns: true },
+    );
+    expect(override).toContain("dns: !override\n      - 127.0.0.1");
+    expect(override).toContain("user: 1000:1000");
   });
 
   it("labels manual services without adding profiles", () => {
