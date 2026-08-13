@@ -256,6 +256,24 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
   // value are swept by `steady-state-reclaim.ts` on the periodic pass, planning#198).
   const coldDays = deps.coldArtifactRetentionDays ?? COLD_ARTIFACT_RETENTION_DAYS;
 
+  // docs/262 — plugin install containers and their generation volumes. FIRST,
+  // and the order is load-bearing: the volume sweep below filters on
+  // `dangling=true`, so a volume an orphaned install container still holds is
+  // invisible to it — and by the next boot, when it finally is dangling, that
+  // sweep deliberately preserves every volume belonging to a live session.
+  // Reaping here is also liveness-free, unlike the sweeps below: an install
+  // cannot outlive the process that awaited it, so at boot any survivor is an
+  // orphan.
+  if (deps.docker) {
+    try {
+      result.orphanPluginInstallsRemoved = await reapOrphanPluginInstalls(
+        deps.docker, { paceMs },
+      );
+    } catch (err) {
+      console.warn("[disk-janitor] orphan plugin-install sweep failed:", getMessage(err));
+    }
+  }
+
   try {
     result.orphanVolumesRemoved = await sweepOrphanSessionVolumes(
       deps.sessionManager, runDocker, paceMs,
@@ -320,18 +338,6 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
       );
     } catch (err) {
       console.warn("[disk-janitor] orphan egress-sidecar sweep failed:", getMessage(err));
-    }
-
-    // docs/262 — plugin install containers. Same liveness-free test as above,
-    // for a stronger reason: an install cannot outlive the process that awaited
-    // it, so at boot any survivor is an orphan — and it holds its generation's
-    // overlay volume open until it is removed.
-    try {
-      result.orphanPluginInstallsRemoved = await reapOrphanPluginInstalls(
-        deps.docker, { paceMs },
-      );
-    } catch (err) {
-      console.warn("[disk-janitor] orphan plugin-install sweep failed:", getMessage(err));
     }
   }
 

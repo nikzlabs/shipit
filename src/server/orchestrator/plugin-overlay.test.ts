@@ -88,7 +88,7 @@ describe("pluginOverlayVolumeName", () => {
 
   it("keeps the session-prefixed shape orphan collection looks for", () => {
     expect(pluginOverlayVolumeName(base.sessionId, "tools", base.commit))
-      .toMatch(/^shipit-0123abcd-456_plugin-tools-a{12}$/);
+      .toMatch(/^shipit-0123abcd-456_plugin-tools-[0-9a-f]{8}-a{12}$/);
   });
 
   // Verified against the sweep itself, not against the convention as described:
@@ -104,6 +104,6 @@ describe("pluginOverlayVolumeName", () => {
 
   it("renders an awkward repo name into something a volume name can hold", () => {
     expect(pluginOverlayVolumeName(base.sessionId, "My Tools/v2!", base.commit))
-      .toMatch(/^shipit-0123abcd-456_plugin-my-tools-v2-a{12}$/);
+      .toMatch(/^shipit-0123abcd-456_plugin-my-tools-v2-[0-9a-f]{8}-a{12}$/);
   });
 });

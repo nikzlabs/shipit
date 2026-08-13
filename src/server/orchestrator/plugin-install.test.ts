@@ -24,7 +24,9 @@ import {
   installStampPath,
   reapOrphanPluginInstalls,
   PLUGIN_INSTALL_DIR,
+  PLUGIN_INSTALL_NETWORK,
 } from "./plugin-install.js";
+import { clearUntrustedContainerNetworks, isUntrustedContainerIp } from "./api-container-guard.js";
 import { pluginWorkDir } from "./plugin-overlay.js";
 import type { PluginInstallJob } from "./plugin-generations.js";
 import type { PluginExport } from "../shared/plugin-repos.js";
@@ -54,19 +56,53 @@ interface CreatedContainer {
  * install container ends: a number is its status code, `"hang"` never finishes
  * on its own (so the timeout path has something to kill).
  */
-function fakeDocker(opts: { exit?: number | "hang"; logs?: string | Buffer } = {}) {
+function fakeDocker(opts: { exit?: number | "hang"; logs?: string | Buffer; heldVolume?: boolean } = {}) {
   const containers: CreatedContainer[] = [];
   const createdVolumes: { Name: string; DriverOpts?: Record<string, string> }[] = [];
   const removedVolumes: string[] = [];
+  // A volume "exists" unless we removed it — so the workspace volume, which
+  // this fake never creates, still inspects fine (the daemon-path translation
+  // reads its mountpoint).
+  const deleted = new Set<string>();
+  const live = new Set<string>();
+  const networksCreated: string[] = [];
+
+  const notFound = (): never => {
+    throw Object.assign(new Error("no such thing"), { statusCode: 404 });
+  };
 
   const docker = {
+    // The install network is created once and inspected for its subnet, which
+    // is what gets declared untrusted.
+    getNetwork: (name: string) => ({
+      inspect: async () => {
+        if (!networksCreated.includes(name)) notFound();
+        return { IPAM: { Config: [{ Subnet: "172.28.0.0/16" }] } };
+      },
+    }),
+    createNetwork: async (spec: { Name: string }) => {
+      networksCreated.push(spec.Name);
+    },
     createVolume: async (spec: { Name: string; DriverOpts?: Record<string, string> }) => {
       createdVolumes.push(spec);
+      deleted.delete(spec.Name);
+      live.add(spec.Name);
     },
+    listVolumes: async () => ({
+      Volumes: [...live].filter((n) => !deleted.has(n)).map((Name) => ({ Name })),
+    }),
     getVolume: (name: string) => ({
-      inspect: async () => ({ Mountpoint: `/var/lib/docker/volumes/${name}/_data` }),
+      inspect: async () => {
+        if (deleted.has(name)) notFound();
+        return { Mountpoint: `/var/lib/docker/volumes/${name}/_data` };
+      },
       remove: async () => {
         removedVolumes.push(name);
+        // `heldVolume` models a container still holding it: the removal is
+        // accepted and the volume is still there afterwards.
+        if (opts.heldVolume) return;
+        live.delete(name);
+        deleted.add(name);
       },
     }),
     createContainer: async (createOpts: Record<string, unknown>) => {
@@ -91,7 +127,13 @@ function fakeDocker(opts: { exit?: number | "hang"; logs?: string | Buffer } = {
       };
     },
   };
-  return { docker: docker as unknown as Docker, containers, createdVolumes, removedVolumes };
+  return {
+    docker: docker as unknown as Docker,
+    containers,
+    createdVolumes,
+    removedVolumes,
+    networksCreated,
+  };
 }
 
 let stateDir: string;
@@ -110,8 +152,14 @@ beforeEach(() => {
 
 afterEach(() => {
   fs.rmSync(stateDir, { recursive: true, force: true });
+  clearUntrustedContainerNetworks();
   vi.unstubAllEnvs();
 });
+
+/** The runner over a hand-modified fake daemon. */
+function run2(docker: Docker) {
+  return createPluginInstallRunner({ docker, image: "worker:test", sessionId: "s1", stateDir });
+}
 
 // --- pure helpers -----------------------------------------------------------
 
@@ -160,9 +208,9 @@ describe("createPluginInstallRunner", () => {
     expect(env).not.toContain("GITHUB_TOKEN");
     expect(env).not.toMatch(/WORKER|CREDENTIAL|SHIPIT_SESSION/i);
     expect(opts.Env).toContain(`SHIPIT_PLUGIN_COMMIT=${COMMIT}`);
-    // Never the session's network — a plugin's install cannot reach its
-    // services or its worker.
-    expect(opts.HostConfig.NetworkMode).toBe("bridge");
+    // Its own network, never a session's and never the default bridge — see
+    // the dedicated test below for why that distinction is the security fix.
+    expect(opts.HostConfig.NetworkMode).toBe(PLUGIN_INSTALL_NETWORK);
     // The worker entrypoint is bypassed: it prepares session mounts this
     // container deliberately does not have.
     expect(opts.Entrypoint).toEqual(["/bin/sh", "-c"]);
@@ -297,6 +345,83 @@ describe("createPluginInstallRunner", () => {
     // overlay volume, which then cannot be removed either.
     expect(await reapOrphanPluginInstalls(docker)).toBe(1);
     expect(removed).toEqual(["abc123"]);
+  });
+
+  // The finding this encodes: on ANY unregistered network the orchestrator's
+  // container-origin guard reads the source IP as a trusted browser/host
+  // caller, so the install could have asked
+  // /api/sessions/<id>/git/credential for a real GitHub token — more API
+  // reach than the agent container it was isolated from.
+  it("denies its own subnet at the orchestrator API before any container joins", async () => {
+    clearUntrustedContainerNetworks();
+    const { docker, networksCreated } = fakeDocker();
+    const run = createPluginInstallRunner({ docker, image: "worker:test", sessionId: "s1", stateDir });
+
+    expect(isUntrustedContainerIp("172.28.0.7")).toBe(false);
+    await run(job([exportWith("probe", "npm ci")]));
+
+    expect(networksCreated).toEqual([PLUGIN_INSTALL_NETWORK]);
+    expect(isUntrustedContainerIp("172.28.0.7")).toBe(true);
+    // A session container's own bridge address is untouched by this.
+    expect(isUntrustedContainerIp("172.18.0.4")).toBe(false);
+  });
+
+  it("refuses to install when its network has no subnet it can deny", async () => {
+    clearUntrustedContainerNetworks();
+    const { docker, containers } = fakeDocker();
+    // A network that reports no IPv4 subnet — nothing to register, so
+    // nothing may run: fail closed.
+    (docker as unknown as { getNetwork: (n: string) => unknown }).getNetwork = () => ({
+      inspect: async () => ({ IPAM: { Config: [] } }),
+    });
+
+    const result = await run2(docker)(job([exportWith("probe", "npm ci")]));
+    expect(result.ok).toBe(false);
+    expect(result.reason).toContain("no IPv4 subnet");
+    expect(containers).toHaveLength(0);
+  });
+
+  it("fails the install when the layer's volume cannot be released", async () => {
+    // Publishing here would produce a generation whose runtime mount cannot be
+    // built: the kernel forbids a second mount over the held upperdir.
+    const { docker } = fakeDocker({ heldVolume: true });
+    const result = await createPluginInstallRunner({
+      docker, image: "worker:test", sessionId: "s1", stateDir,
+    })(job([exportWith("probe", "npm ci")]));
+
+    expect(result.ok).toBe(false);
+    expect(result.reason).toContain("could not be released");
+    expect(fs.existsSync(installStampPath(stateDir, "tools", COMMIT))).toBe(false);
+  });
+
+  it("stops a running install when its session goes away", async () => {
+    const { docker, containers } = fakeDocker({ exit: "hang" });
+    let gone = false;
+    const run = createPluginInstallRunner({
+      docker, image: "worker:test", sessionId: "s1", stateDir, timeoutMs: 60_000,
+    });
+    const running = run({ ...job([exportWith("probe", "sleep 9999")]), isCancelled: () => gone });
+    // Let the wait loop take at least one poll slice.
+    await new Promise((r) => setTimeout(r, 30));
+    gone = true;
+
+    const result = await running;
+    expect(result.ok).toBe(false);
+    expect(result.reason).toContain("session went away");
+    expect(containers[0]!.killed).toBe(true);
+  });
+
+  it("does not start the next export's install once the session is gone", async () => {
+    const { docker, containers } = fakeDocker();
+    const result = await createPluginInstallRunner({
+      docker, image: "worker:test", sessionId: "s1", stateDir,
+    })({
+      ...job([exportWith("a", "npm ci"), exportWith("b", "npm ci")]),
+      isCancelled: () => containers.length >= 1,
+    });
+
+    expect(containers).toHaveLength(1);
+    expect(result.ok).toBe(false);
   });
 
   it("translates the layer onto the daemon's view of the state volume", async () => {

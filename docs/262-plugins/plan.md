@@ -223,14 +223,40 @@ plugin commit, the install string, or the content of the manifest's
 generation's overlay volume at `/plugin` as its ONLY mount, `cwd` there, the
 session-worker image for its toolchain with its ENTRYPOINT bypassed (that
 script prepares session mounts this container does not have), an environment
-of exactly `SHIPIT_PLUGIN_COMMIT` + `HOME=/tmp`, the default bridge network,
-all capabilities dropped, `no-new-privileges`, a memory and PID ceiling, and a
-timeout. It runs as the session-worker UID — which is why the staging checkout
+of exactly `SHIPIT_PLUGIN_COMMIT` + `HOME=/tmp`, all capabilities dropped,
+`no-new-privileges`, a memory and PID ceiling, and a timeout.
+
+**And its own network — which is a security control, not tidiness** (review
+finding, this round). "Not the session's network" is not enough. Install needs
+outbound access (`npm ci` fetches), outbound includes the host gateway, and
+ShipIt's own API is published there. `api-container-guard.ts` identifies a
+container by its source IP and reads *anything it does not recognise* as a
+browser or host caller — so an install container on the default bridge would
+have had MORE API reach than the agent container it was isolated from: list
+sessions, then ask `/api/sessions/<id>/git/credential`, which returns a real
+GitHub token. The fix is a dedicated network whose whole subnet is declared
+untrusted to that guard, and the subnet is registered when the network is
+created rather than per container after it starts — otherwise the first
+request, which is the one worth making, arrives before the registration. It
+fails closed: no registerable subnet, no install.
+
+The general question of what plugin code may reach *outbound* — the manifest's
+`hosts:` as an enforced allowlist rather than an informational one — is req
+24's open decision, and it now covers this container as well as plugin
+services. What is settled is that ShipIt's own API is not reachable from it. It runs as the session-worker UID — which is why the staging checkout
 is handed to that UID first: overlayfs takes the merged directory's
 permissions from the LOWER dir, so a root-owned checkout would leave the
 plugin root unwritable and every install would fail at its first file. That
 handoff is also what covers a generation staged *after* the session container
 booted, which the entrypoint's boot-time chown cannot reach.
+
+**A runtime with no install runner activates, and says so.** Local/dogfood mode
+has no Docker, so nothing can run a plugin's install there. The generation is
+published anyway — that runtime has to be able to exercise a plugin at all —
+but a selected export with an `install:` it never ran makes the generation
+partial, so the card carries "active but was not installed" rather than a plain
+`active`. Req 13's rule is "degrade visibly", not "refuse" (review finding, this
+round: this path silently reported a partial generation as fully active).
 
 For a consumer generation the commit determines every input, so the stamp is
 not what decides a re-install — a new commit is a new generation and a new
@@ -447,12 +473,16 @@ coherent in one UI.
 - ✓ `src/server/orchestrator/plugin-install.ts` — the throwaway install
   container: the generation's overlay volume at `/plugin` and nothing else, the
   worker image for its toolchain with its entrypoint bypassed, no inherited
-  environment, no session network, capabilities dropped, bounded by a timeout.
-  Injected into `activateGeneration` as `runInstall` from `bootstrap-managers`,
-  so neither the generation engine nor the activation service executes
-  plugin-authored code. Also owns the boot-time reap of install containers a
-  previous process left behind — one holds its generation's volume open, so an
-  orphan blocks the next activation of that commit.
+  environment, capabilities dropped, bounded by a timeout, and its own network
+  whose subnet is denied at ShipIt's API (see §1b). Injected into
+  `activateGeneration` as `runInstall` from `bootstrap-managers`, so neither the
+  generation engine nor the activation service executes plugin-authored code.
+  Also owns the boot-time reap of install containers **and generation volumes**
+  a previous process left behind: no existing sweep covers them (the janitor's
+  volume pass filters on `dangling=true`, which an attached volume is not, and
+  on a later boot it preserves everything belonging to a live session), and an
+  orphan holds the volume open so the next activation of that commit cannot
+  rebuild the mount. It runs BEFORE the janitor's volume pass for that reason.
 - ✓ `src/server/orchestrator/api-routes-plugin-repos.ts` — browser snapshot
   (the GET exists; refresh endpoints come with generation mechanics); tracker
   registration folds into the existing trackers registry

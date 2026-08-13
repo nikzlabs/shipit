@@ -38,15 +38,17 @@
  * the rename that made it reachable.
  */
 
+import crypto from "node:crypto";
 import path from "node:path";
 import type Docker from "dockerode";
 import {
   createOverlayVolume,
   removeOverlayVolume,
   resolveVolumeMountpoint,
+  volumeExists,
   type OverlaySpec,
 } from "./overlay-volume.js";
-import { pluginsRoot } from "./plugin-generations.js";
+import { pluginsRoot, WORK_SUBDIR } from "./plugin-generations.js";
 
 /** Marks a volume as belonging to one plugin generation, for orphan cleanup. */
 export const PLUGIN_OVERLAY_LABEL = "shipit-plugin-generation";
@@ -73,17 +75,33 @@ export interface PluginOverlaySpec extends OverlaySpec {
  * reclaimed — it would simply accumulate.
  */
 export function pluginOverlayVolumeName(sessionId: string, repoName: string, commit: string): string {
-  return `shipit-${sessionId.slice(0, 12)}_plugin-${safeSegment(repoName)}-${commit.slice(0, 12)}`;
+  return `shipit-${sessionId.slice(0, 12)}_plugin-${safeSegment(repoName)}-${nameHash(repoName)}-${commit.slice(0, 12)}`;
 }
 
-/** A volume-name-safe rendering of a declared repo name. */
+/**
+ * A volume-name-safe rendering of a declared repo name, for READING — the hash
+ * beside it is what makes the name unique.
+ *
+ * The rendering is lossy: `foo.bar` and `foo-bar` are both legal declarations
+ * (`plugin-repos.ts`) and both render to `foo-bar`. Two such repositories in
+ * one session that resolve to commits sharing a 12-character prefix — forks of
+ * one history, which is the ordinary case for a fork — would then have received
+ * the SAME volume name over different lower and upper dirs, so activating one
+ * would delete or corrupt the other's. Req 14 says repositories fail
+ * independently; sharing a name is the opposite of independent.
+ */
 function safeSegment(name: string): string {
   return name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "repo";
 }
 
+/** Disambiguates names the segment rendering flattens together. */
+function nameHash(name: string): string {
+  return crypto.createHash("sha256").update(name).digest("hex").slice(0, 8);
+}
+
 /** Where a generation's writable layer lives, as the orchestrator sees it. */
 export function pluginWorkDir(stateDir: string, repoName: string, commit: string): string {
-  return path.join(pluginsRoot(stateDir), repoName, "work", commit);
+  return path.join(pluginsRoot(stateDir), repoName, WORK_SUBDIR, commit);
 }
 
 /**
@@ -161,11 +179,25 @@ export async function createPluginOverlay(docker: Docker, spec: PluginOverlaySpe
 }
 
 /**
- * Drop a generation's volume. Called before re-creating one over the same upper
- * layer with a different lowerdir (staging → published), and when a generation
- * is pruned. Removing the volume does NOT remove the upper layer — that is an
- * ordinary directory, and it is what carries install output across the rename.
+ * Drop a generation's volume, and say whether it is actually gone. Called
+ * before re-creating one over the same upper layer with a different lowerdir
+ * (staging → published), and when a generation is pruned. Removing the volume
+ * does NOT remove the upper layer — that is an ordinary directory, and it is
+ * what carries install output across the rename.
+ *
+ * **The return value matters.** `removeOverlayVolume` is deliberately
+ * best-effort: it swallows a 409 (still in use) because for a session's own
+ * teardown the orphan sweep is a sufficient backstop. Here it is not — a volume
+ * that is still held cannot be re-created over the same upperdir, so the caller
+ * must not publish a generation whose runtime mount would then be unbuildable.
+ * Verify rather than assume.
  */
-export async function removePluginOverlay(docker: Docker, volumeName: string): Promise<void> {
+export async function removePluginOverlay(docker: Docker, volumeName: string): Promise<boolean> {
   await removeOverlayVolume(docker, volumeName);
+  try {
+    return !(await volumeExists(docker, volumeName));
+  } catch {
+    // The daemon could not answer; treat an unknown state as "still held".
+    return false;
+  }
 }

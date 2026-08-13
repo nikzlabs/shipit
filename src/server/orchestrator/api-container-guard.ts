@@ -12,6 +12,17 @@
  * cannot spoof another. Browser/host callers (which arrive via the deployment
  * access layer, never from a session container's bridge IP) are left untouched.
  *
+ * **That last sentence is a premise, not a fact, and it has to be maintained.**
+ * "Not a known session container" is read as "browser or host", so a container
+ * ShipIt runs but never registers is treated as MORE trusted than a session —
+ * it skips all three layers below. docs/262's plugin install container found
+ * that edge: it runs third-party code and is on its own network, so it is in
+ * no session's IP map. {@link registerUntrustedContainerNetwork} is the
+ * counterpart for that class of caller — a whole subnet declared untrusted, so
+ * a container is denied from the moment it can send a packet rather than from
+ * whenever the orchestrator gets around to registering its address. Any future
+ * container that runs code ShipIt did not write belongs on such a network.
+ *
  * For a container-originated request the guard is **default-deny**: it passes
  * only `/api/sessions/<its-own-session>/<allowlisted-suffix>`, where the
  * allowlist is the set of routes that opted in with
@@ -105,6 +116,69 @@ export function normalizeRemoteIp(remoteAddress: string | undefined): string | n
   return remoteAddress.replace(/^::ffff:/, "");
 }
 
+// ---------------------------------------------------------------------------
+// Untrusted container networks (§0 — denied outright)
+// ---------------------------------------------------------------------------
+
+/**
+ * IPv4 CIDRs whose traffic is denied the whole `/api/*` surface.
+ *
+ * A **subnet**, registered when the network is created, rather than a
+ * per-container IP registered after the container starts: the container could
+ * otherwise make its first request before the orchestrator learned its address,
+ * and that request is exactly the one worth making.
+ *
+ * Process-wide rather than a guard dep, because the network is created lazily —
+ * long after `buildApp()` wired this hook.
+ */
+const untrustedCidrs = new Set<string>();
+
+/** Declare a subnet untrusted. Idempotent; a non-IPv4 CIDR is rejected. */
+export function registerUntrustedContainerNetwork(cidr: string): boolean {
+  if (!parseCidr(cidr)) return false;
+  untrustedCidrs.add(cidr);
+  return true;
+}
+
+/** Test seam — the registry is process-wide by design. */
+export function clearUntrustedContainerNetworks(): void {
+  untrustedCidrs.clear();
+}
+
+/** Whether `ip` falls in any registered untrusted subnet. */
+export function isUntrustedContainerIp(ip: string): boolean {
+  const addr = ipv4ToInt(ip);
+  if (addr === null) return false;
+  for (const cidr of untrustedCidrs) {
+    const parsed = parseCidr(cidr);
+    if (parsed && (addr & parsed.mask) === (parsed.base & parsed.mask)) return true;
+  }
+  return false;
+}
+
+function parseCidr(cidr: string): { base: number; mask: number } | null {
+  const [addr, bitsRaw] = cidr.split("/");
+  const base = addr ? ipv4ToInt(addr) : null;
+  const bits = Number.parseInt(bitsRaw ?? "", 10);
+  if (base === null || !Number.isInteger(bits) || bits < 0 || bits > 32) return null;
+  // `-1 << 32` is 0 in JS's 32-bit shift, not the all-ones a /0 needs.
+  const mask = bits === 0 ? 0 : (-1 << (32 - bits)) >>> 0;
+  return { base, mask };
+}
+
+function ipv4ToInt(ip: string): number | null {
+  const parts = ip.split(".");
+  if (parts.length !== 4) return null;
+  let value = 0;
+  for (const part of parts) {
+    if (!/^\d{1,3}$/.test(part)) return null;
+    const n = Number(part);
+    if (n > 255) return null;
+    value = (value * 256) + n;
+  }
+  return value >>> 0;
+}
+
 /**
  * Extract the session id from the `/api/sessions/<id>/...` path segment, or
  * `null` if the path isn't session-scoped. Used for the own-session check.
@@ -165,10 +239,21 @@ export function registerContainerOriginGuard(
   const { containerManager } = deps;
 
   app.addHook("onRequest", async (request, reply) => {
+    const ip = normalizeRemoteIp(request.socket.remoteAddress);
+
+    // §0 — a declared-untrusted network gets nothing at all, not even the
+    // per-route opt-in. Checked BEFORE the container-manager guard below, so it
+    // holds in every runtime mode: the caller runs third-party code, and there
+    // is no `/api/*` route it has a reason to reach.
+    if (ip && isUntrustedContainerIp(ip)) {
+      return reply
+        .code(403)
+        .send({ error: "This endpoint is not available to session containers." });
+    }
+
     // Inert without an IP→session map (no real containers to gate).
     if (!containerManager) return;
 
-    const ip = normalizeRemoteIp(request.socket.remoteAddress);
     const caller = ip ? containerManager.getSessionByContainerIp(ip) : undefined;
     // Not a known session container → browser/host origin → unchanged.
     if (!caller) return;

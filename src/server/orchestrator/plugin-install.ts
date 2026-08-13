@@ -47,11 +47,30 @@ import {
   pluginWorkDir,
   removePluginOverlay,
   resolvePluginOverlayRoots,
+  PLUGIN_OVERLAY_LABEL,
 } from "./plugin-overlay.js";
 import { chownToSessionWorker, chownTreeToSessionWorker, sessionWorkerUid } from "./session-worker-uid.js";
+import { registerUntrustedContainerNetwork } from "./api-container-guard.js";
 
 /** Where the merged checkout is mounted inside the install container. */
 export const PLUGIN_INSTALL_DIR = "/plugin";
+
+/**
+ * Dedicated network for install containers. Never the default bridge, and
+ * never a session's network.
+ *
+ * Install needs outbound access — `npm ci` fetches. But outbound includes the
+ * host gateway, and ShipIt's own API is published there. The orchestrator's
+ * container-origin guard reads "source IP I do not recognise" as "browser or
+ * host" and lets it straight through, so an install container on any
+ * unregistered network would have had MORE API reach than an agent container:
+ * enumerate sessions, then ask `/api/sessions/<id>/git/credential` for a real
+ * GitHub token. Its own network exists so the whole subnet can be declared
+ * untrusted **before the first container joins it** — registering a container's
+ * address after it starts leaves the first request unguarded, and that request
+ * is precisely the one worth making.
+ */
+export const PLUGIN_INSTALL_NETWORK = "shipit-plugin-install";
 
 /** Stamped on the install container so an orphan is identifiable and sweepable. */
 export const PLUGIN_INSTALL_LABEL = "shipit-plugin-install";
@@ -71,6 +90,10 @@ const INSTALL_PIDS_LIMIT = 512;
 /** How much of a failed install's output travels back into the failure reason. */
 const LOG_TAIL_LINES = 40;
 const REASON_MAX_CHARS = 2000;
+/** How often the wait loop notices a timeout or a disposed session. */
+const CANCELLATION_POLL_MS = 2_000;
+/** How long to wait for a killed container to actually be gone. */
+const REAP_GRACE_MS = 10_000;
 
 export interface PluginInstallDeps {
   docker: Docker;
@@ -146,6 +169,9 @@ export function createPluginInstallRunner(
 
     let spec;
     try {
+      // Before anything else, and fail-closed: an install container ShipIt
+      // cannot deny at its own API is not one to start.
+      await ensureInstallNetwork(deps.docker);
       const roots = await resolvePluginOverlayRoots(deps.docker, deps.workspaceVolume, deps.stateRoot);
       spec = buildPluginOverlaySpec({
         sessionId: deps.sessionId,
@@ -168,21 +194,41 @@ export function createPluginInstallRunner(
       return { ok: false, reason: `could not prepare the plugin's writable layer: ${message(err)}` };
     }
 
+    let outcome: { ok: boolean; reason?: string };
     try {
+      outcome = { ok: true };
       for (const { plugin, command } of commands) {
+        // Between commands as well as before the first: disposal during a long
+        // install must not start the next one.
+        if (job.isCancelled?.()) {
+          outcome = { ok: false, reason: "the session went away during install" };
+          break;
+        }
         const failure = await runInstallContainer(deps, job, spec.volumeName, command);
-        if (failure) return { ok: false, reason: `install for \`${plugin}\` ${failure}` };
+        if (failure) {
+          outcome = { ok: false, reason: `install for \`${plugin}\` ${failure}` };
+          break;
+        }
       }
-      await fsp.writeFile(stampPath, stamp).catch(() => undefined);
-      return { ok: true };
     } catch (err) {
-      return { ok: false, reason: `install could not run: ${message(err)}` };
-    } finally {
-      // Always: the runtime volume for this generation is created over the same
-      // upper layer with the PUBLISHED lowerdir, and two live mounts cannot
-      // share an upperdir. Removing the volume keeps the layer.
-      await removePluginOverlay(deps.docker, spec.volumeName);
+      outcome = { ok: false, reason: `install could not run: ${message(err)}` };
     }
+
+    // The volume MUST go, and whether it went is part of the result. The
+    // runtime volume for this generation is created over the same upper layer
+    // with the PUBLISHED lowerdir, and the kernel forbids two mounts over one
+    // upperdir — so publishing a generation whose install volume is still held
+    // would produce a generation reported active whose runtime mount cannot be
+    // built. A release failure is therefore an install failure, not a warning.
+    const released = await removePluginOverlay(deps.docker, spec.volumeName);
+    if (!released) {
+      return {
+        ok: false,
+        reason: `the plugin's writable layer could not be released (volume ${spec.volumeName} is still held)`,
+      };
+    }
+    if (outcome.ok) await fsp.writeFile(stampPath, stamp).catch(() => undefined);
+    return outcome;
   };
 }
 
@@ -217,6 +263,49 @@ function readStamp(stampPath: string): string | null {
 }
 
 /**
+ * Create the install network if it does not exist, and declare its subnet
+ * untrusted to the orchestrator's API guard.
+ *
+ * **Fails closed.** If the network cannot be created, or it has no IPv4 subnet
+ * to register (the guard's CIDR match is IPv4-only), no install runs — a
+ * container that ShipIt cannot deny at the API is not one to start.
+ *
+ * Idempotent and cheap to repeat: an existing network is inspected rather than
+ * recreated, and registration is a set insert.
+ */
+async function ensureInstallNetwork(docker: Docker): Promise<void> {
+  let info: { IPAM?: { Config?: { Subnet?: string }[] } };
+  try {
+    info = await docker.getNetwork(PLUGIN_INSTALL_NETWORK).inspect();
+  } catch {
+    try {
+      await docker.createNetwork({ Name: PLUGIN_INSTALL_NETWORK, Driver: "bridge" });
+    } catch (err) {
+      // A concurrent create is fine — the inspect below settles it either way.
+      if (errStatus(err) !== 409) throw err;
+    }
+    info = await docker.getNetwork(PLUGIN_INSTALL_NETWORK).inspect();
+  }
+
+  const subnets = (info.IPAM?.Config ?? [])
+    .map((c) => c.Subnet)
+    .filter((s): s is string => Boolean(s));
+  const registered = subnets.filter((s) => registerUntrustedContainerNetwork(s));
+  if (registered.length === 0) {
+    throw new Error(
+      `network ${PLUGIN_INSTALL_NETWORK} has no IPv4 subnet to deny `
+      + `(saw ${subnets.length > 0 ? subnets.join(", ") : "none"})`,
+    );
+  }
+}
+
+function errStatus(err: unknown): number {
+  return err && typeof err === "object" && "statusCode" in err
+    ? (err as { statusCode: number }).statusCode
+    : 0;
+}
+
+/**
  * Run one install command to completion. Returns a failure clause on a
  * non-zero exit or a timeout, and `null` on success.
  */
@@ -247,9 +336,10 @@ async function runInstallContainer(
       // The one mount. `/plugin` is the merged view: pristine checkout below,
       // this generation's writable layer above.
       Binds: [`${volumeName}:${PLUGIN_INSTALL_DIR}`],
-      // The default bridge, never the session's network — a plugin's install
-      // has no business reaching the session's services or its worker.
-      NetworkMode: "bridge",
+      // Its own network (see PLUGIN_INSTALL_NETWORK): never a session's, and
+      // never the default bridge, whose addresses ShipIt's own API guard reads
+      // as a trusted host caller.
+      NetworkMode: PLUGIN_INSTALL_NETWORK,
       AutoRemove: false, // removed below, after the exit code is read
       CapDrop: ["ALL"],
       SecurityOpt: ["no-new-privileges"],
@@ -264,8 +354,9 @@ async function runInstallContainer(
   const timeoutMs = deps.timeoutMs ?? DEFAULT_PLUGIN_INSTALL_TIMEOUT_MS;
   try {
     await container.start();
-    const code = await waitWithTimeout(container, timeoutMs);
+    const code = await waitForExit(container, timeoutMs, job.isCancelled);
     if (code === "timeout") return `did not finish within ${Math.round(timeoutMs / 1000)}s`;
+    if (code === "cancelled") return "was stopped because the session went away";
     if (code !== 0) return `exited ${code}${await logTail(container)}`;
     return null;
   } finally {
@@ -273,37 +364,55 @@ async function runInstallContainer(
   }
 }
 
+/** Sentinel for "the poll slice elapsed" — an exit result is always an object. */
+const TICK = "tick" as const;
+
 /**
- * Wait for the container, killing it if it outstays the timeout. The kill is
- * what resolves the underlying `wait()`, so the container is always reaped —
- * abandoning the promise would leave it running with the volume attached, and
- * the volume could then not be removed.
+ * Wait for the container, stopping it when it outstays the timeout or when its
+ * session goes away.
+ *
+ * **The post-kill wait is bounded too.** The obvious shape — kill, then await
+ * the same `wait()` promise — assumes the kill worked. A kill that fails (a
+ * daemon hiccup, a container in a state Docker will not signal) leaves that
+ * promise unresolved forever, and a nominal ten-minute timeout becomes an
+ * unbounded hang holding the repository's activation queue and the generation's
+ * volume. So the reap has its own deadline, and the caller treats "stopped, we
+ * think" as a failure either way.
  */
-async function waitWithTimeout(
+async function waitForExit(
   container: Docker.Container,
   timeoutMs: number,
-): Promise<number | "timeout"> {
-  let timer: NodeJS.Timeout | undefined;
+  isCancelled?: () => boolean,
+): Promise<number | "timeout" | "cancelled"> {
   const wait = container.wait() as Promise<{ StatusCode?: number }>;
-  // Swallowed here, not at the await: `wait` is raced, so an early rejection
-  // with nothing attached would surface as an unhandled rejection.
+  // Attached immediately: `wait` is raced below, so an early rejection with
+  // nothing listening would surface as an unhandled rejection.
   const settled = wait.catch(() => ({ StatusCode: -1 }));
-  try {
-    const outcome = await Promise.race([
-      settled,
-      new Promise<"timeout">((resolve) => {
-        timer = setTimeout(() => resolve("timeout"), timeoutMs);
-      }),
-    ]);
-    if (outcome !== "timeout") return outcome.StatusCode ?? -1;
-    // Kill, then reap: the kill is what resolves `wait`, and leaving the
-    // container running would hold the volume open so it could not be removed.
-    await container.kill().catch(() => undefined);
-    await settled;
-    return "timeout";
-  } finally {
-    if (timer) clearTimeout(timer);
+
+  const started = Date.now();
+  let stopReason: "timeout" | "cancelled" | null = null;
+  while (stopReason === null) {
+    const slice = Math.min(CANCELLATION_POLL_MS, Math.max(0, timeoutMs - (Date.now() - started)));
+    const outcome = await Promise.race([settled, tickAfter(slice)]);
+    if (outcome !== TICK) return outcome.StatusCode ?? -1;
+    if (isCancelled?.()) stopReason = "cancelled";
+    else if (Date.now() - started >= timeoutMs) stopReason = "timeout";
   }
+
+  // Kill, then reap — but never wait on the kill having worked.
+  await container.kill().catch(() => undefined);
+  await Promise.race([settled, sleep(REAP_GRACE_MS)]);
+  return stopReason;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** `sleep`, resolving to the poll sentinel so it can be raced against an exit. */
+async function tickAfter(ms: number): Promise<typeof TICK> {
+  await sleep(ms);
+  return TICK;
 }
 
 /**
@@ -325,47 +434,67 @@ async function logTail(container: Docker.Container): Promise<string> {
 
 /**
  * Boot-only crash recovery: remove every install container this orchestrator's
- * predecessor left behind.
+ * predecessor left behind, **and every plugin generation volume**.
  *
  * An install is awaited inside one activation, in this process, so it cannot
- * outlive the process that started it — at boot, a container carrying the label
- * is an orphan by definition, whatever state it is in. That makes the test
- * liveness-free, unlike the session sweeps that cross-reference the DB.
+ * outlive the process that started it — at boot, either artifact is an orphan
+ * by definition, whatever state it is in. That makes the test liveness-free,
+ * unlike the session sweeps that cross-reference the DB.
  *
- * Worth reaping rather than leaving to `docker system prune`: a surviving
- * install container still holds its generation's overlay volume, and a held
- * volume cannot be removed — so the generation's writable layer is stuck with
- * it, and the next activation of that commit cannot re-create the mount.
+ * **The volumes have to go with the containers, and no other sweep will do
+ * it.** The disk janitor's orphan-volume pass filters on `dangling=true`, so a
+ * volume an orphaned container still holds is invisible to it; and on the next
+ * boot, when it IS dangling, the same pass deliberately preserves every volume
+ * whose session prefix belongs to a live session. A crashed install's volume
+ * therefore survived every existing sweep. Removing it here is safe precisely
+ * because it is cheap to rebuild: the volume is a mount description over
+ * directories that outlive it, so the next activation re-creates it.
  *
- * Never throws. Returns the number removed.
+ * Ordering matters: this must run BEFORE the janitor's volume pass, or the
+ * volume is still attached when that pass looks.
+ *
+ * Never throws. Returns the number of artifacts removed.
  */
 export async function reapOrphanPluginInstalls(
   docker: Docker,
   opts: { paceMs?: number } = {},
 ): Promise<number> {
-  let containers: { Id: string }[];
+  let removed = 0;
+  const pace = async (): Promise<void> => {
+    if (opts.paceMs) await sleep(opts.paceMs);
+  };
+
   try {
-    containers = await docker.listContainers({
+    const containers = await docker.listContainers({
       all: true,
       filters: { label: [PLUGIN_INSTALL_LABEL] },
     });
-  } catch (err) {
-    // Docker unavailable — this is a backstop, so the orphans simply wait for
-    // the next boot.
-    console.warn("[plugins] could not list install containers:", message(err));
-    return 0;
-  }
-  let removed = 0;
-  for (const { Id } of containers) {
-    try {
-      await docker.getContainer(Id).remove({ force: true });
-      removed++;
-    } catch {
-      // Already gone, or being removed by something else — either is fine.
+    for (const { Id } of containers) {
+      try {
+        await docker.getContainer(Id).remove({ force: true });
+        removed++;
+      } catch {
+        // Already gone, or being removed by something else — either is fine.
+      }
+      await pace();
     }
-    if (opts.paceMs) await new Promise((r) => setTimeout(r, opts.paceMs));
+  } catch (err) {
+    // Docker unavailable — this is a backstop, so the orphans wait for the
+    // next boot. Fall through: the volume pass fails the same way if so.
+    console.warn("[plugins] could not list install containers:", message(err));
   }
-  if (removed > 0) console.log(`[plugins] removed ${removed} orphan install container(s)`);
+
+  try {
+    const volumes = await docker.listVolumes({ filters: { label: [PLUGIN_OVERLAY_LABEL] } });
+    for (const { Name } of volumes.Volumes ?? []) {
+      if (await removePluginOverlay(docker, Name)) removed++;
+      await pace();
+    }
+  } catch (err) {
+    console.warn("[plugins] could not list generation volumes:", message(err));
+  }
+
+  if (removed > 0) console.log(`[plugins] removed ${removed} orphan install artifact(s)`);
   return removed;
 }
 
