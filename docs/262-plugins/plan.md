@@ -357,14 +357,92 @@ instead of a repeat.
   container start costs latency; a credential-blind persistent runner is a
   later optimisation, and `docker exec` into the agent or a service container
   is not an acceptable shortcut — it re-opens the boundary.
-- **Skills** (req 22 — review finding 5): checkout alone discloses nothing —
-  ShipIt's skill listing scans only the workspace skill dirs, and Codex
-  reading `.claude/skills` is observed harness behavior, not a guarantee
-  (docs/209). The design therefore **materializes** each imported plugin's
-  skills into every backend's actual discovery root, namespaced
-  (`plugins--<alias>--<skill>`), without touching project-tracked paths;
-  refresh re-materializes and the agent re-scans on next turn. The docs/209
-  verification rule applies to future backends.
+- **Skills** (req 22 — review finding 5) — **implemented**
+  (`session/plugin-skills.ts`): checkout alone discloses nothing — ShipIt's
+  skill listing scans only the workspace skill dirs, and Codex reading
+  `.claude/skills` is observed harness behavior, not a guarantee (docs/209).
+  Each imported plugin's skills are therefore **materialized** into every
+  backend's actual discovery root, namespaced (`plugins--<alias>--<skill>`),
+  without touching project-tracked paths; refresh re-materializes and the agent
+  re-scans on next turn. The docs/209 verification rule applies to future
+  backends.
+
+  Details the implementation settled, most of them after two independent review
+  rounds found them. **Every** harness root gets a copy,
+  not just the running session's: req 22's "never tied to one backend" is the
+  requirement's own wording, and `skillsDirName` additionally drives ShipIt's
+  skill picker, so a Codex session with the copy only under `.claude` would
+  work in the CLI and be missing from the picker. **The frontmatter `name:` is
+  rewritten** to the namespaced directory name — the scanner takes the
+  invocable name from the frontmatter and only falls back to the directory, so
+  namespacing the directory alone leaves two plugins' `probe` skills both
+  called `probe`. And **"projects never keep copies" is enforced by
+  `.git/info/exclude`**, the per-clone non-tracked ignore list docs/198 already
+  uses for pnpm's relocated store — a project's own `.gitignore` is a tracked
+  file ShipIt does not own, so editing it would be the very "copy kept in sync"
+  the requirement forbids. Copies (not symlinks) follow the marketplace
+  installer: kilobytes of markdown, no dangling-link failure mode, and
+  re-copying is what makes a refresh take effect.
+
+  **Containment is checked with `realpath`, on both sides, before anything is
+  written.** The manifest's own validation is lexical — it rejects `..` and
+  absolute paths in the declared `skills:` value and says nothing about what any
+  *component* of that path is, nor about what a link inside the checkout points
+  at. So a dereferencing copy let a plugin ship `skills/x/assets ->
+  /credentials`, and `skills: pkg/skills` with `pkg` a symlink out of the
+  checkout read somebody else's files entirely — the per-entry copy filter never
+  saw it, because it only inspects what it is handed. The destination has the
+  mirror problem: a project-owned `.claude -> /outside` put every copy beyond
+  the exclude, and checking only the final path component missed it because the
+  directory was created before the check ran. Both sides now resolve fully — the
+  destination against its deepest existing ancestor — before any `mkdir`.
+
+  **Published by rename — which is complete, not atomic.** Prepare runs while a
+  turn may be reading these files, so deleting the live directory and copying
+  into its final path exposes half a tree, and a copy that failed after the
+  delete left an unmarked partial that the ownership check would then refuse to
+  replace, wedging that skill permanently. Staging plus rename fixes both. It
+  does NOT make publication indivisible: `rename(2)` refuses a non-empty
+  destination, so the old copy is removed first and a reader in that gap sees no
+  skill rather than half of one. Absent-then-whole is the failure mode worth
+  having, and calling it "atomic" was an overclaim the second review caught. The
+  staging directories are themselves excluded from git and swept on the next
+  pass, since a killed process cannot run its own cleanup.
+
+  **The marker's content is checked, not its name.** A file called
+  `.shipit-plugin-skill.json` is something a handwritten skill could plausibly
+  contain, and this module deletes what it owns recursively.
+
+  **Duplicate names are rejected; the hash only narrows the odds.** The readable
+  rendering collapses punctuation, so the aliases `foo_bar` and `foo-bar` — both
+  valid, both distinct to the parser's uniqueness check — render identically,
+  and the second copy silently deleted the first. A hash of the exact pair was
+  the first fix and was not enough: the second review produced a real collision
+  at 6 hex digits from under ten thousand crafted candidates (`a-._--_-.b` and
+  `a...-.---b`, reproduced here before being fixed). The width is 12 digits now,
+  but the guarantee is that a plan REFUSES a name already claimed — a hash width
+  is a defence, not a proof.
+
+  **The git exclude names the exact directories**, written from the plan before
+  any of them exists. A `plugins--*` wildcard would also hide whatever the user
+  happens to name that way, and would swallow a marketplace plugin called
+  `plugins--acme` (installed as `plugins--acme__<skill>`), whose own
+  path-scoped `git add` then fails as an ignored path. Two limits are inherent
+  rather than fixed: an ignore rule does not apply to an already-tracked path
+  (an unmarked directory there is refused as foreign, so the copy never
+  happens), and `git add -f` / `git clean -x` / `git stash --all` override any
+  ignore, as they do for `.gitignore`.
+
+  **The block is rewritten in a fixed order, and never widens what it hides.**
+  Sweep stale directories FIRST, then narrow the block, then write — dropping an
+  exclusion while the directory it covers still exists opens a window where a
+  concurrent `git add -A` stages it. The rewrite runs on every pass including
+  the empty one, or a dropped declaration leaves its exclusions installed
+  forever, later hiding a directory the user creates with the same name. And an
+  orphaned BEGIN marker (from an interrupted write) must not let the next
+  rewrite treat everything up to its own END as managed: that deletes the user's
+  own ignore rules in between, which is how someone loses a rule that was
+  keeping a secret out of a commit.
 - **Refresh** (reqs 12, 15 — review finding 1): refresh is **generation
   activation**, never in-place mutation. Stage the new checkout, validate
   the manifest, run install, prepare services — then atomically activate:
@@ -487,10 +565,13 @@ coherent in one UI.
   (the GET exists; refresh endpoints come with generation mechanics); tracker
   registration folds into the existing trackers registry
   (`api-routes-issues.ts`) with destination-based dedup.
-- ✓ `src/server/session/plugin-runtime.ts` — the container half, and ONLY the
-  link surface: it points `/plugins/<name>` at the read-only store mount and
-  removes links the declaration no longer names. It runs no plugin-authored
-  code — install is not here, and must not come back here (§1b).
+- ✓ `src/server/session/plugin-runtime.ts` — the container half: it points
+  `/plugins/<name>` at the read-only store mount, removes links the declaration
+  no longer names, and materializes each imported plugin's skills
+  (`session/plugin-skills.ts`, req 22 — reading each repository's own manifest
+  out of its live checkout, so the orchestrator still says only *when*, never
+  *what*). It runs no plugin-authored code — copying markdown is not running
+  it, and install is not here and must not come back here (§1b).
   Reached over `POST /plugins/prepare` on the worker
   (`session-worker.ts`), which `ContainerSessionRunner.preparePlugins()` calls
   when an activation round settles and when a container becomes ready — the

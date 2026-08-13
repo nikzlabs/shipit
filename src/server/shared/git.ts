@@ -27,7 +27,26 @@ const DEFAULT_WORKSPACE_DIR = "/workspace";
  * read-only fs in tests) must never block clone prep or a commit.
  */
 export function ensurePnpmStoreGitExcluded(repoDir: string): void {
-  const PNPM_STORE_EXCLUDE_ENTRY = ".pnpm-store/";
+  ensureGitExcluded(repoDir, [".pnpm-store/"]);
+}
+
+/**
+ * Append patterns to a clone's `.git/info/exclude`, once each.
+ *
+ * Generalized from the pnpm case above because docs/262 needs the same
+ * property for a second reason: a plugin repository's skills are materialized
+ * into the workspace's skill roots so the agent can find them (req 22), and
+ * "projects never keep copies" means the post-turn `git add -A` must never see
+ * them. Same constraint, same answer — a per-clone, non-tracked ignore list
+ * leaves the committed tree and every tracked file untouched.
+ *
+ * Idempotent, and never throws: a missing or non-writable `.git` (a worktree
+ * pointer file, a read-only fs in tests) must not block clone prep or a
+ * commit. It DOES report whether the entries are in force, because a caller
+ * that is about to write files it promised would stay out of git needs to know
+ * that the promise held — see `plugin-skills.ts`.
+ */
+export function ensureGitExcluded(repoDir: string, entries: readonly string[]): boolean {
   const excludePath = path.join(repoDir, ".git", "info", "exclude");
   try {
     let contents = "";
@@ -36,18 +55,93 @@ export function ensurePnpmStoreGitExcluded(repoDir: string): void {
     } catch {
       // info/exclude may not exist yet — fall through to create it.
     }
-    if (contents.split("\n").some((line) => line.trim() === PNPM_STORE_EXCLUDE_ENTRY)) {
-      return;
-    }
+    const present = new Set(contents.split("\n").map((line) => line.trim()));
+    const missing = entries.filter((entry) => !present.has(entry));
+    if (missing.length === 0) return true;
     fs.mkdirSync(path.dirname(excludePath), { recursive: true });
     const sep = contents.length > 0 && !contents.endsWith("\n") ? "\n" : "";
-    fs.appendFileSync(excludePath, `${sep}${PNPM_STORE_EXCLUDE_ENTRY}\n`);
+    fs.appendFileSync(excludePath, `${sep}${missing.join("\n")}\n`);
+    return true;
   } catch (err) {
     console.warn(
-      `[git] failed to write .pnpm-store exclude to ${excludePath}:`,
+      `[git] failed to write exclude entries to ${excludePath}:`,
       err instanceof Error ? err.message : String(err),
     );
+    return false;
   }
+}
+
+/**
+ * Replace a delimited, ShipIt-owned block inside `.git/info/exclude`.
+ *
+ * {@link ensureGitExcluded} appends and never removes, which is right for a
+ * fixed pattern like `.pnpm-store/`. docs/262's plugin skills need the
+ * opposite: the entries are the EXACT directories materialized right now, so
+ * they change as a declaration changes and stale ones must go.
+ *
+ * Exact names rather than a wildcard is the point. A pattern broad enough to
+ * cover "whatever ShipIt might write" also hides whatever the USER happens to
+ * name that way — an untracked directory of theirs, or a marketplace plugin
+ * whose own path-scoped `git add` would then fail as an ignored path. Listing
+ * what was actually written can hide nothing else.
+ *
+ * Returns whether the block is in force. Never throws. Last writer wins: this
+ * is a read-modify-write with no lock, which is sound here because the only
+ * writers are ShipIt's own prepare pass (serialized per session) and clone
+ * prep, which runs before a container exists.
+ */
+export function ensureGitExcludedBlock(
+  repoDir: string,
+  blockName: string,
+  entries: readonly string[],
+): boolean {
+  const begin = `# BEGIN ${blockName} (managed by ShipIt — do not edit)`;
+  const end = `# END ${blockName}`;
+  const excludePath = path.join(repoDir, ".git", "info", "exclude");
+  try {
+    let contents = "";
+    try {
+      contents = fs.readFileSync(excludePath, "utf-8");
+    } catch {
+      // info/exclude may not exist yet — fall through to create it.
+    }
+    const lines = contents.split("\n");
+    const from = lines.indexOf(begin);
+    // The END must come AFTER the BEGIN we found. Searching the whole file for
+    // it lets a truncated block (a BEGIN with no END, from an interrupted
+    // write) swallow everything up to the NEXT run's END — including the
+    // user's own ignore rules, which is how someone loses a rule that was
+    // keeping a secret out of a commit (review finding). With no matching END,
+    // drop the orphan BEGIN line alone and leave every other line where it is.
+    const to = from === -1 ? -1 : lines.indexOf(end, from + 1);
+    const kept = from === -1
+      ? lines
+      : [...lines.slice(0, from), ...lines.slice(to === -1 ? from + 1 : to + 1)];
+    const block = entries.length > 0 ? [begin, ...entries, end] : [];
+    const next = [...trimTrailingBlanks(kept), ...block].join("\n");
+    const normalized = next.endsWith("\n") || next === "" ? next : `${next}\n`;
+    if (normalized === contents) return true;
+    fs.mkdirSync(path.dirname(excludePath), { recursive: true });
+    // Written via a temp file and renamed: a partial write here is not a
+    // cosmetic problem — a truncated exclude file silently stops ignoring
+    // whatever its lost lines covered.
+    const tmp = `${excludePath}.shipit-tmp-${process.pid}`;
+    fs.writeFileSync(tmp, normalized);
+    fs.renameSync(tmp, excludePath);
+    return true;
+  } catch (err) {
+    console.warn(
+      `[git] failed to write the ${blockName} exclude block to ${excludePath}:`,
+      err instanceof Error ? err.message : String(err),
+    );
+    return false;
+  }
+}
+
+function trimTrailingBlanks(lines: readonly string[]): string[] {
+  const out = [...lines];
+  while (out.length > 0 && out[out.length - 1].trim() === "") out.pop();
+  return out;
 }
 
 export interface GitCommitInfo {

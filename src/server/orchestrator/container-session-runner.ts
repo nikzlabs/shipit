@@ -1687,9 +1687,18 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     if (this._disposed) return;
     try {
       this.assertWorkerReachable("/plugins/prepare");
-      await workerPost(this.workerUrl, "/plugins/prepare", undefined, {
+      const result = await workerPost(this.workerUrl, "/plugins/prepare", undefined, {
         timeoutMs: PLUGIN_PREPARE_TIMEOUT_MS,
-      });
+      }) as { skillsFailed?: { skill: string; reason: string }[] } | undefined;
+      // req 13 — degrade *visibly*. A skill that could not be materialized is
+      // a plugin that silently does less than it says, so the failure has to
+      // leave a trace somewhere; discarding the response body left none at all
+      // (review finding). The Plugins card has no channel for container-side
+      // prepare state yet — that is tracked in the checklist — so the log is
+      // the honest interim, not the destination.
+      for (const failure of result?.skillsFailed ?? []) {
+        console.warn(`[plugins:${this.sessionId}] skill ${failure.skill}: ${failure.reason}`);
+      }
     } catch (err) {
       console.warn(
         `[plugins:${this.sessionId}] container prepare failed:`,

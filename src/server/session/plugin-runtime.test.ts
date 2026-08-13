@@ -8,7 +8,9 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import { preparePlugins } from "./plugin-runtime.js";
+import { namespacedName } from "./plugin-skills.js";
 
 let tmp: string;
 let workspaceDir: string;
@@ -101,7 +103,9 @@ describe("preparePlugins — the agent-facing surface", () => {
 
   it("does nothing when the project declares no plugins", () => {
     fs.writeFileSync(path.join(workspaceDir, "shipit.yaml"), "agent:\n  install: npm install\n");
-    expect(preparePlugins(opts())).toEqual({ linked: [], missing: [], unlinked: [] });
+    expect(preparePlugins(opts())).toEqual({
+      linked: [], missing: [], unlinked: [], skills: [], skillsRemoved: [], skillsFailed: [],
+    });
   });
 
   it("refuses to clobber a real file at the link path", () => {
@@ -113,6 +117,108 @@ describe("preparePlugins — the agent-facing surface", () => {
     const result = preparePlugins(opts());
     expect(result.linked).toEqual([]);
     expect(fs.readFileSync(path.join(pluginsDir, "tools"), "utf8")).toBe("not ours");
+  });
+});
+
+describe("preparePlugins — skills (req 22)", () => {
+  const SKILLS_MANIFEST = "exports:\n  plugins:\n    probe:\n      skills: pkg/skills\n";
+
+  it("materializes an imported plugin's skills into every harness root", () => {
+    declare();
+    publishGeneration("tools", "a".repeat(40), SKILLS_MANIFEST, {
+      "pkg/skills/probe/SKILL.md": "---\nname: probe\ndescription: p\n---\n\nBody.\n",
+    });
+
+    const result = preparePlugins(opts());
+
+    const name = namespacedName("probe", "probe");
+    expect(result.skills).toEqual([name]);
+    for (const dir of [".claude", ".codex"]) {
+      expect(fs.existsSync(path.join(workspaceDir, dir, "skills", name, "SKILL.md"))).toBe(true);
+    }
+  });
+
+  it("uses the consumer's alias as the namespace, not the export name", () => {
+    declare(DECLARATION.replace("      from: tools\n", "      from: tools\n      alias: reqs\n"));
+    publishGeneration("tools", "a".repeat(40), SKILLS_MANIFEST, {
+      "pkg/skills/probe/SKILL.md": "---\nname: probe\n---\n\nBody.\n",
+    });
+    expect(preparePlugins(opts()).skills).toEqual([namespacedName("reqs", "probe")]);
+  });
+
+  it("does not materialize a plugin the consumer declared but never imported", () => {
+    // A repo with no `use` entry is browsable at /plugins/<name>, but nothing
+    // of it is activated — skills included.
+    declare("plugins:\n  repos:\n    - repo: acme/tools\n      name: tools\n      branch: main\n");
+    publishGeneration("tools", "a".repeat(40), SKILLS_MANIFEST, {
+      "pkg/skills/probe/SKILL.md": "---\nname: probe\n---\n\nBody.\n",
+    });
+    expect(preparePlugins(opts()).skills).toEqual([]);
+  });
+
+  // The whole point of the copy is that req 22's "projects never keep copies"
+  // stays true. A materialized skill that the post-turn `git add -A` stages is
+  // exactly the copy the requirement forbids.
+  it("keeps the materialized skills out of the project's git", () => {
+    execFileSync("git", ["init", "-q", "-b", "main"], { cwd: workspaceDir });
+    execFileSync("git", ["config", "user.email", "t@example.com"], { cwd: workspaceDir });
+    execFileSync("git", ["config", "user.name", "T"], { cwd: workspaceDir });
+    declare();
+    publishGeneration("tools", "a".repeat(40), SKILLS_MANIFEST, {
+      "pkg/skills/probe/SKILL.md": "---\nname: probe\n---\n\nBody.\n",
+    });
+
+    preparePlugins(opts());
+    execFileSync("git", ["add", "-A"], { cwd: workspaceDir });
+    const staged = execFileSync("git", ["diff", "--cached", "--name-only"], { cwd: workspaceDir }).toString();
+
+    expect(staged).toContain("shipit.yaml");
+    expect(staged).not.toContain(namespacedName("probe", "probe"));
+    // And the project's own skills are still perfectly visible to git.
+    fs.mkdirSync(path.join(workspaceDir, ".claude", "skills", "mine"), { recursive: true });
+    fs.writeFileSync(path.join(workspaceDir, ".claude", "skills", "mine", "SKILL.md"), "---\nname: mine\n---\n");
+    execFileSync("git", ["add", "-A"], { cwd: workspaceDir });
+    expect(execFileSync("git", ["diff", "--cached", "--name-only"], { cwd: workspaceDir }).toString())
+      .toContain(".claude/skills/mine/SKILL.md");
+  });
+
+  // If the promise "this never enters your repository" cannot be kept, the
+  // copy must not be made. Materializing anyway would put somebody else's
+  // repository into the user's next commit.
+  it("materializes nothing when it cannot keep the copies out of git", () => {
+    execFileSync("git", ["init", "-q", "-b", "main"], { cwd: workspaceDir });
+    declare();
+    publishGeneration("tools", "a".repeat(40), SKILLS_MANIFEST, {
+      "pkg/skills/probe/SKILL.md": "---\nname: probe\n---\n\nBody.\n",
+    });
+    // `.git/info` cannot be created because `info` is already a file.
+    fs.rmSync(path.join(workspaceDir, ".git", "info"), { recursive: true, force: true });
+    fs.writeFileSync(path.join(workspaceDir, ".git", "info"), "not a directory");
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    const result = preparePlugins(opts());
+
+    expect(result.skills).toEqual([]);
+    expect(result.skillsFailed[0]?.reason).toContain("out of this clone's git");
+    expect(fs.existsSync(path.join(workspaceDir, ".claude", "skills", namespacedName("probe", "probe"))))
+      .toBe(false);
+    // The link surface is unaffected — only the skills are withheld.
+    expect(result.linked).toEqual(["tools"]);
+  });
+
+  it("removes materialized skills when the import is dropped", () => {
+    declare();
+    publishGeneration("tools", "a".repeat(40), SKILLS_MANIFEST, {
+      "pkg/skills/probe/SKILL.md": "---\nname: probe\n---\n\nBody.\n",
+    });
+    preparePlugins(opts());
+
+    fs.writeFileSync(path.join(workspaceDir, "shipit.yaml"), "agent:\n  install: npm install\n");
+    const result = preparePlugins(opts());
+
+    expect(result.skillsRemoved).toEqual([namespacedName("probe", "probe")]);
+    expect(fs.existsSync(path.join(workspaceDir, ".claude", "skills", namespacedName("probe", "probe"))))
+      .toBe(false);
   });
 });
 
