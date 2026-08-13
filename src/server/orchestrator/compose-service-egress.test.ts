@@ -187,6 +187,23 @@ describe("containComposeServices", () => {
     })).rejects.toThrow("API 1.48 or newer");
   });
 
+  it("does not require a new engine when there are no Compose services", async () => {
+    const events: string[] = [];
+    const { docker } = fakeDocker(events);
+    vi.mocked(docker.listContainers).mockResolvedValueOnce([]);
+    vi.mocked(docker.version).mockResolvedValueOnce({ ApiVersion: "1.47" } as never);
+    await expect(containComposeServices({
+      docker,
+      sessionId: "session-1",
+      sidecarImage: "egress:test",
+      config: { contained: true, extraHosts: [] },
+      serviceNames: [],
+      dnsEnabled: false,
+      proxyEnabled: false,
+    })).resolves.toBeUndefined();
+    expect(docker.version).not.toHaveBeenCalled();
+  });
+
   it("fails closed when the intra-session subnet cannot be reopened", async () => {
     const events: string[] = [];
     const { docker, container } = fakeDocker(events);

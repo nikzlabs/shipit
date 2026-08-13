@@ -101,12 +101,6 @@ async function ensureEgressNetwork(
  */
 export async function containComposeServices(opts: ContainComposeServicesOptions): Promise<void> {
   if (!opts.config.contained) return;
-  const engineVersion = await opts.docker.version();
-  if (!apiVersionAtLeast(engineVersion.ApiVersion, 1, 48)) {
-    throw new Error(
-      `Compose service egress containment requires Docker Engine API 1.48 or newer; found ${engineVersion.ApiVersion}`,
-    );
-  }
   const parentLabel = `shipit-parent-session=${opts.sessionId}`;
   const containers = await opts.docker.listContainers({ all: true, filters: { label: [parentLabel] } });
   const allServiceContainers = containers.filter((entry) =>
@@ -130,6 +124,13 @@ export async function containComposeServices(opts: ContainComposeServicesOptions
     try { await opts.docker.getContainer(entry.Id).remove({ force: true }); } catch { /* best-effort reap */ }
   }
   if (serviceContainers.length === 0) return;
+
+  const engineVersion = await opts.docker.version();
+  if (!apiVersionAtLeast(engineVersion.ApiVersion, 1, 48)) {
+    throw new Error(
+      `Compose service egress containment requires Docker Engine API 1.48 or newer; found ${engineVersion.ApiVersion}`,
+    );
+  }
 
   const labels = { ...(opts.labels ?? {}), "shipit-parent-session": opts.sessionId };
   const sessionNetwork = opts.docker.getNetwork(`shipit-session-${opts.sessionId}`);

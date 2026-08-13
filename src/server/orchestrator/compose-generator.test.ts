@@ -31,6 +31,14 @@ describe("parseComposeFile", () => {
     return p;
   }
 
+  function trustedProxyEnvironment(extra = ""): string {
+    const allowed = ["CONTAINERS", "EVENTS", "IMAGES", "INFO", "NETWORKS", "VOLUMES", "VERSION", "PING"];
+    const denied = ["POST", "BUILD", "COMMIT", "EXEC", "AUTH", "CONFIGS", "DISTRIBUTION",
+      "GRPC", "NODES", "PLUGINS", "SECRETS", "SERVICES", "SESSION", "SWARM", "SYSTEM", "TASKS"];
+    return [...allowed.map((key) => `      ${key}: 1`), ...denied.map((key) => `      ${key}: 0`), extra]
+      .filter(Boolean).join("\n");
+  }
+
   it("parses basic service definitions", () => {
     const dir = setup();
     const p = writeCompose(dir, `
@@ -293,6 +301,41 @@ services:
       .toThrow("Custom YAML tags");
   });
 
+  it("allows exclamation marks in ordinary contained scalar values", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `services:\n  web:\n    image: attacker/example\n    user: "1001"\n    environment:\n      PASSWORD: Str0ng!Password\n`);
+    expect(() => parseComposeFile(p, { dockerSocket: false, containEgress: true }))
+      .not.toThrow();
+  });
+
+  it("rejects resolved YAML tags in contained service definitions", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `services:\n  web:\n    image: attacker/example\n    user: "1001"\n    volumes: !!set\n      ? /var/run/docker.sock:/var/run/docker.sock\n`);
+    expect(() => parseComposeFile(p, { dockerSocket: false, containEgress: true }))
+      .toThrow("Custom YAML tags");
+  });
+
+  it("rejects YAML merge keys in contained service definitions", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `x-base: &base\n  privileged: true\n  cap_add: [NET_ADMIN]\nservices:\n  web:\n    <<: *base\n    image: attacker/example\n    user: "1001"\n`);
+    expect(() => parseComposeFile(p, { dockerSocket: false, containEgress: true }))
+      .toThrow("YAML merge keys");
+  });
+
+  it("resolves YAML merge keys before Open-mode security validation", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `x-base: &base\n  privileged: true\nservices:\n  web:\n    <<: *base\n    image: attacker/example\n`);
+    expect(() => parseComposeFile(p, { dockerSocket: false }))
+      .toThrow("privileged: true");
+  });
+
+  it("rejects a project declaration of the reserved contained network", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `services:\n  web:\n    image: attacker/example\n    user: "1001"\nnetworks:\n  shipit-session:\n    driver: macvlan\n`);
+    expect(() => parseComposeFile(p, { dockerSocket: false, containEgress: true }))
+      .toThrow("reserved `shipit-session` network");
+  });
+
   it("rejects volumes_from in contained services", () => {
     const dir = setup();
     const p = writeCompose(dir, `services:\n  web:\n    image: attacker/example\n    user: "1001"\n    volumes_from: [docker-socket-proxy]\n`);
@@ -359,9 +402,7 @@ services:
 
   it("allows the trusted ops proxy on the internal network in a contained ops session", () => {
     const dir = setup();
-    const denied = ["POST", "BUILD", "COMMIT", "EXEC", "AUTH", "CONFIGS", "DISTRIBUTION",
-      "GRPC", "NODES", "PLUGINS", "SECRETS", "SERVICES", "SESSION", "SWARM", "SYSTEM", "TASKS"];
-    const environment = denied.map((key) => `      ${key}: 0`).join("\n");
+    const environment = trustedProxyEnvironment();
     const p = writeCompose(dir, `services:\n  docker-socket-proxy:\n    image: tecnativa/docker-socket-proxy:0.3.0\n    environment:\n${environment}\n    volumes:\n      - /var/run/docker.sock:/var/run/docker.sock:ro\n`);
     expect(() => parseComposeFile(p, {
       dockerSocket: true,
@@ -376,9 +417,7 @@ services:
 
   it("does not trust an ops proxy that supplies a build definition", () => {
     const dir = setup();
-    const denied = ["POST", "BUILD", "COMMIT", "EXEC", "AUTH", "CONFIGS", "DISTRIBUTION",
-      "GRPC", "NODES", "PLUGINS", "SECRETS", "SERVICES", "SESSION", "SWARM", "SYSTEM", "TASKS"];
-    const environment = denied.map((key) => `      ${key}: 0`).join("\n");
+    const environment = trustedProxyEnvironment();
     const p = writeCompose(dir, `services:\n  docker-socket-proxy:\n    image: tecnativa/docker-socket-proxy:0.3.0\n    build: .\n    environment:\n${environment}\n    volumes:\n      - /var/run/docker.sock:/var/run/docker.sock:ro\n`);
     expect(() => parseComposeFile(p, {
       dockerSocket: true,
@@ -389,9 +428,7 @@ services:
 
   it("does not trust an ops proxy with an extra bind mount", () => {
     const dir = setup();
-    const denied = ["POST", "BUILD", "COMMIT", "EXEC", "AUTH", "CONFIGS", "DISTRIBUTION",
-      "GRPC", "NODES", "PLUGINS", "SECRETS", "SERVICES", "SESSION", "SWARM", "SYSTEM", "TASKS"];
-    const environment = denied.map((key) => `      ${key}: 0`).join("\n");
+    const environment = trustedProxyEnvironment();
     const p = writeCompose(dir, `services:\n  docker-socket-proxy:\n    image: tecnativa/docker-socket-proxy:0.3.0\n    environment:\n${environment}\n    volumes:\n      - /var/run/docker.sock:/var/run/docker.sock:ro\n      - ./proxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro\n`);
     expect(() => parseComposeFile(p, {
       dockerSocket: true,
@@ -402,10 +439,34 @@ services:
 
   it("does not trust an ops proxy with a repository-controlled healthcheck", () => {
     const dir = setup();
+    const environment = trustedProxyEnvironment();
+    const p = writeCompose(dir, `services:\n  docker-socket-proxy:\n    image: tecnativa/docker-socket-proxy:0.3.0\n    environment:\n${environment}\n    healthcheck:\n      test: [CMD-SHELL, 'true']\n    volumes:\n      - /var/run/docker.sock:/var/run/docker.sock:ro\n`);
+    expect(() => parseComposeFile(p, {
+      dockerSocket: true,
+      containEgress: true,
+      trustedOpsProxy: true,
+    })).toThrow("direct Docker socket access");
+  });
+
+  it("does not trust an ops proxy with an unapproved environment key", () => {
+    const dir = setup();
+    const environment = trustedProxyEnvironment("      ALLOW_START: 1");
+    const p = writeCompose(dir, `services:\n  docker-socket-proxy:\n    image: tecnativa/docker-socket-proxy:0.3.0\n    environment:\n${environment}\n    volumes:\n      - /var/run/docker.sock:/var/run/docker.sock:ro\n`);
+    expect(() => parseComposeFile(p, {
+      dockerSocket: true,
+      containEgress: true,
+      trustedOpsProxy: true,
+    })).toThrow("direct Docker socket access");
+  });
+
+  it("does not trust list-form proxy environment inherited from a project env file", () => {
+    const dir = setup();
+    const allowed = ["CONTAINERS", "EVENTS", "IMAGES", "INFO", "NETWORKS", "VOLUMES", "VERSION", "PING"];
     const denied = ["POST", "BUILD", "COMMIT", "EXEC", "AUTH", "CONFIGS", "DISTRIBUTION",
       "GRPC", "NODES", "PLUGINS", "SECRETS", "SERVICES", "SESSION", "SWARM", "SYSTEM", "TASKS"];
-    const environment = denied.map((key) => `      ${key}: 0`).join("\n");
-    const p = writeCompose(dir, `services:\n  docker-socket-proxy:\n    image: tecnativa/docker-socket-proxy:0.3.0\n    environment:\n${environment}\n    healthcheck:\n      test: [CMD-SHELL, 'true']\n    volumes:\n      - /var/run/docker.sock:/var/run/docker.sock:ro\n`);
+    const environment = [...allowed.map((key) => `      - ${key}=1`),
+      ...denied.map((key) => `      - ${key}=0`), "      - ALLOW_START"].join("\n");
+    const p = writeCompose(dir, `services:\n  docker-socket-proxy:\n    image: tecnativa/docker-socket-proxy:0.3.0\n    environment:\n${environment}\n    volumes:\n      - /var/run/docker.sock:/var/run/docker.sock:ro\n`);
     expect(() => parseComposeFile(p, {
       dockerSocket: true,
       containEgress: true,

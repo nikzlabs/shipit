@@ -12,7 +12,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { parse as parseYaml, parseDocument, stringify as stringifyYaml } from "yaml";
+import { isScalar, parse as parseYaml, parseDocument, stringify as stringifyYaml, visit } from "yaml";
 import type { ComposeConfig } from "../shared/shipit-config.js";
 import type { SecretRequirement } from "../shared/types/domain-types.js";
 import { sessionWorkerUid } from "./session-worker-uid.js";
@@ -261,15 +261,26 @@ export function parseComposeFile(
   try {
     if (opts.containEgress) {
       const parsedDocument = parseDocument(content);
-      const hasCustomTag = content.split(/\r?\n/).some((line) => {
-        const source = line.split("#", 1)[0];
-        return /![A-Za-z]/.test(source);
+      let hasExplicitTag = false;
+      let hasMergeKey = false;
+      visit(parsedDocument, {
+        Node: (_key, node) => {
+          if (node.tag !== undefined) hasExplicitTag = true;
+        },
+        Pair: (_key, pair) => {
+          if (isScalar(pair.key) && pair.key.value === "<<") hasMergeKey = true;
+        },
       });
-      if (hasCustomTag || parsedDocument.warnings.some((warning) => /unresolved tag/i.test(warning.message))) {
+      if (hasExplicitTag || parsedDocument.warnings.some((warning) => /unresolved tag/i.test(warning.message))) {
         throw new ComposeValidationError("Custom YAML tags are not supported for contained services.");
       }
+      if (hasMergeKey) {
+        throw new ComposeValidationError("YAML merge keys are not supported for contained services.");
+      }
     }
-    doc = parseYaml(content) as Record<string, unknown> | null;
+    // Compose resolves YAML merge keys. Resolve them here as well so security
+    // validation sees the same effective fields in Open mode.
+    doc = parseYaml(content, { merge: true }) as Record<string, unknown> | null;
   } catch (err) {
     // Surface YAML parse errors as ComposeValidationError so callers (which
     // catch them defensively, e.g. mid-edit / mid-merge reconciles) can log
@@ -284,6 +295,15 @@ export function parseComposeFile(
   }
   if (opts.containEgress && doc.include !== undefined) {
     throw new ComposeValidationError("Compose `include` is not supported for contained services.");
+  }
+  if (opts.containEgress) {
+    const networks = doc.networks;
+    if (networks && typeof networks === "object" && !Array.isArray(networks)
+      && Object.hasOwn(networks, "shipit-session")) {
+      throw new ComposeValidationError(
+        "The reserved `shipit-session` network cannot be declared by contained projects.",
+      );
+    }
   }
 
   const services = doc.services as Record<string, Record<string, unknown>> | undefined;
@@ -547,17 +567,17 @@ function isTrustedOpsProxyService(
     || svc.network_mode !== undefined) return false;
   const environment = svc.environment;
   const env: Record<string, unknown> = {};
-  if (Array.isArray(environment)) {
-    for (const item of environment) {
-      if (typeof item !== "string") continue;
-      const separator = item.indexOf("=");
-      if (separator > 0) env[item.slice(0, separator)] = item.slice(separator + 1);
-    }
-  } else if (environment && typeof environment === "object") {
+  // The server-authored template uses map form. List entries without `=` are
+  // resolved from the project environment by Compose, so their effective
+  // values cannot be validated here and must not receive proxy trust.
+  if (Array.isArray(environment)) return false;
+  if (environment && typeof environment === "object") {
     Object.assign(env, environment);
   }
+  const allowed = ["CONTAINERS", "EVENTS", "IMAGES", "INFO", "NETWORKS", "VOLUMES", "VERSION", "PING"];
   const denied = ["POST", "BUILD", "COMMIT", "EXEC", "AUTH", "CONFIGS", "DISTRIBUTION",
     "GRPC", "NODES", "PLUGINS", "SECRETS", "SERVICES", "SESSION", "SWARM", "SYSTEM", "TASKS"];
+  const expectedKeys = new Set([...allowed, ...denied]);
   const hasReadOnlySocket = Array.isArray(svc.volumes) && svc.volumes.length === 1 && svc.volumes.some((vol) =>
     typeof vol === "string"
       ? /^\/var\/run\/docker\.sock:\/var\/run\/docker\.sock:ro$/.test(vol)
@@ -565,7 +585,11 @@ function isTrustedOpsProxyService(
         && (vol as Record<string, unknown>).source === "/var/run/docker.sock"
         && (vol as Record<string, unknown>).target === "/var/run/docker.sock"
         && (vol as Record<string, unknown>).read_only === true));
-  return hasReadOnlySocket && denied.every((key) => String(env[key]) === "0");
+  return hasReadOnlySocket
+    && Object.keys(env).length === expectedKeys.size
+    && Object.keys(env).every((key) => expectedKeys.has(key))
+    && allowed.every((key) => String(env[key]) === "1")
+    && denied.every((key) => String(env[key]) === "0");
 }
 
 function validateServiceSecurity(
