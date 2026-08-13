@@ -469,6 +469,16 @@ instead of a repeat.
   would work under one backend and be `command not found` under another — the
   same backend-dependence req 22 rules out for skills.
 
+  **Credential delivery reads the credential slice's single definition.**
+  Which declared names count as *satisfied* is decided once
+  (`loadSatisfiedPluginCredentialNames`: `SecretStore` only, keyed by the
+  CONSUMING session's remote, non-empty values only — req 23's last sentence,
+  held by construction). Delivery consumes that answer and then reads the value
+  for exactly those names, rather than re-deriving the rule, so the card cannot
+  say "satisfied" while the container gets nothing, or the reverse. The dep is
+  typed as `loadSecrets` alone, so `CredentialStore` — ShipIt's own GitHub
+  identity, tracker tokens and agent routes — does not fit the parameter.
+
   **Collision policy (req 20): a contested name refuses EVERY claimant.**
   First-declared-wins is what the requirement rules out — it is silent
   last-one-wins with the order reversed, and the loser's author cannot tell
@@ -518,8 +528,8 @@ instead of a repeat.
   un-trusted since the wrapper was written must stop executing, and this is the
   only place that can notice.
 
-  Three things this slice does **not** settle, all of them found by the
-  independent review and all of them cross-slice.
+  Two things this slice does **not** settle, both found by the independent
+  review and both cross-slice.
 
   **A refresh can delete a generation out from under a running mount.**
   Publication prunes the previous checkout and its writable layer immediately
@@ -543,18 +553,19 @@ instead of a repeat.
   plugin container to the agent's network namespace is **not** the fix: it
   re-exposes the worker's loopback credential broker and breaks req 19.
 
-  **The PATH-shadow refusal reaches the log, not the card.** Cross-plugin
-  collisions and reserved names are recomputed by the snapshot and appear on the
-  card. The third domain — a name the agent container's PATH already resolves —
-  is knowable only inside the container, so it rides the `/plugins/prepare`
-  response (`commandsRefused`, `commandsFailed`) and is logged by
-  `ContainerSessionRunner.preparePlugins()`, the same interim its `skillsFailed`
-  neighbour uses. The destination is the container-side prepare channel the
-  checklist already tracks. Until then, a plugin exporting a name like `curl` is
-  withheld and says so only in the orchestrator log.
-
   And one accepted limitation, not a gap: output is buffered, so a long-running
   command shows nothing until it exits.
+
+  **Every refusal reaches the card, by two different routes, and that split is
+  the design.** Cross-plugin collisions and reserved names are **recomputed** by
+  the snapshot from the declaration plus the live manifests, so they are visible
+  before anything has run. The third domain — a name the agent container's PATH
+  already resolves — is knowable ONLY inside that container, so it rides the
+  `/plugins/prepare` response as `commandsRefused` / `commandsFailed`, each
+  attributed to its declared repository, and lands through
+  `readPrepareFailures` on the same card channel `skillsFailed` and `linkFailed`
+  use. An unattributed entry is dropped rather than rendered on no card, which
+  is that channel's existing rule.
 - **Skills** (req 22 — review finding 5) — **implemented**
   (`session/plugin-skills.ts`): checkout alone discloses nothing — ShipIt's
   skill listing scans only the workspace skill dirs, and Codex reading
