@@ -421,6 +421,95 @@ describe("PreviewFrame", () => {
     );
   });
 
+  it("navigates the active iframe to its root when Home is clicked", async () => {
+    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    render(<PreviewFrame preview={preview} {...defaultProps} />);
+    const iframe = (await screen.findByTitle("Live Preview")) as HTMLIFrameElement;
+    const postMessage = vi.spyOn(iframe.contentWindow!, "postMessage");
+
+    // The injected preview script announces itself — only then do we know a
+    // "navigate" command will be honoured instead of falling back to `src`.
+    window.dispatchEvent(new MessageEvent("message", {
+      data: { source: "shipit-preview", type: "loaded" },
+      source: iframe.contentWindow,
+    }));
+    const srcSetter = vi.fn();
+    Object.defineProperty(iframe, "src", { set: srcSetter, get: () => "http://localhost:5173", configurable: true });
+
+    fireEvent.click(screen.getByTitle("Go to preview root"));
+
+    expect(postMessage).toHaveBeenCalledWith(
+      { source: "shipit-toolbar", type: "navigate", url: "http://localhost:5173/" },
+      "*",
+    );
+    expect(srcSetter).not.toHaveBeenCalled();
+  });
+
+  it("places Home between the device selector and the address bar", async () => {
+    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    render(<PreviewFrame preview={preview} {...defaultProps} />);
+    const device = screen.getByLabelText("Select device viewport");
+    const home = screen.getByTitle("Go to preview root");
+    // The address-bar chip only renders once the page reports a path.
+    const iframe = (await screen.findByTitle("Live Preview")) as HTMLIFrameElement;
+    window.dispatchEvent(new MessageEvent("message", {
+      data: { source: "shipit-preview", type: "path", path: "/orders" },
+      source: iframe.contentWindow,
+    }));
+    const path = await screen.findByLabelText(/Copy preview URL/);
+
+    const follows = (a: Element, b: Element) =>
+      (a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
+    expect(follows(device, home)).toBe(true);
+    expect(follows(home, path)).toBe(true);
+  });
+
+  it("falls back to a document load at root when Home is clicked and the preview script never loaded", async () => {
+    // No "loaded" message — a non-proxied local preview, a 502, or an
+    // auth-gated response. A hard re-fetch of the root is all that can work.
+    const preview: PreviewStatus = { running: true, port: 5173, url: "http://localhost:5173", source: "vite" };
+    render(<PreviewFrame preview={preview} {...defaultProps} />);
+    const iframe = (await screen.findByTitle("Live Preview")) as HTMLIFrameElement;
+    const postMessage = vi.spyOn(iframe.contentWindow!, "postMessage");
+    const srcSetter = vi.fn();
+    Object.defineProperty(iframe, "src", { set: srcSetter, get: () => "http://localhost:5173", configurable: true });
+
+    fireEvent.click(screen.getByTitle("Go to preview root"));
+
+    expect(srcSetter).toHaveBeenCalledWith("http://localhost:5173/");
+    expect(postMessage).not.toHaveBeenCalled();
+  });
+
+  it("does not render Home when the preview is not running", () => {
+    render(<PreviewFrame preview={null} sessionId="session-a" {...defaultProps} />);
+    expect(screen.queryByTitle("Go to preview root")).not.toBeInTheDocument();
+  });
+
+  it("renders Home disabled while the preview is running but no slot URL exists yet", () => {
+    // Running, but the health poll hasn't created an iframe slot — the toolbar
+    // renders, but there is no origin to navigate to yet.
+    usePreviewStore.getState().setServices([
+      { name: "dev", status: "running", port: 3000, preview: "manual" },
+    ]);
+    vi.stubGlobal("fetch", vi.fn().mockReturnValue(new Promise(() => {})));
+    const runningPreview: PreviewStatus = {
+      running: true,
+      port: 3000,
+      url: "/preview/abc/3000/",
+      source: "detected",
+      detectedPorts: [3000],
+    };
+    render(
+      <PreviewFrame
+        preview={runningPreview}
+        sessionId="abc"
+        {...defaultProps}
+        detectedPorts={[3000]}
+      />,
+    );
+    expect(screen.getByTitle("Go to preview root")).toBeDisabled();
+  });
+
   it("disables Back while the preview has no history entry of its own", async () => {
     // Regression: a preview with nothing behind it used to run `history.back()`
     // against the JOINT session history, walking the ShipIt tab itself back and
