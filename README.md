@@ -11,11 +11,6 @@
 </p>
 
 <p align="center">
-  <a href="FEATURES.md"><b>Full feature list</b></a> &nbsp;·&nbsp;
-  <a href="https://ship-it.ai/">Website</a>
-</p>
-
-<p align="center">
   <img src="docs/assets/hero.png" alt="ShipIt: chat, live preview, and the inline PR card in one screen" width="900">
 </p>
 
@@ -119,6 +114,10 @@ powerful but only semi-trusted actor. The headline defenses:
 Plus a repo trust gate, supply-chain version pinning, bug-report secret redaction, and Cloudflare
 Zero Trust / Tailscale access control. The full picture — trust model, every defense, and accepted
 limitations — is in [SECURITY-MODEL.md](SECURITY-MODEL.md).
+
+## Features
+
+Everything ShipIt does, and its known limitations, are in [FEATURES.md](FEATURES.md).
 
 ## Contributing
 
