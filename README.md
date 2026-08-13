@@ -26,11 +26,9 @@ ShipIt is a chat-driven IDE for running coding agents through your **real engine
 - **Web/Android preview per session** — every session runs its own instance of your full app stack,
   an Android emulator included, so the agent can build, run, and fix before you preview and merge.
 - **Bring your own agent** — on the subscription or API key you already have (Anthropic, OpenAI,
-  DeepSeek, OpenRouter, etc.). Supported harnesses: Claude Code and Codex, with OpenCode and Cursor
-  CLI support coming.
-- **Runs where you want** — one command on your laptop, or on an always-on server you own. There is
-  no ShipIt account and no ShipIt server in the middle: the instance is yours, and it connects
-  straight to your GitHub and your agent provider.
+  DeepSeek, OpenRouter, etc.).
+  - Supported harnesses: Claude Code and Codex, with OpenCode and Cursor CLI support coming.
+- **Runs where you want** — one command on your laptop, or on an always-on server you own.
 - **The GitHub loop, inline** — work with PRs, CI, deploys, reviews, and issues, without leaving ShipIt.
 - **Ship from your phone** — mobile-first, with voice.
 
