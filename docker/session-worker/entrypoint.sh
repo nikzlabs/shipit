@@ -40,7 +40,13 @@ fi
 # `agent.install` and the agent reads fetched CI logs from it, so it needs the
 # same handoff — without it the non-root worker EACCESes on the marker write and
 # every `agent.install` re-runs.
-for d in /workspace /uploads /persist /session-state /dep-cache /credentials /home/shipit; do
+# /plugin-store-rw (docs/262) is the writable view of the session's plugin
+# checkouts; the in-container install runner writes `node_modules` there, so it
+# needs the same handoff. Its read-only twin /plugin-store is skipped by the
+# writability probe below, like /uploads. The sentinel this loop creates lands
+# beside the per-repo directories, so plugin code enumerating the store must
+# ignore dot-entries.
+for d in /workspace /uploads /persist /session-state /plugin-store-rw /dep-cache /credentials /home/shipit; do
   case "$d" in
     # Skip the workspace chown when the orchestrator bind-mounted the host source
     # tree (dev / dogfood). `chown -R` on a bind mount rewrites *host* filesystem

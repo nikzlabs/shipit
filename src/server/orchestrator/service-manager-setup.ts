@@ -793,6 +793,12 @@ function composeRemovalIsTrustworthy(workspaceDir: string): boolean {
 export function emitPluginReposUpdated(runner: SessionRunnerInterface): (sessionId: string) => void {
   return (sessionId: string) => {
     runner.emitMessage({ type: "plugin_repos_updated", sessionId });
+    // The generation is published by the time this fires, so the container can
+    // safely link it and run install. Optional call, not an `in` guard: local
+    // mode has no container to prepare, and that is the correct answer there
+    // rather than a missing capability to work around.
+    const container = runner as SessionRunnerInterface & { preparePlugins?: () => Promise<void> };
+    void container.preparePlugins?.();
   };
 }
 

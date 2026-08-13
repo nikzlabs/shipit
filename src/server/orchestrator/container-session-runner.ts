@@ -75,6 +75,14 @@ export type { ProxyAgentRunner } from "./proxy-agent-process.js";
  */
 const INSTALL_POST_TIMEOUT_MS = 180_000;
 
+/**
+ * docs/262 — bound for POST /plugins/prepare. Unlike install this call does NOT
+ * return early: it runs each imported plugin's `install` before answering, so
+ * the bound covers real work rather than a handoff. Generous, but finite so a
+ * wedged plugin cannot pin an orchestrator request forever.
+ */
+const PLUGIN_PREPARE_TIMEOUT_MS = 600_000;
+
 export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> implements SessionRunnerInterface, ProxyAgentRunner {
   readonly sessionId: string;
   readonly sessionDir: string;
@@ -311,6 +319,14 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     this.workerUrl = url;
     this._workerUnavailableReason = null;
     this._resolveWorkerReady();
+    // docs/262 — a container that just came up has no `/plugins` links: they
+    // live on its own filesystem (a tmpfs under readonly-rootfs), while the
+    // generations they point at live on the session's persistent state dir. So
+    // a RESTART leaves published generations with nothing addressing them, and
+    // the activation-settled hook does not fire again for a session whose
+    // declarations did not change. Re-linking here covers that; it is cheap and
+    // idempotent, and an install whose stamp still matches is skipped.
+    void this.preparePlugins();
   }
 
   /**
@@ -1656,6 +1672,32 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    * instead of resetting `_resolveInstallComplete` (which would orphan the
    * first call's resolver and leak a never-resolving promise).
    */
+  /**
+   * docs/262 — ask the container to link its plugin checkouts under `/plugins`
+   * and run each imported plugin's `install`. Called when an activation round
+   * settles, so the generation the worker reads is already published.
+   *
+   * Fire-and-forget and never throws: a plugin that will not prepare must not
+   * take the session down with it (req 13). Only container runners have this —
+   * local mode runs the agent in-process with no container to mount into, so
+   * the whole container-side surface is absent there by design.
+   */
+  async preparePlugins(): Promise<void> {
+    await this._workerReady;
+    if (this._disposed) return;
+    try {
+      this.assertWorkerReachable("/plugins/prepare");
+      await workerPost(this.workerUrl, "/plugins/prepare", undefined, {
+        timeoutMs: PLUGIN_PREPARE_TIMEOUT_MS,
+      });
+    } catch (err) {
+      console.warn(
+        `[plugins:${this.sessionId}] container prepare failed:`,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }
+
   async runInstall(commands: string[]): Promise<{ ok: boolean }> {
     if (commands.length === 0) return { ok: true };
 

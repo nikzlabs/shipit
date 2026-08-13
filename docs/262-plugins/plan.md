@@ -200,6 +200,27 @@ plugin commit, the install string, or the content of the manifest's
 - **Files** (reqs 2, 7): each declared repo is checked out read-only at
   `/plugins/<repo-name>` in the agent container (browsable by the agent),
   with the per-repo writable layer described above.
+
+  **As built — a symlink into a doubly-mounted store, not a mount per repo.**
+  The obvious shape (bind `<state>/plugins/<name>/active` at
+  `/plugins/<name>:ro`) is wrong for one reason: Docker resolves a bind
+  source's symlinks at container-creation time, so the mount would pin the
+  generation that was live when the session opened and a refresh (req 12)
+  could never reach the agent without recreating its container. Instead the
+  session's whole plugin root is mounted **twice** — `:ro` at
+  `/plugin-store`, `:rw` at `/plugin-store-rw` — and the container makes
+  `/plugins/<name>` a symlink to `/plugin-store/<name>/active`. Both hops
+  resolve *inside* the container on every access, so swapping the `active`
+  symlink on the host is visible immediately, which is exactly what refresh
+  needs.
+
+  The `:rw` view exists because **install runs in this container** (§1b) and
+  must write `node_modules` into the generation. It is a deliberate
+  trade: req 7's read-only is a workflow guarantee — "plugin changes are made
+  in the plugin repo, not in the consuming session" — enforced at the path the
+  agent is given and told about, not a containment boundary against the user's
+  own agent. Requirement 19's real boundary is elsewhere and unaffected: fetch
+  credentials never enter the container at all.
 - **Workspace handle** (req 21): plugin *services* get the consuming
   project's workspace mounted at the fixed path **`/project`**; plugin *CLIs*
   run in the agent container with **cwd = the project workspace**, which
@@ -326,6 +347,17 @@ coherent in one UI.
   (the GET exists; refresh endpoints come with generation mechanics); tracker
   registration folds into the existing trackers registry
   (`api-routes-issues.ts`) with destination-based dedup.
+- ✓ `src/server/session/plugin-runtime.ts` — the container half: links each
+  live checkout at `/plugins/<name>` through the read-only store mount, runs
+  each imported plugin's `install` with the generation's env, and stamps it
+  (install string + commit + `install-inputs` content) inside the generation.
+  Reached over `POST /plugins/prepare` on the worker
+  (`session-worker.ts`), which `ContainerSessionRunner.preparePlugins()` calls
+  when an activation round settles and when a container becomes ready — the
+  latter because a restarted container loses its links while the generations
+  they address survive. The mounts themselves are built in
+  `container-lifecycle.ts`, with `/plugins` in `container-hardening.ts`'s tmpfs
+  set and `/plugin-store-rw` in the entrypoint's UID handoff.
 - `src/server/session/agent-shim/shipit-plugin.ts` + a worker agent-ops
   relay route — the agent's `shipit plugin refresh` transport (orchestrator
   API routes are container-denied; the shim goes through the worker like

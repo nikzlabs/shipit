@@ -64,6 +64,7 @@ import { AgentController, type WorkerAgentFactory } from "./agent-controller.js"
 import { TerminalController } from "./terminal-controller.js";
 import { FileWatcherController } from "./file-watcher-controller.js";
 import { InstallController } from "./install-controller.js";
+import { preparePlugins, type PluginPrepareResult } from "./plugin-runtime.js";
 
 export type { WorkerSSEEvent } from "./sse-broadcaster.js";
 export type { WorkerAgentFactory } from "./agent-controller.js";
@@ -116,6 +117,9 @@ export class SessionWorker extends EventEmitter {
   private port: number;
   private host: string;
   private workspaceDir: string;
+  /** docs/262 — in-flight plugin prepare, and at most one queued follow-up. */
+  private _pluginPrepare: Promise<PluginPrepareResult> | null = null;
+  private _pluginPrepareQueued: Promise<PluginPrepareResult> | null = null;
   private stateDir: string;
   private _createOrchestratorClient?: () => OrchestratorClient;
   private readonly _workerToken: string | undefined;
@@ -226,6 +230,7 @@ export class SessionWorker extends EventEmitter {
     this.installController.registerRoutes(app);
 
     // Worker-level endpoints (state lives on the worker itself).
+    this.registerPluginEndpoint(app);
     this.registerServiceEndpoints(app);
     this.registerSecretsEndpoint(app);
     this.registerSSEEndpoint(app);
@@ -319,6 +324,46 @@ export class SessionWorker extends EventEmitter {
   // updated process.env (the worker passes its own env into the child
   // via the agent factory). An already-running agent does NOT see the
   // change — secret updates take effect on the next agent turn.
+  /**
+   * docs/262 — make the session's live plugin checkouts usable: link them under
+   * `/plugins` and run each imported plugin's `install`. The orchestrator calls
+   * this when an activation round settles and after a refresh; it carries no
+   * payload because everything needed is already on disk in this container
+   * (the declaration in `/workspace/shipit.yaml`, each manifest in its own
+   * checkout).
+   *
+   * Serialized, and deliberately NOT by joining the in-flight promise: a run
+   * reads the declaration and the live generations once, at its start, so a
+   * caller arriving later may be asking about state that run never saw. Joining
+   * would answer them with a stale result and skip the work — the same mistake
+   * the orchestrator's per-repo queue exists to avoid. So a request during a
+   * run queues exactly one follow-up, and every further request coalesces into
+   * that one.
+   */
+  private registerPluginEndpoint(app: FastifyInstance): void {
+    app.post("/plugins/prepare", async () => await this.enqueuePluginPrepare());
+  }
+
+  private enqueuePluginPrepare(): Promise<PluginPrepareResult> {
+    if (!this._pluginPrepare) {
+      this._pluginPrepare = preparePlugins({ workspaceDir: this.workspaceDir }).finally(() => {
+        this._pluginPrepare = null;
+      });
+      return this._pluginPrepare;
+    }
+    this._pluginPrepareQueued ??= (async () => {
+      // The in-flight run's OUTCOME is irrelevant here — this follow-up exists
+      // because that run may have read state older than this caller's, so it
+      // must start either way.
+      await this._pluginPrepare?.catch(() => undefined);
+      // Cleared before starting the follow-up so requests arriving from here on
+      // queue behind the NEW run rather than this finished slot.
+      this._pluginPrepareQueued = null;
+      return await this.enqueuePluginPrepare();
+    })();
+    return this._pluginPrepareQueued;
+  }
+
   private registerSecretsEndpoint(app: FastifyInstance): void {
     app.put<{ Body: { secrets: Record<string, string> } }>("/secrets", async (request, reply) => {
       const { secrets } = request.body ?? {};

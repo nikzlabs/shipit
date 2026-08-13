@@ -18,7 +18,13 @@ import {
   CONTAINER_BUILD_ID_LABEL,
   CONTAINER_SESSION_ID_LABEL,
 } from "./session-container.js";
-import { CONTAINER_WORKSPACE_DIR, DEP_CACHE_CONTAINER_PATH } from "../shared/fs-constants.js";
+import {
+  CONTAINER_PLUGIN_STORE_DIR,
+  CONTAINER_PLUGIN_STORE_RW_DIR,
+  CONTAINER_WORKSPACE_DIR,
+  DEP_CACHE_CONTAINER_PATH,
+} from "../shared/fs-constants.js";
+import { pluginsRoot } from "./plugin-generations.js";
 import {
   CONTAINER_SESSION_STATE_DIR,
   sessionStateDirForWorkspace,
@@ -342,6 +348,38 @@ export function buildMounts(
     });
   } else {
     binds.push(`${sessionSharedStateDir(config.sessionStateDir)}:${CONTAINER_SESSION_STATE_DIR}:rw`);
+  }
+
+  // docs/262 — the session's plugin root, mounted TWICE (plan §2 "as built").
+  // The read-only view is what `/plugins/<name>` symlinks resolve through, so
+  // the agent cannot edit a plugin from the consuming session (req 7); the
+  // writable view exists only so the in-container install runner can put
+  // `node_modules` in the generation. Mounting each generation directly would
+  // have been simpler and wrong: Docker resolves a bind source's symlinks at
+  // creation, which would pin whichever generation was live when the session
+  // opened and leave refresh (req 12) invisible until the container was
+  // recreated. Mounting the ROOT keeps both hops — `<name>/active` →
+  // `generations/<sha>` — inside the container, where they resolve per access.
+  const hostPluginsRoot = pluginsRoot(config.sessionStateDir);
+  if (workspaceVolume) {
+    const pluginsRelPath = hostPluginsRoot.replace(/^\/workspace\//, "");
+    mounts.push({
+      Type: "volume",
+      Source: workspaceVolume,
+      Target: CONTAINER_PLUGIN_STORE_DIR,
+      ReadOnly: true,
+      VolumeOptions: { Subpath: pluginsRelPath },
+    });
+    mounts.push({
+      Type: "volume",
+      Source: workspaceVolume,
+      Target: CONTAINER_PLUGIN_STORE_RW_DIR,
+      ReadOnly: false,
+      VolumeOptions: { Subpath: pluginsRelPath },
+    });
+  } else {
+    binds.push(`${hostPluginsRoot}:${CONTAINER_PLUGIN_STORE_DIR}:ro`);
+    binds.push(`${hostPluginsRoot}:${CONTAINER_PLUGIN_STORE_RW_DIR}:rw`);
   }
 
   // Mount the per-repo dependency cache so npm/yarn/pnpm share downloaded
@@ -761,6 +799,20 @@ export async function createContainer(
   } catch (err) {
     console.warn(
       `[containers] credentials scaffold failed for ${config.sessionId}:`,
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+
+  // docs/262 — create the plugin root before the two mounts reference it.
+  // Activation creates it lazily, and a session with no plugins never has one
+  // at all; letting Docker auto-create the missing bind source would leave a
+  // root-owned directory that the non-root worker cannot write into, breaking
+  // the install runner for every session that later declares a plugin.
+  try {
+    fs.mkdirSync(pluginsRoot(config.sessionStateDir), { recursive: true });
+  } catch (err) {
+    console.warn(
+      `[containers] plugin root scaffold failed for ${config.sessionId}:`,
       err instanceof Error ? err.message : String(err),
     );
   }
