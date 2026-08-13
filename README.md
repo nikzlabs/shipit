@@ -49,9 +49,7 @@ loop**.
 ### Run locally
 
 Run ShipIt on your own machine — Linux, macOS, or Windows via
-[WSL2](https://learn.microsoft.com/windows/wsl/install). This is a full install rather than a trial
-mode: same sessions, same previews, same PR loop as on a server. What it can't do is keep working
-while your machine is asleep.
+[WSL2](https://learn.microsoft.com/windows/wsl/install).
 
 ```bash
 bash <(curl -fsSL https://raw.githubusercontent.com/nikzlabs/shipit/stable/deployment/local/setup.sh)
@@ -75,15 +73,9 @@ ShipIt has no built-in authentication. To reach it from a phone or another machi
 That adds a tailnet binding **alongside** loopback (localhost keeps working, and ShipIt still starts
 when Tailscale is down) and prints a URL of the form `http://100-x-y-z.sslip.io:4123`.
 
-Use that URL rather than the raw `http://100.x.y.z:4123`. Previews are served at
-`{sessionId}--{port}.<host>`, and a raw IP address can't carry a wildcard subdomain, so previews are
-blank on the raw-IP URL — [sslip.io](https://sslip.io) maps the dashed form straight back to the same
-address, which makes them resolve with no DNS setup. Traffic rides the encrypted tailnet, but the
-connection is HTTP: there is no wildcard certificate for these names, so clipboard access and PWA
-install (which need a secure context) are unavailable. Getting real HTTPS means terminating TLS
-yourself — a wildcard DNS record you own pointed at the tailnet address, a wildcard certificate for it,
-and a reverse proxy in front of ShipIt; the DNS record alone is not enough. Details in
-[`docs/254`](docs/254-local-bind-and-tailnet-access/plan.md).
+Use that URL rather than the raw `http://100.x.y.z:4123` — previews need the wildcard subdomain a raw
+IP can't carry. That caveat, the HTTPS trade-offs, and the opt-out are in
+[`deployment/README.md`](deployment/README.md#reaching-a-local-install-from-another-device-tailscale).
 
 To expose ShipIt on your LAN instead, set `SHIPIT_BIND_ADDR=0.0.0.0` in `~/.shipit/.shipit.env` — but
 note that this puts an agent with a shell and your repositories on that network with nothing in front
@@ -91,10 +83,6 @@ of it, so only do it on a network you control. A host firewall is not a reliable
 Docker's published-port rules bypass `ufw`, and on macOS the application firewall is off by default.
 
 ### Run on a VPS
-
-Pick this when you want ShipIt always on: agents, previews, and CI follow-up work keep running with
-your laptop closed, and you pick the session back up from any device. Uptime is the only difference —
-the product is the same either way.
 
 ShipIt ships with a one-command provisioning script for Ubuntu hosts. It installs Docker, raises the
 inotify limits sessions need, and can put ShipIt behind a
@@ -112,19 +100,9 @@ and the self-update systemd units. Updates land from the UI (**Settings → Adva
 Updates**). Fork installs, host-side updates, sizing, access policies, and troubleshooting are all in
 [`deployment/README.md`](deployment/README.md).
 
-### After first boot
-
-1. Connect GitHub so ShipIt can clone repos, push branches, open PRs, and read CI status.
-2. Pick the harness (Claude Code or Codex) and the account it runs on.
-3. Start a session from an existing repository, or create a new project from a template.
-4. Describe the change you want; ShipIt creates an isolated container, branch, chat history, and
-   workspace for that session.
-
 ## Status
 
-ShipIt is in an early public release state, with two supported install paths — local Docker and a
-Docker install on an Ubuntu VPS (see [Quickstart](#quickstart) for both). The core loop
-is live: create isolated sessions, work against your repositories, run Compose-backed previews, open
+ShipIt is in an early public release state. The core loop is live: create isolated sessions, work against your repositories, run Compose-backed previews, open
 PRs, track CI and deploy status from GitHub, and continue from desktop or mobile.
 
 The project is public source, but not yet open to outside pull requests. Bug reports, feature
