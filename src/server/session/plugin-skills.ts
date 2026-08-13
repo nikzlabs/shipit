@@ -142,7 +142,7 @@ export function resolvePluginSkillSources(
   for (const use of uses) {
     const key = use.from.toLowerCase();
     const checkout = checkoutFor(use.from);
-    if (!manifests.has(key)) manifests.set(key, readExports(checkout?.dir ?? null));
+    if (!manifests.has(key)) manifests.set(key, readCheckoutExports(checkout?.dir ?? null));
     const exported = manifests.get(key)!
       .find((e) => e.name.toLowerCase() === use.plugin.toLowerCase());
     if (!exported?.skills) continue;
@@ -171,7 +171,16 @@ export interface PluginCheckout {
   repo: string;
 }
 
-function readExports(checkoutDir: string | null): PluginExport[] {
+/**
+ * Parse a plugin repository's own `exports.plugins` manifest out of a live
+ * checkout. Exported because the companion-CLI generator (`plugin-cli.ts`)
+ * needs exactly the same read — session-side code cannot import the
+ * orchestrator's copy (`plugin-state.ts`), and a third transcription of it
+ * inside `session/` is how the two would drift. (The orchestrator's own
+ * duplication was collapsed separately; this one is a PROCESS boundary —
+ * `eslint.config.js` makes `session/` ↔ `orchestrator/` imports a hard error.)
+ */
+export function readCheckoutExports(checkoutDir: string | null): PluginExport[] {
   if (!checkoutDir) return [];
   try {
     // Parsed from YAML the same way the orchestrator does. A malformed manifest

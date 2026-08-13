@@ -91,6 +91,19 @@ Rules (review findings, both rounds):
     binaries (`shipit`, `git`, coreutils, the base PATH). An activation
     failure keeps the prior generation (or nothing) active and reports the
     collision; it never half-activates (req 15).
+
+    **Amended for commands, on implementation** (§2, "CLIs"): a contested
+    *command* name withholds **that command** — from every claimant — and
+    activates everything else. Failing the whole generation was the wrong unit
+    here: a command collision is a defect in the CONSUMER's declaration, not in
+    either repository's version, and both are fixed in the same `use` entry
+    (`overrides.commands.<x>.as`). Failing activation would take out a
+    perfectly good plugin's services and skills over a naming clash it did not
+    cause, and it would have to pick a repository to blame. Req 15's coherence
+    is about a repository's own version, which nothing here disturbs; req 20's
+    requirement is that the ambiguous one is reported rather than run, which
+    withholding satisfies exactly. Services keep the stated rule — a compose
+    stack is activated as a unit.
   Aliases are per service and per command; there is no plugin-wide rename of
   services or commands (the entry-level `alias` names the *plugin*, not its
   parts).
@@ -434,6 +447,83 @@ instead of a repeat.
   container start costs latency; a credential-blind persistent runner is a
   later optimisation, and `docker exec` into the agent or a service container
   is not an acceptable shortcut — it re-opens the boundary.
+
+  **Implemented** (`shared/plugin-cli.ts`, `session/plugin-cli.ts`,
+  `orchestrator/plugin-cli-run.ts`, `orchestrator/plugin-commands.ts`, plus
+  `shipit plugin exec`). The shape, end to end: a generated wrapper in
+  **`/plugin-bin`** on the agent's PATH execs the `shipit` shim, which relays
+  `POST /agent-ops/plugin/exec` to the orchestrator, which builds the invocation
+  container. The wrapper's whole body is `exec shipit plugin exec --alias …
+  --command … -- "$@"`; it never names the plugin's entrypoint, so the agent
+  container holds no plugin path, no plugin credential, and nothing to execute.
+
+  **The wrapper directory is APPENDED to PATH, never prepended** — and that is
+  the second line of defence, not the first. The first is that a name already
+  resolvable on PATH is refused outright (below); appending means that even if
+  that check is ever wrong, a plugin still cannot shadow `git`. It is on PATH in
+  two places for the reason docs/248 needed two: the worker appends it to
+  `process.env.PATH` for everything it spawns, and a baked
+  `/etc/profile.d/11-shipit-plugin-bin.sh` re-appends it inside login shells,
+  because Codex runs every tool command as `bash -lc` and Debian's
+  `/etc/profile` overwrites PATH outright. Without the second, a plugin command
+  would work under one backend and be `command not found` under another — the
+  same backend-dependence req 22 rules out for skills.
+
+  **Collision policy (req 20): a contested name refuses EVERY claimant.**
+  First-declared-wins is what the requirement rules out — it is silent
+  last-one-wins with the order reversed, and the loser's author cannot tell
+  their command never ran. So neither claimant gets a wrapper, and the card
+  names both aliases and the `overrides.commands.<x>.as` that resolves it.
+  (Repo-name collisions upstream DO use first-declared-wins; the difference is
+  deliberate — there the loser is dropped whole and says so, here both imports
+  stay live and only the one contested name is withheld.) Three domains are
+  checked: cross-plugin claims, a short **reserved** list (`shipit`, `gh`,
+  `git`, the shell, the package managers), and **what the agent container's
+  PATH already resolves**. The first two are pure, so the Plugins tab
+  recomputes them from the declaration plus the live manifests and can report a
+  collision before anything has run; the third is checked where PATH is real.
+  The plan is derived once, in a pure module both sides call, so the surface
+  that *reports* and the surface that *writes* cannot disagree — and it is
+  re-derived a third time **at the run boundary**, because a wrapper is a file
+  and the declaration can change under it.
+
+  **What the invocation container gets**: the generation's overlay volume at
+  `/plugin` (the same merged checkout+install-output the installer produced —
+  under `repo: self` the session's own working tree instead, live and writable
+  per req 27), the project workspace at `/project` and as the cwd, this
+  import's state directory at `/plugin-state`, its validated settings file
+  read-only at `/plugin-settings.json`, `SHIPIT_PROJECT_DIR` /
+  `SHIPIT_PLUGIN_STATE` / `SHIPIT_SETTINGS` / `SHIPIT_PLUGIN_COMMIT` (the last
+  unset under `repo: self`), and **only the credential names the plugin
+  declared**, resolved from the consuming project's own store (req 23). A
+  declared name with no stored value is omitted rather than sent empty, so a
+  missing key stays a named gap on the tab instead of surfacing as a
+  third-party authentication error. Everything else matches the install
+  container: worker image with its ENTRYPOINT bypassed, no inherited
+  environment, all capabilities dropped, `no-new-privileges`, memory and PID
+  ceilings, a timeout, and **its own untrusted-registered network** — that last
+  one shared with install through `plugin-container.ts`, because "not the
+  session's network" is not enough and a second, slightly different copy of a
+  security control is how the two drift.
+
+  Three smaller decisions, each of which had a wrong-looking cheaper option.
+  The agent's **cwd is carried across**: a cwd inside `/workspace` becomes the
+  matching path under `/project`, and anything else falls back to the project
+  root — Docker *creates* a missing `WorkingDir`, so passing one through
+  unchecked writes a stray directory into the user's repository. Output is
+  **buffered, not streamed**, with an 8 MiB per-stream cap that announces its
+  own truncation; streaming through two relay hops is real machinery and the
+  plan already accepts per-call latency here. And the **trust gate** (docs/178)
+  is re-read on every call, not at wrapper-generation time: a repository
+  un-trusted since the wrapper was written must stop executing, and this is the
+  only place that can notice.
+
+  Two things this slice does **not** settle. Egress: the invocation container
+  has its own network with unrestricted outbound, which is what `install`
+  already has and what plugin *service* containers have today — so req 24's
+  enforcement question now covers three surfaces rather than two, and it stays
+  one decision, not three. And output shape: a long-running command shows
+  nothing until it exits.
 - **Skills** (req 22 — review finding 5) — **implemented**
   (`session/plugin-skills.ts`): checkout alone discloses nothing — ShipIt's
   skill listing scans only the workspace skill dirs, and Codex reading
@@ -1060,6 +1150,18 @@ coherent in one UI.
   on a later boot it preserves everything belonging to a live session), and an
   orphan holds the volume open so the next activation of that commit cannot
   rebuild the mount. It runs BEFORE the janitor's volume pass for that reason.
+- ✓ `src/server/shared/plugin-cli.ts` — the pure command plan (reqs 17, 20):
+  which commands a session surfaces, and which it refuses because the name is
+  ambiguous. Filesystem-free, because the orchestrator reports the refusal on
+  the card and the session writes the wrappers, and the two must not disagree.
+  ✓ `src/server/orchestrator/plugin-commands.ts` feeds it the live manifests
+  through `plugin-state.ts`'s resolver, so the snapshot GET recomputes refusals
+  rather than remembering them. ✓ `src/server/session/plugin-cli.ts` adds the
+  one input only it has — what the agent container's PATH already resolves —
+  and writes/sweeps `/plugin-bin`, marker-checked so nothing it did not write
+  is ever touched. ✓ `src/server/orchestrator/plugin-cli-run.ts` is the
+  invocation container; ✓ `plugin-container.ts` holds what it shares with
+  install (the untrusted network, the bounded wait).
 - ✓ `src/server/orchestrator/api-routes-plugin-repos.ts` — browser snapshot
   (the GET exists; refresh endpoints come with generation mechanics); tracker
   registration folds into the existing trackers registry
@@ -1088,10 +1190,13 @@ coherent in one UI.
   `container-lifecycle.ts`; `/plugins` itself is created and handed to the
   worker UID by the entrypoint, and appears in `container-hardening.ts`'s tmpfs
   set for the read-only-rootfs case.
-- `src/server/session/agent-shim/shipit-plugin.ts` + a worker agent-ops
-  relay route — the agent's `shipit plugin refresh` transport (orchestrator
-  API routes are container-denied; the shim goes through the worker like
-  `shipit issue`).
+- ✓ `src/server/session/agent-shim/shipit-plugin.ts` + the worker agent-ops
+  relay routes — the agent's `shipit plugin refresh` and `shipit plugin exec`
+  transports (orchestrator API routes are container-denied; the shim goes
+  through the worker like `shipit issue`). `exec` is the target of every
+  generated wrapper rather than a verb an agent types, and it is a pipe: the
+  plugin's argv survives `--` untouched, its streams are undecorated, and its
+  exit code is the shim's.
 - ✓ `src/client/stores/plugin-repos-store.ts` — the session-scoped store
   behind the tab, its warn dot, and the effective-tab fallback; the pane is
   `PluginReposPanel.tsx`. v0 renders declarations with an honest
@@ -1143,11 +1248,20 @@ What runs where — the dogfood boundary:
   skips Docker entirely, so plugin services cannot start there. Covered in
   the inner loop: declaration parsing and phased validation, checkout and
   generation mechanics, the Plugins tab (gating, warn dot, cards, grants),
-  needs plumbing (`secrets_status` origin, egress rows), CLI wrappers and
-  credential injection, skills materialization, and — via the consumer
+  needs plumbing (`secrets_status` origin, egress rows), CLI wrapper
+  generation, skills materialization, and — via the consumer
   fixture — checkout/generation mechanics and `shipit plugin refresh`
   through the agent-ops relay (which local mode's explicit route allowlist
   must admit; see §2).
+
+  **Corrected on implementation:** CLI *execution* is not in the inner loop.
+  Running a companion CLI needs the invocation container (§2), and local mode
+  has no Docker — so `shipit plugin exec` there answers "this runtime cannot run
+  plugin commands" rather than pretending. What the inner loop does exercise is
+  everything up to it: the plan, the collision refusals, the wrappers on PATH,
+  and the agent-ops relay reaching the route. Execution itself — the mounts, the
+  credential injection, the boundary — is covered by co-located tests over a
+  fake daemon and, end to end, on a real instance.
 - **Integration tests** (`isTestMode`, fakes — the existing pattern): the
   service path — compose-fragment merge, per-service startup and overrides,
   origin on `service_list`/`service_status`, collision activation failures.
@@ -1165,5 +1279,7 @@ Slice 2 (see `checklist.md`): compose-fragment merging and
 security validation, port stability per (session, service), plugin `install`
 execution (container-side — see §1b), credential
 injection mechanics, PATH wrapper generation, skills materialization
-mechanics. (GitHub App multi-repo minting has since been built — see the
-fetch-authority bullet in §2 and `plugin-fetch.ts`.)
+mechanics. *(Install execution, skills materialization, PATH wrapper generation
+plus its credential injection, and GitHub App multi-repo minting have since been
+built — see §1b, §2's CLIs and fetch-authority bullets, `plugin-fetch.ts`, and
+§4's ✓ entries.)*

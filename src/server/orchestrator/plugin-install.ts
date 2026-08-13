@@ -39,6 +39,7 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import type Docker from "dockerode";
+import { CONTAINER_PLUGIN_DIR, PLUGIN_COMMIT_ENV } from "../shared/plugin-contract.js";
 import type { PluginExport } from "../shared/plugin-repos.js";
 import type { PluginInstallJob } from "./plugin-generations.js";
 import {
@@ -50,10 +51,16 @@ import {
   PLUGIN_OVERLAY_LABEL,
 } from "./plugin-overlay.js";
 import { chownToSessionWorker, chownTreeToSessionWorker, sessionWorkerUid } from "./session-worker-uid.js";
-import { registerUntrustedContainerNetwork } from "./api-container-guard.js";
+import { ensureUntrustedPluginNetwork, waitForContainerExit } from "./plugin-container.js";
+import { PLUGIN_CLI_LABEL } from "./plugin-cli-run.js";
 
-/** Where the merged checkout is mounted inside the install container. */
-export const PLUGIN_INSTALL_DIR = "/plugin";
+/**
+ * Where the merged checkout is mounted inside the install container. The
+ * contract constant, not a second spelling of it: a plugin's `cli:` entrypoints
+ * are declared relative to its repository root and must resolve at the same
+ * path in every container that runs plugin code (`plugin-contract.ts`).
+ */
+export const PLUGIN_INSTALL_DIR = CONTAINER_PLUGIN_DIR;
 
 /**
  * Dedicated network for install containers. Never the default bridge, and
@@ -90,10 +97,6 @@ const INSTALL_PIDS_LIMIT = 512;
 /** How much of a failed install's output travels back into the failure reason. */
 const LOG_TAIL_LINES = 40;
 const REASON_MAX_CHARS = 2000;
-/** How often the wait loop notices a timeout or a disposed session. */
-const CANCELLATION_POLL_MS = 2_000;
-/** How long to wait for a killed container to actually be gone. */
-const REAP_GRACE_MS = 10_000;
 
 export interface PluginInstallDeps {
   docker: Docker;
@@ -171,7 +174,7 @@ export function createPluginInstallRunner(
     try {
       // Before anything else, and fail-closed: an install container ShipIt
       // cannot deny at its own API is not one to start.
-      await ensureInstallNetwork(deps.docker);
+      await ensureUntrustedPluginNetwork(deps.docker, PLUGIN_INSTALL_NETWORK);
       const roots = await resolvePluginOverlayRoots(deps.docker, deps.workspaceVolume, deps.stateRoot);
       spec = buildPluginOverlaySpec({
         sessionId: deps.sessionId,
@@ -263,49 +266,6 @@ function readStamp(stampPath: string): string | null {
 }
 
 /**
- * Create the install network if it does not exist, and declare its subnet
- * untrusted to the orchestrator's API guard.
- *
- * **Fails closed.** If the network cannot be created, or it has no IPv4 subnet
- * to register (the guard's CIDR match is IPv4-only), no install runs — a
- * container that ShipIt cannot deny at the API is not one to start.
- *
- * Idempotent and cheap to repeat: an existing network is inspected rather than
- * recreated, and registration is a set insert.
- */
-async function ensureInstallNetwork(docker: Docker): Promise<void> {
-  let info: { IPAM?: { Config?: { Subnet?: string }[] } };
-  try {
-    info = await docker.getNetwork(PLUGIN_INSTALL_NETWORK).inspect();
-  } catch {
-    try {
-      await docker.createNetwork({ Name: PLUGIN_INSTALL_NETWORK, Driver: "bridge" });
-    } catch (err) {
-      // A concurrent create is fine — the inspect below settles it either way.
-      if (errStatus(err) !== 409) throw err;
-    }
-    info = await docker.getNetwork(PLUGIN_INSTALL_NETWORK).inspect();
-  }
-
-  const subnets = (info.IPAM?.Config ?? [])
-    .map((c) => c.Subnet)
-    .filter((s): s is string => Boolean(s));
-  const registered = subnets.filter((s) => registerUntrustedContainerNetwork(s));
-  if (registered.length === 0) {
-    throw new Error(
-      `network ${PLUGIN_INSTALL_NETWORK} has no IPv4 subnet to deny `
-      + `(saw ${subnets.length > 0 ? subnets.join(", ") : "none"})`,
-    );
-  }
-}
-
-function errStatus(err: unknown): number {
-  return err && typeof err === "object" && "statusCode" in err
-    ? (err as { statusCode: number }).statusCode
-    : 0;
-}
-
-/**
  * Run one install command to completion. Returns a failure clause on a
  * non-zero exit or a timeout, and `null` on success.
  */
@@ -328,7 +288,7 @@ async function runInstallContainer(
     // The generation's env and nothing else. Notably absent: everything in this
     // process's environment, the worker URL, and any credential.
     Env: [
-      `SHIPIT_PLUGIN_COMMIT=${job.commit}`,
+      `${PLUGIN_COMMIT_ENV}=${job.commit}`,
       "HOME=/tmp",
       "npm_config_update_notifier=false",
     ],
@@ -354,7 +314,7 @@ async function runInstallContainer(
   const timeoutMs = deps.timeoutMs ?? DEFAULT_PLUGIN_INSTALL_TIMEOUT_MS;
   try {
     await container.start();
-    const code = await waitForExit(container, timeoutMs, job.isCancelled);
+    const code = await waitForContainerExit(container, timeoutMs, job.isCancelled);
     if (code === "timeout") return `did not finish within ${Math.round(timeoutMs / 1000)}s`;
     if (code === "cancelled") return "was stopped because the session went away";
     if (code !== 0) return `exited ${code}${await logTail(container)}`;
@@ -362,57 +322,6 @@ async function runInstallContainer(
   } finally {
     await container.remove({ force: true }).catch(() => undefined);
   }
-}
-
-/** Sentinel for "the poll slice elapsed" — an exit result is always an object. */
-const TICK = "tick" as const;
-
-/**
- * Wait for the container, stopping it when it outstays the timeout or when its
- * session goes away.
- *
- * **The post-kill wait is bounded too.** The obvious shape — kill, then await
- * the same `wait()` promise — assumes the kill worked. A kill that fails (a
- * daemon hiccup, a container in a state Docker will not signal) leaves that
- * promise unresolved forever, and a nominal ten-minute timeout becomes an
- * unbounded hang holding the repository's activation queue and the generation's
- * volume. So the reap has its own deadline, and the caller treats "stopped, we
- * think" as a failure either way.
- */
-async function waitForExit(
-  container: Docker.Container,
-  timeoutMs: number,
-  isCancelled?: () => boolean,
-): Promise<number | "timeout" | "cancelled"> {
-  const wait = container.wait() as Promise<{ StatusCode?: number }>;
-  // Attached immediately: `wait` is raced below, so an early rejection with
-  // nothing listening would surface as an unhandled rejection.
-  const settled = wait.catch(() => ({ StatusCode: -1 }));
-
-  const started = Date.now();
-  let stopReason: "timeout" | "cancelled" | null = null;
-  while (stopReason === null) {
-    const slice = Math.min(CANCELLATION_POLL_MS, Math.max(0, timeoutMs - (Date.now() - started)));
-    const outcome = await Promise.race([settled, tickAfter(slice)]);
-    if (outcome !== TICK) return outcome.StatusCode ?? -1;
-    if (isCancelled?.()) stopReason = "cancelled";
-    else if (Date.now() - started >= timeoutMs) stopReason = "timeout";
-  }
-
-  // Kill, then reap — but never wait on the kill having worked.
-  await container.kill().catch(() => undefined);
-  await Promise.race([settled, sleep(REAP_GRACE_MS)]);
-  return stopReason;
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-/** `sleep`, resolving to the poll sentinel so it can be raced against an exit. */
-async function tickAfter(ms: number): Promise<typeof TICK> {
-  await sleep(ms);
-  return TICK;
 }
 
 /**
@@ -433,13 +342,15 @@ async function logTail(container: Docker.Container): Promise<string> {
 }
 
 /**
- * Boot-only crash recovery: remove every install container this orchestrator's
- * predecessor left behind, **and every plugin generation volume**.
+ * Boot-only crash recovery: remove every plugin container this orchestrator's
+ * predecessor left behind — `install` containers **and companion-CLI
+ * invocation containers** (`plugin-cli-run.ts`) — **and every plugin
+ * generation volume**.
  *
- * An install is awaited inside one activation, in this process, so it cannot
- * outlive the process that started it — at boot, either artifact is an orphan
- * by definition, whatever state it is in. That makes the test liveness-free,
- * unlike the session sweeps that cross-reference the DB.
+ * Each of those containers is awaited inside one call, in this process, so
+ * none can outlive the process that started it — at boot, every such artifact
+ * is an orphan by definition, whatever state it is in. That makes the test
+ * liveness-free, unlike the session sweeps that cross-reference the DB.
  *
  * **The volumes have to go with the containers, and no other sweep will do
  * it.** The disk janitor's orphan-volume pass filters on `dangling=true`, so a
@@ -464,10 +375,15 @@ export async function reapOrphanPluginInstalls(
     if (opts.paceMs) await sleep(opts.paceMs);
   };
 
-  try {
+  // Both kinds of plugin container: `install` and a companion-CLI invocation.
+  // Neither can outlive the process that started it — each is awaited inside
+  // one call — so at boot anything still labelled is an orphan by definition,
+  // whatever state it is in.
+  for (const label of [PLUGIN_INSTALL_LABEL, PLUGIN_CLI_LABEL]) {
+    try {
     const containers = await docker.listContainers({
       all: true,
-      filters: { label: [PLUGIN_INSTALL_LABEL] },
+      filters: { label: [label] },
     });
     for (const { Id } of containers) {
       try {
@@ -481,7 +397,8 @@ export async function reapOrphanPluginInstalls(
   } catch (err) {
     // Docker unavailable — this is a backstop, so the orphans wait for the
     // next boot. Fall through: the volume pass fails the same way if so.
-    console.warn("[plugins] could not list install containers:", message(err));
+    console.warn(`[plugins] could not list ${label} containers:`, message(err));
+    }
   }
 
   try {
@@ -524,6 +441,10 @@ function demultiplex(raw: Buffer): string {
   }
   if (offset !== raw.length) return raw.toString("utf-8");
   return Buffer.concat(parts).toString("utf-8");
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function message(err: unknown): string {

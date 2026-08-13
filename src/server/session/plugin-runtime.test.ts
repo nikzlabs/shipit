@@ -17,7 +17,10 @@ let workspaceDir: string;
 let store: string;
 let pluginsDir: string;
 
-const opts = () => ({ workspaceDir, storeDir: store, pluginsDir });
+// `binDir` is pointed at the temp tree so the companion-CLI generator
+// (reqs 17, 20 — covered in its own `plugin-cli.test.ts`) never touches the
+// real `/plugin-bin` or this process's PATH from here.
+const opts = () => ({ workspaceDir, storeDir: store, pluginsDir, binDir: path.join(tmp, "plugin-bin") });
 
 /** Publish a generation the way `plugin-generations.ts` does: dir + `active` symlink. */
 function publishGeneration(repoName: string, commit: string, manifest: string, files: Record<string, string> = {}): string {
@@ -43,7 +46,12 @@ const PROBE_MANIFEST = "exports:\n  plugins:\n    probe:\n      install: echo in
 const DECLARATION = "plugins:\n  repos:\n    - repo: acme/tools\n      name: tools\n      branch: main\n"
   + "  use:\n    - plugin: probe\n      from: tools\n";
 
+let originalPath: string | undefined;
+
 beforeEach(() => {
+  // The companion-CLI generator appends its wrapper directory to PATH (req 17),
+  // so restore it rather than letting each case leave a temp dir behind.
+  originalPath = process.env.PATH;
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), "plugin-runtime-"));
   workspaceDir = path.join(tmp, "workspace");
   store = path.join(tmp, "plugin-store");
@@ -53,6 +61,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  process.env.PATH = originalPath;
   fs.rmSync(tmp, { recursive: true, force: true });
   vi.restoreAllMocks();
 });
@@ -106,6 +115,7 @@ describe("preparePlugins — the agent-facing surface", () => {
     expect(preparePlugins(opts())).toEqual({
       linked: [], missing: [], unlinked: [], linkFailed: [],
       skills: [], skillsRemoved: [], skillsFailed: [],
+      commands: [], commandsRemoved: [], commandsRefused: [], commandsFailed: [],
     });
   });
 

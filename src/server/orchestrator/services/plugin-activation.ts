@@ -190,6 +190,12 @@ export function readPrepareFailures(body: unknown, sessionId: string): Container
   };
   take(record.skillsFailed, true);
   take(record.linkFailed, false);
+  // docs/262 req 20 — a companion CLI ShipIt refused to surface. Most refusals
+  // are also recomputed by the snapshot (`plugin-commands.ts`), but the
+  // PATH-shadow half is knowable only inside the container, so this is its only
+  // route to the card. Each reason is a complete sentence naming the command.
+  take(record.commandsRefused, false);
+  take(record.commandsFailed, false);
 
   if (dropped > 0) {
     console.warn(

@@ -39,8 +39,10 @@
  */
 
 import crypto from "node:crypto";
+import fs from "node:fs";
 import path from "node:path";
 import type Docker from "dockerode";
+import { chownToSessionWorker } from "./session-worker-uid.js";
 import {
   createOverlayVolume,
   removeOverlayVolume,
@@ -176,6 +178,47 @@ export async function resolvePluginOverlayRoots(
  */
 export async function createPluginOverlay(docker: Docker, spec: PluginOverlaySpec): Promise<void> {
   await createOverlayVolume(docker, spec, { [PLUGIN_OVERLAY_LABEL]: spec.volumeName });
+}
+
+/**
+ * The **runtime** volume for a published generation: the same upper layer
+ * install wrote into, now under the published checkout as its lowerdir.
+ *
+ * Idempotent, and shared on purpose — the CLI invocation container
+ * (`plugin-cli-run.ts`) and, when it lands, a plugin service both attach ONE
+ * volume per generation. Creating a second one over the same upperdir is not an
+ * option the kernel offers, so "ensure" rather than "create" is the only shape
+ * that lets two independent callers ask for it.
+ *
+ * Existing → returned untouched. Absent → the upper and work directories are
+ * created if they are missing (a plugin with no `install` never had them) and
+ * handed to the session-worker UID, which is what every consumer runs as. The
+ * directories are never *cleared*: that is install's job, before it writes, and
+ * doing it here would delete the install output this volume exists to expose.
+ */
+export async function ensurePluginRuntimeOverlay(
+  docker: Docker,
+  args: {
+    sessionId: string;
+    repoName: string;
+    commit: string;
+    stateDir: string;
+    /** The PUBLISHED generation directory — resolve `active` before calling. */
+    checkoutDir: string;
+    volumeMountpoint?: string;
+    stateRoot?: string;
+  },
+): Promise<string> {
+  const spec = buildPluginOverlaySpec(args);
+  if (await volumeExists(docker, spec.volumeName)) return spec.volumeName;
+
+  for (const dir of [spec.orchDirs.upperdir, spec.orchDirs.workdir]) {
+    fs.mkdirSync(dir, { recursive: true });
+    chownToSessionWorker(dir);
+  }
+  chownToSessionWorker(path.dirname(spec.orchDirs.upperdir));
+  await createPluginOverlay(docker, spec);
+  return spec.volumeName;
 }
 
 /**

@@ -96,6 +96,16 @@ if ! (mkdir -p /plugins && chown "${UID_GID}:${UID_GID}" /plugins) 2>/dev/null; 
   echo "[shipit] warning: could not prepare /plugins for UID ${UID_GID}; plugin checkouts will not be linked" >&2
 fi
 
+# docs/262 req 17 — /plugin-bin holds the generated companion-CLI wrappers the
+# worker writes AFTER dropping to UID_GID, so it needs the same handoff /plugins
+# does and for the same reason (`/` is root-owned). Nothing plugin-authored ever
+# lands here: a wrapper is ShipIt's own four-line script that brokers an
+# invocation container. Best-effort like the block above — a missing wrapper
+# directory costs the session its plugin commands, not its agent.
+if ! (mkdir -p /plugin-bin && chown "${UID_GID}:${UID_GID}" /plugin-bin) 2>/dev/null; then
+  echo "[shipit] warning: could not prepare /plugin-bin for UID ${UID_GID}; plugin commands will not be on PATH" >&2
+fi
+
 # docs/172 Gap 5 (planning#99) — read-only rootfs. The orchestrator mounts a tmpfs at
 # /home/shipit (the HOME holds writable caches: ~/.npm, ~/.npm-global, ~/.cache,
 # ~/.claude.json), which SHADOWS the image-baked credential symlinks. Re-create

@@ -29,6 +29,8 @@ import {
   pluginCredentialDeclarationsFor,
   loadSatisfiedPluginCredentialNames,
 } from "./plugin-credentials.js";
+import { pluginCommandIssuesByRepo } from "./plugin-commands.js";
+import type { PluginCliRequest } from "./plugin-cli-run.js";
 import { pluginSettingsIssuesByRepo } from "./plugin-state.js";
 import { getActivationState, getPluginPrepareFailures } from "./services/plugin-activation.js";
 import { sessionStateDirForWorkspace } from "./session-state-dir.js";
@@ -72,6 +74,49 @@ export async function registerPluginRepoRoutes(
         return;
       }
       return result;
+    },
+  );
+
+  // POST /api/sessions/:id/plugin/exec — docs/262 req 17, the other end of a
+  // generated companion-CLI wrapper, relayed by the worker's agent-ops surface.
+  //
+  // `containerAccessible` for the same reason refresh is: this IS the agent's
+  // path. The guard's session scoping is what keeps one session's wrapper from
+  // running another session's plugin.
+  //
+  // The response always carries the command's own `exitCode`/`stdout`/`stderr`,
+  // even when ShipIt refused to run it — the shim is a pipe, and a caller
+  // parsing its output must never have to distinguish a transport shape from a
+  // command shape.
+  app.post<{ Params: { id: string }; Body: Partial<PluginCliRequest> }>(
+    "/api/sessions/:id/plugin/exec",
+    { config: { containerAccessible: true } },
+    async (request, reply) => {
+      const session = deps.sessionManager.get(request.params.id);
+      if (!session?.workspaceDir) {
+        reply.code(404).send({ error: "Session not found" });
+        return;
+      }
+      if (!deps.runPluginCommandForSession) {
+        reply.code(501).send({ error: "This runtime cannot run plugin commands (it has no container runtime)." });
+        return;
+      }
+      const alias = request.body?.alias?.trim();
+      const command = request.body?.command?.trim();
+      if (!alias || !command) {
+        reply.code(400).send({ error: "`alias` and `command` are required." });
+        return;
+      }
+      const args = Array.isArray(request.body?.args)
+        ? request.body.args.filter((a): a is string => typeof a === "string")
+        : [];
+      return await deps.runPluginCommandForSession(request.params.id, session.workspaceDir, {
+        alias,
+        command,
+        args,
+        ...(typeof request.body?.cwd === "string" ? { cwd: request.body.cwd } : {}),
+        ...(typeof request.body?.stdin === "string" ? { stdin: request.body.stdin } : {}),
+      });
     },
   );
 
@@ -195,10 +240,16 @@ function readRuntimeState(
     ...(settingsIssues.get(repoName) ?? []),
     ...getPluginPrepareFailures(sessionId, repoName),
   ];
+  // req 20 — the same "recompute, never remember" rule, for command names. The
+  // PATH-dependent half of the check runs where PATH is real (the session's
+  // wrapper generator); what is knowable here — a name two plugins claim, or a
+  // name ShipIt reserves — is knowable without running anything at all.
+  const commandIssues = pluginCommandIssuesByRepo(config.plugins, config.pluginExports, stateDir);
 
   for (const repo of config.plugins.repos) {
     const entry: PluginRepoRuntime = {};
     const stateIssues = issuesFor(repo.name);
+    const cliIssues = commandIssues.get(repo.name) ?? [];
     // A `repo: self` import runs the live working tree — no generation, no
     // activation attempt (req 27). Its settings still resolve against the same
     // file's own manifest, so it can still have something to say.
@@ -214,10 +265,11 @@ function readRuntimeState(
       if (attempt?.error) entry.error = attempt.error;
       if (attempt?.warning) entry.warning = attempt.warning;
       if (attempt?.missingSelectors?.length) entry.missingSelectors = attempt.missingSelectors;
-    } else if (stateIssues.length === 0) {
+    } else if (stateIssues.length === 0 && cliIssues.length === 0) {
       continue;
     }
     if (stateIssues.length > 0) entry.settingsIssues = stateIssues;
+    if (cliIssues.length > 0) entry.commandIssues = cliIssues;
     runtime[repo.name] = entry;
   }
   return runtime;

@@ -75,6 +75,11 @@ const EXACT_ROUTES: Readonly<Record<string, string>> = {
   // denied in the dogfood instance while working in production, which is
   // exactly the drift the parity test exists to catch.
   "plugin/refresh": "plugin/refresh",
+  // docs/262 req 17 — `shipit plugin exec`, the target of every generated
+  // companion-CLI wrapper. Local mode has no Docker, so the orchestrator route
+  // answers with a plain "this runtime cannot run plugin commands" rather than
+  // a 403 that looks like a missing surface.
+  "plugin/exec": "plugin/exec",
 };
 
 /** Per-PR operations reachable as `pr/<number>/<op>`. */

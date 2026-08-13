@@ -329,10 +329,17 @@ describe("createPluginInstallRunner", () => {
     expect(second.containers).toHaveLength(1);
   });
 
-  it("reaps an install container a previous process left behind", async () => {
+  it("reaps both kinds of plugin container a previous process left behind", async () => {
     const removed: string[] = [];
+    const byLabel: Record<string, string> = {
+      "shipit-plugin-install": "install-1",
+      "shipit-plugin-cli": "cli-1",
+    };
     const docker = {
-      listContainers: async () => [{ Id: "abc123" }],
+      listContainers: async (opts: { filters: { label: string[] } }) => {
+        const id = byLabel[opts.filters.label[0]];
+        return id ? [{ Id: id }] : [];
+      },
       getContainer: (id: string) => ({
         remove: async () => {
           removed.push(id);
@@ -340,11 +347,12 @@ describe("createPluginInstallRunner", () => {
       }),
     } as unknown as Docker;
 
-    // An install is awaited inside one activation, so a survivor at boot is an
-    // orphan by definition — and until it is removed it holds the generation's
-    // overlay volume, which then cannot be removed either.
-    expect(await reapOrphanPluginInstalls(docker)).toBe(1);
-    expect(removed).toEqual(["abc123"]);
+    // An install is awaited inside one activation and a companion-CLI call
+    // inside one request, so a survivor of either kind at boot is an orphan by
+    // definition — and until it is removed it holds the generation's overlay
+    // volume, which then cannot be removed either.
+    expect(await reapOrphanPluginInstalls(docker)).toBe(2);
+    expect(removed).toEqual(["install-1", "cli-1"]);
   });
 
   // The finding this encodes: on ANY unregistered network the orchestrator's

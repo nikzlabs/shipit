@@ -38,3 +38,47 @@ export const PLUGIN_STATE_ENV = "SHIPIT_PLUGIN_STATE";
 
 /** Env var naming the validated settings JSON on both surfaces (req 26). */
 export const PLUGIN_SETTINGS_ENV = "SHIPIT_SETTINGS";
+
+/**
+ * Where the plugin's own tree — the generation's checkout merged with its
+ * install output — is mounted in every container that runs plugin code: the
+ * install container (`plugin-install.ts`), a CLI invocation
+ * (`plugin-cli-run.ts`), and a plugin service. One path, because a plugin's
+ * `cli:` entrypoints are declared relative to its repository root and must
+ * resolve identically on every surface.
+ */
+export const CONTAINER_PLUGIN_DIR = "/plugin";
+
+/**
+ * The consuming project's workspace, at the fixed path req 21 promises: the
+ * same in every project, nameable by a plugin repository that knows nothing
+ * about its consumers. Present in service and CLI containers; deliberately
+ * absent from the install container, which gets the plugin's tree and nothing
+ * else (plan §1b).
+ */
+export const CONTAINER_PROJECT_DIR = "/project";
+
+/** Env var naming the project workspace on both surfaces (req 21). */
+export const PLUGIN_PROJECT_ENV = "SHIPIT_PROJECT_DIR";
+
+/**
+ * Env var carrying the exact commit the running plugin was built from (req 15
+ * — "readable by the plugin itself", so a plugin can decide whether a version
+ * change invalidates a cache it keeps). **Unset under `repo: self`**: a live
+ * working tree corresponds to no exact commit, and an absent variable is how a
+ * plugin tells the two apart.
+ */
+export const PLUGIN_COMMIT_ENV = "SHIPIT_PLUGIN_COMMIT";
+
+/**
+ * Where generated companion-CLI wrappers live inside the **agent** container
+ * (req 17). A directory of ShipIt-authored shell wrappers — no plugin code, and
+ * no plugin credential, ever lands here; each wrapper brokers an invocation
+ * container instead (plan §2, "CLIs").
+ *
+ * It is **appended** to `PATH`, never prepended. The collision check (req 20)
+ * already refuses to write a wrapper whose name resolves anywhere else on PATH,
+ * so appending costs a surfaced command nothing — and if that check is ever
+ * wrong, the ordering means a plugin still cannot shadow `git`.
+ */
+export const CONTAINER_PLUGIN_BIN_DIR = "/plugin-bin";

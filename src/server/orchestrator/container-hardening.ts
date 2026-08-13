@@ -145,6 +145,12 @@ export function readonlyRootfsTmpfs(): Record<string, string> {
     // read-only rootfs would make the agent-facing `/plugins/<name>` path
     // uncreatable, so plugins would silently not exist for the agent.
     "/plugins": "rw,exec,nosuid,nodev",
+    // docs/262 req 17 — the generated companion-CLI wrappers, written at
+    // runtime for the same reason and with the same consequence: without a
+    // tmpfs a read-only rootfs leaves the directory uncreatable and every
+    // plugin command silently absent from PATH. `exec` is load-bearing here in
+    // a way it is not for `/plugins` — these files ARE executed.
+    "/plugin-bin": "rw,exec,nosuid,nodev",
   };
 }
 

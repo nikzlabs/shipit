@@ -64,6 +64,7 @@ import { activateDeclaredPlugins, type PluginInstallHook } from "./services/plug
 import { refreshPluginRepos, type PluginRefreshResult } from "./services/plugin-refresh.js";
 import { emitPluginReposUpdated } from "./service-manager-setup.js";
 import { createPluginInstallRunner } from "./plugin-install.js";
+import { runPluginCommand, type PluginCliRequest, type PluginCliResult } from "./plugin-cli-run.js";
 import { sessionStateDirForWorkspace } from "./session-state-dir.js";
 import { pinStorePath } from "./plugin-pins.js";
 import { createPluginRepoFetcher } from "./plugin-fetch.js";
@@ -601,6 +602,56 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
       repoName,
     );
   };
+
+  /**
+   * docs/262 req 17 — run one imported plugin's companion CLI.
+   *
+   * Built per call rather than per session because everything it needs is
+   * per-call anyway, and because the trust gate below has to be re-read: a
+   * repository un-trusted since the wrapper was generated must stop executing
+   * plugin code, and this is the only place that can notice.
+   *
+   * The gate is the same one automatic activation sits under (docs/178). A
+   * companion CLI is repo-declared code the agent can invoke, so a verb that
+   * ran it without the gate would be the way around the gate.
+   *
+   * No container manager (local mode, tests) means no Docker and therefore no
+   * invocation container. The hook is then absent and the route says so, which
+   * is the honest answer — running the command in the orchestrator or in the
+   * agent container is exactly what this design refuses (plan §1b).
+   */
+  const runPluginCommandForSession = !containerManager
+    ? undefined
+    : async (
+      sessionId: string,
+      workspaceDir: string,
+      request: PluginCliRequest,
+    ): Promise<PluginCliResult> => {
+      const remoteUrl = sessionManager.get(sessionId)?.remoteUrl ?? null;
+      if (remoteUrl && !repoStore.isTrusted(remoteUrl)) {
+        return {
+          error: "This repository is not trusted yet, so ShipIt will not run anything a plugin "
+            + "repository declares. Trust it in the UI first.",
+          exitCode: 126,
+          stdout: "",
+          stderr: "",
+        };
+      }
+      return await runPluginCommand(
+        {
+          docker: containerManager.dockerClient,
+          image: containerManager.workerImageName,
+          sessionId,
+          workspaceDir,
+          consumerRepoUrl: remoteUrl,
+          secretStore,
+          ...(containerManager.workspaceVolumeName
+            ? { workspaceVolume: containerManager.workspaceVolumeName, stateRoot: stateDir }
+            : {}),
+        },
+        request,
+      );
+    };
 
   const publishOverlayBases = async ({ runner, session, installOk, installCommands }: {
     runner: ContainerSessionRunner;
@@ -1183,6 +1234,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     publishOverlayBases,
     activatePluginRepos,
     refreshPluginReposForSession,
+    runPluginCommandForSession,
     runnerRegistry,
     repoPrefetcher,
     drainQueueForSession,

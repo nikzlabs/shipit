@@ -514,3 +514,25 @@ describe("readPrepareFailures", () => {
     expect(readPrepareFailures({ skillsFailed: "nope" }, "sess")).toEqual([]);
   });
 });
+
+/**
+ * docs/262 req 20 — a companion CLI ShipIt refused to surface has to reach the
+ * card. Cross-plugin collisions and reserved names are also recomputed by the
+ * snapshot; the PATH-shadow half is knowable only inside the container, so this
+ * response is its only route.
+ */
+describe("readPrepareFailures — companion-CLI refusals", () => {
+  it("carries a refused command, attributed to its declared repository", () => {
+    expect(readPrepareFailures({
+      commandsRefused: [{ repo: "tools", reason: "Command `curl` would shadow `/usr/bin/curl`." }],
+      commandsFailed: [{ repo: "tools", reason: "`reqs` is not on PATH: the `shipit` shim is not installed." }],
+    }, "sess")).toEqual([
+      { repo: "tools", reason: "Command `curl` would shadow `/usr/bin/curl`." },
+      { repo: "tools", reason: "`reqs` is not on PATH: the `shipit` shim is not installed." },
+    ]);
+  });
+
+  it("drops an unattributed refusal rather than rendering it on no card", () => {
+    expect(readPrepareFailures({ commandsRefused: [{ reason: "no repo" }] }, "sess")).toEqual([]);
+  });
+});
