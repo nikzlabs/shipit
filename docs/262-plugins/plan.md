@@ -357,14 +357,31 @@ instead of a repeat.
   container start costs latency; a credential-blind persistent runner is a
   later optimisation, and `docker exec` into the agent or a service container
   is not an acceptable shortcut — it re-opens the boundary.
-- **Skills** (req 22 — review finding 5): checkout alone discloses nothing —
-  ShipIt's skill listing scans only the workspace skill dirs, and Codex
-  reading `.claude/skills` is observed harness behavior, not a guarantee
-  (docs/209). The design therefore **materializes** each imported plugin's
-  skills into every backend's actual discovery root, namespaced
-  (`plugins--<alias>--<skill>`), without touching project-tracked paths;
-  refresh re-materializes and the agent re-scans on next turn. The docs/209
-  verification rule applies to future backends.
+- **Skills** (req 22 — review finding 5) — **implemented**
+  (`session/plugin-skills.ts`): checkout alone discloses nothing — ShipIt's
+  skill listing scans only the workspace skill dirs, and Codex reading
+  `.claude/skills` is observed harness behavior, not a guarantee (docs/209).
+  Each imported plugin's skills are therefore **materialized** into every
+  backend's actual discovery root, namespaced (`plugins--<alias>--<skill>`),
+  without touching project-tracked paths; refresh re-materializes and the agent
+  re-scans on next turn. The docs/209 verification rule applies to future
+  backends.
+
+  Three details the implementation settled. **Every** harness root gets a copy,
+  not just the running session's: req 22's "never tied to one backend" is the
+  requirement's own wording, and `skillsDirName` additionally drives ShipIt's
+  skill picker, so a Codex session with the copy only under `.claude` would
+  work in the CLI and be missing from the picker. **The frontmatter `name:` is
+  rewritten** to the namespaced directory name — the scanner takes the
+  invocable name from the frontmatter and only falls back to the directory, so
+  namespacing the directory alone leaves two plugins' `probe` skills both
+  called `probe`. And **"projects never keep copies" is enforced by
+  `.git/info/exclude`**, the per-clone non-tracked ignore list docs/198 already
+  uses for pnpm's relocated store — a project's own `.gitignore` is a tracked
+  file ShipIt does not own, so editing it would be the very "copy kept in sync"
+  the requirement forbids. Copies (not symlinks) follow the marketplace
+  installer: kilobytes of markdown, no dangling-link failure mode, and
+  re-copying is what makes a refresh take effect.
 - **Refresh** (reqs 12, 15 — review finding 1): refresh is **generation
   activation**, never in-place mutation. Stage the new checkout, validate
   the manifest, run install, prepare services — then atomically activate:
@@ -487,10 +504,13 @@ coherent in one UI.
   (the GET exists; refresh endpoints come with generation mechanics); tracker
   registration folds into the existing trackers registry
   (`api-routes-issues.ts`) with destination-based dedup.
-- ✓ `src/server/session/plugin-runtime.ts` — the container half, and ONLY the
-  link surface: it points `/plugins/<name>` at the read-only store mount and
-  removes links the declaration no longer names. It runs no plugin-authored
-  code — install is not here, and must not come back here (§1b).
+- ✓ `src/server/session/plugin-runtime.ts` — the container half: it points
+  `/plugins/<name>` at the read-only store mount, removes links the declaration
+  no longer names, and materializes each imported plugin's skills
+  (`session/plugin-skills.ts`, req 22 — reading each repository's own manifest
+  out of its live checkout, so the orchestrator still says only *when*, never
+  *what*). It runs no plugin-authored code — copying markdown is not running
+  it, and install is not here and must not come back here (§1b).
   Reached over `POST /plugins/prepare` on the worker
   (`session-worker.ts`), which `ContainerSessionRunner.preparePlugins()` calls
   when an activation round settles and when a container becomes ready — the

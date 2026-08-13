@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import simpleGit from "simple-git";
-import { GitManager, ensurePnpmStoreGitExcluded } from "./git.js";
+import { GitManager, ensurePnpmStoreGitExcluded, ensureGitExcluded } from "./git.js";
 import { initGlobalGitConfig, setGitIdentity } from "../orchestrator/git-config.js";
 
 describe("GitManager: init & autoCommit", () => {
@@ -242,6 +242,21 @@ describe("GitManager: init & autoCommit", () => {
     const after2 = readExclude();
     const occurrences2 = after2.split("\n").filter((l) => l.trim() === ".pnpm-store/").length;
     expect(occurrences2).toBe(1);
+  });
+
+  // docs/262 — a plugin's materialized skills use the same mechanism, so the
+  // generalized helper must add each pattern once and never re-add one.
+  it("ensureGitExcluded appends only the entries that are missing", async () => {
+    const git = new GitManager(tmpDir);
+    await git.init();
+
+    ensureGitExcluded(tmpDir, [".claude/skills/plugins--*/", ".codex/skills/plugins--*/"]);
+    ensureGitExcluded(tmpDir, [".claude/skills/plugins--*/", ".new-entry/"]);
+    const lines = readExclude().split("\n").map((l) => l.trim());
+
+    for (const entry of [".claude/skills/plugins--*/", ".codex/skills/plugins--*/", ".new-entry/"]) {
+      expect(lines.filter((l) => l === entry).length).toBe(1);
+    }
   });
 
   it("ensurePnpmStoreGitExcluded is best-effort on a missing .git (no throw)", () => {

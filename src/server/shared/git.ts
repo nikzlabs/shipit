@@ -27,7 +27,26 @@ const DEFAULT_WORKSPACE_DIR = "/workspace";
  * read-only fs in tests) must never block clone prep or a commit.
  */
 export function ensurePnpmStoreGitExcluded(repoDir: string): void {
-  const PNPM_STORE_EXCLUDE_ENTRY = ".pnpm-store/";
+  ensureGitExcluded(repoDir, [".pnpm-store/"]);
+}
+
+/**
+ * Append patterns to a clone's `.git/info/exclude`, once each.
+ *
+ * Generalized from the pnpm case above because docs/262 needs the same
+ * property for a second reason: a plugin repository's skills are materialized
+ * into the workspace's skill roots so the agent can find them (req 22), and
+ * "projects never keep copies" means the post-turn `git add -A` must never see
+ * them. Same constraint, same answer — a per-clone, non-tracked ignore list
+ * leaves the committed tree and every tracked file untouched.
+ *
+ * Idempotent, and never throws: a missing or non-writable `.git` (a worktree
+ * pointer file, a read-only fs in tests) must not block clone prep or a
+ * commit. It DOES report whether the entries are in force, because a caller
+ * that is about to write files it promised would stay out of git needs to know
+ * that the promise held — see `plugin-skills.ts`.
+ */
+export function ensureGitExcluded(repoDir: string, entries: readonly string[]): boolean {
   const excludePath = path.join(repoDir, ".git", "info", "exclude");
   try {
     let contents = "";
@@ -36,17 +55,19 @@ export function ensurePnpmStoreGitExcluded(repoDir: string): void {
     } catch {
       // info/exclude may not exist yet — fall through to create it.
     }
-    if (contents.split("\n").some((line) => line.trim() === PNPM_STORE_EXCLUDE_ENTRY)) {
-      return;
-    }
+    const present = new Set(contents.split("\n").map((line) => line.trim()));
+    const missing = entries.filter((entry) => !present.has(entry));
+    if (missing.length === 0) return true;
     fs.mkdirSync(path.dirname(excludePath), { recursive: true });
     const sep = contents.length > 0 && !contents.endsWith("\n") ? "\n" : "";
-    fs.appendFileSync(excludePath, `${sep}${PNPM_STORE_EXCLUDE_ENTRY}\n`);
+    fs.appendFileSync(excludePath, `${sep}${missing.join("\n")}\n`);
+    return true;
   } catch (err) {
     console.warn(
-      `[git] failed to write .pnpm-store exclude to ${excludePath}:`,
+      `[git] failed to write exclude entries to ${excludePath}:`,
       err instanceof Error ? err.message : String(err),
     );
+    return false;
   }
 }
 

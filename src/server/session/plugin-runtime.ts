@@ -11,6 +11,10 @@
  * obtain a real GitHub token — so req 19 cannot hold for anything running here.
  * Install now runs in its own container against an overlay volume (plan §1b).
  *
+ * It also materializes each imported plugin's skills into the workspace skill
+ * roots (req 22) — see `plugin-skills.ts`. That is still no plugin-authored
+ * code: it copies markdown the agent reads, and runs nothing from the checkout.
+ *
  * The declaration is readable at `/workspace/shipit.yaml`, so the orchestrator
  * only has to say *when*, never *what*.
  */
@@ -20,6 +24,12 @@ import path from "node:path";
 import { CONTAINER_PLUGINS_DIR, CONTAINER_PLUGIN_STORE_DIR } from "../shared/fs-constants.js";
 import { resolveShipitConfig } from "../shared/shipit-config.js";
 import { getErrorMessage } from "../shared/utils.js";
+import { ensureGitExcluded } from "../shared/git.js";
+import {
+  materializePluginSkills,
+  pluginSkillExcludeEntries,
+  resolvePluginSkillSources,
+} from "./plugin-skills.js";
 
 export interface PluginPrepareResult {
   /** Repos that got a `/plugins/<name>` entry. */
@@ -28,6 +38,12 @@ export interface PluginPrepareResult {
   missing: string[];
   /** Links removed because the declaration no longer names that repo. */
   unlinked: string[];
+  /** Namespaced skill directories written into each harness's discovery root (req 22). */
+  skills: string[];
+  /** Materialized skills removed because the declaration no longer imports them. */
+  skillsRemoved: string[];
+  /** Skills that could not be written — reported, never fatal. */
+  skillsFailed: { skill: string; reason: string }[];
 }
 
 export interface PreparePluginsOptions {
@@ -47,7 +63,9 @@ export interface PreparePluginsOptions {
 export function preparePlugins(opts: PreparePluginsOptions): PluginPrepareResult {
   const pluginsDir = opts.pluginsDir ?? CONTAINER_PLUGINS_DIR;
   const storeDir = opts.storeDir ?? CONTAINER_PLUGIN_STORE_DIR;
-  const result: PluginPrepareResult = { linked: [], missing: [], unlinked: [] };
+  const result: PluginPrepareResult = {
+    linked: [], missing: [], unlinked: [], skills: [], skillsRemoved: [], skillsFailed: [],
+  };
 
   const config = resolveShipitConfig(opts.workspaceDir);
   const wanted = new Set<string>();
@@ -70,7 +88,48 @@ export function preparePlugins(opts: PreparePluginsOptions): PluginPrepareResult
   // when the block is emptied entirely, which is why this runs even when
   // nothing is declared.
   result.unlinked.push(...removeStaleLinks(pluginsDir, wanted));
+
+  // req 22 — a checkout discloses nothing on its own, so each imported plugin's
+  // skills are copied into every harness's discovery root. Same lifecycle as
+  // the links: idempotent, and re-run on every activation round, which is what
+  // makes a refresh take effect. Kept out of the user's repository by a
+  // per-clone git exclude rather than by editing their `.gitignore`.
+  const sources = resolvePluginSkillSources(
+    config.plugins.uses,
+    (repoName) => {
+      const active = path.join(storeDir, repoName, "active");
+      return fs.existsSync(active) ? active : null;
+    },
+  );
+  // Fail closed on the git side, and only bother a clone that has plugins to
+  // hide: if the exclude cannot be written, materializing would put a copy of
+  // somebody else's repository into the user's next commit, which is the one
+  // thing req 22 rules out. Stale cleanup still runs — removing is always safe.
+  const excluded = sources.length === 0
+    || !isGitRepo(opts.workspaceDir)
+    || ensureGitExcluded(opts.workspaceDir, pluginSkillExcludeEntries());
+  const skills = materializePluginSkills(opts.workspaceDir, excluded ? sources : []);
+  if (!excluded) {
+    result.skillsFailed.push({
+      skill: "(all)",
+      reason: "could not keep plugin skills out of this clone's git, so none were materialized",
+    });
+  }
+  result.skills.push(...skills.materialized);
+  result.skillsRemoved.push(...skills.removed);
+  result.skillsFailed.push(...skills.failed);
+
   return result;
+}
+
+/**
+ * Whether this workspace is a git clone at all. A standalone session with no
+ * repository has no commit to pollute, so the exclude is moot there — and
+ * refusing to materialize would deny it skills for a reason that does not
+ * apply.
+ */
+function isGitRepo(workspaceDir: string): boolean {
+  return fs.existsSync(path.join(workspaceDir, ".git"));
 }
 
 /**

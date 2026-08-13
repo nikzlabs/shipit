@@ -22,7 +22,7 @@ plugins:
   use:
     - plugin: requirements     # an export the repo's manifest declares
       from: tools
-      as: reqs                 # optional alias
+      alias: reqs              # optional local name (default: the plugin name)
 ```
 
 The plugin repository declares what it exports, in **its** `shipit.yaml`:
@@ -93,6 +93,21 @@ You will not see the result. Dependencies and build output land in that
 writable layer, which belongs to the plugin's execution environment; your
 `/plugins/<name>` still shows plain source.
 
+## Skills
+
+A plugin can ship skills. ShipIt copies each imported plugin's skills into
+this session's skill directories, so you discover them exactly like the
+project's own — namespaced `plugins--<alias>--<skill>` so two plugins can ship
+a skill with the same name.
+
+They are **not part of the project**. ShipIt keeps them out of git for this
+clone, so they never appear in a diff or a commit, and the project never holds
+a copy that has to be kept in sync. Do not edit them: a refresh rewrites them
+from the plugin repository, and your change would reach nobody. Fix the skill
+in the plugin's own repository instead.
+
+Removing the `use` entry removes the skills.
+
 ## Failure behaviour
 
 A plugin repository that cannot be fetched or validated does not stop the
@@ -105,7 +120,6 @@ succeeds or fails on its own.
 Declared in the manifest and parsed, but not yet wired into a session:
 
 - **CLIs** on your `PATH`, with the plugin's credentials injected
-- **Skills** materialized into the agent's discovery root
 - **Services** from a plugin's compose fragment, and `/project` inside them
 - **Settings** (`SHIPIT_SETTINGS`) and the per-plugin shared state directory
 - **`shipit plugin refresh`**
