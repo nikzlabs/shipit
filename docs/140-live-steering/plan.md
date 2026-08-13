@@ -724,6 +724,11 @@ pinning trigger/checkmark agreement.
 - `src/server/orchestrator/resident-model-guard.ts` — release the resident
   process when the session's model no longer matches its spawn-time `--model`
   (Phase 6.10); paired with `runner.appliedModel`, set in `turn-executor.ts`.
+- `src/server/shared/types/agent-types.ts` +
+  `src/server/shared/catalogue/harnesses.ts` —
+  `AgentCapabilities.startsOwnTurns` (Phase 6.11): whether a backend's process
+  survives its own turn boundary. Resolved through the agent registry in
+  `ws-handlers/agent-execution.ts`, beside `useStreaming`.
 - `src/server/orchestrator/ws-handlers/agent-listeners.ts` —
   `adoptCliStartedTurn` + `sawTurnResult`: adopt a turn the CLI started on its
   own, from either edge (Phase 6.11). Paired with `rearmForCliStartedTurn` in
