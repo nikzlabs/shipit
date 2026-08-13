@@ -642,7 +642,7 @@ async function sweepOrphanSessionNetworks(
   try {
     listOut = await runDocker([
       "network", "ls",
-      "--filter", "name=shipit-session-",
+      "--filter", "name=shipit-",
       "--filter", "dangling=true",
       "--format", "{{.Name}}",
     ]);

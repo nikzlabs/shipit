@@ -536,3 +536,13 @@ This protection applies to running Compose services, not Dockerfile build
 steps. BuildKit runs build commands in daemon-managed containers before the
 service exists. ShipIt requires Docker Compose 2.24.4 or newer for contained
 service network replacement.
+
+Contained services cannot add Linux capabilities, use `deploy.restart_policy`,
+or declare labels in ShipIt's reserved `shipit-egress-*` namespace. Compose
+`include` and service `extends` are also rejected in contained sessions because
+ShipIt cannot safely validate and override definitions from a second file.
+
+A contained service first starts on an internal network with no public route.
+ShipIt pauses it, installs the allowlist controls, and then resumes it. Do not
+make the entrypoint depend on public network access before setup completes. Put
+dependency installation in `agent.install` or bake it into the image.

@@ -9,6 +9,7 @@
  */
 
 import os from "node:os";
+import { createHash } from "node:crypto";
 import type Docker from "dockerode";
 import type { ResolvedEgressConfig } from "./egress-allowlist.js";
 import {
@@ -33,6 +34,7 @@ import {
 
 export const COMPOSE_EGRESS_NETWORK_PREFIX = "shipit-egress-";
 export const COMPOSE_EGRESS_SIDECAR_LABEL = "shipit-egress-service-sidecar";
+export const COMPOSE_EGRESS_POLICY_LABEL = "shipit-egress-policy-hash";
 
 export interface ContainComposeServicesOptions {
   docker: Docker;
@@ -101,7 +103,16 @@ export async function containComposeServices(opts: ContainComposeServicesOptions
   const labels = { ...(opts.labels ?? {}), "shipit-parent-session": opts.sessionId };
   const network = await ensureEgressNetwork(opts.docker, opts.sessionId, labels);
   const sessionNetwork = opts.docker.getNetwork(`shipit-session-${opts.sessionId}`);
-  const sessionSubnets = extractNetworkSubnets(await sessionNetwork.inspect());
+  const sessionNetworkInfo = await sessionNetwork.inspect();
+  if (!sessionNetworkInfo.Internal) {
+    // Never attach the NAT egress bridge to a service whose bootstrap network
+    // was reused from Open mode or an older ShipIt version.
+    for (const info of serviceContainers) {
+      try { await opts.docker.getContainer(info.Id).stop({ t: 0 }); } catch { /* fail closed */ }
+    }
+    throw new Error(`session network shipit-session-${opts.sessionId} is not internal`);
+  }
+  const sessionSubnets = extractNetworkSubnets(sessionNetworkInfo);
   const inputs = await buildTierAEgressInputs();
   const discoveredServiceNames = serviceContainers
     .map((entry) => entry.Labels?.["shipit-service-name"])
@@ -109,6 +120,14 @@ export async function containComposeServices(opts: ContainComposeServicesOptions
   const internalDomains = [
     ...new Set([...opts.serviceNames, ...discoveredServiceNames, opts.orchestratorHost ?? os.hostname()]),
   ];
+  const policyHash = createHash("sha256").update(JSON.stringify({
+    internalDomains: [...internalDomains].sort(),
+    extraHosts: [...opts.config.extraHosts].sort(),
+    base: opts.config.base,
+    identityRules: opts.config.identityRules,
+    dns: opts.dnsEnabled,
+    proxy: opts.proxyEnabled,
+  })).digest("hex").slice(0, 16);
 
   const failures: Error[] = [];
   for (const info of serviceContainers) {
@@ -117,14 +136,16 @@ export async function containComposeServices(opts: ContainComposeServicesOptions
       ...labels,
       "shipit-egress-parent": info.Id,
       [COMPOSE_EGRESS_SIDECAR_LABEL]: "true",
+      [COMPOSE_EGRESS_POLICY_LABEL]: policyHash,
     };
     let paused = false;
     try {
       const inspected = await container.inspect();
       if (inspected.State?.Paused) {
-        // A previous orchestrator died inside the critical section. Removing
-        // the frozen service is fail-closed; the next Compose up recreates it.
-        await container.remove({ force: true });
+        // A previous orchestrator died inside the critical section. Preserve
+        // the container and anonymous volumes, but leave the workload stopped.
+        await container.unpause();
+        await container.stop({ t: 0 });
         throw new Error(`service ${info.Labels?.["shipit-service-name"] ?? info.Id} was left paused during egress setup`);
       }
       const serviceStartedAt = Date.parse(inspected.State?.StartedAt ?? "") / 1000;
@@ -132,6 +153,7 @@ export async function containComposeServices(opts: ContainComposeServicesOptions
         entry.State === "running"
           && entry.Labels?.[COMPOSE_EGRESS_SIDECAR_LABEL]
           && entry.Labels?.["shipit-egress-parent"] === info.Id
+          && entry.Labels?.[COMPOSE_EGRESS_POLICY_LABEL] === policyHash
           && (entry.Created ?? 0) >= serviceStartedAt
       );
       const hasCurrentResolver = !opts.dnsEnabled
@@ -228,17 +250,13 @@ export async function containComposeServices(opts: ContainComposeServicesOptions
     } catch (error) {
       // Never resume repository code unless the complete containment stack is
       // ready. Removing the service also makes Compose report the failed start.
-      if (opts.refresh) {
-        // Preserve the container and its volumes. Its firewall is still
-        // default-deny; resume only long enough to issue a normal stop.
-        if (paused) {
-          try { await container.unpause(); paused = false; } catch { /* remain frozen and closed */ }
-        }
-        if (!paused) {
-          try { await container.stop({ t: 0 }); } catch { /* fail closed */ }
-        }
-      } else {
-        try { await container.remove({ force: true }); } catch { /* already gone */ }
+      // Preserve the container and anonymous volumes. Its bootstrap network is
+      // internal or its firewall is default-deny, so stopping is fail-closed.
+      if (paused) {
+        try { await container.unpause(); paused = false; } catch { /* remain frozen and closed */ }
+      }
+      if (!paused) {
+        try { await container.stop({ t: 0 }); } catch { /* fail closed */ }
       }
       failures.push(error instanceof Error ? error : new Error(String(error)));
     } finally {

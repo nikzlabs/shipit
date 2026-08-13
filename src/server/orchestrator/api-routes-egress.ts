@@ -173,7 +173,11 @@ export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps):
         deps.sseBroadcast("egress_settings", globalSettings(store, enforcementActive));
         // A per-session add can take effect immediately on a running session.
         if (scope !== EGRESS_GLOBAL_SCOPE) {
-          void deps.containerManager?.reloadEgress(scope).catch(() => {});
+          try {
+            await deps.containerManager?.reloadEgress(scope);
+          } catch (error) {
+            console.error(`[egress:${scope}] allowlist saved but live refresh failed closed:`, error);
+          }
           return sessionSettings(store, scope, enforcementActive, liveContained(scope));
         }
         return globalSettings(store, enforcementActive);

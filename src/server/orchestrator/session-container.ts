@@ -512,6 +512,20 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     return this.isEgressContained(sessionId) && egressProxyEnabled();
   }
 
+  /** Remove the old session bridge before an Open/Contained policy transition. */
+  async resetSessionNetwork(sessionId: string): Promise<void> {
+    const network = this.docker.getNetwork(`shipit-session-${sessionId}`);
+    let info: Docker.NetworkInspectInfo;
+    try { info = await network.inspect(); } catch { return; }
+    for (const containerId of Object.keys(info.Containers ?? {})) {
+      try { await network.disconnect({ Container: containerId, Force: true }); } catch { /* already detached */ }
+    }
+    try { await network.remove(); } catch (error) {
+      const code = error && typeof error === "object" && "statusCode" in error ? Number(error.statusCode) : 0;
+      if (code !== 404) throw error;
+    }
+  }
+
   /**
    * Apply the owning session's effective egress policy to its running Compose
    * services. Called after every Compose `up`, because that command can replace

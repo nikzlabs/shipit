@@ -144,6 +144,13 @@ if ! command -v jq &>/dev/null; then
   apt-get install -y -qq jq
 fi
 
+compose_version="$(docker compose version --short 2>/dev/null | sed 's/^v//')"
+minimum_compose="2.24.4"
+if [ "$(printf '%s\n%s\n' "$minimum_compose" "$compose_version" | sort -V | head -n1)" != "$minimum_compose" ]; then
+  echo "Error: Docker Compose $minimum_compose or newer is required (found $compose_version)." >&2
+  exit 1
+fi
+
 # --- Configure Docker network address pools ---
 # ShipIt creates two Docker networks per contained Compose session. The default pool (~30 /16 subnets)
 # is easily exhausted, causing "all predefined address pools have been fully subnetted".

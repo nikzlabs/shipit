@@ -184,13 +184,13 @@ services:
   it("rejects repository-defined Linux capabilities", () => {
     const dir = setup();
     const p = writeCompose(dir, `services:\n  web:\n    image: node:20\n    cap_add: [NET_ADMIN]\n`);
-    expect(() => parseComposeFile(p, { dockerSocket: false })).toThrow("cap_add");
+    expect(() => parseComposeFile(p, { dockerSocket: false, containEgress: true })).toThrow("cap_add");
   });
 
   it("rejects reserved egress labels", () => {
     const dir = setup();
     const p = writeCompose(dir, `services:\n  web:\n    image: node:20\n    labels:\n      shipit-egress-resolver: forged\n`);
-    expect(() => parseComposeFile(p, { dockerSocket: false })).toThrow("reserved egress namespace");
+    expect(() => parseComposeFile(p, { dockerSocket: false, containEgress: true })).toThrow("reserved egress namespace");
   });
 
   it("rejects network_mode: host", () => {

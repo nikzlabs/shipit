@@ -48,7 +48,10 @@ export function handleEgressDecision(ctx: EgressCtx, msg: WsEgressDecision): voi
   }
   if (msg.action === "add") {
     ctx.egressAllowlistStore?.addHost(EGRESS_GLOBAL_SCOPE, host);
-    void ctx.containerManager?.reloadEgress(sessionId).catch(() => {});
+    void ctx.containerManager?.reloadEgress(sessionId).catch((error: unknown) => {
+      const message = `Allowlist saved, but running services were stopped because policy refresh failed: ${error instanceof Error ? error.message : String(error)}`;
+      runner.emitMessage({ type: "stack_error", sessionId, message });
+    });
   }
   const phase: PersistedEgressPrompt["phase"] =
     msg.action === "deny" ? "denied" : msg.action === "add" ? "added" : "allowed-once";

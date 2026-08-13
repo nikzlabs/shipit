@@ -38,7 +38,7 @@ function fakeDocker(events: string[]) {
   };
   const network = {
     connect: vi.fn(async () => { events.push("connect"); }),
-    inspect: vi.fn(async () => ({ IPAM: { Config: [{ Subnet: "172.30.0.0/24" }] } })),
+    inspect: vi.fn(async () => ({ Internal: true, IPAM: { Config: [{ Subnet: "172.30.0.0/24" }] } })),
   };
   const docker = {
     listContainers: vi.fn(async () => [{
@@ -97,8 +97,8 @@ describe("containComposeServices", () => {
       proxyEnabled: true,
     })).rejects.toThrow("egress containment failed for 1 Compose service");
 
-    expect(container.unpause).not.toHaveBeenCalled();
-    expect(events).toEqual(["pause", "connect", "remove", "remove"]);
+    expect(container.unpause).toHaveBeenCalled();
+    expect(events).toEqual(["pause", "connect", "unpause", "stop"]);
   });
 
   it("does nothing for an open session", async () => {
@@ -147,7 +147,7 @@ describe("containComposeServices", () => {
       dnsEnabled: true,
       proxyEnabled: true,
     })).rejects.toThrow("egress containment failed for 1 Compose service");
-    expect(container.remove).toHaveBeenCalledWith({ force: true });
-    expect(container.unpause).not.toHaveBeenCalled();
+    expect(container.stop).toHaveBeenCalledWith({ t: 0 });
+    expect(container.unpause).toHaveBeenCalled();
   });
 });

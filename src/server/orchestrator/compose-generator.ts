@@ -244,7 +244,7 @@ export function parseUserNamedVolumes(composePath: string): UserNamedVolume[] {
  */
 export function parseComposeFile(
   composePath: string,
-  opts: { dockerSocket: boolean },
+  opts: { dockerSocket: boolean; containEgress?: boolean },
 ): ComposeService[] {
   let content: string;
   try {
@@ -268,6 +268,9 @@ export function parseComposeFile(
   if (!doc || typeof doc !== "object") {
     throw new ComposeValidationError("Compose file must be a YAML mapping");
   }
+  if (opts.containEgress && doc.include !== undefined) {
+    throw new ComposeValidationError("Compose `include` is not supported for contained services.");
+  }
 
   const services = doc.services as Record<string, Record<string, unknown>> | undefined;
   if (!services || typeof services !== "object") {
@@ -280,7 +283,10 @@ export function parseComposeFile(
     if (typeof svc !== "object" || svc === null) continue;
 
     // Security validation
-    validateServiceSecurity(name, svc, opts.dockerSocket);
+    if (opts.containEgress && svc.extends !== undefined) {
+      throw new ComposeValidationError(`Service \`${name}\`: \`extends\` is not supported for contained services.`);
+    }
+    validateServiceSecurity(name, svc, opts.dockerSocket, opts.containEgress ?? false);
 
     // Extract ports (supports short syntax "8080:80" and long syntax { published, target })
     const rawPorts = Array.isArray(svc.ports) ? svc.ports : undefined;
@@ -509,6 +515,7 @@ function validateServiceSecurity(
   name: string,
   svc: Record<string, unknown>,
   dockerSocket: boolean,
+  containEgress: boolean,
 ): void {
   // Reject privileged: true
   if (svc.privileged === true) {
@@ -529,7 +536,7 @@ function validateServiceSecurity(
 
   // NET_ADMIN would let repository code flush its namespace firewall. Reject
   // every capability addition rather than maintain a fragile safe subset.
-  if (Array.isArray(svc.cap_add) && svc.cap_add.length > 0) {
+  if (containEgress && Array.isArray(svc.cap_add) && svc.cap_add.length > 0) {
     throw new ComposeValidationError(
       `Service \`${name}\`: \`cap_add\` is not allowed. Remove added Linux capabilities.`,
     );
@@ -539,11 +546,20 @@ function validateServiceSecurity(
   const labelKeys = Array.isArray(labels)
     ? labels.map((entry) => typeof entry === "string" ? entry.split("=", 1)[0] : "")
     : labels && typeof labels === "object" ? Object.keys(labels) : [];
-  const reserved = labelKeys.find((key) => key.startsWith("shipit-egress-"));
+  const reserved = containEgress ? labelKeys.find((key) => key.startsWith("shipit-egress-")) : undefined;
   if (reserved) {
     throw new ComposeValidationError(
       `Service \`${name}\`: label \`${reserved}\` uses ShipIt's reserved egress namespace.`,
     );
+  }
+  const deploy = svc.deploy;
+  if (containEgress && deploy && typeof deploy === "object") {
+    const restartPolicy = (deploy as Record<string, unknown>).restart_policy;
+    if (restartPolicy !== undefined) {
+      throw new ComposeValidationError(
+        `Service \`${name}\`: \`deploy.restart_policy\` is not allowed for contained services.`,
+      );
+    }
   }
 
   // Reject device passthrough except the exact /dev/kvm mapping (docs/213).

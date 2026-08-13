@@ -82,6 +82,7 @@ export function adoptExistingServiceManager(
     containServicesFn?: (serviceNames: string[]) => Promise<void>;
     containServiceDns?: boolean;
     containServiceProxy?: boolean;
+    resetSessionNetwork?: () => Promise<void>;
   },
 ): void {
   const { serviceManagers, composeStopPromises, containerManager, broadcastLog, installPromise, secretsLoader } = deps;
@@ -108,7 +109,10 @@ export function adoptExistingServiceManager(
       )
     : false;
   if (containmentChanged) {
-    void mgr.reconcile().catch((error: unknown) => {
+    void (async () => {
+      await deps.resetSessionNetwork?.();
+      await mgr.reconcile();
+    })().catch((error: unknown) => {
       console.error(`[compose:${runner.sessionId}] containment-policy reconcile failed:`, getErrorMessage(error));
     });
   }
@@ -554,6 +558,9 @@ export function setupServiceManager(
       containServicesFn,
       containServiceDns: containerManager?.isEgressDnsContained(runner.sessionId) ?? false,
       containServiceProxy: containerManager?.isEgressProxyContained(runner.sessionId) ?? false,
+      resetSessionNetwork: containerManager
+        ? async () => containerManager.resetSessionNetwork(runner.sessionId)
+        : undefined,
     });
     // Clear any stale migration warning — compose is now set up (still).
     composeWarnings.delete(runner.sessionId);
