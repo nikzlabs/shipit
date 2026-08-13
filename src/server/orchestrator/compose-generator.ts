@@ -12,7 +12,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
+import { parse as parseYaml, parseDocument, stringify as stringifyYaml } from "yaml";
 import type { ComposeConfig } from "../shared/shipit-config.js";
 import type { SecretRequirement } from "../shared/types/domain-types.js";
 import { sessionWorkerUid } from "./session-worker-uid.js";
@@ -259,6 +259,16 @@ export function parseComposeFile(
 
   let doc: Record<string, unknown> | null;
   try {
+    if (opts.containEgress) {
+      const parsedDocument = parseDocument(content);
+      const hasCustomTag = content.split(/\r?\n/).some((line) => {
+        const source = line.split("#", 1)[0];
+        return /![A-Za-z]/.test(source);
+      });
+      if (hasCustomTag || parsedDocument.warnings.some((warning) => /unresolved tag/i.test(warning.message))) {
+        throw new ComposeValidationError("Custom YAML tags are not supported for contained services.");
+      }
+    }
     doc = parseYaml(content) as Record<string, unknown> | null;
   } catch (err) {
     // Surface YAML parse errors as ComposeValidationError so callers (which
@@ -560,6 +570,26 @@ function validateServiceSecurity(
   containEgress: boolean,
   trustedOpsProxy: boolean,
 ): void {
+  if (containEgress) {
+    const interpolationSensitive = [
+      svc.privileged, svc.volumes, svc.devices, svc.network_mode, svc.user,
+      svc.use_api_socket, svc.deploy, svc.labels, svc.cap_add, svc.post_start,
+      svc.pre_stop, svc.extends,
+      svc.volumes_from,
+    ];
+    const containsInterpolation = (value: unknown): boolean => {
+      if (typeof value === "string") return value.includes("${");
+      if (Array.isArray(value)) return value.some(containsInterpolation);
+      return Boolean(value && typeof value === "object"
+        && Object.entries(value).some(([key, nested]) => key.includes("${") || containsInterpolation(nested)));
+    };
+    if (interpolationSensitive.some(containsInterpolation)) {
+      throw new ComposeValidationError(
+        `Service \`${name}\`: Compose variable interpolation is not allowed in security-sensitive fields `
+        + "for contained services. Use resolved literal values.",
+      );
+    }
+  }
   const trustedProxyShape = isTrustedOpsProxyService(name, svc, trustedOpsProxy);
   // Reject privileged: true
   if (svc.privileged === true) {
@@ -598,6 +628,11 @@ function validateServiceSecurity(
   if (containEgress && (svc.post_start !== undefined || svc.pre_stop !== undefined)) {
     throw new ComposeValidationError(
       `Service \`${name}\`: Compose lifecycle hooks are not allowed for contained services.`,
+    );
+  }
+  if (containEgress && svc.volumes_from !== undefined) {
+    throw new ComposeValidationError(
+      `Service \`${name}\`: \`volumes_from\` is not allowed for contained services.`,
     );
   }
 

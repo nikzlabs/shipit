@@ -182,6 +182,16 @@ describe("registerContainerOriginGuard — request gating", () => {
     expect(own.statusCode).toBe(200);
   });
 
+  it("does not bypass the guard for an invalid preview port", async () => {
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/bootstrap",
+      headers: { host: `${OWN_SESSION}--99999.localhost` },
+      remoteAddress: CONTAINER_IP,
+    });
+    expect(res.statusCode).toBe(403);
+  });
+
   it("hard-denies a high-value global even when mistakenly flagged", async () => {
     const res = await app.inject({
       method: "PUT",

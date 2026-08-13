@@ -42,6 +42,7 @@
  */
 
 import type { FastifyInstance } from "fastify";
+import { parsePreviewSubdomain } from "./preview-proxy.js";
 
 // ---------------------------------------------------------------------------
 // Fastify type augmentation
@@ -205,6 +206,7 @@ export interface ContainerGuardDeps {
   containerManager?: {
     getSessionByContainerIp(ip: string): { sessionId: string } | undefined;
     getSessionByAnyContainerIp?(ip: string): Promise<{ sessionId: string } | undefined>;
+    isLikelySessionContainerIp?(ip: string): boolean;
   };
 }
 
@@ -255,14 +257,27 @@ export function registerContainerOriginGuard(
     // Inert without an IP→session map (no real containers to gate).
     if (!containerManager) return;
 
-    const caller = ip
-      ? containerManager.getSessionByContainerIp(ip)
-        ?? await containerManager.getSessionByAnyContainerIp?.(ip)
-      : undefined;
+    let caller: { sessionId: string } | undefined;
+    try {
+      caller = ip
+        ? containerManager.getSessionByContainerIp(ip)
+          ?? await containerManager.getSessionByAnyContainerIp?.(ip)
+        : undefined;
+    } catch {
+      if (ip && containerManager.isLikelySessionContainerIp?.(ip)) {
+        return reply.code(403).send({ error: "Container origin could not be verified." });
+      }
+      return;
+    }
     // Not a known session container → browser/host origin → unchanged.
     if (!caller) return;
 
     const pathname = (request.url ?? "/").split("?")[0];
+
+    // Preserve same-session preview traffic. The preview proxy handles this
+    // host before any API route, but this guard's root hook runs first.
+    const previewOwner = parsePreviewSubdomain(request.headers.host)?.sessionId.toLowerCase();
+    if (previewOwner === caller.sessionId.toLowerCase()) return;
 
     // §1 hard-deny backstop — independent of the opt-in flag.
     if (isHardDeniedGlobal(pathname)) {

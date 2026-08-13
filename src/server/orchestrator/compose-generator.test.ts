@@ -271,6 +271,35 @@ services:
     expect(() => parseComposeFile(p, { dockerSocket: false })).toThrow("Docker socket");
   });
 
+  it("rejects interpolation in contained security-sensitive fields", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `
+services:
+  web:
+    image: attacker/example
+    user: "1001"
+    privileged: \${X:-true}
+    volumes:
+      - "\${S:-/var/run/docker.sock}:/var/run/docker.sock"
+`);
+    expect(() => parseComposeFile(p, { dockerSocket: false, containEgress: true }))
+      .toThrow("variable interpolation");
+  });
+
+  it("rejects custom YAML tags in contained service definitions", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `services:\n  web:\n    image: attacker/example\n    user: "1001"\n    privileged: !override true\n`);
+    expect(() => parseComposeFile(p, { dockerSocket: false, containEgress: true }))
+      .toThrow("Custom YAML tags");
+  });
+
+  it("rejects volumes_from in contained services", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `services:\n  web:\n    image: attacker/example\n    user: "1001"\n    volumes_from: [docker-socket-proxy]\n`);
+    expect(() => parseComposeFile(p, { dockerSocket: true, containEgress: true }))
+      .toThrow("volumes_from");
+  });
+
   it("explains when the ops proxy is missing the server-side ops flag", () => {
     const dir = setup();
     const p = writeCompose(dir, `

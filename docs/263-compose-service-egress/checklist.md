@@ -24,3 +24,4 @@
 - [x] Two ShipIt API follow-up reviews completed; ops-agent containment, paused NAT cleanup, API-socket rejection, trusted-proxy DNS/startup, and visible refresh failures were addressed.
 - [x] Three additional Opus review rounds completed; trusted-label exclusion, deterministic bootstrap DNS, safe internal-name routing, dotted orchestrator resolution, and stale-network remediation were addressed.
 - [x] Three convergence Opus rounds completed; Compose-service API authorization and its race-safe, bounded container-origin index were addressed.
+- [x] Two substantive Opus rounds addressed interpolation/tag/socket inheritance, preview authorization, exact network-origin classification, and durable diagnostics; the third broker run returned an empty result.

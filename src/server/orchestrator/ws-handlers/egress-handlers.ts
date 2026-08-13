@@ -51,6 +51,7 @@ export function handleEgressDecision(ctx: EgressCtx, msg: WsEgressDecision): voi
     ctx.egressAllowlistStore?.addHost(EGRESS_GLOBAL_SCOPE, host);
     void ctx.containerManager?.reloadEgress(sessionId).catch((error: unknown) => {
       const message = `Allowlist saved, but running services were stopped because policy refresh failed: ${error instanceof Error ? error.message : String(error)}`;
+      ctx.broadcastLog("server", `[compose] Stack error: ${message}`);
       runner.emitMessage(agentLogAppend("server", `[compose] Stack error: ${message}`));
       runner.emitMessage({ type: "stack_error", sessionId, message });
     });

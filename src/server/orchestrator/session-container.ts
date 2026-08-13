@@ -423,6 +423,8 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
   private containerOriginRefreshStartedAt = 0;
   private containerOriginRefreshedAt = 0;
   private containerOriginRefreshBackoffUntil = 0;
+  private containerOriginRefreshFailed = false;
+  private sessionNetworkRanges = new Map<string, { subnet: string; gateway?: string }[]>();
   private imageName: string;
   private networkName: string;
   private defaultMemoryLimit: number;
@@ -548,6 +550,12 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
   /** Remove the NAT endpoint from stopped services before Compose starts them. */
   async prepareComposeServiceStart(sessionId: string, _serviceNames: string[]): Promise<void> {
     if (!this.isEgressContained(sessionId)) return;
+    try {
+      const networkInfo = await this.docker.getNetwork(`shipit-session-${sessionId}`).inspect();
+      this.sessionNetworkRanges.set(sessionId, (networkInfo.IPAM?.Config ?? [])
+        .filter((entry): entry is { Subnet: string; Gateway?: string } => Boolean(entry.Subnet))
+        .map((entry) => ({ subnet: entry.Subnet, ...(entry.Gateway ? { gateway: entry.Gateway } : {}) })));
+    } catch { /* containment later verifies the network and fails closed */ }
     const containers = await this.docker.listContainers({
       all: true,
       filters: { label: [`shipit-parent-session=${sessionId}`] },
@@ -1202,12 +1210,15 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
           this.containerOriginSessions = next;
           this.containerOriginRefreshedAt = Date.now();
           this.containerOriginRefreshBackoffUntil = 0;
+          this.containerOriginRefreshFailed = false;
           for (const [negativeIp, expiresAt] of this.containerOriginNegative) {
             if (expiresAt <= this.containerOriginRefreshedAt) this.containerOriginNegative.delete(negativeIp);
           }
         } catch (error) {
           console.warn("[container-guard] could not refresh container IP index:", error);
           this.containerOriginRefreshBackoffUntil = Date.now() + 5_000;
+          this.containerOriginRefreshFailed = true;
+          this.containerOriginNegative.clear();
         } finally {
           this.containerOriginRefresh = undefined;
         }
@@ -1228,8 +1239,32 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     }
     const refreshed = this.containerOriginSessions.get(ip);
     if (refreshed) return { sessionId: refreshed };
+    if (this.containerOriginRefreshFailed) throw new Error("container-origin index is unavailable");
     this.containerOriginNegative.set(ip, Date.now() + 1_000);
     return undefined;
+  }
+
+  /** Conservative bridge-origin check used only when Docker lookup is unavailable. */
+  isLikelySessionContainerIp(ip: string): boolean {
+    const toIpv4 = (value: string): number | null => {
+      const parts = value.split(".").map(Number);
+      if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return null;
+      return parts.reduce((result, part) => (result * 256) + part, 0) >>> 0;
+    };
+    const target = toIpv4(ip);
+    if (target === null) return false;
+    for (const ranges of this.sessionNetworkRanges.values()) {
+      for (const range of ranges) {
+        if (range.gateway === ip) continue;
+        const [baseText, prefixText] = range.subnet.split("/");
+        const base = toIpv4(baseText);
+        const prefix = Number(prefixText);
+        if (base === null || !Number.isInteger(prefix) || prefix < 0 || prefix > 32) continue;
+        const mask = prefix === 0 ? 0 : (0xffffffff << (32 - prefix)) >>> 0;
+        if ((target & mask) === (base & mask)) return true;
+      }
+    }
+    return false;
   }
 
   // --- Standby container support ---
