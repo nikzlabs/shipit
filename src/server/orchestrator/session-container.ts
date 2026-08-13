@@ -56,7 +56,10 @@ import {
 import type { DepDirOverlaySpec } from "./overlay-session.js";
 import { egressEnforceEnabled, allowEgressToSubnets } from "./egress-firewall-install.js";
 import { extractNetworkSubnets } from "./egress-firewall.js";
-import { containComposeServices as applyComposeServiceEgress } from "./compose-service-egress.js";
+import {
+  containComposeServices as applyComposeServiceEgress,
+  invalidateComposeServiceContainment,
+} from "./compose-service-egress.js";
 import { egressDnsEnabled, orchestratorCallbackHost } from "./egress-dns-install.js";
 import { egressProxyEnabled } from "./egress-proxy-install.js";
 import {
@@ -548,6 +551,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     for (const entry of containers) {
       const serviceName = entry.Labels?.["shipit-service-name"];
       if (!serviceName || !wanted.has(serviceName) || entry.State === "running" || entry.State === "paused") continue;
+      invalidateComposeServiceContainment(entry.Id);
       try {
         await network.disconnect({ Container: entry.Id, Force: true });
       } catch (error) {

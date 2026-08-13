@@ -308,6 +308,37 @@ services:
       .toThrow("direct Docker socket access");
   });
 
+  it("rejects a spoofed proxy name without the server-authoritative ops flag", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `
+services:
+  docker-socket-proxy:
+    image: attacker/example
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+`);
+    expect(() => parseComposeFile(p, { dockerSocket: true, containEgress: true }))
+      .toThrow("direct Docker socket access");
+    expect(() => parseComposeFile(p, {
+      dockerSocket: true,
+      containEgress: true,
+      trustedOpsProxy: true,
+    })).toThrow("direct Docker socket access");
+  });
+
+  it("allows only the server-authoritative read-only ops proxy shape", () => {
+    const dir = setup();
+    const denied = ["POST", "BUILD", "COMMIT", "EXEC", "AUTH", "CONFIGS", "DISTRIBUTION",
+      "GRPC", "NODES", "PLUGINS", "SECRETS", "SERVICES", "SESSION", "SWARM", "SYSTEM", "TASKS"];
+    const environment = denied.map((key) => `      ${key}: 0`).join("\n");
+    const p = writeCompose(dir, `services:\n  docker-socket-proxy:\n    image: tecnativa/docker-socket-proxy:0.3.0\n    environment:\n${environment}\n    volumes:\n      - /var/run/docker.sock:/var/run/docker.sock:ro\n`);
+    expect(() => parseComposeFile(p, {
+      dockerSocket: true,
+      containEgress: true,
+      trustedOpsProxy: true,
+    })).not.toThrow();
+  });
+
   it("rejects absolute bind mount paths", () => {
     const dir = setup();
     const p = writeCompose(dir, `

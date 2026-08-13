@@ -244,7 +244,7 @@ export function parseUserNamedVolumes(composePath: string): UserNamedVolume[] {
  */
 export function parseComposeFile(
   composePath: string,
-  opts: { dockerSocket: boolean; containEgress?: boolean },
+  opts: { dockerSocket: boolean; containEgress?: boolean; trustedOpsProxy?: boolean },
 ): ComposeService[] {
   let content: string;
   try {
@@ -286,7 +286,13 @@ export function parseComposeFile(
     if (opts.containEgress && svc.extends !== undefined) {
       throw new ComposeValidationError(`Service \`${name}\`: \`extends\` is not supported for contained services.`);
     }
-    validateServiceSecurity(name, svc, opts.dockerSocket, opts.containEgress ?? false);
+    validateServiceSecurity(
+      name,
+      svc,
+      opts.dockerSocket,
+      opts.containEgress ?? false,
+      opts.trustedOpsProxy ?? false,
+    );
 
     // Extract ports (supports short syntax "8080:80" and long syntax { published, target })
     const rawPorts = Array.isArray(svc.ports) ? svc.ports : undefined;
@@ -516,7 +522,27 @@ function validateServiceSecurity(
   svc: Record<string, unknown>,
   dockerSocket: boolean,
   containEgress: boolean,
+  trustedOpsProxy: boolean,
 ): void {
+  const trustedProxyShape = (): boolean => {
+    if (name !== "docker-socket-proxy" || !trustedOpsProxy
+      || svc.image !== "tecnativa/docker-socket-proxy:0.3.0"
+      || svc.command !== undefined || svc.entrypoint !== undefined) return false;
+    const environment = svc.environment;
+    const env: Record<string, unknown> = {};
+    if (Array.isArray(environment)) {
+      for (const item of environment) {
+        if (typeof item !== "string") continue;
+        const separator = item.indexOf("=");
+        if (separator > 0) env[item.slice(0, separator)] = item.slice(separator + 1);
+      }
+    } else if (environment && typeof environment === "object") {
+      Object.assign(env, environment);
+    }
+    const denied = ["POST", "BUILD", "COMMIT", "EXEC", "AUTH", "CONFIGS", "DISTRIBUTION",
+      "GRPC", "NODES", "PLUGINS", "SECRETS", "SERVICES", "SESSION", "SWARM", "SYSTEM", "TASKS"];
+    return denied.every((key) => String(env[key]) === "0");
+  };
   // Reject privileged: true
   if (svc.privileged === true) {
     throw new ComposeValidationError(
@@ -595,13 +621,19 @@ function validateServiceSecurity(
       if (!source) continue;
 
       // Docker socket check
-      if (source.includes("/var/run/docker.sock") && containEgress && name !== "docker-socket-proxy") {
+      const isSocket = source === "/var/run/docker.sock";
+      const socketReadOnly = typeof vol === "string"
+        ? /^\/var\/run\/docker\.sock:\/var\/run\/docker\.sock:ro$/.test(vol)
+        : Boolean(vol && typeof vol === "object"
+          && (vol as Record<string, unknown>).target === "/var/run/docker.sock"
+          && (vol as Record<string, unknown>).read_only === true);
+      if (isSocket && containEgress && !(trustedProxyShape() && socketReadOnly)) {
         throw new ComposeValidationError(
           `Service \`${name}\`: direct Docker socket access is not allowed with contained egress. `
           + "Use ShipIt's trusted docker-socket-proxy service.",
         );
       }
-      if (source.includes("/var/run/docker.sock") && !dockerSocket) {
+      if (isSocket && !dockerSocket) {
         if (name === "docker-socket-proxy") {
           throw new ComposeValidationError(
             `Service \`${name}\`: Docker socket mount is only allowed for ` +

@@ -37,6 +37,11 @@ export const COMPOSE_EGRESS_SIDECAR_LABEL = "shipit-egress-service-sidecar";
 export const COMPOSE_EGRESS_POLICY_LABEL = "shipit-egress-policy-hash";
 const containedServiceState = new Map<string, string>();
 
+/** A stopped container gets a new netns on start even when its id is stable. */
+export function invalidateComposeServiceContainment(containerId: string): void {
+  containedServiceState.delete(containerId);
+}
+
 export interface ContainComposeServicesOptions {
   docker: Docker;
   sessionId: string;
@@ -167,7 +172,8 @@ export async function containComposeServices(opts: ContainComposeServicesOptions
         await container.stop({ t: 0 });
         throw new Error(`service ${info.Labels?.["shipit-service-name"] ?? info.Id} was left paused during egress setup`);
       }
-      const serviceStartedAt = Math.floor(Date.parse(inspected.State?.StartedAt ?? "") / 1000);
+      const startedAt = inspected.State?.StartedAt ?? "";
+      const serviceStartedAt = Math.floor(Date.parse(startedAt) / 1000);
       const currentSidecars = containers.filter((entry) =>
         entry.State === "running"
           && entry.Labels?.[COMPOSE_EGRESS_SIDECAR_LABEL]
@@ -179,7 +185,7 @@ export async function containComposeServices(opts: ContainComposeServicesOptions
         || currentSidecars.some((entry) => Boolean(entry.Labels?.[EGRESS_RESOLVER_LABEL]));
       const hasCurrentProxy = !opts.proxyEnabled
         || currentSidecars.some((entry) => Boolean(entry.Labels?.[EGRESS_PROXY_LABEL]));
-      const hasCurrentFirewall = containedServiceState.get(info.Id) === `${serviceStartedAt}:${policyHash}`;
+      const hasCurrentFirewall = containedServiceState.get(info.Id) === `${startedAt}:${policyHash}`;
       if (!opts.refresh && Number.isFinite(serviceStartedAt) && hasCurrentFirewall
         && hasCurrentResolver && hasCurrentProxy) {
         continue;
@@ -256,7 +262,7 @@ export async function containComposeServices(opts: ContainComposeServicesOptions
       }
       await container.unpause();
       paused = false;
-      containedServiceState.set(info.Id, `${serviceStartedAt}:${policyHash}`);
+      containedServiceState.set(info.Id, `${startedAt}:${policyHash}`);
     } catch (error) {
       // Never resume repository code unless the complete containment stack is
       // ready.

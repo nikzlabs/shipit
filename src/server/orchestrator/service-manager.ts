@@ -1101,6 +1101,7 @@ export class ServiceManager extends EventEmitter {
     const parsedServices = parseComposeFile(composePath, {
       dockerSocket: this.composeConfig.dockerSocket || this.opsSession,
       containEgress: Boolean(this.containServicesFn),
+      trustedOpsProxy: this.opsSession,
     });
 
     // Build service map
@@ -1646,6 +1647,7 @@ export class ServiceManager extends EventEmitter {
       parsedServices = parseComposeFile(composePath, {
         dockerSocket: this.composeConfig.dockerSocket || this.opsSession,
         containEgress: Boolean(this.containServicesFn),
+        trustedOpsProxy: this.opsSession,
       });
     } catch {
       // Compose file missing or invalid — there's nothing to apply secrets to.
