@@ -279,8 +279,14 @@ function writeSkill(from: string, to: string, name: string): string | null {
       `${JSON.stringify({ marker: PLUGIN_SKILL_MARKER_ID, source: from, name }, null, 2)}\n`,
     );
 
-    // One step from the reader's point of view: the old directory is gone and
-    // the new one is complete before either is visible under `to`.
+    // What this does and does NOT guarantee. The directory that appears at
+    // `to` is always complete — it is built entirely under `staging` and
+    // arrives by rename. It is not fully atomic: `rename(2)` refuses a
+    // non-empty destination directory, so the old copy is removed first, and a
+    // reader in that gap sees no skill at all rather than half of one.
+    // Absent-then-whole is the failure mode worth having; the previous shape
+    // let a reader see a directory with some files missing, and left an
+    // unmarked partial behind on failure.
     fs.rmSync(to, { recursive: true, force: true });
     fs.renameSync(staging, to);
     return null;
