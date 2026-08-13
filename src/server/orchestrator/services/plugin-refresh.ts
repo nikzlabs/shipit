@@ -14,10 +14,12 @@
  * activation outcome, for the same reason the generation record lives inside
  * the generation: the commit that is live is a fact about the filesystem, and a
  * report assembled from anything else can disagree with what the session will
- * actually run.
+ * actually run. The FAILURE half comes from this round's own returned outcome
+ * rather than the shared activation-state map — that map belongs to the UI and
+ * is owned by whichever round finishes last (review finding).
  */
 
-import { activateDeclaredPlugins, getActivationState, type PluginActivationDeps } from "./plugin-activation.js";
+import { activateDeclaredPlugins, type PluginActivationDeps } from "./plugin-activation.js";
 import { readActiveGeneration } from "../plugin-generations.js";
 import { resolveShipitConfig } from "../../shared/shipit-config.js";
 import { sessionStateDirForWorkspace } from "../session-state-dir.js";
@@ -102,20 +104,25 @@ export async function refreshPluginRepos(
     targets.map((r) => [r.name, readActiveGeneration(stateDir, r.name)?.commit ?? null]),
   );
 
-  await activateDeclaredPlugins(sessionId, workspaceDir, deps, deps.consumerKey, repoName);
+  const outcomes = await activateDeclaredPlugins(
+    sessionId, workspaceDir, deps, deps.consumerKey, repoName,
+  );
 
   return {
     rows: targets.map((target) => {
       const after = readActiveGeneration(stateDir, target.name)?.commit ?? null;
-      const state = getActivationState(sessionId, target.name);
       const was = before.get(target.name) ?? null;
-      // `error` with a live generation is req 15's degraded state — the refresh
-      // failed and the prior version is still serving. That is a failure to
-      // report, not an "unchanged".
-      const status: PluginRefreshRow["status"] = state?.error
+      // THIS round's own outcome, not the shared "latest attempt" state. That
+      // map is the UI's, and whichever round finishes last owns it — so with a
+      // second trigger queued it could already read `activating: true`, and a
+      // refresh whose install had just failed reported `unchanged` and exited
+      // zero (review finding). A round with no outcome for this repository ran
+      // nothing for it, which is not a failure to report.
+      const outcome = outcomes.get(target.name);
+      const status: PluginRefreshRow["status"] = outcome?.status === "failed"
         ? "failed"
         : after !== was ? "activated" : "unchanged";
-      const detail = state?.error ?? state?.warning;
+      const detail = outcome?.status === "failed" ? outcome.reason : outcome?.warning;
       return {
         repo: target.name,
         ref: target.ref,

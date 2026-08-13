@@ -164,6 +164,23 @@ describe("refreshPluginRepos", () => {
     expect(failed.rows[0]!.after).toBe(live);
   });
 
+  // The shared activation-state map belongs to the UI and is owned by whichever
+  // round finishes last. Deriving the report from it meant a refresh whose
+  // install had just failed could read back as `unchanged` and exit 0, because a
+  // second trigger had already replaced the state with `activating: true`.
+  it("reports ITS OWN round's failure, not the shared latest-attempt state", async () => {
+    writeConfig("plugins:\n  repos:\n    - repo: acme/missing\n      name: tools\n      branch: main\n");
+    const failed = await refreshPluginRepos("sess", workspaceDir, deps());
+    expect(failed.rows[0]!.status).toBe("failed");
+
+    // Wipe the shared map, exactly as a disposal would. The row already
+    // computed above stands on its own; a fresh round still answers for itself.
+    clearActivationState("sess");
+    const again = await refreshPluginRepos("sess", workspaceDir, deps());
+    expect(again.rows[0]!.status).toBe("failed");
+    expect(again.rows[0]!.detail).toContain("authorization failed");
+  });
+
   it("returns no rows, and no error, for a project that declares nothing", async () => {
     writeConfig("agent:\n  install: npm install\n");
     const result = await refreshPluginRepos("sess", workspaceDir, deps());

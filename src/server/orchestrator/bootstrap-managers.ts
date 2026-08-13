@@ -62,6 +62,7 @@ import { makeNonTurnGenerateText } from "./services/non-turn-work.js";
 import { createAutoPushScheduler } from "./services/auto-push-scheduler.js";
 import { activateDeclaredPlugins, type PluginInstallHook } from "./services/plugin-activation.js";
 import { refreshPluginRepos, type PluginRefreshResult } from "./services/plugin-refresh.js";
+import { emitPluginReposUpdated } from "./service-manager-setup.js";
 import { createPluginInstallRunner } from "./plugin-install.js";
 import { sessionStateDirForWorkspace } from "./session-state-dir.js";
 import { pinStorePath } from "./plugin-pins.js";
@@ -556,18 +557,46 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   /**
    * docs/262 req 12 — the awaited half. Same round, same deps; the caller is an
    * agent waiting for an answer rather than a session opening.
+   *
+   * Two things it must NOT skip, both found by review because the first version
+   * skipped them:
+   *
+   * 1. **The settled hook.** It is not decoration — `emitPluginReposUpdated`
+   *    also calls the container's `preparePlugins()`, which re-links
+   *    `/plugins/<name>` and re-materializes the plugin's skills. Without it a
+   *    refresh swapped the generation on disk, printed `activated`, and left
+   *    the session looking at the old one. The refresh would not have reached
+   *    the agent at all, which is the entire point of the verb.
+   * 2. **The trust gate.** Automatic activation sits below
+   *    `repoStore.isTrusted()` (docs/178) precisely because fetching a plugin
+   *    repository and running its install is repo-declared auto-execution. A
+   *    verb the agent can invoke must not be the way around that.
    */
-  const refreshPluginReposForSession = (
+  const refreshPluginReposForSession = async (
     sessionId: string,
     workspaceDir: string,
     repoName?: string,
-    onSettled?: (id: string) => void,
-  ): Promise<PluginRefreshResult> => refreshPluginRepos(
-    sessionId,
-    workspaceDir,
-    pluginActivationDeps(sessionId, workspaceDir, onSettled),
-    repoName,
-  );
+  ): Promise<PluginRefreshResult> => {
+    const remoteUrl = sessionManager.get(sessionId)?.remoteUrl;
+    if (remoteUrl && !repoStore.isTrusted(remoteUrl)) {
+      return {
+        rows: [],
+        error: "This repository is not trusted yet, so ShipIt will not fetch or run "
+          + "anything a plugin repository declares. Trust it in the UI first.",
+      };
+    }
+    // Through the lazy holder, not `runnerRegistry` directly: that binding is
+    // declared further down this function, and the established pattern here
+    // for "a callback that only runs after bootstrap" is the holder.
+    const runner = registryHolder.ref?.get(sessionId);
+    const onSettled = runner ? emitPluginReposUpdated(runner) : undefined;
+    return await refreshPluginRepos(
+      sessionId,
+      workspaceDir,
+      pluginActivationDeps(sessionId, workspaceDir, onSettled),
+      repoName,
+    );
+  };
 
   const publishOverlayBases = async ({ runner, session, installOk, installCommands }: {
     runner: ContainerSessionRunner;

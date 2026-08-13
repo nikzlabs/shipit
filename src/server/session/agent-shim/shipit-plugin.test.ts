@@ -169,4 +169,22 @@ describe("shipit plugin refresh", () => {
     expect((await run(["plugin", "status"])).exitCode).not.toBe(0);
     expect((await run(["plugin", "refresh", "a", "b"])).exitCode).not.toBe(0);
   });
+
+  it("rejects a typo instead of silently refreshing everything", async () => {
+    const { run } = makeRunner();
+    const res = await run(["plugin", "refresh", "--bogus"], { [REFRESH]: MOVED });
+
+    expect(res.exitCode).not.toBe(0);
+    expect(res.stderr).toContain("--bogus");
+    // And nothing was refreshed on the way to that error.
+    expect(res.calls).toHaveLength(0);
+  });
+
+  it("prints help for -h rather than refreshing", async () => {
+    const { run } = makeRunner();
+    const res = await run(["plugin", "refresh", "-h"], { [REFRESH]: MOVED });
+    expect(res.exitCode).toBe(0);
+    expect(res.stdout).toContain("Usage: shipit plugin refresh");
+    expect(res.calls).toHaveLength(0);
+  });
 });

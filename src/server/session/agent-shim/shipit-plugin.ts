@@ -68,7 +68,17 @@ export async function runPlugin(args: string[], deps: RunDeps): Promise<void> {
 }
 
 async function refresh(args: string[], deps: RunDeps): Promise<void> {
-  const { positional, booleans } = parseFlags(args, { booleans: { "--json": "json" } });
+  if (args.includes("--help") || args.includes("-h")) {
+    success(deps.io, HELP);
+    return;
+  }
+  const { positional, booleans, unsupported } = parseFlags(args, { booleans: { "--json": "json" } });
+  // A typo must not silently refresh EVERY repository — the agent asked for
+  // something specific and would be told it worked (review finding). Every
+  // other shim command rejects these; this one had simply ignored the field.
+  if (unsupported.length > 0) {
+    fail(deps.io, `Unsupported flag for \`shipit plugin refresh\`: ${unsupported[0]}\n\n${HELP}`);
+  }
   if (positional.length > 1) {
     fail(deps.io, `Expected at most one repository name, got ${positional.length}.\n\n${HELP}`);
   }

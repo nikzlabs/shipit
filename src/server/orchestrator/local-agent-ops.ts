@@ -48,6 +48,8 @@
  * problem than this one, and it is not made worse here.
  */
 
+import http from "node:http";
+import https from "node:https";
 import Fastify from "fastify";
 import type { FastifyInstance } from "fastify";
 import { getErrorMessage } from "../shared/utils.js";
@@ -104,6 +106,47 @@ export function mapAgentOpsPath(path: string): string | null {
   return null;
 }
 
+/**
+ * Relay one request with NO response deadline.
+ *
+ * `fetch` cannot express this: undici's `headersTimeout`/`bodyTimeout` default
+ * to 300s and are per-dispatcher, not per-request, and undici is not a declared
+ * dependency of this package. `node:http` has no such default, and it is what
+ * `orchestrator-client.ts` already reaches for on its own unbounded path.
+ */
+function requestUnbounded(
+  target: string,
+  method: string,
+  payload: string | undefined,
+): Promise<{ status: number; body: unknown }> {
+  return new Promise((resolve, reject) => {
+    const url = new URL(target);
+    const mod = url.protocol === "https:" ? https : http;
+    const headers: Record<string, string | number> = { "Content-Type": "application/json" };
+    if (payload !== undefined) headers["Content-Length"] = Buffer.byteLength(payload);
+    const req = mod.request(
+      { hostname: url.hostname, port: url.port, path: url.pathname + url.search, method, headers },
+      (res: http.IncomingMessage) => {
+        let data = "";
+        res.setEncoding("utf-8");
+        res.on("data", (chunk: string) => { data += chunk; });
+        res.on("end", () => {
+          let parsed: unknown;
+          try {
+            parsed = data ? JSON.parse(data) : {};
+          } catch {
+            parsed = {};
+          }
+          resolve({ status: res.statusCode ?? 502, body: parsed });
+        });
+      },
+    );
+    req.on("error", reject);
+    if (payload !== undefined) req.write(payload);
+    req.end();
+  });
+}
+
 /** The orchestrator's own address, as seen from inside its own container. */
 export function localOrchestratorBaseUrl(): string {
   // Same resolution `container-lifecycle.ts` uses to tell a container where the
@@ -150,18 +193,15 @@ export async function startLocalAgentOpsHost(
       ? undefined
       : JSON.stringify(request.body);
     try {
-      const res = await fetch(target, {
-        method,
-        headers: { "Content-Type": "application/json" },
-        ...(payload !== undefined ? { body: payload } : {}),
-      });
-      let parsed: unknown;
-      try {
-        parsed = await res.json();
-      } catch {
-        parsed = {};
-      }
-      return await reply.code(res.status).send(parsed ?? {});
+      // No response deadline. `fetch` here would abort a long operation at
+      // undici's 300s default while the orchestrator kept working — the shim
+      // prints a failure and the change lands afterwards, which is exactly the
+      // misleading outcome the unbounded transport exists to prevent. It bit
+      // `plugin/refresh` first (a fetch, a checkout, and a plugin's install),
+      // but nothing relayed here is inherently quick, so the deadline goes for
+      // the whole relay rather than one route (review finding).
+      const res = await requestUnbounded(target, method, payload);
+      return await reply.code(res.status).send(res.body ?? {});
     } catch (err) {
       // Requirement 4 (docs/251): name the reason. The shim renders this
       // verbatim, so an unreachable orchestrator must not read as "no PR".
