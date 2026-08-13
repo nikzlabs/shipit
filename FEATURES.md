@@ -137,8 +137,8 @@ install it, and the security model, start at the [README](README.md).
 - **Your machine, or your server** — one command starts ShipIt on Linux, macOS, or Windows via WSL2;
   the same command set puts it on an always-on Ubuntu VPS when you want agents, previews, and CI
   follow-up work to keep running with your laptop closed. Both paths are Docker, and both are yours:
-  there is no ShipIt account and no cloud tenant, so your code and provider credentials never leave
-  hardware you control
+  there is no ShipIt account and no ShipIt server in the middle, and the instance connects straight
+  to your GitHub and your agent provider
 - **Reachable from your phone** — a local install stays on loopback by default and can add a
   Tailscale binding alongside it, so you keep working from a phone without opening a port
 
