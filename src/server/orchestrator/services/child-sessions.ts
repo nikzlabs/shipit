@@ -272,12 +272,36 @@ export async function spawnChildSession(
   // message. An unlisted/versioned id (`modelOwner === undefined`) is passed
   // through for forward-compat — the CLI forwards `--model` as-is, so a
   // valid-but-newer id the picker hasn't surfaced yet must not be rejected.
+  //
+  // planning#304 — both halves ask **"does this harness offer this model"**, not
+  // "who owns it". `agentIdForModel` answers with the first harness whose list
+  // contains the id, and ownership is not unique: the catalogue anticipates two
+  // harnesses offering the same id (`model-switch.ts`), where the owner answer is
+  // whichever sorts first. Under the owner test `--agent codex --model <shared>`
+  // was refused while the reverse pair was accepted — an asymmetry with no rule
+  // behind it. Membership is symmetric, and identical on today's catalogue (no id
+  // is listed twice, so owner and membership agree everywhere). `modelOwner`
+  // survives for the error text and as the "is this id known at all" test.
+  const parentAgentId: AgentId = parent.agentId ?? defaultAgentId;
+  const harnessOffersModel = (harnessId: AgentId, modelId: string): boolean =>
+    (getAgentCapabilities(harnessId)?.models ?? []).includes(modelId);
   let agentOverride: AgentId | undefined = opts.agent;
   if (opts.model) {
     const modelOwner = agentIdForModel(opts.model);
     if (modelOwner && !agentOverride) {
-      agentOverride = modelOwner;
-    } else if (modelOwner && agentOverride && modelOwner !== agentOverride) {
+      // A shared id needs no switch: the parent's own harness can run it, so
+      // "the model is the source of truth" is already satisfied where the child
+      // is, and switching would move a harness the caller never named.
+      //
+      // Written as `parentAgentId` rather than left unset, because `agentOverride`
+      // is not only the switch — it is also what the installed-harness gate below
+      // is asked about. Leaving it unset for "no switch needed" would skip that
+      // gate, so a bare `--model claude-sonnet-5` on a Codex-only deployment would
+      // stop failing fast with 400 and start creating a Claude child whose first
+      // turn cannot run. Same resolved harness either way; the gate keeps its
+      // subject. Cross-agent review caught this.
+      agentOverride = harnessOffersModel(parentAgentId, opts.model) ? parentAgentId : modelOwner;
+    } else if (modelOwner && agentOverride && !harnessOffersModel(agentOverride, opts.model)) {
       throw new ServiceError(
         400,
         `Model '${opts.model}' belongs to agent '${modelOwner}', not '${agentOverride}'. ` +
@@ -488,8 +512,9 @@ export async function spawnChildSession(
   // parent hasn't been pinned yet (fresh parent, no turn taken). Resolved BEFORE
   // graduation because the row written there is pinned to it, and because
   // neither the model nor the reasoning level below means anything except
-  // relative to it.
-  const parentAgentId: AgentId = parent.agentId ?? defaultAgentId;
+  // relative to it. (`parentAgentId` itself is resolved with the validation
+  // block above, which needs it to answer whether an explicit `--model` the
+  // parent's harness already offers implies a switch at all.)
   const childAgentId: AgentId = agentOverride ?? parentAgentId;
   const inherited = ((): { model?: string; serviceId?: string; billingMode?: BillingMode } => {
     if (opts.model) return { model: opts.model };
@@ -510,6 +535,52 @@ export async function spawnChildSession(
       ...(fresh.billingMode ? { billingMode: fresh.billingMode } : {}),
     };
   })();
+  // planning#304 — the cross-backend guard is asked of the **resolved** pair, not
+  // only of the flags the caller passed. The rejection above inspects `opts.model`
+  // alone, so inheritance sat outside it entirely and could assemble a
+  // `(harness, model)` combination the explicit path would have refused: that is
+  // how a child ended up pinned to `codex` AND `claude-opus-5` and errored without
+  // running a turn.
+  //
+  // The branch above closes the reported route, but it tests a PROXY for the
+  // question that decides whether the child can run — parent harness vs child
+  // harness, rather than "can the harness that will spawn run this model". Today
+  // the two answers only diverge on a parent row that is itself incoherent, which
+  // the live writers prevent (`set_model` refuses a cross-harness model on a
+  // pinned session, and WS connect self-heals a legacy row), so this is an
+  // invariant at the boundary rather than a fix for a reachable path. It is here
+  // because that boundary is where the row is written, and because the recurrence
+  // this feature already shipped came from the two checks living apart with
+  // nothing tying them together.
+  //
+  // **Membership in the child harness's own list, not `agentIdForModel`'s single
+  // "owner".** Ownership is not unique and the catalogue says so: two harnesses
+  // can both offer `anthropic/claude-opus-5` (`model-switch.ts`), and
+  // `agentIdForModel` answers with whichever harness sorts first — so the
+  // ownership test would erase a Codex parent's valid selection the day such a
+  // model lands. This is the same degradation `conformSelectionToAgent` applies to
+  // a bare id: does the target harness offer it at all. The catalogue join, not
+  // the credential-filtered subset — a model this install currently has no
+  // credential for is turn-time routing's question, not this one.
+  //
+  // An id no harness lists is left alone — the same forward-compat passthrough the
+  // explicit `--model` check makes, for the same reason.
+  //
+  // Dropped, not rejected, and the whole triple goes (a service and mode without
+  // their model is not a selection). The caller passed nothing wrong, so failing
+  // their spawn over a stale parent row would be hostile; an empty row means "that
+  // backend's default model", resolved at turn time against what this install can
+  // actually run (`firstEligibleSelectionForHarness`, planning#353). Keep the
+  // harness and drop the model — the rule the WS connect path already applies to a
+  // pinned session's incoherent row (`route-registry.ts`).
+  const inheritedModel = inherited.model;
+  const childHarnessOffersModel =
+    inheritedModel === undefined
+    || harnessOffersModel(childAgentId, inheritedModel)
+    // No harness lists it: unproven, so unchanged.
+    || agentIdForModel(inheritedModel) === undefined;
+  const selection: { model?: string; serviceId?: string; billingMode?: BillingMode } =
+    childHarnessOffersModel ? inherited : {};
   // docs/217 — the reasoning level is the third half of the parent's selection
   // (Control B), and it inherits for the same reason the harness and the model
   // do: a fan-out the parent set to `high` must not quietly drop to the harness
@@ -537,9 +608,9 @@ export async function spawnChildSession(
     agentId: childAgentId,
     skipBranchRename: true,
     ...(explicitTitle ? { explicitTitle } : {}),
-    ...(inherited.model ? { model: inherited.model } : {}),
-    ...(inherited.serviceId ? { serviceId: inherited.serviceId } : {}),
-    ...(inherited.billingMode ? { billingMode: inherited.billingMode } : {}),
+    ...(selection.model ? { model: selection.model } : {}),
+    ...(selection.serviceId ? { serviceId: selection.serviceId } : {}),
+    ...(selection.billingMode ? { billingMode: selection.billingMode } : {}),
     ...(inheritedReasoning ? { reasoning: inheritedReasoning } : {}),
     ...(opts.detached ? {} : { parentSessionId, rootSessionId }),
     ...(opts.spawnedByTurn ? { spawnedByTurn: opts.spawnedByTurn } : {}),

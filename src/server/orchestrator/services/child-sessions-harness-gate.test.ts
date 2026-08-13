@@ -19,14 +19,19 @@ const parent = {
   remoteUrl: "https://github.com/example/repo.git",
 } as SessionInfo;
 
-const sessionManager = {
-  get: (id: string) => (id === parent.id ? parent : undefined),
+const managerFor = (session: SessionInfo) => ({
+  get: (id: string) => (id === session.id ? session : undefined),
   findChildren: () => [],
   countDetachedSpawnedInTurn: () => 0,
-} as never;
+}) as never;
 
 /** Import the module fresh so the mocked install report is the one it reads. */
-async function spawnWith(installed: string[], agent?: string, model?: string) {
+async function spawnWith(
+  installed: string[],
+  agent?: string,
+  model?: string,
+  parentOverride?: Partial<SessionInfo>,
+) {
   vi.resetModules();
   vi.doMock("../../shared/installed-harnesses.js", () => ({
     isHarnessInstalled: (id: string) => installed.includes(id),
@@ -34,7 +39,7 @@ async function spawnWith(installed: string[], agent?: string, model?: string) {
   }));
   const { spawnChildSession } = await import("./child-sessions.js");
   return spawnChildSession(
-    sessionManager,
+    managerFor({ ...parent, ...parentOverride } as SessionInfo),
     {} as never,
     {} as never,
     parent.id,
@@ -70,6 +75,19 @@ describe("spawnChildSession — harness install gate", () => {
     // The agent is derived from the model when `--agent` is omitted, so the gate
     // has to run after that derivation or this path walks straight past it.
     const err = await spawnWith(["codex"], undefined, "claude-sonnet-5").catch((e: unknown) => e);
+    expect((err as ServiceError).statusCode).toBe(400);
+    expect((err as ServiceError).message).toMatch(/'claude' is not installed in this deployment/);
+  });
+
+  it("rejects a --model the PARENT's own harness offers, when that harness is absent", async () => {
+    // planning#304 — the same 400 as the case above, reached without a switch. A
+    // `--model` the parent's harness already offers implies no harness change, and
+    // the resolution says so by naming the parent's harness rather than leaving the
+    // override unset: the override is also the gate's subject, so an unset one
+    // walks past it and creates a child on an absent CLI. The parent here is pinned
+    // to Claude on a Codex-only deployment, so the model derives nothing new.
+    const err = await spawnWith(["codex"], undefined, "claude-sonnet-5", { agentId: "claude" })
+      .catch((e: unknown) => e);
     expect((err as ServiceError).statusCode).toBe(400);
     expect((err as ServiceError).message).toMatch(/'claude' is not installed in this deployment/);
   });
