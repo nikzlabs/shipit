@@ -557,6 +557,14 @@ export async function handleSessionMessage(args: string[], deps: RunDeps): Promi
   if (res.status === 404) {
     fail(deps.io, `${CHILD_NOT_FOUND}\n${WHOAMI_HINT}`, 1);
   }
+  if (res.status === 409 && res.body.reason === "resolved") {
+    if (parsed.booleans.has("json")) {
+      deps.io.stdout(`${JSON.stringify(res.body)}\n`);
+      deps.io.exit(1);
+      return;
+    }
+    fail(deps.io, asString(res.body.error), 1);
+  }
   if (res.status < 200 || res.status >= 300) {
     fail(deps.io, formatError(res, "Failed to send message to spawned session"), 1);
   }
@@ -1219,6 +1227,7 @@ export async function handleSessionReport(args: string[], deps: RunDeps): Promis
   }
 
   const recipients = (res.body.recipients as Record<string, unknown>[] | undefined) ?? [];
+  const skippedRecipients = (res.body.skippedRecipients as Record<string, unknown>[] | undefined) ?? [];
   const wokenCount = recipients.filter((r) => r.woken === true).length;
 
   if (parsed.booleans.has("json")) {
@@ -1239,6 +1248,12 @@ export async function handleSessionReport(args: string[], deps: RunDeps): Promis
       ? "woken"
       : `NOT woken (${asString(r.error) || "unknown error"}) — the card was still posted in its chat`;
     lines.push(`  ${relation} ${asString(r.title)} (${asString(r.sessionId)}): ${outcome}`);
+  }
+  for (const r of skippedRecipients) {
+    lines.push(
+      `  sibling ${asString(r.title)} (${asString(r.sessionId)}): NOT delivered `
+      + "(session is resolved; no message, card, or wake turn was sent)",
+    );
   }
   deps.io.stdout(`${lines.join("\n")}\n`);
   deps.io.exit(wokenCount > 0 ? 0 : 1);

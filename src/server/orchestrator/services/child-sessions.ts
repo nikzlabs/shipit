@@ -26,6 +26,19 @@ import { ServiceError } from "./types.js";
 import type { ClaimSessionService } from "./claim-session.js";
 import { handWorkspaceBackToWorker } from "../session-worker-uid.js";
 import { prepareDispatch } from "../prepared-dispatch.js";
+import { isResolvedForGrouping } from "../../shared/session-resolution.js";
+
+export class ResolvedChildMessageError extends ServiceError {
+  constructor(public readonly child: SessionInfo) {
+    super(409, `${child.title} is resolved; no message, card, or wake turn was sent.`);
+  }
+}
+
+function hasVisibleDirectChildren(sessionManager: SessionManager, sessionId: string): boolean {
+  return sessionManager.findChildren(sessionId).some(
+    (child) => child.archived !== true && child.userArchived !== true,
+  );
+}
 
 /**
  * Read a positive-integer env var override. Returns `undefined` when the var
@@ -922,6 +935,12 @@ export async function sendChildMessage(
     throw new ServiceError(400, "Message text exceeds 50,000 characters");
   }
   const child = assertChildOfParent(sessionManager, parentSessionId, childSessionId);
+  if (isResolvedForGrouping(child, {
+    hasVisibleBrood: hasVisibleDirectChildren(sessionManager, child.id),
+    isRunning: runnerRegistry.get(child.id)?.running === true,
+  })) {
+    throw new ResolvedChildMessageError(child);
+  }
   if (!child.workspaceDir) {
     throw new ServiceError(400, "Child session has no workspace");
   }

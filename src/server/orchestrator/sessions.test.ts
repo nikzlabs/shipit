@@ -4,9 +4,9 @@ import {
   SessionManager,
   filterVisibleInSidebar,
   holdsActiveReservation,
-  reopenedAfterResolve,
   MAX_MERGED_SESSIONS_PER_REPO,
 } from "./sessions.js";
+import { isTerminalPrResolved } from "../shared/session-resolution.js";
 import type { SessionInfo } from "../shared/types.js";
 import { ChatHistoryManager } from "./chat-history.js";
 import { UsageManager } from "./usage.js";
@@ -721,7 +721,7 @@ describe("SessionManager", () => {
     });
   });
 
-  describe("docs/161: reopenedAfterResolve predicate", () => {
+  describe("docs/161: terminal PR resolution predicate", () => {
     function make(overrides: Partial<SessionInfo>): SessionInfo {
       return {
         id: "x",
@@ -734,26 +734,26 @@ describe("SessionManager", () => {
     }
 
     it("is false for a never-resolved session", () => {
-      expect(reopenedAfterResolve(make({}))).toBe(false);
+      expect(isTerminalPrResolved(make({}))).toBe(false);
     });
 
-    it("is false when last activity predates the merge", () => {
+    it("is true when last activity predates the merge", () => {
       // merged_at uses SQLite datetime() format; last_used_at uses ISO. The
-      // predicate parses both via Date.parse rather than comparing lexically.
-      expect(reopenedAfterResolve(make({
+      // predicate normalizes both rather than comparing lexically.
+      expect(isTerminalPrResolved(make({
         mergedAt: "2024-06-01 12:00:00",
         lastUsedAt: "2024-05-01T00:00:00.000Z",
-      }))).toBe(false);
-    });
-
-    it("is true when worked in after the merge despite mixed timestamp formats", () => {
-      expect(reopenedAfterResolve(make({
-        mergedAt: "2024-06-01 12:00:00",
-        lastUsedAt: "2024-06-02T00:00:00.000Z",
       }))).toBe(true);
     });
 
-    it("is false when the merge follows the last turn by seconds (the typical merge flow)", () => {
+    it("is false when worked in after the merge despite mixed timestamp formats", () => {
+      expect(isTerminalPrResolved(make({
+        mergedAt: "2024-06-01 12:00:00",
+        lastUsedAt: "2024-06-02T00:00:00.000Z",
+      }))).toBe(false);
+    });
+
+    it("is true when the merge follows the last turn by seconds (the typical merge flow)", () => {
       // Regression: the last turn lands moments before the PR merges. Both
       // timestamps are UTC, but `merged_at` is the suffix-less SQLite form and
       // `last_used_at` is ISO. A naive `Date.parse` reads `merged_at` as LOCAL
@@ -761,22 +761,22 @@ describe("SessionManager", () => {
       // session is wrongly treated as reopened — promoting a just-merged
       // session back above active ones in the sidebar. UTC-normalized parsing
       // keeps it correctly demoted regardless of host timezone.
-      expect(reopenedAfterResolve(make({
+      expect(isTerminalPrResolved(make({
         lastUsedAt: "2024-06-01T11:59:55.000Z",
         mergedAt: "2024-06-01 12:00:00",
-      }))).toBe(false);
+      }))).toBe(true);
     });
 
     it("treats a closed-without-merge session the same as a merged one", () => {
       // closed_at is the close analogue of merged_at; both demote the session.
-      expect(reopenedAfterResolve(make({
+      expect(isTerminalPrResolved(make({
         closedAt: "2024-06-01 12:00:00",
         lastUsedAt: "2024-05-01T00:00:00.000Z",
-      }))).toBe(false);
-      expect(reopenedAfterResolve(make({
+      }))).toBe(true);
+      expect(isTerminalPrResolved(make({
         closedAt: "2024-06-01 12:00:00",
         lastUsedAt: "2024-06-02T00:00:00.000Z",
-      }))).toBe(true);
+      }))).toBe(false);
     });
   });
 

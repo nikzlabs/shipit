@@ -125,12 +125,13 @@ describe("post-turn commit when the agent process dies", () => {
     const postTurnPrFlow = vi.fn(async () => {});
 
     const agent = makeFakeAgent(() => fs.writeFileSync(filePath, "work the agent did before dying\n"));
+    const listenerDeps = makeListenerDeps();
     const deps: SystemTurnDeps = {
       agentFactory: () => agent as unknown as ReturnType<SystemTurnDeps["agentFactory"]>,
       autoCommit: realAutoCommit,
       scheduleAutoPush,
       postTurnPrFlow,
-      listenerDeps: makeListenerDeps(),
+      listenerDeps,
       buildRunParams: vi.fn().mockResolvedValue({ prompt: "p", cwd: repoDir }),
     };
 
@@ -150,6 +151,7 @@ describe("post-turn commit when the agent process dies", () => {
       emitErrorOnNoResult: true,
     });
     await waitFor(() => agent.run.mock.calls.length === 1, "turn started");
+    expect(listenerDeps.sessionManager.track).toHaveBeenCalledWith("s1");
     expect(runner.queueLength).toBe(0);
 
     // The process dies. No `agent_result` ever arrived, so nothing has run the

@@ -2,7 +2,7 @@ import { useMemo } from "react";
 import { useSessionStore } from "../stores/session-store.js";
 import { usePrStore } from "../stores/pr-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
-import { isRecentlyResolved } from "../components/SessionSidebar/useSessionGrouping.js";
+import { isTerminalPrResolved } from "../../server/shared/session-resolution.js";
 import { computeAttentionReason } from "./useAttentionInfo.js";
 import type { SessionInfo } from "../../server/shared/types.js";
 
@@ -41,7 +41,7 @@ export function useAttentionSessions(sessions: SessionInfo[]): Set<string> {
         hasBackgroundTasks: backgroundTaskSessions.has(session.id),
         autoFixEnabled,
         autoResolveEnabled,
-        resolved: isRecentlyResolved(session),
+        resolved: isTerminalPrResolved(session),
       });
       if (reason !== null) ids.add(session.id);
     }

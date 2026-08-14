@@ -9,7 +9,7 @@ import { useSessionStore } from "../../stores/session-store.js";
 import type { SessionInfo, RepoInfo } from "../../../server/shared/types.js";
 import { SessionItem } from "./SessionItem.js";
 import { repoColorVar } from "../../../server/shared/repo-colors.js";
-import { isRecentlyResolved } from "./useSessionGrouping.js";
+import { isResolvedForGrouping } from "../../../server/shared/session-resolution.js";
 
 /**
  * docs/254 — the per-group identity edge. A 3px colored line on the LEFT of the
@@ -601,7 +601,7 @@ export function RepoGroup({
                 broodByRoot.set(s.rootSessionId, list);
               }
               const isRecentlyResolvedForGroup = (s: SessionInfo): boolean =>
-                isRecentlyResolved(s) && !broodByRoot.has(s.id);
+                isResolvedForGrouping(s, { hasVisibleBrood: broodByRoot.has(s.id) });
               // Render a top-level (root) session followed by its (non-collapsed)
               // brood into `target`. The brood stays together; a root with a
               // visible brood stays Active even after its PR resolves so spawned
@@ -642,7 +642,7 @@ export function RepoGroup({
                 // pinned sub-section (see the `pinnedSessions` memo), so this
                 // split is its ONLY render path.
                 const isResolvedMember = (m: SessionInfo): boolean =>
-                  isRecentlyResolved(m) && !parentsInBrood.has(m.id) && !m.pinnedAt;
+                  isResolvedForGrouping(m, { hasVisibleBrood: parentsInBrood.has(m.id) });
                 const renderMember = (member: SessionInfo) => (
                   <SessionItem
                     key={member.id}
