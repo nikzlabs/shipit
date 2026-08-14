@@ -1,3 +1,5 @@
+import { harnessesForLoginIntegration } from "../shared/catalogue/index.js";
+import type { LoginIntegrationId } from "../shared/catalogue/types.js";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -1122,7 +1124,7 @@ describe("wireEventHandlers — account-scoped auth SSE (docs/150)", () => {
   /** Fake auth manager exposing a settable active account id. */
   class FakeAuthManager extends EventEmitter {
     activeAccountId: string | null = null;
-    readonly agentId: AgentId = "claude";
+    readonly loginId: LoginIntegrationId = "anthropic-oauth";
     getActiveAccountId(): string | null { return this.activeAccountId; }
     start() {}
     cancel() {}
@@ -1141,9 +1143,9 @@ describe("wireEventHandlers — account-scoped auth SSE (docs/150)", () => {
     const mgr = new FakeAuthManager();
     const events: { event: string; data: Record<string, unknown> }[] = [];
     wireEventHandlers({
-      authManagers: new Map<AgentId, AgentAuthManager>([["claude", mgr as unknown as AgentAuthManager]]),
+      authManagers: new Map<LoginIntegrationId, AgentAuthManager>([["anthropic-oauth", mgr as unknown as AgentAuthManager]]),
       githubAuthManager: new EventEmitter() as unknown as GitHubAuthManager,
-      agentRegistry: { refreshAuth: () => {}, list: () => [] } as unknown as AgentRegistry,
+      agentRegistry: { refreshAuth: () => {}, refreshAuthForLogin: () => {}, list: () => [] } as unknown as AgentRegistry,
       providerAccountManager,
       sseBroadcast: (event, data) => events.push({ event, data: data as Record<string, unknown> }),
       credentialsDir: tmp,
@@ -1165,7 +1167,7 @@ describe("wireEventHandlers — account-scoped auth SSE (docs/150)", () => {
 
     expect(providerAccountManager.get("anthropic", account.id)?.status).toBe("ready");
     const complete = events.find((e) => e.event === "agent_auth_complete");
-    expect(complete?.data).toMatchObject({ agentId: "claude", accountId: account.id });
+    expect(complete?.data).toMatchObject({ loginId: "anthropic-oauth", accountId: account.id });
   });
 
   it("clears the replaced credential's exhaustion before making the row selectable", () => {
@@ -1222,7 +1224,7 @@ describe("wireEventHandlers — account-scoped auth SSE (docs/150)", () => {
     expect(events.filter((e) => e.event === "agent_auth_complete")).toHaveLength(1);
     expect(providerAccountManager.list("anthropic").map((a) => a.id)).toEqual([account.id]);
     const failed = events.filter((e) => e.event === "agent_auth_failed").at(-1);
-    expect(failed?.data).toMatchObject({ agentId: "claude", accountId: second.id, reason: "duplicate" });
+    expect(failed?.data).toMatchObject({ loginId: "anthropic-oauth", accountId: second.id, reason: "duplicate" });
     expect(String(failed?.data.message)).toContain("already connected");
   });
 
@@ -1233,7 +1235,7 @@ describe("wireEventHandlers — account-scoped auth SSE (docs/150)", () => {
 
     expect(providerAccountManager.get("anthropic", account.id)?.status).toBe("auth_failed");
     const failed = events.find((e) => e.event === "agent_auth_failed");
-    expect(failed?.data).toMatchObject({ agentId: "claude", accountId: account.id, reason: "error" });
+    expect(failed?.data).toMatchObject({ loginId: "anthropic-oauth", accountId: account.id, reason: "error" });
   });
 
   it("scoped pending qualifies the SSE with accountId", () => {
@@ -1242,21 +1244,21 @@ describe("wireEventHandlers — account-scoped auth SSE (docs/150)", () => {
     mgr.emit("pending", { kind: "code-paste-url", verificationUri: "https://example.com" });
 
     const pending = events.find((e) => e.event === "agent_auth_pending");
-    expect(pending?.data).toMatchObject({ agentId: "claude", accountId: account.id });
+    expect(pending?.data).toMatchObject({ loginId: "anthropic-oauth", accountId: account.id });
   });
 
   it("rebroadcasts auth progress and log diagnostics", () => {
     const { mgr, events, account } = setup();
     mgr.activeAccountId = account.id;
     mgr.emit("progress", {
-      agentId: "claude",
+      loginId: "anthropic-oauth",
       accountId: account.id,
       attemptId: "attempt-1",
       phase: "waiting_for_url",
       message: "Waiting for Claude CLI.",
     });
     mgr.emit("log", {
-      agentId: "claude",
+      loginId: "anthropic-oauth",
       accountId: account.id,
       attemptId: "attempt-1",
       timestamp: "2026-07-11T00:00:00.000Z",
@@ -1266,13 +1268,13 @@ describe("wireEventHandlers — account-scoped auth SSE (docs/150)", () => {
     });
 
     expect(events.find((e) => e.event === "agent_auth_progress")?.data).toMatchObject({
-      agentId: "claude",
+      loginId: "anthropic-oauth",
       accountId: account.id,
       attemptId: "attempt-1",
       phase: "waiting_for_url",
     });
     expect(events.find((e) => e.event === "agent_auth_log")?.data).toMatchObject({
-      agentId: "claude",
+      loginId: "anthropic-oauth",
       accountId: account.id,
       attemptId: "attempt-1",
       source: "shipit",
@@ -1292,7 +1294,7 @@ describe("wireEventHandlers — account-scoped auth SSE (docs/150)", () => {
     mgr.emit("complete");
 
     const complete = events.find((e) => e.event === "agent_auth_complete");
-    expect(complete?.data).toMatchObject({ agentId: "claude" });
+    expect(complete?.data).toMatchObject({ loginId: "anthropic-oauth" });
     expect(complete?.data.accountId).toBeUndefined();
     // No row invented (the old `else` called migrateDefaultAccounts here) and
     // none flipped to ready off an unattributable completion.
@@ -1310,9 +1312,14 @@ describe("markProviderAccountUnauthenticated", () => {
       const account = providerAccountManager.create("anthropic", "Work");
       providerAccountManager.setAccountStatus("anthropic", account.id, "ready");
       let hasRunnableModels = true;
-      const refreshAuth = vi.fn(() => { hasRunnableModels = false; });
+      const refreshAuth = vi.fn((_harnessId?: AgentId) => { hasRunnableModels = false; });
+      // Same fan-out mirror as `buildRegistry` below.
+      const refreshAuthForLogin = vi.fn((loginId: LoginIntegrationId) => {
+        for (const harnessId of harnessesForLoginIntegration(loginId)) refreshAuth(harnessId);
+      });
       const agentRegistry = {
         refreshAuth,
+        refreshAuthForLogin,
         list: () => [{
           id: "claude",
           name: "Claude Code",
@@ -1340,6 +1347,11 @@ describe("markProviderAccountUnauthenticated", () => {
       });
 
       expect(providerAccountManager.get("anthropic", account.id)?.status).toBe("auth_failed");
+      // The status that changed belongs to the shared account route, so the
+      // refresh must go out per LOGIN. Asserting the effect alone
+      // (`refreshAuth("claude")`) would also pass a revert to the old
+      // single-harness call, since the fan-out reaches Claude either way.
+      expect(refreshAuthForLogin).toHaveBeenCalledWith("anthropic-oauth");
       expect(refreshAuth).toHaveBeenCalledWith("claude");
       expect(events.find((e) => e.event === "provider_accounts")?.data.accounts)
         .toEqual(expect.arrayContaining([expect.objectContaining({ id: account.id, status: "auth_failed" })]));
@@ -1352,11 +1364,18 @@ describe("markProviderAccountUnauthenticated", () => {
 });
 
 describe("markProviderAccountReauthenticated", () => {
-  function buildRegistry(initialAuth: boolean): { agentRegistry: AgentRegistry; refreshAuth: ReturnType<typeof vi.fn>; getAuth: () => boolean } {
+  function buildRegistry(initialAuth: boolean): { agentRegistry: AgentRegistry; refreshAuth: ReturnType<typeof vi.fn>; refreshAuthForLogin: ReturnType<typeof vi.fn>; getAuth: () => boolean } {
     let hasRunnableModels = initialAuth;
-    const refreshAuth = vi.fn(() => { hasRunnableModels = true; });
+    const refreshAuth = vi.fn((_harnessId?: AgentId) => { hasRunnableModels = true; });
+    // Mirrors the real registry: a login refresh fans out to every harness the
+    // catalogue says that login serves. Keeping the real mapping here is what
+    // makes the `refreshAuth` assertions below actually exercise the fan-out.
+    const refreshAuthForLogin = vi.fn((loginId: LoginIntegrationId) => {
+      for (const harnessId of harnessesForLoginIntegration(loginId)) refreshAuth(harnessId);
+    });
     const agentRegistry = {
       refreshAuth,
+      refreshAuthForLogin,
       list: () => [{
         id: "claude",
         name: "Claude Code",
@@ -1372,7 +1391,7 @@ describe("markProviderAccountReauthenticated", () => {
         },
       }],
     } as unknown as AgentRegistry;
-    return { agentRegistry, refreshAuth, getAuth: () => hasRunnableModels };
+    return { agentRegistry, refreshAuth, refreshAuthForLogin, getAuth: () => hasRunnableModels };
   }
 
   it("flips a auth_failed account back to ready, refreshes registry auth, and broadcasts the agent list", () => {
@@ -1382,7 +1401,7 @@ describe("markProviderAccountReauthenticated", () => {
       const providerAccountManager = new ProviderAccountManager({ credentialsDir: tmp, credentialStore });
       const account = providerAccountManager.create("anthropic", "Work");
       providerAccountManager.setAccountStatus("anthropic", account.id, "auth_failed");
-      const { agentRegistry, refreshAuth } = buildRegistry(false);
+      const { agentRegistry, refreshAuth, refreshAuthForLogin } = buildRegistry(false);
       const events: { event: string; data: Record<string, unknown> }[] = [];
 
       markProviderAccountReauthenticated({
@@ -1395,6 +1414,8 @@ describe("markProviderAccountReauthenticated", () => {
       });
 
       expect(providerAccountManager.get("anthropic", account.id)?.status).toBe("ready");
+      // See the sibling test: assert the fan-out was chosen, not just its effect.
+      expect(refreshAuthForLogin).toHaveBeenCalledWith("anthropic-oauth");
       expect(refreshAuth).toHaveBeenCalledWith("claude");
       expect(events.find((e) => e.event === "provider_accounts")?.data.accounts)
         .toEqual(expect.arrayContaining([expect.objectContaining({ id: account.id, status: "ready" })]));
@@ -1412,7 +1433,7 @@ describe("markProviderAccountReauthenticated", () => {
       const providerAccountManager = new ProviderAccountManager({ credentialsDir: tmp, credentialStore });
       const account = providerAccountManager.create("anthropic", "Work");
       providerAccountManager.setAccountStatus("anthropic", account.id, "ready");
-      const { agentRegistry, refreshAuth } = buildRegistry(true);
+      const { agentRegistry, refreshAuth, refreshAuthForLogin } = buildRegistry(true);
       const events: { event: string; data: Record<string, unknown> }[] = [];
 
       markProviderAccountReauthenticated({
@@ -1425,6 +1446,8 @@ describe("markProviderAccountReauthenticated", () => {
       });
 
       expect(refreshAuth).not.toHaveBeenCalled();
+      // Idempotent means no refresh at all — neither the fan-out nor a direct one.
+      expect(refreshAuthForLogin).not.toHaveBeenCalled();
       expect(events).toEqual([]);
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });

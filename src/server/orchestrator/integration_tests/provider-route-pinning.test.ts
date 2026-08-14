@@ -205,6 +205,9 @@ describe("per-turn account routing (docs/260)", () => {
     const events: { event: string; data: unknown }[] = [];
     const agentRegistry = {
       refreshAuth: () => {},
+      // A credential change fans out across the login's harnesses; this test
+      // only cares that the route is re-pinned, not which harnesses refreshed.
+      refreshAuthForLogin: () => {},
       list: () => [],
     } as unknown as AgentRegistry;
 

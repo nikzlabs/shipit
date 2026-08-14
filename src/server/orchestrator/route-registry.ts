@@ -194,11 +194,11 @@ export function registerSseEndpoint(app: FastifyInstance, rt: OrchestratorRuntim
     // row that started it (docs/150 req 16), and there is no provider-wide slot
     // to fall back to. Omitting it here — as this did before — meant a reload
     // mid-sign-in replayed a challenge the UI had nowhere to put.
-    for (const [agentId, mgr] of authManagers) {
+    for (const [loginId, mgr] of authManagers) {
       const details = mgr.getPendingPayload();
       if (details) {
         const accountId = mgr.getActiveAccountId() ?? undefined;
-        client.write(`event: agent_auth_pending\ndata: ${JSON.stringify({ agentId, ...(accountId ? { accountId } : {}), details })}\n\n`);
+        client.write(`event: agent_auth_pending\ndata: ${JSON.stringify({ loginId, ...(accountId ? { accountId } : {}), details })}\n\n`);
       }
     }
 

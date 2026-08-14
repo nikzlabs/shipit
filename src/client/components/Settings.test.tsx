@@ -238,8 +238,8 @@ describe("Settings - Services → Anthropic subscription", () => {
       { ...base, id: "acct-a", label: "Account A", isPrimary: true, externalId: "ext-a" },
       { ...base, id: "acct-b", label: "Account B", externalId: "ext-b" },
     ]);
-    useSettingsStore.getState().setProviderAccountAuth("claude", "acct-a", {
-      provider: "claude",
+    useSettingsStore.getState().setProviderAccountAuth("anthropic-oauth", "acct-a", {
+      loginId: "anthropic-oauth",
       accountId: "acct-a",
       verificationUri: "https://claude.ai/oauth/authorize?acct-a",
     });
@@ -395,8 +395,8 @@ describe("Settings - Services → Anthropic subscription", () => {
     // login was running against it and clears the challenge that login left, so
     // a code seeded beforehand is a dead one the dialog is right to drop.
     act(() => {
-      useSettingsStore.getState().setProviderAccountAuth("claude", "acct-secondary", {
-        provider: "claude",
+      useSettingsStore.getState().setProviderAccountAuth("anthropic-oauth", "acct-secondary", {
+        loginId: "anthropic-oauth",
         accountId: "acct-secondary",
         verificationUri: "https://claude.ai/oauth/authorize?secondary=true",
       });
@@ -678,8 +678,8 @@ describe("Settings - Services → OpenAI subscription", () => {
     await userEvent.click(screen.getByLabelText("Manage Codex account 2"));
     await userEvent.click(screen.getByTestId("provider-account-connect-acct-codex-2"));
     act(() => {
-      useSettingsStore.getState().setProviderAccountAuth("codex", "acct-codex-2", {
-        provider: "codex",
+      useSettingsStore.getState().setProviderAccountAuth("openai-chatgpt", "acct-codex-2", {
+        loginId: "openai-chatgpt",
         accountId: "acct-codex-2",
         verificationUri: "https://auth.openai.com/device",
         userCode: "WXYZ-1234",
@@ -711,11 +711,11 @@ describe("Settings - Services → OpenAI subscription", () => {
       { ...base, id: "acct-a", label: "Codex A", status: "authenticating", externalId: "ext-a" },
       { ...base, id: "acct-b", label: "Codex B", status: "authenticating", externalId: "ext-b" },
     ]);
-    useSettingsStore.getState().setProviderAccountAuth("codex", "acct-a", {
-      provider: "codex", accountId: "acct-a", verificationUri: "https://auth.openai.com/device", userCode: "AAAA-1111",
+    useSettingsStore.getState().setProviderAccountAuth("openai-chatgpt", "acct-a", {
+      loginId: "openai-chatgpt", accountId: "acct-a", verificationUri: "https://auth.openai.com/device", userCode: "AAAA-1111",
     });
-    useSettingsStore.getState().setProviderAccountAuth("codex", "acct-b", {
-      provider: "codex", accountId: "acct-b", verificationUri: "https://auth.openai.com/device", userCode: "BBBB-2222",
+    useSettingsStore.getState().setProviderAccountAuth("openai-chatgpt", "acct-b", {
+      loginId: "openai-chatgpt", accountId: "acct-b", verificationUri: "https://auth.openai.com/device", userCode: "BBBB-2222",
     });
 
     render(<Settings {...defaultProps} agentList={[claudeAuthed, codexInstalled]} />);

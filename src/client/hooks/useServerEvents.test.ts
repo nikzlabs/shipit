@@ -228,7 +228,7 @@ describe("useServerEvents — Claude auth diagnostics", () => {
 
     act(() => {
       es.emit("agent_auth_progress", {
-        agentId: "claude",
+        loginId: "anthropic-oauth",
         accountId: "acct-a",
         attemptId: "attempt-1",
         phase: "waiting_for_url",
@@ -236,7 +236,7 @@ describe("useServerEvents — Claude auth diagnostics", () => {
         elapsedMs: 1200,
       });
       es.emit("agent_auth_log", {
-        agentId: "claude",
+        loginId: "anthropic-oauth",
         accountId: "acct-a",
         attemptId: "attempt-1",
         timestamp: "2026-07-11T00:00:00.000Z",
@@ -245,12 +245,12 @@ describe("useServerEvents — Claude auth diagnostics", () => {
         message: "Browser did not open.",
       });
       es.emit("agent_auth_pending", {
-        agentId: "claude",
+        loginId: "anthropic-oauth",
         accountId: "acct-a",
         details: { kind: "code-paste-url", verificationUri: "https://claude.ai/oauth/authorize?code=true" },
       });
       es.emit("agent_auth_failed", {
-        agentId: "claude",
+        loginId: "anthropic-oauth",
         accountId: "acct-a",
         reason: "error",
         message: "Claude sign-in failed.",
@@ -280,7 +280,7 @@ describe("useServerEvents — Claude auth diagnostics", () => {
 
     act(() => {
       es.emit("agent_auth_log", {
-        agentId: "claude",
+        loginId: "anthropic-oauth",
         accountId: "acct-a",
         attemptId: "attempt-a",
         timestamp: "2026-07-11T00:00:00.000Z",
@@ -289,7 +289,7 @@ describe("useServerEvents — Claude auth diagnostics", () => {
         message: "A's output.",
       });
       es.emit("agent_auth_log", {
-        agentId: "claude",
+        loginId: "anthropic-oauth",
         accountId: "acct-b",
         attemptId: "attempt-b",
         timestamp: "2026-07-11T00:00:01.000Z",
@@ -298,7 +298,7 @@ describe("useServerEvents — Claude auth diagnostics", () => {
         message: "B's output.",
       });
       es.emit("agent_auth_failed", {
-        agentId: "claude",
+        loginId: "anthropic-oauth",
         accountId: "acct-b",
         reason: "error",
         message: "B failed.",
@@ -319,13 +319,13 @@ describe("useServerEvents — Claude auth diagnostics", () => {
 
     act(() => {
       es.emit("agent_auth_failed", {
-        agentId: "claude",
+        loginId: "anthropic-oauth",
         accountId: "acct-missing",
         reason: "missing_credentials",
       });
     });
 
-    expect(useSettingsStore.getState().providerAccountAuthErrors["claude:acct-missing"])
+    expect(useSettingsStore.getState().providerAccountAuthErrors["anthropic-oauth:acct-missing"])
       .toBe("Claude credentials are missing. Sign in again.");
     expect(useUiStore.getState().toast?.message).toBe("Claude credentials are missing. Sign in again.");
   });
@@ -339,13 +339,13 @@ describe("useServerEvents — Claude auth diagnostics", () => {
 
     act(() => {
       es.emit("agent_auth_progress", {
-        agentId: "claude",
+        loginId: "anthropic-oauth",
         attemptId: "attempt-unscoped",
         phase: "waiting_for_url",
         message: "Waiting for Claude CLI to print an authentication link.",
       });
       es.emit("agent_auth_log", {
-        agentId: "claude",
+        loginId: "anthropic-oauth",
         attemptId: "attempt-unscoped",
         timestamp: "2026-07-11T00:00:00.000Z",
         level: "info",
@@ -365,22 +365,22 @@ describe("useServerEvents — Claude auth diagnostics", () => {
 
     act(() => {
       es.emit("agent_auth_pending", {
-        agentId: "claude",
+        loginId: "anthropic-oauth",
         accountId: "acct-secondary",
         details: { kind: "code-paste-url", verificationUri: "https://claude.ai/oauth/authorize?secondary=true" },
       });
     });
 
-    expect(useSettingsStore.getState().providerAccountAuths["claude:acct-secondary"]).toEqual({
-      provider: "claude",
+    expect(useSettingsStore.getState().providerAccountAuths["anthropic-oauth:acct-secondary"]).toEqual({
+      loginId: "anthropic-oauth",
       accountId: "acct-secondary",
       verificationUri: "https://claude.ai/oauth/authorize?secondary=true",
     });
 
     act(() => {
-      es.emit("agent_auth_complete", { agentId: "claude", accountId: "acct-secondary" });
+      es.emit("agent_auth_complete", { loginId: "anthropic-oauth", accountId: "acct-secondary" });
     });
-    expect(useSettingsStore.getState().providerAccountAuths["claude:acct-secondary"]).toBeUndefined();
+    expect(useSettingsStore.getState().providerAccountAuths["anthropic-oauth:acct-secondary"]).toBeUndefined();
   });
 });
 

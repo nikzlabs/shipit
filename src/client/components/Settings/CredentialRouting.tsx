@@ -54,6 +54,7 @@
 // handler can observe.
 // eslint-disable-next-line no-restricted-imports -- unmount flush, see above
 import { useEffect, useRef, useState } from "react";
+import { loginForProvider } from "./ProviderAccountRows.js";
 import type { AgentId } from "../../../server/shared/types.js";
 import { credentialModeKey } from "../../../server/shared/types/domain-types/credential-route.js";
 import type { BillingMode } from "../../../server/shared/catalogue/index.js";
@@ -244,21 +245,22 @@ async function saveCutoff(
     // rather than component state: `saveCutoff` is deliberately a module-level
     // function over the store because it is called from an unmount cleanup,
     // where the component's state and its setters are already gone. The notice
-    // channel is still keyed by harness because cutoffs only ever render on an
-    // account-backed mode, which always has one.
+    // channel is keyed by LOGIN FLOW — see the block below for what that means
+    // when the mode has no login at all.
     /**
-     * The notice channel is keyed by HARNESS, and a string-delivered
+     * The notice channel is keyed by LOGIN FLOW, and a string-delivered
      * subscription need not have one — GLM's coding plan is a subscription with
      * no login flow, and Anthropic's plan can arrive as a supplied token on an
      * install with no account. Re-keying the whole notice map by
      * `(service, mode)` is a larger change than this control warrants, so
-     * without a harness the failure is logged and the field's **rollback** is
+     * without a login the failure is logged and the field's **rollback** is
      * the feedback: the number visibly snaps back to the stored one, which is
      * the same signal the notice accompanies. Weaker, and stated rather than
      * hidden.
      */
-    if (provider) {
-      useSettingsStore.getState().setProviderAccountNotice(provider, {
+    const loginId = provider ? loginForProvider(provider) : undefined;
+    if (loginId) {
+      useSettingsStore.getState().setProviderAccountNotice(loginId, {
         kind: "error",
         message: `Failed to update ${serviceName} failover cutoff`,
       });

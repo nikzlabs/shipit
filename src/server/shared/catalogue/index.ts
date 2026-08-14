@@ -22,6 +22,7 @@ import type {
   CredentialTarget,
   CredentialTargets,
   HarnessDef,
+  LoginIntegrationId,
   ModeCredential,
   ModelDef,
   ModelSelection,
@@ -87,6 +88,140 @@ export function nativeServiceForHarness(harnessId: AgentId | undefined): string 
  */
 export function harnessForNativeService(serviceId: string): AgentId | undefined {
   return HARNESSES.find((h) => h.nativeService === serviceId)?.id;
+}
+
+// ---- Login integrations (docs/252 phase 2's deferred re-key) ----
+//
+// `LoginIntegrationId` is what a login FLOW is keyed by: which sign-in
+// implementation runs, and whose credentials it writes. It replaces `AgentId`
+// for that job, because a harness is not a vendor — the same reasoning
+// `LimitsProvider` already applies to quota.
+//
+// Deliberately NOT re-keyed, and both are load-bearing:
+//
+//   - **The credential root on disk** stays keyed by harness
+//     (`provider-accounts/<AgentId>/<accountId>`). Its *contents* are the CLI's
+//     own home directory — `<root>/.claude` + `.claude.json`, `<root>/.codex` —
+//     so the directory is genuinely harness-shaped. Re-keying it would orphan
+//     every connected account's tokens and force every user to sign in again,
+//     while the old directories sat on disk still holding live credentials.
+//   - **`AgentRegistry.refreshAuth`** stays keyed by harness, because "can this
+//     CLI run a model now" is a question about the CLI. What changes is that a
+//     completed login no longer implies ONE harness — see
+//     {@link harnessesForLoginIntegration}.
+
+/**
+ * The login flow that authenticates this service, when it has one.
+ *
+ * A service has a login integration when any of its modes accepts an
+ * account-delivered credential. A service authenticated only by a supplied
+ * string (DeepSeek, the gateways) has none, which is why this returns
+ * `undefined` rather than throwing.
+ */
+export function loginIntegrationForService(
+  serviceId: string | undefined,
+): LoginIntegrationId | undefined {
+  if (!serviceId) return undefined;
+  for (const mode of getService(serviceId)?.modes ?? []) {
+    for (const credential of mode.credentials) {
+      if (credential.via === "account") return credential.login;
+    }
+  }
+  return undefined;
+}
+
+/** The service a login flow authenticates — the inverse of {@link loginIntegrationForService}. */
+export function serviceForLoginIntegration(
+  loginId: LoginIntegrationId,
+): ServiceId | undefined {
+  return SERVICES.find((service) =>
+    service.modes.some((mode) =>
+      mode.credentials.some((c) => c.via === "account" && c.login === loginId),
+    ),
+  )?.id;
+}
+
+/** Every login flow the catalogue declares, in service order. */
+export function allLoginIntegrations(): LoginIntegrationId[] {
+  const seen: LoginIntegrationId[] = [];
+  for (const service of SERVICES) {
+    for (const mode of service.modes) {
+      for (const credential of mode.credentials) {
+        if (credential.via === "account" && !seen.includes(credential.login)) {
+          seen.push(credential.login);
+        }
+      }
+    }
+  }
+  return seen;
+}
+
+/**
+ * The harnesses a completed sign-in on this login flow can change the answer
+ * for — the fan-out set for `AgentRegistry.refreshAuth`.
+ *
+ * **This is the assumption the re-key exists to break, so it is computed rather
+ * than assumed.** While every login serves exactly one harness, "refresh the
+ * harness that owns this flow" and "refresh every harness this credential could
+ * run" are the same set, and the distinction is invisible. They stop being the
+ * same set for the first provider-neutral harness: an OpenCode signed in
+ * against Anthropic draws on the same credential Claude Code does, so a
+ * completed Anthropic login must make BOTH harnesses re-evaluate what they can
+ * run. A `refreshAuth(agentId)` written against the 1:1 shape would silently
+ * refresh one of them, and nothing would fail until that harness shipped.
+ *
+ * The set is the catalogue's own join: every harness sharing an API style with
+ * a mode of this login's service. It yields exactly `["claude"]` and
+ * `["codex"]` today — asserted in `catalogue.test.ts`, so a future row that
+ * widens it does so visibly.
+ */
+/**
+ * The harness whose CLI this login flow actually drives, and whose home
+ * directory the resulting credentials land in.
+ *
+ * The deliberate counterpart to {@link harnessesForLoginIntegration}, and the
+ * distinction is the whole point of the re-key:
+ *
+ *   - ONE harness *runs* the sign-in and owns the files it writes — this
+ *     function. Reading those files back (duplicate detection, pushing the
+ *     token to pinned sessions) is a question about that CLI's own layout.
+ *   - MANY harnesses may *consume* the credential afterwards — that function.
+ *
+ * Today both answers name the same single harness, which is exactly why the old
+ * `AgentId` key looked adequate.
+ */
+export function credentialHarnessForLogin(loginId: LoginIntegrationId): AgentId | undefined {
+  const serviceId = serviceForLoginIntegration(loginId);
+  return serviceId ? harnessForNativeService(serviceId) : undefined;
+}
+
+export function harnessesForLoginIntegration(loginId: LoginIntegrationId): AgentId[] {
+  const serviceId = serviceForLoginIntegration(loginId);
+  const service = serviceId ? getService(serviceId) : undefined;
+  if (!service) return [];
+  // Only the modes that actually accept THIS login. A service can hold a
+  // subscription and a metered key, and the key mode's models say nothing about
+  // who can use the account credential this login produces.
+  const modes = service.modes.filter((mode) =>
+    mode.credentials.some((c) => c.via === "account" && c.login === loginId),
+  );
+  // Joined on the MODELS' styles via `resolveStyle`, exactly as
+  // `catalogueEntriesForHarness` does — not on the mode's endpoint keys. The
+  // catalogue only guarantees model style ⊆ endpoint styles, so an endpoint
+  // declared for a style no model uses would include a harness whose eligible
+  // set this login can never change. Two answers to "can this harness run
+  // something here" must not be computed two ways.
+  //
+  // A shared style is still not enough: the credential is account-delivered, so
+  // a harness declaring no account destination could never carry it however
+  // well the wire formats line up.
+  return HARNESSES.filter(
+    (harness) =>
+      harness.spawn.credential.account !== undefined
+      && modes.some((mode) =>
+        mode.models.some((model) => resolveStyle(harness.id, model) !== undefined),
+      ),
+  ).map((harness) => harness.id);
 }
 
 export function getMode(serviceId: string, billingMode: BillingMode): BillingModeDef | undefined {

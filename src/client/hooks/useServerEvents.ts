@@ -1,5 +1,6 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: EventSource (SSE) connection lifecycle with cleanup (external system sync)
 import { useEffect, useRef, useState } from "react";
+import type { LoginIntegrationId } from "../../server/shared/catalogue/types.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useRepoStore } from "../stores/repo-store.js";
 import { useUiStore } from "../stores/ui-store.js";
@@ -8,7 +9,7 @@ import { useSettingsStore } from "../stores/settings-store.js";
 import { useEgressStore } from "../stores/egress-store.js";
 import type { ToastData } from "../components/Toast.js";
 import { fullResetAllStores } from "../stores/actions/session-actions.js";
-import type { SessionInfo, RepoInfo, PrStatusSummary, DockerMemoryStats, SystemInfo, SubscriptionLimitsMap, PermissionMode, CredentialRoute, AgentId, EgressSettings } from "../../server/shared/types.js";
+import type { SessionInfo, RepoInfo, PrStatusSummary, DockerMemoryStats, SystemInfo, SubscriptionLimitsMap, PermissionMode, CredentialRoute, EgressSettings } from "../../server/shared/types.js";
 import type { ReviewerSlotView } from "../../server/shared/types/agent-types.js";
 import { getLoadedClientBuildId, shouldReloadForServerBuild } from "../utils/client-build.js";
 import { getSavedModelId, saveAgentId, saveModelId } from "../utils/local-storage.js";
@@ -23,6 +24,70 @@ let reloadingForClientUpdate = false;
  */
 function backoffMs(attempt: number): number {
   return Math.min(1000 * Math.pow(2, attempt), 30_000);
+}
+
+
+/**
+ * Per-login sign-in copy.
+ *
+ * This is the table that replaced eight `agentId === "claude" | "codex"`
+ * branches. Those branches existed almost entirely for WORDING — the state
+ * transitions on either side of them were identical — plus one flow-specific
+ * toast. Keeping the strings as data preserves each flow's exact copy while the
+ * logic stays single-path, and adding a third login is a row here rather than
+ * another `else if`.
+ *
+ * An **absent** entry (or an absent `expiry`) is meaningful, not an oversight:
+ * it means that flow says nothing extra and shows no re-sign-in toast, which is
+ * how a flow with no diagnostics behaves today. The table is the gate.
+ */
+const AUTH_COPY: Partial<Record<LoginIntegrationId, {
+  /** Shown in the diagnostics stream once the challenge arrives. */
+  pendingDiagnostic?: string;
+  /** Diagnostics line on success. */
+  completed?: string;
+  /** Fallback per failure reason, when the server sends no message. */
+  failure?: Partial<Record<string, string>>;
+  /** Generic fallback when `failure` has no entry for the reason. */
+  failureDefault?: string;
+  /**
+   * Toast copy for a credential that expired or vanished underneath the user.
+   * Only a flow that can report these reasons declares them.
+   */
+  expiry?: Partial<Record<"revoked" | "missing_credentials", string>>;
+}>> = {
+  "anthropic-oauth": {
+    pendingDiagnostic:
+      "Authentication link received. Paste the authorization code after signing in.",
+    completed: "Claude sign-in completed.",
+    failure: {
+      missing_credentials: "Claude credentials are missing. Sign in again.",
+    },
+    failureDefault: "Claude sign-in failed. You can retry or copy the diagnostic details.",
+    expiry: {
+      revoked: "Claude authentication expired. Sign in again.",
+      missing_credentials: "Claude credentials are missing. Sign in again.",
+    },
+  },
+  "openai-chatgpt": {
+    failure: {
+      timeout: "Sign-in timed out. Try again.",
+      denied: "Sign-in was denied.",
+    },
+    failureDefault: "Sign-in failed. Try again.",
+  },
+};
+
+/** The failure string for a reason, honouring the flow's own wording. */
+function failureCopy(
+  copy: (typeof AUTH_COPY)[LoginIntegrationId],
+  reason: string | undefined,
+): string {
+  return (
+    (reason ? copy?.failure?.[reason] : undefined)
+    ?? copy?.failureDefault
+    ?? "Sign-in failed. Try again."
+  );
 }
 
 /**
@@ -220,195 +285,157 @@ export function useServerEvents(): void {
       useRepoStore.getState().updateRepoWarmSession(data.url, data.sessionId);
     });
 
-    // ---- Unified per-agent auth events (docs/155 Phase 2b) ----
-    // The orchestrator broadcasts one event family for every backend's
+    // ---- Unified auth events (docs/155 Phase 2b) ----
+    // The orchestrator broadcasts one event family for every LOGIN FLOW's
     // sign-in lifecycle: `agent_auth_pending` (sign-in card content arriving),
     // `agent_auth_complete` (success), `agent_auth_failed` (failure or
     // revocation). The legacy event names (`auth_required`, `auth_complete`,
-    // `codex_auth_*`) are gone; adding a new backend is one variant added to
-    // the discriminated `details.kind` union, not three new listeners here.
-    // docs/155: the three SSE auth handlers below dispatch on the runtime
-    // event's `agentId` + `details.kind` to shape each backend's payload into
-    // the account-keyed challenge slice. That's discriminated-union narrowing
-    // of received wire data, not abstraction-leaking dispatch — adding a
-    // backend means adding one more `else if` here for its payload shape. The
-    // disables sit inline so a new backend wires its narrowing without
-    // re-tripping the leak guard.
+    // `codex_auth_*`) are gone. A new BACKEND may need nothing here at all — it
+    // can sign in through a flow that already exists; a new FLOW is one variant
+    // added to the discriminated `details.kind` union, not three new listeners.
+    // The handlers below no longer dispatch on WHICH backend sent the event.
+    // They branch only on `details.kind` (the one thing the payloads actually
+    // differ by) and read per-flow wording from `AUTH_COPY`. The eight
+    // `agentId === "claude" | "codex"` branches this replaced were almost
+    // entirely about copy, not control flow — so a new backend is a row in that
+    // table plus, at most, one new `details.kind` variant.
     //
     // docs/150 req 16/19: every subscription sign-in is account-scoped, so an
     // event without `accountId` has no home and is ignored rather than
     // falling back to a provider-wide slot. The provider-wide slots
     // (`sessionStore.authUrl`, `settingsStore.codexDeviceAuth*`) are gone with
-    // the singleton endpoints that fed them. Claude's *diagnostics* are still
-    // provider-wide and are updated regardless — they're a debug buffer, not a
-    // challenge.
+    // the singleton endpoints that fed them. Diagnostics are per account too,
+    // and a flow that records none simply no-ops rather than being gated.
     es.addEventListener("agent_auth_pending", (e: MessageEvent) => {
       const data = JSON.parse(e.data as string) as {
-        agentId: AgentId;
+        loginId: LoginIntegrationId;
         accountId?: string;
         details:
           | { kind: "code-paste-url"; verificationUri: string }
           | { kind: "device-code"; verificationUri: string; userCode: string; expiresInSec: number };
       };
-      // eslint-disable-next-line no-restricted-syntax -- docs/155: SSE-event narrowing, see comment above
-      if (data.agentId === "claude" && data.details.kind === "code-paste-url") {
-        if (data.accountId) {
-          useSettingsStore.getState().setProviderAccountAuth("claude", data.accountId, {
-            provider: "claude",
-            accountId: data.accountId,
-            verificationUri: data.details.verificationUri,
-          });
-          useSettingsStore.getState().setProviderAccountAuthError("claude", data.accountId, null);
-        }
-        // docs/150 — advance only THIS account's diagnostics, and only if it
-        // already has an attempt in flight to advance.
-        const accountId = data.accountId;
-        const currentAttemptId = accountId
-          ? useSettingsStore.getState().claudeAuthDiagnostics[accountId]?.attemptId
-          : undefined;
-        if (accountId && currentAttemptId) {
-          useSettingsStore.getState().setClaudeAuthProgress(accountId, {
-            attemptId: currentAttemptId,
-            phase: "waiting_for_code",
-            message: "Authentication link received. Paste the authorization code after signing in.",
-          });
-        }
-      // eslint-disable-next-line no-restricted-syntax -- docs/155: SSE-event narrowing, see comment above
-      } else if (data.agentId === "codex" && data.details.kind === "device-code") {
-        // docs/150 req 16 — an account-scoped Codex sign-in belongs on its own
-        // row. Before this, `accountId` was dropped here and every device code
-        // landed in the provider-wide slot, so connecting a second Codex
-        // account rendered its challenge in the singleton card instead of the
-        // row that started it.
-        if (data.accountId) {
-          useSettingsStore.getState().setProviderAccountAuth("codex", data.accountId, {
-            provider: "codex",
-            accountId: data.accountId,
-            verificationUri: data.details.verificationUri,
-            userCode: data.details.userCode,
-          });
-          useSettingsStore.getState().setProviderAccountAuthError("codex", data.accountId, null);
-        }
+      // docs/150 req 16 — a challenge belongs on the row that started it, so an
+      // unscoped payload has nowhere to land and is dropped.
+      if (!data.accountId) return;
+      useSettingsStore.getState().setProviderAccountAuth(data.loginId, data.accountId, {
+        loginId: data.loginId,
+        accountId: data.accountId,
+        verificationUri: data.details.verificationUri,
+        // Present only on the device-code shape; the paste-code flow has no
+        // second factor to show. Discriminated by `details.kind`, which is what
+        // the shapes actually differ by — the backend's identity never was.
+        ...(data.details.kind === "device-code" ? { userCode: data.details.userCode } : {}),
+      });
+      useSettingsStore.getState().setProviderAccountAuthError(data.loginId, data.accountId, null);
+      // Advance diagnostics only where an attempt is already in flight. A flow
+      // that reports no diagnostics never records one, so this is a no-op for it
+      // rather than a case to branch on.
+      const currentAttemptId =
+        useSettingsStore.getState().claudeAuthDiagnostics[data.accountId]?.attemptId;
+      if (currentAttemptId) {
+        useSettingsStore.getState().setClaudeAuthProgress(data.accountId, {
+          attemptId: currentAttemptId,
+          phase: "waiting_for_code",
+          message: AUTH_COPY[data.loginId]?.pendingDiagnostic
+            ?? "Authentication link received.",
+        });
       }
     });
 
     es.addEventListener("agent_auth_complete", (e: MessageEvent) => {
-      const data = JSON.parse(e.data as string) as { agentId: AgentId; accountId?: string };
-      // eslint-disable-next-line no-restricted-syntax -- docs/155: SSE-event narrowing, see comment above
-      if (data.agentId === "claude") {
-        if (data.accountId) {
-          useSettingsStore.getState().setProviderAccountAuth("claude", data.accountId, null);
-          useSettingsStore.getState().setProviderAccountAuthError("claude", data.accountId, null);
-        }
-        if (data.accountId) {
-          useSettingsStore.getState()
-            .finishClaudeAuthDiagnostics(data.accountId, "complete", "Claude sign-in completed.");
-        }
-      // eslint-disable-next-line no-restricted-syntax -- docs/155: SSE-event narrowing, see comment above
-      } else if (data.agentId === "codex") {
-        if (data.accountId) {
-          useSettingsStore.getState().setProviderAccountAuth("codex", data.accountId, null);
-          useSettingsStore.getState().setProviderAccountAuthError("codex", data.accountId, null);
-        }
-      }
+      const data = JSON.parse(e.data as string) as {
+        loginId: LoginIntegrationId;
+        accountId?: string;
+      };
+      if (!data.accountId) return;
+      useSettingsStore.getState().setProviderAccountAuth(data.loginId, data.accountId, null);
+      useSettingsStore.getState().setProviderAccountAuthError(data.loginId, data.accountId, null);
+      // No-ops when the flow recorded no diagnostics (`finishClaudeAuthDiagnostics`
+      // returns early on an account with no attempt), so it needs no gate.
+      useSettingsStore.getState().finishClaudeAuthDiagnostics(
+        data.accountId,
+        "complete",
+        AUTH_COPY[data.loginId]?.completed,
+      );
     });
 
     es.addEventListener("agent_auth_failed", (e: MessageEvent) => {
       const data = JSON.parse(e.data as string) as {
-        agentId: AgentId;
+        loginId: LoginIntegrationId;
         accountId?: string;
         reason?: "timeout" | "denied" | "error" | "revoked" | "missing_credentials" | "duplicate";
         message?: string;
       };
-      // docs/150 req 22 — a refused duplicate connect usually DELETES the row
-      // it names, so the per-row error below has nowhere to land. Skip the
-      // retry-flavoured copy too: retrying this sign-in would only be refused
-      // again.
+      const copy = AUTH_COPY[data.loginId];
+      // docs/150 req 22 — a refused duplicate connect usually DELETES the row it
+      // names, so the per-row error below has nowhere to land. Skip the
+      // retry-flavoured copy too: retrying would only be refused again.
       //
-      // docs/257 req 5 — this used to be a global toast, and it is reachable
-      // during onboarding (sign in with an account already connected), so it is
-      // this flow's own credential step failing. It now lands on the provider's
-      // CARD, next to the step that produced it, instead of somewhere else on
-      // screen for a few seconds. It is card-scoped rather than row-scoped for
-      // the same reason it was a toast: the row is gone.
+      // docs/257 req 5 — card-scoped rather than row-scoped for that same
+      // reason: the row is gone.
       if (data.reason === "duplicate") {
-        useSettingsStore.getState().setProviderAccountNotice(data.agentId, {
+        useSettingsStore.getState().setProviderAccountNotice(data.loginId, {
           kind: "error",
           message: data.message ?? "That account is already connected.",
         });
         if (data.accountId) {
-          useSettingsStore.getState().setProviderAccountAuth(data.agentId, data.accountId, null);
+          useSettingsStore.getState().setProviderAccountAuth(data.loginId, data.accountId, null);
         }
         return;
       }
-      // eslint-disable-next-line no-restricted-syntax -- docs/155: SSE-event narrowing, see comment above
-      if (data.agentId === "claude") {
-        // Clear the URL so the sign-in card flips back to "Sign in" — also
-        // the path the legacy `auth_required {}` broadcast took for
-        // refresher-revoked accounts.
-        const claudeFailure = data.message
-          ?? (data.reason === "missing_credentials"
-            ? "Claude credentials are missing. Sign in again."
-            : "Claude sign-in failed. You can retry or copy the diagnostic details.");
-        if (data.accountId) {
-          useSettingsStore.getState().setProviderAccountAuth("claude", data.accountId, null);
-          useSettingsStore.getState().setProviderAccountAuthError("claude", data.accountId, claudeFailure);
-          useSettingsStore.getState().finishClaudeAuthDiagnostics(data.accountId, "failed", claudeFailure);
-        }
-        if (data.reason === "revoked" || data.reason === "missing_credentials") {
-          useUiStore.getState().setToast({
-            message: data.message ?? (data.reason === "missing_credentials"
-              ? "Claude credentials are missing. Sign in again."
-              : "Claude authentication expired. Sign in again."),
-            action: {
-              label: "Sign in",
-              onClick: () => {
-                useUiStore.getState().setSettingsTab("services");
-                useUiStore.getState().setSettingsOpen(true);
-              },
+      const failure = data.message ?? failureCopy(copy, data.reason);
+      if (data.accountId) {
+        // Clearing the challenge flips the sign-in card back to "Sign in" —
+        // also the path a refresher-revoked account takes.
+        useSettingsStore.getState().setProviderAccountAuth(data.loginId, data.accountId, null);
+        useSettingsStore.getState().setProviderAccountAuthError(data.loginId, data.accountId, failure);
+        useSettingsStore.getState().finishClaudeAuthDiagnostics(data.accountId, "failed", failure);
+      }
+      // The re-sign-in toast is per login flow, because only a flow that can
+      // report a revoked credential has anywhere to send the user back to.
+      // Absent copy means no toast — the table is the gate, not an `if`.
+      const expiryToast = data.reason === "revoked" || data.reason === "missing_credentials"
+        ? copy?.expiry?.[data.reason]
+        : undefined;
+      if (expiryToast) {
+        useUiStore.getState().setToast({
+          message: data.message ?? expiryToast,
+          action: {
+            label: "Sign in",
+            onClick: () => {
+              useUiStore.getState().setSettingsTab("services");
+              useUiStore.getState().setSettingsOpen(true);
             },
-            duration: 12000,
-          });
-        }
-      // eslint-disable-next-line no-restricted-syntax -- docs/155: SSE-event narrowing, see comment above
-      } else if (data.agentId === "codex") {
-        const fallback = data.reason === "timeout"
-          ? "Sign-in timed out. Try again."
-          : data.reason === "denied"
-            ? "Sign-in was denied."
-            : "Sign-in failed. Try again.";
-        if (data.accountId) {
-          useSettingsStore.getState().setProviderAccountAuth("codex", data.accountId, null);
-          useSettingsStore.getState().setProviderAccountAuthError("codex", data.accountId, data.message ?? fallback);
-        }
+          },
+          duration: 12000,
+        });
       }
     });
 
     es.addEventListener("agent_auth_progress", (e: MessageEvent) => {
       const data = JSON.parse(e.data as string) as {
-        agentId: AgentId;
+        loginId: LoginIntegrationId;
         accountId?: string;
         attemptId: string;
         phase: "starting" | "waiting_for_cli" | "skipping_setup" | "waiting_for_url" | "waiting_for_code" | "checking_credentials" | "complete" | "failed";
         message: string;
         elapsedMs?: number;
       };
-      // docs/150 — diagnostics are per account. An unscoped payload has no row
-      // that could render it, so it is dropped rather than pooled provider-wide.
-      // eslint-disable-next-line no-restricted-syntax -- docs/155: SSE-event narrowing for unified auth events.
-      if (data.agentId === "claude" && data.accountId) {
-        useSettingsStore.getState().setClaudeAuthProgress(data.accountId, {
-          attemptId: data.attemptId,
-          phase: data.phase,
-          message: data.message,
-          ...(data.elapsedMs !== undefined ? { elapsedMs: data.elapsedMs } : {}),
-        });
-      }
+      // docs/150 — diagnostics are per account; an unscoped payload has no row
+      // that could render it. Only a flow with diagnostics emits this event at
+      // all, so there is nothing else to filter on.
+      if (!data.accountId) return;
+      useSettingsStore.getState().setClaudeAuthProgress(data.accountId, {
+        attemptId: data.attemptId,
+        phase: data.phase,
+        message: data.message,
+        ...(data.elapsedMs !== undefined ? { elapsedMs: data.elapsedMs } : {}),
+      });
     });
 
     es.addEventListener("agent_auth_log", (e: MessageEvent) => {
       const data = JSON.parse(e.data as string) as {
-        agentId: AgentId;
+        loginId: LoginIntegrationId;
         accountId?: string;
         attemptId: string;
         timestamp: string;
@@ -417,16 +444,14 @@ export function useServerEvents(): void {
         message: string;
       };
       // See `agent_auth_progress` above for why an unscoped payload is dropped.
-      // eslint-disable-next-line no-restricted-syntax -- docs/155: SSE-event narrowing for unified auth events.
-      if (data.agentId === "claude" && data.accountId) {
-        useSettingsStore.getState().appendClaudeAuthLog(data.accountId, {
-          attemptId: data.attemptId,
-          timestamp: data.timestamp,
-          level: data.level,
-          source: data.source,
-          message: data.message,
-        });
-      }
+      if (!data.accountId) return;
+      useSettingsStore.getState().appendClaudeAuthLog(data.accountId, {
+        attemptId: data.attemptId,
+        timestamp: data.timestamp,
+        level: data.level,
+        source: data.source,
+        message: data.message,
+      });
     });
 
     // The orchestrator pushes `github_status` whenever the stored GitHub

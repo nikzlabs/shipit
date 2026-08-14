@@ -1,8 +1,18 @@
 /**
- * AgentAuthManager — shared interface implemented by every per-agent auth
- * manager (Claude OAuth, Codex device flow, …) so the orchestrator can
- * dispatch lifecycle operations through a `Map<AgentId, AgentAuthManager>`
- * lookup instead of branching on agent id at every call site. (docs/155)
+ * AgentAuthManager — shared interface implemented by every login flow (Claude
+ * OAuth, Codex device flow, …) so the orchestrator can dispatch lifecycle
+ * operations through a `Map<LoginIntegrationId, AgentAuthManager>` lookup
+ * instead of branching on agent id at every call site. (docs/155)
+ *
+ * **Keyed by the login flow, not by the harness** (docs/252 phase 2's deferred
+ * re-key). A harness is not a vendor: `claude` names a CLI, `anthropic-oauth`
+ * names a sign-in. They coincide only while each harness has exactly one native
+ * service, which is the assumption a provider-neutral harness removes. The
+ * catalogue declares the key (`ModeCredential.login`), and
+ * `harnessesForLoginIntegration` answers the question the old key answered by
+ * accident: which harnesses a completed sign-in affects.
+ *
+ * What deliberately stays harness-keyed is documented at that function.
  *
  * Scope. The interface covers the surface that's the same across providers:
  * kicking off a flow, cancelling it, signing out, killing the process at
@@ -21,7 +31,7 @@
  */
 
 import type { EventEmitter } from "node:events";
-import type { AgentId } from "../shared/types.js";
+import type { LoginIntegrationId } from "../shared/catalogue/types.js";
 import type { AgentAuthPendingDetails } from "../shared/types/ws-server-messages.js";
 import type {
   AgentAuthLogPayload,
@@ -80,8 +90,11 @@ export interface AgentAuthScopeOptions {
 }
 
 export interface AgentAuthManager extends EventEmitter {
-  /** Which agent backend this manager belongs to. */
-  readonly agentId: AgentId;
+  /**
+   * Which login flow this manager implements. The key of the map that holds it,
+   * and the identity every `agent_auth_*` broadcast carries.
+   */
+  readonly loginId: LoginIntegrationId;
 
   /**
    * Start the agent's auth flow for a specific provider account. Idempotent —

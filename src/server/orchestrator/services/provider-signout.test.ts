@@ -1,3 +1,4 @@
+import type { LoginIntegrationId } from "../../shared/catalogue/types.js";
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
@@ -99,9 +100,9 @@ describe("signOutProvider", () => {
       getActiveAccountId: () => null,
       cancel: () => {},
     } as unknown as AgentAuthManager);
-    accounts.attachAuthManagers(new Map<"claude" | "codex", AgentAuthManager>([
-      ["claude", stubAuthManager("claude")],
-      ["codex", stubAuthManager("codex")],
+    accounts.attachAuthManagers(new Map<LoginIntegrationId, AgentAuthManager>([
+      ["anthropic-oauth", stubAuthManager("claude")],
+      ["openai-chatgpt", stubAuthManager("codex")],
     ]));
     sessions = new SessionManager(createTestDatabaseManager());
     runningSessionIds = new Set();

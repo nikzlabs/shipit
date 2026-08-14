@@ -103,7 +103,7 @@ import {
   startAccountLogin,
   useAllProviderAccounts,
   useProviderAccounts,
-} from "./ProviderAccountRows.js";
+  loginForProvider,} from "./ProviderAccountRows.js";
 import { MODE_LABEL, ServiceCard } from "./ServiceCard.js";
 import { CredentialSelectionModeControl, FailoverCutoffControls } from "./CredentialRouting.js";
 
@@ -262,10 +262,12 @@ export function ServicesPanel({ agentList = [] }: { agentList?: AgentOption[] })
    */
   const configured = catalogueModes().filter(({ service, billingMode }) => {
     const provider = accountProviderFor(service, billingMode);
+    // The card's notice is filed under the login flow that produced it.
+    const loginId = provider ? loginForProvider(provider) : undefined;
     return routes.some((r) => r.serviceId === service.id && r.billingMode === billingMode && r.via === "string")
       || (provider !== undefined
         && connectedAccounts.some((a) => a.serviceId === service.id && a.billingMode === billingMode))
-      || (provider !== undefined && notices[provider] !== undefined);
+      || (loginId !== undefined && notices[loginId] !== undefined);
   });
 
   const cards = configured.map(({ service, billingMode }) => (
@@ -1205,8 +1207,9 @@ function AddServiceDialog({
    * `authenticating`, and a stalled state with a *Try again* is the only thing
    * standing between that and a dialog waiting for a code that will never come.
    */
-  const authKey = signInProvider && signInAccountId
-    ? providerAccountAuthKey(signInProvider, signInAccountId)
+  const signInLoginId = signInProvider ? loginForProvider(signInProvider) : undefined;
+  const authKey = signInLoginId && signInAccountId
+    ? providerAccountAuthKey(signInLoginId, signInAccountId)
     : undefined;
   /** Only Claude narrates; for Codex this is empty and the box just pulses. */
   const authStatus = useAuthStatus(signInProvider === "claude" ? signInAccountId : undefined);
@@ -1298,7 +1301,8 @@ function AddServiceDialog({
         // row's own cancel does it separately), so a stale code would render as
         // this sign-in's live challenge and would suppress `signInStalled` —
         // leaving a dialog with neither a completion nor a *Try again*.
-        useSettingsStore.getState().setProviderAccountAuth(provider, account.id, null);
+        const loginId = loginForProvider(provider);
+        if (loginId) useSettingsStore.getState().setProviderAccountAuth(loginId, account.id, null);
       }
       if (left.current) {
         standDown(provider, account, !existing);

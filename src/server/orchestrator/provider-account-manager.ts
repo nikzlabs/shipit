@@ -1,3 +1,4 @@
+import type { LoginIntegrationId } from "../shared/catalogue/types.js";
 import fs from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -17,6 +18,7 @@ import {
   allServices,
   harnessForNativeService,
   modeCredentialFor,
+  loginIntegrationForService,
   nativeServiceForHarness,
 } from "../shared/catalogue/index.js";
 import { credentialModeKey, orderCredentialRoutes, refusalBlockedUntil } from "../shared/types/domain-types/credential-route.js";
@@ -147,10 +149,12 @@ function accountServiceIds(): string[] {
 }
 
 /**
- * The harness whose login flow, credential root and auth manager belong to this
- * service — the one axis that is genuinely still per-harness.
+ * The harness whose credential root belongs to this service — the axis that is
+ * genuinely still per-harness.
  *
- * Signing in is the CLI's own flow (`AgentAuthManager` is per-harness) and the
+ * The auth MANAGER is no longer among them: login flows are keyed by
+ * `LoginIntegrationId` (see `AgentAuthManager`). What remains harness-keyed is
+ * where the credentials land, because the
  * credentials it writes land under `provider-accounts/<harness>/<id>`, so these
  * cannot be keyed by service without moving every install's credentials on
  * disk. Everything *else* — which credential a turn takes, the order, the
@@ -288,7 +292,7 @@ export class ProviderAccountManager {
    * account-scoped login/cancel/sign-out flows. `null` until attached — the
    * scoped-auth methods throw a clear error if invoked before wiring.
    */
-  private authManagers: Map<AgentId, AgentAuthManager> | null = null;
+  private authManagers: Map<LoginIntegrationId, AgentAuthManager> | null = null;
 
   private getSubscriptionLimits: (() => SubscriptionLimitsMap) | undefined;
 
@@ -334,7 +338,7 @@ export class ProviderAccountManager {
    * account-scoped login flows (docs/150). Called once from `index.ts` after
    * `buildAgentRuntime`.
    */
-  attachAuthManagers(authManagers: Map<AgentId, AgentAuthManager>): void {
+  attachAuthManagers(authManagers: Map<LoginIntegrationId, AgentAuthManager>): void {
     this.authManagers = authManagers;
   }
 
@@ -770,8 +774,11 @@ export class ProviderAccountManager {
     // provider is refused by a row that no longer exists and therefore has no
     // Cancel button. The provider would be locked out of sign-in until the
     // process exited or the orchestrator restarted.
-    const mgr = this.authManagers?.get(provider);
+    const loginId = loginIntegrationForService(serviceId);
+    const mgr = loginId ? this.authManagers?.get(loginId) : undefined;
     if (mgr?.getActiveAccountId() === accountId) mgr.cancel();
+    // `provider` (the harness), not `loginId`: the credential root is the CLI's
+    // own home directory. See `harnessesForLoginIntegration` in the catalogue.
     fs.rmSync(this.resolveCredentialRoot(provider, accountId), { recursive: true, force: true });
     this.credentialStore.deleteCredentialRoute(accountId);
   }
@@ -1074,7 +1081,7 @@ export class ProviderAccountManager {
   startAccountAuth(serviceId: string, accountId: string): CredentialRoute {
     const provider = requireHarness(serviceId);
     this.require(serviceId, accountId);
-    const mgr = this.requireAuthManager(provider);
+    const mgr = this.requireAuthManager(serviceId);
     // There is ONE login process per provider, so two rows cannot sign in at
     // once. Without this guard the second `Add account` marked its own row
     // `authenticating` and then either inherited the first row's challenge
@@ -1113,7 +1120,7 @@ export class ProviderAccountManager {
   cancelAccountAuth(serviceId: string, accountId: string): CredentialRoute {
     const provider = requireHarness(serviceId);
     this.require(serviceId, accountId);
-    const mgr = this.requireAuthManager(provider);
+    const mgr = this.requireAuthManager(serviceId);
     // Only kill the CLI if it is *this* account's flow. An unconditional
     // cancel let one row's Cancel button abort another row's sign-in — and
     // since the status reset below only touches the row that was clicked, the
@@ -1134,7 +1141,7 @@ export class ProviderAccountManager {
   submitAccountCode(serviceId: string, accountId: string, code: string): void {
     const provider = requireHarness(serviceId);
     this.require(serviceId, accountId);
-    const mgr = this.requireAuthManager(provider);
+    const mgr = this.requireAuthManager(serviceId);
     if (typeof mgr.submitCode !== "function") {
       throw new Error(`${PROVIDER_LABEL[provider]} login has no code-submission step`);
     }
@@ -1164,7 +1171,7 @@ export class ProviderAccountManager {
   signOutAccount(serviceId: string, accountId: string): CredentialRoute {
     const provider = requireHarness(serviceId);
     this.require(serviceId, accountId);
-    const mgr = this.requireAuthManager(provider);
+    const mgr = this.requireAuthManager(serviceId);
     const credentialDir = this.resolveCredentialRoot(provider, accountId);
     mgr.signOut({ credentialDir });
     return this.setAccountStatus(serviceId, accountId, "unavailable");
@@ -1198,12 +1205,23 @@ export class ProviderAccountManager {
     for (const account of serviceId ? this.list(serviceId) : []) {
       this.delete(serviceId!, account.id);
     }
-    this.requireAuthManager(provider).signOut();
+    if (serviceId) this.requireAuthManager(serviceId).signOut();
   }
 
-  private requireAuthManager(provider: AgentId): AgentAuthManager {
-    const mgr = this.authManagers?.get(provider);
-    if (!mgr) throw new Error(`No auth manager wired for provider: ${provider}`);
+  /**
+   * The login flow that authenticates `serviceId`.
+   *
+   * Keyed by `LoginIntegrationId`, which the catalogue declares on the mode's
+   * account credential — NOT by `requireHarness(serviceId)`. The harness answers
+   * a different question ("whose home directory do these credentials live in"),
+   * and it only doubles as the login key while every harness has exactly one
+   * native service. Callers that need the harness still ask for it separately;
+   * `resolveCredentialRoot` is the one that must.
+   */
+  private requireAuthManager(serviceId: string): AgentAuthManager {
+    const loginId = loginIntegrationForService(serviceId);
+    const mgr = loginId ? this.authManagers?.get(loginId) : undefined;
+    if (!mgr) throw new Error(`No auth manager wired for service: ${serviceId}`);
     return mgr;
   }
 

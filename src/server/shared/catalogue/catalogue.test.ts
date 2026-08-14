@@ -49,6 +49,11 @@ import {
   selectionExists,
   serializeSelection,
   storageEnvFor,
+  allLoginIntegrations,
+  credentialHarnessForLogin,
+  harnessesForLoginIntegration,
+  loginIntegrationForService,
+  serviceForLoginIntegration,
 } from "./index.js";
 import type {
   ApiStyle,
@@ -1015,5 +1020,49 @@ describe("credentials", () => {
       const { string: stringTarget, account: accountTarget } = harness.spawn.credential;
       expect(stringTarget ?? accountTarget, harness.id).toBeDefined();
     }
+  });
+
+  describe("login integrations", () => {
+    it("round-trips every login flow through its service", () => {
+      for (const loginId of allLoginIntegrations()) {
+        const serviceId = serviceForLoginIntegration(loginId);
+        expect(serviceId, loginId).toBeDefined();
+        expect(loginIntegrationForService(serviceId!)).toBe(loginId);
+      }
+    });
+
+    it("has no login flow for a service authenticated only by a supplied string", () => {
+      // DeepSeek and the gateways take an API key and have no sign-in. The
+      // absence is what tells `requireAuthManager` to refuse rather than guess.
+      expect(loginIntegrationForService("deepseek")).toBeUndefined();
+      expect(loginIntegrationForService("openrouter")).toBeUndefined();
+    });
+
+    it("names the harness whose home directory each login writes into", () => {
+      // The deliberate harness-keyed side: credential ROOTS stay
+      // `provider-accounts/<harness>/…` because their contents are that CLI's
+      // own home. Re-keying them would orphan every connected account.
+      expect(credentialHarnessForLogin("anthropic-oauth")).toBe("claude");
+      expect(credentialHarnessForLogin("openai-chatgpt")).toBe("codex");
+    });
+
+    it("fans a completed sign-in out to every harness that can use the credential", () => {
+      // Pinned deliberately. Today each login serves exactly ONE harness, which
+      // is why `refreshAuth(agentId)` looked correct for years. The first
+      // provider-neutral harness (an OpenCode speaking `anthropic-messages`)
+      // widens the Anthropic row on its own — and this assertion is what makes
+      // that widening show up as a failing test to be reviewed, rather than a
+      // silent behaviour change. If you are here because this broke: confirm
+      // the new harness really should re-evaluate on this sign-in, then update
+      // the expectation.
+      expect(harnessesForLoginIntegration("anthropic-oauth")).toEqual(["claude"]);
+      expect(harnessesForLoginIntegration("openai-chatgpt")).toEqual(["codex"]);
+    });
+
+    it("keeps every declared login backed by a manager key", () => {
+      // The auth-manager map is keyed by these ids, so a catalogue row naming a
+      // login nothing implements would be a lookup that always throws.
+      expect(allLoginIntegrations().sort()).toEqual(["anthropic-oauth", "openai-chatgpt"]);
+    });
   });
 });

@@ -25,7 +25,7 @@ import type {
   AgentAuthStartOptions,
   AgentAuthScopeOptions,
 } from "../../agent-auth-manager.js";
-import type { AgentId } from "../../../shared/types.js";
+import type { LoginIntegrationId } from "../../../shared/catalogue/types.js";
 import type { AgentAuthPendingDetails } from "../../../shared/types/ws-server-messages.js";
 
 /**
@@ -227,7 +227,7 @@ function ensureOnboardingComplete(userConfig: string, configDir: string): void {
 }
 
 export class AuthManager extends EventEmitter implements AgentAuthManager {
-  readonly agentId: AgentId = "claude";
+  readonly loginId: LoginIntegrationId = "anthropic-oauth";
 
   private proc: IPty | null = null;
   private _authenticated = false;
@@ -352,9 +352,9 @@ export class AuthManager extends EventEmitter implements AgentAuthManager {
     this.emit("pending", details);
   }
 
-  private authEventBase(): { agentId: "claude"; accountId?: string; attemptId: string } {
+  private authEventBase(): { loginId: "anthropic-oauth"; accountId?: string; attemptId: string } {
     return {
-      agentId: "claude",
+      loginId: "anthropic-oauth",
       ...(this.activeFlowAccountId ? { accountId: this.activeFlowAccountId } : {}),
       attemptId: this.activeAttemptId ?? "unknown",
     };

@@ -711,7 +711,7 @@ export class ClaudeOAuthRefresher extends EventEmitter {
     this.deps.sseBroadcast("claude_account_unauthenticated", { accountId });
     // docs/150 req 19 — see the matching comment in the Codex refresher: the
     // client drops an `agent_auth_failed` that names no account.
-    this.deps.sseBroadcast("agent_auth_failed", { agentId: "claude", accountId, reason });
+    this.deps.sseBroadcast("agent_auth_failed", { loginId: "anthropic-oauth", accountId, reason });
   }
 
   /** Clear the terminal-state latch when re-auth wrote a healthy source file. */

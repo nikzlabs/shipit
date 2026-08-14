@@ -337,7 +337,7 @@ describe("ClaudeOAuthRefresher", () => {
     const failed = rig.sseCalls.find((c) => c.event === "agent_auth_failed");
     // docs/150 req 19 — names the revoked account; the client has no
     // provider-wide slot left to absorb an unqualified failure.
-    expect(failed!.data).toEqual({ agentId: "claude", accountId: "claude-default", reason: "revoked" });
+    expect(failed!.data).toEqual({ loginId: "anthropic-oauth", accountId: "claude-default", reason: "revoked" });
 
     const perAccount = rig.sseCalls.find((c) => c.event === "claude_account_unauthenticated");
     expect(perAccount!.data).toEqual({ accountId: "claude-default" });
@@ -633,7 +633,7 @@ describe("ClaudeOAuthRefresher", () => {
     expect(unauthenticated).toEqual(["claude-default"]);
     expect(rig.sseCalls).toContainEqual({
       event: "agent_auth_failed",
-      data: { agentId: "claude", accountId: "claude-default", reason: "missing_credentials" },
+      data: { loginId: "anthropic-oauth", accountId: "claude-default", reason: "missing_credentials" },
     });
     expect(rig.sseCalls.filter((call) => call.event === "agent_auth_failed")).toHaveLength(1);
 

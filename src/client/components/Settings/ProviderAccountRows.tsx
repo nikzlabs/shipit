@@ -1,9 +1,10 @@
+import type { LoginIntegrationId } from "../../../server/shared/catalogue/types.js";
 import { useState } from "react";
 import { XIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../../design-tokens.js";
 import type { AgentOption } from "../../agent-types.js";
 import type { AgentId, CredentialRoute, SubscriptionLimits, SubscriptionLimitsMap } from "../../../server/shared/types.js";
-import { getService, nativeServiceForHarness } from "../../../server/shared/catalogue/index.js";
+import { getService, loginIntegrationForService, nativeServiceForHarness } from "../../../server/shared/catalogue/index.js";
 import { Button } from "../ui/button.js";
 import { DropdownMenuItem } from "../ui/dropdown-menu.js";
 import { SubscriptionLimitPill } from "../SubscriptionLimitsBadge.js";
@@ -65,6 +66,20 @@ import { useRowDrag } from "./useRowDrag.js";
 /** The service whose subscription accounts this harness's login flow produces. */
 export function serviceIdForProvider(provider: AgentId): string {
   return nativeServiceForHarness(provider) ?? provider;
+}
+
+/**
+ * The login flow that connects this harness's accounts.
+ *
+ * The auth stores are keyed by login flow (see `providerAccountAuthKey`), while
+ * these components are still handed a harness — they legitimately need one for
+ * harness-shaped questions ("is this CLI installed?"). This is the one hop
+ * between the two, so a card converts once instead of every store call
+ * guessing. `undefined` means the service has no sign-in at all (a
+ * key-only service), in which case there is no challenge to key.
+ */
+export function loginForProvider(provider: AgentId): LoginIntegrationId | undefined {
+  return loginIntegrationForService(serviceIdForProvider(provider));
 }
 
 /** The catalogue's name for that service — "Anthropic", never "Claude". */
@@ -295,7 +310,8 @@ export async function abandonAccount(provider: AgentId, accountId: string): Prom
   } catch {
     // Left on the card, where Disconnect reaches it.
   }
-  useSettingsStore.getState().setProviderAccountAuth(provider, accountId, null);
+  const loginId = loginForProvider(provider);
+  if (loginId) useSettingsStore.getState().setProviderAccountAuth(loginId, accountId, null);
 }
 
 /** Human-readable "somebody else is signing in" refusal, or `undefined`. */
@@ -526,7 +542,8 @@ export function AccountChallenge({
   const auths = useSettingsStore((s) => s.providerAccountAuths);
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
-  const pendingAuth = auths[providerAccountAuthKey(provider, account.id)] ?? null;
+  const loginId = loginForProvider(provider);
+  const pendingAuth = loginId ? auths[providerAccountAuthKey(loginId, account.id)] ?? null : null;
   if (!pendingAuth) return null;
 
   const submit = async () => {
@@ -680,7 +697,8 @@ export function ProviderAccountRows({
    * Card-level notices live in the store, not here. See the store field: each
    * one outlives either this component or the row it is about.
    */
-  const cardNotice = useSettingsStore((s) => s.providerAccountNotices[provider]);
+  const loginId = loginForProvider(provider);
+  const cardNotice = useSettingsStore((s) => (loginId ? s.providerAccountNotices[loginId] : undefined));
   const setCardNotice = useSettingsStore((s) => s.setProviderAccountNotice);
 
   const serviceName = serviceNameForProvider(provider);
@@ -783,7 +801,7 @@ export function ProviderAccountRows({
   const disconnect = async (account: CredentialRoute) => {
     setSavingId(account.id);
     clearRow(account.id);
-    setCardNotice(provider, null);
+    if (loginId) setCardNotice(loginId, null);
     try {
       const result = await request<{ accounts: CredentialRoute[] }>(
         `/api/provider-accounts/${provider}/${account.id}`,
@@ -802,7 +820,7 @@ export function ProviderAccountRows({
     clearRow(account.id);
     try {
       await request(`/api/provider-accounts/${provider}/${account.id}/login/cancel`, { method: "POST" });
-      setProviderAccountAuth(provider, account.id, null);
+      if (loginId) setProviderAccountAuth(loginId, account.id, null);
     } catch (err) {
       failRow(account.id, err, "Failed to cancel sign-in");
     } finally {
@@ -834,7 +852,7 @@ export function ProviderAccountRows({
       {cardNotice && (
         <NoticeLine
           notice={cardNotice}
-          onDismiss={() => setCardNotice(provider, null)}
+          onDismiss={() => loginId && setCardNotice(loginId, null)}
           testId={`provider-accounts-notice-${provider}`}
         />
       )}
@@ -853,7 +871,9 @@ export function ProviderAccountRows({
         <div className="space-y-1">
           {accounts.map((account) => {
             const busy = savingId === account.id;
-            const authError = accountAuthErrors[providerAccountAuthKey(provider, account.id)] ?? null;
+            const authError = loginId
+              ? accountAuthErrors[providerAccountAuthKey(loginId, account.id)] ?? null
+              : null;
             const renaming = account.id in draftLabels;
             const blocked = blockedBy(account.id);
             return (
@@ -989,9 +1009,10 @@ function ClearStoredCredentials({
   const [clearing, setClearing] = useState(false);
   const setCardNotice = useSettingsStore((s) => s.setProviderAccountNotice);
 
+  const loginId = loginForProvider(provider);
   const clear = async (): Promise<void> => {
     setClearing(true);
-    setCardNotice(provider, null);
+    if (loginId) setCardNotice(loginId, null);
     try {
       // The response carries the refreshed agent list; the server also fires an
       // SSE `agent_list` broadcast so other open tabs repaint too.
@@ -1002,10 +1023,12 @@ function ClearStoredCredentials({
       if (result.agents) useUiStore.getState().setAgentList(result.agents);
       if (result.accounts) useSettingsStore.getState().setProviderAccounts(result.accounts);
     } catch (err) {
-      setCardNotice(provider, {
-        kind: "error",
-        message: messageOf(err, `Failed to clear stored ${serviceName} credentials`),
-      });
+      if (loginId) {
+        setCardNotice(loginId, {
+          kind: "error",
+          message: messageOf(err, `Failed to clear stored ${serviceName} credentials`),
+        });
+      }
     } finally {
       setClearing(false);
     }

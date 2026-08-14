@@ -48,9 +48,11 @@ export type HarnessId = AgentId;
  * Selects the login/refresh implementation for a subscription mode delivered as
  * an account. Only `via: "account"` credentials need one.
  *
- * These identifiers are what replaces `AgentId` as the key for the existing
- * `AgentAuthManager` implementations (`agents/index.ts`); the re-keying itself
- * is phase 2's work, so nothing reads this field yet.
+ * These identifiers replaced `AgentId` as the key for the `AgentAuthManager`
+ * implementations (`agents/index.ts`), and they are the identity every
+ * `agent_auth_*` broadcast carries. What deliberately did NOT re-key — the
+ * credential root on disk, and `AgentRegistry.refreshAuth` — is documented at
+ * `harnessesForLoginIntegration` in `./index.ts`.
  */
 export type LoginIntegrationId = "anthropic-oauth" | "openai-chatgpt";
 

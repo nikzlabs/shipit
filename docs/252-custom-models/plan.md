@@ -1682,12 +1682,17 @@ What the retirement actually is:
 
 - **The router splits into two axes instead of one.** `serviceId: string` for
   every question about a credential *row* — which exist, their order, which one
-  a turn takes, benching, cutoffs, status — and `provider: AgentId` for the three
+  a turn takes, benching, cutoffs, status — and `provider: AgentId` for the
   places a *harness* is genuinely the subject: the on-disk credential root
   (`provider-accounts/<harness>/<id>`, unchanged so no install's credentials
-  move), the login flow (one `AgentAuthManager` per CLI), and "does this harness
-  have any credential of its own vendor's". `accountServiceForHarness` is the one
-  named conversion between them.
+  move) and "does this harness have any credential of its own vendor's".
+  `accountServiceForHarness` is the one named conversion between them.
+
+  The login flow was on that list and is not any more: `AgentAuthManager` is now
+  keyed by `LoginIntegrationId`, so a sign-in names a vendor rather than a CLI,
+  and a completed one fans out to every harness it serves via
+  `refreshAuthForLogin`. See `harnessesForLoginIntegration` for what stayed
+  harness-keyed and why.
 - **The projection and `ProviderAccount` are gone**, along with the four
   `CredentialStore` methods and the two adapters. The only thing that still needs
   the old shape is the one-time read of the frozen `providerAccounts` blob, which
