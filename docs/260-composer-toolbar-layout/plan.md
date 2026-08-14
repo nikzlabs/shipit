@@ -114,6 +114,8 @@ The guard is in `DropdownMenuContent`, not here: Radix's `MenuItem` has the same
 
 The permission is armed by that `pointerdown` and **consumed by the click it belongs to**, rather than cleared per opening: Radix keeps the content node alive through the close animation, so a menu closed and reopened quickly is not guaranteed a remount, and `forceMount` would never give one. One pointerdown authorises exactly one activation, which needs no notion of "this opening" to hold.
 
+The permission lives in a ref and is cleared only by a pointerdown that begins **outside** the menu (the opening tap's own pointerdown), never by the content's ref callback. The caveat is load-bearing: Radix's composed refs make React re-apply the content ref on *every* render, and a touch tap re-renders the content between `pointerup` and `click` (the tap focuses the row) — a reset in the ref callback wiped a legitimate in-progress gesture, so the click looked like a ghost and was swallowed, and the menu needed a second tap to select and close (the "two taps to close" bug, fixed 2026-08-14). The outside-pointerdown clear also handles a stale permission left by an aborted gesture across a quick close+reopen on the same node.
+
 ## Reuse, not duplication
 
 `ModelSelector` carries ~80 lines of subtle precedence logic (optimistic pick → session model → live model → saved seed → first row) plus the group resolution that keeps the trigger label and the checkmark from contradicting each other. The menu's model panel needs exactly that, and a second copy would drift.

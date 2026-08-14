@@ -1,6 +1,8 @@
 import {
   forwardRef,
   useCallback,
+  // eslint-disable-next-line no-restricted-imports -- useEffect: document pointerdown subscription with cleanup (browser API subscription)
+  useEffect,
   useRef,
   type ComponentPropsWithoutRef,
   type ComponentRef,
@@ -90,15 +92,36 @@ const DropdownMenuContent = forwardRef<
   // uses today, would never remount at all). One pointerdown authorises exactly
   // one activation, which needs no notion of "this opening" to be correct.
   const gestureStartedInside = useRef(false);
+  const contentNodeRef = useRef<ComponentRef<typeof DropdownMenuPrimitive.Content> | null>(null);
   const setContentRef = useCallback(
     (node: ComponentRef<typeof DropdownMenuPrimitive.Content> | null) => {
-      // Belt and braces on the remount path — a fresh node has had nothing
-      // pressed inside it.
-      gestureStartedInside.current = false;
+      contentNodeRef.current = node;
       assignRef(ref, node);
     },
     [ref],
   );
+
+  // The flag is armed by a pointerdown INSIDE the menu and consumed by the
+  // click it belongs to. It must survive every re-render of the content:
+  // Radix's composed refs make React re-apply this ref (and therefore any
+  // reset in the callback above) on each render, and a touch tap re-renders
+  // the content between `pointerup` and `click` (the tap focuses the row). A
+  // reset there used to wipe a legitimate in-progress gesture, so the click
+  // looked like a ghost and was swallowed — the "two taps to close" bug. The
+  // clear belongs on the gesture this guard actually exists for: a pointerdown
+  // OUTSIDE the menu (the opening tap), which also clears a stale flag left
+  // by an aborted gesture across a quick close+reopen on the same node.
+  // eslint-disable-next-line no-restricted-syntax -- document pointerdown subscription with cleanup (browser API subscription)
+  useEffect(() => {
+    const clearOnOutsidePointerDown = (event: PointerEvent) => {
+      const node = contentNodeRef.current;
+      if (!node || !(event.target instanceof Node) || !node.contains(event.target)) {
+        gestureStartedInside.current = false;
+      }
+    };
+    document.addEventListener("pointerdown", clearOnOutsidePointerDown, true);
+    return () => document.removeEventListener("pointerdown", clearOnOutsidePointerDown, true);
+  }, []);
 
   const content: ReactNode = (
     <DropdownMenuPrimitive.Content
