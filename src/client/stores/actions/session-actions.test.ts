@@ -160,6 +160,22 @@ describe("resumeSessionInternal", () => {
     expect(useSessionStore.getState().compacting).toBe(false);
   });
 
+  /**
+   * `historyLoaded` says "the transcript on screen has its `GET /history`
+   * baseline". This function clears the transcript, so it must clear that too:
+   * `useMessageHandler` queues the attach-time `turn_snapshot` only while the
+   * flag is false, which is what makes the snapshot land ON TOP of the baseline
+   * instead of being overwritten by it. Carrying the outgoing session's `true`
+   * into the incoming one erased the running turn's tail until a reload.
+   */
+  it("clears historyLoaded so the incoming session's attach snapshot is queued behind its history", () => {
+    useSessionStore.setState({ sessionId: "session-a", historyLoaded: true });
+
+    resumeSessionInternal("session-b");
+
+    expect(useSessionStore.getState().historyLoaded).toBe(false);
+  });
+
   it("resets the mobile panel to chat so a switch never lands on the previous session's workspace tab", () => {
     // Outgoing session was parked on the workspace/preview tab on mobile.
     useSessionStore.setState({ sessionId: "session-a" });

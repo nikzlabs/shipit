@@ -87,6 +87,22 @@ export function resumeSessionInternal(sessionId: string) {
   session.setActivity(undefined);
   session.setQueuedMessages([]);
   session.setContainerFreshness(null);
+  // The transcript we just cleared belonged to the outgoing session, so the
+  // incoming one has no baseline yet — and `historyLoaded` is what says so.
+  // `useMessageHandler` queues `turn_snapshot` / `agent_event` only while this
+  // is false, which is the ONLY thing that makes the attach snapshot land on
+  // top of the `GET /history` baseline instead of under it. Leaving it true
+  // (this reset was missing, unlike in the sibling `resetSessionState`) let the
+  // snapshot dispatch immediately and then be overwritten by the history
+  // response, erasing everything the running turn produced since its last
+  // tool-result boundary until a reload.
+  //
+  // `useConnectionSync` also clears it on a `closed`/`connecting` status
+  // transition, which covers most switches — but not one that starts while the
+  // socket is ALREADY connecting (a reconnect whose history load landed late),
+  // because `setStatus("connecting")` is then a no-op and the effect never
+  // re-runs. Owning the flag here removes the dependence on that timing.
+  session.setHistoryLoaded(false);
   // docs/178 — the "Compacting…" spinner is a global, transient flag. Clear it
   // on switch so a compaction in flight on the outgoing session doesn't bleed
   // its spinner into the incoming one (it's never persisted, so history reload

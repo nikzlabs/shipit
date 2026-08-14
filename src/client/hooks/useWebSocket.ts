@@ -67,8 +67,19 @@ export function useWebSocket(url: string | null): UseWebSocketReturn {
     foregroundRetryTimersRef.current = [];
   }, []);
 
+  /**
+   * The `url` the live socket was opened for. `status` is React state, so on
+   * the render that CHANGES `url` it still holds the previous socket's value —
+   * a session switch renders `"open"` once for a socket that belongs to the
+   * outgoing session and is about to be torn down. Anything keyed on status
+   * (history hydration, pending sends) would act on it. Reporting `"connecting"`
+   * for a url we have not opened yet is simply the truth, one render earlier.
+   */
+  const openedUrlRef = useRef<string | null>(null);
+
   // eslint-disable-next-line no-restricted-syntax -- existing usage
   useEffect(() => {
+    openedUrlRef.current = url;
     // A queued message belongs to the socket generation that received it.
     // Session switches change `url`, but React may not run the consumer effect
     // until after this hook has torn down the old socket. Never let an
@@ -213,5 +224,8 @@ export function useWebSocket(url: string | null): UseWebSocketReturn {
     return msgs;
   }, []);
 
-  return { send, lastMessage, drainMessages, status, reconnectAttempt, reconnect };
+  const effectiveStatus: WsStatus =
+    openedUrlRef.current === url ? status : url ? "connecting" : "closed";
+
+  return { send, lastMessage, drainMessages, status: effectiveStatus, reconnectAttempt, reconnect };
 }

@@ -210,6 +210,49 @@ describe("useWebSocket", () => {
     expect(result.current.drainMessages()).toEqual([]);
   });
 
+  /**
+   * `status` is React state, so on the render that CHANGES `url` it would
+   * otherwise still report the previous socket's `"open"` — a session switch
+   * renders `"open"` once for a socket belonging to the outgoing session and
+   * about to be torn down. Consumers key real work off this (history
+   * hydration, pending sends), so the stale value made them act for the
+   * incoming session over the outgoing session's connection.
+   */
+  it("reports connecting for a URL whose socket has not been opened yet", () => {
+    // Recorded per render, because the stale value is only observable DURING
+    // the render that changes the URL — `rerender` flushes the effect that
+    // corrects it, so reading `result.current` afterwards always looks right.
+    const seen: string[] = [];
+    const { result, rerender } = renderHook(
+      ({ url }) => {
+        const ws = useWebSocket(url);
+        seen.push(ws.status);
+        return ws;
+      },
+      { initialProps: { url: "ws://session-a" } },
+    );
+    act(() => latestWs().simulateOpen());
+    expect(result.current.status).toBe("open");
+
+    seen.length = 0;
+    rerender({ url: "ws://session-b" });
+    // Not one render may claim the outgoing session's socket is open.
+    expect(seen).not.toContain("open");
+
+    act(() => latestWs().simulateOpen());
+    expect(result.current.status).toBe("open");
+  });
+
+  it("keeps reporting a live socket's status across a reconnect on the same URL", () => {
+    const { result } = renderHook(() => useWebSocket("ws://test"));
+    act(() => latestWs().simulateOpen());
+
+    act(() => result.current.reconnect());
+    expect(result.current.status).toBe("connecting");
+    act(() => latestWs().simulateOpen());
+    expect(result.current.status).toBe("open");
+  });
+
   // --- Reconnection ---
 
   it("increments reconnectAttempt on close", () => {
