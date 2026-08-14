@@ -666,6 +666,13 @@ function validateFragmentVolumes(name: string, raw: unknown): void {
   }
 }
 
+/**
+ * `./` says where a bind source STARTS. It deliberately says nothing about
+ * where it ends: `./../..` satisfies this and leaves the plugin's tree. The
+ * containment half belongs to `validateServiceSecurity`, which every fragment
+ * also runs (see the module docstring) and which refuses a traversal by name —
+ * so this stays the shape check and does not grow a second, divergent one.
+ */
 function requireRelativeSource(name: string, source: string): void {
   if (source === "." || source === "./" || source.startsWith("./")) return;
   throw new PluginFragmentError(

@@ -304,6 +304,60 @@ services:
 `)).toContain("Absolute bind mount path");
   });
 
+  // `./` says where the path STARTS; containment is about where it ends, and
+  // `requireRelativeSource` deliberately does not check that — the shared
+  // `validateServiceSecurity` does, because a fragment runs the same validation
+  // a project's own service does. These pin the OUTCOME at the fragment edge,
+  // so unwiring that validator here fails as a traversal escape rather than as
+  // a missing-coverage nobody notices. Production would also be caught by the
+  // daemon's subpath safe-join, but dev binds the source directly with no such
+  // check, and req 20 wants the refusal named either way.
+  it("refuses a `./` source that climbs out of the plugin with ..", () => {
+    expect(reject(`
+services:
+  probe:
+    image: node:22-alpine
+    volumes:
+      - ./../../../etc:/host-etc
+`)).toContain("Path traversal");
+  });
+
+  it("refuses a .. buried mid-path, not just a leading one", () => {
+    expect(reject(`
+services:
+  probe:
+    image: node:22-alpine
+    volumes:
+      - ./lib/../../../etc:/host-etc
+`)).toContain("Path traversal");
+  });
+
+  it("refuses the same traversal in the long form's `source`", () => {
+    expect(reject(`
+services:
+  probe:
+    image: node:22-alpine
+    volumes:
+      - type: bind
+        source: ./../..
+        target: /host
+`)).toContain("Path traversal");
+  });
+
+  // The other half of the rule: the check rejects traversal, not nesting.
+  it("still accepts an ordinary nested path containing no .. segment", () => {
+    writeFragment(`
+services:
+  probe:
+    image: node:22-alpine
+    volumes:
+      - ./lib/assets:/assets
+`);
+    const { services, issuesByRepo } = collect(SELF_USE, defaultManifest());
+    expect(services).toHaveLength(1);
+    expect(issuesByRepo.size).toBe(0);
+  });
+
   it("refuses a pass-through environment entry, which would read the orchestrator's env", () => {
     expect(reject(`
 services:
