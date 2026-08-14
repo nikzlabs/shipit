@@ -1,4 +1,5 @@
 import { describe, expect, it, afterEach, vi } from "vitest";
+import { useState } from "react";
 import { render, screen, cleanup, fireEvent } from "@testing-library/react";
 import {
   DropdownMenu,
@@ -6,6 +7,24 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
 } from "./dropdown-menu.js";
+
+/** Re-renders on the press of the button, exactly like a state update that lands mid-gesture. */
+function RerenderingMenu({ onSelect }: { onSelect: () => void }) {
+  const [, setTick] = useState(0);
+  return (
+    <>
+      <button type="button" onClick={() => setTick((t) => t + 1)}>
+        rerender
+      </button>
+      <DropdownMenu defaultOpen>
+        <DropdownMenuTrigger>open</DropdownMenuTrigger>
+        <DropdownMenuContent>
+          <DropdownMenuItem onSelect={onSelect}>one</DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </>
+  );
+}
 
 afterEach(() => cleanup());
 
@@ -70,6 +89,49 @@ describe("DropdownMenuContent overflow contract", () => {
     fireEvent.pointerDown(item, { pointerType: "touch" });
     fireEvent.click(item, { detail: 1 });
     expect(onSelect).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not let a re-render between pointerdown and click eat the gesture", () => {
+    // A touch tap re-renders the menu between its `pointerup` and `click` (the
+    // tap focuses the row). Radix re-applies composed refs on every render, so
+    // a flag reset in the content's ref callback used to be wiped mid-gesture:
+    // the click then looked like a ghost (no pointerdown seen) and was
+    // swallowed — the menu selected nothing and needed a second tap. The
+    // permission must live on the node and survive re-renders.
+    const onSelect = vi.fn();
+    render(<RerenderingMenu onSelect={onSelect} />);
+    const item = screen.getByText("one");
+
+    fireEvent.pointerDown(item, { pointerType: "touch" });
+    // Force the content to re-render before the click arrives.
+    fireEvent.click(screen.getByRole("button", { name: "rerender" }));
+    fireEvent.click(item, { detail: 1 });
+
+    expect(onSelect).toHaveBeenCalledTimes(1);
+  });
+
+  it("clears the permission when the next pointerdown begins outside the menu", () => {
+    // The opening tap's pointerdown is outside the menu, and it must also clear
+    // a permission left armed by an aborted gesture — otherwise a later ghost
+    // click could ride on the stale flag and activate a row it never touched.
+    const onSelect = vi.fn();
+    render(
+      <DropdownMenu defaultOpen>
+        <DropdownMenuTrigger>open</DropdownMenuTrigger>
+        <DropdownMenuContent>
+          <DropdownMenuItem onSelect={onSelect}>one</DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>,
+    );
+    const item = screen.getByText("one");
+
+    // A gesture begins inside the menu and is aborted without a click...
+    fireEvent.pointerDown(item, { pointerType: "touch" });
+    // ...then the next pointerdown is the opening tap, outside the menu.
+    fireEvent.pointerDown(document.body, { pointerType: "touch" });
+    // A ghost click at the row's coordinates must not activate it.
+    fireEvent.click(item, { detail: 1 });
+    expect(onSelect).not.toHaveBeenCalled();
   });
 
   it("does not let one pointerdown authorise a second activation", () => {
