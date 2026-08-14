@@ -352,7 +352,7 @@ describe("runPluginCommand — what it refuses", () => {
     const fake = fakeDocker();
 
     const result = await runPluginCommand(deps(fake.docker), call);
-    expect(result.error).toContain("no live plugin version");
+    expect(result.error).toContain("has no active version in this session yet");
     expect(fake.containers).toHaveLength(0);
   });
 
