@@ -56,13 +56,13 @@
  */
 
 import crypto from "node:crypto";
-import fs from "node:fs";
+import fs, { type Stats } from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 
 import type { SessionInfo } from "../shared/types.js";
 import type { PluginExport } from "../shared/plugin-repos.js";
-import { pluginCloneUrl } from "../shared/plugin-repos.js";
+import { destinationKey, pluginCloneUrl } from "../shared/plugin-repos.js";
 import { resolveShipitConfig } from "../shared/shipit-config.js";
 import { computeInstallDepsHash } from "../shared/deps-hash.js";
 import { overlayBaseGenDir, overlayScopeHash } from "./overlay-volume.js";
@@ -84,6 +84,27 @@ export interface PluginDepDirPlan {
   depDir: string;
   scope: OverlayScope;
   scopeHash: string;
+}
+
+/**
+ * What became of ONE declared dep dir. Per-directory rather than a list of the
+ * pins that worked, because the caller's obligation is to account for every
+ * declared directory: one that is neither pinned nor still in the writable layer
+ * is install output that has been lost, and that is a failed install rather than
+ * a generation without an optimization.
+ */
+export interface PluginDepPromotion {
+  depDir: string;
+  /** Where it now lives in the store, or null if it stayed in the upper layer. */
+  pin: string | null;
+  /**
+   * The tree is in NEITHER place — it left the writable layer and did not reach
+   * the store. Only a failure after the rename can do this (a pointer write that
+   * fails on a full disk), and the caller must treat it as a failed install:
+   * publishing that generation gives the plugin no dependencies at all, with
+   * nothing saying why.
+   */
+  lost: boolean;
 }
 
 /** What the store can do for one generation's install. */
@@ -161,15 +182,29 @@ export function planPluginDepStore(args: {
   const env = args.env ?? process.env;
   if (!isOverlayEnabled(env)) return null;
 
+  // **In execution order, never sorted** (review finding). `installCommands`
+  // runs the selected exports in manifest order, and a package manager's result
+  // depends on that order — `npm ci` then `npm ci --omit=dev` does not leave the
+  // tree the reverse leaves. A key that sorted first would call those two
+  // orderings the same dep state and hand one of them the other's tree.
   const installers = args.exports
-    .filter((e): e is PluginExport & { install: string } => Boolean(e.install?.trim()))
-    .slice()
-    .sort((a, b) => a.name.localeCompare(b.name));
+    .filter((e): e is PluginExport & { install: string } => Boolean(e.install?.trim()));
   if (installers.length === 0) return null;
 
   const parts: string[][] = [];
   for (const e of installers) {
     const command = e.install.trim();
+    // A lifecycle script makes the install a build, whatever the command says
+    // (review finding). `npm ci` runs the repository's own `postinstall`, so a
+    // commit that changes only `scripts/build.js` produces a DIFFERENT tree
+    // under an identical key — and a hit would then skip the build entirely and
+    // serve the previous commit's output as this commit's. Declining here is
+    // not a guess about what the script does: it is the same rule docs/198
+    // applies to an unrecognized command, reached from the manifest instead of
+    // from the command line. A plugin that wants the store past this either has
+    // no lifecycle script or declares `install-inputs`, which REPLACES the input
+    // set and is the author saying what their install actually consumes.
+    if (e.installInputs.length === 0 && hasInstallLifecycleScript(args.checkoutDir)) return null;
     const hash = computeInstallDepsHash(
       args.checkoutDir,
       [command],
@@ -203,6 +238,32 @@ export function planPluginDepStore(args: {
       return { depDir, scope, scopeHash: overlayScopeHash(scope.repoUrl, scope.runtimeKey, scope.depDir) };
     }),
   };
+}
+
+/**
+ * The npm lifecycle scripts an install RUNS, as opposed to the ones a publish or
+ * a test runs. Each of these executes repository code that the manifest and the
+ * lockfile do not describe, so its output is not a function of the hashed
+ * inputs. `prepublish` is here because npm still runs it on a plain install.
+ */
+const INSTALL_LIFECYCLE_SCRIPTS = ["preinstall", "install", "postinstall", "prepare", "prepublish"];
+
+/**
+ * Whether the checkout's own `package.json` declares one. Unreadable or absent
+ * reads as "no" — there is then no npm install to have a lifecycle at all, and
+ * the content key is decided by `computeInstallDepsHash` either way.
+ */
+function hasInstallLifecycleScript(checkoutDir: string): boolean {
+  let pkg: unknown;
+  try {
+    pkg = JSON.parse(fs.readFileSync(path.join(checkoutDir, "package.json"), "utf-8"));
+  } catch {
+    return false;
+  }
+  if (typeof pkg !== "object" || pkg === null) return false;
+  const scripts = (pkg as { scripts?: unknown }).scripts;
+  if (typeof scripts !== "object" || scripts === null) return false;
+  return INSTALL_LIFECYCLE_SCRIPTS.some((name) => Boolean((scripts as Record<string, unknown>)[name]));
 }
 
 /**
@@ -250,22 +311,42 @@ export async function promotePluginDepDirs(args: {
   upperDir: string;
   repoName: string;
   env?: NodeJS.ProcessEnv;
-}): Promise<string[]> {
+}): Promise<PluginDepPromotion[]> {
   const env = args.env ?? process.env;
-  const pins: string[] = [];
+  const results: PluginDepPromotion[] = [];
   for (const dir of args.plan.dirs) {
     const source = path.join(args.upperDir, dir.depDir);
-    let stat;
+    // "Still where install left it" is the answer for every path that does not
+    // reach the store, so it is computed once, from disk, at the end.
+    // Reached only after the tree was there, so a missing source now means the
+    // promotion moved it and did not finish.
+    const kept = (): PluginDepPromotion =>
+      ({ depDir: dir.depDir, pin: null, lost: !fs.existsSync(source) });
+
+    let stat: Stats;
     try {
       stat = await fsp.lstat(source);
     } catch {
-      continue; // the install produced nothing here — nothing to share
+      // The install produced nothing here. Not a loss: a declared dep dir this
+      // install does not populate is an ordinary, complete outcome.
+      results.push({ depDir: dir.depDir, pin: null, lost: false });
+      continue;
     }
     // A symlink is not a tree to promote, and following one would copy whatever
     // it points at into a tree every future session mounts.
-    if (!stat.isDirectory()) continue;
+    if (!stat.isDirectory()) {
+      results.push({ depDir: dir.depDir, pin: null, lost: false });
+      continue;
+    }
 
     try {
+      // Claimed BEFORE the base exists, because a base is unreferenced until the
+      // generation record naming it is written — and that write happens in
+      // `activateGeneration`, after this returns, behind the phase-3 gate and
+      // the publish window (review finding). A sweep landing in that gap sees a
+      // scope nothing points at and removes it, and the generation then goes
+      // live pinning a directory that was deleted seconds earlier.
+      claimPluginBaseScope(dir.scopeHash);
       dropStalePointer(args.depStoreDir, dir.scopeHash);
       const result = await publishBase({
         stateDir: args.depStoreDir,
@@ -302,24 +383,80 @@ export async function promotePluginDepDirs(args: {
       });
 
       const pointer = result.pointer;
-      if (!pointer) continue;
-      const genDir = overlayBaseGenDir(args.depStoreDir, dir.scopeHash, pointer.generation);
-      if (!fs.existsSync(genDir)) continue;
+      const genDir = pointer
+        ? overlayBaseGenDir(args.depStoreDir, dir.scopeHash, pointer.generation)
+        : null;
+      if (!pointer || !genDir || !fs.existsSync(genDir)) {
+        results.push(kept());
+        continue;
+      }
       if (result.outcome !== "created") {
         // Another session promoted this same dep state first. Its tree is ours
         // by definition — same repository, same runtime, same input content — so
         // adopt it and drop our copy rather than keeping two.
         await fsp.rm(source, { recursive: true, force: true });
       }
-      pins.push(pluginBasePin(dir.scopeHash, pointer.generation));
+      results.push({
+        depDir: dir.depDir,
+        pin: pluginBasePin(dir.scopeHash, pointer.generation),
+        lost: false,
+      });
     } catch (err) {
       console.warn(
         `[plugins] ${args.repoName}: could not share \`${dir.depDir}\` with other sessions:`,
         err instanceof Error ? err.message : String(err),
       );
+      results.push(kept());
     }
   }
-  return pins;
+  return results;
+}
+
+/**
+ * Scopes a promotion has created but no generation record names yet.
+ *
+ * **The window this closes is not small.** A base becomes reachable the moment
+ * `publishBase` writes its pointer, but its first *liveness* record is the
+ * generation record `activateGeneration` writes afterwards — behind the phase-3
+ * gate, the staging rename and the session-wide publish window. The disk
+ * janitor's pass fires on every session activation and shares no lock with any
+ * of that, so a concurrent activation elsewhere could reclaim a base a
+ * generation was about to pin, and the generation would go live pinning a
+ * directory that no longer exists (review finding).
+ *
+ * **Time-bounded rather than released, deliberately.** The natural release point
+ * is "the record now names it", which happens in another module after this one
+ * has returned; threading a handle through the install result to the generation
+ * engine would couple the two for a window measured in seconds. A claim that
+ * simply expires is the same shape `post-turn-hold.ts` uses, and it fails in the
+ * right direction: an over-long claim costs one undeleted base until the next
+ * pass, and process death drops every claim — correct, because a process that
+ * died before writing the record never published the generation, so the base
+ * genuinely has no pinner.
+ */
+const IN_FLIGHT_CLAIM_MS = 10 * 60_000;
+const inFlightScopes = new Map<string, number>();
+
+function claimPluginBaseScope(scopeHash: string): void {
+  inFlightScopes.set(scopeHash, Date.now() + IN_FLIGHT_CLAIM_MS);
+}
+
+/**
+ * Drop every claim. For tests, which share this module across cases the way the
+ * process shares it across sessions — the same reason
+ * `clearUntrustedContainerNetworks` exists.
+ */
+export function clearPluginBaseClaims(): void {
+  inFlightScopes.clear();
+}
+
+/** Unexpired claims, pruning as it goes so the map cannot grow with the process. */
+function liveInFlightScopes(): string[] {
+  const now = Date.now();
+  for (const [scopeHash, expiry] of inFlightScopes) {
+    if (expiry <= now) inFlightScopes.delete(scopeHash);
+  }
+  return [...inFlightScopes.keys()];
 }
 
 /**
@@ -455,24 +592,33 @@ export function pluginDepCacheDir(depStoreDir: string, source: string): string {
 export async function livePluginStoreArtifacts(
   sessions: readonly SessionInfo[],
 ): Promise<{ scopeHashes: Set<string>; cacheHashes: Set<string> }> {
-  const scopeHashes = new Set<string>();
+  // In-flight promotions first, so a base created moments ago is live before
+  // anything walks a session tree that cannot yet mention it.
+  const scopeHashes = new Set<string>(liveInFlightScopes());
   const cacheHashes = new Set<string>();
   for (const session of sessions) {
     if (!session.workspaceDir) continue;
     if (session.diskTier === "evicted") continue;
 
-    // The declared repositories' BARE caches (`repo-cache/<hash>`). Read from
-    // the declaration rather than from a generation record, because the hash is
-    // over the clone URL byte-for-byte and only the declaration still has its
-    // case — `destinationKey` has lowercased it.
+    // The declared repositories' caches, BOTH of them, read from the
+    // declaration. The bare cache must come from here because its hash is over
+    // the clone URL byte-for-byte and only the declaration still has its case
+    // (`destinationKey` has lowercased it). The download cache must come from
+    // here because the install CREATES it before any generation exists to name
+    // it (review finding): derived from a published record alone, a first
+    // activation's `/dep-cache` could be deleted by a concurrent sweep while the
+    // install was writing into it, and a failed activation would leave it
+    // unprotected until one finally published.
     try {
       for (const repo of resolveShipitConfig(session.workspaceDir).plugins.repos) {
         if (repo.source.kind === "self") continue;
         cacheHashes.add(repoUrlToHash(pluginCloneUrl(repo.source)));
+        cacheHashes.add(path.basename(pluginDepCacheDir("", destinationKey(repo.source))));
       }
     } catch {
-      // Unreadable config — this session protects nothing, and the next pass
-      // (after the next successful read) protects it again.
+      // Unreadable config — the generation records below still protect this
+      // session's bases, and the next pass (after the next successful read)
+      // protects its caches again.
     }
 
     let root: string;
@@ -502,12 +648,22 @@ export async function livePluginStoreArtifacts(
   return { scopeHashes, cacheHashes };
 }
 
+/**
+ * Directory names, distinguishing "there is nothing here" from "I could not
+ * look" (review finding). Swallowing both made an unreadable generation tree
+ * indistinguishable from a session with no plugins — and the caller's answer
+ * feeds a destructive sweep, so a transient EIO or EACCES would have read as
+ * "nothing pins these bases". Anything but absence propagates, and
+ * {@link livePluginStoreArtifacts}'s caller skips the sweeps for that pass.
+ */
 async function listDirs(dir: string): Promise<string[]> {
   try {
     return (await fsp.readdir(dir, { withFileTypes: true }))
       .filter((e) => e.isDirectory())
       .map((e) => e.name);
-  } catch {
-    return [];
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ENOTDIR") return [];
+    throw err;
   }
 }

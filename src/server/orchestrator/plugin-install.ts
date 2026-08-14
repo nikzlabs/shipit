@@ -289,15 +289,38 @@ export function createPluginInstallRunner(
     // AFTER the volume is released: the tree leaves the upper layer here, and it
     // must not move under a mount. A directory that cannot be promoted stays
     // where install left it and pins nothing — still a complete generation.
-    const basePins = plan && deps.depStoreDir
-      ? await promotePluginDepDirs({
-        depStoreDir: deps.depStoreDir,
-        plan,
-        commit: job.commit,
-        upperDir: spec.orchDirs.upperdir,
-        repoName: job.repoName,
-      })
-      : [];
+    if (!plan || !deps.depStoreDir) {
+      await writeStamp(stampPath, stamp, []);
+      return { ok: true };
+    }
+
+    const promoted = await promotePluginDepDirs({
+      depStoreDir: deps.depStoreDir,
+      plan,
+      commit: job.commit,
+      upperDir: spec.orchDirs.upperdir,
+      repoName: job.repoName,
+    });
+    const basePins = promoted.map((p) => p.pin).filter((pin): pin is string => pin !== null);
+
+    // **Every declared directory must be in one place or the other** (review
+    // finding). Promotion is meant to be an optimization whose failure leaves
+    // the generation self-contained, and for every failure BEFORE the rename it
+    // is. After the rename it is not: the tree is in the store and gone from the
+    // upper layer, so a `publishBase` that then fails to write its pointer — a
+    // full disk is enough — leaves the directory in neither, and publishing that
+    // generation would give the plugin no dependencies at all with nothing
+    // saying why. Checked rather than reasoned about, because the reasoning is
+    // what was wrong: an install whose output cannot be accounted for is a
+    // failed install, which degrades to the prior version (req 15).
+    const lost = promoted.filter((p) => p.lost).map((p) => p.depDir);
+    if (lost.length > 0) {
+      return {
+        ok: false,
+        reason: `the installed \`${lost.join("`, `")}\` could not be stored — install ran but its output was lost`,
+      };
+    }
+
     await writeStamp(stampPath, stamp, basePins);
     return { ok: true, ...(basePins.length > 0 ? { basePins } : {}) };
   };

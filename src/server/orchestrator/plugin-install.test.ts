@@ -586,6 +586,24 @@ describe("createPluginInstallRunner and the shared dependency store", () => {
     expect(redone.basePins).toEqual(cold.basePins);
   });
 
+  it("fails the activation when install output reached neither the layer nor the store", async () => {
+    const { docker, containers } = fakeDocker({ onStart: installs() });
+    // The pointer directory is a file, so `publishBase` fails AFTER the rename
+    // has already emptied the writable layer. Publishing that generation would
+    // give the plugin no dependencies at all, with nothing saying why.
+    fs.writeFileSync(path.join(stateDir, "overlay-base-meta"), "not a directory");
+
+    const result = await createPluginInstallRunner({
+      docker, image: "worker:test", sessionId: "s1", stateDir, depStoreDir: stateDir,
+    })(job([npmExport()]));
+
+    expect(containers).toHaveLength(1);
+    expect(result.ok).toBe(false);
+    expect(result.reason).toContain("its output was lost");
+    // A failed install is a failed activation, so nothing is stamped as done.
+    expect(fs.existsSync(installStampPath(stateDir, "tools", COMMIT))).toBe(false);
+  });
+
   it("does nothing different without a store configured", async () => {
     const { docker, containers } = fakeDocker({ onStart: installs() });
     const result = await createPluginInstallRunner({

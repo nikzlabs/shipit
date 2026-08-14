@@ -24,6 +24,7 @@ import { readBasePointerByHash } from "./overlay-base.js";
 import { overlayBaseGenDir } from "./overlay-volume.js";
 import {
   adoptPluginDepBases,
+  clearPluginBaseClaims,
   livePluginStoreArtifacts,
   parsePluginBasePin,
   planPluginDepStore,
@@ -75,6 +76,9 @@ beforeEach(() => {
 
 afterEach(() => {
   fs.rmSync(root, { recursive: true, force: true });
+  // The in-flight claim map is module state, shared across cases here the way
+  // it is shared across sessions in the process.
+  clearPluginBaseClaims();
   vi.unstubAllEnvs();
 });
 
@@ -165,6 +169,37 @@ describe("planPluginDepStore", () => {
     })).toBeNull();
   });
 
+  it("declines when the repository's own package.json has an install lifecycle script", () => {
+    seedCheckout("{}");
+    // `npm ci` runs `postinstall`, so a commit that changes only
+    // `scripts/build.js` produces a DIFFERENT tree under an identical key — and
+    // a hit would skip the build and serve the previous commit's output.
+    fs.writeFileSync(
+      path.join(checkoutDir, "package.json"),
+      JSON.stringify({ name: "probe", scripts: { postinstall: "node scripts/build.js" } }),
+    );
+    expect(planPluginDepStore({ source: "acme/tools", exports: [exportWith()], checkoutDir })).toBeNull();
+
+    // Declaring install-inputs is the author saying what the install consumes,
+    // and it REPLACES the default set — so the store is available again.
+    expect(planPluginDepStore({
+      source: "acme/tools",
+      exports: [exportWith({ installInputs: ["package.json", "package-lock.json", "scripts/build.js"] })],
+      checkoutDir,
+    })).not.toBeNull();
+  });
+
+  it("keys on execution order, not a sorted one", () => {
+    seedCheckout("{}");
+    const a = exportWith({ name: "a", install: "npm ci" });
+    const b = exportWith({ name: "b", install: "npm ci --omit=dev" });
+    // The installs run in manifest order and their result depends on it, so the
+    // two orderings are two dep states and must not share a base.
+    const forward = planPluginDepStore({ source: "acme/tools", exports: [a, b], checkoutDir });
+    const reversed = planPluginDepStore({ source: "acme/tools", exports: [b, a], checkoutDir });
+    expect(reversed?.dirs[0]!.scopeHash).not.toBe(forward?.dirs[0]!.scopeHash);
+  });
+
   it("declines when an export opts out with an empty dep-dirs list", () => {
     seedCheckout("{}");
     expect(planPluginDepStore({
@@ -185,11 +220,14 @@ describe("promotePluginDepDirs", () => {
     seedInstalled();
     const plan = planPluginDepStore({ source: "acme/tools", exports: [exportWith()], checkoutDir })!;
 
-    const pins = await promotePluginDepDirs({
+    const promoted = await promotePluginDepDirs({
       depStoreDir: root, plan, commit: COMMIT, upperDir, repoName: "tools",
     });
+    const pins = promoted.map((p) => p.pin);
 
-    expect(pins).toEqual([pluginBasePin(plan.dirs[0]!.scopeHash, 1)]);
+    expect(promoted).toEqual([
+      { depDir: "node_modules", pin: pluginBasePin(plan.dirs[0]!.scopeHash, 1), lost: false },
+    ]);
     // The base tree is rooted at the dep dir's own relative path, because it is
     // stacked as a lowerdir of the plugin ROOT — not mounted at the dep dir.
     const genDir = pluginBasePinDir(root, pins[0]!)!;
@@ -215,15 +253,15 @@ describe("promotePluginDepDirs", () => {
     seedCheckout("{}");
     seedInstalled();
     const plan = planPluginDepStore({ source: "acme/tools", exports: [exportWith()], checkoutDir })!;
-    const first = await promotePluginDepDirs({
+    const first = (await promotePluginDepDirs({
       depStoreDir: root, plan, commit: COMMIT, upperDir, repoName: "tools",
-    });
+    })).map((p) => p.pin);
 
     // A second session installs the same dep state and offers its own tree.
     seedInstalled("module.exports = 2;\n");
-    const second = await promotePluginDepDirs({
+    const second = (await promotePluginDepDirs({
       depStoreDir: root, plan, commit: "d".repeat(40), upperDir, repoName: "tools",
-    });
+    })).map((p) => p.pin);
 
     expect(second).toEqual(first);
     // One generation per content scope — which is also what keeps the janitor's
@@ -239,9 +277,11 @@ describe("promotePluginDepDirs", () => {
   it("leaves a dep dir the install did not produce exactly where it is", async () => {
     seedCheckout("{}");
     const plan = planPluginDepStore({ source: "acme/tools", exports: [exportWith()], checkoutDir })!;
+    // Not a loss — a declared dep dir this install does not populate is an
+    // ordinary, complete outcome.
     expect(await promotePluginDepDirs({
       depStoreDir: root, plan, commit: COMMIT, upperDir, repoName: "tools",
-    })).toEqual([]);
+    })).toEqual([{ depDir: "node_modules", pin: null, lost: false }]);
     expect(readBasePointerByHash(root, plan.dirs[0]!.scopeHash)).toBeNull();
   });
 
@@ -254,8 +294,25 @@ describe("promotePluginDepDirs", () => {
 
     expect(await promotePluginDepDirs({
       depStoreDir: root, plan, commit: COMMIT, upperDir, repoName: "tools",
-    })).toEqual([]);
+    })).toEqual([{ depDir: "node_modules", pin: null, lost: false }]);
     expect(fs.existsSync(path.join(root, "elsewhere", "secret"))).toBe(true);
+  });
+
+  it("reports a tree that reached neither place as LOST", async () => {
+    seedCheckout("{}");
+    seedInstalled();
+    const plan = planPluginDepStore({ source: "acme/tools", exports: [exportWith()], checkoutDir })!;
+    // The pointer directory is a file, so the write inside `publishBase` fails
+    // AFTER the materialize rename has already emptied the upper layer — the one
+    // shape that leaves install output in neither place.
+    fs.writeFileSync(path.join(root, "overlay-base-meta"), "not a directory");
+
+    const promoted = await promotePluginDepDirs({
+      depStoreDir: root, plan, commit: COMMIT, upperDir, repoName: "tools",
+    });
+
+    expect(promoted).toEqual([{ depDir: "node_modules", pin: null, lost: true }]);
+    expect(fs.existsSync(path.join(upperDir, "node_modules"))).toBe(false);
   });
 });
 
@@ -264,10 +321,10 @@ describe("adoptPluginDepBases", () => {
     seedCheckout("{}");
     seedInstalled();
     const plan = planPluginDepStore({ source: "acme/tools", exports: [exportWith()], checkoutDir })!;
-    const pins = await promotePluginDepDirs({
+    const promoted = await promotePluginDepDirs({
       depStoreDir: root, plan, commit: COMMIT, upperDir, repoName: "tools",
     });
-    expect(adoptPluginDepBases(root, plan)).toEqual(pins);
+    expect(adoptPluginDepBases(root, plan)).toEqual(promoted.map((p) => p.pin));
   });
 
   it("refuses when a pointer names a generation that is no longer on disk", async () => {
@@ -352,6 +409,43 @@ describe("livePluginStoreArtifacts", () => {
     // why it is read from the declaration, whose case `destinationKey` has lost.
     const { repoUrlToHash } = await import("./git-utils.js");
     expect(live.cacheHashes.has(repoUrlToHash("https://github.com/Acme/Tools.git"))).toBe(true);
+  });
+
+  it("reports a promotion no generation record can mention yet", async () => {
+    seedCheckout("{}");
+    seedInstalled();
+    const plan = planPluginDepStore({ source: "acme/tools", exports: [exportWith()], checkoutDir })!;
+    await promotePluginDepDirs({ depStoreDir: root, plan, commit: COMMIT, upperDir, repoName: "tools" });
+
+    // No session has published a generation naming this base yet — the record is
+    // written after the install returns, behind the phase-3 gate and the publish
+    // window. A sweep in that gap must not read it as an orphan.
+    const live = await livePluginStoreArtifacts([]);
+    expect(live.scopeHashes.has(plan.dirs[0]!.scopeHash)).toBe(true);
+  });
+
+  it("refuses to answer when a generation tree cannot be read", async () => {
+    const workspaceDir = seedSession("unreadable", [pluginBasePin("c".repeat(16), 1)]);
+    const generations = path.join(
+      path.dirname(workspaceDir), "state", "plugins", "tools", "generations",
+    );
+    fs.chmodSync(generations, 0o000);
+    try {
+      // Silently reading an unreadable tree as "no generations" would report
+      // that nothing pins these bases — to a sweep that then deletes them.
+      await expect(livePluginStoreArtifacts([session(workspaceDir)])).rejects.toThrow();
+    } finally {
+      fs.chmodSync(generations, 0o755);
+    }
+  });
+
+  it("protects the download cache from the DECLARATION, before any generation exists", async () => {
+    // The install creates and mounts `/dep-cache` on a repository's very first
+    // activation, long before a record could name it.
+    const workspaceDir = seedSession("fresh", []);
+    fs.rmSync(path.join(path.dirname(workspaceDir), "state"), { recursive: true, force: true });
+    const live = await livePluginStoreArtifacts([session(workspaceDir)]);
+    expect(live.cacheHashes.has(path.basename(pluginDepCacheDir("", "acme/tools")))).toBe(true);
   });
 
   it("ignores an evicted session, whose state dir is gone anyway", async () => {

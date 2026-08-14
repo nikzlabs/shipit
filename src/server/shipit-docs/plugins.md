@@ -37,6 +37,7 @@ exports:
       skills: plugins/requirements/skills
       install: npm ci
       install-inputs: [package-lock.json]
+      dep-dirs: [node_modules]   # what install populates; this is the default
       credentials: [FAL_KEY]     # names only — values live with each project
       hosts: [fal.run]           # informational
       settings:
@@ -84,15 +85,34 @@ layer that belongs to the plugin's own execution environment, not to yours.
 
 ## Install
 
-A plugin's `install` command runs once per commit, in a container that holds
-one thing: the plugin's checkout merged with its own writable layer. It runs
-**before** the new commit goes live, so an install that fails is simply a
-failed refresh — the previous commit stays active and the Plugins tab reports
-why, with the command's own output.
+A plugin's `install` command runs in a container that holds the plugin's
+checkout merged with its own writable layer, plus that repository's own package
+download cache. It runs **before** the new commit goes live, so an install that
+fails is simply a failed refresh — the previous commit stays active and the
+Plugins tab reports why, with the command's own output.
 
 You will not see the result. Dependencies and build output land in that
 writable layer, which belongs to the plugin's execution environment; your
 `/plugins/<name>` still shows plain source.
+
+**It does not run once per commit — it runs once per set of dependencies.** The
+directories a plugin declares in `dep-dirs` (default `[node_modules]`) are
+promoted into a store shared by every session and every project, keyed by the
+repository, the runtime, and the *content* of the install's inputs. A new commit
+whose `package-lock.json` did not change reuses that tree and runs no install at
+all; a commit that does change it installs once, for everybody.
+
+Two things turn the reuse off, deliberately, and both are the plugin author's to
+control:
+
+- an install command that is not a plain dependency install (anything that
+  builds or generates), and
+- a `package.json` with a `preinstall` / `install` / `postinstall` / `prepare`
+  script, because those run repository code the lockfile does not describe.
+
+In either case, declaring `install-inputs` says what the install actually
+consumes and turns reuse back on — it **replaces** the default input set, so
+list every file that changes the result.
 
 ## Skills
 

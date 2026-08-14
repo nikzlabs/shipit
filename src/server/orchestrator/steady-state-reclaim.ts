@@ -180,27 +180,40 @@ export async function runSteadyStateReclaim(
   // download cache matches no repository in the repo store. Resolved once, for
   // both. A failure here yields no protection, so it must not be silent.
   let pluginLive: { scopeHashes: Set<string>; cacheHashes: Set<string> } | null = null;
+  let pluginLiveFailed = false;
   if (deps.livePluginStoreArtifacts) {
     try {
       pluginLive = await deps.livePluginStoreArtifacts();
     } catch (err) {
+      // **Fail closed** (review finding): proceeding with no plugin liveness is
+      // not "sweep a bit less carefully", it is "delete every plugin artifact",
+      // including bases that are live overlay lowerdirs. Both sweeps are
+      // accelerators and this pass fires on every session activation, so
+      // skipping one costs nothing and the next pass retries. This is the same
+      // rule the overlay-base sweep already follows for its own liveness source:
+      // without a way to confirm what is in use, do not touch the subtree.
+      pluginLiveFailed = true;
       console.warn("[disk-janitor] could not resolve live plugin dependency artifacts:", getMessage(err));
     }
   }
 
-  try {
-    result.cachesRemoved = await sweepOrphanedCaches(
-      deps.stateDir, deps.repoStore, cacheDays, paceMs, pluginLive?.cacheHashes,
-    );
-  } catch (err) {
-    console.warn("[disk-janitor] cache sweep failed:", getMessage(err));
+  if (pluginLiveFailed) {
+    console.warn("[disk-janitor] skipping the cache and overlay-base sweeps this pass");
+  } else {
+    try {
+      result.cachesRemoved = await sweepOrphanedCaches(
+        deps.stateDir, deps.repoStore, cacheDays, paceMs, pluginLive?.cacheHashes,
+      );
+    } catch (err) {
+      console.warn("[disk-janitor] cache sweep failed:", getMessage(err));
+    }
   }
 
   // docs/183 Phase 2/3, planning#195 — sweep obsolete overlay bases via a deterministic
   // live-mount check (not an age cutoff). Gated on a live-scope-hash source: removing
   // a base dir that still backs a live overlay `lowerdir` is undefined behavior, so
   // without a way to confirm which bases are in use we don't touch the subtree at all.
-  if (deps.liveOverlayScopeHashes) {
+  if (deps.liveOverlayScopeHashes && !pluginLiveFailed) {
     try {
       result.overlayBasesRemoved = await sweepOrphanedOverlayBases(
         deps.stateDir,
