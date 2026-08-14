@@ -151,7 +151,12 @@ receipts below keep the original "tools" vocabulary of the early rounds.
     the session itself is reset or deleted. Neither
     kind of data is ever stored by modifying the read-only plugin checkout.
     The preview origin is stable for the session's whole life, so
-    origin-keyed browser storage counts as session-scoped state.
+    origin-keyed browser storage counts as session-scoped state. The published
+    port a plugin service is reached on is a property of the **import**, not of
+    the plugin: the consuming project may set it in its own `use:` entry, and
+    ShipIt allocates one when it does not. A plugin never declares the port it
+    is published on, so a plugin's own edit cannot move a consumer's origin and
+    cannot take a number the consuming project is using.
 19. A checked-in plugin declaration is a **standing grant** to fetch and
     execute that repository's declared setup, services, and companion CLIs at
     the selected revision — including each new commit on a tracked branch,
@@ -315,20 +320,6 @@ user's follow-up of 2026-08-12 during the design phase.
   repository finds the duplication annoying. Not implemented either way — the
   current behaviour is the "does not run" one.*
 
-- **A plugin's preview origin and a project service's port want the same
-  number — which one moves?** Req 18 says the preview origin is stable for the
-  session's whole life and states no exception. But the origin's port is also
-  the routing key, so two services cannot share one: if a project later edits
-  its own compose file to serve on the number a plugin's origin already uses,
-  one of them loses its preview. The implementation currently moves the
-  **plugin's** origin (which loses whatever that plugin kept in origin-keyed
-  browser storage — the thing req 18 protects) on the reasoning that the
-  project's port is a real container port the user chose, while the plugin's is
-  ShipIt's own bookkeeping. *Agent recommendation: keep that — it is the rarer
-  and more recoverable loss, and it takes a deliberate project edit to reach.*
-  The alternative is to hold the plugin's pin and leave the project service
-  without an origin until the user renumbers it.
-
 - **A repository added with a credential in its URL leaves a live token in
   `/project/.git/config`, where plugin code can read it — which of three fixes
   do we take?** Req 19 already says a fetch credential is never reachable from
@@ -355,28 +346,58 @@ user's follow-up of 2026-08-12 during the design phase.
   either what the user may type when adding a repository or what a plugin may
   expect at `/project`. Not implemented.*
 
-- **Do plugin SERVICES get their own egress containment, or do they inherit
-  today's unconfined behaviour?** Req 24 is settled on intent — a declaration
-  grants nothing, and services and companion CLIs reach exactly what equivalent
-  same-repo code could reach under the session's own egress configuration. The
-  open part is enforcement, and it is not a plugin question so much as an
-  existing one this feature is the first to make visible: containment lives in
-  the **agent container's** network namespace, while compose service containers
-  have unrestricted egress (the docs/172 residual). So a plugin's declared hosts
-  are evaluated against the agent container — where companion CLIs run — and a
-  service reaching an undeclared host is not stopped by anything. Same-repo
-  compose services are equally unconfined, so the letter of req 24 holds; its
-  spirit does not, because "what equivalent same-repo code could reach" is
-  currently "everything". The options: **(a)** leave services as they are and
-  say so plainly, keeping plugin and project services identical; **(b)** contain
-  plugin services specifically, which makes a plugin service *more* restricted
-  than a same-repo one and needs req 24 reworded; **(c)** contain compose
-  services generally, which closes docs/172 for every project and is much larger
-  than this feature. *Agent recommendation: (a) for v1, with the need-row naming
-  the blocked claimant rather than asserting one repository-level truth across
-  both surfaces — then (c) as its own piece of work. Not implemented.*
+- **A plugin refresh re-installs from scratch — is that acceptable, and what
+  should the user be told while it happens?** No requirement states anything
+  about how long activating or refreshing a plugin may take, and the
+  implementation's answer is currently incidental rather than chosen. Measured
+  from the code: git objects ARE reused (a bare cache per plugin repository is
+  shared across sessions and generations), but install output is **per commit** —
+  it lives in that generation's writable layer, which is created empty and is
+  deleted with the generation it belongs to. The install container is throwaway
+  and mounts no package cache, so each new tracked commit pays a cold dependency
+  install; the code's own note says `npm ci` on a large plugin is minutes. An
+  unchanged commit costs nothing (activation reports `unchanged` and does not
+  re-install), and a companion CLI call reuses the generation's existing layer,
+  so the cost falls entirely on *moving to a new commit* — which req 19's
+  standing grant makes automatic on every tracked-branch commit. So a plugin on
+  a busy branch can re-install repeatedly without the user asking for anything.
+  The options: **(a)** accept it and make the wait visible, since req 13 already
+  wants a degradation the user can see and req 15 keeps the prior version
+  serving throughout; **(b)** share a package cache across generations of one
+  repository, which is a large speed-up but puts a mutable cache on the path
+  req 19 isolates; **(c)** carry a previous generation's install output forward
+  when the dependency manifest is unchanged, which is faster still and strictly
+  harder to reason about, since "unchanged" is a claim about files the plugin
+  controls. *Agent recommendation: (a) for v1 — nothing here is a correctness
+  problem, and both caches trade a boundary that is currently simple for speed
+  the user has not yet said they need. Not implemented, and no requirement
+  states a performance target today.*
 
 ## Resolved questions
+
+- **2026-08-14 — Where is a plugin service's published port declared?** The open
+  question asked which side loses when a plugin's preview origin and a project
+  service want the same number, and recommended moving the plugin's origin.
+  The user rejected the framing: *"Let's make the port field not in the plugin
+  definition, but in the usage."* That dissolves the conflict rather than
+  arbitrating it — a port chosen by the consuming project is the same kind of
+  fact as a project service's own port, so a clash is one the user created and
+  can see, and no ShipIt bookkeeping has to move behind their back. It also
+  keeps req 5 intact, because the field is optional and ShipIt still allocates
+  when it is absent. → **req 18 amended**; the open question is removed rather
+  than answered, since the design it argued about no longer exists.
+
+- **2026-08-14 — Do plugin services get their own egress containment?** Raised
+  on the premise that compose service containers have unrestricted egress (the
+  docs/172 residual), which would have made req 24's letter hold while its
+  spirit did not. The user replied: *"I think egress is confined now."* Verified
+  at the source, and they are right — docs/263 shipped compose service egress
+  containment, and plugin services take the same `containEgress` path as project
+  services, so a plugin service is contained exactly as an equivalent same-repo
+  service is. That is precisely what req 24 asks for. → **no requirement change,
+  no work needed**; the question was written from a stale plan note and is
+  withdrawn. Worth recording as a caution: it was raised from a design document
+  describing the world as it had been, not from the code.
 
 - **2026-08-14 — What happens to a plugin's saved state when a project
   re-points a declaration at a different repository?** Raised while
