@@ -383,6 +383,17 @@ instead of a repeat.
   the same pure collector rather than remembering it, so a declaration that
   cannot work says so before anything has run.
 
+  That recomputation adds a read of `active` to the snapshot GET, which the
+  "resolve `active` once" sweep has to count. The collector itself is coherent
+  — one `realpathSync` in `snapshotRepo`, every later fact read from the
+  directory it returned — so the residual skew is between the collector and the
+  route's own `readActiveGeneration`: the commit rendered could belong to a
+  different generation than the issues rendered beside it. Closing it here would
+  mean the route taking its commit from the collector, which does not carry what
+  that call also supplies (export names, manifest warnings) — a change to the
+  route's contract, not a call-site tidy, and so left to the sweep. Same class
+  as the credential/commit skew recorded below: one request wide, self-healing.
+
   **Session paths are mounted as volume subpaths, never as binds — and that is
   a production-only trap, so it is written down rather than left to be
   rediscovered.** In production the whole session tree lives inside a named
