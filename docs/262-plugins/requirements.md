@@ -164,7 +164,12 @@ receipts below keep the original "tools" vocabulary of the early rounds.
     repository, ref, and exact commit being executed (req 15). Credentials
     used to fetch repositories are never exposed to plugin code; credentials
     a plugin declares for its own job (req 23) are delivered to it. Both
-    halves hold at once.
+    halves hold at once. A credential is never **persisted** to reach a
+    repository — not in a stored remote URL, and not in any file a session or
+    a plugin container can read. ShipIt supplies fetch credentials the same
+    way for a plugin repository as for the project's own: through a credential
+    helper scoped to that remote, for the life of the fetch. A credential a
+    user happens to type into a repository URL is not kept either.
 20. Every surfaced plugin service and companion CLI command has an
     unambiguous identity across the project and all declared plugin
     repositories. When two would collide — with each other or with the
@@ -236,6 +241,15 @@ receipts below keep the original "tools" vocabulary of the early rounds.
     repository itself). Activation there uses the same mechanism consumers
     use — the repository declares itself as a consumer — so dogfooding
     exercises exactly the path real consumers run.
+28. Activating a plugin **reuses ShipIt's existing content caches rather than
+    paying a cold cost per commit**. Sessions already avoid re-downloading
+    dependencies through a shared, rolling dependency store, and plugins get
+    the same benefit: a plugin's declared dependency directories are populated
+    from that shared store, so a new commit on a tracked branch does not
+    re-download what an earlier commit — or another session, or the same
+    plugin in another project — already fetched. Reusing a cache never lets
+    plugin code reach a fetch credential (req 19), and never lets one
+    repository's cached content appear under another's name (req 15).
 
 ## Out of scope (v1)
 
@@ -297,6 +311,10 @@ user's follow-up of 2026-08-12 during the design phase.
 
 ## Open questions
 
+One open, raised by the self-use slice on 2026-08-14. Every other question
+raised so far is answered below, each with the answer's date and the words
+that settled it.
+
 - **Under `repo: self`, does the plugin's declared `install` run?** Today it does
   not: `install` populates a generation's writable layer, and a self declaration
   has neither — so a plugin repository testing itself relies on its own
@@ -320,60 +338,39 @@ user's follow-up of 2026-08-12 during the design phase.
   repository finds the duplication annoying. Not implemented either way — the
   current behaviour is the "does not run" one.*
 
-- **A repository added with a credential in its URL leaves a live token in
-  `/project/.git/config`, where plugin code can read it — which of three fixes
-  do we take?** Req 19 already says a fetch credential is never reachable from
-  anything running plugin-authored code, so this is a **violation to close, not
-  an ambiguity in the requirement**; what is open is only the remedy, and each
-  one costs the user something different. Req 21 puts the consuming project's
-  workspace at `/project`, which necessarily carries `.git`. The repo-local
-  `credential.helper` there is harmless — it is a PATH to the loopback broker,
-  and a plugin container's own network namespace has nothing listening on it.
-  `remote.origin.url` is not: a repository added as
-  `https://x-access-token:<pat>@github.com/o/r.git` is stored verbatim and
-  written into the session clone's config, so every plugin CLI can read it
-  today, and every plugin service can once that surface ships. No mount,
-  environment or network assertion on the plugin surfaces can see it, which is
-  why the guard tests pass while the boundary is open. The options: **(a)** strip
-  the credential when a repository is added and require the credential helper
-  instead — cheapest and fixes it everywhere, but breaks a repository whose only
-  working auth *is* that URL; **(b)** strip it only when writing
-  `remote.origin.url` in the session clone — narrower, leaves the stored value
-  alone, and keeps `.git` usable in plugin containers; **(c)** mask
-  `/project/.git` on plugin surfaces — changes what a plugin may assume about
-  `/project`, and plan §2 currently says nothing about git access either way.
-  *Agent recommendation: (b) — it closes the reachable copy without changing
-  either what the user may type when adding a repository or what a plugin may
-  expect at `/project`. Not implemented.*
-
-- **A plugin refresh re-installs from scratch — is that acceptable, and what
-  should the user be told while it happens?** No requirement states anything
-  about how long activating or refreshing a plugin may take, and the
-  implementation's answer is currently incidental rather than chosen. Measured
-  from the code: git objects ARE reused (a bare cache per plugin repository is
-  shared across sessions and generations), but install output is **per commit** —
-  it lives in that generation's writable layer, which is created empty and is
-  deleted with the generation it belongs to. The install container is throwaway
-  and mounts no package cache, so each new tracked commit pays a cold dependency
-  install; the code's own note says `npm ci` on a large plugin is minutes. An
-  unchanged commit costs nothing (activation reports `unchanged` and does not
-  re-install), and a companion CLI call reuses the generation's existing layer,
-  so the cost falls entirely on *moving to a new commit* — which req 19's
-  standing grant makes automatic on every tracked-branch commit. So a plugin on
-  a busy branch can re-install repeatedly without the user asking for anything.
-  The options: **(a)** accept it and make the wait visible, since req 13 already
-  wants a degradation the user can see and req 15 keeps the prior version
-  serving throughout; **(b)** share a package cache across generations of one
-  repository, which is a large speed-up but puts a mutable cache on the path
-  req 19 isolates; **(c)** carry a previous generation's install output forward
-  when the dependency manifest is unchanged, which is faster still and strictly
-  harder to reason about, since "unchanged" is a claim about files the plugin
-  controls. *Agent recommendation: (a) for v1 — nothing here is a correctness
-  problem, and both caches trade a boundary that is currently simple for speed
-  the user has not yet said they need. Not implemented, and no requirement
-  states a performance target today.*
-
 ## Resolved questions
+
+- **2026-08-14 — Should plugins pay a cold dependency install on every new
+  commit?** Raised after measuring the code: git objects were reused, but
+  install output was per generation, the install container mounted no package
+  cache, and each tracked-branch commit therefore paid a cold install (the
+  code's own note: `npm ci` on a large plugin is minutes). The agent
+  recommended accepting it for v1 and making the wait visible. **The user
+  rejected that**: *"So we spent quite a bit of time on optimizing the disk
+  space and startup time of new sessions, in particular around caching of the
+  content. This work should not be wasted. Plugins need to have this
+  optimization too. Ideally, for the npm case, the dependencies should be
+  reused from the same cache too. This is a new requirement."* → **req 28
+  added.** The agent's recommendation treated the cache as new machinery to be
+  justified; it already exists and is proven (the shared rolling dependency
+  store), so the question was really "does the plugin path reuse it?", and the
+  answer is that it must.
+
+- **2026-08-14 — How should the credential in a repository URL be kept out of
+  plugin containers?** The open question offered three remedies and recommended
+  the narrowest. The user asked the question that settled it: *"How do we do it
+  for the regular session code? We don't save the credential, right? Let's do
+  the same for the plugins."* Verified at the source — correct: ShipIt's own
+  machinery never persists a credential. `repo-git.ts` resets inherited helpers
+  and installs a per-origin `credential.<origin>.helper`, so the token is
+  supplied for the duration of a fetch and written nowhere. The only persisted
+  copy comes from a credential a **user typed into the URL**, which is stored
+  verbatim and written into the session clone's `remote.origin.url` — where any
+  plugin container reading `/project/.git/config` can see it. → **req 19
+  amended**: a credential is never persisted to reach a repository, including
+  one a user typed. The honest cost, recorded rather than argued away: a remote
+  whose *only* working auth is an embedded URL credential stops working on the
+  helper path, and the user chose the consistent rule over that case.
 
 - **2026-08-14 — Where is a plugin service's published port declared?** The open
   question asked which side loses when a plugin's preview origin and a project
