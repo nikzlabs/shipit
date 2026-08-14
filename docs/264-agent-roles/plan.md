@@ -37,7 +37,7 @@ guess.
 ## What a role is
 
 ```
-role   = { name, prompt?, params }
+role   = { name, description, prompt?, params }
 params = { kind: "pinned", harnessId, serviceId, billingMode, modelId, reasoningEffort }
        | { kind: "auto" }                                    // the shipped reviewer — reqs 2, 7
 ```
@@ -46,7 +46,10 @@ Every field of a `pinned` tuple is required, the harness included (reqs 1, 6).
 
 - **`name`** — a CLI-safe token: lowercase letters, digits and dashes, so `--role NAME` is a
   valid word and cannot collide with a flag. Unique per install; a duplicate is refused.
-- **`prompt`** — an optional free-text standing prompt (req 8). See *The prompt*.
+- **`description`** — a short line saying what the role is for (req 9). Separate from the prompt
+  and **not** derived from it: standing instructions are optional, so a role that has none would
+  otherwise have nothing for the inventory or the Settings list to show.
+- **`prompt`** — optional standing instructions (req 8). See *The prompt*.
 - **`params`** — the complete tuple, including the harness. See *The harness is part of a role*.
 
 ## The harness is part of a role (req 6)
@@ -56,8 +59,8 @@ model-first derivation and is scoped to roles. What it changes:
 
 - **`harnessId` is validated at save**: it must be installed, must be able to carry the model
   (the style overlap), and must have a credential. `harnessesForSelection` answers all three; a
-  role naming a harness outside that set is **refused**, in the same place an invalid reasoning
-  level is refused (`resolveReviewerPinPatch`).
+  role naming a harness outside that set is **refused**, by the role validator described under
+  *Settings* — which takes the harness as an input rather than deriving one.
 - **Nothing is derived at run time.** No harness derivation, and no "prefer a harness that is not
   the implementer's" preference — the role said what it runs on.
 - **A stored harness can go stale**, and reports that it cannot run, exactly as a lost model pin
@@ -80,11 +83,20 @@ is required.
 
 ## The prompt (req 8)
 
-A role may carry a **standing prompt** — its job description ("check the code against
-requirements.md", "review the diff for correctness only"). At spawn the role's standing prompt and
-the run's own task compose into **one prompt channel** — a sub-agent has a single prompt channel
-(docs/144), so there is no second channel to wire: the standing half first, the task half after,
-one stable join at spawn.
+A role may carry **standing instructions** — what the job is ("check the code against
+requirements.md", "review the diff for correctness only"). At spawn they and the run's own task
+compose into **one prompt channel**, because a sub-agent has only one (docs/144).
+
+Three things the join has to get right, none of them free:
+
+- **Framing.** The two halves are labelled — the role's instructions, then the task — so the
+  callee can tell a standing brief from the thing it was asked to do now.
+- **Length.** The two entry points enforce different task limits today (200,000 characters for a
+  one-shot run, 50,000 for a child session), so an unbounded stored prompt can push a
+  previously-valid task over the limit *after* resolution. The combined prompt is validated
+  against the destination's limit, and the failure names the role rather than the task.
+- **Identity when there is nothing to add.** A role with no standing instructions passes the task
+  through byte-for-byte, so adding a role never silently rewrites a prompt that worked.
 
 No prompt-architecture change. CLAUDE.md's *prompts are content, not logic* holds: the composition
 is a fixed join in code, and a role's prompt is **user data** stored in settings, not prompt text
@@ -92,21 +104,21 @@ compiled into the binary.
 
 ## Storage
 
-Roles live in the credential store as an **ordered list**:
+Roles live in the credential store, keyed by name:
 
-- `getRoles(): Role[]`
+- `getRoles(): Role[]` — in name order, so the list is deterministic without storing a rank
 - `setRole(name, role | null)` — upsert or delete
-- `renameRole(oldName, newName)`
 
-Order is insertion order, reorderable in Settings as a nicety.
+**No reorder and no rename primitive.** Neither is in the requirements, and a rename is an
+ordinary validated write followed by a delete — an atomic primitive would only be worth it if
+something else held a reference to the old name, and nothing does.
 
 ## Resolution
 
 `resolveRoleByName(name, implementer, deps)` looks the name up and returns a frozen target:
 
-1. **Unknown name → `ServiceError` listing the roles that do exist** (req 12), with a note that
-   `--model` is the flag for a model — a role name and a model label are two different
-   name-spaces, and the refusal is where that is cheapest to learn.
+1. **Unknown name → `ServiceError` listing the roles that do exist** (req 13). The list is the
+   whole remedy; nothing else needs saying.
 2. **`auto` params** → delegate to `selectReviewer` (docs/261, unchanged), which ranks the two
    candidates against `implementer` and returns an already-routed target. This is the only branch
    that needs to know what is implementing.
@@ -135,26 +147,35 @@ params = { kind: "pinned", harnessId, serviceId, billingMode, modelId, reasoning
        | { kind: "auto" }
 ```
 
-Not two kinds of object, which is what makes the rest of the design uniform:
+Not two kinds of object, which is what makes most of the design uniform:
 
-- one store, one lookup, one refusal, one settings list, one attribution path;
+- one store, one lookup, one refusal, one attribution path;
 - `resolveRoleByName` branches **once** — an `auto` role delegates to `selectReviewer` (docs/261's
   ranking, unchanged: two candidates, distance from the implementer, the derived answer when
   nothing is configured), and a `pinned` role takes the simpler path above;
-- "automatic" is already expressible on any role, so if it is ever wanted more widely, nothing
-  needs re-cutting. Req 7 keeps it to the shipped reviewer for now — expressible in the data is
-  not the same as offered in the UI.
+- `{ kind: "auto" }` is **rejected for every name but `reviewer`**. The discriminator exists to
+  describe the one role that has automatic params, not to offer a state nobody can reach: leaving
+  it settable would add an invalid-state surface with no user-visible value today.
 
 **Why the reviewer resolves at all**, since it is the one asymmetry left: *"use whoever is
 furthest from the model that wrote this"* is a rule evaluated **per run**, and a fixed set of
 params cannot encode it — the answer depends on what is implementing at the moment of the call.
 Pinning the reviewer would delete the three behaviours req 2 names, not simplify them.
 
-**The reviewer is otherwise a role in every respect**: named the same way, started the same way
-(both shapes below), refused the same way, reported the same way. `auto` describes where its
-params come from and nothing else.
+**Where the uniformity genuinely stops, stated rather than glossed.** The reviewer's automatic
+params are not one hidden tuple — they are docs/261's **two candidate slots**, which
+`selectReviewer` loads and ranks (`reviewer-model.ts`). One role row carrying one service / model
+/ level / harness control cannot configure that state, so the Settings list is *not* uniform: the
+reviewer's row embeds the existing two-slot editor, and every other row is the ordinary control
+set. That is the smaller move — it keeps a shipped, tested editor rather than migrating two slots
+into a general params record for the sake of a claim about rows.
 
-## Starting a role: the two shapes (req 10)
+**The reviewer is otherwise a role in every respect**: named the same way, started the same way
+(both shapes below), refused the same way, reported the same way. It is also the one role whose
+name is reserved and which cannot be renamed or deleted (req 2) — "review this" has to keep
+resolving to something, and reviewing has to work on an install nobody has configured.
+
+## Starting a role: the two shapes (req 11)
 
 A role names what runs, and that question is the same whichever way a sub-agent is started:
 
@@ -169,12 +190,28 @@ decide what a child runs on. A role supplies all of them at once, which is what 
 naming there.
 
 `--role NAME` on a child session **replaces inheritance** rather than layering over it: docs/261
-req 10 has a child inherit its parent's parameters, and a role is a complete unit (reqs 1, 9), so
+req 10 has a child inherit its parent's parameters, and a role is a complete unit (reqs 1, 10), so
 naming one answers the whole question. A child session with no `--role` inherits exactly as it
 does today.
 
-**Mutual exclusion, both shapes.** `--role NAME` combined with `--model` or an effort flag is
-refused (req 9) — a role is a unit, and naming both asks two questions at once.
+**A child session is not a frozen consult, and the difference is load-bearing** (req 11). A
+one-shot run resolves *and routes* once and holds that target for its life — correct for
+something that lasts minutes. A child session lives for days, across many turns and process
+restarts, and must keep the routing, account failover and model-retirement behaviour every other
+session has. So the role is resolved **once, at creation**: it seeds the new session's stored
+harness, selection and reasoning level, and from then on that session is an ordinary session.
+Carrying the consult's frozen provider route into it would pin a child to one credential for its
+whole life and break failover — a bug that would surface only under quota exhaustion, days later.
+
+Concretely: resolve the role before any disk work, write the complete tuple onto the session row,
+and let normal session routing take it from there. `--role` decides what the child *starts as*,
+not what it is permanently bound to.
+
+**Mutual exclusion, both shapes.** `--role NAME` combined with any parameter that says what to run
+on is refused (req 10). For a one-shot run that is all five of the explicit flags, which is what
+the server already enforces for a role today (`sub-agent-target.ts`) — the role path must not
+quietly narrow that to two. For a child session it is the flags that exist there now, `--agent`
+and `--model`, and any override added later.
 
 ## The CLI
 
@@ -190,29 +227,32 @@ EOF
 **The shim's role check changes shape.** Today it rejects an unknown role locally against a
 compiled-in list, to give the agent a fast message. It cannot know the user's roles — they live
 server-side — so the local check becomes a pass-through and the server's resolution is the
-authority, with the refusal (req 12) naming the roles that exist. The shim buys a message for
+authority, with the refusal (req 13) naming the roles that exist. The shim buys a message for
 what it can know and does not pretend to know the rest.
 
-## The inventory (req 11)
+## The inventory (req 12)
 
 An agent can only map an intent onto roles it can see. Today it can see nothing of the sort: the
 session shim exposes `agent run` and `agent result` and nothing that lists services, models,
 levels **or roles**.
 
-The smallest thing that satisfies req 11 is a **read of the roles, and only the roles** —
-`shipit agent roles`, each entry a name and, where the role has one, its prompt's first line as a
-description. Enough to choose between `deep-dive` and `spec-check`, and enough to tell the user
-what exists when they ask.
+The smallest thing that satisfies req 12 is a **read of the roles, and only the roles** —
+`shipit agent roles`, each entry a name and its description (req 9, which is why the description
+is its own field rather than the prompt's first line: a role need not have a prompt, and one
+without a description would be unchooseable).
 
-**Deliberately not the whole catalogue.** Exposing services, models, billing modes and levels
-would let an agent assemble a fully-specified run itself, which is the thing req 14 removes from
-its instructions. Roles exist so the agent does not reason about params; handing it the params
-anyway would undo that. The inventory is scoped to what req 3 needs and stops there.
+**Roles only, and that is a scope choice rather than a consequence.** Exposing the service and
+model catalogue would make the fully-specified path *enumerable*, and therefore usable — which is
+not what req 15 forbids; req 15 is about not documenting a path the agent cannot use. So the
+honest statement is narrower: the role list is the smallest surface that answers req 3, and it
+keeps the division this feature is built on — the user chooses params, the agent chooses roles.
+Whether ShipIt should ever expose the catalogue to an agent is a separate product question this
+design does not settle.
 
-The refusal (req 12) carries the same list, so an unknown role is self-correcting: the agent
+The refusal (req 13) carries the same list, so an unknown role is self-correcting: the agent
 learns the real names at the moment it guessed wrong.
 
-## What the agent is told (req 14)
+## What the agent is told (req 15)
 
 ShipIt injects instructions into every session, and today they document a run that names every
 parameter — harness, service, billing mode, model and level, all mandatory, an incomplete call
@@ -223,11 +263,21 @@ parameter is indistinguishable from a supplied one.
 So that shape leaves the injected documentation. What the agent is told is: name a role, and if
 you need one that does not exist, say so — the user creates it in Settings (req 5).
 
-**The path stays implemented.** A caller that genuinely holds all five values — a repository that
-hard-codes them, which docs/261 req 2 explicitly permits — keeps working exactly as it does now.
-Req 14 governs what ShipIt *tells the agent*, not what the server accepts. The pages that document
-the explicit shape for that caller are the ones to prune; the server-side refusal of an incomplete
-call is untouched.
+**The path stays implemented, and the repository override stays reachable.** docs/261 req 2 lets a
+repository override the reviewer by naming all five parameters, and its phase 5 drew the line on
+*what the caller was handed*: no complete target ⇒ use the role; a complete target ⇒ pass it
+through. A flat "always name a role" would delete that carve-out, so the injected guidance keeps
+it in the only form that cannot teach guessing: **if repository policy hands you a complete
+target, pass it through unchanged; never assemble one yourself.**
+
+**This collides with a shipped guard, and the collision is the work.**
+`review-command-callers.test.ts` asserts that `shipit-docs/agent.md` contains at least one
+*complete* five-flag invocation, precisely so the override stays documented — a test written to
+stop this shape being lost. Req 15 removes it from the pages ShipIt injects into a session. Both
+cannot hold for the same page, so the audiences have to separate: the complete shape belongs in
+the human-facing reference for whoever writes repository policy, and the guard moves with it,
+asserting it is documented *there* rather than in the agent's own instructions. Phase 4 owns that
+split; it is not a doc edit with a test to silence.
 
 ## Settings (req 5)
 
@@ -248,14 +298,28 @@ the same field becomes a real picker, and the stored shape does not change. It i
 from day one deliberately: a role's harness is part of what it *is* (req 6), so hiding it until it
 becomes selectable would misrepresent the role.
 
-The server is the authority on every write, reusing `resolveReviewerPinPatch` — a role's params
-are a reviewer pin plus a harness, and that function already validates a triple against the
-catalogue and a level against a harness. Name validation is server-side too (token shape, length,
-uniqueness); a name that passes is accepted as given, because the user owns the word.
+The server is the authority on every write. It does **not** reuse `resolveReviewerPinPatch` as-is:
+that function *derives* a harness (`harnessesForSelection(patch, …)[0]`, `reviewer-settings.ts`)
+and validates the reasoning level against whichever it picked. Handing it a role would reproduce
+exactly the defect the required harness exists to remove — a level checked against one harness and
+run on another. A role needs a validator that **takes `harnessId` as an input**: the triple must
+exist in the catalogue, the named harness must be installed, able to carry the model and
+credentialed, and the level must be one that harness declares. The two validators share their
+catalogue and credential checks; only the harness step differs, and it differs in the direction
+that matters.
+
+Name validation is server-side too, and its policy is open question 2.
+
+**A role that cannot run still has to be editable, which is the case a picker-based UI gets
+wrong.** When a stored model, service or harness no longer exists, the shared pickers have no
+option to select and would either drop the row or silently show the first available value. So an
+unresolved role renders its **raw stored tuple** as text, names the field that is no longer
+valid, and keeps its edit and delete controls. It never disappears and is never quietly rewritten
+to something the user did not choose.
 
 Nothing here is optimistic: the server sends the resolution and the response replaces the list.
 
-## Attribution (req 13)
+## Attribution (req 14)
 
 A role's run is resolved and routed **once**, at spawn admission, and that frozen target is what
 retries, attribution and the transcript card all read. The consult card reports the service,
@@ -265,20 +329,24 @@ reader to hold a ranking in their head.
 
 ## Cost assessment, honestly
 
-- **Stored state with staleness.** A role pinned to a retired model, a removed service, a spent
-  credential or an uninstalled harness is stranded. Handled by the machinery that already handles
-  a stranded reviewer pin: retirement resolves through the catalogue's successor where one
-  exists, and a role that cannot run is *refused with a reason and a pointer to Settings*.
+- **Stored state with staleness.** A role whose model is retired, whose service is removed, whose
+  credential is spent or whose harness is uninstalled is stranded, and **a role is not silently
+  re-pointed** — req 7 says it runs on what it names, so it reports that it cannot run and the
+  user fixes it in Settings. That is a deliberate divergence from how a reviewer pin is treated,
+  where a retirement is followed through the catalogue's successor; see open question 1, which is
+  exactly this trade.
 - **Unbounded-list management.** Create, edit, rename, delete, order — four routes on an existing
   settings surface, and a list rendering shared controls. There is **no "default role" flag**, so
   the management is lighter than it first looks.
 - **A second name-space.** Role names and model labels are two lookup tables. They cannot collide
-  at the flag level, and the unknown-role refusal names the known set (req 12).
-- **The prompt** (req 8) adds a content surface: user data in the settings store, a text field on
-  the row. Its real cost is that a role with a prompt invites the user to treat it as a custom
-  agent definition — which is the invitation this feature intends.
-- **A new agent-facing read** (req 11). One small list endpoint, whose cost is not the endpoint
-  but the **boundary**: it must stay scoped to roles, or it re-creates the problem req 14 removes.
+  at the flag level, and the unknown-role refusal names the known set (req 13).
+- **Standing instructions and a description** (reqs 8, 9) add a content surface: user data in the
+  settings store, two text fields on the row, and a length rule where they meet the task. The real
+  cost is that a role carrying instructions invites the user to treat it as a custom agent
+  definition — which is the invitation this feature intends.
+- **A new agent-facing read** (req 12). One small list endpoint, whose cost is not the endpoint
+  but the **boundary**: widening it to the catalogue would put the agent back to assembling
+  params, which is the division this feature exists to draw.
 - **A required harness** (req 6) is one more thing that can go stale and one more pair that can
   disagree — answered by the save-time check and the stale-pin path. Set against that, it removes
   the effort-across-harnesses failure mode entirely.
@@ -287,10 +355,10 @@ reader to hold a ranking in their head.
 
 | # | Phase | Reqs | Done when |
 |---|---|---|---|
-| 1 | Storage + resolution: the role list including its required harness, `resolveRoleByName`, the settings payload carrying roles | 1, 2, 6, 7, 12, 13 | A role is stored, resolved and routed on the harness it names; a role whose harness cannot run its model is refused; an unknown name is refused listing the known ones; nothing calls it yet |
-| 2 | Settings: role CRUD, name validation, the Roles surface with the shared controls, the harness field and the prompt field | 1, 5, 6, 8 | A role is created, edited, renamed and deleted in the UI; the harness is shown on every role and is selectable wherever a model has more than one |
-| 3 | Starting a role: `--role NAME` on both the one-shot run and the child session, the roles read, the intent-to-role guidance | 3, 4, 9, 10, 11 | `--role deep-dive` starts that role either way; the agent can list roles and map "review the PR" onto one; `--role` plus a model or a level is refused |
-| 4 | Injected documentation: the fully-specified run leaves the agent's instructions | 14 | No injected page tells an agent to assemble a run out of parameters it cannot enumerate; the server still accepts one from a caller that holds them |
+| 1 | Storage + resolution: the role record, the params discriminator, `resolveRoleByName`, the harness-explicit validator, the settings payload | 1, 2, 6, 7, 9, 13, 14 | A role is stored, resolved and routed on the harness it names; a level is validated against *that* harness; `auto` is rejected for any name but `reviewer`; an unknown name is refused listing the known ones |
+| 2 | Settings: role CRUD, the Roles surface with the shared controls, harness, description and standing instructions, the reviewer's embedded two-slot editor, and the unresolved-role view | 1, 2, 5, 6, 8, 9 | A role is created, edited and deleted in the UI; the reviewer cannot be renamed or deleted; a role whose model or harness is gone still renders its stored tuple and stays editable |
+| 3 | Starting a role: `--role NAME` on the one-shot run and the child session, the roles read, the prompt join, the intent-to-role guidance | 3, 4, 8, 10, 11, 12 | `--role deep-dive` starts that role either way; a child seeded from a role then routes like any other session; `--role` plus any what-to-run-on parameter is refused; the combined prompt is validated against the destination's limit |
+| 4 | Documentation split: the five-parameter shape leaves the injected pages and moves to the human-facing reference, with its guard | 15 | No injected page tells an agent to assemble a run out of parameters it cannot enumerate; the repository override is still documented for whoever writes repository policy, and `review-command-callers.test.ts` asserts it there |
 
 Phase 1 carries the params discriminator, so `selectReviewer` and the two-slot settings survive
 intact behind the `auto` branch rather than being retired or reimplemented.
