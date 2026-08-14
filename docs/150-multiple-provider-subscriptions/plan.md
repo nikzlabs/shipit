@@ -3267,3 +3267,14 @@ carries it on `PinnedAccountFailover`, and `failoverNotice` maps it to one of
 three sentences. Selection is untouched — it only ever needed the boolean, and
 the classification is derived from the same live snapshot rather than stored
 anywhere.
+### Landed: temporary reviewer cleanup preserves conversation state (reqs 9, 20)
+
+Temporary reviewer and non-turn credential windows now close through the same
+state-preserving subtree replacement boundary as account switches. Cleanup
+removes OAuth tokens and agent config for both Claude and Codex, but keeps the
+allowlisted `projects`, `sessions`, `archived_sessions`, and `history.jsonl`
+state. This is required when a same-harness reviewer uses another service/model
+route: its cleanup must not delete the parent Codex rollout or Claude project
+conversation that the next primary turn resumes. The helper boundary also
+covers quota failover, sign-out sweeps, failures, and cancellations, so those
+paths cannot reintroduce a whole-subtree deletion.

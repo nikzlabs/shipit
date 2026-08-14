@@ -273,3 +273,6 @@ sitting idle.
 - [x] Unit (`agent-listeners.test.ts`): a success-subtype turn whose assistant text is the notice benches the account and ends errored; an ordinary success turn does neither.
 - [x] Integration (`quota-exhaustion-retry.test.ts`): the same shape re-runs the turn on a fresh agent and does not commit the exhausted attempt; a retry that also exhausts in text ends errored rather than successful; a success turn whose text merely mentions limits still ends as one successful turn.
 - [x] Unit (`sub-agent.test.ts`): a consult whose final text is the notice benches and retries on the next subscription; with no account left it fails rather than returning the notice as its answer; a non-quota error alongside notice-shaped text benches nothing.
+- [x] Preserve Claude and Codex conversation state when temporary reviewer,
+  non-turn, failover, cancellation, and sign-out cleanup removes authentication
+  and config material (reqs 9, 20).

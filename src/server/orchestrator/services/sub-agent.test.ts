@@ -1500,7 +1500,7 @@ describe("sweepSubAgentCredentialsOnSignOut", () => {
 
     sweepSubAgentCredentialsOnSignOut("codex", { sessionManager, credentialsDir: root });
 
-    expect(fs.existsSync(dirA)).toBe(false); // swept (codex not pinned here)
+    expect(fs.existsSync(path.join(dirA, "auth.json"))).toBe(false); // temporary auth swept
     expect(fs.existsSync(dirB)).toBe(true); // preserved (codex is the pinned agent)
   });
 
@@ -1509,4 +1509,3 @@ describe("sweepSubAgentCredentialsOnSignOut", () => {
     expect(() => sweepSubAgentCredentialsOnSignOut("codex", { sessionManager })).not.toThrow();
   });
 });
-
