@@ -366,6 +366,67 @@ instead of a repeat.
   `/plugins/<name>`. That is the whole reason it stays browsable and
   refresh-follows-instantly, and it is enough: nothing the agent itself runs
   needs the merged tree.
+- **The consumer lease** (req 15) — **implemented** (`plugin-leases.ts`): a
+  generation's checkout and writable layer are deleted only when nothing is
+  running against them.
+
+  The shared volume above is what makes this necessary. Both plugin surfaces —
+  a companion-CLI invocation container and a plugin service container — attach
+  ONE volume per generation, whose lowerdir is the checkout on disk and whose
+  upperdir is `work/<sha>`. Publication deletes both of those the moment a newer
+  commit is published, and did so with no idea either consumer existed.
+  docs/183's own spike records the result: merged `readdir` starts coming back
+  empty while path lookups still resolve, so the container is silently corrupted
+  rather than failed. Req 15 says an update completes coherently or the prior
+  complete version keeps running; a half-deleted checkout under a live mount is
+  neither.
+
+  **One lease, two facts, because they cover different lifetimes.** A generation
+  may be deleted only when both agree:
+
+  - an **in-process hold**, taken in the same synchronous block that resolves
+    `active` and released in a `finally`. It covers the window a volume cannot —
+    from resolving a generation to the moment a container holds it — where the
+    volume is either not created yet or created and attached to nothing. That
+    window is not benign: Docker re-creates a missing named volume at container
+    start as an empty local volume, so the failure is a silently empty `/plugin`
+    rather than an error.
+  - the **volume's own attachment**, which the daemon enforces (a volume a
+    container holds cannot be removed) and which `removePluginOverlay` already
+    verifies rather than assumes. This is the half that survives an orchestrator
+    restart, and the half that covers a plugin service — a long-lived container
+    the call that created it does not outlive.
+
+  **What happens when the releasing side never runs**, which is the case this
+  had to be designed around: a hold that is never released costs a generation
+  directory that is not deleted — bounded disk inside a session state directory
+  that dies with the session, reclaimed by the next publish's prune, and never
+  corruption. Process death drops every in-process hold, which is correct
+  precisely because no container this process started can outlive it without the
+  boot reap removing it. A session disposal drops the rest.
+
+  **Where it is taken.** The CLI invocation holds its pinned generation for the
+  whole call (`plugin-cli-run.ts`); a call that resolves a generation the pruner
+  has already claimed is refused with "run the command again" rather than
+  mounting a tree that is going away. The service surface replaces its hold set
+  wholesale on every round (`services/plugin-services.ts`), which is how a
+  long-lived consumer's lease follows a refresh with no release call to forget.
+  And publication itself claims the commit it is about to write — from before
+  `install`, which CLEARS `work/<sha>` before writing, through the rename that
+  replaces the checkout's inode. Both of those are reachable by one route: a
+  project pinning back to a version it recently ran (req 8's exact case), whose
+  generation a prune left in place *because* a consumer was using it. Refusing
+  there is an ordinary failed activation.
+
+  **The bound, stated rather than left implied.** A prune that is refused does
+  not retry on its own; the next publish's prune reclaims what has since been
+  released. So a session that refreshes repeatedly keeps at most the live
+  generation plus the one its consumers were still running when the refresh
+  landed, and a session that never refreshes again carries one extra generation
+  until it is disposed. Removing a superseded generation's *volume* is now part
+  of taking the lease to delete the generation, which also closes a smaller leak:
+  volumes were only ever swept on the service path, so a session that refreshed
+  without services accumulated one per refresh.
 - **Services** (reqs 3, 5, 16, 20) — **implemented**
   (`plugin-compose.ts`, `services/plugin-services.ts`): each imported plugin's
   fragment becomes real services in the session's own compose stack, emitted
@@ -516,17 +577,18 @@ instead of a repeat.
   plugin source unmodified, and a service's writable surfaces are `/plugin-state`
   and `/project`, not the layer its own CLI runs out of.
 
-  **Two gaps this slice found and did NOT close, both because closing them here
-  would build the wrong half of a shared mechanism.**
+  **The consumer lease is what keeps a service's tree from disappearing under
+  it** (`plugin-leases.ts`, req 15 — see §2 "The consumer lease" below). This
+  surface takes an in-process hold on the live generation of every tracked
+  repository it resolves, replaced wholesale on each round, and the service
+  container's own attachment to the generation volume carries the lease past the
+  orchestrator. It no longer sweeps superseded volumes itself: removing a
+  generation's volume is now part of taking the lease to delete the generation,
+  and two sweepers racing on one volume name is the second mechanism the lease
+  exists to avoid.
 
-  *No consumer lease over a live generation.* A refresh publishes the new
-  generation and `pruneOldGenerations` immediately deletes the superseded
-  checkout and its writable layer — while a plugin service container is still
-  holding an overlay whose lowerdir is that directory. docs/183's own findings
-  record what that does: merged `readdir` starts returning empty while path
-  lookups still resolve, silently corrupting the running container. The same
-  window belongs to CLI invocation containers, so the fix is ONE lease across
-  both surfaces (prune waits for its consumers), not a service-only version.
+  **One gap this slice found and did NOT close, because closing it here would
+  build the wrong half of a shared mechanism.**
 
   *A rejected fragment does not keep the prior generation live.* Phase 3 runs
   when services are resolved, which is AFTER `activateGeneration` has published
@@ -818,23 +880,13 @@ instead of a repeat.
   un-trusted since the wrapper was written must stop executing, and this is the
   only place that can notice.
 
-  Two things this slice does **not** settle, both found by the independent
-  review and both cross-slice.
-
-  **A refresh can delete a generation out from under a running mount.**
-  Publication prunes the previous checkout and its writable layer immediately
-  (`plugin-generations.ts`), and nothing holds a consumer lease — so a CLI
-  started against commit A, or a service container attached to it, can have its
-  lowerdir removed mid-run. `overlay-volume.ts` records that deleting a live
-  lowerdir can make merged reads come back empty. This bullet earlier promised
-  "a CLI invoked mid-refresh runs the old generation or fails with
-  `refreshing`"; the first half is what happens, the second is not implemented.
-  The fix is a **consumer lease spanning both CLI invocations and service
-  containers** — one mechanism, not two, which is why it is not this slice's to
-  invent. Related and milder: a generation's runtime volume is not removed when
-  its generation is pruned, so volumes accumulate per refresh until the session
-  is archived (session teardown and the boot reap both cover them; nothing
-  in-session does).
+  One thing this slice does **not** settle, found by the independent review and
+  cross-slice. (The other — a refresh deleting a generation out from under a
+  running mount — is now closed by the consumer lease, §2 below; the invocation
+  holds its pinned generation for the whole call, so "a CLI invoked mid-refresh
+  runs the old generation" is true rather than aspirational, and a call that
+  resolves a generation the pruner has already claimed is refused with "run the
+  command again" instead of mounting a tree that is being removed.)
 
   **Egress.** The invocation container has its own network with unrestricted
   outbound — which is what `install` already has and what plugin *service*
@@ -1679,6 +1731,18 @@ coherent in one UI.
   volume is created — the kernel forbids one upperdir backing two mounts. The
   12-character session prefix in the volume name is what makes an orphan
   reclaimable by the disk janitor's sweep.
+- ✓ `src/server/orchestrator/plugin-leases.ts` — the consumer lease over a live
+  generation (req 15): the in-process hold both plugin surfaces take, and the
+  deletion claim publication takes before it removes anything. Two facts, one
+  module, because a service-only or CLI-only version leaves the other exposed
+  and creates a second mechanism to reconcile. The hold and the claim are
+  deliberately **synchronous** — a consumer resolves `active` and holds what it
+  resolved in one block, and a pruner claims before it awaits anything, so
+  neither can slip between the other's check and act. Also owns the Docker half:
+  removing a superseded generation's volume is part of taking permission to
+  delete the directories under it. Injected into `activateGeneration` as
+  `beginGenerationDeletion` from `bootstrap-managers`, for the same reason
+  `runInstall` is — the generation engine holds no Docker client.
 - ✓ `src/server/orchestrator/plugin-install.ts` — the throwaway install
   container: the generation's overlay volume at `/plugin` and nothing else, the
   worker image for its toolchain with its entrypoint bypassed, no inherited

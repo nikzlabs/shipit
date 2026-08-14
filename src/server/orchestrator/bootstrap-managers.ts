@@ -67,6 +67,7 @@ import { resolveSessionPluginServices } from "./services/plugin-services.js";
 import type { PluginComposeService } from "./plugin-compose.js";
 import { emitPluginReposUpdated } from "./service-manager-setup.js";
 import { createPluginInstallRunner } from "./plugin-install.js";
+import { createGenerationDeletionLease } from "./plugin-leases.js";
 import { runPluginCommand, type PluginCliRequest, type PluginCliResult } from "./plugin-cli-run.js";
 import { sessionStateDirForWorkspace } from "./session-state-dir.js";
 import { pinStorePath } from "./plugin-pins.js";
@@ -527,6 +528,14 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     onSettled?: (id: string) => void,
   ) => {
     const runInstall = pluginInstallHook(sessionId, workspaceDir);
+    // docs/262 req 15 — the consumer lease a prune takes before deleting a
+    // superseded generation. Docker-shaped for the same reason install is: the
+    // durable half of the lease is "a container still holds this generation's
+    // volume", which only the daemon can answer. Without a container manager
+    // there are no plugin containers, so there is nothing to lease against.
+    const beginGenerationDeletion = containerManager
+      ? createGenerationDeletionLease({ docker: containerManager.dockerClient, sessionId })
+      : undefined;
     const remoteUrl = sessionManager.get(sessionId)?.remoteUrl;
     return {
       getBareCacheDir,
@@ -535,6 +544,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
       // fetch credentials (req 19).
       ...(onSettled ? { onSettled } : {}),
       ...(runInstall ? { runInstall } : {}),
+      ...(beginGenerationDeletion ? { beginGenerationDeletion } : {}),
       // req 8 — pins are durable per consuming PROJECT, so every session of one
       // repository resolves a pinned tag to the same commit.
       ...(remoteUrl ? { consumerKey: remoteUrl } : {}),

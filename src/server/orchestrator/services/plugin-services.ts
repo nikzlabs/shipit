@@ -32,11 +32,8 @@ import {
   type PluginComposeService,
   type PluginFragmentService,
 } from "../plugin-compose.js";
-import {
-  ensurePluginRuntimeOverlay,
-  removePluginOverlay,
-  resolvePluginOverlayRoots,
-} from "../plugin-overlay.js";
+import { ensurePluginRuntimeOverlay, resolvePluginOverlayRoots } from "../plugin-overlay.js";
+import { holdGenerationsForOwner, pluginServiceOwner } from "../plugin-leases.js";
 import { resolveLiveGenerations } from "../plugin-generations.js";
 import { resolvePublishedPorts } from "../plugin-ports.js";
 import { sessionRootForWorkspace, volumeSubpathFor } from "../plugin-state.js";
@@ -69,6 +66,15 @@ export interface PluginServiceDeps {
  * Never throws and never fails a session: a plugin whose fragment cannot be used
  * contributes no services and one issue on its repository's card, and the
  * project's own stack comes up exactly as it would have (reqs 13, 14).
+ *
+ * **Every path that decides this session surfaces no plugin services also lets
+ * go of its generation holds** ({@link nothingToSurface}), because a hold that is
+ * only released on the happy path is the leak req 15's lease was built to avoid.
+ * The one exception is a `shipit.yaml` this function cannot read at all: that is
+ * not evidence that the plugins went away, the services from the previous round
+ * are still running against their generations, and the next readable round
+ * replaces the set. A session disposal releases them either way
+ * (`clearActivationState`).
  */
 export async function resolveSessionPluginServices(
   sessionId: string,
@@ -82,8 +88,7 @@ export async function resolveSessionPluginServices(
     return [];
   }
   if (!config.plugins.declared || config.plugins.uses.length === 0) {
-    recordPluginServiceFailures(sessionId, new Map());
-    return [];
+    return nothingToSurface(sessionId);
   }
 
   let stateDir: string;
@@ -92,7 +97,8 @@ export async function resolveSessionPluginServices(
     stateDir = sessionStateDirForWorkspace(workspaceDir);
     sessionDir = sessionRootForWorkspace(workspaceDir);
   } catch {
-    return []; // a session layout with no state dir has no generations either
+    // A session layout with no state dir has no generations either.
+    return nothingToSurface(sessionId);
   }
 
   const project = readProjectServices(workspaceDir, config, deps.containEgress);
@@ -106,10 +112,7 @@ export async function resolveSessionPluginServices(
     projectServiceNames: project.names,
     containEgress: deps.containEgress,
   });
-  if (fragments.length === 0) {
-    recordPluginServiceFailures(sessionId, new Map());
-    return [];
-  }
+  if (fragments.length === 0) return nothingToSurface(sessionId);
 
   const roots = deps.docker
     ? await resolvePluginOverlayRoots(deps.docker, deps.workspaceVolume, deps.stateRoot)
@@ -145,6 +148,17 @@ export async function resolveSessionPluginServices(
   });
   recordPluginServiceFailures(sessionId, built.issuesByRepo);
   return built.services;
+}
+
+/**
+ * The answer for a session with no plugin services this round: last round's
+ * failures are cleared, and every generation this surface was holding is
+ * released so a later prune can reclaim it (req 15).
+ */
+function nothingToSurface(sessionId: string): PluginComposeService[] {
+  recordPluginServiceFailures(sessionId, new Map());
+  holdGenerationsForOwner(pluginServiceOwner(sessionId), []);
+  return [];
 }
 
 /**
@@ -207,6 +221,23 @@ function readProjectServices(
  * `buildPluginComposeServices` drops its services with a reason — running a
  * plugin against a tree that is missing whatever its `install` produced is the
  * partial state req 15 forbids, dressed up as a working service.
+ *
+ * **This is where the service surface takes its half of the consumer lease**
+ * (`plugin-leases.ts`, req 15). A plugin service container outlives the call
+ * that created it, so its lease has two parts: the container's own attachment to
+ * the generation volume — which the daemon enforces, and which is the only fact
+ * that survives an orchestrator restart — and the in-process hold taken here,
+ * covering the window before that container exists, where the volume is created
+ * but attached to nothing and a concurrent refresh's prune would take it away.
+ *
+ * The hold set is REPLACED each round rather than added to, so it follows a
+ * refresh with no release call of its own: a repository whose generation moved,
+ * whose services went away, or which is no longer declared simply is not in the
+ * set this round and is let go. That is also why superseded volumes are no
+ * longer swept from here — deleting a generation's volume is now part of taking
+ * the lease to delete the generation itself (`plugin-generations.ts`'s prune),
+ * and a second sweeper racing the pruner on one volume name is precisely the
+ * "two mechanisms" this lease exists to avoid.
  */
 async function ensurePluginVolumes(
   sessionId: string,
@@ -217,7 +248,6 @@ async function ensurePluginVolumes(
 ): Promise<Map<string, string>> {
   const volumes = new Map<string, string>();
   const docker = deps.docker;
-  if (!docker) return volumes;
 
   const tracked = new Map<string, { commit: string; checkoutDir: string }>();
   for (const fragment of fragments) {
@@ -226,7 +256,27 @@ async function ensurePluginVolumes(
     }
   }
 
+  // Taken even without Docker, so the hold set is released for a session whose
+  // declaration dropped its plugin services either way.
+  const held = new Set(
+    holdGenerationsForOwner(
+      pluginServiceOwner(sessionId),
+      [...tracked].map(([repoName, { commit }]) => ({ sessionId, repoName, commit })),
+    ).map((ref) => ref.repoName),
+  );
+  if (!docker) return volumes;
+
   for (const [repoName, { commit, checkoutDir }] of tracked) {
+    if (!held.has(repoName)) {
+      // The generation is being pruned right now, which means it has already
+      // been superseded — this round is looking at a version that is on its way
+      // out. Leaving it out of the map drops its services with a reason, and the
+      // round the newer generation settles brings them back.
+      console.warn(
+        `[plugins:${sessionId}] ${repoName}: ${commit.slice(0, 9)} is being replaced — leaving its services out of this round`,
+      );
+      continue;
+    }
     try {
       // `checkoutDir` is the ALREADY-RESOLVED generation the fragment and the
       // commit were read from — resolving `active` again here is how a volume
@@ -244,7 +294,6 @@ async function ensurePluginVolumes(
         ...roots,
       });
       volumes.set(repoName, volumeName);
-      await dropSupersededVolumes(docker, sessionId, repoName, volumeName);
     } catch (err) {
       console.warn(
         `[plugins:${sessionId}] ${repoName}: could not prepare the plugin's runtime layer:`,
@@ -253,34 +302,4 @@ async function ensurePluginVolumes(
     }
   }
   return volumes;
-}
-
-/**
- * Drop this repository's volumes from superseded generations.
- *
- * A refresh publishes a new commit and therefore a new volume name (they are
- * per generation — a volume's driver options are fixed while consumers hold it),
- * so without this every refresh would leave one behind for the rest of the
- * session. Best-effort: one still held by a container that has not been
- * recreated yet is removed on the next round, and the disk janitor's orphan
- * sweep is the backstop for a session that goes away first.
- */
-async function dropSupersededVolumes(
-  docker: Docker,
-  sessionId: string,
-  repoName: string,
-  keep: string,
-): Promise<void> {
-  // The generation suffix is the last name component, so everything before it
-  // identifies (session, repository) exactly — including the hash that
-  // disambiguates two repo names the volume-name rendering flattens together.
-  const prefix = keep.slice(0, keep.lastIndexOf("-") + 1);
-  const listed = await docker.listVolumes({ filters: { name: [prefix] } });
-  for (const volume of listed.Volumes ?? []) {
-    if (volume.Name === keep || !volume.Name.startsWith(prefix)) continue;
-    const released = await removePluginOverlay(docker, volume.Name);
-    if (!released) {
-      console.log(`[plugins:${sessionId}] ${repoName}: ${volume.Name} is still held — leaving it for the next round`);
-    }
-  }
 }

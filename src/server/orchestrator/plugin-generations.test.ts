@@ -17,6 +17,7 @@ import {
   activeLinkPath,
   readActiveGeneration,
   resolveLiveGenerations,
+  type BeginGenerationDeletion,
 } from "./plugin-generations.js";
 import type { DeclaredPluginRepo } from "../shared/plugin-repos.js";
 
@@ -601,5 +602,174 @@ describe("resolveLiveGenerations", () => {
     await activateGeneration(repo({ branch: "main" }), deps());
     const undeclared = repo({ name: "other-tools", branch: "main" });
     expect(resolveLiveGenerations(stateDir, [])(undeclared)).toBeNull();
+  });
+});
+
+/**
+ * docs/262 req 15 — the consumer lease (`plugin-leases.ts`).
+ *
+ * The lease itself is exercised in its own file; what matters here is that the
+ * PRUNE asks for it, honours a refusal, and never leaves half a generation
+ * behind — a checkout without its writable layer is as broken a lowerdir as no
+ * checkout at all. The hook is stubbed rather than driven through Docker,
+ * because this file is deliberately offline and the fact under test is the
+ * ordering, not the daemon's answer.
+ */
+describe("consumer lease over a superseded generation (req 15)", () => {
+  /** A stub lease that refuses the commits in `held`. */
+  function lease(held: string[] = []) {
+    const refuse = new Set(held);
+    const asked: string[] = [];
+    const claimed = new Set<string>();
+    const begin: BeginGenerationDeletion = async ({ commit }) => {
+      asked.push(commit);
+      if (refuse.has(commit) || claimed.has(commit)) return null;
+      claimed.add(commit);
+      return () => claimed.delete(commit);
+    };
+    return { begin, asked, claimed, refuse };
+  }
+
+  const generationsDir = (): string => path.join(stateDir, "plugins", "tools", "generations");
+  const workDir = (commit: string): string => path.join(stateDir, "plugins", "tools", "work", commit);
+
+  /** Give a generation the writable layer an installed plugin would have. */
+  function seedWorkLayer(commit: string): void {
+    fs.mkdirSync(path.join(workDir(commit), "upper"), { recursive: true });
+  }
+
+  it("leaves a held generation — checkout AND writable layer — exactly where it is", async () => {
+    await activateGeneration(repo({ branch: "main" }), deps());
+    const first = readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)!.commit;
+    seedWorkLayer(first);
+
+    // A companion CLI or a plugin service is running against `first` when the
+    // refresh lands. Deleting it would pull the lowerdir out from under a live
+    // overlay mount, which is silent corruption rather than an error.
+    const held = lease([first]);
+    const second = await commitFiles({ "new.txt": "x" }, "second");
+    const outcome = await activateGeneration(repo({ branch: "main" }), {
+      ...deps(),
+      beginGenerationDeletion: held.begin,
+    });
+
+    expect(outcome.status).toBe("activated");
+    expect(readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)?.commit).toBe(second);
+    expect(held.asked).toContain(first);
+    expect(fs.existsSync(path.join(generationsDir(), first))).toBe(true);
+    expect(fs.existsSync(path.join(workDir(first), "upper"))).toBe(true);
+    // A refused prune is not a failed activation: the new version is live and
+    // the old tree is simply still there.
+    expect(fs.existsSync(path.join(generationsDir(), second))).toBe(true);
+  });
+
+  it("reclaims it on the next publish, once nothing holds it", async () => {
+    await activateGeneration(repo({ branch: "main" }), deps());
+    const first = readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)!.commit;
+    seedWorkLayer(first);
+
+    const held = lease([first]);
+    await commitFiles({ "new.txt": "x" }, "second");
+    await activateGeneration(repo({ branch: "main" }), { ...deps(), beginGenerationDeletion: held.begin });
+    expect(fs.existsSync(path.join(generationsDir(), first))).toBe(true);
+
+    // The consumer is done, so the round after it takes the tree away.
+    held.refuse.delete(first);
+    await commitFiles({ "third.txt": "x" }, "third");
+    await activateGeneration(repo({ branch: "main" }), { ...deps(), beginGenerationDeletion: held.begin });
+
+    expect(fs.existsSync(path.join(generationsDir(), first))).toBe(false);
+    expect(fs.existsSync(workDir(first))).toBe(false);
+    // Every lease it took was released, so a later prune is never wedged.
+    expect(held.claimed.size).toBe(0);
+  });
+
+  it("removes an abandoned staging tree without asking for a lease", async () => {
+    await activateGeneration(repo({ branch: "main" }), deps());
+    const stale = `${"c".repeat(40)}.staging-deadbeef`;
+    fs.mkdirSync(path.join(generationsDir(), stale), { recursive: true });
+
+    const held = lease();
+    await commitFiles({ "new.txt": "x" }, "second");
+    await activateGeneration(repo({ branch: "main" }), { ...deps(), beginGenerationDeletion: held.begin });
+
+    // Publish RENAMES a staging tree, it never mounts one, so no consumer can
+    // ever have held it — and it carries no commit identity to lease against.
+    expect(fs.existsSync(path.join(generationsDir(), stale))).toBe(false);
+    expect(held.asked).not.toContain(stale);
+  });
+
+  it("refuses to re-publish a commit whose previous copy is still in use, before install runs", async () => {
+    await activateGeneration(repo({ branch: "main" }), deps());
+    const first = readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)!.commit;
+    seedWorkLayer(first);
+    fs.writeFileSync(path.join(workDir(first), "upper", "installed.txt"), "from the running version");
+
+    const held = lease([first]);
+    const second = await commitFiles({ "new.txt": "x" }, "second");
+    await activateGeneration(repo({ branch: "main" }), { ...deps(), beginGenerationDeletion: held.begin });
+
+    // The project pins back to the version it was running (req 8's exact case).
+    // Its checkout is still there and still mounted, and so is its writable
+    // layer — which `install` CLEARS before it writes, so the lease has to be
+    // taken before install, not merely before the rename.
+    const installed: string[] = [];
+    const outcome = await activateGeneration(repo({ pin: first }), {
+      ...deps(),
+      runInstall: async (job) => {
+        installed.push(job.commit);
+        return { ok: true };
+      },
+      beginGenerationDeletion: held.begin,
+    });
+
+    expect(outcome.status).toBe("failed");
+    expect(outcome.status === "failed" && outcome.reason).toContain("still in use");
+    expect(installed).toEqual([]);
+    expect(fs.existsSync(path.join(workDir(first), "upper", "installed.txt"))).toBe(true);
+    // req 15 — the prior complete version keeps running.
+    expect(readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)?.commit).toBe(second);
+    // …and nothing was left staged.
+    expect(fs.readdirSync(generationsDir()).filter((n) => n.includes(".staging-"))).toEqual([]);
+  });
+
+  it("releases the lease on the ordinary path, so a later prune is never wedged", async () => {
+    const clean = lease();
+    await activateGeneration(repo({ branch: "main" }), { ...deps(), beginGenerationDeletion: clean.begin });
+    await commitFiles({ "new.txt": "x" }, "second");
+    await activateGeneration(repo({ branch: "main" }), { ...deps(), beginGenerationDeletion: clean.begin });
+
+    // The publish takes a claim over the commit it is about to write and the
+    // prune takes one per superseded generation; every one of them is released
+    // in a `finally`, because a claim nobody drops blocks that generation for
+    // the life of the process.
+    expect(clean.claimed.size).toBe(0);
+  });
+
+  it("retires a re-pointed declaration's link but not a tree somebody is running", async () => {
+    await activateGeneration(repo({ branch: "main" }), deps());
+    const first = readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)!.commit;
+    seedWorkLayer(first);
+
+    // The same declared name now points at a repository that cannot be fetched.
+    const held = lease([first]);
+    const rePointed = repo({ branch: "main", source: { kind: "github", owner: "acme", repo: "other" } });
+    const outcome = await activateGeneration(rePointed, {
+      ...deps(),
+      repoUrl: "https://github.com/acme/other.git",
+      ensureCache: async () => {
+        throw new Error("no access");
+      },
+      beginGenerationDeletion: held.begin,
+    });
+
+    expect(outcome.status).toBe("failed");
+    // The link is what the container follows, so retiring it is the half that
+    // has to happen whatever a consumer is doing.
+    expect(fs.existsSync(activeLinkPath(stateDir, "tools"))).toBe(false);
+    // The tree behind it is addressable by nothing now, and stays until its
+    // consumer is done rather than vanishing mid-run.
+    expect(fs.existsSync(path.join(generationsDir(), first))).toBe(true);
+    expect(fs.existsSync(path.join(workDir(first), "upper"))).toBe(true);
   });
 });

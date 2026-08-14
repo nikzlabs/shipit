@@ -24,8 +24,10 @@ import {
   readActiveGeneration,
   resolveLiveGenerations,
   type ActivationOutcome,
+  type BeginGenerationDeletion,
   type GenerationRecord,
 } from "../plugin-generations.js";
+import { releaseSessionGenerationHolds } from "../plugin-leases.js";
 import {
   createPluginImportResolver,
   preparePluginState,
@@ -312,6 +314,10 @@ export function recordPluginServiceFailures(
 
 export function clearActivationState(sessionId: string): void {
   epochs.set(sessionId, (epochs.get(sessionId) ?? 0) + 1);
+  // req 15 — a session that is gone holds nothing. Its plugin containers are
+  // being torn down with it, so the only thing a surviving hold could do is stop
+  // a later prune from reclaiming disk that nothing is using.
+  releaseSessionGenerationHolds(sessionId);
   for (const key of [...activationState.keys()]) {
     if (key.startsWith(`${sessionId}::`)) activationState.delete(key);
   }
@@ -356,6 +362,16 @@ export interface PluginActivationDeps {
    * and activation is exactly what it was before.
    */
   runInstall?: PluginInstallHook;
+  /**
+   * docs/262 req 15 — the consumer lease a prune takes before it deletes a
+   * superseded generation (`plugin-leases.ts`). Injected from
+   * `bootstrap-managers` for the same reason `runInstall` is: half of it is a
+   * question only Docker can answer.
+   *
+   * Omitted where there is no Docker (local mode, tests), where nothing can be
+   * holding a generation because there are no plugin containers at all.
+   */
+  beginGenerationDeletion?: BeginGenerationDeletion;
 }
 
 /** The install hook's shape, taken from the generation engine that calls it. */
@@ -489,6 +505,9 @@ export async function activateDeclaredPlugins(
           ensureCache: deps.ensureCache,
           isCancelled,
           ...(deps.runInstall ? { runInstall: deps.runInstall } : {}),
+          ...(deps.beginGenerationDeletion
+            ? { beginGenerationDeletion: deps.beginGenerationDeletion }
+            : {}),
         });
       } catch (err) {
         // `activateGeneration` is documented never to throw, but the counter
