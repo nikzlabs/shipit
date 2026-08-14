@@ -266,6 +266,10 @@ export async function executeAgentTurn(
   input: TurnInput,
 ): Promise<void> {
   const { agentId, prompt, activity, sessionId, emit } = input;
+  // docs/233 — every started turn reactivates a terminal-PR session before
+  // any result exists. This is unconditional because echo rendering is not a
+  // lifecycle signal, and abnormal exits must retain the start activity.
+  deps.listenerDeps.sessionManager.track(sessionId);
   const useStreaming = input.useStreaming ?? false;
   /**
    * docs/140 Phase 6.11 — may a turn the CLI starts on its own be ADOPTED here

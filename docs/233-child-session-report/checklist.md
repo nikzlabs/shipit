@@ -20,9 +20,10 @@
 - [x] Human requirements and resolution receipts
 - [x] Implementation design traced against the existing UI/server lifecycle predicate
 - [x] Independent design reviews addressed
-- [ ] Single shared resolved-session classifier + client/server consumer migration + tests
-- [ ] Dispatched-turn start updates `lastUsedAt` + self merge-wake integration coverage
-- [ ] Direct parent-message resolved-child guard + service/integration/shim tests
-- [ ] Cohort resolved-sibling skip result + service/shim tests
-- [ ] Agent-facing docs updated for resolved-child command outcomes and `whoami` visibility
-- [ ] `npm run test:dev`, `npm run lint:dev`, and `npm run typecheck` clean
+- [x] Single shared resolved-session classifier + client/server consumer migration + tests
+- [x] Every turn start updates `lastUsedAt`, including abnormal-exit coverage
+- [x] Direct parent-message resolved-child guard + service tests
+- [x] Cohort resolved-sibling skip result + service tests
+- [x] Agent-facing docs updated for resolved-child command outcomes and `whoami` visibility
+- [x] Independent implementation review findings addressed
+- [x] `npm run test:dev`, `npm run lint:dev`, and `npm run typecheck` clean

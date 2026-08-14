@@ -946,6 +946,32 @@ describe("shipit session message", () => {
     expect(JSON.parse(out.stdout)).toEqual({ queuePosition: 1, enqueued: true });
   });
 
+  it("prints the resolved-child rejection and preserves its JSON body", async () => {
+    const response = {
+      status: 409,
+      body: {
+        error: "Child A is resolved; no message, card, or wake turn was sent.",
+        sessionId: "ses_a",
+        title: "Child A",
+        reason: "resolved",
+        delivered: false,
+      },
+    };
+    const { run } = makeRunner();
+    const human = await run(["session", "message", "ses_a", "-m", "Hi"], {
+      "POST /agent-ops/session/message/ses_a": response,
+    });
+    expect(human.exitCode).toBe(1);
+    expect(human.stderr).toContain("no message, card, or wake turn was sent");
+
+    const { run: runJson } = makeRunner();
+    const json = await runJson(["session", "message", "ses_a", "-m", "Hi", "--json"], {
+      "POST /agent-ops/session/message/ses_a": response,
+    });
+    expect(json.exitCode).toBe(1);
+    expect(JSON.parse(json.stdout)).toEqual(response.body);
+  });
+
   it("surfaces a 404 'not a descendant' verbatim", async () => {
     const { run } = makeRunner();
     const out = await run(
@@ -1550,6 +1576,41 @@ describe("shipit session report", () => {
     expect(out.exitCode).toBe(1);
     expect(out.stdout).toContain("NOT woken (container could not be resumed)");
     expect(out.stdout).toContain("the card was still posted");
+  });
+
+  it("names resolved cohort recipients that received no delivery", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "report", "-b", "x", "--cohort"], {
+      "POST /agent-ops/session/report": {
+        status: 200,
+        body: {
+          reportId: "r",
+          severity: "fyi",
+          to: "cohort",
+          recipients: [{ sessionId: "p", title: "Parent", relation: "child", woken: true }],
+          skippedRecipients: [{ sessionId: "d", title: "Druid", relation: "sibling", reason: "resolved" }],
+        },
+      },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.stdout).toContain("sibling Druid (d): NOT delivered");
+    expect(out.stdout).toContain("no message, card, or wake turn was sent");
+  });
+
+  it("preserves resolved cohort skips in JSON", async () => {
+    const body = {
+      reportId: "r",
+      severity: "warn",
+      to: "cohort",
+      recipients: [],
+      skippedRecipients: [{ sessionId: "d", title: "Druid", relation: "sibling", reason: "resolved" }],
+    };
+    const { run } = makeRunner();
+    const out = await run(["session", "report", "-b", "x", "--cohort", "--json"], {
+      "POST /agent-ops/session/report": { status: 200, body },
+    });
+    expect(out.exitCode).toBe(1);
+    expect(JSON.parse(out.stdout)).toEqual(body);
   });
 
   it("surfaces a 400 'no parent' rejection from the orchestrator", async () => {

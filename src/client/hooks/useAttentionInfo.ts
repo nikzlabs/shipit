@@ -1,7 +1,7 @@
 import { useSessionStore } from "../stores/session-store.js";
 import { usePrStore } from "../stores/pr-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
-import { isRecentlyResolved } from "../components/SessionSidebar/useSessionGrouping.js";
+import { isTerminalPrResolved } from "../../server/shared/session-resolution.js";
 import type { PrCardState } from "../stores/pr-store.js";
 import type { PrStatusSummary } from "../../server/shared/types/github-types.js";
 
@@ -25,7 +25,7 @@ export interface AttentionInputs {
    * The session's PR has reached a terminal state — merged or
    * closed-without-merge — and hasn't been reopened (worked in) since. This is
    * the SAME signal that demotes the row into the sidebar's "Recently resolved"
-   * group (`isRecentlyResolved`, keyed on `SessionInfo.mergedAt`/`closedAt`). It
+   * group (keyed on `SessionInfo.mergedAt`/`closedAt`). It
    * is passed in — rather than re-derived from the pr-store `status.prState` —
    * so the grouping and the attention marker can never disagree: a just-merged
    * row whose pr-store status still reads `open` (or carries a stale CI
@@ -143,7 +143,7 @@ export function useAttentionInfo(sessionId: string): string | null {
   const autoResolveEnabled = useSettingsStore((s) => s.autoResolveConflicts);
   const resolved = useSessionStore((s) => {
     const session = s.sessions.find((sess) => sess.id === sessionId);
-    return session ? isRecentlyResolved(session) : false;
+    return session ? isTerminalPrResolved(session) : false;
   });
   return computeAttentionReason({ card, status, isAgentRunning, awaitingPermission, hasBackgroundTasks, autoFixEnabled, autoResolveEnabled, resolved });
 }

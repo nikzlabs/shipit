@@ -1,6 +1,6 @@
 import type { PreviousMergedPr, ProviderRouteKind, SessionCapabilities, SessionInfo, SessionMergeWatch, SessionSecretBlock, SessionTitleSource } from "../shared/types.js";
 import { normalizeCapabilities } from "../shared/types.js";
-import { parseTimestampMs } from "../shared/utils.js";
+import { isTerminalPrResolved, resolvedAt } from "../shared/session-resolution.js";
 import type { DatabaseManager } from "../shared/database.js";
 import type { PrStatusSummary } from "../shared/types/github-types.js";
 import type { AgentId } from "../shared/types/agent-types.js";
@@ -189,42 +189,6 @@ export function assertDiskLadderOrdering(t: DiskLadderThresholds): void {
 }
 
 /**
- * The instant a session's PR reached a terminal state — merged or
- * closed-without-merge. Both sink the session out of the active sidebar into the
- * demoted "Recently resolved" group; `mergedAt` wins if somehow both are set
- * (a merge is the stronger outcome). Returns undefined for a session whose PR is
- * still open (or that never had one).
- */
-export function resolvedAt(s: SessionInfo): string | undefined {
-  return s.mergedAt ?? s.closedAt;
-}
-
-/**
- * docs/161 — true when a *resolved* session (merged or closed) has been
- * *worked in* since it resolved, i.e. the user returned to it to start a
- * follow-up PR. Keys on `lastUsedAt` (bumped only by turn activity, never by
- * merely opening the session), so it becomes true the instant the user sends a
- * message in a resolved session, floating it back into the Active group.
- *
- * Evaluated in JS, not SQL: `merged_at`/`closed_at` are written by
- * `datetime('now')` ("YYYY-MM-DD HH:MM:SS") while `last_used_at` is
- * `toISOString()` ("…THH:MM:SS.sssZ"). A lexical `>` is wrong — 'T' (0x54) >
- * ' ' (0x20), so an ISO timestamp at the same wall-clock second always sorts
- * greater, falsely marking a just-resolved session as reopened.
- * `parseTimestampMs` reconciles the two formats to UTC epoch ms — a plain
- * `Date.parse` would read the suffix-less SQLite form as *local* time and
- * mis-order the two on any non-UTC runtime.
- */
-export function reopenedAfterResolve(s: SessionInfo): boolean {
-  const resolved = resolvedAt(s);
-  if (!resolved) return false;
-  const resolvedMs = parseTimestampMs(resolved);
-  const used = parseTimestampMs(s.lastUsedAt);
-  if (Number.isNaN(resolvedMs) || Number.isNaN(used)) return false;
-  return used > resolvedMs;
-}
-
-/**
  * docs/161 — the sidebar visibility predicate. Pure derivation over session
  * metadata; `diskTier` is deliberately NOT consulted (a disk-evicted but recent
  * session stays listed and restores on select). Input must already exclude
@@ -289,7 +253,7 @@ export function filterVisibleInSidebar(
   // guard at the end.
   const resolvedByRepo = new Map<string, SessionInfo[]>();
   for (const s of sessions) {
-    if (!resolvedAt(s) || reopenedAfterResolve(s)) continue;
+    if (!isTerminalPrResolved(s)) continue;
     const key = s.remoteUrl ?? "";
     let group = resolvedByRepo.get(key);
     if (!group) {
@@ -337,8 +301,7 @@ export function filterVisibleInSidebar(
       // while vanishing from the surface that explains where the slot went.
       (!!s.pinnedAt
         || holdsActiveReservation(s)
-        || !resolvedAt(s)
-        || reopenedAfterResolve(s)
+        || !isTerminalPrResolved(s)
         || topResolvedIds.has(s.id)
         || exemptFromCap(s)),
   );

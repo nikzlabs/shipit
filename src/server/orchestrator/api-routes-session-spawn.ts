@@ -20,6 +20,7 @@ import {
   listSpawnedChildren,
   getSpawnedChild,
   sendChildMessage,
+  ResolvedChildMessageError,
   waitForChildIdle,
   assertArchivableChild,
   registerMergeWatch,
@@ -527,6 +528,16 @@ export async function registerSessionSpawnRoutes(
         );
         return { queuePosition: result.queuePosition, enqueued: result.enqueued };
       } catch (err) {
+        if (err instanceof ResolvedChildMessageError) {
+          reply.code(409).send({
+            error: err.message,
+            sessionId: err.child.id,
+            title: err.child.title,
+            reason: "resolved",
+            delivered: false,
+          });
+          return;
+        }
         if (err instanceof ServiceError) {
           reply.code(err.statusCode).send({ error: err.message });
           return;

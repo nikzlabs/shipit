@@ -153,18 +153,18 @@ existing fields:
 (mergedAt OR closedAt) AND NOT (lastUsedAt > resolvedAt)
 ```
 
-Every started turn must advance `lastUsedAt`. Today the interactive WS path does
-that at turn start, while a dispatched/system turn updates it only after
-`agent_result`. Add the same `sessionManager.track(sessionId)` call at the start
-of the dispatched-turn executor. Then a self merge-wake, CI fix, conflict
+Every started turn must advance `lastUsedAt`. Add
+`sessionManager.track(sessionId)` unconditionally at the start of the shared
+turn executor. Then a self merge-wake, adopted turn, CI fix, conflict
 remediation, or other system continuation reactivates the session immediately,
 even if the turn later crashes without `agent_result`. The existing terminal
 update can remain idempotent. A later PR lifecycle establishes a newer terminal
 instant and can resolve the session again.
 
 `isResolvedForGrouping` composes the baseline and returns true only when the
-session is not pinned and has no visible brood. The helper accepts the already
-computed `hasVisibleBrood` fact: root-level sidebar grouping passes any-depth
+session is not pinned, has no visible brood, and is not currently running. The
+helper accepts the already computed `hasVisibleBrood` and optional `isRunning`
+facts: root-level sidebar grouping passes any-depth
 visible-descendant membership; brood-member grouping and server delivery pass
 visible direct-child membership. A visible child has neither `archived` nor
 `userArchived`; archived descendants do not keep a session active.
@@ -172,7 +172,7 @@ visible direct-child membership. A visible child has neither `archived` nor
 The module owns timestamp normalization through `parseTimestampMs`, pin logic,
 and composition. No client component, attention hook, sidebar grouping
 function, orchestrator service, or test helper may reconstruct these rules.
-Callers compute only the visible-brood context.
+Callers compute only the visible-brood and server liveness context.
 
 Delete client `resolvedAt` / `reopenedAfterResolve` / `isRecentlyResolved`
 mirrors from `useSessionGrouping.ts`; sidebar and attention consumers import the
