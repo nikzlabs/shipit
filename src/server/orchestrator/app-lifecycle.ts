@@ -1115,6 +1115,12 @@ export function createPrStatusPoller(
   // forwards into the manager). The closure resolves the per-session runner
   // and git manager per-call. Skipped in degraded test setups that omit any
   // of the deps — the auto-resolve feature stays inactive.
+  // The closure below runs long after this function returns, but the poller it
+  // needs is constructed a few lines further down — and the poller constructor
+  // is what the closure is being built for. A late-read holder breaks the cycle
+  // without a forward reference to a `const` that is still in its TDZ here.
+  const pollerHolder: { current: PrStatusPoller | null } = { current: null };
+
   let rebaseAndResolveCb: RebaseAndResolveCb | undefined;
   if (createGitManager && chatHistoryManager && usageManager) {
     rebaseAndResolveCb = async (sessionId, baseBranch): Promise<AutoResolveResult> => {
@@ -1134,6 +1140,10 @@ export function createPrStatusPoller(
           chatHistoryManager,
           usageManager,
           sseBroadcast,
+          // planning#369 — the auto path force-pushes too, so it needs the same
+          // "the conflict just cleared, go look" notification the user-driven
+          // route gets. Read at call time; see `pollerHolder` above.
+          prStatusPoller: pollerHolder.current,
           // Container runners supply `createAgent` themselves so this is
           // unused in production; in-process runners (tests, local mode)
           // need the fallback factory.
@@ -1314,6 +1324,10 @@ export function createPrStatusPoller(
       }
     },
   });
+
+  // Close the cycle: the auto-resolve closure reads this at call time so its
+  // force-push can refresh the PR status it just changed (planning#369).
+  pollerHolder.current = prStatusPoller;
 
   // Seed in-memory `lastKnown` from persisted PR snapshots so archived
   // sessions show their PR badge / link on the All Sessions dialog after a

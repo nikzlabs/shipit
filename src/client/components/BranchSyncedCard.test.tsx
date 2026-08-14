@@ -42,4 +42,31 @@ describe("BranchSyncedCard", () => {
     expect(screen.getByText(/already includes the latest/)).toBeInTheDocument();
     expect(screen.queryByText(/was/)).not.toBeInTheDocument();
   });
+
+  // planning#369 — a sync that rebases nothing can still push: the branch held
+  // commits origin had never seen, which is exactly what kept the PR marked
+  // conflicting. Reading "nothing happened" while the PR state just changed is
+  // how the user concluded the button was broken.
+  it("reports a push made without a rebase", () => {
+    render(<BranchSyncedCard card={{
+      ...baseCard,
+      headToSha: baseCard.headFromSha,
+      baseToSha: baseCard.baseFromSha!,
+      forcePushed: true,
+    }} />);
+
+    expect(screen.getByText(/already includes the latest/)).toBeInTheDocument();
+    expect(screen.getByText(/Pushed local commits missing from the remote/)).toBeInTheDocument();
+  });
+
+  it("stays silent about a push when there was none", () => {
+    render(<BranchSyncedCard card={{
+      ...baseCard,
+      headToSha: baseCard.headFromSha,
+      baseToSha: baseCard.baseFromSha!,
+      forcePushed: false,
+    }} />);
+
+    expect(screen.queryByText(/Pushed local commits/)).not.toBeInTheDocument();
+  });
 });

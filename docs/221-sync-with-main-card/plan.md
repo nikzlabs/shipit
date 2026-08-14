@@ -67,6 +67,11 @@ card renders truthful outcome-specific copy for a rebased branch, a local-base-o
 move, or an already-current branch. `WsRebaseComplete.baseMoved` suppresses the
 redundant toast whenever this durable card is emitted.
 
+planning#369 added a fourth line to that copy: an already-current sync that
+nonetheless **pushed** (the branch held commits origin had never seen, which is
+what kept the PR marked conflicting) says so, instead of reading "nothing
+happened" at the exact moment the PR state changed.
+
 ### Agent-facing notice (manual route only)
 
 The card above tells the **user**. Nothing told the **agent** — and the agent is

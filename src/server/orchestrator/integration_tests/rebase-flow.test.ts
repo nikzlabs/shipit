@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
 import { execSync } from "node:child_process";
@@ -273,6 +273,30 @@ describe("rebase flow: API + WS events", () => {
     const second = await waitForPrompt("and again");
     expect(second.lastPrompt).not.toContain("[System]");
     second.finish("test-session-1");
+  });
+
+  // planning#369 — the whole point of the rebase is to clear GitHub's
+  // `CONFLICTING` state, and the PR card renders straight off the poller's
+  // `mergeable`. The route never told the poller anything, so the "Merge
+  // conflicts" chip and the "Resolve conflicts" button outlived the fix by up to
+  // a slow tick (120s) — and forever while the polling gate was closed. This
+  // asserts the ROUTE wires the poller through; the driver's own behaviour
+  // (which calls, in which order, on which paths) is in rebase-driver.test.ts.
+  it("clean rebase — the route makes the poller re-read the PR it just un-conflicted", { timeout: 20_000 }, async () => {
+    await githubAuth.setToken("test-token");
+    const { sessionId, sessionDir } = await createSession();
+    setupDivergence(sessionDir, { conflicting: false });
+
+    const poller = app.prStatusPoller;
+    if (!poller) throw new Error("buildApp did not decorate a PR status poller");
+    const notifyAutoPush = vi.spyOn(poller, "notifyAutoPush");
+    const forceRefresh = vi.spyOn(poller, "forceRefreshSession").mockImplementation(async () => {});
+
+    expect((await postRebase(sessionId, "main")).status).toBe(200);
+    await waitForMessage("rebase_complete", 8_000);
+
+    expect(notifyAutoPush).toHaveBeenCalledWith(sessionId);
+    expect(forceRefresh).toHaveBeenCalledWith(sessionId);
   });
 
   it("up-to-date branch — emits rebase_complete without rebase_started", { timeout: 20_000 }, async () => {

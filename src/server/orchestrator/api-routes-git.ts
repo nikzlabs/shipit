@@ -462,6 +462,11 @@ export async function registerGitRoutes(
             // docs/221 — manual "Sync with <base>" records a persisted card; the
             // automatic conflict-resolve-on-idle path leaves this unset.
             recordSyncCard: true,
+            // planning#369 — the driver notifies the poller itself after a push
+            // that landed, so the "Merge conflicts" chip clears in seconds
+            // instead of surviving up to a slow tick (or forever, with the
+            // polling gate closed). See `RebaseDriverDeps.prStatusPoller`.
+            prStatusPoller: deps.prStatusPoller,
           },
           baseBranch,
         );
