@@ -100,6 +100,34 @@ export interface RebaseDriverDeps {
    * `<base>` fast-forward itself is unconditional (it's plain correctness).
    */
   recordSyncCard?: boolean;
+  /**
+   * The PR-status poller, so a push made by this flow can tell the poller about
+   * itself. Structurally typed (not `PrStatusPoller`) to keep the driver free of
+   * that import and let tests pass a two-method stub; optional because several
+   * test setups construct the driver without a poller at all.
+   *
+   * Why the driver and not the call sites: a rebase + force-push is what CLEARS
+   * GitHub's `CONFLICTING` state, and until the poller observes that, the PR card
+   * keeps its "Merge conflicts" chip and "Resolve conflicts" button. Nothing else
+   * tells it. `POST /git/rebase` never called `forceRefreshSession`, and
+   * `tryForcePush` never called `notifyAutoPush` (only the auto-push scheduler
+   * did), so the session stayed in the 120s slow bucket and the chip survived the
+   * fix that removed the conflict — up to two minutes, and indefinitely while the
+   * polling gate is closed. Putting both calls next to the push itself means every
+   * caller (the user-driven route AND the auto-conflict-resolve path) inherits
+   * them, and a future caller cannot forget.
+   */
+  prStatusPoller?: RebasePrStatusPoller | null;
+}
+
+/**
+ * The slice of `PrStatusPoller` the rebase driver uses after a push.
+ * `notifyAutoPush` moves the session into the fast (15s) cadence bucket;
+ * `forceRefreshSession` is the immediate one-shot that bypasses the global gate.
+ */
+export interface RebasePrStatusPoller {
+  notifyAutoPush(sessionId: string): void;
+  forceRefreshSession(sessionId: string): Promise<void>;
 }
 
 export type RebaseFlowOutcome =
@@ -281,7 +309,7 @@ export async function runRebaseFlow(
   deps: RebaseDriverDeps,
   baseBranch: string,
 ): Promise<RebaseFlowOutcome> {
-  const { git, githubAuthManager, runner } = deps;
+  const { git, runner } = deps;
   const recordSync = deps.recordSyncCard ?? false;
 
   if (runner.running) {
@@ -330,12 +358,20 @@ export async function runRebaseFlow(
     // 3. Check ancestry — already up-to-date?
     const isAncestor = await git.isAncestor(baseRef, "HEAD");
     if (isAncestor) {
+      // ...locally. GitHub computes `mergeable` from the PUSHED head, so a
+      // branch that already contains `<base>` but never reached origin (an
+      // auto-push rejected as non-fast-forward, a push that failed while the
+      // container was going away) is still CONFLICTING as far as the PR card is
+      // concerned — and this path used to return without pushing anything, so
+      // every further click on "Resolve conflicts" repeated the same no-op.
+      // Publish the commits the remote is missing; that is the whole fix.
+      const forcePushed = await pushIfAheadOfRemote(deps);
       // Manual syncs always leave a durable confirmation card, including the
       // already-current case. Automatic conflict resolution remains cardless.
       const cardEmitted = recordSync
-        ? emitSyncCard(deps, { baseBranch, headFrom: headBefore, headTo: headBefore, baseMove, forcePushed: false })
+        ? emitSyncCard(deps, { baseBranch, headFrom: headBefore, headTo: headBefore, baseMove, forcePushed })
         : false;
-      runner.emitMessage({ type: "rebase_complete", sessionId: runner.sessionId, forcePushed: false, upToDate: true, baseMoved: cardEmitted });
+      runner.emitMessage({ type: "rebase_complete", sessionId: runner.sessionId, forcePushed, upToDate: true, baseMoved: cardEmitted });
       return { status: "up_to_date" };
     }
 
@@ -350,7 +386,7 @@ export async function runRebaseFlow(
     // 5. Clean rebase — go straight to force push.
     if (result.status === "clean") {
       reevaluateSessionConfig(runner);
-      const forcePushed = await tryForcePush(git, githubAuthManager, runner);
+      const forcePushed = await tryForcePush(deps);
       if (recordSync) {
         const headAfter = await git.getHeadHash();
         emitSyncCard(deps, { baseBranch, headFrom: headBefore, headTo: headAfter, baseMove, forcePushed });
@@ -447,7 +483,7 @@ export async function runRebaseFlow(
 
     // 7. Force push after successful resolution.
     reevaluateSessionConfig(runner);
-    const forcePushed = await tryForcePush(git, githubAuthManager, runner);
+    const forcePushed = await tryForcePush(deps);
     if (recordSync) {
       const headAfter = await git.getHeadHash();
       emitSyncCard(deps, { baseBranch, headFrom: headBefore, headTo: headAfter, baseMove, forcePushed });
@@ -499,17 +535,18 @@ export async function runRebaseFlow(
  * confirmation on success and an actionable error on failure — without these,
  * the rebase appears "complete" while the rewritten history never reaches
  * origin (see also `scheduleAutoPush` in index.ts / app-lifecycle.ts).
+ *
+ * On success it also notifies the PR-status poller — see `prStatusPoller` in
+ * `RebaseDriverDeps` for why that call lives here rather than at the call sites.
  */
-async function tryForcePush(
-  git: GitManager,
-  githubAuthManager: GitHubAuthManager,
-  runner: SessionRunnerInterface,
-): Promise<boolean> {
+async function tryForcePush(deps: RebaseDriverDeps): Promise<boolean> {
+  const { git, githubAuthManager, runner } = deps;
   if (!githubAuthManager.authenticated) return false;
   try {
     const message = await git.forcePush();
     const branch = await git.getCurrentBranch();
     runner.emitMessage({ type: "github_push_result", success: true, message, branch });
+    notifyPrStatusPollerOfPush(deps);
     return true;
   } catch (err) {
     const errMsg = getErrorMessage(err);
@@ -528,6 +565,71 @@ async function tryForcePush(
       runner.emitMessage(agentLogAppend("server", text));
     }
     return false;
+  }
+}
+
+/**
+ * Push on the up-to-date path when the local branch is strictly AHEAD of
+ * `origin/<branch>` — i.e. it holds commits the remote has never seen.
+ *
+ * The up-to-date short-circuit answers a purely LOCAL question ("does HEAD
+ * already contain `<base>`?"), while the PR card's conflict state is computed by
+ * GitHub from the PUSHED head. Those disagree exactly when a commit never made
+ * it to origin, and the user experiences it as a "Resolve conflicts" button that
+ * does nothing, forever, however many times they press it.
+ *
+ * Deliberately narrow: it pushes only when the remote tip is an ANCESTOR of
+ * HEAD, which is the fast-forward case and the one this bug produces. A remote
+ * that has diverged (someone else pushed) is left alone — resolving that is the
+ * rebase path's job, not a silent history rewrite from the no-op branch. A
+ * branch with no remote ref yet is also left alone: publishing a branch for the
+ * first time belongs to the auto-push path, not to "sync with base".
+ *
+ * Returns true only when a push actually landed. Any inspection failure returns
+ * false: an unpushed commit is a recoverable state, and a git error here must not
+ * fail a sync that is otherwise a no-op.
+ */
+async function pushIfAheadOfRemote(deps: RebaseDriverDeps): Promise<boolean> {
+  const { git } = deps;
+  try {
+    if (!deps.githubAuthManager.authenticated) return false;
+    const branch = await git.getCurrentBranch();
+    const remoteHead = await git.getRefHash(`origin/${branch}`);
+    if (!remoteHead) return false;
+    const localHead = await git.getHeadHash();
+    if (!localHead || localHead === remoteHead) return false;
+    if (!(await git.isAncestor(remoteHead, "HEAD"))) return false;
+    return await tryForcePush(deps);
+  } catch (err) {
+    console.error("[rebase] up-to-date push check failed:", getErrorMessage(err));
+    return false;
+  }
+}
+
+/**
+ * Tell the PR-status poller that this session's branch just reached origin:
+ * move it into the fast cadence bucket, then poll once immediately.
+ *
+ * Both halves are needed. `forceRefreshSession` alone gives one fresh reading,
+ * but GitHub recomputes `mergeable` asynchronously and often answers `UNKNOWN`
+ * on the first ask; `notifyAutoPush` alone leaves the session waiting up to a
+ * full slow tick (120s) for that first reading. Together the card converges in
+ * seconds.
+ *
+ * Best-effort and non-blocking: the push already succeeded, so neither a missing
+ * poller nor a failed refresh may turn a completed rebase into a reported failure.
+ */
+function notifyPrStatusPollerOfPush(deps: RebaseDriverDeps): void {
+  const poller = deps.prStatusPoller;
+  if (!poller) return;
+  const sessionId = deps.runner.sessionId;
+  try {
+    poller.notifyAutoPush(sessionId);
+    void poller.forceRefreshSession(sessionId).catch((err: unknown) => {
+      console.error("[rebase] PR status refresh after push failed:", getErrorMessage(err));
+    });
+  } catch (err) {
+    console.error("[rebase] notifying the PR poller after push failed:", getErrorMessage(err));
   }
 }
 

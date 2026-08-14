@@ -76,6 +76,13 @@ export function BranchSyncedCard({ card }: BranchSyncedCardProps) {
                 <code className="px-1.5 py-0.5 rounded bg-(--color-bg-tertiary)">{card.base}</code>.
               </>
             )}
+            {/* planning#280 — a sync that rebased nothing can still have pushed:
+                the branch held commits origin had never seen, which is what kept
+                the pull request marked conflicting. Say so, or the card reads as
+                "nothing happened" while the PR state just changed. */}
+            {!headMoved && card.forcePushed && (
+              <> Pushed local commits missing from the remote.</>
+            )}
           </div>
         </div>
       </div>

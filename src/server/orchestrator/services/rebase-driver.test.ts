@@ -813,6 +813,282 @@ function advanceOriginMain(bareDir: string, workDir: string, file: string, conte
   fs.rmSync(tempClone, { recursive: true, force: true });
 }
 
+/** Two-method stub matching `RebasePrStatusPoller`, with call-arg assertions. */
+interface StubPoller {
+  notifyAutoPush: ReturnType<typeof vi.fn<(sessionId: string) => void>>;
+  forceRefreshSession: ReturnType<typeof vi.fn<(sessionId: string) => Promise<void>>>;
+}
+
+function makeStubPoller(): StubPoller {
+  return {
+    notifyAutoPush: vi.fn<(sessionId: string) => void>(),
+    forceRefreshSession: vi.fn<(sessionId: string) => Promise<void>>(async () => {}),
+  };
+}
+
+/**
+ * planning#280 — the rebase flow is what CLEARS GitHub's `CONFLICTING` state, so it
+ * owes the PR-status poller a nudge. Without it the card kept its "Merge
+ * conflicts" chip and "Resolve conflicts" button for up to a slow tick (120s),
+ * and indefinitely with the polling gate closed, after the fix had landed.
+ */
+describe("rebase-driver: planning#280 PR status refresh after a push", () => {
+  let tmpDir: string;
+  let origGitConfigGlobal: string | undefined;
+  let origGitEditor: string | undefined;
+
+  beforeEach(() => {
+    vi.mocked(handWorkspaceBackToWorker).mockClear();
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-rebase-refresh-"));
+    origGitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
+    origGitEditor = process.env.GIT_EDITOR;
+    initGlobalGitConfig(path.join(tmpDir, "credentials"));
+    setGitIdentity("Test User", "test@test.com");
+    process.env.GIT_EDITOR = "true";
+  });
+
+  afterEach(() => {
+    if (origGitConfigGlobal !== undefined) process.env.GIT_CONFIG_GLOBAL = origGitConfigGlobal;
+    else delete process.env.GIT_CONFIG_GLOBAL;
+    if (origGitEditor !== undefined) process.env.GIT_EDITOR = origGitEditor;
+    else delete process.env.GIT_EDITOR;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  const depsWithPoller = (
+    git: GitManager,
+    runner: SessionRunner,
+    authed: boolean,
+    prStatusPoller: StubPoller | null,
+  ) => ({
+    git,
+    githubAuthManager: makeStubAuth(authed),
+    runner,
+    sessionManager: makeStubSessionManager(),
+    chatHistoryManager: makeStubHistory([]),
+    agentFactory: () => new FakeRebaseAgent(() => "should not run") as unknown as AgentProcess,
+    usageManager: makeStubUsageManager(),
+    sseBroadcast: () => {},
+    prStatusPoller,
+  });
+
+  it("clean rebase — bumps the session to fast cadence AND forces a refresh", async () => {
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    createCleanDivergence(bareDir, workDir);
+    execSync("git push -u origin feature", { cwd: workDir, stdio: "pipe" });
+
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+    const poller = makeStubPoller();
+
+    const result = await runFlow(depsWithPoller(git, runner, true, poller), "main");
+
+    expect(result).toHaveProperty("forcePushed", true);
+    // Both halves: the cadence bump alone waits a full slow tick for the first
+    // reading; the one-shot alone often catches GitHub mid-recompute (UNKNOWN).
+    expect(poller.notifyAutoPush).toHaveBeenCalledWith("s1");
+    expect(poller.forceRefreshSession).toHaveBeenCalledWith("s1");
+  });
+
+  it("conflict resolution — notifies the poller after the resolved rebase is pushed", async () => {
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    createConflictingDivergence(bareDir, workDir);
+    execSync("git push -u origin feature", { cwd: workDir, stdio: "pipe" });
+
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+    const poller = makeStubPoller();
+
+    const result = await runFlow({
+      ...depsWithPoller(git, runner, true, poller),
+      agentFactory: () => new FakeRebaseAgent((cwd) => {
+        fs.writeFileSync(path.join(cwd, "shared.txt"), "merged\n");
+        return "Resolved";
+      }) as unknown as AgentProcess,
+    }, "main");
+
+    expect(result.status).toBe("conflicts_resolved");
+    expect(poller.notifyAutoPush).toHaveBeenCalledWith("s1");
+    expect(poller.forceRefreshSession).toHaveBeenCalledWith("s1");
+  });
+
+  it("no GitHub auth — nothing was pushed, so the poller is left alone", async () => {
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    createCleanDivergence(bareDir, workDir);
+
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+    const poller = makeStubPoller();
+
+    const result = await runFlow(depsWithPoller(git, runner, false, poller), "main");
+
+    expect(result).toHaveProperty("forcePushed", false);
+    // GitHub's view of the branch did not change — a refresh would only cost a
+    // request and re-render the same conflicting state.
+    expect(poller.notifyAutoPush).not.toHaveBeenCalled();
+    expect(poller.forceRefreshSession).not.toHaveBeenCalled();
+  });
+
+  it("no poller wired — a clean rebase still completes", async () => {
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    createCleanDivergence(bareDir, workDir);
+    execSync("git push -u origin feature", { cwd: workDir, stdio: "pipe" });
+
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+
+    const result = await runFlow(depsWithPoller(git, runner, true, null), "main");
+
+    expect(result).toHaveProperty("forcePushed", true);
+  });
+
+  it("a refusing poller does not fail the rebase", async () => {
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    createCleanDivergence(bareDir, workDir);
+    execSync("git push -u origin feature", { cwd: workDir, stdio: "pipe" });
+
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+    const poller = makeStubPoller();
+    poller.forceRefreshSession.mockRejectedValue(new Error("GitHub 502"));
+
+    const result = await runFlow(depsWithPoller(git, runner, true, poller), "main");
+
+    // The push already landed; a failed status refresh must not undo that.
+    expect(result).toHaveProperty("forcePushed", true);
+  });
+});
+
+/**
+ * planning#280 (secondary) — the up-to-date short-circuit asks a purely LOCAL
+ * question, while GitHub computes `mergeable` from the PUSHED head. A branch
+ * holding an unpushed commit is "up to date" locally and CONFLICTING on GitHub,
+ * and the old code pushed nothing — so the chip could never clear, however many
+ * times the user pressed the button.
+ */
+describe("rebase-driver: planning#280 up-to-date branch with unpushed commits", () => {
+  let tmpDir: string;
+  let origGitConfigGlobal: string | undefined;
+  let origGitEditor: string | undefined;
+
+  beforeEach(() => {
+    vi.mocked(handWorkspaceBackToWorker).mockClear();
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-rebase-unpushed-"));
+    origGitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
+    origGitEditor = process.env.GIT_EDITOR;
+    initGlobalGitConfig(path.join(tmpDir, "credentials"));
+    setGitIdentity("Test User", "test@test.com");
+    process.env.GIT_EDITOR = "true";
+  });
+
+  afterEach(() => {
+    if (origGitConfigGlobal !== undefined) process.env.GIT_CONFIG_GLOBAL = origGitConfigGlobal;
+    else delete process.env.GIT_CONFIG_GLOBAL;
+    if (origGitEditor !== undefined) process.env.GIT_EDITOR = origGitEditor;
+    else delete process.env.GIT_EDITOR;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  const deps = (
+    git: GitManager,
+    runner: SessionRunner,
+    authed: boolean,
+    prStatusPoller: StubPoller | null = null,
+  ) => ({
+    git,
+    githubAuthManager: makeStubAuth(authed),
+    runner,
+    sessionManager: makeStubSessionManager(),
+    chatHistoryManager: makeStubHistory([]),
+    agentFactory: () => new FakeRebaseAgent(() => "should not run") as unknown as AgentProcess,
+    usageManager: makeStubUsageManager(),
+    sseBroadcast: () => {},
+    prStatusPoller,
+  });
+
+  /** Branch already contains origin/main, is pushed, then gains a local-only commit. */
+  function setupUnpushedCommit(tmpDirPath: string) {
+    const repo = setupRepoWithRemote(tmpDirPath);
+    execSync("git checkout -b feature", { cwd: repo.workDir, stdio: "pipe" });
+    execSync("git push -u origin feature", { cwd: repo.workDir, stdio: "pipe" });
+    fs.writeFileSync(path.join(repo.workDir, "local-only.txt"), "never pushed\n");
+    execSync("git add -A && git commit -m 'Local only'", { cwd: repo.workDir, stdio: "pipe" });
+    return repo;
+  }
+
+  it("pushes the unpushed commit, reports forcePushed, and refreshes the PR status", async () => {
+    const { workDir, git } = setupUnpushedCommit(tmpDir);
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+    const messages: WsServerMessage[] = [];
+    runner.on("message", (m: WsServerMessage) => messages.push(m));
+    const poller = makeStubPoller();
+
+    const localHead = await git.getHeadHash();
+    expect(await git.getRefHash("origin/feature")).not.toBe(localHead); // remote is behind
+
+    const result = await runFlow({ ...deps(git, runner, true, poller), recordSyncCard: true }, "main");
+
+    // Still an up-to-date rebase — nothing was replayed — but the remote caught up.
+    expect(result.status).toBe("up_to_date");
+    expect(await git.getRefHash("origin/feature")).toBe(localHead);
+
+    const complete = messages.find((m) => m.type === "rebase_complete");
+    if (complete?.type === "rebase_complete") {
+      expect(complete.upToDate).toBe(true);
+      expect(complete.forcePushed).toBe(true);
+    }
+    const card = messages.find((m) => m.type === "branch_synced_card");
+    if (card?.type === "branch_synced_card") {
+      expect(card.card.forcePushed).toBe(true);
+      expect(card.card.headFromSha).toBe(card.card.headToSha); // no rebase happened
+    }
+    expect(poller.notifyAutoPush).toHaveBeenCalledWith("s1");
+    expect(poller.forceRefreshSession).toHaveBeenCalledWith("s1");
+  });
+
+  it("remote already matches HEAD — pushes nothing and leaves the poller alone", async () => {
+    const { workDir, git } = setupRepoWithRemote(tmpDir);
+    execSync("git checkout -b feature", { cwd: workDir, stdio: "pipe" });
+    execSync("git push -u origin feature", { cwd: workDir, stdio: "pipe" });
+
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+    const messages: WsServerMessage[] = [];
+    runner.on("message", (m: WsServerMessage) => messages.push(m));
+    const poller = makeStubPoller();
+
+    const result = await runFlow(deps(git, runner, true, poller), "main");
+
+    expect(result.status).toBe("up_to_date");
+    expect(messages.find((m) => m.type === "github_push_result")).toBeUndefined();
+    expect(poller.notifyAutoPush).not.toHaveBeenCalled();
+  });
+
+  it("branch never pushed — publishing it is the auto-push path's job, not this one", async () => {
+    const { workDir, git } = setupRepoWithRemote(tmpDir);
+    execSync("git checkout -b feature", { cwd: workDir, stdio: "pipe" });
+    fs.writeFileSync(path.join(workDir, "local-only.txt"), "never pushed\n");
+    execSync("git add -A && git commit -m 'Local only'", { cwd: workDir, stdio: "pipe" });
+
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+    const messages: WsServerMessage[] = [];
+    runner.on("message", (m: WsServerMessage) => messages.push(m));
+
+    const result = await runFlow(deps(git, runner, true), "main");
+
+    expect(result.status).toBe("up_to_date");
+    expect(await git.getRefHash("origin/feature")).toBeNull();
+    expect(messages.find((m) => m.type === "github_push_result")).toBeUndefined();
+  });
+
+  it("no GitHub auth — reports up-to-date without pretending it pushed", async () => {
+    const { workDir, git } = setupUnpushedCommit(tmpDir);
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+    const messages: WsServerMessage[] = [];
+    runner.on("message", (m: WsServerMessage) => messages.push(m));
+
+    const result = await runFlow(deps(git, runner, false), "main");
+
+    expect(result.status).toBe("up_to_date");
+    const complete = messages.find((m) => m.type === "rebase_complete");
+    if (complete?.type === "rebase_complete") expect(complete.forcePushed).toBe(false);
+  });
+});
+
 describe("rebase-driver: docs/221 sync card + local base move", () => {
   let tmpDir: string;
   let origGitConfigGlobal: string | undefined;
