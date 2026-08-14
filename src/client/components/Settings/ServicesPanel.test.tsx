@@ -1084,7 +1084,11 @@ describe("ServicesPanel — one card component (docs/252 D2, D7, D8, D9)", () =>
     const card = screen.getByTestId("service-card-anthropic:sub");
     expect(within(card).getByTestId("provider-account-rows-claude")).toBeInTheDocument();
     expect(within(card).getByRole("heading", { name: "Anthropic" })).toBeInTheDocument();
-    expect(within(card).getByTestId("service-avatar-anthropic")).toHaveTextContent("A");
+    // The vendor's mark, not the service's initial — the avatar is the one
+    // thing on the row that can be recognised without reading.
+    const avatar = within(card).getByTestId("service-avatar-anthropic");
+    expect(avatar.querySelector("svg")).not.toBeNull();
+    expect(avatar).toHaveTextContent("");
     // The harness vendor never titles a credential card.
     expect(screen.queryByText(/Claude subscriptions/i)).not.toBeInTheDocument();
   });

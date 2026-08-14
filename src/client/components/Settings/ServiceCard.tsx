@@ -41,6 +41,7 @@
  */
 
 import type { ReactNode } from "react";
+import { ServiceLogo } from "../ServiceLogo.js";
 import { Badge } from "../ui/badge.js";
 import { WithTooltip } from "../ui/tooltip.js";
 import { BillingModePill, MODE_LABEL } from "../BillingModePill.js";
@@ -52,19 +53,28 @@ import type { BillingMode, ServiceDef } from "../../../server/shared/catalogue/i
 export { MODE_LABEL };
 
 /**
- * The avatar. An initial rather than a vendor logo: the catalogue carries no
- * artwork, and a letter is honest about that while still giving the eye a fixed
- * left edge to scan down. Derived from the service name so a new catalogue row
- * needs no asset.
+ * The avatar: the **vendor's own mark**, in the tile that gives the eye a fixed
+ * left edge to scan down.
+ *
+ * It was the service's initial, on the reasoning that the catalogue carries no
+ * artwork and a letter is honest about that. It is — and a column of `A` `O` `D`
+ * `G` `O` `V` still makes the reader decode a character to learn something the
+ * name one control to the right already says, with two of the six launch
+ * services sharing a letter. {@link ServiceLogo} keeps the letter as its
+ * fallback, so a new catalogue row needs no asset either way.
+ *
+ * The tile stays: the marks have wildly different aspect ratios (Vercel's
+ * triangle against OpenRouter's wide arrow), and the box is what makes a column
+ * of them line up.
  */
 function ServiceAvatar({ service }: { service: ServiceDef }) {
   return (
     <span
-      className="flex h-5 w-5 shrink-0 items-center justify-center rounded border border-(--color-border-secondary) bg-(--color-bg-secondary) text-[10px] font-semibold text-(--color-text-secondary)"
+      className="flex h-5 w-5 shrink-0 items-center justify-center rounded border border-(--color-border-secondary) bg-(--color-bg-secondary) text-(--color-text-primary)"
       aria-hidden="true"
       data-testid={`service-avatar-${service.id}`}
     >
-      {service.name.slice(0, 1).toUpperCase()}
+      <ServiceLogo service={service} />
     </span>
   );
 }

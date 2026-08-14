@@ -3581,6 +3581,7 @@ disappeared.
 | `client/components/Settings/ProviderAccountRows.tsx` | The rows, plus what the dialog shares with them: `AccountChallenge`, `createAccountAndStartLogin`, `abandonAccount`, `signInBlockedReason` |
 | `orchestrator/session-namer.ts` | Naming's CLI shell-out, now pointed at the resolved selection and reporting its telemetry (req 9) |
 | `client/components/Settings/ServiceCard.tsx` | The **one** card the Services list is built from: chrome only — avatar, service name, billing-mode and count pills, the `N models` control, and the routing band when there is something to route between. **No card action** (req 17) and no credential logic |
+| `client/components/ServiceLogo.tsx` | The vendor marks the card avatar and the add-flow's service list draw. Monochrome `currentColor` paths (Simple Icons, CC0), keyed on `ServiceId`, with the service's initial as the fallback for a catalogue row that has outrun its artwork |
 | `client/components/Settings/ServicesPanel.tsx` | The list and the add-flow. Decides which bodies go in a card, what the routing band holds, and what a credential of that mode is called |
 | `client/components/Settings/ProviderAccountRows.tsx` | Was `ProviderAccountsCard`. The account rows, the login challenge and their notices — a body, not a card. `AddAccountButton` is its header half |
 | `client/components/Settings/CredentialRouting.tsx` | `CredentialSelectionModeControl` + `FailoverCutoffControls`, keyed by `(service, billing mode)`. Replaced the two copies of the selection mode that wrote the same key |
