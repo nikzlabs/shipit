@@ -14,7 +14,26 @@ export function useConnectionSync(params: {
 }): void {
   const { status, send, onSessionConnect } = params;
 
-  const historyLoadedRef = useRef(false);
+  // Subscribed, not read through `getState()`: lowering this flag is what
+  // re-arms hydration, so the effect below has to re-run when it moves. App
+  // already subscribes to it, so this adds no renders.
+  const historyLoaded = useSessionStore((s) => s.historyLoaded);
+
+  /**
+   * A history load is on the wire right now. This is re-entrancy protection
+   * only — "does the transcript have its baseline" is answered by the store's
+   * `historyLoaded`, never by a hook-local latch.
+   *
+   * It used to be that latch ("a load has been issued for this connection"),
+   * cleared only on a `closed`/`connecting` status transition. That made the
+   * store flag and the hook disagree about the same fact: any path that
+   * lowered the flag without changing the socket — `resumeSessionInternal`
+   * resuming the session already on screen, which "All Sessions" does because
+   * it renders every row as non-current — found the latch still raised, so no
+   * load was ever issued and `useMessageHandler` queued the transcript
+   * forever.
+   */
+  const historyLoadInFlightRef = useRef(false);
   const bootstrapFetchedRef = useRef(false);
   const recentlyForegroundedRef = useRef(false);
   const foregroundTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -67,16 +86,22 @@ export function useConnectionSync(params: {
     });
   }, []);
 
-  // On per-session WS connect, fetch session history + send any pending message
+  // Hydrate whenever the socket is open and the transcript has no baseline —
+  // fetch session history + send any pending message.
   // (No activate_session needed — the per-session WS auto-activates via URL)
   // (No set_agent needed — passed as query param on WS URL)
+  //
+  // Keyed on `historyLoaded` rather than on the status transition alone, so a
+  // reset performed by anything other than a disconnect (a session switch, a
+  // resume of the session already on screen) re-arms hydration on its own. The
+  // status transition is still what clears the flag on a disconnect, below.
+  //
   // `onSessionConnect` is a caller-supplied callback that is re-created on each
-  // render; this effect must run on connection-status transitions only, so it
-  // is invoked but deliberately not depended on.
-  // eslint-disable-next-line no-restricted-syntax -- existing usage; status-transition-keyed, see above
+  // render, so it is invoked but deliberately not depended on.
+  // eslint-disable-next-line no-restricted-syntax -- existing usage; see above
   useEffect(() => {
-    if (status === "open" && !historyLoadedRef.current && useSessionStore.getState().sessionId) {
-      historyLoadedRef.current = true;
+    if (status === "open" && !historyLoaded && !historyLoadInFlightRef.current && useSessionStore.getState().sessionId) {
+      historyLoadInFlightRef.current = true;
       const sessionId = useSessionStore.getState().sessionId!;
       // Sync the UI's active agent to whichever provider the session is
       // actually persisted with — otherwise the localStorage default (used
@@ -92,6 +117,8 @@ export function useConnectionSync(params: {
           await onSessionConnect?.(sessionId);
         } catch (err) {
           console.error("[api] Failed to load session history:", err);
+        } finally {
+          historyLoadInFlightRef.current = false;
         }
       })();
 
@@ -108,8 +135,20 @@ export function useConnectionSync(params: {
         }
       }
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- `onSessionConnect` is re-created each render (see above)
+  }, [status, historyLoaded, send]);
+
+  // On disconnect, drop the transcript baseline and the live-only signals that
+  // cannot survive the gap. Keyed on `status` alone so it fires once per
+  // transition — not again every time `historyLoaded` moves while we are down.
+  // eslint-disable-next-line no-restricted-syntax -- existing usage; status-transition-keyed, see above
+  useEffect(() => {
     if (status === "closed" || status === "connecting") {
-      historyLoadedRef.current = false;
+      // The load this connection issued (if any) is abandoned: its response may
+      // still land — `historyLoadSeq` decides whether it may write — but the
+      // next open must be free to issue its own rather than wait on a request
+      // whose socket is gone.
+      historyLoadInFlightRef.current = false;
       // Reset the store flag so the useMessageHandler guard blocks agent events
       // until the next loadSessionHistory completes. Without this, a reconnecting
       // WS would process live events before HTTP history is loaded, causing
@@ -133,8 +172,7 @@ export function useConnectionSync(params: {
       // after HTTP history hydration.
       useSessionStore.setState({ subAgentSpawns: {} });
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps -- `onSessionConnect` is re-created each render; this effect must key on connection-status transitions only (see above)
-  }, [status, send]);
+  }, [status]);
 
   // PR status is now delivered via SSE (pr_status event) — no HTTP polling needed.
 

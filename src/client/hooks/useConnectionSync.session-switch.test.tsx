@@ -158,4 +158,74 @@ describe("session switch that skips the connecting status transition", () => {
       expect(useSessionStore.getState().messages.map((m) => m.text)).toEqual(["B live tail"]);
     });
   });
+
+  /**
+   * The counterpart hazard: clearing `historyLoaded` from a path that does NOT
+   * move the socket. "All Sessions" renders every row as non-current, so
+   * selecting the session already on screen resumes it with the same id — the
+   * URL, and therefore the socket and its status, never change. Hydration has
+   * to be keyed on the flag itself, or the reset leaves the transcript cleared
+   * with every incoming event queued behind a load that is never issued.
+   */
+  it("re-issues the history load when a resume clears the baseline without moving the socket", async () => {
+    useSessionStore.getState().setSessionId("A");
+    renderHook(({ id }: { id: string }) => useConnectionStack(id), {
+      initialProps: { id: "A" },
+    });
+
+    await act(async () => { FakeWebSocket.instances[0].simulateOpen(); });
+    await waitFor(() => expect(historyResolvers).toHaveLength(1));
+    await act(async () => { historyResolvers[0](historyPayload(["A baseline"])); });
+    expect(useSessionStore.getState().historyLoaded).toBe(true);
+
+    // Resume the session already on screen: same id, same URL, same socket.
+    await act(async () => { resumeSessionInternal("A"); });
+    expect(useSessionStore.getState().messages).toEqual([]);
+
+    await waitFor(() => expect(historyResolvers).toHaveLength(2));
+    await act(async () => { historyResolvers[1](historyPayload(["A baseline"])); });
+    expect(useSessionStore.getState().historyLoaded).toBe(true);
+    expect(useSessionStore.getState().messages.map((m) => m.text)).toEqual(["A baseline"]);
+  });
+
+  /**
+   * The same snapshot-under-history loss, reached WITHOUT a session switch: a
+   * plain reconnect whose old history response resolves while the replacement
+   * socket is still connecting. The transcript then already has its baseline,
+   * so the reconnect must not issue a second destructive load underneath the
+   * snapshot the new attach is about to deliver.
+   */
+  it("keeps the attach snapshot when a reconnect's old history response landed first", async () => {
+    useSessionStore.getState().setSessionId("A");
+    const { result } = renderHook(({ id }: { id: string }) => useConnectionStack(id), {
+      initialProps: { id: "A" },
+    });
+
+    await act(async () => { FakeWebSocket.instances[0].simulateOpen(); });
+    await waitFor(() => expect(historyResolvers).toHaveLength(1));
+
+    await act(async () => { result.current.reconnect(); });
+    expect(result.current.status).toBe("connecting");
+
+    // The abandoned load answers while we are between sockets.
+    await act(async () => { historyResolvers[0](historyPayload(["stale baseline"])); });
+    expect(useSessionStore.getState().historyLoaded).toBe(true);
+
+    const reconnected = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
+    await act(async () => { reconnected.simulateOpen(); });
+    await act(async () => {
+      reconnected.simulateMessage({
+        type: "turn_snapshot",
+        sessionId: "A",
+        messages: [{ role: "assistant", text: "live tail" }],
+      });
+    });
+    // Let any load this open would have issued resolve, so the assertion below
+    // fails loudly if one overwrote the snapshot.
+    await act(async () => {
+      historyResolvers.slice(1).forEach((resolve) => resolve(historyPayload(["stale baseline"])));
+    });
+
+    expect(useSessionStore.getState().messages.map((m) => m.text)).toEqual(["live tail"]);
+  });
 });
