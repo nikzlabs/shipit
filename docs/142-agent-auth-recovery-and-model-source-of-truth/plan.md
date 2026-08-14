@@ -278,6 +278,22 @@ mapping). Divergence becomes structurally impossible.
   agree. Both directions now raise a toast; the redirect's links to Settings →
   Services.
 
+  **What is parked is the SEED, and the seed is not `activeAgentId`.** That
+  field is synced to whichever session is being *viewed*
+  ([useConnectionSync.ts](../../src/client/hooks/useConnectionSync.ts)) — it
+  answers "what is this session running on", while the seed answers "what will
+  the next session be created on" (`newSessionAgentId` is that rule). Reading the
+  wrong one got both halves wrong, and cross-backend review caught both: open an
+  old Codex session while the seed is Claude/Opus and let Codex's credential
+  fail, and the redirect is a no-op for the seed yet parked `{codex, Opus}` — a
+  pair the user never chose, which on recovery would replace their Claude seed
+  with Codex's first model. And after a real redirect, every reconnect re-synced
+  `activeAgentId` to the viewed session's dead harness, so the same redirect
+  re-ran and re-toasted for the whole outage. Both the park and the notice are
+  therefore gated on the seed actually moving; the in-memory correction and the
+  persisted writes below that gate still run unconditionally, because that is
+  C4's job and it is idempotent when nothing moved.
+
 ### Key files
 - `src/client/utils/local-storage.ts` — model as source of truth; derive agent (C1); the parked selection (C5)
 - `src/client/utils/harness-seed.ts` — the one writer of a harness pick: harness + the model seed that must agree with it (C5, docs/166)

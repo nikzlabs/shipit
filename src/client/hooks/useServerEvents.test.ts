@@ -782,3 +782,98 @@ describe("useServerEvents — agent_list auth redirect and its undo", () => {
     expect(getSavedModelId()).toBe("gpt-5.6-sol");
   });
 });
+
+/**
+ * The park describes the SEED, never the session being viewed.
+ *
+ * `activeAgentId` is synced to whichever session is open (`useConnectionSync`),
+ * on purpose. Reading it as "the harness the user chose for new sessions" made
+ * the redirect park a pair the user never picked, and made it re-announce itself
+ * on every reconnect. Both were found by cross-backend review.
+ */
+describe("useServerEvents — the redirect acts on the seed, not the viewed session", () => {
+  const model = (modelId: string, serviceId: string) => ({
+    modelId,
+    serviceId,
+    serviceName: serviceId,
+    billingMode: "sub" as const,
+    label: modelId,
+    canonicalModelKey: modelId,
+  });
+  const agentPayload = (id: string, runnable: boolean) =>
+    id === "claude"
+      ? {
+          id,
+          name: "Claude Code",
+          installed: true,
+          hasRunnableModels: runnable,
+          models: ["claude-opus-5"],
+          eligibleModels: [model("claude-opus-5", "anthropic")],
+        }
+      : {
+          id,
+          name: "Codex",
+          installed: true,
+          hasRunnableModels: runnable,
+          models: ["gpt-5.6-sol"],
+          eligibleModels: [model("gpt-5.6-sol", "openai")],
+        };
+  const emit = (es: FakeEventSource, claudeRunnable: boolean, codexRunnable = true) => {
+    act(() => {
+      es.emit("agent_list", {
+        agents: [agentPayload("claude", claudeRunnable), agentPayload("codex", codexRunnable)],
+      });
+    });
+  };
+
+  beforeEach(() => {
+    vi.stubGlobal("EventSource", FakeEventSource as unknown as typeof EventSource);
+    FakeEventSource.last = null;
+    localStorage.clear();
+    useUiStore.setState({ activeAgentId: "claude", toast: null, agentList: [] });
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  it("parks nothing when the viewed session's harness dies but the seed is untouched", () => {
+    // Seed is Claude/Opus; the user is looking at an older Codex session, so
+    // `activeAgentId` is codex. Codex's credential fails. The redirect writes
+    // Claude/Opus back over Claude/Opus — it took nothing away — so parking
+    // `{codex, Opus}` here would later restore an incoherent pair and replace
+    // the user's Claude seed with Codex's first model.
+    localStorage.setItem("vibe-agent-id", "claude");
+    localStorage.setItem("vibe-model-id", "claude-opus-5");
+    useUiStore.setState({ activeAgentId: "codex" });
+    renderHook(() => useServerEvents());
+
+    emit(FakeEventSource.last!, true, false);
+
+    expect(getParkedHarness()).toBeUndefined();
+    expect(useUiStore.getState().toast).toBeNull();
+    expect(getSavedModelId()).toBe("claude-opus-5");
+  });
+
+  it("does not re-announce the redirect when a reconnect re-syncs the dead harness", () => {
+    // After the redirect the seed is Codex. A WS reconnect sets `activeAgentId`
+    // back to the viewed Claude session's harness, and the SSE reconnect's own
+    // `agent_list` re-runs the same redirect — which used to raise the same
+    // 12-second toast again, for the whole outage, every time the app was
+    // foregrounded.
+    localStorage.setItem("vibe-agent-id", "claude");
+    localStorage.setItem("vibe-model-id", "claude-opus-5");
+    renderHook(() => useServerEvents());
+    const es = FakeEventSource.last!;
+
+    emit(es, false);
+    expect(useUiStore.getState().toast?.message).toContain("no usable credential");
+
+    useUiStore.setState({ toast: null, activeAgentId: "claude" });
+    emit(es, false);
+
+    expect(useUiStore.getState().toast).toBeNull();
+    expect(getParkedHarness()?.agentId).toBe("claude");
+  });
+});
