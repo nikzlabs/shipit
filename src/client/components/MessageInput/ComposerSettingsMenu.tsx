@@ -445,6 +445,7 @@ export function ComposerSettingsMenu({
               <div key={group.key || "__ungrouped__"}>
                 {group.serviceName && (
                   <ModelGroupHeader
+                    serviceId={group.serviceId}
                     serviceName={group.serviceName}
                     billingMode={group.billingMode}
                   />

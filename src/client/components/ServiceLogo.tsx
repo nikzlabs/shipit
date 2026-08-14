@@ -45,7 +45,22 @@
  */
 
 import { ICON_SIZE } from "../design-tokens.js";
-import type { ServiceDef, ServiceId } from "../../server/shared/catalogue/index.js";
+import type { ServiceId } from "../../server/shared/catalogue/index.js";
+
+/**
+ * All this component needs of a service: which one it is, and what it is called
+ * when there is no mark for it.
+ *
+ * Deliberately narrower than `ServiceDef`, which structurally satisfies it — the
+ * pickers never hold one. A model row on the wire carries `serviceId` and
+ * `serviceName` and nothing else about the service, and making the logo demand a
+ * catalogue lookup at every menu row would be a lookup that can *fail*, for a
+ * glyph.
+ */
+export interface ServiceIdentity {
+  id: string;
+  name: string;
+}
 
 /**
  * One 24×24 path per service. `Record` rather than `Partial<Record>` and keyed
@@ -82,7 +97,7 @@ export function ServiceLogo({
   service,
   size = ICON_SIZE.XS,
 }: {
-  service: ServiceDef;
+  service: ServiceIdentity;
   /** Defaults to `ICON_SIZE.XS` (12px) — the size that fits the 20px card tile. */
   size?: number;
 }) {

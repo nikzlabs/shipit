@@ -312,6 +312,26 @@ describe("ModelSelector", () => {
     expect(screen.getAllByTestId("model-group-mode-key")[0]).toHaveTextContent("API key");
   });
 
+  it("draws each group's service mark beside its name", async () => {
+    // The mark is the half of the header that can be recognised without
+    // reading, and it is the same one Settings → Services draws — a model menu
+    // that named the service differently from the card the credential lives on
+    // would be two vocabularies for one thing. The NAME stays: the mark is a
+    // second way to recognise a service, never the only one.
+    const user = userEvent.setup();
+    render(
+      <ModelSelector agents={agents} activeAgentId="claude" modelInfo={null} onModelChange={vi.fn()} />,
+    );
+    await user.click(screen.getByTestId("model-trigger"));
+
+    // The mark's own 24×24 grid, not any `svg`: a header sits beside rows
+    // carrying Phosphor checkmarks (256×256), so a bare svg query would pass
+    // with the mark missing.
+    const header = screen.getByTestId("model-group-mode-sub").parentElement;
+    expect(header?.querySelector('svg[viewBox="0 0 24 24"]')).not.toBeNull();
+    expect(header).toHaveTextContent("Anthropic");
+  });
+
   it("hands the caller the whole triple, not a bare model id", async () => {
     // A bare id was ambiguous the moment two services could offer the same one:
     // the server would re-resolve it to whichever service sorts first, which is

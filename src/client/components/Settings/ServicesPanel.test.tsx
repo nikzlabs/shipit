@@ -214,7 +214,9 @@ describe("ServicesPanel", () => {
       await userEvent.click(screen.getByTestId("services-add-empty"));
 
       const row = screen.getByTestId("add-service-option-anthropic");
-      expect(row.querySelector("svg")).not.toBeNull();
+      // The mark's 24×24 grid rather than any `svg` — Phosphor's glyphs are
+      // 256×256, so this cannot pass on a tick from the support table.
+      expect(row.querySelector('svg[viewBox="0 0 24 24"]')).not.toBeNull();
       expect(row).toHaveTextContent("Anthropic");
     });
 
