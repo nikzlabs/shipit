@@ -34,6 +34,13 @@ export function useConnectionSync(params: {
    * forever.
    */
   const historyLoadInFlightRef = useRef(false);
+  /**
+   * Identifies the newest hydration attempt. A load that is no longer the
+   * newest — superseded by a reconnect, or abandoned by a disconnect — must not
+   * clear the guard, nudge the effect, or run `onSessionConnect`, because it is
+   * speaking for a socket generation that is gone.
+   */
+  const hydrateGenerationRef = useRef(0);
   /** Bumped to re-run the hydrate effect when only a ref changed. */
   const [hydrateAttempt, setHydrateAttempt] = useState(0);
   const bootstrapFetchedRef = useRef(false);
@@ -103,6 +110,7 @@ export function useConnectionSync(params: {
   useEffect(() => {
     if (status === "open" && !historyLoaded && !historyLoadInFlightRef.current && useSessionStore.getState().sessionId) {
       historyLoadInFlightRef.current = true;
+      const attempt = ++hydrateGenerationRef.current;
       const sessionId = useSessionStore.getState().sessionId!;
       // Sync the UI's active agent to whichever provider the session is
       // actually persisted with — otherwise the localStorage default (used
@@ -117,23 +125,36 @@ export function useConnectionSync(params: {
         try {
           await loadSessionHistory(sessionId);
           loaded = true;
+          // A superseded load still resolves normally (`loadSessionHistory`
+          // returns early rather than throwing), so without this it would
+          // re-hydrate uploads/skills/docs for a session that is no longer the
+          // one on screen, overwriting the current attempt's work.
+          if (hydrateGenerationRef.current !== attempt) return;
           await onSessionConnect?.(sessionId);
         } catch (err) {
           console.error("[api] Failed to load session history:", err);
         } finally {
-          historyLoadInFlightRef.current = false;
-          // `loadSessionHistory` raises `historyLoaded` partway through and then
-          // keeps going (it still has the preview-status round trip to make), so
-          // a reset landing in that tail — a resume of the session already on
-          // screen — leaves the flag false with this ref still raised. Clearing
-          // a ref renders nothing, so the effect would never re-run and the
-          // transcript would stay queued forever. Nudge it.
-          //
-          // Gated on `loaded`, so a load that THREW does not retry: that would
-          // spin against a failing endpoint. It keeps the old behaviour of
-          // waiting for the next connection transition.
-          if (loaded && !useSessionStore.getState().historyLoaded) {
-            setHydrateAttempt((n) => n + 1);
+          // Only the newest attempt owns this bookkeeping. An older one
+          // clearing the guard would hand the effect a green light while the
+          // current load is still running — and its nudge would then start yet
+          // another load, superseding the one in flight, whose own late
+          // settle would repeat the whole thing. That is an unbounded fetch
+          // loop, not a one-off duplicate.
+          if (hydrateGenerationRef.current === attempt) {
+            historyLoadInFlightRef.current = false;
+            // `loadSessionHistory` raises `historyLoaded` partway through and
+            // then keeps going (it still has the preview-status round trip to
+            // make), so a reset landing in that tail — a resume of the session
+            // already on screen — leaves the flag false with this ref still
+            // raised. Clearing a ref renders nothing, so the effect would never
+            // re-run and the transcript would stay queued forever. Nudge it.
+            //
+            // Gated on `loaded`, so a load that THREW does not retry: that
+            // would spin against a failing endpoint. It keeps the old behaviour
+            // of waiting for the next connection transition.
+            if (loaded && !useSessionStore.getState().historyLoaded) {
+              setHydrateAttempt((n) => n + 1);
+            }
           }
         }
       })();
@@ -171,7 +192,9 @@ export function useConnectionSync(params: {
       // The load this connection issued (if any) is abandoned: its response may
       // still land — `historyLoadSeq` decides whether it may write — but the
       // next open must be free to issue its own rather than wait on a request
-      // whose socket is gone.
+      // whose socket is gone. Retiring the generation with it keeps that
+      // orphaned load from clearing the NEXT one's guard when it settles.
+      hydrateGenerationRef.current += 1;
       historyLoadInFlightRef.current = false;
       // Reset the store flag so the useMessageHandler guard blocks agent events
       // until the next loadSessionHistory completes. Without this, a reconnecting

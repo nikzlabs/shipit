@@ -344,4 +344,47 @@ describe("transcript hydration across session switches and reconnects", () => {
     await act(async () => { historyResolvers[1](historyPayload(["B baseline"])); });
     expect(historyResolvers).toHaveLength(2);
   });
+
+  /**
+   * The abandoned load settles AFTER its replacement has already started. A
+   * superseded `loadSessionHistory` resolves normally rather than throwing, so
+   * an attempt that does not check whether it is still the newest would clear
+   * the running load's guard and nudge — starting a third load that supersedes
+   * the second, whose own late settle repeats it. That is an unbounded fetch
+   * loop, and it also re-runs `onSessionConnect` for a dead socket generation.
+   */
+  it("ignores an abandoned load that settles after its replacement started", async () => {
+    useSessionStore.getState().setSessionId("A");
+    const connected: string[] = [];
+    const { result } = renderHook(({ id }: { id: string }) => {
+      const ws = useSessionWebSocket(id);
+      useConnectionSync({
+        status: ws.status,
+        send: ws.send,
+        onSessionConnect: (sid) => { connected.push(sid); },
+      });
+      return ws;
+    }, { initialProps: { id: "A" } });
+
+    await act(async () => { FakeWebSocket.instances[0].simulateOpen(); });
+    await waitFor(() => expect(historyResolvers).toHaveLength(1));
+
+    // Reconnect, and let the replacement socket start its own load while the
+    // first response is still outstanding.
+    await act(async () => { result.current.reconnect(); });
+    const reconnected = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
+    await act(async () => { reconnected.simulateOpen(); });
+    await waitFor(() => expect(historyResolvers).toHaveLength(2));
+
+    // The abandoned first response lands last.
+    await act(async () => { historyResolvers[0](historyPayload(["stale"])); });
+    expect(historyResolvers).toHaveLength(2);
+
+    await act(async () => { historyResolvers[1](historyPayload(["current"])); });
+    expect(historyResolvers).toHaveLength(2);
+    expect(useSessionStore.getState().historyLoaded).toBe(true);
+    expect(useSessionStore.getState().messages.map((m) => m.text)).toEqual(["current"]);
+    // Exactly one live attempt reached the session-hydration callback.
+    expect(connected).toEqual(["A"]);
+  });
 });
