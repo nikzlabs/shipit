@@ -388,11 +388,18 @@ instead of a repeat.
   — one `realpathSync` in `snapshotRepo`, every later fact read from the
   directory it returned — so the residual skew is between the collector and the
   route's own `readActiveGeneration`: the commit rendered could belong to a
-  different generation than the issues rendered beside it. Closing it here would
-  mean the route taking its commit from the collector, which does not carry what
-  that call also supplies (export names, manifest warnings) — a change to the
-  route's contract, not a call-site tidy, and so left to the sweep. Same class
+  different generation than the issues rendered beside it. Closing it means the
+  route taking that record from the collector, which is a change to the route's
+  contract rather than a call-site tidy, and so is left to the sweep. Same class
   as the credential/commit skew recorded below: one request wide, self-healing.
+
+  **The collector already reads everything that call site needs**, which makes
+  the sweep cheaper here than it looks: `snapshotRepo` calls
+  `readGenerationRecordAt(root)` and keeps only `.commit`, discarding the
+  `exports` and `manifestWarnings` off the same record — the exact two fields
+  the route's own `readActiveGeneration` supplies. Widening `RepoSnapshot` to
+  carry the record is the whole change on this file; no second read, and no new
+  resolution.
 
   **Session paths are mounted as volume subpaths, never as binds — and that is
   a production-only trap, so it is written down rather than left to be
