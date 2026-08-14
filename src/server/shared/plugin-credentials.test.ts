@@ -6,6 +6,7 @@ import {
   pluginClaimantsOf,
   pluginCredentialNames,
   resolvePluginCredentials,
+  satisfiedCredentialNames,
 } from "./plugin-credentials.js";
 
 const NO_TRACKERS: never[] = [];
@@ -124,5 +125,40 @@ describe("claimant projection (plan §3 — one stored secret, many claimants)",
     expect(pluginClaimantsOf(declarations, "FAL_KEY")).toEqual(["artk", "probe"]);
     expect(pluginClaimantsOf(declarations, "PROBE_KEY")).toEqual(["probe"]);
     expect(pluginClaimantsOf(declarations, "NOBODY")).toEqual([]);
+  });
+});
+
+/**
+ * docs/262 req 23 — the ONE rule that decides whether a stored value satisfies a
+ * declared credential. Both the card's verdict and what a plugin container is
+ * given are computed from it, which is what makes them the same answer.
+ */
+describe("the satisfaction rule (req 23)", () => {
+  it("a non-empty single-line value satisfies its name", () => {
+    expect([...satisfiedCredentialNames({ FAL_KEY: "sk-live" })]).toEqual(["FAL_KEY"]);
+  });
+
+  it("an empty value is a name the user started to set and did not", () => {
+    expect(satisfiedCredentialNames({ FAL_KEY: "" }).size).toBe(0);
+  });
+
+  it("an arbitrary string value satisfies its name", () => {
+    // No narrower rule: every delivery surface carries an arbitrary string —
+    // the override's `environment` for a plugin service, the invocation
+    // container's `Env` for a companion CLI — so excluding a shape here would
+    // report a working credential as missing.
+    const awkward = {
+      PEM: "-----BEGIN-----\nx\n-----END-----",
+      DOLLARS: `a$b$\{HOME}`,
+      HASH: "value # not a comment",
+      QUOTED: '"quoted"',
+    };
+    expect([...satisfiedCredentialNames(awkward)].sort()).toEqual(
+      ["DOLLARS", "HASH", "PEM", "QUOTED"],
+    );
+  });
+
+  it("a non-string value never satisfies a name", () => {
+    expect(satisfiedCredentialNames({ N: 7 as unknown as string }).size).toBe(0);
   });
 });

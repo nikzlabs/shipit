@@ -185,3 +185,104 @@ describe("plugin credential needs on secrets_status (req 23)", () => {
     expect(resolver.getSnapshot().plugins[0].credentials[0].satisfied).toBe(false);
   });
 });
+
+/**
+ * docs/262 req 23 — the DELIVERY half. The snapshot above says which declared
+ * names a plugin has a value for; these prove the plugin's service containers
+ * actually receive exactly those, from the consuming project's own store.
+ *
+ * The defect this closes: the card reported `satisfied` while a plugin service
+ * was started with nothing, because the compose path merged only the fragment's
+ * own environment with ShipIt's `SHIPIT_*` names.
+ */
+describe("plugin credential DELIVERY to services (req 23)", () => {
+  /** One surfaced plugin service of the `palette` plugin above. */
+  const paletteService = { name: "probe", credentials: ["FAL_KEY", "OPENAI_API_KEY"] };
+
+  it("delivers exactly the declared names the project has a value for", async () => {
+    const resolver = makeResolver({
+      userSecrets: { FAL_KEY: "fixture-live", DATABASE_URL: "postgres://x" },
+      plugins: () => [PALETTE],
+    });
+    await resolver.sync([], [paletteService]);
+
+    // Declared and set → delivered. Declared and unset → omitted, never sent
+    // empty, so a missing key stays a named gap instead of a third-party
+    // authentication error. Stored but never declared → not a plugin's to have.
+    expect(resolver.getPluginServiceEnv()).toEqual({ probe: { FAL_KEY: "fixture-live" } });
+  });
+
+  it("what the card calls satisfied is what the container gets", async () => {
+    const resolver = makeResolver({
+      userSecrets: { FAL_KEY: "fixture-live" },
+      plugins: () => [PALETTE],
+    });
+    await resolver.sync([], [paletteService]);
+
+    const delivered = resolver.getPluginServiceEnv()!.probe;
+    for (const need of resolver.getSnapshot().plugins[0].credentials) {
+      expect(need.name in delivered).toBe(need.satisfied);
+    }
+  });
+
+  it("carries a value of any shape, unaltered", async () => {
+    // The reason delivery is the override's `environment` and not an env file:
+    // Compose's env-file parser applies quote, comment and `${VAR}` handling to
+    // what it reads, so these would not arrive as stored.
+    const awkward = `line1\nline2 # not a comment $\{HOME} "quoted"`;
+    const resolver = makeResolver({
+      userSecrets: { FAL_KEY: awkward },
+      plugins: () => [PALETTE],
+    });
+    await resolver.sync([], [paletteService]);
+    expect(resolver.getPluginServiceEnv()!.probe.FAL_KEY).toBe(awkward);
+  });
+
+  it("ShipIt's account-level credentials are never delivered to a plugin service", async () => {
+    const resolver = makeResolver({
+      userSecrets: {},
+      accountEnv: { OPENAI_API_KEY: "fixture-account-level" },
+      plugins: () => [PALETTE],
+    });
+    await resolver.sync([], [paletteService]);
+    expect(resolver.getPluginServiceEnv()).toEqual({ probe: {} });
+  });
+
+  it("a service whose plugin declares nothing is delivered nothing", async () => {
+    const resolver = makeResolver({ userSecrets: { FAL_KEY: "x" }, plugins: () => [PALETTE] });
+    await resolver.sync([], [{ name: "sidecar", credentials: [] }]);
+    expect(resolver.getPluginServiceEnv()).toEqual({ sidecar: {} });
+  });
+
+  it("a service that goes away leaves nothing behind", async () => {
+    const resolver = makeResolver({ userSecrets: { FAL_KEY: "v" }, plugins: () => [PALETTE] });
+    await resolver.sync([], [paletteService]);
+    await resolver.sync([], []);
+    expect(resolver.getPluginServiceEnv()).toEqual({});
+  });
+
+  it("nothing is written to disk for a plugin service", async () => {
+    // Values ride the generated override, which lives in the session state dir.
+    // No new file, no sweep, and no path for the project's own secrets pass —
+    // which runs from callers that used to know nothing about plugins — to
+    // delete a running plugin's credentials.
+    const resolver = makeResolver({ userSecrets: { FAL_KEY: "v" }, plugins: () => [PALETTE] });
+    await resolver.sync(apiService, [paletteService]);
+    const envRoot = path.join(sessionDir, "service-env", "s1");
+    expect(fs.readdirSync(envRoot)).toEqual([".env.api"]);
+  });
+
+  it("the published env map is a copy — a caller cannot mutate resolver state", async () => {
+    const resolver = makeResolver({ userSecrets: { FAL_KEY: "v" }, plugins: () => [PALETTE] });
+    await resolver.sync([], [paletteService]);
+    resolver.getPluginServiceEnv()!.probe.FAL_KEY = "tampered";
+    expect(resolver.getPluginServiceEnv()!.probe.FAL_KEY).toBe("v");
+  });
+
+  it("no plugin services at all is the pre-plugin behaviour, unchanged", async () => {
+    const resolver = makeResolver({ userSecrets: { DATABASE_URL: "postgres://x" } });
+    await resolver.sync(apiService);
+    expect(resolver.getPluginServiceEnv()).toEqual({});
+    expect(resolver.getServiceEnvFiles()?.api).toBeDefined();
+  });
+});

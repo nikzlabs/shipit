@@ -83,7 +83,12 @@ import {
   readGenerationManifestAt,
   type LiveGenerations,
 } from "./plugin-generations.js";
-import { OVERRIDE_SENTINELS, validateServiceSecurity, type ComposeService } from "./compose-generator.js";
+import {
+  escapeDollars,
+  OVERRIDE_SENTINELS,
+  validateServiceSecurity,
+  type ComposeService,
+} from "./compose-generator.js";
 import { chownToSessionWorker } from "./session-worker-uid.js";
 
 // ---------------------------------------------------------------------------
@@ -115,6 +120,18 @@ export interface PluginFragmentService {
   definition: Record<string, unknown>;
   /** Directory of the fragment inside the repository ("" = the repo root). */
   fragmentDir: string;
+  /**
+   * The credential NAMES the exported plugin declares (req 23), de-duplicated,
+   * in manifest order.
+   *
+   * Read from the SAME manifest this fragment came from — the resolve-once
+   * snapshot — so a service can never be started with the names of one
+   * generation and the tree of another. Names only: the values are resolved
+   * from the consuming project's own secret store, at the one place that
+   * already decides which names count as satisfied
+   * (`service-secrets-resolver.ts`), and never travel through this module.
+   */
+  credentials: readonly string[];
   /** `repo: self` — the live working tree, with no generation (req 27). */
   self: boolean;
   /** The live generation's commit, for a tracked repository (req 15). */
@@ -281,6 +298,7 @@ export function collectPluginFragments(
         ...(source.port !== undefined ? { port: source.port } : {}),
         definition: source.definition,
         fragmentDir: fragmentDir === "." ? "" : fragmentDir,
+        credentials: [...new Set(exported.credentials)],
         self: snapshot.self,
         checkoutDir: snapshot.root,
         ...(snapshot.commit ? { commit: snapshot.commit } : {}),
@@ -727,6 +745,18 @@ export interface PluginComposeService {
   publishedPort?: number;
   /** The complete definition to emit, mounts and environment included. */
   definition: Record<string, unknown>;
+  /**
+   * The credential names this service's plugin declares (req 23) — carried
+   * through so the secrets pass can deliver exactly those, and so a manifest
+   * that gains or drops a name counts as a CHANGED service
+   * (`setPluginServices` compares these objects) and the container is recreated
+   * with the new set.
+   *
+   * Never values. Delivery is an env file the secrets resolver writes outside
+   * the workspace; nothing about a credential enters this definition, so the
+   * override the daemon reads stays free of secrets.
+   */
+  credentials: readonly string[];
   /** Volumes the override must declare `external: true` for. */
   externalVolumes: string[];
   /**
@@ -891,6 +921,7 @@ export function buildPluginComposeServices(
       repo: fragment.repo,
       plugin: fragment.plugin,
       preview: fragment.preview,
+      credentials: fragment.credentials,
       ...(fragment.port !== undefined ? { port: fragment.port } : {}),
       ...(opts.publishedPorts.has(fragment.name)
         ? { publishedPort: opts.publishedPorts.get(fragment.name) }
@@ -1163,20 +1194,6 @@ function normalizeEnvironment(raw: unknown): Record<string, string> {
     }
   }
   return out;
-}
-
-/** Compose's own escape: `$$` renders as a literal `$` and interpolates nothing. */
-function escapeDollars(value: unknown): unknown {
-  if (typeof value === "string") return value.replace(/\$/g, "$$$$");
-  if (Array.isArray(value)) return value.map(escapeDollars);
-  if (value && typeof value === "object") {
-    const out: Record<string, unknown> = {};
-    for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
-      out[key.replace(/\$/g, "$$$$")] = escapeDollars(nested);
-    }
-    return out;
-  }
-  return value;
 }
 
 /**

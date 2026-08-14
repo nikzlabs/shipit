@@ -39,6 +39,7 @@ import type { DeclaredPluginRepo, PluginExport, PluginReposConfig } from "../sha
 
 import {
   declaredPluginCredentials,
+  satisfiedCredentialNames,
   type PluginCredentialDeclaration,
 } from "../shared/plugin-credentials.js";
 import { resolveShipitConfig } from "../shared/shipit-config.js";
@@ -144,14 +145,11 @@ export function loadSatisfiedPluginCredentialNames(
 ): Set<string> {
   if (!secretStore || !consumerRemoteUrl) return new Set();
   try {
-    // Values are read to test emptiness — the same bar the compose resolver
-    // applies, so one stored empty string does not read as "set" here and
-    // "missing" there — and are discarded with this expression.
-    return new Set(
-      Object.entries(secretStore.loadSecrets(consumerRemoteUrl))
-        .filter(([, value]) => typeof value === "string" && value.length > 0)
-        .map(([name]) => name),
-    );
+    // Values are read to apply {@link satisfiedCredentialNames} — the single
+    // rule the compose resolver applies to the very same map, so one stored
+    // value cannot read as "set" here and "missing" there — and are discarded
+    // with this expression.
+    return satisfiedCredentialNames(secretStore.loadSecrets(consumerRemoteUrl));
   } catch {
     // A store that cannot be read must not report every credential as
     // satisfied — an unreadable store means "nothing known to be set", which

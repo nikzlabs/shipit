@@ -17,11 +17,20 @@
  *
  * **The boundary this module does not decide, and must not undermine** (req
  * 23, last sentence): satisfaction is a pure function of the name set handed
- * in. Whoever produces that set is what keeps ShipIt's own platform
- * credentials — the user's GitHub identity, tracker tokens, agent tokens —
- * out of a plugin's reach. There is exactly one sanctioned producer
- * (`loadSatisfiedPluginCredentialNames`), and it reads the project secret
- * store and nothing else.
+ * in. What keeps ShipIt's own platform credentials — the user's GitHub
+ * identity, tracker tokens, agent tokens — out of a plugin's reach is the map
+ * that set is computed FROM.
+ *
+ * {@link satisfiedCredentialNames} is the one rule; there are exactly two
+ * callers, and each reads the consuming project's secret store and nothing
+ * else. `orchestrator/plugin-credentials.ts`'s
+ * `loadSatisfiedPluginCredentialNames` reads `SecretStore` — a parameter type
+ * that admits nothing else — keyed by the consuming session's remote, for the
+ * Plugins card and the CLI surface. `service-secrets-resolver.ts` applies it to
+ * the `secretsLoader` map it has already loaded for the project's own compose
+ * services, and then delivers exactly those names to that session's plugin
+ * services. Sharing the rule is what makes the card's verdict and the
+ * container's environment one answer instead of two.
  */
 
 import type { PluginExport, PluginReposConfig } from "./plugin-repos.js";
@@ -46,6 +55,29 @@ export interface PluginCredentialDeclaration {
   alias: string;
   /** Declared credential names, in manifest order, de-duplicated. */
   credentials: string[];
+}
+
+/**
+ * Which of a store's names actually satisfy a declared credential — the ONE
+ * rule, so the card's verdict and what a plugin container receives are the same
+ * answer rather than two lookups that agree by convention (req 23).
+ *
+ * A value counts when it is a non-empty string. An empty string is a name the
+ * user started to set and did not, which is the gap req 23 wants named rather
+ * than a credential delivered empty. Nothing else is excluded: every delivery
+ * surface carries an arbitrary string — a plugin service gets its values in the
+ * generated override's `environment`, a companion CLI in the invocation
+ * container's `Env` — so a rule that narrowed further would report a working
+ * credential as missing.
+ */
+export function satisfiedCredentialNames(
+  values: Readonly<Record<string, unknown>>,
+): Set<string> {
+  return new Set(
+    Object.entries(values)
+      .filter(([, value]) => typeof value === "string" && value.length > 0)
+      .map(([name]) => name),
+  );
 }
 
 /** {@link PluginCredentialDeclaration} with each name resolved (req 23). */

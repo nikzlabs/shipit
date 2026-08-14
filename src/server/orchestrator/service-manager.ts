@@ -1254,12 +1254,16 @@ export class ServiceManager extends EventEmitter {
     // per-service env files via `env_file:` and compose detects the file at
     // `up` time. We always sync the env files (even when no secrets are
     // declared) so stale files from a previous compose definition are cleared.
-    await this.secrets.sync(parsedServices);
+    // docs/262 req 23 — the plugin services go in too: their declared
+    // credentials are delivered by the same pass, and the pass sweeps the files
+    // of plugin services it is not told about.
+    await this.secrets.sync(parsedServices, this.pluginServices);
 
     // Generate override
     const userNamedVolumes = parseUserNamedVolumes(composePath);
     const dockerSecretsBuild = this.secrets.getDockerSecretsBuild();
     const serviceEnvFiles = this.secrets.getServiceEnvFiles();
+    const pluginServiceEnv = this.secrets.getPluginServiceEnv();
     const overrideOpts: ComposeOverrideOptions = {
       sessionId: this.sessionId,
       composeConfig: this.composeConfig,
@@ -1272,6 +1276,7 @@ export class ServiceManager extends EventEmitter {
       ...(this.containServiceProxy ? { containProxy: true } : {}),
       ...(dockerSecretsBuild ? { dockerSecrets: dockerSecretsBuild } : {}),
       ...(serviceEnvFiles ? { serviceEnvFiles } : {}),
+      ...(pluginServiceEnv ? { pluginServiceEnv } : {}),
       ...(this.overlayDepDirs.length > 0 ? { overlayDepDirs: this.overlayDepDirs } : {}),
     };
     const overrideContent = generateComposeOverride(overrideServices, overrideOpts);
@@ -1808,7 +1813,7 @@ export class ServiceManager extends EventEmitter {
     } catch {
       return;
     }
-    await this.secrets.sync(parsedServices);
+    await this.secrets.sync(parsedServices, this.pluginServices);
   }
 
   async refreshSecrets(): Promise<void> {
@@ -1821,7 +1826,7 @@ export class ServiceManager extends EventEmitter {
       // Compose file missing or invalid — there's nothing to apply secrets to.
       return;
     }
-    await this.secrets.sync(parsedServices);
+    await this.secrets.sync(parsedServices, this.pluginServices);
 
     // In Docker-secrets mode the override file references which secrets each
     // service consumes — so a change to the set of declared secrets (or to
@@ -1829,8 +1834,17 @@ export class ServiceManager extends EventEmitter {
     // mode, the override only references the env file PATH, so the file
     // content can change without regenerating. We always regenerate when
     // Docker-secrets mode is active to be safe.
+    //
+    // docs/262 req 23 — and whenever this session surfaces PLUGIN services,
+    // whatever the project's mode, because their credential VALUES live in the
+    // override itself rather than behind a stable path. Without this a user
+    // saving the key a plugin declared would rewrite nothing the plugin can
+    // see, and the card would report it satisfied against a container started
+    // before it existed. That is the same disagreement req 23 forbids, one
+    // rebuild later.
     const dockerSecretsBuild = this.secrets.getDockerSecretsBuild();
-    if (dockerSecretsBuild) {
+    const pluginServiceEnv = this.secrets.getPluginServiceEnv();
+    if (dockerSecretsBuild || this.pluginServices.length > 0) {
       const composePath = path.join(this.workspaceDir, this.composeConfig.file);
       const userNamedVolumes = parseUserNamedVolumes(composePath);
       const overrideOpts: ComposeOverrideOptions = {
@@ -1844,7 +1858,8 @@ export class ServiceManager extends EventEmitter {
         ...(this.containServiceDns ? { containDns: true } : {}),
         ...(this.containServiceProxy ? { containProxy: true } : {}),
         ...(this.overlayDepDirs.length > 0 ? { overlayDepDirs: this.overlayDepDirs } : {}),
-        dockerSecrets: dockerSecretsBuild,
+        ...(pluginServiceEnv ? { pluginServiceEnv } : {}),
+        ...(dockerSecretsBuild ? { dockerSecrets: dockerSecretsBuild } : {}),
       };
       // docs/262 — plugin services must survive this rewrite: the override is
       // the ONLY place their definitions exist, so regenerating it from the
@@ -1860,7 +1875,10 @@ export class ServiceManager extends EventEmitter {
     if (!this._started) return;
     // Re-run `up -d` for the auto services so compose recreates containers
     // whose env_file content changed. Manual services aren't restarted —
-    // they're only running if the user explicitly started them.
+    // they're only running if the user explicitly started them. That applies
+    // unchanged to a plugin's manual service (docs/262 req 23): its container
+    // keeps the values it started with until something restarts it, so the
+    // Plugins card can lead the container until then.
     const autoNames = [...this.services.values()]
       .filter(s => s.preview === "auto")
       .map(s => s.name);
