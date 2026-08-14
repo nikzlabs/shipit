@@ -237,12 +237,12 @@ describe("plugin services in a session's stack (docs/262)", () => {
     await stack.mgr.stop();
   });
 
-  it("lets the consuming project override startup and rename a service (reqs 16, 20)", async () => {
+  it("renames a plugin service and starts one the plugin left manual (reqs 16, 20)", async () => {
     writeFixture({
       uses:
         "    - plugin: probe\n      from: mine\n      overrides:\n        services:\n"
-        + "          probe:\n            autostart: false\n"
-        + "          probe-worker:\n            as: reqs-worker\n            autostart: true\n",
+        + "          probe:\n            as: reqs-probe\n"
+        + "          probe-worker:\n            autostart: true\n",
     });
     const stack = makeStack();
 
@@ -250,21 +250,49 @@ describe("plugin services in a session's stack (docs/262)", () => {
 
     // The rename is what the session addresses it by, everywhere.
     expect(stack.mgr.getServices().map((s) => s.name).sort())
-      .toEqual(["probe", "reqs-worker", "web"]);
-    expect(readOverride()["reqs-worker"]).toBeDefined();
-    const started = startedNames(stack.commands);
-    expect(started).toContain("reqs-worker");
-    expect(started).not.toContain("probe");
+      .toEqual(["probe-worker", "reqs-probe", "web"]);
+    expect(readOverride()["reqs-probe"]).toBeDefined();
+    // `probe-worker` is manual in the fragment (no port, no `x-shipit-preview`)
+    // and the consuming project asked for it automatically — so ShipIt names it.
+    expect(startedNames(stack.commands)).toContain("probe-worker");
     // The rename follows the plugin's own `depends_on` — a plugin's internal
     // ordering must not break because a consumer renamed a service.
-    expect(readOverride()["reqs-worker"].depends_on).toEqual(["probe"]);
+    expect(readOverride()["probe-worker"].depends_on).toEqual(["reqs-probe"]);
     // …and the plugin's own name for it is kept, so the card and the collision
     // message can name the override that produced it.
-    expect(stack.mgr.getService("reqs-worker")?.origin).toMatchObject({ sourceName: "probe-worker" });
+    expect(stack.mgr.getService("reqs-probe")?.origin).toMatchObject({ sourceName: "probe" });
     await stack.mgr.stop();
   });
 
-  it("carries the plugin origin on the service messages a browser receives (req 3)", async () => {
+  it("keeps an automatic plugin service manual when the project says so (req 16)", async () => {
+    writeFixture({
+      uses:
+        "    - plugin: probe\n      from: mine\n      overrides:\n        services:\n"
+        + "          probe:\n            autostart: false\n",
+    });
+    const stack = makeStack();
+
+    await startStack(stack);
+
+    expect(stack.mgr.getService("probe")?.preview).toBe("manual");
+    // Neither plugin service is named to `compose up`, and — the reason this
+    // case is written with nothing auto depending on `probe` — nothing brings it
+    // up behind ShipIt's back either: `compose up <name>` starts the named
+    // service's DEPENDENCIES unless `--no-deps` is passed, and ShipIt passes
+    // none (`compose-cli.ts`). So an override that holds a service the plugin
+    // marked automatic is only honoured while nothing automatic depends on it —
+    // a real property of Compose, not of this test (review finding).
+    const started = startedNames(stack.commands);
+    expect(started).not.toContain("probe");
+    expect(started).not.toContain("probe-worker");
+    expect(started).toContain("web");
+    await stack.mgr.stop();
+  });
+
+  it("carries the plugin origin on the service messages the runner broadcasts (req 3)", async () => {
+    // The runner's emitted messages, not a browser: this asserts what
+    // `setServiceManager` puts on the wire, and stops there. Nothing about WS
+    // transport or the client's rendering of the badge is proved here.
     writeFixture();
     const stack = makeStack();
     const runner = new ContainerSessionRunner({
@@ -320,6 +348,12 @@ describe("plugin services in a session's stack (docs/262)", () => {
     // Not just the colliding service — a compose stack is not a set of
     // independent services, so half a plugin is the partial state req 15
     // forbids.
+    //
+    // The check runs when services are RESOLVED. A plugin that is already
+    // running has `/project` read-write, and a later `compose up` re-reads the
+    // project file without re-checking collisions — see the "does NOT establish"
+    // note in `plugin-service-boundary.test.ts`, which is where that limit is
+    // recorded.
     expect(stack.mgr.getServices().map((s) => s.name)).toEqual(["probe"]);
     expect(stack.mgr.getService("probe")?.origin).toBeUndefined();
     expect(readOverride()["probe-worker"]).toBeUndefined();

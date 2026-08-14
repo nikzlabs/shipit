@@ -11,11 +11,22 @@
  *   shipit.yaml → `resolveSessionPluginServices` → `ServiceManager.start()`
  *   → the generated override in the session's state dir (docs/246)
  *
- * Nothing is injected but Docker and the compose CLI. The claims are written
- * EXHAUSTIVELY — the whole key set, the whole mount list, the whole environment,
- * compared — for the reason the CLI half gives: this is the half a later change
- * breaks by ADDITION, and a denylist of today's known-bad names passes the mount
- * nobody thought to forbid.
+ * What is injected: Docker, the compose CLI, and — because the test constructs
+ * the `ServiceManager` rather than letting `setupServiceManager` build one — its
+ * secret loaders. So this file cannot see production wiring the ORCHESTRATOR's
+ * `CredentialStore` into `secretsLoader`; that pairing lives in
+ * `service-manager-setup.ts` and its separation is asserted at the manager level
+ * by `service-manager-plugin-services.test.ts` ("never gives a plugin ShipIt's
+ * own account-level credentials"). Everything between the declaration and the
+ * emitted YAML is the production path.
+ *
+ * The claims are written EXHAUSTIVELY — the whole key set, the whole mount list
+ * with its sources, the whole environment, compared — for the reason the CLI
+ * half gives: this is the half a later change breaks by ADDITION, and a denylist
+ * of today's known-bad names passes the mount nobody thought to forbid. The
+ * fragment allowlist itself is pinned too (the last test): a fixture-based claim
+ * cannot notice a key the fixture never declares, so the set of keys a plugin
+ * may declare at all is compared against a committed list.
  *
  * ## Where a service's boundary differs from the CLI's, and why
  *
@@ -53,48 +64,60 @@
  * has to say which provenance is allowed, and the two are distinguishable at
  * their source rather than by inspection: a plugin credential is a name the
  * plugin's manifest declared whose value the user typed into THIS project's
- * secret store, while a fetch credential is minted per fetch
- * (`plugin-fetch.ts`), handed to git for the life of one command, and written to
- * no store at all — so there is no name under which it could arrive here. The
- * delivery test below states that difference with both kinds present.
+ * secret store (`SecretStore`, reached only through `secretsLoader`), while a
+ * fetch credential lives in the orchestrator's own `CredentialStore` or is a
+ * per-fetch App token (`plugin-fetch.ts`) — neither of which the delivery
+ * computation consults. So the rule is not "no secrets" but "only names this
+ * plugin declared, only values from this project's store". A user who saves a
+ * value under the literal name `GITHUB_TOKEN` and declares it in a manifest gets
+ * it delivered, which is the rule working: that is the user's own value, placed
+ * there for plugins. The delivery test below states the difference with both
+ * kinds present.
  *
- * ## Why the override entry is the whole document for a plugin service
+ * ## What this file does NOT establish — read this before trusting it
  *
- * Compose merges the project's file and this override by service NAME, so a
- * project entry sharing a plugin service's name would merge into it — a second
- * spelling for a mount that no assertion on this file could see. That cannot
- * happen because it is exactly req 20's collision, and a collision withholds
- * every service of the repository rather than renaming one
- * (`plugin-services.test.ts` in `integration_tests/` asserts the withholding).
- * The collision rule is therefore load-bearing for this boundary too, not only
- * for name clarity.
+ * Both of these are verified at the source and neither is this slice's to close.
+ * They are recorded here because a guard test that reads as a clean bill of
+ * health while the boundary is open is worse than no test.
  *
- * ## Two limits, stated rather than closed
+ *  1. **A plugin service CAN reach a repository-fetch credential today, and this
+ *     file cannot see it.** The chain, every link checked: the service container
+ *     sits on the session network, which the orchestrator joins
+ *     (`service-manager-setup.ts`'s `networkJoinFn`); it carries the
+ *     `shipit-parent-session` label, so `api-container-guard.ts` resolves it
+ *     through `getSessionByAnyContainerIp` as a container OF THAT SESSION rather
+ *     than as an unrecognised caller; the guard therefore admits its own
+ *     session's container-accessible routes, a set that includes
+ *     `POST /api/sessions/:id/git/credential` (`api-routes-github.ts`), which
+ *     returns a real GitHub token. The one thing that looked like a lock — that
+ *     the guard compares the FULL session id and ShipIt hands the service none —
+ *     is not one: `/proc/self/mountinfo` exposes each mount's ROOT, and in
+ *     production those are volume subpaths of the form
+ *     `…/_data/sessions/<full uuid>/workspace`. Confirmed by reading
+ *     `/proc/self/mountinfo` inside a live ShipIt session container. The
+ *     environment assertion below is worth keeping as hygiene, but it is not the
+ *     boundary, and nothing in a compose override could be.
+ *  2. **The collision rule stops the project's compose file merging into a
+ *     plugin service's entry only until the plugin runs.** Compose merges by
+ *     service NAME, so a project entry sharing the name would merge in — a
+ *     second spelling for a mount or an environment value that no assertion on
+ *     this file could see. Req 20's collision check closes that when services are
+ *     RESOLVED, and a collision withholds the whole repository
+ *     (`integration_tests/plugin-services.test.ts` asserts the withholding). But
+ *     a plugin service has `/project` read-write (reqs 18, 21), every later
+ *     `compose up` re-reads the project file, and that re-read re-runs
+ *     `validateServiceSecurity` WITHOUT re-checking collisions or re-resolving
+ *     plugin services (`service-manager.ts`). Compose also interpolates `${VAR}`
+ *     in that file from the environment of the process that runs it — the
+ *     orchestrator's, since `compose-cli.ts` spawns with no restricted `env` —
+ *     which is the very thing `plugin-compose.ts` escapes every `$` in a
+ *     FRAGMENT to prevent. Both findings come from an independent review of this
+ *     branch and are reported to the feature's owning session.
  *
- *  - The environment claim covers what ShipIt WRITES, not the container's
- *    effective environment: the image's own `ENV` is merged by the daemon, and
- *    a plugin service runs an image the plugin chose. That is the plugin's own
- *    image and nothing here guards it — but it is also not a way to reach a
- *    ShipIt credential, which is what req 19 is about.
- *  - **The session id is the remaining key, and it is not ShipIt's to hand
- *    over.** A plugin service container is on the session network, which the
- *    orchestrator joins (`service-manager-setup.ts`'s `networkJoinFn`), and it
- *    carries the `shipit-parent-session` label — so `api-container-guard.ts`
- *    resolves it through `getSessionByAnyContainerIp` as a container of that
- *    session rather than as an unrecognised (therefore trusted) browser caller.
- *    That is the layer that denies it every `/api/*` route except its own
- *    session's container-accessible ones — a set that includes
- *    `POST /api/sessions/:id/git/credential`, which returns a real GitHub token.
- *    Reaching it requires knowing the session id, and the guard compares the
- *    FULL id — the neighbouring container's DNS name carries only its first 12
- *    characters (`container-lifecycle.ts` names the agent `agent-<shortId>`), so
- *    the id is not there for the taking from inside the session network. ShipIt
- *    does not put it in a plugin service's environment either, and that is
- *    asserted below, so a later `SHIPIT_SESSION_ID=` added "for convenience"
- *    turns the build red and names the reason. It is a thin lock and it is the
- *    one this surface has: the CLI and install containers answer the same
- *    question with a dedicated network registered untrusted, which req 3 denies
- *    a service.
+ * One further limit, smaller: the environment claim covers what ShipIt WRITES,
+ * not the container's effective environment — the daemon merges the image's own
+ * `ENV`, and a plugin service runs an image the plugin chose. That is the
+ * plugin's own image and not a route to a ShipIt credential.
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
@@ -104,7 +127,7 @@ import path from "node:path";
 import { parse as parseYaml } from "yaml";
 import type Docker from "dockerode";
 import { resolveSessionPluginServices } from "./services/plugin-services.js";
-import { parsePluginFragment } from "./plugin-compose.js";
+import { ALLOWED_SERVICE_KEYS, parsePluginFragment } from "./plugin-compose.js";
 import { ServiceManager, type ComposeQuery, type ComposeRunner } from "./service-manager.js";
 import {
   COMPOSE_OVERRIDE_FILE,
@@ -112,6 +135,7 @@ import {
   SESSION_WORKSPACE_SUBDIR,
 } from "./session-state-dir.js";
 import { LOOPBACK_ONLY_PREFIXES } from "../shared/worker-auth.js";
+import { releaseSessionGenerationHolds } from "./plugin-leases.js";
 
 const SESSION_ID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
 const COMMIT = "c".repeat(40);
@@ -137,6 +161,12 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // The service surface takes a consumer lease on every generation it resolves
+  // (`plugin-leases.ts`, req 15), and the hold registry is process-wide. Vitest
+  // isolates files, so a leaked hold could not reach another suite — released
+  // anyway, because "another suite cannot see it" is a property of the runner's
+  // configuration rather than of this test.
+  releaseSessionGenerationHolds(SESSION_ID);
   fs.rmSync(stateRoot, { recursive: true, force: true });
   vi.unstubAllEnvs();
 });
@@ -334,14 +364,41 @@ function mounts(entry: Record<string, unknown>): MountEntry[] {
 }
 
 /**
+ * The plugin's own directory inside the SELF fixture's workspace — what the
+ * fragment's `- .:/app:ro` resolves to (req 5: `.` means "this plugin", exactly
+ * as it does when the fragment runs standalone).
+ */
+function fragmentSource(): string {
+  return path.join(workspaceDir, "tools", "probe");
+}
+
+/** The import's state directory and settings file, as the dev layout binds them. */
+function pluginStateSource(): string {
+  return path.join(sessionDir, "plugin-data", "probe", "state");
+}
+
+function settingsSource(): string {
+  return path.join(sessionDir, "plugin-data", "probe", "settings.json");
+}
+
+/**
  * The req-19 properties that must hold on EVERY branch, written as exhaustive
  * claims. A helper because the branches are where a boundary erodes: a
  * credential mount added "just for the settings case" would evade an assertion
- * made once on the tracked path.
+ * made once on the tracked path. Every branch calls it — including the ones with
+ * their own extra assertions, since "this branch checks something else" is how a
+ * branch stops checking the boundary at all (review finding).
  */
 function expectBoundaryHolds(
   entry: Record<string, unknown>,
-  expected: { targets: string[]; env: Record<string, string> },
+  expected: {
+    targets: string[];
+    env: Record<string, string>;
+    /** Mount sources this branch may legitimately name (see below). */
+    sources: string[];
+    /** Contained sessions add three ShipIt-owned keys and drop two capabilities. */
+    contained?: boolean;
+  },
 ): void {
   // 1. The whole emitted definition, key by key. A plugin service is a document
   //    ShipIt authors from a third party's fragment, so a NEW key is the thing
@@ -350,8 +407,9 @@ function expectBoundaryHolds(
   //    requirement rather than a silent pass.
   expect(Object.keys(entry).sort()).toEqual([
     "cap_drop", "command", "environment", "image", "labels", "networks",
+    ...(expected.contained ? ["restart", "security_opt"] : []),
     "user", "volumes", "working_dir",
-  ]);
+  ].sort());
 
   // 2. Nothing that shares another container's namespaces or reaches the host.
   //    Spelled out as well as covered by the key set above, because these are
@@ -366,15 +424,30 @@ function expectBoundaryHolds(
     expect(entry[key]).toBeUndefined();
   }
 
-  // 3. The whole mount list. A compose service has no second spelling for a
-  //    mount the way the Docker API has `Binds` beside `Mounts`: everything
-  //    from outside the image arrives as a `volumes:` entry, and the three
-  //    remaining ways to put content in a container — `env_file`, `secrets`,
-  //    `configs` — are refused above. (`tmpfs:` is allowed and is not one: it
-  //    is empty memory, and it cannot name a host path.)
-  expect(mounts(entry).map((m) => m.target).sort()).toEqual([...expected.targets].sort());
+  // 3. The network list by VALUE, not by presence: the session network and
+  //    nothing else. A second network added beside it is how a container gets a
+  //    route the containment posture never saw, and a presence-only assertion
+  //    passes that (review finding).
+  expect(entry.networks).toEqual(["shipit-session"]);
+  expect(entry.cap_drop).toEqual(
+    expected.contained ? ["NET_RAW", "SETUID", "SETGID"] : ["NET_RAW"],
+  );
 
-  // 4. The whole environment ShipIt writes (see the module note on what this
+  // 4. The whole mount list, targets AND sources. A compose service has no
+  //    second spelling for a mount the way the Docker API has `Binds` beside
+  //    `Mounts`: everything from outside the image arrives as a `volumes:`
+  //    entry, and the three remaining ways to put content in a container —
+  //    `env_file`, `secrets`, `configs` — are refused above. (`tmpfs:` is
+  //    allowed and is not one: it is empty memory and cannot name a host path.)
+  //
+  //    Comparing targets alone was not exhaustive (review finding): swapping an
+  //    expected target's SOURCE for the credentials volume would have passed.
+  expect(mounts(entry).map((m) => m.target).sort()).toEqual([...expected.targets].sort());
+  for (const mount of mounts(entry)) {
+    expect(expected.sources).toContain(mount.source);
+  }
+
+  // 5. The whole environment ShipIt writes (see the module note on what this
   //    does and does not cover).
   expect(entry.environment).toEqual(expected.env);
 }
@@ -392,10 +465,15 @@ describe("plugin services — the fetch-authority boundary (req 19)", () => {
 
     const probe = await emitProbeService({ docker });
 
+    const generationVolume = [...volumes].find((v) => v !== "shipit-ws")!;
     expectBoundaryHolds(probe, {
       // `/app` is the fragment's own `- .:/app:ro`, rewritten onto the plugin's
       // tree; the other three are the contract (plan §2).
       targets: ["/app", "/plugin", "/plugin-state", "/project"],
+      // The dev layout, where the daemon and the orchestrator see one
+      // filesystem: the plugin's own tree comes from the generation's overlay
+      // volume and everything else is a path inside THIS session's directory.
+      sources: [generationVolume, workspaceDir, pluginStateSource(), settingsSource()],
       env: {
         PROBE_PORT: "4820",
         SHIPIT_PROJECT_DIR: "/project",
@@ -410,7 +488,6 @@ describe("plugin services — the fetch-authority boundary (req 19)", () => {
 
     // The plugin's own files come from the generation's overlay volume — the
     // checkout with its install output merged over it — and nothing else does.
-    const generationVolume = [...volumes].find((v) => v !== "shipit-ws")!;
     const pluginTree = mounts(probe).find((m) => m.target === "/plugin")!;
     expect(pluginTree).toMatchObject({ type: "volume", source: generationVolume, read_only: true });
     expect(mounts(probe).find((m) => m.target === "/app")).toMatchObject({
@@ -433,6 +510,9 @@ describe("plugin services — the fetch-authority boundary (req 19)", () => {
 
     expectBoundaryHolds(probe, {
       targets: ["/app", "/plugin", "/plugin-state", "/project"],
+      // No generation under `repo: self` (req 27): the plugin's tree IS the
+      // session's own workspace, which is also its `/project`.
+      sources: [workspaceDir, fragmentSource(), pluginStateSource()],
       env: {
         PROBE_PORT: "4820",
         SHIPIT_PROJECT_DIR: "/project",
@@ -456,6 +536,7 @@ describe("plugin services — the fetch-authority boundary (req 19)", () => {
 
     expectBoundaryHolds(probe, {
       targets: ["/app", "/plugin", "/plugin-settings.json", "/plugin-state", "/project"],
+      sources: [workspaceDir, fragmentSource(), pluginStateSource(), settingsSource()],
       env: {
         PROBE_PORT: "4820",
         SHIPIT_PROJECT_DIR: "/project",
@@ -476,28 +557,26 @@ describe("plugin services — the fetch-authority boundary (req 19)", () => {
 
     const probe = await emitProbeService({ containEgress: true });
 
-    // Containment ADDS keys (the generator's own policy), so the exhaustive key
-    // set differs here — which is exactly why the branch is asserted separately
-    // rather than assumed to match.
-    expect(Object.keys(probe).sort()).toEqual([
-      "cap_drop", "command", "environment", "image", "labels", "networks",
-      "restart", "security_opt", "user", "volumes", "working_dir",
-    ]);
-    expect(mounts(probe).map((m) => m.target).sort())
-      .toEqual(["/app", "/plugin", "/plugin-state", "/project"]);
-    expect(probe.environment).toEqual({
-      PROBE_PORT: "4820",
-      SHIPIT_PROJECT_DIR: "/project",
-      SHIPIT_PLUGIN_STATE: "/plugin-state",
+    // Containment ADDS keys and drops two more capabilities (the generator's own
+    // policy), which the helper takes as a parameter rather than as a separate,
+    // weaker set of assertions.
+    expectBoundaryHolds(probe, {
+      contained: true,
+      targets: ["/app", "/plugin", "/plugin-state", "/project"],
+      sources: [workspaceDir, fragmentSource(), pluginStateSource()],
+      env: {
+        PROBE_PORT: "4820",
+        SHIPIT_PROJECT_DIR: "/project",
+        SHIPIT_PLUGIN_STATE: "/plugin-state",
+      },
     });
-    // The session network, and only it. Contained mode emits it under Compose's
-    // `!override` tag so the list REPLACES rather than merges — a second
-    // ordinary bridge merged in from a fragment would be a NAT route around
-    // containment. (A fragment cannot declare `networks:` at all; the tag is
-    // what makes that true of the merged document as well as of the fragment.)
-    expect(probe.networks).toEqual(["shipit-session"]);
-    expect(probe.cap_drop).toEqual(["NET_RAW", "SETUID", "SETGID"]);
     expect(probe.security_opt).toEqual(["no-new-privileges"]);
+    expect(probe.restart).toBe("no");
+    // The network list is emitted under Compose's `!override` tag here, so it
+    // REPLACES rather than merges — a second ordinary bridge merged in from the
+    // project's file would otherwise be a NAT route around containment.
+    expect(fs.readFileSync(path.join(stateDir, COMPOSE_OVERRIDE_FILE), "utf-8"))
+      .toContain("networks: !override");
   });
 
   it("mounts session paths as volume subpaths in the production layout, never as binds", async () => {
@@ -509,6 +588,17 @@ describe("plugin services — the fetch-authority boundary (req 19)", () => {
 
     const probe = await emitProbeService({ workspaceVolume: "shipit-ws" });
 
+    expectBoundaryHolds(probe, {
+      targets: ["/app", "/plugin", "/plugin-state", "/project"],
+      // ONE source in this layout: the workspace volume's compose alias. The
+      // real volume name is known only to the override generator.
+      sources: ["shipit-workspace"],
+      env: {
+        PROBE_PORT: "4820",
+        SHIPIT_PROJECT_DIR: "/project",
+        SHIPIT_PLUGIN_STATE: "/plugin-state",
+      },
+    });
     expect(mounts(probe).map((m) => m.type)).not.toContain("bind");
     for (const mount of mounts(probe)) {
       expect(mount.source).toBe("shipit-workspace");
@@ -539,24 +629,29 @@ describe("plugin services — the fetch-authority boundary (req 19)", () => {
       secrets: { FAL_KEY: "sk-declared", GITHUB_TOKEN: "ghp-stored-but-undeclared" },
     });
 
-    expect(probe.environment).toEqual({
-      PROBE_PORT: "4820",
-      SHIPIT_PROJECT_DIR: "/project",
-      SHIPIT_PLUGIN_STATE: "/plugin-state",
-      FAL_KEY: "sk-declared",
+    expectBoundaryHolds(probe, {
+      targets: ["/app", "/plugin", "/plugin-state", "/project"],
+      sources: [workspaceDir, fragmentSource(), pluginStateSource()],
+      env: {
+        PROBE_PORT: "4820",
+        SHIPIT_PROJECT_DIR: "/project",
+        SHIPIT_PLUGIN_STATE: "/plugin-state",
+        FAL_KEY: "sk-declared",
+      },
     });
     expect(JSON.stringify(probe)).not.toContain("ghp-stored-but-undeclared");
     expect(JSON.stringify(probe)).not.toContain("ghp-orchestrator-fetch-token");
   });
 
-  it("never names the session id, which is the key to the credential broker", async () => {
-    // See the module note. A plugin service is on the session network and
-    // resolves — correctly — as a container of its session, so ShipIt's API
-    // denies it everything except that session's container-accessible routes,
-    // one of which brokers a real GitHub token. Not handing it the id is the
-    // remaining lock, and it is a lock only while nothing writes the id into the
-    // service. (The daemon-side mount SOURCES do carry it, by construction; the
-    // container sees only targets.)
+  it("writes no session id into the service — hygiene, not the boundary", async () => {
+    // Kept, and deliberately not sold as a lock. ShipIt's API admits a plugin
+    // service container to its OWN session's container-accessible routes, one of
+    // which brokers a real GitHub token, so the id is worth not handing over —
+    // but a container reads its own mount roots out of `/proc/self/mountinfo`,
+    // and in production those are volume subpaths containing the full id. See
+    // the module note: the boundary is open on that path, and no assertion about
+    // a compose override could close it. What this does catch is the cheap
+    // regression — an `SHIPIT_SESSION_ID=` added "for convenience".
     writeSelfFixture();
 
     const probe = await emitProbeService();
@@ -611,6 +706,24 @@ describe("plugin services — the fetch-authority boundary (req 19)", () => {
       path.join(workspaceDir, "tools", "probe", "docker-compose.yml"),
       false,
     )).toThrow(/`network_mode:`/);
+  });
+
+  /**
+   * The fixture cannot notice a key it never declares (review finding): widening
+   * {@link ALLOWED_SERVICE_KEYS} changes nothing about the emitted `probe`, so
+   * every exhaustive claim above stays green while a plugin gains the ability to
+   * declare something new. The allowlist is therefore pinned itself, the way the
+   * container-accessible route table is: adding a key turns the build red and
+   * asks for the req-19 argument at the point the decision is made.
+   */
+  it("pins the set of keys a plugin fragment may declare at all", () => {
+    expect([...ALLOWED_SERVICE_KEYS].sort()).toEqual([
+      "command", "cpus", "depends_on", "entrypoint", "environment", "expose",
+      "healthcheck", "image", "init", "mem_limit", "mem_reservation",
+      "pids_limit", "ports", "read_only", "shm_size", "stop_grace_period",
+      "stop_signal", "tmpfs", "ulimits", "user", "volumes", "working_dir",
+      "x-shipit-preview",
+    ]);
   });
 
   it("keeps the worker's credential broker loopback-only, which is what makes the shared network safe", () => {
