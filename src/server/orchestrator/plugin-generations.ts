@@ -292,8 +292,41 @@ export function readActiveManifest(
   repoName: string,
   expectedSource: string,
 ): PluginExport[] | null {
-  if (!readActiveGeneration(stateDir, repoName, expectedSource)) return null;
-  return readGenerationManifestAt(activeLinkPath(stateDir, repoName));
+  const verified = resolveVerifiedGeneration(stateDir, repoName, expectedSource);
+  return verified ? readGenerationManifestAt(verified.dir) : null;
+}
+
+/**
+ * Resolve `active` ONCE and hand back the concrete directory together with the
+ * record that proves it belongs to `expectedSource` — or null.
+ *
+ * Two facts about the same generation want two reads, and reading each through
+ * the symlink is how they come from different generations. Checking the record
+ * through the link and then reading the manifest through the link again is
+ * exactly that hazard, in the one function whose whole job is to answer for a
+ * single commit: a re-point plus a publish landing between the two reads
+ * validates this consumer's selectors, settings and credential names against a
+ * manifest whose record was never checked. So the link is resolved once here
+ * and every fact is read out of that one answer.
+ *
+ * Not exported yet on purpose. The resolve-once sweep (docs/262) needs exactly
+ * this shape at the snapshot route, where several readers answer for one repo
+ * on one request — it should export this rather than add a second resolver
+ * beside it.
+ */
+function resolveVerifiedGeneration(
+  stateDir: string,
+  repoName: string,
+  expectedSource: string,
+): { dir: string; record: GenerationRecord } | null {
+  let dir: string;
+  try {
+    dir = fs.realpathSync(activeLinkPath(stateDir, repoName));
+  } catch {
+    return null; // nothing activated, or the link no longer resolves
+  }
+  const record = readGenerationRecordAt(dir);
+  return record?.source === expectedSource ? { dir, record } : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -637,8 +670,8 @@ async function retireForeignGeneration(
   }
   if (record.source === expectedSource) return;
   // **Unknown provenance is not proof of foreignness.** A record written before
-  // `source` existed carries none, and that generation is this repository's own
-  // — built by a ShipIt that did not record where it came from. Retiring it
+  // `source` existed carries none, so this code cannot tell whose generation it
+  // is — and "cannot tell" is not "someone else's". Retiring it
   // would be destructive twice over: the first activation round after this ships
   // would drop EVERY plugin in EVERY live session at once, and because the
   // retirement runs before the fetch (and `previous` is read after it), a fetch
@@ -647,6 +680,15 @@ async function retireForeignGeneration(
   // no previous generation at all. The plugin goes dark rather than degrading,
   // which is the opposite of req 15. A legacy generation is instead replaced by
   // the next successful publish, exactly as an ordinary refresh replaces it.
+  //
+  // **The residual, stated rather than left implied** (review finding): keeping
+  // the tree is not the same as serving it. Every reader here refuses a record
+  // whose source it cannot match, so the card says "no active version" — but the
+  // CONTAINER side follows this symlink with no record at all, so `/plugins/
+  // <name>`, the materialized skills and the wrapper names keep describing that
+  // tree until a successful publish replaces it. The container's own guard is
+  // its own change (docs/262 checklist); the choice here is only "do not delete
+  // what we cannot prove is a stranger's".
   if (record.source === undefined) return;
 
   await fsp.rm(activeLinkPath(stateDir, repoName), { force: true });

@@ -205,6 +205,10 @@ export async function runPluginCommand(
   // generation or fail.
   let pinned: PinnedGeneration | null = null;
   if (!isSelf) {
+    // Invariant, not a case: `repoNameFor` returns the NAME of a declared repo,
+    // so the lookup above cannot miss. Asserted rather than assumed because the
+    // next line needs its source, and reading a source off the wrong entry is
+    // the failure this whole path exists to prevent.
     if (!repo) {
       return refuse(`\`${repoName}\` is not a declared plugin repository in this project.`);
     }

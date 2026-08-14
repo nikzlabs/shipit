@@ -514,7 +514,7 @@ describe("a re-pointed declaration", () => {
    * `failed` with no previous generation at all. Degrading is req 15; going
    * dark is not.
    */
-  it("keeps a legacy generation live when the fetch for its own repository fails", async () => {
+  it("keeps a legacy generation ON DISK when the fetch for its own repository fails", async () => {
     await activateGeneration(repo({ branch: "main" }), deps());
     const live = readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)!;
 
@@ -526,8 +526,12 @@ describe("a re-pointed declaration", () => {
     const outcome = await activateGeneration(repo({ pin: "v-does-not-exist" }), deps());
 
     expect(outcome.status).toBe("failed");
-    // The checkout is still there, and still serving.
+    // Kept on disk — NOT the same as served. Every reader here still refuses a
+    // record whose source it cannot match, so the card says "no active
+    // version"; what survives is the tree the next successful publish replaces,
+    // and the container's link to it. Asserting the weaker thing on purpose.
     expect(fs.existsSync(path.join(stateDir, "plugins", "tools", "active"))).toBe(true);
     expect(fs.existsSync(path.join(stateDir, "plugins", "tools", "generations", live.commit))).toBe(true);
+    expect(readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)).toBeNull();
   });
 });
