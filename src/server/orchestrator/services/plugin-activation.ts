@@ -38,7 +38,7 @@ import {
 import { resolveShipitConfig, type ShipitConfig } from "../../shared/shipit-config.js";
 import { sessionStateDirForWorkspace } from "../session-state-dir.js";
 import type { DeclaredPluginRepo } from "../../shared/plugin-repos.js";
-import { destinationKey } from "../../shared/plugin-repos.js";
+import { destinationKey, pluginCloneUrl } from "../../shared/plugin-repos.js";
 
 /** What the tab shows for one tracked repository, beyond what's on disk. */
 export interface PluginRepoActivationState {
@@ -704,6 +704,5 @@ function isSelfDeclared(workspaceDir: string, repoName: string): boolean {
 
 /** The clone URL for a declared repo. GitHub-only in v1 (plan §1a). */
 function cloneUrl(repo: DeclaredPluginRepo): string {
-  if (repo.source.kind === "self") throw new Error("self repos have no clone URL");
-  return `https://github.com/${repo.source.owner}/${repo.source.repo}.git`;
+  return pluginCloneUrl(repo.source);
 }

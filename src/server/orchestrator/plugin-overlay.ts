@@ -50,7 +50,8 @@ import {
   volumeExists,
   type OverlaySpec,
 } from "./overlay-volume.js";
-import { pluginsRoot, WORK_SUBDIR } from "./plugin-generations.js";
+import { pluginsRoot, readGenerationRecordAt, WORK_SUBDIR } from "./plugin-generations.js";
+import { pluginBasePinDir } from "./plugin-dep-store.js";
 
 /** Marks a volume as belonging to one plugin generation, for orphan cleanup. */
 export const PLUGIN_OVERLAY_LABEL = "shipit-plugin-generation";
@@ -124,6 +125,16 @@ export function buildPluginOverlaySpec(args: {
   stateDir: string;
   /** Lowerdir as the orchestrator sees it — staging during install, the generation after. */
   checkoutDir: string;
+  /**
+   * req 28 — shared dependency bases this generation pins, as ORCHESTRATOR
+   * paths, deepest-priority last. Each is stacked BELOW the checkout in the
+   * lowerdir list, so the repository's own files always win and a base only ever
+   * supplies the directory install put in it (`plugin-dep-store.ts`).
+   *
+   * Empty during install, always: the install is what produces a promotable
+   * tree, and it can only do that over a lower that holds no dep dir.
+   */
+  depBases?: readonly string[];
   /** Daemon-host mountpoint of the state volume. Omit in dev (no volume). */
   volumeMountpoint?: string;
   /** Orchestrator-visible root of that same volume. Omit in dev. */
@@ -136,9 +147,11 @@ export function buildPluginOverlaySpec(args: {
     workdir: path.join(work, "work"),
   };
   const toDaemon = (p: string): string => daemonPath(p, args.stateRoot, args.volumeMountpoint);
+  // overlayfs takes a `:`-separated lowerdir stack, highest priority first.
+  const lowerdirs = [orchDirs.lowerdir, ...(args.depBases ?? [])].map(toDaemon);
   return {
     volumeName: pluginOverlayVolumeName(args.sessionId, args.repoName, args.commit),
-    lowerdir: toDaemon(orchDirs.lowerdir),
+    lowerdir: lowerdirs.join(":"),
     upperdir: toDaemon(orchDirs.upperdir),
     workdir: toDaemon(orchDirs.workdir),
     orchDirs,
@@ -215,11 +228,17 @@ export async function ensurePluginRuntimeOverlay(
     stateDir: string;
     /** The PUBLISHED generation directory — resolve `active` before calling. */
     checkoutDir: string;
+    /**
+     * req 28 — the orchestrator state dir that holds the shared dependency
+     * store. Omitted where there is none (tests), which simply means no
+     * generation can pin a base.
+     */
+    depStoreDir?: string;
     volumeMountpoint?: string;
     stateRoot?: string;
   },
 ): Promise<string> {
-  const spec = buildPluginOverlaySpec(args);
+  const spec = buildPluginOverlaySpec({ ...args, depBases: resolvePinnedDepBases(args) });
   const previous = ensureQueues.get(spec.volumeName) ?? Promise.resolve();
   // eslint-disable-next-line no-restricted-syntax -- chaining a serial queue; awaiting `previous` here would be the race
   const work = previous.then(async () => {
@@ -244,6 +263,39 @@ export async function ensurePluginRuntimeOverlay(
     if (ensureQueues.get(spec.volumeName) === tail) ensureQueues.delete(spec.volumeName);
   }
   return spec.volumeName;
+}
+
+/**
+ * The shared dependency bases a published generation pins (req 28), read out of
+ * the generation directory the caller already resolved.
+ *
+ * Read here rather than threaded through every call site for one reason: this is
+ * the ONE function that builds a runtime mount, and both surfaces that build one
+ * (a companion-CLI invocation and a plugin service) hand it the same
+ * already-verified generation directory. Reading the record out of that same
+ * directory keeps the mount and the pin coming from one generation by
+ * construction — a pin resolved anywhere else could describe another one.
+ *
+ * **A pin that does not resolve is fatal, deliberately.** The install output
+ * lives in that base and nowhere else, so mounting without it produces a plugin
+ * whose dependencies are silently absent — a "cannot find module" minutes later,
+ * with nothing naming the cause. Refusing names the cause and the fix.
+ */
+function resolvePinnedDepBases(args: { checkoutDir: string; depStoreDir?: string }): string[] {
+  const pins = readGenerationRecordAt(args.checkoutDir)?.basePins ?? [];
+  if (pins.length === 0) return [];
+  if (!args.depStoreDir) {
+    throw new Error("this generation shares its dependencies, but the dependency store is not configured");
+  }
+  return pins.map((pin) => {
+    const dir = pluginBasePinDir(args.depStoreDir!, pin);
+    if (!dir || !fs.existsSync(dir)) {
+      throw new Error(
+        `its shared dependency layer (${pin}) is gone — run \`shipit plugin refresh\` to install them again`,
+      );
+    }
+    return dir;
+  });
 }
 
 /**

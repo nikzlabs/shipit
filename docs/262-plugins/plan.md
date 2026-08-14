@@ -213,6 +213,9 @@ exports:
       skills: plugins/requirements/skills               # dir shipped to sessions (req 22)
       install: npm --prefix . ci                        # see Install contract (req 7)
       install-inputs: [package-lock.json]                 # files whose content re-triggers install
+      dep-dirs: [node_modules]                            # what install populates; shared via the
+                                                          # dependency store (req 28). This is the
+                                                          # default — an empty list opts out
       credentials: [FAL_KEY]        # names only — values live with each project (req 23)
       hosts: [fal.run]              # informational; grants nothing (req 24)
       settings:                     # declared settings + defaults (req 26)

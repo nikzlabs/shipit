@@ -124,6 +124,14 @@ export interface SteadyStateReclaimDeps {
    */
   pnpmStoreRuntimeHash?: () => string | null;
   /**
+   * docs/262 req 28 — the dependency-store artifacts declared plugins still
+   * pin: base scope hashes (a live overlay lowerdir, so reclaiming one is
+   * corruption) and download-cache hashes (an accelerator, so reclaiming one is
+   * only a cold install). Both sweeps consult it; omitted, plugin artifacts are
+   * invisible to them and are reclaimed as orphans.
+   */
+  livePluginStoreArtifacts?: () => Promise<{ scopeHashes: Set<string>; cacheHashes: Set<string> }>;
+  /**
    * Throttle: milliseconds to pause between each destructive operation so the reclaim
    * drips out rather than hammering the Docker daemon / fs that a concurrent agent
    * start also needs. Defaults to `0` (no pause) so unit tests stay fast.
@@ -166,23 +174,50 @@ export async function runSteadyStateReclaim(
   const paceMs = deps.paceMs ?? 0;
   const cacheDays = deps.cacheDays ?? DEFAULT_CACHE_DAYS;
 
-  try {
-    result.cachesRemoved = await sweepOrphanedCaches(
-      deps.stateDir, deps.repoStore, cacheDays, paceMs,
-    );
-  } catch (err) {
-    console.warn("[disk-janitor] cache sweep failed:", getMessage(err));
+  // docs/262 req 28 — plugin generations pin dependency-store artifacts that
+  // neither sweep below can recognize on its own: a base scope keyed on a plugin
+  // repository matches no session's `agent.dep-dirs` scope, and a plugin's
+  // download cache matches no repository in the repo store. Resolved once, for
+  // both. A failure here yields no protection, so it must not be silent.
+  let pluginLive: { scopeHashes: Set<string>; cacheHashes: Set<string> } | null = null;
+  let pluginLiveFailed = false;
+  if (deps.livePluginStoreArtifacts) {
+    try {
+      pluginLive = await deps.livePluginStoreArtifacts();
+    } catch (err) {
+      // **Fail closed** (review finding): proceeding with no plugin liveness is
+      // not "sweep a bit less carefully", it is "delete every plugin artifact",
+      // including bases that are live overlay lowerdirs. Both sweeps are
+      // accelerators and this pass fires on every session activation, so
+      // skipping one costs nothing and the next pass retries. This is the same
+      // rule the overlay-base sweep already follows for its own liveness source:
+      // without a way to confirm what is in use, do not touch the subtree.
+      pluginLiveFailed = true;
+      console.warn("[disk-janitor] could not resolve live plugin dependency artifacts:", getMessage(err));
+    }
+  }
+
+  if (pluginLiveFailed) {
+    console.warn("[disk-janitor] skipping the cache and overlay-base sweeps this pass");
+  } else {
+    try {
+      result.cachesRemoved = await sweepOrphanedCaches(
+        deps.stateDir, deps.repoStore, cacheDays, paceMs, pluginLive?.cacheHashes,
+      );
+    } catch (err) {
+      console.warn("[disk-janitor] cache sweep failed:", getMessage(err));
+    }
   }
 
   // docs/183 Phase 2/3, planning#195 — sweep obsolete overlay bases via a deterministic
   // live-mount check (not an age cutoff). Gated on a live-scope-hash source: removing
   // a base dir that still backs a live overlay `lowerdir` is undefined behavior, so
   // without a way to confirm which bases are in use we don't touch the subtree at all.
-  if (deps.liveOverlayScopeHashes) {
+  if (deps.liveOverlayScopeHashes && !pluginLiveFailed) {
     try {
       result.overlayBasesRemoved = await sweepOrphanedOverlayBases(
         deps.stateDir,
-        deps.liveOverlayScopeHashes(),
+        new Set([...deps.liveOverlayScopeHashes(), ...(pluginLive?.scopeHashes ?? [])]),
         runDocker,
         paceMs,
       );
@@ -435,10 +470,17 @@ async function sweepOrphanedCaches(
   repoStore: RepoStore,
   days: number,
   paceMs: number,
+  /**
+   * docs/262 req 28 — `dep-cache/<hash>` entries owned by a declared plugin
+   * repository rather than by a repository in the store. They can never appear
+   * in the repo-url set below, and this sweep has no age guard, so without them
+   * a plugin's download cache is deleted on the first pass after it is written.
+   */
+  extraLiveCacheHashes?: ReadonlySet<string>,
 ): Promise<number> {
   const cutoffMs = Date.now() - days * 86_400_000;
   const repos = repoStore.list();
-  const liveHashes = new Set<string>();
+  const liveHashes = new Set<string>(extraLiveCacheHashes ?? []);
   for (const repo of repos) {
     const lastUsedMs = Date.parse(repo.lastUsedAt);
     if (Number.isFinite(lastUsedMs) && lastUsedMs >= cutoffMs) {

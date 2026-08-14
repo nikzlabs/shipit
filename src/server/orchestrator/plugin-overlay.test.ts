@@ -196,3 +196,106 @@ describe("ensurePluginRuntimeOverlay", () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// req 28 — shared dependency bases stacked under the checkout
+// ---------------------------------------------------------------------------
+
+describe("buildPluginOverlaySpec with shared dependency bases", () => {
+  it("stacks each base BELOW the checkout, and translates them too", () => {
+    const spec = buildPluginOverlaySpec({
+      ...base,
+      depBases: ["/workspace/overlay-base/aaaa/g1", "/workspace/overlay-base/bbbb/g2"],
+      volumeMountpoint: "/var/lib/docker/volumes/shipit-workspace/_data",
+      stateRoot: "/workspace",
+    });
+
+    const lowerdirs = spec.lowerdir.split(":");
+    // The repository's own files win over anything a base supplies — a base
+    // only ever holds a directory install created, and the checkout is the
+    // higher-priority layer by construction.
+    expect(lowerdirs[0]).toContain("/plugins/tools/generations/");
+    expect(lowerdirs.slice(1)).toEqual([
+      "/var/lib/docker/volumes/shipit-workspace/_data/overlay-base/aaaa/g1",
+      "/var/lib/docker/volumes/shipit-workspace/_data/overlay-base/bbbb/g2",
+    ]);
+  });
+
+  it("is byte-identical to the pre-req-28 spec when nothing is pinned", () => {
+    expect(buildPluginOverlaySpec({ ...base, depBases: [] }))
+      .toEqual(buildPluginOverlaySpec(base));
+  });
+});
+
+describe("ensurePluginRuntimeOverlay with shared dependency bases", () => {
+  /** Records the driver options, which is where the lowerdir stack shows up. */
+  function fakeDocker() {
+    const live = new Set<string>();
+    const creates: { Name: string; DriverOpts?: Record<string, string> }[] = [];
+    const docker = {
+      createVolume: async (spec: { Name: string; DriverOpts?: Record<string, string> }) => {
+        creates.push(spec);
+        live.add(spec.Name);
+      },
+      getVolume: (name: string) => ({
+        inspect: async () => {
+          if (!live.has(name)) throw Object.assign(new Error("no such volume"), { statusCode: 404 });
+          return { Mountpoint: `/var/lib/docker/volumes/${name}/_data` };
+        },
+        remove: async () => {
+          if (!live.has(name)) throw Object.assign(new Error("no such volume"), { statusCode: 404 });
+          live.delete(name);
+        },
+      }),
+    };
+    return { docker: docker as unknown as Docker, creates };
+  }
+
+  /** A published generation whose record pins `pins`. */
+  function generation(stateDir: string, pins: string[]): string {
+    const dir = path.join(stateDir, "plugins", "tools", "generations", base.commit);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(
+      path.join(dir, ".shipit-generation.json"),
+      JSON.stringify({ repoName: "tools", source: "acme/tools", commit: base.commit, basePins: pins }),
+    );
+    return dir;
+  }
+
+  it("mounts the bases the generation itself recorded", async () => {
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "plugin-overlay-"));
+    try {
+      const { docker, creates } = fakeDocker();
+      const checkoutDir = generation(stateDir, [`${"a".repeat(16)}/g1`]);
+      fs.mkdirSync(path.join(stateDir, "overlay-base", "a".repeat(16), "g1"), { recursive: true });
+
+      await ensurePluginRuntimeOverlay(docker, {
+        sessionId: base.sessionId, repoName: "tools", commit: base.commit,
+        stateDir, checkoutDir, depStoreDir: stateDir,
+      });
+
+      const o = creates[0]!.DriverOpts!.o;
+      expect(o).toContain(`:${path.join(stateDir, "overlay-base", "a".repeat(16), "g1")},upperdir=`);
+    } finally {
+      fs.rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses rather than mounting a plugin without the dependencies it pinned", async () => {
+    const stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "plugin-overlay-"));
+    try {
+      const { docker, creates } = fakeDocker();
+      const checkoutDir = generation(stateDir, [`${"b".repeat(16)}/g1`]);
+      // The base is gone. Mounting anyway produces a plugin whose dependencies
+      // are silently absent — a "cannot find module" minutes later, with
+      // nothing naming the cause.
+      await expect(ensurePluginRuntimeOverlay(docker, {
+        sessionId: base.sessionId, repoName: "tools", commit: base.commit,
+        stateDir, checkoutDir, depStoreDir: stateDir,
+      })).rejects.toThrow(/shared dependency layer/);
+      expect(creates).toHaveLength(0);
+    } finally {
+      fs.rmSync(stateDir, { recursive: true, force: true });
+    }
+  });
+});

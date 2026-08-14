@@ -52,6 +52,55 @@ describe("runSteadyStateReclaim", () => {
     if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
+  it("keeps a plugin repository's caches, which no repo store can vouch for", async () => {
+    setup();
+    const repoStore = new RepoStore(dbManager!);
+    const pluginBare = repoUrlToHash("https://github.com/Acme/Tools.git");
+    const orphan = repoUrlToHash("https://github.com/example/gone.git");
+    for (const sub of ["repo-cache", "dep-cache"]) {
+      fs.mkdirSync(path.join(tmpDir, sub, pluginBare), { recursive: true });
+      fs.mkdirSync(path.join(tmpDir, sub, orphan), { recursive: true });
+    }
+
+    const result = await runSteadyStateReclaim({
+      repoStore,
+      stateDir: tmpDir,
+      cacheDays: 30,
+      runDocker: () => Promise.resolve(""),
+      livePluginStoreArtifacts: async () =>
+        ({ scopeHashes: new Set<string>(), cacheHashes: new Set([pluginBare]) }),
+    });
+
+    expect(result.cachesRemoved).toBe(2); // the orphan, in both subtrees
+    expect(fs.existsSync(path.join(tmpDir, "repo-cache", pluginBare))).toBe(true);
+    expect(fs.existsSync(path.join(tmpDir, "dep-cache", pluginBare))).toBe(true);
+  });
+
+  it("skips both sweeps when plugin liveness cannot be resolved", async () => {
+    setup();
+    const repoStore = new RepoStore(dbManager!);
+    const orphan = repoUrlToHash("https://github.com/example/gone.git");
+    fs.mkdirSync(path.join(tmpDir, "dep-cache", orphan), { recursive: true });
+    fs.mkdirSync(path.join(tmpDir, "overlay-base", "a".repeat(16), "g1"), { recursive: true });
+
+    const result = await runSteadyStateReclaim({
+      repoStore,
+      stateDir: tmpDir,
+      cacheDays: 30,
+      runDocker: () => Promise.resolve(""),
+      liveOverlayScopeHashes: () => new Set<string>(),
+      livePluginStoreArtifacts: async () => { throw new Error("state dir unreadable"); },
+    });
+
+    // Failing open here is not "sweep less carefully", it is "delete every
+    // plugin artifact" — including bases that are live overlay lowerdirs. The
+    // pass fires on every session activation, so skipping one costs nothing.
+    expect(result.cachesRemoved).toBe(0);
+    expect(result.overlayBasesRemoved).toBe(0);
+    expect(fs.existsSync(path.join(tmpDir, "dep-cache", orphan))).toBe(true);
+    expect(fs.existsSync(path.join(tmpDir, "overlay-base", "a".repeat(16)))).toBe(true);
+  });
+
   it("sweeps unreferenced repo/dep cache directories", async () => {
     setup();
     const repoStore = new RepoStore(dbManager!);

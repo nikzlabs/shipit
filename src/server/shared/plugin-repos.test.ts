@@ -222,6 +222,35 @@ describe("parsePluginExports", () => {
     expect(exportsList[0].settings.greeting).toEqual({ description: "Echo text", default: "hello" });
   });
 
+  it("defaults dep-dirs to the npm case and takes an explicit list (req 28)", () => {
+    const warnings: string[] = [];
+    const [byDefault, declared, optedOut] = parsePluginExports(
+      {
+        plugins: {
+          a: { install: "npm ci" },
+          b: { install: "npm ci", "dep-dirs": ["node_modules", "./tools/node_modules/", "node_modules"] },
+          c: { install: "npm ci", "dep-dirs": [] },
+        },
+      },
+      warnings,
+    );
+    expect(warnings).toEqual([]);
+    // Zero-config for the common npm plugin, exactly as `agent.dep-dirs` is.
+    expect(byDefault!.depDirs).toEqual(["node_modules"]);
+    // Normalized and de-duplicated, like every other path this parser takes.
+    expect(declared!.depDirs).toEqual(["node_modules", "tools/node_modules"]);
+    // An explicit empty list is how a plugin opts out of sharing entirely.
+    expect(optedOut!.depDirs).toEqual([]);
+  });
+
+  it("drops a plugin whose dep-dirs escape the repository", () => {
+    const warnings: string[] = [];
+    // A dep dir is mounted into every consumer of this plugin, so a path that
+    // leaves the repository is refused the same way `skills` and `compose` are.
+    expect(parsePluginExports({ plugins: { bad: { "dep-dirs": ["../outside"] } } }, warnings)).toEqual([]);
+    expect(parsePluginExports({ plugins: { bad: { "dep-dirs": "node_modules" } } }, [])).toEqual([]);
+  });
+
   it("fail-closed per plugin: one bad field drops the whole export, siblings survive", () => {
     const warnings: string[] = [];
     const exportsList = parsePluginExports(

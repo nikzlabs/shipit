@@ -280,7 +280,7 @@ describe("liveManifestReader", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "plugin-creds-flat-"));
     try {
       const selfExports = [
-        { name: "probe", cli: {}, installInputs: [], credentials: ["PROBE_KEY"], hosts: [], settings: {} },
+        { name: "probe", cli: {}, installInputs: [], depDirs: [], credentials: ["PROBE_KEY"], hosts: [], settings: {} },
       ];
       const repos: DeclaredPluginRepo[] = [{ name: "dev", source: { kind: "self" } }];
       // A self repo reads without any generation being resolvable at all.

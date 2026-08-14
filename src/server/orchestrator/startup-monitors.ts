@@ -9,6 +9,7 @@ import {
 import { resolveAgentDockerLimits } from "./session-container.js";
 import { runDiskJanitor, runSteadyStateReclaim, pruneSessionVolumes, escalateDiskTiers, statfsFreeBytes, statfsTotalBytes, resolveDiskWatermarks, COLD_ARTIFACT_RETENTION_DAYS } from "./disk-janitor.js";
 import { liveOverlayScopeHashes, depDirsForSession, isOverlayEnabled, overlayRuntimeKey, pnpmStoreHash } from "./overlay-session.js";
+import { livePluginStoreArtifacts } from "./plugin-dep-store.js";
 import { DEFAULT_DISK_LADDER, assertDiskLadderOrdering, type DiskLadderThresholds } from "./sessions.js";
 import type { OrchestratorRuntime } from "./bootstrap-managers.js";
 import { createKeepPreviewRestartSupervisor, restoreReservedPreviews } from "./keep-preview-running.js";
@@ -310,6 +311,10 @@ export async function startStartupMonitors(
           // `OVERLAY_DEP_STORE` kill switch, keeping their sweeps inert when off.
           liveOverlayScopeHashes: () =>
             liveOverlayScopeHashes(sessionManager.listAll(), depDirsForSession),
+          // docs/262 req 28 — a declared plugin repository is in no repo store
+          // and its bases are in no session's dep-dir scope, so both sweeps
+          // would read every artifact plugins depend on as an orphan.
+          livePluginStoreArtifacts: () => livePluginStoreArtifacts(sessionManager.listAll()),
           pnpmStoreRuntimeHash: () =>
             isOverlayEnabled() ? pnpmStoreHash(overlayRuntimeKey()) : null,
         });

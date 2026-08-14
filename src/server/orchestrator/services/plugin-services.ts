@@ -56,6 +56,12 @@ export interface PluginServiceDeps {
    */
   workspaceVolume?: string;
   stateRoot?: string;
+  /**
+   * req 28 — the orchestrator state dir holding the shared dependency store, so
+   * a generation's pinned bases can be stacked under its checkout. Absent means
+   * no generation can pin one.
+   */
+  depStoreDir?: string;
   /** Whether this session contains Compose-service egress (docs/263). */
   containEgress: boolean;
 }
@@ -353,6 +359,9 @@ async function ensurePluginVolumes(
         commit,
         stateDir,
         checkoutDir,
+        // req 28 — the bases this generation pins are read out of `checkoutDir`
+        // itself, so the mount and its shared layers come from one generation.
+        ...(deps.depStoreDir ? { depStoreDir: deps.depStoreDir } : {}),
         ...roots,
       });
       volumes.set(repoName, volumeName);
