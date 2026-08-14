@@ -240,9 +240,19 @@ export function activeLinkPath(stateDir: string, repoName: string): string {
  * Every path here is keyed by the declaration **name**, and `GenerationRecord`
  * carries no source repository — so a `repos:` entry re-pointed at a different
  * repository keeps serving the previous repository's generation, however
- * carefully a caller resolves. That is a separate axis with a separate fix (a
- * recorded source, checked on read). Until it lands, a caller that *executes*
- * what it reads is running a repository the declaration no longer names.
+ * carefully a caller resolves. That is a separate axis with a separate fix: a
+ * recorded source, checked on read.
+ *
+ * **When that check arrives, it has to arrive HERE, not only on the wrappers
+ * below.** The wrappers are the obvious place to guard, and guarding only them
+ * makes the compiler find every caller *of the wrappers* — which is every
+ * reader that displays or validates, and not the one that **executes**.
+ * `plugin-cli-run.ts` calls these two directly, having resolved `active`
+ * itself, so a required argument added one level down would leave the
+ * invocation container mounting and running a repository the declaration no
+ * longer names, with the credentials the project stored for the declared one —
+ * and no build error to say so. A guard these readers do not take is a guard
+ * the executing path opts out of silently.
  */
 export function readGenerationRecordAt(generationDir: string): GenerationRecord | null {
   try {
