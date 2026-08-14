@@ -1,8 +1,1 @@
-[
-  {
-    "advisory": "GHSA-2v37-7h3g-55p8",
-    "package": "nanoid",
-    "reason": "The fix (nanoid 3.3.18) was published 2026-08-07 and is younger than the 7-day minimum this repo's own dependency policy sets, so pinning it today would break one rule to satisfy another. It becomes policy-compliant on 2026-08-14: add \"nanoid\": \"3.3.18\" to the overrides block, run npm install, and delete this entry. Exposure meanwhile is nil rather than merely low — the loop needs a CUSTOM generator called with size zero, and the single path into nanoid here is postcss calling the built-in generator with a literal 6 (postcss/lib/input.js:80). nanoid is not a direct dependency and no ShipIt code calls it.",
-    "expires": "2026-08-16"
-  }
-]
+[]
