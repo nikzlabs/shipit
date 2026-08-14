@@ -17,11 +17,13 @@ afterEach(() => {
 
 function fakeDocker(subnets: string[] | null) {
   const created: string[] = [];
+  const createSpecs: Record<string, unknown>[] = [];
   const notFound = (): never => {
     throw Object.assign(new Error("no such network"), { statusCode: 404 });
   };
   return {
     created,
+    createSpecs,
     docker: {
       getNetwork: (name: string) => ({
         inspect: async () => {
@@ -29,7 +31,10 @@ function fakeDocker(subnets: string[] | null) {
           return { IPAM: { Config: (subnets ?? []).map((Subnet) => ({ Subnet })) } };
         },
       }),
-      createNetwork: async (spec: { Name: string }) => { created.push(spec.Name); },
+      createNetwork: async (spec: { Name: string }) => {
+        createSpecs.push(spec);
+        created.push(spec.Name);
+      },
     } as unknown as Docker,
   };
 }
@@ -58,6 +63,41 @@ describe("ensureUntrustedPluginNetwork", () => {
     const { docker } = fakeDocker([]);
     await expect(ensureUntrustedPluginNetwork(docker, "shipit-plugin-test"))
       .rejects.toThrow(/no IPv4 subnet to deny/);
+  });
+
+  it("fails closed on an IPv6-only network, not only on an empty one", async () => {
+    const { docker } = fakeDocker(["fd00:dead:beef::/64"]);
+    await expect(ensureUntrustedPluginNetwork(docker, "shipit-plugin-test"))
+      .rejects.toThrow(/no IPv4 subnet to deny/);
+  });
+
+  /**
+   * The gap this closes (req 19). "Some IPv4 subnet registered" is not the same
+   * property as "every address this network hands out is denied": a dual-stack
+   * network passes the first and fails the second, and a container on it reaches
+   * ShipIt's API over IPv6 as an UNRECOGNISED source — which
+   * `api-container-guard.ts` reads as a browser or host caller, i.e. more
+   * privileged than the agent container this one is isolated from. From there
+   * `/api/sessions/<id>/git/credential` returns a real GitHub token, which is
+   * exactly the fetch credential req 19 says plugin code never sees.
+   */
+  it("fails closed on a dual-stack network, whose IPv6 half it cannot deny", async () => {
+    const { docker } = fakeDocker(["172.30.0.0/16", "fd00:dead:beef::/64"]);
+
+    await expect(ensureUntrustedPluginNetwork(docker, "shipit-plugin-test"))
+      .rejects.toThrow(/cannot deny at its own API/);
+    // The IPv4 half is still registered on the way out — refusing to run is the
+    // safe answer, and un-registering what did work would not make it safer.
+    expect(isUntrustedContainerIp("172.30.4.9")).toBe(true);
+  });
+
+  // Pinned at creation rather than only checked afterwards: a daemon that hands
+  // new bridge networks an IPv6 subnet would otherwise make every plugin
+  // container undeniable, and this call is the only place to say otherwise.
+  it("creates the network IPv4-only", async () => {
+    const { docker, createSpecs } = fakeDocker(["172.30.0.0/16"]);
+    await ensureUntrustedPluginNetwork(docker, "shipit-plugin-test");
+    expect(createSpecs[0]).toMatchObject({ Driver: "bridge", EnableIPv6: false });
   });
 });
 

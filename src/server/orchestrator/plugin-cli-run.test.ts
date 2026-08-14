@@ -8,7 +8,7 @@
  * project's secrets beyond the names the plugin declared.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -21,9 +21,14 @@ import {
   PLUGIN_CLI_NETWORK,
   type PluginCliDeps,
 } from "./plugin-cli-run.js";
-import { clearUntrustedContainerNetworks } from "./api-container-guard.js";
+import { clearUntrustedContainerNetworks, isUntrustedContainerIp } from "./api-container-guard.js";
 
 const COMMIT = "d".repeat(40);
+
+/** An address inside the subnet the fake daemon reports for the CLI network. */
+const CLI_SUBNET_ADDRESS = "172.29.0.7";
+/** A session container's own bridge address — a different network entirely. */
+const SESSION_BRIDGE_ADDRESS = "172.18.0.4";
 
 let sessionDir: string;
 let workspaceDir: string;
@@ -40,6 +45,7 @@ beforeEach(() => {
 afterEach(() => {
   fs.rmSync(sessionDir, { recursive: true, force: true });
   clearUntrustedContainerNetworks();
+  vi.unstubAllEnvs();
 });
 
 const CONSUMER = `
@@ -87,7 +93,17 @@ function publishGeneration(manifest = MANIFEST, source = "acme/tools"): void {
   fs.symlinkSync(dir, path.join(stateDir, "plugins", "tools", "active"));
 }
 
-interface Created { opts: Record<string, unknown> }
+interface Created {
+  opts: Record<string, unknown>;
+  /**
+   * Whether this container's own subnet was already denied at ShipIt's API when
+   * the daemon was asked to create it. Recorded at creation rather than checked
+   * afterwards because the ordering IS the control: an address registered once
+   * the container is running leaves its first request — the one worth making —
+   * unguarded.
+   */
+  deniedAtCreate: boolean;
+}
 
 interface Mount {
   Type: string;
@@ -136,7 +152,10 @@ function fakeDocker(opts: { exit?: number; stdout?: string; stderr?: string } = 
       remove: async () => { volumes.delete(name); },
     }),
     createContainer: async (createOpts: Record<string, unknown>) => {
-      containers.push({ opts: createOpts });
+      containers.push({
+        opts: createOpts,
+        deniedAtCreate: isUntrustedContainerIp(CLI_SUBNET_ADDRESS),
+      });
       return {
         attach: async () => {
           // Flowing, so `end()` actually reaches `end`/`close` — the real
@@ -339,6 +358,179 @@ exports:
     expect(mountFor(created.HostConfig as { Mounts: Mount[] }, "/plugin"))
       .toMatchObject({ Type: "bind", Source: workspaceDir });
     expect((created.Env as string[]).some((e) => e.startsWith("SHIPIT_PLUGIN_COMMIT"))).toBe(false);
+  });
+});
+
+/**
+ * docs/262 req 19, the fetch-authority half: "credentials used to fetch
+ * repositories are never exposed to plugin code".
+ *
+ * The tests above assert the container ShipIt MEANT to build. These assert the
+ * complement — that it holds nothing else — because that is the half a later
+ * change breaks by addition rather than by edit. Each one is written as an
+ * exhaustive claim (the whole mount list, the whole environment) rather than a
+ * denylist of today's known-bad names: a denylist passes a mount nobody thought
+ * to forbid, which is precisely how the withdrawn PR #2202 shipped an install
+ * container that could read `/credentials`.
+ */
+describe("runPluginCommand — the fetch-authority boundary (req 19)", () => {
+  it("mounts EXACTLY the in-session usage contract, and nothing else", async () => {
+    declareConsumer();
+    publishGeneration();
+    const fake = fakeDocker();
+
+    await runPluginCommand(deps(fake.docker), call);
+
+    const created = fake.containers[0].opts;
+    const host = created.HostConfig as {
+      Mounts: Mount[];
+      Binds?: string[];
+      VolumesFrom?: string[];
+    };
+    const mounts = host.Mounts;
+    expect(mounts.map((m) => m.Target).sort()).toEqual(["/plugin", "/plugin-state", "/project"]);
+    // `Mounts` is not the only way to hand a container a filesystem, and an
+    // exhaustive claim about one field is not exhaustive if a sibling field can
+    // carry the rest. `Binds` is the older spelling of the same thing (the
+    // install container uses it), and `VolumesFrom` copies ANOTHER container's
+    // mounts wholesale — pointed at the session container that would be
+    // `/credentials`, in one line, with this file's mount assertion still green.
+    expect(host.Binds ?? []).toEqual([]);
+    expect(host.VolumesFrom ?? []).toEqual([]);
+    // Nor a second network beside `NetworkMode`: a container attached to the
+    // session's bridge as well would reach ShipIt's API from an address in no
+    // registered untrusted subnet, which the guard reads as a browser caller.
+    expect(created.NetworkingConfig).toBeUndefined();
+    // Nothing named for a credential store on either side of any mount — not
+    // the session's `/credentials` tree, and not the orchestrator's own.
+    for (const m of mounts) {
+      expect(`${m.Source} ${m.Target}`).not.toMatch(/credential/i);
+    }
+    // `/project` IS the workspace, so it necessarily carries `.git` — and that
+    // is not a way back to a fetch credential. Verified at the source rather
+    // than assumed: the repo-local `credential.helper` written by
+    // `github-auth.ts:392` is `CONTAINER_CREDENTIAL_HELPER`, a PATH to a broker
+    // (`git-config.ts` — "this file NEVER contains the token"), and the broker
+    // answers only over the session worker's loopback, which the next test
+    // shows this container does not share.
+    expect(mountFor(host, "/project")?.Source).toBe(workspaceDir);
+  });
+
+  it("carries no ShipIt credential, and nothing from the orchestrator's own environment", async () => {
+    // The failure this rules out is a one-word one: `...process.env` in the Env
+    // array. The orchestrator process holds the fetch token these values stand
+    // in for, so a leak is req 19's exact violation.
+    vi.stubEnv("GITHUB_TOKEN", "ghp-should-never-be-inherited");
+    vi.stubEnv("GH_TOKEN", "gh-should-never-be-inherited");
+    vi.stubEnv("SHIPIT_AGENT_OPS_URL", "http://127.0.0.1:9100");
+    declareConsumer();
+    publishGeneration();
+    const fake = fakeDocker();
+
+    await runPluginCommand(deps(fake.docker), call);
+
+    const env = fake.containers[0].opts.Env as string[];
+    // The WHOLE environment: the contract's three names (settings is absent —
+    // this import has no settings file), the two hygiene settings, and the one
+    // credential name the plugin declared.
+    expect([...env].sort()).toEqual([
+      "FAL_KEY=secret-value",
+      "HOME=/tmp",
+      `SHIPIT_PLUGIN_COMMIT=${COMMIT}`,
+      "SHIPIT_PLUGIN_STATE=/plugin-state",
+      "SHIPIT_PROJECT_DIR=/project",
+      "npm_config_update_notifier=false",
+    ]);
+    expect(env.join("\n")).not.toContain("should-never-be-inherited");
+    // `WORKER_PORT` matters as much as an explicit URL: the brokering credential
+    // helper falls back to `http://127.0.0.1:${WORKER_PORT|9100}`, so an
+    // inherited port would aim it at whatever answers on this container's own
+    // loopback rather than merely being inert.
+    expect(env.some((e) => e.startsWith("WORKER_PORT="))).toBe(false);
+  });
+
+  /**
+   * The non-obvious one, and the reason the env assertion above is not enough.
+   *
+   * This container runs the SESSION WORKER IMAGE for its toolchain, so
+   * `/usr/local/bin/shipit-git-credential` is present in it, and `/project`'s
+   * git config names that helper. The helper needs no token and no URL: it
+   * POSTs to `http://127.0.0.1:9100/agent-ops/git/credential`, unauthenticated,
+   * and the worker brokers a real GitHub token back. What makes that harmless
+   * here is ONLY that `127.0.0.1` is this container's own loopback. A
+   * `NetworkMode` of `host` or `container:<session>` would share the worker's
+   * network namespace and turn `git -C /project fetch` into a token read — with
+   * no mount and no environment variable changed, so nothing else in this file
+   * would notice.
+   */
+  it("keeps its own network namespace, where the worker's token broker does not listen", async () => {
+    declareConsumer();
+    publishGeneration();
+    const fake = fakeDocker();
+
+    await runPluginCommand(deps(fake.docker), call);
+
+    const host = fake.containers[0].opts.HostConfig as {
+      NetworkMode: string;
+      ExtraHosts?: string[];
+      Privileged?: boolean;
+      CapAdd?: string[];
+    };
+    expect(host.NetworkMode).toBe(PLUGIN_CLI_NETWORK);
+    // Spelled out as well as pinned, because the two namespace-sharing modes
+    // are what the assertion above is really for, and a future change that
+    // renames the network must not read as permission to use one of them.
+    expect(host.NetworkMode).not.toBe("host");
+    expect(host.NetworkMode.startsWith("container:")).toBe(false);
+    // Nor a hand-written route back to the host, where ShipIt's own API is
+    // published — the IP guard denies it, but a second lock costs nothing.
+    expect(host.ExtraHosts ?? []).toEqual([]);
+    expect(host.Privileged ?? false).toBe(false);
+    expect(host.CapAdd ?? []).toEqual([]);
+  });
+
+  /**
+   * The ordering is the control, not a detail. `api-container-guard.ts` reads an
+   * unrecognised source IP as a trusted browser/host caller, so between "the
+   * container can send a packet" and "its subnet is registered" it is MORE
+   * privileged at ShipIt's API than the agent container it is isolated from —
+   * and `/api/sessions/<id>/git/credential` is one request. `plugin-install.ts`
+   * carries the same assertion; this is the CLI surface's copy of it, because
+   * the two register different networks and neither implies the other.
+   */
+  it("denies its own subnet at ShipIt's API before the container is created", async () => {
+    declareConsumer();
+    publishGeneration();
+    const fake = fakeDocker();
+
+    expect(isUntrustedContainerIp(CLI_SUBNET_ADDRESS)).toBe(false);
+    await runPluginCommand(deps(fake.docker), call);
+
+    expect(fake.networks).toEqual([PLUGIN_CLI_NETWORK]);
+    expect(fake.containers[0].deniedAtCreate).toBe(true);
+    expect(isUntrustedContainerIp(CLI_SUBNET_ADDRESS)).toBe(true);
+    // Scoped to this network: a session container's own bridge address keeps
+    // the treatment the guard's own layers give it.
+    expect(isUntrustedContainerIp(SESSION_BRIDGE_ADDRESS)).toBe(false);
+  });
+
+  // The dual-stack hole, at the surface that has to survive it: an IPv6 subnet
+  // is one the IPv4-only guard cannot deny, so the container must not start.
+  // Without this, the run proceeds and the plugin reaches ShipIt's API over
+  // IPv6 as an unrecognised — therefore trusted — caller.
+  it("refuses to run on a network whose second subnet cannot be denied", async () => {
+    declareConsumer();
+    publishGeneration();
+    const fake = fakeDocker();
+    (fake.docker as unknown as { getNetwork: (n: string) => unknown }).getNetwork = () => ({
+      inspect: async () => ({
+        IPAM: { Config: [{ Subnet: "172.29.0.0/16" }, { Subnet: "fd00:dead:beef::/64" }] },
+      }),
+    });
+
+    const result = await runPluginCommand(deps(fake.docker), call);
+    expect(result.error).toContain("plugin network could not be prepared");
+    expect(fake.containers).toHaveLength(0);
   });
 });
 

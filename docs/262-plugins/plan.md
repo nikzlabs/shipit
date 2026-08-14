@@ -251,7 +251,20 @@ GitHub token. The fix is a dedicated network whose whole subnet is declared
 untrusted to that guard, and the subnet is registered when the network is
 created rather than per container after it starts — otherwise the first
 request, which is the one worth making, arrives before the registration. It
-fails closed: no registerable subnet, no install.
+fails closed: a subnet ShipIt cannot deny means nothing runs.
+
+**"Cannot deny" includes an address family the guard does not match.** The
+guard's CIDR comparison is IPv4-only, so a *dual-stack* network is not half
+safe — the container's IPv6 address falls in no registered CIDR, which the
+guard reads as a browser/host caller, and the same escalation is available by
+making the request over IPv6. Registering *some* IPv4 subnet is therefore the
+wrong bar: every subnet the network reports has to be registerable, and the
+network ShipIt creates is pinned `EnableIPv6: false` so a daemon default
+cannot make it dual-stack in the first place. (Teaching
+`api-container-guard.ts` to match IPv6 CIDRs would close it too, and is the
+better fix the day a plugin container legitimately needs IPv6.) Both the
+install and CLI surfaces get this from `plugin-container.ts`, which is why it
+is shared code rather than two copies.
 
 The general question of what plugin code may reach *outbound* — the manifest's
 `hosts:` as an enforced allowlist rather than an informational one — is req
