@@ -370,6 +370,27 @@ describe("materializePluginSkills", () => {
     expect(fs.existsSync(orphan)).toBe(false);
   });
 
+  // req 27 — under `repo: self` the checkout IS the workspace, so this module's
+  // output and its input can sit in one tree for the first time. A plugin that
+  // declares a harness skill root as its `skills:` directory would otherwise
+  // re-materialize last round's copies under a twice-namespaced name, and again
+  // next round: growth with no bound and no error.
+  it("never re-materializes its own output as a source (req 27)", () => {
+    const selfRoot = roots()[0]!;
+    writeSkill(path.join(selfRoot, "probe"), "probe");
+
+    // Round one: the author's own skill is picked up and copied beside it.
+    const first = materialize([{ alias: "tools", skillsDir: selfRoot, checkoutDir: workspaceDir }]);
+    expect(first.materialized).toEqual([NAMES.probe]);
+
+    // Round two sees the copy sitting in the source directory and leaves it
+    // alone — the same set, not a deeper one.
+    const second = materialize([{ alias: "tools", skillsDir: selfRoot, checkoutDir: workspaceDir }]);
+    expect(second.materialized).toEqual([NAMES.probe]);
+    expect(second.removed).toEqual([]);
+    expect(fs.readdirSync(selfRoot).sort()).toEqual(["probe", NAMES.probe].sort());
+  });
+
   it("marks what it wrote", () => {
     writeSkill(path.join(checkoutDir, "skills", "probe"), "probe");
     materialize([{ alias: "tools", skillsDir: path.join(checkoutDir, "skills") }]);

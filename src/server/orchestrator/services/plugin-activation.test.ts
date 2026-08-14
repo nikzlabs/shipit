@@ -91,6 +91,42 @@ describe("activateDeclaredPlugins", () => {
     expect(getActivationState("sess", "dev")).toBeUndefined();
   });
 
+  // req 27 — the half of the identity guard only this path can run. A self
+  // declaration activates nothing, so no later round would ever reconcile what
+  // an earlier tracked declaration published under the same name: without this,
+  // the previous repository's checkout stays live under that name for the
+  // session's whole life, readable through the read-only store mount.
+  it("retires a generation left under a name now declared `repo: self`", async () => {
+    writeConfig("plugins:\n  repos:\n    - repo: acme/tools\n      name: tools\n      branch: main\n");
+    await activateDeclaredPlugins("sess", workspaceDir, deps());
+    const repoRoot = path.join(sessionDir, "state", "plugins", "tools");
+    expect(fs.existsSync(path.join(repoRoot, "active"))).toBe(true);
+
+    writeConfig("plugins:\n  repos:\n    - repo: self\n      name: tools\n");
+    await activateDeclaredPlugins("sess", workspaceDir, deps());
+
+    // The link first — it is what the container's prepare pass follows — and the
+    // trees with it, since nothing can ever name them again.
+    expect(fs.existsSync(path.join(repoRoot, "active"))).toBe(false);
+    expect(fs.readdirSync(path.join(repoRoot, "generations"))).toEqual([]);
+  });
+
+  // A narrowed round speaks for the one repository the agent named. `shipit
+  // plugin refresh` refuses a self name outright, so a narrowed round must not
+  // reach sideways into one.
+  it("leaves a self-declared name alone when the round is narrowed to another repo", async () => {
+    writeConfig("plugins:\n  repos:\n    - repo: acme/tools\n      name: tools\n      branch: main\n");
+    await activateDeclaredPlugins("sess", workspaceDir, deps());
+
+    writeConfig(
+      "plugins:\n  repos:\n    - repo: self\n      name: tools\n"
+        + "    - repo: acme/other\n      name: other\n      branch: main\n",
+    );
+    await activateDeclaredPlugins("sess", workspaceDir, deps(), undefined, "other");
+
+    expect(fs.existsSync(path.join(sessionDir, "state", "plugins", "tools", "active"))).toBe(true);
+  });
+
   it("one repository failing leaves the other activated (req 14)", async () => {
     writeConfig(
       "plugins:\n  repos:\n    - repo: acme/tools\n      name: tools\n      branch: main\n"

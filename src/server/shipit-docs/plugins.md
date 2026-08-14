@@ -67,15 +67,13 @@ mid-session, `/plugins/<name>` points at the new commit with no restart.
 
 Everything a plugin *ships* — its `install`, its CLIs, its services — runs in a
 separate container, with only what it declared: the checkout, its own writable
-layer, its own credentials. `install` works this way today; CLIs and services
-are not built yet.
+layer, its own credentials.
 
 This is not tidiness. Your container can reach ShipIt's own credential broker
 on loopback, so anything running here can obtain a real GitHub token. Plugin
 code comes from another repository, so it runs where that is not reachable.
-Expect the same rule to apply to plugin CLIs when they land: the command on
-your `PATH` will be a ShipIt wrapper, and the plugin's own code will run
-elsewhere.
+A plugin's command on your `PATH` is therefore a ShipIt wrapper: you run it
+like any other command, and the plugin's own code runs elsewhere.
 
 The practical consequence for you: `/plugins/<name>` shows plugin **source**.
 It does not show a plugin's installed dependencies, because those live in a
@@ -124,6 +122,51 @@ A failed refresh exits non-zero and leaves the previous version live — so the
 session keeps working, on the OLD version. That distinction is the point of the
 non-zero exit: nothing is broken, but you are not running what you think.
 
+## Working inside the plugin's own repository
+
+A plugin repository can consume **itself**, so you can test its exports in a
+session on the repository you are editing:
+
+```yaml
+exports:
+  plugins:
+    requirements: { ... }        # the manifest, as above
+plugins:
+  repos:
+    - repo: self                 # no `branch:` and no `pin:` — both are errors
+      name: dev
+  use:
+    - plugin: requirements
+      from: dev
+```
+
+This is the ordinary consumer path, pointed at this session. The services, the
+commands on your `PATH`, the skills, the settings file and the credential needs
+are the same ones a consuming project gets, from the same manifest — you do not
+write a second compose file or a second declaration to make it work.
+
+One thing differs, and everything else follows from it: **the checkout is this
+session's own working tree.** So:
+
+- There is no separate `/plugins/<name>`; the files are your workspace, where
+  you are already editing them. The plugin's own code still sees itself at
+  `/plugin`, exactly as it does in a consuming project.
+- The read-only rule above does not apply here. Editing the plugin IS the point,
+  and an edit is live: the next command you run and the next service start read
+  the working tree.
+- There is no commit and no generation, so `SHIPIT_PLUGIN_COMMIT` is unset —
+  which is how a plugin can tell "being developed in its own repository" from
+  "running at a tracked commit".
+- `shipit plugin refresh dev` is refused: there is no version to move to. What
+  ShipIt *copies* rather than reads live — the materialized skills and the
+  generated command wrappers — is re-applied on the next activation round, which
+  a `shipit.yaml` save or the session opening runs.
+- The plugin's `install` does not run: it exists to populate a generation's
+  writable layer, and there is none. Your repository's own `agent.install`
+  prepares the working tree that the services and CLIs then run out of.
+- The repository's issues are already this session's, so `self` registers no
+  separate feedback destination. File plugin bugs the ordinary way.
+
 ## Reporting a problem with a plugin
 
 A plugin misbehaving is not something to work around locally, and not something
@@ -167,14 +210,15 @@ session. It opens, and the Plugins tab reports the repository as unavailable,
 or as degraded with the previous commit still live. Each declared repository
 succeeds or fails on its own.
 
-## Not built yet
+## When a declared surface does not appear
 
-Declared in the manifest and parsed, but not yet wired into a session:
+The surfaces a manifest can declare — services, CLIs, skills, settings, and the
+per-plugin state directory — are wired into a session. If one of them is not
+there, that is reported rather than silent: the repository's card in the Plugins
+tab names the plugin, the surface, and the reason. A command withheld because
+two plugins claim the name, a settings value that no longer matches the
+manifest, a service whose fragment was rejected — each says so on the card.
 
-- **CLIs** on your `PATH`, with the plugin's credentials injected
-- **Services** from a plugin's compose fragment, and `/project` inside them
-- **Settings** (`SHIPIT_SETTINGS`) and the per-plugin shared state directory
-- **`repo: self`** — parsed and shown, but it activates no checkout yet
-
-Declaring any of these today is harmless: they are validated, surfaced in the
-Plugins tab, and ignored otherwise.
+Declared `hosts:` are the exception, and by design: they tell you which external
+hosts a plugin needs, and grant nothing. A plugin reaches exactly what any other
+code in this session reaches, under the session's own egress configuration.

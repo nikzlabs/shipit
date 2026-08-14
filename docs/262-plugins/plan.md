@@ -140,6 +140,50 @@ Rules (review findings, both rounds):
   the same working tree. Everything else — services, commands, skills,
   settings, needs — activates through exactly the consumer path.
 
+  **Implemented, and the substitution is one line per surface.** Every reader
+  already takes "which tree does this declaration resolve to?" as its input, so
+  self-use is that one answer changed and nothing else: the orchestrator's
+  `resolveLiveGenerations` answers `null` (no generation to verify) while each
+  surface's own self branch names the working tree —
+  `plugin-compose.ts`'s `snapshotRepo`, `plugin-cli-run.ts`'s unpinned mount,
+  `plugin-state.ts` and `plugin-credentials.ts` reading the project's own parsed
+  manifest, and now `session/plugin-runtime.ts`'s `resolveLiveCheckout` for the
+  container pass. No second compose path, manifest reader or settings writer
+  exists for it (req 5 applied to the plugin's own repository).
+
+  **The identity guard's answer for `repo: self`: never resolve a generation,
+  and retire any that is found.** A generation records the repository it was
+  built from and every reader compares that against the declaration; a self
+  declaration has no such record, so the question is not "which record proves
+  this one?" but "what may stand in for it?" — and the answer is only the
+  session's own working tree. Nothing under the store is consulted, so a
+  checkout left by a declaration that USED to be tracked under the same name
+  cannot be linked, cannot supply skills and cannot name a command. It is also
+  retired rather than left lying about (`plugin-activation.ts` calls the same
+  `retireForeignGeneration` an ordinary re-point runs, under the same lease):
+  self activates nothing, so no later round would ever have reconciled it, and
+  the store mount would keep the previous repository's files readable for the
+  session's whole life.
+
+  **The two things a plugin author should expect, stated rather than implied.**
+  `/plugins/<name>` is deliberately NOT created for a self declaration — the
+  agent already has that tree as its workspace, and the path is not one a plugin
+  can rely on anyway, since every consumer names the repository itself. And what
+  ShipIt *copies* rather than reads live — the materialized skills and the
+  generated command wrappers — is re-applied on the next activation round (a
+  `shipit.yaml` save, or the session opening), not on the edit itself; `shipit
+  plugin refresh <self-name>` stays refused, because there is no version to move
+  to. Everything read live — the service's tree, the CLI's tree, `/project` —
+  needs nothing.
+
+  **And `install` does not run under self, which follows from the same fact and
+  is the right answer rather than a gap.** A plugin's `install` exists to
+  populate a generation's writable layer, and self has neither; the repository's
+  own `agent.install` is what prepares the working tree its services and CLIs
+  then run out of — the setup a plugin author already has for their own
+  repository. This is what the fixture's `install.matchesActiveCommit: null`
+  records under self-use.
+
 ### 1b. Plugin side — `exports.plugins:` (reqs 5, 17, 22, 23, 24, 26)
 
 The plugin repository's own `shipit.yaml` gains an `exports.plugins` map —

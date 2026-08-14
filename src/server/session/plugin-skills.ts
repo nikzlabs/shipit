@@ -439,6 +439,16 @@ function segment(value: string): string {
  * Immediate subdirectories of a skills dir that actually hold a `SKILL.md`, or
  * `null` when the directory itself is missing or unreadable — which is a
  * reportable failure, not an empty result.
+ *
+ * **This module's own output is never an input** (req 27). Until self-use landed
+ * the source tree was always a checkout of ANOTHER repository, so the question
+ * could not arise; a `repo: self` import reads the session's own working tree,
+ * which is also where materialized skills are written. A plugin that declares a
+ * harness skill root as its `skills:` directory would otherwise re-materialize
+ * last round's copies under names namespaced a second time, and again the round
+ * after that — growth with no bound and no error. Ownership is decided by the
+ * validated marker, the same test the write and the sweep use, so a plugin's own
+ * hand-written skill that merely starts with the prefix is still shipped.
  */
 function listSkillDirs(skillsDir: string): string[] | null {
   let entries: fs.Dirent[];
@@ -449,6 +459,7 @@ function listSkillDirs(skillsDir: string): string[] | null {
   }
   return entries
     .filter((e) => e.isDirectory() && fs.existsSync(path.join(skillsDir, e.name, "SKILL.md")))
+    .filter((e) => ownershipOf(path.join(skillsDir, e.name)) !== "ours")
     .map((e) => e.name);
 }
 

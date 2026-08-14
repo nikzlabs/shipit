@@ -939,8 +939,17 @@ function readManifest(
  * linking `/plugins/<name>` at the old repository's checkout, whatever any
  * reader believes. The generations and their writable layers go with it, since
  * nothing can ever name them again.
+ *
+ * **Exported for the one declaration that never activates.** `repo: self`
+ * (req 27) runs the working tree and stages nothing, so no activation of its own
+ * will ever reconcile what an earlier tracked declaration left under its name —
+ * making this the only path that can, and `plugin-activation.ts` calls it per
+ * round for exactly that case. Nothing ever publishes a generation whose source
+ * is `self`, so under a self-declared name every generation is foreign by
+ * construction: the expected source is passed the same way, and the answer falls
+ * out of the same comparison rather than a second rule.
  */
-async function retireForeignGeneration(
+export async function retireForeignGeneration(
   stateDir: string,
   repoName: string,
   expectedSource: string,
