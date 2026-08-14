@@ -118,6 +118,37 @@ export function pluginSettingsPath(sessionDir: string, alias: string): string {
   return path.join(pluginDataDir(sessionDir, alias), PLUGIN_SETTINGS_FILE);
 }
 
+/**
+ * A session path as the DAEMON can reach it: the subpath, inside the volume
+ * rooted at `volumeRoot`, that names it — or `null` when it cannot be named that
+ * way.
+ *
+ * **Every path this file produces is orchestrator-visible only.** In production
+ * the whole session tree lives inside a named volume; the daemon has no path for
+ * it, so handing one of these to Docker as a bind source creates an empty,
+ * root-owned directory where the data was meant to be — and dev and dogfood,
+ * where the paths are real, look perfect the entire time. The established
+ * translation is a volume mount with `VolumeOptions.Subpath`
+ * (`container-lifecycle.ts` for the agent container, `compose-generator.ts` for
+ * service containers); this is that translation, in the one place both plugin
+ * surfaces take it from, so the CLI container and a plugin service cannot derive
+ * it two different ways.
+ *
+ * `null` covers the two shapes with no honest answer: a path outside the volume
+ * (nothing in it to point at) and the volume ROOT itself (whose subpath would be
+ * "", i.e. every session's tree at once). Callers must fail closed on it —
+ * refuse the run, drop the service with a reason — never fall back to a bind,
+ * which is the defect this exists to remove.
+ */
+export function volumeSubpathFor(volumeRoot: string, hostPath: string): string | null {
+  const root = volumeRoot.replace(/\/+$/, "");
+  if (!root) return null;
+  const rel = path.relative(root, hostPath);
+  if (rel === "" || rel.startsWith("..") || path.isAbsolute(rel)) return null;
+  // Compose and the Docker API both want POSIX separators inside a volume.
+  return rel.split(path.sep).join("/");
+}
+
 // ---------------------------------------------------------------------------
 // Settings resolution (req 26)
 // ---------------------------------------------------------------------------

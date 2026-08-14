@@ -16,6 +16,7 @@ import {
   preparePluginState,
   resolvePluginSettings,
   sessionRootForWorkspace,
+  volumeSubpathFor,
 } from "./plugin-state.js";
 import { REGENERABLE_SESSION_SUBDIRS, reclaimRegenerableSessionDirs } from "./disk-utils.js";
 import { resolveLiveGenerations } from "./plugin-generations.js";
@@ -481,5 +482,32 @@ describe("pluginSettingsIssuesByRepo", () => {
       uses: [makeUse({ from: "tools", overrides: { services: {}, commands: {}, settings: { x: 1 } } })],
     };
     expect(pluginSettingsIssuesByRepo(plugins, [], liveFor(plugins)).size).toBe(0);
+  });
+});
+
+/**
+ * The one translation both plugin container surfaces take. Its whole job is that
+ * a session path never reaches Docker as a bind source in production, where the
+ * daemon cannot see it — so the interesting cases are the ones with no answer,
+ * which must be `null` and never a plausible-looking string.
+ */
+describe("volumeSubpathFor", () => {
+  it("names a session path relative to the volume root, in POSIX form", () => {
+    expect(volumeSubpathFor("/workspace", "/workspace/sessions/abc/workspace")).toBe("sessions/abc/workspace");
+    expect(volumeSubpathFor("/workspace", "/workspace/sessions/abc/plugin-data/reqs/settings.json"))
+      .toBe("sessions/abc/plugin-data/reqs/settings.json");
+    // A trailing slash on the root is the same root, not a different one.
+    expect(volumeSubpathFor("/workspace/", "/workspace/sessions/abc")).toBe("sessions/abc");
+  });
+
+  it("refuses a path the volume does not contain", () => {
+    expect(volumeSubpathFor("/workspace", "/var/lib/elsewhere")).toBeNull();
+    expect(volumeSubpathFor("/workspace", "/workspace-other/sessions/abc")).toBeNull();
+    expect(volumeSubpathFor("", "/workspace/sessions/abc")).toBeNull();
+  });
+
+  it("refuses the volume root itself, whose subpath would be every session at once", () => {
+    expect(volumeSubpathFor("/workspace", "/workspace")).toBeNull();
+    expect(volumeSubpathFor("/workspace", "/workspace/")).toBeNull();
   });
 });

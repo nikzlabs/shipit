@@ -763,6 +763,11 @@ export interface PluginMountOptions {
    * are real. `container-lifecycle.ts` mounts workspace, credentials, uploads
    * and scratch this way for exactly this reason; absent here means dev, where a
    * bind of the real path is correct.
+   *
+   * Absent WITH a `workspaceVolume` means the caller could not locate the
+   * session inside that volume, which is not dev and has no correct mount —
+   * every service is dropped with a reason rather than mounted wrongly (see
+   * {@link SessionVolume}).
    */
   sessionSubpath?: string;
   workspaceDir: string;
@@ -782,6 +787,37 @@ export interface PluginMountOptions {
 }
 
 /**
+ * Compose's own name for the workspace volume. It is an ALIAS: the override
+ * generator declares it `external: true` with `name:` set to the real volume
+ * (`compose-generator.ts`), so every file ShipIt writes names it this way and
+ * only the generator knows what it resolves to.
+ */
+const WORKSPACE_VOLUME_ALIAS = "shipit-workspace";
+
+/**
+ * The session, as the DAEMON can reach it — present only when the orchestrator
+ * runs containerized, and then complete.
+ *
+ * Both halves are required together, and that is the point. `workspaceSubpath`
+ * names the git clone; `sessionSubpath` names its parent, because `plugin-data/`
+ * is a SIBLING of `workspace/` and cannot be derived from the clone's path. A
+ * mount that had the volume but not the subpath it needs used to fall back —
+ * `/plugin-state` to a bind (an empty root-owned directory in production), and
+ * `/project` to the volume with no subpath, which is every session's tree at
+ * once. Neither is a degraded mount; both are wrong in a way nothing reports.
+ * Making the pair one value means a mount helper that compiles has the subpath.
+ */
+interface SessionVolume {
+  workspaceSubpath: string;
+  sessionSubpath: string;
+}
+
+function sessionVolume(opts: PluginMountOptions): SessionVolume | undefined {
+  if (!opts.workspaceVolume || !opts.workspaceSubpath || !opts.sessionSubpath) return undefined;
+  return { workspaceSubpath: opts.workspaceSubpath, sessionSubpath: opts.sessionSubpath };
+}
+
+/**
  * Attach ShipIt's half of the in-session contract to each surfaced service:
  * the plugin's own tree, the consuming project at `/project` (req 21), the
  * import's shared state directory and validated settings file (reqs 17, 18, 26),
@@ -796,30 +832,50 @@ export function buildPluginComposeServices(
 ): { services: PluginComposeService[]; issuesByRepo: Map<string, string[]> } {
   const services: PluginComposeService[] = [];
   const issuesByRepo = new Map<string, string[]>();
+  const addIssue = (repo: string, issue: string): void => {
+    issuesByRepo.set(repo, [...(issuesByRepo.get(repo) ?? []), issue]);
+  };
+
+  // Resolved ONCE, and every session-path mount below takes it rather than
+  // reading `opts` again. That is what makes the volume form unmissable: with a
+  // volume runtime there is no subpath-less branch left to fall into, so no
+  // mount can quietly become "the whole volume" or "an orchestrator path the
+  // daemon cannot see" — see {@link SessionVolume}.
+  const volume = sessionVolume(opts);
+  if (opts.workspaceVolume && !volume) {
+    for (const fragment of fragments) {
+      addIssue(
+        fragment.repo,
+        `\`${fragment.alias}\`: its services could not be started because ShipIt could not locate `
+        + "this session inside the workspace volume.",
+      );
+    }
+    return { services: [], issuesByRepo };
+  }
 
   for (const fragment of fragments) {
     const volumeName = fragment.self ? undefined : opts.pluginVolumes.get(fragment.repo);
     if (!fragment.self && !volumeName) {
-      issuesByRepo.set(fragment.repo, [
-        ...(issuesByRepo.get(fragment.repo) ?? []),
+      addIssue(
+        fragment.repo,
         `\`${fragment.alias}\`: its services could not be started because the plugin's writable `
         + "layer is not available in this session.",
-      ]);
+      );
       continue;
     }
 
     const definition: Record<string, unknown> = { ...fragment.definition };
     const externalVolumes: string[] = [];
     if (volumeName) externalVolumes.push(volumeName);
-    if (opts.workspaceVolume) externalVolumes.push("shipit-workspace");
+    if (opts.workspaceVolume) externalVolumes.push(WORKSPACE_VOLUME_ALIAS);
 
     const volumes: unknown[] = [];
     for (const entry of asArray(fragment.definition.volumes)) {
-      volumes.push(rewriteFragmentVolume(entry, fragment, opts, volumeName));
+      volumes.push(rewriteFragmentVolume(entry, fragment, opts, volumeName, volume));
     }
-    volumes.push(pluginTreeMount(fragment, opts, volumeName));
-    volumes.push(projectMount(opts));
-    volumes.push(...pluginDataMounts(fragment.alias, opts));
+    volumes.push(pluginTreeMount(opts, volumeName, volume));
+    volumes.push(projectMount(opts, volume));
+    volumes.push(...pluginDataMounts(fragment.alias, opts, volume));
     definition.volumes = volumes;
 
     const settingsFingerprint = fingerprintSettings(fragment.alias, opts);
@@ -868,6 +924,7 @@ function rewriteFragmentVolume(
   fragment: PluginFragmentService,
   opts: PluginMountOptions,
   volumeName: string | undefined,
+  volume: SessionVolume | undefined,
 ): unknown {
   const parsed = readVolumeEntry(entry);
   if (!parsed) return entry; // an anonymous volume — nothing to resolve
@@ -884,13 +941,12 @@ function rewriteFragmentVolume(
       ...(readOnly ? { read_only: true } : {}),
     };
   }
-  if (opts.workspaceVolume) {
-    const subpath = joinPosix(opts.workspaceSubpath ?? "", withinRepo);
+  if (volume) {
     return {
       type: "volume",
-      source: "shipit-workspace",
+      source: WORKSPACE_VOLUME_ALIAS,
       target,
-      ...(subpath ? { volume: { subpath } } : {}),
+      volume: { subpath: joinPosix(volume.workspaceSubpath, withinRepo) },
       ...(readOnly ? { read_only: true } : {}),
     };
   }
@@ -917,9 +973,9 @@ function rewriteFragmentVolume(
  * relative mounts are the ones anchored at the fragment's directory.
  */
 function pluginTreeMount(
-  fragment: PluginFragmentService,
   opts: PluginMountOptions,
   volumeName: string | undefined,
+  volume: SessionVolume | undefined,
 ): Record<string, unknown> {
   if (volumeName) {
     return { type: "volume", source: volumeName, target: CONTAINER_PLUGIN_DIR, read_only: true };
@@ -927,12 +983,12 @@ function pluginTreeMount(
   // A `repo: self` import has no generation: its tree is the session's own
   // working copy, which is also its `/project` (req 27 — the plugin repository
   // IS the consuming project there).
-  if (opts.workspaceVolume) {
+  if (volume) {
     return {
       type: "volume",
-      source: "shipit-workspace",
+      source: WORKSPACE_VOLUME_ALIAS,
       target: CONTAINER_PLUGIN_DIR,
-      ...(opts.workspaceSubpath ? { volume: { subpath: opts.workspaceSubpath } } : {}),
+      volume: { subpath: volume.workspaceSubpath },
       read_only: true,
     };
   }
@@ -940,13 +996,16 @@ function pluginTreeMount(
 }
 
 /** req 21 — the consuming project's workspace, at the one path every plugin can name. */
-function projectMount(opts: PluginMountOptions): Record<string, unknown> {
-  if (opts.workspaceVolume) {
+function projectMount(
+  opts: PluginMountOptions,
+  volume: SessionVolume | undefined,
+): Record<string, unknown> {
+  if (volume) {
     return {
       type: "volume",
-      source: "shipit-workspace",
+      source: WORKSPACE_VOLUME_ALIAS,
       target: CONTAINER_PROJECT_DIR,
-      ...(opts.workspaceSubpath ? { volume: { subpath: opts.workspaceSubpath } } : {}),
+      volume: { subpath: volume.workspaceSubpath },
     };
   }
   return { type: "bind", source: opts.workspaceDir, target: CONTAINER_PROJECT_DIR };
@@ -980,13 +1039,17 @@ function projectMount(opts: PluginMountOptions): Record<string, unknown> {
  * state; this is the ordering case where a stack starts before the first
  * activation round has settled.
  */
-function pluginDataMounts(alias: string, opts: PluginMountOptions): Record<string, unknown>[] {
+function pluginDataMounts(
+  alias: string,
+  opts: PluginMountOptions,
+  volume: SessionVolume | undefined,
+): Record<string, unknown>[] {
   const mounts: Record<string, unknown>[] = [];
   const stateDir = pluginStateDir(opts.sessionDir, alias);
   try {
     fs.mkdirSync(stateDir, { recursive: true });
     chownToSessionWorker(stateDir);
-    mounts.push(sessionMount(opts, `${PLUGIN_DATA_SUBDIR}/${alias}/${PLUGIN_STATE_SUBDIR}`, {
+    mounts.push(sessionMount(volume, `${PLUGIN_DATA_SUBDIR}/${alias}/${PLUGIN_STATE_SUBDIR}`, {
       hostPath: stateDir,
       target: CONTAINER_PLUGIN_STATE_DIR,
     }));
@@ -995,7 +1058,7 @@ function pluginDataMounts(alias: string, opts: PluginMountOptions): Record<strin
   }
   const settingsPath = pluginSettingsPath(opts.sessionDir, alias);
   if (fs.existsSync(settingsPath)) {
-    mounts.push(sessionMount(opts, `${PLUGIN_DATA_SUBDIR}/${alias}/${PLUGIN_SETTINGS_FILE}`, {
+    mounts.push(sessionMount(volume, `${PLUGIN_DATA_SUBDIR}/${alias}/${PLUGIN_SETTINGS_FILE}`, {
       hostPath: settingsPath,
       target: CONTAINER_PLUGIN_SETTINGS_FILE,
       readOnly: true,
@@ -1010,16 +1073,16 @@ function pluginDataMounts(alias: string, opts: PluginMountOptions): Record<strin
  * daemon and this process see the same filesystem.
  */
 function sessionMount(
-  opts: PluginMountOptions,
+  volume: SessionVolume | undefined,
   relative: string,
   spec: { hostPath: string; target: string; readOnly?: boolean },
 ): Record<string, unknown> {
-  if (opts.workspaceVolume && opts.sessionSubpath) {
+  if (volume) {
     return {
       type: "volume",
-      source: "shipit-workspace",
+      source: WORKSPACE_VOLUME_ALIAS,
       target: spec.target,
-      volume: { subpath: joinPosix(opts.sessionSubpath, relative) },
+      volume: { subpath: joinPosix(volume.sessionSubpath, relative) },
       ...(spec.readOnly ? { read_only: true } : {}),
     };
   }

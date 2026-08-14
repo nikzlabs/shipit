@@ -139,4 +139,61 @@ plugins:
     await resolve();
     expect(getPluginServiceFailures(SESSION_ID, "tools")).toEqual([]);
   });
+
+  /**
+   * The wiring, which is where the production-only defect re-enters: the mount
+   * builders translate correctly, and translate NOTHING if this layer stops
+   * handing them the volume and the root it is anchored at. A bind of an
+   * orchestrator path is invisible in dev and dogfood — the paths are real
+   * there — so it has to be asserted on the SPEC, never on a filesystem effect.
+   */
+  describe("the production layout", () => {
+    const resolveInVolume = (): ReturnType<typeof resolveSessionPluginServices> =>
+      resolveSessionPluginServices(SESSION_ID, workspaceDir, {
+        containEgress: false,
+        workspaceVolume: "shipit-workspace-vol",
+        // The orchestrator-visible root that maps onto that volume; the temp
+        // session tree stands in for a session under it.
+        stateRoot: path.dirname(sessionDir),
+      });
+
+    it("mounts every session path through the workspace volume, never as a bind", async () => {
+      writeConfig(SELF_DECLARATION);
+      const services = await resolveInVolume();
+      expect(services).toHaveLength(1);
+
+      const rel = path.basename(sessionDir);
+      const volumes = services[0].definition.volumes as Record<string, unknown>[];
+      for (const volume of volumes) {
+        expect(volume.type).toBe("volume");
+        expect(volume.volume).toMatchObject({ subpath: expect.any(String) });
+      }
+      expect(volumes).toContainEqual({
+        type: "volume",
+        source: "shipit-workspace",
+        target: "/project",
+        volume: { subpath: `${rel}/${SESSION_WORKSPACE_SUBDIR}` },
+      });
+      expect(volumes).toContainEqual({
+        type: "volume",
+        source: "shipit-workspace",
+        target: "/plugin-state",
+        volume: { subpath: `${rel}/plugin-data/probe/state` },
+      });
+      // The override generator declares this alias `external: true` with the
+      // real volume's name, so a plugin service mounting it must ask for it.
+      expect(services[0].externalVolumes).toContain("shipit-workspace");
+    });
+
+    it("drops the services with a reason when the session is outside the volume root", async () => {
+      writeConfig(SELF_DECLARATION);
+      const services = await resolveSessionPluginServices(SESSION_ID, workspaceDir, {
+        containEgress: false,
+        workspaceVolume: "shipit-workspace-vol",
+        stateRoot: "/some/other/root",
+      });
+      expect(services).toEqual([]);
+      expect(getPluginServiceFailures(SESSION_ID, "mine")[0]).toContain("could not locate this session");
+    });
+  });
 });

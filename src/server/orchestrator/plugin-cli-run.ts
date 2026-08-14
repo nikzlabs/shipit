@@ -82,6 +82,7 @@ import {
   pluginSettingsPath,
   pluginStateDir,
   sessionRootForWorkspace,
+  volumeSubpathFor,
 } from "./plugin-state.js";
 import { loadSatisfiedPluginCredentialNames } from "./plugin-credentials.js";
 import type { SecretStore } from "./secret-store.js";
@@ -279,9 +280,20 @@ export async function runPluginCommand(
   // sees the SAME merged checkout+install-output the installer produced. Self:
   // the working tree itself, live and writable — req 27's whole point.
   const mounts: MountSpec[] = [];
+  // Collected rather than thrown, so ONE refusal names the first untranslatable
+  // path instead of an exception reaching the agent as an opaque 500. See
+  // {@link sessionPathMount} for why there is no bind to fall back to.
+  const mountErrors: string[] = [];
+  const addSessionMount = (hostPath: string, target: string, readOnly: boolean): void => {
+    try {
+      mounts.push(sessionPathMount(deps, hostPath, target, readOnly));
+    } catch (err) {
+      mountErrors.push(message(err));
+    }
+  };
   let commit: string | null = null;
   if (!pinned) {
-    mounts.push(sessionPathMount(deps, deps.workspaceDir, CONTAINER_PLUGIN_DIR, false));
+    addSessionMount(deps.workspaceDir, CONTAINER_PLUGIN_DIR, false);
   } else {
     commit = pinned.commit;
     try {
@@ -321,10 +333,20 @@ export async function runPluginCommand(
   const hostSettings = pluginSettingsPath(sessionRoot, use.alias);
   const hasSettings = fs.existsSync(hostSettings);
 
-  mounts.push(sessionPathMount(deps, deps.workspaceDir, CONTAINER_PROJECT_DIR, false));
-  mounts.push(sessionPathMount(deps, hostStateDir, CONTAINER_PLUGIN_STATE_DIR, false));
+  addSessionMount(deps.workspaceDir, CONTAINER_PROJECT_DIR, false);
+  addSessionMount(hostStateDir, CONTAINER_PLUGIN_STATE_DIR, false);
   if (hasSettings) {
-    mounts.push(sessionPathMount(deps, hostSettings, CONTAINER_PLUGIN_SETTINGS_FILE, true));
+    // As a FILE, which the daemon supports: it stats the resolved path and binds
+    // a file as a file (`daemon/volume/safepath/join_linux.go`), from API 1.45 —
+    // below the floor docs/263 already requires. Mounting its parent instead
+    // would hand the plugin a directory it can write, and settings a plugin can
+    // rewrite were never validated.
+    addSessionMount(hostSettings, CONTAINER_PLUGIN_SETTINGS_FILE, true);
+  }
+  if (mountErrors.length > 0) {
+    return refuse(
+      `this session's files could not be mounted into the plugin container: ${mountErrors.join("; ")}.`,
+    );
   }
 
   const env = [
@@ -440,13 +462,21 @@ function pinGeneration(
  * writing to, which is reqs 17, 18, 21 and 27 all silently untrue. The
  * established translation is a volume mount with `VolumeOptions.Subpath`
  * (`container-lifecycle.ts`, and `compose-generator.ts` for service
- * containers); this mirrors it.
+ * containers); {@link volumeSubpathFor} is that translation, shared with the
+ * compose surface so the two cannot derive it differently.
  *
  * The subpath is taken relative to `stateRoot` — the orchestrator-visible root
  * of that volume — rather than a hardcoded `/workspace/`, which is the same
  * pair `resolvePluginOverlayRoots` already threads through for the overlay's
  * daemon paths. Both must be present for the volume form: `workspaceVolume`
  * alone cannot say where the volume begins.
+ *
+ * **With a volume runtime and no usable subpath, this THROWS rather than
+ * falling back to a bind.** A bind there is not a degraded mount, it is the
+ * defect: the container starts, every path exists, and the plugin reads an empty
+ * directory instead of the project. There is nothing to degrade to, so the run
+ * is refused and the reason is reported — the same fail-closed choice the
+ * compose surface makes by dropping the service with an issue on its card.
  *
  * `install` sidesteps all of this because its ONE mount is a named volume, and
  * a name needs no translation. Every other mount here is a session path.
@@ -459,28 +489,32 @@ interface MountSpec {
   VolumeOptions?: { Subpath?: string };
 }
 
+/** Thrown by {@link sessionPathMount}; carried to the caller as a refusal. */
+export class PluginMountError extends Error {}
+
 export function sessionPathMount(
   deps: Pick<PluginCliDeps, "workspaceVolume" | "stateRoot">,
   hostPath: string,
   target: string,
   readOnly: boolean,
 ): MountSpec {
-  const root = deps.stateRoot?.replace(/\/$/, "");
-  const inside = root && (hostPath === root || hostPath.startsWith(`${root}/`));
-  if (!deps.workspaceVolume || !inside) {
-    // Dev / dogfood: the state dir is a bind mount and the daemon sees the same
-    // paths this process does, so the identity translation is the correct one.
-    // A path OUTSIDE the volume gets the same treatment for the same reason
-    // `daemonPath` passes it through — better unchanged than silently rewritten
-    // to somewhere unrelated.
+  if (!deps.workspaceVolume) {
+    // Dev / dogfood: the session tree is a real path the daemon can see too, so
+    // the identity translation is the correct one.
     return { Type: "bind", Source: hostPath, Target: target, ReadOnly: readOnly };
+  }
+  const subpath = deps.stateRoot ? volumeSubpathFor(deps.stateRoot, hostPath) : null;
+  if (subpath === null) {
+    throw new PluginMountError(
+      `\`${target}\` (${hostPath}) is not inside this deployment's session volume`,
+    );
   }
   return {
     Type: "volume",
     Source: deps.workspaceVolume,
     Target: target,
     ReadOnly: readOnly,
-    VolumeOptions: { Subpath: path.relative(root, hostPath) },
+    VolumeOptions: { Subpath: subpath },
   };
 }
 

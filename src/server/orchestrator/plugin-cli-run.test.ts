@@ -297,6 +297,96 @@ describe("runPluginCommand — the container it builds", () => {
     expect(mountFor(host!, "/plugin")?.Type).toBe("volume");
   });
 
+  // The sweeping form of the assertion above, and the one that catches a mount
+  // added later: in the production layout NOTHING may be a bind. A bind here
+  // does not fail — it starts a container in which the path exists and is
+  // empty, which is the whole reason this defect survived dev and dogfood.
+  it("leaves no session path as a bind in the production layout, settings file included", async () => {
+    declareConsumer();
+    publishGeneration();
+    const settings = path.join(sessionDir, "plugin-data", "reqs", "settings.json");
+    fs.mkdirSync(path.dirname(settings), { recursive: true });
+    fs.writeFileSync(settings, `{"root":"docs"}\n`);
+    const fake = fakeDocker();
+
+    const stateRoot = path.dirname(sessionDir);
+    const rel = path.basename(sessionDir);
+    await runPluginCommand(deps(fake.docker, { workspaceVolume: "shipit-ws", stateRoot }), call);
+
+    const host = fake.containers[0].opts.HostConfig as { Mounts: Mount[] };
+    expect(host.Mounts.map((m) => m.Type)).not.toContain("bind");
+    // req 26 — mounted AS A FILE, which the daemon supports (it stats the
+    // resolved path and binds a file as a file). Its parent is the plugin's
+    // writable state directory, so mounting that instead would hand the plugin
+    // its own settings to rewrite.
+    expect(mountFor(host, "/plugin-settings.json")).toMatchObject({
+      Type: "volume",
+      Source: "shipit-ws",
+      ReadOnly: true,
+      VolumeOptions: { Subpath: `${rel}/plugin-data/reqs/settings.json` },
+    });
+  });
+
+  // req 27 — a `repo: self` import's `/plugin` IS the session's working tree, so
+  // it is the one plugin-tree mount that is a session path rather than a named
+  // volume, and the one that needs the same translation.
+  it("translates a `repo: self` plugin tree too", async () => {
+    declareConsumer(`
+plugins:
+  repos:
+    - repo: self
+      name: mine
+  use:
+    - plugin: requirements
+      from: mine
+      alias: reqs
+exports:
+  plugins:
+    requirements:
+      cli:
+        reqs: cli/index.mjs
+`);
+    const fake = fakeDocker();
+
+    const stateRoot = path.dirname(sessionDir);
+    const rel = path.basename(sessionDir);
+    const result = await runPluginCommand(
+      deps(fake.docker, { workspaceVolume: "shipit-ws", stateRoot }),
+      call,
+    );
+
+    expect(result.error).toBeUndefined();
+    const host = fake.containers[0].opts.HostConfig as { Mounts: Mount[] };
+    expect(mountFor(host, "/plugin")).toMatchObject({
+      Type: "volume",
+      Source: "shipit-ws",
+      // Read-WRITE: under `repo: self` the plugin is deliberately live and
+      // editable, which is req 27's whole point.
+      ReadOnly: false,
+      VolumeOptions: { Subpath: `${rel}/workspace` },
+    });
+    expect(host.Mounts.map((m) => m.Type)).not.toContain("bind");
+  });
+
+  // Fail closed. With a volume runtime there is no bind to degrade to: one would
+  // start the command against an empty `/project` and a `/plugin-state` nothing
+  // else writes to, and report success. Refusing is the only honest answer.
+  it("refuses rather than binding when a session path is outside the volume root", async () => {
+    declareConsumer();
+    publishGeneration();
+    const fake = fakeDocker();
+
+    const result = await runPluginCommand(
+      deps(fake.docker, { workspaceVolume: "shipit-ws", stateRoot: "/some/other/root" }),
+      call,
+    );
+
+    expect(result.exitCode).toBe(126);
+    expect(result.error).toContain("could not be mounted");
+    expect(result.error).toContain("/project");
+    expect(fake.containers).toHaveLength(0);
+  });
+
   // req 19 — the whole reason a companion CLI does not run in the agent
   // container. This is the assertion that keeps it true.
   it("hands the plugin no ShipIt credential, worker URL, or inherited environment", async () => {
