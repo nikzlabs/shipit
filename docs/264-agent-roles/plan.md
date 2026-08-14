@@ -63,19 +63,16 @@ Three reasons the generalization is the right call, not just a renaming:
 
 ```
 role = { name, prompt?, params }
-params = (serviceId, billingMode, modelId, reasoningEffort)   // pinned — req 12
+params = (harnessId, serviceId, billingMode, modelId, reasoningEffort)   // pinned — reqs 9, 12
 ```
 
 - **`name`** — a single CLI-safe token: lowercase letters, digits and dashes (kebab-case), so
   `--role NAME` is a valid word and cannot collide with a flag. Unique per install; creating a
   duplicate is a refusal.
 - **`prompt`** — an optional free-text standing prompt (req 11). See *The prompt*.
-- **`params`** — exactly the tuple a pinned reviewer holds (docs/261 reqs 1, 3, 5). The harness
-  is **derived** (req 9, docs/261 req 3) and a role never *has* to name one. Whether it may
-  **optionally constrain** it is open question 1, reopened by the human — the recommendation is
-  an optional field that is absent by default and whose control appears only where a model is
-  genuinely dual-harness, which is nowhere in today's catalogue. Designed for below, under
-  *The harness constraint*.
+- **`params`** — a pinned reviewer's tuple (docs/261 reqs 1, 5) **plus the harness**, which is
+  **required** (req 9). This is the one place in ShipIt where the harness is chosen rather than
+  derived; see *The harness is part of a role* below for what that changes and what it fixes.
 - **The built-in `reviewer` role is not stored.** Its resolution *is* the two slots (docs/261).
   It is listed alongside user roles wherever roles are listed, but it has no row.
 
@@ -120,12 +117,15 @@ as a nicety. Nothing about the two slots changes.
    once, frozen.
 2. **User roles** — look `name` up in the store. **Unknown → `ServiceError` listing the known
    roles** (built-in and user) and, because a role name and a model label are two name-spaces, a
-   hint that `--model` is the flag for a model (req 8). Resolve the pin exactly as a pinned slot
-   resolves today: eligibility + **usable route** (`firstRoutable`, the *Eligible is not
-   runnable* rule), harness derived preferring one that is not the implementer's, effort = the
-   pin's level (validated at save against the settings-time harness; the latent dual-harness
-   caveat recorded in docs/261 phase 3 applies unchanged). Freeze the target with
-   `source: "role"`, carrying the name.
+   hint that `--model` is the flag for a model (req 8). Then resolve **the role's own tuple**: the
+   harness is the one the role names (req 9 — not derived, and no implementer preference applied),
+   and the only question left is whether it still has a **usable route** (the *Eligible is not
+   runnable* rule). Effort is the role's level, already validated at save against that same
+   harness. Freeze the target with `source: "role"`, carrying the name.
+
+   This is a **simpler** path than a slot's, not a parallel one: the slot machinery exists to
+   *choose* a harness, and a role has already chosen. What is reused is the routing and the
+   freezing; what is skipped is every step that was deciding something the role states.
 
 The consult card's `runOn` reports the resolved tuple, as phase 4 already does for every review
 (req 10); the role's name joins the ranking's log line. A user role whose credential or harness
@@ -207,34 +207,43 @@ The settings surface gains the role list:
 Name validation lives server-side (kebab-case token, length bound, uniqueness), and a name the
 user chooses is accepted as given — the user owns the word.
 
-## The harness constraint (open question 1)
+## The harness is part of a role (req 9)
 
-Req 9 keeps the harness **derived**, and a role never has to name one. The open question is
-whether it may *optionally constrain* it, and the recommendation is yes — designed here so the
-shape is visible rather than argued in the abstract:
+A role's harness is **required and stored**. That is a departure from docs/261 req 3's
+model-first derivation, taken deliberately and scoped to user roles — the built-in `reviewer`
+keeps deriving. What it changes:
 
-- **An optional `harnessId` on the role.** Absent — the default, and the only state expressible
-  today — means derived, exactly as now. Present means this role runs on that harness, and the
-  save is **refused** if that harness cannot run the model, in the same place and the same way
-  an invalid effort level is refused (`resolveReviewerPinPatch`).
-- **The control follows docs/261 req 14**: it is rendered only where the chosen model is offered
-  by more than one harness. On today's catalogue no model is, so the control never appears and
-  the field is never set — the feature ships as though the answer were "no", and becomes
-  available by itself the day a gateway row makes a model dual-harness.
-- **It changes no resolution rule.** A constrained role skips the "prefer a harness that is not
-  the implementer's" preference for that role only; every other rule — the routable check, the
-  frozen target, the attribution — is untouched.
+- **`harnessId` is a required field on the role**, validated at save: it must be installed, it
+  must be able to carry the model (the style overlap), and it must have a credential. The
+  existing `harnessesForSelection` answers all three; a role naming a harness outside that set is
+  **refused**, in the same place an invalid effort level is refused
+  (`resolveReviewerPinPatch`).
+- **No harness derivation at run time for a user role**, and no "prefer a harness that is not the
+  implementer's" preference either. The role said what it runs on. That preference remains what
+  it always was — the *automatic* pick's tie-breaker, for the built-in reviewer only.
+- **Same-harness reviews become expressible, and that is correct.** docs/261 req 4's promise
+  never to review work with the thing that produced it governs the **automatic** pick. A user
+  role is an explicit choice; if the user defines a role on their own harness, that is what they
+  asked for, exactly as req 13 makes a role's level un-overridable.
+- **A stored harness can go stale**, and goes `pin_unavailable` like any other lost pin. For a
+  job definition that is the better failure: being told the role cannot run beats being quietly
+  handed a different agent, which is the "same model, different agent" difference that motivated
+  requiring it.
 
-**Why this rather than the flat "no" recorded a turn earlier.** The reasons for "no" were
-model-first consistency and the fact that a harness picker would have exactly one option today.
-The second is true and is the real reason it looked settled — but it is an argument for *not
-rendering a control*, not for making the state inexpressible. The first is weaker than it looked:
-a harness is not a neutral pipe, and ShipIt's own ranking already treats it as a distance axis
-(docs/261's `reviewerDistanceTier`), so a design that ranks on the harness while forbidding the
-user to express it is asserting a rule it does not itself keep. **The honest cost of the
-recommendation is that it is untestable end to end today** — the same gap docs/261 records for
-tiers 3 and 5 — so it is pinned as a pure function and left unreachable through the shipped
-catalogue, and that limit is stated rather than papered over.
+**It fixes something.** docs/261 phase 3 records a latent bug it deliberately left open: a pin's
+effort is validated against the *settings-time derived* harness, while `selectReviewer` may run it
+on a **different** harness and copy the level across without revalidating — so a dual-harness
+model could carry a Claude-only `max` to Codex. The fix there is a choice between refusing the
+review and silently substituting a default, and both are bad. **For a role the gap does not
+exist**: the level is validated against the one harness the role names, and that is the harness it
+runs on. Requiring the harness is what collapses the two into one.
+
+**What it costs.** The pair (model, harness) can now disagree in a way a model alone could not,
+so the save-time check is load-bearing rather than belt-and-braces. And the *choice* is
+unexercisable on today's catalogue — no shipped model runs on both harnesses — so for now the
+field has exactly one valid value per model. That does not make it derivation with extra steps:
+stored-and-frozen behaves differently from derived the moment the install changes, which is the
+whole reason it is required. The UI consequence is in *The Settings tab*.
 
 ## Recurrence conversion (req 7)
 
@@ -250,6 +259,12 @@ the Roles settings surface prefilled** with that model and level, rather than wr
 itself: creation is a UI act in v1 (req 5), and the offer is how the user gets there in one click
 instead of re-deriving the combination from memory. A repeated *task* shape (a prompt the user
 keeps attaching) prefills the prompt too, which is where req 11 pays off.
+
+**The prefill can fill the harness too, and does not have to guess it.** A role requires one
+(req 9) while an ad-hoc combination names only a model and a level — but the run that prompted
+the offer resolved onto a real harness, and docs/261 phase 4 already persists it on the consult
+card's `runOn`. So the offer carries the harness that actually ran, which is both the honest
+answer and the one the user meant.
 
 Two design notes:
 
@@ -269,8 +284,16 @@ the user roles, each a name field, an optional prompt field (req 11), the three 
 controls (`ServiceSelector`, the model menu and the reasoning menu — all phase-6 shared pickers,
 so docs/261 req 13 binds them by construction), a rename, a delete, and a *New role* row. User
 roles are pinned by construction (a user created them), so the auto/pinned badge that the slots
-carry applies to the built-in row only. Where a model is dual-harness, the row also carries the
-optional harness control (open question 1); on today's catalogue it is never rendered.
+carry applies to the built-in row only. Each user role also carries its **harness** (req 9).
+
+**The harness is required in the data; it is not necessarily a required interaction.** Today every
+model has exactly one harness that can run it, so the field is filled in from that single valid
+option and *shown* on the row rather than asked for — a control with one choice is a control
+worth not making the user operate (the spirit of docs/261 req 14, whose letter covers the
+zero-option case). The day a model is offered by two harnesses, the same field becomes a real
+picker with two rows, and nothing about the stored shape changes. Showing it read-only from day
+one is deliberate: a role's harness is part of what it *is* (req 9), so hiding it until it becomes
+selectable would misrepresent the role.
 
 **This surface is load-bearing rather than a convenience**, because req 5 makes it the only way a
 role is created. It is also the answer to the question chat-native creation could not answer:
@@ -305,6 +328,10 @@ The earlier frame's costs carry over; the prompt adds one. Each:
   not the endpoint but the **boundary**: it must stay scoped to roles. Widening it to services
   and models would revive the fully-explicit path this design declines to build on, and would put
   the agent back in the business of choosing params.
+- **A required harness is one more thing that can go stale, and one more pair that can
+  disagree** (req 9). Both are answered above: `pin_unavailable` for the first, a load-bearing
+  save-time check for the second. Set against that, it *removes* a cost — docs/261's latent
+  effort-across-harnesses bug has no analogue here.
 
 ## The pool question, settled (req 12)
 
@@ -320,8 +347,8 @@ future fold would be a small change — but it is a stated non-goal, not a defer
 
 | # | Phase | Reqs | Done when |
 |---|---|---|---|
-| 1 | Storage + resolution: the role list, `resolveRoleByName` (built-in + user), the settings payload carrying roles | 1, 2, 8, 9, 10, 12 | A user role is stored, resolved and routed; an unknown role name is refused listing the known ones; nothing calls it yet |
-| 2 | Settings: role CRUD, name validation, the Roles surface with the shared controls and the prompt field | 5, 1, 11 | A role is created, edited, renamed and deleted in the UI; nothing about creation lives in chat |
+| 1 | Storage + resolution: the role list including its required harness, `resolveRoleByName` (built-in + user), the settings payload carrying roles | 1, 2, 8, 9, 10, 12 | A user role is stored, resolved and routed on the harness it names; a role whose harness cannot run its model is refused; an unknown role name is refused listing the known ones; nothing calls it yet |
+| 2 | Settings: role CRUD, name validation, the Roles surface with the shared controls, the harness field and the prompt field | 5, 1, 9, 11 | A role is created, edited, renamed and deleted in the UI; the harness is shown on every role and is selectable wherever a model has more than one; nothing about creation lives in chat |
 | 3 | CLI + inventory: `--role NAME` for user roles, the roles read, the intent-to-role guidance, exclusive with the ad-hoc flags | 2, 3, 4, 8, 13, 14 | `--role deep-dive` spawns that role; the agent can list roles and map "review the PR" onto one; `--role NAME` + `--model`/`--effort` is refused in both shim and server |
 | 4 | Recurrence conversion: the agent-facing guidance and the propose-actions offer opening the prefilled Roles surface | 6, 7 | A second ask for the same combination produces an offer that lands the user in the UI with it filled in |
 
@@ -329,5 +356,6 @@ future fold would be a small change — but it is a stated non-goal, not a defer
 the UI is now the only way a role exists, so a CLI phase before it would ship `--role NAME` with
 no way to create a NAME. The prompt (req 11) rides phases 1 and 2; the inventory (req 14) rides
 phase 3, because it is what makes req 3's intent-mapping possible. The pool question is settled
-(req 12): pinned only — deliberately not in the table. The harness constraint (open question 1)
-rides phases 1 and 2 if it is taken.
+(req 12): pinned only — deliberately not in the table. The required harness (req 9) rides phases
+1 and 2 and is not optional work: it is part of what a role *is*, so there is no phase in which
+roles exist without it.

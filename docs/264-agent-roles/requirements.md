@@ -15,9 +15,9 @@ resolved from the two configured slots — docs/261), or spelled out **ad hoc** 
 (`--model NAME` / `--effort LEVEL` — docs/263). The direction generalizes the implicit side:
 instead of only a reviewer, the user preconfigures **agent roles** — named units of agent work,
 each carrying the params a reviewer has today (the service, the billing mode, the model and the
-reasoning level) and an optional standing prompt. The **reviewer is one role** (the automatic one);
-user roles are additional, and asking for a review and asking for any other role are the same
-action.
+reasoning level), **the harness that runs it**, and an optional standing prompt. The **reviewer is
+one role** (the automatic one); user roles are additional, and asking for a review and asking for
+any other role are the same action.
 
 The number of roles is **open-ended** ("preconfigure various agent roles"). A user role's params
 are **pinned** (req 12); the automatic resolution is the built-in `reviewer` role's, and a user
@@ -26,9 +26,9 @@ role never resolves its own model.
 ## Requirements
 
 1. **A user can create any number of agent roles**, and each role is a **complete** unit — the
-   service, the billing mode, the model and the reasoning level — exactly the tuple a pinned
-   reviewer holds today (docs/261 reqs 1, 3, 5). Nothing about a role's params is left for the
-   agent to decide at invocation time.
+   service, the billing mode, the model, the reasoning level **and the harness** (req 9).
+   Nothing about a role's params is left for the agent to decide at invocation time, and nothing
+   is left for ShipIt to derive at run time either.
 
 2. **The reviewer is a role like any other.** The built-in `reviewer` role is the automatic
    one — it resolves from the configured slots, unchanged (docs/261 reqs 4, 8) — and asking for
@@ -67,11 +67,20 @@ role never resolves its own model.
    next rather than what they did wrong. This mirrors the model-name resolution docs/263
    established.
 
-9. **A role is a model, like every other reviewer, and the harness is derived from it.**
-   docs/261 req 3 fixes a reviewer as a model with the harness derived, and a role is a reviewer:
-   a role always carries `(service, billing mode, model, level)`, and it never has to name a
-   harness for ShipIt to run it. Whether a role may **additionally** constrain the harness is
-   open question 1 — reopened by the human, and the argument is set out there.
+9. **A role names its harness, and the harness is required.** A role carries
+   `(harness, service, billing mode, model, level)`. It is not derived, not optional and not
+   re-decided per run: a role is a *job definition*, and which agent performs the job is part of
+   the job — Claude Code driving a model and Codex driving the same model are different agents,
+   with different scaffolding, tools and agentic loops.
+
+   **This is a deliberate departure from docs/261 req 3 for roles, and only for roles.** That
+   requirement makes a reviewer a model with the harness *derived*, and the built-in `reviewer`
+   role keeps that behaviour untouched (req 2). A user-defined role does not: it is the one place
+   in ShipIt where the harness is chosen rather than derived, because it is the one place where
+   the user is describing a job rather than picking a model.
+
+   A role whose harness cannot run its model is **refused when it is saved**, not silently
+   repaired — the same treatment req 13 gives every other param.
 
 10. **What a role's run did is reported and attributed exactly as any other review.**
     docs/261 req 9 is restated because this feature must not lose it: a role is still resolved
@@ -118,37 +127,7 @@ draft and was removed on the human's instruction; the reasoning is in the 2026-0
 
 ## Open questions
 
-1. **May a role additionally constrain the harness?** The human asked, of the flat "no" he had
-   given a turn earlier: *"So help me understand why the user shouldn't be able to select the
-   harness."* It is a fair challenge and the honest answer has three parts.
-
-   - **The principled reason for "no"** is docs/261's model-first decision (its 2026-08-10
-     receipt: "unify on model-first"). A model's API style determines which harnesses can carry
-     it, so naming both is usually either redundant — one harness can run it — or contradictory,
-     naming a harness that cannot. Selecting a model *and* a harness is two controls for one
-     answer.
-   - **The practical reason, today**, is stronger than the principled one and is the real reason
-     it looked settled: **no shipped model runs on both harnesses.** Claude's family speaks
-     `anthropic-messages` and GPT's speaks `openai-responses`, so a harness control would today
-     offer exactly one option on every model — and docs/261 req 14 says a picker with nothing to
-     choose is not shown at all. It would be a control that cannot do anything.
-   - **Where the challenge is right**, and this is the part the flat "no" got wrong: a harness is
-     not a neutral pipe. Claude Code driving GLM and Codex driving GLM are *different agents* —
-     different scaffolding, tools, system prompt and agentic loop — so for a **role**, which is a
-     job definition rather than only a model choice, the harness is plausibly part of the job.
-     ShipIt already treats it as meaningful: docs/261's distance ranking has a harness axis and
-     deliberately prefers a harness that is not the implementer's. Saying a user may never
-     express what ShipIt itself ranks on is hard to defend.
-
-   **Recommended: an optional harness constraint.** Absent (the default) means derived, exactly
-   as today and exactly as req 9 requires. Present means pinned to that harness, refused at save
-   if that harness cannot run the model. The control appears only where the chosen model is
-   genuinely offered by more than one harness, which satisfies docs/261 req 14 — so it is
-   invisible on today's catalogue and appears by itself the day a gateway row makes a model
-   dual-harness. That keeps model-first intact for every case that exists now, and stops the
-   design from having asserted a rule it would have to break later.
-
-2. **What happens to the fully-explicit five-flag `agent run`?** The human, on the ad-hoc path:
+1. **What happens to the fully-explicit five-flag `agent run`?** The human, on the ad-hoc path:
    *"today doesn't work at all because the agent has to specify all the params, and it does not
    have access to the inventory. So essentially this feature doesn't work. Maybe we could even
    remove it as part of this refactor, or leave for now."* The finding is confirmed (see the
@@ -158,6 +137,32 @@ draft and was removed on the human's instruction; the reasoning is in the 2026-0
    standing invitation for an agent to guess at it.
 
 ## Resolved questions
+
+- 2026-08-14 — **May a role name a harness?** **Chosen: it must.** Offered as an *optional*
+  constraint; the human went further — *"let's require it."* So the harness is part of a role's
+  tuple rather than a field that may be absent (req 9), and a role is the one place in ShipIt
+  where the harness is chosen instead of derived.
+
+  Three consequences, recorded because required is a stronger claim than optional and two of them
+  are not obvious:
+
+  - **It takes user roles off docs/261 req 3's model-first line, deliberately.** The built-in
+    `reviewer` keeps deriving (req 2); a user role does not. That is a departure a reader will
+    otherwise mistake for an inconsistency, so req 9 states it outright. It does not reopen
+    docs/261's 2026-08-10 receipt: *choosing a model* is still how you say what runs, everywhere
+    else in the product.
+  - **A required harness cannot silently move, and that is the point.** A derived harness
+    re-derives as the install changes; a named one is frozen and goes `pin_unavailable` if the
+    harness is uninstalled. For a job definition, being told "this role cannot run" is better
+    than being quietly handed a different agent — which is precisely the "same model, different
+    agent" difference that motivated requiring it.
+  - **It dissolves a latent bug docs/261 deliberately left open.** That design records
+    (`plan.md`, phase 3) that a pin's effort is validated against the *settings-time derived*
+    harness while `selectReviewer` may run it on a **different** one, carrying a level the second
+    harness may not declare — unreachable today, and fixable only by choosing between refusing
+    the review and silently substituting a default. For a role there is no gap to fix: the level
+    is validated against the one harness the role names, and that is the harness it runs on. The
+    bug class does not exist here.
 
 - 2026-08-14 — **Who picks the role — the user's exact word, or the agent's reading of the
   intent?** **Chosen: the agent works out which role is meant.** The human, of the draft's
@@ -195,11 +200,13 @@ draft and was removed on the human's instruction; the reasoning is in the 2026-0
   than fixed here: req 6 is narrowed to the user-supplied override that does work, req 14 adds
   the inventory *for roles*, and what to do with the five-flag path is open question 2.
 
-- 2026-08-14 — **May a role name a harness?** **Answer withdrawn and reopened.** It was recorded
-  as "no" on the human's one-word answer; he then asked why, and the reasons did not survive
-  being written down — see open question 1. Req 9 keeps the half that is not in doubt (a role is
-  a model, the harness is derived, a role never *has* to name one) and no longer claims the half
-  that is.
+- 2026-08-14 — **May a role name a harness? — the first answer, withdrawn.** It was recorded as
+  "no" on the human's one-word answer; he then asked why, and the reasons did not survive being
+  written down: the real one was that no shipped model runs on both harnesses, so a picker would
+  offer one option — an argument for not *rendering a control*, not for making the state
+  inexpressible. Superseded the same day by the receipt above, which requires it. Kept because
+  the reversal is the useful record: a flat answer that cannot justify itself is worth
+  re-examining, and the design asserted a rule it would have had to break later.
 
 - 2026-08-14 — **What triggers the recurrence offer? — withdrawn as mis-filed, not answered.**
   The human: "I don't understand the question." Checked before rewriting, and he is right that it
@@ -257,10 +264,16 @@ a requirement is a restatement of docs/261/263 it is marked as such. What he act
 - **"today doesn't work at all because the agent has to specify all the params, and it does not
   have access to the inventory"** → req 6's narrowing, req 14, and open question 2. The
   observation is his; the verification against the shim is recorded in the receipt.
-- **"So help me understand why the user shouldn't be able to select the harness."** → req 9's
-  narrowing and open question 1.
+- **"So help me understand why the user shouldn't be able to select the harness."** and, on the
+  optional constraint that answer produced, **"let's require it."** → req 9. Both moves are his:
+  the challenge that reopened it, and the decision to go past the recommendation from optional to
+  required.
 
-Reqs 8, 10 and 12 restate existing rules the feature must not lose: docs/263's name resolution
-(8) and docs/261 reqs 9 and 3 (10, 9). Reqs 11–13 are the human's answers, each with a dated
-receipt above. Req 14 is the agent's, and it is the one requirement here that exists because a
-*defect* was found rather than because a behaviour was asked for.
+Reqs 8 and 10 restate existing rules the feature must not lose: docs/263's name resolution (8)
+and docs/261 req 9 (10). Reqs 9 and 11–13 are the human's answers, each with a dated receipt
+above. Req 14 is the agent's, and it is the one requirement here that exists because a *defect*
+was found rather than because a behaviour was asked for.
+
+**Req 9 is the one requirement that departs from docs/261 rather than restating it**, and it does
+so on the human's explicit instruction. Everything else in this document inherits docs/261's
+rules; this one deliberately does not, for user roles only.
