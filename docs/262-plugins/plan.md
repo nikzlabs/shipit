@@ -478,6 +478,24 @@ instead of a repeat.
   — and mounting its parent instead would hand the plugin its own settings to
   rewrite.
 
+  **One translation, and it fails closed.** Both surfaces take the subpath from
+  `volumeSubpathFor` (`plugin-state.ts`), keyed off the orchestrator-visible
+  root that maps onto the volume, so the CLI container and a plugin service
+  cannot derive it two different ways — and neither strips a literal
+  `/workspace/`. It returns `null` for the two shapes with no honest answer: a
+  path the volume does not contain, and the volume ROOT itself, whose subpath
+  would be every session's tree at once. Callers must fail closed on `null`,
+  because there is nothing to degrade to — a bind does not error, it starts a
+  container in which `/project` exists and is empty. The CLI surface refuses the
+  run and says why; the compose surface drops the repository's services with a
+  reason on its card, the same way it already treats a missing writable layer.
+  On the compose side the volume name and its two subpaths are one value
+  (`SessionVolume`), so a mount helper that compiles has the subpath it needs;
+  the earlier per-mount `?:` spreads could emit `/project` with no subpath at
+  all, which is worse than an empty directory — it is every session's tree.
+  Asserted on the mount SPEC, never on a filesystem effect: the bug is invisible
+  when the source is a real path, which is why dev and dogfood cannot catch it.
+
   **A settings change recreates the service, via a label.** The settings file is
   rewritten only when its content changes, so a change means a NEW INODE — and a
   file bind mount follows the inode it was created with, leaving a running

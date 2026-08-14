@@ -39,7 +39,7 @@ import {
 } from "../plugin-overlay.js";
 import { resolveLiveGenerations } from "../plugin-generations.js";
 import { resolvePublishedPorts } from "../plugin-ports.js";
-import { sessionRootForWorkspace } from "../plugin-state.js";
+import { sessionRootForWorkspace, volumeSubpathFor } from "../plugin-state.js";
 import { sessionStateDirForWorkspace } from "../session-state-dir.js";
 import { resolveShipitConfig, type ShipitConfig } from "../../shared/shipit-config.js";
 import { recordPluginServiceFailures } from "./plugin-activation.js";
@@ -132,12 +132,14 @@ export async function resolveSessionPluginServices(
     project.ports,
   );
 
+  const sessionSubpath = volumeSubpath(sessionDir, deps);
+  const workspaceSubpath = volumeSubpath(workspaceDir, deps);
   const built = buildPluginComposeServices(fragments, {
     sessionDir,
-    ...(sessionSubpath(sessionDir, deps) ? { sessionSubpath: sessionSubpath(sessionDir, deps)! } : {}),
+    ...(sessionSubpath ? { sessionSubpath } : {}),
     workspaceDir,
     ...(deps.workspaceVolume ? { workspaceVolume: deps.workspaceVolume } : {}),
-    ...(workspaceSubpath(workspaceDir, deps) ? { workspaceSubpath: workspaceSubpath(workspaceDir, deps)! } : {}),
+    ...(workspaceSubpath ? { workspaceSubpath } : {}),
     pluginVolumes,
     publishedPorts,
   });
@@ -146,22 +148,22 @@ export async function resolveSessionPluginServices(
 }
 
 /**
- * This session's subpath inside the workspace volume — the same derivation
- * `setupServiceManager` makes for the project's own services, kept here so the
- * two cannot disagree about where a session's files sit inside that volume.
+ * This session's subpath inside the workspace volume, and the session ROOT's —
+ * `plugin-data/` is a sibling of `workspace/`, so it needs its own rather than
+ * one derived from the clone's.
+ *
+ * Both go through {@link volumeSubpathFor}, the same translation the companion
+ * CLI's container mounts take, keyed off the orchestrator-visible `stateRoot`
+ * that maps onto the volume's root. Taking it from `stateRoot` rather than
+ * stripping a literal `/workspace/` is what makes the two surfaces one
+ * derivation instead of two that agree by coincidence — and it is why this
+ * returns `undefined` for a path the root does not contain, which the mount
+ * builder turns into a dropped service with a reason rather than a bind of a
+ * path the daemon cannot see.
  */
-function workspaceSubpath(workspaceDir: string, deps: PluginServiceDeps): string | undefined {
-  if (!deps.workspaceVolume) return undefined;
-  return workspaceDir.replace(/^\/workspace\//, "");
-}
-
-/**
- * The same, for the session ROOT — `plugin-data/` is a sibling of `workspace/`,
- * so it needs its own subpath rather than one derived from the clone's.
- */
-function sessionSubpath(sessionDir: string, deps: PluginServiceDeps): string | undefined {
-  if (!deps.workspaceVolume) return undefined;
-  return sessionDir.replace(/^\/workspace\//, "");
+function volumeSubpath(dir: string, deps: PluginServiceDeps): string | undefined {
+  if (!deps.workspaceVolume || !deps.stateRoot) return undefined;
+  return volumeSubpathFor(deps.stateRoot, dir) ?? undefined;
 }
 
 /**

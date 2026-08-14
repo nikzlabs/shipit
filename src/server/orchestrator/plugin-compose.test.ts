@@ -103,6 +103,7 @@ function collect(consumer: string, manifest = defaultManifest(), opts: {
 function build(fragments: PluginFragmentService[], overrides: {
   workspaceVolume?: string;
   workspaceSubpath?: string;
+  sessionSubpath?: string;
 } = {}): ReturnType<typeof buildPluginComposeServices> {
   return buildPluginComposeServices(fragments, {
     sessionDir,
@@ -456,6 +457,7 @@ describe("buildPluginComposeServices", () => {
     const built = build(services, {
       workspaceVolume: "shipit_workspace",
       workspaceSubpath: "sessions/abc/workspace",
+      sessionSubpath: "sessions/abc",
     });
     const volumes = built.services[0].definition.volumes as Record<string, unknown>[];
     expect(volumes[0]).toEqual({
@@ -546,6 +548,54 @@ describe("buildPluginComposeServices", () => {
       volume: { subpath: "sessions/abc/plugin-data/probe/settings.json" },
       read_only: true,
     });
+  });
+
+  // The sweeping form, and the one that catches a mount added later: in the
+  // production layout no mount of this service may be a bind, and none may name
+  // the volume without a subpath — that second shape is the worse of the two,
+  // since it mounts EVERY session's tree at `/project`.
+  it("leaves no bind and no subpath-less volume in the production layout", () => {
+    fs.mkdirSync(path.join(sessionDir, "plugin-data", "probe"), { recursive: true });
+    fs.writeFileSync(path.join(sessionDir, "plugin-data", "probe", "settings.json"), "{}\n");
+    const { services } = collect(SELF_USE);
+    const built = build(services, {
+      workspaceVolume: "shipit_workspace",
+      workspaceSubpath: "sessions/abc/workspace",
+      sessionSubpath: "sessions/abc",
+    });
+    const volumes = built.services[0].definition.volumes as Record<string, unknown>[];
+
+    for (const volume of volumes) {
+      expect(volume.type).toBe("volume");
+      expect(volume.volume).toMatchObject({ subpath: expect.any(String) });
+    }
+    // req 21 — the consuming project, and (req 27) the self import's own tree,
+    // which is the same working copy reached the same way.
+    expect(volumes).toContainEqual({
+      type: "volume",
+      source: "shipit-workspace",
+      target: "/project",
+      volume: { subpath: "sessions/abc/workspace" },
+    });
+    expect(volumes).toContainEqual({
+      type: "volume",
+      source: "shipit-workspace",
+      target: "/plugin",
+      volume: { subpath: "sessions/abc/workspace" },
+      read_only: true,
+    });
+  });
+
+  // Fail closed: a volume runtime whose session ShipIt cannot locate inside that
+  // volume has no correct mount. Dropping with a reason is what the surrounding
+  // code already does for a plugin whose writable layer is missing — a mount
+  // that silently means something else is what this whole path exists to stop.
+  it("drops the services with a reason when the session cannot be located in the volume", () => {
+    const { services } = collect(SELF_USE);
+    const built = build(services, { workspaceVolume: "shipit_workspace" });
+
+    expect(built.services).toEqual([]);
+    expect(built.issuesByRepo.get("mine")?.[0]).toContain("could not locate this session");
   });
 
   it("fingerprints the settings so a change recreates the container (req 26)", () => {
