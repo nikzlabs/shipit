@@ -172,6 +172,94 @@ describe("containComposeServices", () => {
     expect(container.stop).toHaveBeenCalled();
   });
 
+  it("ignores the exact stale unpause error after Compose replaces the service", async () => {
+    const events: string[] = [];
+    const { docker, container } = fakeDocker(events);
+    const oldResolver = { remove: vi.fn(async () => undefined) };
+    vi.mocked(docker.getContainer).mockImplementation((id) => (
+      id === "old-resolver" ? oldResolver : container
+    ) as never);
+    container.unpause.mockRejectedValueOnce(new Error("Container service-1 is not paused"));
+    vi.mocked(docker.listContainers)
+      .mockResolvedValueOnce([{
+        Id: "service-1",
+        State: "running",
+        Labels: { "shipit-service-name": "web", "shipit-parent-session": "session-1" },
+      }] as never)
+      .mockResolvedValueOnce([{
+        Id: "service-2",
+        State: "running",
+        Labels: { "shipit-service-name": "web", "shipit-parent-session": "session-1" },
+      }] as never)
+      .mockResolvedValueOnce([{
+        Id: "old-resolver",
+        State: "running",
+        Labels: {
+          "shipit-egress-service-sidecar": "true",
+          "shipit-egress-parent": "service-1",
+          "shipit-parent-session": "session-1",
+        },
+      }] as never);
+
+    await expect(containComposeServices({
+      docker,
+      sessionId: "session-1",
+      sidecarImage: "egress:test",
+      config: { contained: true, extraHosts: [] },
+      serviceNames: ["web"],
+      dnsEnabled: false,
+      proxyEnabled: false,
+    })).resolves.toBeUndefined();
+
+    expect(oldResolver.remove).toHaveBeenCalledWith({ force: true });
+    expect(container.remove).toHaveBeenCalledWith({ force: true });
+  });
+
+  it("fails closed on the same unpause error when the container is still active", async () => {
+    const events: string[] = [];
+    const { docker, container } = fakeDocker(events);
+    container.unpause.mockRejectedValue(new Error("Container service-1 is not paused"));
+
+    await expect(containComposeServices({
+      docker,
+      sessionId: "session-1",
+      sidecarImage: "egress:test",
+      config: { contained: true, extraHosts: [] },
+      serviceNames: ["web"],
+      dnsEnabled: false,
+      proxyEnabled: false,
+    })).rejects.toThrow("egress containment failed for 1 Compose service");
+    expect(container.remove).toHaveBeenCalledWith({ force: true });
+  });
+
+  it("fails closed when the same container is restarting", async () => {
+    const events: string[] = [];
+    const { docker, container, network } = fakeDocker(events);
+    container.pause.mockRejectedValueOnce(new Error("container is restarting, cannot pause"));
+    vi.mocked(docker.listContainers)
+      .mockResolvedValueOnce([{
+        Id: "service-1",
+        State: "running",
+        Labels: { "shipit-service-name": "web", "shipit-parent-session": "session-1" },
+      }] as never)
+      .mockResolvedValueOnce([{
+        Id: "service-1",
+        State: "restarting",
+        Labels: { "shipit-service-name": "web", "shipit-parent-session": "session-1" },
+      }] as never);
+
+    await expect(containComposeServices({
+      docker,
+      sessionId: "session-1",
+      sidecarImage: "egress:test",
+      config: { contained: true, extraHosts: [] },
+      serviceNames: ["web"],
+      dnsEnabled: false,
+      proxyEnabled: false,
+    })).rejects.toThrow("egress containment failed for 1 Compose service");
+    expect(network.disconnect).toHaveBeenCalledWith({ Container: "service-1", Force: true });
+  });
+
   it("rejects Docker engines without gateway-priority support", async () => {
     const events: string[] = [];
     const { docker } = fakeDocker(events);

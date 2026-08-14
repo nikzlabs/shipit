@@ -32,16 +32,49 @@ log() { echo "[egress-init] $*"; }
 
 # --- 1. Resolve allowed hostnames (before deny) ----------------------------
 ips=()
+resolve_dir="$(mktemp -d)"
+resolve_pids=()
+all_resolve_pids=()
+resolve_files=()
+trap 'rm -rf "$resolve_dir"' EXIT
+query_index=0
 for host in ${EGRESS_ALLOWED_HOSTS:-}; do
-  # A and AAAA; `dig +short` may emit CNAME target lines, so keep only literals.
+  for record_type in A AAAA; do
+    result_file="$resolve_dir/$query_index"
+    query_index=$((query_index + 1))
+    resolve_files+=("$result_file")
+    # Resolve concurrently. Each query gets one short attempt, and the group
+    # below has a separate deadline in case `dig` itself becomes unresponsive.
+    dig +time=1 +tries=1 +short "$record_type" "$host" >"$result_file" 2>/dev/null &
+    resolve_pids+=("$!")
+    all_resolve_pids+=("$!")
+  done
+done
+
+resolve_deadline=$((SECONDS + ${EGRESS_DNS_DEADLINE_SECONDS:-5}))
+while ((${#resolve_pids[@]} > 0)); do
+  remaining=()
+  for pid in "${resolve_pids[@]}"; do
+    kill -0 "$pid" 2>/dev/null && remaining+=("$pid")
+  done
+  resolve_pids=("${remaining[@]}")
+  ((${#resolve_pids[@]} == 0)) && break
+  if ((SECONDS >= resolve_deadline)); then
+    kill "${resolve_pids[@]}" 2>/dev/null || true
+    break
+  fi
+  sleep 0.05
+done
+for pid in "${all_resolve_pids[@]}"; do wait "$pid" 2>/dev/null || true; done
+for result_file in "${resolve_files[@]}"; do
   while read -r ip; do
-    [[ -n "$ip" ]] && ips+=("$ip")
-  done < <(dig +short A "$host" 2>/dev/null | grep -E '^[0-9.]+$' || true)
-  while read -r ip; do
-    [[ -n "$ip" ]] && ips+=("$ip")
-  done < <(dig +short AAAA "$host" 2>/dev/null | grep -E '^[0-9a-fA-F:]+$' || true)
+    if [[ "$ip" =~ ^[0-9.]+$ || "$ip" =~ ^[0-9a-fA-F:]+$ ]]; then ips+=("$ip"); fi
+  done <"$result_file"
 done
 log "resolved ${#ips[@]} IP(s) from ${EGRESS_ALLOWED_HOSTS:-<none>}"
+
+# Test seam for the bounded resolver. Production never sets this value.
+[[ "${EGRESS_RESOLVE_ONLY:-0}" == "1" ]] && exit 0
 
 # --- 2. Build the ipsets (hash:net holds bare IPs and CIDRs) ----------------
 # A service container can be stopped and started with the same id but a fresh

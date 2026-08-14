@@ -94,6 +94,46 @@ async function ensureEgressNetwork(
   return docker.getNetwork(name);
 }
 
+async function containerWasSuperseded(
+  opts: ContainComposeServicesOptions,
+  containerId: string,
+): Promise<boolean> {
+  try {
+    const current = await opts.docker.listContainers({
+      all: true,
+      filters: { label: [`shipit-parent-session=${opts.sessionId}`] },
+    });
+    // A present-but-stopped/restarting container is still the same workload.
+    // It can restart into a fresh netns without the firewall, so only absence
+    // proves that Compose removed or replaced this exact container.
+    return !current.some((entry) => entry.Id === containerId);
+  } catch {
+    // Failure to verify supersession must keep the active-container path
+    // fail-closed.
+    return false;
+  }
+}
+
+async function reapServiceSidecars(
+  opts: ContainComposeServicesOptions,
+  containerId: string,
+): Promise<void> {
+  let current: Docker.ContainerInfo[];
+  try {
+    current = await opts.docker.listContainers({
+      all: true,
+      filters: { label: [`shipit-parent-session=${opts.sessionId}`] },
+    });
+  } catch {
+    return;
+  }
+  for (const entry of current) {
+    if (!entry.Labels?.[COMPOSE_EGRESS_SIDECAR_LABEL]
+      || entry.Labels?.["shipit-egress-parent"] !== containerId) continue;
+    try { await opts.docker.getContainer(entry.Id).remove({ force: true }); } catch { /* already gone */ }
+  }
+}
+
 /**
  * Contain every running Compose container for the session. The operation is
  * idempotent per container id. Call it after each `compose up`, because Compose
@@ -297,6 +337,17 @@ export async function containComposeServices(opts: ContainComposeServicesOptions
       paused = false;
       containedServiceState.set(stateKey, `${startedAt}:${policyHash}`);
     } catch (error) {
+      // A later Compose reconcile can replace this exact service while a
+      // short-lived installer is still running. Docker then reports errors
+      // such as "Container ... is not paused" when this stale pass reaches
+      // unpause. The replacement starts on the internal bootstrap network and
+      // has its own queued containment pass, so obsolete work is not a failure
+      // of the new container. Reap only the old container's sidecars.
+      if (await containerWasSuperseded(opts, info.Id)) {
+        containedServiceState.delete(stateKey);
+        await reapServiceSidecars(opts, info.Id);
+        continue;
+      }
       // Never resume repository code unless the complete containment stack is
       // ready.
       // Preserve the container and anonymous volumes. Its bootstrap network is

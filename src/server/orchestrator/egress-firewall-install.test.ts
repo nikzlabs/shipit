@@ -7,6 +7,11 @@
  * iptables/netns application is verified on a live host, not here.
  */
 
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import type Docker from "dockerode";
 import {
@@ -175,6 +180,32 @@ describe("installEgressFirewall", () => {
       installEgressFirewall(docker, { agentContainerId: "a", sidecarImage: "egress:1", inputs }),
     ).rejects.toThrow(/exited 1/);
     expect(container.remove).toHaveBeenCalled();
+  });
+});
+
+describe("init-firewall hostname resolution", () => {
+  it("bounds a full set of unresponsive DNS lookups with one global deadline", async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-egress-dns-"));
+    const fakeDig = path.join(tempDir, "dig");
+    fs.writeFileSync(fakeDig, "#!/bin/sh\nsleep 30\n", { mode: 0o755 });
+    const startedAt = Date.now();
+    try {
+      const result = await promisify(execFile)("bash", ["docker/egress-sidecar/init-firewall.sh"], {
+        cwd: process.cwd(),
+        env: {
+          ...process.env,
+          PATH: `${tempDir}:${process.env.PATH ?? ""}`,
+          EGRESS_ALLOWED_HOSTS: Array.from({ length: 15 }, (_, index) => `host-${index}.example`).join(" "),
+          EGRESS_DNS_DEADLINE_SECONDS: "1",
+          EGRESS_RESOLVE_ONLY: "1",
+        },
+        timeout: 5_000,
+      });
+      expect(result.stdout).toContain("resolved 0 IP(s)");
+      expect(Date.now() - startedAt).toBeLessThan(3_000);
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 });
 
