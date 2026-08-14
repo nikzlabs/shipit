@@ -22,8 +22,28 @@
  * So each kind gets a network of its own whose whole subnet is declared
  * untrusted **before the first container joins it** — registering a container's
  * address after it starts leaves the first request unguarded, and that request
- * is precisely the one worth making. It **fails closed**: no registerable IPv4
- * subnet, nothing runs.
+ * is precisely the one worth making. It **fails closed**: a subnet ShipIt
+ * cannot deny means nothing runs.
+ *
+ * **"Cannot deny" includes a subnet of the wrong address family.** The guard's
+ * CIDR match is IPv4-only, so on a dual-stack network the container's IPv6
+ * address falls in no registered CIDR — which the guard reads as a
+ * browser/host caller, i.e. the exact escalation this module exists to
+ * prevent. Requiring only *some* IPv4 subnet would pass such a network, so
+ * every reported subnet has to be registerable, and the network ShipIt creates
+ * is pinned IPv4-only so a daemon default cannot make it dual-stack; the check
+ * covers the network ShipIt did not create (a leftover from an earlier boot).
+ *
+ * **This is a latent hole, not a live one, and the distinction is recorded so
+ * nobody "fixes" the wrong end of it** (review finding): the orchestrator binds
+ * `0.0.0.0` (`app-lifecycle.ts`), so there is no IPv6 listener to reach today.
+ * What the check buys is that the day the listener, a proxy, or the deployment
+ * topology gains IPv6, the boundary does not open silently — which is the same
+ * bet the subnet-before-container ordering above makes. Teaching
+ * `api-container-guard.ts` to match IPv6 CIDRs closes it from the other side,
+ * and is the better fix the day a plugin container legitimately needs IPv6:
+ * this one refuses such a network outright, so an IPv6-only dependency is
+ * unreachable from plugin code until then.
  */
 
 import type Docker from "dockerode";
@@ -47,7 +67,10 @@ export async function ensureUntrustedPluginNetwork(
     info = await docker.getNetwork(name).inspect();
   } catch {
     try {
-      await docker.createNetwork({ Name: name, Driver: "bridge" });
+      // IPv4-only, explicitly: a daemon configured to hand new bridges an IPv6
+      // subnet would otherwise give every plugin container an address the guard
+      // cannot match, and this call is the only chance to say otherwise.
+      await docker.createNetwork({ Name: name, Driver: "bridge", EnableIPv6: false });
     } catch (err) {
       // A concurrent create is fine — the inspect below settles it either way.
       if (errStatus(err) !== 409) throw err;
@@ -58,11 +81,19 @@ export async function ensureUntrustedPluginNetwork(
   const subnets = (info.IPAM?.Config ?? [])
     .map((c) => c.Subnet)
     .filter((s): s is string => Boolean(s));
-  const registered = subnets.filter((s) => registerUntrustedContainerNetwork(s));
-  if (registered.length === 0) {
+  // Registration runs for every subnet first: throwing below leaves the ones
+  // that DID register in place, which is never less safe than skipping them.
+  const undeniable = subnets.filter((s) => !registerUntrustedContainerNetwork(s));
+  if (subnets.length === 0 || undeniable.length === subnets.length) {
     throw new Error(
       `network ${name} has no IPv4 subnet to deny `
       + `(saw ${subnets.length > 0 ? subnets.join(", ") : "none"})`,
+    );
+  }
+  if (undeniable.length > 0) {
+    throw new Error(
+      `network ${name} carries a subnet ShipIt cannot deny at its own API `
+      + `(${undeniable.join(", ")}) — remove the network so it is recreated IPv4-only`,
     );
   }
 }
