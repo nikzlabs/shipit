@@ -206,6 +206,18 @@ describe("ServicesPanel", () => {
       ).toBeInTheDocument();
     });
 
+    it("carries the same vendor mark the card will carry", async () => {
+      // The row the user picks and the card they come back to are the same
+      // service, so they show the same thing. The row keeps its name too — the
+      // mark is a second way to recognise it, never the only one.
+      render(<ServicesPanel agentList={[claudeAgent, codexAgent]} />);
+      await userEvent.click(screen.getByTestId("services-add-empty"));
+
+      const row = screen.getByTestId("add-service-option-anthropic");
+      expect(row.querySelector("svg")).not.toBeNull();
+      expect(row).toHaveTextContent("Anthropic");
+    });
+
     it("gives a harness the image does not have no column at all", async () => {
       render(<ServicesPanel agentList={[claudeAgent, { ...codexAgent, installed: false }]} />);
       await userEvent.click(screen.getByTestId("services-add-empty"));

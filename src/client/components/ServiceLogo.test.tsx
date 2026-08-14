@@ -1,13 +1,13 @@
 /**
- * The vendor marks, pinned on the two things that would silently regress: a
- * service the map does not cover must still draw *something*, and no mark may
- * carry a colour of its own (ShipIt is multi-theme, and a hardcoded `#000`
- * disappears on a dark background).
+ * The vendor marks, pinned on what a type cannot say.
  *
- * Deliberately NOT asserting that every catalogue service has a mark. The map is
- * `Partial` on purpose — a new service ships before its artwork does, and a red
- * build over a missing logo would be the fallback's whole reason for existing,
- * inverted.
+ * "Every service has a mark" is NOT one of these tests, because `SERVICE_MARKS`
+ * is total over `ServiceId` — the compiler already refuses a service without
+ * one, and naming the missing id better than a test failure can. What is left
+ * for a test is everything a `string` value satisfies and a logo does not: an
+ * empty path, the same path pasted under two ids, a colour of its own (ShipIt is
+ * multi-theme, and a hardcoded `#000` disappears on a dark background), and the
+ * fallback for an id that is not a service at all.
  */
 
 import { describe, it, expect, afterEach } from "vitest";
@@ -19,14 +19,32 @@ import { ServiceLogo } from "./ServiceLogo.js";
 afterEach(cleanup);
 
 describe("ServiceLogo", () => {
-  it("draws a mark for every service ShipIt ships today", () => {
+  /** The path each service draws, keyed by id — the basis of the two tests below. */
+  const drawnPaths = (): Map<string, string> => {
+    const drawn = new Map<string, string>();
     for (const service of allServices()) {
       const { container, unmount } = render(<ServiceLogo service={service} />);
       const svg = container.querySelector("svg");
       expect(svg, `no mark for ${service.id}`).not.toBeNull();
-      expect(svg?.querySelector("path")?.getAttribute("d")).toBeTruthy();
+      // The 24×24 grid every Simple Icons path is drawn on. A mark copied in
+      // under a different grid renders as a fragment of itself.
+      expect(svg?.getAttribute("viewBox")).toBe("0 0 24 24");
+      drawn.set(service.id, svg?.querySelector("path")?.getAttribute("d") ?? "");
       unmount();
     }
+    return drawn;
+  };
+
+  it("draws a non-empty mark for every service ShipIt ships today", () => {
+    for (const [id, path] of drawnPaths()) expect(path, `empty mark for ${id}`).toBeTruthy();
+  });
+
+  it("draws a DIFFERENT mark for each service", () => {
+    // The failure this catches is a copy-paste: a new row added by duplicating
+    // the one above it and changing only the key, which the compiler and every
+    // other assertion here accept happily.
+    const drawn = drawnPaths();
+    expect(new Set(drawn.values()).size).toBe(drawn.size);
   });
 
   it("draws every mark in currentColor, so it survives a theme change", () => {

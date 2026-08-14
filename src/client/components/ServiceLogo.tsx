@@ -33,19 +33,27 @@
  * here to identify the service a credential belongs to, which is the use
  * trademark law leaves open.
  *
- * A service with no mark falls back to its initial, so a new catalogue row never
- * has to wait for artwork — {@link SERVICE_MARKS} is deliberately `Partial`.
+ * **The map is total; the fallback is for ids that are not services.** A first
+ * cut made {@link SERVICE_MARKS} `Partial`, so a service added before its
+ * artwork would quietly fall back to a letter — and then pinned "every service
+ * has a mark" in a test, which fails that same build. Cross-backend review found
+ * the contradiction. A total `Record<ServiceId, string>` is the version worth
+ * having: adding a service without a mark is a *compile* error naming the
+ * missing id, which beats a green build and a letter nobody notices. The
+ * fallback keeps its job regardless, because `ServiceDef.id` is a bare `string`
+ * — an id from outside the catalogue union still renders something.
  */
 
 import { ICON_SIZE } from "../design-tokens.js";
 import type { ServiceDef, ServiceId } from "../../server/shared/catalogue/index.js";
 
 /**
- * One 24×24 path per service. Keyed on `ServiceId` rather than `string` so a
- * typo — or a service id renamed in the catalogue — is a compile error rather
- * than a tile that silently falls back to a letter.
+ * One 24×24 path per service. `Record` rather than `Partial<Record>` and keyed
+ * on `ServiceId` rather than `string`, so a renamed id, a typo, and a service
+ * added without a mark are all compile errors rather than a tile that silently
+ * falls back to a letter.
  */
-const SERVICE_MARKS: Partial<Record<ServiceId, string>> = {
+const SERVICE_MARKS: Record<ServiceId, string> = {
   anthropic:
     "M17.3041 3.541h-3.6718l6.696 16.918H24Zm-10.6082 0L0 20.459h3.7442l1.3693-3.5527h7.0052l1.3693 3.5528h3.7442L10.5363 3.5409Zm-.3712 10.2232 2.2914-5.9456 2.2914 5.9456Z",
   openai:
@@ -79,9 +87,10 @@ export function ServiceLogo({
   size?: number;
 }) {
   // `ServiceDef.id` is a bare `string` on the type; the cast is the same bridge
-  // `ServicesPanel`'s `HarnessSupportCell` makes for `AgentOption.id`, and an id
-  // the map does not know reads as "no mark" rather than throwing.
-  const path = SERVICE_MARKS[service.id as ServiceId];
+  // `ServicesPanel`'s `HarnessSupportCell` makes for `AgentOption.id`. The map
+  // is total over `ServiceId`, so the cast is also the only way `path` can come
+  // back undefined — which is exactly the case the letter below is for.
+  const path = SERVICE_MARKS[service.id as ServiceId] as string | undefined;
 
   if (!path) {
     return (
