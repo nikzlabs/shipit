@@ -8,24 +8,23 @@ import { useSessionStore } from "../stores/session-store.js";
 import { resumeSessionInternal } from "../stores/actions/session-actions.js";
 
 /**
- * Reachability guard for the session-switch entry into the transcript hole:
- * switch away mid-turn, switch back, and part of the running turn is gone
- * until a reload.
+ * Hydration ordering over the REAL hook composition — `useSessionWebSocket` +
+ * `useConnectionSync` + `useMessageHandler`, in App's order — because every bug
+ * here lives in the seam between them and none of it reproduces in a hook
+ * tested alone.
  *
  * `historyLoaded` is the ordering guard that makes the attach-time
  * `turn_snapshot` land ON TOP of the `GET /history` baseline rather than under
- * it (`useMessageHandler` queues the snapshot only while the flag is false).
- * `useConnectionSync` clears the flag on a `closed`/`connecting` status
- * transition, which covers a switch that starts from an open socket — so it is
- * tempting to conclude `resumeSessionInternal` needn't clear it as well.
+ * it: `useMessageHandler` queues the snapshot only while the flag is false.
+ * Losing that ordering is what produced "switch away mid-turn, switch back, and
+ * part of the running turn is gone until a reload".
  *
- * It must. This test drives the one sequence where the status transition never
- * happens: a switch that starts while the socket is ALREADY connecting, so
- * `setStatus("connecting")` is a no-op and the effect never re-runs. Reached by
- * an ordinary reconnect whose in-flight history load resolves late (raising the
- * flag while connecting) — the same late-resolving load `historyLoadSeq`
- * exists for. Without the reset in `resumeSessionInternal` the snapshot applies
- * immediately and the history response then overwrites it.
+ * One rule holds the whole file together: **the store flag is the single source
+ * of truth for whether the transcript has its baseline, and hydration keys on
+ * it.** Each test pins a sequence that a plausible simplification would break —
+ * a socket that never changes status, a resume that never moves the socket, a
+ * load still running after it raised the flag, an open that needs no load, and
+ * the stale-`"open"` render at the start of an ordinary switch.
  */
 
 class FakeWebSocket {
@@ -61,6 +60,13 @@ class FakeWebSocket {
 
 /** Resolvers for the deferred `GET /history` responses, in issue order. */
 let historyResolvers: ((payload: unknown) => void)[] = [];
+/**
+ * `loadSessionHistory` raises `historyLoaded` and then keeps going, awaiting
+ * preview status. Deferring that tail is how a test holds a load "in flight
+ * past the flag flip".
+ */
+let previewStatusResolvers: ((payload: unknown) => void)[] = [];
+let deferPreviewStatus = false;
 
 /** The three hooks App composes for a session's transport, in App's order. */
 function useConnectionStack(sessionId: string) {
@@ -89,12 +95,22 @@ function historyPayload(texts: string[]) {
 beforeEach(() => {
   FakeWebSocket.instances = [];
   historyResolvers = [];
+  previewStatusResolvers = [];
+  deferPreviewStatus = false;
   vi.stubGlobal("WebSocket", FakeWebSocket);
   vi.stubGlobal("fetch", vi.fn((url: string) => {
     if (url.includes("/history")) {
       return Promise.resolve({
         ok: true,
         json: () => new Promise((resolve) => historyResolvers.push(resolve)),
+      });
+    }
+    if (url.includes("/preview-status")) {
+      return Promise.resolve({
+        ok: true,
+        json: () => deferPreviewStatus
+          ? new Promise((resolve) => previewStatusResolvers.push(resolve))
+          : Promise.resolve({ known: true, running: false }),
       });
     }
     return Promise.resolve({ ok: true, json: () => Promise.resolve({ sessions: [], repos: [], agents: [] }) });
@@ -108,7 +124,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe("session switch that skips the connecting status transition", () => {
+describe("transcript hydration across session switches and reconnects", () => {
   it("keeps the incoming session's attach snapshot instead of its stale history baseline", async () => {
     useSessionStore.getState().setSessionId("A");
     const { result, rerender } = renderHook(
@@ -227,5 +243,105 @@ describe("session switch that skips the connecting status transition", () => {
     });
 
     expect(useSessionStore.getState().messages.map((m) => m.text)).toEqual(["live tail"]);
+  });
+
+  /**
+   * `loadSessionHistory` raises `historyLoaded` and then keeps going, so a
+   * resume landing in that tail lowers the flag while the in-flight guard is
+   * still raised. The guard is a ref, and clearing a ref renders nothing — so
+   * without an explicit nudge when the load settles, nothing ever re-runs the
+   * hydrate effect and the transcript stays queued forever.
+   */
+  it("re-arms hydration when a resume lands after the flag flips but before the load settles", async () => {
+    deferPreviewStatus = true;
+    useSessionStore.getState().setSessionId("A");
+    renderHook(({ id }: { id: string }) => useConnectionStack(id), {
+      initialProps: { id: "A" },
+    });
+
+    await act(async () => { FakeWebSocket.instances[0].simulateOpen(); });
+    await waitFor(() => expect(historyResolvers).toHaveLength(1));
+
+    // The transcript is applied and the flag is up, but the load is still
+    // running — it has the preview-status round trip left.
+    await act(async () => { historyResolvers[0](historyPayload(["A baseline"])); });
+    expect(useSessionStore.getState().historyLoaded).toBe(true);
+    await waitFor(() => expect(previewStatusResolvers).toHaveLength(1));
+
+    // Resume the session on screen, inside that window.
+    await act(async () => { resumeSessionInternal("A"); });
+    expect(useSessionStore.getState().historyLoaded).toBe(false);
+
+    // The first load finally settles. That must re-arm hydration.
+    deferPreviewStatus = false;
+    await act(async () => { previewStatusResolvers[0]({ known: true, running: false }); });
+
+    await waitFor(() => expect(historyResolvers).toHaveLength(2));
+    await act(async () => { historyResolvers[1](historyPayload(["A baseline"])); });
+    expect(useSessionStore.getState().historyLoaded).toBe(true);
+  });
+
+  /**
+   * The pending-frame flush must not ride along with hydration. An open that
+   * correctly skips a redundant history load still has to put a stashed
+   * message on the wire.
+   */
+  it("flushes a stashed message on an open that needs no history load", async () => {
+    useSessionStore.getState().setSessionId("A");
+    const { result } = renderHook(({ id }: { id: string }) => useConnectionStack(id), {
+      initialProps: { id: "A" },
+    });
+
+    await act(async () => { FakeWebSocket.instances[0].simulateOpen(); });
+    await waitFor(() => expect(historyResolvers).toHaveLength(1));
+    await act(async () => { result.current.reconnect(); });
+    // The abandoned load answers between sockets, so the next open is already
+    // baselined and issues no load of its own.
+    await act(async () => { historyResolvers[0](historyPayload(["baseline"])); });
+    expect(useSessionStore.getState().historyLoaded).toBe(true);
+
+    useSessionStore.getState().setPendingWsMessage({ type: "send_message", text: "first message" });
+    const reconnected = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
+    await act(async () => { reconnected.simulateOpen(); });
+
+    expect(reconnected.send).toHaveBeenCalledWith(
+      JSON.stringify({ type: "send_message", text: "first message", sessionId: "A" }),
+    );
+    expect(useSessionStore.getState().pendingWsMessage).toBeUndefined();
+  });
+
+  /**
+   * An ordinary switch from an open socket must issue exactly one load for the
+   * incoming session. `status` is React state, so the render that changes the
+   * socket URL still carries the OUTGOING socket's `"open"` — and hydration now
+   * keys on `historyLoaded`, which `resumeSessionInternal` lowers in that same
+   * render. `useWebSocket` reporting `"connecting"` for a URL it has not opened
+   * yet is what keeps that stale render from starting a doomed second load (and
+   * a second round of `onSessionConnect` hydration with it).
+   */
+  it("issues exactly one history load for an ordinary switch from an open socket", async () => {
+    useSessionStore.getState().setSessionId("A");
+    const { rerender } = renderHook(({ id }: { id: string }) => useConnectionStack(id), {
+      initialProps: { id: "A" },
+    });
+
+    await act(async () => { FakeWebSocket.instances[0].simulateOpen(); });
+    await waitFor(() => expect(historyResolvers).toHaveLength(1));
+    await act(async () => { historyResolvers[0](historyPayload(["A baseline"])); });
+
+    await act(async () => {
+      resumeSessionInternal("B");
+      rerender({ id: "B" });
+    });
+    // The stale-"open" render must not have started anything.
+    expect(historyResolvers).toHaveLength(1);
+
+    const socketB = FakeWebSocket.instances[FakeWebSocket.instances.length - 1];
+    await act(async () => { socketB.simulateOpen(); });
+    await waitFor(() => expect(historyResolvers).toHaveLength(2));
+
+    // Settle B's load and confirm no third request follows it.
+    await act(async () => { historyResolvers[1](historyPayload(["B baseline"])); });
+    expect(historyResolvers).toHaveLength(2);
   });
 });

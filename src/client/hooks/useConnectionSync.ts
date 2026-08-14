@@ -1,5 +1,5 @@
 // eslint-disable-next-line no-restricted-imports -- useEffect: HTTP bootstrap fetch on mount, WS connect/disconnect handling (external system sync)
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { WsClientMessage } from "../../server/shared/types.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useUiStore } from "../stores/ui-store.js";
@@ -34,6 +34,8 @@ export function useConnectionSync(params: {
    * forever.
    */
   const historyLoadInFlightRef = useRef(false);
+  /** Bumped to re-run the hydrate effect when only a ref changed. */
+  const [hydrateAttempt, setHydrateAttempt] = useState(0);
   const bootstrapFetchedRef = useRef(false);
   const recentlyForegroundedRef = useRef(false);
   const foregroundTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -86,8 +88,7 @@ export function useConnectionSync(params: {
     });
   }, []);
 
-  // Hydrate whenever the socket is open and the transcript has no baseline —
-  // fetch session history + send any pending message.
+  // Hydrate whenever the socket is open and the transcript has no baseline.
   // (No activate_session needed — the per-session WS auto-activates via URL)
   // (No set_agent needed — passed as query param on WS URL)
   //
@@ -112,31 +113,54 @@ export function useConnectionSync(params: {
         useUiStore.getState().setActiveAgentId(session.agentId);
       }
       void (async () => {
+        let loaded = false;
         try {
           await loadSessionHistory(sessionId);
+          loaded = true;
           await onSessionConnect?.(sessionId);
         } catch (err) {
           console.error("[api] Failed to load session history:", err);
         } finally {
           historyLoadInFlightRef.current = false;
+          // `loadSessionHistory` raises `historyLoaded` partway through and then
+          // keeps going (it still has the preview-status round trip to make), so
+          // a reset landing in that tail — a resume of the session already on
+          // screen — leaves the flag false with this ref still raised. Clearing
+          // a ref renders nothing, so the effect would never re-run and the
+          // transcript would stay queued forever. Nudge it.
+          //
+          // Gated on `loaded`, so a load that THREW does not retry: that would
+          // spin against a failing endpoint. It keeps the old behaviour of
+          // waiting for the next connection transition.
+          if (loaded && !useSessionStore.getState().historyLoaded) {
+            setHydrateAttempt((n) => n + 1);
+          }
         }
       })();
-
-      // If there's a pending WS message (e.g. new session from home page, feature start), send it now
-      const pending = useSessionStore.getState().pendingWsMessage;
-      if (pending) {
-        // Only drop the stash once the frame is actually on the wire. The
-        // status transition can land a tick before the socket is writable (or
-        // the socket can close again in between), and clearing first would lose
-        // the message with no trace — the same silent drop `send`'s boolean
-        // exists to expose. Keeping it stashed means the next open retries it.
-        if (send({ ...pending, sessionId } as WsClientMessage)) {
-          useSessionStore.getState().setPendingWsMessage(undefined);
-        }
-      }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps -- `onSessionConnect` is re-created each render (see above)
-  }, [status, historyLoaded, send]);
+  }, [status, historyLoaded, hydrateAttempt, send]);
+
+  // Flush a stashed frame (e.g. the first message of a session claimed on
+  // /{slug}/new) on EVERY open, not only on an open that also hydrates. These
+  // were one block until an open that skips a redundant history load — the
+  // reconnect whose earlier response already landed — started skipping the
+  // flush with it, stranding the user's message until some later reconnect.
+  // eslint-disable-next-line no-restricted-syntax -- existing usage; status-transition-keyed
+  useEffect(() => {
+    if (status !== "open") return;
+    const sessionId = useSessionStore.getState().sessionId;
+    const pending = useSessionStore.getState().pendingWsMessage;
+    if (!sessionId || !pending) return;
+    // Only drop the stash once the frame is actually on the wire. The status
+    // transition can land a tick before the socket is writable (or the socket
+    // can close again in between), and clearing first would lose the message
+    // with no trace — the same silent drop `send`'s boolean exists to expose.
+    // Keeping it stashed means the next open retries it.
+    if (send({ ...pending, sessionId } as WsClientMessage)) {
+      useSessionStore.getState().setPendingWsMessage(undefined);
+    }
+  }, [status, send]);
 
   // On disconnect, drop the transcript baseline and the live-only signals that
   // cannot survive the gap. Keyed on `status` alone so it fires once per
