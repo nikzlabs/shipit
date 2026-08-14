@@ -304,6 +304,53 @@ user's follow-up of 2026-08-12 during the design phase.
   The alternative is to hold the plugin's pin and leave the project service
   without an origin until the user renumbers it.
 
+- **A repository added with a credential in its URL leaves a live token in
+  `/project/.git/config`, where plugin code can read it — which of three fixes
+  do we take?** Req 19 already says a fetch credential is never reachable from
+  anything running plugin-authored code, so this is a **violation to close, not
+  an ambiguity in the requirement**; what is open is only the remedy, and each
+  one costs the user something different. Req 21 puts the consuming project's
+  workspace at `/project`, which necessarily carries `.git`. The repo-local
+  `credential.helper` there is harmless — it is a PATH to the loopback broker,
+  and a plugin container's own network namespace has nothing listening on it.
+  `remote.origin.url` is not: a repository added as
+  `https://x-access-token:<pat>@github.com/o/r.git` is stored verbatim and
+  written into the session clone's config, so every plugin CLI can read it
+  today, and every plugin service can once that surface ships. No mount,
+  environment or network assertion on the plugin surfaces can see it, which is
+  why the guard tests pass while the boundary is open. The options: **(a)** strip
+  the credential when a repository is added and require the credential helper
+  instead — cheapest and fixes it everywhere, but breaks a repository whose only
+  working auth *is* that URL; **(b)** strip it only when writing
+  `remote.origin.url` in the session clone — narrower, leaves the stored value
+  alone, and keeps `.git` usable in plugin containers; **(c)** mask
+  `/project/.git` on plugin surfaces — changes what a plugin may assume about
+  `/project`, and plan §2 currently says nothing about git access either way.
+  *Agent recommendation: (b) — it closes the reachable copy without changing
+  either what the user may type when adding a repository or what a plugin may
+  expect at `/project`. Not implemented.*
+
+- **Do plugin SERVICES get their own egress containment, or do they inherit
+  today's unconfined behaviour?** Req 24 is settled on intent — a declaration
+  grants nothing, and services and companion CLIs reach exactly what equivalent
+  same-repo code could reach under the session's own egress configuration. The
+  open part is enforcement, and it is not a plugin question so much as an
+  existing one this feature is the first to make visible: containment lives in
+  the **agent container's** network namespace, while compose service containers
+  have unrestricted egress (the docs/172 residual). So a plugin's declared hosts
+  are evaluated against the agent container — where companion CLIs run — and a
+  service reaching an undeclared host is not stopped by anything. Same-repo
+  compose services are equally unconfined, so the letter of req 24 holds; its
+  spirit does not, because "what equivalent same-repo code could reach" is
+  currently "everything". The options: **(a)** leave services as they are and
+  say so plainly, keeping plugin and project services identical; **(b)** contain
+  plugin services specifically, which makes a plugin service *more* restricted
+  than a same-repo one and needs req 24 reworded; **(c)** contain compose
+  services generally, which closes docs/172 for every project and is much larger
+  than this feature. *Agent recommendation: (a) for v1, with the need-row naming
+  the blocked claimant rather than asserting one repository-level truth across
+  both surfaces — then (c) as its own piece of work. Not implemented.*
+
 ## Resolved questions
 
 - **2026-08-13 — Where does a plugin's `install` run, and how strictly is req 19
