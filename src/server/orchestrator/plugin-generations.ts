@@ -215,6 +215,34 @@ export function activeLinkPath(stateDir: string, repoName: string): string {
  * and the CLI invocation container then gets a volume named for B whose
  * lowerdir is C's tree (sibling report, docs/262). Whoever resolves the link is
  * responsible for holding onto the result.
+ *
+ * ## Which callers belong here
+ *
+ * The rule, written down because three sessions each re-derived it: these
+ * readers are for a pass whose results are **compared or combined as if they
+ * came from one generation**. Three shapes look like members from a grep for
+ * `readActive*` and are not — collapsing them is a regression, not a fix:
+ *
+ *  - A read that must **observe a change**. `services/plugin-refresh.ts`
+ *    snapshots each commit, activates, then reads again; `after !== before` is
+ *    the whole changed/unchanged verdict. One resolution reports every refresh
+ *    as `unchanged`.
+ *  - A path that must **follow a later swap**. `/plugins/<name>` links to the
+ *    *unresolved* `active` deliberately, so a new generation reaches the agent
+ *    with no re-link (plan §2). Pinning it would break refresh.
+ *  - An operation that **already resolves once**. A lone `readActiveGeneration`
+ *    is a single `open` through the link, so the fields of its record cannot
+ *    disagree; a window between that read and a later write is a lease
+ *    question, not a resolution one.
+ *
+ * ## Resolving once does not settle identity
+ *
+ * Every path here is keyed by the declaration **name**, and `GenerationRecord`
+ * carries no source repository — so a `repos:` entry re-pointed at a different
+ * repository keeps serving the previous repository's generation, however
+ * carefully a caller resolves. That is a separate axis with a separate fix (a
+ * recorded source, checked on read). Until it lands, a caller that *executes*
+ * what it reads is running a repository the declaration no longer names.
  */
 export function readGenerationRecordAt(generationDir: string): GenerationRecord | null {
   try {
