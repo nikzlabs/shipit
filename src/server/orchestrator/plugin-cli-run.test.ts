@@ -123,6 +123,7 @@ function fakeDocker(opts: { exit?: number; stdout?: string; stderr?: string } = 
   // translation inspects it for its mountpoint.
   const volumes = new Set<string>(["shipit-ws"]);
   const networks: string[] = [];
+  const connected: unknown[] = [];
   const notFound = (): never => {
     throw Object.assign(new Error("no such thing"), { statusCode: 404 });
   };
@@ -141,6 +142,10 @@ function fakeDocker(opts: { exit?: number; stdout?: string; stderr?: string } = 
         if (!networks.includes(name)) notFound();
         return { IPAM: { Config: [{ Subnet: "172.29.0.0/16" }] } };
       },
+      // Recorded, never stubbed away: attaching a running container to a second
+      // network is a real pattern in this codebase (`service-manager-setup.ts`),
+      // and it is invisible to every create-time assertion below.
+      connect: async (spec: unknown) => { connected.push(spec); },
     }),
     createNetwork: async (spec: { Name: string }) => { networks.push(spec.Name); },
     createVolume: async (spec: { Name: string }) => { volumes.add(spec.Name); },
@@ -171,7 +176,49 @@ function fakeDocker(opts: { exit?: number; stdout?: string; stderr?: string } = 
       };
     },
   };
-  return { docker: docker as unknown as Docker, containers, networks, volumes };
+  return { docker: docker as unknown as Docker, containers, networks, volumes, connected };
+}
+
+/**
+ * The req-19 properties that must hold on EVERY branch of `runPluginCommand`,
+ * not just the one the main fixture takes.
+ *
+ * Written as a helper because the branches are where a boundary erodes: a
+ * credential mount or a broker variable added inside the settings branch or the
+ * `repo: self` branch would evade an assertion made once, on the pinned
+ * no-settings path (review finding).
+ */
+function expectBoundaryHolds(created: Record<string, unknown>, expectedTargets: string[]): void {
+  const host = created.HostConfig as {
+    Mounts: Mount[];
+    Binds?: string[];
+    VolumesFrom?: string[];
+    NetworkMode: string;
+  };
+  expect(host.Mounts.map((m) => m.Target).sort()).toEqual([...expectedTargets].sort());
+  // `Mounts` is not the only way to hand a container a filesystem, and an
+  // exhaustive claim about one field is not exhaustive if a sibling field can
+  // carry the rest. `Binds` is the older spelling of the same thing (the
+  // install container uses it), and `VolumesFrom` copies ANOTHER container's
+  // mounts wholesale — pointed at the session container that would be
+  // `/credentials`, in one line, with the mount assertion still green.
+  expect(host.Binds ?? []).toEqual([]);
+  expect(host.VolumesFrom ?? []).toEqual([]);
+  // Nor a second network beside `NetworkMode`: a container attached to the
+  // session's bridge as well would reach ShipIt's API from an address in no
+  // registered untrusted subnet, which the guard reads as a browser caller.
+  expect(created.NetworkingConfig).toBeUndefined();
+  expect(host.NetworkMode).toBe(PLUGIN_CLI_NETWORK);
+  for (const m of host.Mounts) {
+    expect(`${m.Source} ${m.Target}`).not.toMatch(/credential/i);
+  }
+  // No ShipIt credential, no worker URL, no port that aims the brokering git
+  // helper at anything, and nothing inherited from this process.
+  const env = created.Env as string[];
+  for (const e of env) {
+    expect(e).not.toMatch(/^(GITHUB_TOKEN|GH_TOKEN|WORKER_URL|WORKER_PORT|SHIPIT_AGENT_OPS_URL|ORCHESTRATOR_URL|PATH)=/);
+  }
+  expect(env.join("\n")).not.toContain("should-never-be-inherited");
 }
 
 function deps(docker: Docker, over: Partial<PluginCliDeps> = {}): PluginCliDeps {
@@ -382,38 +429,76 @@ describe("runPluginCommand — the fetch-authority boundary (req 19)", () => {
     await runPluginCommand(deps(fake.docker), call);
 
     const created = fake.containers[0].opts;
-    const host = created.HostConfig as {
-      Mounts: Mount[];
-      Binds?: string[];
-      VolumesFrom?: string[];
-    };
-    const mounts = host.Mounts;
-    expect(mounts.map((m) => m.Target).sort()).toEqual(["/plugin", "/plugin-state", "/project"]);
-    // `Mounts` is not the only way to hand a container a filesystem, and an
-    // exhaustive claim about one field is not exhaustive if a sibling field can
-    // carry the rest. `Binds` is the older spelling of the same thing (the
-    // install container uses it), and `VolumesFrom` copies ANOTHER container's
-    // mounts wholesale — pointed at the session container that would be
-    // `/credentials`, in one line, with this file's mount assertion still green.
-    expect(host.Binds ?? []).toEqual([]);
-    expect(host.VolumesFrom ?? []).toEqual([]);
-    // Nor a second network beside `NetworkMode`: a container attached to the
-    // session's bridge as well would reach ShipIt's API from an address in no
-    // registered untrusted subnet, which the guard reads as a browser caller.
-    expect(created.NetworkingConfig).toBeUndefined();
-    // Nothing named for a credential store on either side of any mount — not
-    // the session's `/credentials` tree, and not the orchestrator's own.
-    for (const m of mounts) {
-      expect(`${m.Source} ${m.Target}`).not.toMatch(/credential/i);
-    }
-    // `/project` IS the workspace, so it necessarily carries `.git` — and that
-    // is not a way back to a fetch credential. Verified at the source rather
-    // than assumed: the repo-local `credential.helper` written by
-    // `github-auth.ts:392` is `CONTAINER_CREDENTIAL_HELPER`, a PATH to a broker
-    // (`git-config.ts` — "this file NEVER contains the token"), and the broker
-    // answers only over the session worker's loopback, which the next test
-    // shows this container does not share.
+    const host = created.HostConfig as { Mounts: Mount[] };
+    expectBoundaryHolds(created, ["/plugin", "/plugin-state", "/project"]);
+    // …and it is never attached to a second network after the fact, which no
+    // create-time field would record.
+    expect(fake.connected).toEqual([]);
+    // `/project` IS the workspace, so it necessarily carries `.git`.
+    //
+    // **Half of that is safe and half of it is an open req-19 gap, and the
+    // difference was worth checking rather than asserting.** The repo-local
+    // `credential.helper` is safe: `github-auth.ts` writes
+    // `CONTAINER_CREDENTIAL_HELPER`, a PATH to a broker (`git-config.ts` —
+    // "this file NEVER contains the token"), and that broker answers only over
+    // the session worker's loopback, which the next test shows this container
+    // does not share. `remote.origin.url` is NOT: `addRepo`
+    // (`services/repos.ts`) trims and expands shorthand but never calls
+    // `stripUrlCredentials`, `RepoStore.add` persists the string verbatim, and
+    // `RepoGit.cloneFromCache` runs `git remote set-url origin <that string>`
+    // — so a repository added as
+    // `https://x-access-token:<pat>@github.com/o/r.git` puts a live token in
+    // this container's `/project/.git/config`, where no mount, environment or
+    // network assertion in this file can see it. Found by an independent
+    // review of this branch. Closing it is a product decision outside this
+    // surface (stripping the URL would break an install whose ONLY auth is
+    // that URL), so it is reported, not silently patched here.
     expect(mountFor(host, "/project")?.Source).toBe(workspaceDir);
+  });
+
+  // The two branches the fixture above does not take. A boundary erodes at a
+  // branch: a credential mount added "just for settings", or a broker variable
+  // added "just for self-use", would pass every assertion made once on the
+  // pinned no-settings path (review finding).
+  it("holds the same boundary on the settings branch", async () => {
+    vi.stubEnv("GITHUB_TOKEN", "ghp-should-never-be-inherited");
+    declareConsumer();
+    publishGeneration();
+    const settings = path.join(sessionDir, "plugin-data", "reqs", "settings.json");
+    fs.mkdirSync(path.dirname(settings), { recursive: true });
+    fs.writeFileSync(settings, "{}\n");
+    const fake = fakeDocker();
+
+    await runPluginCommand(deps(fake.docker), call);
+
+    expectBoundaryHolds(fake.containers[0].opts, [
+      "/plugin", "/plugin-settings.json", "/plugin-state", "/project",
+    ]);
+    expect(fake.connected).toEqual([]);
+  });
+
+  it("holds the same boundary on the `repo: self` branch", async () => {
+    vi.stubEnv("GITHUB_TOKEN", "ghp-should-never-be-inherited");
+    declareConsumer(`
+plugins:
+  repos:
+    - repo: self
+      name: here
+  use:
+    - plugin: probe
+      from: here
+exports:
+  plugins:
+    probe:
+      cli:
+        probe: tools/probe
+`);
+    const fake = fakeDocker();
+
+    await runPluginCommand(deps(fake.docker), { alias: "probe", command: "probe", args: [] });
+
+    expectBoundaryHolds(fake.containers[0].opts, ["/plugin", "/plugin-state", "/project"]);
+    expect(fake.connected).toEqual([]);
   });
 
   it("carries no ShipIt credential, and nothing from the orchestrator's own environment", async () => {
@@ -430,9 +515,17 @@ describe("runPluginCommand — the fetch-authority boundary (req 19)", () => {
     await runPluginCommand(deps(fake.docker), call);
 
     const env = fake.containers[0].opts.Env as string[];
-    // The WHOLE environment: the contract's three names (settings is absent —
-    // this import has no settings file), the two hygiene settings, and the one
-    // credential name the plugin declared.
+    // Everything ShipIt SUBMITS, exactly: the contract's three names (settings
+    // is absent — this import has no settings file), the two hygiene settings,
+    // and the one credential name the plugin declared.
+    //
+    // Not the container's *effective* environment, and the distinction is not
+    // pedantic (review finding): Docker merges this array with the image's own
+    // `ENV`, and the image here is the session-worker image, which already
+    // supplies `PATH` and `AGENT_HOME`. An `ENV GITHUB_TOKEN=…` added to that
+    // Dockerfile would reach plugin code with this assertion still green. That
+    // is the image's contract to hold, not this call's — but it IS a second
+    // surface, and nothing in this file guards it.
     expect([...env].sort()).toEqual([
       "FAL_KEY=secret-value",
       "HOME=/tmp",

@@ -254,17 +254,22 @@ request, which is the one worth making, arrives before the registration. It
 fails closed: a subnet ShipIt cannot deny means nothing runs.
 
 **"Cannot deny" includes an address family the guard does not match.** The
-guard's CIDR comparison is IPv4-only, so a *dual-stack* network is not half
-safe — the container's IPv6 address falls in no registered CIDR, which the
-guard reads as a browser/host caller, and the same escalation is available by
-making the request over IPv6. Registering *some* IPv4 subnet is therefore the
-wrong bar: every subnet the network reports has to be registerable, and the
-network ShipIt creates is pinned `EnableIPv6: false` so a daemon default
-cannot make it dual-stack in the first place. (Teaching
-`api-container-guard.ts` to match IPv6 CIDRs would close it too, and is the
-better fix the day a plugin container legitimately needs IPv6.) Both the
-install and CLI surfaces get this from `plugin-container.ts`, which is why it
-is shared code rather than two copies.
+guard's CIDR comparison is IPv4-only, so on a *dual-stack* network the
+container's IPv6 address falls in no registered CIDR, which the guard reads as
+a browser/host caller. Registering *some* IPv4 subnet is therefore the wrong
+bar: every subnet the network reports has to be registerable, and the network
+ShipIt creates is pinned `EnableIPv6: false` so a daemon default cannot make
+it dual-stack in the first place. **Latent rather than live**, and recorded
+that way so the wrong end does not get "fixed": the orchestrator binds
+`0.0.0.0` (`app-lifecycle.ts`), so no IPv6 listener answers today — what the
+check buys is that the boundary does not open silently when the listener,
+a proxy, or the deployment topology gains one. Teaching
+`api-container-guard.ts` to match IPv6 CIDRs closes it from the other side and
+is the better fix the day a plugin container legitimately needs IPv6; until
+then this refuses such a network outright, so an IPv6-only outbound dependency
+is unreachable from plugin code. Both the install and CLI surfaces get this
+from `plugin-container.ts`, which is why it is shared code rather than two
+copies.
 
 The general question of what plugin code may reach *outbound* — the manifest's
 `hosts:` as an enforced allowlist rather than an informational one — is req

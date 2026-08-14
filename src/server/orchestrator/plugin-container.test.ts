@@ -74,12 +74,19 @@ describe("ensureUntrustedPluginNetwork", () => {
   /**
    * The gap this closes (req 19). "Some IPv4 subnet registered" is not the same
    * property as "every address this network hands out is denied": a dual-stack
-   * network passes the first and fails the second, and a container on it reaches
-   * ShipIt's API over IPv6 as an UNRECOGNISED source — which
+   * network passes the first and fails the second, because a container on it
+   * also holds an IPv6 address in no registered CIDR — which
    * `api-container-guard.ts` reads as a browser or host caller, i.e. more
-   * privileged than the agent container this one is isolated from. From there
-   * `/api/sessions/<id>/git/credential` returns a real GitHub token, which is
-   * exactly the fetch credential req 19 says plugin code never sees.
+   * privileged than the agent container this one is isolated from. What sits
+   * behind that door is `/api/sessions/<id>/git/credential`, a real GitHub
+   * token, which is exactly the fetch credential req 19 says plugin code never
+   * sees.
+   *
+   * **Latent, not live** (review finding): the orchestrator binds `0.0.0.0`
+   * (`app-lifecycle.ts`), so no IPv6 listener answers today. The test is here
+   * because the alternative is that the boundary opens silently the day the
+   * topology gains one — the same reason the subnet is registered before the
+   * container starts rather than after.
    */
   it("fails closed on a dual-stack network, whose IPv6 half it cannot deny", async () => {
     const { docker } = fakeDocker(["172.30.0.0/16", "fd00:dead:beef::/64"]);

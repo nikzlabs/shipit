@@ -26,16 +26,24 @@
  * cannot deny means nothing runs.
  *
  * **"Cannot deny" includes a subnet of the wrong address family.** The guard's
- * CIDR match is IPv4-only, so a dual-stack network is not half-safe: the
- * container's IPv6 address falls in no registered CIDR, which the guard reads as
- * a browser/host caller — the exact escalation this module exists to prevent,
- * reachable by asking for the same page over IPv6. Requiring only *some* IPv4
- * subnet would pass such a network, so every reported subnet has to be
- * registerable. The network ShipIt creates is pinned IPv4-only for the same
- * reason; the check covers the one it did not create (a leftover from an
- * earlier boot, or a daemon default). Teaching `api-container-guard.ts` to
- * match IPv6 CIDRs would also close it, and is the better fix the day a plugin
- * container legitimately needs IPv6.
+ * CIDR match is IPv4-only, so on a dual-stack network the container's IPv6
+ * address falls in no registered CIDR — which the guard reads as a
+ * browser/host caller, i.e. the exact escalation this module exists to
+ * prevent. Requiring only *some* IPv4 subnet would pass such a network, so
+ * every reported subnet has to be registerable, and the network ShipIt creates
+ * is pinned IPv4-only so a daemon default cannot make it dual-stack; the check
+ * covers the network ShipIt did not create (a leftover from an earlier boot).
+ *
+ * **This is a latent hole, not a live one, and the distinction is recorded so
+ * nobody "fixes" the wrong end of it** (review finding): the orchestrator binds
+ * `0.0.0.0` (`app-lifecycle.ts`), so there is no IPv6 listener to reach today.
+ * What the check buys is that the day the listener, a proxy, or the deployment
+ * topology gains IPv6, the boundary does not open silently — which is the same
+ * bet the subnet-before-container ordering above makes. Teaching
+ * `api-container-guard.ts` to match IPv6 CIDRs closes it from the other side,
+ * and is the better fix the day a plugin container legitimately needs IPv6:
+ * this one refuses such a network outright, so an IPv6-only dependency is
+ * unreachable from plugin code until then.
  */
 
 import type Docker from "dockerode";
