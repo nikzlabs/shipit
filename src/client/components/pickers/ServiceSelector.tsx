@@ -17,6 +17,7 @@
  */
 
 import { BillingModePill } from "../BillingModePill.js";
+import { ServiceLogo } from "../ServiceLogo.js";
 import { Picker, PickerOption } from "./Picker.js";
 import { serviceKeyOf, type ServiceChoice } from "./model-choice.js";
 
@@ -49,6 +50,18 @@ export function ServiceSelector({
   return (
     <Picker
       label={current?.serviceName ?? fallbackLabel}
+      {...(current
+        ? {
+            /*
+              The vendor's mark, in the slot the reasoning control's brain uses
+              — the same one Settings → Services draws on the card. Only when a
+              service actually resolves: `fallbackLabel` names a pin whose
+              credential went away, and a mark beside "No service" would be a
+              logo for nothing.
+            */
+            icon: <ServiceLogo service={{ id: current.serviceId, name: current.serviceName }} />,
+          }
+        : {})}
       ariaLabel={`Service for ${idPrefix}`}
       triggerTestId={`${idPrefix}-service-trigger`}
       menuTestId={`${idPrefix}-service-menu`}
@@ -63,6 +76,9 @@ export function ServiceSelector({
           <PickerOption
             key={key}
             label={service.serviceName}
+            leading={
+              <ServiceLogo service={{ id: service.serviceId, name: service.serviceName }} />
+            }
             selected={key === selectedKey}
             onSelect={() => onChange(service)}
             testId={`${idPrefix}-service-option-${key}`}

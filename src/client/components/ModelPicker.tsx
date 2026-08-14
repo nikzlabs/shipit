@@ -7,6 +7,7 @@ import { useSessionStore } from "../stores/session-store.js";
 import { DropdownMenuLabel } from "./ui/dropdown-menu.js";
 import { Picker, PickerOption } from "./pickers/Picker.js";
 import { BillingModePill } from "./BillingModePill.js";
+import { ServiceLogo } from "./ServiceLogo.js";
 import type { BillingMode } from "../../server/shared/catalogue/index.js";
 import type { AgentId, SessionInfo } from "../../server/shared/types.js";
 import type { AgentOption, ModelChoice } from "../agent-types.js";
@@ -43,14 +44,16 @@ import type { ModelInfo } from "../utils/model-info.js";
 /** One `(service, billing mode)` block in the model menu. */
 interface ModelGroup {
   key: string;
+  /** Which service this is — what the header's vendor mark is drawn from. */
+  serviceId: string;
   serviceName: string;
   billingMode: "sub" | "key";
   rows: ModelRow[];
 }
 
 /**
- * A group header: the service at the left edge, its billing mode as a coloured
- * pill at the right.
+ * A group header: the service's mark and name at the left edge, its billing mode
+ * as a coloured pill at the right.
  *
  * The pill is the same component Settings → Services puts on a card header, and
  * the right edge is where it goes because the header is a two-column statement —
@@ -63,14 +66,26 @@ interface ModelGroup {
  * copies of this markup is exactly how the two menus would drift apart.
  */
 export function ModelGroupHeader({
+  serviceId,
   serviceName,
   billingMode,
 }: {
+  /**
+   * Drawn as the vendor's mark. A bare id rather than a `ServiceDef` because a
+   * model row on the wire carries exactly this and a name — which is what
+   * `ServiceLogo`'s `ServiceIdentity` asks for, and all it asks for.
+   */
+  serviceId: string;
   serviceName: string;
   billingMode: BillingMode;
 }) {
   return (
     <DropdownMenuLabel className="flex items-center gap-2">
+      {/* The same 12px box the rows' `leading` slot uses, so a header's mark and
+          the option glyphs below it share one left edge. */}
+      <span className="flex w-3 shrink-0 justify-center">
+        <ServiceLogo service={{ id: serviceId, name: serviceName }} />
+      </span>
       <span className="min-w-0 flex-1 truncate">{serviceName}</span>
       <BillingModePill billingMode={billingMode} data-testid={`model-group-mode-${billingMode}`} />
     </DropdownMenuLabel>
@@ -85,6 +100,7 @@ function groupRows(rows: ModelRow[]): ModelGroup[] {
     if (!group) {
       group = {
         key: row.groupKey,
+        serviceId: row.serviceId,
         serviceName: row.serviceName,
         billingMode: row.billingMode,
         rows: [],
@@ -594,7 +610,11 @@ export function ModelSelector({
         {groups.map((group) => (
           <div key={group.key || "__ungrouped__"}>
             {group.serviceName && (
-              <ModelGroupHeader serviceName={group.serviceName} billingMode={group.billingMode} />
+              <ModelGroupHeader
+                serviceId={group.serviceId}
+                serviceName={group.serviceName}
+                billingMode={group.billingMode}
+              />
             )}
             {group.rows.map((row) => (
               <PickerOption

@@ -206,6 +206,20 @@ describe("ServicesPanel", () => {
       ).toBeInTheDocument();
     });
 
+    it("carries the same vendor mark the card will carry", async () => {
+      // The row the user picks and the card they come back to are the same
+      // service, so they show the same thing. The row keeps its name too — the
+      // mark is a second way to recognise it, never the only one.
+      render(<ServicesPanel agentList={[claudeAgent, codexAgent]} />);
+      await userEvent.click(screen.getByTestId("services-add-empty"));
+
+      const row = screen.getByTestId("add-service-option-anthropic");
+      // The mark's 24×24 grid rather than any `svg` — Phosphor's glyphs are
+      // 256×256, so this cannot pass on a tick from the support table.
+      expect(row.querySelector('svg[viewBox="0 0 24 24"]')).not.toBeNull();
+      expect(row).toHaveTextContent("Anthropic");
+    });
+
     it("gives a harness the image does not have no column at all", async () => {
       render(<ServicesPanel agentList={[claudeAgent, { ...codexAgent, installed: false }]} />);
       await userEvent.click(screen.getByTestId("services-add-empty"));
@@ -1084,7 +1098,11 @@ describe("ServicesPanel — one card component (docs/252 D2, D7, D8, D9)", () =>
     const card = screen.getByTestId("service-card-anthropic:sub");
     expect(within(card).getByTestId("provider-account-rows-claude")).toBeInTheDocument();
     expect(within(card).getByRole("heading", { name: "Anthropic" })).toBeInTheDocument();
-    expect(within(card).getByTestId("service-avatar-anthropic")).toHaveTextContent("A");
+    // The vendor's mark, not the service's initial — the avatar is the one
+    // thing on the row that can be recognised without reading.
+    const avatar = within(card).getByTestId("service-avatar-anthropic");
+    expect(avatar.querySelector("svg")).not.toBeNull();
+    expect(avatar).toHaveTextContent("");
     // The harness vendor never titles a credential card.
     expect(screen.queryByText(/Claude subscriptions/i)).not.toBeInTheDocument();
   });

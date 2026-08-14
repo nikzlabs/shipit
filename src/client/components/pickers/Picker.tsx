@@ -226,6 +226,7 @@ export function Picker({
 export function PickerOption({
   label,
   detail,
+  leading,
   selected,
   disabled,
   trailing,
@@ -236,6 +237,16 @@ export function PickerOption({
 }: {
   label: string;
   detail?: string;
+  /**
+   * A glyph at the left edge — the service rows' vendor mark.
+   *
+   * `shrink-0` and a fixed 12px box, so a row's text truncates and the column of
+   * glyphs stays a column: a mark that could shrink would make each row's label
+   * start at a slightly different place. It is the caller's job to keep it
+   * `aria-hidden` — the row's own `label` is what a screen reader reads, and a
+   * mark that announced itself would say the same thing twice.
+   */
+  leading?: ReactNode;
   selected?: boolean;
   disabled?: boolean;
   /** Rendered before the checkmark — the service rows' billing-mode pill. */
@@ -255,6 +266,7 @@ export function PickerOption({
       }${className ? ` ${className}` : ""}`}
       data-testid={testId}
     >
+      {leading && <span className="flex w-3 shrink-0 justify-center">{leading}</span>}
       <span className="min-w-0 flex-1">
         <span className="block truncate">{label}</span>
         {detail && (

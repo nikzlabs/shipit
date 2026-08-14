@@ -84,6 +84,7 @@ import { Dialog, DialogContent, DialogTitle } from "../ui/dialog.js";
 import { DropdownMenuItem } from "../ui/dropdown-menu.js";
 import { providerAccountAuthKey, useSettingsStore } from "../../stores/settings-store.js";
 import { useUiStore } from "../../stores/ui-store.js";
+import { ServiceLogo } from "../ServiceLogo.js";
 import { SubscriptionLimitPill } from "../SubscriptionLimitsBadge.js";
 import { CredentialRowShell } from "./CredentialRowShell.js";
 import { useRowDrag, type RowDragProps } from "./useRowDrag.js";
@@ -1461,7 +1462,22 @@ function AddServiceDialog({
                     className="flex w-full items-center justify-between gap-3 rounded-md border border-(--color-border-secondary) px-2.5 py-2 text-left text-xs text-(--color-text-primary) hover:bg-(--color-bg-hover)"
                     data-testid={`add-service-option-${s.id}`}
                   >
-                    <span className="truncate">{s.name}</span>
+                    {/*
+                      The same mark the card will carry once the service is
+                      configured, so the row the user picks and the row they
+                      come back to are recognisably the same thing. It rides
+                      inside the row here rather than in a tile: the rows are
+                      already a bordered list, and a box inside a box is chrome
+                      the step does not need. The glyph is 12px against a 16px
+                      line box, so the support table beside this list — aligned
+                      by shared row metrics, not by measurement — does not move.
+                    */}
+                    <span className="flex min-w-0 items-center gap-2">
+                      <span className="flex w-3 shrink-0 justify-center">
+                        <ServiceLogo service={s} />
+                      </span>
+                      <span className="truncate">{s.name}</span>
+                    </span>
                     <span className="shrink-0 text-(--color-text-tertiary)">
                       {s.modes.map((m) => MODE_LABEL[m.kind]).join(" · ")}
                     </span>
