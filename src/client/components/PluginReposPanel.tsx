@@ -1,6 +1,7 @@
-import { WarningIcon, PlugsIcon, KeyIcon } from "@phosphor-icons/react";
+import { useState } from "react";
+import { WarningIcon, PlugsIcon, KeyIcon, GlobeIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
-import { usePluginReposStore } from "../stores/plugin-repos-store.js";
+import { usePluginReposStore, type PluginHostGrantScope } from "../stores/plugin-repos-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import type { PluginRepoCardView } from "../../server/shared/plugin-repos.js";
 import { RichErrorText } from "./PrLifecycleCard/RichErrorText.js";
@@ -89,6 +90,17 @@ function PluginRepoCard({
   const setKeys = repo.uses.flatMap((u) =>
     (u.credentials ?? []).filter((c) => c.satisfied).map((c) => ({ alias: u.alias, name: c.name })),
   );
+  // req 24 — the same two lists for declared external hosts. A host the session
+  // may not reach is a gap the user closes deliberately; a host it may reach is
+  // stated quietly, because the requirement asks the session to SHOW what a
+  // plugin needs, not only what is broken.
+  const blockedHosts = repo.uses.flatMap((u) =>
+    (u.hosts ?? []).filter((h) => !h.allowed).map((h) => ({ alias: u.alias, host: h.host })),
+  );
+  const allowedHosts = repo.uses.flatMap((u) =>
+    (u.hosts ?? []).filter((h) => h.allowed).map((h) => ({ alias: u.alias, host: h.host })),
+  );
+  const needCount = missingKeys.length + blockedHosts.length;
   return (
     <div className="rounded-lg border border-(--color-border-primary) bg-(--color-bg-secondary) overflow-hidden">
       <div className="flex flex-wrap items-center gap-2 border-b border-(--color-border-primary) px-3 py-2 text-sm">
@@ -108,10 +120,12 @@ function PluginRepoCard({
             <Chip tone="warn">{`${repo.issues.length} problem${repo.issues.length > 1 ? "s" : ""}`}</Chip>
           )
         )}
-        {/* req 23 — an unset credential is a need, not a failure: the version
-            is live and whole, one key away from working. */}
-        {missingKeys.length > 0 && (
-          <Chip tone="warn">{`${missingKeys.length} need${missingKeys.length > 1 ? "s" : ""}`}</Chip>
+        {/* reqs 23, 24 — an unset credential and an unallowed host are needs,
+            not failures: the version is live and whole, one user act away from
+            working. They share one chip because they are the same kind of thing
+            to the person reading the card — something to go and set. */}
+        {needCount > 0 && (
+          <Chip tone="warn">{`${needCount} need${needCount > 1 ? "s" : ""}`}</Chip>
         )}
       </div>
 
@@ -152,6 +166,21 @@ function PluginRepoCard({
         </div>
       )}
 
+      {allowedHosts.length > 0 && (
+        <div
+          className="px-3 pb-2 text-xs text-(--color-text-tertiary)"
+          data-testid="plugin-hosts-allowed"
+        >
+          hosts allowed:{" "}
+          {allowedHosts.map((h, i) => (
+            <span key={`${h.alias}:${h.host}`}>
+              {i > 0 && " · "}
+              <code className="font-mono">{h.host}</code> for {h.alias}
+            </span>
+          ))}
+        </div>
+      )}
+
       {/* req 23 — a missing key is a named gap: which plugin, which name, and
           the one action that closes it. "Add key…" opens the CONSUMING
           project's secret store; the plugin repository's own store is never
@@ -168,17 +197,23 @@ function PluginRepoCard({
             <span className="font-medium">{need.alias}</span> needs it
           </span>
           {consumerRepoUrl && (
-            <button
-              type="button"
+            <CardAction
+              className="ml-auto"
               onClick={() =>
                 useUiStore.getState().setProjectSettingsRepoUrl(consumerRepoUrl, "secrets")
               }
-              className="ml-auto rounded-md border border-(--color-border-primary) px-2 py-1 text-xs hover:bg-(--color-bg-hover)"
             >
               Add key…
-            </button>
+            </CardAction>
           )}
         </div>
+      ))}
+
+      {/* req 24 — the same shape for a declared host the session may not reach,
+          with the two scopes the requirement names. The declaration itself
+          granted nothing: pressing one of these is the deliberate user act. */}
+      {blockedHosts.map((need) => (
+        <HostNeedRow key={`${need.alias}:${need.host}`} alias={need.alias} host={need.host} />
       ))}
 
       {repo.issues.map((issue, i) => (
@@ -239,6 +274,95 @@ function PluginRepoCard({
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * req 24's affordance: one declared host the session's egress allowlist does
+ * not cover, with the two scopes the requirement names — "for the session or
+ * for the whole ShipIt instance".
+ *
+ * The wording states what is true rather than what is convenient. It says the
+ * host is not in the allowlist, not that a call was blocked: what enforcement
+ * covers differs per execution surface (a plugin service rides the session's
+ * containment, a companion-CLI invocation container has its own network), and
+ * an allowlist entry is the fact both scopes are about either way.
+ */
+function HostNeedRow({ alias, host }: { alias: string; host: string }) {
+  const allowHost = usePluginReposStore((s) => s.allowHost);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const grant = async (scope: PluginHostGrantScope) => {
+    setBusy(true);
+    setError(null);
+    try {
+      await allowHost(host, scope);
+    } catch {
+      // The snapshot was refetched regardless (the store's `finally`), so the
+      // row disappears if the host landed anyway — this only speaks for the
+      // case where it did not.
+      setError("Could not add it to the allowlist. Try again, or add it in Settings → Network egress.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div
+      className="flex flex-wrap items-center gap-2 border-t border-(--color-border-primary) px-3 py-2 text-sm"
+      data-testid={`plugin-host-need-${alias}-${host}`}
+    >
+      <GlobeIcon size={ICON_SIZE.SM} className="flex-none text-(--color-warning)" />
+      <span className="min-w-0 break-words">
+        <code className="font-mono text-xs">{host}</code> is not in this session's egress allowlist —{" "}
+        <span className="font-medium">{alias}</span> declares it
+      </span>
+      <span className="ml-auto flex flex-none items-center gap-2">
+        <CardAction
+          disabled={busy}
+          title="Add it to this session's allowlist. Applies immediately."
+          onClick={() => void grant("session")}
+        >
+          Allow for session
+        </CardAction>
+        <CardAction
+          disabled={busy}
+          title="Add it to the instance-wide allowlist, for this and future sessions. A running service may need a restart to pick it up."
+          onClick={() => void grant("global")}
+        >
+          Allow for ShipIt
+        </CardAction>
+      </span>
+      {error && <span className="w-full text-xs text-(--color-error)">{error}</span>}
+    </div>
+  );
+}
+
+/** The card's small secondary action — one spelling for every row on it. */
+function CardAction({
+  children,
+  onClick,
+  disabled = false,
+  title,
+  className = "",
+}: {
+  children: React.ReactNode;
+  onClick: () => void;
+  disabled?: boolean;
+  title?: string;
+  className?: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      {...(title ? { title } : {})}
+      className={`rounded-md border border-(--color-border-primary) px-2 py-1 text-xs hover:bg-(--color-bg-hover) disabled:opacity-50 ${className}`}
+    >
+      {children}
+    </button>
   );
 }
 

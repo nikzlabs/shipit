@@ -58,7 +58,7 @@ import path from "node:path";
 import simpleGit from "simple-git";
 import { parse as parseYaml } from "yaml";
 import type { DeclaredPluginRepo, PluginExport } from "../shared/plugin-repos.js";
-import { parsePluginExports, destinationKey } from "../shared/plugin-repos.js";
+import { parsePluginExports, destinationKey, declaredRefLabel } from "../shared/plugin-repos.js";
 import { resolveDurablePin } from "./plugin-pins.js";
 
 /** Subdirectory of the session state dir that holds every plugin checkout. */
@@ -645,7 +645,7 @@ async function activateOnce(repo: DeclaredPluginRepo, deps: ActivateDeps): Promi
   await retireForeignGeneration(stateDir, repo.name, source, deps.beginGenerationDeletion);
   const previous = readActiveGeneration(stateDir, repo.name, source) ?? undefined;
   const withPrevious = previous ? { previous } : {};
-  const declaredRef = repo.pin ? `pin ${repo.pin}` : `branch ${repo.branch ?? "(default)"}`;
+  const declaredRef = declaredRefLabel(repo);
 
   try {
     await deps.ensureCache(bareCacheDir, repoUrl);

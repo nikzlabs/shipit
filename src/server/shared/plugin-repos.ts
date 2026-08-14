@@ -17,7 +17,9 @@
 
 import { parseOwnerRepo } from "./tracker-id.js";
 import type { DeclaredTracker } from "./declared-tracker.js";
+import { PLUGIN_CONTRACT_ENV_NAMES } from "./plugin-contract.js";
 import type { PluginCredentialGroup, PluginCredentialNeed } from "./plugin-credentials.js";
+import type { PluginHostGroup, PluginHostNeed } from "./plugin-hosts.js";
 
 // ---------------------------------------------------------------------------
 // Config types (what shipit.yaml declares)
@@ -135,6 +137,16 @@ export interface PluginRepoUseView {
    * manifest to read — "not knowable" is never reported as "needs nothing".
    */
   credentials: PluginCredentialNeed[];
+  /**
+   * req 24 — the external hosts this plugin declares, each resolved against
+   * the session's own egress allowlist. Grouped under the declaring plugin for
+   * the reason `credentials` is: req 24 asks for "the same visibility req 23
+   * gives credentials", and a flat list cannot name the claimant.
+   *
+   * A `false` here is a gap the user may close deliberately, never one the
+   * declaration closed by itself — the declaration grants nothing.
+   */
+  hosts: PluginHostNeed[];
 }
 
 /**
@@ -152,7 +164,22 @@ export interface PluginRepoCardView {
   name: string;
   /** `"self"` or `"owner/repo"` — always visible on the card (req 19). */
   source: string;
-  /** `branch @ …` / `pin @ …` display source; null for self. */
+  /**
+   * The ref of what is **being executed**, paired with {@link commit} from the
+   * same generation record; the declared ref only when nothing is live, where
+   * there is nothing else to name. Null for self.
+   *
+   * req 19 says ShipIt visibly identifies "the repository, ref, and exact
+   * commit **being executed**", and `ref` used to come from the declaration
+   * while `commit` came from the live generation — so a declaration edited
+   * since the last successful round rendered as `active` at the NEW ref and
+   * the OLD commit, a pair no round ever produced (seen in the dogfood
+   * instance, where a round needs an attached runner and an edit made with
+   * none never settles). A ref that has produced no generation is not being
+   * executed; the gap between what is declared and what runs belongs in the
+   * `activating` / `degraded` framing that exists for it, and — when neither
+   * applies — in an issue row saying so.
+   */
   ref: string | null;
   /** The live generation's exact commit; null for self and when nothing is live. */
   commit: string | null;
@@ -170,6 +197,12 @@ export interface PluginRepoCardView {
 export interface PluginRepoRuntime {
   activating?: boolean;
   commit?: string;
+  /**
+   * The ref the live generation RECORDED when it was built ({@link
+   * declaredRefLabel}'s spelling) — what is being executed, as opposed to what
+   * the declaration says now. Present exactly when {@link commit} is.
+   */
+  ref?: string;
   /** Exported plugin names in the live generation's manifest (phase-2 input). */
   exports?: string[];
   error?: string;
@@ -376,6 +409,21 @@ export function destinationKey(source: PluginRepoSource): string {
 export function pluginCloneUrl(source: PluginRepoSource): string {
   if (source.kind === "self") throw new Error("self repos have no clone URL");
   return `https://github.com/${source.owner}/${source.repo}.git`;
+}
+
+/**
+ * How a declared version is written wherever a human reads it: the generation
+ * record (`plugin-generations.ts`), the refresh rows the agent's `shipit plugin
+ * refresh` prints, the preflight verdict, and the Plugins card.
+ *
+ * One formatter because the card **compares** two of those (plan §3): the ref a
+ * generation recorded when it was built against the ref the declaration names
+ * now. Two spellings of "the default branch" would make every default-branch
+ * repository look re-pointed. Never called for a `repo: self` declaration —
+ * a live working tree has no version to state (req 27).
+ */
+export function declaredRefLabel(repo: Pick<DeclaredPluginRepo, "branch" | "pin">): string {
+  return repo.pin ? `pin ${repo.pin}` : `branch ${repo.branch ?? "(default)"}`;
 }
 
 function sameDestination(source: PluginRepoSource, tracker: DeclaredTracker): boolean {
@@ -769,6 +817,19 @@ function parseExportEntry(name: string, entry: unknown, warnings: string[]): Plu
       if (typeof c !== "string" || !CREDENTIAL_NAME_RE.test(c)) {
         return drop(`credential names must look like environment variables (got \`${String(c)}\`)`);
       }
+      // The check belongs HERE rather than on either delivery surface, so both
+      // inherit one answer and the plugin author is told at declaration time
+      // (see `PLUGIN_CONTRACT_ENV_NAMES`): the compose surface silently drops
+      // such a name while the CLI surface appends a duplicate `Env` entry whose
+      // resolution nothing specifies. Refused rather than ignored, because a
+      // plugin that names one of these has confused ShipIt's contract for its
+      // own configuration, and telling it so is cheaper than either surface's
+      // undefined behaviour.
+      if (PLUGIN_CONTRACT_ENV_NAMES.has(c)) {
+        return drop(
+          `\`${c}\` is set by ShipIt in every plugin container, so a plugin cannot declare it as a credential`,
+        );
+      }
       credentials.push(c);
     }
   }
@@ -873,9 +934,17 @@ export function buildPluginReposSnapshot(
    * pure. Keyed onto `use` entries by alias, which is unique per project.
    */
   credentialGroups: readonly PluginCredentialGroup[] = [],
+  /**
+   * req 24 — per-plugin host needs, already resolved against the session's own
+   * egress allowlist by the caller (`orchestrator/plugin-hosts.ts`). Passed in
+   * for the reason `credentialGroups` is: allowance is a store read, and this
+   * projection stays pure. A declaration NEVER decides its own allowance.
+   */
+  hostGroups: readonly PluginHostGroup[] = [],
 ): PluginReposSnapshot {
   const selfExports = new Set(pluginExports.map((e) => e.name.toLowerCase()));
   const needsByAlias = new Map(credentialGroups.map((g) => [g.alias.toLowerCase(), g.credentials]));
+  const hostsByAlias = new Map(hostGroups.map((g) => [g.alias.toLowerCase(), g.hosts]));
 
   const repos: PluginRepoCardView[] = plugins.repos.map((repo) => {
     const isSelf = repo.source.kind === "self";
@@ -892,7 +961,23 @@ export function buildPluginReposSnapshot(
         alias: u.alias,
         found: manifest ? manifest.has(u.plugin.toLowerCase()) : null,
         credentials: needsByAlias.get(u.alias.toLowerCase()) ?? [],
+        hosts: hostsByAlias.get(u.alias.toLowerCase()) ?? [],
       }));
+
+    // What runs, and what the declaration says now. The card states the
+    // former (req 19 — the commit "being executed"); when they disagree and
+    // nothing is in flight to reconcile them, the difference is itself a fact
+    // the user needs, because their edit has not taken effect. Ordered first:
+    // a repository at the wrong version explains the selector, settings and
+    // command problems below it.
+    const declaredRef = isSelf ? null : declaredRefLabel(repo);
+    const issues: string[] = [];
+    if (live.ref && declaredRef && live.ref !== declaredRef && !live.activating) {
+      issues.push(
+        `Running \`${live.ref}\`; the declaration now says \`${declaredRef}\`. `
+        + `Run \`shipit plugin refresh ${repo.name}\` to move to it.`,
+      );
+    }
 
     // A phase-2 failure already says which selectors the declared version
     // lacks, so repeating it here would state one fact twice on the card
@@ -900,9 +985,11 @@ export function buildPluginReposSnapshot(
     // a selector the LIVE generation lacks when the attempt failed for some
     // other reason — a fetch failure plus a newly added selector, say.
     const named = new Set((live.missingSelectors ?? []).map((n) => n.toLowerCase()));
-    const issues = uses
-      .filter((u) => u.found === false && !named.has(u.plugin.toLowerCase()))
-      .map((u) => `\`${u.plugin}\` is not in this repository's \`exports.plugins\` manifest.`);
+    issues.push(
+      ...uses
+        .filter((u) => u.found === false && !named.has(u.plugin.toLowerCase()))
+        .map((u) => `\`${u.plugin}\` is not in this repository's \`exports.plugins\` manifest.`),
+    );
     // req 26 — a settings value that cannot take effect. Below the selector
     // problems: a plugin that is not there at all outranks one whose settings
     // are wrong.
@@ -923,7 +1010,9 @@ export function buildPluginReposSnapshot(
     return {
       name: repo.name,
       source: isSelf ? "self" : `${(repo.source as { owner: string }).owner}/${(repo.source as { repo: string }).repo}`,
-      ref: isSelf ? null : repo.pin ?? repo.branch ?? "default branch",
+      // The running generation's own ref, so the pair on the card comes from
+      // one record; the declared ref only when nothing is running.
+      ref: isSelf ? null : live.ref ?? declaredRef,
       commit: live.commit ?? null,
       status: cardStatus(isSelf, live),
       uses,

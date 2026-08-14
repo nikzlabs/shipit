@@ -77,7 +77,7 @@ import {
 } from "../plugin-generations.js";
 import { sessionStateDirForWorkspace } from "../session-state-dir.js";
 import { resolveShipitConfig, type ShipitConfig } from "../../shared/shipit-config.js";
-import { destinationKey, type DeclaredPluginRepo } from "../../shared/plugin-repos.js";
+import { destinationKey, declaredRefLabel, type DeclaredPluginRepo } from "../../shared/plugin-repos.js";
 import { readProjectServices } from "./plugin-services.js";
 
 export interface StagedGenerationGateDeps {
@@ -238,7 +238,7 @@ function substituteStaged(
     repoName: declaration.name,
     source: staged.source,
     commit: staged.commit,
-    ref: declaration.pin ? `pin ${declaration.pin}` : `branch ${declaration.branch ?? "(default)"}`,
+    ref: declaredRefLabel(declaration),
     activatedAt: new Date().toISOString(),
     exports: readGenerationManifestAt(staged.stagingDir).map((e) => e.name),
     manifestWarnings: [],

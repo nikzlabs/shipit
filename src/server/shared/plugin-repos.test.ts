@@ -9,6 +9,7 @@ import {
   parsePluginRepos,
   type PluginRepoRuntime,
 } from "./plugin-repos.js";
+import { PLUGIN_CONTRACT_ENV_NAMES } from "./plugin-contract.js";
 import { parseShipitConfig } from "./shipit-config.js";
 
 const NO_TRACKERS: DeclaredTracker[] = [];
@@ -290,6 +291,33 @@ describe("parsePluginExports", () => {
     expect(exportsList).toEqual([]);
     expect(warnings).toContainEqual(expect.stringContaining("bare hostnames"));
   });
+
+  // A name ShipIt itself sets in every plugin container. The check lives in the
+  // PARSER so both delivery surfaces inherit one answer — the compose surface
+  // drops such a name defensively while the CLI surface appends a duplicate
+  // `Env` entry whose resolution is unspecified — and so the plugin author is
+  // told at declaration time rather than the name being silently ignored on one
+  // surface and duplicated on the other.
+  it("refuses a credential named after a ShipIt contract variable", () => {
+    for (const name of PLUGIN_CONTRACT_ENV_NAMES) {
+      const warnings: string[] = [];
+      expect(parsePluginExports({ plugins: { p: { credentials: [name] } } }, warnings)).toEqual([]);
+      expect(warnings).toContainEqual(expect.stringContaining(name));
+      expect(warnings).toContainEqual(expect.stringContaining("`exports.plugins.p`"));
+    }
+  });
+
+  it("leaves an ordinary SHIPIT_-ish name alone — only the contract names are taken", () => {
+    // The reservation is the four names ShipIt sets, not a prefix land-grab: a
+    // plugin's own `SHIPIT_TOOL_TOKEN` collides with nothing.
+    const warnings: string[] = [];
+    const exportsList = parsePluginExports(
+      { plugins: { p: { credentials: ["SHIPIT_TOOL_TOKEN", "FAL_KEY"] } } },
+      warnings,
+    );
+    expect(exportsList[0]?.credentials).toEqual(["SHIPIT_TOOL_TOKEN", "FAL_KEY"]);
+    expect(warnings).toEqual([]);
+  });
 });
 
 describe("parseShipitConfig integration (docs/262)", () => {
@@ -354,12 +382,12 @@ describe("buildPluginReposSnapshot", () => {
     const tools = snapshot.repos.find((r) => r.name === "tools");
     expect(dev).toMatchObject({ source: "self", status: "self", ref: null });
     expect(dev?.uses).toEqual([
-      { plugin: "probe", alias: "probe", found: true, credentials: [] },
-      { plugin: "missing", alias: "gone", found: false, credentials: [] },
+      { plugin: "probe", alias: "probe", found: true, credentials: [], hosts: [] },
+      { plugin: "missing", alias: "gone", found: false, credentials: [], hosts: [] },
     ]);
     expect(dev?.issues).toHaveLength(1);
-    expect(tools).toMatchObject({ source: "nikzlabs/shipit", status: "unavailable", ref: "main", commit: null });
-    expect(tools?.uses).toEqual([{ plugin: "probe", alias: "remote", found: null, credentials: [] }]);
+    expect(tools).toMatchObject({ source: "nikzlabs/shipit", status: "unavailable", ref: "branch main", commit: null });
+    expect(tools?.uses).toEqual([{ plugin: "probe", alias: "remote", found: null, credentials: [], hosts: [] }]);
   });
 
   it("keeps only plugin/export-shaped warnings", () => {
@@ -468,6 +496,91 @@ describe("buildPluginReposSnapshot", () => {
         "authorization failed",
         "`p` is not in this repository's `exports.plugins` manifest.",
       ]);
+    });
+
+    // req 19 — "the repository, ref, and exact commit BEING EXECUTED". `ref`
+    // came from the declaration and `commit` from the live generation, so an
+    // edited declaration rendered `active` at a (ref, commit) pair no round
+    // ever produced. Seen in the dogfood instance, where a round needs an
+    // attached runner and an edit made with none never settles.
+    it("pairs the commit with the ref that produced it, never the declared one", () => {
+      const card = build({ tools: { commit: "abc123", exports: ["p"], ref: "pin v1.0.0" } });
+      expect(card).toMatchObject({ status: "active", ref: "pin v1.0.0", commit: "abc123" });
+    });
+
+    it("names the declared ref when nothing is running — there is nothing else to name", () => {
+      expect(build({}).ref).toBe("branch main");
+      expect(build({ tools: { activating: true } }).ref).toBe("branch main");
+    });
+
+    it("says so when the declaration has moved past what runs", () => {
+      // Not silence: the card shows what RUNS, so without this row the user's
+      // edit would appear to have taken effect (it shows the old ref) or to
+      // have vanished. It names the command that closes the gap.
+      const card = build({ tools: { commit: "abc123", exports: ["p"], ref: "branch next" } });
+      expect(card.status).toBe("active");
+      expect(card.ref).toBe("branch next");
+      expect(card.issues[0]).toContain("Running `branch next`");
+      expect(card.issues[0]).toContain("`branch main`");
+      expect(card.issues[0]).toContain("shipit plugin refresh tools");
+    });
+
+    it("stays quiet about the difference while a round is in flight", () => {
+      // `activating` is the framing that already covers this gap; a second
+      // message beside it would report a round in progress as a problem.
+      const card = build({ tools: { commit: "abc123", exports: ["p"], ref: "branch next", activating: true } });
+      expect(card.status).toBe("activating");
+      expect(card.issues).toEqual([]);
+    });
+  });
+
+  // docs/262 req 24 — the same projection for declared hosts, and the property
+  // the requirement is emphatic about: the declaration decides nothing.
+  describe("host needs projection", () => {
+    const declaration = {
+      repos: [{ repo: "a/b", name: "tools", branch: "main" }],
+      use: [
+        { plugin: "palette", from: "tools", alias: "artk" },
+        { plugin: "probe", from: "tools" },
+      ],
+    };
+    const build = (groups: Parameters<typeof buildPluginReposSnapshot>[6]) => {
+      const warnings: string[] = [];
+      const plugins = parsePluginRepos(declaration, NO_TRACKERS, warnings);
+      return buildPluginReposSnapshot(
+        plugins,
+        [],
+        null,
+        warnings,
+        { tools: { commit: "abc123", exports: ["palette", "probe"], ref: "branch main" } },
+        [],
+        groups,
+      ).repos[0];
+    };
+
+    it("attaches each group to its own use entry, by alias", () => {
+      const card = build([
+        { repo: "tools", plugin: "palette", alias: "artk", hosts: [{ host: "fal.run", allowed: false }] },
+      ]);
+      expect(card.uses[0]).toMatchObject({
+        alias: "artk",
+        hosts: [{ host: "fal.run", allowed: false }],
+      });
+      expect(card.uses[1]).toMatchObject({ alias: "probe", hosts: [] });
+    });
+
+    it("an unallowed host is a need, never an issue row", () => {
+      // A gap the user may close deliberately is not a malfunction of the
+      // version: the plugin is live and whole, one allowlist entry away.
+      const card = build([
+        { repo: "tools", plugin: "palette", alias: "artk", hosts: [{ host: "fal.run", allowed: false }] },
+      ]);
+      expect(card.status).toBe("active");
+      expect(card.issues).toEqual([]);
+    });
+
+    it("reports nothing when nothing has been resolved yet", () => {
+      expect(build([]).uses.every((u) => u.hosts.length === 0)).toBe(true);
     });
   });
 

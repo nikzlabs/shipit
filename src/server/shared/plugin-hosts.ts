@@ -1,0 +1,100 @@
+/**
+ * docs/262 req 24 — the external hosts each activated plugin declares, resolved
+ * against the session's own egress allowlist.
+ *
+ * A plugin manifest declares `hosts: [fal.run]` "so the user never has to
+ * reverse-engineer them from failing calls". The requirement is emphatic about
+ * what that declaration is worth: **it grants nothing.** Plugin services and
+ * companion CLIs reach exactly what equivalent same-repo code could reach under
+ * the session's user-managed egress configuration, and "a plugin declaration
+ * never widens a session's network reach by itself".
+ *
+ * Nothing in this module can widen anything: it takes an `isAllowed` predicate
+ * and returns a projection. Adding a host to the allowlist is a **deliberate
+ * user act** on the browser-only egress routes (`POST /api/egress/hosts`, which
+ * carries no `containerAccessible` flag, so plugin code cannot self-grant) —
+ * this module is only what makes the gap visible enough to act on.
+ *
+ * The shape is req 23's, because the requirement asks for it in those words:
+ * "the same visibility req 23 gives credentials". So the collector is the same
+ * walk (`plugin-needs.ts`), the group is keyed by the same alias, and an
+ * unallowed host reads as "`artk` needs `fal.run`" rather than as an anonymous
+ * blocked hostname. Filesystem-free, like its neighbours: the client imports
+ * these types.
+ */
+
+import { declaredPluginNeeds } from "./plugin-needs.js";
+import type { PluginExport, PluginReposConfig } from "./plugin-repos.js";
+
+/** One declared host and whether this session's egress configuration allows it. */
+export interface PluginHostNeed {
+  host: string;
+  /**
+   * True when the session can reach it today — because the session is not
+   * contained at all, or because the host matches its effective allowlist.
+   * False is the "not yet allowed" req 24 asks the session to show; it is a
+   * gap to grant, never a failure, and never something a declaration closed
+   * by itself.
+   */
+  allowed: boolean;
+}
+
+/** What one activated plugin declares, before allowance is known. */
+export interface PluginHostDeclaration {
+  /** Declared repo name (`plugins.repos[].name`) — which card this belongs to. */
+  repo: string;
+  /** The exported plugin's own name in that repository's manifest. */
+  plugin: string;
+  /** The consumer's alias — unique across the project, so it keys the group. */
+  alias: string;
+  /** Declared hostnames, in manifest order, de-duplicated. */
+  hosts: string[];
+}
+
+/** {@link PluginHostDeclaration} with each host resolved (req 24). */
+export interface PluginHostGroup {
+  repo: string;
+  plugin: string;
+  alias: string;
+  hosts: PluginHostNeed[];
+}
+
+/**
+ * Collect the hosts every activated plugin declares, from the LIVE manifest —
+ * so a refresh that adds a host is visible without recreating the session.
+ *
+ * `manifestFor` returns `null` for a repository with nothing live, and that is
+ * reported as nothing rather than as "needs no network": a repository whose
+ * version could not be read has not told us what it calls.
+ */
+export function declaredPluginHosts(
+  plugins: PluginReposConfig,
+  manifestFor: (repoName: string) => readonly PluginExport[] | null,
+): PluginHostDeclaration[] {
+  return declaredPluginNeeds(plugins, manifestFor, (e) => e.hosts).map((d) => ({
+    repo: d.repo,
+    plugin: d.plugin,
+    alias: d.alias,
+    hosts: d.values,
+  }));
+}
+
+/**
+ * Resolve declared hosts against what the session may actually reach.
+ *
+ * `isAllowed` is the session's own egress answer — never anything derived from
+ * the plugin declaration, which is the whole point of req 24's "grants
+ * nothing". The orchestrator half (`orchestrator/plugin-hosts.ts`) builds it
+ * from the same effective allowlist the Settings editor renders.
+ */
+export function resolvePluginHosts(
+  declarations: readonly PluginHostDeclaration[],
+  isAllowed: (host: string) => boolean,
+): PluginHostGroup[] {
+  return declarations.map((d) => ({
+    repo: d.repo,
+    plugin: d.plugin,
+    alias: d.alias,
+    hosts: d.hosts.map((host) => ({ host, allowed: isAllowed(host) })),
+  }));
+}

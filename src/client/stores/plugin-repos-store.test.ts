@@ -173,10 +173,92 @@ describe("tab gating and attention (plan §3)", () => {
       alias: "artk",
       found: true,
       credentials: [{ name: "FAL_KEY", satisfied }],
+      hosts: [],
     });
     // A closed tab may hide information, never a gap the user must close.
     expect(pluginsAttention(snapshot({ repos: [{ ...card, uses: [use(false)] }] }))).toBe(true);
     expect(pluginsAttention(snapshot({ repos: [{ ...card, uses: [use(true)] }] }))).toBe(false);
+  });
+
+  it("a declared host the session may not reach fires the dot (req 24)", () => {
+    const use = (allowed: boolean) => ({
+      plugin: "palette",
+      alias: "artk",
+      found: true,
+      credentials: [],
+      hosts: [{ host: "fal.run", allowed }],
+    });
+    expect(pluginsAttention(snapshot({ repos: [{ ...card, uses: [use(false)] }] }))).toBe(true);
+    expect(pluginsAttention(snapshot({ repos: [{ ...card, uses: [use(true)] }] }))).toBe(false);
+  });
+
+  it("a snapshot from an older client build has neither list and must not throw", () => {
+    // The store outlives a deploy: a cached response predating `hosts` (or
+    // `credentials`) reaches this predicate as `undefined`.
+    const legacy = { plugin: "p", alias: "p", found: true } as unknown as (typeof card)["uses"][number];
+    expect(pluginsAttention(snapshot({ repos: [{ ...card, uses: [legacy] }] }))).toBe(false);
+  });
+});
+
+// req 24's affordance: the grant is the USER's act on the USER's allowlist —
+// the existing browser-only egress route, at one of the two scopes the
+// requirement names. Nothing plugin-shaped, and nothing a declaration triggers.
+describe("allowHost", () => {
+  beforeEach(() => {
+    usePluginReposStore.setState({ snapshot: snapshot(), forSessionId: "sess-a" });
+    useSessionStore.setState({ sessionId: "sess-a" });
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    vi.restoreAllMocks();
+  });
+
+  const captureFetch = (grantResponse: Response): ReturnType<typeof vi.fn> => {
+    const impl = vi.fn(async (url: string) =>
+      url === "/api/egress/hosts"
+        ? grantResponse
+        : new Response(JSON.stringify(snapshot()), { status: 200 }),
+    );
+    globalThis.fetch = impl as unknown as typeof fetch;
+    return impl;
+  };
+
+  it("scopes a session grant to the session id and a global one to `global`", async () => {
+    const impl = captureFetch(new Response("{}", { status: 200 }));
+    await usePluginReposStore.getState().allowHost("fal.run", "session");
+    expect(JSON.parse(String(impl.mock.calls[0][1].body))).toEqual({ host: "fal.run", scope: "sess-a" });
+
+    impl.mockClear();
+    await usePluginReposStore.getState().allowHost("fal.run", "global");
+    expect(JSON.parse(String(impl.mock.calls[0][1].body))).toEqual({ host: "fal.run", scope: "global" });
+  });
+
+  it("refetches the snapshot afterwards, so the card stops naming a closed gap", async () => {
+    const impl = captureFetch(new Response("{}", { status: 200 }));
+    await usePluginReposStore.getState().allowHost("fal.run", "session");
+    expect(impl.mock.calls.map((c) => c[0])).toEqual([
+      "/api/egress/hosts",
+      "/api/plugin-repos?sessionId=sess-a",
+    ]);
+  });
+
+  it("refetches on failure too, and rethrows", async () => {
+    // `POST /api/egress/hosts` answers 503 for "saved, but the live refresh
+    // failed closed" — the host may be allowed even though the call failed, so
+    // the card must be re-read rather than left asserting the old answer.
+    const impl = captureFetch(new Response("{}", { status: 503 }));
+    await expect(usePluginReposStore.getState().allowHost("fal.run", "session")).rejects.toThrow();
+    expect(impl.mock.calls.map((c) => c[0])).toContain("/api/plugin-repos?sessionId=sess-a");
+  });
+
+  it("does nothing without a session or a host", async () => {
+    const impl = captureFetch(new Response("{}", { status: 200 }));
+    usePluginReposStore.setState({ forSessionId: null });
+    await usePluginReposStore.getState().allowHost("fal.run", "session");
+    usePluginReposStore.setState({ forSessionId: "sess-a" });
+    await usePluginReposStore.getState().allowHost("   ", "global");
+    expect(impl).not.toHaveBeenCalled();
   });
 });
 

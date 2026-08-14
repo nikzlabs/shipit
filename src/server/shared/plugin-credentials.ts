@@ -33,6 +33,7 @@
  * container's environment one answer instead of two.
  */
 
+import { declaredPluginNeeds } from "./plugin-needs.js";
 import type { PluginExport, PluginReposConfig } from "./plugin-repos.js";
 
 /** One declared credential name and whether this project has a value for it. */
@@ -91,45 +92,23 @@ export interface PluginCredentialGroup {
 /**
  * Collect the credential names every activated plugin declares.
  *
- * `manifestFor` returns a repository's live manifest, or `null` when there is
- * none to read yet — a tracked repository that has never activated. `null` is
- * deliberately NOT "declares no credentials": the card reports that repository
- * as unavailable, and inventing an empty needs list there would turn a
- * fetch failure into a silent "nothing required" (req 13).
- *
- * A `use` entry whose selector names no exported plugin is skipped for the
- * same reason — the card already says the selector is missing, and a needs
- * list assembled from a plugin that does not exist would be fiction.
+ * The walk itself is {@link declaredPluginNeeds}, shared with req 24's host
+ * needs: `null` from `manifestFor` means "not knowable yet" and reports
+ * nothing (never "needs nothing" — req 13), and a `use` entry whose selector
+ * names no exported plugin is skipped because the card already says the
+ * selector is missing. Two copies of those rules is how one surface starts
+ * calling an unread manifest "satisfied".
  */
 export function declaredPluginCredentials(
   plugins: PluginReposConfig,
   manifestFor: (repoName: string) => readonly PluginExport[] | null,
 ): PluginCredentialDeclaration[] {
-  const declarations: PluginCredentialDeclaration[] = [];
-
-  for (const repo of plugins.repos) {
-    const uses = plugins.uses.filter((u) => u.from.toLowerCase() === repo.name.toLowerCase());
-    if (uses.length === 0) continue;
-
-    const manifest = manifestFor(repo.name);
-    if (!manifest) continue;
-
-    const byName = new Map(manifest.map((e) => [e.name.toLowerCase(), e]));
-    for (const use of uses) {
-      const exported = byName.get(use.plugin.toLowerCase());
-      if (!exported) continue;
-
-      const credentials = [...new Set(exported.credentials)];
-      if (credentials.length === 0) continue;
-      declarations.push({
-        repo: repo.name,
-        plugin: exported.name,
-        alias: use.alias,
-        credentials,
-      });
-    }
-  }
-  return declarations;
+  return declaredPluginNeeds(plugins, manifestFor, (e) => e.credentials).map((d) => ({
+    repo: d.repo,
+    plugin: d.plugin,
+    alias: d.alias,
+    credentials: d.values,
+  }));
 }
 
 /**
