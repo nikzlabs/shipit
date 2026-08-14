@@ -74,8 +74,10 @@ export const usePluginReposStore = create<PluginReposState>((set, get) => ({
    * to anything plugin-shaped — req 24 is explicit that a plugin declaration
    * never widens reach by itself, so the grant has to be the same user act, on
    * the same allowlist, that a user without plugins performs. That route is
-   * browser-only (no `containerAccessible`), which is what keeps plugin code
-   * from self-granting.
+   * denied to session containers (no `containerAccessible`), so no plugin
+   * service, companion CLI or agent can call it. What that does NOT cover is
+   * any page the user's browser loads, which today's API cannot tell from the
+   * user — planning#370, and see `shared/plugin-hosts.ts`.
    *
    * The snapshot is refetched afterwards **on every outcome, including a
    * failed one**: `POST /api/egress/hosts` answers 503 for "saved, but the live

@@ -10,10 +10,17 @@
  * never widens a session's network reach by itself".
  *
  * Nothing in this module can widen anything: it takes an `isAllowed` predicate
- * and returns a projection. Adding a host to the allowlist is a **deliberate
- * user act** on the browser-only egress routes (`POST /api/egress/hosts`, which
- * carries no `containerAccessible` flag, so plugin code cannot self-grant) —
- * this module is only what makes the gap visible enough to act on.
+ * and returns a projection. Adding a host to the allowlist happens on the
+ * existing egress routes, which carry no `containerAccessible` flag, so nothing
+ * running **in a session container** — a plugin service, a companion CLI, the
+ * agent — can call them (`api-container-guard.ts` default-deny, planning#131).
+ * This module is only what makes the gap visible enough to act on.
+ *
+ * **What that boundary does not cover** (planning#370): the orchestrator has no
+ * origin or CSRF check and reflects any `Origin` with credentials, so any page
+ * the user's browser loads can both call and read `/api/*`. Platform-wide,
+ * predating this feature, and not closable by any plugin-local design. Stated
+ * here so nothing in this slice is built on the stronger claim.
  *
  * The shape is req 23's, because the requirement asks for it in those words:
  * "the same visibility req 23 gives credentials". So the collector is the same

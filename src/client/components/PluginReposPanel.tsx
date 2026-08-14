@@ -108,7 +108,15 @@ function PluginRepoCard({
         {/* req 19 — the repo identity stays visible in every card state. */}
         <Chip mono>{isSelf ? "self · live working tree" : repo.source}</Chip>
         {!isSelf && (
-          <Chip mono>{`${repo.ref ?? "default branch"} @ ${repo.commit ? repo.commit.slice(0, 9) : "—"}`}</Chip>
+          // A live generation always has a commit; it has a ref unless its
+          // record predates ShipIt recording one, and then the commit stands
+          // alone rather than borrowing the declared ref (req 19 — the pair has
+          // to be one a round produced).
+          <Chip mono>
+            {repo.ref
+              ? `${repo.ref} @ ${repo.commit ? repo.commit.slice(0, 9) : "—"}`
+              : repo.commit?.slice(0, 9) ?? "—"}
+          </Chip>
         )}
         {statusLabel ? (
           <Chip tone={repo.status === "unavailable" ? "error" : "warn"}>{statusLabel}</Chip>

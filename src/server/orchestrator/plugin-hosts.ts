@@ -12,43 +12,55 @@
  * code could reach under the session's user-managed egress configuration, and
  * a plugin declaration never widens a session's network reach by itself."
  *
- * So this module reads two things and writes nothing. {@link
- * pluginHostAllowance} composes its answer from the very same inputs the
- * Settings → Network egress editor renders (`buildEffectiveAllowlist`) plus
- * the live allow-once policy the Tier C proxy consults (`egress-policy.ts`) —
- * never from the manifest. Granting is elsewhere and is a deliberate user act:
- * `POST /api/egress/hosts`, which carries no `containerAccessible` flag, so
- * plugin code cannot self-grant (planning#131's default-deny).
+ * So this module reads two things and writes nothing. Granting is elsewhere and
+ * is a deliberate user act on the browser-only egress routes.
  *
- * ## Why containment gates the whole answer
+ * ## The allowance comes from the seam that configures enforcement
  *
- * "Not yet allowed" is only a fact about a session whose egress is contained.
- * An Open session — or a deployment with no egress enforcement — reaches every
- * host, and reporting a declared host as blocked there would send the user to
- * grant something that was never denied. `ContainerSessionManager.
- * isEgressContained` is the one honest answer to "is this session contained
- * right now?": it folds in whether enforcement is deployed at all and what the
- * LIVE container was started with, and the plugin-repos route already computes
- * it for the compose-validation rule set. The same value gates this.
+ * {@link pluginHostAllowance} answers from the session's own
+ * `ResolvedEgressConfig` — the exact `base` + `extraHosts` pair the Tier B
+ * resolver and the Tier C SNI proxy are launched with
+ * (`buildProxyAllowed`) — plus the allow-once policy, which is what the
+ * proxy's decision endpoint answers with for a host outside that static set.
+ *
+ * Re-deriving that composition from the allowlist store instead is the thing
+ * NOT to do, and the first review of this slice caught why: a docs/211 sandbox
+ * with `network` OFF runs on the lifeline base with an EMPTY extras list, so a
+ * store-derived answer reported hosts as reachable that that session cannot
+ * reach at all. One seam, one answer.
+ *
+ * Containment itself is asked separately, of `isEgressContained`: that is the
+ * boot-effective truth (does this deployment enforce at all, and what did the
+ * LIVE container start with), where the config's own `contained` is only the
+ * policy. An Open session denies nothing, so nothing there is "not yet
+ * allowed" — naming a gap would send the user to grant what was never blocked.
  *
  * ## What this cannot see, stated rather than left implied
  *
- * Allowance is evaluated against the session's allowlist — the one the agent
- * container and (since docs/263) every contained Compose service share, plugin
- * services included, because they take the same `containComposeServices` path.
- * A companion-CLI **invocation** container does not: it joins its own
- * `shipit-plugin-cli` bridge (`plugin-container.ts`) with no firewall,
- * resolver or proxy installed, so it is not contained by this allowlist at
- * all. That is a gap in req 24's enforcement half, not in this report; the row
- * therefore names the plugin that declared the host and what the session's
- * allowlist says, and does not claim a call was blocked.
+ * Two divergences between "the configuration permits it" and "the call will
+ * succeed", both recorded because the honest report is narrower than it looks:
+ *
+ *  - A **companion-CLI invocation** container joins its own
+ *    `shipit-plugin-cli` bridge (`plugin-container.ts`) with no firewall,
+ *    resolver or proxy installed, so it is not bound by this allowlist at all.
+ *    That is a gap in req 24's enforcement half, not in this report.
+ *  - An **instance-scoped** grant applies to the running resolver and proxy
+ *    only at the next container start (`api-routes-egress.ts` reloads for a
+ *    session-scoped add alone), though the proxy's decision endpoint honours it
+ *    live for a host outside the static set.
+ *
+ * The card therefore says a host is not in the session's egress allowlist, not
+ * that a call was blocked, and the instance-scope button says when it takes
+ * effect.
  */
 
-import { buildEffectiveAllowlist, hostMatchesEntry, normalizeHost } from "./egress-allowlist.js";
-import { EGRESS_GLOBAL_SCOPE } from "./egress-allowlist-store.js";
-import type { EgressAllowlistStore } from "./egress-allowlist-store.js";
+import {
+  EGRESS_DEFAULT_ALLOWLIST,
+  hostMatchesEntry,
+  normalizeHost,
+  type ResolvedEgressConfig,
+} from "./egress-allowlist.js";
 import { isEgressHostAllowed } from "./egress-policy.js";
-import type { CredentialStore } from "./credential-store.js";
 import { declaredPluginHosts, type PluginHostDeclaration } from "../shared/plugin-hosts.js";
 import type { PluginExport, PluginReposConfig } from "../shared/plugin-repos.js";
 import { liveManifestReader } from "./plugin-credentials.js";
@@ -79,60 +91,45 @@ export function pluginHostDeclarationsFor(
 }
 
 export interface PluginHostAllowanceInput {
-  /** The durable user allowlist (global + per-session). Absent in runtimes with no egress wiring. */
-  store?: EgressAllowlistStore | undefined;
-  /** Live MCP server hosts — reachable, so a plugin declaring one is not blocked. */
-  credentialStore?: CredentialStore | undefined;
-  sessionId?: string | undefined;
   /**
    * Whether this session's egress is contained right now
    * (`ContainerSessionManager.isEgressContained`). False means nothing is
    * denied, so nothing is "not yet allowed".
    */
   contained: boolean;
+  /**
+   * The session's resolved egress config
+   * (`ContainerSessionManager.resolveEgress`) — the same `base` + `extraHosts`
+   * the proxy is launched with. Absent in a runtime with no resolver wired.
+   */
+  config?: ResolvedEgressConfig | undefined;
+  /** Scopes the allow-once lookup; without it that layer is simply not counted. */
+  sessionId?: string | undefined;
 }
 
 /**
  * The predicate {@link import("../shared/plugin-hosts.js").resolvePluginHosts}
- * resolves declared hosts against.
+ * resolves declared hosts against — never anything derived from the manifest,
+ * which is the whole point of req 24's "grants nothing".
  *
- * Composed from exactly what a contained session can reach:
- *
- *  - the **effective allowlist** — built-in defaults minus the ones the user
- *    removed, operator extras (`SESSION_EGRESS_ALLOWLIST`), live MCP hosts,
- *    and the durable global + per-session user entries. This is the static set
- *    the resolver pins and the proxy splices, and the same view the Settings
- *    editor shows, so the card and that editor cannot disagree.
- *  - the **allow-once policy** for this session, which is what the proxy's own
- *    decision endpoint answers with for a host outside that static set. A host
- *    the user approved on an inline card is reachable, and a plugin row
- *    claiming otherwise would offer to grant something already granted.
- *
- * Fails closed on an unreadable store, for the reason
+ * Fails closed on a contained session with no resolved config, for the reason
  * `loadSatisfiedPluginCredentialNames` does: "not knowable" must render as the
- * visible gap req 24 asks for, never as satisfied. The cost of being wrong
- * that way is one redundant, idempotent grant; the cost of the other way is a
- * plugin that fails at runtime with the card saying nothing.
+ * visible gap req 24 asks for, never as satisfied. The cost of being wrong that
+ * way is one redundant, idempotent grant; the cost of the other way is a plugin
+ * that fails at runtime with the card saying nothing.
  */
 export function pluginHostAllowance(
   input: PluginHostAllowanceInput,
 ): (host: string) => boolean {
-  // An Open session (or a deployment that does not enforce containment) denies
-  // nothing, so there is no gap to show and nothing to grant.
   if (!input.contained) return () => true;
 
   const sessionId = input.sessionId;
-  let entries: string[];
-  try {
-    entries = buildEffectiveAllowlist({
-      ...(input.credentialStore ? { credentialStore: input.credentialStore } : {}),
-      globalHosts: input.store?.listHosts(EGRESS_GLOBAL_SCOPE) ?? [],
-      sessionHosts: input.store && sessionId ? input.store.listHosts(sessionId) : [],
-      suppressedDefaults: input.store?.listSuppressedDefaults() ?? [],
-    }).map((e) => e.host);
-  } catch {
-    entries = [];
-  }
+  // Exactly `buildProxyAllowed`'s composition. `base` is omitted by a config
+  // that means "the full default list"; a Network-off sandbox narrows it, and a
+  // user who removed a built-in default has it removed here too.
+  const entries = input.config
+    ? [...(input.config.base ?? EGRESS_DEFAULT_ALLOWLIST), ...input.config.extraHosts].map(normalizeHost)
+    : [];
 
   return (host: string): boolean => {
     const h = normalizeHost(host);

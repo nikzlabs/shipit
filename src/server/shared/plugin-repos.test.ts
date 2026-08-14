@@ -513,24 +513,24 @@ describe("buildPluginReposSnapshot", () => {
       expect(build({ tools: { activating: true } }).ref).toBe("branch main");
     });
 
-    it("says so when the declaration has moved past what runs", () => {
-      // Not silence: the card shows what RUNS, so without this row the user's
-      // edit would appear to have taken effect (it shows the old ref) or to
-      // have vanished. It names the command that closes the gap.
+    it("shows the running ref even when the declaration has moved past it", () => {
+      // And says nothing else about the difference: the `activating` /
+      // `degraded` framing covers the gap, and a "your declaration has moved"
+      // row cannot be told apart from a ref that legitimately resolves to the
+      // live commit — activation short-circuits to `unchanged` there and leaves
+      // the record's ref alone, so such a row would never clear (review
+      // finding). Distinguishing them needs a network resolve plan §3 rules out.
       const card = build({ tools: { commit: "abc123", exports: ["p"], ref: "branch next" } });
-      expect(card.status).toBe("active");
-      expect(card.ref).toBe("branch next");
-      expect(card.issues[0]).toContain("Running `branch next`");
-      expect(card.issues[0]).toContain("`branch main`");
-      expect(card.issues[0]).toContain("shipit plugin refresh tools");
+      expect(card).toMatchObject({ status: "active", ref: "branch next", commit: "abc123" });
+      expect(card.issues).toEqual([]);
     });
 
-    it("stays quiet about the difference while a round is in flight", () => {
-      // `activating` is the framing that already covers this gap; a second
-      // message beside it would report a round in progress as a problem.
-      const card = build({ tools: { commit: "abc123", exports: ["p"], ref: "branch next", activating: true } });
-      expect(card.status).toBe("activating");
-      expect(card.issues).toEqual([]);
+    it("a live generation with no recorded ref reports the commit alone", () => {
+      // The record is parsed with an unchecked cast, so this shape is
+      // reachable. Falling back to the DECLARED ref here would rebuild exactly
+      // the ref/commit pair no round produced (review finding).
+      const card = build({ tools: { commit: "abc123", exports: ["p"] } });
+      expect(card).toMatchObject({ status: "active", ref: null, commit: "abc123" });
     });
   });
 

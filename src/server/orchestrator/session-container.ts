@@ -518,6 +518,24 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     return sc?.egressContainedAtStart ?? this.resolveEgressConfig?.(sessionId)?.contained ?? true;
   }
 
+  /**
+   * The session's resolved egress config — the very inputs a contained
+   * session's resolver and SNI proxy are launched with (base allowlist minus
+   * removed defaults, plus operator/MCP/durable extras; or the docs/211
+   * lifeline set for a Network-off sandbox).
+   *
+   * Exposed so a READER can answer "can this session reach host X?" from the
+   * same seam that configures the enforcement, rather than re-deriving the
+   * composition from the store and drifting from it. docs/262 req 24's Plugins
+   * card is the first such reader: re-deriving it would, among other things,
+   * have reported a Network-off sandbox against the full default base, which is
+   * not the base that session runs on. Answers `undefined` when no resolver is
+   * wired (test runtimes).
+   */
+  resolveEgress(sessionId: string): ResolvedEgressConfig | undefined {
+    return this.resolveEgressConfig?.(sessionId);
+  }
+
   isEgressDnsContained(sessionId: string): boolean {
     return this.isEgressContained(sessionId) && egressDnsEnabled();
   }

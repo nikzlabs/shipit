@@ -210,10 +210,15 @@ export async function registerPluginRepoRoutes(
         const hostGroups = resolvePluginHosts(
           pluginHostDeclarationsFor(config.plugins, config.pluginExports, live),
           pluginHostAllowance({
-            store: deps.egressAllowlistStore,
-            credentialStore: deps.credentialStore,
-            sessionId: request.query.sessionId,
             contained: containEgress,
+            // The same seam the resolver and SNI proxy are configured from, so
+            // the card cannot answer from a composition the session does not
+            // actually run on (a Network-off sandbox is the case that made this
+            // a correctness matter rather than a tidiness one).
+            ...(request.query.sessionId
+              ? { config: deps.containerManager?.resolveEgress(request.query.sessionId) }
+              : {}),
+            sessionId: request.query.sessionId,
           }),
         );
         return buildPluginReposSnapshot(

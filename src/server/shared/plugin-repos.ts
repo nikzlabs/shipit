@@ -964,20 +964,23 @@ export function buildPluginReposSnapshot(
         hosts: hostsByAlias.get(u.alias.toLowerCase()) ?? [],
       }));
 
-    // What runs, and what the declaration says now. The card states the
-    // former (req 19 — the commit "being executed"); when they disagree and
-    // nothing is in flight to reconcile them, the difference is itself a fact
-    // the user needs, because their edit has not taken effect. Ordered first:
-    // a repository at the wrong version explains the selector, settings and
-    // command problems below it.
+    // The declared ref is what the card names only when nothing is running —
+    // there is nothing else to name then. Whenever a generation IS live, both
+    // the ref and the commit come from its record, so the pair on the card is
+    // one a round actually produced (req 19).
+    //
+    // **No "your declaration has moved" row.** An earlier revision added one
+    // and it was wrong in a way that could not be cleared: activation
+    // short-circuits to `unchanged` when the declared ref resolves to the SHA
+    // already live (`plugin-generations.ts`), deliberately leaving the record's
+    // `ref` as it was — so `branch main` → `pin <that same sha>`, or a branch
+    // re-pointed to the same commit, would flag a mismatch forever and the
+    // refresh the row told you to run would repeat the same short-circuit.
+    // Telling the two apart needs the declared ref RESOLVED, which is a network
+    // round-trip plan §3 rules out ("no commits-behind badge"). The gap the row
+    // was for is the one the `activating` / `degraded` framing already covers.
     const declaredRef = isSelf ? null : declaredRefLabel(repo);
     const issues: string[] = [];
-    if (live.ref && declaredRef && live.ref !== declaredRef && !live.activating) {
-      issues.push(
-        `Running \`${live.ref}\`; the declaration now says \`${declaredRef}\`. `
-        + `Run \`shipit plugin refresh ${repo.name}\` to move to it.`,
-      );
-    }
 
     // A phase-2 failure already says which selectors the declared version
     // lacks, so repeating it here would state one fact twice on the card
@@ -1012,7 +1015,14 @@ export function buildPluginReposSnapshot(
       source: isSelf ? "self" : `${(repo.source as { owner: string }).owner}/${(repo.source as { repo: string }).repo}`,
       // The running generation's own ref, so the pair on the card comes from
       // one record; the declared ref only when nothing is running.
-      ref: isSelf ? null : live.ref ?? declaredRef,
+      //
+      // A live generation whose record carries NO ref reports none — the
+      // commit stands alone. Falling back to the declared ref there would
+      // recreate exactly the pair this change removes (a declared ref beside a
+      // commit it never produced), silently and for the one record shape
+      // nobody can vouch for, since `readGenerationRecordAt` parses with an
+      // unchecked cast (review finding).
+      ref: isSelf ? null : live.commit ? live.ref ?? null : declaredRef,
       commit: live.commit ?? null,
       status: cardStatus(isSelf, live),
       uses,
