@@ -41,16 +41,17 @@ export function EgressPromptCard({ cardId, onDecide }: EgressPromptCardProps) {
           ? "Allowed once"
           : "Denied";
     const Icon = phase === "denied" ? ProhibitIcon : CheckCircleIcon;
-    const tone = phase === "denied" ? "text-gray-400" : "text-emerald-400";
+    const tone =
+      phase === "denied" ? "text-(--color-text-tertiary)" : "text-(--color-success)";
     return (
       <div
         data-testid="egress-prompt-card"
-        className="rounded-lg border border-gray-800 bg-gray-900/60 px-3 py-2 text-sm text-gray-300"
+        className="rounded-lg border border-(--color-border-primary) bg-(--color-bg-tertiary) px-3 py-2 text-sm text-(--color-text-secondary)"
       >
         <span className={`inline-flex items-center gap-1.5 ${tone}`}>
           <Icon size={ICON_SIZE.SM} weight="fill" />
           {label}
-          <span className="text-gray-500">· {host}</span>
+          <span className="text-(--color-text-tertiary)">· {host}</span>
         </span>
       </div>
     );
@@ -59,16 +60,22 @@ export function EgressPromptCard({ cardId, onDecide }: EgressPromptCardProps) {
   return (
     <div
       data-testid="egress-prompt-card"
-      className="rounded-lg border border-amber-700/50 bg-amber-950/20 px-4 py-3"
+      className="rounded-lg border border-(--color-warning)/40 bg-(--color-warning-subtle) px-4 py-3"
     >
       <div className="flex items-start gap-2.5">
-        <ShieldWarningIcon size={ICON_SIZE.MD} weight="fill" className="mt-0.5 shrink-0 text-amber-400" />
+        <ShieldWarningIcon
+          size={ICON_SIZE.MD}
+          weight="fill"
+          className="mt-0.5 shrink-0 text-(--color-warning)"
+        />
         <div className="min-w-0 flex-1">
-          <div className="text-sm font-medium text-gray-100">Egress blocked</div>
-          <div className="mt-0.5 text-sm text-gray-300">
+          <div className="text-sm font-medium text-(--color-text-primary)">Egress blocked</div>
+          <div className="mt-0.5 text-sm text-(--color-text-secondary)">
             The agent tried to reach{" "}
-            <code className="rounded bg-gray-800 px-1 py-0.5 text-amber-200">{host}</code>, which is
-            not on the egress allowlist.
+            <code className="rounded bg-(--color-bg-tertiary) px-1 py-0.5 font-mono text-(--color-text-primary)">
+              {host}
+            </code>
+            , which is not on the egress allowlist.
           </div>
           <div className="mt-3 flex flex-wrap gap-2">
             <Button onClick={() => onDecide?.(cardId, host, "allow-once")}>Allow once</Button>
