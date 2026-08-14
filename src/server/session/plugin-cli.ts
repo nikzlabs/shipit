@@ -29,10 +29,9 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { CONTAINER_PLUGIN_STORE_DIR } from "../shared/fs-constants.js";
 import { CONTAINER_PLUGIN_BIN_DIR } from "../shared/plugin-contract.js";
 import { planPluginCommands, type SurfacedPluginCommand } from "../shared/plugin-cli.js";
-import type { PluginExport, PluginReposConfig } from "../shared/plugin-repos.js";
+import type { DeclaredPluginRepo, PluginExport, PluginReposConfig } from "../shared/plugin-repos.js";
 import { getErrorMessage } from "../shared/utils.js";
 import { readCheckoutExports } from "./plugin-skills.js";
 
@@ -85,8 +84,23 @@ export interface PreparePluginCommandsOptions {
   plugins: PluginReposConfig;
   /** The project's OWN manifest, for `repo: self` imports (req 27). */
   selfExports: readonly PluginExport[];
+  /**
+   * The concrete generation directory a declared repository may expose, or
+   * `null` when it has none this session is allowed to use.
+   *
+   * Supplied by the caller rather than resolved here, and that is the whole
+   * point: `preparePlugins` runs the links, the skills and these commands in
+   * ONE pass, and a repository must not be a different generation — or a
+   * different REPOSITORY — in one half than in another. This half used to
+   * resolve `<store>/<name>/active` itself and read the manifest through the
+   * unresolved link, which meant it could name commands from a generation the
+   * other halves had already refused (and, before an activation round retires
+   * it, from a repository the declaration no longer points at). The caller
+   * resolves once, checks the generation's recorded source against the
+   * declaration, and hands the answer down.
+   */
+  checkoutFor: (repo: DeclaredPluginRepo) => string | null;
   binDir?: string;
-  storeDir?: string;
   shimPath?: string;
   /** PATH to probe for collisions. Defaults to the worker's own. */
   pathEnv?: string;
@@ -100,7 +114,6 @@ export function preparePluginCommands(
   opts: PreparePluginCommandsOptions,
 ): PluginCommandPrepareResult {
   const binDir = opts.binDir ?? CONTAINER_PLUGIN_BIN_DIR;
-  const storeDir = opts.storeDir ?? CONTAINER_PLUGIN_STORE_DIR;
   const shimPath = opts.shimPath ?? DEFAULT_SHIM_PATH;
   const result: PluginCommandPrepareResult = {
     commands: [], removed: [], refused: [], failed: [],
@@ -112,7 +125,7 @@ export function preparePluginCommands(
   // rewrote PATH between the two.
   ensureOnPath(binDir);
 
-  const plan = buildPlan(opts, storeDir, binDir);
+  const plan = buildPlan(opts, binDir);
   for (const [repo, issues] of plan.issues) {
     result.refused.push(...issues.map((reason) => ({ repo, reason })));
   }
@@ -157,7 +170,6 @@ export function preparePluginCommands(
  */
 function buildPlan(
   opts: PreparePluginCommandsOptions,
-  storeDir: string,
   binDir: string,
 ): ReturnType<typeof planPluginCommands> {
   const declared = new Map(opts.plugins.repos.map((r) => [r.name.toLowerCase(), r]));
@@ -172,7 +184,7 @@ function buildPlan(
           ? []
           : repo.source.kind === "self"
             ? [...opts.selfExports]
-            : readCheckoutExports(activeCheckout(storeDir, repo.name)),
+            : readCheckoutExports(opts.checkoutFor(repo)),
       );
     }
     return manifests.get(repoKey)!;
@@ -198,33 +210,6 @@ function buildPlan(
       describeTaken: (name) => `\`${takenBy.get(name) ?? name}\``,
     },
   );
-}
-
-/**
- * Resolve a declared repository's live generation to a CONCRETE directory, once.
- *
- * `active` is a symlink an activation round re-points, so handing back the link
- * unresolved leaves every later read following it again — and a refresh landing
- * between two of them yields one prepare result describing two generations.
- * One `realpathSync` and no preceding `existsSync`: the missing-link case is
- * the exception branch precisely so the check and the read cannot straddle a
- * swap. With the memo in {@link buildPlan}, that is one resolution per declared
- * repository per pass.
- *
- * Whether the generation it lands on came from the repository the declaration
- * NOW names is a separate axis, and it is deliberately not checked here: the
- * generation record lives in the orchestrator's tree, which
- * `src/server/session/` never imports. The container side is guarded instead by
- * activation clearing `active` for a re-pointed declaration before it fetches —
- * which is why that retirement is load-bearing here rather than redundant with
- * the orchestrator's own reader checks.
- */
-function activeCheckout(storeDir: string, repoName: string): string | null {
-  try {
-    return fs.realpathSync(path.join(storeDir, repoName, "active"));
-  } catch {
-    return null;
-  }
 }
 
 /**

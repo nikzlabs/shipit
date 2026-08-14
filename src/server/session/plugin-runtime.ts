@@ -22,6 +22,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { CONTAINER_PLUGINS_DIR, CONTAINER_PLUGIN_STORE_DIR } from "../shared/fs-constants.js";
+import { readPluginGenerationRecord } from "../shared/plugin-generation-record.js";
+import { destinationKey, type DeclaredPluginRepo } from "../shared/plugin-repos.js";
 import { resolveShipitConfig } from "../shared/shipit-config.js";
 import { getErrorMessage } from "../shared/utils.js";
 import { ensureGitExcludedBlock } from "../shared/git.js";
@@ -110,6 +112,19 @@ export function preparePlugins(opts: PreparePluginsOptions): PluginPrepareResult
   const config = resolveShipitConfig(opts.workspaceDir);
   const wanted = new Set<string>();
 
+  // ONE verified resolution per declared repository, shared by every half of
+  // this pass. Both properties it carries are per-pass properties, so they have
+  // to be established once and handed down rather than re-derived: a second
+  // resolution can land in a different generation, and a half that skips the
+  // identity check exposes what the others refused. Splitting this between the
+  // links, the skills and the commands is exactly how the pass came to describe
+  // two generations at once before.
+  const live = new Map<string, string | null>();
+  const liveDir = (repo: DeclaredPluginRepo): string | null => {
+    if (!live.has(repo.name)) live.set(repo.name, resolveLiveGeneration(storeDir, repo));
+    return live.get(repo.name) ?? null;
+  };
+
   for (const repo of config.plugins.repos) {
     // `repo: self` runs the live working tree and has no generation (req 27);
     // its consumer-path parity is its own piece of work.
@@ -117,18 +132,18 @@ export function preparePlugins(opts: PreparePluginsOptions): PluginPrepareResult
     wanted.add(repo.name);
 
     const target = path.join(storeDir, repo.name, "active");
-    if (!fs.existsSync(target)) {
+    if (liveDir(repo) === null) {
       result.missing.push(repo.name);
-      // A live generation this session already linked can go away while the
-      // declaration still names the repository — re-pointing a `repos:` entry
-      // retires what the PREVIOUS repository left, before the fetch that may
-      // then fail. `removeStaleLinks` does not cover that: the name is still
-      // declared, so it is not stale. Left alone, `/plugins/<name>` survives as
-      // a dangling link and the agent is shown a path that lists but cannot be
-      // read — presence claiming a plugin the card is simultaneously reporting
-      // as unavailable (req 13). Dropping it is safe because the next prepare
-      // re-links as soon as a generation is published, and every activation
-      // round and container start fires one.
+      // A generation this session already linked can stop being exposable while
+      // the declaration still names the repository — retired mid-refresh, or
+      // re-pointed so that what is live belongs to the PREVIOUS repository.
+      // `removeStaleLinks` does not cover either: the name is still declared,
+      // so it is not stale. Left alone, `/plugins/<name>` keeps resolving to a
+      // tree this declaration does not name, or survives dangling and lists
+      // while being unreadable — presence claiming a plugin the card is
+      // simultaneously reporting as unavailable (req 13). Dropping it is safe
+      // because the next prepare re-links as soon as an owned generation is
+      // published, and every activation round and container start fires one.
       removeDeadLink(pluginsDir, repo.name, target);
       continue;
     }
@@ -152,33 +167,17 @@ export function preparePlugins(opts: PreparePluginsOptions): PluginPrepareResult
   // resolve through the declaration rather than trusting the `use` entry's
   // case, which silently found nothing on a case-sensitive filesystem (review
   // finding).
-  const declaredNames = new Map(config.plugins.repos.map((r) => [r.name.toLowerCase(), r.name]));
-  // `active` is followed ONCE per pass, and the concrete generation directory
-  // is what travels from here on (sibling finding, docs/262). Publishing swaps
-  // that symlink atomically, so following it repeatedly means one pass can
-  // straddle a refresh: the manifest comes from generation A while the skills
-  // directory resolves in B. `containedRealPath` made that worse than a torn
-  // copy — it resolves base and target independently, so a swap between those
-  // two calls left the base in B and the target in A and reported the plugin as
-  // "resolving outside the plugin checkout", a security-shaped message for a
-  // benign refresh. Pinning makes a pass describe exactly one generation; the
-  // next prepare (which every activation round fires) brings the newer one.
-  //
-  // This pins only the READ side. `/plugins/<name>` still points at the
-  // unresolved `active` path on purpose, so a new generation is visible to the
-  // agent with no re-link — see `linkPlugin`.
-  const resolved = new Map<string, string | null>();
+  const declaredRepos = new Map(config.plugins.repos.map((r) => [r.name.toLowerCase(), r]));
   const sources = resolvePluginSkillSources(
     config.plugins.uses,
     (repoName) => {
-      const declared = declaredNames.get(repoName.toLowerCase());
+      const declared = declaredRepos.get(repoName.toLowerCase());
       if (!declared) return null;
-      if (!resolved.has(declared)) resolved.set(declared, realActiveDir(storeDir, declared));
-      const dir = resolved.get(declared) ?? null;
+      const dir = liveDir(declared);
       // The declared spelling travels with the checkout: every downstream
       // failure is attributed to that repository's card, and the card is keyed
       // by the name as the declaration writes it.
-      return dir ? { dir, repo: declared } : null;
+      return dir ? { dir, repo: declared.name } : null;
     },
   );
 
@@ -236,8 +235,13 @@ export function preparePlugins(opts: PreparePluginsOptions): PluginPrepareResult
     workspaceDir: opts.workspaceDir,
     plugins: config.plugins,
     selfExports: config.pluginExports,
+    // The same verified resolution the links and the skills used. Reading the
+    // store again here is what made one prepare result describe two
+    // generations, and it is also the half with no identity check at all — a
+    // command name is put on the agent's PATH, so a foreign one is a name the
+    // agent can run.
+    checkoutFor: liveDir,
     ...(opts.binDir ? { binDir: opts.binDir } : {}),
-    ...(opts.storeDir ? { storeDir: opts.storeDir } : {}),
     ...(opts.shimPath ? { shimPath: opts.shimPath } : {}),
   });
   result.commands.push(...commands.commands);
@@ -249,26 +253,55 @@ export function preparePlugins(opts: PreparePluginsOptions): PluginPrepareResult
 }
 
 /**
- * The concrete generation directory a repository's `active` link points at, or
- * `null` when nothing is published (or the link is dangling mid-prune).
+ * The concrete generation directory this declaration may expose, or `null` when
+ * there is none — nothing published yet, a link dangling mid-prune, or a
+ * generation that belongs to a DIFFERENT repository than the declaration now
+ * names.
  *
- * `realpathSync` rather than `existsSync` + the symlink path: one syscall
- * answers both "is there a live generation?" and "which one?", and the caller
- * holds a path that no later swap can re-point.
+ * Two properties, and the pass depends on both.
  *
- * What that does NOT buy is a directory that stays there. A refresh publishing
- * a new generation prunes the old one, so a pass pinned to A can find A deleted
- * mid-copy and report a write failure. That is the intended trade: the
- * unpinned code silently picked up B instead, and a bounded, visible,
- * self-healing failure beats a quiet mixed read (req 13). The next prepare —
- * which that same refresh round fires — materializes from B.
+ * **One resolution.** `realpathSync` rather than `existsSync` + the symlink
+ * path: one syscall answers "is there a live generation?" and "which one?", and
+ * the caller holds a path no later swap can re-point. What it does NOT buy is a
+ * directory that stays there — a refresh prunes the generation it replaces, so
+ * a pass pinned to A can find A deleted mid-copy and report a write failure.
+ * That is the intended trade: the unpinned code silently picked up B instead,
+ * and a bounded, visible, self-healing failure beats a quiet mixed read
+ * (req 13). The next prepare — which that same refresh round fires — sees B.
+ *
+ * **One identity.** Re-pointing a `repos:` entry at a different repository
+ * leaves the previous repository's generation live under the same name until an
+ * activation round retires it, and that round is fire-and-forget behind a fetch
+ * that may take minutes or fail outright. Every ORCHESTRATOR reader refuses
+ * such a generation by comparing the record's source against the declaration;
+ * this side had no record check at all, so the generation the card correctly
+ * refused was still the one the agent got — its files under `/plugins/<name>`,
+ * its SKILL.md files in the agent's skill roots, its command names on PATH.
+ * Skills are the sharpest of those: they are INSTRUCTIONS the agent follows,
+ * from a repository this project's declaration no longer names, and req 19's
+ * standing grant covers the repository the declaration names and no other.
+ *
+ * A record with NO source is refused for the same reason a foreign one is:
+ * nothing can prove whose it is. The orchestrator deliberately keeps such a
+ * generation on disk rather than deleting it (deleting would drop every plugin
+ * in every live session on the first deploy, ahead of a fetch that may fail) —
+ * refusing to EXPOSE it is what makes keeping it safe. It stops being refused
+ * the moment a publish records a source, which is the next successful
+ * activation round.
  */
-function realActiveDir(storeDir: string, repoName: string): string | null {
+function resolveLiveGeneration(storeDir: string, repo: DeclaredPluginRepo): string | null {
+  let dir: string;
   try {
-    return fs.realpathSync(path.join(storeDir, repoName, "active"));
+    dir = fs.realpathSync(path.join(storeDir, repo.name, "active"));
   } catch {
     return null;
   }
+  // Read from the RESOLVED directory, never through `active` again: the point
+  // of pinning is that the record and the tree it describes are the same
+  // generation.
+  const record = readPluginGenerationRecord(dir);
+  if (record?.source !== destinationKey(repo.source)) return null;
+  return dir;
 }
 
 /**

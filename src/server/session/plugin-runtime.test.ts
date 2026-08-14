@@ -22,14 +22,30 @@ let pluginsDir: string;
 // real `/plugin-bin` or this process's PATH from here.
 const opts = () => ({ workspaceDir, storeDir: store, pluginsDir, binDir: path.join(tmp, "plugin-bin") });
 
-/** Publish a generation the way `plugin-generations.ts` does: dir + `active` symlink. */
-function publishGeneration(repoName: string, commit: string, manifest: string, files: Record<string, string> = {}): string {
+/**
+ * Publish a generation the way `plugin-generations.ts` does: dir + record +
+ * `active` symlink.
+ *
+ * `source` defaults to the repository every declaration here points at. Pass
+ * another value to publish what a RE-POINTED declaration leaves behind, or
+ * `null` to publish a legacy record from before the field existed.
+ */
+function publishGeneration(
+  repoName: string,
+  commit: string,
+  manifest: string,
+  files: Record<string, string> = {},
+  source: string | null = "acme/tools",
+): string {
   const dir = path.join(store, repoName, "generations", commit);
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, "shipit.yaml"), manifest);
   fs.writeFileSync(
     path.join(dir, ".shipit-generation.json"),
-    JSON.stringify({ repoName, commit, ref: "branch main", activatedAt: "", exports: [] }),
+    JSON.stringify({
+      repoName, commit, ref: "branch main", activatedAt: "", exports: [],
+      ...(source === null ? {} : { source }),
+    }),
   );
   for (const [rel, body] of Object.entries(files)) {
     fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true });
@@ -334,6 +350,109 @@ describe("preparePlugins — skills (req 22)", () => {
     expect(result.skillsRemoved).toEqual([namespacedName("probe", "probe")]);
     expect(fs.existsSync(path.join(workspaceDir, ".claude", "skills", namespacedName("probe", "probe"))))
       .toBe(false);
+  });
+});
+
+// req 19 — the standing grant is to fetch and execute the repository the
+// declaration NAMES. Re-pointing a `repos:` entry leaves the previous
+// repository's generation live under the same name until an activation round
+// retires it, and that round is fire-and-forget behind a fetch that can take
+// minutes or fail outright. Every orchestrator reader refuses such a generation;
+// this half had no record check at all, so the generation the card refused was
+// still the one the agent got.
+describe("preparePlugins — a generation belongs to the repository the declaration names", () => {
+  const SKILLS_MANIFEST = "exports:\n  plugins:\n    probe:\n      skills: pkg/skills\n      cli:\n        probe: cli/probe.mjs\n";
+  const FILES = { "pkg/skills/probe/SKILL.md": "---\nname: probe\n---\n\nBody.\n" };
+
+  it("exposes nothing of a generation left by the PREVIOUS repository", () => {
+    declare();
+    // The declaration says `acme/tools`; what is live came from `acme/old`.
+    publishGeneration("tools", "a".repeat(40), SKILLS_MANIFEST, FILES, "acme/old");
+
+    const result = preparePlugins(opts());
+
+    // Not linked, not skilled, not on PATH — one refusal reaching all three
+    // halves of the pass, because they share one verified resolution.
+    expect(result.linked).toEqual([]);
+    expect(result.skills).toEqual([]);
+    expect(result.commands).toEqual([]);
+    expect(fs.existsSync(path.join(pluginsDir, "tools"))).toBe(false);
+    expect(fs.existsSync(path.join(workspaceDir, ".claude", "skills", namespacedName("probe", "probe")))).toBe(false);
+    // Reported as `missing`, which the card already renders as unavailable —
+    // and the activation that refused this generation is reporting its own
+    // failure with a reason. A second failure row here would state one fact
+    // twice, as two problems.
+    expect(result.missing).toEqual(["tools"]);
+    expect(result.linkFailed).toEqual([]);
+    expect(result.skillsFailed).toEqual([]);
+  });
+
+  it("refuses a legacy record with no source at all", () => {
+    // #2225 deliberately does NOT delete such a generation: nothing can prove
+    // whose it is, and deleting would drop every plugin in every live session on
+    // the first deploy, ahead of a fetch that may fail. Refusing to EXPOSE it is
+    // what makes keeping it safe.
+    declare();
+    publishGeneration("tools", "a".repeat(40), SKILLS_MANIFEST, FILES, null);
+
+    const result = preparePlugins(opts());
+
+    expect(result.missing).toEqual(["tools"]);
+    expect(result.linked).toEqual([]);
+    expect(result.skills).toEqual([]);
+    expect(result.commands).toEqual([]);
+  });
+
+  it("takes the plugin back as soon as a publish records the right source", () => {
+    declare();
+    publishGeneration("tools", "a".repeat(40), SKILLS_MANIFEST, FILES, null);
+    preparePlugins(opts());
+
+    publishGeneration("tools", "b".repeat(40), SKILLS_MANIFEST, FILES);
+    const result = preparePlugins(opts());
+
+    expect(result.linked).toEqual(["tools"]);
+    expect(result.skills).toEqual([namespacedName("probe", "probe")]);
+  });
+
+  it("withdraws a link it already made once the live generation turns foreign", () => {
+    declare();
+    publishGeneration("tools", "a".repeat(40), SKILLS_MANIFEST, FILES);
+    preparePlugins(opts());
+    expect(fs.existsSync(path.join(pluginsDir, "tools"))).toBe(true);
+
+    // The consumer re-points `repos:` and the next generation to be published
+    // is still the old repository's — the window before activation retires it.
+    publishGeneration("tools", "b".repeat(40), SKILLS_MANIFEST, FILES, "acme/old");
+    const result = preparePlugins(opts());
+
+    expect(result.missing).toEqual(["tools"]);
+    // Gone, not merely unreadable: the link resolves fine, it just resolves to
+    // a repository this project's declaration does not name.
+    expect(fs.lstatSync(path.join(pluginsDir, "tools"), { throwIfNoEntry: false })).toBeUndefined();
+    expect(result.skillsRemoved).toEqual([namespacedName("probe", "probe")]);
+  });
+
+  it("matches the declaration's repository case-insensitively", () => {
+    // `destinationKey` lowercases, and a consumer may write `AcMe/Tools`.
+    declare("plugins:\n  repos:\n    - repo: AcMe/Tools\n      name: tools\n      branch: main\n"
+      + "  use:\n    - plugin: probe\n      from: tools\n");
+    publishGeneration("tools", "a".repeat(40), SKILLS_MANIFEST, FILES);
+
+    expect(preparePlugins(opts()).linked).toEqual(["tools"]);
+  });
+
+  it("does not refuse `repo: self`, which has no generation to check (req 27)", () => {
+    declare("exports:\n  plugins:\n    probe:\n      skills: pkg/skills\n"
+      + "plugins:\n  repos:\n    - repo: self\n      name: dev\n"
+      + "  use:\n    - plugin: probe\n      from: dev\n");
+    fs.mkdirSync(path.join(workspaceDir, "pkg", "skills", "probe"), { recursive: true });
+    fs.writeFileSync(path.join(workspaceDir, "pkg", "skills", "probe", "SKILL.md"), "---\nname: probe\n---\n");
+
+    const result = preparePlugins(opts());
+
+    expect(result.missing).toEqual([]);
+    expect(result.linkFailed).toEqual([]);
   });
 });
 

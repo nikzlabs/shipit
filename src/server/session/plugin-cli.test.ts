@@ -57,7 +57,18 @@ function declare(yaml: string) {
 function run(yaml: string, overrides: Partial<Parameters<typeof preparePluginCommands>[0]> = {}) {
   const { plugins, selfExports } = declare(yaml);
   return preparePluginCommands({
-    workspaceDir, plugins, selfExports, binDir, storeDir, shimPath,
+    workspaceDir, plugins, selfExports, binDir, shimPath,
+    // Stands in for `preparePlugins`'s verified resolution: these cases are
+    // about planning and wrapper writing, so the checkout is simply whatever
+    // `publishRepo` left live. Identity refusal is covered where the check
+    // lives, in `plugin-runtime.test.ts`.
+    checkoutFor: (repo) => {
+      try {
+        return fs.realpathSync(path.join(storeDir, repo.name, "active"));
+      } catch {
+        return null;
+      }
+    },
     // A PATH with nothing on it, so only what a test declares can collide.
     pathEnv: "",
     ...overrides,

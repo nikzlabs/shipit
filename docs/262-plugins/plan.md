@@ -663,15 +663,14 @@ instead of a repeat.
   it by giving up refresh-without-recreation, which costs more than the window
   does.
 
-  **The pin covers the skills half of the pass, not yet the whole pass.**
-  `preparePlugins` also generates the companion-CLI wrappers, and that half
-  reads each repository's manifest through the unresolved link
-  (`plugin-cli.ts`'s `activeCheckout`, which returns the `active` path itself).
-  So a swap landing between the two halves still produces a result whose
-  commands come from B and whose skills come from A. That half belongs to the
-  companion-CLI slice and is not reached into from here; threading the pass's
-  already-memoized resolution into it is the freshness half of its fix, and the
-  slice owns what else that call site needs.
+  **The whole pass shares that one resolution.** It did not at first: the pin
+  landed in the skills half while the companion-CLI half kept resolving
+  `<store>/<name>/active` itself and reading the manifest through the
+  unresolved link, so one prepare result could name commands from generation B
+  beside skills from A. `preparePluginCommands` now takes the resolved
+  directory from the caller (`checkoutFor`) and reads the store nowhere, which
+  is also what let the identity check below reach all three halves at once
+  rather than being written three times.
 
   **The rule is narrower than "resolve `active` once everywhere", and stated
   wrongly it breaks things.** It targets reads whose results are *compared or
@@ -786,16 +785,50 @@ instead of a repeat.
     dropped a repository it still names. Self-healing — the next prepare
     re-links as soon as a generation is published.
 
-    **Retirement is the only identity guard this half has, by construction.**
-    The orchestrator's readers check a generation's recorded source against the
-    declaration; the container side reads no generation record at all — it has
-    a store path and a declared name, and nothing to compare — and it cannot be
-    given the check by pinning, because `/plugins/<name>` links the unresolved
-    `active` on purpose. So clearing `active` when a declaration is re-pointed
-    is what stands between the agent and the previous repository's tree under
-    the new declaration's name. It reads like a belt-and-braces extra beside
-    the reader check and is not one: weaken it and this surface has no identity
-    guard left.
+    **The container checks identity too — it is not left to retirement.** The
+    orchestrator's readers refuse a generation whose recorded source does not
+    match the declaration; this half had no record check at all, so the
+    generation the card correctly refused was still the one the agent got. The
+    window is not a symlink swap: `retireForeignGeneration` clears `active`
+    inside an activation round, and that round is fire-and-forget behind a git
+    fetch and possibly an install — minutes, or forever if the fetch fails. The
+    concrete case is a `repos:` entry re-pointed at a private repository whose
+    fetch fails: the card says failed with no commit, while the container was
+    still mounting the previous repository's tree, still materializing its
+    SKILL.md files into the agent's skill roots, and still listing its command
+    names on PATH.
+
+    Skills are the sharpest of the three. A checkout under `/plugins/<name>` is
+    files the agent may read; a materialized skill is **instructions it
+    follows**, from a repository this project's declaration no longer names —
+    and req 19's standing grant covers the repository the declaration names and
+    no other.
+
+    So `preparePlugins` resolves `active` once per declared repository and
+    compares the generation record's `source` against
+    `destinationKey(repo.source)`, treating a mismatch exactly as "nothing
+    live" — the branch all three readers already had. One resolution shared by
+    all three halves is what makes the pass answer for one generation AND one
+    repository; a per-half check would drift the same way the freshness half
+    did. **A record with NO source is refused for the same reason a foreign one
+    is:** nothing can prove whose it is. The orchestrator deliberately keeps
+    such a generation rather than deleting it — deleting would drop every
+    plugin in every live session on the first deploy, ahead of a fetch that may
+    fail — so refusing to EXPOSE it is what makes keeping it safe. The cost is
+    stated rather than hidden: after this deploys, an existing session's
+    plugins read as unavailable until the next successful activation
+    republishes them with a source, which is the same round that would have
+    refreshed them anyway.
+
+    The record format lives in `shared/plugin-generation-record.ts` rather than
+    in the container: `src/server/session/` cannot import
+    `src/server/orchestrator/` (the ESLint boundary, type imports included), so
+    a container-local copy would be a second implementation of a format only
+    one file writes. Its reader fails closed — a record that is not an object,
+    or whose `source` is not a string, reads as having no source — because a
+    corrupt file must not be able to decide that a foreign checkout is this
+    declaration's. Folding the orchestrator's own reader into it is a follow-up
+    for whoever next owns that file.
   - **The response is validated, not cast** (review finding). Containers survive
     an orchestrator restart and are reconnected, so a rolling upgrade puts a new
     orchestrator in front of a worker built before failures carried a `repo`.
