@@ -22,6 +22,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { CONTAINER_PLUGINS_DIR, CONTAINER_PLUGIN_STORE_DIR } from "../shared/fs-constants.js";
+import { readPluginGenerationSource } from "../shared/plugin-generation-record.js";
+import { destinationKey, type DeclaredPluginRepo } from "../shared/plugin-repos.js";
 import { resolveShipitConfig } from "../shared/shipit-config.js";
 import { getErrorMessage } from "../shared/utils.js";
 import { ensureGitExcludedBlock } from "../shared/git.js";
@@ -110,6 +112,20 @@ export function preparePlugins(opts: PreparePluginsOptions): PluginPrepareResult
   const config = resolveShipitConfig(opts.workspaceDir);
   const wanted = new Set<string>();
 
+  // ONE verified resolution per declared repository, shared by every half of
+  // this pass. Both properties it carries are per-pass properties, so they have
+  // to be established once and handed down rather than re-derived: a second
+  // resolution can land in a different generation, and a half that skips the
+  // identity check exposes what the others refused. Splitting this between the
+  // links, the skills and the commands is exactly how the pass came to describe
+  // two generations at once before.
+  const live = new Map<string, LiveGeneration>();
+  const resolve = (repo: DeclaredPluginRepo): LiveGeneration => {
+    if (!live.has(repo.name)) live.set(repo.name, resolveLiveGeneration(storeDir, repo));
+    return live.get(repo.name)!;
+  };
+  const liveDir = (repo: DeclaredPluginRepo): string | null => resolve(repo).dir;
+
   for (const repo of config.plugins.repos) {
     // `repo: self` runs the live working tree and has no generation (req 27);
     // its consumer-path parity is its own piece of work.
@@ -117,8 +133,31 @@ export function preparePlugins(opts: PreparePluginsOptions): PluginPrepareResult
     wanted.add(repo.name);
 
     const target = path.join(storeDir, repo.name, "active");
-    if (!fs.existsSync(target)) {
+    const generation = resolve(repo);
+    if (generation.dir === null) {
       result.missing.push(repo.name);
+      // A refusal explains itself; an ordinary "not fetched yet" does not need
+      // to, because the card already renders that from the generation state.
+      if (generation.refusal) {
+        result.linkFailed.push({ repo: repo.name, reason: generation.refusal });
+      }
+      // A generation this session already linked can stop being exposable while
+      // the declaration still names the repository — retired mid-refresh, or
+      // re-pointed so that what is live belongs to the PREVIOUS repository.
+      // `removeStaleLinks` does not cover either: the name is still declared,
+      // so it is not stale. Left alone, `/plugins/<name>` keeps resolving to a
+      // tree this declaration does not name, or survives dangling and lists
+      // while being unreadable — presence claiming a plugin the card is
+      // simultaneously reporting as unavailable (req 13). Dropping it is safe
+      // because the next prepare re-links as soon as an owned generation is
+      // published, and every activation round and container start fires one.
+      //
+      // A withdrawal that FAILS is reported, not swallowed: this whole path
+      // exists to stop the agent reaching a tree it may not use, so "we could
+      // not take it away" is the one outcome the card must not render as a
+      // clean unavailable.
+      const withdrawal = removeDeadLink(pluginsDir, repo.name, target);
+      if (withdrawal) result.linkFailed.push({ repo: repo.name, reason: withdrawal });
       continue;
     }
     const failure = linkPlugin(pluginsDir, repo.name, target);
@@ -141,17 +180,17 @@ export function preparePlugins(opts: PreparePluginsOptions): PluginPrepareResult
   // resolve through the declaration rather than trusting the `use` entry's
   // case, which silently found nothing on a case-sensitive filesystem (review
   // finding).
-  const declaredNames = new Map(config.plugins.repos.map((r) => [r.name.toLowerCase(), r.name]));
+  const declaredRepos = new Map(config.plugins.repos.map((r) => [r.name.toLowerCase(), r]));
   const sources = resolvePluginSkillSources(
     config.plugins.uses,
     (repoName) => {
-      const declared = declaredNames.get(repoName.toLowerCase());
+      const declared = declaredRepos.get(repoName.toLowerCase());
       if (!declared) return null;
-      const active = path.join(storeDir, declared, "active");
+      const dir = liveDir(declared);
       // The declared spelling travels with the checkout: every downstream
       // failure is attributed to that repository's card, and the card is keyed
       // by the name as the declaration writes it.
-      return fs.existsSync(active) ? { dir: active, repo: declared } : null;
+      return dir ? { dir, repo: declared.name } : null;
     },
   );
 
@@ -209,8 +248,13 @@ export function preparePlugins(opts: PreparePluginsOptions): PluginPrepareResult
     workspaceDir: opts.workspaceDir,
     plugins: config.plugins,
     selfExports: config.pluginExports,
+    // The same verified resolution the links and the skills used. Reading the
+    // store again here is what made one prepare result describe two
+    // generations, and it is also the half with no identity check at all — a
+    // command name is put on the agent's PATH, so a foreign one is a name the
+    // agent can run.
+    checkoutFor: liveDir,
     ...(opts.binDir ? { binDir: opts.binDir } : {}),
-    ...(opts.storeDir ? { storeDir: opts.storeDir } : {}),
     ...(opts.shimPath ? { shimPath: opts.shimPath } : {}),
   });
   result.commands.push(...commands.commands);
@@ -219,6 +263,87 @@ export function preparePlugins(opts: PreparePluginsOptions): PluginPrepareResult
   result.commandsFailed.push(...commands.failed);
 
   return result;
+}
+
+/**
+ * The concrete generation directory this declaration may expose, or `null` when
+ * there is none — nothing published yet, a link dangling mid-prune, or a
+ * generation that belongs to a DIFFERENT repository than the declaration now
+ * names.
+ *
+ * Two properties, and the pass depends on both.
+ *
+ * **One resolution.** `realpathSync` rather than `existsSync` + the symlink
+ * path: one syscall answers "is there a live generation?" and "which one?", and
+ * the caller holds a path no later swap can re-point. What it does NOT buy is a
+ * directory that stays there — a refresh prunes the generation it replaces, so
+ * a pass pinned to A can find A deleted mid-copy and report a write failure.
+ * That is the intended trade: the unpinned code silently picked up B instead,
+ * and a bounded, visible, self-healing failure beats a quiet mixed read
+ * (req 13). The next prepare — which that same refresh round fires — sees B.
+ *
+ * **One identity.** Re-pointing a `repos:` entry at a different repository
+ * leaves the previous repository's generation live under the same name until an
+ * activation round retires it, and that round is fire-and-forget behind a fetch
+ * that may take minutes or fail outright. Every ORCHESTRATOR reader refuses
+ * such a generation by comparing the record's source against the declaration;
+ * this side had no record check at all, so the generation the card correctly
+ * refused was still the one the agent got — its files under `/plugins/<name>`,
+ * its SKILL.md files in the agent's skill roots, its command names on PATH.
+ * Skills are the sharpest of those: they are INSTRUCTIONS the agent follows,
+ * from a repository this project's declaration no longer names, and req 19's
+ * standing grant covers the repository the declaration names and no other.
+ *
+ * A record with NO source is refused for the same reason a foreign one is:
+ * nothing can prove whose it is. The orchestrator deliberately keeps such a
+ * generation on disk rather than deleting it (deleting would drop every plugin
+ * in every live session on the first deploy, ahead of a fetch that may fail) —
+ * refusing to EXPOSE it is what makes keeping it safe. It stops being refused
+ * the moment a publish records a source, which is the next successful
+ * activation round.
+ */
+interface LiveGeneration {
+  /** The concrete generation directory, or `null` when none may be exposed. */
+  dir: string | null;
+  /**
+   * Why a generation that EXISTS may not be used, as a complete sentence for
+   * the card. Absent when there is simply nothing published — that is the
+   * ordinary state, not a problem to report.
+   */
+  refusal?: string;
+}
+
+function resolveLiveGeneration(storeDir: string, repo: DeclaredPluginRepo): LiveGeneration {
+  let dir: string;
+  try {
+    dir = fs.realpathSync(path.join(storeDir, repo.name, "active"));
+  } catch {
+    // Nothing published, or a link dangling mid-prune. The ordinary state, and
+    // the card already renders it as `unavailable` from the generation state.
+    return { dir: null };
+  }
+  // Read from the RESOLVED directory, never through `active` again: the point
+  // of pinning is that the record and the tree it describes are the same
+  // generation.
+  const source = readPluginGenerationSource(dir);
+  if (source === destinationKey(repo.source)) return { dir };
+  // Something IS published here and this session may not use it. That is not
+  // the same as "nothing published", and it does not explain itself: `missing`
+  // never leaves the worker (the orchestrator ingests only the failure lists),
+  // so without a reason here the card would render a bare `unavailable` for a
+  // state that is not "not fetched yet". Usually the failed activation that
+  // caused it supplies its own reason, but that is transient in-memory state —
+  // after an orchestrator restart, or when no round has run at all, this is the
+  // only thing that can say why (req 13: reports that plugins are unavailable
+  // *and why*).
+  return {
+    dir: null,
+    refusal: source === null
+      ? "the version on disk predates ShipIt recording which repository a version came from, so it cannot be"
+        + " confirmed as this repository's. The next successful activation replaces it."
+      : `the version on disk was published from \`${source}\`, which this declaration no longer names.`
+        + " The next successful activation replaces it.",
+  };
 }
 
 /**
@@ -253,6 +378,36 @@ function removeStaleLinks(pluginsDir: string, wanted: Set<string>): string[] {
     }
   }
   return removed;
+}
+
+/**
+ * Drop `/plugins/<name>` when it is OUR link to a store path that no longer
+ * resolves. Ownership is checked the same way `linkPlugin` checks it — the link
+ * must point exactly where we would have pointed it — so a real directory, or a
+ * link somebody else made, is left alone even when it is broken.
+ *
+ * Silent: the repository is already reported in `missing`, which is the
+ * accurate statement of what the user needs to know. Reporting the removal as
+ * `unlinked` would be false — that list means "the declaration no longer names
+ * this repo", and here it still does.
+ */
+function removeDeadLink(pluginsDir: string, name: string, target: string): string | null {
+  const link = path.join(pluginsDir, name);
+  let current: string;
+  try {
+    current = fs.readlinkSync(link);
+  } catch {
+    return null; // No link, or not a link at all — nothing of ours to remove.
+  }
+  if (current !== target) return null;
+  try {
+    fs.unlinkSync(link);
+    return null;
+  } catch (err) {
+    const reason = getErrorMessage(err);
+    console.warn(`[plugins] could not withdraw ${link}: ${reason}`);
+    return `\`${link}\` could not be removed and still points at a version this session may not use: ${reason}`;
+  }
 }
 
 /**

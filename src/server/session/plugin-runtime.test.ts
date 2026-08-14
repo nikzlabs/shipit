@@ -22,14 +22,30 @@ let pluginsDir: string;
 // real `/plugin-bin` or this process's PATH from here.
 const opts = () => ({ workspaceDir, storeDir: store, pluginsDir, binDir: path.join(tmp, "plugin-bin") });
 
-/** Publish a generation the way `plugin-generations.ts` does: dir + `active` symlink. */
-function publishGeneration(repoName: string, commit: string, manifest: string, files: Record<string, string> = {}): string {
+/**
+ * Publish a generation the way `plugin-generations.ts` does: dir + record +
+ * `active` symlink.
+ *
+ * `source` defaults to the repository every declaration here points at. Pass
+ * another value to publish what a RE-POINTED declaration leaves behind, or
+ * `null` to publish a legacy record from before the field existed.
+ */
+function publishGeneration(
+  repoName: string,
+  commit: string,
+  manifest: string,
+  files: Record<string, string> = {},
+  source: string | null = "acme/tools",
+): string {
   const dir = path.join(store, repoName, "generations", commit);
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, "shipit.yaml"), manifest);
   fs.writeFileSync(
     path.join(dir, ".shipit-generation.json"),
-    JSON.stringify({ repoName, commit, ref: "branch main", activatedAt: "", exports: [] }),
+    JSON.stringify({
+      repoName, commit, ref: "branch main", activatedAt: "", exports: [],
+      ...(source === null ? {} : { source }),
+    }),
   );
   for (const [rel, body] of Object.entries(files)) {
     fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true });
@@ -277,6 +293,50 @@ describe("preparePlugins — skills (req 22)", () => {
     expect(failed[0]?.reason).toContain("not created by ShipIt");
   });
 
+  // A refresh republishes while a prepare pass is already running, and `active`
+  // is a symlink publication swaps atomically. A pass that follows it more than
+  // once can therefore read the manifest from one generation and the skill
+  // files from the next (sibling finding, docs/262).
+  it("describes ONE generation even when a refresh swaps `active` mid-pass", () => {
+    declare();
+    publishGeneration("tools", "a".repeat(40), SKILLS_MANIFEST, {
+      "pkg/skills/probe/SKILL.md": "---\nname: probe\n---\n\nGeneration A.\n",
+    });
+
+    // Swap the moment the manifest has been read — the narrowest window there
+    // is, and the one the unpinned code lost.
+    const realRead = fs.readFileSync;
+    let swapped = false;
+    vi.spyOn(fs, "readFileSync").mockImplementation((p, options) => {
+      const out = realRead(p as string, options as BufferEncoding);
+      if (!swapped && typeof p === "string" && p.startsWith(store) && p.endsWith("shipit.yaml")) {
+        swapped = true;
+        publishGeneration("tools", "b".repeat(40), SKILLS_MANIFEST, {
+          "pkg/skills/probe/SKILL.md": "---\nname: probe\n---\n\nGeneration B.\n",
+        });
+      }
+      return out;
+    });
+
+    const result = preparePlugins(opts());
+
+    expect(swapped).toBe(true);
+    // Not "the newest wins" — the point is that no ONE pass mixes the two.
+    // Reading the skills through `active` again would take them from B while
+    // the manifest that named them came from A.
+    const body = realRead(
+      path.join(workspaceDir, ".claude", "skills", namespacedName("probe", "probe"), "SKILL.md"),
+      "utf-8",
+    );
+    expect(body).toContain("Generation A.");
+    // The content assertion above is the discriminating one; this only says the
+    // pass completed cleanly. The worst unpinned outcome — `containedRealPath`
+    // resolving base and target in two independent calls, so a swap between
+    // them reports the plugin as resolving outside its own checkout — needs the
+    // swap to land INSIDE that function, which this timing does not produce.
+    expect(result.skillsFailed).toEqual([]);
+  });
+
   it("removes materialized skills when the import is dropped", () => {
     declare();
     publishGeneration("tools", "a".repeat(40), SKILLS_MANIFEST, {
@@ -290,6 +350,151 @@ describe("preparePlugins — skills (req 22)", () => {
     expect(result.skillsRemoved).toEqual([namespacedName("probe", "probe")]);
     expect(fs.existsSync(path.join(workspaceDir, ".claude", "skills", namespacedName("probe", "probe"))))
       .toBe(false);
+  });
+});
+
+// req 19 — the standing grant is to fetch and execute the repository the
+// declaration NAMES. Re-pointing a `repos:` entry leaves the previous
+// repository's generation live under the same name until an activation round
+// retires it, and that round is fire-and-forget behind a fetch that can take
+// minutes or fail outright. Every orchestrator reader refuses such a generation;
+// this half had no record check at all, so the generation the card refused was
+// still the one the agent got.
+describe("preparePlugins — a generation belongs to the repository the declaration names", () => {
+  const SKILLS_MANIFEST = "exports:\n  plugins:\n    probe:\n      skills: pkg/skills\n      cli:\n        probe: cli/probe.mjs\n";
+  const FILES = { "pkg/skills/probe/SKILL.md": "---\nname: probe\n---\n\nBody.\n" };
+
+  it("exposes nothing of a generation left by the PREVIOUS repository", () => {
+    declare();
+    // The declaration says `acme/tools`; what is live came from `acme/old`.
+    publishGeneration("tools", "a".repeat(40), SKILLS_MANIFEST, FILES, "acme/old");
+
+    const result = preparePlugins(opts());
+
+    // Not linked, not skilled, not on PATH — one refusal reaching all three
+    // halves of the pass, because they share one verified resolution.
+    expect(result.linked).toEqual([]);
+    expect(result.skills).toEqual([]);
+    expect(result.commands).toEqual([]);
+    expect(fs.existsSync(path.join(pluginsDir, "tools"))).toBe(false);
+    expect(fs.existsSync(path.join(workspaceDir, ".claude", "skills", namespacedName("probe", "probe")))).toBe(false);
+    // Reported as `missing`, which the card already renders as unavailable —
+    // and the activation that refused this generation is reporting its own
+    // failure with a reason. A second failure row here would state one fact
+    // twice, as two problems.
+    expect(result.missing).toEqual(["tools"]);
+    expect(result.skillsFailed).toEqual([]);
+    // …and the card is TOLD why. `missing` never leaves the worker — the
+    // orchestrator ingests only the failure lists — so without this the card
+    // renders a bare `unavailable`, which is the wrong story: something is
+    // published here, it is just not this declaration's (req 13 asks for the
+    // why, not only the fact).
+    expect(result.linkFailed).toEqual([
+      { repo: "tools", reason: expect.stringContaining("published from `acme/old`") },
+    ]);
+  });
+
+  it("refuses a legacy record with no source at all", () => {
+    // #2225 deliberately does NOT delete such a generation: nothing can prove
+    // whose it is, and deleting would drop every plugin in every live session on
+    // the first deploy, ahead of a fetch that may fail. Refusing to EXPOSE it is
+    // what makes keeping it safe.
+    declare();
+    publishGeneration("tools", "a".repeat(40), SKILLS_MANIFEST, FILES, null);
+
+    const result = preparePlugins(opts());
+
+    expect(result.missing).toEqual(["tools"]);
+    expect(result.linked).toEqual([]);
+    expect(result.skills).toEqual([]);
+    expect(result.commands).toEqual([]);
+    // A legacy version cannot be blamed on a repository, so the reason says
+    // what is actually true: it cannot be confirmed as this one's.
+    expect(result.linkFailed).toEqual([
+      { repo: "tools", reason: expect.stringContaining("predates ShipIt recording") },
+    ]);
+  });
+
+  it("takes the plugin back as soon as a publish records the right source", () => {
+    declare();
+    publishGeneration("tools", "a".repeat(40), SKILLS_MANIFEST, FILES, null);
+    preparePlugins(opts());
+
+    publishGeneration("tools", "b".repeat(40), SKILLS_MANIFEST, FILES);
+    const result = preparePlugins(opts());
+
+    expect(result.linked).toEqual(["tools"]);
+    expect(result.skills).toEqual([namespacedName("probe", "probe")]);
+  });
+
+  it("withdraws a link it already made once the live generation turns foreign", () => {
+    declare();
+    publishGeneration("tools", "a".repeat(40), SKILLS_MANIFEST, FILES);
+    preparePlugins(opts());
+    expect(fs.existsSync(path.join(pluginsDir, "tools"))).toBe(true);
+
+    // The consumer re-points `repos:` and the next generation to be published
+    // is still the old repository's — the window before activation retires it.
+    publishGeneration("tools", "b".repeat(40), SKILLS_MANIFEST, FILES, "acme/old");
+    const result = preparePlugins(opts());
+
+    expect(result.missing).toEqual(["tools"]);
+    // Gone, not merely unreadable: the link resolves fine, it just resolves to
+    // a repository this project's declaration does not name.
+    expect(fs.lstatSync(path.join(pluginsDir, "tools"), { throwIfNoEntry: false })).toBeUndefined();
+    expect(result.skillsRemoved).toEqual([namespacedName("probe", "probe")]);
+  });
+
+  it("reports a withdrawal it could not carry out", () => {
+    declare();
+    publishGeneration("tools", "a".repeat(40), SKILLS_MANIFEST, FILES);
+    preparePlugins(opts());
+
+    publishGeneration("tools", "b".repeat(40), SKILLS_MANIFEST, FILES, "acme/old");
+    const unlink = vi.spyOn(fs, "unlinkSync").mockImplementation((p) => {
+      if (String(p) === path.join(pluginsDir, "tools")) throw new Error("device or resource busy");
+    });
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    const result = preparePlugins(opts());
+    unlink.mockRestore();
+
+    // The point of the whole path is to stop the agent reaching a tree it may
+    // not use. "We could not take it away" is the one outcome that must not
+    // render as a clean `unavailable`.
+    expect(result.linkFailed.map((f) => f.reason)).toEqual([
+      expect.stringContaining("published from `acme/old`"),
+      expect.stringContaining("could not be removed"),
+    ]);
+    expect(fs.existsSync(path.join(pluginsDir, "tools"))).toBe(true);
+  });
+
+  it("matches the declaration's repository case-insensitively", () => {
+    // `destinationKey` lowercases, and a consumer may write `AcMe/Tools`.
+    declare("plugins:\n  repos:\n    - repo: AcMe/Tools\n      name: tools\n      branch: main\n"
+      + "  use:\n    - plugin: probe\n      from: tools\n");
+    publishGeneration("tools", "a".repeat(40), SKILLS_MANIFEST, FILES);
+
+    expect(preparePlugins(opts()).linked).toEqual(["tools"]);
+  });
+
+  // `repo: self` has no generation, so there is nothing to check and nothing to
+  // refuse. Asserted narrowly on purpose: a self import materializes no skills
+  // today either (its consumer-path parity is still its own piece of work), so
+  // this case must not be read as "self is fully supported".
+  it("has nothing to refuse for `repo: self`, which has no generation (req 27)", () => {
+    declare("exports:\n  plugins:\n    probe:\n      skills: pkg/skills\n"
+      + "plugins:\n  repos:\n    - repo: self\n      name: dev\n"
+      + "  use:\n    - plugin: probe\n      from: dev\n");
+    fs.mkdirSync(path.join(workspaceDir, "pkg", "skills", "probe"), { recursive: true });
+    fs.writeFileSync(path.join(workspaceDir, "pkg", "skills", "probe", "SKILL.md"), "---\nname: probe\n---\n");
+
+    const result = preparePlugins(opts());
+
+    // Never enters the link loop, so it can neither be reported missing nor
+    // refused — the identity check is not consulted for it at all.
+    expect(result.missing).toEqual([]);
+    expect(result.linkFailed).toEqual([]);
   });
 });
 
@@ -307,6 +512,50 @@ describe("preparePlugins — stale links (review finding)", () => {
 
     expect(result.unlinked).toEqual(["tools"]);
     expect(fs.existsSync(path.join(pluginsDir, "tools"))).toBe(false);
+  });
+
+  // Re-pointing a `repos:` entry retires what the previous repository left,
+  // while the declaration keeps naming the repo — so `removeStaleLinks` does not
+  // see it as stale. The link would otherwise survive pointing at nothing.
+  it("drops its own link when the generation is retired under a still-declared repo", () => {
+    declare();
+    publishGeneration("tools", "a".repeat(40), PROBE_MANIFEST);
+    preparePlugins(opts());
+    expect(fs.existsSync(path.join(pluginsDir, "tools"))).toBe(true);
+
+    fs.rmSync(path.join(store, "tools", "active"));
+    const result = preparePlugins(opts());
+
+    expect(result.missing).toEqual(["tools"]);
+    // Gone entirely — not merely unresolvable. `existsSync` follows the link, so
+    // it cannot tell a removed entry from a dangling one; `lstat` can.
+    expect(fs.lstatSync(path.join(pluginsDir, "tools"), { throwIfNoEntry: false })).toBeUndefined();
+    // Not reported as unlinked: that list means the declaration dropped the
+    // repo, and this declaration still names it.
+    expect(result.unlinked).toEqual([]);
+  });
+
+  it("re-links once a generation is published again", () => {
+    declare();
+    publishGeneration("tools", "a".repeat(40), PROBE_MANIFEST);
+    preparePlugins(opts());
+    fs.rmSync(path.join(store, "tools", "active"));
+    preparePlugins(opts());
+
+    publishGeneration("tools", "b".repeat(40), PROBE_MANIFEST);
+    expect(preparePlugins(opts()).linked).toEqual(["tools"]);
+    expect(fs.readlinkSync(path.join(pluginsDir, "tools"))).toBe(path.join(store, "tools", "active"));
+  });
+
+  it("leaves a broken link somebody else made alone", () => {
+    declare();
+    fs.mkdirSync(pluginsDir, { recursive: true });
+    // Same name, different target — not ours to remove, broken or not.
+    fs.symlinkSync(path.join(tmp, "nowhere"), path.join(pluginsDir, "tools"));
+
+    preparePlugins(opts());
+
+    expect(fs.readlinkSync(path.join(pluginsDir, "tools"))).toBe(path.join(tmp, "nowhere"));
   });
 
   it("leaves anything that is not our symlink alone", () => {

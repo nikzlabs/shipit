@@ -331,7 +331,10 @@ function parseRepoList(
  *
  * Exported because a generation records it (`plugin-generations.ts`): a
  * generation keyed by name alone would let a re-pointed declaration pair a new
- * repository with the previous one's commit.
+ * repository with the previous one's commit. The session container compares
+ * against it too, before exposing a checkout it did not publish
+ * (`session/plugin-runtime.ts`) — which is why this lives in `shared/` and not
+ * beside the generation engine.
  */
 export function destinationKey(source: PluginRepoSource): string {
   return source.kind === "self" ? "self" : `${source.owner}/${source.repo}`.toLowerCase();
