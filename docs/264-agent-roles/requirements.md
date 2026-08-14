@@ -16,12 +16,8 @@ resolved from the two configured slots — docs/261), or spelled out **ad hoc** 
 instead of only a reviewer, the user preconfigures **agent roles** — named units of agent work,
 each carrying the params a reviewer has today (the service, the billing mode, the model and the
 reasoning level) and an optional standing prompt. The **reviewer is one role** (the automatic one);
-user roles are additional, and asking for a review by name and asking for any other role by name
-are the same action.
-
-The shaping principle, in the product owner's words: *the ad-hoc path stays as the discovery
-on-ramp — you cannot save a reviewer you have not tried — and conversion is the mechanism, not
-prohibition.* Nothing here blocks, warns at, or otherwise makes the ad-hoc path harder.
+user roles are additional, and asking for a review and asking for any other role are the same
+action.
 
 The number of roles is **open-ended** ("preconfigure various agent roles"). A user role's params
 are **pinned** (req 12); the automatic resolution is the built-in `reviewer` role's, and a user
@@ -39,24 +35,28 @@ role never resolves its own model.
    a review and asking for any other role are the same action: name the role. A user role may be
    a reviewer (with or without a review prompt) or any other job.
 
-3. **A user invokes a role by naming it** — "review with `deep-dive`", "run the `spec-check`
-   role" — and the run uses that role. The name travels from the user to ShipIt **verbatim**:
-   the agent passes it through and never chooses or invents it, the same courier invariant
-   docs/263 applies to `--model` and `--effort`.
+3. **A role is invoked by name, and the agent works out which role the user means.** "Review the
+   PR" reaches the `reviewer` role without the user naming it; "review with `deep-dive`" names a
+   role explicitly, and that name is used as given rather than re-interpreted. Both are the same
+   action: **the agent supplies a role, never a param.** Mapping an intent to a role is the
+   agent's job — it is the thing it has always done when it turned "review this" into
+   `--role reviewer` — and choosing what that role runs on remains the user's (req 1).
 
 4. **Invoking a role by name is at least as easy as spelling its work out ad hoc.** A role
-   called `deep-dive` is invoked in one word where the same work without it costs a model name
-   and a level. This is what makes the *sustainable* path (set up once, invoke by name) the
-   *easy* path — the affordance that shapes the habit.
+   called `deep-dive` is invoked in one word, or in no word at all when the intent is plain
+   enough for req 3 to resolve it. This is what makes the *sustainable* path (set up once,
+   invoke by name) the *easy* path — the affordance that shapes the habit.
 
-5. **Creating a role is chat-native**: "create a role `spec-check` that checks the code against
-   requirements.md, using GPT-5.6 at low effort" is a sentence, not a Settings excursion.
-   Settings may show and edit roles, but it is not required to create one.
+5. **Roles are created and edited in ShipIt's settings UI.** In v1 the UI is where a role comes
+   from: it is the surface that can show the user what services, models and reasoning levels
+   their install actually offers, which is exactly what choosing a role's params requires.
 
-6. **The ad-hoc path stays, unchanged, as the on-ramp.** Naming a model and a level for a single
-   run keeps working exactly as it does today, and ShipIt neither blocks it nor nudges it except
-   by conversion (req 7). The moment a combination is worth keeping is the moment a role can
-   exist for it — which is only possible *after* the combination has been tried ad hoc.
+6. **A user can ask for a one-off combination without saving it**, by naming what they want in
+   chat — the model and the level, relayed verbatim (docs/263). That is the path a role is later
+   saved *from*: you cannot save a reviewer you have not tried. This requirement names the
+   **user-supplied override** specifically; the fully-explicit five-flag `agent run` is a
+   different thing and is **not** relied on here — see the 2026-08-14 finding under *Resolved
+   questions*, and open question 2.
 
 7. **Recurrence converts.** When the same combination recurs, ShipIt **offers** to save it as a
    role, and the user decides. An offer is never a forced action and never an interruption of
@@ -67,10 +67,11 @@ role never resolves its own model.
    next rather than what they did wrong. This mirrors the model-name resolution docs/263
    established.
 
-9. **A role is a model, like every other reviewer; the harness is derived, and a role never
-   names one.** docs/261 req 3 fixes a reviewer as a model with the harness derived from it, and
-   a role is a reviewer. A role carries `(service, billing mode, model, level)` and nothing about
-   which CLI runs it — so there is one way to select what an agent runs on, everywhere.
+9. **A role is a model, like every other reviewer, and the harness is derived from it.**
+   docs/261 req 3 fixes a reviewer as a model with the harness derived, and a role is a reviewer:
+   a role always carries `(service, billing mode, model, level)`, and it never has to name a
+   harness for ShipIt to run it. Whether a role may **additionally** constrain the harness is
+   open question 1 — reopened by the human, and the argument is set out there.
 
 10. **What a role's run did is reported and attributed exactly as any other review.**
     docs/261 req 9 is restated because this feature must not lose it: a role is still resolved
@@ -91,6 +92,16 @@ role never resolves its own model.
     refused today. A variation the user wants is a new role, which is the conversion this feature
     exists to encourage.
 
+14. **The agent can see which roles exist.** It can read the roles this install has — their names
+    and what each is for — so that it can map an intent to one (req 3), tell the user what is
+    available when they ask, and name the alternatives when a role does not resolve (req 8).
+    An agent that has to guess a role name is the same failure as an agent that has to guess a
+    model: it produces a confident wrong answer the user cannot see the origin of.
+
+    This is the **inventory** the current install does not give an agent at all — see the
+    2026-08-14 finding. It is scoped to roles: nothing here requires exposing the whole service
+    and model catalogue, which is req 5's job in the UI.
+
 ## Scope
 
 This builds on docs/263's override machinery (an unmerged PR) and is designed for it, but does
@@ -102,18 +113,93 @@ The **two configured slots** (docs/261) stay exactly as they are — they are th
 (docs/264's earlier "named reviewer configurations" frame) is **folded into `--role NAME`**:
 a named reviewer *is* a role.
 
+**Chat-native role creation is out of scope for v1** (req 5). It was a requirement in an earlier
+draft and was removed on the human's instruction; the reasoning is in the 2026-08-14 receipt.
+
 ## Open questions
 
-_None._
+1. **May a role additionally constrain the harness?** The human asked, of the flat "no" he had
+   given a turn earlier: *"So help me understand why the user shouldn't be able to select the
+   harness."* It is a fair challenge and the honest answer has three parts.
+
+   - **The principled reason for "no"** is docs/261's model-first decision (its 2026-08-10
+     receipt: "unify on model-first"). A model's API style determines which harnesses can carry
+     it, so naming both is usually either redundant — one harness can run it — or contradictory,
+     naming a harness that cannot. Selecting a model *and* a harness is two controls for one
+     answer.
+   - **The practical reason, today**, is stronger than the principled one and is the real reason
+     it looked settled: **no shipped model runs on both harnesses.** Claude's family speaks
+     `anthropic-messages` and GPT's speaks `openai-responses`, so a harness control would today
+     offer exactly one option on every model — and docs/261 req 14 says a picker with nothing to
+     choose is not shown at all. It would be a control that cannot do anything.
+   - **Where the challenge is right**, and this is the part the flat "no" got wrong: a harness is
+     not a neutral pipe. Claude Code driving GLM and Codex driving GLM are *different agents* —
+     different scaffolding, tools, system prompt and agentic loop — so for a **role**, which is a
+     job definition rather than only a model choice, the harness is plausibly part of the job.
+     ShipIt already treats it as meaningful: docs/261's distance ranking has a harness axis and
+     deliberately prefers a harness that is not the implementer's. Saying a user may never
+     express what ShipIt itself ranks on is hard to defend.
+
+   **Recommended: an optional harness constraint.** Absent (the default) means derived, exactly
+   as today and exactly as req 9 requires. Present means pinned to that harness, refused at save
+   if that harness cannot run the model. The control appears only where the chosen model is
+   genuinely offered by more than one harness, which satisfies docs/261 req 14 — so it is
+   invisible on today's catalogue and appears by itself the day a gateway row makes a model
+   dual-harness. That keeps model-first intact for every case that exists now, and stops the
+   design from having asserted a rule it would have to break later.
+
+2. **What happens to the fully-explicit five-flag `agent run`?** The human, on the ad-hoc path:
+   *"today doesn't work at all because the agent has to specify all the params, and it does not
+   have access to the inventory. So essentially this feature doesn't work. Maybe we could even
+   remove it as part of this refactor, or leave for now."* The finding is confirmed (see the
+   2026-08-14 receipt). **Recommended: leave it for now and do not build on it** — removing it is
+   docs/261's territory and a separate change, and this feature depends on none of it. Worth
+   deciding deliberately rather than by neglect, because a documented path nobody can use is a
+   standing invitation for an agent to guess at it.
 
 ## Resolved questions
 
-- 2026-08-14 — **May a role name a harness?** **Chosen: no.** The human, in one word, on the
-  recommendation. Req 9 now states it as a property of a role rather than deferring it: a role
-  carries `(service, billing mode, model, level)` and the harness is derived. This holds
-  docs/261's model-first line (its 2026-08-10 receipt, "unify on model-first") for the surface
-  most likely to have reopened it — the original ask for this feature *did* include a harness
-  axis, and it is now answered rather than left implied.
+- 2026-08-14 — **Who picks the role — the user's exact word, or the agent's reading of the
+  intent?** **Chosen: the agent works out which role is meant.** The human, of the draft's
+  verbatim-courier rule: *"The agent should be able to figure out the correct role. E.g. 'review
+  the PR' -> role == reviewer."* The draft had over-applied docs/263's courier invariant: that
+  rule exists so an agent cannot invent a **model** or an **effort level** — values it has no way
+  to know and no business choosing — and req 3 had stretched it to cover the role name too, which
+  would have made "review the PR" un-actionable without the user reciting a role name. Rewritten:
+  the agent maps intent to a role, passes an explicitly named role through unchanged, and still
+  supplies **no param**. That is also the invariant docs/261 req 6 actually states — *name the
+  role, never the reviewer* — so this restores the boundary rather than moving it. Req 14 exists
+  because of this: an agent can only map an intent onto roles it can see.
+
+- 2026-08-14 — **Is role creation chat-native?** **Chosen: no — in v1 roles are created in the
+  UI.** The human: *"Remove this. In v1 roles are fully created in the UI."* The draft's req 5
+  made a chat sentence the creation path. Removed, and the slot restated as the opposite: the UI
+  is where a role comes from. The reasoning that supports it, recorded because it is why the
+  instruction is right rather than merely followed — choosing a role's params means choosing
+  among the services, models and levels *this install* offers, and the UI is the only surface
+  that can show that set; a chat sentence would have the agent naming params it cannot enumerate,
+  which is the same defect the next receipt records. Consequence for req 7: a recurrence offer
+  points at the UI rather than writing a role itself (`plan.md`).
+
+- 2026-08-14 — **Finding: the fully-explicit `agent run` path is unusable by an agent.** The
+  human: *"today doesn't work at all because the agent has to specify all the params, and it does
+  not have access to the inventory."* **Checked before recording, and it holds.** docs/261 req 7
+  requires `--agent`, `--service`, `--billing-mode`, `--model` and `--effort` together, and
+  refuses the call if any is missing; the session shim (`src/server/session/agent-shim/`) exposes
+  `agent run` and `agent result` and **nothing that lists services, models, billing modes or
+  effort levels** — there is no catalogue read anywhere in that tree. docs/261's own `plan.md`
+  says as much in passing ("the agent inside a container has no way to discover a service, a
+  billing mode or a valid effort level, so filling the five in would mean *guessing*"), which
+  makes the path complete-by-construction and unreachable in practice. Its only real user is a
+  repository that hard-codes all five (docs/261 req 2's override). Recorded as a finding rather
+  than fixed here: req 6 is narrowed to the user-supplied override that does work, req 14 adds
+  the inventory *for roles*, and what to do with the five-flag path is open question 2.
+
+- 2026-08-14 — **May a role name a harness?** **Answer withdrawn and reopened.** It was recorded
+  as "no" on the human's one-word answer; he then asked why, and the reasons did not survive
+  being written down — see open question 1. Req 9 keeps the half that is not in doubt (a role is
+  a model, the harness is derived, a role never *has* to name one) and no longer claims the half
+  that is.
 
 - 2026-08-14 — **What triggers the recurrence offer? — withdrawn as mis-filed, not answered.**
   The human: "I don't understand the question." Checked before rewriting, and he is right that it
@@ -135,9 +221,9 @@ _None._
   is one role (the automatic one, docs/261 unchanged); user roles are additional named units
   carrying the params a reviewer has today, invoked by `--role NAME`; the earlier `--reviewer
   NAME` namespace folds into the role namespace. The "maybe also some prompt" became a settled
-  requirement the same day — see the prompt receipt above. The re-reading of docs/261 req 6 this implies
-  ("the agent names the role, never the reviewer" — a user role *is* a reviewer the user named)
-  is recorded in `plan.md` § "The shape".
+  requirement the same day — see the prompt receipt below. The re-reading of docs/261 req 6 this
+  implies ("the agent names the role, never the reviewer" — a user role *is* a reviewer the user
+  named) is recorded in `plan.md` § "The shape".
 
 - 2026-08-14 — **Does a role carry a standing prompt?** **Chosen: yes, optional.** The human took
   the recommendation. Req 11.
@@ -156,31 +242,25 @@ a requirement is a restatement of docs/261/263 it is marked as such. What he act
 - "add as many named reviewer configurations as they want and invoke one by name ('review with
   `deep-dive`')" → reqs 1 and 3, in the earlier frame.
 - "invocation by name is at least as short as the ad-hoc spelling" → req 4.
-- "'save a reviewer called `deep-dive` = GPT-5.6 at high effort' is a sentence, not a Settings
-  excursion" → req 5.
 - "convert novelty into assets … the easiest path becomes the habit — so the sustainable path
-  must be the easy path" → req 4, and the shaping principle in the preamble.
+  must be the easy path" → req 4, and the shaping principle behind reqs 6 and 7.
 - "Keep the ad-hoc path as the *discovery on-ramp* (you cannot save a reviewer you have not
   tried) and make **conversion** the mechanism — not prohibition" → reqs 6 and 7.
 - "the same (model, effort) combo requested twice triggers an offer to save it as a named
   reviewer (the propose-actions pattern)" → req 7, with the mechanism — including what notices
   the recurrence — left entirely to `plan.md`.
-- **"generalize reviewers to any agent roles … the user would be able to preconfigure various
-  agent roles, where it would be the params we have now and maybe also some prompt"** → reqs 1,
-  2 and 3, and the resolved receipt above. This is the decision that superseded the "named
-  reviewer" frame.
+- **"generalize reviewers to any agent roles … the params we have now and maybe also some
+  prompt"** → reqs 1, 2 and 3, and the receipt above. This superseded the "named reviewer" frame.
+- **"The agent should be able to figure out the correct role. E.g. 'review the PR' -> role ==
+  reviewer."** → req 3's rewrite, and req 14, which is what makes it possible.
+- **"Remove this. In v1 roles are fully created in the UI."** → req 5, inverted from the draft.
+- **"today doesn't work at all because the agent has to specify all the params, and it does not
+  have access to the inventory"** → req 6's narrowing, req 14, and open question 2. The
+  observation is his; the verification against the shim is recorded in the receipt.
+- **"So help me understand why the user shouldn't be able to select the harness."** → req 9's
+  narrowing and open question 1.
 
-Reqs 8, 9 and 10 are the agent's, each a restatement of an existing rule the feature must not
-lose: docs/263's model-name resolution (8), docs/261 req 3 (9), and docs/261 req 9 (10). Req 8
-is stated because name resolution over the *role* namespace — now open to user-defined names —
-is the genuinely new failure mode this feature introduces, and it must fail as legibly as
-docs/263's does.
-
-Reqs 11–13 are the human's answers to the open questions, each taken as recommended and
-recorded with a dated receipt above: the standing prompt (11), pinned params (12), and a role as
-an unoverridable unit (13). Req 9's harness clause is his too — a one-word "no" that turned a
-deferred question into a stated property.
-
-**No open questions remain.** One was withdrawn rather than answered, because it asked the human
-to choose a mechanism he could not observe; the receipt above records that, since a question that
-disappears without a reason is indistinguishable from one that was quietly decided.
+Reqs 8, 10 and 12 restate existing rules the feature must not lose: docs/263's name resolution
+(8) and docs/261 reqs 9 and 3 (10, 9). Reqs 11–13 are the human's answers, each with a dated
+receipt above. Req 14 is the agent's, and it is the one requirement here that exists because a
+*defect* was found rather than because a behaviour was asked for.
