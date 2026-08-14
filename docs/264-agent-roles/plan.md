@@ -16,8 +16,8 @@ starts a role **by name** and supplies nothing else (reqs 3, 4).
 
 The reviewer is a role (req 2). ShipIt's existing review path — `--role reviewer`, resolved from
 two configured candidates ranked by distance from whatever is implementing (docs/261) — becomes
-one role among many rather than the only one. Whether it keeps resolving that way is the design's
-one open question; see *The reviewer* below.
+one role among many rather than the only one, and keeps resolving that way: it is the one role
+whose params ShipIt supplies. See *The reviewer*.
 
 ## The shape
 
@@ -38,8 +38,11 @@ guess.
 
 ```
 role   = { name, prompt?, params }
-params = (harnessId, serviceId, billingMode, modelId, reasoningEffort)   // all required — reqs 1, 6, 7
+params = { kind: "pinned", harnessId, serviceId, billingMode, modelId, reasoningEffort }
+       | { kind: "auto" }                                    // the shipped reviewer — reqs 2, 7
 ```
+
+Every field of a `pinned` tuple is required, the harness included (reqs 1, 6).
 
 - **`name`** — a CLI-safe token: lowercase letters, digits and dashes, so `--role NAME` is a
   valid word and cannot collide with a flag. Unique per install; a duplicate is refused.
@@ -99,50 +102,57 @@ Order is insertion order, reorderable in Settings as a nicety.
 
 ## Resolution
 
-`resolveRoleByName(name, deps)` looks the name up and returns a frozen target:
+`resolveRoleByName(name, implementer, deps)` looks the name up and returns a frozen target:
 
 1. **Unknown name → `ServiceError` listing the roles that do exist** (req 12), with a note that
    `--model` is the flag for a model — a role name and a model label are two different
    name-spaces, and the refusal is where that is cheapest to learn.
-2. **Known name** → the role's own tuple. The harness is the one the role names (req 6 — not
+2. **`auto` params** → delegate to `selectReviewer` (docs/261, unchanged), which ranks the two
+   candidates against `implementer` and returns an already-routed target. This is the only branch
+   that needs to know what is implementing.
+3. **`pinned` params** → the role's own tuple. The harness is the one the role names (req 6 — not
    derived, no implementer preference), and the only question left is whether it still has a
    **usable route**. The level is the role's, already validated at save against that same harness.
-   Freeze the target with `source: "role"`, carrying the name.
 
-This is a **simpler** path than a reviewer slot's, not a parallel one: the slot machinery exists
-to *choose* a harness and a model, and a role has already chosen. What is reused is the routing
-and the freezing; what is skipped is every step that was deciding something the role states.
+Either way, freeze the target with the role's name on it.
+
+The pinned branch is **simpler** than the auto one, not a parallel implementation of it: the
+ranking machinery exists to *choose* a harness and a model, and a pinned role has already chosen.
+What is shared is the routing and the freezing; what the pinned branch skips is every step that
+was deciding something the role states.
 
 A role whose credential or harness has gone away reports that it cannot run and says why, pointing
 at Settings — it is never silently repaired.
 
-## The reviewer (req 2, and the open question)
+## The reviewer (req 2)
 
-Today `--role reviewer` resolves from two configured candidates, ranked by distance from whatever
-is implementing, with a derived answer when nothing is configured (docs/261 reqs 4, 8). Every
-other role is a fixed tuple (reqs 1, 6, 7). The requirements' open question 1 asks whether that
-difference should survive.
+There is **one kind of role**, and the variation lives in a role's params: the user pins them
+(req 7), and ShipIt ships one role — the reviewer — whose params it resolves (req 2). In the data
+that is a single discriminator:
 
-**The difficulty is structural, not cosmetic.** "Use whoever is furthest from the model that wrote
-this" is a **rule evaluated per run**; a role is a **fixed tuple**. The rule's answer depends on
-what is implementing at the moment of the call, so no static role can encode it. Removing the
-difference therefore deletes a behaviour rather than simplifying a concept.
+```
+params = { kind: "pinned", harnessId, serviceId, billingMode, modelId, reasoningEffort }
+       | { kind: "auto" }
+```
 
-**Designed for the recommendation** (keep the behaviour, drop the "special case" framing): a
-role's params are pinned, and ShipIt ships **one role whose params are automatic**. In the data
-that is a single discriminator on the params — `{ kind: "pinned", … }` or `{ kind: "auto" }` —
-rather than two kinds of object, so:
+Not two kinds of object, which is what makes the rest of the design uniform:
 
-- one store, one lookup, one refusal, one settings list;
-- `resolveRoleByName` branches once, at the point where an automatic role delegates to
-  `selectReviewer` (docs/261's ranking, unchanged);
-- if "automatic" is ever wanted on a user role, it is already expressible and nothing needs
-  re-cutting.
+- one store, one lookup, one refusal, one settings list, one attribution path;
+- `resolveRoleByName` branches **once** — an `auto` role delegates to `selectReviewer` (docs/261's
+  ranking, unchanged: two candidates, distance from the implementer, the derived answer when
+  nothing is configured), and a `pinned` role takes the simpler path above;
+- "automatic" is already expressible on any role, so if it is ever wanted more widely, nothing
+  needs re-cutting. Req 7 keeps it to the shipped reviewer for now — expressible in the data is
+  not the same as offered in the UI.
 
-If instead the reviewer becomes an ordinary pinned role, `selectReviewer` and the two-slot
-settings retire with it, ShipIt seeds a role at first run, and the three behaviours the
-requirements list are gone. That is a smaller system and a different product; it is the human's
-call.
+**Why the reviewer resolves at all**, since it is the one asymmetry left: *"use whoever is
+furthest from the model that wrote this"* is a rule evaluated **per run**, and a fixed set of
+params cannot encode it — the answer depends on what is implementing at the moment of the call.
+Pinning the reviewer would delete the three behaviours req 2 names, not simplify them.
+
+**The reviewer is otherwise a role in every respect**: named the same way, started the same way
+(both shapes below), refused the same way, reported the same way. `auto` describes where its
+params come from and nothing else.
 
 ## Starting a role: the two shapes (req 10)
 
@@ -282,6 +292,5 @@ reader to hold a ranking in their head.
 | 3 | Starting a role: `--role NAME` on both the one-shot run and the child session, the roles read, the intent-to-role guidance | 3, 4, 9, 10, 11 | `--role deep-dive` starts that role either way; the agent can list roles and map "review the PR" onto one; `--role` plus a model or a level is refused |
 | 4 | Injected documentation: the fully-specified run leaves the agent's instructions | 14 | No injected page tells an agent to assemble a run out of parameters it cannot enumerate; the server still accepts one from a caller that holds them |
 
-The reviewer's resolution (open question 1) is settled in phase 1 — it decides whether that phase
-carries a params discriminator or retires `selectReviewer`, so it wants an answer before phase 1
-starts rather than after.
+Phase 1 carries the params discriminator, so `selectReviewer` and the two-slot settings survive
+intact behind the `auto` branch rather than being retired or reimplemented.

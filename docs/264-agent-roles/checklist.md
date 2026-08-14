@@ -22,9 +22,10 @@ The design is [`plan.md`](./plan.md); the contract is [`requirements.md`](./requ
       frozen target with `source: "role"` and the name
 - [ ] Unknown role name refused, listing the roles that exist, with the `--model` hint (req 12)
 - [ ] Settings payload carries the roles, each resolved (server sends the resolution)
-- [ ] The reviewer's resolution, per open question 1 — either a `{ kind: "auto" }` params
-      discriminator delegating to `selectReviewer`, or a seeded ordinary role. **Decide before
-      starting this phase**, since it decides the shape of the store
+- [ ] Params are a discriminator — `{ kind: "pinned", … }` or `{ kind: "auto" }` — so the shipped
+      reviewer is a role with automatic params rather than a second kind of object (reqs 2, 7)
+- [ ] The `auto` branch delegates to `selectReviewer` unchanged; the two reviewer slots and the
+      distance ranking survive behind it, neither retired nor reimplemented
 
 ## Phase 2 — Settings (the only way a role is created, req 5)
 

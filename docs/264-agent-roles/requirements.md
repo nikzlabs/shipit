@@ -15,15 +15,30 @@ runs it, the model it runs (a service, a billing mode and a model id), the reaso
 optionally a standing prompt describing the job. An agent starts a role **by name**, and supplies
 nothing else.
 
+There is one kind of role. What a role's params may be is where the only variation lives: the
+user pins them (req 7), and ShipIt ships one role — the reviewer — whose params it resolves
+instead (req 2).
+
 ## Requirements
 
 1. **A user can create any number of agent roles**, and each role is a **complete** unit — the
    harness, the service, the billing mode, the model and the reasoning level. Nothing about a
-   role is left for the agent to decide when it starts one, and nothing is left for ShipIt to
-   derive while it runs.
+   role is left for the agent to decide when it starts one.
 
-2. **The reviewer is a role.** Asking for a review and asking for any other role are the same
-   action: name the role. A role may be a reviewer, or any other job.
+2. **The reviewer is a role, and it is the one role whose params ShipIt resolves.** Asking for a
+   review and asking for any other role are the same action: name the role. What sets the
+   reviewer apart is not its kind but its params — they are **automatic** rather than pinned, so
+   that:
+
+   - a review is never performed by the model that produced the work, whenever any alternative
+     is available;
+   - reviewing works on an install where nobody has configured anything;
+   - the reviewer improves by itself as the install changes — adding a service can make it a
+     better reviewer with no one editing it.
+
+   These are things a fixed set of params cannot express, because the answer depends on what is
+   doing the work at the moment the review is asked for. That is why this one role resolves
+   rather than being pinned, and it is the only reason.
 
 3. **A role is started by name, and the agent works out which role the user means.** "Review the
    PR" reaches the reviewer role without the user naming it; "review with `deep-dive`" names a
@@ -48,8 +63,9 @@ nothing else.
    A role whose harness cannot run its model is **refused when it is saved**, not silently
    repaired.
 
-7. **A role names exactly what it runs.** Its params are pinned: a role never resolves its own
-   model, and never runs on anything other than what it names.
+7. **A role's params are pinned, and a role runs on what it names and nothing else.** The single
+   exception is the reviewer ShipIt ships (req 2). A user's role never resolves its own model and
+   is never re-pointed at another one.
 
 8. **A role may carry an optional standing prompt — its job description — which composes with
    the task it is given when it is started.** The prompt is user data stored with the role, and
@@ -99,39 +115,26 @@ other agent settings already do.
 
 ## Open questions
 
-1. **Should the reviewer keep behaving differently from every other role?** The human: *"I'm not
-   sure if we need to keep the special casing of the reviewer role. What do you think?"*
-
-   The reviewer is currently the one role whose params are **not** pinned: ShipIt derives them,
-   ranking two configured candidates by distance from whichever model is implementing, so a
-   review is never performed by the thing that produced the work and an install that has
-   configured nothing still reviews. Every other role is a fixed tuple (reqs 1, 6, 7).
-
-   **The special case is not arbitrary, and that is the honest difficulty:** "use whoever is
-   furthest from the model that wrote this" is a **rule evaluated per run**, and a role is a
-   **fixed tuple**. A static role cannot express it, because the answer depends on what is
-   implementing at the moment of the call. Dropping the special case therefore does not simplify
-   the concept — it deletes a behaviour, and specifically these three:
-
-   - reviewing never falls to the model that wrote the work;
-   - reviewing works on an install where nobody has configured anything;
-   - the reviewer improves by itself when a service is added.
-
-   **Recommended: keep the behaviour, and stop calling it a special case.** Rather than "roles,
-   plus a different thing called the reviewer", state it as: **a role's params are pinned, and
-   ShipIt ships one role whose params are automatic.** That is one concept with one exception the
-   user can see and reason about, rather than two kinds of object — and it leaves room for
-   "automatic" to become a choice on any role later, if it is ever wanted, without re-cutting
-   anything.
-
-   **What the alternative costs, stated plainly so the choice is real.** Making the reviewer an
-   ordinary pinned role means ShipIt seeds one at first run and it is thereafter a fixed tuple
-   like any other. The concept gets genuinely simpler — one kind of role, no exception — and the
-   three behaviours above are lost: a role pinned to the model that happens to be implementing
-   will review its own work, a fresh install has no reviewer until someone makes one, and a
-   seeded role stops following the install. That is a coherent product, and it is a different one.
+_None._
 
 ## Resolved questions
+
+- 2026-08-14 — **Should the reviewer keep behaving differently from every other role?** **Chosen:
+  keep the behaviour, drop the framing.** Put to the human as a real choice, with the cost of the
+  alternative stated; he took the recommendation — *"ok good."*
+
+  So there is **one kind of role**, and the variation lives in a role's params: a user pins them
+  (req 7), and ShipIt ships one role whose params it resolves (req 2). The reviewer is not a
+  different sort of object, and it is not exempt from anything else a role is — it is named the
+  same way, started the same way, refused the same way and reported the same way.
+
+  Why the behaviour could not simply be dropped: *"use whoever is furthest from the model that
+  wrote this"* is a **rule evaluated per run**, while a role is a **fixed set of params**. The
+  answer depends on what is doing the work at the moment the review is asked for, so no fixed set
+  can encode it. Removing the reviewer's automatic params would therefore have deleted the three
+  behaviours req 2 now lists rather than simplifying the concept. The alternative — seeding an
+  ordinary pinned reviewer at first run — was a coherent and genuinely smaller product, and is
+  the one not taken.
 
 - 2026-08-14 — **Is the harness part of a role?** **Chosen: yes, and required.** Offered as an
   optional constraint; the human: *"let's require it."* Req 6. Two consequences worth recording:
@@ -176,7 +179,8 @@ other agent settings already do.
   the only surface that can show that set.
 
 - 2026-08-14 — **Must a role's params be pinned, or may ShipIt resolve them?** **Chosen:
-  pinned.** Req 7. Whether the reviewer is an exception is open question 1.
+  pinned.** Req 7, with the shipped reviewer the single exception — see the reviewer receipt
+  above.
 
 - 2026-08-14 — **May a role be overridden when it is started?** **Chosen: no — a role is a
   unit.** Req 9.
@@ -210,6 +214,11 @@ his. What he actually said:
 - "I think there should be two ways to run a sub-agent. One is as a review and another as a child
   session. So maybe in the child session API, the agent should be able to specify the role." →
   req 10.
+
+- "I'm not sure if we need to keep the special casing of the reviewer role. What do you think?",
+  and then "ok good" to the recommendation → req 2's shape. The question is his; that the answer
+  is *one kind of role with automatic params on one of them*, rather than either "two kinds" or
+  "no exception", came out of answering it.
 
 Reqs 7 and 9 are his answers to questions put to him, recorded above. Reqs 12 and 13 are the
 agent's: req 12 because a name-space open to user-defined names must fail legibly, and req 13
