@@ -26,6 +26,7 @@ import {
   type ActivationOutcome,
   type BeginGenerationDeletion,
   type GenerationRecord,
+  type ValidateStagedGeneration,
 } from "../plugin-generations.js";
 import { releaseSessionGenerationHolds } from "../plugin-leases.js";
 import {
@@ -372,6 +373,18 @@ export interface PluginActivationDeps {
    * holding a generation because there are no plugin containers at all.
    */
   beginGenerationDeletion?: BeginGenerationDeletion;
+  /**
+   * docs/262 plan §1a phase 3 — the pre-publish gate
+   * (`services/plugin-preflight.ts`): a candidate whose compose fragment cannot
+   * be used, or whose service name is already claimed, is refused before it is
+   * published, so the prior complete version keeps running (req 15).
+   *
+   * Injected all the way from `bootstrap-managers` for the same reason
+   * `runInstall` is: the generation engine must not grow a dependency on the
+   * service layer. Omitted → the step is skipped and activation behaves exactly
+   * as it did before.
+   */
+  validateStaged?: ValidateStagedGeneration;
 }
 
 /** The install hook's shape, taken from the generation engine that calls it. */
@@ -505,6 +518,7 @@ export async function activateDeclaredPlugins(
           ensureCache: deps.ensureCache,
           isCancelled,
           ...(deps.runInstall ? { runInstall: deps.runInstall } : {}),
+          ...(deps.validateStaged ? { validateStaged: deps.validateStaged } : {}),
           ...(deps.beginGenerationDeletion
             ? { beginGenerationDeletion: deps.beginGenerationDeletion }
             : {}),

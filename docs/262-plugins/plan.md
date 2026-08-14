@@ -602,18 +602,56 @@ instead of a repeat.
   and two sweepers racing on one volume name is the second mechanism the lease
   exists to avoid.
 
-  **One gap this slice found and did NOT close, because closing it here would
-  build the wrong half of a shared mechanism.**
+  **The gap this slice found is now closed** (`services/plugin-preflight.ts`).
+  Phase 3 used to run only when services were resolved, which is AFTER
+  `activateGeneration` has published and pruned — so a tracked commit whose
+  fragment failed validation still became the live generation, its files, CLIs
+  and skills moving while its services were withheld. That is the partial
+  version req 15 forbids, and it contradicted §1a's "an activation failure keeps
+  the prior generation active".
 
-  *A rejected fragment does not keep the prior generation live.* Phase 3 runs
-  when services are resolved, which is AFTER `activateGeneration` has published
-  and pruned. So a tracked commit whose fragment fails validation still becomes
-  the live generation — its files, CLIs and skills move, its services are
-  withheld — which is the partial version req 15 forbids, and it contradicts
-  §1a's "an activation failure keeps the prior generation active". Closing it
-  means running the fragment check as a pre-publish gate inside activation,
-  beside the phase-2 selector check, where the command-collision half will want
-  to live too.
+  It is now a **pre-publish gate**: `activateGeneration` takes an injected
+  `validateStaged` hook, and the implementation judges the candidate by
+  **substitution** — the same `collectPluginFragments`, with this one
+  repository's `LiveGenerations` lookup pointed at the STAGING tree. One
+  implementation, so the gate cannot drift from the surface it gates; and the
+  generation engine still knows nothing about compose. A refusal is an ordinary
+  failed activation, so the prior version stays whole and live and the card
+  carries the collector's own message (req 13).
+
+  **It runs inside a session-wide publish window, not beside the phase-2 check.**
+  Phase 3 asks about the whole session's name domain, so the verdict is worth
+  only as much as its adjacency to the swap — and activation is serialized per
+  *repository* while repositories run concurrently. Judged any earlier, two
+  first-time candidates exporting one service name each see the other as
+  not-live, both pass, and both publish; the loser then ends up live for files,
+  CLIs and skills but not services, which is the same partial version by another
+  route. So the gate, the rename and the link swap are one serialized decision
+  (`plugin-generations.ts`'s publish key). Fetch, checkout and `install` stay
+  concurrent per repository (req 14). The cost is that a doomed candidate has
+  already run its `install` — wasted work in a throwaway container, the cheaper
+  half of the trade.
+
+  Three rulings the gate encodes rather than leaves implicit. **The staged
+  repository's own issues are absolute; every other repository is judged on the
+  DIFFERENCE** — publishing must not take a working sibling's services away
+  (req 14), and because the collector's claim order is the declaration's, the
+  "who is to blame" attribution would otherwise let an earlier-declared
+  repository silently disable a later-declared one by shipping a commit.
+  **Command collisions do not gate**, per the amendment above: they withhold the
+  contested command and are reported by `plugin-commands.ts`, so the version
+  stays coherent. And the gate **fails closed** — on a declaration that went away
+  or was re-pointed mid-round, on a project compose file that exists and cannot
+  be parsed, and on any unexpected throw. Each is guard-tested, so the next slice
+  does not read the gate as half-built.
+
+  Two of those are corrections a review made to the first version, and both were
+  ways the original shape re-opened the bug it closed: admitting a candidate
+  whose declaration had gone away let an ungated generation reach disk and then
+  become live through the `unchanged` short-circuit on re-add, and reading an
+  unreadable project stack as an *empty* name domain admitted exactly the
+  collisions the gate exists to catch. A declared compose file that does not
+  exist yet stays a definite answer — no stack, no claimed names.
 
   **Egress is unchanged on this surface.** Plugin service containers ride the
   session's existing posture, whatever `containComposeServices` gives the

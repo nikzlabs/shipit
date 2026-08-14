@@ -28,6 +28,15 @@
  * there — see `plugin-pins.ts`: a pin is a property of the consuming
  * *project's declaration*, not of one session (req 8).
  *
+ * **Validation is what the caller injects, not what this module knows.** The
+ * phase-2 selector check below is answerable from the manifest alone, so it
+ * lives here. Phase 3 — "would this version's services actually come up?" — is
+ * answerable only from the consuming session's compose world, and this module
+ * deliberately depends on very little. So it takes a `validateStaged` hook and
+ * calls it against the STAGING tree, before publish (plan §1a phase 3). A
+ * rejected candidate is an ordinary failed activation: the prior generation
+ * stays whole and live, which is the whole point — see {@link ValidateStagedGeneration}.
+ *
  * **This module runs no plugin-authored code.** An earlier draft ran the
  * manifest's `install` here, in the orchestrator, with the full process
  * environment — which reads ShipIt's own credentials (the PAT in the global
@@ -156,6 +165,73 @@ export interface PluginInstallJob {
   isCancelled?: () => boolean;
 }
 
+/**
+ * A generation that is staged but not yet published, offered to the phase-3
+ * gate. Same shape as {@link PluginInstallJob}'s first three fields and for the
+ * same reason: `stagingDir` is a directory nothing else can see yet, so a
+ * candidate that is rejected leaves no trace.
+ */
+export interface StagedGeneration {
+  repoName: string;
+  /**
+   * What the declaration pointed at when this was staged — `owner/repo`
+   * lowercased (`destinationKey`).
+   *
+   * Carried because the gate re-reads the CURRENT declaration and the name is
+   * not identity: a `shipit.yaml` edit landing mid-round can re-point `tools`
+   * at another repository, and a gate that matched on name alone would judge
+   * this candidate against the new repository's world and then let it publish
+   * under the new declaration.
+   */
+  source: string;
+  commit: string;
+  /** The staged checkout — NOT a published generation. */
+  stagingDir: string;
+}
+
+/**
+ * Phase 3 of the naming/validation phases (plan §1a), as a **pre-publish gate**.
+ *
+ * It answers one question about a candidate: *if this became the live
+ * generation, would this repository's declared surfaces work?* A `false` is an
+ * ordinary failed activation — nothing is published, the staging tree is
+ * removed, and the prior complete version keeps running (req 15, "degraded
+ * beats partial").
+ *
+ * **Why it is a hook and not a call.** The answer needs the consuming session's
+ * compose world — the project's own service names, the other imports' live
+ * generations, this session's egress posture — none of which this module knows
+ * or should learn. `services/plugin-preflight.ts` implements it; omitted (tests,
+ * and any caller with no compose world) the step is skipped and activation
+ * behaves exactly as it did before.
+ *
+ * **It is called inside the publish window, not beside the phase-2 check.** The
+ * question is about the moment the symlink swaps, and the answer depends on
+ * what ELSE is live in the session — so a verdict reached before `install` is a
+ * verdict about a world that had minutes to change. Repositories activate in
+ * parallel and the generation queue is per repository, so two first-time
+ * candidates exporting one service name would each see the other as not-live,
+ * both pass, and both publish. Checking under the session's publish lock, one
+ * step before the swap, is what makes the check and the publication one
+ * decision. The cost — a doomed candidate has already run its `install` — is
+ * wasted work in a throwaway container, which is the cheaper half of the trade.
+ *
+ * **What it deliberately does NOT gate: companion-CLI command names** (domain 5
+ * of the same phase). §1a's amendment settles that unit — a contested command
+ * withholds *that command* from every claimant and activates everything else,
+ * because a command collision is a defect in the consuming declaration rather
+ * than in either repository's version, and both are fixed in the same `use`
+ * entry (`overrides.commands.<x>.as`). Failing the whole generation over it
+ * would take out a working plugin's services and skills over a naming clash it
+ * did not cause. The refusal is already reported on the repository's card
+ * (`plugin-commands.ts`, recomputed per snapshot), so it is visible without
+ * being fatal. Stated here rather than left as an omission, so the next slice
+ * does not build a second mechanism for it.
+ */
+export type ValidateStagedGeneration = (
+  staged: StagedGeneration,
+) => { ok: true } | { ok: false; reason: string };
+
 export interface ActivateDeps {
   /** The session's state dir (`sessionStateDir(sessionDir)`). */
   stateDir: string;
@@ -213,6 +289,11 @@ export interface ActivateDeps {
    * skipped and activation behaves exactly as before.
    */
   runInstall?: (job: PluginInstallJob) => Promise<{ ok: boolean; reason?: string }>;
+  /**
+   * The phase-3 pre-publish gate ({@link ValidateStagedGeneration}). Injected
+   * for the same reason `runInstall` is: the answer lives outside this module.
+   */
+  validateStaged?: ValidateStagedGeneration;
 }
 
 // ---------------------------------------------------------------------------
@@ -444,15 +525,34 @@ export function resolveVerifiedGeneration(
 // ---------------------------------------------------------------------------
 
 /**
- * Per-repository serial queue.
+ * Serial queues, on two keys with two jobs.
  *
- * Not a "join the in-flight promise" map (review finding 5): a `shipit.yaml`
- * edit landing mid-activation would have received the OLD declaration's
- * outcome and queued no follow-up, silently ignoring the edit. Chaining
- * instead means every trigger runs against the declaration it was given, in
- * order, and the last edit always wins.
+ * **Per repository** (`<stateDir>::<repoName>`) — one activation at a time for
+ * one declared repository. Not a "join the in-flight promise" map (review
+ * finding 5): a `shipit.yaml` edit landing mid-activation would have received
+ * the OLD declaration's outcome and queued no follow-up, silently ignoring the
+ * edit. Chaining instead means every trigger runs against the declaration it
+ * was given, in order, and the last edit always wins.
+ *
+ * **Per session** ({@link publishKey}) — the publish WINDOW: phase-3
+ * validation, the rename, and the link swap. Repositories activate in parallel
+ * (`plugin-activation.ts` maps them through `Promise.all`), and the per-repo key
+ * says nothing across repositories — but phase 3 is a question about the whole
+ * session's name domain, so its answer is only worth anything if nothing else
+ * can publish between asking and swapping. This key is what makes those one
+ * decision. It deliberately does NOT cover fetch, checkout or `install`, which
+ * are per-repository work and stay concurrent (req 14).
  */
 const queues = new Map<string, Promise<unknown>>();
+
+/**
+ * The session-wide publish key. `/` cannot appear in a declared repo name
+ * (`PLUGIN_NAME_RE` allows letters, digits, `.`, `_` and `-`), so this can never
+ * collide with a per-repository key.
+ */
+function publishKey(stateDir: string): string {
+  return `${stateDir}::/publish`;
+}
 
 /** Live queue entries — exported so a test can prove they are released. */
 export function activationQueueSize(): number {
@@ -630,6 +730,16 @@ async function activateOnce(repo: DeclaredPluginRepo, deps: ActivateDeps): Promi
       };
     }
 
+    // The lease is released once, from whichever path reaches it first — the
+    // publish window releases it deliberately before the link swap, and the
+    // `finally` below catches every path that never got there.
+    let leaseReleased = false;
+    const releaseLease = (): void => {
+      if (leaseReleased) return;
+      leaseReleased = true;
+      clearGeneration();
+    };
+
     let record: GenerationRecord;
     let notInstalled: string | undefined;
     try {
@@ -687,23 +797,40 @@ async function activateOnce(repo: DeclaredPluginRepo, deps: ActivateDeps): Promi
       // becomes live is complete before it has a name anything reads.
       await fsp.writeFile(path.join(stagingDir, RECORD_FILE), JSON.stringify(record, null, 2));
 
-      // Last check before publishing: everything up to here is confined to a
-      // staging directory that the cleanup below removes.
-      if (deps.isCancelled?.()) {
-        await fsp.rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
-        return { status: "failed", reason: "the session went away before activation completed", ...withPrevious };
-      }
+      // **The publish window** — phase 3, the rename and the link swap, as ONE
+      // decision serialized across the session (see {@link enqueue}'s publish
+      // key). Phase 3's answer depends on what else is live in this session, and
+      // repositories activate in parallel behind per-repository queues, so a
+      // verdict reached anywhere earlier is a verdict about a world that can
+      // change before the swap: two first-time candidates exporting one service
+      // name would each see the other as not-live and both publish. Inside this
+      // lock, the second one sees the first.
+      const refusal = await enqueue(publishKey(stateDir), async () => {
+        if (deps.validateStaged) {
+          const verdict = deps.validateStaged({ repoName: repo.name, source, commit, stagingDir });
+          if (!verdict.ok) return verdict.reason;
+        }
+        // Last check before publishing: everything up to here is confined to a
+        // staging directory that the cleanup below removes.
+        if (deps.isCancelled?.()) return "the session went away before activation completed";
 
-      await fsp.rm(finalDir, { recursive: true, force: true });
-      await fsp.rename(stagingDir, finalDir);
+        await fsp.rm(finalDir, { recursive: true, force: true });
+        await fsp.rename(stagingDir, finalDir);
+        // Released BEFORE the link swap, so the moment `active` names this
+        // commit a consumer can hold it. The other order leaves a window in
+        // which the live generation refuses every hold. The outer `finally`
+        // still covers every path that never reaches this line.
+        releaseLease();
+        await swapActiveLink(stateDir, repo.name, commit);
+        return null;
+      });
+      if (refusal !== null) {
+        await fsp.rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
+        return { status: "failed", reason: refusal, ...withPrevious, ...warningField };
+      }
     } finally {
-      // Released BEFORE the link swap, so the moment `active` names this commit
-      // a consumer can hold it. The other order leaves a window in which the
-      // live generation refuses every hold — and, on the failure paths above,
-      // would leave the claim behind for the life of the process.
-      clearGeneration();
+      releaseLease();
     }
-    await swapActiveLink(stateDir, repo.name, commit);
     await pruneOldGenerations(stateDir, repo.name, commit, deps.beginGenerationDeletion);
 
     console.log(`[plugins] ${repo.name}: activated ${commit.slice(0, 9)} (${declaredRef})`);

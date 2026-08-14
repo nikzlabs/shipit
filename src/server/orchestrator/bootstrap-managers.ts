@@ -64,6 +64,7 @@ import { createAutoPushScheduler } from "./services/auto-push-scheduler.js";
 import { activateDeclaredPlugins, type PluginInstallHook } from "./services/plugin-activation.js";
 import { refreshPluginRepos, type PluginRefreshResult } from "./services/plugin-refresh.js";
 import { resolveSessionPluginServices } from "./services/plugin-services.js";
+import { createStagedGenerationGate } from "./services/plugin-preflight.js";
 import type { PluginComposeService } from "./plugin-compose.js";
 import { emitPluginReposUpdated } from "./service-manager-setup.js";
 import { createPluginInstallRunner } from "./plugin-install.js";
@@ -545,6 +546,15 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
       ...(onSettled ? { onSettled } : {}),
       ...(runInstall ? { runInstall } : {}),
       ...(beginGenerationDeletion ? { beginGenerationDeletion } : {}),
+      // docs/262 plan §1a phase 3 — the pre-publish gate. Built here rather than
+      // inside the activation service because the egress posture is the
+      // container manager's answer, and it is read at gate time (a thunk) so the
+      // verdict matches the one `resolvePluginServices` below will reach with
+      // the same posture.
+      validateStaged: createStagedGenerationGate({
+        workspaceDir,
+        containEgress: () => containerManager?.isEgressContained(sessionId) ?? false,
+      }),
       // req 8 — pins are durable per consuming PROJECT, so every session of one
       // repository resolves a pinned tag to the same commit.
       ...(remoteUrl ? { consumerKey: remoteUrl } : {}),
