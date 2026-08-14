@@ -83,9 +83,8 @@ re-armed after a merge and can open a later PR. There is no general durable
    resolved classification makes it eligible again.
 
 6. When a recipient is ineligible, the system must use one consistent outcome:
-   either omit delivery entirely or persist a non-waking audit card. It must not
-   persist an ordinary actionable report card that looks as if the agent received
-   it when no wake can occur.
+   omit delivery entirely. It must not persist an actionable or audit card in
+   the resolved recipient's transcript.
 
 7. Recipient filtering is only one safety control. The service must suppress
    causal duplicates so two active, eligible sessions cannot echo one finding
@@ -108,6 +107,10 @@ re-armed after a merge and can open a later PR. There is no general durable
 11. Duplicate suppression must occur before card persistence, wake dispatch, and
     rate-limit charging. The response to the reporter must say which recipients
     were delivered, skipped as ineligible, or suppressed as duplicates.
+
+11a. When delivery is skipped because a recipient is resolved, the synchronous
+     command response to the sender must name that recipient, say that it is
+     resolved, and state that it received no message, card, or wake turn.
 
 12. FYI wake policy must be explicit. A persisted FYI card and an agent wake are
     separate effects; low-urgency information must not consume a turn unless the
@@ -155,3 +158,7 @@ re-armed after a merge and can open a later PR. There is no general durable
   delivery too. Do not persist an actionable card and do not wake a resolved
   recipient. A later user message can move the session back to active and make it
   eligible again.
+- 2026-08-14 — When delivery to a resolved recipient is blocked, what remains in
+  that recipient's transcript? Chosen: no card. The sender's command response
+  must clearly name the resolved recipient and state that it received no message,
+  card, or wake turn.
