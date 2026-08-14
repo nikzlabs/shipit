@@ -457,13 +457,20 @@ export function provisionSubAgentCredentials(
 }
 
 /**
- * docs/144 — remove a **sub-agent's** credential subtree from a session's
- * credentials dir after a spawn completes (success, failure, crash, or cancel).
- * Deletes ONLY the sub-agent's paths (`.codex` for a Codex sub-agent, `.claude`
- * + `.claude.json` for a Claude one) — the pinned agent's subtree and the rest
- * of the per-session dir are untouched. Best-effort: the sub-agent CLI may still
- * be flushing writes to its own subtree at the instant we delete it, which is
- * tolerable (the next provision re-copies cleanly from source-of-truth).
+ * docs/144 — close a temporary sub-agent credential window after a spawn
+ * completes (success, failure, crash, or cancel). Removes authentication and
+ * config material from only that agent's paths, while preserving the
+ * conversation-state allowlist used by account replacement. This distinction
+ * is load-bearing for a same-harness reviewer: its temporary route borrows the
+ * parent's `.codex` / `.claude` subtree, and deleting the whole directory would
+ * delete the rollout that the parent must resume after the reviewer finishes.
+ *
+ * All cleanup callers use this boundary, including quota failover, sign-out,
+ * reviewer/non-turn completion, and their failure/cancellation paths. A
+ * cross-provider temporary subtree can therefore leave non-secret conversation
+ * state behind, but never temporary authentication or config. Best-effort: the
+ * sub-agent CLI may still be flushing writes at the instant we clean it; the
+ * next provision runs the same replacement cleanup before copying credentials.
  */
 export function removeSubAgentCredentials(
   credentialsRoot: string,
@@ -473,7 +480,7 @@ export function removeSubAgentCredentials(
   const dir = perSessionCredentialsDir(credentialsRoot, sessionId);
   for (const rel of AGENT_CREDENTIAL_PATHS[subAgentId]) {
     try {
-      fs.rmSync(path.join(dir, rel), { recursive: true, force: true });
+      removeProviderSubtreeForReplacement(dir, rel);
     } catch {
       // Best-effort — a leftover is reclaimed by the next provision's
       // replace-existing pass, or the disk-janitor's session sweep.

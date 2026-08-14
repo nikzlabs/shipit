@@ -1615,18 +1615,56 @@ describe("session-credentials", () => {
       expect(fs.existsSync(path.join(dir, ".claude", ".credentials.json"))).toBe(true);
     });
 
-    it("removes ONLY the sub-agent subtree, leaving the pinned agent's intact", () => {
+    it("removes cross-provider auth and config, leaving the pinned agent intact", () => {
       provisionAgentCredentials(root, sid, "claude");
       provisionSubAgentCredentials(root, sid, "codex");
       const dir = perSessionCredentialsDir(root, sid);
       expect(fs.existsSync(path.join(dir, ".codex"))).toBe(true);
 
       removeSubAgentCredentials(root, sid, "codex");
-      expect(fs.existsSync(path.join(dir, ".codex"))).toBe(false);
+      expect(fs.existsSync(path.join(dir, ".codex", "auth.json"))).toBe(false);
       // The pinned Claude subtree is untouched.
       expect(fs.existsSync(path.join(dir, ".claude", ".credentials.json"))).toBe(true);
       expect(fs.existsSync(path.join(dir, ".claude.json"))).toBe(true);
     });
+
+    it("preserves a Codex parent's rollout across same-harness reviewer cleanup", () => {
+      provisionAgentCredentials(root, sid, "codex");
+      const dir = perSessionCredentialsDir(root, sid);
+      const rollout = path.join(dir, ".codex", "sessions", "2026", "08", "14", "rollout-parent.jsonl");
+      fs.mkdirSync(path.dirname(rollout), { recursive: true });
+      fs.writeFileSync(rollout, '{"thread_id":"parent-thread"}\n');
+      fs.writeFileSync(path.join(dir, ".codex", "config.toml"), 'model = "reviewer-model"\n');
+
+      // The reviewer may use another service/model route, but cleanup is keyed
+      // to the harness. The parent's rollout is state; auth/config are not.
+      removeSubAgentCredentials(root, sid, "codex");
+
+      expect(fs.readFileSync(rollout, "utf8")).toContain("parent-thread");
+      expect(fs.existsSync(path.join(dir, ".codex", "auth.json"))).toBe(false);
+      expect(fs.existsSync(path.join(dir, ".codex", "config.toml"))).toBe(false);
+    });
+
+    it.each(["failure", "cancellation"])(
+      "preserves Claude resume state and removes temporary credentials after %s",
+      () => {
+        provisionAgentCredentials(root, sid, "claude");
+        const dir = perSessionCredentialsDir(root, sid);
+        const conversation = path.join(dir, ".claude", "projects", "-workspace", "parent.jsonl");
+        fs.mkdirSync(path.dirname(conversation), { recursive: true });
+        fs.writeFileSync(conversation, '{"sessionId":"parent"}\n');
+        fs.writeFileSync(path.join(dir, ".claude", "settings.json"), '{}');
+
+        // runSubAgent and non-turn work call the same helper from `finally`, so
+        // both failure and cancellation have this cleanup contract.
+        removeSubAgentCredentials(root, sid, "claude");
+
+        expect(fs.existsSync(conversation)).toBe(true);
+        expect(fs.existsSync(path.join(dir, ".claude", ".credentials.json"))).toBe(false);
+        expect(fs.existsSync(path.join(dir, ".claude", "settings.json"))).toBe(false);
+        expect(fs.existsSync(path.join(dir, ".claude.json"))).toBe(false);
+      },
+    );
 
     it("removeSubAgentCredentials is best-effort on a missing subtree", () => {
       provisionAgentCredentials(root, sid, "claude");
