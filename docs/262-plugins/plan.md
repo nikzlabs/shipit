@@ -668,13 +668,10 @@ instead of a repeat.
   reads each repository's manifest through the unresolved link
   (`plugin-cli.ts`'s `activeCheckout`, which returns the `active` path itself).
   So a swap landing between the two halves still produces a result whose
-  commands come from B and whose skills come from A. The fix is the same shape —
-  resolve once, in the pass, and hand the concrete directory to both halves —
-  and it belongs with the companion-CLI slice rather than being reached into
-  from here. The invocation path on the orchestrator side already pins
-  correctly (`plugin-cli-run.ts`'s `pinGeneration`: one `existsSync`, one
-  `realpathSync`, and the record, manifest, volume name and overlay lowerdir all
-  read out of that one directory).
+  commands come from B and whose skills come from A. That half belongs to the
+  companion-CLI slice and is not reached into from here; threading the pass's
+  already-memoized resolution into it is the freshness half of its fix, and the
+  slice owns what else that call site needs.
 
   **The rule is narrower than "resolve `active` once everywhere", and stated
   wrongly it breaks things.** It targets reads whose results are *compared or
@@ -788,6 +785,17 @@ instead of a repeat.
     user-facing fact, and calling it `unlinked` would claim the declaration
     dropped a repository it still names. Self-healing — the next prepare
     re-links as soon as a generation is published.
+
+    **Retirement is the only identity guard this half has, by construction.**
+    The orchestrator's readers check a generation's recorded source against the
+    declaration; the container side reads no generation record at all — it has
+    a store path and a declared name, and nothing to compare — and it cannot be
+    given the check by pinning, because `/plugins/<name>` links the unresolved
+    `active` on purpose. So clearing `active` when a declaration is re-pointed
+    is what stands between the agent and the previous repository's tree under
+    the new declaration's name. It reads like a belt-and-braces extra beside
+    the reader check and is not one: weaken it and this surface has no identity
+    guard left.
   - **The response is validated, not cast** (review finding). Containers survive
     an orchestrator restart and are reconnected, so a rolling upgrade puts a new
     orchestrator in front of a worker built before failures carried a `repo`.
