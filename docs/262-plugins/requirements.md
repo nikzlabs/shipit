@@ -240,7 +240,10 @@ receipts below keep the original "tools" vocabulary of the early rounds.
     exported definitions are the single source (req 5 applied to the plugin
     repository itself). Activation there uses the same mechanism consumers
     use — the repository declares itself as a consumer — so dogfooding
-    exercises exactly the path real consumers run.
+    exercises exactly the path real consumers run. The plugin's exported
+    **`install` does not run** in its own repository: the repository prepares
+    its own working tree the way it already does for its tests, and ShipIt
+    never writes plugin-authored install output into a tree it auto-commits.
 28. Activating a plugin **reuses ShipIt's existing content caches rather than
     paying a cold cost per commit**. Sessions already avoid re-downloading
     dependencies through a shared, rolling dependency store, and plugins get
@@ -311,34 +314,26 @@ user's follow-up of 2026-08-12 during the design phase.
 
 ## Open questions
 
-One open, raised by the self-use slice on 2026-08-14. Every other question
-raised so far is answered below, each with the answer's date and the words
-that settled it.
-
-- **Under `repo: self`, does the plugin's declared `install` run?** Today it does
-  not: `install` populates a generation's writable layer, and a self declaration
-  has neither — so a plugin repository testing itself relies on its own
-  `agent.install` to prepare the working tree its services and CLIs then run out
-  of. Two readings of req 27 pull in opposite directions, which is why this is a
-  question rather than a decision the agent should take. Its own enumeration of
-  what self-use must deliver — "the same services, commands, skills, settings,
-  and needs a consumer gets" — **does not name install**, and a repository needs
-  its dependencies installed for its own development anyway. But its next
-  sentence says **nothing is duplicated to make self-use work**, and a plugin
-  whose exported `install` must be repeated in `agent.install` for the self case
-  is duplicating exactly the setup req 5 puts in the plugin's hands. The
-  repository's own fixture assumes the first reading is wrong: `test-plugin/`
-  gitignores an install stamp that only a self-mode install could write. The
-  cost is not symmetric — running it means a new install-container branch that
-  mounts the session's working tree read-write instead of a generation overlay,
-  re-triggered by input hashes rather than by a commit, and writing
-  plugin-authored output into a tree ShipIt auto-commits. *Agent recommendation:
-  leave it out (v1), since a plugin repository's own `agent.install` already has
-  to work for its tests and lint to run at all, and revisit if a real plugin
-  repository finds the duplication annoying. Not implemented either way — the
-  current behaviour is the "does not run" one.*
+*None open.* Every question raised so far is answered below, each with the
+answer's date and the words that settled it.
 
 ## Resolved questions
+
+- **2026-08-14 — Under `repo: self`, does the plugin's declared `install`
+  run?** Raised by the self-use slice: req 27's enumeration of what self-use
+  delivers — "the same services, commands, skills, settings, and needs a
+  consumer gets" — does not name install, while its next sentence says nothing
+  is duplicated to make self-use work, so the two readings pulled in opposite
+  directions. The user answered **"keep it out"**. Req 27 now says so in its own
+  words, so the next reader is not left to re-derive it. The reasoning behind
+  the answer: a plugin repository's own `agent.install` has to work for its
+  tests and lint to run at all, so the setup already exists there, and running
+  the exported `install` under self would mean a new install-container branch
+  that mounts the session's working tree read-write instead of a generation
+  overlay, re-triggered by input hashes rather than by a commit, writing
+  plugin-authored output into a tree ShipIt auto-commits. This was also the
+  behaviour already shipped, so nothing changes in code. Revisit if a real
+  plugin author finds repeating the install string annoying.
 
 - **2026-08-14 — Should plugins pay a cold dependency install on every new
   commit?** Raised after measuring the code: git objects were reused, but
