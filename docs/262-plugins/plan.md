@@ -407,8 +407,13 @@ instead of a repeat.
   does, driven by the same `shipit.yaml` edit that re-pointed the declaration.
   The fix here is one comparison (`record.source === destinationKey(...)`) on a
   record `snapshotRepo` already reads, and it waits only on #2225 landing the
-  field. The general fix — pushing the check into the `…At` readers so
-  "resolve once" and "check identity" compose — belongs to #2225.
+  field. The general shape is **verify where the link is resolved, and return a
+  verified handle** — not an `expectedSource` parameter on the directory-scoped
+  readers, which would re-introduce the optional check #2225's docstring
+  rejects by making its own parameter required (sibling report, req 23 slice).
+  `snapshotRepo` is already that shape: it resolves, reads the record, and hands
+  every consumer a concrete `RepoSnapshot`. The comparison belongs in it, which
+  is why the fix is one line and not a signature change.
 
   **The collector already reads everything that call site needs**, which makes
   the sweep cheaper here than it looks: `snapshotRepo` calls
