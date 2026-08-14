@@ -178,9 +178,14 @@ without forcing two product questions through one composite boolean.
 ShipIt-started self merge-wake—updates it. Add nullable
 `SessionInfo.lastUserTurnAt` backed by `sessions.last_user_turn_at`.
 
-Migration behavior for existing terminal-PR rows is finalized by Q10. After
-migration, system turns advance only `lastUsedAt`, while accepted user-started
-input advances both timestamps.
+Migration sets `last_user_turn_at` to the terminal PR timestamp (the earlier of
+the chosen `mergedAt` / `closedAt` instant for this comparison) for existing
+terminal-PR rows. It does not copy a later `last_used_at`, because that activity
+may be the system wake that caused the incident. Existing non-terminal rows can
+backfill from `last_used_at`. After migration, system turns advance only
+`lastUsedAt`, while accepted user-started input advances both timestamps. A
+genuine legacy continuation that is reclassified as resolved becomes active on
+its next user turn.
 
 Add `SessionManager.markUserTurn(sessionId)` as the sole database writer. Call
 it at each accepted interactive user ingress before the message can steer,

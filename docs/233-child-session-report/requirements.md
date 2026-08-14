@@ -116,18 +116,6 @@ temporary eligibility exemption.
   parent or cohort message unless pinning, child coordination, or a user turn
   makes the child eligible.
 
-### Q10. How should existing terminal-PR sessions be migrated?
-
-Old rows have only `lastUsedAt`, which can be later than the PR because of a
-system wake. It cannot be identified reliably as user-started activity.
-
-- **A — Protect the incident population (recommended).** Backfill terminal-PR
-  rows as not user-reactivated. They become resolved unless another exemption
-  applies. A genuine old continuation becomes active on its next user turn.
-- **B — Preserve old active classification.** Backfill from `lastUsedAt`. This
-  avoids reclassifying genuine continuations but leaves old system-woken
-  terminal-PR children eligible until their next PR cycle.
-
 ## Resolved questions
 
 - 2026-08-14 — Which terminal-PR sessions are eligible for cohort broadcasts?
@@ -164,3 +152,7 @@ system wake. It cannot be identified reliably as user-started activity.
   Keep pinned children and child coordinators eligible while the UI treats them
   as Active. Put the complete resolved-session classification in exactly one
   shared code location used by every server and client consumer.
+- 2026-08-14 — How should existing terminal-PR sessions be migrated to the new
+  user-activity field? Chosen: protect the incident population. Backfill them as
+  not user-reactivated, so they become resolved unless another exemption applies.
+  A genuine old continuation becomes active on its next user-started turn.
