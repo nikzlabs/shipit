@@ -338,6 +338,106 @@ describe("manifest warnings (req 13)", () => {
 });
 
 /**
+ * docs/262 plan §1a phase 3 — the pre-publish gate. Phase-3 validation used to
+ * run when services were RESOLVED, which is after this module has published and
+ * pruned: a commit whose declared surfaces could not be used still became live,
+ * taking the files, the CLIs and the skills with it while its services stayed
+ * behind. These prove the gate is a *publish* decision, not a report.
+ *
+ * The gate's own verdicts are `services/plugin-preflight.test.ts`; here it is a
+ * stub, because what this module owes is the ordering and the failure shape.
+ */
+describe("the phase-3 gate runs before publish (reqs 13, 15)", () => {
+  it("a refused candidate publishes nothing and leaves the prior generation live", async () => {
+    await activateGeneration(repo({ branch: "main" }), deps(["probe"]));
+    const before = readActiveGeneration(stateDir, "tools", TOOLS_SOURCE);
+    expect(before?.commit).toBeTruthy();
+
+    await commitFiles({ "second.txt": "x" }, "second");
+    const outcome = await activateGeneration(repo({ branch: "main" }), {
+      ...deps(["probe"]),
+      validateStaged: () => ({ ok: false, reason: "its compose service `web` declares `build:`." }),
+    });
+
+    expect(outcome.status).toBe("failed");
+    // The collector's own message reaches the card, not a generic one (req 13).
+    expect((outcome as { reason: string }).reason).toContain("declares `build:`");
+    expect((outcome as { previous?: { commit: string } }).previous?.commit).toBe(before?.commit);
+    expect(readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)?.commit).toBe(before?.commit);
+    // No staging tree left behind, and the rejected commit was never staged into
+    // a generation directory anything can name.
+    expect(fs.readdirSync(path.join(stateDir, "plugins", "tools", "generations")))
+      .toEqual([before!.commit]);
+  });
+
+  it("a refused FIRST candidate leaves nothing active at all", async () => {
+    const outcome = await activateGeneration(repo({ branch: "main" }), {
+      ...deps(["probe"]),
+      validateStaged: () => ({ ok: false, reason: "its compose fragment could not be read." }),
+    });
+
+    expect(outcome.status).toBe("failed");
+    expect(readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)).toBeNull();
+    expect(fs.existsSync(activeLinkPath(stateDir, "tools"))).toBe(false);
+  });
+
+  it("judges the STAGING tree, before anything is published", async () => {
+    let seen: { stagingDir: string; commit: string; repoName: string } | null = null;
+    await activateGeneration(repo({ branch: "main" }), {
+      ...deps(["probe"]),
+      validateStaged: (staged) => {
+        seen = { ...staged };
+        // The candidate is not live at the moment it is judged — that is the point.
+        expect(readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)).toBeNull();
+        // And its files are readable, so the gate can parse a fragment out of them.
+        expect(fs.existsSync(path.join(staged.stagingDir, "shipit.yaml"))).toBe(true);
+        return { ok: true };
+      },
+    });
+
+    expect(seen!.repoName).toBe("tools");
+    expect(seen!.stagingDir).toContain(".staging-");
+    expect(readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)?.commit).toBe(seen!.commit);
+  });
+
+  // Ordered before install deliberately: the fragment lives in the pristine
+  // checkout, so the answer is the same either side of it — and on this side a
+  // doomed candidate costs a YAML parse instead of minutes of third-party code.
+  it("does not run install for a candidate it is going to refuse", async () => {
+    let installed = false;
+    const outcome = await activateGeneration(repo({ branch: "main" }), {
+      ...deps(["probe"]),
+      validateStaged: () => ({ ok: false, reason: "nope" }),
+      runInstall: async () => {
+        installed = true;
+        return { ok: true };
+      },
+    });
+
+    expect(outcome.status).toBe("failed");
+    expect(installed).toBe(false);
+  });
+
+  // Nothing is being published, so there is nothing to gate: the version that is
+  // already live keeps running whatever the gate would say about it, and its
+  // services report themselves through the service round as they do today.
+  it("is not consulted when the declared commit is already live", async () => {
+    await activateGeneration(repo({ branch: "main" }), deps(["probe"]));
+    let asked = false;
+    const outcome = await activateGeneration(repo({ branch: "main" }), {
+      ...deps(["probe"]),
+      validateStaged: () => {
+        asked = true;
+        return { ok: false, reason: "nope" };
+      },
+    });
+
+    expect(outcome.status).toBe("unchanged");
+    expect(asked).toBe(false);
+  });
+});
+
+/**
  * The ordering the blocked first attempt inverted: it published, pruned the
  * prior generation, THEN installed fire-and-forget and dropped the result — so
  * a failed install left a broken commit reported as `active` with no fallback.

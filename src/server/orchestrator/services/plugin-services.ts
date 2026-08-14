@@ -198,8 +198,13 @@ function volumeSubpath(dir: string, deps: PluginServiceDeps): string | undefined
  * compose file is mid-edit (or absent — a project may declare plugins and no
  * stack of its own) should still get its plugin services. Its own stack reports
  * the parse failure through its own path.
+ *
+ * Exported for `plugin-preflight.ts`, which must seed the collision domain the
+ * SAME way this round will (docs/262 plan §1a phase 3): a pre-publish gate that
+ * read the project's services differently would admit a generation this function
+ * then refuses to surface, which is the bug the gate exists to prevent.
  */
-function readProjectServices(
+export function readProjectServices(
   workspaceDir: string,
   config: ShipitConfig,
   containEgress: boolean,

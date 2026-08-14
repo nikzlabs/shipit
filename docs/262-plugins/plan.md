@@ -602,18 +602,32 @@ instead of a repeat.
   and two sweepers racing on one volume name is the second mechanism the lease
   exists to avoid.
 
-  **One gap this slice found and did NOT close, because closing it here would
-  build the wrong half of a shared mechanism.**
+  **The gap this slice found is now closed** (`services/plugin-preflight.ts`).
+  Phase 3 used to run only when services were resolved, which is AFTER
+  `activateGeneration` has published and pruned — so a tracked commit whose
+  fragment failed validation still became the live generation, its files, CLIs
+  and skills moving while its services were withheld. That is the partial
+  version req 15 forbids, and it contradicted §1a's "an activation failure keeps
+  the prior generation active".
 
-  *A rejected fragment does not keep the prior generation live.* Phase 3 runs
-  when services are resolved, which is AFTER `activateGeneration` has published
-  and pruned. So a tracked commit whose fragment fails validation still becomes
-  the live generation — its files, CLIs and skills move, its services are
-  withheld — which is the partial version req 15 forbids, and it contradicts
-  §1a's "an activation failure keeps the prior generation active". Closing it
-  means running the fragment check as a pre-publish gate inside activation,
-  beside the phase-2 selector check, where the command-collision half will want
-  to live too.
+  It is now a **pre-publish gate**, beside the phase-2 selector check and before
+  `install`: `activateGeneration` takes an injected `validateStaged` hook, and
+  the implementation judges the candidate by **substitution** — the same
+  `collectPluginFragments`, with this one repository's `LiveGenerations` lookup
+  pointed at the STAGING tree. One implementation, so the gate cannot drift from
+  the surface it gates; and the generation engine still knows nothing about
+  compose. A refusal is an ordinary failed activation, so the prior version stays
+  whole and live and the card carries the collector's own message (req 13).
+
+  Two rulings the gate encodes rather than leaves implicit. **Only the staged
+  repository's own issues refuse it** (req 14): a candidate that loses a service
+  name to another repository is refused; one that *wins* publishes, and the
+  loser's card reports its withheld services as it does today — that is req 20's
+  consumer-declaration problem, not an incoherent version of either repository.
+  And **command collisions do not gate**, per the amendment above: they withhold
+  the contested command and are reported by `plugin-commands.ts`, so the version
+  stays coherent. Both are guard-tested, so the next slice does not read the gate
+  as half-built.
 
   **Egress is unchanged on this surface.** Plugin service containers ride the
   session's existing posture, whatever `containComposeServices` gives the

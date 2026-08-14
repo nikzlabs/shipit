@@ -28,6 +28,15 @@
  * there — see `plugin-pins.ts`: a pin is a property of the consuming
  * *project's declaration*, not of one session (req 8).
  *
+ * **Validation is what the caller injects, not what this module knows.** The
+ * phase-2 selector check below is answerable from the manifest alone, so it
+ * lives here. Phase 3 — "would this version's services actually come up?" — is
+ * answerable only from the consuming session's compose world, and this module
+ * deliberately depends on very little. So it takes a `validateStaged` hook and
+ * calls it against the STAGING tree, before publish (plan §1a phase 3). A
+ * rejected candidate is an ordinary failed activation: the prior generation
+ * stays whole and live, which is the whole point — see {@link ValidateStagedGeneration}.
+ *
  * **This module runs no plugin-authored code.** An earlier draft ran the
  * manifest's `install` here, in the orchestrator, with the full process
  * environment — which reads ShipIt's own credentials (the PAT in the global
@@ -156,6 +165,51 @@ export interface PluginInstallJob {
   isCancelled?: () => boolean;
 }
 
+/**
+ * A generation that is staged but not yet published, offered to the phase-3
+ * gate. Same shape as {@link PluginInstallJob}'s first three fields and for the
+ * same reason: `stagingDir` is a directory nothing else can see yet, so a
+ * candidate that is rejected leaves no trace.
+ */
+export interface StagedGeneration {
+  repoName: string;
+  commit: string;
+  /** The staged checkout — NOT a published generation. */
+  stagingDir: string;
+}
+
+/**
+ * Phase 3 of the naming/validation phases (plan §1a), as a **pre-publish gate**.
+ *
+ * It answers one question about a candidate: *if this became the live
+ * generation, would this repository's declared surfaces work?* A `false` is an
+ * ordinary failed activation — nothing is published, the staging tree is
+ * removed, and the prior complete version keeps running (req 15, "degraded
+ * beats partial").
+ *
+ * **Why it is a hook and not a call.** The answer needs the consuming session's
+ * compose world — the project's own service names, the other imports' live
+ * generations, this session's egress posture — none of which this module knows
+ * or should learn. `services/plugin-preflight.ts` implements it; omitted (tests,
+ * and any caller with no compose world) the step is skipped and activation
+ * behaves exactly as it did before.
+ *
+ * **What it deliberately does NOT gate: companion-CLI command names** (domain 5
+ * of the same phase). §1a's amendment settles that unit — a contested command
+ * withholds *that command* from every claimant and activates everything else,
+ * because a command collision is a defect in the consuming declaration rather
+ * than in either repository's version, and both are fixed in the same `use`
+ * entry (`overrides.commands.<x>.as`). Failing the whole generation over it
+ * would take out a working plugin's services and skills over a naming clash it
+ * did not cause. The refusal is already reported on the repository's card
+ * (`plugin-commands.ts`, recomputed per snapshot), so it is visible without
+ * being fatal. Stated here rather than left as an omission, so the next slice
+ * does not build a second mechanism for it.
+ */
+export type ValidateStagedGeneration = (
+  staged: StagedGeneration,
+) => { ok: true } | { ok: false; reason: string };
+
 export interface ActivateDeps {
   /** The session's state dir (`sessionStateDir(sessionDir)`). */
   stateDir: string;
@@ -213,6 +267,11 @@ export interface ActivateDeps {
    * skipped and activation behaves exactly as before.
    */
   runInstall?: (job: PluginInstallJob) => Promise<{ ok: boolean; reason?: string }>;
+  /**
+   * The phase-3 pre-publish gate ({@link ValidateStagedGeneration}). Injected
+   * for the same reason `runInstall` is: the answer lives outside this module.
+   */
+  validateStaged?: ValidateStagedGeneration;
 }
 
 // ---------------------------------------------------------------------------
@@ -577,6 +636,28 @@ async function activateOnce(repo: DeclaredPluginRepo, deps: ActivateDeps): Promi
         ...withPrevious,
         ...warningField,
       };
+    }
+
+    // Phase 3 (plan §1a), as a PRE-PUBLISH gate — the same rule as phase 2 one
+    // step later, and for the same reason: a version whose declared surfaces
+    // cannot be used must not become live. Without it, fragment validation ran
+    // only when services were RESOLVED, which is after this function has
+    // published and pruned, so a commit with an unusable compose fragment took
+    // the files, the CLIs and the skills to the new version while its services
+    // stayed behind — the partial version req 15 forbids, wearing an `active`
+    // badge.
+    //
+    // **Before `install`, deliberately.** The fragment lives in the pristine
+    // checkout and install writes only into the generation's overlay upper
+    // layer, so the gate's answer is the same on either side of it — and on this
+    // side it costs a YAML parse instead of minutes of third-party code for a
+    // candidate that was never going to publish.
+    if (deps.validateStaged) {
+      const verdict = deps.validateStaged({ repoName: repo.name, commit, stagingDir });
+      if (!verdict.ok) {
+        await fsp.rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
+        return { status: "failed", reason: verdict.reason, ...withPrevious, ...warningField };
+      }
     }
 
     // Install runs HERE — against the staging tree, before anything is
