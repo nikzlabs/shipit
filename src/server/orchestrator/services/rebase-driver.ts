@@ -106,7 +106,7 @@ export interface RebaseDriverDeps {
    * that import and let tests pass a two-method stub; optional because several
    * test setups construct the driver without a poller at all.
    *
-   * Why the driver and not the call sites: a rebase + force-push is what CLEARS
+   * Why the driver and not the call sites (planning#369): a rebase + force-push is what CLEARS
    * GitHub's `CONFLICTING` state, and until the poller observes that, the PR card
    * keeps its "Merge conflicts" chip and "Resolve conflicts" button. Nothing else
    * tells it. `POST /git/rebase` never called `forceRefreshSession`, and
@@ -131,7 +131,13 @@ export interface RebasePrStatusPoller {
 }
 
 export type RebaseFlowOutcome =
-  | { status: "up_to_date" }
+  /**
+   * HEAD already contained `<base>`, so nothing was replayed — but the branch
+   * may still have been pushed, when it held commits origin had never seen.
+   * `forcePushed` is what the auto-resolve wrapper needs to tell a genuine
+   * no-op apart from a push that just changed the head SHA on GitHub.
+   */
+  | { status: "up_to_date"; forcePushed: boolean }
   | { status: "rebased"; forcePushed: boolean }
   | { status: "conflicts_resolved"; iterations: number; forcePushed: boolean }
   | { status: "aborted"; reason: string };
@@ -365,14 +371,14 @@ export async function runRebaseFlow(
       // concerned — and this path used to return without pushing anything, so
       // every further click on "Resolve conflicts" repeated the same no-op.
       // Publish the commits the remote is missing; that is the whole fix.
-      const forcePushed = await pushIfAheadOfRemote(deps);
+      const forcePushed = await pushIfAheadOfRemote(deps, baseBranch);
       // Manual syncs always leave a durable confirmation card, including the
       // already-current case. Automatic conflict resolution remains cardless.
       const cardEmitted = recordSync
         ? emitSyncCard(deps, { baseBranch, headFrom: headBefore, headTo: headBefore, baseMove, forcePushed })
         : false;
       runner.emitMessage({ type: "rebase_complete", sessionId: runner.sessionId, forcePushed, upToDate: true, baseMoved: cardEmitted });
-      return { status: "up_to_date" };
+      return { status: "up_to_date", forcePushed };
     }
 
     // 4. Begin rebase.
@@ -539,12 +545,27 @@ export async function runRebaseFlow(
  * On success it also notifies the PR-status poller — see `prStatusPoller` in
  * `RebaseDriverDeps` for why that call lives here rather than at the call sites.
  */
-async function tryForcePush(deps: RebaseDriverDeps): Promise<boolean> {
+async function tryForcePush(
+  deps: RebaseDriverDeps,
+  /**
+   * Lease against THIS sha instead of the remote's live tip.
+   *
+   * `git.forcePush()` re-reads the live tip and leases against whatever it finds,
+   * which is right after a rebase (ShipIt owns the branch, and the only
+   * legitimate remote state is the pre-rebase commits it pushed itself) but wrong
+   * for a caller that decided to push *because* it verified a specific remote
+   * sha: a commit landing between that check and the push would become the lease
+   * and be overwritten. Pass the checked sha and the push is rejected instead.
+   */
+  expectedRemoteSha?: string,
+): Promise<boolean> {
   const { git, githubAuthManager, runner } = deps;
   if (!githubAuthManager.authenticated) return false;
   try {
-    const message = await git.forcePush();
     const branch = await git.getCurrentBranch();
+    const message = expectedRemoteSha === undefined
+      ? await git.forcePush()
+      : await git.forcePushWithLease("origin", branch, expectedRemoteSha);
     runner.emitMessage({ type: "github_push_result", success: true, message, branch });
     notifyPrStatusPollerOfPush(deps);
     return true;
@@ -578,28 +599,43 @@ async function tryForcePush(deps: RebaseDriverDeps): Promise<boolean> {
  * it to origin, and the user experiences it as a "Resolve conflicts" button that
  * does nothing, forever, however many times they press it.
  *
- * Deliberately narrow: it pushes only when the remote tip is an ANCESTOR of
- * HEAD, which is the fast-forward case and the one this bug produces. A remote
- * that has diverged (someone else pushed) is left alone — resolving that is the
- * rebase path's job, not a silent history rewrite from the no-op branch. A
- * branch with no remote ref yet is also left alone: publishing a branch for the
- * first time belongs to the auto-push path, not to "sync with base".
+ * Deliberately narrow — four things must all hold, and each excludes a way this
+ * could publish something nobody asked it to:
+ *
+ *  1. **The session is not on the base branch.** `syncLocalBaseRef` already
+ *     handles a session sitting on `<base>`, so it happens. `origin/main` is
+ *     trivially an ancestor of a `main` checkout carrying local commits, and
+ *     without this clause "Sync with main" would push straight to `main`,
+ *     bypassing the pull request entirely.
+ *  2. **The branch ref resolves to HEAD.** On a detached HEAD
+ *     `getCurrentBranch()` falls back to the literal `"main"`, so the ancestry
+ *     question would be asked of one ref and the push aimed at another — landing
+ *     commits on a branch the caller never named and reporting success.
+ *  3. **`origin/<branch>` exists.** Publishing a branch for the first time
+ *     belongs to the auto-push path, not to "sync with base".
+ *  4. **The remote tip is an ANCESTOR of HEAD** — the fast-forward case, and the
+ *     one this bug produces. A genuinely diverged remote is left alone; resolving
+ *     that is the rebase path's job, not a silent history rewrite from the no-op
+ *     branch. The verified sha is then handed to the push as its lease, so a
+ *     commit that lands in between is rejected rather than clobbered.
  *
  * Returns true only when a push actually landed. Any inspection failure returns
  * false: an unpushed commit is a recoverable state, and a git error here must not
  * fail a sync that is otherwise a no-op.
  */
-async function pushIfAheadOfRemote(deps: RebaseDriverDeps): Promise<boolean> {
+async function pushIfAheadOfRemote(deps: RebaseDriverDeps, baseBranch: string): Promise<boolean> {
   const { git } = deps;
   try {
     if (!deps.githubAuthManager.authenticated) return false;
     const branch = await git.getCurrentBranch();
-    const remoteHead = await git.getRefHash(`origin/${branch}`);
-    if (!remoteHead) return false;
+    if (branch === baseBranch) return false;
     const localHead = await git.getHeadHash();
-    if (!localHead || localHead === remoteHead) return false;
+    if (!localHead) return false;
+    if ((await git.getRefHash(branch)) !== localHead) return false;
+    const remoteHead = await git.getRefHash(`origin/${branch}`);
+    if (!remoteHead || remoteHead === localHead) return false;
     if (!(await git.isAncestor(remoteHead, "HEAD"))) return false;
-    return await tryForcePush(deps);
+    return await tryForcePush(deps, remoteHead);
   } catch (err) {
     console.error("[rebase] up-to-date push check failed:", getErrorMessage(err));
     return false;
@@ -747,9 +783,13 @@ export const AUTO_RESOLVE_ATTEMPT_TIMEOUT_MS = 10 * 60 * 1000;
  *   - dirty tree, in-progress rebase, no GitHub auth → deferred.
  *
  * Translation of `runRebaseFlow`'s outcome:
- *   - `up_to_date` (GitHub said CONFLICTING but our local view disagrees) →
- *     deferred with `suppressEmit: true` so the WS layer doesn't flash
- *     "rebased then deferred" after the inner `rebase_complete`.
+ *   - `up_to_date` with NO push (GitHub said CONFLICTING but our local view
+ *     disagrees, and the remote already has our head) → deferred with
+ *     `suppressEmit: true` so the WS layer doesn't flash "rebased then deferred"
+ *     after the inner `rebase_complete`.
+ *   - `up_to_date` that DID push (the branch held commits origin never saw —
+ *     which is why GitHub still said CONFLICTING) → success carrying
+ *     `forcePushed`, so the manager arms the settle window for the new head.
  *   - `rebased` / `conflicts_resolved` → success carrying `forcePushed`.
  *   - `ServiceError(409)` from the running-guard → deferred (TOCTOU backstop).
  *   - Any throw BEFORE `onAgentSpawned` fires (fetch failure, ancestry
@@ -865,17 +905,25 @@ export async function runAutoResolveAttempt(
   const flowPromise = (async (): Promise<AutoResolveResult> => {
     try {
       const result = await runRebaseFlow(wrappedDeps, baseBranch);
-      if (result.status === "up_to_date") {
+      if (result.status === "up_to_date" && !result.forcePushed) {
         // GitHub said CONFLICTING; our local view says HEAD already contains
-        // every commit in base. Races between GraphQL mergeability recompute
-        // and our local fetch. Suppress the `auto_resolve_result deferred`
-        // emit on this specific path — `runRebaseFlow` already emitted
-        // `rebase_complete { forcePushed: false }` and a contradicting
-        // `auto_resolve_result deferred` would flash "rebased then deferred"
-        // in the UI.
+        // every commit in base, AND the remote already has that head. Races
+        // between GraphQL mergeability recompute and our local fetch. Suppress
+        // the `auto_resolve_result deferred` emit on this specific path —
+        // `runRebaseFlow` already emitted `rebase_complete { forcePushed: false }`
+        // and a contradicting `auto_resolve_result deferred` would flash
+        // "rebased then deferred" in the UI.
         return { outcome: "deferred", didWork: false, suppressEmit: true };
       }
-      // rebased / conflicts_resolved
+      // An up-to-date flow that DID push is a success, not a deferral. Reporting
+      // it as deferred would hand `writeBack` `pushed: false`, so it would skip
+      // the settle window and leave the arbiter's await-fresh-signal unarmed —
+      // and the next poll, still holding GitHub's pre-push CONFLICTING verdict,
+      // would re-fire against a head that no longer has the conflict. That is
+      // the docs/146 spin, which `writeBack`'s own comment records as having
+      // been reached once before "through the one path that used to hard-code
+      // `false`".
+      // up_to_date-with-push / rebased / conflicts_resolved
       return { outcome: "success", forcePushed: result.status !== "aborted" && "forcePushed" in result ? result.forcePushed : false, didWork: true };
     } catch (err) {
       // 409 from the running-guard. Pre-spawn, no real work; defer.

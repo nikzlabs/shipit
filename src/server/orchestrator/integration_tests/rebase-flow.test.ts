@@ -275,7 +275,7 @@ describe("rebase flow: API + WS events", () => {
     second.finish("test-session-1");
   });
 
-  // planning#280 — the whole point of the rebase is to clear GitHub's
+  // planning#369 — the whole point of the rebase is to clear GitHub's
   // `CONFLICTING` state, and the PR card renders straight off the poller's
   // `mergeable`. The route never told the poller anything, so the "Merge
   // conflicts" chip and the "Resolve conflicts" button outlived the fix by up to

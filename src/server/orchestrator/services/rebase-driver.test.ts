@@ -9,6 +9,7 @@ import { initGlobalGitConfig, setGitIdentity } from "../git-config.js";
 import { SessionRunner } from "../session-runner.js";
 import {
   runRebaseFlow,
+  runAutoResolveAttempt,
   buildRebaseConflictPrompt,
   buildBranchSyncAgentNotice,
   MAX_REBASE_ITERATIONS,
@@ -827,12 +828,12 @@ function makeStubPoller(): StubPoller {
 }
 
 /**
- * planning#280 — the rebase flow is what CLEARS GitHub's `CONFLICTING` state, so it
+ * planning#369 — the rebase flow is what CLEARS GitHub's `CONFLICTING` state, so it
  * owes the PR-status poller a nudge. Without it the card kept its "Merge
  * conflicts" chip and "Resolve conflicts" button for up to a slow tick (120s),
  * and indefinitely with the polling gate closed, after the fix had landed.
  */
-describe("rebase-driver: planning#280 PR status refresh after a push", () => {
+describe("rebase-driver: planning#369 PR status refresh after a push", () => {
   let tmpDir: string;
   let origGitConfigGlobal: string | undefined;
   let origGitEditor: string | undefined;
@@ -955,13 +956,13 @@ describe("rebase-driver: planning#280 PR status refresh after a push", () => {
 });
 
 /**
- * planning#280 (secondary) — the up-to-date short-circuit asks a purely LOCAL
+ * planning#369 (secondary) — the up-to-date short-circuit asks a purely LOCAL
  * question, while GitHub computes `mergeable` from the PUSHED head. A branch
  * holding an unpushed commit is "up to date" locally and CONFLICTING on GitHub,
  * and the old code pushed nothing — so the chip could never clear, however many
  * times the user pressed the button.
  */
-describe("rebase-driver: planning#280 up-to-date branch with unpushed commits", () => {
+describe("rebase-driver: planning#369 up-to-date branch with unpushed commits", () => {
   let tmpDir: string;
   let origGitConfigGlobal: string | undefined;
   let origGitEditor: string | undefined;
@@ -1073,6 +1074,136 @@ describe("rebase-driver: planning#280 up-to-date branch with unpushed commits", 
     expect(result.status).toBe("up_to_date");
     expect(await git.getRefHash("origin/feature")).toBeNull();
     expect(messages.find((m) => m.type === "github_push_result")).toBeUndefined();
+  });
+
+  // The session CAN be on the base branch — `syncLocalBaseRef` has a clause for
+  // exactly that. `origin/main` is trivially an ancestor of a `main` checkout
+  // carrying local commits, so without the guard "Sync with main" would publish
+  // straight to `main` and bypass the pull request.
+  it("session is ON the base branch — refuses to publish to it", async () => {
+    const { workDir, git } = setupRepoWithRemote(tmpDir);
+    // Still on `main`, pushed, then a local-only commit.
+    fs.writeFileSync(path.join(workDir, "local-only.txt"), "never pushed\n");
+    execSync("git add -A && git commit -m 'Local only'", { cwd: workDir, stdio: "pipe" });
+
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+    const messages: WsServerMessage[] = [];
+    runner.on("message", (m: WsServerMessage) => messages.push(m));
+    const originMainBefore = await git.getRefHash("origin/main");
+
+    const result = await runFlow(deps(git, runner, true), "main");
+
+    expect(result.status).toBe("up_to_date");
+    expect(await git.getRefHash("origin/main")).toBe(originMainBefore); // untouched
+    expect(messages.find((m) => m.type === "github_push_result")).toBeUndefined();
+  });
+
+  // The ancestry question is asked of HEAD, but `git push origin <branch>` pushes
+  // the BRANCH REF. When those disagree — a detached HEAD, where
+  // `getCurrentBranch()` falls back to a name rather than reporting the
+  // detachment — the push aims at a ref the check never examined. Here the branch
+  // ref already matches origin, so the push is a silent no-op that would
+  // nonetheless be reported as a successful force-push, and the commit on the
+  // detached HEAD would never reach GitHub at all.
+  it("HEAD is detached ahead of the branch ref — declines rather than reporting a phantom push", async () => {
+    const { workDir, git } = setupRepoWithRemote(tmpDir);
+    execSync("git checkout -b feature", { cwd: workDir, stdio: "pipe" });
+    execSync("git push -u origin feature", { cwd: workDir, stdio: "pipe" });
+    execSync("git checkout --detach HEAD", { cwd: workDir, stdio: "pipe" });
+    fs.writeFileSync(path.join(workDir, "detached.txt"), "off-branch\n");
+    execSync("git add -A && git commit -m 'Detached commit'", { cwd: workDir, stdio: "pipe" });
+    // Reproduce the fallback: a detached HEAD reported as an ordinary branch.
+    vi.spyOn(git, "getCurrentBranch").mockResolvedValue("feature");
+
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+    const originFeatureBefore = await git.getRefHash("origin/feature");
+
+    const result = await runFlow(deps(git, runner, true), "main");
+    vi.mocked(git.getCurrentBranch).mockRestore();
+
+    // No push, and — critically — no claim that one happened.
+    expect(result).toHaveProperty("forcePushed", false);
+    expect(await git.getRefHash("origin/feature")).toBe(originFeatureBefore);
+  });
+
+  /** Land a third-party commit on `origin/feature` from a throwaway clone. */
+  function raceCommitOntoOriginFeature(bareDir: string): string {
+    const tempClone = path.join(tmpDir, `racer-${Math.abs(bareDir.length)}`);
+    fs.mkdirSync(tempClone, { recursive: true });
+    execSync(`git clone ${bareDir} .`, { cwd: tempClone, stdio: "pipe" });
+    execSync("git checkout feature", { cwd: tempClone, stdio: "pipe" });
+    fs.writeFileSync(path.join(tempClone, "racer.txt"), "someone else\n");
+    execSync("git add -A && git commit -m 'Racer'", { cwd: tempClone, stdio: "pipe" });
+    execSync("git push", { cwd: tempClone, stdio: "pipe" });
+    return execSync("git rev-parse HEAD", { cwd: tempClone, encoding: "utf8" }).trim();
+  }
+
+  it("remote has diverged — leaves it alone rather than rewriting it", async () => {
+    const { workDir, bareDir, git } = setupUnpushedCommit(tmpDir);
+    const racerSha = raceCommitOntoOriginFeature(bareDir);
+
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+    const result = await runFlow(deps(git, runner, true), "main");
+
+    // The flow's own fetch sees the divergence, so the ancestor clause declines.
+    expect(result).toHaveProperty("forcePushed", false);
+    expect(await git.getRefHash("origin/feature")).toBe(racerSha);
+  });
+
+  // The window the ancestor check cannot close: a commit landing between the
+  // check and the push. `git.forcePush()` re-reads the LIVE tip and leases
+  // against that, so it would have adopted the racer's commit as the lease and
+  // overwritten it. Passing the checked sha makes git reject the push instead.
+  // Simulated by making the check observe the pre-racer tip, which is exactly
+  // what a real race looks like from inside the flow.
+  it("remote moves between the ancestor check and the push — the lease rejects it", async () => {
+    const { workDir, bareDir, git } = setupUnpushedCommit(tmpDir);
+    const preRacer = await git.getRefHash("origin/feature");
+    const racerSha = raceCommitOntoOriginFeature(bareDir);
+
+    const realGetRefHash = git.getRefHash.bind(git);
+    vi.spyOn(git, "getRefHash").mockImplementation(async (ref: string) =>
+      (ref === "origin/feature" ? preRacer : realGetRefHash(ref)));
+
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+    const messages: WsServerMessage[] = [];
+    runner.on("message", (m: WsServerMessage) => messages.push(m));
+
+    const result = await runFlow(deps(git, runner, true), "main");
+    vi.mocked(git.getRefHash).mockRestore();
+
+    expect(result).toHaveProperty("forcePushed", false);
+    // The racer's commit is still the remote tip — not clobbered.
+    execSync("git fetch origin", { cwd: workDir, stdio: "pipe" });
+    expect(await git.getRefHash("origin/feature")).toBe(racerSha);
+    expect(messages.find((m) => m.type === "git_push_rejected")).toBeDefined();
+  });
+
+  // `writeBack` in auto-conflict-resolve-manager.ts derives `pushed` from
+  // `outcome === "success" && forcePushed`. Reporting a push as `deferred` would
+  // skip the settle window and leave await-fresh-signal unarmed, so the next poll
+  // — still holding GitHub's pre-push CONFLICTING verdict — re-fires against a
+  // head that no longer has the conflict. That is the docs/146 spin.
+  it("auto-resolve: an up-to-date flow that pushed is reported as success, not deferred", async () => {
+    const { workDir, git } = setupUnpushedCommit(tmpDir);
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+
+    const result = await runAutoResolveAttempt(deps(git, runner, true), "main");
+
+    expect(result).toMatchObject({ outcome: "success", forcePushed: true, didWork: true });
+  });
+
+  it("auto-resolve: a genuine no-op stays a suppressed deferral", async () => {
+    const { workDir, git } = setupRepoWithRemote(tmpDir);
+    execSync("git checkout -b feature", { cwd: workDir, stdio: "pipe" });
+    execSync("git push -u origin feature", { cwd: workDir, stdio: "pipe" });
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+
+    const result = await runAutoResolveAttempt(deps(git, runner, true), "main");
+
+    // Nothing changed on GitHub, so the budget must not move and the UI must not
+    // flash a contradicting envelope after the inner `rebase_complete`.
+    expect(result).toMatchObject({ outcome: "deferred", didWork: false, suppressEmit: true });
   });
 
   it("no GitHub auth — reports up-to-date without pretending it pushed", async () => {

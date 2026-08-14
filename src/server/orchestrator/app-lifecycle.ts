@@ -1140,7 +1140,7 @@ export function createPrStatusPoller(
           chatHistoryManager,
           usageManager,
           sseBroadcast,
-          // planning#280 — the auto path force-pushes too, so it needs the same
+          // planning#369 — the auto path force-pushes too, so it needs the same
           // "the conflict just cleared, go look" notification the user-driven
           // route gets. Read at call time; see `pollerHolder` above.
           prStatusPoller: pollerHolder.current,
@@ -1326,7 +1326,7 @@ export function createPrStatusPoller(
   });
 
   // Close the cycle: the auto-resolve closure reads this at call time so its
-  // force-push can refresh the PR status it just changed (planning#280).
+  // force-push can refresh the PR status it just changed (planning#369).
   pollerHolder.current = prStatusPoller;
 
   // Seed in-memory `lastKnown` from persisted PR snapshots so archived

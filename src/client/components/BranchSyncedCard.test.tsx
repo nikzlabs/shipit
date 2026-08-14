@@ -43,7 +43,7 @@ describe("BranchSyncedCard", () => {
     expect(screen.queryByText(/was/)).not.toBeInTheDocument();
   });
 
-  // planning#280 — a sync that rebases nothing can still push: the branch held
+  // planning#369 — a sync that rebases nothing can still push: the branch held
   // commits origin had never seen, which is exactly what kept the PR marked
   // conflicting. Reading "nothing happened" while the PR state just changed is
   // how the user concluded the button was broken.
