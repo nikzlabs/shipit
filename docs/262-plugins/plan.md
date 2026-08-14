@@ -402,9 +402,18 @@ instead of a repeat.
   use. `snapshotRepo` is such a caller, so a `repos:` entry re-pointed from
   `acme/old` to `acme/new` can still have `acme/old`'s checkout mounted as this
   session's plugin services. `retireForeignGeneration` closes the window inside
-  `activateOnce`, so the exposure is a reconcile that runs before or
-  independently of the next activation round — which `applyShipitConfigChange`
-  does, driven by the same `shipit.yaml` edit that re-pointed the declaration.
+  `activateOnce` — but activation is **fire-and-forget** at both call sites
+  (`service-manager-setup.ts:436`, `:1077`), deliberately, so a slow fetch never
+  delays a session opening (req 13). The window is therefore bounded by a git
+  fetch plus an install, not by a symlink swap, and the service path usually
+  wins it: `setupServiceManager` fires activation at `:436`, then resolves
+  plugin services at `:814-817` behind local awaits only. A session opening
+  against a declaration re-pointed since its last round STARTS the previous
+  repository's services. The `shipit.yaml`-edit path differs — its reconcile
+  reuses already-resolved services rather than re-resolving, so there the
+  exposure persists across the edit rather than being created by it. Ordering
+  the reconcile behind activation is the wrong lever: it trades req 19 for
+  req 13 and still leaves session activation resolving before any round has run.
   The fix here is one comparison (`record.source === destinationKey(...)`) on a
   record `snapshotRepo` already reads, and it waits only on #2225 landing the
   field. The general shape is **verify where the link is resolved, and return a
