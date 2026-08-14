@@ -361,13 +361,31 @@ describe("materializePluginSkills", () => {
   it("sweeps a staging directory a killed run left behind", () => {
     // The `finally` cannot cover a killed process, and nothing else ever names
     // these — so without this they accumulate, holding third-party content in
-    // the workspace.
+    // the workspace. The marker is written BEFORE the copy starts, so even a
+    // run killed mid-copy leaves one that proves whose it is.
     const orphan = path.join(roots()[0]!, `.${namespacedName("tools", "probe")}.staging-deadbeef`);
     fs.mkdirSync(orphan, { recursive: true });
     fs.writeFileSync(path.join(orphan, "SKILL.md"), "half copied");
+    fs.writeFileSync(
+      path.join(orphan, PLUGIN_SKILL_MARKER),
+      JSON.stringify({ marker: "shipit-plugin-skill-v1", name: "x" }),
+    );
 
     sweepStalePluginSkills(workspaceDir, new Set());
     expect(fs.existsSync(orphan)).toBe(false);
+  });
+
+  // req 27 made this reachable: a self-declared plugin may point `skills:` at a
+  // harness root, so a directory in this root can be checked-in source. Deleting
+  // it because its NAME matches is the working-tree data loss the marker exists
+  // to prevent — the same rule the published names follow.
+  it("leaves a staging-shaped directory that is not provably ours", () => {
+    const theirs = path.join(roots()[0]!, `.${namespacedName("tools", "probe")}.staging-backup`);
+    fs.mkdirSync(theirs, { recursive: true });
+    fs.writeFileSync(path.join(theirs, "SKILL.md"), "the user's own notes");
+
+    sweepStalePluginSkills(workspaceDir, new Set());
+    expect(fs.existsSync(path.join(theirs, "SKILL.md"))).toBe(true);
   });
 
   // req 27 — under `repo: self` the checkout IS the workspace, so this module's

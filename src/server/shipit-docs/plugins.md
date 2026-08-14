@@ -67,7 +67,10 @@ mid-session, `/plugins/<name>` points at the new commit with no restart.
 
 Everything a plugin *ships* — its `install`, its CLIs, its services — runs in a
 separate container, with only what it declared: the checkout, its own writable
-layer, its own credentials.
+layer, and the credential names in its manifest. (Those values reach a plugin's
+**CLI** today. A plugin **service** does not receive them yet, even when the
+Plugins tab shows the key as satisfied — so a service that needs an API key
+cannot work until that lands.)
 
 This is not tidiness. Your container can reach ShipIt's own credential broker
 on loopback, so anything running here can obtain a real GitHub token. Plugin
@@ -163,7 +166,8 @@ session's own working tree.** So:
   a `shipit.yaml` save or the session opening runs.
 - The plugin's `install` does not run: it exists to populate a generation's
   writable layer, and there is none. Your repository's own `agent.install`
-  prepares the working tree that the services and CLIs then run out of.
+  prepares the working tree that the services and CLIs then run out of. (Whether
+  self-use should run the exported `install` too is an open product question.)
 - The repository's issues are already this session's, so `self` registers no
   separate feedback destination. File plugin bugs the ordinary way.
 

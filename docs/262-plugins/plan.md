@@ -159,11 +159,20 @@ Rules (review findings, both rounds):
   session's own working tree. Nothing under the store is consulted, so a
   checkout left by a declaration that USED to be tracked under the same name
   cannot be linked, cannot supply skills and cannot name a command. It is also
-  retired rather than left lying about (`plugin-activation.ts` calls the same
-  `retireForeignGeneration` an ordinary re-point runs, under the same lease):
-  self activates nothing, so no later round would ever have reconciled it, and
-  the store mount would keep the previous repository's files readable for the
-  session's whole life.
+  retired rather than left lying about (`retireSelfDeclaredGeneration` wraps the
+  same retirement an ordinary re-point runs, under the same lease): self
+  activates nothing, so no later round would ever have reconciled it, and the
+  store mount would keep the previous repository's files readable for the
+  session's whole life. Two things that wrapper adds, both from review. It takes
+  the **per-repository queue**, the key activation serializes on, so it cannot
+  interleave with a publish for the same name — off the queue it could delete a
+  generation a later round had just published, or that round's staging tree. And
+  it **re-reads the declaration inside the queued task**: ordering alone does not
+  help a round that read `self` before the name was re-pointed, so the version on
+  disk when the work runs is the only one it acts on. It also answers the
+  source-less legacy record the OPPOSITE way from the tracked path — there
+  "unknown provenance" might be this repository's own generation, and under a
+  self declaration it cannot be, since nothing ever publishes one.
 
   **The two things a plugin author should expect, stated rather than implied.**
   `/plugins/<name>` is deliberately NOT created for a self declaration — the
@@ -176,13 +185,17 @@ Rules (review findings, both rounds):
   to. Everything read live — the service's tree, the CLI's tree, `/project` —
   needs nothing.
 
-  **And `install` does not run under self, which follows from the same fact and
-  is the right answer rather than a gap.** A plugin's `install` exists to
-  populate a generation's writable layer, and self has neither; the repository's
-  own `agent.install` is what prepares the working tree its services and CLIs
-  then run out of — the setup a plugin author already has for their own
-  repository. This is what the fixture's `install.matchesActiveCommit: null`
-  records under self-use.
+  **And `install` does not run under self — which is where the design stands,
+  not a settled answer.** A plugin's `install` populates a generation's writable
+  layer and self has neither, so the repository's own `agent.install` is what
+  prepares the working tree its services and CLIs run out of. An independent
+  review read that as a req 27 violation — "nothing is duplicated to make
+  self-use work" — against req 27's own enumeration, which does not name install;
+  `test-plugin/` assumes the reviewer's reading (it gitignores a stamp only a
+  self-mode install could write). **It is a question for the user, recorded under
+  `requirements.md` → Open questions**, because running it means a new
+  install-container branch over the session's working tree, and that is
+  mechanism no requirement has asked for yet.
 
 ### 1b. Plugin side — `exports.plugins:` (reqs 5, 17, 22, 23, 24, 26)
 

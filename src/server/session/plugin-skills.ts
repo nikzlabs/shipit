@@ -500,6 +500,18 @@ function writeSkill(from: string, root: string, name: string): string | null {
     if (owned === "foreign") return `\`${name}\` already exists and was not created by ShipIt`;
 
     fs.rmSync(staging, { recursive: true, force: true });
+    // **The marker goes in FIRST, before a byte is copied** (review finding).
+    // The sweep below has to be able to delete a staging tree a killed process
+    // left behind, and until now it decided ownership from the NAME alone —
+    // which is exactly the reasoning {@link ownershipOf} exists to reject. That
+    // was unreachable while every source was another repository's checkout;
+    // under `repo: self` (req 27) a plugin may legitimately declare a harness
+    // skill root as its `skills:` directory, and a checked-in directory there
+    // whose name happens to match this pattern was recursively deleted — the
+    // user's own working-tree data, gone. Writing the marker first makes a
+    // staging tree provably ours from the moment it exists.
+    fs.mkdirSync(staging, { recursive: true });
+    writeMarker(staging, from, name);
     // Symlinks are DROPPED, not followed. `dereference: true` copies a link's
     // target content, so a plugin repository could ship
     // `skills/x/assets -> /credentials` (or a huge tree) and have this copy it
@@ -514,10 +526,9 @@ function writeSkill(from: string, root: string, name: string): string | null {
       return `\`${name}\` has no readable SKILL.md`;
     }
     rewriteSkillName(path.join(staging, "SKILL.md"), name);
-    fs.writeFileSync(
-      path.join(staging, PLUGIN_SKILL_MARKER),
-      `${JSON.stringify({ marker: PLUGIN_SKILL_MARKER_ID, source: from, name }, null, 2)}\n`,
-    );
+    // Re-written after the copy as well: a source directory carrying a file of
+    // this name would otherwise have overwritten ours on the way in.
+    writeMarker(staging, from, name);
 
     // What this does and does NOT guarantee. The directory that appears at
     // `to` is always complete — it is built entirely under `staging` and
@@ -535,6 +546,14 @@ function writeSkill(from: string, root: string, name: string): string | null {
   } finally {
     fs.rmSync(staging, { recursive: true, force: true });
   }
+}
+
+/** The ownership proof, written twice — see both call sites in {@link writeSkill}. */
+function writeMarker(dir: string, from: string, name: string): void {
+  fs.writeFileSync(
+    path.join(dir, PLUGIN_SKILL_MARKER),
+    `${JSON.stringify({ marker: PLUGIN_SKILL_MARKER_ID, source: from, name }, null, 2)}\n`,
+  );
 }
 
 function isSymlink(p: string): boolean {
@@ -611,11 +630,17 @@ function removeStaleSkills(workspaceDir: string, wanted: ReadonlySet<string>): s
       continue;
     }
     for (const entry of entries) {
-      // A staging directory is always ours and never wanted: it exists only
-      // between the copy and the rename, so anything still here is the residue
-      // of a run that died (review finding — the `finally` cannot cover a
-      // killed process, and nothing else names these).
-      if (entry.isDirectory() && STAGING_RE.test(entry.name)) {
+      // A staging directory is never WANTED — it exists only between the copy
+      // and the rename, so anything still here is the residue of a run that died
+      // (the `finally` cannot cover a killed process, and nothing else names
+      // these). But "never wanted" is not "ours": the marker decides that here
+      // exactly as it does below, because under `repo: self` a source directory
+      // and this root can be the same directory, and a checked-in name that
+      // merely matches the pattern is the user's, not ours (review finding).
+      // `writeSkill` writes the marker before it copies, so a genuine residue
+      // always carries one; one left by a build older than that change is not
+      // swept, which costs a hidden, git-excluded directory and no data.
+      if (entry.isDirectory() && STAGING_RE.test(entry.name) && ownershipOf(path.join(root, entry.name)) === "ours") {
         try {
           fs.rmSync(path.join(root, entry.name), { recursive: true, force: true });
         } catch (err) {

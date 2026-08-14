@@ -23,7 +23,7 @@ import {
   activateGeneration,
   readActiveGeneration,
   resolveLiveGenerations,
-  retireForeignGeneration,
+  retireSelfDeclaredGeneration,
   type ActivationOutcome,
   type BeginGenerationDeletion,
   type GenerationRecord,
@@ -495,7 +495,9 @@ export async function activateDeclaredPlugins(
   //
   // A narrowed round is left alone: it speaks for the one repository the agent
   // named, and `shipit plugin refresh` refuses a self name outright.
-  if (!onlyRepo) await retireSelfDeclaredGenerations(config.plugins.repos, stateDir, deps, isCancelled);
+  if (!onlyRepo) {
+    await retireSelfDeclaredGenerations(config.plugins.repos, workspaceDir, stateDir, deps, isCancelled);
+  }
 
   if (repos.length === 0) {
     // Nothing to fetch — but a `repo: self` declaration lives entirely in this
@@ -657,6 +659,7 @@ function syncPluginState(sessionId: string, workspaceDir: string): void {
  */
 async function retireSelfDeclaredGenerations(
   repos: readonly DeclaredPluginRepo[],
+  workspaceDir: string,
   stateDir: string,
   deps: PluginActivationDeps,
   isCancelled: () => boolean,
@@ -664,11 +667,15 @@ async function retireSelfDeclaredGenerations(
   for (const repo of repos) {
     if (repo.source.kind !== "self" || isCancelled()) continue;
     try {
-      await retireForeignGeneration(
+      await retireSelfDeclaredGeneration(
         stateDir,
         repo.name,
-        destinationKey(repo.source),
         deps.beginGenerationDeletion,
+        // Re-read at the moment the queued work runs, never the round's own
+        // captured copy: rounds overlap, and a round that started while this
+        // name said `self` must not delete a generation a later round has since
+        // published for a tracked declaration of it (review finding).
+        () => isSelfDeclared(workspaceDir, repo.name) && !isCancelled(),
       );
     } catch (err) {
       console.warn(
@@ -676,6 +683,22 @@ async function retireSelfDeclaredGenerations(
         err instanceof Error ? err.message : String(err),
       );
     }
+  }
+}
+
+/**
+ * Does the project declare this name as `repo: self` RIGHT NOW?
+ *
+ * Fails closed: an unreadable or changed declaration answers `false`, so the
+ * retirement it guards does nothing rather than acting on a guess.
+ */
+function isSelfDeclared(workspaceDir: string, repoName: string): boolean {
+  try {
+    return resolveShipitConfig(workspaceDir).plugins.repos.some(
+      (r) => r.source.kind === "self" && r.name.toLowerCase() === repoName.toLowerCase(),
+    );
+  } catch {
+    return false;
   }
 }
 
