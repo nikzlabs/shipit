@@ -1,7 +1,7 @@
 ---
 issue: planning#243
-title: Safe child-session report delivery
-description: Delivery eligibility and loop prevention for parent and cohort session reports.
+title: Resolved child-session message eligibility
+description: Resolved child sessions do not receive parent messages or cohort reports.
 ---
 
 # Safe child-session report delivery — requirements
@@ -41,24 +41,18 @@ re-armed after a merge and can open a later PR. There is no general durable
 
 ## Terms
 
-- **Explicitly completed session:** a session with a durable, authoritative
-  completion state set by an explicit lifecycle action. A merged or closed PR
-  does not set this state by implication.
 - **Resolved session:** the existing UI lifecycle classification for a session
   whose single PR merged and that received no user message after the merge. A
   merge alone is not sufficient because a later user message makes the session
   active again.
 - **Cohort delivery:** `shipit session report --to cohort`, which can address the
   reporter's parent and siblings.
-- **Direct delivery:** a report to the reporter's parent, or an existing
-  parent-to-child `shipit session message`; direct-message policy is decided
-  separately from cohort-broadcast policy.
+- **Direct delivery:** an existing parent-to-child `shipit session message`.
 
 ## Requirements
 
-1. An archived, explicitly completed, or resolved session must not receive a
-   report card, direct session message, or wake turn through either cohort or
-   parent-child delivery.
+1. A resolved child session must not receive a report card, direct parent
+   message, or wake turn through either cohort or parent-to-child delivery.
 
 2. Delivery eligibility must be evaluated by the server for each recipient at
    delivery time. A sender cannot select a session ID or override a recipient's
@@ -68,15 +62,17 @@ re-armed after a merge and can open a later PR. There is no general durable
    session can continue on the same branch, open a later PR, or coordinate its
    children after that PR reaches a terminal state.
 
-4. A session that the existing UI classifies as resolved — its single PR merged
-   and it received no user message after that merge — must be excluded from
-   cohort broadcasts. The eligibility check must reuse the existing resolved
-   classification rather than create a different report-specific approximation.
+4. A child session that the existing UI classifies as resolved — its single PR
+   merged and it received no user message after that merge — must be excluded
+   from cohort broadcasts. The eligibility check must reuse the existing
+   resolved classification rather than create a different report-specific
+   approximation.
 
-5. The same recipient eligibility rule applies to direct parent-to-child and
-   child-to-parent delivery. A resolved recipient cannot receive direct
-   coordination. A new user message that moves the session out of the existing
-   resolved classification makes it eligible again.
+5. The same recipient eligibility rule applies when a parent sends a direct
+   message to its child. A resolved child cannot receive direct coordination. A
+   new user message that moves the child out of the existing resolved
+   classification makes it eligible again. Child-to-parent delivery and resolved
+   parent behavior do not change.
 
 6. When a recipient is ineligible, the system must use one consistent outcome:
    omit delivery entirely. It must not persist an actionable or audit card in
@@ -86,30 +82,24 @@ re-armed after a merge and can open a later PR. There is no general durable
    command response to the sender must name that recipient, say that it is
    resolved, and state that it received no message, card, or wake turn.
 
-8. FYI wake policy must be explicit. A persisted FYI card and an agent wake are
-    separate effects; low-urgency information must not consume a turn unless the
-    selected policy requires it.
+8. Severity behavior must not change. Every eligible `fyi`, `warn`, and
+   `blocker` report persists its card and starts or queues an agent wake turn.
 
-9. `warn` and `blocker` reports that are eligible must retain the current
-   non-preempting behavior: a busy recipient queues the system turn, and an idle
-   recipient starts it through the shared wake path.
+9. Every eligible report retains the current non-preempting behavior: a busy
+   recipient queues the system turn, and an idle recipient starts it through the
+   shared wake path.
 
 10. The existing per-reporter rolling rate limit remains the volume bound for
     eligible recipients. No causal-chain tracking, content fingerprinting, or
     other smart duplicate suppression is added in this remediation.
 
-11. Tests must cover archived and explicitly completed recipients, merged and
-    re-armed sessions, the existing resolved classification, direct-message
-    policy, every severity, and reporter-visible delivery outcomes.
+11. Tests must cover the existing resolved-child classification, a later user
+    message making the child eligible again, parent-to-child direct messages,
+    cohort delivery, all severities, and sender-visible skip outcomes.
 
 ## Open questions
 
-### Q3. Should an FYI report wake the recipient agent?
-
-- **A — Card only (recommended).** Persist the FYI in the recipient transcript,
-  but do not start or queue an agent turn. `warn` and `blocker` keep wakes.
-- **B — Card and wake.** Keep the current behavior: every FYI starts or queues an
-  agent turn after its card is persisted.
+_None._
 
 ## Resolved questions
 
@@ -120,10 +110,9 @@ re-armed after a merge and can open a later PR. There is no general durable
   not treat every merged PR as completion and do not invent a separate idle/queue
   approximation.
 - 2026-08-14 — Does resolved-session ineligibility apply only to cohort reports?
-  Chosen: no. Apply it to direct parent-to-child and child-to-parent recipient
-  delivery too. Do not persist an actionable card and do not wake a resolved
-  recipient. A later user message can move the session back to active and make it
-  eligible again.
+  Chosen: no. Apply it when a parent directly messages its resolved child too.
+  Do not change child-to-parent delivery or resolved-parent behavior. A later
+  user message can move the child back to active and make it eligible again.
 - 2026-08-14 — When delivery to a resolved recipient is blocked, what remains in
   that recipient's transcript? Chosen: no card. The sender's command response
   must clearly name the resolved recipient and state that it received no message,
@@ -132,3 +121,6 @@ re-armed after a merge and can open a later PR. There is no general durable
   or other smart duplicate suppression? Chosen: no; smart deduplication is out of
   scope. Keep the existing per-reporter rolling rate limit and fix recipient
   eligibility without adding semantic inference.
+- 2026-08-14 — Should FYI reports stop waking agents? Chosen: no. Do not
+  distinguish severities mechanically. Every eligible `fyi`, `warn`, and
+  `blocker` report continues to persist a card and start or queue a wake turn.
