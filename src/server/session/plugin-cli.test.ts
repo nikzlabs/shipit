@@ -205,6 +205,41 @@ plugins:
     expect(fs.existsSync(path.join(binDir, "reqs"))).toBe(false);
   });
 
+  // The commands half resolves `active` ONCE and reads the manifest out of the
+  // concrete directory, so a round cannot describe two generations. Observable
+  // consequence: the generation the link pointed at when it was resolved is the
+  // one that decides, and a link pointing nowhere surfaces nothing.
+  it("reads the manifest out of the generation the link resolved to", () => {
+    publishRepo("tools", "exports:\n  plugins:\n    requirements:\n      cli:\n        reqs: cli\n");
+    expect(run(TRACKED).commands).toEqual(["reqs"]);
+
+    // Re-point `active` at a generation exporting a different command, the way
+    // an activation round would, and the next round follows it — pinning is per
+    // pass, not a cache.
+    const next = path.join(storeDir, "tools", "generations", "def");
+    fs.mkdirSync(next, { recursive: true });
+    fs.writeFileSync(
+      path.join(next, "shipit.yaml"),
+      "exports:\n  plugins:\n    requirements:\n      cli:\n        reqs-2: cli\n",
+    );
+    fs.rmSync(path.join(storeDir, "tools", "active"));
+    fs.symlinkSync(next, path.join(storeDir, "tools", "active"));
+
+    const result = run(TRACKED);
+    expect(result.commands).toEqual(["reqs-2"]);
+    expect(result.removed).toEqual(["reqs"]);
+  });
+
+  it("surfaces nothing for a repository whose `active` link points nowhere", () => {
+    fs.mkdirSync(path.join(storeDir, "tools"), { recursive: true });
+    fs.symlinkSync(path.join(storeDir, "tools", "generations", "gone"), path.join(storeDir, "tools", "active"));
+
+    const result = run(TRACKED);
+    expect(result.commands).toEqual([]);
+    expect(result.failed).toEqual([]);
+    expect(result.refused).toEqual([]);
+  });
+
   it("is idempotent — an unchanged wrapper is left byte-identical", () => {
     publishRepo("tools", "exports:\n  plugins:\n    requirements:\n      cli:\n        reqs: cli\n");
     run(TRACKED);

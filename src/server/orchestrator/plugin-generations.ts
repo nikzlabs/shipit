@@ -215,57 +215,6 @@ export function activeLinkPath(stateDir: string, repoName: string): string {
  * and the CLI invocation container then gets a volume named for B whose
  * lowerdir is C's tree (sibling report, docs/262). Whoever resolves the link is
  * responsible for holding onto the result.
- *
- * ## Which callers belong here
- *
- * The rule, written down because three sessions each re-derived it: these
- * readers are for a pass whose results are **compared or combined as if they
- * came from one generation**. Three shapes look like members from a grep for
- * `readActive*` and are not — collapsing them is a regression, not a fix:
- *
- *  - A read that must **observe a change**. `services/plugin-refresh.ts`
- *    snapshots each commit, activates, then reads again; `after !== before` is
- *    the whole changed/unchanged verdict. One resolution reports every refresh
- *    as `unchanged`.
- *  - A path that must **follow a later swap**. `/plugins/<name>` links to the
- *    *unresolved* `active` deliberately, so a new generation reaches the agent
- *    with no re-link (plan §2). Pinning it would break refresh.
- *  - An operation that **already resolves once**. A lone `readActiveGeneration`
- *    is a single `open` through the link, so the fields of its record cannot
- *    disagree; a window between that read and a later write is a lease
- *    question, not a resolution one.
- *
- * ## Resolving once does not settle identity
- *
- * Every path here is keyed by the declaration **name**, and `GenerationRecord`
- * carries no source repository — so a `repos:` entry re-pointed at a different
- * repository keeps serving the previous repository's generation, however
- * carefully a caller resolves. That is a separate axis with a separate fix: a
- * recorded source, checked on read.
- *
- * **A guard on the wrappers alone does not cover a caller that resolved
- * `active` itself.** Guarding the wrappers makes the compiler find every caller
- * *of the wrappers* — which is every reader that displays or validates, and not
- * the one that **executes**: `plugin-cli-run.ts` calls these two directly, so a
- * required argument one level down leaves the invocation container mounting and
- * running a repository the declaration no longer names, with the credentials
- * the project stored for the declared one, and no build error to say so.
- *
- * **The check belongs at the point of resolution, not on these readers.** A
- * caller that resolves the link is the caller that has both halves — the
- * declaration it started from and the record it just read — so it compares
- * there and passes on a handle that is *already verified*. Adding
- * `expectedSource` to these two instead is worse than it looks: only
- * {@link readGenerationRecordAt} reads the record, so it is the only one that
- * could compare; {@link readGenerationManifestAt} reads `shipit.yaml` and would
- * have to re-read the record to check anything — duplicating the read its
- * caller just did, on the very path whose point is to read once.
- *
- * So these stay directory-scoped primitives **for callers that have already
- * verified identity**, and a caller reaching for them without a verified handle
- * is the shape to look for in review. That is not a guarantee the compiler
- * makes; it is the cost of resolving once, and it is why this paragraph is here
- * rather than in a commit message.
  */
 export function readGenerationRecordAt(generationDir: string): GenerationRecord | null {
   try {

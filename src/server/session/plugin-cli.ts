@@ -200,9 +200,31 @@ function buildPlan(
   );
 }
 
+/**
+ * Resolve a declared repository's live generation to a CONCRETE directory, once.
+ *
+ * `active` is a symlink an activation round re-points, so handing back the link
+ * unresolved leaves every later read following it again — and a refresh landing
+ * between two of them yields one prepare result describing two generations.
+ * One `realpathSync` and no preceding `existsSync`: the missing-link case is
+ * the exception branch precisely so the check and the read cannot straddle a
+ * swap. With the memo in {@link buildPlan}, that is one resolution per declared
+ * repository per pass.
+ *
+ * Whether the generation it lands on came from the repository the declaration
+ * NOW names is a separate axis, and it is deliberately not checked here: the
+ * generation record lives in the orchestrator's tree, which
+ * `src/server/session/` never imports. The container side is guarded instead by
+ * activation clearing `active` for a re-pointed declaration before it fetches —
+ * which is why that retirement is load-bearing here rather than redundant with
+ * the orchestrator's own reader checks.
+ */
 function activeCheckout(storeDir: string, repoName: string): string | null {
-  const active = path.join(storeDir, repoName, "active");
-  return fs.existsSync(active) ? active : null;
+  try {
+    return fs.realpathSync(path.join(storeDir, repoName, "active"));
+  } catch {
+    return null;
+  }
 }
 
 /**
