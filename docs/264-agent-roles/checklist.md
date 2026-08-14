@@ -29,7 +29,7 @@ The design is [`plan.md`](./plan.md); the contract is [`requirements.md`](./requ
 ## Phase 3 — Chat-native creation
 
 - [ ] Settings CRUD for roles, validating params through `resolveReviewerPinPatch`; the optional
-      prompt field (per open question 1) is an ordinary string
+      prompt field (req 11) is an ordinary string
 - [ ] Name rules: kebab-case token, length bound, uniqueness — enforced server-side
 - [ ] Roles settings surface: the built-in `reviewer` row (auto/pinned, its two-slot resolution)
       plus the user roles (name, optional prompt, the three shared controls, rename, delete, New
@@ -42,6 +42,5 @@ The design is [`plan.md`](./plan.md); the contract is [`requirements.md`](./requ
       consult `runOn`
 - [ ] The offer's payload is the exact command / settings write that creates the role
 
-The pool question (requirements open question 2 — may a user role's params be auto?) is
-deliberately not in this table; see plan.md § "The pool question, reframed" for what it would
-cost.
+The pool question is settled (requirements req 12): a user role's params are pinned — deliberately
+not in this table; see plan.md § "The pool question, settled" for the assessment that led there.

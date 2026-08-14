@@ -15,7 +15,7 @@ resolved from the two configured slots — docs/261), or spelled out **ad hoc** 
 (`--model NAME` / `--effort LEVEL` — docs/263). The direction generalizes the implicit side:
 instead of only a reviewer, the user preconfigures **agent roles** — named units of agent work,
 each carrying the params a reviewer has today (the service, the billing mode, the model and the
-reasoning level) and, tentatively, a prompt. The **reviewer is one role** (the automatic one);
+reasoning level) and an optional standing prompt. The **reviewer is one role** (the automatic one);
 user roles are additional, and asking for a review by name and asking for any other role by name
 are the same action.
 
@@ -23,9 +23,9 @@ The shaping principle, in the product owner's words: *the ad-hoc path stays as t
 on-ramp — you cannot save a reviewer you have not tried — and conversion is the mechanism, not
 prohibition.* Nothing here blocks, warns at, or otherwise makes the ad-hoc path harder.
 
-The number of roles is **open-ended** ("preconfigure various agent roles"). Whether a user role
-may carry *auto* (ShipIt-resolved) params rather than a pinned tuple is deliberately open —
-see open question 2.
+The number of roles is **open-ended** ("preconfigure various agent roles"). A user role's params
+are **pinned** (req 12); the automatic resolution is the built-in `reviewer` role's, and a user
+role never resolves its own model.
 
 ## Requirements
 
@@ -69,12 +69,26 @@ see open question 2.
 
 9. **A role is a model, like every other reviewer; the harness is derived.** docs/261 req 3
    fixes a reviewer as a model with the harness derived from it, and a role is a reviewer.
-   Whether a role may *additionally* name a harness is open question 4.
+   Whether a role may *additionally* name a harness is open question 1.
 
 10. **What a role's run did is reported and attributed exactly as any other review.**
     docs/261 req 9 is restated because this feature must not lose it: a role is still resolved
     and routed once, and the consult card still says which service, model, harness and level
     actually ran.
+
+11. **A role may carry an optional standing prompt — its job description — which composes with
+    the per-invocation task prompt at run time.** The prompt is user data stored with the role,
+    and the run's prompt is one channel: the role's standing half first, then the task half.
+    A role without a prompt is a complete role; the prompt extends, it does not gate.
+
+12. **A role names exactly what it runs.** A user role's params are **pinned**; the automatic
+    resolution is the built-in `reviewer` role's, and a user role never resolves its own model.
+    This settles the earlier "pool" question: user roles are not members of the automatic pick.
+
+13. **A role is a unit; it is not overridden per invocation.** `--role NAME` combined with
+    `--model` or `--effort` is refused, exactly as a role combined with an explicit parameter is
+    refused today. A variation the user wants is a new role, which is the conversion this feature
+    exists to encourage.
 
 ## Scope
 
@@ -89,33 +103,11 @@ a named reviewer *is* a role.
 
 ## Open questions
 
-1. **Does a role carry a standing prompt?** The user's proposal ended "and maybe also some
-   prompt" — a genuine "maybe." **Recommended: yes, an optional free-text prompt per role.** It
-   is what makes a role more than a model config — a role names a *job*, not just a model — and
-   it is what justifies the generalization over the earlier "named reviewers" frame. The
-   composition question (standing prompt + per-invocation task prompt) is design, in `plan.md`.
-   If the answer is no, a role is a named reviewer and this feature is the earlier frame by
-   another flag.
-
-2. **Must a user role's params be pinned, or may they be auto (ShipIt-resolved)?** "The params
-   we have now" reads as pinned. **Recommended: pinned** — the automatic resolution is the
-   built-in `reviewer` role's, and a role the user defines names what it runs. This is also the
-   reframed "pool" question from the earlier design: a role that could be auto would be a member
-   of the automatic pick, and the cost assessment in `plan.md` § "The pool question, reframed"
-   applies.
-
-3. **May `--role NAME` combine with per-invocation `--effort` / `--model` overrides?** A role
-   is a complete unit (req 1), so a "same role, different level" call is really a new
-   combination — which the ad-hoc path already expresses. **Recommended: no — combining is
-   refused**, exactly as a role combined with an explicit parameter is refused today. The
-   ad-hoc override flags (docs/263) belong to the built-in `reviewer` role, whose params are
-   otherwise auto.
-
-4. **May a role name a harness?** docs/261 deferred harness naming for reviewers (req 3, unify
+1. **May a role name a harness?** docs/261 deferred harness naming for reviewers (req 3, unify
    on model-first). **Recommended: no — a role carries `(service, billing mode, model, level)`
    and the harness stays derived**, consistent with req 9 and with every other reviewer.
 
-5. **What triggers the recurrence offer?** **Recommended: the agent's own judgement, using the
+2. **What triggers the recurrence offer?** **Recommended: the agent's own judgement, using the
    propose-actions pattern**, rather than a server-side heuristic. The agent is the courier of
    every role request, so it is the surface that can see "the user has asked for GPT-5.6 at high
    effort twice" — and an offer is a turn-shaped action, which is the agent's to make, not a
@@ -129,10 +121,18 @@ a named reviewer *is* a role.
   params we have now and maybe also some prompt." **Chosen: a role is the unit.** The reviewer
   is one role (the automatic one, docs/261 unchanged); user roles are additional named units
   carrying the params a reviewer has today, invoked by `--role NAME`; the earlier `--reviewer
-  NAME` namespace folds into the role namespace. The "maybe also some prompt" is **not** a
-  settled requirement — it is open question 1. The re-reading of docs/261 req 6 this implies
+  NAME` namespace folds into the role namespace. The "maybe also some prompt" became a settled
+  requirement the same day — see the next receipt. The re-reading of docs/261 req 6 this implies
   ("the agent names the role, never the reviewer" — a user role *is* a reviewer the user named)
   is recorded in `plan.md` § "The shape".
+
+- 2026-08-13 — **Does a role carry a standing prompt?** **Chosen: yes, optional.** The human took
+  the recommendation. Req 11.
+- 2026-08-13 — **Must a user role's params be pinned, or may they be auto (ShipIt-resolved)?**
+  **Chosen: pinned.** The human took the recommendation. Req 12, which settles the earlier pool
+  question.
+- 2026-08-13 — **May `--role NAME` combine with per-invocation `--effort` / `--model`
+  overrides?** **Chosen: no — a role is a unit.** The human took the recommendation. Req 13.
 
 ## Requirement provenance
 
@@ -151,7 +151,7 @@ a requirement is a restatement of docs/261/263 it is marked as such. What he act
   tried) and make **conversion** the mechanism — not prohibition" → reqs 6 and 7.
 - "the same (model, effort) combo requested twice triggers an offer to save it as a named
   reviewer (the propose-actions pattern)" → req 7, with the mechanism left to `plan.md` and the
-  trigger to open question 5.
+  trigger to open question 2.
 - **"generalize reviewers to any agent roles … the user would be able to preconfigure various
   agent roles, where it would be the params we have now and maybe also some prompt"** → reqs 1,
   2 and 3, and the resolved receipt above. This is the decision that superseded the "named
@@ -162,3 +162,7 @@ lose: docs/263's model-name resolution (8), docs/261 req 3 (9), and docs/261 req
 is stated because name resolution over the *role* namespace — now open to user-defined names —
 is the genuinely new failure mode this feature introduces, and it must fail as legibly as
 docs/263's does.
+
+Reqs 11–13 are the human's answers to the open questions, each taken as recommended and
+recorded with a dated receipt above: the standing prompt (11), pinned params (12), and a role as
+an unoverridable unit (13).

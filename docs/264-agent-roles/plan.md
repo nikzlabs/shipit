@@ -54,14 +54,13 @@ Three reasons the generalization is the right call, not just a renaming:
 
 ```
 role = { name, prompt?, params }
-params = (serviceId, billingMode, modelId, reasoningEffort)   // pinned — open question 2
+params = (serviceId, billingMode, modelId, reasoningEffort)   // pinned — req 12
 ```
 
 - **`name`** — a single CLI-safe token: lowercase letters, digits and dashes (kebab-case), so
   `--role NAME` is a valid word and cannot collide with a flag. Unique per install; creating a
   duplicate is a refusal.
-- **`prompt`** — an optional free-text standing prompt (open question 1; designed here for the
-  recommended yes). See *The prompt*.
+- **`prompt`** — an optional free-text standing prompt (req 11). See *The prompt*.
 - **`params`** — exactly the tuple a pinned reviewer holds (docs/261 reqs 1, 3, 5). The harness
   is **derived** (req 9, docs/261 req 3), never stored.
 - **The built-in `reviewer` role is not stored.** Its resolution *is* the two slots (docs/261).
@@ -73,9 +72,9 @@ params = (serviceId, billingMode, modelId, reasoningEffort)   // pinned — open
 auto-configured/pinned state and the *Eligible is not runnable* rule all as docs/261 ships them.
 The ad-hoc override flags (`--model NAME`, `--effort LEVEL`, docs/263) attach to **this** role,
 whose params are otherwise auto — they are the on-ramp, and a pinned user role is not the place
-for them (open question 3, recommendation no).
+for them (req 13).
 
-## The prompt (open question 1; designed for the recommended yes)
+## The prompt (req 11)
 
 A role may carry a **standing prompt** — its job description ("check the code against
 requirements.md", "review the diff for correctness only"). At spawn the role's standing prompt
@@ -139,8 +138,8 @@ is the server's, listing the known roles. The shim buys a message for the built-
 for user roles, which is the honest limit of what a stateless shim can know.
 
 **Mutual exclusion, mirroring docs/261's role-vs-explicit refusal.** `--role NAME` names a
-complete unit (req 1), so combining it with `--model` or `--effort` is refused (open question 3,
-recommendation no). The ad-hoc pair names the *built-in reviewer's* params; a user role already
+complete unit (req 1), so combining it with `--model` or `--effort` is refused (req 13). The
+ad-hoc pair names the *built-in reviewer's* params; a user role already
 fixed them.
 
 The **agent passes the user's word verbatim** (req 3): the shim and the system prompts treat
@@ -154,7 +153,7 @@ eligible models, the harnesses' reasoning options), validates what the user name
 a settings API. The server is the authority on the write, reusing `resolveReviewerPinPatch`
 **verbatim** — a role's params are a `ReviewerPin`, and that function already validates a triple
 against the catalogue and the level against the *derived* harness, completing the tuple when the
-level is omitted. The prompt, if any (open question 1), is an ordinary string field.
+level is omitted. The prompt (req 11) is an ordinary string field.
 
 The settings surface gains the role list:
 
@@ -171,13 +170,13 @@ user chooses is accepted as given — the user owns the word.
 ## Recurrence conversion (req 7)
 
 The mechanism is the **propose-actions pattern**, and the trigger is the **agent's own
-judgement** (open question 5, recommendation). The agent is the courier of every role request, so
+judgement** (open question 2, recommendation). The agent is the courier of every role request, so
 it is the only surface that can see "the user has asked for GPT-5.6 at high effort twice." When
 it recognizes a recurrence — a `--role reviewer --model NAME --effort LEVEL` combination the user
 has asked for before — it offers, at the end of the turn, to save it as a role; the offer's
 payload is the exact command (or settings write) that creates it, so accepting costs the user one
 click. A repeated *task* shape (a prompt the user keeps attaching) can earn the same offer with
-that prompt in the role, which is where open question 1's prompt pays off.
+that prompt in the role, which is where req 11's prompt pays off.
 
 Two design notes:
 
@@ -193,7 +192,7 @@ Two design notes:
 
 The Reviewer tab becomes (or grows into) a **Roles** surface: the built-in `reviewer` row (auto,
 showing its two-slot resolution — the auto-configured/pinned state docs/261 ships) followed by
-the user roles, each a name field, an optional prompt field (open question 1), the three shared
+the user roles, each a name field, an optional prompt field (req 11), the three shared
 controls (`ServiceSelector`, the model menu and the reasoning menu — all phase-6 shared pickers,
 so docs/261 req 13 binds them by construction), a rename, a delete, and a *New role* row. User
 roles are pinned by construction (a user created them), so the auto/pinned badge that the slots
@@ -218,31 +217,31 @@ The earlier frame's costs carry over; the prompt adds one. Each:
 - **One name-space.** Role names and model labels are the two lookup tables, and they cannot
   collide at the flag level (`--role` and `--model` are distinct). The unknown-role refusal names
   the known set and points at `--model` for a model (req 8).
-- **The prompt** (open question 1) adds a content surface: a role prompt is **user data** in the
+- **The prompt** (req 11) adds a content surface: a role prompt is **user data** in the
   settings store — the same store as pins, no prompt-architecture change — and a text field on
   the Settings row. Its only real cost is that a role with a prompt invites the user to treat it
   as a custom agent definition, which is exactly the invitation the generalization intends.
-- **The bare-role ranking still has a clean answer.** Under the recommended shape (user roles
-  pinned), it is unchanged — the two slots, ranked, with nothing new to integrate.
+- **The bare-role ranking still has a clean answer.** User roles are pinned (req 12), so the
+  automatic pick is unchanged — the two slots, ranked, with nothing new to integrate.
 
-## The pool question, reframed (open question 2)
+## The pool question, settled (req 12)
 
-The earlier frame's extend-vs-unify question survives, in the role vocabulary: **may a user role
-carry auto (ShipIt-resolved) params?** "The params we have now" reads as pinned, and the
-recommendation is pinned. If the human later wants auto roles, the pool generalization is
-list-shaped already — but the earlier assessment holds and is worth repeating: the automatic pick
-is a **distance ranking**, and the derived default is constructed to be distance-optimal, so an
-auto user role would rarely win the automatic pick; the benefit would be one mental model ("all
-roles can be auto") at the cost of docs/261's shipped two-slot shape. Not now.
+The earlier frame's extend-vs-unify question is settled: **a user role's params are pinned**, and
+the automatic resolution is the built-in `reviewer` role's — the human chose it as recommended.
+The assessment that led there is worth keeping on record: the automatic pick is a **distance
+ranking**, and the derived default is constructed to be distance-optimal, so an auto user role
+would rarely win the automatic pick; the benefit would be one mental model ("all roles can be
+auto") at the cost of docs/261's shipped two-slot shape. The storage stays list-shaped, so a
+future fold would be a small change — but it is a stated non-goal, not a deferred one.
 
 ## Phases
 
 | # | Phase | Reqs | Done when |
 |---|---|---|---|
-| 1 | Storage + resolution: the role list, `resolveRoleByName` (built-in + user), the settings payload carrying roles | 1, 2, 8, 9, 10 | A user role is stored, resolved and routed; an unknown role name is refused listing the known ones; nothing calls it yet |
-| 2 | CLI: `--role NAME` for user roles, the shim's pass-through role check, exclusive with the ad-hoc flags | 2, 3, 4, 8 | `--role deep-dive` spawns that role; `--role NAME` + `--model`/`--effort` is refused in both shim and server |
-| 3 | Chat-native creation: settings CRUD for roles, name validation, the Roles settings surface | 5, 1 | "Create a role `spec-check` = …" is a sentence the agent can act on; the tab shows and edits roles with the shared controls (and the prompt field, per open question 1) |
+| 1 | Storage + resolution: the role list, `resolveRoleByName` (built-in + user), the settings payload carrying roles | 1, 2, 8, 9, 10, 12 | A user role is stored, resolved and routed; an unknown role name is refused listing the known ones; nothing calls it yet |
+| 2 | CLI: `--role NAME` for user roles, the shim's pass-through role check, exclusive with the ad-hoc flags | 2, 3, 4, 8, 13 | `--role deep-dive` spawns that role; `--role NAME` + `--model`/`--effort` is refused in both shim and server |
+| 3 | Chat-native creation: settings CRUD for roles, name validation, the Roles settings surface | 5, 1, 11 | "Create a role `spec-check` = …" is a sentence the agent can act on; the tab shows and edits roles with the shared controls (and the prompt field, req 11) |
 | 4 | Recurrence conversion: the agent-facing guidance and the propose-actions offer, cross-checked against consult `runOn` | 6, 7 | A second ask for the same combination produces an offer to save it as a role, with a one-click accept |
 
-Open question 1's prompt rides phases 1 and 3 if the answer is yes; the pool question (open
-question 2) is deliberately not in the table.
+The prompt (req 11) rides phases 1 and 3. The pool question is settled (req 12): pinned only —
+deliberately not in the table.
