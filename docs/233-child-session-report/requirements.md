@@ -53,10 +53,6 @@ re-armed after a merge and can open a later PR. There is no general durable
 - **Direct delivery:** a report to the reporter's parent, or an existing
   parent-to-child `shipit session message`; direct-message policy is decided
   separately from cohort-broadcast policy.
-- **Report chain:** one originating finding and any reports derived from it as
-  recipients coordinate or escalate it.
-- **Semantic duplicate:** a report that repeats the same material finding even
-  if it was submitted as a new call with a new random ID.
 
 ## Requirements
 
@@ -86,64 +82,34 @@ re-armed after a merge and can open a later PR. There is no general durable
    omit delivery entirely. It must not persist an actionable or audit card in
    the resolved recipient's transcript.
 
-7. Recipient filtering is only one safety control. The service must suppress
-   causal duplicates so two active, eligible sessions cannot echo one finding
-   around the cohort and create a feedback loop.
+7. When delivery is skipped because a recipient is resolved, the synchronous
+   command response to the sender must name that recipient, say that it is
+   resolved, and state that it received no message, card, or wake turn.
 
-8. Each originating finding must have a stable report-chain identifier. A report
-   derived from another report must preserve that identifier. A random delivery
-   ID can still identify one API call or one rendered card, but it must not be the
-   duplicate-suppression key.
-
-9. For a configured suppression scope and duration, one recipient must receive
-   at most one wake for the same report chain. Retries and fan-out overlap must
-   be safe under concurrent delivery.
-
-10. The service must also define semantic duplicate suppression for agents that
-    fail to propagate a chain identifier. The fingerprint must be computed by
-    the server from bounded report fields and must not treat a new random ID as
-    new meaning.
-
-11. Duplicate suppression must occur before card persistence, wake dispatch, and
-    rate-limit charging. The response to the reporter must say which recipients
-    were delivered, skipped as ineligible, or suppressed as duplicates.
-
-11a. When delivery is skipped because a recipient is resolved, the synchronous
-     command response to the sender must name that recipient, say that it is
-     resolved, and state that it received no message, card, or wake turn.
-
-12. FYI wake policy must be explicit. A persisted FYI card and an agent wake are
+8. FYI wake policy must be explicit. A persisted FYI card and an agent wake are
     separate effects; low-urgency information must not consume a turn unless the
     selected policy requires it.
 
-13. `warn` and `blocker` reports that are eligible and not duplicates must retain
-    the current non-preempting behavior: a busy recipient queues the system turn,
-    and an idle recipient starts it through the shared wake path.
+9. `warn` and `blocker` reports that are eligible must retain the current
+   non-preempting behavior: a busy recipient queues the system turn, and an idle
+   recipient starts it through the shared wake path.
 
-14. The existing per-reporter rolling rate limit remains a last-resort volume
-    bound. It does not replace eligibility, causal deduplication, or semantic
-    deduplication.
+10. The existing per-reporter rolling rate limit remains the volume bound for
+    eligible recipients. No causal-chain tracking, content fingerprinting, or
+    other smart duplicate suppression is added in this remediation.
 
-15. Tests must cover archived and explicitly completed recipients, merged and
-    re-armed sessions, dormant terminal-PR sessions, direct-message policy,
-    causal and semantic duplicates, suppression expiry, concurrent duplicate
-    calls, every severity, and reporter-visible delivery outcomes.
+11. Tests must cover archived and explicitly completed recipients, merged and
+    re-armed sessions, the existing resolved classification, direct-message
+    policy, every severity, and reporter-visible delivery outcomes.
 
 ## Open questions
 
-### Q3. What duplicate and FYI policy should apply?
+### Q3. Should an FYI report wake the recipient agent?
 
-- **A — Durable causal suppression plus a 30-minute cohort semantic window; FYI
-  is card-only (recommended).** Suppress the same chain once per recipient for
-  the life of the chain. Also suppress matching normalized
-  reporter/cohort/subject/body fingerprints for 30 minutes. Persist one FYI card
-  but do not wake an agent; `warn` and `blocker` keep wakes.
-- **B — Causal suppression only; every severity wakes.** This is simpler but does
-  not stop an echo when an agent submits a fresh report without the inherited
-  chain ID.
-- **C — Durable causal and semantic suppression; every severity wakes.** This
-  closes both duplicate paths but a permanent semantic fingerprint can suppress
-  a materially relevant recurrence after circumstances change.
+- **A — Card only (recommended).** Persist the FYI in the recipient transcript,
+  but do not start or queue an agent turn. `warn` and `blocker` keep wakes.
+- **B — Card and wake.** Keep the current behavior: every FYI starts or queues an
+  agent turn after its card is persisted.
 
 ## Resolved questions
 
@@ -162,3 +128,7 @@ re-armed after a merge and can open a later PR. There is no general durable
   that recipient's transcript? Chosen: no card. The sender's command response
   must clearly name the resolved recipient and state that it received no message,
   card, or wake turn.
+- 2026-08-14 — Should this remediation add report-chain IDs, content fingerprints,
+  or other smart duplicate suppression? Chosen: no; smart deduplication is out of
+  scope. Keep the existing per-reporter rolling rate limit and fix recipient
+  eligibility without adding semantic inference.
