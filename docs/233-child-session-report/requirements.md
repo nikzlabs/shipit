@@ -44,6 +44,10 @@ re-armed after a merge and can open a later PR. There is no general durable
 - **Explicitly completed session:** a session with a durable, authoritative
   completion state set by an explicit lifecycle action. A merged or closed PR
   does not set this state by implication.
+- **Resolved session:** the existing UI lifecycle classification for a session
+  whose single PR merged and that received no user message after the merge. A
+  merge alone is not sufficient because a later user message makes the session
+  active again.
 - **Cohort delivery:** `shipit session report --to cohort`, which can address the
   reporter's parent and siblings.
 - **Direct delivery:** a report to the reporter's parent, or an existing
@@ -67,10 +71,10 @@ re-armed after a merge and can open a later PR. There is no general durable
    session can continue on the same branch, open a later PR, or coordinate its
    children after that PR reaches a terminal state.
 
-4. The design must define whether the narrower dormant state — only a merged or
-   closed PR, no running turn, no queued work, and no newer open PR — is excluded
-   from cohort broadcasts. This rule must not silently redefine a terminal PR as
-   explicit session completion.
+4. A session that the existing UI classifies as resolved — its single PR merged
+   and it received no user message after that merge — must be excluded from
+   cohort broadcasts. The eligibility check must reuse the existing resolved
+   classification rather than create a different report-specific approximation.
 
 5. Direct parent-to-child and child-to-parent delivery after PR merge or session
    completion must have its own rule. Cohort eligibility must not implicitly
@@ -122,24 +126,6 @@ re-armed after a merge and can open a later PR. There is no general durable
 
 ## Open questions
 
-### Q1. Which terminal-PR sessions are eligible for cohort broadcasts?
-
-- **A — Only explicit lifecycle state gates delivery (recommended).** Exclude
-  archived and explicitly completed sessions. Keep a session eligible when it
-  merely has a merged or closed PR, even when it is idle with no queued work and
-  no newer open PR. This is the smallest rule and does not guess whether the
-  session still coordinates children.
-- **B — Exclude a narrowly dormant terminal-PR session.** Exclude it from cohort
-  broadcasts when all four signals hold: terminal PR, idle, empty queue, and no
-  newer open PR. Direct delivery can still remain available. This reduces fan-out
-  but can hide a report from a parent that is still coordinating children.
-- **C — Exclude every terminal-PR session.** This has the smallest recipient set
-  but conflicts with requirement 3 and is not recommended.
-
-The same decision must state what explicit action creates the durable completed
-state. Recommendation: use an explicit archive/finish lifecycle action, never PR
-state inference.
-
 ### Q2. What remains deliverable after completion, and what audit remains when delivery is skipped?
 
 - **A — Direct messages remain allowed; skipped cohort delivery creates no card
@@ -169,4 +155,9 @@ state inference.
 
 ## Resolved questions
 
-_None yet._
+- 2026-08-14 — Which terminal-PR sessions are eligible for cohort broadcasts?
+  Chosen: exclude sessions that the existing UI classifies as resolved. For this
+  decision, that is a session whose single PR merged and that received no user
+  message after the merge. Reuse that classification for report eligibility; do
+  not treat every merged PR as completion and do not invent a separate idle/queue
+  approximation.
