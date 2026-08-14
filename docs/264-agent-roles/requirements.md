@@ -47,9 +47,14 @@ instead (req 2).
 
 3. **A role is started by name, and the agent works out which role the user means.** "Review the
    PR" reaches the reviewer role without the user naming it; "review with `deep-dive`" names a
-   role explicitly, and that name is used as given rather than re-interpreted. Both are the same
-   action: **the agent supplies a role, never a param.** Mapping an intent onto a role is the
-   agent's judgement; what that role runs on is the user's (req 1).
+   role explicitly, and that name is used as given rather than re-interpreted. Mapping an intent
+   onto a role is the agent's judgement; what that role runs on is the user's (req 1).
+
+   **When starting a role, the agent supplies its name and nothing else.** This governs the role
+   path only. It is not a claim that an agent may never carry parameters at all: a repository may
+   hand an agent a complete target and have it passed through unchanged, which is a different
+   invocation and stays available (req 15). What an agent may never do is *assemble* such a target
+   itself.
 
 4. **Starting a role costs a name and nothing else.** A role is invoked in one word, or in no
    word at all when the intent alone resolves it (req 3). The user never restates the model, the
@@ -72,15 +77,20 @@ instead (req 2).
    (req 2), and its harness is part of what ShipIt resolves — that is the exception req 2 already
    names, not a second rule.
 
-7. **A role's params are pinned, and a role runs on what it names and nothing else.** The single
-   exception is the reviewer ShipIt ships (req 2). A user's role never resolves its own model and
-   is never re-pointed at another one.
+7. **Starting a role runs exactly what the role names.** Resolving a role never substitutes a
+   different model, harness or level for the ones it carries. The single exception is the reviewer
+   ShipIt ships, whose params ShipIt resolves by design (req 2).
+
+   This governs **resolution**. What a child session does over its own life afterwards is req 11's
+   subject, and the two are deliberately different: a role hands a child its starting tuple and
+   stops being involved.
 
 8. **A role may carry standing instructions — what the job is — which apply whenever the role is
    started, in addition to the task it is given.** A role without them is a complete role.
 
-9. **Every role says what it is for**, in a short description the agent and the user can both
-   read, whether or not it carries standing instructions.
+9. *(Provisional — agent-supplied, open question 3.)* **Every role says what it is for**, in a
+   short description the agent and the user can both read, whether or not it carries standing
+   instructions.
 
 10. **A role is a unit; it is not overridden when it is started.** Naming a role together with
     any parameter that would say what to run on — a harness, a service, a billing mode, a model
@@ -92,9 +102,11 @@ instead (req 2).
     which is the same question in both. A child session started with a role runs that role
     completely, rather than inheriting its parent's harness and model.
 
-    A child session so started behaves in every other way like a child session started any other
-    way: it keeps its own routing, failover and model-retirement behaviour across its whole life,
-    rather than being frozen to the moment it was created.
+    **A role decides what the child starts as, not what it is bound to for ever.** Once created,
+    such a child is an ordinary session: it keeps the routing, account failover and
+    model-retirement behaviour every other session has, and may over time run on something other
+    than what the role named. Editing or deleting the role afterwards does not reach back into a
+    child that already exists.
 
 12. **The agent can see which roles exist.** It can read this install's roles — their names and
     what each is for (req 9) — so that it can map an intent onto one (req 3), tell the user what
@@ -105,13 +117,14 @@ instead (req 2).
     This is scoped to **roles**: it is the smallest surface that answers req 3, and it keeps the
     agent choosing roles rather than assembling params.
 
-13. **An unknown role name is refused, and the refusal names the roles that do exist.** The name
-    is resolved server-side, and the user is told what they can say next rather than what they
-    did wrong.
+13. *(Provisional — agent-supplied, open question 3.)* **An unknown role name is refused, and the
+    refusal names the roles that do exist.** The name is resolved server-side, and the user is told
+    what they can say next rather than what they did wrong.
 
-14. **What a role's run did is reported and attributed** — the service, the model, the harness
-    and the level it actually ran on, with its usage and cost attributed to the service and
-    billing mode that served it. This holds for both ways of starting a role (req 11).
+14. *(Provisional — agent-supplied, open question 3.)* **What a role's run did is reported and
+    attributed** — the service, the model, the harness and the level it actually ran on, with its
+    usage and cost attributed to the service and billing mode that served it. This holds for both
+    ways of starting a role (req 11), and a child session also records which role started it.
 
 15. **ShipIt does not tell an agent to assemble a run out of parameters it cannot enumerate.**
     The instructions ShipIt injects into a session do not describe a way of starting an agent
@@ -149,11 +162,16 @@ other agent settings already do.
    where a command needs to. The stricter rule is worth taking only if role names should be
    guaranteed typeable without quoting.
 
-3. **Do reqs 13 and 14 stand?** Both are the agent's, not yours: req 13 because a name-space open
-   to user-defined names has to fail legibly, and req 14 because attribution is an obligation
-   ShipIt already has and this feature must not lose it. Neither came from anything you said.
-   **Recommended: keep both** — but they are listed here rather than buried, because a
-   requirement nobody asked for should be struck rather than inherited by default.
+3. **Do reqs 9, 13 and 14 stand?** All three are the agent's, not yours — req 9 so an agent can
+   choose between roles it can only otherwise see the names of, req 13 so a name-space open to
+   user-defined names fails legibly, and req 14 because attribution is an obligation ShipIt
+   already has and this feature must not lose it. None came from anything you said.
+
+   They are marked *provisional* in the list above rather than being either silently settled or
+   held outside it: the design implements all three, so pretending they are absent would
+   misdescribe it, and pretending they are approved would put words in your mouth.
+   **Recommended: keep all three** — but a requirement nobody asked for should be struck rather
+   than inherited by default, so this is a real question.
 
 ## Resolved questions
 
@@ -250,19 +268,21 @@ his. What he actually said:
   constraint to a required one.
 - "today doesn't work at all because the agent has to specify all the params, and it does not have
   access to the inventory" → reqs 12 and 15.
-- "Leave it implemented, but remove from the injected documentation." → req 14.
+- "Leave it implemented, but remove from the injected documentation." → req 15.
 - "I think there should be two ways to run a sub-agent. One is as a review and another as a child
   session. So maybe in the child session API, the agent should be able to specify the role." →
-  req 10.
+  req 11.
 
 - "I'm not sure if we need to keep the special casing of the reviewer role. What do you think?",
   and then "ok good" to the recommendation → req 2's shape. The question is his; that the answer
   is *one kind of role with automatic params on one of them*, rather than either "two kinds" or
   "no exception", came out of answering it.
 
-Reqs 7 and 10 are his answers to questions put to him, recorded above. Reqs 13 and 14 are the
-agent's — req 13 because a name-space open to user-defined names must fail legibly, and req 14
-because attribution is an obligation ShipIt already has and this feature must not lose it — and
-they are open question 3 rather than settled, because a requirement nobody asked for should be
-struck rather than inherited by default. Req 9 is the agent's too, and is a consequence of req 12
-rather than a new want: an agent cannot choose between roles it can only see the names of.
+Reqs 7 and 10 are his answers to questions put to him, recorded above.
+
+**Reqs 9, 13 and 14 are the agent's**, and are marked *provisional* in the list above pending
+open question 3 — req 9 so an agent can choose between roles it can otherwise only see the names
+of, req 13 so a name-space open to user-defined names fails legibly, and req 14 because
+attribution is an obligation ShipIt already has and this feature must not lose it. The design
+implements all three, which is why they are numbered rather than held outside the list; the
+marking is what stops that from reading as approval.
