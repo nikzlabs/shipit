@@ -34,6 +34,7 @@ log() { echo "[egress-init] $*"; }
 ips=()
 resolve_dir="$(mktemp -d)"
 resolve_pids=()
+all_resolve_pids=()
 resolve_files=()
 trap 'rm -rf "$resolve_dir"' EXIT
 query_index=0
@@ -44,8 +45,9 @@ for host in ${EGRESS_ALLOWED_HOSTS:-}; do
     resolve_files+=("$result_file")
     # Resolve concurrently. Each query gets one short attempt, and the group
     # below has a separate deadline in case `dig` itself becomes unresponsive.
-    (dig +time=1 +tries=1 +short "$record_type" "$host" >"$result_file" 2>/dev/null || true) &
+    dig +time=1 +tries=1 +short "$record_type" "$host" >"$result_file" 2>/dev/null &
     resolve_pids+=("$!")
+    all_resolve_pids+=("$!")
   done
 done
 
@@ -63,7 +65,7 @@ while ((${#resolve_pids[@]} > 0)); do
   fi
   sleep 0.05
 done
-for pid in "${resolve_pids[@]}"; do wait "$pid" 2>/dev/null || true; done
+for pid in "${all_resolve_pids[@]}"; do wait "$pid" 2>/dev/null || true; done
 for result_file in "${resolve_files[@]}"; do
   while read -r ip; do
     if [[ "$ip" =~ ^[0-9.]+$ || "$ip" =~ ^[0-9a-fA-F:]+$ ]]; then ips+=("$ip"); fi

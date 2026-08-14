@@ -103,8 +103,10 @@ async function containerWasSuperseded(
       all: true,
       filters: { label: [`shipit-parent-session=${opts.sessionId}`] },
     });
-    return !current.some((entry) => entry.Id === containerId
-      && (entry.State === "running" || entry.State === "paused"));
+    // A present-but-stopped/restarting container is still the same workload.
+    // It can restart into a fresh netns without the firewall, so only absence
+    // proves that Compose removed or replaced this exact container.
+    return !current.some((entry) => entry.Id === containerId);
   } catch {
     // Failure to verify supersession must keep the active-container path
     // fail-closed.
