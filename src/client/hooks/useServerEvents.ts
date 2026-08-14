@@ -9,11 +9,20 @@ import { useSettingsStore } from "../stores/settings-store.js";
 import { useEgressStore } from "../stores/egress-store.js";
 import type { ToastData } from "../components/Toast.js";
 import { fullResetAllStores } from "../stores/actions/session-actions.js";
-import type { SessionInfo, RepoInfo, PrStatusSummary, DockerMemoryStats, SystemInfo, SubscriptionLimitsMap, PermissionMode, CredentialRoute, EgressSettings } from "../../server/shared/types.js";
+import type { AgentId, SessionInfo, RepoInfo, PrStatusSummary, DockerMemoryStats, SystemInfo, SubscriptionLimitsMap, PermissionMode, CredentialRoute, EgressSettings } from "../../server/shared/types.js";
 import type { ReviewerSlotView } from "../../server/shared/types/agent-types.js";
 import { getLoadedClientBuildId, shouldReloadForServerBuild } from "../utils/client-build.js";
-import { getSavedModelId, saveAgentId, saveModelId } from "../utils/local-storage.js";
-import { resolveAuthedSelection } from "../utils/resolve-authed-selection.js";
+import {
+  getParkedHarness,
+  getSavedModelId,
+  getSavedModelSelection,
+  saveAgentId,
+  saveModelId,
+  saveParkedHarness,
+} from "../utils/local-storage.js";
+import { persistHarnessPick } from "../utils/harness-seed.js";
+import { newSessionAgentId } from "../utils/new-session-agent.js";
+import { resolveAuthedSelection, resolveParkedRestore } from "../utils/resolve-authed-selection.js";
 import { useForegroundSignal } from "./useForegroundSignal.js";
 
 let reloadingForClientUpdate = false;
@@ -582,15 +591,106 @@ export function useServerEvents(): void {
       // the first turn still connected as the unauthed one and got rejected by
       // the server's auth gate, until the user round-tripped the selector. See
       // resolveAuthedSelection / docs/142.
-      const redirect = resolveAuthedSelection(
-        agents,
-        useUiStore.getState().activeAgentId,
-        getSavedModelId(),
-      );
+      //
+      // Both directions, because a credential coming back is delivered on this
+      // same event and used to be ignored: the redirect below is persistent by
+      // design and used to be PERMANENT by accident, so a transient
+      // `auth_failed` moved the user to the other harness for good. The restore
+      // runs first — a harness that can be handed back is never also a harness
+      // to redirect away from, and doing it in the other order would re-park
+      // what it had just restored.
+      const activeAgentId = useUiStore.getState().activeAgentId;
+      const parked = getParkedHarness();
+      const restoreTo = resolveParkedRestore(agents, parked);
+      if (restoreTo) {
+        const agentId = restoreTo.id as AgentId;
+        // Through the same writer a deliberate pick uses, so the restored
+        // harness and the restored model agree — handing back `vibe-agent-id`
+        // alone would be outvoted by the redirect's model exactly as the
+        // composer's own pick was. It clears the park as part of the write.
+        // Same question the redirect's notice asks, for the same reason: did the
+        // SEED move? `activeAgentId` would answer about the session being
+        // viewed, and stay silent whenever that session happens to run the
+        // harness being handed back.
+        const seedMoved = newSessionAgentId(agents) !== agentId;
+        persistHarnessPick({ agentId, agents, ...(parked?.model ? { current: parked.model } : {}) });
+        useUiStore.getState().setActiveAgentId(agentId);
+        if (seedMoved) {
+          useUiStore.getState().setToast({
+            message: `${restoreTo.name} is available again — switched back to it.`,
+            duration: 8000,
+          });
+        }
+        return;
+      }
+      const redirect = resolveAuthedSelection(agents, activeAgentId, getSavedModelId());
       if (redirect) {
+        // **What is being taken away is the SEED, and the seed is not
+        // `activeAgentId`.** That field is synced to whichever session is being
+        // VIEWED (`useConnectionSync`), on purpose — it answers "what is this
+        // session running on". The seed answers "what will the next session be
+        // created on", and `newSessionAgentId` is that rule.
+        //
+        // Reading the wrong one gets both halves wrong. Open an old Codex
+        // session while the seed is Claude/Opus, and let Codex's credential
+        // fail: the redirect is a no-op for the seed (it writes Claude/Opus back
+        // over Claude/Opus) but parked `{codex, Opus}` — an incoherent pair the
+        // user never chose, which on Codex's recovery would be restored and
+        // would replace their Claude seed with Codex's first model. And on every
+        // reconnect after a real redirect, `useConnectionSync` re-syncs
+        // `activeAgentId` to the viewed session's dead harness, so the same
+        // redirect re-ran and re-toasted for the whole outage.
+        //
+        // So both the park and the notice are gated on the seed actually moving.
+        // Everything below the gate — the in-memory correction and the persisted
+        // writes — still runs unconditionally, because that is C4's job and it
+        // is idempotent when nothing moved.
+        const seedAgentId = newSessionAgentId(agents);
+        const seedModelId = getSavedModelId();
+        const displacesSeed =
+          redirect.agentId !== seedAgentId
+          || (!!redirect.modelId && redirect.modelId !== seedModelId);
+        // Park BEFORE overwriting, and only when nothing is parked yet — a
+        // second redirect must not overwrite the user's own choice with the
+        // machine's.
+        if (displacesSeed && !parked) {
+          const saved = getSavedModelSelection();
+          saveParkedHarness({
+            agentId: seedAgentId,
+            ...(seedModelId
+              ? {
+                  model: {
+                    modelId: seedModelId,
+                    ...(saved ? { serviceId: saved.serviceId, billingMode: saved.billingMode } : {}),
+                  },
+                }
+              : {}),
+          });
+        }
         useUiStore.getState().setActiveAgentId(redirect.agentId);
         saveAgentId(redirect.agentId);
         if (redirect.modelId) saveModelId(redirect.modelId);
+        // Say so. The redirect changes the single most consequential and
+        // irreversible fact about every session created from here on, and it
+        // used to happen silently — the user found out by noticing a different
+        // name in a dropdown, if at all.
+        if (displacesSeed) {
+          const from = agents.find((a) => a.id === seedAgentId);
+          const to = agents.find((a) => a.id === redirect.agentId);
+          useUiStore.getState().setToast({
+            message:
+              `${from?.name ?? seedAgentId} has no usable credential right now — `
+              + `new sessions will run on ${to?.name ?? redirect.agentId}.`,
+            action: {
+              label: "Settings",
+              onClick: () => {
+                useUiStore.getState().setSettingsTab("services");
+                useUiStore.getState().setSettingsOpen(true);
+              },
+            },
+            duration: 12000,
+          });
+        }
       }
     });
 

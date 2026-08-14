@@ -144,7 +144,8 @@ import {
   repoLabelToNewPath,
   parseNewSessionSlug,
 } from "./utils/repo-label.js";
-import { saveAgentId, saveModelId, saveModelSelection } from "./utils/local-storage.js";
+import { clearParkedHarness, saveModelId, saveModelSelection } from "./utils/local-storage.js";
+import { persistHarnessPick } from "./utils/harness-seed.js";
 import {
   siblingsOf,
   orderSiblingsForTabs,
@@ -1522,7 +1523,22 @@ export default function App() {
 
   const handleAgentChange = useCallback(
     (agentId: AgentId) => {
-      saveAgentId(agentId);
+      // The harness AND the model seed it has to agree with. Writing only
+      // `vibe-agent-id` here is what made this pick evaporate: the seed is what
+      // `newSessionAgentId` derives the harness from, and `useUiStore.reset()`
+      // re-derives it on every new session and session switch — so a pick made
+      // while the saved model belonged to the other harness lasted exactly as
+      // long as the page did. `set_agent` below still owns THIS session's model
+      // (the server conforms it); this owns the next session's.
+      // The live session model when the composer has one, so "keep the model if
+      // the new harness runs it" keeps what the user is looking at rather than
+      // whatever the slot last held. With none, the helper reads the seed.
+      const liveModel = useUiStore.getState().modelInfo?.model;
+      persistHarnessPick({
+        agentId,
+        agents: useUiStore.getState().agentList,
+        ...(liveModel ? { current: { modelId: liveModel } } : {}),
+      });
       useUiStore.getState().setActiveAgentId(agentId);
       send({ type: "set_agent", agentId });
       // Skills are per-backend (Claude scans .claude/skills, Codex .codex/skills),
@@ -1544,6 +1560,9 @@ export default function App() {
   // browser's own seed slot stores the triple for the same reason.
   const handleModelChange = useCallback(
     (selection: ModelChoice) => {
+      // A model pick names a harness too (the harness is derived from it), so it
+      // is the user overruling any redirect that is parked — see `ParkedHarness`.
+      clearParkedHarness();
       if (selection.serviceId) {
         saveModelSelection({
           serviceId: selection.serviceId,

@@ -4,6 +4,8 @@ import { useServerEvents } from "./useServerEvents.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
 import { useUiStore } from "../stores/ui-store.js";
+import { getParkedHarness, getSavedModelId } from "../utils/local-storage.js";
+import { persistHarnessPick } from "../utils/harness-seed.js";
 
 /**
  * Minimal fake EventSource: captures `addEventListener` handlers so a test can
@@ -657,5 +659,221 @@ describe("useServerEvents — foreground reconnect", () => {
       window.dispatchEvent(new Event("focus"));
     });
     expect(FakeEventSource.created).toBe(2);
+  });
+});
+
+/**
+ * The auth redirect, in BOTH directions.
+ *
+ * `resolveAuthedSelection` moves the picker off a harness with no usable
+ * credential and persists the move, because the seed is what the next session is
+ * created from. It was also permanent: a Claude account that went `auth_failed`
+ * for a few minutes — which the OAuth refresher classifies optimistically and
+ * `markProviderAccountReauthenticated` exists to undo — silently moved every
+ * future session to Codex, with nothing on screen ever saying so.
+ */
+describe("useServerEvents — agent_list auth redirect and its undo", () => {
+  const model = (modelId: string, serviceId: string) => ({
+    modelId,
+    serviceId,
+    serviceName: serviceId,
+    billingMode: "sub" as const,
+    label: modelId,
+    canonicalModelKey: modelId,
+  });
+  const agentPayload = (id: string, runnable: boolean) =>
+    id === "claude"
+      ? {
+          id,
+          name: "Claude Code",
+          installed: true,
+          hasRunnableModels: runnable,
+          models: ["claude-opus-5"],
+          eligibleModels: [model("claude-opus-5", "anthropic")],
+        }
+      : {
+          id,
+          name: "Codex",
+          installed: true,
+          hasRunnableModels: runnable,
+          models: ["gpt-5.6-sol"],
+          eligibleModels: [model("gpt-5.6-sol", "openai")],
+        };
+  const emitAgents = (es: FakeEventSource, claudeRunnable: boolean) => {
+    act(() => {
+      es.emit("agent_list", {
+        agents: [agentPayload("claude", claudeRunnable), agentPayload("codex", true)],
+      });
+    });
+  };
+
+  beforeEach(() => {
+    vi.stubGlobal("EventSource", FakeEventSource as unknown as typeof EventSource);
+    FakeEventSource.last = null;
+    localStorage.clear();
+    useUiStore.setState({ activeAgentId: "claude", toast: null, agentList: [] });
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  it("redirects, parks the displaced selection, and says so", () => {
+    localStorage.setItem("vibe-agent-id", "claude");
+    localStorage.setItem("vibe-model-id", "claude-opus-5");
+    renderHook(() => useServerEvents());
+
+    emitAgents(FakeEventSource.last!, false);
+
+    expect(useUiStore.getState().activeAgentId).toBe("codex");
+    expect(localStorage.getItem("vibe-agent-id")).toBe("codex");
+    expect(getParkedHarness()).toEqual({
+      agentId: "claude",
+      model: { modelId: "claude-opus-5", serviceId: "anthropic", billingMode: "sub" },
+    });
+    expect(useUiStore.getState().toast?.message).toContain("Claude Code");
+  });
+
+  it("hands the harness back — with its model — once the credential returns", () => {
+    localStorage.setItem("vibe-agent-id", "claude");
+    localStorage.setItem("vibe-model-id", "claude-opus-5");
+    renderHook(() => useServerEvents());
+    const es = FakeEventSource.last!;
+
+    emitAgents(es, false);
+    expect(useUiStore.getState().activeAgentId).toBe("codex");
+
+    emitAgents(es, true);
+
+    expect(useUiStore.getState().activeAgentId).toBe("claude");
+    expect(localStorage.getItem("vibe-agent-id")).toBe("claude");
+    expect(getSavedModelId()).toBe("claude-opus-5");
+    expect(getParkedHarness()).toBeUndefined();
+    expect(useUiStore.getState().toast?.message).toContain("available again");
+  });
+
+  it("does not re-park on a second redirect, so the user's own choice survives", () => {
+    localStorage.setItem("vibe-agent-id", "claude");
+    localStorage.setItem("vibe-model-id", "claude-opus-5");
+    renderHook(() => useServerEvents());
+    const es = FakeEventSource.last!;
+
+    emitAgents(es, false);
+    // A second event while still down must not overwrite the park with "codex".
+    emitAgents(es, false);
+
+    expect(getParkedHarness()?.agentId).toBe("claude");
+  });
+
+  it("leaves a deliberate pick made while the harness was down alone", () => {
+    // Choosing Codex while Claude is unreachable means it — the restore must not
+    // yank the user back when Claude recovers. The pick clears the park.
+    localStorage.setItem("vibe-agent-id", "claude");
+    localStorage.setItem("vibe-model-id", "claude-opus-5");
+    renderHook(() => useServerEvents());
+    const es = FakeEventSource.last!;
+
+    emitAgents(es, false);
+    persistHarnessPick({ agentId: "codex", agents: useUiStore.getState().agentList });
+    emitAgents(es, true);
+
+    expect(localStorage.getItem("vibe-agent-id")).toBe("codex");
+    expect(getSavedModelId()).toBe("gpt-5.6-sol");
+  });
+});
+
+/**
+ * The park describes the SEED, never the session being viewed.
+ *
+ * `activeAgentId` is synced to whichever session is open (`useConnectionSync`),
+ * on purpose. Reading it as "the harness the user chose for new sessions" made
+ * the redirect park a pair the user never picked, and made it re-announce itself
+ * on every reconnect. Both were found by cross-backend review.
+ */
+describe("useServerEvents — the redirect acts on the seed, not the viewed session", () => {
+  const model = (modelId: string, serviceId: string) => ({
+    modelId,
+    serviceId,
+    serviceName: serviceId,
+    billingMode: "sub" as const,
+    label: modelId,
+    canonicalModelKey: modelId,
+  });
+  const agentPayload = (id: string, runnable: boolean) =>
+    id === "claude"
+      ? {
+          id,
+          name: "Claude Code",
+          installed: true,
+          hasRunnableModels: runnable,
+          models: ["claude-opus-5"],
+          eligibleModels: [model("claude-opus-5", "anthropic")],
+        }
+      : {
+          id,
+          name: "Codex",
+          installed: true,
+          hasRunnableModels: runnable,
+          models: ["gpt-5.6-sol"],
+          eligibleModels: [model("gpt-5.6-sol", "openai")],
+        };
+  const emit = (es: FakeEventSource, claudeRunnable: boolean, codexRunnable = true) => {
+    act(() => {
+      es.emit("agent_list", {
+        agents: [agentPayload("claude", claudeRunnable), agentPayload("codex", codexRunnable)],
+      });
+    });
+  };
+
+  beforeEach(() => {
+    vi.stubGlobal("EventSource", FakeEventSource as unknown as typeof EventSource);
+    FakeEventSource.last = null;
+    localStorage.clear();
+    useUiStore.setState({ activeAgentId: "claude", toast: null, agentList: [] });
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  it("parks nothing when the viewed session's harness dies but the seed is untouched", () => {
+    // Seed is Claude/Opus; the user is looking at an older Codex session, so
+    // `activeAgentId` is codex. Codex's credential fails. The redirect writes
+    // Claude/Opus back over Claude/Opus — it took nothing away — so parking
+    // `{codex, Opus}` here would later restore an incoherent pair and replace
+    // the user's Claude seed with Codex's first model.
+    localStorage.setItem("vibe-agent-id", "claude");
+    localStorage.setItem("vibe-model-id", "claude-opus-5");
+    useUiStore.setState({ activeAgentId: "codex" });
+    renderHook(() => useServerEvents());
+
+    emit(FakeEventSource.last!, true, false);
+
+    expect(getParkedHarness()).toBeUndefined();
+    expect(useUiStore.getState().toast).toBeNull();
+    expect(getSavedModelId()).toBe("claude-opus-5");
+  });
+
+  it("does not re-announce the redirect when a reconnect re-syncs the dead harness", () => {
+    // After the redirect the seed is Codex. A WS reconnect sets `activeAgentId`
+    // back to the viewed Claude session's harness, and the SSE reconnect's own
+    // `agent_list` re-runs the same redirect — which used to raise the same
+    // 12-second toast again, for the whole outage, every time the app was
+    // foregrounded.
+    localStorage.setItem("vibe-agent-id", "claude");
+    localStorage.setItem("vibe-model-id", "claude-opus-5");
+    renderHook(() => useServerEvents());
+    const es = FakeEventSource.last!;
+
+    emit(es, false);
+    expect(useUiStore.getState().toast?.message).toContain("no usable credential");
+
+    useUiStore.setState({ toast: null, activeAgentId: "claude" });
+    emit(es, false);
+
+    expect(useUiStore.getState().toast).toBeNull();
+    expect(getParkedHarness()?.agentId).toBe("claude");
   });
 });

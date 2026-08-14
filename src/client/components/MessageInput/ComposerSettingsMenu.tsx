@@ -25,8 +25,8 @@ import {
   ModelGroupHeader,
   useHarnessPickerState,
   useModelPickerState,
-  modelRowsFor,
 } from "../ModelPicker.js";
+import { modelRowsFor } from "../../utils/model-rows.js";
 import { useReasoningPickerState } from "../ReasoningSelector.js";
 import { formatModelName } from "../../utils/format-model.js";
 import type { AgentId, PermissionMode } from "../../../server/shared/types.js";
