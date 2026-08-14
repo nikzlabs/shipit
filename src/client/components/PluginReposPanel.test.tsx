@@ -84,6 +84,11 @@ describe("PluginReposPanel", () => {
     render(<PluginReposPanel />);
     expect(screen.getByText("1 problem")).toBeTruthy();
     expect(screen.getByText(/is not in this repository's/)).toBeTruthy();
+    // The backticks are markup, not characters: the same strings are read in a
+    // terminal by `shipit plugin refresh`, so they stay in the string and the
+    // row renders them (found in the dogfood reading "`probe` declares…").
+    expect(screen.getAllByText("exports.plugins")[0].tagName).toBe("CODE");
+    expect(screen.queryByText(/`exports\.plugins`/)).toBeNull();
   });
 
   it("a files-only repo says so", () => {

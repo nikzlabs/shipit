@@ -74,6 +74,16 @@ const EXACT_ROUTES: Readonly<Record<string, string>> = {
   // this host IS the agent-ops surface there; without the entry the shim is
   // denied in the dogfood instance while working in production, which is
   // exactly the drift the parity test exists to catch.
+  //
+  // NECESSARY, NOT SUFFICIENT — measured in the dogfood on 2026-08-14, so the
+  // next reader does not conclude from this entry that the verb is exercisable
+  // there. `Dockerfile.dogfood` installs the `gh` shim and DELIBERATELY not the
+  // `shipit` one (planning#305), so an inner turn answers
+  // `shipit: command not found` while `SHIPIT_AGENT_OPS_URL` is set and this
+  // host is listening. The orchestrator route below it does work locally
+  // (driven directly: fetch, publish, prune, an `activated` row with
+  // before ≠ after). What is untested end to end in the dogfood is the shim
+  // hop alone, and installing that shim is a decision planning#305 owns.
   "plugin/refresh": "plugin/refresh",
   // docs/262 req 17 — `shipit plugin exec`, the target of every generated
   // companion-CLI wrapper. Local mode has no Docker, so the orchestrator route

@@ -25,6 +25,7 @@ import {
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const GH_SHIM = path.resolve(HERE, "../session/agent-shim/gh.ts");
+const PLUGIN_SHIM = path.resolve(HERE, "../session/agent-shim/shipit-plugin.ts");
 
 describe("mapAgentOpsPath", () => {
   it("maps the fixed PR routes, including the worker's rename of pr/create", () => {
@@ -46,8 +47,9 @@ describe("mapAgentOpsPath", () => {
   // the agent-ops surface there. A missing entry means `shipit plugin refresh`
   // works in production and is denied in the inner instance, which is exactly
   // the drift this allowlist keeps making visible.
-  it("maps the plugin refresh route the `shipit plugin` shim emits", () => {
+  it("maps the plugin routes the `shipit plugin` shim emits", () => {
     expect(mapAgentOpsPath("/agent-ops/plugin/refresh")).toBe("plugin/refresh");
+    expect(mapAgentOpsPath("/agent-ops/plugin/exec")).toBe("plugin/exec");
   });
 
   it("still denies the CI verbs the shim never emits", () => {
@@ -109,6 +111,29 @@ describe("mapAgentOpsPath", () => {
 
     const denied = [...concrete].filter((p) => mapAgentOpsPath(p) === null);
     expect(denied, `gh shim emits paths this host denies: ${denied.join(", ")}`).toEqual([]);
+  });
+
+  // docs/262 — the same guard for the `shipit plugin` verb, and ONLY that verb.
+  // Scoping matters: the `shipit` shim as a whole emits agent-ops paths this
+  // host deliberately denies (`shipit service` needs a ServiceManager local mode
+  // does not have, `shipit agent run` spawns a sub-agent), so scanning
+  // `shipit.ts` would assert a parity that is not wanted. `shipit-plugin.ts` is
+  // the file whose every path local mode MUST admit — reqs 12 and 17 are
+  // orchestrator-side verbs, so denying one here would be dogfood-only drift
+  // rather than an honest local-mode limit. A third plugin verb added to that
+  // file now fails this build instead of 403-ing in the inner instance.
+  it("accepts every /agent-ops path the `shipit plugin` shim can emit", () => {
+    const source = fs.readFileSync(PLUGIN_SHIM, "utf8");
+    const raw = [...source.matchAll(/deps\.call\(\s*"[A-Z]+",\s*([`"])([^`"]*)\1/g)]
+      .map((m) => m[2]);
+    expect(raw.length).toBeGreaterThan(1); // sanity: refresh + exec at least
+    expect(raw.every((p) => p.startsWith("/agent-ops/plugin/"))).toBe(true);
+
+    const denied = raw.filter((p) => mapAgentOpsPath(p) === null);
+    expect(
+      denied,
+      `\`shipit plugin\` emits paths this host denies: ${denied.join(", ")}`,
+    ).toEqual([]);
   });
 });
 

@@ -230,6 +230,31 @@ describe("failure semantics (reqs 13, 15)", () => {
     const outcome = await activateGeneration(repo({ branch: "nope" }), deps());
     expect(outcome.status).toBe("failed");
     expect(readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)?.commit).toBe(good);
+
+    // req 13 says report WHY, and this reason goes straight onto the Plugins
+    // card and into the `shipit plugin refresh` row. Relaying `git rev-parse`
+    // put three lines of argument-syntax advice there instead — measured in the
+    // dogfood — which reads as a ShipIt malfunction, not a missing branch.
+    const reason = (outcome as { reason: string }).reason;
+    expect(reason).toBe("`nope` is not a branch, tag or commit in `acme/tools`.");
+  });
+
+  // The other half of the same rule: an error that is NOT "no such revision"
+  // must survive whole, because a broken object store or an unreadable cache is
+  // exactly what a tidy message would hide.
+  it("keeps an unexpected git failure's own text", async () => {
+    const outcome = await activateGeneration(repo({ branch: "main" }), {
+      ...deps(),
+      // A bare-cache path that exists and is not a repository: `rev-parse`
+      // fails for a reason that is not a missing ref.
+      bareCacheDir: stateDir,
+    });
+    expect(outcome.status).toBe("failed");
+    const reason = (outcome as { reason: string }).reason;
+    expect(reason).toContain("is not a branch, tag or commit in `acme/tools`");
+    expect(reason.length).toBeGreaterThan(
+      "`main` is not a branch, tag or commit in `acme/tools`.".length,
+    );
   });
 
   it("`repo: self` has no generations", async () => {
@@ -569,8 +594,32 @@ describe("install runs before publish (req 13, req 15)", () => {
     const outcome = await activateGeneration(repo({ branch: "main" }), deps(["probe"]));
 
     expect(outcome.status).toBe("activated");
-    expect((outcome as { warning?: string }).warning).toContain("was not installed");
+    // Reads as written in the one-plugin case, which is the only one the
+    // dogfood ever showed and the one it showed WRONG ("`probe` declare an
+    // install command … the plugin is active"). A card is the whole report a
+    // user gets about a partial version (req 13).
+    expect((outcome as { warning?: string }).warning).toBe(
+      "`probe` declares an install command, which this runtime cannot run — "
+      + "the plugin is active but was not installed.",
+    );
     expect(readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)?.manifestWarnings.join(" ")).toContain("`probe`");
+  });
+
+  it("agrees with itself when two selected exports declare one", async () => {
+    await commitFiles(
+      {
+        "shipit.yaml":
+          "exports:\n  plugins:\n    probe:\n      install: npm ci\n    other:\n      install: npm ci\n",
+      },
+      "two installs",
+    );
+    const outcome = await activateGeneration(repo({ branch: "main" }), deps(["probe", "other"]));
+
+    expect(outcome.status).toBe("activated");
+    expect((outcome as { warning?: string }).warning).toBe(
+      "`probe`, `other` declare an install command, which this runtime cannot run — "
+      + "the plugins are active but were not installed.",
+    );
   });
 
   it("stays quiet when nothing selected declares an install", async () => {

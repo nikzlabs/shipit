@@ -820,8 +820,15 @@ async function activateOnce(repo: DeclaredPluginRepo, deps: ActivateDeps): Promi
       const uninstalled = deps.runInstall
         ? []
         : selected.filter((e) => e.install?.trim()).map((e) => e.name);
+      // Agrees with itself in the ONE-plugin case, which is the common one and
+      // the only one the dogfood ever showed: the card read "`probe` declare an
+      // install command … the plugin is active". A card is the whole report a
+      // user gets about a partial version (req 13), so it reads as written.
+      const one = uninstalled.length === 1;
       notInstalled = uninstalled.length > 0
-        ? `${uninstalled.map((n) => `\`${n}\``).join(", ")} declare an install command, which this runtime cannot run — the plugin is active but was not installed.`
+        ? `${uninstalled.map((n) => `\`${n}\``).join(", ")} ${one ? "declares" : "declare"} an install command, `
+          + `which this runtime cannot run — ${one ? "the plugin is" : "the plugins are"} active but `
+          + `${one ? "was" : "were"} not installed.`
         : undefined;
 
       record = {
@@ -916,12 +923,44 @@ async function resolveCommit(
       storePath: deps.pinStorePath,
       consumerKey: deps.consumerKey,
       repo,
-      resolve: async () => (await git.raw(["rev-parse", `${repo.pin}^{commit}`])).trim(),
+      resolve: () => revParse(git, repo, repo.pin!),
     });
   }
 
   const branch = repo.branch ?? (await defaultBranch(deps.bareCacheDir));
-  return { commit: (await git.raw(["rev-parse", `${branch}^{commit}`])).trim() };
+  return { commit: await revParse(git, repo, branch) };
+}
+
+/**
+ * `git rev-parse <rev>^{commit}`, with the ONE failure a consuming project
+ * actually causes named rather than relayed (req 13 — say why).
+ *
+ * A typo'd, deleted or never-pushed ref is the commonest way an activation
+ * fails, and git's own answer to it is three lines of argument-syntax advice
+ * ("Use '--' to separate paths from revisions") headed by the echoed argument.
+ * The dogfood put that verbatim on the Plugins card and in the `shipit plugin
+ * refresh` row, where it reads as a ShipIt malfunction rather than as "that
+ * branch is not there". Anything else git says is kept whole underneath the
+ * name: an unreadable cache or a broken object store is exactly the case this
+ * must not swallow.
+ */
+async function revParse(
+  git: ReturnType<typeof simpleGit>,
+  repo: DeclaredPluginRepo,
+  rev: string,
+): Promise<string> {
+  try {
+    return (await git.raw(["rev-parse", `${rev}^{commit}`])).trim();
+  } catch (err) {
+    const where = destinationKey(repo.source);
+    const named = `\`${rev}\` is not a branch, tag or commit in \`${where}\`.`;
+    const detail = message(err);
+    return Promise.reject(new Error(
+      /unknown revision|ambiguous argument|Needed a single revision/i.test(detail)
+        ? named
+        : `${named} ${detail}`,
+    ));
+  }
 }
 
 async function defaultBranch(bareCacheDir: string): Promise<string> {

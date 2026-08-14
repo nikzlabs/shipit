@@ -272,6 +272,7 @@ export async function registerRoutes(
     nudgeClaudeOAuthRefresh, onAgentAuthRequired, ensureAgentTokenFresh,
     authManagers, runParamsPreps,
     runnerRegistry, repoPrefetcher, mergeWatchManager,
+    refreshPluginReposForSession, runPluginCommandForSession,
     prStatusPoller, releaseStatusPoller, limitsRegistry, recordAgentRateLimits, markSessionAccountExhausted,
     createSessionDir, warmSessionForRepo, waitForWarmSession,
     clientDir, logStore, buildId,
@@ -336,6 +337,13 @@ export async function registerRoutes(
     presentStore,
     serviceManagers,
     composeStopPromises,
+    // docs/262 reqs 12, 17 — the agent's two plugin verbs. `bootstrapManagers`
+    // has produced both since they landed; nothing forwarded them here, so both
+    // routes answered 501 everywhere (found by dogfooding, 2026-08-14). The
+    // ApiDeps keys are now required-but-nullable so a future omission is a
+    // build error rather than a runtime "this runtime cannot…".
+    refreshPluginReposForSession,
+    runPluginCommandForSession,
     // Skip the volume-prune fallback in test mode so unit / integration
     // tests don't shell out to a real Docker daemon. Production always
     // wires this; the function itself is defensive (catches its own

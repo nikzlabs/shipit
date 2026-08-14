@@ -118,27 +118,36 @@ export interface ApiDeps {
   runnerRegistry: SessionRunnerRegistry;
   /**
    * docs/262 req 12 — run a plugin-repository refresh and WAIT for it, for the
-   * agent's `shipit plugin refresh`. Optional: a runtime without the plugin
-   * wiring (tests) simply has no refresh verb, and the route says so rather
-   * than pretending it worked.
+   * agent's `shipit plugin refresh`. A runtime that cannot refresh supplies
+   * `undefined` and the route says so rather than pretending it worked.
+   *
+   * **The key is REQUIRED even though the value may be `undefined`**, and that
+   * is the whole point (found by dogfooding, 2026-08-14). Both of these hooks
+   * were declared optional here, produced by `bootstrapManagers`, and then
+   * never forwarded by `route-registry.ts` — which type-checked, so the routes
+   * answered `501 This runtime cannot refresh plugin repositories.` on EVERY
+   * deployment, production included, while every co-located test passed because
+   * each injects the hook directly. A required key makes the omission a build
+   * error; `| undefined` keeps the honest "this runtime has none" answer.
    */
-  refreshPluginReposForSession?: (
+  refreshPluginReposForSession: ((
     sessionId: string,
     workspaceDir: string,
     repoName?: string,
     onSettled?: (id: string) => void,
-  ) => Promise<PluginRefreshResult>;
+  ) => Promise<PluginRefreshResult>) | undefined;
   /**
    * docs/262 req 17 — run one imported plugin's companion CLI in an invocation
-   * container (`plugin-cli-run.ts`). Optional for the same reason refresh is:
-   * a runtime with no Docker (local mode, tests) cannot run one, and the route
-   * says so instead of pretending it did.
+   * container (`plugin-cli-run.ts`). `undefined` where there is no Docker
+   * (local mode, tests), which is the honest answer rather than running the
+   * command somewhere it must not run (plan §1b). Required key for the reason
+   * spelled out on `refreshPluginReposForSession` above.
    */
-  runPluginCommandForSession?: (
+  runPluginCommandForSession: ((
     sessionId: string,
     workspaceDir: string,
     request: PluginCliRequest,
-  ) => Promise<PluginCliResult>;
+  ) => Promise<PluginCliResult>) | undefined;
   /**
    * Drop a session's pending debounced auto-push (`services/auto-push-scheduler.ts`).
    * Only ever called after a synchronous push has replaced it — the agent's own
