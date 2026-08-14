@@ -12,50 +12,46 @@ The design is [`plan.md`](./plan.md); the contract is [`requirements.md`](./requ
 
 - [ ] Role store in the credential store, list-shaped: `getRoles`, `setRole(name, role | null)`,
       `renameRole`
-- [ ] `harnessId` is a **required** field on the role (req 9) — no derivation, no implementer
+- [ ] `harnessId` is a **required** field on the role (req 6) — no derivation, no implementer
       preference; refused at save when that harness is not installed, cannot carry the model, or
       has no credential (`harnessesForSelection` answers all three)
-- [ ] `resolveRoleByName(name, implementer, deps)` — built-in `reviewer` via `selectReviewer`;
-      user roles run on the harness the role names, checked only for a usable route, frozen
-      target with `source: "role"` and the name
-- [ ] The role's effort is validated against **its own** harness at save — the docs/261 phase-3
-      latent bug (level validated on one harness, run on another) has no analogue here; add a
-      test that pins the property rather than assuming it
-- [ ] Unknown role name refused, listing the known roles (built-in + user), with the `--model`
-      hint
+- [ ] The role's reasoning level is validated against **its own** harness at save, so a level can
+      never be carried onto a harness that does not declare it — with a test that pins the
+      property rather than assuming it
+- [ ] `resolveRoleByName(name, deps)` — the role's own tuple, checked only for a usable route,
+      frozen target with `source: "role"` and the name
+- [ ] Unknown role name refused, listing the roles that exist, with the `--model` hint (req 12)
 - [ ] Settings payload carries the roles, each resolved (server sends the resolution)
+- [ ] The reviewer's resolution, per open question 1 — either a `{ kind: "auto" }` params
+      discriminator delegating to `selectReviewer`, or a seeded ordinary role. **Decide before
+      starting this phase**, since it decides the shape of the store
 
 ## Phase 2 — Settings (the only way a role is created, req 5)
 
 - [ ] Role CRUD through the settings API, validating params through `resolveReviewerPinPatch`;
-      the optional prompt (req 11) is an ordinary string
-- [ ] Name rules: kebab-case token, length bound, uniqueness — enforced server-side
-- [ ] Roles surface: the built-in `reviewer` row (auto/pinned, its two-slot resolution) plus the
-      user roles (name, optional prompt, the three shared controls, the harness, rename, delete,
-      New role row)
-- [ ] The harness is **shown on every user role** and is filled from the single valid option
-      where a model has one; it becomes a real picker where a model is carried by more than one.
-      Required in the data, not necessarily a required interaction
+      the optional prompt (req 8) is an ordinary string
+- [ ] Name rules: token shape, length bound, uniqueness — enforced server-side
+- [ ] Roles surface: the reviewer's row, then the user's roles (name, optional prompt, the shared
+      service / model / reasoning controls, the harness, rename, delete, New role row)
+- [ ] The harness is **shown on every role** and filled from the single valid option where a model
+      has one; it becomes a real picker where a model is carried by more than one
 
-## Phase 3 — CLI + inventory
+## Phase 3 — Starting a role
 
-- [ ] `--role NAME` accepts user roles: the shim validates the built-in set locally and passes
-      anything else through for the server to resolve
-- [ ] `--role NAME` exclusive with `--model` / `--effort` in both shim and server
-- [ ] `resolveSubAgentSpawnTarget` resolves the role path through `resolveRoleByName`
-- [ ] The roles read (req 14) — names plus a one-line description, scoped to roles and NOT the
+- [ ] `--role NAME` on `shipit agent run`: the shim passes the name through, the server resolves
+- [ ] `--role NAME` on `shipit session create` (req 10) — replaces inheritance rather than
+      layering over it; no `--role` keeps today's inheritance exactly
+- [ ] `--role NAME` refused together with a model or a reasoning level, in shim and server (req 9)
+- [ ] The roles read (req 11) — names plus a one-line description, scoped to roles and NOT the
       service/model catalogue
-- [ ] Agent-facing guidance: map the user's intent onto a role ("review the PR" → `reviewer`),
+- [ ] Agent-facing guidance: map the user's intent onto a role ("review the PR" → the reviewer),
       pass an explicitly named role through unchanged, and supply no param
 
-## Phase 4 — Recurrence conversion
+## Phase 4 — Injected documentation (req 14)
 
-- [ ] Agent-facing guidance: after a repeated `--role reviewer --model NAME --effort LEVEL`
-      combination, offer to save it as a role (propose-actions pattern), cross-checked against
-      consult `runOn`
-- [ ] The offer's payload opens the Roles settings surface prefilled — it does not write the role
-- [ ] The prefill carries the **harness that actually ran**, read from the consult card's `runOn`
-      (docs/261 phase 4), rather than guessing one for req 9's required field
-
-The pool question is settled (requirements req 12): a user role's params are pinned — deliberately
-not in this table; see plan.md § "The pool question, settled" for the assessment that led there.
+- [ ] The fully-specified run leaves the injected pages and the harness system prompts; what
+      replaces it is "name a role, and ask the user to create one in Settings if it is missing"
+- [ ] The server still accepts a fully-specified call from a caller that holds all five values —
+      this phase changes what the agent is told, not what the server permits
+- [ ] A guard that fails if an injected page starts telling an agent to assemble a run out of
+      parameters it cannot enumerate
