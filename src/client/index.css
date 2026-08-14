@@ -386,6 +386,85 @@ html, body {
   animation: spin-slow 1s linear infinite;
 }
 
+/* ── Preview empty-state illustration (PreviewSetupInvite.tsx) ──
+   Decorative only: the dashed outlines march slowly to read as "waiting to be
+   filled", and the chat bubble's dots blink to read as a live conversation.
+   Nothing here carries meaning the copy doesn't also state, so the whole set
+   is switched off under `prefers-reduced-motion` at the bottom of this block. */
+@keyframes preview-art-march {
+  to {
+    stroke-dashoffset: -160;
+  }
+}
+
+@keyframes preview-art-drift {
+  0%, 100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-3px);
+  }
+}
+
+@keyframes preview-art-pulse {
+  0%, 60%, 100% {
+    opacity: 0.25;
+  }
+  30% {
+    opacity: 1;
+  }
+}
+
+@keyframes preview-art-shine {
+  0%, 100% {
+    opacity: 0.35;
+    transform: scale(0.85);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.preview-art-dash {
+  animation: preview-art-march 24s linear infinite;
+}
+
+.preview-art-float {
+  transform-origin: 80px 60px;
+  animation: preview-art-drift 6s ease-in-out infinite;
+}
+
+.preview-art-blink {
+  animation: preview-art-pulse 2.4s ease-in-out infinite;
+}
+
+.preview-art-blink-2 {
+  animation-delay: 0.25s;
+}
+
+.preview-art-blink-3 {
+  animation-delay: 0.5s;
+}
+
+.preview-art-sparkle {
+  transform-origin: center;
+  animation: preview-art-shine 3.6s ease-in-out infinite;
+}
+
+.preview-art-sparkle-late {
+  animation-delay: 1.2s;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .preview-art-dash,
+  .preview-art-float,
+  .preview-art-blink,
+  .preview-art-sparkle {
+    animation: none;
+  }
+}
+
 /* Monaco line highlight when the preview is opened at a specific line
    (e.g. from a `path:line` link in chat). Fades on its own after the
    decoration is cleared. */

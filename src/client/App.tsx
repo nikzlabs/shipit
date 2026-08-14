@@ -833,8 +833,16 @@ export default function App() {
     if (composeHintInFlight.current) return;
     const sid = useSessionStore.getState().sessionId;
     if (!sid) return;
+    // Goal-shaped, not mechanism-shaped: the button now asks for a *preview*,
+    // not for a compose file, and the agent already has /shipit-docs/compose.md
+    // to work out how. The last sentence matters — the invite is phrased as a
+    // question, so "this repo has nothing to preview" has to be an answer the
+    // agent is allowed to give instead of fitting a library with a dev server.
     const text =
-      "The preview panel needs a Docker Compose configuration. Please add a `compose` key to `shipit.yaml` pointing to the project's compose file so that previews can be enabled.";
+      "Set up a live preview for this repo, so the app runs in ShipIt's preview panel. "
+      + "Check whether the repo contains a web app or an Android app, and configure whichever you find "
+      + "(see /shipit-docs/compose.md, and the android-build skill for Android). "
+      + "If there is nothing here that a preview would show, say so instead of adding configuration.";
     requestPermission();
     // On /{slug}/new route — graduate: transition URL to /session/{id}, same as
     // handleSend. The dispatch makes the session real; without this the URL

@@ -15,7 +15,8 @@ import { usePreviewHealthPoller, buildSubdomainUrl } from "../../hooks/usePrevie
 import { useDeviceFrame } from "./DeviceFrame.js";
 import { PreviewToolbar, type PortInfo } from "./PreviewToolbar.js";
 import { PreviewErrors } from "./PreviewErrors.js";
-import { ComposeErrorBanner, ComposeHint } from "./ComposeErrorBanner.js";
+import { ComposeErrorBanner } from "./ComposeErrorBanner.js";
+import { PreviewSetupInvite } from "./PreviewSetupInvite.js";
 import { SecretsMissingBanner } from "./SecretsMissingBanner.js";
 import { handleAgentInterfaceRequest } from "../../agent-interface-sdk/handle-request.js";
 import type { AgentInterfaceProvenance } from "../../../server/shared/agent-interface-sdk/protocol.js";
@@ -63,7 +64,7 @@ interface PreviewFrameProps {
   onClearErrors: () => void;
   /** Called when user clicks "Send to agent" to send error info to the agent. */
   onSendCrashToAgent?: () => void;
-  /** Called when user clicks "Send to agent" to ask the agent to add compose config. */
+  /** Called when the user asks the agent to set a preview up for this repo. */
   onSendComposeHintToAgent?: () => void;
   onAgentInterfaceMessage?: (text: string, provenance: AgentInterfaceProvenance) => Promise<void>;
 }
@@ -570,7 +571,7 @@ export function PreviewFrame({
   } else if (showComposeError) {
     overlayContent = <ComposeErrorBanner composeError={composeError} onSendToAgent={onSendCrashToAgent} />;
   } else if (showComposeHint) {
-    overlayContent = <ComposeHint onSendToAgent={onSendComposeHintToAgent} />;
+    overlayContent = <PreviewSetupInvite onSendToAgent={onSendComposeHintToAgent} />;
   } else if (showStarting && !showIframe) {
     overlayContent = (
       <div className="text-center space-y-3">
