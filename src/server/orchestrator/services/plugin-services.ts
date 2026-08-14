@@ -114,10 +114,21 @@ export async function resolveSessionPluginServices(
   });
   if (fragments.length === 0) return nothingToSurface(sessionId);
 
+  // **The lease is taken HERE, before the first `await`** (req 15). Every
+  // fragment's generation was resolved inside `collectPluginFragments` just
+  // above, and everything from this function's entry to this line is one
+  // synchronous block — which is the whole basis of the lease's mutual
+  // exclusion. Taking it after the Docker round-trip below instead left the
+  // original race wide open (review finding): a refresh could publish, claim,
+  // fully delete generation A and release its claim during that await, and this
+  // round would then take a hold on a generation that no longer exists,
+  // re-create its work directories and build an overlay whose lowerdir is gone.
+  const { tracked, held } = holdResolvedGenerations(sessionId, fragments);
+
   const roots = deps.docker
     ? await resolvePluginOverlayRoots(deps.docker, deps.workspaceVolume, deps.stateRoot)
     : {};
-  const pluginVolumes = await ensurePluginVolumes(sessionId, stateDir, fragments, deps, roots);
+  const pluginVolumes = await ensurePluginVolumes(sessionId, stateDir, tracked, held, deps, roots);
 
   // req 18 — pinned per (session, service). Project ports are reserved: theirs
   // is both an origin and a real container port, so of the two only a plugin's
@@ -213,22 +224,22 @@ function readProjectServices(
   }
 }
 
+/** The tracked generation each declared repository contributed to this round. */
+type TrackedGenerations = Map<string, { commit: string; checkoutDir: string }>;
+
 /**
- * Make sure every tracked repository with services has its live generation's
- * overlay volume, and return the ones that are usable.
+ * Take the service surface's half of the consumer lease over every generation
+ * this round resolved (`plugin-leases.ts`, req 15).
  *
- * A repository that does not get one is left out of the map, and
- * `buildPluginComposeServices` drops its services with a reason — running a
- * plugin against a tree that is missing whatever its `install` produced is the
- * partial state req 15 forbids, dressed up as a working service.
- *
- * **This is where the service surface takes its half of the consumer lease**
- * (`plugin-leases.ts`, req 15). A plugin service container outlives the call
- * that created it, so its lease has two parts: the container's own attachment to
- * the generation volume — which the daemon enforces, and which is the only fact
- * that survives an orchestrator restart — and the in-process hold taken here,
- * covering the window before that container exists, where the volume is created
- * but attached to nothing and a concurrent refresh's prune would take it away.
+ * **Synchronous, and it must stay that way.** A plugin service container
+ * outlives the call that created it, so its lease has two parts: the container's
+ * own attachment to the generation volume — which the daemon enforces, and which
+ * is the only fact that survives an orchestrator restart — and the in-process
+ * hold taken here, covering the window before that container exists, where the
+ * volume is created but attached to nothing. The hold only closes that window if
+ * it is taken in the same synchronous block that resolved the generations; an
+ * `await` in between is enough for a refresh to publish, prune and release, and
+ * this round would then hold a generation that no longer exists.
  *
  * The hold set is REPLACED each round rather than added to, so it follows a
  * refresh with no release call of its own: a repository whose generation moved,
@@ -238,32 +249,52 @@ function readProjectServices(
  * the lease to delete the generation itself (`plugin-generations.ts`'s prune),
  * and a second sweeper racing the pruner on one volume name is precisely the
  * "two mechanisms" this lease exists to avoid.
+ *
+ * Taken with or without Docker, so a session that drops its plugin services
+ * lets go of its holds either way.
  */
-async function ensurePluginVolumes(
+function holdResolvedGenerations(
   sessionId: string,
-  stateDir: string,
   fragments: readonly PluginFragmentService[],
-  deps: PluginServiceDeps,
-  roots: { volumeMountpoint?: string; stateRoot?: string },
-): Promise<Map<string, string>> {
-  const volumes = new Map<string, string>();
-  const docker = deps.docker;
-
-  const tracked = new Map<string, { commit: string; checkoutDir: string }>();
+): { tracked: TrackedGenerations; held: Set<string> } {
+  const tracked: TrackedGenerations = new Map();
   for (const fragment of fragments) {
     if (!fragment.self && fragment.commit) {
       tracked.set(fragment.repo, { commit: fragment.commit, checkoutDir: fragment.checkoutDir });
     }
   }
-
-  // Taken even without Docker, so the hold set is released for a session whose
-  // declaration dropped its plugin services either way.
   const held = new Set(
     holdGenerationsForOwner(
       pluginServiceOwner(sessionId),
       [...tracked].map(([repoName, { commit }]) => ({ sessionId, repoName, commit })),
     ).map((ref) => ref.repoName),
   );
+  return { tracked, held };
+}
+
+/**
+ * Make sure every tracked repository with services has its live generation's
+ * overlay volume, and return the ones that are usable.
+ *
+ * A repository that does not get one is left out of the map, and
+ * `buildPluginComposeServices` drops its services with a reason — running a
+ * plugin against a tree that is missing whatever its `install` produced is the
+ * partial state req 15 forbids, dressed up as a working service.
+ *
+ * `held` is decided by {@link holdResolvedGenerations} before this is called,
+ * never here: this function awaits, and the lease has to be taken before the
+ * first await.
+ */
+async function ensurePluginVolumes(
+  sessionId: string,
+  stateDir: string,
+  tracked: TrackedGenerations,
+  held: ReadonlySet<string>,
+  deps: PluginServiceDeps,
+  roots: { volumeMountpoint?: string; stateRoot?: string },
+): Promise<Map<string, string>> {
+  const volumes = new Map<string, string>();
+  const docker = deps.docker;
   if (!docker) return volumes;
 
   for (const [repoName, { commit, checkoutDir }] of tracked) {

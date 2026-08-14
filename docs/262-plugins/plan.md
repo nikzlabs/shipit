@@ -419,14 +419,29 @@ instead of a repeat.
   there is an ordinary failed activation.
 
   **The bound, stated rather than left implied.** A prune that is refused does
-  not retry on its own; the next publish's prune reclaims what has since been
-  released. So a session that refreshes repeatedly keeps at most the live
-  generation plus the one its consumers were still running when the refresh
-  landed, and a session that never refreshes again carries one extra generation
-  until it is disposed. Removing a superseded generation's *volume* is now part
-  of taking the lease to delete the generation, which also closes a smaller leak:
-  volumes were only ever swept on the service path, so a session that refreshed
-  without services accumulated one per refresh.
+  not retry on its own; the next publish's prune reclaims whatever has since been
+  released. So a session retains, beyond the live generation, **one generation
+  per still-held generation** — normally the single one its consumers were
+  running when the refresh landed, but genuinely more when long invocations
+  overlap several refreshes (a CLI on A, refresh to B, a CLI on B, refresh to C
+  retains both A and B — review finding; an earlier version of this paragraph
+  claimed a flat ceiling of one). Every one of them is a generation something is
+  actually using, and each is reclaimed by the first publish after its consumer
+  finishes, or with the session.
+
+  **What the prune cannot see, stated for the same reason.** Removing a
+  superseded generation's *volume* is now part of taking the lease to delete the
+  generation, which closes the leak where volumes were only ever swept on the
+  service path and a session refreshing without services accumulated one per
+  refresh. The residual is the mirror image: the prune derives volume names from
+  the directories it finds, so a volume whose directories were removed by a
+  DIFFERENT actor — disk-tier eviction wipes the whole session state dir
+  (`REGENERABLE_SESSION_SUBDIRS`) — is no longer discoverable by it (review
+  finding). Such a volume holds no bytes, since the upper layer it describes went
+  with the state tree, and `reapOrphanPluginInstalls` drops every plugin overlay
+  volume at the next orchestrator boot. Re-adding a Docker-listing sweeper on the
+  service path to catch it sooner is the thing to *not* do: two owners racing on
+  one volume name is what this lease replaced.
 - **Services** (reqs 3, 5, 16, 20) — **implemented**
   (`plugin-compose.ts`, `services/plugin-services.ts`): each imported plugin's
   fragment becomes real services in the session's own compose stack, emitted

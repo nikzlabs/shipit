@@ -8,6 +8,7 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import type Docker from "dockerode";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -271,6 +272,42 @@ describe("resolveSessionPluginServices — the consumer lease", () => {
     await resolve();
 
     expect(generationHoldCount(generation())).toBe(0);
+  });
+
+  /**
+   * The review finding this closes: the hold used to be taken inside
+   * `ensurePluginVolumes`, AFTER the Docker round-trip that resolves the
+   * workspace volume's daemon-host mountpoint. A refresh could publish, claim,
+   * fully delete generation A and release its claim during that await, and the
+   * round would then hold a generation that no longer existed, re-create its
+   * work directories and build an overlay whose lowerdir was gone.
+   *
+   * Asserted as an ORDERING against the first daemon call, because that is the
+   * property — "no await between resolving a generation and holding it" — rather
+   * than against an interleaving a test would have to manufacture.
+   */
+  it("holds it before the first daemon round-trip, not after", async () => {
+    publishTrackedGeneration();
+    writeConfig(TRACKED_DECLARATION);
+
+    let heldAtFirstDaemonCall = -1;
+    const docker = {
+      getVolume: () => ({
+        inspect: async () => {
+          heldAtFirstDaemonCall = generationHoldCount(generation());
+          return { Mountpoint: "/var/lib/docker/volumes/shipit-workspace-vol/_data" };
+        },
+      }),
+    } as unknown as Docker;
+
+    await resolveSessionPluginServices(SESSION_ID, workspaceDir, {
+      containEgress: false,
+      docker,
+      workspaceVolume: "shipit-workspace-vol",
+      stateRoot: path.dirname(sessionDir),
+    });
+
+    expect(heldAtFirstDaemonCall).toBe(1);
   });
 
   it("leaves out a repository whose generation is being pruned right now", async () => {

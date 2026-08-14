@@ -687,7 +687,21 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
           // A session archived, reset or deleted mid-call must stop the
           // command: otherwise third-party code keeps the project and state
           // mounts, and its network, for the rest of the timeout.
-          isCancelled: () => !sessionManager.get(sessionId),
+          //
+          // **Archive has to be part of that test, and was not** (review
+          // finding, confirmed at source): `SessionManager.get` returns an
+          // archived row like any other, so only a DELETED session cancelled
+          // anything. Archiving disposes the runner, destroys the container and
+          // then removes the session's `workspace/` and `state/` outright
+          // (`reclaimRegenerableSessionDirs`) — under a running invocation
+          // container's `/project`, `/plugin-state` and generation mount, which
+          // is the same live-mount deletion req 15's lease exists to prevent,
+          // arriving from the one direction a lease cannot cover: a recursive
+          // `rm` of the whole tree by an actor that never asks.
+          isCancelled: () => {
+            const live = sessionManager.get(sessionId);
+            return !live || live.userArchived === true;
+          },
           ...(containerManager.workspaceVolumeName
             ? { workspaceVolume: containerManager.workspaceVolumeName, stateRoot: stateDir }
             : {}),
