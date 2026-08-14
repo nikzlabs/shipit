@@ -774,6 +774,20 @@ instead of a repeat.
     is deliberately NOT among these: the card already renders that as
     `unavailable` from the generation state, and repeating it here would state
     one ordinary fact twice, as an error.
+
+    **A link whose generation was retired is dropped, and that is not the same
+    as a stale one.** `removeStaleLinks` removes links for names the declaration
+    no longer has; re-pointing a `repos:` entry keeps the name and retires what
+    the PREVIOUS repository left, before the fetch that may then fail. So the
+    link survived pointing at nothing, and `/plugins/<name>` listed while being
+    unreadable — presence claiming a plugin the card was simultaneously
+    reporting as unavailable. It is removed in the same pass that reports the
+    repository as `missing`, under `linkPlugin`'s ownership rule (the link must
+    point exactly where we would have pointed it, so a foreign or real entry is
+    left alone even when broken), and silently: `missing` already carries the
+    user-facing fact, and calling it `unlinked` would claim the declaration
+    dropped a repository it still names. Self-healing — the next prepare
+    re-links as soon as a generation is published.
   - **The response is validated, not cast** (review finding). Containers survive
     an orchestrator restart and are reconnected, so a rolling upgrade puts a new
     orchestrator in front of a worker built before failures carried a `repo`.

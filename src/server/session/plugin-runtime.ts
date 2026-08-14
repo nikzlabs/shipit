@@ -119,6 +119,17 @@ export function preparePlugins(opts: PreparePluginsOptions): PluginPrepareResult
     const target = path.join(storeDir, repo.name, "active");
     if (!fs.existsSync(target)) {
       result.missing.push(repo.name);
+      // A live generation this session already linked can go away while the
+      // declaration still names the repository — re-pointing a `repos:` entry
+      // retires what the PREVIOUS repository left, before the fetch that may
+      // then fail. `removeStaleLinks` does not cover that: the name is still
+      // declared, so it is not stale. Left alone, `/plugins/<name>` survives as
+      // a dangling link and the agent is shown a path that lists but cannot be
+      // read — presence claiming a plugin the card is simultaneously reporting
+      // as unavailable (req 13). Dropping it is safe because the next prepare
+      // re-links as soon as a generation is published, and every activation
+      // round and container start fires one.
+      removeDeadLink(pluginsDir, repo.name, target);
       continue;
     }
     const failure = linkPlugin(pluginsDir, repo.name, target);
@@ -292,6 +303,27 @@ function removeStaleLinks(pluginsDir: string, wanted: Set<string>): string[] {
     }
   }
   return removed;
+}
+
+/**
+ * Drop `/plugins/<name>` when it is OUR link to a store path that no longer
+ * resolves. Ownership is checked the same way `linkPlugin` checks it — the link
+ * must point exactly where we would have pointed it — so a real directory, or a
+ * link somebody else made, is left alone even when it is broken.
+ *
+ * Silent: the repository is already reported in `missing`, which is the
+ * accurate statement of what the user needs to know. Reporting the removal as
+ * `unlinked` would be false — that list means "the declaration no longer names
+ * this repo", and here it still does.
+ */
+function removeDeadLink(pluginsDir: string, name: string, target: string): void {
+  const link = path.join(pluginsDir, name);
+  try {
+    if (fs.readlinkSync(link) !== target) return;
+    fs.unlinkSync(link);
+  } catch {
+    // No link, or not a link at all — nothing of ours to remove.
+  }
 }
 
 /**

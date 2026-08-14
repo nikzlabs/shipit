@@ -353,6 +353,50 @@ describe("preparePlugins — stale links (review finding)", () => {
     expect(fs.existsSync(path.join(pluginsDir, "tools"))).toBe(false);
   });
 
+  // Re-pointing a `repos:` entry retires what the previous repository left,
+  // while the declaration keeps naming the repo — so `removeStaleLinks` does not
+  // see it as stale. The link would otherwise survive pointing at nothing.
+  it("drops its own link when the generation is retired under a still-declared repo", () => {
+    declare();
+    publishGeneration("tools", "a".repeat(40), PROBE_MANIFEST);
+    preparePlugins(opts());
+    expect(fs.existsSync(path.join(pluginsDir, "tools"))).toBe(true);
+
+    fs.rmSync(path.join(store, "tools", "active"));
+    const result = preparePlugins(opts());
+
+    expect(result.missing).toEqual(["tools"]);
+    // Gone entirely — not merely unresolvable. `existsSync` follows the link, so
+    // it cannot tell a removed entry from a dangling one; `lstat` can.
+    expect(fs.lstatSync(path.join(pluginsDir, "tools"), { throwIfNoEntry: false })).toBeUndefined();
+    // Not reported as unlinked: that list means the declaration dropped the
+    // repo, and this declaration still names it.
+    expect(result.unlinked).toEqual([]);
+  });
+
+  it("re-links once a generation is published again", () => {
+    declare();
+    publishGeneration("tools", "a".repeat(40), PROBE_MANIFEST);
+    preparePlugins(opts());
+    fs.rmSync(path.join(store, "tools", "active"));
+    preparePlugins(opts());
+
+    publishGeneration("tools", "b".repeat(40), PROBE_MANIFEST);
+    expect(preparePlugins(opts()).linked).toEqual(["tools"]);
+    expect(fs.readlinkSync(path.join(pluginsDir, "tools"))).toBe(path.join(store, "tools", "active"));
+  });
+
+  it("leaves a broken link somebody else made alone", () => {
+    declare();
+    fs.mkdirSync(pluginsDir, { recursive: true });
+    // Same name, different target — not ours to remove, broken or not.
+    fs.symlinkSync(path.join(tmp, "nowhere"), path.join(pluginsDir, "tools"));
+
+    preparePlugins(opts());
+
+    expect(fs.readlinkSync(path.join(pluginsDir, "tools"))).toBe(path.join(tmp, "nowhere"));
+  });
+
   it("leaves anything that is not our symlink alone", () => {
     declare();
     fs.mkdirSync(pluginsDir, { recursive: true });
