@@ -610,24 +610,48 @@ instead of a repeat.
   version req 15 forbids, and it contradicted §1a's "an activation failure keeps
   the prior generation active".
 
-  It is now a **pre-publish gate**, beside the phase-2 selector check and before
-  `install`: `activateGeneration` takes an injected `validateStaged` hook, and
-  the implementation judges the candidate by **substitution** — the same
-  `collectPluginFragments`, with this one repository's `LiveGenerations` lookup
-  pointed at the STAGING tree. One implementation, so the gate cannot drift from
-  the surface it gates; and the generation engine still knows nothing about
-  compose. A refusal is an ordinary failed activation, so the prior version stays
-  whole and live and the card carries the collector's own message (req 13).
+  It is now a **pre-publish gate**: `activateGeneration` takes an injected
+  `validateStaged` hook, and the implementation judges the candidate by
+  **substitution** — the same `collectPluginFragments`, with this one
+  repository's `LiveGenerations` lookup pointed at the STAGING tree. One
+  implementation, so the gate cannot drift from the surface it gates; and the
+  generation engine still knows nothing about compose. A refusal is an ordinary
+  failed activation, so the prior version stays whole and live and the card
+  carries the collector's own message (req 13).
 
-  Two rulings the gate encodes rather than leaves implicit. **Only the staged
-  repository's own issues refuse it** (req 14): a candidate that loses a service
-  name to another repository is refused; one that *wins* publishes, and the
-  loser's card reports its withheld services as it does today — that is req 20's
-  consumer-declaration problem, not an incoherent version of either repository.
-  And **command collisions do not gate**, per the amendment above: they withhold
-  the contested command and are reported by `plugin-commands.ts`, so the version
-  stays coherent. Both are guard-tested, so the next slice does not read the gate
-  as half-built.
+  **It runs inside a session-wide publish window, not beside the phase-2 check.**
+  Phase 3 asks about the whole session's name domain, so the verdict is worth
+  only as much as its adjacency to the swap — and activation is serialized per
+  *repository* while repositories run concurrently. Judged any earlier, two
+  first-time candidates exporting one service name each see the other as
+  not-live, both pass, and both publish; the loser then ends up live for files,
+  CLIs and skills but not services, which is the same partial version by another
+  route. So the gate, the rename and the link swap are one serialized decision
+  (`plugin-generations.ts`'s publish key). Fetch, checkout and `install` stay
+  concurrent per repository (req 14). The cost is that a doomed candidate has
+  already run its `install` — wasted work in a throwaway container, the cheaper
+  half of the trade.
+
+  Three rulings the gate encodes rather than leaves implicit. **The staged
+  repository's own issues are absolute; every other repository is judged on the
+  DIFFERENCE** — publishing must not take a working sibling's services away
+  (req 14), and because the collector's claim order is the declaration's, the
+  "who is to blame" attribution would otherwise let an earlier-declared
+  repository silently disable a later-declared one by shipping a commit.
+  **Command collisions do not gate**, per the amendment above: they withhold the
+  contested command and are reported by `plugin-commands.ts`, so the version
+  stays coherent. And the gate **fails closed** — on a declaration that went away
+  or was re-pointed mid-round, on a project compose file that exists and cannot
+  be parsed, and on any unexpected throw. Each is guard-tested, so the next slice
+  does not read the gate as half-built.
+
+  Two of those are corrections a review made to the first version, and both were
+  ways the original shape re-opened the bug it closed: admitting a candidate
+  whose declaration had gone away let an ungated generation reach disk and then
+  become live through the `unchanged` short-circuit on re-add, and reading an
+  unreadable project stack as an *empty* name domain admitted exactly the
+  collisions the gate exists to catch. A declared compose file that does not
+  exist yet stays a definite answer — no stack, no claimed names.
 
   **Egress is unchanged on this surface.** Plugin service containers ride the
   session's existing posture, whatever `containComposeServices` gives the

@@ -17,6 +17,8 @@ import {
   getActivationState,
   getPluginPrepareFailures,
 } from "./plugin-activation.js";
+import { createStagedGenerationGate } from "./plugin-preflight.js";
+import { readActiveGeneration } from "../plugin-generations.js";
 
 let tmp: string;
 let sessionDir: string;
@@ -158,6 +160,103 @@ describe("activateDeclaredPlugins", () => {
     const state = getActivationState("sess", "gone");
     expect(state?.error).toBeUndefined();
     expect(state?.generation?.commit).toBeTruthy();
+  });
+});
+
+/**
+ * docs/262 plan §1a phase 3 — the pre-publish gate, wired the way production
+ * wires it (`bootstrap-managers.ts`): the REAL gate, not a stub, forwarded
+ * through this service into the generation engine.
+ *
+ * The two halves are tested apart — `plugin-generations.test.ts` owns the
+ * ordering and the failure shape, `plugin-preflight.test.ts` owns the verdicts —
+ * and nothing else proves they are actually connected. A dropped `validateStaged`
+ * property in either forwarding step type-checks perfectly and silently restores
+ * the bug the gate closes.
+ */
+describe("the phase-3 gate, wired end to end (reqs 13, 15)", () => {
+  const declareProbe = "compose: docker-compose.yml\n"
+    + "plugins:\n  repos:\n    - repo: acme/tools\n      name: tools\n      branch: main\n"
+    + "  use:\n    - plugin: probe\n      from: tools\n";
+
+  /**
+   * Commit an exported compose fragment on the plugin repository, good or bad,
+   * and make it reachable through the bare cache the way a real fetch would.
+   * `ensureCache` above short-circuits on an existing cache, so a SECOND commit
+   * only reaches activation if it is fetched here.
+   */
+  async function publishFragment(fragment: string): Promise<void> {
+    fs.writeFileSync(
+      path.join(originDir, "shipit.yaml"),
+      "exports:\n  plugins:\n    probe:\n      compose: probe/docker-compose.yml\n"
+        + "      cli:\n        probe: bin/probe.mjs\n",
+    );
+    fs.mkdirSync(path.join(originDir, "probe"), { recursive: true });
+    fs.writeFileSync(path.join(originDir, "probe", "docker-compose.yml"), fragment);
+    const git = simpleGit(originDir);
+    await git.add(".");
+    await git.commit("fragment");
+
+    const cacheDir = getBareCacheDir("https://github.com/acme/tools.git");
+    if (!fs.existsSync(path.join(cacheDir, "HEAD"))) return;
+    await simpleGit(cacheDir).raw(["config", "remote.origin.fetch", "+refs/heads/*:refs/heads/*"]);
+    await simpleGit(cacheDir).raw(["fetch", "--all", "--force"]);
+  }
+
+  /** The state dir the session's generations live in. */
+  const liveCommit = (): string | undefined =>
+    readActiveGeneration(path.join(sessionDir, "state"), "tools", "acme/tools")?.commit;
+
+  it("activates a version whose fragment is usable", async () => {
+    await publishFragment("services:\n  probe:\n    image: node:22-alpine\n");
+    writeConfig(declareProbe);
+
+    await activateDeclaredPlugins("sess", workspaceDir, {
+      ...deps(),
+      validateStaged: createStagedGenerationGate({ workspaceDir, containEgress: () => false }),
+    });
+
+    const state = getActivationState("sess", "tools");
+    expect(state?.error).toBeUndefined();
+    expect(state?.generation?.commit).toBeTruthy();
+  });
+
+  it("does not publish a version whose fragment is rejected", async () => {
+    // `build:` is refused for a plugin fragment — its files reach it through the
+    // generation's overlay volume, which cannot be a build context.
+    await publishFragment("services:\n  probe:\n    build: .\n");
+    writeConfig(declareProbe);
+
+    await activateDeclaredPlugins("sess", workspaceDir, {
+      ...deps(),
+      validateStaged: createStagedGenerationGate({ workspaceDir, containEgress: () => false }),
+    });
+
+    const state = getActivationState("sess", "tools");
+    expect(state?.error).toContain("build:");
+    // Nothing became live — the whole point. Without the gate this repository
+    // would be `active` at a commit whose services can never start.
+    expect(state?.generation).toBeUndefined();
+    expect(liveCommit()).toBeUndefined();
+  });
+
+  it("keeps the prior version live when a later commit's fragment is rejected", async () => {
+    await publishFragment("services:\n  probe:\n    image: node:22-alpine\n");
+    writeConfig(declareProbe);
+    const gate = createStagedGenerationGate({ workspaceDir, containEgress: () => false });
+    await activateDeclaredPlugins("sess", workspaceDir, { ...deps(), validateStaged: gate });
+    const good = getActivationState("sess", "tools")?.generation?.commit;
+    expect(good).toBeTruthy();
+
+    await publishFragment("services:\n  probe:\n    build: .\n");
+    await activateDeclaredPlugins("sess", workspaceDir, { ...deps(), validateStaged: gate });
+
+    const state = getActivationState("sess", "tools");
+    // req 15's degraded state: the failure is reported AND the prior complete
+    // version is still the one running.
+    expect(state?.error).toContain("build:");
+    expect(state?.generation?.commit).toBe(good);
+    expect(liveCommit()).toBe(good);
   });
 });
 

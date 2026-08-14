@@ -6,6 +6,11 @@
  * repository, and a staged checkout in a directory nothing has published. That
  * is exactly what `activateGeneration` hands the gate, so these run the real
  * collector against the real declaration — no stubs on either side.
+ *
+ * A repository is made LIVE the way activation makes one live: a generation
+ * directory with its record inside it, and the `active` symlink pointing at it.
+ * Several of these findings only exist when a sibling is genuinely live, so the
+ * fixture builds one rather than declaring one.
  */
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
@@ -18,9 +23,11 @@ import type { StagedGeneration } from "../plugin-generations.js";
 
 let sessionDir: string;
 let workspaceDir: string;
+let stateDir: string;
 let stagingDir: string;
 
 const COMMIT = "a".repeat(40);
+const TOOLS_SOURCE = "acme/tools";
 
 /**
  * A consumer declaration importing `probe` from the tracked repo `tools`.
@@ -66,10 +73,11 @@ services:
 beforeEach(() => {
   sessionDir = fs.mkdtempSync(path.join(os.tmpdir(), "plugin-preflight-"));
   workspaceDir = path.join(sessionDir, SESSION_WORKSPACE_SUBDIR);
-  stagingDir = path.join(sessionDir, SESSION_STATE_SUBDIR, "plugins", "tools", "generations", `${COMMIT}.staging-1234`);
+  stateDir = path.join(sessionDir, SESSION_STATE_SUBDIR);
+  stagingDir = path.join(stateDir, "plugins", "tools", "generations", `${COMMIT}.staging-1234`);
   fs.mkdirSync(workspaceDir, { recursive: true });
   fs.mkdirSync(path.join(stagingDir, "probe"), { recursive: true });
-  fs.writeFileSync(path.join(workspaceDir, "shipit.yaml"), CONSUMER);
+  declare(CONSUMER);
   writeStaged(MANIFEST, FRAGMENT);
 });
 
@@ -86,7 +94,7 @@ function judge(over: Partial<StagedGeneration> = {}): ReturnType<ReturnType<type
   return createStagedGenerationGate({
     workspaceDir,
     containEgress: () => false,
-  })({ repoName: "tools", commit: COMMIT, stagingDir, ...over });
+  })({ repoName: "tools", source: TOOLS_SOURCE, commit: COMMIT, stagingDir, ...over });
 }
 
 /** Replace the consuming project's declaration for one test. */
@@ -97,6 +105,28 @@ function declare(body: string): void {
 /** Give the consuming project a stack of its own — the other half of req 20's domain. */
 function declareProjectStack(body: string): void {
   fs.writeFileSync(path.join(workspaceDir, "docker-compose.yml"), body);
+}
+
+/**
+ * Publish a generation for `name` the way activation does — record inside the
+ * generation directory, `active` symlinked at it.
+ */
+function makeLive(name: string, source: string, manifest: string, fragment: string): void {
+  const commit = "b".repeat(40);
+  const dir = path.join(stateDir, "plugins", name, "generations", commit);
+  fs.mkdirSync(path.join(dir, "probe"), { recursive: true });
+  fs.writeFileSync(path.join(dir, "shipit.yaml"), manifest);
+  fs.writeFileSync(path.join(dir, "probe", "docker-compose.yml"), fragment);
+  fs.writeFileSync(path.join(dir, ".shipit-generation.json"), JSON.stringify({
+    repoName: name,
+    source,
+    commit,
+    ref: "branch main",
+    activatedAt: new Date().toISOString(),
+    exports: ["probe"],
+    manifestWarnings: [],
+  }));
+  fs.symlinkSync(path.join("generations", commit), path.join(stateDir, "plugins", name, "active"));
 }
 
 describe("the phase-3 gate (reqs 13, 15, 20)", () => {
@@ -202,12 +232,18 @@ exports:
 
     expect(judge()).toEqual({ ok: true });
   });
+});
 
-  // req 14 — repositories are independent. Another declared repository whose
-  // services cannot be surfaced is that repository's problem, reported on its
-  // own card; it must not hold this one at its previous version.
-  it("is unmoved by another repository's problems", () => {
-    declare(`
+/**
+ * req 14 — repositories are independent, in both directions. A sibling's own
+ * problems must not hold this candidate back; this candidate must not take a
+ * sibling's working services away. The claim order inside the collector is the
+ * DECLARATION's, so the second half is not symmetric with the first and needs
+ * its own rule (the differential half of the verdict).
+ */
+describe("the phase-3 gate and its siblings (req 14)", () => {
+  const OTHER = `
+compose: docker-compose.yml
 plugins:
   repos:
     - repo: acme/tools
@@ -219,24 +255,88 @@ plugins:
   use:
     - plugin: probe
       from: tools
-    - plugin: broken
+    - plugin: probe
       from: other
+      alias: other-probe
+`;
+
+  it("is unmoved by a live sibling whose own fragment is broken", () => {
+    declare(OTHER);
+    // A genuinely live sibling with a genuinely unusable fragment — the shape a
+    // declaration-only stand-in cannot produce, because the collector skips a
+    // repository with no generation.
+    makeLive("other", "acme/other", MANIFEST, "services:\n  side:\n    build: .\n");
+
+    expect(judge()).toEqual({ ok: true });
+  });
+
+  it("refuses a candidate that would take a live sibling's services away", () => {
+    declare(OTHER);
+    // The sibling is live and serving `side`. `tools` is declared FIRST, so the
+    // collector would hand it the name and attribute the collision to `other` —
+    // the staged repository would look blameless and publish, silently
+    // disabling a repository that works today.
+    makeLive("other", "acme/other", MANIFEST, `
+services:
+  side:
+    image: node:22-alpine
 `);
-    expect(judge()).toEqual({ ok: true });
-  });
+    writeStaged(MANIFEST, `
+services:
+  side:
+    image: node:22-alpine
+`);
+    const verdict = judge();
 
-  // A `shipit.yaml` edit landing mid-round. There is no declaration left to
-  // judge the candidate against, and the edit has already queued its own round
-  // behind this one.
-  it("admits a candidate whose declaration has gone away", () => {
+    expect(verdict.ok).toBe(false);
+    const reason = (verdict as { reason: string }).reason;
+    expect(reason).toContain("`other`");
+    expect(reason).toContain("collides");
+  });
+});
+
+/**
+ * Fail closed. Each of these is a state in which the gate cannot know the
+ * answer, and publishing without knowing is the partial version it exists to
+ * prevent. A refusal keeps the prior version whole and is retried next round.
+ */
+describe("the phase-3 gate fails closed (reqs 13, 15)", () => {
+  // A `shipit.yaml` edit landing mid-round. Admitting the candidate looks
+  // harmless and is not: the round behind this one maps only the repositories
+  // the project CURRENTLY declares, so a removed one gets no follow-up — and
+  // re-adding it at the same commit returns `unchanged` before the gate is
+  // consulted, so an ungated generation becomes live.
+  it("refuses a candidate whose declaration has gone away", () => {
     declare("plugins:\n  repos: []\n  use: []\n");
-    expect(judge()).toEqual({ ok: true });
+    const verdict = judge();
+
+    expect(verdict.ok).toBe(false);
+    expect((verdict as { reason: string }).reason).toContain("changed while");
   });
 
-  // Fail closed: publishing on an error we cannot explain is the partial state
-  // this gate exists to prevent, and a refusal is visible and recoverable.
+  // A name is not identity: the same `tools` entry can be re-pointed at another
+  // repository mid-round, and this candidate's files are the previous one's.
+  it("refuses a candidate whose declaration was re-pointed at another repository", () => {
+    declare(CONSUMER.replace("acme/tools", "acme/elsewhere"));
+    const verdict = judge();
+
+    expect(verdict.ok).toBe(false);
+    expect((verdict as { reason: string }).reason).toContain("changed while");
+  });
+
+  // The project's own stack is UNKNOWN, not absent — publishing against an
+  // unknown name domain is how a colliding candidate goes live and has its
+  // services withheld by the very next service round.
+  it("refuses when the project's own compose file cannot be read", () => {
+    declareProjectStack("services: [this is: : not yaml\n");
+    const verdict = judge();
+
+    expect(verdict.ok).toBe(false);
+    expect((verdict as { reason: string }).reason).toContain("could not read this project's own compose file");
+  });
+
   it("refuses when it cannot read the declaration at all", () => {
-    fs.writeFileSync(path.join(workspaceDir, "shipit.yaml"), "plugins: [oh: : no\n");
+    declare("plugins: [oh: : no\n");
     const verdict = judge();
 
     expect(verdict.ok).toBe(false);

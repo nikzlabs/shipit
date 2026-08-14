@@ -23,6 +23,7 @@
  * is what makes `shipit plugin refresh` (req 12) reach the running services.
  */
 
+import fs from "node:fs";
 import path from "node:path";
 import type Docker from "dockerode";
 import { parseComposeFile } from "../compose-generator.js";
@@ -191,27 +192,52 @@ function volumeSubpath(dir: string, deps: PluginServiceDeps): string | undefined
   return volumeSubpathFor(deps.stateRoot, dir) ?? undefined;
 }
 
+/** The project's own half of req 20's name domain, and whether it is knowable. */
+export interface ProjectServices {
+  names: string[];
+  ports: Set<number>;
+  /**
+   * The project DECLARES a compose file that could not be read or parsed, so
+   * these names are not "none" but "unknown".
+   *
+   * The distinction only matters to a caller that must fail closed. This round
+   * is not one: it degrades, deliberately (see below). `plugin-preflight.ts` is
+   * — a gate that read an unreadable project stack as an empty name domain would
+   * admit a candidate this function later refuses to surface, which is the exact
+   * bug the gate exists to prevent, arriving through the gate itself.
+   */
+  unknown: boolean;
+}
+
 /**
  * The project's own service names and ports, best-effort.
  *
- * Best-effort because this is a *collision domain*, not a gate: a project whose
- * compose file is mid-edit (or absent — a project may declare plugins and no
- * stack of its own) should still get its plugin services. Its own stack reports
- * the parse failure through its own path.
+ * Best-effort because for THIS round it is a *collision domain*, not a gate: a
+ * project whose compose file is mid-edit (or absent — a project may declare
+ * plugins and no stack of its own) should still get its plugin services. Its own
+ * stack reports the parse failure through its own path.
  *
  * Exported for `plugin-preflight.ts`, which must seed the collision domain the
- * SAME way this round will (docs/262 plan §1a phase 3): a pre-publish gate that
- * read the project's services differently would admit a generation this function
- * then refuses to surface, which is the bug the gate exists to prevent.
+ * SAME way this round will (docs/262 plan §1a phase 3) — one reader, so the gate
+ * and the surface it gates cannot disagree about what the project claims.
  */
 export function readProjectServices(
   workspaceDir: string,
   config: ShipitConfig,
   containEgress: boolean,
-): { names: string[]; ports: Set<number> } {
-  if (!config.compose) return { names: [], ports: new Set() };
+): ProjectServices {
+  // No `compose:` block is not a failure to read one: the project has no stack,
+  // and keying it on whether a conventional filename happens to exist would
+  // start a stack the project never declared (plan §1b).
+  if (!config.compose) return { names: [], ports: new Set(), unknown: false };
+  const file = path.join(workspaceDir, config.compose.file);
+  // A declared file that is not there yet is a DEFINITE answer, not an unknown
+  // one: a stack that does not exist claims no names, and a project may
+  // legitimately declare `compose:` before writing it. Only a file that exists
+  // and cannot be read or parsed leaves the name domain unknowable.
+  if (!fs.existsSync(file)) return { names: [], ports: new Set(), unknown: false };
   try {
-    const parsed = parseComposeFile(path.join(workspaceDir, config.compose.file), {
+    const parsed = parseComposeFile(file, {
       dockerSocket: config.compose.dockerSocket,
       containEgress,
     });
@@ -223,9 +249,9 @@ export function readProjectServices(
         if (Number.isInteger(port)) ports.add(port);
       }
     }
-    return { names: parsed.map((s) => s.name), ports };
+    return { names: parsed.map((s) => s.name), ports, unknown: false };
   } catch {
-    return { names: [], ports: new Set() };
+    return { names: [], ports: new Set(), unknown: true };
   }
 }
 

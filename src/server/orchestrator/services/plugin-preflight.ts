@@ -1,7 +1,7 @@
 /**
  * docs/262 reqs 13, 14, 15, 20, plan §1a phase 3 — the **pre-publish gate**:
  * would this staged generation's declared surfaces actually work if it became
- * live?
+ * live, and would publishing it break anything that works now?
  *
  * `plugin-generations.ts` owns *when* a generation is published and knows
  * nothing about compose; this is the half that knows the consuming session's
@@ -31,26 +31,39 @@
  * from what is actually live. One implementation means the gate cannot drift
  * from the surface it is gating.
  *
- * Only issues attributed to the STAGED repository refuse it (req 14: one
- * repository's problems leave the others alone). Two consequences are worth
- * stating rather than discovering:
+ * The verdict is then **differential**, and asymmetric on purpose:
  *
- *  - A candidate whose services would take a name another repository already
- *    claims is refused — the claim order is the declaration's, and the loser is
- *    whoever comes second. A candidate that *wins* such a race publishes, and
- *    the loser's card reports its withheld services, as it does today. That is a
- *    consumer-declaration problem (req 20's second half), not an incoherent
- *    version of either repository.
- *  - Repositories activate in parallel, so a repository with nothing live yet
- *    contributes no claimed names. The gate answers about the world as it is at
- *    that moment, which is the strongest honest answer; the service round is
- *    still the place that reports what a fully settled session surfaces.
+ *  - **The staged repository's own issues are absolute.** Any issue at all
+ *    refuses it: its files, CLIs, skills and services must all belong to the one
+ *    commit (req 15), so a version that cannot surface its services is not a
+ *    version to publish, whether or not the previous one had the same problem.
+ *  - **Every other repository is judged on the DIFFERENCE.** Publishing must not
+ *    take a working repository's services away (req 14: one repository's update
+ *    leaves the others unaffected). A candidate whose service name is already
+ *    claimed by a live sibling is refused even when the collision would be
+ *    *attributed* to the sibling — the claim order is the declaration's, so
+ *    without this the outcome would depend on which `use:` entry happens to come
+ *    first, and an earlier-declared repository could silently disable a
+ *    later-declared one by shipping a commit. Their pre-existing problems are
+ *    theirs and do not hold this candidate back.
+ *
+ * ## Why the caller runs this inside its publish lock
+ *
+ * The question is about the moment the symlink swaps and the answer depends on
+ * the rest of the session, so the check is only worth as much as its adjacency
+ * to the swap. `activateGeneration` therefore calls it inside a session-wide
+ * publish window; see the `queues` docstring there. Without that, two first-time
+ * candidates exporting one service name each see the other as not-live, both
+ * pass, and both publish.
  *
  * ## Fail closed
  *
- * An unexpected throw refuses the candidate. The alternative — publish anyway —
- * is precisely the partial state this exists to prevent, and a refusal is
- * visible, recoverable on the next refresh, and leaves the prior version whole.
+ * An unexpected throw refuses the candidate; so does a declaration that has gone
+ * away or been re-pointed since the round started, and a project compose file
+ * that is declared but unreadable. The alternative in each case is to publish
+ * without knowing, which is precisely the partial state this exists to prevent.
+ * A refusal is visible, leaves the prior version whole, and is retried by the
+ * next activation round.
  */
 
 import { collectPluginFragments } from "../plugin-compose.js";
@@ -63,7 +76,7 @@ import {
   type ValidateStagedGeneration,
 } from "../plugin-generations.js";
 import { sessionStateDirForWorkspace } from "../session-state-dir.js";
-import { resolveShipitConfig } from "../../shared/shipit-config.js";
+import { resolveShipitConfig, type ShipitConfig } from "../../shared/shipit-config.js";
 import { destinationKey, type DeclaredPluginRepo } from "../../shared/plugin-repos.js";
 import { readProjectServices } from "./plugin-services.js";
 
@@ -81,13 +94,15 @@ export interface StagedGenerationGateDeps {
   containEgress: () => boolean;
 }
 
+type Verdict = { ok: true } | { ok: false; reason: string };
+
 /**
  * Build the phase-3 gate for one session.
  *
  * The declaration and every live generation are re-read on each call rather than
  * captured: an activation round holds its config for as long as its slowest
- * repository takes to fetch, and the question this answers is about the session
- * as it is at publish time.
+ * repository takes to fetch and install, and the question this answers is about
+ * the session as it is at publish time.
  */
 export function createStagedGenerationGate(
   deps: StagedGenerationGateDeps,
@@ -98,38 +113,58 @@ export function createStagedGenerationGate(
       const declaration = config.plugins.repos.find(
         (r) => r.source.kind !== "self" && r.name.toLowerCase() === staged.repoName.toLowerCase(),
       );
-      // The declaration this candidate was staged for is gone — a `shipit.yaml`
-      // edit landed mid-round. Nothing here can judge it against a declaration
-      // that no longer exists, and the edit has already queued its own round
-      // behind this one (`plugin-generations.ts`'s per-repo serial queue).
-      if (!declaration) return { ok: true };
+      // The declaration this candidate was staged for is gone, or now points at
+      // a different repository — a `shipit.yaml` edit landed mid-round.
+      //
+      // **Refused, not waved through.** Admitting it looked harmless ("the edit
+      // has queued its own round") and is not: the round behind this one maps
+      // only the repositories the project CURRENTLY declares, so there is no
+      // follow-up task for one that was removed, and the obsolete generation
+      // stays on disk under that name. Re-adding the same repository at the same
+      // commit then returns `unchanged` before the gate is ever consulted, so a
+      // candidate that never passed preflight becomes the live version.
+      if (!declaration || destinationKey(declaration.source) !== staged.source) {
+        return {
+          ok: false,
+          reason: `${staged.commit.slice(0, 9)} was not activated: this project's declaration of `
+            + `\`${staged.repoName}\` changed while the version was being prepared.`,
+        };
+      }
 
       const containEgress = deps.containEgress();
-      const issues = collectPluginFragments({
+      const project = readProjectServices(deps.workspaceDir, config, containEgress);
+      // The project declares a stack whose file cannot be read or parsed right
+      // now — a mid-edit window, or a file its own security validation refuses.
+      // Its service names are UNKNOWN rather than absent, and publishing against
+      // an unknown name domain is how a colliding candidate goes live and has
+      // its services withheld by the very next service round.
+      if (project.unknown) {
+        return {
+          ok: false,
+          reason: `${staged.commit.slice(0, 9)} was not activated: ShipIt could not read this `
+            + "project's own compose file, so it cannot tell whether the plugin's services collide "
+            + "with it.",
+        };
+      }
+
+      const collect = (live: LiveGenerations): Map<string, string[]> => collectPluginFragments({
         workspaceDir: deps.workspaceDir,
-        live: substituteStaged(
-          resolveLiveGenerations(sessionStateDirForWorkspace(deps.workspaceDir), config.plugins.repos),
-          declaration,
-          staged,
-        ),
+        live,
         plugins: config.plugins,
         selfExports: config.pluginExports,
-        projectServiceNames: readProjectServices(deps.workspaceDir, config, containEgress).names,
+        projectServiceNames: project.names,
         containEgress,
-      }).issuesByRepo.get(declaration.name) ?? [];
-      if (issues.length === 0) return { ok: true };
+      }).issuesByRepo;
 
-      // The reason carries the collector's own messages, not a summary of them:
-      // they already name the offending service, the fragment key and the fix,
-      // and req 13 asks for a degradation the user can act on rather than one
-      // they can merely see. The commit is named because the card's other half
-      // is the PRIOR version that is still running.
-      return {
-        ok: false,
-        reason:
-          `${staged.commit.slice(0, 9)} was not activated: this project cannot surface its plugin `
-          + `services. ${issues.join(" ")}`,
-      };
+      const stateDir = sessionStateDirForWorkspace(deps.workspaceDir);
+      const before = collect(resolveLiveGenerations(stateDir, config.plugins.repos));
+      const after = collect(substituteStaged(
+        resolveLiveGenerations(stateDir, config.plugins.repos),
+        declaration,
+        staged,
+      ));
+
+      return verdictFor(staged, declaration, config, before, after);
     } catch (err) {
       return {
         ok: false,
@@ -141,6 +176,48 @@ export function createStagedGenerationGate(
 }
 
 /**
+ * Compare the two worlds. The staged repository answers absolutely; every other
+ * declared repository answers on the difference — see the module docstring for
+ * why the two halves are not the same rule.
+ *
+ * The collector's own messages are carried through rather than summarized: they
+ * already name the offending service, the fragment key and the fix, and req 13
+ * asks for a degradation the user can act on rather than one they can merely
+ * see. The commit is named because the card's other half is the PRIOR version
+ * that keeps running.
+ */
+function verdictFor(
+  staged: StagedGeneration,
+  declaration: DeclaredPluginRepo,
+  config: Pick<ShipitConfig, "plugins">,
+  before: ReadonlyMap<string, string[]>,
+  after: ReadonlyMap<string, string[]>,
+): Verdict {
+  const own = after.get(declaration.name) ?? [];
+  if (own.length > 0) {
+    return {
+      ok: false,
+      reason: `${staged.commit.slice(0, 9)} was not activated: this project cannot surface its plugin `
+        + `services. ${own.join(" ")}`,
+    };
+  }
+
+  for (const repo of config.plugins.repos) {
+    if (repo.name === declaration.name) continue;
+    const added = (after.get(repo.name) ?? []).filter(
+      (issue) => !(before.get(repo.name) ?? []).includes(issue),
+    );
+    if (added.length === 0) continue;
+    return {
+      ok: false,
+      reason: `${staged.commit.slice(0, 9)} was not activated: it would stop \`${repo.name}\` from `
+        + `surfacing services this session already has. ${added.join(" ")}`,
+    };
+  }
+  return { ok: true };
+}
+
+/**
  * The same live-generation lookup, with ONE repository answered from the staging
  * tree instead of from `active`.
  *
@@ -148,9 +225,9 @@ export function createStagedGenerationGate(
  * checkout rather than stubbed, even though the collector reads only the
  * directory and the commit: a half-populated record is the kind of thing a later
  * reader trusts. The source identity check that `resolveLiveGenerations`
- * performs is not bypassed so much as already answered — this generation is
- * being staged *for* this declaration, which is exactly what that check proves
- * for a published one.
+ * performs is not bypassed so much as already answered — the caller verified
+ * `staged.source` against this declaration above, which is exactly what that
+ * check proves for a published generation.
  */
 function substituteStaged(
   live: LiveGenerations,
@@ -159,7 +236,7 @@ function substituteStaged(
 ): LiveGenerations {
   const record: GenerationRecord = {
     repoName: declaration.name,
-    source: destinationKey(declaration.source),
+    source: staged.source,
     commit: staged.commit,
     ref: declaration.pin ? `pin ${declaration.pin}` : `branch ${declaration.branch ?? "(default)"}`,
     activatedAt: new Date().toISOString(),

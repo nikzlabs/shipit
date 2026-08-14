@@ -18,6 +18,7 @@ import {
   readActiveGeneration,
   resolveLiveGenerations,
   type BeginGenerationDeletion,
+  type StagedGeneration,
 } from "./plugin-generations.js";
 import type { DeclaredPluginRepo } from "../shared/plugin-repos.js";
 
@@ -364,8 +365,10 @@ describe("the phase-3 gate runs before publish (reqs 13, 15)", () => {
     expect((outcome as { reason: string }).reason).toContain("declares `build:`");
     expect((outcome as { previous?: { commit: string } }).previous?.commit).toBe(before?.commit);
     expect(readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)?.commit).toBe(before?.commit);
-    // No staging tree left behind, and the rejected commit was never staged into
-    // a generation directory anything can name.
+    // The rejected commit was never renamed into a generation directory anything
+    // can name, and its staging tree is cleaned up (best-effort, so this asserts
+    // the path where the `rm` succeeds — a residue is inert and swept by the
+    // next publish's prune either way).
     expect(fs.readdirSync(path.join(stateDir, "plugins", "tools", "generations")))
       .toEqual([before!.commit]);
   });
@@ -381,8 +384,8 @@ describe("the phase-3 gate runs before publish (reqs 13, 15)", () => {
     expect(fs.existsSync(activeLinkPath(stateDir, "tools"))).toBe(false);
   });
 
-  it("judges the STAGING tree, before anything is published", async () => {
-    let seen: { stagingDir: string; commit: string; repoName: string } | null = null;
+  it("judges the STAGING tree, and the declaration it was staged for", async () => {
+    let seen: StagedGeneration | null = null;
     await activateGeneration(repo({ branch: "main" }), {
       ...deps(["probe"]),
       validateStaged: (staged) => {
@@ -397,25 +400,54 @@ describe("the phase-3 gate runs before publish (reqs 13, 15)", () => {
 
     expect(seen!.repoName).toBe("tools");
     expect(seen!.stagingDir).toContain(".staging-");
+    // The source travels with the candidate: a name is not identity, and the
+    // gate re-reads a declaration that may have been re-pointed meanwhile.
+    expect(seen!.source).toBe(TOOLS_SOURCE);
     expect(readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)?.commit).toBe(seen!.commit);
   });
 
-  // Ordered before install deliberately: the fragment lives in the pristine
-  // checkout, so the answer is the same either side of it — and on this side a
-  // doomed candidate costs a YAML parse instead of minutes of third-party code.
-  it("does not run install for a candidate it is going to refuse", async () => {
-    let installed = false;
-    const outcome = await activateGeneration(repo({ branch: "main" }), {
-      ...deps(["probe"]),
-      validateStaged: () => ({ ok: false, reason: "nope" }),
-      runInstall: async () => {
-        installed = true;
-        return { ok: true };
-      },
-    });
+  /**
+   * The gate answers a question about the whole SESSION's name domain, so its
+   * verdict is worth only as much as its adjacency to the swap. Activation is
+   * serialized per repository and repositories run concurrently
+   * (`plugin-activation.ts` maps them through `Promise.all`), so without a
+   * session-wide publish window two first-time candidates exporting one service
+   * name would each be judged against a world in which the other had not
+   * published — both pass, both publish, and the loser ends up live for files,
+   * CLIs and skills but not services. That is the very partial version this gate
+   * exists to prevent, reached by a different route.
+   *
+   * The invariant asserted is the one the window guarantees and nothing else
+   * does: **whichever candidate entered the window first has already swapped its
+   * `active` link by the time the next one is judged.** It holds always under the
+   * lock and essentially never without it, so the test cannot fail flakily in the
+   * passing direction.
+   */
+  it("judges one candidate at a time across the session, not one per repository", async () => {
+    const entered: string[] = [];
+    let sawUnpublishedPredecessor = false;
+    const gate = (staged: StagedGeneration): { ok: true } => {
+      for (const earlier of entered) {
+        if (!fs.existsSync(activeLinkPath(stateDir, earlier))) sawUnpublishedPredecessor = true;
+      }
+      entered.push(staged.repoName);
+      return { ok: true };
+    };
 
-    expect(outcome.status).toBe("failed");
-    expect(installed).toBe(false);
+    const other = repo({
+      name: "other",
+      source: { kind: "github", owner: "acme", repo: "other" },
+      branch: "main",
+    });
+    await Promise.all([
+      activateGeneration(repo({ branch: "main" }), { ...deps(["probe"]), validateStaged: gate }),
+      activateGeneration(other, { ...deps(["probe"]), validateStaged: gate }),
+    ]);
+
+    expect(entered).toHaveLength(2);
+    expect(sawUnpublishedPredecessor).toBe(false);
+    expect(readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)).not.toBeNull();
+    expect(readActiveGeneration(stateDir, "other", "acme/other")).not.toBeNull();
   });
 
   // Nothing is being published, so there is nothing to gate: the version that is
