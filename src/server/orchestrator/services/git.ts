@@ -10,7 +10,7 @@ import type { GitHubAuthManager } from "../github-auth.js";
 import type { FileDiff } from "../../shared/types.js";
 import { scanFileTree } from "../../shared/file-tree.js";
 import { createLfsBlobResolver, parseLfsPointer, type LfsBlobResolver } from "../git-lfs-blob.js";
-import { stripUrlCredentials } from "../git-utils.js";
+import { stripRemoteUrlCredentials } from "../git-utils.js";
 import { ServiceError } from "./types.js";
 
 // ---- Image diff support ----
@@ -453,7 +453,7 @@ export async function setGitRemote(
   url: string,
 ): Promise<{ remotes: { name: string; url: string }[] }> {
   if (!name.trim() || !url.trim()) throw new ServiceError(400, "Remote name and URL are required");
-  const cleanUrl = stripUrlCredentials(url);
+  const cleanUrl = stripRemoteUrlCredentials(url);
   if (cleanUrl !== url.trim()) {
     console.warn(
       `[git] Dropped the credential embedded in the remote URL for ${name.trim()} — ShipIt never records `

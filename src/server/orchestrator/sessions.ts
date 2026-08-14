@@ -6,7 +6,7 @@ import type { PrStatusSummary } from "../shared/types/github-types.js";
 import type { AgentId } from "../shared/types/agent-types.js";
 import type { BillingMode, ModelSelection } from "../shared/catalogue/index.js";
 import { resolveModelSelection, sameCredentialOwner } from "../shared/catalogue/index.js";
-import { stripUrlCredentials } from "./git-utils.js";
+import { stripRemoteUrlCredentials } from "./git-utils.js";
 
 /**
  * docs/252 — how a credential route is BILLED, derived from the route itself.
@@ -561,7 +561,7 @@ export class SessionManager {
    * the cross-session display boundary by `sanitizeRemoteUrlForInventory`.
    */
   setRemoteUrl(id: string, remoteUrl: string | undefined): void {
-    const stored = remoteUrl === undefined ? null : stripUrlCredentials(remoteUrl);
+    const stored = remoteUrl === undefined ? null : stripRemoteUrlCredentials(remoteUrl);
     this.db.prepare("UPDATE sessions SET remote_url = ? WHERE id = ?").run(stored, id);
   }
 

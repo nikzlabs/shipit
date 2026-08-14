@@ -254,21 +254,56 @@ describe("no credential is recorded in a git config (docs/262 req 19)", () => {
     expect(config).not.toMatch(CREDENTIAL_IN_URL);
   });
 
-  it("cloneBare records the plain URL even when handed a credentialed one", async () => {
-    // The bare cache is orchestrator-side, but it is what every session clone
-    // is cut from — and `git clone <url>` records the URL it cloned from.
-    // Uses the local file:// remote for the fetch and asserts on the config a
-    // credentialed https URL would have produced, so the accepted cost is
-    // explicit: the clone is attempted WITHOUT the embedded credential.
-    const cacheDir = path.join(tmpDir, "cache-plain");
+  it("cloneBare never offers a URL-embedded credential, and never records one", async () => {
+    // Isolates `cloneBare` itself against a REAL server: an earlier version of
+    // this test reached the credential through `setRemoteUrl`, so a regression
+    // confined to `cloneBare` would have passed it. git sends URL userinfo as
+    // Basic auth, so "the server saw no Authorization header" is direct proof
+    // the credential was dropped before git ran — and the accepted cost is
+    // visible in the same assertion: the fetch is anonymous.
+    let authorization: string | undefined;
+    let requests = 0;
+    const server = http.createServer((req, res) => {
+      requests += 1;
+      if (req.headers.authorization) authorization ??= req.headers.authorization;
+      res.writeHead(401, { "WWW-Authenticate": "Basic realm=\"git\"" });
+      res.end("no");
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const port = (server.address() as { port: number }).port;
+    // `server-test-setup.ts` pins GIT_ALLOW_PROTOCOL to `file`; this server IS
+    // the loopback, so opt in for the duration and put the guard back.
+    const allowed = process.env.GIT_ALLOW_PROTOCOL;
+    process.env.GIT_ALLOW_PROTOCOL = "file:http";
+    // And pin an EMPTY global config: `setGlobalCredentialHelper` (exercised by
+    // other suites in this process) installs a host-blind helper into the real
+    // global git config, which would answer for this loopback server and make
+    // the assertion below depend on test ordering rather than on this code.
+    const emptyGlobal = path.join(tmpDir, "empty.gitconfig");
+    fs.writeFileSync(emptyGlobal, "");
+    const previousGlobal = process.env.GIT_CONFIG_GLOBAL;
+    process.env.GIT_CONFIG_GLOBAL = emptyGlobal;
+    const cacheDir = path.join(tmpDir, "cache-clonebare-cred");
     fs.mkdirSync(cacheDir, { recursive: true });
-    const cacheGit = createRepoGit(cacheDir);
-    await cacheGit.cloneBare(remoteUrl);
-    await cacheGit.setRemoteUrl(CREDENTIALED);
-    expect(
-      execFileSync("git", ["-C", cacheDir, "remote", "get-url", "origin"], { encoding: "utf-8" }).trim(),
-    ).toBe(CLEAN);
-  });
+    try {
+      await createRepoGit(cacheDir)
+        .cloneBare(`http://x-access-token:pw@127.0.0.1:${port}/plugin.git`)
+        .catch(() => undefined); // Always refused — what matters is what git offered.
+    } finally {
+      if (allowed === undefined) Reflect.deleteProperty(process.env, "GIT_ALLOW_PROTOCOL");
+      else process.env.GIT_ALLOW_PROTOCOL = allowed;
+      if (previousGlobal === undefined) Reflect.deleteProperty(process.env, "GIT_CONFIG_GLOBAL");
+      else process.env.GIT_CONFIG_GLOBAL = previousGlobal;
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+
+    expect(requests).toBeGreaterThan(0); // Not vacuous: git did reach the server.
+    expect(authorization).toBeUndefined();
+    // Stated separately so a future ambient helper cannot make this pass
+    // vacuously: whatever git offered, it was never the URL's own credential.
+    expect(Buffer.from((authorization ?? "").replace("Basic ", ""), "base64").toString("utf8"))
+      .not.toContain("pw");
+  }, 20_000);
 });
 
 /**

@@ -564,10 +564,12 @@ describe("runPluginCommand — the fetch-authority boundary (req 19)", () => {
     // `https://x-access-token:<pat>@github.com/o/r.git` put a live token in
     // this container's `/project/.git/config`, where no mount, environment or
     // network assertion in this file can see it. Found by an independent
-    // review of this branch, and CLOSED by the user's 2026-08-14 decision: the
-    // credential is stripped where a repository is added and at every write of
-    // a remote URL, with the accepted cost that a remote whose only auth is
-    // that URL stops authenticating. The guard lives where the file is written,
+    // review of this branch, and CLOSED under req 19's own rule — a credential a
+    // user types into a repository URL is not kept, and fetches are credentialed
+    // by a helper scoped to that remote. It is stripped where a repository is
+    // added and at every write of a remote URL, with the recorded cost that a
+    // remote whose only working auth is that URL stops working on the helper
+    // path. The guard lives where the file is written,
     // not here — `repo-git.test.ts` → "no credential is recorded in a git
     // config", plus the legacy sweep in `startup-tasks.test.ts`.
     expect(mountFor(host, "/project")?.Source).toBe(workspaceDir);

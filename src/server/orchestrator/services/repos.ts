@@ -26,8 +26,10 @@ export function listRepos(repoStore: RepoStore): RepoInfo[] {
  * in every session clone's `/project/.git/config`, which the agent and every
  * plugin CLI and plugin service can read.
  *
- * Known, accepted cost (user decision, 2026-08-14): a remote whose ONLY working
- * auth is that embedded credential stops authenticating. The `console.warn` is
+ * Known, accepted cost, recorded with the requirement: a remote whose ONLY
+ * working auth is that embedded credential stops working on the helper path —
+ * it degrades to an anonymous fetch, and no fallback keeps the credential
+ * (that fallback is what req 19 forbids). The `console.warn` is
  * what makes the resulting failure legible rather than an unexplained "could
  * not read Username" — the clone runs anonymously, and the caller surfaces the
  * clone error the same way it always has (req 13).

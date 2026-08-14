@@ -1,7 +1,7 @@
 import type { RepoInfo } from "../shared/types.js";
 import type { DatabaseManager } from "../shared/database.js";
 import { isValidRepoColorIndex, pickRepoColorIndex } from "../shared/repo-colors.js";
-import { canonicalRepoKey, hasUrlCredentials, stripUrlCredentials } from "./git-utils.js";
+import { canonicalRepoKey, hasUrlCredentials, stripRemoteUrlCredentials } from "./git-utils.js";
 
 interface RepoRow {
   url: string;
@@ -38,7 +38,7 @@ export class RepoStore {
    * git can clone from, so casing and the `.git` suffix are preserved.
    */
   private key(url: string): string {
-    return stripUrlCredentials(url);
+    return stripRemoteUrlCredentials(url);
   }
 
   private fromRow(row: RepoRow): RepoInfo {
@@ -84,33 +84,56 @@ export class RepoStore {
 
   /**
    * docs/262 req 19 — rewrite any row whose URL was stored with an embedded
-   * credential by an earlier build. Returns the cleaned URLs.
+   * credential by an earlier build. Returns `{ from, to }` for each row it
+   * changed, so the boot sweep can carry the directories keyed by that URL
+   * (bare cache, dep cache, per-repo memory) across with it.
    *
    * Strip-on-write only covers rows added from now on; this is what closes the
    * rows an existing installation already has, and it is why the boot sweep
-   * (`startup-tasks.ts:runRemoteCredentialScrub`) exists. When the clean URL is
-   * ALREADY a row — the same repository added twice, once with a credential and
-   * once without — the credentialed row is dropped rather than merged: the two
-   * rows are the same repository, `isTrusted` already matches by canonical key
-   * so the trust decision survives either way, and merging display order/color
-   * would have to invent a winner. Runs in a transaction so a concurrent reader
-   * never sees the credentialed row and its replacement at once.
+   * (`startup-tasks.ts:runRemoteCredentialScrub`) exists.
+   *
+   * **Collision — the same repository as two rows, added once with a credential
+   * and once without — MERGES rather than deletes.** An earlier version dropped
+   * the credentialed row outright on the reasoning that `isTrusted` matches by
+   * canonical key, so trust survived either way. It does not: an independent
+   * review reproduced the realistic order (add + trust the credentialed URL,
+   * later add the clean one, upgrade) where the credentialed row is the trusted,
+   * ready, warm-linked one and the clean row is a fresh untrusted `cloning`
+   * shell — deleting the first silently un-trusts the repository and drops its
+   * warm session, default branch and colour. So each field is carried over only
+   * where the surviving row has nothing: trust and readiness win if EITHER row
+   * has them, and the nullable columns fill the survivor's holes. Runs in a
+   * transaction so a concurrent reader never sees a half-merged pair.
    */
-  scrubCredentialedUrls(): string[] {
-    const rows = this.db.prepare("SELECT url FROM repos").all() as Pick<RepoRow, "url">[];
+  scrubCredentialedUrls(): { from: string; to: string }[] {
+    const rows = this.db.prepare("SELECT * FROM repos").all() as RepoRow[];
     const affected = rows.filter((r) => hasUrlCredentials(r.url));
     if (affected.length === 0) return [];
-    const cleaned: string[] = [];
+    const cleaned: { from: string; to: string }[] = [];
     const tx = this.db.transaction(() => {
       for (const row of affected) {
         const clean = this.key(row.url);
-        const twin = this.db.prepare("SELECT 1 FROM repos WHERE url = ? LIMIT 1").get(clean);
+        const twin = this.db.prepare("SELECT * FROM repos WHERE url = ?").get(clean) as RepoRow | undefined;
         if (twin) {
+          this.db.prepare(
+            `UPDATE repos SET
+               trusted = MAX(trusted, ?),
+               status = CASE WHEN status = 'ready' OR ? = 'ready' THEN 'ready' ELSE status END,
+               hidden = MIN(hidden, ?),
+               warm_session_id = COALESCE(warm_session_id, ?),
+               default_branch = COALESCE(default_branch, ?),
+               color_index = COALESCE(color_index, ?),
+               display_order = COALESCE(display_order, (SELECT display_order FROM repos WHERE url = ?))
+             WHERE url = ?`,
+          ).run(
+            row.trusted, row.status, row.hidden, row.warm_session_id,
+            row.default_branch, row.color_index, row.url, clean,
+          );
           this.db.prepare("DELETE FROM repos WHERE url = ?").run(row.url);
         } else {
           this.db.prepare("UPDATE repos SET url = ? WHERE url = ?").run(clean, row.url);
         }
-        cleaned.push(clean);
+        cleaned.push({ from: row.url, to: clean });
       }
     });
     tx();

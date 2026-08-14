@@ -93,6 +93,8 @@ export {
   createSessionDirFactory,
   createBareCacheDirHelper,
   createDepCacheDirHelper,
+  bareCacheRoot,
+  depCacheRoot,
 } from "./session-dir-factory.js";
 export type { SessionDirDeps } from "./session-dir-factory.js";
 

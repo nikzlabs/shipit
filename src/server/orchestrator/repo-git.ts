@@ -4,7 +4,7 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import simpleGit, { type SimpleGit } from "simple-git";
 import { ensurePnpmStoreGitExcluded } from "../shared/git.js";
-import { hasUrlCredentials, stripUrlCredentials } from "./git-utils.js";
+import { hasUrlCredentials, stripRemoteUrlCredentials } from "./git-utils.js";
 import { chownTreeToSessionWorker } from "./session-worker-uid.js";
 import { linkLfsObjectsIntoClone } from "./git-lfs-store.js";
 
@@ -69,7 +69,7 @@ export async function ensureBareCache(
  */
 function credentialFreeRemote(url: string, context: string): string {
   if (!hasUrlCredentials(url)) return url;
-  const clean = stripUrlCredentials(url);
+  const clean = stripRemoteUrlCredentials(url);
   console.warn(
     `[git] ${context}: dropped a credential embedded in the remote URL for ${clean} — `
     + "ShipIt never records one in a git config. If this remote authenticates only through "

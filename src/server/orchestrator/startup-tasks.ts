@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import crypto from "node:crypto";
 import { existsSync } from "node:fs";
 import simpleGit from "simple-git";
 import type { RepoStore } from "./repo-store.js";
@@ -18,7 +19,7 @@ import { persistTurnInProgress, emitNoticePostTurn } from "./chat-card-persisten
 import { deleteSession } from "./services/session.js";
 import { refreshExpiredMcpOAuthTokens } from "./services/mcp-oauth.js";
 import { getErrorMessage } from "./validation.js";
-import { hasUrlCredentials, stripUrlCredentials } from "./git-utils.js";
+import { hasUrlCredentials, repoUrlToHash, stripRemoteUrlCredentials } from "./git-utils.js";
 
 // ---- Migration + startup ----
 
@@ -91,29 +92,81 @@ export async function runRepoMigration(
  *      at `/project` in the session container, and readable by every plugin CLI
  *      and (once that surface ships) every plugin service.
  *
- * Boot-only and idempotent: a clean installation reads three tiny queries and
- * one small file per live session, and rewrites nothing. It converges within
- * one restart, which every deploy performs.
+ *   4. every **secret** stored for it (`secrets.repo_url` is the raw URL), and
+ *   5. every per-repo DIRECTORY, each named after a hash of that URL — the bare
+ *      cache, the dependency cache, and the agent's per-repo memory.
  *
- * Two limits, stated rather than closed. The bare cache is keyed by a hash of
- * the repo URL, so a scrubbed repo's next fetch builds a FRESH cache and the
- * old one is left orphaned on disk (it holds no credential — `cloneBare`
- * strips too, and the janitor already normalizes cache origins). And an
- * *archived* session whose checkout was reclaimed has no config to fix; when it
- * is restored, it is re-cloned from the scrubbed row.
+ * 4 and 5 are here because the rename is not only a strip: a URL that changes
+ * changes every key derived from it. Left alone, the user's stored service
+ * secrets and the agent's accumulated memory for that repository would still
+ * exist, keyed by a string nothing looks up any more — silently gone, and with
+ * the credential still in them. So the sweep carries them across rather than
+ * cleaning one key and orphaning the rest (independent review, findings 3 & 6).
+ *
+ * **Warm sessions are included** (`listAllIncludingWarm`): `listAll` filters
+ * `warm = 0`, and a warm row is a real pre-provisioned checkout that a later
+ * claim hands to a user — skipping it left the token in the one workspace most
+ * likely to be handed out next (independent review, finding 2).
+ *
+ * Boot-only and idempotent: a clean installation reads a few tiny queries and
+ * one small file per session, and rewrites nothing. It converges within one
+ * restart, which every deploy performs.
+ *
+ * Two limits, stated rather than closed. A directory is carried across only
+ * when the destination does not already exist — where both spellings have one,
+ * the clean one is authoritative and the stale twin is left on disk for the
+ * ordinary disk sweeps, because merging two caches is not something this can do
+ * safely. And an *archived* session whose checkout was reclaimed has no config
+ * to fix; when it is restored, it is re-cloned from the scrubbed row.
  */
 export async function runRemoteCredentialScrub(
-  deps: { repoStore: RepoStore; sessionManager: SessionManager },
-): Promise<{ repoRows: number; sessionRows: number; workspaces: number }> {
-  const result = { repoRows: 0, sessionRows: 0, workspaces: 0 };
+  deps: {
+    repoStore: RepoStore;
+    sessionManager: SessionManager;
+    secretStore?: { scrubCredentialedRepoUrls: () => number };
+    /**
+     * Resolvers for the directories named after a repo URL's HASH — bare cache,
+     * dep cache, per-repo memory. Keyed by hash rather than by URL because the
+     * *old* directory carries the hash of the credentialed URL, which
+     * `repoUrlToHash` deliberately no longer produces. Passed in rather than
+     * imported so this stays a pure function over its dependencies, and so a
+     * caller with no such directories (tests, local mode) can omit them.
+     */
+    repoKeyedDirs?: ((repoHash: string) => string)[];
+  },
+): Promise<{ repoRows: number; sessionRows: number; workspaces: number; secrets: number; dirs: number }> {
+  const result = { repoRows: 0, sessionRows: 0, workspaces: 0, secrets: 0, dirs: 0 };
 
+  let renamed: { from: string; to: string }[] = [];
   try {
-    result.repoRows = deps.repoStore.scrubCredentialedUrls().length;
+    renamed = deps.repoStore.scrubCredentialedUrls();
+    result.repoRows = renamed.length;
   } catch (err) {
     console.warn("[credential-scrub] repo rows failed:", getErrorMessage(err));
   }
 
-  for (const session of deps.sessionManager.listAll()) {
+  for (const { from, to } of renamed) {
+    const oldHash = hashAsAnOlderBuildDid(from);
+    const newHash = repoUrlToHash(to);
+    for (const resolve of deps.repoKeyedDirs ?? []) {
+      try {
+        if (await moveKeyedDir(resolve(oldHash), resolve(newHash))) result.dirs++;
+        // A bare cache carried across still holds the credential in its OWN
+        // origin — the older build cloned it with the credentialed URL.
+        await scrubGitRemotes(resolve(newHash));
+      } catch (err) {
+        console.warn("[credential-scrub] could not carry a per-repo directory across:", getErrorMessage(err));
+      }
+    }
+  }
+
+  try {
+    result.secrets = deps.secretStore?.scrubCredentialedRepoUrls() ?? 0;
+  } catch (err) {
+    console.warn("[credential-scrub] secrets failed:", getErrorMessage(err));
+  }
+
+  for (const session of deps.sessionManager.listAllIncludingWarm()) {
     try {
       if (session.remoteUrl && hasUrlCredentials(session.remoteUrl)) {
         // `setRemoteUrl` strips — passing the credentialed value back in IS
@@ -121,7 +174,7 @@ export async function runRemoteCredentialScrub(
         deps.sessionManager.setRemoteUrl(session.id, session.remoteUrl);
         result.sessionRows++;
       }
-      if (session.workspaceDir && await scrubWorkspaceRemotes(session.workspaceDir)) {
+      if (session.workspaceDir && await scrubGitRemotes(session.workspaceDir)) {
         result.workspaces++;
       }
     } catch (err) {
@@ -129,44 +182,97 @@ export async function runRemoteCredentialScrub(
     }
   }
 
-  if (result.repoRows || result.sessionRows || result.workspaces) {
+  if (result.repoRows || result.sessionRows || result.workspaces || result.secrets || result.dirs) {
     console.log(
       `[credential-scrub] removed stored remote credentials: ${result.repoRows} repo row(s), `
-      + `${result.sessionRows} session row(s), ${result.workspaces} checkout(s)`,
+      + `${result.sessionRows} session row(s), ${result.workspaces} checkout(s), `
+      + `${result.secrets} secret(s), ${result.dirs} per-repo directory(ies) carried across`,
     );
   }
   return result;
 }
 
 /**
- * Rewrite any remote in `<workspaceDir>/.git/config` that carries an embedded
- * credential. Returns true when something was rewritten.
+ * The directory hash an OLDER build produced for a URL: a plain sha256 of the
+ * string as typed, credential and all.
  *
- * Reads the config file first and only spawns git when the file actually
- * contains a credentialed URL, so the common (clean) case costs one small
- * read per session and no process. The rewrite itself goes through
- * `git remote set-url` rather than editing the file, so git owns the format.
+ * Deliberately inlined rather than shared with `repoUrlToHash`, which now
+ * hashes the STRIPPED URL so a credentialed spelling and a clean one address
+ * one cache. That is the right rule going forward and the wrong one for finding
+ * what is already on disk — this copy must keep reproducing a historical layout
+ * forever, exactly like the docs/252 rule `sessions.ts` inlines for the same
+ * reason. Changing `repoUrlToHash` must not change this.
  */
-async function scrubWorkspaceRemotes(workspaceDir: string): Promise<boolean> {
-  const configPath = path.join(workspaceDir, ".git", "config");
-  let text: string;
-  try {
-    text = await fs.readFile(configPath, "utf8");
-  } catch {
-    return false; // No checkout (archived / evicted / standalone session).
-  }
-  // Cheap pre-filter: `url = <scheme>://<userinfo>@host…`. The authoritative
-  // test is `hasUrlCredentials` on each remote below.
-  if (!/^\s*url\s*=\s*\S+:\/\/[^\s/@]+@/m.test(text)) return false;
+function hashAsAnOlderBuildDid(repoUrl: string): string {
+  return crypto.createHash("sha256").update(repoUrl).digest("hex").slice(0, 16);
+}
 
-  const git = simpleGit(workspaceDir);
+/**
+ * Carry a per-repo directory from the old URL's hash to the new one. Returns
+ * true when it moved. Declines when the source is absent (the ordinary case) or
+ * the destination already exists (see the "two limits" note above).
+ */
+async function moveKeyedDir(from: string, to: string): Promise<boolean> {
+  if (from === to) return false;
+  // eslint-disable-next-line no-restricted-syntax -- stat existence-check idiom
+  const sourceExists = await fs.stat(from).then(() => true, () => false);
+  if (!sourceExists) return false;
+  // eslint-disable-next-line no-restricted-syntax -- stat existence-check idiom
+  const destExists = await fs.stat(to).then(() => true, () => false);
+  if (destExists) {
+    console.warn(`[credential-scrub] left ${from} in place — ${to} already exists`);
+    return false;
+  }
+  await fs.mkdir(path.dirname(to), { recursive: true });
+  await fs.rename(from, to);
+  console.log(`[credential-scrub] carried ${from} → ${to}`);
+  return true;
+}
+
+/**
+ * Rewrite every remote in `dir`'s git config that carries an embedded
+ * credential — fetch URL **and** push URL. Returns true when something was
+ * rewritten. Handles a working tree (`.git/config`) and a bare cache
+ * (`config`), because both hold a remote and only the first is mounted into a
+ * container.
+ *
+ * Reads the config file first and only spawns git when it actually contains a
+ * credentialed URL, so the common (clean) case costs one small read and no
+ * process. The rewrite goes through `git remote set-url` rather than editing
+ * the file, so git owns the format — and `--push` is passed for a distinct push
+ * URL, which a fetch-only rewrite silently left credentialed (independent
+ * review, finding 4).
+ */
+async function scrubGitRemotes(dir: string): Promise<boolean> {
+  let configPath = path.join(dir, ".git", "config");
+  let text = await fs.readFile(configPath, "utf8").catch(() => null);
+  if (text === null) {
+    configPath = path.join(dir, "config"); // bare repository
+    text = await fs.readFile(configPath, "utf8").catch(() => null);
+  }
+  if (text === null) return false; // Not a git directory (reclaimed, or a plain dir).
+  // Cheap pre-filter: `url = <scheme>://<userinfo>@host…`, `pushurl = …`, or a
+  // credential in the query. The authoritative test is `hasUrlCredentials` per
+  // remote below.
+  if (!/^\s*(push)?url\s*=\s*\S*(:\/\/[^\s/@]+@|\?)/m.test(text)) return false;
+
+  const git = simpleGit(dir);
   const remotes = await git.getRemotes(true);
   let changed = false;
   for (const remote of remotes) {
-    const url = remote.refs.fetch || remote.refs.push;
-    if (!url || !hasUrlCredentials(url)) continue;
-    await git.raw(["remote", "set-url", remote.name, stripUrlCredentials(url)]);
-    changed = true;
+    const fetchUrl = remote.refs.fetch;
+    const pushUrl = remote.refs.push;
+    if (fetchUrl && hasUrlCredentials(fetchUrl)) {
+      await git.raw(["remote", "set-url", remote.name, stripRemoteUrlCredentials(fetchUrl)]);
+      changed = true;
+    }
+    // Only a DISTINCT push URL needs its own rewrite. With no `pushurl` set,
+    // git reports the fetch URL in both slots, and `set-url --push` would then
+    // ADD a `pushurl` line that was never there.
+    if (pushUrl && pushUrl !== fetchUrl && hasUrlCredentials(pushUrl)) {
+      await git.raw(["remote", "set-url", "--push", remote.name, stripRemoteUrlCredentials(pushUrl)]);
+      changed = true;
+    }
   }
   if (changed) {
     console.log(`[credential-scrub] rewrote credentialed remote(s) in ${configPath}`);
