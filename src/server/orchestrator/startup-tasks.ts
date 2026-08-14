@@ -1,5 +1,7 @@
 import fs from "node:fs/promises";
+import path from "node:path";
 import { existsSync } from "node:fs";
+import simpleGit from "simple-git";
 import type { RepoStore } from "./repo-store.js";
 import type { SessionManager } from "./sessions.js";
 import type { ChatHistoryManager } from "./chat-history.js";
@@ -16,6 +18,7 @@ import { persistTurnInProgress, emitNoticePostTurn } from "./chat-card-persisten
 import { deleteSession } from "./services/session.js";
 import { refreshExpiredMcpOAuthTokens } from "./services/mcp-oauth.js";
 import { getErrorMessage } from "./validation.js";
+import { hasUrlCredentials, stripUrlCredentials } from "./git-utils.js";
 
 // ---- Migration + startup ----
 
@@ -70,6 +73,105 @@ export async function runRepoMigration(
   }
 
   return migratedRepoUrls;
+}
+
+/**
+ * docs/262 req 19 — remove credentials an EARLIER build stored in a remote URL.
+ *
+ * Strip-on-write (`RepoStore.add`, `SessionManager.setRemoteUrl`, `RepoGit`)
+ * covers everything written from now on and nothing already on disk. An
+ * installation that added `https://x-access-token:<pat>@github.com/o/r.git`
+ * before this landed has that token in three places, and only the third is
+ * reachable by plugin code — which is why all three are swept here rather than
+ * just the rows:
+ *
+ *   1. the repo row,
+ *   2. the session row (`remote_url`),
+ *   3. **the session's own checkout**, `<workspaceDir>/.git/config` — mounted
+ *      at `/project` in the session container, and readable by every plugin CLI
+ *      and (once that surface ships) every plugin service.
+ *
+ * Boot-only and idempotent: a clean installation reads three tiny queries and
+ * one small file per live session, and rewrites nothing. It converges within
+ * one restart, which every deploy performs.
+ *
+ * Two limits, stated rather than closed. The bare cache is keyed by a hash of
+ * the repo URL, so a scrubbed repo's next fetch builds a FRESH cache and the
+ * old one is left orphaned on disk (it holds no credential — `cloneBare`
+ * strips too, and the janitor already normalizes cache origins). And an
+ * *archived* session whose checkout was reclaimed has no config to fix; when it
+ * is restored, it is re-cloned from the scrubbed row.
+ */
+export async function runRemoteCredentialScrub(
+  deps: { repoStore: RepoStore; sessionManager: SessionManager },
+): Promise<{ repoRows: number; sessionRows: number; workspaces: number }> {
+  const result = { repoRows: 0, sessionRows: 0, workspaces: 0 };
+
+  try {
+    result.repoRows = deps.repoStore.scrubCredentialedUrls().length;
+  } catch (err) {
+    console.warn("[credential-scrub] repo rows failed:", getErrorMessage(err));
+  }
+
+  for (const session of deps.sessionManager.listAll()) {
+    try {
+      if (session.remoteUrl && hasUrlCredentials(session.remoteUrl)) {
+        // `setRemoteUrl` strips — passing the credentialed value back in IS
+        // the fix, and keeps one implementation of what a credential is.
+        deps.sessionManager.setRemoteUrl(session.id, session.remoteUrl);
+        result.sessionRows++;
+      }
+      if (session.workspaceDir && await scrubWorkspaceRemotes(session.workspaceDir)) {
+        result.workspaces++;
+      }
+    } catch (err) {
+      console.warn(`[credential-scrub] session ${session.id} failed:`, getErrorMessage(err));
+    }
+  }
+
+  if (result.repoRows || result.sessionRows || result.workspaces) {
+    console.log(
+      `[credential-scrub] removed stored remote credentials: ${result.repoRows} repo row(s), `
+      + `${result.sessionRows} session row(s), ${result.workspaces} checkout(s)`,
+    );
+  }
+  return result;
+}
+
+/**
+ * Rewrite any remote in `<workspaceDir>/.git/config` that carries an embedded
+ * credential. Returns true when something was rewritten.
+ *
+ * Reads the config file first and only spawns git when the file actually
+ * contains a credentialed URL, so the common (clean) case costs one small
+ * read per session and no process. The rewrite itself goes through
+ * `git remote set-url` rather than editing the file, so git owns the format.
+ */
+async function scrubWorkspaceRemotes(workspaceDir: string): Promise<boolean> {
+  const configPath = path.join(workspaceDir, ".git", "config");
+  let text: string;
+  try {
+    text = await fs.readFile(configPath, "utf8");
+  } catch {
+    return false; // No checkout (archived / evicted / standalone session).
+  }
+  // Cheap pre-filter: `url = <scheme>://<userinfo>@host…`. The authoritative
+  // test is `hasUrlCredentials` on each remote below.
+  if (!/^\s*url\s*=\s*\S+:\/\/[^\s/@]+@/m.test(text)) return false;
+
+  const git = simpleGit(workspaceDir);
+  const remotes = await git.getRemotes(true);
+  let changed = false;
+  for (const remote of remotes) {
+    const url = remote.refs.fetch || remote.refs.push;
+    if (!url || !hasUrlCredentials(url)) continue;
+    await git.raw(["remote", "set-url", remote.name, stripUrlCredentials(url)]);
+    changed = true;
+  }
+  if (changed) {
+    console.log(`[credential-scrub] rewrote credentialed remote(s) in ${configPath}`);
+  }
+  return changed;
 }
 
 /**

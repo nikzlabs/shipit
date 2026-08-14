@@ -6,6 +6,7 @@ import type { PrStatusSummary } from "../shared/types/github-types.js";
 import type { AgentId } from "../shared/types/agent-types.js";
 import type { BillingMode, ModelSelection } from "../shared/catalogue/index.js";
 import { resolveModelSelection, sameCredentialOwner } from "../shared/catalogue/index.js";
+import { stripUrlCredentials } from "./git-utils.js";
 
 /**
  * docs/252 — how a credential route is BILLED, derived from the route itself.
@@ -545,9 +546,23 @@ export class SessionManager {
     this.db.prepare("UPDATE sessions SET agent_session_id = NULL WHERE id = ?").run(id);
   }
 
-  /** Cache the origin remote URL for a session. */
+  /**
+   * Cache the origin remote URL for a session.
+   *
+   * Stored credential-free (docs/262 req 19): this column is what
+   * `cloneFromCache` and the fork path write into a session clone's
+   * `remote.origin.url`, i.e. into `/project/.git/config` — a file the agent
+   * and every plugin CLI and plugin service can read. The row is also written
+   * from an existing workspace's own origin (`services/session.ts`), so a
+   * checkout left credentialed by an older build cannot feed one back in here.
+   *
+   * Only http(s) userinfo is removed — see `stripUrlCredentials`. Other shapes
+   * a user can type (`ssh://git:pw@…`, `?access_token=`) are still handled at
+   * the cross-session display boundary by `sanitizeRemoteUrlForInventory`.
+   */
   setRemoteUrl(id: string, remoteUrl: string | undefined): void {
-    this.db.prepare("UPDATE sessions SET remote_url = ? WHERE id = ?").run(remoteUrl ?? null, id);
+    const stored = remoteUrl === undefined ? null : stripUrlCredentials(remoteUrl);
+    this.db.prepare("UPDATE sessions SET remote_url = ? WHERE id = ?").run(stored, id);
   }
 
   /**

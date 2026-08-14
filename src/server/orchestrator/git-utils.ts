@@ -47,6 +47,18 @@ export function stripUrlCredentials(url: string): string {
 }
 
 /**
+ * True when `url` carries userinfo `stripUrlCredentials` would remove — i.e.
+ * when storing or recording it would persist a credential (docs/262 req 19).
+ *
+ * Defined as "the strip changes it" rather than as a second parser, so the
+ * detector and the remedy can never disagree about what a credential is.
+ */
+export function hasUrlCredentials(url: string): boolean {
+  const trimmed = (url ?? "").trim();
+  return stripUrlCredentials(trimmed) !== trimmed;
+}
+
+/**
  * Canonicalize a repo URL for *identity* comparison (a comparison key, NOT a
  * value to persist or clone from): strip credentials, lowercase the scheme and
  * host, and drop a trailing slash and a trailing `.git`. Two URLs that point at

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { DatabaseManager } from "../../shared/database.js";
 import { RepoStore } from "../repo-store.js";
 import { REPO_COLOR_COUNT } from "../../shared/repo-colors.js";
-import { setRepoColorIndex, assertValidRepoColorIndex, setRepoHidden } from "./repos.js";
+import { addRepo, setRepoColorIndex, assertValidRepoColorIndex, setRepoHidden } from "./repos.js";
 import { ServiceError } from "./types.js";
 
 let dbManager: DatabaseManager;
@@ -73,6 +73,30 @@ describe("setRepoColorIndex", () => {
     expect(() => assertValidRepoColorIndex(0)).not.toThrow();
     expect(() => assertValidRepoColorIndex(REPO_COLOR_COUNT)).toThrow(ServiceError);
     expect(() => assertValidRepoColorIndex("2")).toThrow(ServiceError);
+  });
+
+  // docs/262 req 19 — the credential a user types into the Add-repo field is
+  // dropped, not stored. Everything downstream (the bare cache's origin, every
+  // session clone's `/project/.git/config`) is written from this stored value,
+  // so this is where the credential would otherwise enter the system.
+  it("drops a credential typed into the repository URL", () => {
+    const repo = addRepo(repoStore, "https://x-access-token:pw@github.com/owner/other.git");
+    expect(repo.url).toBe("https://github.com/owner/other.git");
+    expect(repoStore.list().map((r) => r.url)).not.toContain(
+      "https://x-access-token:pw@github.com/owner/other.git",
+    );
+  });
+
+  // The credentialed spelling and the clean one are ONE repository: the follow-up
+  // calls (`setReady`, `setWarmSessionId`) address the row by the URL the caller
+  // has, and a strip that only ran in `add` would leave them addressing nothing.
+  it("keeps a credentialed re-add on the same row it already created", () => {
+    const first = addRepo(repoStore, "https://github.com/owner/same.git");
+    const second = addRepo(repoStore, "https://x-access-token:pw@github.com/owner/same.git");
+    expect(second.url).toBe(first.url);
+    expect(repoStore.list().filter((r) => r.url.endsWith("owner/same.git"))).toHaveLength(1);
+    repoStore.setReady("https://x-access-token:pw@github.com/owner/same.git");
+    expect(repoStore.get("https://github.com/owner/same.git")?.status).toBe("ready");
   });
 
   it("leaves hidden untouched when a combined update is rejected up front", () => {

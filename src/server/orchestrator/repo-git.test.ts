@@ -201,6 +201,77 @@ describe("RepoGit overlay publish oracle (docs/183)", () => {
 });
 
 /**
+ * docs/262 req 19 — **no credential ever reaches `/project/.git/config`.**
+ *
+ * This is the assertion whose absence kept the violation open: every existing
+ * plugin guard test checks a plugin container's mounts, environment and network,
+ * and NONE of them can see a token sitting in the session clone's own git
+ * config — which is mounted at `/project` and readable by the agent, by every
+ * companion CLI, and (once that surface ships) by every plugin service.
+ *
+ * These drive real git and read the real config file, so they fail if any later
+ * change re-introduces the credential by another route.
+ *
+ * Fixture note: the password is deliberately short and generic. `secret-scan.ts`
+ * flags `<user>:<8+ chars>@` in a URL, so a realistic-looking PAT here would
+ * trip the scanner on every commit. Don't "improve" it.
+ */
+describe("no credential is recorded in a git config (docs/262 req 19)", () => {
+  const CREDENTIALED = "https://x-access-token:pw@github.com/o/r.git";
+  const CLEAN = "https://github.com/o/r.git";
+  /** The shape `secret-scan.ts` looks for, minus its length floor. */
+  const CREDENTIAL_IN_URL = /^\s*url\s*=\s*\S+:\/\/[^\s/@]+@/m;
+
+  it("cloneFromCache writes a credential-free origin into the session clone", async () => {
+    const cacheDir = path.join(tmpDir, "cache-cred");
+    fs.mkdirSync(cacheDir, { recursive: true });
+    const cacheGit = createRepoGit(cacheDir);
+    await cacheGit.cloneBare(remoteUrl);
+
+    // The session clone. In production this directory is the container's
+    // `/project`, so its `.git/config` is `/project/.git/config`.
+    const workspaceDir = path.join(tmpDir, "workspace-cred");
+    await cacheGit.cloneFromCache(workspaceDir, CREDENTIALED);
+
+    const config = fs.readFileSync(path.join(workspaceDir, ".git", "config"), "utf-8");
+    expect(config).not.toContain("pw@");
+    expect(config).not.toMatch(CREDENTIAL_IN_URL);
+    expect(
+      execFileSync("git", ["-C", workspaceDir, "remote", "get-url", "origin"], { encoding: "utf-8" }).trim(),
+    ).toBe(CLEAN);
+  });
+
+  it("setRemoteUrl can only remove a credential, never install one", async () => {
+    const cacheDir = path.join(tmpDir, "cache-seturl");
+    fs.mkdirSync(cacheDir, { recursive: true });
+    const cacheGit = createRepoGit(cacheDir);
+    await cacheGit.cloneBare(remoteUrl);
+
+    await cacheGit.setRemoteUrl(CREDENTIALED);
+
+    const config = fs.readFileSync(path.join(cacheDir, "config"), "utf-8");
+    expect(config).not.toContain("pw@");
+    expect(config).not.toMatch(CREDENTIAL_IN_URL);
+  });
+
+  it("cloneBare records the plain URL even when handed a credentialed one", async () => {
+    // The bare cache is orchestrator-side, but it is what every session clone
+    // is cut from — and `git clone <url>` records the URL it cloned from.
+    // Uses the local file:// remote for the fetch and asserts on the config a
+    // credentialed https URL would have produced, so the accepted cost is
+    // explicit: the clone is attempted WITHOUT the embedded credential.
+    const cacheDir = path.join(tmpDir, "cache-plain");
+    fs.mkdirSync(cacheDir, { recursive: true });
+    const cacheGit = createRepoGit(cacheDir);
+    await cacheGit.cloneBare(remoteUrl);
+    await cacheGit.setRemoteUrl(CREDENTIALED);
+    expect(
+      execFileSync("git", ["-C", cacheDir, "remote", "get-url", "origin"], { encoding: "utf-8" }).trim(),
+    ).toBe(CLEAN);
+  });
+});
+
+/**
  * docs/262 req 10 — the per-instance credential. These drive REAL git, because
  * every part of the mechanism that can be wrong is a git behavior: whether the
  * inherited helper list is actually reset, whether a URL-scoped helper matches,

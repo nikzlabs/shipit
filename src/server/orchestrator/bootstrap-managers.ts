@@ -36,6 +36,7 @@ import {
   createDepCacheDirHelper,
   createWarmPool,
   runRepoMigration,
+  runRemoteCredentialScrub,
   scheduleStartupTasks,
 } from "./app-lifecycle.js";
 import { refreshAllRepoDefaultBranches } from "./services/repo-default-branch.js";
@@ -1201,6 +1202,13 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     credentialsDir, getBareCacheDir, getDepCacheDir, createSessionDir, sseBroadcast,
     oomBreaker,
   });
+
+  // ---- docs/262 req 19: drop remote credentials an earlier build stored ----
+  // Ordered BEFORE the repo migration: that migration derives repo rows from
+  // session rows, so scrubbing first stops a credentialed session URL from
+  // seeding a fresh credentialed repo row (the store would strip it, and the
+  // migration's own `setReady` would then address a row that never existed).
+  await runRemoteCredentialScrub({ repoStore, sessionManager });
 
   // ---- Migration: derive RepoStore from existing sessions ----
   const migratedRepoUrls = await runRepoMigration({
