@@ -414,15 +414,27 @@ instead of a repeat.
   exposure persists across the edit rather than being created by it. Ordering
   the reconcile behind activation is the wrong lever: it trades req 19 for
   req 13 and still leaves session activation resolving before any round has run.
-  The fix here is one comparison (`record.source === destinationKey(...)`) on a
-  record `snapshotRepo` already reads, and it waits only on #2225 landing the
-  field. The general shape is **verify where the link is resolved, and return a
-  verified handle** — not an `expectedSource` parameter on the directory-scoped
-  readers, which would re-introduce the optional check #2225's docstring
-  rejects by making its own parameter required (sibling report, req 23 slice).
-  `snapshotRepo` is already that shape: it resolves, reads the record, and hands
-  every consumer a concrete `RepoSnapshot`. The comparison belongs in it, which
-  is why the fix is one line and not a signature change.
+  **This is a class, not an instance, so the fix is a shared helper rather than
+  a comparison pasted here.** The guard sits in the wrappers because that is
+  where the link-following callers were when #2225 was written; "resolve once"
+  moves callers OFF the wrappers onto self-resolution, so each migration sheds
+  the guard as a side effect and looks like progress while doing it. There are
+  two self-resolvers — `pinGeneration` (`plugin-cli-run.ts:368`, merged) and
+  `snapshotRepo` — and a third arrives with the next one. The version that
+  generalizes is an engine helper (sibling report, req 25 slice):
+
+  ```
+  resolveActiveGeneration(stateDir, repoName, expectedSource)
+    → { dir, record } | null
+  ```
+
+  One resolution, the identity check AT the resolution, a verified handle out.
+  `readActiveGeneration`/`readActiveManifest` delegate to it; `snapshotRepo`
+  calls it in place of its `realpathSync`; and the `…At` readers keep an honest
+  meaning — *I hold a directory somebody else verified* — which is the only
+  reading under which leaving them unguarded is safe. That helper belongs with
+  whoever carries #2225, since it owns the `source` field; this slice's change
+  is then the call-site swap, not a private comparison.
 
   **The collector already reads everything that call site needs**, which makes
   the sweep cheaper here than it looks: `snapshotRepo` calls
