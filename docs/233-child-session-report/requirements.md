@@ -42,9 +42,8 @@ re-armed after a merge and can open a later PR. There is no general durable
 ## Terms
 
 - **Resolved session:** the existing UI lifecycle classification for a session
-  whose PR merged or closed without merge and that had no later turn activity.
-  A terminal PR alone is not sufficient forever because later turn activity
-  makes the session active again.
+  whose PR merged or closed without merge and that had no later user-started
+  activity. ShipIt-started system turns do not reactivate it.
 - **Cohort delivery:** `shipit session report --to cohort`, which can address the
   reporter's parent and siblings.
 - **Direct delivery:** an existing parent-to-child `shipit session message`.
@@ -62,15 +61,14 @@ re-armed after a merge and can open a later PR. There is no general durable
    session can continue on the same branch, open a later PR, or coordinate its
    children after that PR reaches a terminal state.
 
-4. A child session that the existing UI classifies as resolved — its PR merged
-   or closed without merge and it had no later turn activity — must be excluded
-   from cohort broadcasts. The eligibility check must reuse the existing
-   resolved classification rather than create a different report-specific
-   approximation.
+4. A child session whose PR merged or closed without merge and whose shared
+   classification says it remains resolved must be excluded from cohort
+   broadcasts. The eligibility check must call that classification rather than
+   create a report-specific approximation.
 
 5. The same recipient eligibility rule applies when a parent sends a direct
    message to its child. A resolved child cannot receive direct coordination. A
-   new turn that moves the child out of the existing resolved
+   new user-started turn that moves the child out of the shared resolved
    classification makes it eligible again. Child-to-parent delivery and resolved
    parent behavior do not change.
 
@@ -93,34 +91,42 @@ re-armed after a merge and can open a later PR. There is no general durable
     eligible recipients. No causal-chain tracking, content fingerprinting, or
     other smart duplicate suppression is added in this remediation.
 
-11. Tests must cover the existing resolved-child classification, later turn
-    activity making the child eligible again, parent-to-child direct messages,
+10a. Resolved children reduce sibling fan-out only. Parent delivery remains
+     unchanged, so the existing rate limit remains the only volume bound for the
+     parent-side queue growth observed in the incident.
+
+11. Tests must cover the existing resolved-child classification, later
+    user-started activity making the child eligible again while system turns do
+    not, parent-to-child direct messages,
     cohort delivery, all severities, and sender-visible skip outcomes.
 
 ## Open questions
 
-### Q7. What activity makes a resolved child active again?
+### Q9. Is a child eligible while ShipIt-started post-merge work is live?
 
-The existing UI baseline uses `lastUsedAt`, which is advanced by every turn,
-including ShipIt-started system wakes. A self merge-wake can therefore make a
-child active immediately after its PR merges even when the user sent no later
-message. This differs from the approved “no later user message” intent.
+A child can be running or queued on a self merge-wake, release task, or other
+system flow after its PR resolves and before any new user turn. The user-only
+activity rule does not persistently reactivate it, but live work can be a
+temporary eligibility exemption.
 
-- **A — User-started activity only (recommended).** A resolved child becomes
-  active again only after a new user-started turn. This needs a durable signal
-  distinct from `lastUsedAt`, and the UI and delivery gate must share it.
-- **B — Any turn activity.** Preserve the current UI baseline exactly. A system
-  wake after merge makes the child active and eligible for later messages.
+- **A — Eligible while live (recommended).** A running or queued system turn,
+  or an armed self merge-watch, temporarily keeps the child eligible. When that
+  work is no longer live, the child returns to resolved without a user turn.
+- **B — Block during system work.** Active ShipIt-started work receives no
+  parent or cohort message unless pinning, child coordination, or a user turn
+  makes the child eligible.
 
-### Q8. Are pinned child coordinators eligible after their PR resolves?
+### Q10. How should existing terminal-PR sessions be migrated?
 
-The rendered sidebar adds two exemptions beyond the baseline predicate: a
-pinned session and a child that still has visible children remain in Active.
+Old rows have only `lastUsedAt`, which can be later than the PR because of a
+system wake. It cannot be identified reliably as user-started activity.
 
-- **A — Match the rendered UI (recommended).** Keep pinned children and child
-  coordinators eligible while they appear Active.
-- **B — Ignore the UI exemptions.** Block them when their PR is terminal and the
-  activity rule from Q7 says they were not reopened.
+- **A — Protect the incident population (recommended).** Backfill terminal-PR
+  rows as not user-reactivated. They become resolved unless another exemption
+  applies. A genuine old continuation becomes active on its next user turn.
+- **B — Preserve old active classification.** Backfill from `lastUsedAt`. This
+  avoids reclassifying genuine continuations but leaves old system-woken
+  terminal-PR children eligible until their next PR cycle.
 
 ## Resolved questions
 
@@ -147,4 +153,14 @@ pinned session and a child that still has visible children remain in Active.
   `blocker` report continues to persist a card and start or queue a wake turn.
 - 2026-08-14 — Does “resolved child” include a PR closed without merge? Chosen:
   match the existing UI predicate. Both merged and closed-without-merge children
-  are resolved until later turn activity makes them active again.
+  are resolved. This receipt's original “later turn activity” wording is
+  superseded by the user-started-only decision below.
+- 2026-08-14 — What activity makes a resolved child active again? Chosen: only
+  user-started activity. ShipIt-started system wakes must not reactivate it. Add
+  a durable user-activity signal and use it in the shared UI/server predicate
+  instead of interpreting `lastUsedAt` as user intent.
+- 2026-08-14 — Are pinned children and children still coordinating their own
+  children eligible after their PR resolves? Chosen: match the rendered UI.
+  Keep pinned children and child coordinators eligible while the UI treats them
+  as Active. Put the complete resolved-session classification in exactly one
+  shared code location used by every server and client consumer.

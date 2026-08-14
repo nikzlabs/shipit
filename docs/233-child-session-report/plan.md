@@ -134,40 +134,79 @@ by the existing UI as **Recently resolved** does not receive a direct parent
 message or a sibling cohort report. It receives no transcript card and no wake
 turn. The sender gets a synchronous, named skip result.
 
-### One lifecycle predicate, not a report-specific state
+### One lifecycle module, not client/server mirrors
 
-The UI classification already has a server-side foundation in
-`sessions.ts:resolvedAt` and `reopenedAfterResolve`:
+Create `src/server/shared/session-resolution.ts` as the only code location that
+implements resolution rules. It exports a layered API because attention and
+delivery ask different questions:
 
-```text
-resolved = (mergedAt OR closedAt) AND NOT reopenedAfterResolve(session)
+```ts
+resolvedAt(session)
+isTerminalPrResolved(session)
+isResolvedForGrouping(session, { hasVisibleChildren, hasLiveSystemWork })
 ```
 
-The final shared predicate depends on requirements Q7 and Q8. It must reuse the
-same lifecycle inputs as the rendered UI, including the chosen activity signal
-and any pin / child-coordinator exemptions. Delivery code must call that shared
-server predicate rather than reproduce timestamp or hierarchy logic locally.
-Do not refactor `filterVisibleInSidebar` merely to route it through a new helper;
-that behavior-neutral cleanup is outside this incident fix.
+`isTerminalPrResolved` owns the terminal-PR + user-reactivation baseline.
+Attention hooks and resolved view-cap ranking use it so pinned/coordinating
+sessions cannot show stale historical PR attention or change cap-slot behavior.
 
-This preserves the important distinction between a terminal PR and a terminal
-session. The existing UTC-normalizing `parseTimestampMs` path remains
-load-bearing; delivery code must not compare the mixed SQLite and ISO timestamp
-strings itself. The independent review verified that `lastUsedAt` advances for
-system turns too, so the design must not claim it represents user return unless
-Q7 explicitly chooses that behavior.
+`isResolvedForGrouping` composes that baseline and returns true only when:
+
+1. the baseline says the PR is resolved and not user-reactivated;
+2. the session is not pinned;
+3. it has no visible direct child sessions; and
+4. Q9's liveness rule does not exempt it.
+
+The module owns timestamp normalization through `parseTimestampMs`, pin logic,
+and composition. No client component, attention hook, sidebar grouping
+function, orchestrator service, or test helper may reconstruct these rules.
+Each caller computes runtime context only. `hasVisibleChildren` means at least
+one direct child with neither `archived` nor `userArchived`; archived children
+do not keep a parent active. `hasLiveSystemWork` is finalized by Q9.
+
+Delete the client `resolvedAt` / `reopenedAfterResolve` /
+`isRecentlyResolved` mirrors from `useSessionGrouping.ts`; sidebar and attention
+consumers import the appropriate shared layer. Move server `resolvedAt` /
+`reopenedAfterResolve` logic out of `sessions.ts`. `filterVisibleInSidebar` keeps
+its existing cap-slot semantics by using `isTerminalPrResolved`; it must not
+apply pin, hierarchy, or runtime exemptions. This enforces one implementation
+without forcing two product questions through one composite boolean.
+
+### Durable user-started activity
+
+`lastUsedAt` cannot represent reactivation because every turn—including a
+ShipIt-started self merge-wake—updates it. Add nullable
+`SessionInfo.lastUserTurnAt` backed by `sessions.last_user_turn_at`.
+
+Migration behavior for existing terminal-PR rows is finalized by Q10. After
+migration, system turns advance only `lastUsedAt`, while accepted user-started
+input advances both timestamps.
+
+Add `SessionManager.markUserTurn(sessionId)` as the sole database writer. Call
+it at each accepted interactive user ingress before the message can steer,
+queue, or start: ordinary `send_message` and AskUserQuestion answers. This makes
+reactivation immediate when the user submits input and covers steered and queued
+messages. Programmatic `runner.dispatch` paths—including self merge-wakes,
+cohort reports, CI/rebase flows, and parent-to-child messages—do not call it.
+Permission approvals do not start a new turn and do not mark user activity.
+
+This preserves the distinction between a terminal PR and a terminal session:
+merge or close resolves the session, a system wake does not persistently reopen
+it, and a later user-started interaction does.
 
 ### Direct parent → child message
 
 `sendChildMessage` already resolves and authenticates the child through
 `assertChildOfParent`. Immediately after that lookup and before the workspace,
-container, credential, or runner paths, check `isRecentlyResolved(child)`.
+container, credential, or runner paths, call `isResolvedForGrouping` with
+visible-child and Q9 runtime context.
 
-On a match, return HTTP `409` with the structured shape
-`{ sessionId, title, reason: "resolved", delivered: false }` and the explicit
-message that the child received no message or wake turn. `shipit session
-message --json` must emit that body before exiting non-zero; human output renders
-the same facts without requiring prose parsing. The guard must precede
+On a match, return HTTP `409` with
+`{ error, sessionId, title, reason: "resolved", delivered: false }`. `error`
+contains the full human sentence that the child received no message or wake
+turn. `handleSessionMessage` handles this structured 409 before its generic
+non-2xx branch: `--json` writes the full body then exits non-zero; human output
+uses `error`. The guard must precede
 `runnerRegistry.getOrCreate`, so a rejected delivery cannot resume a container
 or mutate its queue.
 
@@ -180,7 +219,8 @@ child-to-parent behavior are out of scope.
 During recipient resolution in `deliverSessionReport`:
 
 1. Keep the existing archive filter.
-2. For each sibling, evaluate `isRecentlyResolved(sibling)`.
+2. For each sibling, evaluate the shared `isResolvedForGrouping` helper with its
+   visible-child context.
 3. Put an eligible sibling in the existing delivery list.
 4. Put a resolved sibling in a new `skippedRecipients` result list with
    `sessionId`, `title`, and `reason: "resolved"`.
@@ -201,7 +241,9 @@ resolved skip after the delivery count, for example:
 ```
 
 JSON output carries the same structured result. Exit behavior does not change:
-success still means at least one recipient was woken. The existing generic
+success still means at least one recipient was woken. A call with only resolved
+skips does not consume a rate-limit slot because it has no eligible recipient.
+The existing generic
 archived/no-recipient error remains only when there are no eligible recipients
 and no resolved skips. If the parent is archived or absent and every sibling is
 resolved, return the named `skippedRecipients` result rather than incorrectly
@@ -222,9 +264,13 @@ claiming that every recipient was archived.
 
 ### Verification
 
-- Add only the missing shared-predicate cases after Q7/Q8 resolve; do not repeat
-  the existing merged, closed, reopen, and mixed-timestamp matrix already covered
-  by `sessions.test.ts`.
+- Add shared-module tests for both predicate layers: merge and close, user turn
+  reactivation, system activity not reactivating, pin exemption, visible-child
+  exemption, and mixed timestamp formats. Remove superseded mirror tests rather
+  than testing two implementations.
+- Add persistence tests for migration backfill, `lastUserTurnAt` round-trip, and
+  `markUserTurn`; add ingress tests proving ordinary, queued, steered, and
+  AskUserQuestion input mark it while system dispatches do not.
 - Add direct-message service/integration cases proving a resolved child returns
   `409`, names the child, and creates no runner or queue entry; prove a reopened
   child still receives the message.
@@ -248,7 +294,12 @@ claiming that every recipient was archived.
 | `src/server/session/agent-ops-routes.ts` | Worker broker: `GET /agent-ops/session/cohort`, `POST /agent-ops/session/report` |
 | `src/server/orchestrator/api-routes-session-spawn.ts` | `GET /api/sessions/:sessionId/cohort`, `POST /api/sessions/:sessionId/report` (both `containerAccessible`) |
 | `src/server/orchestrator/services/session-report.ts` | Validation, recipient resolution, rate limit, card + wake fan-out, wake-turn prompt |
-| `src/server/orchestrator/sessions.ts` | Server lifecycle inputs used by the shared resolved-child eligibility predicate |
+| `src/server/shared/session-resolution.ts` | Sole client/server resolved-session classifier |
+| `src/server/shared/types/domain-types/session.ts` | Durable `lastUserTurnAt` domain field |
+| `src/server/shared/database.ts` | `last_user_turn_at` migration + legacy backfill |
+| `src/server/orchestrator/sessions.ts` | `markUserTurn` persistence writer; consumes the shared classifier for listing |
+| `src/server/orchestrator/ws-handlers/send-message.ts` | Marks accepted user messages and question answers as user-started activity |
+| `src/client/components/SessionSidebar/useSessionGrouping.ts` | Consumes shared classifier; deletes local mirrors |
 | `src/server/orchestrator/services/child-sessions.ts` | Early resolved-child guard for direct parent messages |
 | `src/server/orchestrator/wake-session.ts` | Shared out-of-turn wake (extracted from `merge-watch.ts`) |
 | `src/server/orchestrator/chat-history.ts` | `sessionReport` persisted field + `session_report` column |
