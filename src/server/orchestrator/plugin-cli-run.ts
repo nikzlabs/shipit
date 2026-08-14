@@ -15,7 +15,11 @@
  *  - `/plugin` — the generation's overlay volume, the pristine checkout merged
  *    with its install output. Under `repo: self` (req 27) it is the session's
  *    own working tree instead, mounted read-write, because there the plugin is
- *    deliberately live and editable.
+ *    deliberately live and editable. The tracked case takes the **consumer
+ *    lease** (`plugin-leases.ts`, req 15) for the whole call, so a refresh
+ *    landing mid-command cannot delete the checkout this container is running
+ *    from — it is the same lease a plugin service takes, because both attach the
+ *    same per-generation volume.
  *  - `/project` — the consuming project's workspace (req 21), and the cwd, so a
  *    cwd-addressed tool behaves as it would have beside the agent. A plugin's
  *    durable output lands here as ordinary project changes (req 18).
@@ -75,6 +79,7 @@ import {
   readGenerationRecordAt,
 } from "./plugin-generations.js";
 import { ensureUntrustedPluginNetwork, waitForContainerExit } from "./plugin-container.js";
+import { holdGeneration, type ReleaseHold } from "./plugin-leases.js";
 import { ensurePluginRuntimeOverlay, resolvePluginOverlayRoots } from "./plugin-overlay.js";
 import { resolveLiveGenerations } from "./plugin-generations.js";
 import {
@@ -170,6 +175,24 @@ export async function runPluginCommand(
   deps: PluginCliDeps,
   req: PluginCliRequest,
 ): Promise<PluginCliResult> {
+  // docs/262 req 15 — the consumer lease. Taken inside {@link pinGeneration}, in
+  // the same synchronous block that resolves `active`, and released here on
+  // EVERY path: a refusal, a daemon error, a timeout, a cancelled session. A
+  // lease with more than one exit is a lease that leaks, so the hold lives out
+  // here and the work lives in a function that cannot skip this `finally`.
+  const held: { release?: ReleaseHold } = {};
+  try {
+    return await runHeldPluginCommand(deps, req, held);
+  } finally {
+    held.release?.();
+  }
+}
+
+async function runHeldPluginCommand(
+  deps: PluginCliDeps,
+  req: PluginCliRequest,
+  held: { release?: ReleaseHold },
+): Promise<PluginCliResult> {
   const refuse = (error: string): PluginCliResult => ({ error, exitCode: 126, stdout: "", stderr: "" });
 
   let stateDir: string;
@@ -228,10 +251,11 @@ export async function runPluginCommand(
       return refuse(`\`${repoName}\` is not a declared plugin repository in this project.`);
     }
     try {
-      pinned = pinGeneration(stateDir, repoName, destinationKey(repo.source));
+      pinned = pinGeneration(deps.sessionId, stateDir, repoName, destinationKey(repo.source));
     } catch (err) {
       return refuse(`\`${repoName}\`'s active checkout could not be resolved: ${message(err)}`);
     }
+    if (pinned) held.release = pinned.release;
     if (!pinned) {
       return refuse(`\`${repoName}\` has no active version in this session yet — run \`shipit plugin refresh ${repoName}\`.`);
     }
@@ -402,12 +426,20 @@ interface PinnedGeneration {
   dir: string;
   commit: string;
   exports: PluginExport[];
+  /**
+   * Drops the consumer lease this pin holds (req 15). Called by
+   * {@link runPluginCommand}'s `finally` and nowhere else — the pin is what the
+   * container mounts, so the lease has to outlive every step between here and
+   * the container's removal.
+   */
+  release: ReleaseHold;
 }
 
 /**
- * Resolve `active` and read the generation behind it. `null` when the
- * repository has no live generation; throws only when the link exists but
- * cannot be resolved, which the caller reports as its own failure.
+ * Resolve `active`, read the generation behind it, and hold it. `null` when the
+ * repository has no live generation; throws when the link exists but cannot be
+ * resolved, and when the generation it resolved is being pruned right now —
+ * both of which the caller reports as its own failure.
  *
  * **`expectedSource` is required, and this is the one reader where omitting it
  * would run code rather than render it.** The identity check lives in
@@ -433,6 +465,7 @@ interface PinnedGeneration {
  * to read once.
  */
 function pinGeneration(
+  sessionId: string,
   stateDir: string,
   repoName: string,
   expectedSource: string,
@@ -447,7 +480,22 @@ function pinGeneration(
   // …and neither is one built from a repository this declaration no longer
   // names. Reading it as absent is the same answer every other reader gives.
   if (record.source !== expectedSource) return null;
-  return { dir, commit: record.commit, exports: readGenerationManifestAt(dir) };
+  // **The lease is taken here, in the same synchronous block that resolved the
+  // link** (req 15, `plugin-leases.ts`). This whole function is synchronous —
+  // `realpathSync`, then two `readFileSync`s — so nothing can run between
+  // resolving `active` and holding what it resolved to. Taking the hold a tick
+  // later would reopen exactly the race it closes: a publish landing in that
+  // tick prunes this directory, and the invocation container then mounts an
+  // overlay whose lowerdir is gone.
+  const release = holdGeneration({ sessionId, repoName, commit: record.commit });
+  if (!release) {
+    // The pruner has claimed this generation, so it was superseded between the
+    // wrapper's call and this line and its tree is being removed right now.
+    // Thrown rather than reported as "nothing is active", because something is:
+    // the newer generation the refresh just published.
+    throw new Error("the version it resolved was replaced mid-call — run the command again");
+  }
+  return { dir, commit: record.commit, exports: readGenerationManifestAt(dir), release };
 }
 
 /**

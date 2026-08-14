@@ -99,6 +99,17 @@ export interface GenerationRecord {
   manifestWarnings: string[];
 }
 
+/**
+ * Ask permission to delete one superseded generation, and keep that permission
+ * until the returned function is called. `null` → leave it exactly where it is.
+ *
+ * Implemented by `plugin-leases.ts`; declared here because this module is the
+ * only caller and the shape belongs to the prune, not to the lease.
+ */
+export type BeginGenerationDeletion = (
+  generation: { repoName: string; commit: string },
+) => Promise<(() => void) | null>;
+
 /** What `activateGeneration` did. */
 export type ActivationOutcome =
   | { status: "unchanged"; generation: GenerationRecord; warning?: string }
@@ -176,6 +187,21 @@ export interface ActivateDeps {
    * see the check before staging for the exact gap).
    */
   isCancelled?: () => boolean;
+  /**
+   * Take the consumer lease over a superseded generation, so its checkout and
+   * writable layer are deleted only when nothing is running against them
+   * (req 15 — `plugin-leases.ts`). Call the returned function when the deletion
+   * is done; `null` means a live consumer still has it and nothing must be
+   * removed.
+   *
+   * Injected for the same reason `runInstall` is: half the answer belongs to
+   * Docker (a volume a container still holds cannot be removed, which is the
+   * only evidence that survives an orchestrator restart), and this module holds
+   * no Docker client. Omitted where there is none — local/dogfood mode and
+   * tests — and there nothing can be holding a generation, because there are no
+   * plugin containers at all.
+   */
+  beginGenerationDeletion?: BeginGenerationDeletion;
   /**
    * Run the selected plugins' `install` against the STAGING checkout, before
    * anything is published. Injected, because this module deliberately runs no
@@ -483,7 +509,7 @@ async function activateOnce(repo: DeclaredPluginRepo, deps: ActivateDeps): Promi
   // prior generation of THIS plugin, and a stranger's files are not a
   // degradation of it. The declaration then reads as unavailable until the new
   // source activates, which is the honest state.
-  await retireForeignGeneration(stateDir, repo.name, source);
+  await retireForeignGeneration(stateDir, repo.name, source, deps.beginGenerationDeletion);
   const previous = readActiveGeneration(stateDir, repo.name, source) ?? undefined;
   const withPrevious = previous ? { previous } : {};
   const declaredRef = repo.pin ? `pin ${repo.pin}` : `branch ${repo.branch ?? "(default)"}`;
@@ -567,71 +593,118 @@ async function activateOnce(repo: DeclaredPluginRepo, deps: ActivateDeps): Promi
     const selected = exportsList.filter((e) =>
       deps.selectedExports.some((n) => n.toLowerCase() === e.name.toLowerCase()),
     );
-    if (deps.runInstall) {
-      // Checked HERE, not only at the two publish gates: fetch, checkout and
-      // manifest validation all take time, so a session disposed during them
-      // would otherwise have reached this line and started minutes of
-      // third-party code — which `prepareLayer` precedes by re-creating the
-      // very state directory cleanup had just removed.
+
+    // **Everything from here to the rename touches THIS commit's durable
+    // artifacts, so it runs under the consumer lease** (req 15 —
+    // `plugin-leases.ts`). Two of them, and both are reachable by the same
+    // route: a project that pins back to a version it recently ran, whose
+    // generation a prune left in place precisely because a companion CLI or a
+    // plugin service was still using it.
+    //
+    //  - `work/<commit>` — install CLEARS the upper and work dirs before it
+    //    writes (`plugin-install.ts`'s `prepareLayer`, which must: a
+    //    half-populated upper from an earlier failure would otherwise be merged
+    //    in as if it had succeeded). That is the live upper layer of the volume
+    //    the consumer is running on.
+    //  - `generations/<commit>` — cleared before the staging tree is renamed
+    //    into place, which replaces the consumer's overlay lowerdir with a fresh
+    //    inode. docs/183's spike records the result: merged `readdir` starts
+    //    coming back empty while path lookups still resolve, so the container
+    //    misbehaves rather than fails.
+    //
+    // Refusing instead is an ordinary failed activation — the prior version
+    // stays live (req 15) and the next round succeeds once the consumer is done.
+    // Nothing can take a NEW hold on this commit while the claim is held,
+    // because `active` does not name it: a commit that was already live returned
+    // `unchanged` far above and never reaches this line.
+    const clearGeneration = deps.beginGenerationDeletion
+      ? await deps.beginGenerationDeletion({ repoName: repo.name, commit }).catch(() => null)
+      : noop;
+    if (!clearGeneration) {
+      await fsp.rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
+      return {
+        status: "failed",
+        reason: `the copy of ${commit.slice(0, 9)} already in this session is still in use — try again in a moment`,
+        ...withPrevious,
+        ...warningField,
+      };
+    }
+
+    let record: GenerationRecord;
+    let notInstalled: string | undefined;
+    try {
+      if (deps.runInstall) {
+        // Checked HERE, not only at the two publish gates: fetch, checkout and
+        // manifest validation all take time, so a session disposed during them
+        // would otherwise have reached this line and started minutes of
+        // third-party code — which `prepareLayer` precedes by re-creating the
+        // very state directory cleanup had just removed.
+        if (deps.isCancelled?.()) {
+          await fsp.rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
+          return { status: "failed", reason: "the session went away before activation completed", ...withPrevious };
+        }
+        const outcome = await deps.runInstall({
+          stagingDir,
+          commit,
+          repoName: repo.name,
+          exports: selected,
+          ...(deps.isCancelled ? { isCancelled: deps.isCancelled } : {}),
+        });
+        if (!outcome.ok) {
+          await fsp.rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
+          return {
+            status: "failed",
+            reason: outcome.reason ?? "plugin install failed",
+            ...withPrevious,
+            ...warningField,
+          };
+        }
+      }
+
+      // No install runner at all (local/dogfood mode, tests) but a selected
+      // export declares one: the generation is genuinely partial, so say so
+      // rather than reporting it plainly `active`. Publishing anyway is
+      // deliberate — this is the runtime the inner dogfood instance uses, and a
+      // repository that cannot activate there cannot be exercised there either.
+      // Req 13's rule is "degrade visibly", not "refuse".
+      const uninstalled = deps.runInstall
+        ? []
+        : selected.filter((e) => e.install?.trim()).map((e) => e.name);
+      notInstalled = uninstalled.length > 0
+        ? `${uninstalled.map((n) => `\`${n}\``).join(", ")} declare an install command, which this runtime cannot run — the plugin is active but was not installed.`
+        : undefined;
+
+      record = {
+        repoName: repo.name,
+        source,
+        commit,
+        ref: declaredRef,
+        activatedAt: new Date().toISOString(),
+        exports: exportsList.map((e) => e.name),
+        manifestWarnings: notInstalled ? [...manifestWarnings, notInstalled] : manifestWarnings,
+      };
+      // The record is written into the staging tree, so the directory that
+      // becomes live is complete before it has a name anything reads.
+      await fsp.writeFile(path.join(stagingDir, RECORD_FILE), JSON.stringify(record, null, 2));
+
+      // Last check before publishing: everything up to here is confined to a
+      // staging directory that the cleanup below removes.
       if (deps.isCancelled?.()) {
         await fsp.rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
         return { status: "failed", reason: "the session went away before activation completed", ...withPrevious };
       }
-      const outcome = await deps.runInstall({
-        stagingDir,
-        commit,
-        repoName: repo.name,
-        exports: selected,
-        ...(deps.isCancelled ? { isCancelled: deps.isCancelled } : {}),
-      });
-      if (!outcome.ok) {
-        await fsp.rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
-        return {
-          status: "failed",
-          reason: outcome.reason ?? "plugin install failed",
-          ...withPrevious,
-          ...warningField,
-        };
-      }
+
+      await fsp.rm(finalDir, { recursive: true, force: true });
+      await fsp.rename(stagingDir, finalDir);
+    } finally {
+      // Released BEFORE the link swap, so the moment `active` names this commit
+      // a consumer can hold it. The other order leaves a window in which the
+      // live generation refuses every hold — and, on the failure paths above,
+      // would leave the claim behind for the life of the process.
+      clearGeneration();
     }
-
-    // No install runner at all (local/dogfood mode, tests) but a selected
-    // export declares one: the generation is genuinely partial, so say so
-    // rather than reporting it plainly `active`. Publishing anyway is
-    // deliberate — this is the runtime the inner dogfood instance uses, and a
-    // repository that cannot activate there cannot be exercised there either.
-    // Req 13's rule is "degrade visibly", not "refuse".
-    const uninstalled = deps.runInstall
-      ? []
-      : selected.filter((e) => e.install?.trim()).map((e) => e.name);
-    const notInstalled = uninstalled.length > 0
-      ? `${uninstalled.map((n) => `\`${n}\``).join(", ")} declare an install command, which this runtime cannot run — the plugin is active but was not installed.`
-      : undefined;
-
-    const record: GenerationRecord = {
-      repoName: repo.name,
-      source,
-      commit,
-      ref: declaredRef,
-      activatedAt: new Date().toISOString(),
-      exports: exportsList.map((e) => e.name),
-      manifestWarnings: notInstalled ? [...manifestWarnings, notInstalled] : manifestWarnings,
-    };
-    // The record is written into the staging tree, so the directory that
-    // becomes live is complete before it has a name anything reads.
-    await fsp.writeFile(path.join(stagingDir, RECORD_FILE), JSON.stringify(record, null, 2));
-
-    // Last check before publishing: everything up to here is confined to a
-    // staging directory that the cleanup below removes.
-    if (deps.isCancelled?.()) {
-      await fsp.rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
-      return { status: "failed", reason: "the session went away before activation completed", ...withPrevious };
-    }
-
-    await fsp.rm(finalDir, { recursive: true, force: true });
-    await fsp.rename(stagingDir, finalDir);
     await swapActiveLink(stateDir, repo.name, commit);
-    await pruneOldGenerations(stateDir, repo.name, commit);
+    await pruneOldGenerations(stateDir, repo.name, commit, deps.beginGenerationDeletion);
 
     console.log(`[plugins] ${repo.name}: activated ${commit.slice(0, 9)} (${declaredRef})`);
     // The uninstalled warning outranks a moved-tag advisory: one says the
@@ -744,6 +817,7 @@ async function retireForeignGeneration(
   stateDir: string,
   repoName: string,
   expectedSource: string,
+  begin: BeginGenerationDeletion | undefined,
 ): Promise<void> {
   let record: GenerationRecord;
   try {
@@ -776,10 +850,14 @@ async function retireForeignGeneration(
   if (record.source === undefined) return;
 
   await fsp.rm(activeLinkPath(stateDir, repoName), { force: true });
-  await Promise.all([
-    fsp.rm(generationsRoot(stateDir, repoName), { recursive: true, force: true }),
-    fsp.rm(path.join(repoRoot(stateDir, repoName), WORK_SUBDIR), { recursive: true, force: true }),
-  ]);
+  // The trees go through the same lease the prune uses: a re-point is still an
+  // update, and a companion CLI or plugin service running against the previous
+  // repository's generation must not have its checkout deleted mid-run either
+  // (req 15). Removing the link above is what makes the retirement effective —
+  // it is what the container's prepare pass follows — so a tree that outlives
+  // its consumer by one round is addressable by nothing and is reclaimed by the
+  // next publish's prune.
+  await dropGenerations(stateDir, repoName, new Set(), begin);
 }
 
 /**
@@ -812,41 +890,92 @@ async function swapActiveLink(stateDir: string, repoName: string, commit: string
  * install output for every superseded commit, kept forever, which is the
  * opposite of what a per-generation layer is for.
  */
-async function pruneOldGenerations(stateDir: string, repoName: string, keepCommit: string): Promise<void> {
-  const root = generationsRoot(stateDir, repoName);
+async function pruneOldGenerations(
+  stateDir: string,
+  repoName: string,
+  keepCommit: string,
+  begin: BeginGenerationDeletion | undefined,
+): Promise<void> {
   let live = keepCommit;
   try {
     live = path.basename(await fsp.readlink(activeLinkPath(stateDir, repoName)));
   } catch {
     // No link yet — keep the commit we just published.
   }
-  const keep = new Set([keepCommit, live]);
+  await dropGenerations(stateDir, repoName, new Set([keepCommit, live]), begin);
+}
 
-  let entries: string[];
-  try {
-    entries = await fsp.readdir(root);
-  } catch {
-    return;
-  }
+/**
+ * Remove every generation of `repoName` except `keep`, checkout and writable
+ * layer together, under the consumer lease (req 15 — `plugin-leases.ts`).
+ *
+ * **A generation and its layer are one unit.** They were pruned by two separate
+ * passes before, which is exactly the shape that lets one of them be leased and
+ * the other deleted; the lease is taken once and covers both.
+ *
+ * **Abandoned staging trees are outside the lease, and correctly so.** They are
+ * named `<sha>.staging-<uuid>`, so they fail the object-name test below and are
+ * removed unconditionally: publish RENAMES a staging tree, it never mounts one,
+ * so no consumer can ever have had it. Only a published generation has an
+ * identity a consumer could be holding.
+ *
+ * Never throws. A prune runs immediately after a publish that already succeeded,
+ * so a daemon hiccup here must not turn an activated generation into a reported
+ * failure.
+ */
+async function dropGenerations(
+  stateDir: string,
+  repoName: string,
+  keep: ReadonlySet<string>,
+  begin: BeginGenerationDeletion | undefined,
+): Promise<void> {
+  const root = generationsRoot(stateDir, repoName);
+  const workRoot = path.join(repoRoot(stateDir, repoName), WORK_SUBDIR);
+  const [entries, layers] = await Promise.all([listNames(root), listNames(workRoot)]);
+
+  // Leftovers from a stage that never published — no identity, no consumer.
   await Promise.all(
     entries
-      .filter((name) => !keep.has(name))
+      .filter((name) => !keep.has(name) && !SHA_RE.test(name))
       .map((name) => fsp.rm(path.join(root, name), { recursive: true, force: true }).catch(() => undefined)),
   );
 
-  // The writable layers, keyed by the same commit names.
-  const workRoot = path.join(repoRoot(stateDir, repoName), WORK_SUBDIR);
-  let layers: string[];
-  try {
-    layers = await fsp.readdir(workRoot);
-  } catch {
-    return; // no layers yet — nothing installed for this repo
-  }
-  await Promise.all(
-    layers
-      .filter((name) => !keep.has(name))
-      .map((name) => fsp.rm(path.join(workRoot, name), { recursive: true, force: true }).catch(() => undefined)),
+  const superseded = new Set(
+    [...entries, ...layers].filter((name) => SHA_RE.test(name) && !keep.has(name)),
   );
+  await Promise.all(
+    [...superseded].map(async (commit) => {
+      const done = begin ? await begin({ repoName, commit }).catch(() => null) : noop;
+      if (!done) {
+        // req 15 — the prior complete version keeps running. A consumer still
+        // has this tree mounted, so it stays; the next publish's prune retries,
+        // and a session that never refreshes again takes the whole state
+        // directory with it when it goes.
+        console.log(
+          `[plugins] ${repoName}: ${commit.slice(0, 9)} is still in use — leaving it for a later round`,
+        );
+        return;
+      }
+      try {
+        await fsp.rm(path.join(root, commit), { recursive: true, force: true }).catch(() => undefined);
+        await fsp.rm(path.join(workRoot, commit), { recursive: true, force: true }).catch(() => undefined);
+      } finally {
+        done();
+      }
+    }),
+  );
+}
+
+function noop(): void {
+  /* no lease to release */
+}
+
+async function listNames(dir: string): Promise<string[]> {
+  try {
+    return await fsp.readdir(dir);
+  } catch {
+    return [];
+  }
 }
 
 function message(err: unknown): string {

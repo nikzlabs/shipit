@@ -22,6 +22,11 @@ import {
   type PluginCliDeps,
 } from "./plugin-cli-run.js";
 import { clearUntrustedContainerNetworks, isUntrustedContainerIp } from "./api-container-guard.js";
+import {
+  claimGenerationDeletion,
+  generationHoldCount,
+  releaseSessionGenerationHolds,
+} from "./plugin-leases.js";
 
 const COMMIT = "d".repeat(40);
 
@@ -852,5 +857,76 @@ describe("mapWorkingDir", () => {
     expect(mapWorkingDir(workspaceDir, "/tmp")).toBe("/project");
     expect(mapWorkingDir(workspaceDir, "/workspace/../etc")).toBe("/project");
     expect(mapWorkingDir(workspaceDir, undefined)).toBe("/project");
+  });
+});
+
+/**
+ * docs/262 req 15 — the consumer lease (`plugin-leases.ts`).
+ *
+ * An invocation container mounts the generation's overlay volume, whose lowerdir
+ * is the checkout on disk. A refresh landing mid-command used to prune that
+ * checkout, and docs/183's spike records what that does to a live overlay:
+ * merged `readdir` comes back empty while path lookups still resolve, so the
+ * command misbehaves instead of failing. The lease is the same one a plugin
+ * service takes — one mechanism, because both surfaces attach one volume per
+ * generation.
+ */
+describe("runPluginCommand — the consumer lease", () => {
+  const GENERATION = { sessionId: "s1", repoName: "tools", commit: COMMIT };
+
+  afterEach(() => releaseSessionGenerationHolds("s1"));
+
+  it("holds the generation for the whole call and lets go at the end", async () => {
+    declareConsumer();
+    publishGeneration();
+    const fake = fakeDocker({ stdout: "ok\n" });
+    // Observed at container-creation time, which is inside the call and after
+    // the volume has been ensured — the exact window a prune must not win.
+    let heldDuringRun = -1;
+    const docker = {
+      ...(fake.docker as unknown as Record<string, unknown>),
+      createContainer: async (opts: Record<string, unknown>) => {
+        heldDuringRun = generationHoldCount(GENERATION);
+        return (fake.docker as unknown as {
+          createContainer: (o: Record<string, unknown>) => Promise<unknown>;
+        }).createContainer(opts);
+      },
+    } as unknown as Docker;
+
+    const result = await runPluginCommand(deps(docker), call);
+
+    expect(result.exitCode).toBe(0);
+    expect(heldDuringRun).toBe(1);
+    expect(generationHoldCount(GENERATION)).toBe(0);
+  });
+
+  it("lets go on a refusal too — the lease has one exit, not one per branch", async () => {
+    declareConsumer();
+    publishGeneration();
+    const fake = fakeDocker();
+
+    const result = await runPluginCommand(deps(fake.docker), { ...call, command: "nope" });
+
+    expect(result.error).toBeTruthy();
+    expect(fake.containers).toHaveLength(0);
+    expect(generationHoldCount(GENERATION)).toBe(0);
+  });
+
+  it("refuses to run a generation that is being pruned right now", async () => {
+    declareConsumer();
+    publishGeneration();
+    const fake = fakeDocker();
+    // A publish has superseded this commit and its prune has the tree claimed:
+    // `active` still resolved to it a moment ago, and the directory is going
+    // away. Mounting it now is the corruption case, so the answer is "run it
+    // again", not a container.
+    const done = claimGenerationDeletion(GENERATION)!;
+    try {
+      const result = await runPluginCommand(deps(fake.docker), call);
+      expect(result.error).toContain("replaced mid-call");
+      expect(fake.containers).toHaveLength(0);
+    } finally {
+      done();
+    }
   });
 });

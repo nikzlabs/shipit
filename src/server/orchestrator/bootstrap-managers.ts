@@ -67,6 +67,7 @@ import { resolveSessionPluginServices } from "./services/plugin-services.js";
 import type { PluginComposeService } from "./plugin-compose.js";
 import { emitPluginReposUpdated } from "./service-manager-setup.js";
 import { createPluginInstallRunner } from "./plugin-install.js";
+import { createGenerationDeletionLease } from "./plugin-leases.js";
 import { runPluginCommand, type PluginCliRequest, type PluginCliResult } from "./plugin-cli-run.js";
 import { sessionStateDirForWorkspace } from "./session-state-dir.js";
 import { pinStorePath } from "./plugin-pins.js";
@@ -527,6 +528,14 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     onSettled?: (id: string) => void,
   ) => {
     const runInstall = pluginInstallHook(sessionId, workspaceDir);
+    // docs/262 req 15 — the consumer lease a prune takes before deleting a
+    // superseded generation. Docker-shaped for the same reason install is: the
+    // durable half of the lease is "a container still holds this generation's
+    // volume", which only the daemon can answer. Without a container manager
+    // there are no plugin containers, so there is nothing to lease against.
+    const beginGenerationDeletion = containerManager
+      ? createGenerationDeletionLease({ docker: containerManager.dockerClient, sessionId })
+      : undefined;
     const remoteUrl = sessionManager.get(sessionId)?.remoteUrl;
     return {
       getBareCacheDir,
@@ -535,6 +544,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
       // fetch credentials (req 19).
       ...(onSettled ? { onSettled } : {}),
       ...(runInstall ? { runInstall } : {}),
+      ...(beginGenerationDeletion ? { beginGenerationDeletion } : {}),
       // req 8 — pins are durable per consuming PROJECT, so every session of one
       // repository resolves a pinned tag to the same commit.
       ...(remoteUrl ? { consumerKey: remoteUrl } : {}),
@@ -677,7 +687,21 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
           // A session archived, reset or deleted mid-call must stop the
           // command: otherwise third-party code keeps the project and state
           // mounts, and its network, for the rest of the timeout.
-          isCancelled: () => !sessionManager.get(sessionId),
+          //
+          // **Archive has to be part of that test, and was not** (review
+          // finding, confirmed at source): `SessionManager.get` returns an
+          // archived row like any other, so only a DELETED session cancelled
+          // anything. Archiving disposes the runner, destroys the container and
+          // then removes the session's `workspace/` and `state/` outright
+          // (`reclaimRegenerableSessionDirs`) — under a running invocation
+          // container's `/project`, `/plugin-state` and generation mount, which
+          // is the same live-mount deletion req 15's lease exists to prevent,
+          // arriving from the one direction a lease cannot cover: a recursive
+          // `rm` of the whole tree by an actor that never asks.
+          isCancelled: () => {
+            const live = sessionManager.get(sessionId);
+            return !live || live.userArchived === true;
+          },
           ...(containerManager.workspaceVolumeName
             ? { workspaceVolume: containerManager.workspaceVolumeName, stateRoot: stateDir }
             : {}),
