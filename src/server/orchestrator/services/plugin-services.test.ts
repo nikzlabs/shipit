@@ -111,7 +111,10 @@ services:
 `);
     fs.writeFileSync(
       path.join(generation, ".shipit-generation.json"),
-      JSON.stringify({ repoName: "tools", commit: "abc123", exports: ["probe"] }),
+      // `source` is what proves this generation belongs to the declaration that
+      // names it; a record without it reads as unverified everywhere since
+      // #2225, so the fixture has to carry it to reach the runtime-layer step.
+      JSON.stringify({ repoName: "tools", source: "someone/tools", commit: "abc123", exports: ["probe"] }),
     );
     fs.symlinkSync(
       path.join("generations", "abc123"),

@@ -3,6 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
+import { resolveLiveGenerations } from "./plugin-generations.js";
 import {
   buildPluginComposeServices,
   collectPluginFragments,
@@ -91,7 +92,7 @@ function collect(consumer: string, manifest = defaultManifest(), opts: {
   const { plugins, selfExports } = declare(consumer, manifest);
   return collectPluginFragments({
     workspaceDir,
-    stateDir,
+    live: resolveLiveGenerations(stateDir, plugins.repos),
     plugins,
     selfExports,
     projectServiceNames: opts.projectServiceNames ?? [],

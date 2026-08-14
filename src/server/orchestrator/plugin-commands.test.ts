@@ -11,6 +11,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
+import { resolveLiveGenerations } from "./plugin-generations.js";
 import { pluginCommandIssuesByRepo } from "./plugin-commands.js";
 import { parsePluginExports, parsePluginRepos } from "../shared/plugin-repos.js";
 
@@ -49,10 +50,11 @@ function publish(repoName: string, manifest: string, source = "acme/tools"): voi
 function issues(yaml: string) {
   const doc = parseYaml(yaml) as Record<string, unknown>;
   const warnings: string[] = [];
+  const plugins = parsePluginRepos(doc.plugins, [], warnings);
   return pluginCommandIssuesByRepo(
-    parsePluginRepos(doc.plugins, [], warnings),
+    plugins,
     parsePluginExports(doc.exports, warnings),
-    stateDir,
+    resolveLiveGenerations(stateDir, plugins.repos),
   );
 }
 

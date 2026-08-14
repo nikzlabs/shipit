@@ -37,6 +37,7 @@ import {
   removePluginOverlay,
   resolvePluginOverlayRoots,
 } from "../plugin-overlay.js";
+import { resolveLiveGenerations } from "../plugin-generations.js";
 import { resolvePublishedPorts } from "../plugin-ports.js";
 import { sessionRootForWorkspace } from "../plugin-state.js";
 import { sessionStateDirForWorkspace } from "../session-state-dir.js";
@@ -97,7 +98,9 @@ export async function resolveSessionPluginServices(
   const project = readProjectServices(workspaceDir, config, deps.containEgress);
   const { services: fragments } = collectPluginFragments({
     workspaceDir,
-    stateDir,
+    // One resolution per repository for this build, so a fragment and the tree
+    // its services mount cannot come from two generations (docs/262).
+    live: resolveLiveGenerations(stateDir, config.plugins.repos),
     plugins: config.plugins,
     selfExports: config.pluginExports,
     projectServiceNames: project.names,

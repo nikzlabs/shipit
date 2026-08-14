@@ -303,29 +303,29 @@ user's follow-up of 2026-08-12 during the design phase.
   and more recoverable loss, and it takes a deliberate project edit to reach.*
   The alternative is to hold the plugin's pin and leave the project service
   without an origin until the user renumbers it.
-- **What happens to a plugin's saved state when a project re-points a
-  declaration at a different repository?** Req 18 says a plugin's
-  session-scoped state survives everything until the session is reset or
-  deleted, and it says the state belongs to *a plugin*. A project can edit its
-  `shipit.yaml` to keep the same declared name and the same import while
-  changing which repository it points at — so the next session hands the **new**
-  repository's plugin whatever the **previous** one saved (found while
-  implementing reqs 17, 18, 26; verified at the source: the saved state is keyed
-  by the import's local name, and nothing about the repository is recorded
-  alongside it). Neither answer is inferable from what the user has said:
-  - **Keep the state** — the plainest reading of req 18, and right when the
-    re-point is a move (a repository renamed, or a fork taking over), where
-    losing the plugin's data would be a surprise.
-  - **Treat it as a different plugin's state** — right when the re-point is a
-    replacement, where the new plugin inherits files it did not write, which can
-    range from harmless to data it will misread.
-  *(Agent recommendation: treat it as a different plugin's state and start
-  clean, but keep the old state recoverable rather than deleting it, so a move
-  is not a data-loss event. Not implemented — this bullet is the question, not
-  the answer.)*
 
 ## Resolved questions
 
+- **2026-08-14 — What happens to a plugin's saved state when a project
+  re-points a declaration at a different repository?** Raised while
+  implementing reqs 17, 18, 26: the state directory and settings file are keyed
+  by the import's local name, so keeping `use: {from: tools, alias: tools}`
+  while changing which repository `repos: tools` points at hands the new
+  plugin whatever the previous one saved. **Req 18 already classifies this
+  case** — it puts a plugin's *durable output* in the project's workspace as
+  ordinary versioned files, and defines everything else a plugin holds as
+  session-scoped runtime state. So nothing a user values can be in that
+  directory by construction, and a re-point cannot lose it. The settings half
+  answers itself: `settings.json` is derived from the consuming project's
+  `shipit.yaml` and rewritten on every prepare pass, so a re-point regenerates
+  it against the new plugin's declared settings. Answer (user, 2026-08-14):
+  **keep the current behaviour — the state survives a re-point**, with no
+  retirement, move-aside or fresh-start mechanism; it is a corner case, and
+  anything worth keeping is in the repository. The agent's proposed carve-out
+  ("state survives, EXCEPT when re-pointed") is **withdrawn**: no user could
+  predict it from req 18's plain words, and it built mechanism to defend
+  against a plugin mishandling files it did not write, which belongs to the
+  plugin's author. → no requirement text changed.
 - **2026-08-13 — Where does a plugin's `install` run, and how strictly is req 19
   met?** Raised by an implementation review, which found that a first attempt at
   the container wiring let plugin `install` obtain a GitHub token: the worker's

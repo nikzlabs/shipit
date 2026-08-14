@@ -18,6 +18,7 @@ import {
   sessionRootForWorkspace,
 } from "./plugin-state.js";
 import { REGENERABLE_SESSION_SUBDIRS, reclaimRegenerableSessionDirs } from "./disk-utils.js";
+import { resolveLiveGenerations } from "./plugin-generations.js";
 import type { PluginExport, PluginReposConfig, PluginUse } from "../shared/plugin-repos.js";
 import type { PluginImportResolver } from "./plugin-state.js";
 
@@ -63,6 +64,11 @@ function makeUse(over: Partial<PluginUse> = {}): PluginUse {
     overrides: { services: {}, commands: {}, settings: {} },
     ...over,
   };
+}
+
+/** This "operation's" live generations — what production resolves once per pass. */
+function liveFor(plugins: PluginReposConfig): ReturnType<typeof resolveLiveGenerations> {
+  return resolveLiveGenerations(stateDir, plugins.repos);
 }
 
 function readSettings(alias: string): unknown {
@@ -408,7 +414,7 @@ describe("createPluginImportResolver", () => {
       "Game-Tools",
       "exports:\n  plugins:\n    requirements:\n      settings:\n        root:\n          default: docs\n",
     );
-    const { exportFor } = createPluginImportResolver(config(), [], stateDir);
+    const { exportFor } = createPluginImportResolver(config(), [], liveFor(config()));
     expect(exportFor(makeUse({ from: "game-tools" }))?.settings.root?.default).toBe("docs");
   });
 
@@ -417,7 +423,7 @@ describe("createPluginImportResolver", () => {
     // case-insensitively, and a case-sensitive filesystem would otherwise find
     // nothing (the defect `plugin-runtime.ts` had to fix).
     publishGeneration("Game-Tools", "exports:\n  plugins:\n    requirements: {}\n");
-    const { exportFor, repoNameFor } = createPluginImportResolver(config(), [], stateDir);
+    const { exportFor, repoNameFor } = createPluginImportResolver(config(), [], liveFor(config()));
     expect(exportFor(makeUse({ from: "GAME-TOOLS" }))?.name).toBe("requirements");
     expect(repoNameFor(makeUse({ from: "GAME-TOOLS" }))).toBe("Game-Tools");
   });
@@ -431,17 +437,17 @@ describe("createPluginImportResolver", () => {
       "exports:\n  plugins:\n    requirements:\n      settings:\n        root:\n          default: docs\n",
       "acme/previous-tools",
     );
-    const { exportFor } = createPluginImportResolver(config(), [], stateDir);
+    const { exportFor } = createPluginImportResolver(config(), [], liveFor(config()));
     expect(exportFor(makeUse({ from: "game-tools" }))).toBeNull();
   });
 
   it("reads a `repo: self` import from the project's own parsed manifest", () => {
-    const { exportFor } = createPluginImportResolver(config(), [makeExport({ name: "probe" })], stateDir);
+    const { exportFor } = createPluginImportResolver(config(), [makeExport({ name: "probe" })], liveFor(config()));
     expect(exportFor(makeUse({ plugin: "probe", from: "here" }))?.name).toBe("probe");
   });
 
   it("returns null for an unknown repo or an export the manifest lacks", () => {
-    const { exportFor, repoNameFor } = createPluginImportResolver(config(), [], stateDir);
+    const { exportFor, repoNameFor } = createPluginImportResolver(config(), [], liveFor(config()));
     expect(exportFor(makeUse({ from: "nope" }))).toBeNull();
     expect(repoNameFor(makeUse({ from: "nope" }))).toBeNull();
     expect(exportFor(makeUse({ from: "here" }))).toBeNull();
@@ -462,7 +468,7 @@ describe("pluginSettingsIssuesByRepo", () => {
         }),
       ],
     };
-    const issues = pluginSettingsIssuesByRepo(plugins, [makeExport({ name: "probe" })], stateDir);
+    const issues = pluginSettingsIssuesByRepo(plugins, [makeExport({ name: "probe" })], liveFor(plugins));
     // Keyed by the declaration's own spelling — that is the card's identity.
     expect([...issues.keys()]).toEqual(["Here"]);
     expect(issues.get("Here")![0]).toContain("`nope`");
@@ -474,6 +480,6 @@ describe("pluginSettingsIssuesByRepo", () => {
       repos: [{ name: "tools", source: { kind: "github", owner: "a", repo: "b" }, branch: "main" }],
       uses: [makeUse({ from: "tools", overrides: { services: {}, commands: {}, settings: { x: 1 } } })],
     };
-    expect(pluginSettingsIssuesByRepo(plugins, [], stateDir).size).toBe(0);
+    expect(pluginSettingsIssuesByRepo(plugins, [], liveFor(plugins)).size).toBe(0);
   });
 });

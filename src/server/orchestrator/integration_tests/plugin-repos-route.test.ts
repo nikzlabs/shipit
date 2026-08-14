@@ -8,7 +8,7 @@
  * files-changed refetch depends on it.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -225,6 +225,34 @@ describe("Integration: GET /api/plugin-repos (docs/262)", () => {
       + "  use:\n    - plugin: probe\n      from: dev\n",
     );
     expect((await snapshot()).repos[0].issues[0]).toContain("declare an `image:` instead");
+  });
+
+  // docs/262 resolve-once. Five readers answer for one repository on this
+  // request — the commit, the manifest behind the settings verdict, the one
+  // behind the command verdict, the credential names, and the compose fragment.
+  // Each used to follow `active` itself, so a refresh landing mid-request could
+  // compose ONE card from several generations.
+  it("resolves each declared repository's `active` once per request", async () => {
+    // A live generation for the tracked repo, so there is a symlink to follow.
+    const stateDir = path.join(tmpDir, "state");
+    const generation = path.join(stateDir, "plugins", "tools", "generations", "abc123");
+    fs.mkdirSync(generation, { recursive: true });
+    fs.writeFileSync(path.join(generation, "shipit.yaml"), "exports:\n  plugins:\n    probe: {}\n");
+    fs.writeFileSync(
+      path.join(generation, ".shipit-generation.json"),
+      JSON.stringify({ repoName: "tools", source: "nikzlabs/shipit", commit: "abc123", exports: ["probe"] }),
+    );
+    fs.symlinkSync(path.join("generations", "abc123"), path.join(stateDir, "plugins", "tools", "active"));
+    writeConfig(DECLARE_FIXTURE);
+
+    const spy = vi.spyOn(fs, "realpathSync");
+    await snapshot();
+    const followed = spy.mock.calls.filter(
+      ([target]) => typeof target === "string" && target.endsWith(path.join("plugins", "tools", "active")),
+    );
+    spy.mockRestore();
+
+    expect(followed).toHaveLength(1);
   });
 
   it("re-reads the file per request — an edit changes the very next answer", async () => {
