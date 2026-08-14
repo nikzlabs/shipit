@@ -14,9 +14,21 @@ export function generateBranchPrefix(): string {
   return `shipit/${  generateBranchSlug()}`;
 }
 
-/** Hash a repo URL to a short 16-char hex string for use as a directory name. */
+/**
+ * Hash a repo URL to a short 16-char hex string for use as a directory name.
+ *
+ * Hashed credential-free (docs/262 req 19): the stores now key their rows by
+ * the stripped URL, so a caller still holding the credentialed spelling — the
+ * claim route takes one straight off the request path — would otherwise
+ * address a DIFFERENT bare cache, dep cache and per-repo memory directory than
+ * the repo row it just resolved, splitting one repository across two of each.
+ *
+ * Only a URL carrying userinfo hashes differently than before; a clean URL is
+ * unchanged, so no existing cache directory moves that the credential scrub
+ * (`startup-tasks.ts`) was not already going to orphan.
+ */
 export function repoUrlToHash(repoUrl: string): string {
-  return crypto.createHash("sha256").update(repoUrl).digest("hex").slice(0, 16);
+  return crypto.createHash("sha256").update(stripRemoteUrlCredentials(repoUrl)).digest("hex").slice(0, 16);
 }
 
 /**
@@ -44,6 +56,69 @@ export function stripUrlCredentials(url: string): string {
   } catch {
     return trimmed;
   }
+}
+
+/**
+ * The strip used when a remote URL is about to be **persisted** — stored in a
+ * row, or written into a git config (docs/262 req 19: "a credential a user
+ * happens to type into a repository URL is not kept either").
+ *
+ * Strictly stronger than {@link stripUrlCredentials}, and deliberately a
+ * separate function rather than a change to it: that helper's narrow scope is
+ * right for the surfaces it was written for (showing a URL back to its own
+ * owner, redaction, the identity key), and widening it there would change
+ * every one of them at once. This one is used at the write boundary only.
+ *
+ * Three shapes, all reachable through `setGitRemote`, which takes whatever the
+ * user types — the first was the reported violation, the other two were found
+ * by the independent review of that fix:
+ *
+ *  - **http(s) userinfo** — `https://x-access-token:<pat>@host/o/r.git`.
+ *    Removed whole, as `stripUrlCredentials` does.
+ *  - **a password in ANY other scheme** — `ssh://git:pw@host/o/r.git`. The
+ *    *password* goes; the **username stays**, because for ssh that is the login
+ *    identity (`git@`) and not a secret, and dropping it breaks the remote.
+ *  - **query and fragment** — `…/o/r.git?access_token=pw`. Dropped wholesale
+ *    for any parseable URL. A git remote has no meaningful query or fragment
+ *    (the same judgement `sanitizeRemoteUrlForInventory` already makes), and
+ *    both are places a token demonstrably shows up.
+ *
+ * An scp-style remote (`git@github.com:o/r.git`) does not parse as a URL and is
+ * returned untouched — its `git@` is an ssh login, and a token pasted in that
+ * position cannot be told apart from one. The cross-session display boundary
+ * (`sanitizeRemoteUrlForInventory`) still fails closed on that shape.
+ */
+export function stripRemoteUrlCredentials(url: string): string {
+  const trimmed = (url ?? "").trim();
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    return trimmed; // scp-style, or too malformed to reason about — see above.
+  }
+  const isHttp = parsed.protocol === "http:" || parsed.protocol === "https:";
+  const carries = Boolean((isHttp && parsed.username) || parsed.password || parsed.search || parsed.hash);
+  // Return the ORIGINAL string when there is nothing to remove: `new URL`
+  // normalizes (a bare host gains a trailing slash), and a stored URL that
+  // silently changes shape is a row key that stops matching itself.
+  if (!carries) return trimmed;
+  if (isHttp) parsed.username = "";
+  parsed.password = "";
+  parsed.search = "";
+  parsed.hash = "";
+  return parsed.toString();
+}
+
+/**
+ * True when persisting `url` would persist a credential — i.e. when
+ * {@link stripRemoteUrlCredentials} would change it (docs/262 req 19).
+ *
+ * Defined as "the strip changes it" rather than as a second parser, so the
+ * detector and the remedy can never disagree about what a credential is.
+ */
+export function hasUrlCredentials(url: string): boolean {
+  const trimmed = (url ?? "").trim();
+  return stripRemoteUrlCredentials(trimmed) !== trimmed;
 }
 
 /**

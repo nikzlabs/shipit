@@ -34,6 +34,30 @@ describe("RepoStore", () => {
     expect(repo2.url).toBe("https://github.com/owner/repo.git");
   });
 
+  // docs/262 req 19 — the row key is the credential-free URL, in EVERY method
+  // that takes one. Stripping in `add` alone would store the clean URL and then
+  // leave `setReady`/`get`/`setWarmSessionId` addressing a row that never
+  // existed, which is a repo stuck at status "cloning" forever.
+  it("treats a credentialed URL and its clean twin as one row", () => {
+    const credentialed = "https://x-access-token:pw@github.com/owner/repo.git";
+    const clean = "https://github.com/owner/repo.git";
+
+    expect(store.add(credentialed).url).toBe(clean);
+    expect(store.list()).toHaveLength(1);
+    expect(store.add(clean).url).toBe(clean);
+    expect(store.list()).toHaveLength(1);
+
+    store.setReady(credentialed);
+    expect(store.get(clean)?.status).toBe("ready");
+    expect(store.get(credentialed)?.status).toBe("ready");
+    expect(store.has(credentialed)).toBe(true);
+
+    store.setWarmSessionId(credentialed, "warm-1");
+    expect(store.get(clean)?.warmSessionId).toBe("warm-1");
+    expect(store.remove(credentialed)).toBe(true);
+    expect(store.list()).toEqual([]);
+  });
+
   it("setReady changes status", () => {
     store.add("https://github.com/owner/repo.git");
     store.setReady("https://github.com/owner/repo.git");

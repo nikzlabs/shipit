@@ -226,6 +226,21 @@ describe("SessionManager", () => {
       expect(mgr.findUngraduatedWarm("https://github.com/user/repo.git", "warm-1")).toBeUndefined();
     });
 
+    // docs/262 req 19 — this column is written into the session clone's
+    // `remote.origin.url` (`cloneFromCache`, the fork path), i.e. into
+    // `/project/.git/config`, which the agent and every plugin CLI can read.
+    it("stores a remote URL without the credential someone embedded in it", () => {
+      const mgr = new SessionManager(dbManager);
+      mgr.track("sess-1", "S");
+      mgr.setRemoteUrl("sess-1", "https://x-access-token:pw@github.com/user/repo.git");
+
+      expect(mgr.get("sess-1")?.remoteUrl).toBe("https://github.com/user/repo.git");
+      // And the row itself, not just the projection.
+      expect(
+        dbManager.db.prepare("SELECT remote_url FROM sessions WHERE id = ?").get("sess-1"),
+      ).toEqual({ remote_url: "https://github.com/user/repo.git" });
+    });
+
     it("does not match warm sessions for a different repo", () => {
       const mgr = new SessionManager(dbManager);
       mgr.track("warm-1", "Warm 1");

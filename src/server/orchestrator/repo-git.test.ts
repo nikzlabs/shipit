@@ -201,6 +201,112 @@ describe("RepoGit overlay publish oracle (docs/183)", () => {
 });
 
 /**
+ * docs/262 req 19 — **no credential ever reaches `/project/.git/config`.**
+ *
+ * This is the assertion whose absence kept the violation open: every existing
+ * plugin guard test checks a plugin container's mounts, environment and network,
+ * and NONE of them can see a token sitting in the session clone's own git
+ * config — which is mounted at `/project` and readable by the agent, by every
+ * companion CLI, and (once that surface ships) by every plugin service.
+ *
+ * These drive real git and read the real config file, so they fail if any later
+ * change re-introduces the credential by another route.
+ *
+ * Fixture note: the password is deliberately short and generic. `secret-scan.ts`
+ * flags `<user>:<8+ chars>@` in a URL, so a realistic-looking PAT here would
+ * trip the scanner on every commit. Don't "improve" it.
+ */
+describe("no credential is recorded in a git config (docs/262 req 19)", () => {
+  const CREDENTIALED = "https://x-access-token:pw@github.com/o/r.git";
+  const CLEAN = "https://github.com/o/r.git";
+  /** The shape `secret-scan.ts` looks for, minus its length floor. */
+  const CREDENTIAL_IN_URL = /^\s*url\s*=\s*\S+:\/\/[^\s/@]+@/m;
+
+  it("cloneFromCache writes a credential-free origin into the session clone", async () => {
+    const cacheDir = path.join(tmpDir, "cache-cred");
+    fs.mkdirSync(cacheDir, { recursive: true });
+    const cacheGit = createRepoGit(cacheDir);
+    await cacheGit.cloneBare(remoteUrl);
+
+    // The session clone. In production this directory is the container's
+    // `/project`, so its `.git/config` is `/project/.git/config`.
+    const workspaceDir = path.join(tmpDir, "workspace-cred");
+    await cacheGit.cloneFromCache(workspaceDir, CREDENTIALED);
+
+    const config = fs.readFileSync(path.join(workspaceDir, ".git", "config"), "utf-8");
+    expect(config).not.toContain("pw@");
+    expect(config).not.toMatch(CREDENTIAL_IN_URL);
+    expect(
+      execFileSync("git", ["-C", workspaceDir, "remote", "get-url", "origin"], { encoding: "utf-8" }).trim(),
+    ).toBe(CLEAN);
+  });
+
+  it("setRemoteUrl can only remove a credential, never install one", async () => {
+    const cacheDir = path.join(tmpDir, "cache-seturl");
+    fs.mkdirSync(cacheDir, { recursive: true });
+    const cacheGit = createRepoGit(cacheDir);
+    await cacheGit.cloneBare(remoteUrl);
+
+    await cacheGit.setRemoteUrl(CREDENTIALED);
+
+    const config = fs.readFileSync(path.join(cacheDir, "config"), "utf-8");
+    expect(config).not.toContain("pw@");
+    expect(config).not.toMatch(CREDENTIAL_IN_URL);
+  });
+
+  it("cloneBare never offers a URL-embedded credential, and never records one", async () => {
+    // Isolates `cloneBare` itself against a REAL server: an earlier version of
+    // this test reached the credential through `setRemoteUrl`, so a regression
+    // confined to `cloneBare` would have passed it. git sends URL userinfo as
+    // Basic auth, so "the server saw no Authorization header" is direct proof
+    // the credential was dropped before git ran — and the accepted cost is
+    // visible in the same assertion: the fetch is anonymous.
+    let authorization: string | undefined;
+    let requests = 0;
+    const server = http.createServer((req, res) => {
+      requests += 1;
+      if (req.headers.authorization) authorization ??= req.headers.authorization;
+      res.writeHead(401, { "WWW-Authenticate": "Basic realm=\"git\"" });
+      res.end("no");
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const port = (server.address() as { port: number }).port;
+    // `server-test-setup.ts` pins GIT_ALLOW_PROTOCOL to `file`; this server IS
+    // the loopback, so opt in for the duration and put the guard back.
+    const allowed = process.env.GIT_ALLOW_PROTOCOL;
+    process.env.GIT_ALLOW_PROTOCOL = "file:http";
+    // And pin an EMPTY global config: `setGlobalCredentialHelper` (exercised by
+    // other suites in this process) installs a host-blind helper into the real
+    // global git config, which would answer for this loopback server and make
+    // the assertion below depend on test ordering rather than on this code.
+    const emptyGlobal = path.join(tmpDir, "empty.gitconfig");
+    fs.writeFileSync(emptyGlobal, "");
+    const previousGlobal = process.env.GIT_CONFIG_GLOBAL;
+    process.env.GIT_CONFIG_GLOBAL = emptyGlobal;
+    const cacheDir = path.join(tmpDir, "cache-clonebare-cred");
+    fs.mkdirSync(cacheDir, { recursive: true });
+    try {
+      await createRepoGit(cacheDir)
+        .cloneBare(`http://x-access-token:pw@127.0.0.1:${port}/plugin.git`)
+        .catch(() => undefined); // Always refused — what matters is what git offered.
+    } finally {
+      if (allowed === undefined) Reflect.deleteProperty(process.env, "GIT_ALLOW_PROTOCOL");
+      else process.env.GIT_ALLOW_PROTOCOL = allowed;
+      if (previousGlobal === undefined) Reflect.deleteProperty(process.env, "GIT_CONFIG_GLOBAL");
+      else process.env.GIT_CONFIG_GLOBAL = previousGlobal;
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+
+    expect(requests).toBeGreaterThan(0); // Not vacuous: git did reach the server.
+    expect(authorization).toBeUndefined();
+    // Stated separately so a future ambient helper cannot make this pass
+    // vacuously: whatever git offered, it was never the URL's own credential.
+    expect(Buffer.from((authorization ?? "").replace("Basic ", ""), "base64").toString("utf8"))
+      .not.toContain("pw");
+  }, 20_000);
+});
+
+/**
  * docs/262 req 10 — the per-instance credential. These drive REAL git, because
  * every part of the mechanism that can be wrong is a git behavior: whether the
  * inherited helper list is actually reset, whether a URL-scoped helper matches,

@@ -15,6 +15,7 @@ import type { SessionInfo } from "../../shared/types.js";
 import { graduateSession, type GraduateSessionDeps } from "./graduate-session.js";
 import { ServiceError } from "./types.js";
 import { chownTreeToSessionWorker, handWorkspaceBackToWorker } from "../session-worker-uid.js";
+import { stripRemoteUrlCredentials } from "../git-utils.js";
 
 /** Fork a session into a new clone with its own branch. */
 export async function forkSession(
@@ -55,8 +56,11 @@ export async function forkSession(
   // Disable auto-gc so hardlinks aren't broken in either clone.
   await newGit.raw(["config", "gc.auto", "0"]);
   // Reset origin to the real remote (clone --local sets it to activeSessionDir).
+  // Stripped on the way in as well as at the source (`SessionManager.setRemoteUrl`),
+  // because this writes the fork's `/project/.git/config` (docs/262 req 19) and a
+  // fork can inherit a row written by an older build.
   if (activeSession?.remoteUrl) {
-    await newGit.raw(["remote", "set-url", "origin", activeSession.remoteUrl]);
+    await newGit.raw(["remote", "set-url", "origin", stripRemoteUrlCredentials(activeSession.remoteUrl)]);
   }
   if (githubAuthManager.authenticated) {
     githubAuthManager.configureGitCredentials(newWorkspaceDir);

@@ -196,8 +196,9 @@ export function composeProjectForSession(sessionId: string): string {
  *   https://u:pw@                              — `new URL` throws, returned as-is
  *   tok@example.com:o/r.git                    — scp-style, may be a token
  *
- * `setGitRemote` (services/git.ts) persists whatever string the user supplied,
- * and git accepts every form above as a remote, so each is reachable. Crossing
+ * `setGitRemote` (services/git.ts) now strips the http(s) shape before it
+ * persists anything (docs/262 req 19), but git accepts every form above as a
+ * remote and the strip reaches none of them, so each is reachable. Crossing
  * a session boundary is exactly where req 8's "no tokens" clause binds, so this
  * FAILS CLOSED instead: parse strictly and drop userinfo + query + fragment;
  * if it will not parse, drop everything up to the last `@`. Losing a legible

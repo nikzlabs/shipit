@@ -5,7 +5,7 @@
 
 import type { RepoStore } from "../repo-store.js";
 import type { RepoInfo } from "../../shared/types.js";
-import { canonicalRepoKey } from "../git-utils.js";
+import { canonicalRepoKey, hasUrlCredentials, stripUrlCredentials } from "../git-utils.js";
 import { REPO_COLOR_COUNT, isValidRepoColorIndex } from "../../shared/repo-colors.js";
 import { ServiceError } from "./types.js";
 import { validateStringArray } from "./validation.js";
@@ -15,7 +15,25 @@ export function listRepos(repoStore: RepoStore): RepoInfo[] {
   return repoStore.list();
 }
 
-/** Add a repo. Returns the new or existing RepoInfo. */
+/**
+ * Add a repo. Returns the new or existing RepoInfo.
+ *
+ * A credential the user types into the URL is **dropped, not stored**
+ * (docs/262 req 19). ShipIt authenticates a fetch through a credential helper
+ * scoped to that remote, for the life of the fetch, and keeps it out of every
+ * file — so a URL like `https://x-access-token:<pat>@github.com/o/r.git` would
+ * otherwise end up in the repo row, in the bare cache's config, and from there
+ * in every session clone's `/project/.git/config`, which the agent and every
+ * plugin CLI and plugin service can read.
+ *
+ * Known, accepted cost, recorded with the requirement: a remote whose ONLY
+ * working auth is that embedded credential stops working on the helper path —
+ * it degrades to an anonymous fetch, and no fallback keeps the credential
+ * (that fallback is what req 19 forbids). The `console.warn` is
+ * what makes the resulting failure legible rather than an unexplained "could
+ * not read Username" — the clone runs anonymously, and the caller surfaces the
+ * clone error the same way it always has (req 13).
+ */
 export function addRepo(
   repoStore: RepoStore,
   url: string,
@@ -29,6 +47,15 @@ export function addRepo(
   // Support owner/repo shorthand
   if (/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(normalized)) {
     normalized = `https://github.com/${normalized}.git`;
+  }
+
+  if (hasUrlCredentials(normalized)) {
+    normalized = stripUrlCredentials(normalized);
+    console.warn(
+      `[repos] Dropped the credential embedded in the URL for ${normalized} — ShipIt never stores one. `
+      + "Access is supplied by the GitHub connection (PAT or App installation) at fetch time; "
+      + "if that connection cannot reach this repository, adding it will fail to clone.",
+    );
   }
 
   return repoStore.add(normalized);

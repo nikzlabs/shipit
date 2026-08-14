@@ -550,23 +550,28 @@ describe("runPluginCommand — the fetch-authority boundary (req 19)", () => {
     expect(fake.connected).toEqual([]);
     // `/project` IS the workspace, so it necessarily carries `.git`.
     //
-    // **Half of that is safe and half of it is an open req-19 gap, and the
+    // **Half of that was safe and half of it was an open req-19 gap, and the
     // difference was worth checking rather than asserting.** The repo-local
     // `credential.helper` is safe: `github-auth.ts` writes
     // `CONTAINER_CREDENTIAL_HELPER`, a PATH to a broker (`git-config.ts` —
     // "this file NEVER contains the token"), and that broker answers only over
     // the session worker's loopback, which the next test shows this container
-    // does not share. `remote.origin.url` is NOT: `addRepo`
-    // (`services/repos.ts`) trims and expands shorthand but never calls
-    // `stripUrlCredentials`, `RepoStore.add` persists the string verbatim, and
-    // `RepoGit.cloneFromCache` runs `git remote set-url origin <that string>`
+    // does not share. `remote.origin.url` was NOT: `addRepo`
+    // (`services/repos.ts`) trimmed and expanded shorthand but never called
+    // `stripUrlCredentials`, `RepoStore.add` persisted the string verbatim, and
+    // `RepoGit.cloneFromCache` ran `git remote set-url origin <that string>`
     // — so a repository added as
-    // `https://x-access-token:<pat>@github.com/o/r.git` puts a live token in
+    // `https://x-access-token:<pat>@github.com/o/r.git` put a live token in
     // this container's `/project/.git/config`, where no mount, environment or
     // network assertion in this file can see it. Found by an independent
-    // review of this branch. Closing it is a product decision outside this
-    // surface (stripping the URL would break an install whose ONLY auth is
-    // that URL), so it is reported, not silently patched here.
+    // review of this branch, and CLOSED under req 19's own rule — a credential a
+    // user types into a repository URL is not kept, and fetches are credentialed
+    // by a helper scoped to that remote. It is stripped where a repository is
+    // added and at every write of a remote URL, with the recorded cost that a
+    // remote whose only working auth is that URL stops working on the helper
+    // path. The guard lives where the file is written,
+    // not here — `repo-git.test.ts` → "no credential is recorded in a git
+    // config", plus the legacy sweep in `startup-tasks.test.ts`.
     expect(mountFor(host, "/project")?.Source).toBe(workspaceDir);
   });
 

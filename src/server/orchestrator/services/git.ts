@@ -10,6 +10,7 @@ import type { GitHubAuthManager } from "../github-auth.js";
 import type { FileDiff } from "../../shared/types.js";
 import { scanFileTree } from "../../shared/file-tree.js";
 import { createLfsBlobResolver, parseLfsPointer, type LfsBlobResolver } from "../git-lfs-blob.js";
+import { stripRemoteUrlCredentials } from "../git-utils.js";
 import { ServiceError } from "./types.js";
 
 // ---- Image diff support ----
@@ -433,7 +434,17 @@ export async function gitRollback(
   return { commitHash };
 }
 
-/** Add or update a git remote. Returns the updated remotes list. */
+/**
+ * Add or update a git remote. Returns the updated remotes list.
+ *
+ * The URL is recorded credential-free (docs/262 req 19). This is the one place
+ * a user hands ShipIt an arbitrary remote string, and it writes it straight
+ * into the session's own `.git/config` — `/project/.git/config` inside the
+ * container, readable by the agent and by every plugin CLI and plugin service.
+ * Only http(s) userinfo is removed; the other shapes git accepts are still
+ * handled at the cross-session display boundary
+ * (`sanitizeRemoteUrlForInventory`).
+ */
 export async function setGitRemote(
   git: GitManager,
   sessionManager: SessionManager,
@@ -442,9 +453,16 @@ export async function setGitRemote(
   url: string,
 ): Promise<{ remotes: { name: string; url: string }[] }> {
   if (!name.trim() || !url.trim()) throw new ServiceError(400, "Remote name and URL are required");
-  await git.addRemote(name.trim(), url.trim());
+  const cleanUrl = stripRemoteUrlCredentials(url);
+  if (cleanUrl !== url.trim()) {
+    console.warn(
+      `[git] Dropped the credential embedded in the remote URL for ${name.trim()} — ShipIt never records `
+      + "one in a git config; access is supplied by the GitHub connection at fetch time.",
+    );
+  }
+  await git.addRemote(name.trim(), cleanUrl);
   if (name.trim() === "origin") {
-    sessionManager.setRemoteUrl(sessionId, url.trim());
+    sessionManager.setRemoteUrl(sessionId, cleanUrl);
   }
   const remotes = await git.getRemotes();
   return { remotes };

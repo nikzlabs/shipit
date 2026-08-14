@@ -52,10 +52,25 @@ export function createSessionDirFactory(
 export function createBareCacheDirHelper(
   stateDir: string,
 ): (repoUrl: string) => string {
-  const cacheRoot = path.join(stateDir, "repo-cache");
   return (repoUrl: string): string => {
-    return path.join(cacheRoot, repoUrlToHash(repoUrl));
+    return path.join(bareCacheRoot(stateDir), repoUrlToHash(repoUrl));
   };
+}
+
+/**
+ * The directory the per-repo bare caches live IN — `<hash>` children.
+ *
+ * Exported for the one caller that addresses a cache by a hash it did not
+ * compute from a current URL: the docs/262 req 19 boot scrub, which has to find
+ * a directory an OLDER build named after a credentialed URL.
+ */
+export function bareCacheRoot(stateDir: string): string {
+  return path.join(stateDir, "repo-cache");
+}
+
+/** The directory the per-repo dependency caches live IN — see {@link bareCacheRoot}. */
+export function depCacheRoot(stateDir: string): string {
+  return path.join(stateDir, "dep-cache");
 }
 
 /**
@@ -65,8 +80,7 @@ export function createBareCacheDirHelper(
 export function createDepCacheDirHelper(
   stateDir: string,
 ): (repoUrl: string) => string {
-  const depCacheRoot = path.join(stateDir, "dep-cache");
   return (repoUrl: string): string => {
-    return path.join(depCacheRoot, repoUrlToHash(repoUrl));
+    return path.join(depCacheRoot(stateDir), repoUrlToHash(repoUrl));
   };
 }

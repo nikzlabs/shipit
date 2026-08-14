@@ -4,6 +4,7 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import simpleGit, { type SimpleGit } from "simple-git";
 import { ensurePnpmStoreGitExcluded } from "../shared/git.js";
+import { hasUrlCredentials, stripRemoteUrlCredentials } from "./git-utils.js";
 import { chownTreeToSessionWorker } from "./session-worker-uid.js";
 import { linkLfsObjectsIntoClone } from "./git-lfs-store.js";
 
@@ -47,6 +48,34 @@ export async function ensureBareCache(
   await git.cloneBare(repoUrl);
   console.log(`[repo-git] Recovered bare cache: ${cacheDir}`);
   return { git, recovered: true };
+}
+
+/**
+ * The URL to hand git, with any embedded credential removed (docs/262 req 19).
+ *
+ * Every RepoGit path that records a remote goes through this, not just the one
+ * that seemed reachable: `clone`/`cloneBare` because the URL git clones from is
+ * the URL it writes to `remote.origin.url`, and `setRemoteUrl`/`cloneFromCache`
+ * because they write that key directly — `cloneFromCache` into the session
+ * clone that becomes `/project`, whose `.git/config` the agent and every plugin
+ * CLI and plugin service can read. Credentials reach git through the per-remote
+ * helper (`gitCredentialConfig`) or the global helper, both of which supply the
+ * token for the life of the operation and write it nowhere.
+ *
+ * The warning is the legible half (req 13): a remote that ONLY authenticates
+ * through its URL now fails, and this line says why instead of leaving an
+ * unexplained authentication error. The URL is logged already-stripped, so the
+ * log itself never carries the secret.
+ */
+function credentialFreeRemote(url: string, context: string): string {
+  if (!hasUrlCredentials(url)) return url;
+  const clean = stripRemoteUrlCredentials(url);
+  console.warn(
+    `[git] ${context}: dropped a credential embedded in the remote URL for ${clean} — `
+    + "ShipIt never records one in a git config. If this remote authenticates only through "
+    + "that URL, the operation will fail to authenticate.",
+  );
+  return clean;
 }
 
 /**
@@ -207,7 +236,7 @@ export class RepoGit {
    * The directory must be empty or non-existent.
    */
   async clone(url: string, branch?: string): Promise<void> {
-    const args = ["clone", url, "."];
+    const args = ["clone", credentialFreeRemote(url, "clone"), "."];
     if (branch) args.push("--branch", branch);
     await this.git.raw(args);
   }
@@ -219,7 +248,7 @@ export class RepoGit {
   async cloneBare(url: string): Promise<void> {
     // Clone bare into the current directory. simple-git operates on repoDir,
     // but `git clone --bare` needs the parent to exist with the target as ".".
-    await this.git.raw(["clone", "--bare", url, "."]);
+    await this.git.raw(["clone", "--bare", credentialFreeRemote(url, "cloneBare"), "."]);
     await this.ensureFetchRefspec();
     console.log("[git] Cloned bare repo:", this.repoDir);
   }
@@ -251,11 +280,13 @@ export class RepoGit {
   }
 
   /**
-   * Update the origin remote URL. Used to refresh embedded credentials
-   * before fetching when tokens rotate.
+   * Update a remote's URL — the normalization every caller uses to put a
+   * cache's origin back into its plain, credential-free form. The URL is
+   * stripped here too (see `credentialFreeRemote`), so this can only ever
+   * REMOVE a credential from a config, never install one.
    */
   async setRemoteUrl(url: string, remote = "origin"): Promise<void> {
-    await this.git.raw(["remote", "set-url", remote, url]);
+    await this.git.raw(["remote", "set-url", remote, credentialFreeRemote(url, "setRemoteUrl")]);
   }
 
   /**
@@ -351,9 +382,12 @@ export class RepoGit {
     // Disable auto-gc in the session clone to prevent hardlink breakage
     const sessionGit = simpleGit(sessionDir);
     await sessionGit.raw(["config", "gc.auto", "0"]);
-    // Reset origin to the real remote URL (clone --local sets it to the bare cache path)
+    // Reset origin to the real remote URL (clone --local sets it to the bare
+    // cache path). Credential-free: this write lands in the session clone's
+    // `.git/config`, which is `/project/.git/config` inside the session and
+    // plugin containers (docs/262 req 19).
     if (remoteUrl) {
-      await sessionGit.raw(["remote", "set-url", "origin", remoteUrl]);
+      await sessionGit.raw(["remote", "set-url", "origin", credentialFreeRemote(remoteUrl, "cloneFromCache")]);
     }
     // docs/198 — keep pnpm's relocated `/workspace/.pnpm-store` (a mountpoint at the
     // workspace root for pnpm repos) out of git via `.git/info/exclude`, so the

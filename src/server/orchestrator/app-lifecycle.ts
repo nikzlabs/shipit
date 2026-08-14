@@ -93,6 +93,8 @@ export {
   createSessionDirFactory,
   createBareCacheDirHelper,
   createDepCacheDirHelper,
+  bareCacheRoot,
+  depCacheRoot,
 } from "./session-dir-factory.js";
 export type { SessionDirDeps } from "./session-dir-factory.js";
 
@@ -101,6 +103,7 @@ export type { WarmPoolDeps } from "./warm-pool-manager.js";
 
 export {
   runRepoMigration,
+  runRemoteCredentialScrub,
   runMcpOAuthStartupRefresh,
   scheduleStartupTasks,
   handleContainerExited,

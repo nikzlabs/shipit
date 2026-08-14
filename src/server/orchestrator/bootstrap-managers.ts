@@ -33,12 +33,16 @@ import {
   markProviderAccountReauthenticated,
   createSessionDirFactory,
   createBareCacheDirHelper,
+  bareCacheRoot,
+  depCacheRoot,
   createDepCacheDirHelper,
   createWarmPool,
   runRepoMigration,
+  runRemoteCredentialScrub,
   scheduleStartupTasks,
 } from "./app-lifecycle.js";
 import { refreshAllRepoDefaultBranches } from "./services/repo-default-branch.js";
+import { repoMemoryDir } from "./repo-memory-manager.js";
 import { restoreSessionWorkspace } from "./services/session.js";
 import { reattachInFlightTurns } from "./restart-turn-reattach.js";
 import { reconcileOrphanedConsultCards } from "./consult-card-reconcile.js";
@@ -1200,6 +1204,24 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     githubAuthManager, credentialStore, containerManager,
     credentialsDir, getBareCacheDir, getDepCacheDir, createSessionDir, sseBroadcast,
     oomBreaker,
+  });
+
+  // ---- docs/262 req 19: drop remote credentials an earlier build stored ----
+  // Ordered BEFORE the repo migration: that migration derives repo rows from
+  // session rows, so scrubbing first stops a credentialed session URL from
+  // seeding a fresh credentialed repo row (the store would strip it, and the
+  // migration's own `setReady` would then address a row that never existed).
+  // `repoKeyedDirs` are the directories NAMED after a hash of the repo URL —
+  // when the URL is rewritten they must travel with it, or the repo's bare
+  // cache, its dependency cache and the agent's accumulated per-repo memory
+  // stay on disk under a name nothing looks up (independent review, finding 6).
+  await runRemoteCredentialScrub({
+    repoStore, sessionManager, secretStore,
+    repoKeyedDirs: [
+      (hash: string): string => path.join(bareCacheRoot(stateDir), hash),
+      (hash: string): string => path.join(depCacheRoot(stateDir), hash),
+      ...(credentialsDir ? [(hash: string): string => repoMemoryDir(credentialsDir, hash)] : []),
+    ],
   });
 
   // ---- Migration: derive RepoStore from existing sessions ----
