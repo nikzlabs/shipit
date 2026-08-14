@@ -60,8 +60,9 @@ re-armed after a merge and can open a later PR. There is no general durable
 
 ## Requirements
 
-1. An archived session or an explicitly completed session must not receive a
-   cohort report card and must not get a wake turn from that cohort report.
+1. An archived, explicitly completed, or resolved session must not receive a
+   report card, direct session message, or wake turn through either cohort or
+   parent-child delivery.
 
 2. Delivery eligibility must be evaluated by the server for each recipient at
    delivery time. A sender cannot select a session ID or override a recipient's
@@ -76,9 +77,10 @@ re-armed after a merge and can open a later PR. There is no general durable
    cohort broadcasts. The eligibility check must reuse the existing resolved
    classification rather than create a different report-specific approximation.
 
-5. Direct parent-to-child and child-to-parent delivery after PR merge or session
-   completion must have its own rule. Cohort eligibility must not implicitly
-   disable direct coordination.
+5. The same recipient eligibility rule applies to direct parent-to-child and
+   child-to-parent delivery. A resolved recipient cannot receive direct
+   coordination. A new user message that moves the session out of the existing
+   resolved classification makes it eligible again.
 
 6. When a recipient is ineligible, the system must use one consistent outcome:
    either omit delivery entirely or persist a non-waking audit card. It must not
@@ -126,19 +128,6 @@ re-armed after a merge and can open a later PR. There is no general durable
 
 ## Open questions
 
-### Q2. What remains deliverable after completion, and what audit remains when delivery is skipped?
-
-- **A — Direct messages remain allowed; skipped cohort delivery creates no card
-  (recommended).** An explicit parent can still contact a completed child, but a
-  broadcast cannot write or wake it. The reporter receives the skip reason in
-  the command result.
-- **B — Direct messages remain allowed; skipped cohort delivery persists a
-  clearly non-actionable audit card.** This gives the recipient a record but can
-  add transcript noise and can still look like contact after completion.
-- **C — Completion blocks direct and cohort delivery.** This makes completion a
-  strict communication boundary and requires an explicit reopen before any
-  coordination.
-
 ### Q3. What duplicate and FYI policy should apply?
 
 - **A — Durable causal suppression plus a 30-minute cohort semantic window; FYI
@@ -161,3 +150,8 @@ re-armed after a merge and can open a later PR. There is no general durable
   message after the merge. Reuse that classification for report eligibility; do
   not treat every merged PR as completion and do not invent a separate idle/queue
   approximation.
+- 2026-08-14 — Does resolved-session ineligibility apply only to cohort reports?
+  Chosen: no. Apply it to direct parent-to-child and child-to-parent recipient
+  delivery too. Do not persist an actionable card and do not wake a resolved
+  recipient. A later user message can move the session back to active and make it
+  eligible again.
