@@ -393,6 +393,23 @@ instead of a repeat.
   contract rather than a call-site tidy, and so is left to the sweep. Same class
   as the credential/commit skew recorded below: one request wide, self-healing.
 
+  **Open, and it fails toward running the wrong repository: the directory-scoped
+  readers carry no identity check.** #2225 adds `source` to `GenerationRecord`
+  and makes `readActiveGeneration`/`readActiveManifest` return null when the
+  live generation came from a different repository than the declaration now
+  names — but it leaves `readGenerationRecordAt`/`readGenerationManifestAt`
+  source-agnostic, and those are what the resolve-once rule tells callers to
+  use. `snapshotRepo` is such a caller, so a `repos:` entry re-pointed from
+  `acme/old` to `acme/new` can still have `acme/old`'s checkout mounted as this
+  session's plugin services. `retireForeignGeneration` closes the window inside
+  `activateOnce`, so the exposure is a reconcile that runs before or
+  independently of the next activation round — which `applyShipitConfigChange`
+  does, driven by the same `shipit.yaml` edit that re-pointed the declaration.
+  The fix here is one comparison (`record.source === destinationKey(...)`) on a
+  record `snapshotRepo` already reads, and it waits only on #2225 landing the
+  field. The general fix — pushing the check into the `…At` readers so
+  "resolve once" and "check identity" compose — belongs to #2225.
+
   **The collector already reads everything that call site needs**, which makes
   the sweep cheaper here than it looks: `snapshotRepo` calls
   `readGenerationRecordAt(root)` and keeps only `.commit`, discarding the
