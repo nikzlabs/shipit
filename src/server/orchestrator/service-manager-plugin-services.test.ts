@@ -45,6 +45,7 @@ function pluginService(overrides: Partial<PluginComposeService> = {}): PluginCom
     port: 4820,
     publishedPort: 4820,
     definition: { image: "node:22-alpine", command: "node server.mjs" },
+    credentials: [],
     externalVolumes: [],
     ...overrides,
   };
@@ -52,7 +53,14 @@ function pluginService(overrides: Partial<PluginComposeService> = {}): PluginCom
 
 function createManager(
   workspaceDir: string,
-  opts: { composeRunner?: ComposeRunner; noProjectCompose?: boolean } = {},
+  opts: {
+    composeRunner?: ComposeRunner;
+    noProjectCompose?: boolean;
+    /** The consuming project's own secret store, as `secretsLoader` sees it. */
+    userSecrets?: () => Record<string, string>;
+    /** ShipIt's account-level credentials — must never reach a plugin (req 23). */
+    accountEnv?: Record<string, string>;
+  } = {},
 ): ServiceManager {
   return new ServiceManager({
     sessionId: "11111111-2222-3333-4444-555555555555",
@@ -62,6 +70,8 @@ function createManager(
     composeRunner: opts.composeRunner ?? (async () => {}),
     composeQuery: emptyQuery,
     pollIntervalMs: 0,
+    ...(opts.userSecrets ? { secretsLoader: async () => opts.userSecrets!() } : {}),
+    ...(opts.accountEnv ? { accountAgentEnvLoader: () => opts.accountEnv! } : {}),
     ...(opts.noProjectCompose ? { noProjectCompose: true } : {}),
   });
 }
@@ -224,5 +234,97 @@ describe("plugin services in the compose stack", () => {
     await mgr.start();
     expect(commands.some((c) => c.includes("up"))).toBe(false);
     expect(mgr.getServices()).toEqual([]);
+  });
+});
+
+/**
+ * docs/262 req 23 — the whole path, end to end: a plugin's manifest declares a
+ * credential NAME, the consuming project's secret store holds the value, and
+ * the container the daemon is asked to create has it.
+ *
+ * The defect this closes was a gap between the two halves — the Plugins card
+ * reported the name satisfied while the compose path delivered nothing.
+ */
+describe("plugin credential delivery, end to end (req 23)", () => {
+  function envOf(workspaceDir: string, service = "probe"): Record<string, string> {
+    return (readOverride(workspaceDir).services[service].environment ?? {}) as Record<string, string>;
+  }
+
+  it("puts the project's stored value into the plugin service the daemon creates", async () => {
+    const workspaceDir = setup("services:\n  web:\n    image: node:20\n");
+    const mgr = createManager(workspaceDir, {
+      userSecrets: () => ({ FAL_KEY: "sk-live", UNRELATED: "no" }),
+    });
+    mgr.setPluginServices([pluginService({ credentials: ["FAL_KEY", "OPENAI_API_KEY"] })]);
+    await mgr.start();
+
+    const env = envOf(workspaceDir);
+    expect(env.FAL_KEY).toBe("sk-live");
+    // Declared but unset → omitted, so the gap stays named on the card rather
+    // than becoming an authentication error inside the plugin.
+    expect(env.OPENAI_API_KEY).toBeUndefined();
+    // Stored but never declared → not a plugin's to receive.
+    expect(env.UNRELATED).toBeUndefined();
+    await mgr.stop();
+  });
+
+  it("never gives a plugin ShipIt's own account-level credentials", async () => {
+    const workspaceDir = setup("services:\n  web:\n    image: node:20\n");
+    const mgr = createManager(workspaceDir, {
+      userSecrets: () => ({}),
+      accountEnv: { OPENAI_API_KEY: "platform-token" },
+    });
+    mgr.setPluginServices([pluginService({ credentials: ["OPENAI_API_KEY"] })]);
+    await mgr.start();
+
+    expect(JSON.stringify(readOverride(workspaceDir))).not.toContain("platform-token");
+    await mgr.stop();
+  });
+
+  it("leaves the project's own services untouched", async () => {
+    const workspaceDir = setup("services:\n  web:\n    image: node:20\n");
+    const mgr = createManager(workspaceDir, { userSecrets: () => ({ FAL_KEY: "sk-live" }) });
+    mgr.setPluginServices([pluginService({ credentials: ["FAL_KEY"] })]);
+    await mgr.start();
+
+    expect(envOf(workspaceDir, "web").FAL_KEY).toBeUndefined();
+    await mgr.stop();
+  });
+
+  it("a saved key reaches a running plugin service", async () => {
+    // The values live in the override itself, so a secret save has to rewrite
+    // it — the env-file path this branch was written for only ever changed a
+    // file the override already pointed at.
+    const workspaceDir = setup("services:\n  web:\n    image: node:20\n");
+    let stored: Record<string, string> = {};
+    const upCalls: string[][] = [];
+    const mgr = createManager(workspaceDir, {
+      userSecrets: () => stored,
+      composeRunner: async (args) => {
+        if (args.includes("up")) upCalls.push(args);
+      },
+    });
+    mgr.setPluginServices([pluginService({ credentials: ["FAL_KEY"] })]);
+    await mgr.start();
+    expect(envOf(workspaceDir).FAL_KEY).toBeUndefined();
+
+    stored = { FAL_KEY: "sk-live" };
+    await mgr.refreshSecrets();
+
+    expect(envOf(workspaceDir).FAL_KEY).toBe("sk-live");
+    // …and the auto service is re-upped, so the daemon reads the new value.
+    expect(upCalls.length).toBeGreaterThan(1);
+    await mgr.stop();
+  });
+
+  it("a secret save does not delete the plugin services from the stack", async () => {
+    const workspaceDir = setup("services:\n  web:\n    image: node:20\n");
+    const mgr = createManager(workspaceDir, { userSecrets: () => ({}) });
+    mgr.setPluginServices([pluginService({ credentials: ["FAL_KEY"] })]);
+    await mgr.start();
+
+    await mgr.refreshSecrets();
+    expect(Object.keys(readOverride(workspaceDir).services).sort()).toEqual(["probe", "web"]);
+    await mgr.stop();
   });
 });

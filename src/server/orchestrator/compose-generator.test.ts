@@ -878,6 +878,16 @@ describe("writeComposeOverride", () => {
     expect(fs.readFileSync(result, "utf-8")).toBe(content);
   });
 
+  // docs/262 req 23 — the override carries a plugin's delivered credential
+  // values, so it is no longer an ordinary generated file.
+  it("writes the override 0600, including over a pre-existing looser file", () => {
+    const dir = setup();
+    const target = path.join(dir, "compose.override.yml");
+    fs.writeFileSync(target, "stale", { mode: 0o644 });
+    writeComposeOverride(dir, "services: {}\n");
+    expect(fs.statSync(target).mode & 0o777).toBe(0o600);
+  });
+
   it("creates the target directory if it doesn't exist", () => {
     const dir = setup();
     const target = path.join(dir, "state");
@@ -1201,6 +1211,111 @@ describe("generateComposeOverride env_file injection", () => {
     );
     expect(override).toContain("/workspace/service-env/test-session-123/.env.web");
     expect(override).not.toContain(".env.api");
+  });
+
+  /**
+   * docs/262 req 23 — a plugin service's declared credentials are emitted into
+   * its own `environment`, which is the only place Compose cannot let anything
+   * else win.
+   */
+  describe("plugin services (req 23)", () => {
+    const probe = {
+      name: "probe",
+      origin: {
+        kind: "plugin" as const,
+        repo: "art-kit",
+        alias: "artk",
+        plugin: "palette",
+        sourceName: "probe",
+      },
+      pluginDefinition: {
+        image: "node:22-alpine",
+        entrypoint: ["/plugin/bin/serve"],
+        environment: { SHIPIT_PROJECT_DIR: "/project", PROBE_PORT: "4820" },
+      },
+      externalVolumes: [],
+    };
+
+    function envOf(override: string): Record<string, string> {
+      const doc = parseYaml(override) as {
+        services: Record<string, { environment?: Record<string, string> }>;
+      };
+      return doc.services.probe.environment ?? {};
+    }
+
+    it("delivers the resolved values as the service's own environment", () => {
+      const override = generateComposeOverride(
+        [probe],
+        { ...baseOpts, pluginServiceEnv: { probe: { FAL_KEY: "sk-live" } } },
+      );
+      expect(envOf(override)).toMatchObject({ FAL_KEY: "sk-live", PROBE_PORT: "4820" });
+    });
+
+    it("wins over the same name declared by the plugin's own fragment", () => {
+      // Compose gives `environment` precedence over `env_file`, so a fragment
+      // that hardcodes a name it also declared would otherwise run on its own
+      // literal while the card reported the project's stored value satisfied.
+      const shadowing = {
+        ...probe,
+        pluginDefinition: { ...probe.pluginDefinition, environment: { FAL_KEY: "fragment-literal" } },
+      };
+      const override = generateComposeOverride(
+        [shadowing],
+        { ...baseOpts, pluginServiceEnv: { probe: { FAL_KEY: "sk-live" } } },
+      );
+      expect(envOf(override).FAL_KEY).toBe("sk-live");
+    });
+
+    it("never overrides one of ShipIt's own contract variables", () => {
+      // A credential named after a contract variable is dropped: those name the
+      // mounts ShipIt made, and a stored secret does not get to move a plugin's
+      // idea of where the project is.
+      const override = generateComposeOverride(
+        [probe],
+        { ...baseOpts, pluginServiceEnv: { probe: { SHIPIT_PROJECT_DIR: "/elsewhere" } } },
+      );
+      expect(envOf(override).SHIPIT_PROJECT_DIR).toBe("/project");
+    });
+
+    it("escapes a value so Compose interpolates nothing from the orchestrator", () => {
+      const override = generateComposeOverride(
+        [probe],
+        { ...baseOpts, pluginServiceEnv: { probe: { FAL_KEY: `a$b$\{GITHUB_TOKEN}` } } },
+      );
+      // `$$` is Compose's own escape and renders back as a literal `$`.
+      expect(override).toContain(`a$$b$$\{GITHUB_TOKEN}`);
+      expect(override).not.toContain(`a$b$\{GITHUB_TOKEN}`);
+    });
+
+    it("never injects an environment into one of the project's own services", () => {
+      const override = generateComposeOverride(
+        [{ name: "probe", secrets: ["DATABASE_URL"] }],
+        { ...baseOpts, pluginServiceEnv: { probe: { FAL_KEY: "sk-live" } } },
+      );
+      expect(override).not.toContain("sk-live");
+    });
+
+    it("delivers nothing when the project has no value, and does not hijack the entrypoint", () => {
+      // The Docker-secrets branch replaces `entrypoint` to load `/run/secrets`.
+      // For a plugin service that line came from the plugin's own fragment, so
+      // plugin credentials take the environment path in both modes.
+      const override = generateComposeOverride(
+        [probe],
+        {
+          ...baseOpts,
+          pluginServiceEnv: { probe: {} },
+          dockerSecrets: {
+            secretNames: ["DATABASE_URL"],
+            perService: { probe: ["DATABASE_URL"] },
+            filePathFor: (name: string) => `/host/secrets/test-session-123/${name}`,
+            entrypointHostPath: "/host/secrets/_entrypoint/secrets-entrypoint.sh",
+          },
+        },
+      );
+      expect(override).toContain("/plugin/bin/serve");
+      expect(override).not.toContain("secrets-entrypoint.sh");
+      expect(override).not.toContain("env_file");
+    });
   });
 });
 

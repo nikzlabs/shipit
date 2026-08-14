@@ -728,3 +728,53 @@ describe("override emission", () => {
     });
   });
 });
+
+/**
+ * docs/262 req 23 — the compose surface carries the plugin's DECLARED credential
+ * names so the secrets pass can deliver their values. Names travel here; values
+ * never do, which is why the emitted definition below must stay clean.
+ */
+describe("declared credential names on the compose surface (req 23)", () => {
+  const WITH_CREDENTIALS = `
+plugins:
+  probe:
+    compose: tools/probe/docker-compose.yml
+    credentials: [FAL_KEY, FAL_KEY, OPENAI_API_KEY]
+`;
+
+  it("carries the manifest's names onto the service, de-duplicated", () => {
+    const { services } = collect(SELF_USE, WITH_CREDENTIALS);
+    expect(services[0].credentials).toEqual(["FAL_KEY", "OPENAI_API_KEY"]);
+    expect(build(services).services[0].credentials).toEqual(["FAL_KEY", "OPENAI_API_KEY"]);
+  });
+
+  it("a plugin that declares none carries none", () => {
+    const { services } = collect(SELF_USE);
+    expect(services[0].credentials).toEqual([]);
+    expect(build(services).services[0].credentials).toEqual([]);
+  });
+
+  it("resolves no value here — this module carries names only", () => {
+    // Values are resolved by the secrets pass, from the consuming project's own
+    // store, and merged into the emitted `environment` by the override
+    // generator. This module never reads a store, so a fragment cannot obtain a
+    // value through it — and it could not have named one anyway: the allowlist
+    // refuses `x-shipit-secrets`, `secrets` and `env_file` outright.
+    const { services } = collect(SELF_USE, WITH_CREDENTIALS);
+    const definition = build(services).services[0].definition;
+    expect(JSON.stringify(definition)).not.toContain("FAL_KEY");
+    expect(definition.env_file).toBeUndefined();
+    expect(Object.keys(definition.environment as Record<string, string>)).toEqual(
+      expect.not.arrayContaining(["FAL_KEY", "OPENAI_API_KEY"]),
+    );
+  });
+
+  it("a changed credential set is a changed service, so the container is recreated", () => {
+    // `ServiceManager.setPluginServices` compares these objects to decide
+    // whether to reconcile. A refresh that adds a declared name has to reach a
+    // running container, and nothing else about the definition changes with it.
+    const before = build(collect(SELF_USE).services).services[0];
+    const after = build(collect(SELF_USE, WITH_CREDENTIALS).services).services[0];
+    expect(JSON.stringify(before)).not.toBe(JSON.stringify(after));
+  });
+});

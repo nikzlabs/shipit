@@ -19,6 +19,12 @@ import { sessionWorkerUid } from "./session-worker-uid.js";
 import { COMPOSE_OVERRIDE_FILE } from "./session-state-dir.js";
 import { EGRESS_RESOLVER_UID } from "./egress-dns.js";
 import { EGRESS_PROXY_UID } from "./egress-proxy-install.js";
+import {
+  PLUGIN_COMMIT_ENV,
+  PLUGIN_PROJECT_ENV,
+  PLUGIN_SETTINGS_ENV,
+  PLUGIN_STATE_ENV,
+} from "../shared/plugin-contract.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -207,6 +213,33 @@ export interface ComposeOverrideOptions {
    * `env_file:`).
    */
   serviceEnvFiles?: Record<string, string>;
+  /**
+   * docs/262 req 23 — plugin-service name → the credential values that
+   * service's plugin DECLARED and this project has a value for
+   * (`ServiceSecretsResolver.getPluginServiceEnv()`).
+   *
+   * Merged into the emitted service's `environment`, never `env_file`. That is
+   * the deliberate difference from the map above, and it is what makes the
+   * value ShipIt resolved the value the container gets: Compose gives a
+   * service's own `environment` precedence over any `env_file`, so a plugin
+   * fragment declaring the same name would otherwise shadow its own declared
+   * credential — the card would say satisfied and the container would run on
+   * the fragment's literal. Compose's env-file parser also applies quote,
+   * comment and `${VAR}` handling to the values it reads, so a stored value is
+   * not necessarily delivered byte-for-byte, and `${…}` could resolve from the
+   * environment of the process that runs Compose — the ORCHESTRATOR's. Emitting
+   * here instead puts every value through {@link escapePluginDollars}, the same
+   * escaping the rest of a plugin definition already gets.
+   *
+   * The cost, stated rather than hidden: the generated override is the one
+   * ShipIt-written file that now carries secret values. It lives in the session
+   * STATE dir — never the git clone, and outside the `plugins/` subtree that is
+   * the agent container's only mount of it — and is written 0600.
+   *
+   * Only consulted for a service carrying a plugin `origin`, so nothing here
+   * can inject an environment into one of the project's own services.
+   */
+  pluginServiceEnv?: Record<string, Record<string, string>>;
   /**
    * docs/183 Phase 5 — per-session overlay dep-dir volumes. For an
    * overlay-eligible session, each declared dep dir (e.g. `node_modules`) is a
@@ -1003,6 +1036,68 @@ function overlayMountsForService(
 }
 
 /**
+ * Compose's own escape: `$$` renders as a literal `$` and interpolates nothing.
+ *
+ * Compose interpolates `${VAR}` and `$VAR` in the files it reads from the
+ * environment of the process that runs it — the ORCHESTRATOR's. Everything
+ * ShipIt writes into a plugin service's definition therefore goes through this:
+ * the fragment's own lines (`plugin-compose.ts`) and the credential values
+ * delivered beside them (req 23). Ordinary shell usage (`sh -c 'echo $HOME'`)
+ * survives untouched, which rejecting `$` would not allow.
+ */
+export function escapeDollars(value: unknown): unknown {
+  if (typeof value === "string") return value.replace(/\$/g, "$$$$");
+  if (Array.isArray(value)) return value.map(escapeDollars);
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+      out[key.replace(/\$/g, "$$$$")] = escapeDollars(nested);
+    }
+    return out;
+  }
+  return value;
+}
+
+/**
+ * docs/262 req 23 — merge a plugin's delivered credential values into the
+ * `environment` map ShipIt already emitted for that service.
+ *
+ * Two rules, in this order:
+ *
+ *  - **The delivery wins over the fragment.** A plugin may declare `FAL_KEY` in
+ *    its manifest AND set `FAL_KEY` in its own fragment; Compose would let the
+ *    fragment's literal stand, so the card would report the project's stored
+ *    value satisfied while the container ran on something else.
+ *  - **ShipIt's contract never loses.** A credential named after one of the
+ *    contract variables (`SHIPIT_PROJECT_DIR` and friends) is dropped rather
+ *    than delivered: those name the mounts ShipIt made, and a stored secret is
+ *    not allowed to move a plugin's idea of where the project is. Nothing is
+ *    lost that could have worked — the fragment's own `environment` could never
+ *    override them either, for the same reason.
+ *
+ * Values are escaped exactly as the rest of the definition already was, so
+ * Compose interpolates nothing out of the orchestrator's environment.
+ */
+function mergePluginCredentialEnv(
+  existing: unknown,
+  delivered: Record<string, string>,
+): Record<string, unknown> {
+  const base = (existing && typeof existing === "object" && !Array.isArray(existing)
+    ? { ...(existing as Record<string, unknown>) }
+    : {});
+  for (const [name, value] of Object.entries(delivered)) {
+    if (PLUGIN_CONTRACT_ENV_NAMES.has(name)) continue;
+    base[name] = escapeDollars(value);
+  }
+  return base;
+}
+
+/** ShipIt's own in-container contract — never overridable by a stored secret. */
+const PLUGIN_CONTRACT_ENV_NAMES: ReadonlySet<string> = new Set([
+  PLUGIN_PROJECT_ENV, PLUGIN_STATE_ENV, PLUGIN_SETTINGS_ENV, PLUGIN_COMMIT_ENV,
+]);
+
+/**
  * Generate the `.shipit/compose.override.yml` content.
  *
  * The override adds:
@@ -1109,7 +1204,18 @@ export function generateComposeOverride(
     // present we emit `secrets:` references + an entrypoint hijack. Falls
     // back to per-service env_file otherwise.
     const ds = opts.dockerSecrets;
-    if (ds && svc.secrets && svc.secrets.length > 0) {
+    if (svc.origin?.kind === "plugin") {
+      // docs/262 req 23 — a plugin's declared credentials, resolved from the
+      // consuming project's own store by `ServiceSecretsResolver`. Checked
+      // FIRST and exclusively: a plugin fragment may not declare
+      // `x-shipit-secrets` (the allowlist refuses it), and the Docker-secrets
+      // branch below hijacks `entrypoint`, which for a plugin service is a line
+      // ShipIt re-emitted from the plugin's own fragment.
+      const delivered = opts.pluginServiceEnv?.[svc.name];
+      if (delivered && Object.keys(delivered).length > 0) {
+        entry.environment = mergePluginCredentialEnv(entry.environment, delivered);
+      }
+    } else if (ds && svc.secrets && svc.secrets.length > 0) {
       const consumed = (ds.perService[svc.name] ?? []).filter((n) => ds.secretNames.includes(n));
       if (consumed.length > 0) {
         entry.secrets = consumed.map((n) => `shipit-${n}`);
@@ -1266,6 +1372,12 @@ export function writeComposeOverride(
 ): string {
   fs.mkdirSync(targetDir, { recursive: true });
   const overridePath = path.join(targetDir, COMPOSE_OVERRIDE_FILE);
-  fs.writeFileSync(overridePath, content, "utf-8");
+  // docs/262 req 23 — 0600, because this file now carries secret VALUES: a
+  // plugin service's declared credentials are emitted as its `environment`
+  // (see `pluginServiceEnv`), which is the only delivery Compose cannot let the
+  // fragment shadow or reinterpret. The mode is set explicitly on every write,
+  // not just at creation, so a file that predates this cannot stay readable.
+  fs.writeFileSync(overridePath, content, { encoding: "utf-8", mode: 0o600 });
+  fs.chmodSync(overridePath, 0o600);
   return overridePath;
 }

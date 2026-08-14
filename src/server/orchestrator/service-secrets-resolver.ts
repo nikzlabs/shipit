@@ -26,6 +26,7 @@ import {
   pluginClaimantsOf,
   pluginCredentialNames,
   resolvePluginCredentials,
+  satisfiedCredentialNames,
   type PluginCredentialDeclaration,
   type PluginCredentialGroup,
 } from "../shared/plugin-credentials.js";
@@ -157,6 +158,20 @@ export interface ServiceSecretsResolverOptions {
   pluginCredentialsLoader?: () => PluginCredentialDeclaration[];
 }
 
+/**
+ * docs/262 req 23 — one surfaced plugin service, as the secrets pass needs it:
+ * the name it is addressed by, and the credential names its plugin declared in
+ * the LIVE manifest the fragment itself came from.
+ *
+ * Structurally satisfied by `PluginComposeService`, so `ServiceManager` hands
+ * over what it already holds and no second resolution of "which plugin, which
+ * generation" happens here.
+ */
+export interface PluginServiceCredentialNeed {
+  name: string;
+  credentials: readonly string[];
+}
+
 // ---------------------------------------------------------------------------
 // ServiceSecretsResolver
 // ---------------------------------------------------------------------------
@@ -202,6 +217,11 @@ export class ServiceSecretsResolver {
    * (which delivers via `secrets:` instead).
    */
   private serviceEnvFiles?: Record<string, string>;
+  /**
+   * docs/262 req 23 — plugin service name → the credential values that service
+   * is to receive, from the most recent `sync()`.
+   */
+  private pluginServiceEnv?: Record<string, Record<string, string>>;
 
   constructor(opts: ServiceSecretsResolverOptions) {
     this.sessionId = opts.sessionId;
@@ -267,6 +287,22 @@ export class ServiceSecretsResolver {
     return this.serviceEnvFiles ? { ...this.serviceEnvFiles } : undefined;
   }
 
+  /**
+   * docs/262 req 23 — plugin service name → the declared credentials that
+   * service's plugin actually gets, resolved from the consuming project's own
+   * store. The override generator emits them as that service's `environment:`.
+   *
+   * `undefined` before the first `sync()`. A service whose plugin declares no
+   * credential, or none this project has a value for, gets an empty map rather
+   * than no entry — "nothing to deliver" is an answer, not a gap in the data.
+   */
+  getPluginServiceEnv(): Record<string, Record<string, string>> | undefined {
+    if (!this.pluginServiceEnv) return undefined;
+    return Object.fromEntries(
+      Object.entries(this.pluginServiceEnv).map(([svc, values]) => [svc, { ...values }]),
+    );
+  }
+
   /** Whether Docker-secrets isolation mode is configured. */
   get dockerSecretsModeEnabled(): boolean {
     return !!this.dockerSecretsConfig;
@@ -282,7 +318,10 @@ export class ServiceSecretsResolver {
    * snapshot changed — listeners are cheap, debouncing is the consumer's
    * concern.
    */
-  async sync(parsedServices: ComposeService[]): Promise<void> {
+  async sync(
+    parsedServices: ComposeService[],
+    pluginServices: readonly PluginServiceCredentialNeed[] = [],
+  ): Promise<void> {
     let userSecrets: Record<string, string> = {};
     if (this.secretsLoader) {
       try {
@@ -335,11 +374,15 @@ export class ServiceSecretsResolver {
     // — is deliberately not consulted here and must never be: a plugin's
     // store can never resolve ShipIt's own platform credentials (req 23).
     const pluginDeclarations = this.loadPluginCredentials();
-    const satisfied = new Set(
-      Object.entries(userSecrets)
-        .filter(([, value]) => typeof value === "string" && value.length > 0)
-        .map(([name]) => name),
-    );
+    const satisfied = satisfiedCredentialNames(userSecrets);
+
+    // The same set, one expression later, decides what each plugin SERVICE
+    // container receives. That adjacency is the point: the card's "satisfied"
+    // and the container's environment are one computation over one map, so they
+    // cannot disagree — which they did, when the delivery half did not exist at
+    // all and every declared name read as satisfied while the service got
+    // nothing.
+    this.pluginServiceEnv = resolvePluginServiceEnv(pluginServices, userSecrets, satisfied);
 
     this.snapshot = {
       declared: mergePluginClaimants(resolution.declared, pluginDeclarations),
@@ -494,6 +537,59 @@ export class ServiceSecretsResolver {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * docs/262 req 23 — what each plugin service is to receive: exactly the
+ * credential names its plugin declared, and only those the consuming project
+ * has a value for.
+ *
+ * Four properties, each load-bearing:
+ *
+ *  - **Only declared names.** The set is the intersection of the plugin's
+ *    manifest declaration with what this project has stored. A fragment cannot
+ *    widen it: `x-shipit-secrets`, `secrets` and `env_file` are all refused by
+ *    the fragment allowlist (`plugin-compose.ts`), and these values are merged
+ *    into the emitted service's `environment` by ShipIt, over anything the
+ *    fragment put there. So delivering a value never became a way for a plugin
+ *    to name something it did not declare, nor to shadow what it did.
+ *  - **Only the consuming project's store.** `userSecrets` is `secretsLoader`'s
+ *    map: `SecretStore.loadSecrets(<this session's remoteUrl>)`.
+ *    `CredentialStore` — ShipIt's GitHub identity, tracker and agent tokens —
+ *    is reachable in this class only through `accountAgentEnvLoader`, whose map
+ *    is deliberately not an argument here.
+ *  - **A declared plugin credential is not a FETCH credential** (req 19), and
+ *    the two live in different worlds rather than being told apart here. A
+ *    fetch credential is minted per fetch by `resolvePluginFetchCredential`
+ *    (`plugin-fetch.ts`) and handed to git as a `GitRemoteCredential`
+ *    (`repo-git.ts`) for the life of one command; it is written to no store, so
+ *    there is no name in `userSecrets` it could arrive under. What this
+ *    delivers is the other kind entirely: a name the plugin's manifest asked
+ *    for, for the plugin's own job, whose value the user typed into this
+ *    project's Settings → Secrets.
+ *  - **A missing key is omitted, never sent empty**, and the service still
+ *    STARTS. Req 23 wants a named gap on the plugin's card; an empty-string
+ *    credential turns that into a third-party authentication error instead. The
+ *    manifest declares names with no required/optional distinction, so refusing
+ *    to start would make every optional key fatal and — under the
+ *    all-or-nothing service rule — would take out a whole repository over one
+ *    unset name. The companion CLI already omits-and-runs; two surfaces
+ *    disagreeing about one declared name is the worse failure.
+ */
+function resolvePluginServiceEnv(
+  pluginServices: readonly PluginServiceCredentialNeed[],
+  userSecrets: Record<string, string>,
+  satisfied: ReadonlySet<string>,
+): Record<string, Record<string, string>> {
+  const perService: Record<string, Record<string, string>> = {};
+  for (const svc of pluginServices) {
+    const values: Record<string, string> = {};
+    for (const name of svc.credentials) {
+      if (satisfied.has(name)) values[name] = userSecrets[name];
+    }
+    perService[svc.name] = values;
+  }
+  return perService;
+}
 
 /**
  * docs/262 req 23 — fold plugin-declared credential names into the flat
