@@ -42,9 +42,10 @@ re-armed after a merge and can open a later PR. There is no general durable
 ## Terms
 
 - **Resolved session:** the existing UI lifecycle classification for a session
-  whose single PR merged and that received no user message after the merge. A
-  merge alone is not sufficient because a later user message makes the session
-  active again.
+  whose PR merged or closed without merge and that had no later turn. Any turn,
+  including a user turn, self merge-wake, CI fix, conflict remediation, or other
+  system continuation, reactivates it when that turn starts. This targets
+  sessions that completed one PR and then stopped.
 - **Cohort delivery:** `shipit session report --to cohort`, which can address the
   reporter's parent and siblings.
 - **Direct delivery:** an existing parent-to-child `shipit session message`.
@@ -62,15 +63,14 @@ re-armed after a merge and can open a later PR. There is no general durable
    session can continue on the same branch, open a later PR, or coordinate its
    children after that PR reaches a terminal state.
 
-4. A child session that the existing UI classifies as resolved — its single PR
-   merged and it received no user message after that merge — must be excluded
-   from cohort broadcasts. The eligibility check must reuse the existing
-   resolved classification rather than create a different report-specific
-   approximation.
+4. A child session whose PR merged or closed without merge and whose shared
+   classification says it remains resolved must be excluded from cohort
+   broadcasts. The eligibility check must call that classification rather than
+   create a report-specific approximation.
 
 5. The same recipient eligibility rule applies when a parent sends a direct
    message to its child. A resolved child cannot receive direct coordination. A
-   new user message that moves the child out of the existing resolved
+   new turn that moves the child out of the shared resolved
    classification makes it eligible again. Child-to-parent delivery and resolved
    parent behavior do not change.
 
@@ -93,8 +93,12 @@ re-armed after a merge and can open a later PR. There is no general durable
     eligible recipients. No causal-chain tracking, content fingerprinting, or
     other smart duplicate suppression is added in this remediation.
 
-11. Tests must cover the existing resolved-child classification, a later user
-    message making the child eligible again, parent-to-child direct messages,
+10a. Resolved children reduce sibling fan-out only. Parent delivery remains
+     unchanged, so the existing rate limit remains the only volume bound for the
+     parent-side queue growth observed in the incident.
+
+11. Tests must cover the shared resolved-child classification, user and system
+    turns making the child eligible again at turn start, parent-to-child direct messages,
     cohort delivery, all severities, and sender-visible skip outcomes.
 
 ## Open questions
@@ -104,11 +108,11 @@ _None._
 ## Resolved questions
 
 - 2026-08-14 — Which terminal-PR sessions are eligible for cohort broadcasts?
-  Chosen: exclude sessions that the existing UI classifies as resolved. For this
-  decision, that is a session whose single PR merged and that received no user
-  message after the merge. Reuse that classification for report eligibility; do
-  not treat every merged PR as completion and do not invent a separate idle/queue
-  approximation.
+  Chosen: exclude sessions that the existing UI classifies as resolved. The
+  initial answer described a single merged PR with no later user message; the
+  later 2026-08-14 receipt below supersedes the merged-only part by including a
+  PR closed without merge. Reuse the UI classification for report eligibility;
+  do not invent a separate idle/queue approximation.
 - 2026-08-14 — Does resolved-session ineligibility apply only to cohort reports?
   Chosen: no. Apply it when a parent directly messages its resolved child too.
   Do not change child-to-parent delivery or resolved-parent behavior. A later
@@ -124,3 +128,25 @@ _None._
 - 2026-08-14 — Should FYI reports stop waking agents? Chosen: no. Do not
   distinguish severities mechanically. Every eligible `fyi`, `warn`, and
   `blocker` report continues to persist a card and start or queue a wake turn.
+- 2026-08-14 — Does “resolved child” include a PR closed without merge? Chosen:
+  match the existing UI predicate. Both merged and closed-without-merge children
+  are resolved. This receipt's original “later turn activity” wording is
+  superseded by the user-started-only decision below.
+- 2026-08-14 — What activity makes a resolved child active again? Chosen: only
+  user-started activity. This answer is superseded by the later self merge-wake
+  decision below.
+- 2026-08-14 — Are pinned children and children still coordinating their own
+  children eligible after their PR resolves? Chosen: match the rendered UI.
+  Keep pinned children and child coordinators eligible while the UI treats them
+  as Active. Put the complete resolved-session classification in exactly one
+  shared code location used by every server and client consumer.
+- 2026-08-14 — How should existing terminal-PR sessions be migrated to the new
+  user-activity field? Chosen at the time: protect the incident population. The
+  later self merge-wake decision removes the new field and migration entirely,
+  so this choice is no longer applicable.
+- 2026-08-14 — How does a self merge-wake affect resolution? Chosen: it
+  reactivates the child persistently. A resolved session is a single-PR session
+  that stopped after its PR reached a terminal state. A child that self-wakes to
+  continue is active from the start of that wake and remains eligible; the same
+  rule applies to other started continuation turns. No temporary liveness
+  carve-out or separate user-only activity timestamp is needed.

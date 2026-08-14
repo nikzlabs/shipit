@@ -127,6 +127,167 @@ and report delivery now go through it, so a resumed container behaves identicall
 on both paths and the invariant "a queued wake never preempts a running agent"
 lives in one place.
 
+## Resolved-child delivery gate (planned)
+
+The production remediation adds one recipient eligibility rule: a child shown
+by the existing UI as **Recently resolved** does not receive a direct parent
+message or a sibling cohort report. It receives no transcript card and no wake
+turn. The sender gets a synchronous, named skip result.
+
+### One lifecycle module, not client/server mirrors
+
+Create `src/server/shared/session-resolution.ts` as the only code location that
+implements resolution rules. It exports a layered API because attention/cap
+ranking and rendered grouping ask related but different questions:
+
+```ts
+resolvedAt(session)
+isTerminalPrResolved(session)
+isResolvedForGrouping(session, { hasVisibleBrood })
+```
+
+`isTerminalPrResolved` owns the terminal-PR + continuation baseline using the
+existing fields:
+
+```text
+(mergedAt OR closedAt) AND NOT (lastUsedAt > resolvedAt)
+```
+
+Every started turn must advance `lastUsedAt`. Today the interactive WS path does
+that at turn start, while a dispatched/system turn updates it only after
+`agent_result`. Add the same `sessionManager.track(sessionId)` call at the start
+of the dispatched-turn executor. Then a self merge-wake, CI fix, conflict
+remediation, or other system continuation reactivates the session immediately,
+even if the turn later crashes without `agent_result`. The existing terminal
+update can remain idempotent. A later PR lifecycle establishes a newer terminal
+instant and can resolve the session again.
+
+`isResolvedForGrouping` composes the baseline and returns true only when the
+session is not pinned and has no visible brood. The helper accepts the already
+computed `hasVisibleBrood` fact: root-level sidebar grouping passes any-depth
+visible-descendant membership; brood-member grouping and server delivery pass
+visible direct-child membership. A visible child has neither `archived` nor
+`userArchived`; archived descendants do not keep a session active.
+
+The module owns timestamp normalization through `parseTimestampMs`, pin logic,
+and composition. No client component, attention hook, sidebar grouping
+function, orchestrator service, or test helper may reconstruct these rules.
+Callers compute only the visible-brood context.
+
+Delete client `resolvedAt` / `reopenedAfterResolve` / `isRecentlyResolved`
+mirrors from `useSessionGrouping.ts`; sidebar and attention consumers import the
+appropriate shared layer. Migrate the actual Active/Recently resolved split in
+`SessionGroup.tsx` too: root and brood-member rendering call
+`isResolvedForGrouping` with their existing hierarchy context, intentionally
+fixing sort/render drift for pinned sessions. Attention hooks import
+`isTerminalPrResolved` because they suppress stale terminal-PR attention
+independently of grouping exemptions. Move server `resolvedAt` /
+`reopenedAfterResolve` logic out of `sessions.ts`. In
+`filterVisibleInSidebar`, only the resolved ranking uses
+`isTerminalPrResolved`; existing pin, reservation, and root-hierarchy visibility
+exemptions remain unchanged. This enforces one implementation without forcing
+two product questions through one composite boolean.
+
+No new lifecycle column, migration, or user-ingress writer is needed. One
+dispatched-turn-start update closes the current timing gap; `lastUsedAt` then
+records the approved single-PR-versus-continuation distinction on every path.
+
+### Direct parent → child message
+
+`sendChildMessage` already resolves and authenticates the child through
+`assertChildOfParent`. Immediately after that lookup and before the workspace,
+container, credential, or runner paths, call `isResolvedForGrouping` with the
+visible-child context.
+
+On a match, the service throws a resolved-child `ServiceError(409, ...)`. The
+child-message route recognizes that case and explicitly sends
+`{ error, sessionId, title, reason: "resolved", delivered: false }`. `error`
+contains the full human sentence that the child received no message or wake
+turn. `handleSessionMessage` handles this structured 409 before its generic
+non-2xx branch: `--json` writes the full body then exits non-zero; human output
+uses `error`. The guard must precede
+`runnerRegistry.getOrCreate`, so a rejected delivery cannot resume a container
+or mutate its queue.
+
+### Child → cohort report
+
+Only sibling rows are child recipients on this path. The parent recipient is
+unchanged, even when the parent has a terminal PR, because resolved-parent and
+child-to-parent behavior are out of scope.
+
+During recipient resolution in `deliverSessionReport`:
+
+1. Keep the existing archive filter.
+2. For each sibling, evaluate the shared `isResolvedForGrouping` helper with its
+   visible-child context.
+3. Put an eligible sibling in the existing delivery list.
+4. Put a resolved sibling in a new `skippedRecipients` result list with
+   `sessionId`, `title`, and `reason: "resolved"`.
+
+The initial filter happens before `enforceRateLimit` and report/card ID
+construction. Because fan-out awaits each recipient sequentially and a wake can
+spend up to 30 seconds resuming a worker, re-read and re-check each sibling
+immediately before its `surfaceCard` call. A sibling that became resolved while
+earlier recipients were waking moves to `skippedRecipients` and gets no card,
+live event, container resume, or queue entry. Eligible recipients retain the
+current per-recipient best-effort path.
+
+`DeliverSessionReportResult` gains `skippedRecipients`. The shim prints each
+resolved skip after the delivery count, for example:
+
+```text
+  sibling Druid catalog (<id>): NOT delivered (session is resolved; no card or wake turn was sent)
+```
+
+JSON output carries the same structured result. Exit behavior does not change:
+success still means at least one recipient was woken. A call whose initial
+filter finds only resolved skips does not consume a rate-limit slot. If the
+fresh in-loop re-check resolves the last initially eligible sibling, the call
+has already consumed its one per-call slot; no rollback bookkeeping is added.
+The existing generic
+archived/no-recipient error remains only when there are no eligible recipients
+and no resolved skips. If the parent is archived or absent and every sibling is
+resolved, return the named `skippedRecipients` result rather than incorrectly
+claiming that every recipient was archived.
+
+### Deliberate boundaries
+
+- `shipit session whoami` continues to show resolved siblings. It is a topology
+  read, not a promise that every peer is eligible for delivery.
+- A resolved parent still receives a child's direct parent report. Only resolved
+  **child recipients** are gated.
+- Every eligible `fyi`, `warn`, and `blocker` report still persists a card and
+  wakes the agent. No severity split is introduced.
+- The five-per-ten-minute sender rate limit stays unchanged. There is no report
+  chain, content fingerprint, or semantic deduplication.
+- The gate is checked at delivery time. A stale earlier `whoami` or `list` result
+  cannot authorize delivery after the child becomes resolved.
+
+### Verification
+
+- Add shared-module tests for both predicate layers: merge and close,
+  continuation-turn reactivation, pin
+  exemption, visible-child exemption, archived-child non-exemption, and mixed
+  timestamp formats. Remove superseded mirror tests rather than testing two
+  implementations.
+- Add a dispatched-turn integration test proving `lastUsedAt` advances at turn
+  start, including abnormal exit. Add an end-to-end self merge-wake case:
+  merged child → wake starts → sibling cohort report is delivered while the
+  continuation turn is still running.
+- Add direct-message service/integration cases proving a resolved child returns
+  `409`, names the child, and creates no runner or queue entry; prove a reopened
+  child still receives the message.
+- Add `session-report.test.ts` cases proving a resolved sibling appears only in
+  `skippedRecipients`, receives no history card or dispatch, and does not change
+  delivery for the parent or active siblings. Cover no rate-limit charge, no live
+  `session_report_card` event, the all-skipped branch, merge/close/reopen, and all
+  severities without duplicating the same structural assertion three times.
+- Add shim tests for human-readable and JSON direct/cohort resolved outcomes.
+  Preserve the existing exit-code contract when other recipients were woken.
+- Update `src/server/shipit-docs/sessions.md` unconditionally: both commands gain
+  a terminal resolved-child outcome, while `whoami` can still list an
+  undeliverable resolved peer.
+
 ## Key files
 
 | File | Role |
@@ -136,6 +297,13 @@ lives in one place.
 | `src/server/session/agent-ops-routes.ts` | Worker broker: `GET /agent-ops/session/cohort`, `POST /agent-ops/session/report` |
 | `src/server/orchestrator/api-routes-session-spawn.ts` | `GET /api/sessions/:sessionId/cohort`, `POST /api/sessions/:sessionId/report` (both `containerAccessible`) |
 | `src/server/orchestrator/services/session-report.ts` | Validation, recipient resolution, rate limit, card + wake fan-out, wake-turn prompt |
+| `src/server/shared/session-resolution.ts` | Sole client/server resolved-session classifier |
+| `src/server/orchestrator/sessions.ts` | Consumes the shared classifier for resolved view-cap ranking |
+| `src/client/components/SessionSidebar/useSessionGrouping.ts` | Consumes shared classifier; deletes local mirrors |
+| `src/client/components/SessionSidebar/SessionGroup.tsx` | Routes actual root/brood Active-vs-resolved rendering through the shared classifier |
+| `src/server/orchestrator/services/child-sessions.ts` | Early resolved-child guard for direct parent messages |
+| `src/server/orchestrator/api-routes-session-spawn.ts` | Builds the structured direct-message 409 response |
+| `src/server/orchestrator/turn-executor.ts` | Advances activity at dispatched-turn start so continuation is immediately active |
 | `src/server/orchestrator/wake-session.ts` | Shared out-of-turn wake (extracted from `merge-watch.ts`) |
 | `src/server/orchestrator/chat-history.ts` | `sessionReport` persisted field + `session_report` column |
 | `src/server/shared/database.ts` | `messages.session_report` migration |
