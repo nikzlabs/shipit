@@ -42,8 +42,10 @@ re-armed after a merge and can open a later PR. There is no general durable
 ## Terms
 
 - **Resolved session:** the existing UI lifecycle classification for a session
-  whose PR merged or closed without merge and that had no later user-started
-  activity. ShipIt-started system turns do not reactivate it.
+  whose PR merged or closed without merge and that had no later turn. Any turn,
+  including a user turn, self merge-wake, CI fix, conflict remediation, or other
+  system continuation, reactivates it when that turn starts. This targets
+  sessions that completed one PR and then stopped.
 - **Cohort delivery:** `shipit session report --to cohort`, which can address the
   reporter's parent and siblings.
 - **Direct delivery:** an existing parent-to-child `shipit session message`.
@@ -68,7 +70,7 @@ re-armed after a merge and can open a later PR. There is no general durable
 
 5. The same recipient eligibility rule applies when a parent sends a direct
    message to its child. A resolved child cannot receive direct coordination. A
-   new user-started turn that moves the child out of the shared resolved
+   new turn that moves the child out of the shared resolved
    classification makes it eligible again. Child-to-parent delivery and resolved
    parent behavior do not change.
 
@@ -95,26 +97,13 @@ re-armed after a merge and can open a later PR. There is no general durable
      unchanged, so the existing rate limit remains the only volume bound for the
      parent-side queue growth observed in the incident.
 
-11. Tests must cover the existing resolved-child classification, later
-    user-started activity making the child eligible again while system turns do
-    not, parent-to-child direct messages,
+11. Tests must cover the shared resolved-child classification, user and system
+    turns making the child eligible again at turn start, parent-to-child direct messages,
     cohort delivery, all severities, and sender-visible skip outcomes.
 
 ## Open questions
 
-### Q9. Is a child eligible while ShipIt-started post-merge work is live?
-
-A child can be running or queued on a self merge-wake, release task, or other
-system flow after its PR resolves and before any new user turn. The user-only
-activity rule does not persistently reactivate it, but live work can be a
-temporary eligibility exemption.
-
-- **A — Eligible while live (recommended).** A running or queued system turn,
-  or an armed self merge-watch, temporarily keeps the child eligible. When that
-  work is no longer live, the child returns to resolved without a user turn.
-- **B — Block during system work.** Active ShipIt-started work receives no
-  parent or cohort message unless pinning, child coordination, or a user turn
-  makes the child eligible.
+_None._
 
 ## Resolved questions
 
@@ -144,15 +133,20 @@ temporary eligibility exemption.
   are resolved. This receipt's original “later turn activity” wording is
   superseded by the user-started-only decision below.
 - 2026-08-14 — What activity makes a resolved child active again? Chosen: only
-  user-started activity. ShipIt-started system wakes must not reactivate it. Add
-  a durable user-activity signal and use it in the shared UI/server predicate
-  instead of interpreting `lastUsedAt` as user intent.
+  user-started activity. This answer is superseded by the later self merge-wake
+  decision below.
 - 2026-08-14 — Are pinned children and children still coordinating their own
   children eligible after their PR resolves? Chosen: match the rendered UI.
   Keep pinned children and child coordinators eligible while the UI treats them
   as Active. Put the complete resolved-session classification in exactly one
   shared code location used by every server and client consumer.
 - 2026-08-14 — How should existing terminal-PR sessions be migrated to the new
-  user-activity field? Chosen: protect the incident population. Backfill them as
-  not user-reactivated, so they become resolved unless another exemption applies.
-  A genuine old continuation becomes active on its next user-started turn.
+  user-activity field? Chosen at the time: protect the incident population. The
+  later self merge-wake decision removes the new field and migration entirely,
+  so this choice is no longer applicable.
+- 2026-08-14 — How does a self merge-wake affect resolution? Chosen: it
+  reactivates the child persistently. A resolved session is a single-PR session
+  that stopped after its PR reached a terminal state. A child that self-wakes to
+  continue is active from the start of that wake and remains eligible; the same
+  rule applies to other started continuation turns. No temporary liveness
+  carve-out or separate user-only activity timestamp is needed.

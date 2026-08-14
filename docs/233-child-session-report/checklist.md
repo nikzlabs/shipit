@@ -19,9 +19,9 @@
 
 - [x] Human requirements and resolution receipts
 - [x] Implementation design traced against the existing UI/server lifecycle predicate
-- [ ] Independent design review addressed; focused re-review pending
+- [x] Independent design reviews addressed
 - [ ] Single shared resolved-session classifier + client/server consumer migration + tests
-- [ ] Durable `lastUserTurnAt` migration, persistence, and interactive-ingress marking
+- [ ] Dispatched-turn start updates `lastUsedAt` + self merge-wake integration coverage
 - [ ] Direct parent-message resolved-child guard + service/integration/shim tests
 - [ ] Cohort resolved-sibling skip result + service/shim tests
 - [ ] Agent-facing docs updated for resolved-child command outcomes and `whoami` visibility
