@@ -66,15 +66,21 @@ function declareConsumer(yaml = CONSUMER): void {
   fs.writeFileSync(path.join(workspaceDir, "shipit.yaml"), yaml);
 }
 
-/** Publish a live generation of `tools`, the way activation would. */
-function publishGeneration(manifest = MANIFEST): void {
+/**
+ * Publish a live generation of `tools`, the way activation would — including
+ * `source`. A real activation always records it, and this path REFUSES a
+ * generation whose source it cannot match: the pinned directory is what the
+ * invocation container mounts and executes, so an unprovable tree is not one to
+ * run. `source` is therefore part of the fixture, not decoration.
+ */
+function publishGeneration(manifest = MANIFEST, source = "acme/tools"): void {
   const dir = path.join(stateDir, "plugins", "tools", "generations", COMMIT);
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, "shipit.yaml"), manifest);
   fs.writeFileSync(
     path.join(dir, ".shipit-generation.json"),
     JSON.stringify({
-      repoName: "tools", commit: COMMIT, ref: "branch main",
+      repoName: "tools", source, commit: COMMIT, ref: "branch main",
       activatedAt: new Date(0).toISOString(), exports: ["requirements"], manifestWarnings: [],
     }),
   );
@@ -353,6 +359,29 @@ describe("runPluginCommand — what it refuses", () => {
 
     const result = await runPluginCommand(deps(fake.docker), call);
     expect(result.error).toContain("has no active version in this session yet");
+    expect(fake.containers).toHaveLength(0);
+  });
+
+  /**
+   * The identity check lives in the readers that follow the `active` symlink
+   * themselves. This path resolves the link ITSELF and then reads through the
+   * directory-scoped readers, which carry no check by design — so without its
+   * own comparison it opts out by construction, and no compiler sweep over
+   * those wrappers can find it. It is also the worst place to miss: the pinned
+   * directory is what the container mounts, so it feeds the entrypoint, the
+   * lowerdir, the volume name and `SHIPIT_PLUGIN_COMMIT`. Between a `repos:`
+   * entry being re-pointed and the activation round that republishes it,
+   * `active` still resolves to the PREVIOUS repository's tree.
+   */
+  it("refuses to run a generation built from a repository the declaration no longer names", async () => {
+    declareConsumer();
+    publishGeneration(MANIFEST, "acme/previous");
+    const fake = fakeDocker();
+
+    const result = await runPluginCommand(deps(fake.docker), call);
+
+    expect(result.error).toContain("has no active version in this session yet");
+    // Nothing was mounted, and nothing ran.
     expect(fake.containers).toHaveLength(0);
   });
 

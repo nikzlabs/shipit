@@ -67,6 +67,7 @@ import {
 import { CONTAINER_WORKSPACE_DIR } from "../shared/fs-constants.js";
 import { planPluginCommands } from "../shared/plugin-cli.js";
 import type { PluginExport } from "../shared/plugin-repos.js";
+import { destinationKey } from "../shared/plugin-repos.js";
 import { resolveShipitConfig } from "../shared/shipit-config.js";
 import {
   activeLinkPath,
@@ -204,8 +205,11 @@ export async function runPluginCommand(
   // generation or fail.
   let pinned: PinnedGeneration | null = null;
   if (!isSelf) {
+    if (!repo) {
+      return refuse(`\`${repoName}\` is not a declared plugin repository in this project.`);
+    }
     try {
-      pinned = pinGeneration(stateDir, repoName);
+      pinned = pinGeneration(stateDir, repoName, destinationKey(repo.source));
     } catch (err) {
       return refuse(`\`${repoName}\`'s active checkout could not be resolved: ${message(err)}`);
     }
@@ -364,8 +368,35 @@ interface PinnedGeneration {
  * Resolve `active` and read the generation behind it. `null` when the
  * repository has no live generation; throws only when the link exists but
  * cannot be resolved, which the caller reports as its own failure.
+ *
+ * **`expectedSource` is required, and this is the one reader where omitting it
+ * would run code rather than render it.** The identity check lives in
+ * `readActiveGeneration`/`readActiveManifest`, which follow the symlink
+ * themselves; the `…At` readers take a bare directory and deliberately carry no
+ * check, because their contract is *the caller already verified this*. This
+ * function resolves the link ITSELF and then uses them — so without the
+ * comparison below it opts out of the check by construction, not by
+ * forgetfulness, and no compiler sweep over the wrappers can find it.
+ *
+ * What that would cost: the pinned directory is what the invocation container
+ * MOUNTS. It feeds the entrypoint, the overlay lowerdir, the volume name and
+ * `SHIPIT_PLUGIN_COMMIT`. Between a `repos:` entry being re-pointed and the
+ * activation round that retires the foreign generation, `active` still resolves
+ * to the PREVIOUS repository's tree — so this path would execute a stranger's
+ * entrypoint under the declared name, against `/project` and the plugin's state
+ * directory. Every other unguarded reader displays or validates; this one runs.
+ *
+ * Verifying here rather than inside the `…At` readers keeps "resolve once" and
+ * "check identity" composable: one resolution, one record read, one comparison.
+ * Pushing the check down into `readGenerationManifestAt` would force it to
+ * re-read the record its caller just read, on the path whose whole purpose is
+ * to read once.
  */
-function pinGeneration(stateDir: string, repoName: string): PinnedGeneration | null {
+function pinGeneration(
+  stateDir: string,
+  repoName: string,
+  expectedSource: string,
+): PinnedGeneration | null {
   const link = activeLinkPath(stateDir, repoName);
   if (!fs.existsSync(link)) return null;
   const dir = fs.realpathSync(link);
@@ -373,6 +404,9 @@ function pinGeneration(stateDir: string, repoName: string): PinnedGeneration | n
   // A directory with no readable record is not a generation this may run: the
   // commit is req 15's identity, and inventing one would mis-name the volume.
   if (!record) return null;
+  // …and neither is one built from a repository this declaration no longer
+  // names. Reading it as absent is the same answer every other reader gives.
+  if (record.source !== expectedSource) return null;
   return { dir, commit: record.commit, exports: readGenerationManifestAt(dir) };
 }
 

@@ -502,4 +502,32 @@ describe("a re-pointed declaration", () => {
     expect((outcome as { previous?: unknown }).previous).toBeUndefined();
     expect(fs.existsSync(path.join(stateDir, "plugins", "tools", "active"))).toBe(false);
   });
+
+  /**
+   * A record written before `source` existed carries none — and that generation
+   * is this repository's own, built by a ShipIt that did not record where it
+   * came from. Treating "unknown provenance" as "foreign" would retire it, and
+   * the retirement runs BEFORE the fetch while `previous` is read after: so the
+   * first activation round after this ships would drop every plugin in every
+   * live session, and any one of those fetches that then failed — a private
+   * plugin repository the host's App is not installed on — would report
+   * `failed` with no previous generation at all. Degrading is req 15; going
+   * dark is not.
+   */
+  it("keeps a legacy generation live when the fetch for its own repository fails", async () => {
+    await activateGeneration(repo({ branch: "main" }), deps());
+    const live = readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)!;
+
+    // Rewrite the live record as a pre-source one, in place.
+    const recordPath = path.join(stateDir, "plugins", "tools", "active", ".shipit-generation.json");
+    const { source: _dropped, ...legacy } = JSON.parse(fs.readFileSync(recordPath, "utf-8"));
+    fs.writeFileSync(recordPath, JSON.stringify(legacy));
+
+    const outcome = await activateGeneration(repo({ pin: "v-does-not-exist" }), deps());
+
+    expect(outcome.status).toBe("failed");
+    // The checkout is still there, and still serving.
+    expect(fs.existsSync(path.join(stateDir, "plugins", "tools", "active"))).toBe(true);
+    expect(fs.existsSync(path.join(stateDir, "plugins", "tools", "generations", live.commit))).toBe(true);
+  });
 });

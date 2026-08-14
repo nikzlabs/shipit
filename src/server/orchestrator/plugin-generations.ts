@@ -636,6 +636,18 @@ async function retireForeignGeneration(
     return; // nothing live (or unreadable) — the normal activation path handles it
   }
   if (record.source === expectedSource) return;
+  // **Unknown provenance is not proof of foreignness.** A record written before
+  // `source` existed carries none, and that generation is this repository's own
+  // — built by a ShipIt that did not record where it came from. Retiring it
+  // would be destructive twice over: the first activation round after this ships
+  // would drop EVERY plugin in EVERY live session at once, and because the
+  // retirement runs before the fetch (and `previous` is read after it), a fetch
+  // that then fails — a private plugin repository the host's App is not
+  // installed on, exactly what req 6/10 exists to report — returns `failed` with
+  // no previous generation at all. The plugin goes dark rather than degrading,
+  // which is the opposite of req 15. A legacy generation is instead replaced by
+  // the next successful publish, exactly as an ordinary refresh replaces it.
+  if (record.source === undefined) return;
 
   await fsp.rm(activeLinkPath(stateDir, repoName), { force: true });
   await Promise.all([
