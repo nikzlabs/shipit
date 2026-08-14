@@ -676,6 +676,16 @@ instead of a repeat.
   `realpathSync`, and the record, manifest, volume name and overlay lowerdir all
   read out of that one directory).
 
+  **The rule is narrower than "resolve `active` once everywhere", and stated
+  wrongly it breaks things.** It targets reads whose results are *compared or
+  combined as if they came from one generation*. A read that must observe a
+  CHANGE is excluded by construction: `services/plugin-refresh.ts` snapshots
+  each repository's commit before `activateDeclaredPlugins` and reads it again
+  after, and `after !== was` is the entire activated/unchanged determination;
+  collapsing that pair would make every refresh report `unchanged`. So is a path
+  that must FOLLOW a later swap, which is why `/plugins/<name>` stays
+  unresolved. Verified at the source; the classification is the req 10 slice's.
+
   This is a rule about one operation's reads, not about every store path. The
   orchestrator's snapshot readers hold a weaker property that is sufficient for
   a single fact: `readActiveGeneration` is one `readFileSync` through the link,
