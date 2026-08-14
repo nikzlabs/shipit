@@ -240,9 +240,10 @@ describe("failure semantics (reqs 13, 15)", () => {
   });
 
   // The other half of the same rule: an error that is NOT "no such revision"
-  // must survive whole, because a broken object store or an unreadable cache is
-  // exactly what a tidy message would hide.
-  it("keeps an unexpected git failure's own text", async () => {
+  // keeps git's own text AND must not be diagnosed as a missing ref — a broken
+  // object store reported as a bad branch sends the reader to fix a declaration
+  // that is correct (review finding).
+  it("does not diagnose an unexpected git failure as a missing ref", async () => {
     const outcome = await activateGeneration(repo({ branch: "main" }), {
       ...deps(),
       // A bare-cache path that exists and is not a repository: `rev-parse`
@@ -251,10 +252,10 @@ describe("failure semantics (reqs 13, 15)", () => {
     });
     expect(outcome.status).toBe("failed");
     const reason = (outcome as { reason: string }).reason;
-    expect(reason).toContain("is not a branch, tag or commit in `acme/tools`");
-    expect(reason.length).toBeGreaterThan(
-      "`main` is not a branch, tag or commit in `acme/tools`.".length,
-    );
+    expect(reason).toContain("could not resolve `main` in `acme/tools`");
+    expect(reason).not.toContain("is not a branch, tag or commit");
+    // git's own diagnostic survives, which is the whole point of not tidying.
+    expect(reason).toMatch(/not a git repository/i);
   });
 
   it("`repo: self` has no generations", async () => {

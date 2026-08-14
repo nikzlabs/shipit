@@ -953,12 +953,16 @@ async function revParse(
     return (await git.raw(["rev-parse", `${rev}^{commit}`])).trim();
   } catch (err) {
     const where = destinationKey(repo.source);
-    const named = `\`${rev}\` is not a branch, tag or commit in \`${where}\`.`;
     const detail = message(err);
+    // Only the recognized shape gets the DIAGNOSIS. Everything else gets a
+    // neutral prefix and keeps git's own text whole: an unreadable cache or a
+    // directory that is not a repository would otherwise be reported as a
+    // missing branch, which sends the reader to fix a declaration that is
+    // correct (review finding).
     return Promise.reject(new Error(
       /unknown revision|ambiguous argument|Needed a single revision/i.test(detail)
-        ? named
-        : `${named} ${detail}`,
+        ? `\`${rev}\` is not a branch, tag or commit in \`${where}\`.`
+        : `could not resolve \`${rev}\` in \`${where}\`: ${detail}`,
     ));
   }
 }

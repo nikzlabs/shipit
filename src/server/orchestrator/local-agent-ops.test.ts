@@ -124,6 +124,11 @@ describe("mapAgentOpsPath", () => {
   // file now fails this build instead of 403-ing in the inner instance.
   it("accepts every /agent-ops path the `shipit plugin` shim can emit", () => {
     const source = fs.readFileSync(PLUGIN_SHIM, "utf8");
+    // Known limit, stated rather than implied (review finding): this captures a
+    // LITERAL method and a LITERAL path. A path held in a variable, or built by
+    // a helper, is invisible to it — and the count check below would still
+    // pass. Both of today's calls are literals, so the guard is real now; a
+    // future verb that is not would need this widened, not trusted.
     const raw = [...source.matchAll(/deps\.call\(\s*"[A-Z]+",\s*([`"])([^`"]*)\1/g)]
       .map((m) => m[2]);
     expect(raw.length).toBeGreaterThan(1); // sanity: refresh + exec at least

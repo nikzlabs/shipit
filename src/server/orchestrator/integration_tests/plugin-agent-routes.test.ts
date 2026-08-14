@@ -14,6 +14,16 @@
  * path. It deliberately asserts the negative (`not 501`) rather than a refresh
  * result: what broke was the wiring, and a refresh over a workspace that
  * declares no plugins is the cheapest way to prove the hook arrived.
+ *
+ * **What each case can and cannot prove, because the two verbs differ here**
+ * (review finding). Refresh is produced unconditionally, so its arrival is
+ * observable and is what the first test asserts. The exec hook is legitimately
+ * `undefined` in a runtime with no Docker — which this one is — so no assertion
+ * at this level can tell "forwarded, and absent for the right reason" from
+ * "not forwarded". What guards THAT half is the type: `ApiDeps` declares both
+ * keys required with a `| undefined` value, so dropping the forward is a build
+ * error. The exec test below therefore asserts the honest-answer shape, not the
+ * wiring.
  */
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
@@ -105,7 +115,7 @@ describe("Integration: the agent's plugin routes", () => {
     });
   });
 
-  it("scopes both verbs to a real session", async () => {
+  it("answers 404 from the handler, not from an unregistered route", async () => {
     const missing = crypto.randomUUID();
     for (const verb of ["refresh", "exec"]) {
       const res = await app.inject({
@@ -114,6 +124,10 @@ describe("Integration: the agent's plugin routes", () => {
         payload: { alias: "probe", command: "probe" },
       });
       expect(res.statusCode, verb).toBe(404);
+      // The BODY, because 404 is also what Fastify answers for a route that was
+      // never registered at all — so status alone would pass in exactly the
+      // world this file exists to rule out (review finding).
+      expect(res.json(), verb).toMatchObject({ error: "Session not found" });
     }
   });
 });

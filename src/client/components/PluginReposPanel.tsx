@@ -193,8 +193,13 @@ function PluginRepoCard({
               "`probe` declares an install command…"). The same strings are also
               read in a terminal by `shipit plugin refresh`, where backticks are
               right, so the markup stays in the string and the renderer is what
-              understands it. `RichErrorText` is the existing one. */}
-          <span className="min-w-0 break-words"><RichErrorText text={issue} /></span>
+              understands it. `RichErrorText` is the existing one.
+
+              `links={false}` because an issue is not always ShipIt's prose: an
+              activation failure carries git's output and a plugin's own install
+              stderr, and linkifying those would let a third-party repository
+              put an external link into this panel (review finding). */}
+          <span className="min-w-0 break-words"><RichErrorText text={issue} links={false} /></span>
         </div>
       ))}
 
@@ -204,10 +209,17 @@ function PluginRepoCard({
               mechanics (docs/262)" — the honest placeholder of tab v0, left
               behind once those mechanics shipped, so an ACTIVE card told the
               user its commands, skills and services did not exist yet (found in
-              the dogfood). What it says now is req 15's coherence guarantee,
-              which is the fact this row exists to state. */}
-          Checked out at this exact commit — the files, companion CLIs, skills and services this
-          session gets from this repository all come from it.
+              the dogfood).
+
+              It states the CHECKOUT as fact and the rest as following, which is
+              the true shape: `emitPluginReposUpdated` pushes the refetch that
+              produced this card BEFORE it fire-and-forgets the container
+              prepare and the service reconcile (`service-manager-setup.ts`), so
+              a card asserting that all four already agree would be asserting
+              req 15 rather than reporting it (review finding). Anything that
+              could not follow is an issue row above this one. */}
+          Checked out at this exact commit. Its files, companion CLIs, skills and services follow
+          it — anything that could not be updated is reported above.
         </div>
       )}
       {!isSelf && repo.status === "degraded" && (
