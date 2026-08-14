@@ -179,7 +179,7 @@ Two browser channels: per-session **WebSocket** (`/ws/sessions/{id}`) and global
 - **Node built-ins** — use `node:` prefix (e.g., `import fs from "node:fs"`).
 - **Naming** — classes: PascalCase, functions: camelCase, events/WS message types: snake_case, constants: UPPER_SNAKE_CASE.
 - **React** — functional components only, hooks for all state/effects. React 19 JSX transform (no `import React` needed).
-- **Icons** — use `@phosphor-icons/react` for all icons. Never hardcode `<svg>` elements. Use the `ICON_SIZE` constants from `src/client/design-tokens.ts` (XS=12, SM=16, MD=20, LG=32, XL=48) for icon sizes. See the `design-language` skill for full icon and styling guidance.
+- **Icons** — use `@phosphor-icons/react` for all icons. Never hardcode `<svg>` elements for one; the single exception is a bespoke **illustration** in an empty/onboarding state that depicts a relationship no glyph carries, which the `design-language` skill gates on named conditions. Use the `ICON_SIZE` constants from `src/client/design-tokens.ts` (XS=12, SM=16, MD=20, LG=32, XL=48) for icon sizes. See the `design-language` skill for full icon and styling guidance.
 - **Styling** — Tailwind CSS v4 utilities over the **semantic color tokens**; concrete values live in per-theme CSS under `src/client/themes/`. Never hardcode a palette value — ShipIt is multi-theme, not dark-mode-only. See the `design-language` skill.
 - **Strict TypeScript** — `strict: true` in tsconfig. Target ES2022, module ESNext with bundler resolution.
 

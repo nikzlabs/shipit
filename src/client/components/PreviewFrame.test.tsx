@@ -948,9 +948,12 @@ describe("PreviewFrame", () => {
   it("names no implementation detail in the preview setup invite", () => {
     usePreviewStore.getState().setComposeNotConfigured(true);
     const { container } = render(<PreviewFrame preview={null} {...defaultProps} />);
-    expect(container.textContent).not.toMatch(/compose/i);
+    // `\b` rather than a bare /compose/i: the guard is about the noun we used
+    // to put on screen, and a loose match would trip over any future copy that
+    // happens to contain "composed".
+    expect(container.textContent).not.toMatch(/\bcompose\b/i);
     expect(container.textContent).not.toMatch(/shipit\.yaml/i);
-    expect(container.textContent).not.toMatch(/docker/i);
+    expect(container.textContent).not.toMatch(/\bdocker\b/i);
   });
 
   it("shows the ask-the-agent button in the preview setup invite", () => {

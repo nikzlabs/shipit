@@ -1,13 +1,33 @@
 import { Button } from "../ui/button.js";
 
 /**
+ * The message the "Ask the agent to set it up" button sends.
+ *
+ * Lives here, next to the copy that offers it, because `dispatchAgentMessage`
+ * appends this verbatim as a visible user bubble — it is chat the user appears
+ * to have written, not a private instruction, so it is held to the same bar as
+ * the invite above it and names no path, skill, or config key. The agent has
+ * /shipit-docs/compose.md and the android-build skill already.
+ *
+ * The last sentence is load-bearing. The invite asks a question, so "no" has to
+ * be an answer the agent may give; without it the button pushes it into fitting
+ * a library or a CLI with a preview nobody wanted.
+ */
+export const PREVIEW_SETUP_PROMPT =
+  "Set up a live preview for this repo, so the app runs in ShipIt's preview panel. "
+  + "Check whether the repo contains a web app or an Android app, and configure whichever you find. "
+  + "If there is nothing here that a preview would show, say so instead of adding configuration.";
+
+/**
  * The empty preview panel's illustration: a browser window and a phone drawn as
  * empty slots, with a chat bubble pointing at them.
  *
- * Bespoke line art rather than a Phosphor glyph — the icon rule covers icons,
- * and no glyph carries the two facts this state has to land at a glance: these
- * are the app *kinds* that can appear here, and *chat* is what puts them there.
- * Motion is decorative and stops under `prefers-reduced-motion` (index.css).
+ * Bespoke line art rather than composed Phosphor glyphs, under the illustration
+ * exception in the design-language skill — no glyph carries the two facts this
+ * state has to land at a glance: these are the app *kinds* that can appear here,
+ * and *chat* is what puts them there. Purely decorative, so it is hidden from
+ * assistive tech: the copy beside it already says everything it says. Motion
+ * stops under `prefers-reduced-motion` (index.css).
  */
 function PreviewSetupArt() {
   return (
@@ -16,9 +36,11 @@ function PreviewSetupArt() {
       height="144"
       viewBox="0 0 200 144"
       fill="none"
-      className="mx-auto overflow-visible"
-      role="img"
-      aria-label="An empty browser window and an empty phone, with a chat bubble pointing at them"
+      // `max-w-full h-auto` so the art shrinks with the pane instead of being
+      // clipped: the right panel is user-resizable well below 200px.
+      className="mx-auto max-w-full h-auto overflow-visible"
+      aria-hidden="true"
+      focusable="false"
     >
       <defs>
         <radialGradient id="preview-invite-glow" cx="50%" cy="45%" r="55%">
@@ -118,19 +140,30 @@ interface PreviewSetupInviteProps {
  */
 export function PreviewSetupInvite({ onSendToAgent }: PreviewSetupInviteProps) {
   return (
-    <div className="text-center max-w-sm px-4">
+    // `max-h-full overflow-y-auto` keeps the button reachable rather than
+    // clipped when the pane is short or the user has zoomed the browser in.
+    <div className="text-center max-w-sm px-4 max-h-full overflow-y-auto">
       <PreviewSetupArt />
       {/* text-lg font-semibold is the documented heading step (design-language
           skill). Tailwind's preflight resets heading sizes to inherit, so
           without it this would silently render at the overlay's body size. */}
-      <h3 className="text-lg font-semibold text-(--color-text-primary) mt-5 mb-1.5">Your app can run here</h3>
+      <h2 className="text-lg font-semibold text-(--color-text-primary) mt-5 mb-1.5">Your app can run here</h2>
       <p className="text-sm text-(--color-text-secondary) leading-relaxed">
         Do you have a <span className="text-(--color-text-primary) font-medium">web</span> or{" "}
         <span className="text-(--color-text-primary) font-medium">Android</span> app in this repo?
         Ask the agent to set it up. It then runs in this panel while you build.
       </p>
+      {/* The Button base is `whitespace-nowrap h-8`, which clips this label out
+          of the panel's right edge once the pane is dragged to ~200px wide.
+          Overriding both (twMerge lets className win) lets it wrap to two lines
+          and grow instead — measured, it overflowed by 19px at 200px before. */}
       {onSendToAgent && (
-        <Button variant="primary" size="md" onClick={onSendToAgent} className="mt-4">
+        <Button
+          variant="primary"
+          size="md"
+          onClick={onSendToAgent}
+          className="mt-4 h-auto min-h-8 py-1.5 max-w-full whitespace-normal"
+        >
           Ask the agent to set it up
         </Button>
       )}

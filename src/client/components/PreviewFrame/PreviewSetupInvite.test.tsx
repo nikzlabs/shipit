@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { render, screen, fireEvent, cleanup } from "@testing-library/react";
-import { PreviewSetupInvite } from "./PreviewSetupInvite.js";
+import { PreviewSetupInvite, PREVIEW_SETUP_PROMPT } from "./PreviewSetupInvite.js";
 
 afterEach(cleanup);
 
@@ -11,9 +11,16 @@ describe("PreviewSetupInvite", () => {
     expect(screen.getByText("Android")).toBeInTheDocument();
   });
 
-  it("describes the illustration for screen readers", () => {
+  // The old copy said only what to configure. Stating the payoff is the reason
+  // this state was rewritten, so it is not an incidental turn of phrase.
+  it("states what the user gets, not just what to do", () => {
     render(<PreviewSetupInvite />);
-    expect(screen.getByRole("img")).toHaveAccessibleName(/browser window and an empty phone/i);
+    expect(screen.getByText(/runs in this panel while you build/)).toBeInTheDocument();
+  });
+
+  it("hides the decorative illustration from assistive tech", () => {
+    render(<PreviewSetupInvite />);
+    expect(screen.queryByRole("img")).not.toBeInTheDocument();
   });
 
   it("calls back when the user asks the agent", () => {
@@ -26,6 +33,22 @@ describe("PreviewSetupInvite", () => {
   it("omits the button when there is nothing to call", () => {
     render(<PreviewSetupInvite />);
     expect(screen.queryByText("Ask the agent to set it up")).not.toBeInTheDocument();
+  });
+
+  // `dispatchAgentMessage` appends this text verbatim as a visible user bubble,
+  // so it is part of the same first impression as the invite above it. An
+  // earlier revision cited /shipit-docs/compose.md and a skill name here, which
+  // put the exact vocabulary this feature removes back on screen one click
+  // later. The agent has those references already; the chat log must not.
+  describe("PREVIEW_SETUP_PROMPT", () => {
+    it("names no path, skill, or config key", () => {
+      expect(PREVIEW_SETUP_PROMPT).not.toMatch(/shipit-docs|shipit\.yaml|\bcompose\b|docker|skill/i);
+    });
+
+    it("asks for the outcome and allows the agent to answer that there is none", () => {
+      expect(PREVIEW_SETUP_PROMPT).toMatch(/live preview/i);
+      expect(PREVIEW_SETUP_PROMPT).toMatch(/say so instead of adding configuration/i);
+    });
   });
 
   // The motion is decorative and index.css switches these classes off under

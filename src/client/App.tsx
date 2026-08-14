@@ -45,7 +45,7 @@ import { ICON_SIZE } from "./design-tokens.js";
 import { Tab } from "./components/ui/tab.js";
 import { useTabLabelCollapse } from "./hooks/useTabLabelCollapse.js";
 import { useApi } from "./hooks/useApi.js";
-import { formatErrorForMessage } from "./components/PreviewFrame.js";
+import { formatErrorForMessage, PREVIEW_SETUP_PROMPT } from "./components/PreviewFrame.js";
 import { MessageInput, type SendPayload } from "./components/MessageInput.js";
 import { MessageList } from "./components/MessageList.js";
 import type { RewindGapAction } from "./components/RewindPoint.js";
@@ -833,16 +833,10 @@ export default function App() {
     if (composeHintInFlight.current) return;
     const sid = useSessionStore.getState().sessionId;
     if (!sid) return;
-    // Goal-shaped, not mechanism-shaped: the button now asks for a *preview*,
-    // not for a compose file, and the agent already has /shipit-docs/compose.md
-    // to work out how. The last sentence matters — the invite is phrased as a
-    // question, so "this repo has nothing to preview" has to be an answer the
-    // agent is allowed to give instead of fitting a library with a dev server.
-    const text =
-      "Set up a live preview for this repo, so the app runs in ShipIt's preview panel. "
-      + "Check whether the repo contains a web app or an Android app, and configure whichever you find "
-      + "(see /shipit-docs/compose.md, and the android-build skill for Android). "
-      + "If there is nothing here that a preview would show, say so instead of adding configuration.";
+    // Goal-shaped, not mechanism-shaped, and held to the same no-jargon bar as
+    // the invite that offers it — this text is appended as a visible user
+    // bubble. Defined beside that copy; see PREVIEW_SETUP_PROMPT.
+    const text = PREVIEW_SETUP_PROMPT;
     requestPermission();
     // On /{slug}/new route — graduate: transition URL to /session/{id}, same as
     // handleSend. The dispatch makes the session real; without this the URL
