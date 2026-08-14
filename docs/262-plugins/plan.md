@@ -635,6 +635,23 @@ instead of a repeat.
   directory was created before the check ran. Both sides now resolve fully — the
   destination against its deepest existing ancestor — before any `mkdir`.
 
+  **`active` is followed ONCE per pass, and the concrete generation directory
+  is what travels.** Prepare used to hand the unresolved `<store>/<name>/active`
+  path downstream, where the manifest read, the containment check and each skill
+  copy followed it again. Publication swaps that symlink atomically, so a
+  refresh landing mid-pass produced a pass describing two generations: the
+  manifest naming skills from A, the files copied from B. The containment check
+  made it worse than a torn copy — it resolves base and target independently, so
+  a swap between those two `realpath` calls left the base in B and the target in
+  A and reported the plugin as resolving outside its own checkout, a
+  security-shaped message for an ordinary refresh. Resolving once per repository
+  per pass makes a pass describe exactly one generation; the newer one arrives
+  with the next prepare, which every activation round fires. This pins only the
+  READ side — `/plugins/<name>` still points at the unresolved `active` on
+  purpose, so the agent sees a new generation with no re-link (the "mount the
+  store, not the generation" rule above). The same single-resolution discipline
+  is what the CLI and service slices apply to their own reads.
+
   **Published by rename — which is complete, not atomic.** Prepare runs while a
   turn may be reading these files, so deleting the live directory and copying
   into its final path exposes half a tree, and a copy that failed after the

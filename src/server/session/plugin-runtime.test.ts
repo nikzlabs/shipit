@@ -277,6 +277,49 @@ describe("preparePlugins — skills (req 22)", () => {
     expect(failed[0]?.reason).toContain("not created by ShipIt");
   });
 
+  // A refresh republishes while a prepare pass is already running, and `active`
+  // is a symlink publication swaps atomically. A pass that follows it more than
+  // once can therefore read the manifest from one generation and the skill
+  // files from the next (sibling finding, docs/262).
+  it("describes ONE generation even when a refresh swaps `active` mid-pass", () => {
+    declare();
+    publishGeneration("tools", "a".repeat(40), SKILLS_MANIFEST, {
+      "pkg/skills/probe/SKILL.md": "---\nname: probe\n---\n\nGeneration A.\n",
+    });
+
+    // Swap the moment the manifest has been read — the narrowest window there
+    // is, and the one the unpinned code lost.
+    const realRead = fs.readFileSync;
+    let swapped = false;
+    vi.spyOn(fs, "readFileSync").mockImplementation((p, options) => {
+      const out = realRead(p as string, options as BufferEncoding);
+      if (!swapped && typeof p === "string" && p.startsWith(store) && p.endsWith("shipit.yaml")) {
+        swapped = true;
+        publishGeneration("tools", "b".repeat(40), SKILLS_MANIFEST, {
+          "pkg/skills/probe/SKILL.md": "---\nname: probe\n---\n\nGeneration B.\n",
+        });
+      }
+      return out;
+    });
+
+    const result = preparePlugins(opts());
+
+    expect(swapped).toBe(true);
+    // Not "the newest wins" — the point is that no ONE pass mixes the two.
+    // Reading the skills through `active` again would take them from B while
+    // the manifest that named them came from A.
+    const body = realRead(
+      path.join(workspaceDir, ".claude", "skills", namespacedName("probe", "probe"), "SKILL.md"),
+      "utf-8",
+    );
+    expect(body).toContain("Generation A.");
+    // And no failure invented by the swap. `containedRealPath` resolves base
+    // and target independently, so a swap between those two calls used to
+    // report the plugin as resolving outside its own checkout — a
+    // security-shaped message for an ordinary refresh.
+    expect(result.skillsFailed).toEqual([]);
+  });
+
   it("removes materialized skills when the import is dropped", () => {
     declare();
     publishGeneration("tools", "a".repeat(40), SKILLS_MANIFEST, {
