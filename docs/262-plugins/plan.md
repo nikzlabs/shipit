@@ -179,6 +179,27 @@ resolves relative paths from the base file. Slice 2 must therefore
 deliberately preserve per-fragment resolution: compose `include` semantics,
 or rebasing the fragment's paths before merging (review finding, this
 round).
+
+**Implemented** (`plugin-compose.ts`), and the resolution question is settled
+by taking the third option: the fragment is **never handed to `docker compose
+-f`** at all. ShipIt parses it, validates it, and re-emits each service into the
+generated override with every relative source rewritten into an explicit mount
+of the plugin's own tree — the generation's overlay volume with a `subpath` of
+the fragment's directory, or the workspace volume for a `repo: self` import.
+Neither `include` nor a path rebase could have been enough on their own: what a
+fragment's `.` must resolve to is not a path on the daemon's filesystem at all
+but a subpath of a Docker volume (§2's merged view), which no compose-level
+mechanism can express for it.
+
+Re-emitting is also what turns the validation below into a boundary rather than
+a lint, since ShipIt then authors every line the daemon sees. The v1 limits that
+follow from it: a fragment may declare only keys from an explicit allowlist
+(everything a service says about ITSELF; nothing about its relationship to the
+host, which is ShipIt's to decide), only bind mounts of its own `./…` files plus
+anonymous volumes, and **no `build:`** — a build context cannot be a Docker
+volume, and pointing it at the pristine checkout instead would give one service
+two different views of the same plugin. A plugin that needs an image builds and
+publishes it like any other image.
 ShipIt-injected pieces (`/project`, the state dir, the `SHIPIT_*` env) are
 deliberately not declared in the fragment, so it stays valid for a plain
 `docker compose up` and the plugin can degrade its report gracefully.
@@ -327,6 +348,183 @@ instead of a repeat.
   `/plugins/<name>`. That is the whole reason it stays browsable and
   refresh-follows-instantly, and it is enough: nothing the agent itself runs
   needs the merged tree.
+- **Services** (reqs 3, 5, 16, 20) — **implemented**
+  (`plugin-compose.ts`, `services/plugin-services.ts`): each imported plugin's
+  fragment becomes real services in the session's own compose stack, emitted
+  into the generated override beside the project's own and therefore picking up
+  every ShipIt policy — labels, the session network, `cap_drop`, the
+  contained-egress overlay, the worker uid — from one implementation, which is
+  what req 16's lifecycle parity means in practice. They are in the same service
+  map, so start/stop/restart, logs, health and preview all address them by name;
+  the only thing that marks one is a structured `origin` on `ManagedService` and
+  the service WS messages.
+
+  **A fragment is validated exactly as the project's own compose file is in that
+  session** — the same `validateServiceSecurity`, contained-egress rules
+  included (docs/263), so a plugin must declare a numeric non-root `user:` in a
+  Contained session like everything else there. Three things are added at the
+  plugin edge, each because the project's own laxity is not the plugin's to
+  inherit: **never the Docker socket**, whatever `compose.docker-socket` says;
+  **every `$` escaped on the way out**, because Compose interpolates from the
+  environment of the process that runs it — the orchestrator's — so a fragment
+  could otherwise name ShipIt's own variables into a plugin container; and the
+  key allowlist above. A pass-through `environment: [- SOME_NAME]` entry is
+  refused for the same reason as the escaping.
+
+  **A repository's services are all-or-nothing.** One unusable service — an
+  invalid fragment, a name that collides with the project's or another plugin's
+  — withholds every service that repository provides, with the reason on its
+  card; the prior generation stays live, so nothing is torn down to say so
+  (req 15). This is the phase-3 rule as §1a states it, and it is deliberately
+  **not** the rule for commands, which are withheld individually: a compose stack
+  is not a set of independent services, while a command name is just a name. The
+  collision message names the domain and the fix
+  (`overrides.services.<name>.as`), and the snapshot GET **recomputes** it from
+  the same pure collector rather than remembering it, so a declaration that
+  cannot work says so before anything has run.
+
+  That recomputation adds a read of `active` to the snapshot GET, which the
+  "resolve `active` once" sweep has to count. The collector itself is coherent
+  — one `realpathSync` in `snapshotRepo`, every later fact read from the
+  directory it returned — so the residual skew is between the collector and the
+  route's own `readActiveGeneration`: the commit rendered could belong to a
+  different generation than the issues rendered beside it. Closing it means the
+  route taking that record from the collector, which is a change to the route's
+  contract rather than a call-site tidy, and so is left to the sweep. Same class
+  as the credential/commit skew recorded below: one request wide, self-healing.
+
+  **Open, and it fails toward running the wrong repository: the directory-scoped
+  readers carry no identity check.** #2225 adds `source` to `GenerationRecord`
+  and makes `readActiveGeneration`/`readActiveManifest` return null when the
+  live generation came from a different repository than the declaration now
+  names — but it leaves `readGenerationRecordAt`/`readGenerationManifestAt`
+  source-agnostic, and those are what the resolve-once rule tells callers to
+  use. `snapshotRepo` is such a caller, so a `repos:` entry re-pointed from
+  `acme/old` to `acme/new` can still have `acme/old`'s checkout mounted as this
+  session's plugin services. `retireForeignGeneration` closes the window inside
+  `activateOnce` — but activation is **fire-and-forget** at both call sites
+  (`service-manager-setup.ts:436`, `:1077`), deliberately, so a slow fetch never
+  delays a session opening (req 13). The window is therefore bounded by a git
+  fetch plus an install, not by a symlink swap, and the service path usually
+  wins it: `setupServiceManager` fires activation at `:436`, then resolves
+  plugin services at `:814-817` behind local awaits only. A session opening
+  against a declaration re-pointed since its last round STARTS the previous
+  repository's services. The `shipit.yaml`-edit path differs — its reconcile
+  reuses already-resolved services rather than re-resolving, so there the
+  exposure persists across the edit rather than being created by it. Ordering
+  the reconcile behind activation is the wrong lever: it trades req 19 for
+  req 13 and still leaves session activation resolving before any round has run.
+  **This is a class, not an instance, so the fix is a shared helper rather than
+  a comparison pasted here.** The guard sits in the wrappers because that is
+  where the link-following callers were when #2225 was written; "resolve once"
+  moves callers OFF the wrappers onto self-resolution, so each migration sheds
+  the guard as a side effect and looks like progress while doing it. There are
+  two self-resolvers — `pinGeneration` (`plugin-cli-run.ts:368`, merged) and
+  `snapshotRepo` — and a third arrives with the next one. The version that
+  generalizes is an engine helper (sibling report, req 25 slice):
+
+  ```
+  resolveActiveGeneration(stateDir, repoName, expectedSource)
+    → { dir, record } | null
+  ```
+
+  One resolution, the identity check AT the resolution, a verified handle out.
+  `readActiveGeneration`/`readActiveManifest` delegate to it; `snapshotRepo`
+  calls it in place of its `realpathSync`; and the `…At` readers keep an honest
+  meaning — *I hold a directory somebody else verified* — which is the only
+  reading under which leaving them unguarded is safe. That helper belongs with
+  whoever carries #2225, since it owns the `source` field; this slice's change
+  is then the call-site swap, not a private comparison.
+
+  **The collector already reads everything that call site needs**, which makes
+  the sweep cheaper here than it looks: `snapshotRepo` calls
+  `readGenerationRecordAt(root)` and keeps only `.commit`, discarding the
+  `exports` and `manifestWarnings` off the same record — the exact two fields
+  the route's own `readActiveGeneration` supplies. Widening `RepoSnapshot` to
+  carry the record is the whole change on this file; no second read, and no new
+  resolution.
+
+  **Session paths are mounted as volume subpaths, never as binds — and that is
+  a production-only trap, so it is written down rather than left to be
+  rediscovered.** In production the whole session tree lives inside a named
+  volume the daemon knows nothing about, so a bind of the orchestrator's
+  `/workspace/sessions/<id>/…` makes Docker silently create an EMPTY,
+  ROOT-OWNED directory: `/project` would not be the project and `/plugin-state`
+  would not be the state the CLI writes to, while dev and dogfood worked
+  perfectly the whole time. `container-lifecycle.ts` mounts workspace,
+  credentials, uploads and scratch through `VolumeOptions.Subpath` for exactly
+  this reason. The state directory and settings file need their own subpath
+  keyed off the session ROOT, since `plugin-data/` is a sibling of `workspace/`
+  rather than under it. The settings file is mounted **as a file**, which the
+  daemon supports from API 1.45 — below the Engine 28 docs/263 already requires
+  — and mounting its parent instead would hand the plugin its own settings to
+  rewrite.
+
+  **A settings change recreates the service, via a label.** The settings file is
+  rewritten only when its content changes, so a change means a NEW INODE — and a
+  file bind mount follows the inode it was created with, leaving a running
+  container reading a file nothing writes to any more. The mount path is
+  identical either way, so neither the reconcile decision nor Compose's own
+  changed-service test would notice. A digest of the content rides a
+  `shipit-plugin-settings` label, which changes both answers at once.
+
+  **Mounts come from `shared/plugin-contract.ts`, and the plugin tree is one
+  volume per generation.** A service gets the merged tree at
+  `/plugin` — the same path the install and CLI-invocation containers use, so a
+  `cli:` entrypoint declared relative to the repository root resolves identically
+  on every surface — plus `/project`, `/plugin-state` and the settings file. The
+  volume itself is obtained through `ensurePluginRuntimeOverlay`, an **ensure**
+  rather than a create, because the kernel forbids one upperdir backing two
+  independently created overlay mounts and the CLI container asks for the same
+  volume. `/plugin` is mounted **read-only** for a service: req 7 keeps the
+  plugin source unmodified, and a service's writable surfaces are `/plugin-state`
+  and `/project`, not the layer its own CLI runs out of.
+
+  **Two gaps this slice found and did NOT close, both because closing them here
+  would build the wrong half of a shared mechanism.**
+
+  *No consumer lease over a live generation.* A refresh publishes the new
+  generation and `pruneOldGenerations` immediately deletes the superseded
+  checkout and its writable layer — while a plugin service container is still
+  holding an overlay whose lowerdir is that directory. docs/183's own findings
+  record what that does: merged `readdir` starts returning empty while path
+  lookups still resolve, silently corrupting the running container. The same
+  window belongs to CLI invocation containers, so the fix is ONE lease across
+  both surfaces (prune waits for its consumers), not a service-only version.
+
+  *A rejected fragment does not keep the prior generation live.* Phase 3 runs
+  when services are resolved, which is AFTER `activateGeneration` has published
+  and pruned. So a tracked commit whose fragment fails validation still becomes
+  the live generation — its files, CLIs and skills move, its services are
+  withheld — which is the partial version req 15 forbids, and it contradicts
+  §1a's "an activation failure keeps the prior generation active". Closing it
+  means running the fragment check as a pre-publish gate inside activation,
+  beside the phase-2 selector check, where the command-collision half will want
+  to live too.
+
+  **Egress is unchanged on this surface.** Plugin service containers ride the
+  session's existing posture, whatever `containComposeServices` gives the
+  project's own services. Req 24 is one decision covering the install container,
+  the CLI invocation container and services, and closing it on one surface alone
+  is how the three drift — in particular, joining a plugin container to the
+  agent's network namespace would re-expose the worker's loopback credential
+  broker and break req 19.
+
+  **A project that declares plugins and no `compose:` block of its own still
+  gets their services** (req 5's "one declaration"). It then has NO project
+  compose file — not "one that may be missing": keying it on whether a
+  conventional `docker-compose.yml` happens to exist would start a stack the
+  project never declared, and the collision domain would not know about those
+  services either. The generated override is the whole stack.
+
+  **The project's compose file is re-validated before every `up`, not only at
+  start.** A plugin service gets `/project` read-write (reqs 18, 21), so
+  third-party code can now rewrite that file — and a manual start, a restart,
+  an OOM or install retry, and the gate release all re-read it from disk. Left
+  as it was, the rewritten file would run with none of the checks it was
+  admitted under: `privileged: true`, a Docker-socket bind, an absolute host
+  path. Every `compose up` in the manager goes through one function, which is
+  where the check lives.
 - **Workspace handle** (req 21): plugin *services* get the consuming
   project's workspace mounted at the fixed path **`/project`**; plugin *CLIs*
   run in the agent container with **cwd = the project workspace**, which
@@ -342,6 +540,33 @@ instead of a repeat.
   **published port must stay stable per (session, service)** even if a
   tracked commit edits the fragment's port, because the preview origin is
   port-derived and req 18 guarantees origin stability.
+
+  **The mounts are implemented** (`plugin-compose.ts`): the state directory
+  read-WRITE and the settings file read-ONLY, at the paths
+  `shared/plugin-contract.ts` fixes, as absolute **daemon-side** bind sources —
+  the same translation `plugin-overlay.ts` does and the staged secrets
+  entrypoint already relies on (planning#287), since the daemon resolves a bind
+  source and the orchestrator's own view of the session tree is not the daemon's.
+  The settings file is mounted only once it EXISTS: a bind source that does not
+  is created by the daemon as an empty directory, which would leave a directory
+  where the next validated write expects a file.
+
+  **And the port pin is implemented** (`plugin-ports.ts`), by adding the one
+  piece it needs to be more than a wish: an **indirection**. Pinning the number
+  alone would have moved the origin off the container the moment a fragment
+  changed its port. So a plugin service now carries two — the pinned
+  `publishedPort`, which is what the preview subdomain, the health probe and the
+  browser's service list all use, and the `port` the container actually serves
+  on, which follows the fragment. `ServiceManager.resolvePreviewTarget` maps one
+  to the other and the proxy asks it, so the origin holds while the traffic
+  follows the container. For a project service the two are always the same
+  number: its compose file is the user's, so a change to it is a change the user
+  made. Allocation prefers the service's own port, falls back to a band, and
+  treats the project's ports as reserved — of the two, only a plugin's origin is
+  ShipIt's own bookkeeping to move. The pin lives at
+  `<sessionDir>/plugin-ports.json`, outside the reclaimable state dir, for the
+  reason the state directory is: rebuilding it IS the origin change req 18
+  forbids.
 
   **Implemented** (`plugin-state.ts`), as
   `<sessionDir>/plugin-data/<alias>/state/`. The container-side names both
@@ -1407,6 +1632,24 @@ coherent in one UI.
   is ever touched. ✓ `src/server/orchestrator/plugin-cli-run.ts` is the
   invocation container; ✓ `plugin-container.ts` holds what it shares with
   install (the untrusted network, the bounded wait).
+- ✓ `src/server/orchestrator/plugin-compose.ts` — the fragment edge (reqs 3, 5,
+  16, 20): locate each import's fragment in whatever is live for it, validate it
+  under the consuming session's own rules plus the plugin-edge allowlist, apply
+  the consumer's `as`/`autostart` overrides, check the one name domain across the
+  project and every plugin, and re-emit each service with its relative sources
+  rewritten onto the plugin's own tree and ShipIt's mounts and environment
+  attached. Pure apart from filesystem reads, which is what lets the snapshot GET
+  report exactly what the service path would refuse. ✓
+  `services/plugin-services.ts` is its lifecycle half — the runtime overlay
+  volume, the published ports, and the failures nothing can recompute — called
+  before the first `start()` and again whenever an activation round settles,
+  which is what makes `shipit plugin refresh` reach a running service.
+- ✓ `src/server/orchestrator/plugin-ports.ts` — the published-port pin (req 18),
+  at `<sessionDir>/plugin-ports.json`. Deliberately outside the state dir, which
+  eviction reclaims: rebuilding a pin is the origin change the requirement
+  forbids. `ServiceManager.resolvePreviewTarget` is the indirection that makes
+  the pin more than a wish, and `preview-proxy.ts` asks it on all three paths
+  (HTTP, the HMR upgrade, and the health probe).
 - ✓ `src/server/orchestrator/api-routes-plugin-repos.ts` — browser snapshot
   (the GET exists; refresh endpoints come with generation mechanics); tracker
   registration folds into the existing trackers registry
@@ -1525,6 +1768,15 @@ security validation, port stability per (session, service), plugin `install`
 execution (container-side — see §1b), credential
 injection mechanics, PATH wrapper generation, skills materialization
 mechanics. *(Install execution, skills materialization, PATH wrapper generation
-plus its credential injection, and GitHub App multi-repo minting have since been
-built — see §1b, §2's CLIs and fetch-authority bullets, `plugin-fetch.ts`, and
-§4's ✓ entries.)*
+plus its credential injection, GitHub App multi-repo minting, and — with the
+service slice — compose-fragment merging, its security validation and port
+stability have since been built: see §1b, §2's Services, CLIs and
+fetch-authority bullets, `plugin-fetch.ts`, and §4's ✓ entries.)*
+
+Known v1 limits of the service path, each with its reason above rather than as
+an oversight: a fragment may not declare `build:` (the merged plugin tree is a
+Docker volume, which cannot be a build context); it may not declare named
+volumes (`/plugin-state` is the home with a lifetime ShipIt guarantees); and
+plugin **service** containers ride the session's existing egress posture, since
+whether they get containment of their own is still req 24's open decision (§3's
+needs-row note), taken once across all three surfaces rather than per surface.

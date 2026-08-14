@@ -290,7 +290,19 @@ user's follow-up of 2026-08-12 during the design phase.
 
 ## Open questions
 
-(None.)
+- **A plugin's preview origin and a project service's port want the same
+  number — which one moves?** Req 18 says the preview origin is stable for the
+  session's whole life and states no exception. But the origin's port is also
+  the routing key, so two services cannot share one: if a project later edits
+  its own compose file to serve on the number a plugin's origin already uses,
+  one of them loses its preview. The implementation currently moves the
+  **plugin's** origin (which loses whatever that plugin kept in origin-keyed
+  browser storage — the thing req 18 protects) on the reasoning that the
+  project's port is a real container port the user chose, while the plugin's is
+  ShipIt's own bookkeeping. *Agent recommendation: keep that — it is the rarer
+  and more recoverable loss, and it takes a deliberate project edit to reach.*
+  The alternative is to hold the plugin's pin and leave the project service
+  without an origin until the user renumbers it.
 
 ## Resolved questions
 

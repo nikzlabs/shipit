@@ -29,6 +29,7 @@ import { spawn } from "node:child_process";
 import type { ChildProcess } from "node:child_process";
 import path from "node:path";
 import type { ComposeConfig } from "../shared/shipit-config.js";
+import type { ComposeServiceOriginView } from "../shared/types/ws-server-messages/service.js";
 import { killChild } from "../shared/kill-child.js";
 import { truncateTerminalBuffer } from "./terminal-buffer.js";
 import type { LogStore } from "./log-store.js";
@@ -39,8 +40,10 @@ import {
   writeComposeOverride,
   type ComposeOverrideOptions,
   type ComposeService,
+  type ComposeServiceOrigin,
   type OverlayDepDirVolume,
 } from "./compose-generator.js";
+import { toComposeService, type PluginComposeService } from "./plugin-compose.js";
 import { COMPOSE_OVERRIDE_FILE, sessionStateDirForWorkspace } from "./session-state-dir.js";
 import {
   ServiceSecretsResolver,
@@ -84,9 +87,23 @@ export type ServiceStatus = "stopped" | "starting" | "running" | "error";
 export interface ManagedService {
   name: string;
   port?: number;
+  /**
+   * docs/262 req 18 — the port the PREVIEW ORIGIN carries
+   * (`{sessionId}--{publishedPort}.<host>`), which the proxy resolves back to
+   * {@link port} on this service's container.
+   *
+   * For a project service the two are always the same number: its compose file
+   * is the user's, so a change to it is a change the user made. A plugin's
+   * fragment arrives with every tracked-branch commit, so its published port is
+   * pinned per session (`plugin-ports.ts`) and the container port follows the
+   * fragment — the origin stays put while the traffic follows the container.
+   */
+  publishedPort?: number;
   preview: "auto" | "manual";
   status: ServiceStatus;
   error?: string;
+  /** docs/262 req 3 — the plugin this service came from, when it is not the project's own. */
+  origin?: ComposeServiceOrigin;
   /**
    * Whether this service is gated on `agent.install` completing before it
    * starts (`x-shipit-depends-on-install`). Defaults to `true` for
@@ -119,6 +136,16 @@ export interface ManagedService {
    * GH #1509.
    */
   url?: string;
+}
+
+/**
+ * docs/262 — project a service's origin into the shape the client sees. The
+ * fragment's own service name is deliberately dropped: it is what the collision
+ * message needs (it names the key to write `as` under) and not something the
+ * browser has any use for.
+ */
+export function originView(origin: ComposeServiceOrigin): ComposeServiceOriginView {
+  return { kind: "plugin", repo: origin.repo, alias: origin.alias, plugin: origin.plugin };
 }
 
 /**
@@ -286,6 +313,13 @@ export interface ServiceManagerOptions {
   /** Docker stack name (e.g. "shipit-dev") — propagated to compose labels for cleanup filtering. */
   stackName?: string;
   /**
+   * docs/262 — this project declares no `compose:` block, so it HAS no compose
+   * file of its own and its stack is its plugins' services alone (req 5). Off by
+   * default; see {@link ComposeCliOptions.noProjectFile} for why this is not
+   * "the file may be missing".
+   */
+  noProjectCompose?: boolean;
+  /**
    * docs/128 — server-authoritative ops session flag. Allows the hidden ops
    * template's docker-socket-proxy service to mount the host Docker socket even
    * though ordinary sessions cannot enable that by copying workspace files.
@@ -439,8 +473,17 @@ export class ServiceManager extends EventEmitter {
   private readonly workspaceSubpath?: string;
   /** docs/183 Phase 5 — per-session overlay dep-dir volumes (set lazily; see setOverlayDepDirs). */
   private overlayDepDirs: OverlayDepDirVolume[];
+  /** docs/262 — plugin services this session surfaces (set lazily; see setPluginServices). */
+  private pluginServices: PluginComposeService[] = [];
   private readonly stackName?: string;
   private readonly opsSession: boolean;
+  /**
+   * docs/262 — this session has no project compose file at all: `shipit.yaml`
+   * declares no `compose:` block, and the stack is its plugins' services (req 5).
+   * A project that DOES declare one still fails loudly when its file cannot be
+   * read.
+   */
+  private noProjectCompose: boolean;
   private readonly networkJoinFn?: (networkName: string) => Promise<void>;
   /** docs/128 — periodic agent network-attachment self-heal (see options). */
   private readonly networkHealFn?: (networkName: string) => Promise<void>;
@@ -607,6 +650,7 @@ export class ServiceManager extends EventEmitter {
       workspaceDir: opts.workspaceDir,
       composeFile: opts.composeConfig.file,
       overrideFile: path.join(this.overrideDir, COMPOSE_OVERRIDE_FILE),
+      ...(opts.noProjectCompose ? { noProjectFile: true } : {}),
       ...(opts.composeRunner ? { composeRunner: opts.composeRunner } : {}),
       ...(opts.composeQuery ? { composeQuery: opts.composeQuery } : {}),
     });
@@ -615,6 +659,7 @@ export class ServiceManager extends EventEmitter {
     this.overlayDepDirs = opts.overlayDepDirs ?? [];
     this.stackName = opts.stackName;
     this.opsSession = opts.opsSession ?? false;
+    this.noProjectCompose = opts.noProjectCompose ?? false;
     this.networkJoinFn = opts.networkJoinFn;
     this.networkHealFn = opts.networkHealFn;
     this.containServicesFn = opts.containServicesFn;
@@ -747,6 +792,23 @@ export class ServiceManager extends EventEmitter {
    */
   setOverlayDepDirs(overlayDepDirs: OverlayDepDirVolume[]): void {
     this.overlayDepDirs = overlayDepDirs;
+  }
+
+  /**
+   * docs/262 — set the plugin services this session surfaces (reqs 3, 5, 16),
+   * already located, validated and named by `plugin-compose.ts`.
+   *
+   * Resolved outside the manager for the same reason `setOverlayDepDirs` is: it
+   * needs Docker and the session's plugin generations, neither of which this
+   * class knows about. Returns whether the set actually CHANGED, so a caller can
+   * skip the reconcile — an activation round settles on every session activation
+   * and every `shipit.yaml` edit, and recreating live containers on each of them
+   * would restart a plugin service that nothing happened to.
+   */
+  setPluginServices(services: PluginComposeService[]): boolean {
+    const changed = JSON.stringify(this.pluginServices) !== JSON.stringify(services);
+    this.pluginServices = services;
+    return changed;
   }
 
   /** Refresh the boot-effective egress policy when a preserved manager is adopted. */
@@ -1017,8 +1079,36 @@ export class ServiceManager extends EventEmitter {
 
   /** Find the container IP for a service listening on the given port. */
   getContainerIpForPort(port: number): string | undefined {
+    return this.resolvePreviewTarget(port)?.containerIp;
+  }
+
+  /**
+   * Resolve a preview subdomain's port to the container address behind it.
+   *
+   * The two halves are the same number for a project service and may differ for
+   * a plugin one (docs/262 req 18): the subdomain carries the service's PINNED
+   * published port, which stays put for the session's life, while the container
+   * port follows whatever the plugin's current fragment declares. Returning both
+   * is what lets a tracked commit move the port without moving the origin — and
+   * without the proxy having to know anything about plugins.
+   *
+   * Falls back to the container port when no service claims the number as its
+   * published one, so a service recorded before this field existed still routes.
+   */
+  resolvePreviewTarget(port: number): { containerIp: string; port: number } | undefined {
     for (const svc of this.services.values()) {
-      if (svc.port === port && svc.containerIp) return svc.containerIp;
+      if (svc.publishedPort === port && svc.containerIp) {
+        return { containerIp: svc.containerIp, port: svc.port ?? port };
+      }
+    }
+    for (const svc of this.services.values()) {
+      // Only for a service that has no published port of its own. A plugin
+      // service always has one, and its container port must NOT become a second
+      // addressable origin — the whole point of the pin is that there is one
+      // origin, and origin-keyed browser storage can rely on it (req 18).
+      if (svc.publishedPort === undefined && svc.port === port && svc.containerIp) {
+        return { containerIp: svc.containerIp, port };
+      }
     }
     return undefined;
   }
@@ -1106,12 +1196,19 @@ export class ServiceManager extends EventEmitter {
 
     const composePath = path.join(this.workspaceDir, this.composeConfig.file);
 
+    // docs/262 — a project may declare plugins and no stack of its own (req 5:
+    // one declaration). There is then no project compose file to parse at all,
+    // declared or otherwise, and the plugin services below are the whole stack.
+    if (this.noProjectCompose && this.pluginServices.length === 0) {
+      console.log(`[compose:${this.sessionId}] no project compose file and no plugin services — nothing to start`);
+      this._startupComplete = true;
+      return;
+    }
+
     // Parse and validate
-    const parsedServices = parseComposeFile(composePath, {
-      dockerSocket: this.composeConfig.dockerSocket || this.opsSession,
-      containEgress: Boolean(this.containServicesFn),
-      trustedOpsProxy: this.opsSession,
-    });
+    const parsedServices = this.noProjectCompose
+      ? []
+      : this.parseProjectCompose(composePath);
 
     // Build service map
     for (const svc of parsedServices) {
@@ -1120,11 +1217,38 @@ export class ServiceManager extends EventEmitter {
       this.services.set(svc.name, {
         name: svc.name,
         port,
+        // A project service's origin is its own compose file, so there is
+        // nothing to pin: its published port IS its container port.
+        ...(port !== undefined ? { publishedPort: port } : {}),
         preview,
         status: "stopped",
         dependsOnInstall: svc.dependsOnInstall ?? (preview === "auto"),
       });
     }
+
+    // docs/262 reqs 3, 16 — plugin services join the same map, so every control,
+    // status and log path treats them as the first-class services req 3 asks
+    // for. `dependsOnInstall: false`: the consuming project's `agent.install`
+    // has nothing to do with a plugin, whose own install ran before its
+    // generation was published (plan §1b).
+    for (const svc of this.pluginServices) {
+      this.services.set(svc.name, {
+        name: svc.name,
+        ...(svc.port !== undefined ? { port: svc.port } : {}),
+        ...(svc.publishedPort !== undefined ? { publishedPort: svc.publishedPort } : {}),
+        preview: svc.preview,
+        status: "stopped",
+        dependsOnInstall: false,
+        origin: {
+          kind: "plugin",
+          repo: svc.repo,
+          alias: svc.alias,
+          plugin: svc.plugin,
+          sourceName: svc.sourceName,
+        },
+      });
+    }
+    const overrideServices = [...parsedServices, ...this.pluginServices.map(toComposeService)];
 
     // Resolve secrets BEFORE generating the override — the override references
     // per-service env files via `env_file:` and compose detects the file at
@@ -1150,7 +1274,7 @@ export class ServiceManager extends EventEmitter {
       ...(serviceEnvFiles ? { serviceEnvFiles } : {}),
       ...(this.overlayDepDirs.length > 0 ? { overlayDepDirs: this.overlayDepDirs } : {}),
     };
-    const overrideContent = generateComposeOverride(parsedServices, overrideOpts);
+    const overrideContent = generateComposeOverride(overrideServices, overrideOpts);
     writeComposeOverride(this.overrideDir, overrideContent);
 
     // Mark auto services as starting (silently — _startupComplete is false)
@@ -1538,13 +1662,19 @@ export class ServiceManager extends EventEmitter {
    * Returns true when the config actually changed (the caller can skip work,
    * and the reconcile is a plain compose-file re-read).
    */
-  updateComposeConfig(next: ComposeConfig): boolean {
+  updateComposeConfig(next: ComposeConfig, opts: { noProjectCompose?: boolean } = {}): boolean {
+    const noProjectCompose = opts.noProjectCompose ?? false;
     const changed =
       next.file !== this.composeConfig.file ||
-      next.dockerSocket !== this.composeConfig.dockerSocket;
+      next.dockerSocket !== this.composeConfig.dockerSocket ||
+      // docs/262 — a `compose:` block added to (or removed from) a plugin-only
+      // project changes whether there is a project file at all, which changes
+      // the argument vector every later command is built from.
+      noProjectCompose !== this.noProjectCompose;
     if (!changed) return false;
     this.composeConfig = next;
-    this.compose.setComposeFile(next.file);
+    this.noProjectCompose = noProjectCompose;
+    this.compose.setComposeFile(next.file, noProjectCompose);
     return true;
   }
 
@@ -1684,12 +1814,9 @@ export class ServiceManager extends EventEmitter {
   async refreshSecrets(): Promise<void> {
     let parsedServices: ComposeService[];
     try {
-      const composePath = path.join(this.workspaceDir, this.composeConfig.file);
-      parsedServices = parseComposeFile(composePath, {
-        dockerSocket: this.composeConfig.dockerSocket || this.opsSession,
-        containEgress: Boolean(this.containServicesFn),
-        trustedOpsProxy: this.opsSession,
-      });
+      parsedServices = this.noProjectCompose
+        ? []
+        : this.parseProjectCompose(path.join(this.workspaceDir, this.composeConfig.file));
     } catch {
       // Compose file missing or invalid — there's nothing to apply secrets to.
       return;
@@ -1719,7 +1846,14 @@ export class ServiceManager extends EventEmitter {
         ...(this.overlayDepDirs.length > 0 ? { overlayDepDirs: this.overlayDepDirs } : {}),
         dockerSecrets: dockerSecretsBuild,
       };
-      const overrideContent = generateComposeOverride(parsedServices, overrideOpts);
+      // docs/262 — plugin services must survive this rewrite: the override is
+      // the ONLY place their definitions exist, so regenerating it from the
+      // project's services alone would delete them from the stack on the next
+      // secret save.
+      const overrideContent = generateComposeOverride(
+        [...parsedServices, ...this.pluginServices.map(toComposeService)],
+        overrideOpts,
+      );
       writeComposeOverride(this.overrideDir, overrideContent);
     }
 
@@ -1754,12 +1888,48 @@ export class ServiceManager extends EventEmitter {
   // -----------------------------------------------------------------------
 
   /**
+   * Parse and security-validate the project's own compose file.
+   *
+   * One place, because it is re-run before every `docker compose up` (see
+   * {@link withUpInFlight}) and not only at `start()`. docs/262 is what forces
+   * that: plugin services get the project workspace read-write at `/project`
+   * (reqs 18, 21), so third-party code can now REWRITE this file — and every
+   * later `up` (a manual start, a restart, an OOM or install retry, the gate
+   * release) re-reads it from disk. Validating it only at `start()` left a
+   * window in which a rewritten file was executed with none of the checks it
+   * was admitted under: `privileged: true`, a Docker-socket bind, an absolute
+   * host path. The file is small and the parse is cheap; the window is not.
+   */
+  private parseProjectCompose(composePath: string): ComposeService[] {
+    return parseComposeFile(composePath, {
+      dockerSocket: this.composeConfig.dockerSocket || this.opsSession,
+      containEgress: Boolean(this.containServicesFn),
+      trustedOpsProxy: this.opsSession,
+    });
+  }
+
+  /**
+   * Refuse to run `docker compose up` against a project compose file that no
+   * longer passes validation — see {@link parseProjectCompose} for why it can
+   * change under us. Throws the `ComposeValidationError` verbatim, so the
+   * caller reports the real reason on the service it was starting.
+   */
+  private assertProjectComposeStillValid(): void {
+    if (this.noProjectCompose) return;
+    this.parseProjectCompose(path.join(this.workspaceDir, this.composeConfig.file));
+  }
+
+  /**
    * Mark `names` as having a `compose up` in flight for the duration of `fn`
    * (planning#316). Every `compose up`/`up <service>` call goes through this so the
    * poller can tell "this service has no container because it is still coming
    * up" from "this service's container disappeared".
    */
   private async withUpInFlight<T>(names: string[], fn: () => Promise<T>): Promise<T> {
+    // BEFORE the bookkeeping below, so a refused `up` leaves no in-flight
+    // exemption behind. Every `compose up` in this class goes through here,
+    // which is what makes this the one place the check has to live.
+    this.assertProjectComposeStillValid();
     for (const name of names) {
       this.upInFlight.set(name, (this.upInFlight.get(name) ?? 0) + 1);
       // A new container is on its way, so the address we hold describes the

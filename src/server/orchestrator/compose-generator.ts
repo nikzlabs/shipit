@@ -24,6 +24,23 @@ import { EGRESS_PROXY_UID } from "./egress-proxy-install.js";
 // Types
 // ---------------------------------------------------------------------------
 
+/**
+ * docs/262 req 3 — which repository a surfaced service came from. Plugin
+ * services are first-class in every list, control and log path, so the only
+ * thing that distinguishes them is this label.
+ */
+export interface ComposeServiceOrigin {
+  kind: "plugin";
+  /** The declared plugin repository's own spelling — the Plugins card's unit. */
+  repo: string;
+  /** The import's local name (`use.alias`). */
+  alias: string;
+  /** The exported plugin's name in that repository's manifest. */
+  plugin: string;
+  /** The service's name inside the plugin's own fragment, before any `as:`. */
+  sourceName: string;
+}
+
 export interface ComposeService {
   name: string;
   /** True only for the server-authorized, validated ops Docker proxy shape. */
@@ -63,6 +80,35 @@ export interface ComposeService {
    * shorthand).
    */
   secretRequirements?: SecretRequirement[];
+  /**
+   * docs/262 — where this service came from. Absent means the project's own
+   * compose file; a plugin service carries its import's identity so the services
+   * list can say so (req 3) and so the override knows to emit its definition
+   * rather than only an overlay on the user's.
+   */
+  origin?: ComposeServiceOrigin;
+  /**
+   * docs/262 — the complete definition to emit for a PLUGIN service. The
+   * project's own services are described by the user's compose file and only
+   * overlaid here; a plugin's fragment is never handed to `docker compose -f`
+   * (see `plugin-compose.ts`), so ShipIt writes every line of it, mounts and
+   * environment included.
+   */
+  pluginDefinition?: Record<string, unknown>;
+  /**
+   * docs/262 — volumes this service references that the daemon-overlay
+   * subsystem owns (the plugin generation's volume, and the workspace volume
+   * when the project's own services do not already pull it in). Declared
+   * `external: true` in the volumes block, exactly like the dep-dir overlays.
+   */
+  externalVolumes?: string[];
+  /**
+   * docs/262 req 26 — digest of this service's validated settings file. Emitted
+   * as a label so that a settings change, which alters nothing else Compose can
+   * see, still counts as a changed service definition and recreates the
+   * container. See `PluginComposeService.settingsFingerprint`.
+   */
+  settingsFingerprint?: string;
   /**
    * Explicit `user:` declared by the service in the user's compose file, if any.
    * When set, ShipIt honors it and does NOT inject the session-worker UID
@@ -187,6 +233,24 @@ export interface OverlayDepDirVolume {
   /** Per-session `type=overlay` Docker volume name (`shipit-<id>_overlay-<hash>`). */
   volumeName: string;
 }
+
+/**
+ * The placeholders {@link generateComposeOverride} substitutes for Compose's
+ * `!reset` / `!override` tags AFTER serialization, because the YAML writer
+ * cannot emit them.
+ *
+ * Exported because that post-serialization `replace` is a text pass over the
+ * whole document, so any value that reaches the override carrying one of these
+ * literals would be rewritten mid-string. For the project's own compose file
+ * that is self-inflicted and harmless; for a plugin fragment it is a
+ * third-party string landing in a file ShipIt authors, so `plugin-compose.ts`
+ * refuses them (docs/262).
+ */
+export const OVERRIDE_SENTINELS: readonly string[] = [
+  "__RESET_PORTS__",
+  "__RESET_NETWORKS__",
+  "__RESET_DNS__",
+];
 
 export class ComposeValidationError extends Error {
   constructor(message: string) {
@@ -592,7 +656,13 @@ function isTrustedOpsProxyService(
     && denied.every((key) => String(env[key]) === "0");
 }
 
-function validateServiceSecurity(
+/**
+ * Exported for docs/262: a plugin's compose fragment is held to exactly the
+ * rules the consuming session applies to the project's own services, so
+ * `plugin-compose.ts` runs THIS function rather than a second copy that could
+ * drift from it.
+ */
+export function validateServiceSecurity(
   name: string,
   svc: Record<string, unknown>,
   dockerSocket: boolean,
@@ -965,7 +1035,15 @@ export function generateComposeOverride(
     if (opts.stackName) {
       labels["shipit-stack"] = opts.stackName;
     }
+    if (svc.settingsFingerprint) {
+      labels["shipit-plugin-settings"] = svc.settingsFingerprint;
+    }
     const entry: Record<string, unknown> = {
+      // docs/262 — a plugin service has no definition in the user's compose
+      // file, so its own (already validated and path-rewritten) definition is
+      // the base everything below overlays. Spread FIRST: every ShipIt-owned
+      // key that follows must win over anything the fragment declared.
+      ...(svc.pluginDefinition ?? {}),
       labels,
       // Replace, do not merge, user-declared networks. A second ordinary
       // bridge would give repository code a NAT route before containment.
@@ -1143,6 +1221,16 @@ export function generateComposeOverride(
   // it, never creates or owns it.
   for (const name of referencedOverlayVolumes) {
     volumeOverlay[name] = { name, external: true };
+  }
+  // docs/262 — the same treatment for a plugin generation's overlay volume: the
+  // orchestrator creates it (`plugin-overlay.ts`) and compose only references
+  // it. `shipit-workspace` can appear here too when a plugin mounts the project;
+  // it is already declared above whenever it is reachable, and never overwritten
+  // with its alias, which is not the real volume's name.
+  for (const svc of services) {
+    for (const name of svc.externalVolumes ?? []) {
+      if (!volumeOverlay[name]) volumeOverlay[name] = { name, external: true };
+    }
   }
   if (Object.keys(volumeOverlay).length > 0) {
     override.volumes = volumeOverlay;

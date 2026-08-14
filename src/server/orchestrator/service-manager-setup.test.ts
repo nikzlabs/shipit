@@ -19,7 +19,7 @@ import os from "node:os";
 import path from "node:path";
 import { DatabaseManager } from "../shared/database.js";
 import { RepoStore } from "./repo-store.js";
-import { applyShipitConfigChange, setupServiceManager } from "./service-manager-setup.js";
+import { applyShipitConfigChange, emitPluginReposUpdated, setupServiceManager } from "./service-manager-setup.js";
 import { ContainerSessionRunner } from "./container-session-runner.js";
 import type { ServiceManager } from "./service-manager.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
@@ -147,6 +147,57 @@ describe("applyShipitConfigChange", () => {
     return deps;
   }
 
+  // docs/262 — an activation round settles on every session activation and every
+  // shipit.yaml edit, so the reconcile it can trigger must be gated on the
+  // plugin services actually having changed, and must never overlap the first
+  // start() (which is what `serializeStackOp` guarantees).
+  describe("plugin services on an activation round (docs/262)", () => {
+    function makePluginManager(services: unknown[]) {
+      return {
+        ...makeFakeManager(),
+        setPluginServices: vi.fn((next: unknown[]) =>
+          JSON.stringify(next) !== JSON.stringify(services)),
+        // req 23 — a settled round also resyncs the declared credential names,
+        // so a manager in the map has to answer this too.
+        refreshSecretsStatus: vi.fn(async () => { /* no secrets store in tests */ }),
+      };
+    }
+
+    it("reconciles once when the round changes the plugin services", async () => {
+      writeConfig("compose: docker-compose.yml\n");
+      const runner = makeRunner();
+      const mgr = makePluginManager([]);
+      const deps = {
+        ...makeLiveDeps(mgr),
+        resolvePluginServices: vi.fn(async () => [{ name: "probe" }] as never),
+      };
+
+      emitPluginReposUpdated(runner, deps)("s1");
+      await vi.waitFor(() => expect(mgr.reconcile).toHaveBeenCalledTimes(1));
+      expect(deps.resolvePluginServices).toHaveBeenCalledWith("s1", tmpDir);
+    });
+
+    it("does not reconcile when the round changes nothing", async () => {
+      writeConfig("compose: docker-compose.yml\n");
+      const runner = makeRunner();
+      const mgr = makePluginManager([]);
+      const deps = { ...makeLiveDeps(mgr), resolvePluginServices: vi.fn(async () => [] as never) };
+
+      emitPluginReposUpdated(runner, deps)("s1");
+      await vi.waitFor(() => expect(deps.resolvePluginServices).toHaveBeenCalled());
+      expect(mgr.reconcile).not.toHaveBeenCalled();
+    });
+
+    it("still tells viewers the round settled when there is no manager", () => {
+      const runner = makeRunner();
+      const deps = { ...makeDeps(""), resolvePluginServices: vi.fn(async () => [] as never) };
+
+      emitPluginReposUpdated(runner, deps)("s1");
+      expect(runner.emitMessage).toHaveBeenCalledWith({ type: "plugin_repos_updated", sessionId: "s1" });
+      expect(deps.resolvePluginServices).not.toHaveBeenCalled();
+    });
+  });
+
   it("reconciles when only the compose file's contents changed", async () => {
     writeConfig("compose: docker-compose.yml\n");
     const runner = makeRunner();
@@ -155,7 +206,13 @@ describe("applyShipitConfigChange", () => {
     applyShipitConfigChange(runner, makeLiveDeps(mgr));
     await vi.waitFor(() => expect(mgr.reconcile).toHaveBeenCalled());
 
-    expect(mgr.updateComposeConfig).toHaveBeenCalledWith({ file: "docker-compose.yml", dockerSocket: false });
+    // docs/262 — the second argument says whether the project HAS a compose file
+    // of its own, which it does not only when its stack is its declared plugins
+    // alone.
+    expect(mgr.updateComposeConfig).toHaveBeenCalledWith(
+      { file: "docker-compose.yml", dockerSocket: false },
+      { noProjectCompose: false },
+    );
     expect(mgr.composeFile).toBe("docker-compose.yml");
   });
 

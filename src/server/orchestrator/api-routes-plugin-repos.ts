@@ -33,7 +33,13 @@ import {
 import { pluginCommandIssuesByRepo } from "./plugin-commands.js";
 import type { PluginCliRequest } from "./plugin-cli-run.js";
 import { pluginSettingsIssuesByRepo } from "./plugin-state.js";
-import { getActivationState, getPluginPrepareFailures } from "./services/plugin-activation.js";
+import {
+  getActivationState,
+  getPluginPrepareFailures,
+  getPluginServiceFailures,
+} from "./services/plugin-activation.js";
+import { collectPluginFragments } from "./plugin-compose.js";
+import { parseComposeFile } from "./compose-generator.js";
 import { sessionStateDirForWorkspace } from "./session-state-dir.js";
 import { getErrorMessage } from "./validation.js";
 
@@ -192,7 +198,15 @@ export async function registerPluginRepoRoutes(
           // of the declaration against the live manifests. A GET never
           // activates anything — that runs on session activation and on a
           // shipit.yaml edit.
-          readRuntimeState(request.query.sessionId, session.workspaceDir, config),
+          readRuntimeState(request.query.sessionId, session.workspaceDir, config, {
+            // docs/262 req 20 — a fragment is validated against the rules THIS
+            // session applies, and a contained session applies more of them
+            // (docs/263). Reporting under the wrong rule set would show a card
+            // with no problem for a plugin the session will refuse to start.
+            containEgress: request.query.sessionId
+              ? deps.containerManager?.isEgressContained(request.query.sessionId) ?? false
+              : false,
+          }),
           credentialGroups,
         );
       } catch (err) {
@@ -221,7 +235,8 @@ export async function registerPluginRepoRoutes(
 function readRuntimeState(
   sessionId: string | undefined,
   workspaceDir: string,
-  config: Pick<ShipitConfig, "plugins" | "pluginExports">,
+  config: Pick<ShipitConfig, "plugins" | "pluginExports" | "compose">,
+  opts: { containEgress: boolean },
 ): Record<string, PluginRepoRuntime> {
   const runtime: Record<string, PluginRepoRuntime> = {};
   if (!sessionId) return runtime;
@@ -232,6 +247,13 @@ function readRuntimeState(
   } catch {
     return runtime;
   }
+
+  // reqs 3, 20 — recomputed for the same reason the settings issues are: the
+  // collector is pure, so this reports exactly what the service path would
+  // refuse to surface, including before any stack has started. What it CANNOT
+  // recompute — a runtime layer Docker would not give us — is remembered by the
+  // service resolver and merged in below.
+  const serviceIssues = collectPluginFragmentIssues(workspaceDir, stateDir, config, opts.containEgress);
 
   // req 26 — recomputed, not remembered: the resolver is pure, so this reports
   // exactly what a prepare pass would refuse to write, including before the
@@ -254,6 +276,10 @@ function readRuntimeState(
     const entry: PluginRepoRuntime = {};
     const stateIssues = issuesFor(repo.name);
     const cliIssues = commandIssues.get(repo.name) ?? [];
+    const svcIssues = [
+      ...(serviceIssues.get(repo.name) ?? []),
+      ...getPluginServiceFailures(sessionId, repo.name),
+    ];
     // A `repo: self` import runs the live working tree — no generation, no
     // activation attempt (req 27). Its settings still resolve against the same
     // file's own manifest, so it can still have something to say.
@@ -269,14 +295,51 @@ function readRuntimeState(
       if (attempt?.error) entry.error = attempt.error;
       if (attempt?.warning) entry.warning = attempt.warning;
       if (attempt?.missingSelectors?.length) entry.missingSelectors = attempt.missingSelectors;
-    } else if (stateIssues.length === 0 && cliIssues.length === 0) {
+    } else if (stateIssues.length === 0 && cliIssues.length === 0 && svcIssues.length === 0) {
       continue;
     }
     if (stateIssues.length > 0) entry.settingsIssues = stateIssues;
     if (cliIssues.length > 0) entry.commandIssues = cliIssues;
+    if (svcIssues.length > 0) entry.serviceIssues = svcIssues;
     runtime[repo.name] = entry;
   }
   return runtime;
+}
+
+/**
+ * Fragment-level service problems, recomputed. Never throws: a card that cannot
+ * describe a repository's services must still describe everything else about it.
+ */
+function collectPluginFragmentIssues(
+  workspaceDir: string,
+  stateDir: string,
+  config: Pick<ShipitConfig, "plugins" | "pluginExports" | "compose">,
+  containEgress: boolean,
+): Map<string, string[]> {
+  try {
+    let projectServiceNames: string[] = [];
+    if (config.compose) {
+      try {
+        projectServiceNames = parseComposeFile(path.join(workspaceDir, config.compose.file), {
+          dockerSocket: config.compose.dockerSocket,
+          containEgress,
+        }).map((s) => s.name);
+      } catch {
+        // The project's own compose file is reported through its own path; a
+        // plugin card must not inherit its parse failure.
+      }
+    }
+    return collectPluginFragments({
+      workspaceDir,
+      stateDir,
+      plugins: config.plugins,
+      selfExports: config.pluginExports,
+      projectServiceNames,
+      containEgress,
+    }).issuesByRepo;
+  } catch {
+    return new Map();
+  }
 }
 
 function emptySnapshot(consumerRepoUrl: string | null): PluginReposSnapshot {

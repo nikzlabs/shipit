@@ -2,7 +2,11 @@ import { create } from "zustand";
 import { getLocalStorageObject } from "../utils/local-storage.js";
 import type { PreviewStatus } from "../components/PreviewFrame.js";
 import type { DevicePreset } from "../components/device-presets.js";
-import type { ComposeServiceStatus, ComposeServicePreviewMode } from "../../server/shared/types/ws-server-messages.js";
+import type {
+  ComposeServiceStatus,
+  ComposeServicePreviewMode,
+  ComposeServiceOriginView,
+} from "../../server/shared/types/ws-server-messages.js";
 import type { SecretRequirement } from "../../server/shared/types/domain-types.js";
 import type { PluginCredentialGroup } from "../../server/shared/plugin-credentials.js";
 
@@ -14,6 +18,13 @@ export interface ManagedServiceState {
   port?: number;
   preview: ComposeServicePreviewMode;
   error?: string;
+  /**
+   * docs/262 req 3 — the plugin a service came from, absent for the project's
+   * own. Services are otherwise first-class and indistinguishable, which is the
+   * requirement; this is the one thing that says where one came from, and the
+   * server sends it on both the live and the replayed message.
+   */
+  origin?: ComposeServiceOriginView;
 }
 
 // ---- Agent-authored preview links (docs/258) ----

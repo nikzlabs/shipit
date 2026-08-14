@@ -10,6 +10,7 @@ export const handleServiceStatus: Handler<WsServiceStatus> = (_ctx, data) => {
     port: data.port,
     preview: data.preview,
     error: data.error,
+    ...(data.origin ? { origin: data.origin } : {}),
   });
   // Drive the dev_server startup step from real service state. This is
   // what un-sticks the "Installing dependencies..." overlay for compose-

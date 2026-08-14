@@ -76,6 +76,20 @@ export interface ComposeCliOptions {
    * before, and the generated override contains only absolute paths anyway.
    */
   overrideFile: string;
+  /**
+   * docs/262 — this project declares NO compose file of its own, so the stack is
+   * its plugins' services alone (req 5: wiring a plugin in costs one
+   * declaration, not a declaration plus an empty compose file to hang it on).
+   * The project file is then left off the argument vector entirely and the
+   * generated override is the only source.
+   *
+   * Deliberately "absent", not "optional": keying it on whether a conventional
+   * `docker-compose.yml` happens to EXIST would start a stack the project never
+   * declared — ShipIt runs a compose file because `shipit.yaml` names it, and a
+   * repository that adds a plugin has not asked for that to change (review
+   * finding).
+   */
+  noProjectFile?: boolean;
   /** Optional override for running compose commands (useful for testing). */
   composeRunner?: ComposeRunner;
   /** Optional override for querying compose commands (useful for testing). */
@@ -87,6 +101,7 @@ export class ComposeCli {
   private readonly workspaceDir: string;
   private composeFile: string;
   private readonly overrideFile: string;
+  private noProjectFile: boolean;
   private readonly runner: ComposeRunner;
   /** Exposed so the poller / direct-spawn callers can run their own queries. */
   readonly query: ComposeQuery;
@@ -96,6 +111,7 @@ export class ComposeCli {
     this.workspaceDir = opts.workspaceDir;
     this.composeFile = opts.composeFile;
     this.overrideFile = opts.overrideFile;
+    this.noProjectFile = opts.noProjectFile ?? false;
     this.runner = opts.composeRunner ?? defaultComposeRunner;
     this.query = opts.composeQuery ?? defaultComposeQuery;
   }
@@ -105,15 +121,16 @@ export class ComposeCli {
    * session's `shipit.yaml` changes its `compose:` path mid-session (a git
    * sync/rebase can rewrite it) — see `ServiceManager.updateComposeConfig`.
    */
-  setComposeFile(file: string): void {
+  setComposeFile(file: string, noProjectFile = false): void {
     this.composeFile = file;
+    this.noProjectFile = noProjectFile;
   }
 
   /** Build common compose CLI args with the user file and override. */
   args(...extra: string[]): string[] {
     return [
       "compose",
-      "-f", this.composeFile,
+      ...(this.noProjectFile ? [] : ["-f", this.composeFile]),
       "-f", this.overrideFile,
       "-p", `shipit-${this.sessionId.slice(0, 12)}`,
       ...extra,

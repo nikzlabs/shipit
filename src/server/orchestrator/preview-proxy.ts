@@ -611,19 +611,23 @@ export function registerPreviewProxy(
   const reportError = createPreviewErrorReporter(runnerRegistry);
 
   /**
-   * Resolve the container IP for a session + port combination.
-   * Checks compose service containers first (by port), falls back to agent container.
+   * Resolve the container address behind a preview subdomain's port.
+   *
+   * Compose services first, then the agent container. The returned port is not
+   * always the one in the subdomain: docs/262 req 18 pins a plugin service's
+   * PUBLISHED port for the session's whole life so the preview origin is stable,
+   * while its container port follows whatever the plugin's current compose
+   * fragment declares. The manager owns that mapping; for every project service
+   * — and for the agent-container fallback, which has no service behind it — the
+   * two numbers are the same.
    */
-  function resolveContainerIp(sessionId: string, port: number): string | null {
-    // Check compose services for a container listening on this port
+  function resolveTarget(sessionId: string, port: number): { ip: string; port: number } | null {
     const mgr = serviceManagers.get(sessionId);
-    if (mgr) {
-      const ip = mgr.getContainerIpForPort(port);
-      if (ip) return ip;
-    }
+    const target = mgr?.resolvePreviewTarget(port);
+    if (target) return { ip: target.containerIp, port: target.port };
     // Fall back to the agent container
     const sc = containerManager.get(sessionId);
-    return sc?.containerIp ?? null;
+    return sc?.containerIp ? { ip: sc.containerIp, port } : null;
   }
 
   // --- Subdomain-based proxy (intercepts before Fastify routing) ----------
@@ -639,13 +643,16 @@ export function registerPreviewProxy(
       return;
     }
 
-    const { sessionId, port: targetPort } = parsed;
-    const containerIp = resolveContainerIp(sessionId, targetPort);
-    if (!containerIp) {
+    const { sessionId, port: originPort } = parsed;
+    const target = resolveTarget(sessionId, originPort);
+    if (!target) {
       reply.code(404).send({ error: "Session container not found" });
       done();
       return;
     }
+    // Errors are reported against the ORIGIN's port, which is what the user's
+    // address bar and the health poller both use.
+    const { ip: containerIp, port: targetPort } = target;
 
     reply.hijack();
     proxyHttp(
@@ -656,8 +663,8 @@ export function registerPreviewProxy(
       request.headers,
       request.raw,
       reply.raw,
-      (msg) => reportError(sessionId, targetPort, msg, false),
-      () => reportError.success(sessionId, targetPort),
+      (msg) => reportError(sessionId, originPort, msg, false),
+      () => reportError.success(sessionId, originPort),
     );
     done();
   });
@@ -671,18 +678,22 @@ export function registerPreviewProxy(
     "/api/preview-health/:sessionId/:port",
     async (request, reply) => {
       const params = request.params as { sessionId: string; port: string };
-      const targetPort = Number(params.port);
+      const originPort = Number(params.port);
       if (
-        !Number.isInteger(targetPort) ||
-        targetPort < 1 ||
-        targetPort > 65535
+        !Number.isInteger(originPort) ||
+        originPort < 1 ||
+        originPort > 65535
       ) {
         return reply.send({ ready: false });
       }
-      const containerIp = resolveContainerIp(params.sessionId, targetPort);
-      if (!containerIp) {
+      // The poller asks about the origin it is going to load, so the probe has
+      // to follow the same mapping the proxy does — otherwise a plugin service
+      // whose fragment moved its port would report "not ready" forever.
+      const target = resolveTarget(params.sessionId, originPort);
+      if (!target) {
         return reply.send({ ready: false });
       }
+      const { ip: containerIp, port: targetPort } = target;
       // Quick HTTP probe to the container's dev server
       const ready = await new Promise<boolean>((resolve) => {
         const probe = http.request(
@@ -734,21 +745,21 @@ export function registerPreviewProxy(
       // Try subdomain-based first
       const subdomainParsed = parsePreviewSubdomain(req.headers.host);
       if (subdomainParsed) {
-        const { sessionId, port: targetPort } = subdomainParsed;
-        const containerIp = resolveContainerIp(sessionId, targetPort);
-        if (!containerIp) {
-          reportError(sessionId, targetPort, "Container not found for HMR upgrade", true);
+        const { sessionId, port: originPort } = subdomainParsed;
+        const target = resolveTarget(sessionId, originPort);
+        if (!target) {
+          reportError(sessionId, originPort, "Container not found for HMR upgrade", true);
           socket.destroy();
           return;
         }
         proxyWebSocket(
-          containerIp,
-          targetPort,
+          target.ip,
+          target.port,
           req.url || "/",
           req.headers,
           socket,
-          (msg) => reportError(sessionId, targetPort, msg, true),
-          () => reportError.success(sessionId, targetPort),
+          (msg) => reportError(sessionId, originPort, msg, true),
+          () => reportError.success(sessionId, originPort),
         );
         return;
       }

@@ -189,6 +189,44 @@ describe("Integration: GET /api/plugin-repos (docs/262)", () => {
     expect((await snapshot()).repos[0].issues).toEqual([]);
   });
 
+  // docs/262 reqs 3, 20 — the card reports a service problem BEFORE anything has
+  // been started, because the collector the service path runs is pure and the
+  // route re-derives from it. A GET still activates nothing.
+  it("reports a plugin service that collides with the project's own (req 20)", async () => {
+    fs.writeFileSync(
+      path.join(workspaceDir, "docker-compose.yml"),
+      "services:\n  probe:\n    image: node:20\n",
+    );
+    fs.mkdirSync(path.join(workspaceDir, "tools"), { recursive: true });
+    fs.writeFileSync(
+      path.join(workspaceDir, "tools", "docker-compose.yml"),
+      "services:\n  probe:\n    image: node:22-alpine\n",
+    );
+    writeConfig(
+      "compose: docker-compose.yml\n"
+      + "exports:\n  plugins:\n    probe:\n      compose: tools/docker-compose.yml\n"
+      + "plugins:\n  repos:\n    - repo: self\n      name: dev\n"
+      + "  use:\n    - plugin: probe\n      from: dev\n",
+    );
+    const issues = (await snapshot()).repos[0].issues;
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toContain("collides with a service this project");
+  });
+
+  it("reports a compose fragment a plugin cannot be run from (req 13)", async () => {
+    fs.mkdirSync(path.join(workspaceDir, "tools"), { recursive: true });
+    fs.writeFileSync(
+      path.join(workspaceDir, "tools", "docker-compose.yml"),
+      "services:\n  probe:\n    build: .\n",
+    );
+    writeConfig(
+      "exports:\n  plugins:\n    probe:\n      compose: tools/docker-compose.yml\n"
+      + "plugins:\n  repos:\n    - repo: self\n      name: dev\n"
+      + "  use:\n    - plugin: probe\n      from: dev\n",
+    );
+    expect((await snapshot()).repos[0].issues[0]).toContain("declare an `image:` instead");
+  });
+
   it("re-reads the file per request — an edit changes the very next answer", async () => {
     writeConfig("agent: {}\n");
     expect((await snapshot()).declared).toBe(false);
