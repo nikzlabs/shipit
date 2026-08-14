@@ -682,11 +682,10 @@ instead of a repeat.
   that must FOLLOW a later swap, which is why `/plugins/<name>` stays
   unresolved. Verified at the source; the classification is the req 10 slice's.
 
-  This is a rule about one operation's reads, not about every store path. The
-  orchestrator's snapshot readers hold a weaker property that is sufficient for
-  a single fact: `readActiveGeneration` is one `readFileSync` through the link,
-  so one `open` resolves it, while `readActiveManifest` traverses twice
-  (`existsSync`, then read) and can therefore skew inside a single call.
+  This is a rule about one operation's reads, not about every store path — and
+  it is about the READS. `/plugins/<name>` still points at the unresolved
+  `active`, so the verified directory deliberately does not travel through the
+  link half; what travels there is the decision of whether to link at all.
 
   **Published by rename — which is complete, not atomic.** Prepare runs while a
   turn may be reading these files, so deleting the live directory and copying
@@ -814,21 +813,58 @@ instead of a repeat.
     is:** nothing can prove whose it is. The orchestrator deliberately keeps
     such a generation rather than deleting it — deleting would drop every
     plugin in every live session on the first deploy, ahead of a fetch that may
-    fail — so refusing to EXPOSE it is what makes keeping it safe. The cost is
+    fail — so refusing to expose it is what makes keeping it safe. The cost is
     stated rather than hidden: after this deploys, an existing session's
     plugins read as unavailable until the next successful activation
     republishes them with a source, which is the same round that would have
     refreshed them anyway.
 
+    **A refusal says why.** `missing` never leaves the worker — the orchestrator
+    ingests only the failure lists — so a refused repository would otherwise
+    render as a bare `unavailable`, which is the wrong story: something IS
+    published, it is just not this declaration's. Usually the activation that
+    caused it reports its own error, but that is transient in-memory state and
+    there are mismatch cases with no current error at all (an orchestrator
+    restart, or no round having run). So the refusal is pushed as an attributed
+    reason naming the repository the version actually came from, or saying
+    plainly that a legacy version cannot be confirmed as this one's. And a
+    withdrawal that FAILS is reported rather than swallowed: this path exists to
+    stop the agent reaching a tree it may not use, so "could not take it away"
+    is the one outcome the card must not render as a clean unavailable.
+
+    **Scope, stated precisely, because "the agent cannot see it" would be
+    false.** What this guard controls is the MANAGED surfaces — the
+    `/plugins/<name>` link, the materialized skills, the wrapper names on PATH.
+    The plugin store itself is mounted read-only in the container, so an agent
+    with a shell can still read `/plugin-store/<name>/active` directly. That is
+    unchanged by this work and is the mount's own design (plan §2); the claim
+    here is that ShipIt stops PRESENTING a foreign version as this project's
+    plugin, not that the bytes become unreachable.
+
+    Two further limits, both inherent rather than deferred. **Withdrawal happens
+    on the next prepare, and prepare runs when an activation round settles** —
+    so between a `shipit.yaml` edit and that round finishing (a fetch, possibly
+    an install, possibly a failure) the previous artifacts are still in place,
+    and a slow repository delays the withdrawal for every repository in the
+    round. Running one prepare immediately on a declaration change would narrow
+    it, and that is an orchestrator-side trigger rather than a container-side
+    check. And **an already-running container keeps the code it started with**:
+    a session container that predates this guard does not acquire it from an
+    orchestrator upgrade, so the guarantee is about containers started after it,
+    plus whatever container recreation the upgrade performs.
+
     The record format lives in `shared/plugin-generation-record.ts` rather than
     in the container: `src/server/session/` cannot import
     `src/server/orchestrator/` (the ESLint boundary, type imports included), so
     a container-local copy would be a second implementation of a format only
-    one file writes. Its reader fails closed — a record that is not an object,
-    or whose `source` is not a string, reads as having no source — because a
-    corrupt file must not be able to decide that a foreign checkout is this
-    declaration's. Folding the orchestrator's own reader into it is a follow-up
-    for whoever next owns that file.
+    one file writes. It exposes only the `source`, because that is the only
+    question this side asks — a reader that also returned the commit would
+    invite a second question (what a malformed `commit` should mean) with no
+    bearing on the decision. It fails closed: not JSON, not an object, an array,
+    or a non-string `source` all read as "no source", because a corrupt file
+    must not be able to decide that a foreign checkout is this declaration's.
+    Folding the orchestrator's own reader into it is a follow-up for whoever
+    next owns that file.
   - **The response is validated, not cast** (review finding). Containers survive
     an orchestrator restart and are reconnected, so a rolling upgrade puts a new
     orchestrator in front of a worker built before failures carried a `repo`.
@@ -881,6 +917,15 @@ instead of a repeat.
     CURRENT declaration and the dropped repository has no card. Surfacing it
     needs a tombstone or a session-level warning — a surface, not a field — and
     that is its own piece of work rather than a line in this one.
+
+    A repository that is still DECLARED but identity-refused is a different
+    case, because it does have a card: the link withdrawal reports its own
+    failure there. The skill and wrapper sweeps still only log theirs, so a
+    materialized skill or a wrapper that cannot be removed leaves the agent
+    holding an artifact of a version the card says is unavailable. That is the
+    remaining fail-open in this half, and it wants the sweeps to return
+    attributed failures the way the write paths already do — a change to two
+    more return types rather than a new surface.
   - **Runner disposal clears the record while the container's filesystem may
     outlive it.** `clearActivationState` fires on every runner `disposed` event,
     and an idle-disposed container is later reconnected without a fresh

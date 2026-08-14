@@ -383,8 +383,15 @@ describe("preparePlugins — a generation belongs to the repository the declarat
     // failure with a reason. A second failure row here would state one fact
     // twice, as two problems.
     expect(result.missing).toEqual(["tools"]);
-    expect(result.linkFailed).toEqual([]);
     expect(result.skillsFailed).toEqual([]);
+    // …and the card is TOLD why. `missing` never leaves the worker — the
+    // orchestrator ingests only the failure lists — so without this the card
+    // renders a bare `unavailable`, which is the wrong story: something is
+    // published here, it is just not this declaration's (req 13 asks for the
+    // why, not only the fact).
+    expect(result.linkFailed).toEqual([
+      { repo: "tools", reason: expect.stringContaining("published from `acme/old`") },
+    ]);
   });
 
   it("refuses a legacy record with no source at all", () => {
@@ -401,6 +408,11 @@ describe("preparePlugins — a generation belongs to the repository the declarat
     expect(result.linked).toEqual([]);
     expect(result.skills).toEqual([]);
     expect(result.commands).toEqual([]);
+    // A legacy version cannot be blamed on a repository, so the reason says
+    // what is actually true: it cannot be confirmed as this one's.
+    expect(result.linkFailed).toEqual([
+      { repo: "tools", reason: expect.stringContaining("predates ShipIt recording") },
+    ]);
   });
 
   it("takes the plugin back as soon as a publish records the right source", () => {
@@ -433,6 +445,30 @@ describe("preparePlugins — a generation belongs to the repository the declarat
     expect(result.skillsRemoved).toEqual([namespacedName("probe", "probe")]);
   });
 
+  it("reports a withdrawal it could not carry out", () => {
+    declare();
+    publishGeneration("tools", "a".repeat(40), SKILLS_MANIFEST, FILES);
+    preparePlugins(opts());
+
+    publishGeneration("tools", "b".repeat(40), SKILLS_MANIFEST, FILES, "acme/old");
+    const unlink = vi.spyOn(fs, "unlinkSync").mockImplementation((p) => {
+      if (String(p) === path.join(pluginsDir, "tools")) throw new Error("device or resource busy");
+    });
+    vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    const result = preparePlugins(opts());
+    unlink.mockRestore();
+
+    // The point of the whole path is to stop the agent reaching a tree it may
+    // not use. "We could not take it away" is the one outcome that must not
+    // render as a clean `unavailable`.
+    expect(result.linkFailed.map((f) => f.reason)).toEqual([
+      expect.stringContaining("published from `acme/old`"),
+      expect.stringContaining("could not be removed"),
+    ]);
+    expect(fs.existsSync(path.join(pluginsDir, "tools"))).toBe(true);
+  });
+
   it("matches the declaration's repository case-insensitively", () => {
     // `destinationKey` lowercases, and a consumer may write `AcMe/Tools`.
     declare("plugins:\n  repos:\n    - repo: AcMe/Tools\n      name: tools\n      branch: main\n"
@@ -442,7 +478,11 @@ describe("preparePlugins — a generation belongs to the repository the declarat
     expect(preparePlugins(opts()).linked).toEqual(["tools"]);
   });
 
-  it("does not refuse `repo: self`, which has no generation to check (req 27)", () => {
+  // `repo: self` has no generation, so there is nothing to check and nothing to
+  // refuse. Asserted narrowly on purpose: a self import materializes no skills
+  // today either (its consumer-path parity is still its own piece of work), so
+  // this case must not be read as "self is fully supported".
+  it("has nothing to refuse for `repo: self`, which has no generation (req 27)", () => {
     declare("exports:\n  plugins:\n    probe:\n      skills: pkg/skills\n"
       + "plugins:\n  repos:\n    - repo: self\n      name: dev\n"
       + "  use:\n    - plugin: probe\n      from: dev\n");
@@ -451,6 +491,8 @@ describe("preparePlugins — a generation belongs to the repository the declarat
 
     const result = preparePlugins(opts());
 
+    // Never enters the link loop, so it can neither be reported missing nor
+    // refused — the identity check is not consulted for it at all.
     expect(result.missing).toEqual([]);
     expect(result.linkFailed).toEqual([]);
   });

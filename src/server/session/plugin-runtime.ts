@@ -22,7 +22,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { CONTAINER_PLUGINS_DIR, CONTAINER_PLUGIN_STORE_DIR } from "../shared/fs-constants.js";
-import { readPluginGenerationRecord } from "../shared/plugin-generation-record.js";
+import { readPluginGenerationSource } from "../shared/plugin-generation-record.js";
 import { destinationKey, type DeclaredPluginRepo } from "../shared/plugin-repos.js";
 import { resolveShipitConfig } from "../shared/shipit-config.js";
 import { getErrorMessage } from "../shared/utils.js";
@@ -119,11 +119,12 @@ export function preparePlugins(opts: PreparePluginsOptions): PluginPrepareResult
   // identity check exposes what the others refused. Splitting this between the
   // links, the skills and the commands is exactly how the pass came to describe
   // two generations at once before.
-  const live = new Map<string, string | null>();
-  const liveDir = (repo: DeclaredPluginRepo): string | null => {
+  const live = new Map<string, LiveGeneration>();
+  const resolve = (repo: DeclaredPluginRepo): LiveGeneration => {
     if (!live.has(repo.name)) live.set(repo.name, resolveLiveGeneration(storeDir, repo));
-    return live.get(repo.name) ?? null;
+    return live.get(repo.name)!;
   };
+  const liveDir = (repo: DeclaredPluginRepo): string | null => resolve(repo).dir;
 
   for (const repo of config.plugins.repos) {
     // `repo: self` runs the live working tree and has no generation (req 27);
@@ -132,8 +133,14 @@ export function preparePlugins(opts: PreparePluginsOptions): PluginPrepareResult
     wanted.add(repo.name);
 
     const target = path.join(storeDir, repo.name, "active");
-    if (liveDir(repo) === null) {
+    const generation = resolve(repo);
+    if (generation.dir === null) {
       result.missing.push(repo.name);
+      // A refusal explains itself; an ordinary "not fetched yet" does not need
+      // to, because the card already renders that from the generation state.
+      if (generation.refusal) {
+        result.linkFailed.push({ repo: repo.name, reason: generation.refusal });
+      }
       // A generation this session already linked can stop being exposable while
       // the declaration still names the repository — retired mid-refresh, or
       // re-pointed so that what is live belongs to the PREVIOUS repository.
@@ -144,7 +151,13 @@ export function preparePlugins(opts: PreparePluginsOptions): PluginPrepareResult
       // simultaneously reporting as unavailable (req 13). Dropping it is safe
       // because the next prepare re-links as soon as an owned generation is
       // published, and every activation round and container start fires one.
-      removeDeadLink(pluginsDir, repo.name, target);
+      //
+      // A withdrawal that FAILS is reported, not swallowed: this whole path
+      // exists to stop the agent reaching a tree it may not use, so "we could
+      // not take it away" is the one outcome the card must not render as a
+      // clean unavailable.
+      const withdrawal = removeDeadLink(pluginsDir, repo.name, target);
+      if (withdrawal) result.linkFailed.push({ repo: repo.name, reason: withdrawal });
       continue;
     }
     const failure = linkPlugin(pluginsDir, repo.name, target);
@@ -289,19 +302,48 @@ export function preparePlugins(opts: PreparePluginsOptions): PluginPrepareResult
  * the moment a publish records a source, which is the next successful
  * activation round.
  */
-function resolveLiveGeneration(storeDir: string, repo: DeclaredPluginRepo): string | null {
+interface LiveGeneration {
+  /** The concrete generation directory, or `null` when none may be exposed. */
+  dir: string | null;
+  /**
+   * Why a generation that EXISTS may not be used, as a complete sentence for
+   * the card. Absent when there is simply nothing published — that is the
+   * ordinary state, not a problem to report.
+   */
+  refusal?: string;
+}
+
+function resolveLiveGeneration(storeDir: string, repo: DeclaredPluginRepo): LiveGeneration {
   let dir: string;
   try {
     dir = fs.realpathSync(path.join(storeDir, repo.name, "active"));
   } catch {
-    return null;
+    // Nothing published, or a link dangling mid-prune. The ordinary state, and
+    // the card already renders it as `unavailable` from the generation state.
+    return { dir: null };
   }
   // Read from the RESOLVED directory, never through `active` again: the point
   // of pinning is that the record and the tree it describes are the same
   // generation.
-  const record = readPluginGenerationRecord(dir);
-  if (record?.source !== destinationKey(repo.source)) return null;
-  return dir;
+  const source = readPluginGenerationSource(dir);
+  if (source === destinationKey(repo.source)) return { dir };
+  // Something IS published here and this session may not use it. That is not
+  // the same as "nothing published", and it does not explain itself: `missing`
+  // never leaves the worker (the orchestrator ingests only the failure lists),
+  // so without a reason here the card would render a bare `unavailable` for a
+  // state that is not "not fetched yet". Usually the failed activation that
+  // caused it supplies its own reason, but that is transient in-memory state —
+  // after an orchestrator restart, or when no round has run at all, this is the
+  // only thing that can say why (req 13: reports that plugins are unavailable
+  // *and why*).
+  return {
+    dir: null,
+    refusal: source === null
+      ? "the version on disk predates ShipIt recording which repository a version came from, so it cannot be"
+        + " confirmed as this repository's. The next successful activation replaces it."
+      : `the version on disk was published from \`${source}\`, which this declaration no longer names.`
+        + " The next successful activation replaces it.",
+  };
 }
 
 /**
@@ -349,13 +391,22 @@ function removeStaleLinks(pluginsDir: string, wanted: Set<string>): string[] {
  * `unlinked` would be false — that list means "the declaration no longer names
  * this repo", and here it still does.
  */
-function removeDeadLink(pluginsDir: string, name: string, target: string): void {
+function removeDeadLink(pluginsDir: string, name: string, target: string): string | null {
   const link = path.join(pluginsDir, name);
+  let current: string;
   try {
-    if (fs.readlinkSync(link) !== target) return;
-    fs.unlinkSync(link);
+    current = fs.readlinkSync(link);
   } catch {
-    // No link, or not a link at all — nothing of ours to remove.
+    return null; // No link, or not a link at all — nothing of ours to remove.
+  }
+  if (current !== target) return null;
+  try {
+    fs.unlinkSync(link);
+    return null;
+  } catch (err) {
+    const reason = getErrorMessage(err);
+    console.warn(`[plugins] could not withdraw ${link}: ${reason}`);
+    return `\`${link}\` could not be removed and still points at a version this session may not use: ${reason}`;
   }
 }
 
