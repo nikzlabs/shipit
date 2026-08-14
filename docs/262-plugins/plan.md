@@ -637,20 +637,39 @@ instead of a repeat.
 
   **`active` is followed ONCE per pass, and the concrete generation directory
   is what travels.** Prepare used to hand the unresolved `<store>/<name>/active`
-  path downstream, where the manifest read, the containment check and each skill
-  copy followed it again. Publication swaps that symlink atomically, so a
-  refresh landing mid-pass produced a pass describing two generations: the
-  manifest naming skills from A, the files copied from B. The containment check
-  made it worse than a torn copy — it resolves base and target independently, so
-  a swap between those two `realpath` calls left the base in B and the target in
-  A and reported the plugin as resolving outside its own checkout, a
-  security-shaped message for an ordinary refresh. Resolving once per repository
-  per pass makes a pass describe exactly one generation; the newer one arrives
-  with the next prepare, which every activation round fires. This pins only the
-  READ side — `/plugins/<name>` still points at the unresolved `active` on
-  purpose, so the agent sees a new generation with no re-link (the "mount the
-  store, not the generation" rule above). The same single-resolution discipline
-  is what the CLI and service slices apply to their own reads.
+  path downstream, where the manifest read and then the containment check
+  followed it again — two re-follows, not more: the check returns the *resolved*
+  target, so the per-skill copies were already concrete. Publication swaps that
+  symlink atomically, so a refresh landing between those two produced a pass
+  describing two generations, the manifest naming skills from A and the files
+  copied from B. The containment check made the narrowest case worse than a torn
+  copy — it resolves base and target independently, so a swap between those two
+  `realpath` calls left the base in B and the target in A and reported the
+  plugin as resolving outside its own checkout, a security-shaped message for an
+  ordinary refresh. Resolving once per repository per pass means a pass never
+  mixes two generations; the newer one arrives with the next prepare, which
+  every activation round fires.
+
+  Two honest limits on that. A pin fixes the *path*, not the directory it names:
+  publication prunes the generation it replaces, so a pass pinned to A can find
+  A deleted mid-copy and report a write failure. That is the trade — the
+  unpinned code silently copied B instead, and a bounded, visible, self-healing
+  failure is what req 13 asks for. And this pins only the READ side:
+  `/plugins/<name>` still points at the unresolved `active` on purpose, so the
+  agent sees a new generation with no re-link (the "mount the store, not the
+  generation" rule above). The consequence is a transient divergence — between a
+  refresh's swap and the next materialization, a turn can browse B's checkout
+  while invoking A's copied skills. Linking the concrete generation would close
+  it by giving up refresh-without-recreation, which costs more than the window
+  does.
+
+  This is a rule about one pass's reads, not about every store path, and it is
+  deliberately not claimed for the other slices. The orchestrator's readers hold
+  a weaker property that is sufficient for what they do: `readActiveGeneration`
+  is a single `readFileSync` through the link, so one `open` resolves it once,
+  while `readActiveManifest` traverses twice (`existsSync`, then read). The CLI
+  slice reads `active` nowhere at all — wrappers take the commit and the overlay
+  volume from the install job.
 
   **Published by rename — which is complete, not atomic.** Prepare runs while a
   turn may be reading these files, so deleting the live directory and copying

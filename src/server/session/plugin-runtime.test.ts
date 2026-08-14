@@ -313,10 +313,11 @@ describe("preparePlugins — skills (req 22)", () => {
       "utf-8",
     );
     expect(body).toContain("Generation A.");
-    // And no failure invented by the swap. `containedRealPath` resolves base
-    // and target independently, so a swap between those two calls used to
-    // report the plugin as resolving outside its own checkout — a
-    // security-shaped message for an ordinary refresh.
+    // The content assertion above is the discriminating one; this only says the
+    // pass completed cleanly. The worst unpinned outcome — `containedRealPath`
+    // resolving base and target in two independent calls, so a swap between
+    // them reports the plugin as resolving outside its own checkout — needs the
+    // swap to land INSIDE that function, which this timing does not produce.
     expect(result.skillsFailed).toEqual([]);
   });
 

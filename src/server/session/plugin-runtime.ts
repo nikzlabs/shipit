@@ -242,8 +242,15 @@ export function preparePlugins(opts: PreparePluginsOptions): PluginPrepareResult
  * `null` when nothing is published (or the link is dangling mid-prune).
  *
  * `realpathSync` rather than `existsSync` + the symlink path: one syscall
- * answers both "is there a live generation?" and "which one?", and the answer
- * cannot change under the caller afterwards.
+ * answers both "is there a live generation?" and "which one?", and the caller
+ * holds a path that no later swap can re-point.
+ *
+ * What that does NOT buy is a directory that stays there. A refresh publishing
+ * a new generation prunes the old one, so a pass pinned to A can find A deleted
+ * mid-copy and report a write failure. That is the intended trade: the
+ * unpinned code silently picked up B instead, and a bounded, visible,
+ * self-healing failure beats a quiet mixed read (req 13). The next prepare —
+ * which that same refresh round fires — materializes from B.
  */
 function realActiveDir(storeDir: string, repoName: string): string | null {
   try {
