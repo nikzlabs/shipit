@@ -303,6 +303,26 @@ user's follow-up of 2026-08-12 during the design phase.
   and more recoverable loss, and it takes a deliberate project edit to reach.*
   The alternative is to hold the plugin's pin and leave the project service
   without an origin until the user renumbers it.
+- **What happens to a plugin's saved state when a project re-points a
+  declaration at a different repository?** Req 18 says a plugin's
+  session-scoped state survives everything until the session is reset or
+  deleted, and it says the state belongs to *a plugin*. A project can edit its
+  `shipit.yaml` to keep the same declared name and the same import while
+  changing which repository it points at — so the next session hands the **new**
+  repository's plugin whatever the **previous** one saved (found while
+  implementing reqs 17, 18, 26; verified at the source: the saved state is keyed
+  by the import's local name, and nothing about the repository is recorded
+  alongside it). Neither answer is inferable from what the user has said:
+  - **Keep the state** — the plainest reading of req 18, and right when the
+    re-point is a move (a repository renamed, or a fork taking over), where
+    losing the plugin's data would be a surprise.
+  - **Treat it as a different plugin's state** — right when the re-point is a
+    replacement, where the new plugin inherits files it did not write, which can
+    range from harmless to data it will misread.
+  *(Agent recommendation: treat it as a different plugin's state and start
+  clean, but keep the old state recoverable rather than deleting it, so a move
+  is not a data-loss event. Not implemented — this bullet is the question, not
+  the answer.)*
 
 ## Resolved questions
 
