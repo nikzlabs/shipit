@@ -663,13 +663,24 @@ instead of a repeat.
   it by giving up refresh-without-recreation, which costs more than the window
   does.
 
-  This is a rule about one pass's reads, not about every store path, and it is
-  deliberately not claimed for the other slices. The orchestrator's readers hold
-  a weaker property that is sufficient for what they do: `readActiveGeneration`
-  is a single `readFileSync` through the link, so one `open` resolves it once,
-  while `readActiveManifest` traverses twice (`existsSync`, then read). The CLI
-  slice reads `active` nowhere at all — wrappers take the commit and the overlay
-  volume from the install job.
+  **The pin covers the skills half of the pass, not yet the whole pass.**
+  `preparePlugins` also generates the companion-CLI wrappers, and that half
+  reads each repository's manifest through the unresolved link
+  (`plugin-cli.ts`'s `activeCheckout`, which returns the `active` path itself).
+  So a swap landing between the two halves still produces a result whose
+  commands come from B and whose skills come from A. The fix is the same shape —
+  resolve once, in the pass, and hand the concrete directory to both halves —
+  and it belongs with the companion-CLI slice rather than being reached into
+  from here. The invocation path on the orchestrator side already pins
+  correctly (`plugin-cli-run.ts`'s `pinGeneration`: one `existsSync`, one
+  `realpathSync`, and the record, manifest, volume name and overlay lowerdir all
+  read out of that one directory).
+
+  This is a rule about one operation's reads, not about every store path. The
+  orchestrator's snapshot readers hold a weaker property that is sufficient for
+  a single fact: `readActiveGeneration` is one `readFileSync` through the link,
+  so one `open` resolves it, while `readActiveManifest` traverses twice
+  (`existsSync`, then read) and can therefore skew inside a single call.
 
   **Published by rename — which is complete, not atomic.** Prepare runs while a
   turn may be reading these files, so deleting the live directory and copying
