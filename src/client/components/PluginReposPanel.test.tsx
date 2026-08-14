@@ -84,6 +84,25 @@ describe("PluginReposPanel", () => {
     render(<PluginReposPanel />);
     expect(screen.getByText("1 problem")).toBeTruthy();
     expect(screen.getByText(/is not in this repository's/)).toBeTruthy();
+    // The backticks are markup, not characters: the same strings are read in a
+    // terminal by `shipit plugin refresh`, so they stay in the string and the
+    // row renders them (found in the dogfood reading "`probe` declares…").
+    expect(screen.getAllByText("exports.plugins")[0].tagName).toBe("CODE");
+    expect(screen.queryByText(/`exports\.plugins`/)).toBeNull();
+  });
+
+  // The `active` footer once said those things "land with the remaining plugin
+  // mechanics (docs/262)" — tab v0's honest placeholder, still there after they
+  // shipped, so an active card denied its own features (found in the dogfood).
+  // It must also not assert that all four already AGREE: the refetch that draws
+  // this card is emitted before the container prepare and the service reconcile
+  // are fired (review finding), so they follow rather than being done.
+  it("the active footer states the checkout as fact and the rest as following", () => {
+    setSnapshot({ ...FIXTURE, repos: [FIXTURE.repos[1]] });
+    render(<PluginReposPanel />);
+    expect(screen.getByText(/Checked out at this exact commit\./)).toBeTruthy();
+    expect(screen.getByText(/anything that could not be updated is reported above/)).toBeTruthy();
+    expect(screen.queryByText(/remaining plugin mechanics/)).toBeNull();
   });
 
   it("a files-only repo says so", () => {

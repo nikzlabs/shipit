@@ -3,14 +3,16 @@ import { ICON_SIZE } from "../design-tokens.js";
 import { usePluginReposStore } from "../stores/plugin-repos-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import type { PluginRepoCardView } from "../../server/shared/plugin-repos.js";
+import { RichErrorText } from "./PrLifecycleCard/RichErrorText.js";
 
 /**
  * docs/262 — the Plugins tab pane (plan §3, mockup-plugins-tab.html): one card
  * per declared repo, with the full repo identity always visible (req 19).
  * Renders declarations, self-use, per-repo issues, parse warnings, and each
  * plugin's credential needs (req 23) — an unset key named beside the plugin
- * that needs it, with the one action that closes it. Refresh and collision
- * states arrive with the remaining slice-2 mechanics.
+ * that needs it, with the one action that closes it. Collision, settings and
+ * install problems arrive as ordinary issue rows on the repository's card
+ * (verified live in the dogfood instance for all three).
  */
 export function PluginReposPanel() {
   const snapshot = usePluginReposStore((s) => s.snapshot);
@@ -185,14 +187,39 @@ function PluginRepoCard({
           className="flex items-start gap-2 border-t border-(--color-border-primary) px-3 py-2 text-sm"
         >
           <WarningIcon size={ICON_SIZE.SM} className="mt-0.5 flex-none text-(--color-warning)" />
-          <span className="min-w-0 break-words">{issue}</span>
+          {/* Every issue this feature produces quotes its identifiers in
+              backticks — a plugin name, a command, a `overrides.…` path — and
+              this row rendered them as literal characters (seen in the dogfood:
+              "`probe` declares an install command…"). The same strings are also
+              read in a terminal by `shipit plugin refresh`, where backticks are
+              right, so the markup stays in the string and the renderer is what
+              understands it. `RichErrorText` is the existing one.
+
+              `links={false}` because an issue is not always ShipIt's prose: an
+              activation failure carries git's output and a plugin's own install
+              stderr, and linkifying those would let a third-party repository
+              put an external link into this panel (review finding). */}
+          <span className="min-w-0 break-words"><RichErrorText text={issue} links={false} /></span>
         </div>
       ))}
 
       {!isSelf && repo.status === "active" && (
         <div className="border-t border-(--color-border-primary) px-3 py-2 text-xs text-(--color-text-tertiary)">
-          Checked out at this exact commit. Commands, skills, and services from this repository
-          land with the remaining plugin mechanics (docs/262).
+          {/* This sentence used to end "…land with the remaining plugin
+              mechanics (docs/262)" — the honest placeholder of tab v0, left
+              behind once those mechanics shipped, so an ACTIVE card told the
+              user its commands, skills and services did not exist yet (found in
+              the dogfood).
+
+              It states the CHECKOUT as fact and the rest as following, which is
+              the true shape: `emitPluginReposUpdated` pushes the refetch that
+              produced this card BEFORE it fire-and-forgets the container
+              prepare and the service reconcile (`service-manager-setup.ts`), so
+              a card asserting that all four already agree would be asserting
+              req 15 rather than reporting it (review finding). Anything that
+              could not follow is an issue row above this one. */}
+          Checked out at this exact commit. Its files, companion CLIs, skills and services follow
+          it — anything that could not be updated is reported above.
         </div>
       )}
       {!isSelf && repo.status === "degraded" && (
