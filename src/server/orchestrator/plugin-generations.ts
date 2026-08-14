@@ -250,25 +250,43 @@ export type LiveGenerations = (repo: DeclaredPluginRepo) => VerifiedGeneration |
  *    (`api-routes-issues.ts`), whose residual window is between its read and the
  *    GitHub POST and is what "what this session was running" means.
  *
- * Eager rather than lazy: the whole operation then answers for one instant per
- * repository, instead of for whenever each reader first asked.
+ * Resolved on FIRST ASK and memoized, not eagerly for every declared repo. The
+ * guarantee the readers need is per-repository — the facts one card or one
+ * mount states about ONE repository come from one generation — and memoizing
+ * gives exactly that. Resolving the whole list up front would additionally pin
+ * every repository at a single instant, which nothing compares across
+ * repositories, at the cost of resolving repositories the operation never
+ * reads: `plugin-cli-run.ts` builds this for the collision verdict over the
+ * OTHER imports while its target is pinned separately by `pinGeneration` (that
+ * pin also names the volume and the lowerdir), so an eager pass followed the
+ * target's `active` a second time for an answer it then discarded (review
+ * finding). A repository nobody asks about is never touched.
  */
 export function resolveLiveGenerations(
   stateDir: string,
   repos: readonly DeclaredPluginRepo[],
 ): LiveGenerations {
-  const byName = new Map<string, VerifiedGeneration | null>();
-  for (const repo of repos) {
-    byName.set(
-      repo.name.toLowerCase(),
-      // req 27 — a self declaration IS the working tree; it has no generation
-      // to resolve and no commit to be verified against.
-      repo.source.kind === "self"
-        ? null
-        : resolveVerifiedGeneration(stateDir, repo.name, destinationKey(repo.source)),
-    );
-  }
-  return (repo) => byName.get(repo.name.toLowerCase()) ?? null;
+  const declared = new Map(repos.map((r) => [r.name.toLowerCase(), r]));
+  const resolved = new Map<string, VerifiedGeneration | null>();
+  return (repo) => {
+    const key = repo.name.toLowerCase();
+    // Resolve the DECLARATION under that name, never the argument: a caller
+    // holding a stale repo object gets this operation's answer for the
+    // repository the project currently declares, or nothing.
+    const declaration = declared.get(key);
+    if (!declaration) return null;
+    if (!resolved.has(key)) {
+      resolved.set(
+        key,
+        // req 27 — a self declaration IS the working tree; it has no generation
+        // to resolve and no commit to be verified against.
+        declaration.source.kind === "self"
+          ? null
+          : resolveVerifiedGeneration(stateDir, declaration.name, destinationKey(declaration.source)),
+      );
+    }
+    return resolved.get(key) ?? null;
+  };
 }
 
 /**

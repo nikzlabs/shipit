@@ -1579,6 +1579,18 @@ coherent in one UI.
   resolved rather than once per reader, and `readActiveManifest`'s own three
   traversals collapse to one.
 
+  The lookup resolves a repository on **first ask**, not for the whole list up
+  front. The guarantee the readers need is per-repository — the facts one card
+  or one mount states about one repository come from one generation — and
+  memoizing gives that; pinning every repository at a single instant would
+  additionally cost a resolution for repositories the operation never reads.
+  `plugin-cli-run.ts` is why that matters and not merely tidier: it builds the
+  lookup for the collision verdict over the OTHER imports while `pinGeneration`
+  pins its target separately (that pin also names the volume and the lowerdir),
+  so resolving the list up front followed the target's `active` a second time
+  for an answer it discarded — a review found it, and a test in
+  `plugin-cli-run.test.ts` now holds that count at one.
+
   **What is NOT in that rule, because each of these breaks if it is folded in:**
   a read whose subject IS the change (`plugin-refresh.ts`'s before/after pair,
   `plugin-activation.ts`'s pre-activation read — collapse them and every refresh

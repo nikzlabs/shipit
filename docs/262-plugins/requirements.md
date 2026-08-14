@@ -145,8 +145,10 @@ receipts below keep the original "tools" vocabulary of the early rounds.
     project's workspace as ordinary project changes: versioned, committed,
     and kept like any other project file. Everything else a plugin holds is
     session-scoped runtime state: it survives page reloads, plugin-service
-    restarts, plugin refreshes (req 12), and routine container restarts, and
-    is discarded only when the session itself is reset or deleted. Neither
+    restarts, plugin refreshes (req 12), routine container restarts, and a
+    re-point of the declaration at a different repository — that state is kept
+    per import, not per repository behind it — and it is discarded only when
+    the session itself is reset or deleted. Neither
     kind of data is ever stored by modifying the read-only plugin checkout.
     The preview origin is stable for the session's whole life, so
     origin-keyed browser storage counts as session-scoped state.
@@ -311,21 +313,25 @@ user's follow-up of 2026-08-12 during the design phase.
   implementing reqs 17, 18, 26: the state directory and settings file are keyed
   by the import's local name, so keeping `use: {from: tools, alias: tools}`
   while changing which repository `repos: tools` points at hands the new
-  plugin whatever the previous one saved. **Req 18 already classifies this
-  case** — it puts a plugin's *durable output* in the project's workspace as
-  ordinary versioned files, and defines everything else a plugin holds as
-  session-scoped runtime state. So nothing a user values can be in that
-  directory by construction, and a re-point cannot lose it. The settings half
-  answers itself: `settings.json` is derived from the consuming project's
-  `shipit.yaml` and rewritten on every prepare pass, so a re-point regenerates
-  it against the new plugin's declared settings. Answer (user, 2026-08-14):
-  **keep the current behaviour — the state survives a re-point**, with no
-  retirement, move-aside or fresh-start mechanism; it is a corner case, and
-  anything worth keeping is in the repository. The agent's proposed carve-out
-  ("state survives, EXCEPT when re-pointed") is **withdrawn**: no user could
-  predict it from req 18's plain words, and it built mechanism to defend
-  against a plugin mishandling files it did not write, which belongs to the
-  plugin's author. → no requirement text changed.
+  plugin whatever the previous one saved. **Answer (user, 2026-08-14): keep the
+  current behaviour — the state survives a re-point**, with no retirement,
+  move-aside or fresh-start mechanism; it is a corner case, and anything worth
+  keeping is in the repository. → **req 18 amended** to name a re-point among
+  the events that state survives, since that is now an observable rule and was
+  only inferable before.
+
+  *Agent notes, not part of the answer.* The proposed carve-out ("state
+  survives, EXCEPT when re-pointed") is **withdrawn**: no user could predict it
+  from req 18's plain words, and it built mechanism to defend against a plugin
+  mishandling files it did not write. On the settings half — the accurate
+  version, after a review corrected an earlier claim here that a re-point
+  "regenerates it" — `settings.json` is derived from the consuming project's
+  `shipit.yaml` and is rewritten when the new repository's manifest becomes
+  available; until then the previous file deliberately stays, because no
+  manifest is not evidence that a file is wrong. Nothing of the new repository
+  can read it in that window: the old generation fails the source check, so
+  there is no live generation to run (verified at
+  `plugin-cli-run.ts`'s refusal when `pinGeneration` returns null).
 - **2026-08-13 — Where does a plugin's `install` run, and how strictly is req 19
   met?** Raised by an implementation review, which found that a first attempt at
   the container wiring let plugin `install` obtain a GitHub token: the worker's

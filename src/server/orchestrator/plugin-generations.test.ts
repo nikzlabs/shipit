@@ -547,13 +547,29 @@ describe("resolveLiveGenerations", () => {
 
     const spy = vi.spyOn(fs, "realpathSync");
     const live = resolveLiveGenerations(stateDir, [repo({ branch: "main" })]);
-    const before = spy.mock.calls.length;
+    // Nothing yet: the answer is owed on the first ask, not on construction.
+    expect(spy.mock.calls.length).toBe(0);
 
     // Five readers, as one snapshot request has: the commit, two manifests, a
     // fragment and a credential list.
     for (let i = 0; i < 5; i++) live(repo({ branch: "main" }));
-    expect(spy.mock.calls.length).toBe(before);
-    expect(before).toBe(1);
+    expect(spy.mock.calls.length).toBe(1);
+    spy.mockRestore();
+  });
+
+  it("never touches a declared repository nobody asks about", async () => {
+    await activateGeneration(repo({ branch: "main" }), deps());
+    const other = repo({ name: "other-tools", branch: "main" });
+
+    const spy = vi.spyOn(fs, "realpathSync");
+    // Both declared, one asked for. The unasked one costs nothing: an
+    // operation that pins its own target separately (`plugin-cli-run.ts`) must
+    // not follow that target's `active` a second time just by building this.
+    resolveLiveGenerations(stateDir, [repo({ branch: "main" }), other])(repo({ branch: "main" }));
+
+    const touchedOther = spy.mock.calls.filter(([p]) => String(p).includes("other-tools"));
+    expect(touchedOther).toEqual([]);
+    expect(spy.mock.calls.length).toBe(1);
     spy.mockRestore();
   });
 
