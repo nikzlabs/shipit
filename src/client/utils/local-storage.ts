@@ -1,7 +1,7 @@
 import type { AgentId, IssuePriorityLevel, PermissionMode } from "../../server/shared/types.js";
 import type { IssueFilters } from "../components/issues-filter.js";
 import { DEFAULT_SORT_PREFS, type GroupKey, type SortDir, type SortKey, type SortPrefs } from "../components/issues-sort.js";
-import type { ModelSelection } from "../../server/shared/catalogue/index.js";
+import type { BillingMode, ModelSelection } from "../../server/shared/catalogue/index.js";
 import { parseSelection, resolveModelSelection, selectionExists, serializeSelection } from "../../server/shared/catalogue/index.js";
 
 /**
@@ -50,6 +50,7 @@ const SIDEBAR_VIEW_KEY = "shipit-sidebar-view";
 const RIGHT_TAB_KEY = "shipit-right-tab";
 const AGENT_PREFERENCE_KEY = "vibe-agent-id";
 const MODEL_PREFERENCE_KEY = "vibe-model-id";
+const PARKED_HARNESS_KEY = "shipit-parked-harness";
 const ACTIVE_REPO_KEY = "vibe-active-repo";
 const NOTIFY_ON_FINISH_KEY = "shipit-notify-on-finish";
 const SOUND_ON_FINISH_KEY = "shipit-sound-on-finish";
@@ -131,6 +132,70 @@ export function getSavedAgentId(): AgentId {
 export function saveAgentId(agentId: AgentId): void {
   try {
     localStorage.setItem(AGENT_PREFERENCE_KEY, agentId);
+  } catch {
+    // localStorage may be unavailable
+  }
+}
+
+/**
+ * The harness selection an auth redirect took away from the user, kept so it can
+ * be handed back.
+ *
+ * `resolveAuthedSelection` redirects the picker off a harness with no usable
+ * credential and PERSISTS the redirect, because the seed is what the next
+ * session is created from (see that file). The redirect was one-way: it
+ * overwrote `vibe-agent-id` and `vibe-model-id` in place, so a Claude account
+ * that went `auth_failed` for a few minutes — which `ClaudeOAuthRefresher`
+ * classifies optimistically and `markProviderAccountReauthenticated` exists to
+ * undo — silently and permanently moved every future session to Codex. The user
+ * was never told, and nothing could tell afterwards which harness they had
+ * chosen.
+ *
+ * So the displaced selection is parked here first. Two rules keep it honest:
+ *
+ * - **Only a FORCED move parks.** A deliberate pick writes the seed through
+ *   `persistHarnessPick` / the model picker, both of which CLEAR the park — a
+ *   user who chooses Codex while Claude is down means it, and must not be
+ *   yanked back when Claude recovers.
+ * - **Only the first forced move parks.** A second redirect while something is
+ *   already parked would overwrite the user's own choice with the machine's, so
+ *   the park is written only when empty.
+ */
+export interface ParkedHarness {
+  agentId: AgentId;
+  /**
+   * The model seed in force at park time. The whole triple, not a bare id: the
+   * restore has to put the user back on the service and billing mode they were
+   * on, or it hands back the harness and silently re-bills the model.
+   */
+  model?: { modelId: string; serviceId?: string; billingMode?: BillingMode };
+}
+
+export function getParkedHarness(): ParkedHarness | undefined {
+  return getLocalStorageObject<ParkedHarness | undefined>(
+    PARKED_HARNESS_KEY,
+    undefined,
+    (parsed) => {
+      if (typeof parsed !== "object" || parsed === null) return undefined;
+      const value = parsed as Partial<ParkedHarness>;
+      // eslint-disable-next-line no-restricted-syntax -- runtime input validation: localStorage is user-writable and outlives a build, so a value that is not a known harness id must be rejected before it is handed back as one (same check as `getSavedAgentId`)
+      if (value.agentId !== "claude" && value.agentId !== "codex") return undefined;
+      return { agentId: value.agentId, ...(value.model ? { model: value.model } : {}) };
+    },
+  );
+}
+
+export function saveParkedHarness(parked: ParkedHarness): void {
+  try {
+    localStorage.setItem(PARKED_HARNESS_KEY, JSON.stringify(parked));
+  } catch {
+    // localStorage may be unavailable
+  }
+}
+
+export function clearParkedHarness(): void {
+  try {
+    localStorage.removeItem(PARKED_HARNESS_KEY);
   } catch {
     // localStorage may be unavailable
   }

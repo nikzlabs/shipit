@@ -2,6 +2,7 @@ import { useState, useRef, useCallback } from "react";
 import { formatModelName, resolveModelAlias } from "../utils/format-model.js";
 import { getSavedModelId, getSavedModelSelection } from "../utils/local-storage.js";
 import { newSessionAgentId } from "../utils/new-session-agent.js";
+import { modelRowsFor, type ModelRow } from "../utils/model-rows.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { DropdownMenuLabel } from "./ui/dropdown-menu.js";
 import { Picker, PickerOption } from "./pickers/Picker.js";
@@ -39,12 +40,6 @@ import type { ModelInfo } from "../utils/model-info.js";
  * asserting something untrue.
  */
 
-/** A model row, as the picker groups and renders it. */
-interface ModelRow extends ModelChoice {
-  /** The group this row belongs to: one `(service, billing mode)`. */
-  groupKey: string;
-}
-
 /** One `(service, billing mode)` block in the model menu. */
 interface ModelGroup {
   key: string;
@@ -80,29 +75,6 @@ export function ModelGroupHeader({
       <BillingModePill billingMode={billingMode} data-testid={`model-group-mode-${billingMode}`} />
     </DropdownMenuLabel>
   );
-}
-
-/**
- * The eligible models of an agent as picker rows.
- *
- * Falls back to the bare `models` list when `eligibleModels` is absent — an
- * older wire payload or a test fixture. The fallback renders one unnamed group,
- * which is what the picker showed before the service axis existed; degrading to
- * it beats rendering nothing.
- */
-export function modelRowsFor(agent: AgentOption | undefined): ModelRow[] {
-  if (!agent) return [];
-  if (agent.eligibleModels && agent.eligibleModels.length > 0) {
-    return agent.eligibleModels.map((m) => ({ ...m, groupKey: `${m.serviceId}:${m.billingMode}` }));
-  }
-  return agent.models.map((modelId) => ({
-    modelId,
-    label: formatModelName(modelId),
-    serviceId: "",
-    serviceName: "",
-    billingMode: "key" as const,
-    groupKey: "",
-  }));
 }
 
 /** Group rows by `(service, billing mode)`, preserving catalogue order. */

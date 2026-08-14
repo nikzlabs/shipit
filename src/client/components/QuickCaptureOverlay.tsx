@@ -10,17 +10,17 @@ import { useSettingsStore } from "../stores/settings-store.js";
 import { isSelectionEligibleForAgent } from "../agent-types.js";
 import { startQuickSessionInBackground } from "../stores/actions/session-actions.js";
 import {
+  clearParkedHarness,
   getSavedModelId,
   getSavedModelSelection,
   getSavedQuickSessionRepo,
   getSavedReasoning,
-  saveAgentId,
   saveModelId,
   saveModelSelection,
   saveQuickSessionRepo,
 } from "../utils/local-storage.js";
 import { newSessionAgentId } from "../utils/new-session-agent.js";
-import { modelRowsFor } from "./ModelPicker.js";
+import { persistHarnessPick } from "../utils/harness-seed.js";
 import { parseRepoLabel } from "../utils/repo-label.js";
 import { useChatDisabledReason } from "../utils/chat-runnable.js";
 import { MessageInput, type SendPayload } from "./MessageInput.js";
@@ -322,56 +322,21 @@ export function QuickCaptureOverlay({
             agents={agentList}
             activeAgentId={selectedAgentId}
             onAgentChange={(agentId) => {
-              saveAgentId(agentId);
               useUiStore.getState().setActiveAgentId(agentId);
               // …and MOVE THE MODEL onto that harness, or the pick is a no-op.
               // The harness here is derived from the model (see
-              // `selectedAgentId`), and an in-session composer gets away with a
-              // bare `set_agent` because the server re-resolves the session's
-              // model for the new harness. A quick session has no session to
-              // send that to: the creation params carry a model, so leaving the
-              // previous harness's model in place re-derived the harness right
-              // back and the overlay ignored the pick entirely — which is what
-              // "tapping Codex does nothing" was.
-              //
-              // A harness switch is not a model switch, so the current model is
-              // KEPT whenever the new harness runs it — which is exactly the
-              // case that motivated this: the shared models (DeepSeek, GLM,
-              // anything through a gateway) are the ones both harnesses offer.
-              // Same `(service, mode)` first, so the switch cannot silently
-              // re-bill an identical id through another service; then the same
-              // id anywhere on that harness; only then its first row, which is
-              // what the model picker itself falls back to (`rows[0]`), so the
-              // anchor, the Model row and the created session agree.
-              const rows = modelRowsFor(agentList.find((a) => a.id === agentId));
-              const saved = getSavedModelSelection();
-              const next =
-                rows.find(
-                  (r) =>
-                    r.modelId === selectedModel
-                    && r.serviceId === saved?.serviceId
-                    && r.billingMode === saved.billingMode,
-                )
-                ?? rows.find((r) => r.modelId === selectedModel)
-                ?? rows[0];
-              if (next) {
-                if (next.serviceId) {
-                  saveModelSelection({
-                    serviceId: next.serviceId,
-                    billingMode: next.billingMode,
-                    modelId: next.modelId,
-                  });
-                } else {
-                  saveModelId(next.modelId);
-                }
-                // `saveModelSelection` REFUSES a triple this build's catalogue
-                // cannot place, and refuses it silently. The seed is what the
-                // harness is derived from, so a refusal would leave the overlay
-                // showing the old harness while sending the new model. Fall back
-                // to the bare id, which is stored as-is.
-                if (getSavedModelId() !== next.modelId) saveModelId(next.modelId);
-                setSelectedModel(next.modelId);
-              }
+              // `selectedAgentId`), so leaving the previous harness's model in
+              // place re-derives the harness right back and the overlay ignores
+              // the pick entirely — which is what "tapping Codex does nothing"
+              // was. `persistHarnessPick` is that rule; it is shared with the
+              // composer, which turned out to have the same bug one step later
+              // (its pick survived until the next `useUiStore.reset()`).
+              const nextModelId = persistHarnessPick({
+                agentId,
+                agents: agentList,
+                ...(selectedModel ? { current: { modelId: selectedModel } } : {}),
+              });
+              if (nextModelId) setSelectedModel(nextModelId);
               seedWritten();
               // Reasoning is per-agent — drop any explicit pick made for the
               // harness being left, exactly as a model switch does below.
@@ -382,6 +347,10 @@ export function QuickCaptureOverlay({
               // Quick Capture stores it verbatim rather than the bare id it used
               // to: dropping the service here is what let a fresh session
               // re-resolve to whichever service sorts first (a phase-1 finding).
+              //
+              // A model pick names a harness too, so it overrules any parked
+              // redirect — same reason the composer's does.
+              clearParkedHarness();
               if (selection.serviceId) {
                 saveModelSelection({
                   serviceId: selection.serviceId,

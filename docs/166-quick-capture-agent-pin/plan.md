@@ -194,8 +194,38 @@ an uninstalled or credential-less harness never wins it),
 `quick-capture-headless.test.ts` (the server honours a harness that can run the
 submitted model, and still overrides one that cannot).
 
+## Second follow-up — the composer had the same bug, one step later
+
+The follow-up above fixed the harness pick in Quick Capture and left the
+composer alone, on the reasoning quoted there: the in-session composer "gets
+away with a bare `set_agent` because the server re-resolves that session's model
+for the new harness". That is true of the SESSION and false of the SEED. The
+server never touches the browser's `vibe-model-id`, and `useUiStore.reset()` —
+which runs on every new session and every session switch — recomputes
+`activeAgentId` from it via `newSessionAgentId`. So a harness picked in the
+composer held for exactly as long as the page did, and the user's next session
+derived the old harness again. Reported as "the dropdown in the new session
+always switches from Claude to Codex", which is what it looks like from outside:
+the pick appears to work, and is gone by the next session.
+
+The rule is now one function, `persistHarnessPick`
+(`client/utils/harness-seed.ts`), called by the composer and by Quick Capture —
+a third copy is how the two would have drifted apart on exactly the models it
+exists for. `modelRowsFor` moved to `client/utils/model-rows.ts` so a plain
+module and a hook can reach it without importing the picker's React tree.
+
+The in-session half is deliberately unchanged: `set_agent` remains the only
+thing that moves a live session's model, so the server stays the sole authority
+on what a session runs. What the composer now also writes is the answer to a
+different question — what the NEXT session will be created on.
+
+Tests: `harness-seed.test.ts`, including the regression itself (a pick still
+names its harness after `useUiStore.reset()`) and its counter-example (writing
+only the harness key fails the same way the bug did).
+
 ## Related
 
-- docs/142 — agent-auth-recovery-and-model-source-of-truth (Problem C).
+- docs/142 — agent-auth-recovery-and-model-source-of-truth (Problem C, and the
+  auth redirect whose one-way persistence is fixed there).
 - docs/138 — per-agent-credential-isolation (the `agentPinned` lock this gates).
 - `shipit/qttory` — the separate quick-session spawn-flow fix (not touched here).
