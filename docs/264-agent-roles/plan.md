@@ -62,7 +62,9 @@ params = (serviceId, billingMode, modelId, reasoningEffort)   // pinned — req 
   duplicate is a refusal.
 - **`prompt`** — an optional free-text standing prompt (req 11). See *The prompt*.
 - **`params`** — exactly the tuple a pinned reviewer holds (docs/261 reqs 1, 3, 5). The harness
-  is **derived** (req 9, docs/261 req 3), never stored.
+  is **derived** (req 9, docs/261 req 3), never stored and never nameable: the human answered
+  that outright (`requirements.md`, 2026-08-14), so there is no harness field to add later and no
+  second way to select what a role runs on.
 - **The built-in `reviewer` role is not stored.** Its resolution *is* the two slots (docs/261).
   It is listed alongside user roles wherever roles are listed, but it has no row.
 
@@ -170,7 +172,10 @@ user chooses is accepted as given — the user owns the word.
 ## Recurrence conversion (req 7)
 
 The mechanism is the **propose-actions pattern**, and the trigger is the **agent's own
-judgement** (open question 2, recommendation). The agent is the courier of every role request, so
+judgement** — a design decision, not a requirement. It was briefly filed as an open question and
+withdrawn (`requirements.md`, 2026-08-14 receipt): the user cannot observe whether an offer came
+from the agent noticing or from a server-side detector, so both satisfy req 7 identically and
+neither is the human's to ratify. The agent is the courier of every role request, so
 it is the only surface that can see "the user has asked for GPT-5.6 at high effort twice." When
 it recognizes a recurrence — a `--role reviewer --model NAME --effort LEVEL` combination the user
 has asked for before — it offers, at the end of the turn, to save it as a role; the offer's

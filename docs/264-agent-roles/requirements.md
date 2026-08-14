@@ -67,9 +67,10 @@ role never resolves its own model.
    next rather than what they did wrong. This mirrors the model-name resolution docs/263
    established.
 
-9. **A role is a model, like every other reviewer; the harness is derived.** docs/261 req 3
-   fixes a reviewer as a model with the harness derived from it, and a role is a reviewer.
-   Whether a role may *additionally* name a harness is open question 1.
+9. **A role is a model, like every other reviewer; the harness is derived, and a role never
+   names one.** docs/261 req 3 fixes a reviewer as a model with the harness derived from it, and
+   a role is a reviewer. A role carries `(service, billing mode, model, level)` and nothing about
+   which CLI runs it — so there is one way to select what an agent runs on, everywhere.
 
 10. **What a role's run did is reported and attributed exactly as any other review.**
     docs/261 req 9 is restated because this feature must not lose it: a role is still resolved
@@ -103,35 +104,47 @@ a named reviewer *is* a role.
 
 ## Open questions
 
-1. **May a role name a harness?** docs/261 deferred harness naming for reviewers (req 3, unify
-   on model-first). **Recommended: no — a role carries `(service, billing mode, model, level)`
-   and the harness stays derived**, consistent with req 9 and with every other reviewer.
-
-2. **What triggers the recurrence offer?** **Recommended: the agent's own judgement, using the
-   propose-actions pattern**, rather than a server-side heuristic. The agent is the courier of
-   every role request, so it is the surface that can see "the user has asked for GPT-5.6 at high
-   effort twice" — and an offer is a turn-shaped action, which is the agent's to make, not a
-   server's to inject.
+_None._
 
 ## Resolved questions
 
-- 2026-08-13 — **Generalize reviewers to agent roles.** The human, of the earlier "named
+- 2026-08-14 — **May a role name a harness?** **Chosen: no.** The human, in one word, on the
+  recommendation. Req 9 now states it as a property of a role rather than deferring it: a role
+  carries `(service, billing mode, model, level)` and the harness is derived. This holds
+  docs/261's model-first line (its 2026-08-10 receipt, "unify on model-first") for the surface
+  most likely to have reopened it — the original ask for this feature *did* include a harness
+  axis, and it is now answered rather than left implied.
+
+- 2026-08-14 — **What triggers the recurrence offer? — withdrawn as mis-filed, not answered.**
+  The human: "I don't understand the question." Checked before rewriting, and he is right that it
+  was not a question for him: it asked whether the offer comes from the agent's own judgement or
+  from a server-side detector, which is a **mechanism** the user cannot observe — both produce
+  the same experience req 7 already fixes (the same combination recurs, ShipIt offers, the user
+  decides). A requirements document is the wrong place for it, and putting it there asked the
+  human to ratify an implementation choice. It is removed rather than rephrased, and the decision
+  now lives in `plan.md` § "Recurrence conversion" as design, where it can be judged on whether it
+  delivers req 7. Nothing about req 7 changes.
+
+  The UX-level question that *would* have been his — should ShipIt offer at all, and does the
+  user decide — is already req 7, answered before this was ever asked.
+
+- 2026-08-14 — **Generalize reviewers to agent roles.** The human, of the earlier "named
   reviewer configurations" frame: "How about we generalize reviewers to any agent roles? So
   essentially the user would be able to preconfigure various agent roles, where it would be the
   params we have now and maybe also some prompt." **Chosen: a role is the unit.** The reviewer
   is one role (the automatic one, docs/261 unchanged); user roles are additional named units
   carrying the params a reviewer has today, invoked by `--role NAME`; the earlier `--reviewer
   NAME` namespace folds into the role namespace. The "maybe also some prompt" became a settled
-  requirement the same day — see the next receipt. The re-reading of docs/261 req 6 this implies
+  requirement the same day — see the prompt receipt above. The re-reading of docs/261 req 6 this implies
   ("the agent names the role, never the reviewer" — a user role *is* a reviewer the user named)
   is recorded in `plan.md` § "The shape".
 
-- 2026-08-13 — **Does a role carry a standing prompt?** **Chosen: yes, optional.** The human took
+- 2026-08-14 — **Does a role carry a standing prompt?** **Chosen: yes, optional.** The human took
   the recommendation. Req 11.
-- 2026-08-13 — **Must a user role's params be pinned, or may they be auto (ShipIt-resolved)?**
+- 2026-08-14 — **Must a user role's params be pinned, or may they be auto (ShipIt-resolved)?**
   **Chosen: pinned.** The human took the recommendation. Req 12, which settles the earlier pool
   question.
-- 2026-08-13 — **May `--role NAME` combine with per-invocation `--effort` / `--model`
+- 2026-08-14 — **May `--role NAME` combine with per-invocation `--effort` / `--model`
   overrides?** **Chosen: no — a role is a unit.** The human took the recommendation. Req 13.
 
 ## Requirement provenance
@@ -150,8 +163,8 @@ a requirement is a restatement of docs/261/263 it is marked as such. What he act
 - "Keep the ad-hoc path as the *discovery on-ramp* (you cannot save a reviewer you have not
   tried) and make **conversion** the mechanism — not prohibition" → reqs 6 and 7.
 - "the same (model, effort) combo requested twice triggers an offer to save it as a named
-  reviewer (the propose-actions pattern)" → req 7, with the mechanism left to `plan.md` and the
-  trigger to open question 2.
+  reviewer (the propose-actions pattern)" → req 7, with the mechanism — including what notices
+  the recurrence — left entirely to `plan.md`.
 - **"generalize reviewers to any agent roles … the user would be able to preconfigure various
   agent roles, where it would be the params we have now and maybe also some prompt"** → reqs 1,
   2 and 3, and the resolved receipt above. This is the decision that superseded the "named
@@ -165,4 +178,9 @@ docs/263's does.
 
 Reqs 11–13 are the human's answers to the open questions, each taken as recommended and
 recorded with a dated receipt above: the standing prompt (11), pinned params (12), and a role as
-an unoverridable unit (13).
+an unoverridable unit (13). Req 9's harness clause is his too — a one-word "no" that turned a
+deferred question into a stated property.
+
+**No open questions remain.** One was withdrawn rather than answered, because it asked the human
+to choose a mechanism he could not observe; the receipt above records that, since a question that
+disappears without a reason is indistinguishable from one that was quietly decided.
