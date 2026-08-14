@@ -45,7 +45,7 @@ import { ICON_SIZE } from "./design-tokens.js";
 import { Tab } from "./components/ui/tab.js";
 import { useTabLabelCollapse } from "./hooks/useTabLabelCollapse.js";
 import { useApi } from "./hooks/useApi.js";
-import { formatErrorForMessage } from "./components/PreviewFrame.js";
+import { formatErrorForMessage, PREVIEW_SETUP_PROMPT } from "./components/PreviewFrame.js";
 import { MessageInput, type SendPayload } from "./components/MessageInput.js";
 import { MessageList } from "./components/MessageList.js";
 import type { RewindGapAction } from "./components/RewindPoint.js";
@@ -833,8 +833,10 @@ export default function App() {
     if (composeHintInFlight.current) return;
     const sid = useSessionStore.getState().sessionId;
     if (!sid) return;
-    const text =
-      "The preview panel needs a Docker Compose configuration. Please add a `compose` key to `shipit.yaml` pointing to the project's compose file so that previews can be enabled.";
+    // Goal-shaped, not mechanism-shaped, and held to the same no-jargon bar as
+    // the invite that offers it — this text is appended as a visible user
+    // bubble. Defined beside that copy; see PREVIEW_SETUP_PROMPT.
+    const text = PREVIEW_SETUP_PROMPT;
     requestPermission();
     // On /{slug}/new route — graduate: transition URL to /session/{id}, same as
     // handleSend. The dispatch makes the session real; without this the URL

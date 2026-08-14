@@ -80,6 +80,10 @@ Library: [`@phosphor-icons/react`](https://phosphoricons.com). All icons use Pho
 
 **Weights:** `"regular"` (default), `"bold"` for emphasis, `"fill"` for toggle-on states, `"duotone"` sparingly for illustrations.
 
+**The one exception — a scene, not a symbol.** A hand-written inline `<svg>` is allowed *only* for a bespoke illustration in an empty or onboarding state, where the drawing has to depict a relationship a glyph set cannot: an arrangement of parts (a slot, a container, an arrow between two things), a state (empty, waiting, filled), or a data-driven shape. Composed Phosphor glyphs are the default even for illustrations — reach for this only after trying them. Anything that labels an action, a status, or a row is an **icon**, and icons are always Phosphor, no exceptions.
+
+An illustration under this exception must still: use only semantic colour tokens (it is drawn in every theme); carry `aria-hidden="true"` unless it conveys something the adjacent copy does not; scale with its container (`max-w-full h-auto`, never a fixed width in a resizable pane); and disable any animation under `prefers-reduced-motion`. Current members of this set: `PreviewFrame/PreviewSetupInvite.tsx` (empty-preview scene), `RocketLaunch.tsx` (new-session animation), `ContextDial.tsx` (data-driven gauge).
+
 **Color:** Icons inherit `currentColor`. Set via parent's text color token:
 
 ```tsx
