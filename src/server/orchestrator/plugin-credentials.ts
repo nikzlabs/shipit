@@ -35,7 +35,8 @@
  * beside a populated `SecretStore`, rather than asserting it in a comment.
  */
 
-import type { PluginExport, PluginReposConfig } from "../shared/plugin-repos.js";
+import type { DeclaredPluginRepo, PluginExport, PluginReposConfig } from "../shared/plugin-repos.js";
+import { destinationKey } from "../shared/plugin-repos.js";
 import {
   declaredPluginCredentials,
   type PluginCredentialDeclaration,
@@ -98,7 +99,7 @@ export function pluginCredentialDeclarationsFor(
  */
 export function liveManifestReader(
   workspaceDir: string,
-  repos: readonly { name: string; source: { kind: string } }[],
+  repos: readonly DeclaredPluginRepo[],
   selfExports: readonly PluginExport[],
 ): (repoName: string) => readonly PluginExport[] | null {
   let stateDir: string | null = null;
@@ -107,13 +108,20 @@ export function liveManifestReader(
   } catch {
     stateDir = null;
   }
-  const kindOf = new Map(repos.map((r) => [r.name.toLowerCase(), r.source.kind]));
+  // Keyed by what each declaration POINTS AT, not only by its kind: the name is
+  // re-pointable and the generation's path is keyed by the name, so a manifest
+  // read without the source can answer with the PREVIOUS repository's exports —
+  // and then this module reports that repository's credential names as the ones
+  // this project must satisfy.
+  const sourceOf = new Map(repos.map((r) => [r.name.toLowerCase(), destinationKey(r.source)]));
 
   return (repoName: string) => {
-    if (kindOf.get(repoName.toLowerCase()) === "self") return selfExports;
+    const source = sourceOf.get(repoName.toLowerCase());
+    if (source === undefined) return null;
+    if (source === "self") return selfExports;
     if (!stateDir) return null;
     try {
-      return readActiveManifest(stateDir, repoName);
+      return readActiveManifest(stateDir, repoName, source);
     } catch {
       return null;
     }

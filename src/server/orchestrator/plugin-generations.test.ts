@@ -30,6 +30,9 @@ function repo(over: Partial<DeclaredPluginRepo> = {}): DeclaredPluginRepo {
   return { name: "tools", source: { kind: "github", owner: "acme", repo: "tools" }, ...over };
 }
 
+/** The identity `repo()` points at — what a generation of it records. */
+const TOOLS_SOURCE = "acme/tools";
+
 function deps(selectedExports: string[] = []) {
   return {
     stateDir,
@@ -93,7 +96,7 @@ describe("activateGeneration — staging and publish", () => {
     const outcome = await activateGeneration(repo({ branch: "main" }), deps());
 
     expect(outcome.status).toBe("activated");
-    const record = readActiveGeneration(stateDir, "tools");
+    const record = readActiveGeneration(stateDir, "tools", TOOLS_SOURCE);
     expect(record?.commit).toBe(head);
     expect(record?.ref).toBe("branch main");
     expect(record?.exports).toEqual(["probe"]);
@@ -110,13 +113,13 @@ describe("activateGeneration — staging and publish", () => {
 
   it("advances to a new commit and prunes the old generation", async () => {
     await activateGeneration(repo({ branch: "main" }), deps());
-    const first = readActiveGeneration(stateDir, "tools")!.commit;
+    const first = readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)!.commit;
 
     const second = await commitFiles({ "new.txt": "x" }, "second");
     const outcome = await activateGeneration(repo({ branch: "main" }), deps());
 
     expect(outcome.status).toBe("activated");
-    expect(readActiveGeneration(stateDir, "tools")?.commit).toBe(second);
+    expect(readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)?.commit).toBe(second);
     const generations = fs.readdirSync(path.join(stateDir, "plugins", "tools", "generations"));
     expect(generations).not.toContain(first);
     expect(generations).toContain(second);
@@ -129,7 +132,7 @@ describe("activateGeneration — staging and publish", () => {
     await activateGeneration(repo({ pin: first }), deps());
 
     const live = fs.realpathSync(activeLinkPath(stateDir, "tools"));
-    expect(readActiveGeneration(stateDir, "tools")?.commit).toBe(first);
+    expect(readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)?.commit).toBe(first);
     expect(fs.existsSync(path.join(live, "later.txt"))).toBe(false);
   });
 });
@@ -141,7 +144,7 @@ describe("pin durability (req 8)", () => {
     await simpleGit(bareCacheDir).raw(["fetch", "--all", "--force", "--tags"]);
 
     await activateGeneration(repo({ pin: "v1" }), deps());
-    expect(readActiveGeneration(stateDir, "tools")?.commit).toBe(firstSha);
+    expect(readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)?.commit).toBe(firstSha);
 
     // The tag moves to a newer commit — the plugin must not move with it.
     await commitFiles({ "moved.txt": "x" }, "moved");
@@ -150,7 +153,7 @@ describe("pin durability (req 8)", () => {
 
     const outcome = await activateGeneration(repo({ pin: "v1" }), deps());
     expect(outcome.status).toBe("unchanged");
-    expect(readActiveGeneration(stateDir, "tools")?.commit).toBe(firstSha);
+    expect(readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)?.commit).toBe(firstSha);
   });
 
   it("re-resolves when the declaration itself changes", async () => {
@@ -161,7 +164,7 @@ describe("pin durability (req 8)", () => {
 
     await activateGeneration(repo({ pin: "v1" }), deps());
     await activateGeneration(repo({ pin: "v2" }), deps());
-    expect(readActiveGeneration(stateDir, "tools")?.commit).toBe(second);
+    expect(readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)?.commit).toBe(second);
   });
 });
 
@@ -174,7 +177,7 @@ describe("phase-2 selector validation (plan §1a)", () => {
     // The names travel with the failure so the card states the fact once.
     expect((outcome as { missingSelectors?: string[] }).missingSelectors).toEqual(["ghost"]);
     // Nothing was published — degraded beats partial.
-    expect(readActiveGeneration(stateDir, "tools")).toBeNull();
+    expect(readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)).toBeNull();
     const generations = fs.readdirSync(path.join(stateDir, "plugins", "tools", "generations"));
     expect(generations).toEqual([]);
   });
@@ -186,7 +189,7 @@ describe("phase-2 selector validation (plan §1a)", () => {
 
   it("a new commit that drops a selected export keeps the prior generation live", async () => {
     await activateGeneration(repo({ branch: "main" }), deps(["probe"]));
-    const good = readActiveGeneration(stateDir, "tools")!.commit;
+    const good = readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)!.commit;
 
     // The plugin repo renames its export; the consumer still selects the old name.
     await commitFiles({ "shipit.yaml": manifest(["renamed"]) }, "rename export");
@@ -194,7 +197,7 @@ describe("phase-2 selector validation (plan §1a)", () => {
 
     expect(outcome.status).toBe("failed");
     expect((outcome as { previous?: { commit: string } }).previous?.commit).toBe(good);
-    expect(readActiveGeneration(stateDir, "tools")?.commit).toBe(good);
+    expect(readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)?.commit).toBe(good);
     // The live checkout is still complete.
     expect(fs.existsSync(path.join(fs.realpathSync(activeLinkPath(stateDir, "tools")), "shipit.yaml"))).toBe(true);
     // No staging leftovers.
@@ -213,16 +216,16 @@ describe("failure semantics (reqs 13, 15)", () => {
     });
     expect(outcome.status).toBe("failed");
     expect((outcome as { reason: string }).reason).toContain("authorization failed");
-    expect(readActiveGeneration(stateDir, "tools")).toBeNull();
+    expect(readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)).toBeNull();
   });
 
   it("an unknown branch fails without disturbing the live generation", async () => {
     await activateGeneration(repo({ branch: "main" }), deps());
-    const good = readActiveGeneration(stateDir, "tools")!.commit;
+    const good = readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)!.commit;
 
     const outcome = await activateGeneration(repo({ branch: "nope" }), deps());
     expect(outcome.status).toBe("failed");
-    expect(readActiveGeneration(stateDir, "tools")?.commit).toBe(good);
+    expect(readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)?.commit).toBe(good);
   });
 
   it("`repo: self` has no generations", async () => {
@@ -238,7 +241,7 @@ describe("failure semantics (reqs 13, 15)", () => {
     ]);
     // Serialized: the first stages and publishes, the second sees it live.
     expect([a.status, b.status]).toEqual(["activated", "unchanged"]);
-    expect(readActiveGeneration(stateDir, "tools")).not.toBeNull();
+    expect(readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)).not.toBeNull();
   });
 
   // The regression this guards: joining an in-flight promise handed the second
@@ -258,7 +261,7 @@ describe("failure semantics (reqs 13, 15)", () => {
     expect(pinned.status).toBe("activated");
     // The second declaration ran against ITS OWN declaration and won.
     expect(branched.status).toBe("activated");
-    expect(readActiveGeneration(stateDir, "tools")?.commit).toBe(second);
+    expect(readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)?.commit).toBe(second);
   });
 });
 
@@ -271,7 +274,7 @@ describe("cancellation and queue hygiene", () => {
       isCancelled: () => true,
     });
     expect(outcome.status).toBe("failed");
-    expect(readActiveGeneration(stateDir, "tools")).toBeNull();
+    expect(readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)).toBeNull();
     expect(fs.existsSync(path.join(stateDir, "plugins", "tools", "generations"))).toBe(false);
   });
 
@@ -286,14 +289,14 @@ describe("cancellation and queue hygiene", () => {
 describe("pruning what a generation leaves behind", () => {
   it("drops a superseded generation's writable layer with it", async () => {
     await activateGeneration(repo({ branch: "main" }), deps());
-    const first = readActiveGeneration(stateDir, "tools")!.commit;
+    const first = readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)!.commit;
     // The layer an install would have written into.
     const work = path.join(stateDir, "plugins", "tools", "work");
     fs.mkdirSync(path.join(work, first, "upper"), { recursive: true });
 
     await commitFiles({ "second.txt": "x" }, "second");
     await activateGeneration(repo({ branch: "main" }), deps());
-    const second = readActiveGeneration(stateDir, "tools")!.commit;
+    const second = readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)!.commit;
 
     expect(second).not.toBe(first);
     // Kept forever otherwise: install output for every commit this repo ever had.
@@ -313,7 +316,7 @@ describe("pruning what a generation leaves behind", () => {
     await activateGeneration(repo({ branch: "main" }), deps());
 
     expect(fs.existsSync(abandoned)).toBe(false);
-    expect(fs.readdirSync(generations)).toEqual([readActiveGeneration(stateDir, "tools")!.commit]);
+    expect(fs.readdirSync(generations)).toEqual([readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)!.commit]);
   });
 });
 
@@ -325,7 +328,7 @@ describe("manifest warnings (req 13)", () => {
     );
     await activateGeneration(repo({ branch: "main" }), deps());
 
-    const record = readActiveGeneration(stateDir, "tools");
+    const record = readActiveGeneration(stateDir, "tools", TOOLS_SOURCE);
     expect(record?.exports).toEqual(["probe"]);
     // Recorded, not just logged — the tab shows it (degrade *visibly*).
     expect(record?.manifestWarnings.join(" ")).toContain("surprise");
@@ -341,7 +344,7 @@ describe("install runs before publish (req 13, req 15)", () => {
   it("a failed install publishes nothing and leaves the prior generation live", async () => {
     // A good generation first, with no install step.
     await activateGeneration(repo({ branch: "main" }), deps(["probe"]));
-    const before = readActiveGeneration(stateDir, "tools");
+    const before = readActiveGeneration(stateDir, "tools", TOOLS_SOURCE);
     expect(before?.commit).toBeTruthy();
 
     // Now a new commit whose install fails.
@@ -354,7 +357,7 @@ describe("install runs before publish (req 13, req 15)", () => {
     expect(outcome.status).toBe("failed");
     expect((outcome as { reason: string }).reason).toContain("npm ci exited 1");
     // The live generation is untouched — same commit, still readable.
-    expect(readActiveGeneration(stateDir, "tools")?.commit).toBe(before?.commit);
+    expect(readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)?.commit).toBe(before?.commit);
     // And the staging tree is gone rather than left half-built.
     const generations = fs.readdirSync(path.join(stateDir, "plugins", "tools", "generations"));
     expect(generations).toEqual([before!.commit]);
@@ -371,7 +374,7 @@ describe("install runs before publish (req 13, req 15)", () => {
           exports: job.exports.map((e) => e.name),
         };
         // Nothing is live yet at the moment install runs — that is the point.
-        expect(readActiveGeneration(stateDir, "tools")).toBeNull();
+        expect(readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)).toBeNull();
         return { ok: true };
       },
     });
@@ -380,7 +383,7 @@ describe("install runs before publish (req 13, req 15)", () => {
     expect(seen!.commit).toMatch(/^[0-9a-f]{40}$/);
     // Only the selected export is offered for install.
     expect(seen!.exports).toEqual(["probe"]);
-    expect(readActiveGeneration(stateDir, "tools")?.commit).toBe(seen!.commit);
+    expect(readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)?.commit).toBe(seen!.commit);
   });
 
   // The session is archived while the fetch/checkout runs. Without a check
@@ -403,7 +406,7 @@ describe("install runs before publish (req 13, req 15)", () => {
 
     expect(started).toBe(false);
     expect(outcome.status).toBe("failed");
-    expect(readActiveGeneration(stateDir, "tools")).toBeNull();
+    expect(readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)).toBeNull();
   });
 
   it("hands the install a way to notice its session went away", async () => {
@@ -432,7 +435,7 @@ describe("install runs before publish (req 13, req 15)", () => {
 
     expect(outcome.status).toBe("activated");
     expect((outcome as { warning?: string }).warning).toContain("was not installed");
-    expect(readActiveGeneration(stateDir, "tools")?.manifestWarnings.join(" ")).toContain("`probe`");
+    expect(readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)?.manifestWarnings.join(" ")).toContain("`probe`");
   });
 
   it("stays quiet when nothing selected declares an install", async () => {
@@ -451,5 +454,84 @@ describe("install runs before publish (req 13, req 15)", () => {
       },
     });
     expect(calledWith).toEqual([]);
+  });
+});
+
+/**
+ * Every on-disk path is keyed by the declaration's NAME, but a name is not
+ * identity — a consumer can re-point `tools` from one repository to another and
+ * keep the name. Without the recorded source, the previous repository's
+ * generation stayed live under the new declaration: the Plugins tab showed the
+ * new repository at the old repository's commit, and `/plugins/tools` still
+ * held the old repository's files (reported by the feedback-channel session,
+ * confirmed here).
+ */
+describe("a re-pointed declaration", () => {
+  const OTHER = { kind: "github", owner: "acme", repo: "other" } as const;
+
+  it("does not read the previous repository's generation as its own", async () => {
+    await activateGeneration(repo({ branch: "main" }), deps());
+    expect(readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)).not.toBeNull();
+
+    // Same name, different repository: what is live belongs to someone else.
+    expect(readActiveGeneration(stateDir, "tools", "acme/other")).toBeNull();
+  });
+
+  it("republishes under the new repository, and the old one stops being live", async () => {
+    await activateGeneration(repo({ branch: "main" }), deps());
+
+    const outcome = await activateGeneration(repo({ branch: "main", source: OTHER }), deps());
+
+    expect(outcome.status).toBe("activated");
+    expect(readActiveGeneration(stateDir, "tools", "acme/other")?.source).toBe("acme/other");
+    // Whatever is live now, it is not the previous repository's.
+    expect(readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)).toBeNull();
+  });
+
+  // The half that reading-as-absent cannot cover: while the symlink resolves,
+  // the container's prepare pass keeps linking /plugins/<name> at whatever it
+  // points to. req 15 keeps the prior generation live on failure — the prior
+  // generation OF THIS PLUGIN. Another repository's files are not a degraded
+  // version of it, so the declaration reads as unavailable instead.
+  it("leaves nothing live when the new repository fails to activate", async () => {
+    await activateGeneration(repo({ branch: "main" }), deps());
+
+    const outcome = await activateGeneration(repo({ pin: "v-does-not-exist", source: OTHER }), deps());
+
+    expect(outcome.status).toBe("failed");
+    expect((outcome as { previous?: unknown }).previous).toBeUndefined();
+    expect(fs.existsSync(path.join(stateDir, "plugins", "tools", "active"))).toBe(false);
+  });
+
+  /**
+   * A record written before `source` existed carries none — and that generation
+   * is this repository's own, built by a ShipIt that did not record where it
+   * came from. Treating "unknown provenance" as "foreign" would retire it, and
+   * the retirement runs BEFORE the fetch while `previous` is read after: so the
+   * first activation round after this ships would drop every plugin in every
+   * live session, and any one of those fetches that then failed — a private
+   * plugin repository the host's App is not installed on — would report
+   * `failed` with no previous generation at all. Degrading is req 15; going
+   * dark is not.
+   */
+  it("keeps a legacy generation ON DISK when the fetch for its own repository fails", async () => {
+    await activateGeneration(repo({ branch: "main" }), deps());
+    const live = readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)!;
+
+    // Rewrite the live record as a pre-source one, in place.
+    const recordPath = path.join(stateDir, "plugins", "tools", "active", ".shipit-generation.json");
+    const { source: _dropped, ...legacy } = JSON.parse(fs.readFileSync(recordPath, "utf-8"));
+    fs.writeFileSync(recordPath, JSON.stringify(legacy));
+
+    const outcome = await activateGeneration(repo({ pin: "v-does-not-exist" }), deps());
+
+    expect(outcome.status).toBe("failed");
+    // Kept on disk — NOT the same as served. Every reader here still refuses a
+    // record whose source it cannot match, so the card says "no active
+    // version"; what survives is the tree the next successful publish replaces,
+    // and the container's link to it. Asserting the weaker thing on purpose.
+    expect(fs.existsSync(path.join(stateDir, "plugins", "tools", "active"))).toBe(true);
+    expect(fs.existsSync(path.join(stateDir, "plugins", "tools", "generations", live.commit))).toBe(true);
+    expect(readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)).toBeNull();
   });
 });

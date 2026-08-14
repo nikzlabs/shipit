@@ -1167,6 +1167,23 @@ coherent in one UI.
   carries export NAMES only, which answers "is this selector real?" and nothing
   about what an export *declares* (req 23's credentials, later settings and
   hosts).
+  **A generation records the repository it came from, not only the declaration
+  name.** Every on-disk path is keyed by the name, and a name is re-pointable:
+  moving `tools` from `acme/old` to `acme/new` left the old repository's
+  generation live under the new declaration, so the Plugins tab, the feedback
+  footer and `SHIPIT_PLUGIN_COMMIT` all reported the new repository at the old
+  repository's commit. `readActiveGeneration` therefore takes the expected
+  source (required, not optional — an optional check is one every caller can
+  forget) and reads a foreign generation as absent. Reading it as absent is only
+  half: while the `active` symlink resolves, the container's prepare pass keeps
+  linking `/plugins/<name>` at the old files, so a re-point also RETIRES what the
+  previous repository left — before the fetch that can fail. req 15's "the prior
+  generation stays live" means the prior generation of THIS plugin; another
+  repository's files are not a degraded version of it, so a re-point whose new
+  source fails reads as unavailable. **Both readers take the expected source**:
+  `readActiveManifest` resolves through the same symlink, so a re-pointed
+  declaration would otherwise validate a consumer's selectors, settings and
+  declared credentials against the PREVIOUS repository's manifest.
 - ✓ `src/server/orchestrator/plugin-fetch.ts` — req 10's credential resolution:
   the plugin repository's own read-only App installation token, else the host
   PAT, else none, plus the named failure when none of them reaches it (req 13).

@@ -22,6 +22,7 @@
 import { activateDeclaredPlugins, type PluginActivationDeps } from "./plugin-activation.js";
 import { readActiveGeneration } from "../plugin-generations.js";
 import { resolveShipitConfig } from "../../shared/shipit-config.js";
+import { destinationKey } from "../../shared/plugin-repos.js";
 import { sessionStateDirForWorkspace } from "../session-state-dir.js";
 
 /** One repository's before/after, as the shim prints it. */
@@ -63,7 +64,10 @@ export async function refreshPluginRepos(
   deps: PluginRefreshDeps,
   repoName?: string,
 ): Promise<PluginRefreshResult> {
-  let declared: { name: string; ref: string }[];
+  // `source` rides along because a generation is only THIS declaration's when it
+  // was built from the repository the declaration currently names — the name
+  // alone is re-pointable (`plugin-generations.ts`).
+  let declared: { name: string; ref: string; source: string }[];
   let selfNames: string[];
   let stateDir: string;
   try {
@@ -71,7 +75,11 @@ export async function refreshPluginRepos(
     stateDir = sessionStateDirForWorkspace(workspaceDir);
     declared = config.plugins.repos
       .filter((r) => r.source.kind === "github")
-      .map((r) => ({ name: r.name, ref: r.pin ? `pin ${r.pin}` : `branch ${r.branch ?? "(default)"}` }));
+      .map((r) => ({
+        name: r.name,
+        ref: r.pin ? `pin ${r.pin}` : `branch ${r.branch ?? "(default)"}`,
+        source: destinationKey(r.source),
+      }));
     selfNames = config.plugins.repos.filter((r) => r.source.kind === "self").map((r) => r.name);
   } catch (err) {
     return { rows: [], error: `could not read this project's shipit.yaml: ${message(err)}` };
@@ -101,7 +109,7 @@ export async function refreshPluginRepos(
   }
 
   const before = new Map(
-    targets.map((r) => [r.name, readActiveGeneration(stateDir, r.name)?.commit ?? null]),
+    targets.map((r) => [r.name, readActiveGeneration(stateDir, r.name, r.source)?.commit ?? null]),
   );
 
   const outcomes = await activateDeclaredPlugins(
@@ -110,7 +118,7 @@ export async function refreshPluginRepos(
 
   return {
     rows: targets.map((target) => {
-      const after = readActiveGeneration(stateDir, target.name)?.commit ?? null;
+      const after = readActiveGeneration(stateDir, target.name, target.source)?.commit ?? null;
       const was = before.get(target.name) ?? null;
       // THIS round's own outcome, not the shared "latest attempt" state. That
       // map is the UI's, and whichever round finishes last owns it — so with a

@@ -154,14 +154,32 @@ describe("refreshPluginRepos", () => {
     const good = await refreshPluginRepos("sess", workspaceDir, deps());
     const live = good.rows[0]!.after;
 
-    // The declaration now points the same NAME at a repository that cannot be
-    // fetched — the shape a rotated credential or a deleted repo produces.
+    // The SAME repository, at a ref that cannot be resolved — the shape a
+    // deleted tag or a bad pin produces. It has to stay the same repository:
+    // pointing the name at a DIFFERENT one is a re-point, and a stranger's
+    // files are not a degraded version of this plugin (see the test below).
+    writeConfig("plugins:\n  repos:\n    - repo: acme/tools\n      name: tools\n      pin: v-does-not-exist\n");
+    const failed = await refreshPluginRepos("sess", workspaceDir, deps());
+
+    expect(failed.rows[0]!.status).toBe("failed");
+    expect(failed.rows[0]!.after).toBe(live);
+  });
+
+  // Re-pointing is not refreshing. Every on-disk path is keyed by the
+  // declaration NAME, so before the generation recorded its source the old
+  // repository's checkout stayed live under the new declaration — the report,
+  // the Plugins tab and `/plugins/tools` all showed the new repository at the
+  // old repository's commit.
+  it("does not keep the previous repository live when the name is re-pointed", async () => {
+    writeConfig(DECLARATION);
+    await refreshPluginRepos("sess", workspaceDir, deps());
+
     writeConfig("plugins:\n  repos:\n    - repo: acme/missing\n      name: tools\n      branch: main\n");
     const failed = await refreshPluginRepos("sess", workspaceDir, deps());
 
     expect(failed.rows[0]!.status).toBe("failed");
     expect(failed.rows[0]!.detail).toContain("authorization failed");
-    expect(failed.rows[0]!.after).toBe(live);
+    expect(failed.rows[0]!.after).toBeNull();
   });
 
   // The shared activation-state map belongs to the UI and is owned by whichever

@@ -324,7 +324,16 @@ function parseRepoList(
   return repos;
 }
 
-function destinationKey(source: PluginRepoSource): string {
+/**
+ * The canonical identity of what a declaration POINTS AT — `owner/repo`
+ * lowercased, or `self`. Distinct from the declaration's `name`, which is only
+ * what the consumer calls it and can be re-pointed at a different repository.
+ *
+ * Exported because a generation records it (`plugin-generations.ts`): a
+ * generation keyed by name alone would let a re-pointed declaration pair a new
+ * repository with the previous one's commit.
+ */
+export function destinationKey(source: PluginRepoSource): string {
   return source.kind === "self" ? "self" : `${source.owner}/${source.repo}`.toLowerCase();
 }
 

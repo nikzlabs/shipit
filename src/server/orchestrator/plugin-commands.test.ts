@@ -24,10 +24,25 @@ afterEach(() => {
   fs.rmSync(stateDir, { recursive: true, force: true });
 });
 
-function publish(repoName: string, manifest: string): void {
+/**
+ * Publish a live generation, record included. The record is not decoration
+ * here: every reader through the `active` symlink checks the generation's
+ * recorded `source` against the declaration, so a generation without one reads
+ * as absent and this collector would correctly surface no commands at all.
+ * `source` is the lowercased `owner/repo` (`destinationKey`), which is why it
+ * is passed separately from the directory's own spelling.
+ */
+function publish(repoName: string, manifest: string, source = "acme/tools"): void {
   const dir = path.join(stateDir, "plugins", repoName, "generations", "abc");
   fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(path.join(dir, "shipit.yaml"), manifest);
+  fs.writeFileSync(
+    path.join(dir, ".shipit-generation.json"),
+    JSON.stringify({
+      repoName, source, commit: "abc", ref: "branch main",
+      activatedAt: new Date(0).toISOString(), exports: [], manifestWarnings: [],
+    }),
+  );
   fs.symlinkSync(dir, path.join(stateDir, "plugins", repoName, "active"));
 }
 

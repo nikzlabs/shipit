@@ -58,6 +58,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import {
+  destinationKey,
   type DeclaredPluginRepo,
   type PluginExport,
   type PluginReposConfig,
@@ -290,8 +291,12 @@ export function createPluginImportResolver(
             // (`readActiveManifest`, non-logging: this runs per request and
             // activation already logged any warning once). `null` — no live
             // generation — collapses to "no exports", which the caller reads as
-            // "nothing to validate against" either way.
-            : readActiveManifest(stateDir, repo.name) ?? [],
+            // "nothing to validate against" either way. The expected SOURCE is
+            // required: the generation is filed under the declaration's NAME,
+            // and a name is re-pointable, so without it a declaration moved to
+            // another repository would validate this consumer's settings
+            // against the previous repository's manifest.
+            : readActiveManifest(stateDir, repo.name, destinationKey(repo.source)) ?? [],
         );
       }
       return cache.get(key)!.find((e) => e.name.toLowerCase() === use.plugin.toLowerCase()) ?? null;
