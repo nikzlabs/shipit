@@ -136,6 +136,12 @@ export interface PluginCliDeps {
   /** Volume name + orchestrator-visible state root; both omitted in dev/dogfood. */
   workspaceVolume?: string;
   stateRoot?: string;
+  /**
+   * req 28 — the orchestrator state dir holding the shared dependency store,
+   * where a generation's pinned bases resolve. Unlike the pair above it is not
+   * about daemon-path translation, so it is present whenever there is a store.
+   */
+  depStoreDir?: string;
   timeoutMs?: number;
   /**
    * Whether the session this call belongs to is gone (archived, reset,
@@ -330,6 +336,10 @@ async function runHeldPluginCommand(
         commit: pinned.commit,
         stateDir,
         checkoutDir: pinned.dir,
+        // req 28 — the shared dependency bases this generation pins are read out
+        // of that same pinned directory, so the volume's lowerdir stack cannot
+        // describe two generations either.
+        ...(deps.depStoreDir ? { depStoreDir: deps.depStoreDir } : {}),
         ...roots,
       });
       // A NAMED volume, so it needs no path translation: the daemon already
@@ -529,7 +539,7 @@ function pinGeneration(
  * `install` sidesteps all of this because its ONE mount is a named volume, and
  * a name needs no translation. Every other mount here is a session path.
  */
-interface MountSpec {
+export interface MountSpec {
   Type: "bind" | "volume";
   Source: string;
   Target: string;

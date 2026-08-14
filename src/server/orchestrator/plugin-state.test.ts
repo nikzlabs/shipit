@@ -50,6 +50,7 @@ function makeExport(over: Partial<PluginExport> = {}): PluginExport {
     name: "requirements",
     cli: {},
     installInputs: [],
+    depDirs: [],
     credentials: [],
     hosts: [],
     settings: {},

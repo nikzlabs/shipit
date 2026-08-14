@@ -510,6 +510,11 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
       image: containerManager.workerImageName,
       sessionId,
       stateDir: sessionStateDir,
+      // req 28 — the shared dependency store lives beside every session, in the
+      // orchestrator's own state dir. Always passed: unlike `stateRoot` below it
+      // is not about daemon-path translation, so a bind-mount deployment needs
+      // it just as much.
+      depStoreDir: stateDir,
       // Both omitted in dev/dogfood bind-mount mode, where the daemon and this
       // process see the same paths and no translation is needed.
       ...(containerManager.workspaceVolumeName
@@ -600,6 +605,8 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   ): Promise<PluginComposeService[]> =>
     resolveSessionPluginServices(sessionId, workspaceDir, {
       ...(containerManager ? { docker: containerManager.dockerClient } : {}),
+      // req 28 — where a generation's pinned dependency bases resolve.
+      depStoreDir: stateDir,
       ...(containerManager?.workspaceVolumeName
         ? { workspaceVolume: containerManager.workspaceVolumeName, stateRoot: stateDir }
         : {}),
@@ -712,6 +719,8 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
             const live = sessionManager.get(sessionId);
             return !live || live.userArchived === true;
           },
+          // req 28 — where a generation's pinned dependency bases resolve.
+          depStoreDir: stateDir,
           ...(containerManager.workspaceVolumeName
             ? { workspaceVolume: containerManager.workspaceVolumeName, stateRoot: stateDir }
             : {}),

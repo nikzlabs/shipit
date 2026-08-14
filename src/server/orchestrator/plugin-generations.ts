@@ -106,6 +106,18 @@ export interface GenerationRecord {
    * visibly" (review finding).
    */
   manifestWarnings: string[];
+  /**
+   * req 28 — shared dependency bases this generation's install left in the
+   * store, as `<scopeHash>/g<N>` (`plugin-dep-store.ts`). Every container that
+   * mounts this generation stacks them under the checkout; the disk janitor
+   * reads them to know the base is still in use.
+   *
+   * Absent when nothing was shared — a plugin with no install, an install the
+   * content key cannot cover, the kill switch, or a runtime with no installer at
+   * all. An absent list means "this generation is self-contained", which is what
+   * every generation was before this existed.
+   */
+  basePins?: string[];
 }
 
 /**
@@ -150,6 +162,14 @@ export type ActivationOutcome =
  */
 export interface PluginInstallJob {
   repoName: string;
+  /**
+   * What the declaration points at — `owner/repo` lowercased
+   * (`destinationKey`). The install shares its result under this identity
+   * (req 28), never under the declaration NAME: a name is re-pointable, and a
+   * shared tree keyed by one would hand a new repository the previous
+   * repository's installed dependencies (req 15).
+   */
+  source: string;
   commit: string;
   /** The staged checkout — NOT a published generation. */
   stagingDir: string;
@@ -163,6 +183,19 @@ export interface PluginInstallJob {
    * holding the generation's volume, long after the session it served.
    */
   isCancelled?: () => boolean;
+}
+
+/** What an install run reports back. */
+export interface PluginInstallResult {
+  ok: boolean;
+  reason?: string;
+  /**
+   * req 28 — the shared dependency bases this install ended up pinning
+   * (`plugin-dep-store.ts`), recorded on the generation so every later mount and
+   * the disk janitor read the same answer. Absent when nothing was shared, which
+   * is a complete generation exactly as it was before the store existed.
+   */
+  basePins?: string[];
 }
 
 /**
@@ -288,7 +321,7 @@ export interface ActivateDeps {
    * Omitted (tests, and any caller with nothing to install) → the step is
    * skipped and activation behaves exactly as before.
    */
-  runInstall?: (job: PluginInstallJob) => Promise<{ ok: boolean; reason?: string }>;
+  runInstall?: (job: PluginInstallJob) => Promise<PluginInstallResult>;
   /**
    * The phase-3 pre-publish gate ({@link ValidateStagedGeneration}). Injected
    * for the same reason `runInstall` is: the answer lives outside this module.
@@ -742,6 +775,11 @@ async function activateOnce(repo: DeclaredPluginRepo, deps: ActivateDeps): Promi
 
     let record: GenerationRecord;
     let notInstalled: string | undefined;
+    // req 28 — what the install left in the shared dependency store. Recorded on
+    // the generation because every consumer of this checkout must stack the same
+    // bases under it, and because a base with no recorded pinner is one the disk
+    // janitor is entitled to reclaim.
+    let basePins: string[] = [];
     try {
       if (deps.runInstall) {
         // Checked HERE, not only at the two publish gates: fetch, checkout and
@@ -757,6 +795,7 @@ async function activateOnce(repo: DeclaredPluginRepo, deps: ActivateDeps): Promi
           stagingDir,
           commit,
           repoName: repo.name,
+          source,
           exports: selected,
           ...(deps.isCancelled ? { isCancelled: deps.isCancelled } : {}),
         });
@@ -769,6 +808,7 @@ async function activateOnce(repo: DeclaredPluginRepo, deps: ActivateDeps): Promi
             ...warningField,
           };
         }
+        basePins = outcome.basePins ?? [];
       }
 
       // No install runner at all (local/dogfood mode, tests) but a selected
@@ -792,6 +832,7 @@ async function activateOnce(repo: DeclaredPluginRepo, deps: ActivateDeps): Promi
         activatedAt: new Date().toISOString(),
         exports: exportsList.map((e) => e.name),
         manifestWarnings: notInstalled ? [...manifestWarnings, notInstalled] : manifestWarnings,
+        ...(basePins.length > 0 ? { basePins } : {}),
       };
       // The record is written into the staging tree, so the directory that
       // becomes live is complete before it has a name anything reads.

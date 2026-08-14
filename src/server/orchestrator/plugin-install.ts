@@ -41,7 +41,14 @@ import path from "node:path";
 import type Docker from "dockerode";
 import { CONTAINER_PLUGIN_DIR, PLUGIN_COMMIT_ENV } from "../shared/plugin-contract.js";
 import type { PluginExport } from "../shared/plugin-repos.js";
-import type { PluginInstallJob } from "./plugin-generations.js";
+import type { PluginInstallJob, PluginInstallResult } from "./plugin-generations.js";
+import {
+  adoptPluginDepBases,
+  planPluginDepStore,
+  pluginBasePinDir,
+  pluginDepCacheDir,
+  promotePluginDepDirs,
+} from "./plugin-dep-store.js";
 import {
   buildPluginOverlaySpec,
   createPluginOverlay,
@@ -52,7 +59,8 @@ import {
 } from "./plugin-overlay.js";
 import { chownToSessionWorker, chownTreeToSessionWorker, sessionWorkerUid } from "./session-worker-uid.js";
 import { ensureUntrustedPluginNetwork, waitForContainerExit } from "./plugin-container.js";
-import { PLUGIN_CLI_LABEL } from "./plugin-cli-run.js";
+import { PLUGIN_CLI_LABEL, sessionPathMount, type MountSpec } from "./plugin-cli-run.js";
+import { DEP_CACHE_CONTAINER_PATH } from "../shared/fs-constants.js";
 
 /**
  * Where the merged checkout is mounted inside the install container. The
@@ -106,6 +114,14 @@ export interface PluginInstallDeps {
   /** The session's state dir, the same one activation stages generations into. */
   stateDir: string;
   /**
+   * req 28 — the ORCHESTRATOR state dir, which holds the shared dependency
+   * store (`overlay-base/`, shared by every session). Distinct from `stateRoot`
+   * below, which exists only to translate paths for the daemon and is absent in
+   * bind-mount deployments. Omitted → no store, and install behaves exactly as
+   * it did before req 28.
+   */
+  depStoreDir?: string;
+  /**
    * Name of the workspace volume, and the orchestrator-visible root that maps
    * onto it. Both omitted in dev/dogfood, where the state dir is a bind mount
    * and the daemon sees the same paths this process does.
@@ -158,16 +174,52 @@ export function installStampPath(stateDir: string, repoName: string, commit: str
  */
 export function createPluginInstallRunner(
   deps: PluginInstallDeps,
-): (job: PluginInstallJob) => Promise<{ ok: boolean; reason?: string }> {
+): (job: PluginInstallJob) => Promise<PluginInstallResult> {
   return async (job) => {
     const commands = installCommands(job.exports);
     if (commands.length === 0) return { ok: true };
 
     const stampPath = installStampPath(deps.stateDir, job.repoName, job.commit);
     const stamp = installStamp(job);
-    if (readStamp(stampPath) === stamp) {
+    const layerDirs = {
+      upperdir: path.join(pluginWorkDir(deps.stateDir, job.repoName, job.commit), "upper"),
+      workdir: path.join(pluginWorkDir(deps.stateDir, job.repoName, job.commit), "work"),
+    };
+
+    // This generation's own layer is already installed — the
+    // succeeded-then-failed-to-publish re-stage. Checked BEFORE the store,
+    // because it is the one case where the upper layer holds output no store hit
+    // would reproduce (a build artifact outside any declared dep dir).
+    const recorded = readStamp(stampPath);
+    if (recorded?.stamp === stamp && pinsResolve(deps.depStoreDir, recorded.basePins)) {
       console.log(`[plugins] ${job.repoName}: install already done for ${job.commit.slice(0, 9)}`);
-      return { ok: true };
+      return { ok: true, ...(recorded.basePins.length > 0 ? { basePins: recorded.basePins } : {}) };
+    }
+
+    // req 28 — the shared dependency store. A hit means this repository's own
+    // install, at this exact dep state, under this runtime, already produced a
+    // tree some other session (or an earlier commit of this one) put in the
+    // store: mount it and run nothing. That — not a faster install — is what
+    // stops a plugin on a busy tracked branch from paying a cold cost per
+    // commit, because `npm ci` deletes `node_modules` before it starts and would
+    // ignore a warm base anyway.
+    const plan = deps.depStoreDir
+      ? planPluginDepStore({ source: job.source, exports: job.exports, checkoutDir: job.stagingDir })
+      : null;
+    if (plan && deps.depStoreDir) {
+      const pins = adoptPluginDepBases(deps.depStoreDir, plan);
+      if (pins) {
+        // The layer is cleared for the same reason install clears it: nothing
+        // above the base may be left over from an attempt that failed, and no
+        // successful attempt for this commit can be here (the stamp check above
+        // is what that would have matched).
+        await prepareLayer(layerDirs, stampPath);
+        await writeStamp(stampPath, stamp, pins);
+        console.log(
+          `[plugins] ${job.repoName}: ${job.commit.slice(0, 9)} reuses shared dependencies — install skipped`,
+        );
+        return { ok: true, basePins: pins };
+      }
     }
 
     let spec;
@@ -230,8 +282,24 @@ export function createPluginInstallRunner(
         reason: `the plugin's writable layer could not be released (volume ${spec.volumeName} is still held)`,
       };
     }
-    if (outcome.ok) await fsp.writeFile(stampPath, stamp).catch(() => undefined);
-    return outcome;
+    if (!outcome.ok) return outcome;
+
+    // req 28 — hand what was just installed to the store, so the next commit,
+    // and every other session, mounts it instead of installing it again. Runs
+    // AFTER the volume is released: the tree leaves the upper layer here, and it
+    // must not move under a mount. A directory that cannot be promoted stays
+    // where install left it and pins nothing — still a complete generation.
+    const basePins = plan && deps.depStoreDir
+      ? await promotePluginDepDirs({
+        depStoreDir: deps.depStoreDir,
+        plan,
+        commit: job.commit,
+        upperDir: spec.orchDirs.upperdir,
+        repoName: job.repoName,
+      })
+      : [];
+    await writeStamp(stampPath, stamp, basePins);
+    return { ok: true, ...(basePins.length > 0 ? { basePins } : {}) };
   };
 }
 
@@ -257,12 +325,47 @@ async function prepareLayer(
   chownToSessionWorker(orchDirs.workdir);
 }
 
-function readStamp(stampPath: string): string | null {
+/**
+ * The stamp file, which records BOTH what was installed and where its shared
+ * dependency bases ended up (req 28).
+ *
+ * The pins have to travel with the stamp: a stamp hit skips the install, and a
+ * generation that skips its install still has to be told which bases to mount —
+ * the answer is not derivable from anything else once the tree has left the
+ * upper layer. Fail-closed on anything unexpected, including the pre-req-28
+ * plain-string format: an unreadable stamp only ever costs a reinstall.
+ */
+function readStamp(stampPath: string): { stamp: string; basePins: string[] } | null {
   try {
-    return fs.readFileSync(stampPath, "utf-8");
+    const parsed: unknown = JSON.parse(fs.readFileSync(stampPath, "utf-8"));
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return null;
+    const { stamp, basePins } = parsed as Record<string, unknown>;
+    if (typeof stamp !== "string") return null;
+    if (basePins !== undefined && (!Array.isArray(basePins) || basePins.some((p) => typeof p !== "string"))) {
+      return null;
+    }
+    return { stamp, basePins: (basePins as string[] | undefined) ?? [] };
   } catch {
     return null;
   }
+}
+
+async function writeStamp(stampPath: string, stamp: string, basePins: string[]): Promise<void> {
+  await fsp.writeFile(stampPath, JSON.stringify({ stamp, basePins })).catch(() => undefined);
+}
+
+/**
+ * Whether every pin a stamp recorded still names a base that exists. A base a
+ * sweep removed makes the stamp a lie — the generation would mount a lowerdir
+ * that is gone — so the stamp stops matching and the install runs again.
+ */
+function pinsResolve(depStoreDir: string | undefined, pins: readonly string[]): boolean {
+  if (pins.length === 0) return true;
+  if (!depStoreDir) return false;
+  return pins.every((pin) => {
+    const dir = pluginBasePinDir(depStoreDir, pin);
+    return dir !== null && fs.existsSync(dir);
+  });
 }
 
 /**
@@ -276,6 +379,7 @@ async function runInstallContainer(
   command: string,
 ): Promise<string | null> {
   const uid = sessionWorkerUid();
+  const depCache = resolveDepCacheMount(deps, job);
   const container = await deps.docker.createContainer({
     Image: deps.image,
     Labels: { [PLUGIN_INSTALL_LABEL]: deps.sessionId },
@@ -291,11 +395,30 @@ async function runInstallContainer(
       `${PLUGIN_COMMIT_ENV}=${job.commit}`,
       "HOME=/tmp",
       "npm_config_update_notifier=false",
+      // req 28 — point the package managers at this plugin repository's own
+      // download cache, the same names and the same layout every session
+      // container uses (`container-lifecycle.ts`). Set only when the cache is
+      // actually mounted, so a container without it cannot write a cache into
+      // its own throwaway layer under a path that suggests otherwise.
+      ...(depCache
+        ? [
+          `npm_config_cache=${DEP_CACHE_CONTAINER_PATH}/npm`,
+          `YARN_CACHE_FOLDER=${DEP_CACHE_CONTAINER_PATH}/yarn`,
+          `PNPM_STORE_DIR=${DEP_CACHE_CONTAINER_PATH}/pnpm`,
+        ]
+        : []),
     ],
     HostConfig: {
-      // The one mount. `/plugin` is the merged view: pristine checkout below,
-      // this generation's writable layer above.
+      // `/plugin` is the merged view: pristine checkout below, this generation's
+      // writable layer above.
       Binds: [`${volumeName}:${PLUGIN_INSTALL_DIR}`],
+      // req 28 — and the repository's download cache, so a dep-state change
+      // installs from disk instead of re-downloading what an earlier commit
+      // already fetched. It holds package tarballs and nothing else: no
+      // credential is reachable through it, and it is keyed by the plugin
+      // repository, so one repository's cached content can never appear under
+      // another's name (reqs 15, 19).
+      ...(depCache ? { Mounts: [depCache] as unknown as Docker.MountSettings[] } : {}),
       // Its own network (see PLUGIN_INSTALL_NETWORK): never a session's, and
       // never the default bridge, whose addresses ShipIt's own API guard reads
       // as a trusted host caller.
@@ -321,6 +444,41 @@ async function runInstallContainer(
     return null;
   } finally {
     await container.remove({ force: true }).catch(() => undefined);
+  }
+}
+
+/**
+ * The plugin repository's own download cache, as a mount — req 28's "does not
+ * re-download what an earlier commit already fetched".
+ *
+ * **A volume+Subpath mount, never a plain bind, wherever the state root lives in
+ * a named volume.** The orchestrator sees the cache under its own
+ * `/workspace/...`; in production that tree is inside a volume the daemon knows
+ * nothing about, so a bind of that path would silently produce a fresh empty
+ * root-owned directory — the failure would be invisible (an install that works,
+ * slowly) and production-only. `sessionPathMount` is the established
+ * translation, shared with the companion-CLI surface.
+ *
+ * **Absent rather than fatal on any failure**, which is the opposite of what
+ * that surface does with the same helper, and deliberately: there, a mount that
+ * silently resolves to an empty directory means `/project` is not the project.
+ * Here the worst case is a cold download, so an install must never fail over it.
+ */
+function resolveDepCacheMount(deps: PluginInstallDeps, job: PluginInstallJob): MountSpec | null {
+  if (!deps.depStoreDir) return null;
+  try {
+    const dir = pluginDepCacheDir(deps.depStoreDir, job.source);
+    fs.mkdirSync(dir, { recursive: true });
+    // The install runs as the worker uid; a root-created cache dir would be
+    // unwritable, and npm treats an unwritable cache as a hard error.
+    chownToSessionWorker(dir);
+    return sessionPathMount(deps, dir, DEP_CACHE_CONTAINER_PATH, false);
+  } catch (err) {
+    console.warn(
+      `[plugins] ${job.repoName}: no shared download cache for this install:`,
+      err instanceof Error ? err.message : String(err),
+    );
+    return null;
   }
 }
 

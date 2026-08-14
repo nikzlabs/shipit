@@ -38,6 +38,7 @@ function exportWith(name: string, install?: string): PluginExport {
     name,
     cli: {},
     installInputs: [],
+    depDirs: [],
     credentials: [],
     hosts: [],
     settings: {},
@@ -56,7 +57,13 @@ interface CreatedContainer {
  * install container ends: a number is its status code, `"hang"` never finishes
  * on its own (so the timeout path has something to kill).
  */
-function fakeDocker(opts: { exit?: number | "hang"; logs?: string | Buffer; heldVolume?: boolean } = {}) {
+function fakeDocker(opts: {
+  exit?: number | "hang";
+  logs?: string | Buffer;
+  heldVolume?: boolean;
+  /** What the install writes into the generation's writable layer. */
+  onStart?: () => void;
+} = {}) {
   const containers: CreatedContainer[] = [];
   const createdVolumes: { Name: string; DriverOpts?: Record<string, string> }[] = [];
   const removedVolumes: string[] = [];
@@ -111,7 +118,7 @@ function fakeDocker(opts: { exit?: number | "hang"; logs?: string | Buffer; held
       let finish: (v: { StatusCode: number }) => void = () => undefined;
       const waited = new Promise<{ StatusCode: number }>((resolve) => { finish = resolve; });
       return {
-        start: async () => undefined,
+        start: async () => { opts.onStart?.(); },
         wait: async () => {
           if (opts.exit === "hang") return waited;
           return { StatusCode: opts.exit ?? 0 };
@@ -141,7 +148,7 @@ let stagingDir: string;
 const COMMIT = "c".repeat(40);
 
 function job(exports: PluginExport[]): PluginInstallJob {
-  return { repoName: "tools", commit: COMMIT, stagingDir, exports };
+  return { repoName: "tools", source: "acme/tools", commit: COMMIT, stagingDir, exports };
 }
 
 beforeEach(() => {
@@ -448,5 +455,145 @@ describe("createPluginInstallRunner", () => {
     for (const part of o.split(",")) {
       expect(part.split("=")[1]).toMatch(/^\/var\/lib\/docker\/volumes\/shipit-workspace\/_data\//);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// req 28 — the shared dependency store
+// ---------------------------------------------------------------------------
+
+describe("createPluginInstallRunner and the shared dependency store", () => {
+  /** An export whose install is content-keyable, over a checkout that has inputs. */
+  function npmExport(): PluginExport {
+    fs.writeFileSync(path.join(stagingDir, "package.json"), `{"name":"probe"}`);
+    fs.writeFileSync(path.join(stagingDir, "package-lock.json"), `{"lockfileVersion":3}`);
+    return { ...exportWith("probe", "npm ci"), depDirs: ["node_modules"] };
+  }
+
+  /** Where a generation's install output lands. */
+  function upper(commit = COMMIT): string {
+    return path.join(pluginWorkDir(stateDir, "tools", commit), "upper");
+  }
+
+  function installs(commit = COMMIT): () => void {
+    return () => {
+      fs.mkdirSync(path.join(upper(commit), "node_modules", "left-pad"), { recursive: true });
+      fs.writeFileSync(path.join(upper(commit), "node_modules", "left-pad", "index.js"), "1");
+    };
+  }
+
+  it("promotes what it installed, so the next commit does not install it again", async () => {
+    const first = fakeDocker({ onStart: installs() });
+    const runner = { image: "worker:test", sessionId: "s1", stateDir, depStoreDir: stateDir };
+    const cold = await createPluginInstallRunner({ ...runner, docker: first.docker })(job([npmExport()]));
+
+    expect(first.containers).toHaveLength(1);
+    expect(cold.basePins).toHaveLength(1);
+    // The tree left the writable layer: the store holds one copy, not two.
+    expect(fs.existsSync(path.join(upper(), "node_modules"))).toBe(false);
+
+    // A NEW commit of the same repository, whose dependency inputs did not
+    // change — the case req 28 names. Nothing runs.
+    const nextCommit = "e".repeat(40);
+    const next = fakeDocker({ onStart: installs(nextCommit) });
+    const warm = await createPluginInstallRunner({ ...runner, docker: next.docker })({
+      ...job([npmExport()]), commit: nextCommit,
+    });
+
+    expect(next.containers).toHaveLength(0);
+    expect(next.createdVolumes).toHaveLength(0);
+    expect(warm.ok).toBe(true);
+    expect(warm.basePins).toEqual(cold.basePins);
+  });
+
+  it("installs cold when the dependency inputs move, and shares the new tree", async () => {
+    const runner = { image: "worker:test", sessionId: "s1", stateDir, depStoreDir: stateDir };
+    const first = fakeDocker({ onStart: installs() });
+    const cold = await createPluginInstallRunner({ ...runner, docker: first.docker })(job([npmExport()]));
+
+    const movedCommit = "f".repeat(40);
+    const second = fakeDocker({ onStart: installs(movedCommit) });
+    const exp = npmExport();
+    fs.writeFileSync(path.join(stagingDir, "package-lock.json"), `{"lockfileVersion":4}`);
+    const moved = await createPluginInstallRunner({ ...runner, docker: second.docker })({
+      ...job([exp]), commit: movedCommit,
+    });
+
+    expect(second.containers).toHaveLength(1);
+    expect(moved.basePins).toHaveLength(1);
+    // A different dep state is a different scope, never an overwrite of the one
+    // an earlier commit's generations are still mounting.
+    expect(moved.basePins).not.toEqual(cold.basePins);
+  });
+
+  it("never mounts the store into the container that runs plugin code (req 19)", async () => {
+    const { docker, containers, createdVolumes } = fakeDocker({ onStart: installs() });
+    await createPluginInstallRunner({
+      docker, image: "worker:test", sessionId: "s1", stateDir, depStoreDir: stateDir,
+    })(job([npmExport()]));
+
+    // The install's lowerdir is the staging checkout and nothing else: a base
+    // stacked under it would make the upper layer a delta, and a delta cannot be
+    // promoted by a rename. It is also what keeps the shared tree unreachable
+    // from plugin-authored code while it runs.
+    const o = createdVolumes[0]!.DriverOpts!.o;
+    expect(o.split(",")[0]).toBe(`lowerdir=${stagingDir}`);
+    // And the only thing the container holds besides that volume is the
+    // repository's own download cache.
+    const host = containers[0]!.opts.HostConfig as {
+      Binds: string[];
+      Mounts?: { Source: string; Target: string; ReadOnly?: boolean }[];
+    };
+    expect(host.Binds).toHaveLength(1);
+    expect(host.Mounts).toHaveLength(1);
+    expect(host.Mounts![0]!.Target).toBe("/dep-cache");
+    expect(host.Mounts![0]!.Source).toContain(path.join(stateDir, "dep-cache"));
+    expect(host.Mounts![0]!.ReadOnly).toBe(false);
+    const env = (containers[0]!.opts as { Env: string[] }).Env;
+    expect(env).toContain("npm_config_cache=/dep-cache/npm");
+  });
+
+  it("keeps the download cache in this repository's own subtree (req 15)", async () => {
+    const one = fakeDocker({ onStart: installs() });
+    const two = fakeDocker({ onStart: installs() });
+    const runner = { image: "worker:test", sessionId: "s1", stateDir, depStoreDir: stateDir };
+    await createPluginInstallRunner({ ...runner, docker: one.docker })(job([npmExport()]));
+    const otherCommit = "a".repeat(40);
+    two.containers.length = 0;
+    await createPluginInstallRunner({ ...runner, docker: two.docker })({
+      ...job([npmExport()]), source: "acme/other", commit: otherCommit,
+    });
+
+    const sourceOf = (d: typeof one) =>
+      (d.containers[0]!.opts.HostConfig as { Mounts: { Source: string }[] }).Mounts[0]!.Source;
+    expect(sourceOf(one)).not.toBe(sourceOf(two));
+  });
+
+  it("re-installs when a base the stamp recorded is gone", async () => {
+    const runner = { image: "worker:test", sessionId: "s1", stateDir, depStoreDir: stateDir };
+    const first = fakeDocker({ onStart: installs() });
+    const cold = await createPluginInstallRunner({ ...runner, docker: first.docker })(job([npmExport()]));
+
+    // A sweep took the base. The stamp still claims this commit is installed,
+    // and believing it would leave the plugin with no dependencies at all.
+    fs.rmSync(path.join(stateDir, "overlay-base"), { recursive: true, force: true });
+    const again = fakeDocker({ onStart: installs() });
+    const redone = await createPluginInstallRunner({ ...runner, docker: again.docker })(job([npmExport()]));
+
+    expect(again.containers).toHaveLength(1);
+    // Republished into the same scope: the content key did not change, only the
+    // tree went missing.
+    expect(redone.basePins).toEqual(cold.basePins);
+  });
+
+  it("does nothing different without a store configured", async () => {
+    const { docker, containers } = fakeDocker({ onStart: installs() });
+    const result = await createPluginInstallRunner({
+      docker, image: "worker:test", sessionId: "s1", stateDir,
+    })(job([npmExport()]));
+
+    expect(containers).toHaveLength(1);
+    expect(result).toEqual({ ok: true });
+    expect(fs.existsSync(path.join(upper(), "node_modules"))).toBe(true);
   });
 });

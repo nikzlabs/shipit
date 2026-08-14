@@ -87,6 +87,20 @@ export interface PluginExport {
   install?: string;
   /** Files whose content re-triggers install (same convention as agent.install-inputs). */
   installInputs: string[];
+  /**
+   * Directories `install` populates, relative to the repository root — the
+   * plugin half of `agent.dep-dirs` (docs/183), and what req 28 means by "a
+   * plugin's declared dependency directories". Each one is eligible for the
+   * shared dependency store: ShipIt promotes it out of the generation's
+   * writable layer into a base keyed by this repository, the runtime, and the
+   * content of the install's inputs, so the next commit — and every other
+   * session — mounts it instead of installing again.
+   *
+   * Defaults to `[node_modules]` for the same reason `agent.dep-dirs` does: the
+   * common npm plugin is then zero-config. A declared directory that does not
+   * exist after install simply contributes nothing.
+   */
+  depDirs: string[];
   /** Credential NAMES only — values live with each consuming project (req 23). */
   credentials: string[];
   /** Informational; grants nothing (req 24). */
@@ -349,6 +363,21 @@ export function destinationKey(source: PluginRepoSource): string {
   return source.kind === "self" ? "self" : `${source.owner}/${source.repo}`.toLowerCase();
 }
 
+/**
+ * The URL a declared plugin repository is cloned from. Case-preserving, because
+ * every cache keyed on it (`repo-cache/<hash>`, docs/075's `dep-cache/<hash>`)
+ * hashes the URL byte-for-byte — the lowercased {@link destinationKey} is the
+ * IDENTITY of a repository and not a substitute for it here.
+ *
+ * Lives beside `destinationKey` so the activation path and the disk janitor
+ * cannot derive two different answers: the janitor's whole job is to recognize
+ * the very directories activation created (req 28).
+ */
+export function pluginCloneUrl(source: PluginRepoSource): string {
+  if (source.kind === "self") throw new Error("self repos have no clone URL");
+  return `https://github.com/${source.owner}/${source.repo}.git`;
+}
+
 function sameDestination(source: PluginRepoSource, tracker: DeclaredTracker): boolean {
   return (
     source.kind === "github" &&
@@ -600,10 +629,19 @@ const KNOWN_EXPORT_KEYS = new Set([
   "skills",
   "install",
   "install-inputs",
+  "dep-dirs",
   "credentials",
   "hosts",
   "settings",
 ]);
+
+/**
+ * What `dep-dirs` means when an export does not say (req 28). The same literal
+ * `agent.dep-dirs` defaults to (docs/183), duplicated rather than imported
+ * because `shipit-config.ts` imports THIS module — and it is the module that is
+ * allowed to touch `node:fs`, which this one deliberately is not.
+ */
+export const DEFAULT_PLUGIN_DEP_DIRS: readonly string[] = ["node_modules"];
 
 /** Credential names are environment variable names (req 23). */
 const CREDENTIAL_NAME_RE = /^[A-Z][A-Z0-9_]*$/;
@@ -704,6 +742,26 @@ function parseExportEntry(name: string, entry: unknown, warnings: string[]): Plu
     }
   }
 
+  // req 28 — the directories install populates, each eligible for the shared
+  // dependency store. Absent means the npm default, exactly as `agent.dep-dirs`
+  // behaves; an explicit empty list opts out.
+  let depDirs: string[] = [...DEFAULT_PLUGIN_DEP_DIRS];
+  if (entry["dep-dirs"] !== undefined && entry["dep-dirs"] !== null) {
+    const rawDirs = entry["dep-dirs"];
+    if (!Array.isArray(rawDirs)) return drop("`dep-dirs` must be a list of directory paths");
+    const seen = new Set<string>();
+    depDirs = [];
+    for (let i = 0; i < rawDirs.length; i++) {
+      const rel = optionalRelPath(rawDirs[i], `exports.plugins.${name}.dep-dirs[${i}]`);
+      if (rel === undefined || typeof rel === "object") {
+        return drop(typeof rel === "object" ? rel.error : `\`dep-dirs[${i}]\` must be a path`);
+      }
+      if (seen.has(rel)) continue;
+      seen.add(rel);
+      depDirs.push(rel);
+    }
+  }
+
   const credentials: string[] = [];
   if (entry.credentials !== undefined && entry.credentials !== null) {
     if (!Array.isArray(entry.credentials)) return drop("`credentials` must be a list of credential NAMES");
@@ -764,6 +822,7 @@ function parseExportEntry(name: string, entry: unknown, warnings: string[]): Plu
     ...(skills !== undefined ? { skills } : {}),
     ...(install !== undefined ? { install } : {}),
     installInputs,
+    depDirs,
     credentials,
     hosts,
     settings,

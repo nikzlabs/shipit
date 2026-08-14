@@ -8,7 +8,7 @@ import { planPluginCommands, RESERVED_PLUGIN_COMMANDS } from "./plugin-cli.js";
 import type { PluginExport, PluginUse } from "./plugin-repos.js";
 
 function exported(name: string, cli: Record<string, string>): PluginExport {
-  return { name, cli, installInputs: [], credentials: [], hosts: [], settings: {} };
+  return { name, cli, installInputs: [], depDirs: [], credentials: [], hosts: [], settings: {} };
 }
 
 function use(
