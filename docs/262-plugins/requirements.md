@@ -151,7 +151,12 @@ receipts below keep the original "tools" vocabulary of the early rounds.
     the session itself is reset or deleted. Neither
     kind of data is ever stored by modifying the read-only plugin checkout.
     The preview origin is stable for the session's whole life, so
-    origin-keyed browser storage counts as session-scoped state.
+    origin-keyed browser storage counts as session-scoped state. The published
+    port a plugin service is reached on is a property of the **import**, not of
+    the plugin: the consuming project may set it in its own `use:` entry, and
+    ShipIt allocates one when it does not. A plugin never declares the port it
+    is published on, so a plugin's own edit cannot move a consumer's origin and
+    cannot take a number the consuming project is using.
 19. A checked-in plugin declaration is a **standing grant** to fetch and
     execute that repository's declared setup, services, and companion CLIs at
     the selected revision — including each new commit on a tracked branch,
@@ -159,7 +164,12 @@ receipts below keep the original "tools" vocabulary of the early rounds.
     repository, ref, and exact commit being executed (req 15). Credentials
     used to fetch repositories are never exposed to plugin code; credentials
     a plugin declares for its own job (req 23) are delivered to it. Both
-    halves hold at once.
+    halves hold at once. A credential is never **persisted** to reach a
+    repository — not in a stored remote URL, and not in any file a session or
+    a plugin container can read. ShipIt supplies fetch credentials the same
+    way for a plugin repository as for the project's own: through a credential
+    helper scoped to that remote, for the life of the fetch. A credential a
+    user happens to type into a repository URL is not kept either.
 20. Every surfaced plugin service and companion CLI command has an
     unambiguous identity across the project and all declared plugin
     repositories. When two would collide — with each other or with the
@@ -230,7 +240,19 @@ receipts below keep the original "tools" vocabulary of the early rounds.
     exported definitions are the single source (req 5 applied to the plugin
     repository itself). Activation there uses the same mechanism consumers
     use — the repository declares itself as a consumer — so dogfooding
-    exercises exactly the path real consumers run.
+    exercises exactly the path real consumers run. The plugin's exported
+    **`install` does not run** in its own repository: the repository prepares
+    its own working tree the way it already does for its tests, and ShipIt
+    never writes plugin-authored install output into a tree it auto-commits.
+28. Activating a plugin **reuses ShipIt's existing content caches rather than
+    paying a cold cost per commit**. Sessions already avoid re-downloading
+    dependencies through a shared, rolling dependency store, and plugins get
+    the same benefit: a plugin's declared dependency directories are populated
+    from that shared store, so a new commit on a tracked branch does not
+    re-download what an earlier commit — or another session, or the same
+    plugin in another project — already fetched. Reusing a cache never lets
+    plugin code reach a fetch credential (req 19), and never lets one
+    repository's cached content appear under another's name (req 15).
 
 ## Out of scope (v1)
 
@@ -292,91 +314,82 @@ user's follow-up of 2026-08-12 during the design phase.
 
 ## Open questions
 
-- **Under `repo: self`, does the plugin's declared `install` run?** Today it does
-  not: `install` populates a generation's writable layer, and a self declaration
-  has neither — so a plugin repository testing itself relies on its own
-  `agent.install` to prepare the working tree its services and CLIs then run out
-  of. Two readings of req 27 pull in opposite directions, which is why this is a
-  question rather than a decision the agent should take. Its own enumeration of
-  what self-use must deliver — "the same services, commands, skills, settings,
-  and needs a consumer gets" — **does not name install**, and a repository needs
-  its dependencies installed for its own development anyway. But its next
-  sentence says **nothing is duplicated to make self-use work**, and a plugin
-  whose exported `install` must be repeated in `agent.install` for the self case
-  is duplicating exactly the setup req 5 puts in the plugin's hands. The
-  repository's own fixture assumes the first reading is wrong: `test-plugin/`
-  gitignores an install stamp that only a self-mode install could write. The
-  cost is not symmetric — running it means a new install-container branch that
-  mounts the session's working tree read-write instead of a generation overlay,
-  re-triggered by input hashes rather than by a commit, and writing
-  plugin-authored output into a tree ShipIt auto-commits. *Agent recommendation:
-  leave it out (v1), since a plugin repository's own `agent.install` already has
-  to work for its tests and lint to run at all, and revisit if a real plugin
-  repository finds the duplication annoying. Not implemented either way — the
-  current behaviour is the "does not run" one.*
-
-- **A plugin's preview origin and a project service's port want the same
-  number — which one moves?** Req 18 says the preview origin is stable for the
-  session's whole life and states no exception. But the origin's port is also
-  the routing key, so two services cannot share one: if a project later edits
-  its own compose file to serve on the number a plugin's origin already uses,
-  one of them loses its preview. The implementation currently moves the
-  **plugin's** origin (which loses whatever that plugin kept in origin-keyed
-  browser storage — the thing req 18 protects) on the reasoning that the
-  project's port is a real container port the user chose, while the plugin's is
-  ShipIt's own bookkeeping. *Agent recommendation: keep that — it is the rarer
-  and more recoverable loss, and it takes a deliberate project edit to reach.*
-  The alternative is to hold the plugin's pin and leave the project service
-  without an origin until the user renumbers it.
-
-- **A repository added with a credential in its URL leaves a live token in
-  `/project/.git/config`, where plugin code can read it — which of three fixes
-  do we take?** Req 19 already says a fetch credential is never reachable from
-  anything running plugin-authored code, so this is a **violation to close, not
-  an ambiguity in the requirement**; what is open is only the remedy, and each
-  one costs the user something different. Req 21 puts the consuming project's
-  workspace at `/project`, which necessarily carries `.git`. The repo-local
-  `credential.helper` there is harmless — it is a PATH to the loopback broker,
-  and a plugin container's own network namespace has nothing listening on it.
-  `remote.origin.url` is not: a repository added as
-  `https://x-access-token:<pat>@github.com/o/r.git` is stored verbatim and
-  written into the session clone's config, so every plugin CLI can read it
-  today, and every plugin service can once that surface ships. No mount,
-  environment or network assertion on the plugin surfaces can see it, which is
-  why the guard tests pass while the boundary is open. The options: **(a)** strip
-  the credential when a repository is added and require the credential helper
-  instead — cheapest and fixes it everywhere, but breaks a repository whose only
-  working auth *is* that URL; **(b)** strip it only when writing
-  `remote.origin.url` in the session clone — narrower, leaves the stored value
-  alone, and keeps `.git` usable in plugin containers; **(c)** mask
-  `/project/.git` on plugin surfaces — changes what a plugin may assume about
-  `/project`, and plan §2 currently says nothing about git access either way.
-  *Agent recommendation: (b) — it closes the reachable copy without changing
-  either what the user may type when adding a repository or what a plugin may
-  expect at `/project`. Not implemented.*
-
-- **Do plugin SERVICES get their own egress containment, or do they inherit
-  today's unconfined behaviour?** Req 24 is settled on intent — a declaration
-  grants nothing, and services and companion CLIs reach exactly what equivalent
-  same-repo code could reach under the session's own egress configuration. The
-  open part is enforcement, and it is not a plugin question so much as an
-  existing one this feature is the first to make visible: containment lives in
-  the **agent container's** network namespace, while compose service containers
-  have unrestricted egress (the docs/172 residual). So a plugin's declared hosts
-  are evaluated against the agent container — where companion CLIs run — and a
-  service reaching an undeclared host is not stopped by anything. Same-repo
-  compose services are equally unconfined, so the letter of req 24 holds; its
-  spirit does not, because "what equivalent same-repo code could reach" is
-  currently "everything". The options: **(a)** leave services as they are and
-  say so plainly, keeping plugin and project services identical; **(b)** contain
-  plugin services specifically, which makes a plugin service *more* restricted
-  than a same-repo one and needs req 24 reworded; **(c)** contain compose
-  services generally, which closes docs/172 for every project and is much larger
-  than this feature. *Agent recommendation: (a) for v1, with the need-row naming
-  the blocked claimant rather than asserting one repository-level truth across
-  both surfaces — then (c) as its own piece of work. Not implemented.*
+*None open.* Every question raised so far is answered below, each with the
+answer's date and the words that settled it.
 
 ## Resolved questions
+
+- **2026-08-14 — Under `repo: self`, does the plugin's declared `install`
+  run?** Raised by the self-use slice: req 27's enumeration of what self-use
+  delivers — "the same services, commands, skills, settings, and needs a
+  consumer gets" — does not name install, while its next sentence says nothing
+  is duplicated to make self-use work, so the two readings pulled in opposite
+  directions. The user answered **"keep it out"**. Req 27 now says so in its own
+  words, so the next reader is not left to re-derive it. The reasoning behind
+  the answer: a plugin repository's own `agent.install` has to work for its
+  tests and lint to run at all, so the setup already exists there, and running
+  the exported `install` under self would mean a new install-container branch
+  that mounts the session's working tree read-write instead of a generation
+  overlay, re-triggered by input hashes rather than by a commit, writing
+  plugin-authored output into a tree ShipIt auto-commits. This was also the
+  behaviour already shipped, so nothing changes in code. Revisit if a real
+  plugin author finds repeating the install string annoying.
+
+- **2026-08-14 — Should plugins pay a cold dependency install on every new
+  commit?** Raised after measuring the code: git objects were reused, but
+  install output was per generation, the install container mounted no package
+  cache, and each tracked-branch commit therefore paid a cold install (the
+  code's own note: `npm ci` on a large plugin is minutes). The agent
+  recommended accepting it for v1 and making the wait visible. **The user
+  rejected that**: *"So we spent quite a bit of time on optimizing the disk
+  space and startup time of new sessions, in particular around caching of the
+  content. This work should not be wasted. Plugins need to have this
+  optimization too. Ideally, for the npm case, the dependencies should be
+  reused from the same cache too. This is a new requirement."* → **req 28
+  added.** The agent's recommendation treated the cache as new machinery to be
+  justified; it already exists and is proven (the shared rolling dependency
+  store), so the question was really "does the plugin path reuse it?", and the
+  answer is that it must.
+
+- **2026-08-14 — How should the credential in a repository URL be kept out of
+  plugin containers?** The open question offered three remedies and recommended
+  the narrowest. The user asked the question that settled it: *"How do we do it
+  for the regular session code? We don't save the credential, right? Let's do
+  the same for the plugins."* Verified at the source — correct: ShipIt's own
+  machinery never persists a credential. `repo-git.ts` resets inherited helpers
+  and installs a per-origin `credential.<origin>.helper`, so the token is
+  supplied for the duration of a fetch and written nowhere. The only persisted
+  copy comes from a credential a **user typed into the URL**, which is stored
+  verbatim and written into the session clone's `remote.origin.url` — where any
+  plugin container reading `/project/.git/config` can see it. → **req 19
+  amended**: a credential is never persisted to reach a repository, including
+  one a user typed. The honest cost, recorded rather than argued away: a remote
+  whose *only* working auth is an embedded URL credential stops working on the
+  helper path, and the user chose the consistent rule over that case.
+
+- **2026-08-14 — Where is a plugin service's published port declared?** The open
+  question asked which side loses when a plugin's preview origin and a project
+  service want the same number, and recommended moving the plugin's origin.
+  The user rejected the framing: *"Let's make the port field not in the plugin
+  definition, but in the usage."* That dissolves the conflict rather than
+  arbitrating it — a port chosen by the consuming project is the same kind of
+  fact as a project service's own port, so a clash is one the user created and
+  can see, and no ShipIt bookkeeping has to move behind their back. It also
+  keeps req 5 intact, because the field is optional and ShipIt still allocates
+  when it is absent. → **req 18 amended**; the open question is removed rather
+  than answered, since the design it argued about no longer exists.
+
+- **2026-08-14 — Do plugin services get their own egress containment?** Raised
+  on the premise that compose service containers have unrestricted egress (the
+  docs/172 residual), which would have made req 24's letter hold while its
+  spirit did not. The user replied: *"I think egress is confined now."* Verified
+  at the source, and they are right — docs/263 shipped compose service egress
+  containment, and plugin services take the same `containEgress` path as project
+  services, so a plugin service is contained exactly as an equivalent same-repo
+  service is. That is precisely what req 24 asks for. → **no requirement change,
+  no work needed**; the question was written from a stale plan note and is
+  withdrawn. Worth recording as a caution: it was raised from a design document
+  describing the world as it had been, not from the code.
 
 - **2026-08-14 — What happens to a plugin's saved state when a project
   re-points a declaration at a different repository?** Raised while
