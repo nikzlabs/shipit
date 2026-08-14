@@ -2,34 +2,47 @@
 
 `shipit agent run` spawns **another** agent for a one-shot sub-task and gives you
 its final text back, synchronously, in the same turn. Use it when the user wants
-a second model's eyes or hands — "review this", "ask another model to draft the
-migration" — without you leaving the session or surrendering the session's
-pinned agent.
+a second model's eyes on the work — "review this" — without you leaving the
+session or surrendering the session's pinned agent. A second model's *hands*
+("draft the migration") are reachable too, but only under the conditions the
+next section states.
 
-This is a generic delegation primitive with a review path built into it. Which
-shape you use depends on whether you were handed a complete target:
+The command has two shapes, and which of them you can reach is decided for you:
 
-- **You were not → name the ROLE.** `--role reviewer` asks for a review and lets
-  ShipIt pick the reviewer, from settings the user owns. This is the normal case.
-- **You were → name EVERYTHING.** An explicit run states the harness, the
-  service, the billing mode, the model and the reasoning level. Nothing is filled
-  in from a stored default, so an incomplete call is refused. A repository that
-  names all five is overriding ShipIt's reviewer, which is allowed; that review
-  is an ordinary explicit call.
+- **Name the ROLE.** `--role reviewer` asks for a review and lets ShipIt pick the
+  reviewer, from settings the user owns. This is the only shape you can reach on
+  your own initiative, and it is the normal case.
+- **Name EVERYTHING.** An explicit run states the harness, the service, the
+  billing mode, the model and the reasoning level. Nothing is filled in from a
+  stored default, so an incomplete call is refused. Use this shape only when all
+  five values were handed to you — by the user, or by a repository's own
+  instructions overriding ShipIt's reviewer.
 
 The two do not mix, and a call in between is rejected with an error naming what
 is missing (docs/261).
+
+**So a delegation that is not a review is usually not available to you.** There
+is no role for it, and you cannot complete the explicit shape yourself: nothing
+in this container lists the service ids, the model ids or the reasoning levels,
+and guessing them is forbidden below. When the user asks for one without naming
+every parameter, say which parameters are missing and let them decide.
 
 ## When to use it
 
 The user says something like:
 
 - "review this" / "get a second opinion from another model"
-- "ask another model to write the test fixtures for this"
-- "have a second model explain how this subsystem works"
 
 Recognize the intent and run the command yourself. There is no slash command and
 no button — the natural-language request is the trigger.
+
+A request that is **not** a review — "ask another model to write the test
+fixtures", "have a second model explain this subsystem" — reaches the same
+command, but only through the explicit shape. Run it when the user named all
+five parameters. When they did not, tell them which ones are missing instead of
+choosing them. Often what they want is reachable another way: `Task` for a
+fan-out under your own model, or `shipit session create --agent <id>` for work
+that gets its own branch and PR.
 
 **Do not choose the reviewer yourself, and do not guess to fill the explicit
 shape out.** If the user names a backend ("review this with Codex") without
@@ -100,10 +113,13 @@ Outside a role you name everything the run executes on:
 
 **Omitting any of them is an error**, and the message names the missing flags.
 Nothing is filled in from a stored setting, so a half-specified call can never be
-completed from somewhere you cannot see. In practice this means: use the explicit
-shape only when all five values were handed to you — by the user, or by a
-repository's own instructions overriding ShipIt's reviewer. Do not guess values
-to fill the shape out; use `--role reviewer`.
+completed from somewhere you cannot see.
+
+**And there is no discovery command.** `shipit agent` has exactly two
+subcommands, `run` and `result`; nothing in this container lists the catalogue.
+So values you were not given, you cannot look up. Do not guess them. For a
+review, use `--role reviewer`. For anything else, report which parameters are
+missing and let the user supply them.
 
 ### Not the same as a child session
 
