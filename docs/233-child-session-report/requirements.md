@@ -103,21 +103,7 @@ re-armed after a merge and can open a later PR. There is no general durable
 
 ## Open questions
 
-### Q6. Does “resolved child” include a PR closed without merge?
-
-The existing UI predicate verified at
-`src/client/components/SessionSidebar/useSessionGrouping.ts:isRecentlyResolved`
-and its server counterpart in `src/server/orchestrator/sessions.ts` treats both
-`mergedAt` and `closedAt` as resolved, unless later turn activity reopens the
-session. The approved wording above says “merged.” The implementation cannot
-both reuse the UI predicate and exclude only merged PRs.
-
-- **A — Reuse the complete UI predicate (recommended).** Block delivery to a
-  child whose PR merged or closed without merge and that has no later turn
-  activity. This keeps the sidebar and delivery eligibility consistent.
-- **B — Merged PRs only.** Block delivery only when `mergedAt` is set and there
-  is no later turn activity. A closed-without-merge child remains eligible even
-  while the UI shows it under Recently resolved.
+_None._
 
 ## Resolved questions
 
