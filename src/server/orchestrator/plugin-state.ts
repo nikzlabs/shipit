@@ -58,13 +58,16 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import {
-  destinationKey,
   type DeclaredPluginRepo,
   type PluginExport,
   type PluginReposConfig,
   type PluginUse,
 } from "../shared/plugin-repos.js";
-import { readActiveManifest } from "./plugin-generations.js";
+import {
+  readGenerationManifestAt,
+  type LiveGenerations,
+  type VerifiedGeneration,
+} from "./plugin-generations.js";
 import { chownToSessionWorker, sessionWorkerUid } from "./session-worker-uid.js";
 import { sessionStateDirForWorkspace } from "./session-state-dir.js";
 
@@ -259,15 +262,23 @@ export interface PluginImportResolver {
 }
 
 /**
- * Build the resolver for a session: a `repo: self` import reads the project's
- * own `exports.plugins` (already parsed — its manifest is the same file), and a
- * tracked import reads the LIVE generation's manifest off disk, which is what a
- * refresh changes.
+ * Build the resolver for one operation: a `repo: self` import reads the
+ * project's own `exports.plugins` (already parsed — its manifest is the same
+ * file), and a tracked import reads the manifest out of the generation
+ * directory `live` already resolved and verified.
+ *
+ * It takes the resolved generations rather than a `stateDir` on purpose
+ * (docs/262 resolve-once): given a state dir it would follow `active` itself,
+ * and every other reader answering for the same card would follow it again — so
+ * one request could describe one repository with a commit from generation A and
+ * settings validated against B's manifest. Taking a verified handle also means
+ * this cannot read a generation belonging to a repository the declaration no
+ * longer names; the check lives where the link was resolved.
  */
 export function createPluginImportResolver(
   plugins: PluginReposConfig,
   selfExports: readonly PluginExport[],
-  stateDir: string,
+  live: LiveGenerations,
 ): PluginImportResolver {
   const declaredRepos = new Map(plugins.repos.map((r) => [r.name.toLowerCase(), r]));
   const cache = new Map<string, PluginExport[]>();
@@ -287,21 +298,22 @@ export function createPluginImportResolver(
           repo.source.kind === "self"
             // req 27 — a self repo's manifest IS this same file, already parsed.
             ? [...selfExports]
-            // The generation engine owns reading a live checkout's manifest
-            // (`readActiveManifest`, non-logging: this runs per request and
-            // activation already logged any warning once). `null` — no live
-            // generation — collapses to "no exports", which the caller reads as
-            // "nothing to validate against" either way. The expected SOURCE is
-            // required: the generation is filed under the declaration's NAME,
-            // and a name is re-pointable, so without it a declaration moved to
-            // another repository would validate this consumer's settings
-            // against the previous repository's manifest.
-            : readActiveManifest(stateDir, repo.name, destinationKey(repo.source)) ?? [],
+            // Read out of the directory this operation already resolved and
+            // verified. No live generation — including one belonging to a
+            // repository this declaration no longer names — collapses to "no
+            // exports", which the caller reads as "nothing to validate
+            // against" either way.
+            : manifestOf(live(repo)),
         );
       }
       return cache.get(key)!.find((e) => e.name.toLowerCase() === use.plugin.toLowerCase()) ?? null;
     },
   };
+}
+
+/** The manifest of a verified generation, or none when nothing is live. */
+function manifestOf(verified: VerifiedGeneration | null): PluginExport[] {
+  return verified ? readGenerationManifestAt(verified.dir) : [];
 }
 
 // ---------------------------------------------------------------------------
@@ -532,9 +544,9 @@ function message(err: unknown): string {
 export function pluginSettingsIssuesByRepo(
   plugins: PluginReposConfig,
   selfExports: readonly PluginExport[],
-  stateDir: string,
+  live: LiveGenerations,
 ): Map<string, string[]> {
-  const resolver = createPluginImportResolver(plugins, selfExports, stateDir);
+  const resolver = createPluginImportResolver(plugins, selfExports, live);
   const byRepo = new Map<string, string[]>();
 
   for (const use of plugins.uses) {

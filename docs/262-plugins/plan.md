@@ -1584,6 +1584,42 @@ coherent in one UI.
   `readActiveManifest` resolves through the same symlink, so a re-pointed
   declaration would otherwise validate a consumer's selectors, settings and
   declared credentials against the PREVIOUS repository's manifest.
+
+  **One resolution per repository per operation** (`resolveLiveGenerations`).
+  Five readers answer for the same card on one snapshot request — the commit,
+  the manifest behind the settings verdict, the one behind the command verdict,
+  the credential names, and the compose fragment — and each used to follow
+  `active` itself, so a refresh landing mid-request could compose ONE card from
+  several generations. The request now resolves each declared repository once
+  and hands every reader that verified `{dir, record}` handle; the service build
+  does the same, so a fragment and the tree its services mount cannot disagree.
+  Two properties come with it: the identity check runs where the link is
+  resolved rather than once per reader, and `readActiveManifest`'s own three
+  traversals collapse to one.
+
+  The lookup resolves a repository on **first ask**, not for the whole list up
+  front. The guarantee the readers need is per-repository — the facts one card
+  or one mount states about one repository come from one generation — and
+  memoizing gives that; pinning every repository at a single instant would
+  additionally cost a resolution for repositories the operation never reads.
+  `plugin-cli-run.ts` is why that matters and not merely tidier: it builds the
+  lookup for the collision verdict over the OTHER imports while `pinGeneration`
+  pins its target separately (that pin also names the volume and the lowerdir),
+  so resolving the list up front followed the target's `active` a second time
+  for an answer it discarded — a review found it, and a test in
+  `plugin-cli-run.test.ts` now holds that count at one.
+
+  **What is NOT in that rule, because each of these breaks if it is folded in:**
+  a read whose subject IS the change (`plugin-refresh.ts`'s before/after pair,
+  `plugin-activation.ts`'s pre-activation read — collapse them and every refresh
+  reports `unchanged` and the card names the new generation as the one it is
+  replacing); a stored path that must FOLLOW a later swap (`/plugins/<name>`
+  links the unresolved `active` on purpose); and an operation that already
+  resolves once (the feedback footer, whose residual window is between its read
+  and the GitHub POST and is what "what this session was running" means). The
+  rule is stated where a new reader will meet it — beside the directory-scoped
+  readers, which carry no identity check and are safe only on a directory the
+  resolver returned.
 - ✓ `src/server/orchestrator/plugin-fetch.ts` — req 10's credential resolution:
   the plugin repository's own read-only App installation token, else the host
   PAT, else none, plus the named failure when none of them reaches it (req 13).

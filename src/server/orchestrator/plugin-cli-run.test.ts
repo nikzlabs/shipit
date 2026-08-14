@@ -381,6 +381,25 @@ describe("runPluginCommand — the container it builds", () => {
 
   // req 27 — there the plugin IS the working tree, live and editable, and
   // there is no commit for it to correspond to.
+  // The skew this whole path exists to prevent needs the target's `active`
+  // followed ONCE — `pinGeneration` names the volume, the lowerdir and the
+  // entrypoint out of that one answer. A review found the collision verdict's
+  // lookup following it a second time for a manifest it then discarded.
+  it("follows the target repository's `active` exactly once per invocation", async () => {
+    declareConsumer();
+    publishGeneration();
+    const fake = fakeDocker({ stdout: "ok\n" });
+    const activeLink = path.join(stateDir, "plugins", "tools", "active");
+
+    const spy = vi.spyOn(fs, "realpathSync");
+    const result = await runPluginCommand(deps(fake.docker), call);
+    const follows = spy.mock.calls.filter(([p]) => String(p) === activeLink);
+    spy.mockRestore();
+
+    expect(result.error).toBeUndefined();
+    expect(follows.length).toBe(1);
+  });
+
   it("runs a `repo: self` import against the working tree, with no commit set", async () => {
     declareConsumer(`
 plugins:

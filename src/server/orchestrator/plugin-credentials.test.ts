@@ -20,6 +20,8 @@ import { DatabaseManager } from "../shared/database.js";
 import { SecretStore } from "./secret-store.js";
 import { CredentialStore } from "./credential-store.js";
 import { resolvePluginCredentials } from "../shared/plugin-credentials.js";
+import type { DeclaredPluginRepo } from "../shared/plugin-repos.js";
+import { resolveLiveGenerations } from "./plugin-generations.js";
 import {
   collectPluginCredentialDeclarations,
   liveManifestReader,
@@ -262,11 +264,10 @@ describe("liveManifestReader", () => {
     const workspaceDir = path.join(sessionDir, "workspace");
     fs.mkdirSync(workspaceDir, { recursive: true });
     try {
-      const read = liveManifestReader(
-        workspaceDir,
-        [{ name: "art-kit", source: { kind: "github", owner: "acme", repo: "art-kit" } }],
-        [],
-      );
+      const repos: DeclaredPluginRepo[] = [
+        { name: "art-kit", source: { kind: "github", owner: "acme", repo: "art-kit" } },
+      ];
+      const read = liveManifestReader(repos, [], resolveLiveGenerations(path.join(sessionDir, "state"), repos));
       expect(read("art-kit")).toBeNull();
     } finally {
       fs.rmSync(sessionDir, { recursive: true, force: true });
@@ -281,7 +282,9 @@ describe("liveManifestReader", () => {
       const selfExports = [
         { name: "probe", cli: {}, installInputs: [], credentials: ["PROBE_KEY"], hosts: [], settings: {} },
       ];
-      const read = liveManifestReader(dir, [{ name: "dev", source: { kind: "self" } }], selfExports);
+      const repos: DeclaredPluginRepo[] = [{ name: "dev", source: { kind: "self" } }];
+      // A self repo reads without any generation being resolvable at all.
+      const read = liveManifestReader(repos, selfExports, () => null);
       expect(read("dev")).toEqual(selfExports);
       expect(read("other")).toBeNull();
     } finally {

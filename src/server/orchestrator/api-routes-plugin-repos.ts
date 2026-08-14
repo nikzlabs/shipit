@@ -17,15 +17,15 @@ import type { FastifyInstance } from "fastify";
 import type { ApiDeps } from "./api-routes.js";
 import type { SessionManager } from "./sessions.js";
 import { resolveShipitConfig, type ShipitConfig } from "../shared/shipit-config.js";
+import type { DeclaredPluginRepo } from "../shared/plugin-repos.js";
 import {
   buildPluginReposSnapshot,
-  destinationKey,
   EMPTY_PLUGIN_REPOS,
   type PluginReposSnapshot,
   type PluginRepoRuntime,
 } from "../shared/plugin-repos.js";
 import { resolvePluginCredentials } from "../shared/plugin-credentials.js";
-import { readActiveGeneration } from "./plugin-generations.js";
+import { resolveLiveGenerations, type LiveGenerations } from "./plugin-generations.js";
 import {
   pluginCredentialDeclarationsFor,
   loadSatisfiedPluginCredentialNames,
@@ -176,16 +176,19 @@ export async function registerPluginRepoRoutes(
 
       try {
         const config = resolveShipitConfig(session.workspaceDir);
+        // docs/262 resolve-once: ONE resolution of `active` per declared
+        // repository for this whole request. Five readers answer for the same
+        // card — the commit, the manifest behind the settings verdict, the one
+        // behind the command verdict, the credential names, and the compose
+        // fragment — and a refresh landing mid-request used to let each of them
+        // answer for a different generation.
+        const live = liveGenerationsFor(session.workspaceDir, config.plugins.repos);
         // req 23 — what each activated plugin declares, resolved against THIS
         // project's secret store. `consumerRepoUrl` is the same value the
         // card's "Add key…" writes back to, so the gap the tab names and the
         // store it opens can never disagree (plan §3's store trap).
         const credentialGroups = resolvePluginCredentials(
-          pluginCredentialDeclarationsFor(
-            session.workspaceDir,
-            config.plugins,
-            config.pluginExports,
-          ),
+          pluginCredentialDeclarationsFor(config.plugins, config.pluginExports, live),
           loadSatisfiedPluginCredentialNames(deps.secretStore, consumerRepoUrl),
         );
         return buildPluginReposSnapshot(
@@ -198,7 +201,7 @@ export async function registerPluginRepoRoutes(
           // of the declaration against the live manifests. A GET never
           // activates anything — that runs on session activation and on a
           // shipit.yaml edit.
-          readRuntimeState(request.query.sessionId, session.workspaceDir, config, {
+          readRuntimeState(request.query.sessionId, session.workspaceDir, config, live, {
             // docs/262 req 20 — a fragment is validated against the rules THIS
             // session applies, and a contained session applies more of them
             // (docs/263). Reporting under the wrong rule set would show a card
@@ -227,6 +230,22 @@ export async function registerPluginRepoRoutes(
 }
 
 /**
+ * This request's live generations, or a lookup that answers "nothing" when the
+ * session layout has no resolvable state dir (planning#288). Never throws: a
+ * card must still describe a declaration it cannot find generations for.
+ */
+function liveGenerationsFor(
+  workspaceDir: string,
+  repos: readonly DeclaredPluginRepo[],
+): LiveGenerations {
+  try {
+    return resolveLiveGenerations(sessionStateDirForWorkspace(workspaceDir), repos);
+  } catch {
+    return () => null;
+  }
+}
+
+/**
  * What is actually live for each tracked repository: the generation record on
  * disk (durable — it survives a restart) plus the last attempt's outcome from
  * the activation service (transient). Never throws; a repository with neither
@@ -236,24 +255,18 @@ function readRuntimeState(
   sessionId: string | undefined,
   workspaceDir: string,
   config: Pick<ShipitConfig, "plugins" | "pluginExports" | "compose">,
+  live: LiveGenerations,
   opts: { containEgress: boolean },
 ): Record<string, PluginRepoRuntime> {
   const runtime: Record<string, PluginRepoRuntime> = {};
   if (!sessionId) return runtime;
-
-  let stateDir: string;
-  try {
-    stateDir = sessionStateDirForWorkspace(workspaceDir);
-  } catch {
-    return runtime;
-  }
 
   // reqs 3, 20 — recomputed for the same reason the settings issues are: the
   // collector is pure, so this reports exactly what the service path would
   // refuse to surface, including before any stack has started. What it CANNOT
   // recompute — a runtime layer Docker would not give us — is remembered by the
   // service resolver and merged in below.
-  const serviceIssues = collectPluginFragmentIssues(workspaceDir, stateDir, config, opts.containEgress);
+  const serviceIssues = collectPluginFragmentIssues(workspaceDir, live, config, opts.containEgress);
 
   // req 26 — recomputed, not remembered: the resolver is pure, so this reports
   // exactly what a prepare pass would refuse to write, including before the
@@ -261,7 +274,7 @@ function readRuntimeState(
   // the last round failed to write — is remembered by the activation service
   // and merged in; without it a failed write left the plugin running on the
   // previous declaration's settings with a clean card (review finding).
-  const settingsIssues = pluginSettingsIssuesByRepo(config.plugins, config.pluginExports, stateDir);
+  const settingsIssues = pluginSettingsIssuesByRepo(config.plugins, config.pluginExports, live);
   const issuesFor = (repoName: string): string[] => [
     ...(settingsIssues.get(repoName) ?? []),
     ...getPluginPrepareFailures(sessionId, repoName),
@@ -270,7 +283,7 @@ function readRuntimeState(
   // PATH-dependent half of the check runs where PATH is real (the session's
   // wrapper generator); what is knowable here — a name two plugins claim, or a
   // name ShipIt reserves — is knowable without running anything at all.
-  const commandIssues = pluginCommandIssuesByRepo(config.plugins, config.pluginExports, stateDir);
+  const commandIssues = pluginCommandIssuesByRepo(config.plugins, config.pluginExports, live);
 
   for (const repo of config.plugins.repos) {
     const entry: PluginRepoRuntime = {};
@@ -284,7 +297,10 @@ function readRuntimeState(
     // activation attempt (req 27). Its settings still resolve against the same
     // file's own manifest, so it can still have something to say.
     if (repo.source.kind !== "self") {
-      const generation = readActiveGeneration(stateDir, repo.name, destinationKey(repo.source));
+      // The record this request already resolved and verified — not a fresh
+      // walk of the symlink, which is what let the commit on the card describe
+      // a different generation from the issues beside it.
+      const generation = live(repo)?.record;
       const attempt = getActivationState(sessionId, repo.name);
       if (generation) {
         entry.commit = generation.commit;
@@ -312,7 +328,7 @@ function readRuntimeState(
  */
 function collectPluginFragmentIssues(
   workspaceDir: string,
-  stateDir: string,
+  live: LiveGenerations,
   config: Pick<ShipitConfig, "plugins" | "pluginExports" | "compose">,
   containEgress: boolean,
 ): Map<string, string[]> {
@@ -331,7 +347,7 @@ function collectPluginFragmentIssues(
     }
     return collectPluginFragments({
       workspaceDir,
-      stateDir,
+      live,
       plugins: config.plugins,
       selfExports: config.pluginExports,
       projectServiceNames,

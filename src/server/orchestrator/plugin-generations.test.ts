@@ -6,7 +6,7 @@
  * injected (`ensureCache`), because there is no network here.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -16,6 +16,7 @@ import {
   activationQueueSize,
   activeLinkPath,
   readActiveGeneration,
+  resolveLiveGenerations,
 } from "./plugin-generations.js";
 import type { DeclaredPluginRepo } from "../shared/plugin-repos.js";
 
@@ -533,5 +534,72 @@ describe("a re-pointed declaration", () => {
     expect(fs.existsSync(path.join(stateDir, "plugins", "tools", "active"))).toBe(true);
     expect(fs.existsSync(path.join(stateDir, "plugins", "tools", "generations", live.commit))).toBe(true);
     expect(readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)).toBeNull();
+  });
+});
+
+/**
+ * docs/262 resolve-once — one answer per repository for one operation, so every
+ * reader on a request describes the same generation.
+ */
+describe("resolveLiveGenerations", () => {
+  it("resolves each repository's `active` exactly ONCE, however many readers ask", async () => {
+    await activateGeneration(repo({ branch: "main" }), deps());
+
+    const spy = vi.spyOn(fs, "realpathSync");
+    const live = resolveLiveGenerations(stateDir, [repo({ branch: "main" })]);
+    // Nothing yet: the answer is owed on the first ask, not on construction.
+    expect(spy.mock.calls.length).toBe(0);
+
+    // Five readers, as one snapshot request has: the commit, two manifests, a
+    // fragment and a credential list.
+    for (let i = 0; i < 5; i++) live(repo({ branch: "main" }));
+    expect(spy.mock.calls.length).toBe(1);
+    spy.mockRestore();
+  });
+
+  it("never touches a declared repository nobody asks about", async () => {
+    await activateGeneration(repo({ branch: "main" }), deps());
+    const other = repo({ name: "other-tools", branch: "main" });
+
+    const spy = vi.spyOn(fs, "realpathSync");
+    // Both declared, one asked for. The unasked one costs nothing: an
+    // operation that pins its own target separately (`plugin-cli-run.ts`) must
+    // not follow that target's `active` a second time just by building this.
+    resolveLiveGenerations(stateDir, [repo({ branch: "main" }), other])(repo({ branch: "main" }));
+
+    const touchedOther = spy.mock.calls.filter(([p]) => String(p).includes("other-tools"));
+    expect(touchedOther).toEqual([]);
+    expect(spy.mock.calls.length).toBe(1);
+    spy.mockRestore();
+  });
+
+  it("hands back the directory WITH the record that proves whose it is", async () => {
+    await activateGeneration(repo({ branch: "main" }), deps());
+
+    const verified = resolveLiveGenerations(stateDir, [repo({ branch: "main" })])(repo({ branch: "main" }))!;
+    expect(verified.record.source).toBe(TOOLS_SOURCE);
+    expect(verified.record.commit).toMatch(/^[0-9a-f]{40}$/);
+    // The concrete generation directory, not the symlink — a later swap cannot
+    // move what this operation already read.
+    expect(verified.dir).toContain(path.join("generations", verified.record.commit));
+    expect(fs.lstatSync(verified.dir).isSymbolicLink()).toBe(false);
+  });
+
+  it("answers null for a `repo: self` declaration and for a foreign generation", async () => {
+    await activateGeneration(repo({ branch: "main" }), deps());
+
+    const selfRepo: DeclaredPluginRepo = { name: "dev", source: { kind: "self" } };
+    expect(resolveLiveGenerations(stateDir, [selfRepo])(selfRepo)).toBeNull();
+
+    // Same declared name, re-pointed at another repository: what is live is
+    // someone else's, and every reader must see nothing rather than that.
+    const rePointed = repo({ branch: "main", source: { kind: "github", owner: "acme", repo: "other" } });
+    expect(resolveLiveGenerations(stateDir, [rePointed])(rePointed)).toBeNull();
+  });
+
+  it("answers null for a repository it was not asked to resolve", async () => {
+    await activateGeneration(repo({ branch: "main" }), deps());
+    const undeclared = repo({ name: "other-tools", branch: "main" });
+    expect(resolveLiveGenerations(stateDir, [])(undeclared)).toBeNull();
   });
 });

@@ -36,13 +36,17 @@
  */
 
 import type { DeclaredPluginRepo, PluginExport, PluginReposConfig } from "../shared/plugin-repos.js";
-import { destinationKey } from "../shared/plugin-repos.js";
+
 import {
   declaredPluginCredentials,
   type PluginCredentialDeclaration,
 } from "../shared/plugin-credentials.js";
 import { resolveShipitConfig } from "../shared/shipit-config.js";
-import { readActiveManifest } from "./plugin-generations.js";
+import {
+  readGenerationManifestAt,
+  resolveLiveGenerations,
+  type LiveGenerations,
+} from "./plugin-generations.js";
 import { sessionStateDirForWorkspace } from "./session-state-dir.js";
 import type { SecretStore } from "./secret-store.js";
 
@@ -63,7 +67,14 @@ export function collectPluginCredentialDeclarations(
 ): PluginCredentialDeclaration[] {
   try {
     const config = resolveShipitConfig(workspaceDir);
-    return pluginCredentialDeclarationsFor(workspaceDir, config.plugins, config.pluginExports);
+    return pluginCredentialDeclarationsFor(
+      config.plugins,
+      config.pluginExports,
+      // This entry point owns one operation of its own, so it resolves the
+      // generations for it; the snapshot route hands in the resolution it
+      // already made for the rest of the card (docs/262 resolve-once).
+      resolveLiveGenerations(sessionStateDirForWorkspace(workspaceDir), config.plugins.repos),
+    );
   } catch {
     return [];
   }
@@ -76,14 +87,14 @@ export function collectPluginCredentialDeclarations(
  * edit.
  */
 export function pluginCredentialDeclarationsFor(
-  workspaceDir: string,
   plugins: PluginReposConfig,
   selfExports: readonly PluginExport[],
+  live: LiveGenerations,
 ): PluginCredentialDeclaration[] {
   try {
     return declaredPluginCredentials(
       plugins,
-      liveManifestReader(workspaceDir, plugins.repos, selfExports),
+      liveManifestReader(plugins.repos, selfExports, live),
     );
   } catch {
     return [];
@@ -98,33 +109,23 @@ export function pluginCredentialDeclarationsFor(
  * no live generation.
  */
 export function liveManifestReader(
-  workspaceDir: string,
   repos: readonly DeclaredPluginRepo[],
   selfExports: readonly PluginExport[],
+  live: LiveGenerations,
 ): (repoName: string) => readonly PluginExport[] | null {
-  let stateDir: string | null = null;
-  try {
-    stateDir = sessionStateDirForWorkspace(workspaceDir);
-  } catch {
-    stateDir = null;
-  }
-  // Keyed by what each declaration POINTS AT, not only by its kind: the name is
-  // re-pointable and the generation's path is keyed by the name, so a manifest
-  // read without the source can answer with the PREVIOUS repository's exports —
-  // and then this module reports that repository's credential names as the ones
-  // this project must satisfy.
-  const sourceOf = new Map(repos.map((r) => [r.name.toLowerCase(), destinationKey(r.source)]));
+  const byName = new Map(repos.map((r) => [r.name.toLowerCase(), r]));
 
   return (repoName: string) => {
-    const source = sourceOf.get(repoName.toLowerCase());
-    if (source === undefined) return null;
-    if (source === "self") return selfExports;
-    if (!stateDir) return null;
-    try {
-      return readActiveManifest(stateDir, repoName, source);
-    } catch {
-      return null;
-    }
+    const repo = byName.get(repoName.toLowerCase());
+    if (!repo) return null;
+    // req 27 — a self declaration's manifest is the consuming project's own.
+    if (repo.source.kind === "self") return selfExports;
+    // Read out of the directory this operation resolved and verified once.
+    // The source check that keeps a re-pointed declaration from reporting the
+    // PREVIOUS repository's credential names now lives there, at the
+    // resolution, rather than being repeated per reader.
+    const verified = live(repo);
+    return verified ? readGenerationManifestAt(verified.dir) : null;
   };
 }
 

@@ -76,6 +76,7 @@ import {
 } from "./plugin-generations.js";
 import { ensureUntrustedPluginNetwork, waitForContainerExit } from "./plugin-container.js";
 import { ensurePluginRuntimeOverlay, resolvePluginOverlayRoots } from "./plugin-overlay.js";
+import { resolveLiveGenerations } from "./plugin-generations.js";
 import {
   createPluginImportResolver,
   pluginSettingsPath,
@@ -184,7 +185,20 @@ export async function runPluginCommand(
   if (!use) {
     return refuse(`\`${req.alias}\` is not a plugin this project imports (check \`plugins.use\` in shipit.yaml).`);
   }
-  const resolver = createPluginImportResolver(config.plugins, config.pluginExports, stateDir);
+  // The OTHER repositories' manifests, for the collision verdict only. One
+  // resolution each for this invocation; the target repository is pinned
+  // separately below, because that pin also names the volume and the lowerdir.
+  // "Other" holds because the lookup resolves a repository on first ask and
+  // nothing here ever asks it about the target: `repoNameFor` reads the
+  // declaration alone, and every manifest read for the target goes through
+  // `pinned.exports`. Keep it that way — routing the target back through the
+  // resolver would follow its `active` a second time, which is the skew this
+  // whole path exists to prevent.
+  const resolver = createPluginImportResolver(
+    config.plugins,
+    config.pluginExports,
+    resolveLiveGenerations(stateDir, config.plugins.repos),
+  );
   const repoName = resolver.repoNameFor(use);
   if (!repoName) {
     return refuse(`\`${req.alias}\` has no live plugin version right now — refresh it, or check the Plugins tab.`);

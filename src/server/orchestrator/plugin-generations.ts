@@ -214,6 +214,81 @@ export function activeLinkPath(stateDir: string, repoName: string): string {
   return path.join(repoRoot(stateDir, repoName), "active");
 }
 
+/** A generation directory together with the record proving whose it is. */
+export interface VerifiedGeneration {
+  dir: string;
+  record: GenerationRecord;
+}
+
+/**
+ * One operation's answer to "which generation is live for this declared repo",
+ * resolved once per repository and reused by every reader in that operation.
+ * `null` for a `repo: self` declaration (no generation by design, req 27) and
+ * for a repository with nothing live — or nothing live that belongs to it.
+ */
+export type LiveGenerations = (repo: DeclaredPluginRepo) => VerifiedGeneration | null;
+
+/**
+ * Resolve every declared repository's live generation ONCE, for one operation.
+ *
+ * **Which readers belong here, and which must not** (docs/262, the rule the
+ * cohort converged on): this is for reads whose results are **compared or
+ * combined as if they came from one generation** — the snapshot route's card,
+ * where a commit, a manifest, a fragment and a settings verdict all describe
+ * one repository, and the service build, where a definition and the tree it
+ * mounts must match. Three shapes are excluded by construction, and each one
+ * BREAKS if it is folded in:
+ *
+ *  - a read whose subject IS the change — `plugin-refresh.ts`'s before/after
+ *    pair, and `plugin-activation.ts`'s pre-activation read. Collapse those and
+ *    every refresh reports `unchanged` and the card names the new generation as
+ *    the one it is replacing.
+ *  - a stored path that must FOLLOW a later swap — `/plugins/<name>` links the
+ *    unresolved `active` on purpose, so a new generation reaches the agent with
+ *    no re-link.
+ *  - an operation that already resolves once — the feedback issue's footer
+ *    (`api-routes-issues.ts`), whose residual window is between its read and the
+ *    GitHub POST and is what "what this session was running" means.
+ *
+ * Resolved on FIRST ASK and memoized, not eagerly for every declared repo. The
+ * guarantee the readers need is per-repository — the facts one card or one
+ * mount states about ONE repository come from one generation — and memoizing
+ * gives exactly that. Resolving the whole list up front would additionally pin
+ * every repository at a single instant, which nothing compares across
+ * repositories, at the cost of resolving repositories the operation never
+ * reads: `plugin-cli-run.ts` builds this for the collision verdict over the
+ * OTHER imports while its target is pinned separately by `pinGeneration` (that
+ * pin also names the volume and the lowerdir), so an eager pass followed the
+ * target's `active` a second time for an answer it then discarded (review
+ * finding). A repository nobody asks about is never touched.
+ */
+export function resolveLiveGenerations(
+  stateDir: string,
+  repos: readonly DeclaredPluginRepo[],
+): LiveGenerations {
+  const declared = new Map(repos.map((r) => [r.name.toLowerCase(), r]));
+  const resolved = new Map<string, VerifiedGeneration | null>();
+  return (repo) => {
+    const key = repo.name.toLowerCase();
+    // Resolve the DECLARATION under that name, never the argument: a caller
+    // holding a stale repo object gets this operation's answer for the
+    // repository the project currently declares, or nothing.
+    const declaration = declared.get(key);
+    if (!declaration) return null;
+    if (!resolved.has(key)) {
+      resolved.set(
+        key,
+        // req 27 — a self declaration IS the working tree; it has no generation
+        // to resolve and no commit to be verified against.
+        declaration.source.kind === "self"
+          ? null
+          : resolveVerifiedGeneration(stateDir, declaration.name, destinationKey(declaration.source)),
+      );
+    }
+    return resolved.get(key) ?? null;
+  };
+}
+
 /**
  * One generation's record, read from a CONCRETE generation directory.
  *
@@ -225,6 +300,14 @@ export function activeLinkPath(stateDir: string, repoName: string): string {
  * and the CLI invocation container then gets a volume named for B whose
  * lowerdir is C's tree (sibling report, docs/262). Whoever resolves the link is
  * responsible for holding onto the result.
+ *
+ * **These readers carry no identity check, and cannot.** A directory proves
+ * nothing about which repository produced it; the record does, so the check
+ * lives where the link is resolved — {@link resolveVerifiedGeneration} and
+ * {@link resolveLiveGenerations}. They are therefore safe on a directory one of
+ * those returned, and on nothing else: reaching for them with a directory you
+ * resolved yourself is how a re-pointed declaration goes back to serving the
+ * previous repository's files, and it looks like a pure refactor while doing it.
  */
 export function readGenerationRecordAt(generationDir: string): GenerationRecord | null {
   try {
@@ -309,16 +392,17 @@ export function readActiveManifest(
  * manifest whose record was never checked. So the link is resolved once here
  * and every fact is read out of that one answer.
  *
- * Not exported yet on purpose. The resolve-once sweep (docs/262) needs exactly
- * this shape at the snapshot route, where several readers answer for one repo
- * on one request — it should export this rather than add a second resolver
- * beside it.
+ * Exported for {@link resolveLiveGenerations}, which is how an operation with
+ * several readers gets ONE answer per repository. A caller that needs a single
+ * fact should still use `readActiveGeneration` / `readActiveManifest`: they are
+ * this function with the reading attached, and they cannot be given a directory
+ * nobody verified.
  */
-function resolveVerifiedGeneration(
+export function resolveVerifiedGeneration(
   stateDir: string,
   repoName: string,
   expectedSource: string,
-): { dir: string; record: GenerationRecord } | null {
+): VerifiedGeneration | null {
   let dir: string;
   try {
     dir = fs.realpathSync(activeLinkPath(stateDir, repoName));

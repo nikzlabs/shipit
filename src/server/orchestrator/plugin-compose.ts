@@ -80,9 +80,8 @@ import {
   PLUGIN_STATE_SUBDIR,
 } from "./plugin-state.js";
 import {
-  activeLinkPath,
   readGenerationManifestAt,
-  readGenerationRecordAt,
+  type LiveGenerations,
 } from "./plugin-generations.js";
 import { OVERRIDE_SENTINELS, validateServiceSecurity, type ComposeService } from "./compose-generator.js";
 import { chownToSessionWorker } from "./session-worker-uid.js";
@@ -141,8 +140,14 @@ export interface PluginFragmentResolution {
 
 export interface CollectPluginFragmentsOptions {
   workspaceDir: string;
-  /** The session STATE dir — where tracked repositories' generations live. */
-  stateDir: string;
+  /**
+   * This operation's live generations, resolved once per repository (docs/262
+   * resolve-once). Taken rather than a `stateDir` so a fragment, the tree it
+   * mounts and the card's commit cannot come from three different generations —
+   * and so the identity check that proves a generation belongs to the
+   * declaration runs where the link is resolved, not once per reader.
+   */
+  live: LiveGenerations;
   plugins: PluginReposConfig;
   /** The consuming project's own `exports.plugins`, for `repo: self` imports. */
   selfExports: readonly PluginExport[];
@@ -402,22 +407,22 @@ function snapshotRepo(
     // req 27 — the live working tree, which corresponds to no exact commit.
     return { name: repo.name, root: opts.workspaceDir, self: true, exports: opts.selfExports };
   }
-  let root: string;
-  try {
-    root = fs.realpathSync(activeLinkPath(opts.stateDir, repo.name));
-  } catch {
+  const verified = opts.live(repo);
+  if (!verified) {
+    // Nothing live, or nothing live that belongs to this declaration — the
+    // caller already treats a null root as "this repository contributes no
+    // services", which is the right answer for both.
     return { name: repo.name, root: null, self: false, exports: [] };
   }
-  // Both read from the directory `active` ALREADY resolved to, never from the
-  // link again — that is the whole point of the snapshot, and the generation
-  // engine offers the directory-scoped readers for exactly this.
-  const commit = readGenerationRecordAt(root)?.commit;
+  // Every fact read out of the directory the resolution already returned, never
+  // from the link again — that is the whole point of the snapshot, and the
+  // generation engine offers the directory-scoped readers for exactly this.
   return {
     name: repo.name,
-    root,
+    root: verified.dir,
     self: false,
-    exports: readGenerationManifestAt(root),
-    ...(commit ? { commit } : {}),
+    exports: readGenerationManifestAt(verified.dir),
+    commit: verified.record.commit,
   };
 }
 

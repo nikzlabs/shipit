@@ -22,6 +22,7 @@
 import {
   activateGeneration,
   readActiveGeneration,
+  resolveLiveGenerations,
   type ActivationOutcome,
   type GenerationRecord,
 } from "../plugin-generations.js";
@@ -569,7 +570,10 @@ function syncPluginState(sessionId: string, workspaceDir: string): void {
       resolver: createPluginImportResolver(
         config.plugins,
         config.pluginExports,
-        sessionStateDirForWorkspace(workspaceDir),
+        // One resolution per repository for this whole settlement, so every
+        // import's settings are validated against the same generation the one
+        // beside it was (docs/262 resolve-once).
+        resolveLiveGenerations(sessionStateDirForWorkspace(workspaceDir), config.plugins.repos),
       ),
     });
 
