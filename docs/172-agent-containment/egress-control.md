@@ -665,6 +665,17 @@ as an operator default / fail-secure floor).
 
 ## Key files (planned)
 
+### Compose startup reliability
+
+Tier A resolves its host allowlist concurrently with one short attempt per DNS
+query and a five-second deadline for the full group. A slow resolver therefore
+cannot keep a Compose preview paused for minutes. Compose containment remains
+serialized per session. If a later reconcile replaces a service while the old
+installer finishes, Docker's container-gone or no-longer-paused result is treated
+as superseded only after a fresh container listing proves that the old container
+is not active. The old sidecars are reaped and the queued pass contains the
+replacement. All errors for an active container remain fail-closed.
+
 - Gateway provisioning + internal-network topology — `container-lifecycle.ts`,
   `session-container.ts` (extend the existing per-session `createNetwork` to `Internal: true`
   + gateway attachment).

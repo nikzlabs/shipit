@@ -172,6 +172,61 @@ describe("containComposeServices", () => {
     expect(container.stop).toHaveBeenCalled();
   });
 
+  it("ignores the exact stale unpause error after Compose replaces the service", async () => {
+    const events: string[] = [];
+    const { docker, container } = fakeDocker(events);
+    container.unpause.mockRejectedValueOnce(new Error("Container service-1 is not paused"));
+    vi.mocked(docker.listContainers)
+      .mockResolvedValueOnce([{
+        Id: "service-1",
+        State: "running",
+        Labels: { "shipit-service-name": "web", "shipit-parent-session": "session-1" },
+      }] as never)
+      .mockResolvedValueOnce([{
+        Id: "service-2",
+        State: "running",
+        Labels: { "shipit-service-name": "web", "shipit-parent-session": "session-1" },
+      }] as never)
+      .mockResolvedValueOnce([{
+        Id: "old-resolver",
+        State: "running",
+        Labels: {
+          "shipit-egress-service-sidecar": "true",
+          "shipit-egress-parent": "service-1",
+          "shipit-parent-session": "session-1",
+        },
+      }] as never);
+
+    await expect(containComposeServices({
+      docker,
+      sessionId: "session-1",
+      sidecarImage: "egress:test",
+      config: { contained: true, extraHosts: [] },
+      serviceNames: ["web"],
+      dnsEnabled: false,
+      proxyEnabled: false,
+    })).resolves.toBeUndefined();
+
+    expect(docker.getContainer).toHaveBeenCalledWith("old-resolver");
+  });
+
+  it("fails closed on the same unpause error when the container is still active", async () => {
+    const events: string[] = [];
+    const { docker, container } = fakeDocker(events);
+    container.unpause.mockRejectedValueOnce(new Error("Container service-1 is not paused"));
+
+    await expect(containComposeServices({
+      docker,
+      sessionId: "session-1",
+      sidecarImage: "egress:test",
+      config: { contained: true, extraHosts: [] },
+      serviceNames: ["web"],
+      dnsEnabled: false,
+      proxyEnabled: false,
+    })).rejects.toThrow("egress containment failed for 1 Compose service");
+    expect(container.stop).toHaveBeenCalled();
+  });
+
   it("rejects Docker engines without gateway-priority support", async () => {
     const events: string[] = [];
     const { docker } = fakeDocker(events);
