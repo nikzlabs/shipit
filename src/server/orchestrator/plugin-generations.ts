@@ -939,12 +939,16 @@ function readManifest(
  * linking `/plugins/<name>` at the old repository's checkout, whatever any
  * reader believes. The generations and their writable layers go with it, since
  * nothing can ever name them again.
+ *
+ * `unknownIsForeign` is the `repo: self` case — see
+ * {@link retireSelfDeclaredGeneration}, its only caller.
  */
 async function retireForeignGeneration(
   stateDir: string,
   repoName: string,
   expectedSource: string,
   begin: BeginGenerationDeletion | undefined,
+  unknownIsForeign = false,
 ): Promise<void> {
   let record: GenerationRecord;
   try {
@@ -974,7 +978,17 @@ async function retireForeignGeneration(
   // tree until a successful publish replaces it. The container's own guard is
   // its own change (docs/262 checklist); the choice here is only "do not delete
   // what we cannot prove is a stranger's".
-  if (record.source === undefined) return;
+  //
+  // **`repo: self` is the one caller that CAN prove it** (review finding). The
+  // conservatism above rests on "a legacy record might be this declaration's" —
+  // and under a self declaration it cannot be, because nothing ever publishes a
+  // generation for one (`activateGeneration` refuses it a hundred lines up). So
+  // there is no version to keep whole, no fetch that could fail and leave the
+  // plugin dark, and every reader already refuses the tree: keeping it only
+  // leaves a previous repository's files readable through the store mount for
+  // the session's life. The flag is passed by exactly that caller, so the
+  // tracked path's answer is unchanged.
+  if (record.source === undefined && !unknownIsForeign) return;
 
   await fsp.rm(activeLinkPath(stateDir, repoName), { force: true });
   // The trees go through the same lease the prune uses: a re-point is still an
@@ -986,6 +1000,48 @@ async function retireForeignGeneration(
   // next publish's prune.
   await dropGenerations(stateDir, repoName, new Set(), begin);
 }
+
+/**
+ * Retire whatever is published under a name the project declares `repo: self`
+ * (req 27) — the one reconciliation no activation will ever do for itself.
+ *
+ * A self declaration stages nothing, so `activateGeneration` never runs for it
+ * and the retirement `activateOnce` performs before its fetch never happens.
+ * Left alone, a name re-pointed from `owner/repo` to `self` keeps the previous
+ * repository's checkout published for the session's whole life — refused by
+ * every reader, and still readable through the read-only store mount.
+ *
+ * **Two things this adds over calling the retirement directly**, both found by
+ * review, and both about the fact that rounds overlap while a new round does not
+ * cancel the one before it.
+ *
+ * It runs **on the per-repository queue**, the same key `activateGeneration`
+ * serializes on. Off the queue, a round that read the declaration while it said
+ * `self` could delete a generation that a LATER round had meanwhile published
+ * for a tracked declaration of the same name — or remove its staging tree, which
+ * the publish path is entitled to assume nothing else touches.
+ *
+ * And it **re-asks `stillSelf` inside the queued task**, because ordering alone
+ * is not enough: serialized after that publish, a stale round would still delete
+ * a perfectly good tracked generation. The declaration on disk at the moment the
+ * work runs is the only version of it worth acting on — the same rule
+ * `syncPluginState` follows for settings, and for the same reason.
+ */
+export async function retireSelfDeclaredGeneration(
+  stateDir: string,
+  repoName: string,
+  begin: BeginGenerationDeletion | undefined,
+  stillSelf: () => boolean,
+): Promise<void> {
+  await enqueue(`${stateDir}::${repoName}`, async () => {
+    if (!stillSelf()) return;
+    // Unknown provenance IS foreign here — see the comment inside.
+    await retireForeignGeneration(stateDir, repoName, SELF_SOURCE, begin, true);
+  });
+}
+
+/** What `destinationKey` renders for a `repo: self` declaration. */
+const SELF_SOURCE = destinationKey({ kind: "self" });
 
 /**
  * Atomic publish: write the new symlink under a temporary name, then rename

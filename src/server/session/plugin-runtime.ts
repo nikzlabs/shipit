@@ -15,6 +15,12 @@
  * roots (req 22) — see `plugin-skills.ts`. That is still no plugin-authored
  * code: it copies markdown the agent reads, and runs nothing from the checkout.
  *
+ * A `repo: self` import (req 27) takes the same route through every half of this
+ * pass, with one substitution: its checkout is the session's own working tree
+ * instead of a published generation ({@link resolveLiveCheckout}). Nothing is
+ * duplicated to make that work — the manifest, the skills and the commands are
+ * read from the one copy of them that exists, in the repository being edited.
+ *
  * The declaration is readable at `/workspace/shipit.yaml`, so the orchestrator
  * only has to say *when*, never *what*.
  */
@@ -121,14 +127,24 @@ export function preparePlugins(opts: PreparePluginsOptions): PluginPrepareResult
   // two generations at once before.
   const live = new Map<string, LiveGeneration>();
   const resolve = (repo: DeclaredPluginRepo): LiveGeneration => {
-    if (!live.has(repo.name)) live.set(repo.name, resolveLiveGeneration(storeDir, repo));
+    if (!live.has(repo.name)) live.set(repo.name, resolveLiveCheckout(opts.workspaceDir, storeDir, repo));
     return live.get(repo.name)!;
   };
   const liveDir = (repo: DeclaredPluginRepo): string | null => resolve(repo).dir;
 
   for (const repo of config.plugins.repos) {
-    // `repo: self` runs the live working tree and has no generation (req 27);
-    // its consumer-path parity is its own piece of work.
+    // **`repo: self` gets no link, and that is the finished answer** (req 27),
+    // not a gap. Its checkout is the session's own working tree, which the agent
+    // already has at the workspace root — a second name for it buys nothing, and
+    // `/plugins/<name>` is not a path a plugin author can rely on anyway, since
+    // each consumer names the repository whatever it likes. What the plugin's
+    // own code names is `/plugin`, which the CLI and service surfaces mount from
+    // the working tree.
+    //
+    // Leaving it out of `wanted` is also what withdraws a link left by a
+    // declaration that USED to be tracked under this name: `removeStaleLinks`
+    // takes it, and nothing under the store is ever consulted for a self
+    // declaration (see {@link resolveLiveCheckout}).
     if (repo.source.kind === "self") continue;
     wanted.add(repo.name);
 
@@ -311,6 +327,33 @@ interface LiveGeneration {
    * ordinary state, not a problem to report.
    */
   refusal?: string;
+}
+
+/**
+ * The tree this declaration may be read from, whichever kind it is.
+ *
+ * **The `repo: self` answer to the identity question, stated rather than
+ * incidental** (req 27). Every other reader of a plugin checkout proves whose it
+ * is by comparing a generation record's `source` against the declaration. A self
+ * declaration has no generation and therefore no record — so the question is not
+ * "which record proves this one?" but "what may stand in for it?", and the
+ * answer is: only the session's own working tree, by construction. Nothing under
+ * the store is consulted for a self declaration, so a generation left there by a
+ * declaration that used to be tracked under the same name cannot be linked,
+ * cannot supply skills and cannot name a command — the case the check exists for
+ * is answered by never looking.
+ *
+ * The tree is live and editable, which is the point of developing there: an edit
+ * is visible to the next pass with nothing to refresh (req 27, and req 15 scopes
+ * its exact-commit correspondence to tracked checkouts for exactly this reason).
+ */
+function resolveLiveCheckout(
+  workspaceDir: string,
+  storeDir: string,
+  repo: DeclaredPluginRepo,
+): LiveGeneration {
+  if (repo.source.kind === "self") return { dir: workspaceDir };
+  return resolveLiveGeneration(storeDir, repo);
 }
 
 function resolveLiveGeneration(storeDir: string, repo: DeclaredPluginRepo): LiveGeneration {

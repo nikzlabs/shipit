@@ -292,6 +292,29 @@ user's follow-up of 2026-08-12 during the design phase.
 
 ## Open questions
 
+- **Under `repo: self`, does the plugin's declared `install` run?** Today it does
+  not: `install` populates a generation's writable layer, and a self declaration
+  has neither — so a plugin repository testing itself relies on its own
+  `agent.install` to prepare the working tree its services and CLIs then run out
+  of. Two readings of req 27 pull in opposite directions, which is why this is a
+  question rather than a decision the agent should take. Its own enumeration of
+  what self-use must deliver — "the same services, commands, skills, settings,
+  and needs a consumer gets" — **does not name install**, and a repository needs
+  its dependencies installed for its own development anyway. But its next
+  sentence says **nothing is duplicated to make self-use work**, and a plugin
+  whose exported `install` must be repeated in `agent.install` for the self case
+  is duplicating exactly the setup req 5 puts in the plugin's hands. The
+  repository's own fixture assumes the first reading is wrong: `test-plugin/`
+  gitignores an install stamp that only a self-mode install could write. The
+  cost is not symmetric — running it means a new install-container branch that
+  mounts the session's working tree read-write instead of a generation overlay,
+  re-triggered by input hashes rather than by a commit, and writing
+  plugin-authored output into a tree ShipIt auto-commits. *Agent recommendation:
+  leave it out (v1), since a plugin repository's own `agent.install` already has
+  to work for its tests and lint to run at all, and revisit if a real plugin
+  repository finds the duplication annoying. Not implemented either way — the
+  current behaviour is the "does not run" one.*
+
 - **A plugin's preview origin and a project service's port want the same
   number — which one moves?** Req 18 says the preview origin is stable for the
   session's whole life and states no exception. But the origin's port is also

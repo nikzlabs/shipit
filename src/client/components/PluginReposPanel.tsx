@@ -207,8 +207,8 @@ function PluginRepoCard({
       )}
       {isSelf && (
         <div className="border-t border-(--color-border-primary) px-3 py-2 text-xs text-(--color-text-tertiary)">
-          This repository's own exports, live from the working tree — edits apply without a
-          refresh (activation mechanics under development, docs/262).
+          This repository's own exports, live from the working tree — services, commands, skills
+          and settings, with edits applying without a refresh (req 27).
         </div>
       )}
     </div>

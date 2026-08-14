@@ -17,6 +17,7 @@ import {
   activeLinkPath,
   readActiveGeneration,
   resolveLiveGenerations,
+  retireSelfDeclaredGeneration,
   type BeginGenerationDeletion,
   type StagedGeneration,
 } from "./plugin-generations.js";
@@ -667,6 +668,66 @@ describe("a re-pointed declaration", () => {
     expect(fs.existsSync(path.join(stateDir, "plugins", "tools", "active"))).toBe(true);
     expect(fs.existsSync(path.join(stateDir, "plugins", "tools", "generations", live.commit))).toBe(true);
     expect(readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)).toBeNull();
+  });
+});
+
+/**
+ * docs/262 req 27 — the retirement no activation performs for itself. A
+ * `repo: self` declaration stages nothing, so `activateOnce`'s pre-fetch
+ * retirement never runs for it and whatever an earlier tracked declaration
+ * published under that name would stay live for the session's life.
+ */
+describe("retiring what is left under a `repo: self` name (req 27)", () => {
+  const stillSelf = () => true;
+
+  it("retires the previous repository's generation, link and trees", async () => {
+    await activateGeneration(repo({ branch: "main" }), deps());
+    const live = readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)!;
+
+    await retireSelfDeclaredGeneration(stateDir, "tools", undefined, stillSelf);
+
+    expect(fs.existsSync(activeLinkPath(stateDir, "tools"))).toBe(false);
+    expect(fs.existsSync(path.join(stateDir, "plugins", "tools", "generations", live.commit))).toBe(false);
+  });
+
+  /**
+   * The opposite answer from the tracked path, and deliberately so. There,
+   * "unknown provenance" might be this repository's own generation, so it is
+   * kept. Under a self declaration it cannot be: `activateGeneration` refuses to
+   * publish for one at all, so nothing ShipIt wrote can be here — and keeping it
+   * only leaves another repository's files readable through the store mount.
+   */
+  it("retires a legacy record with no recorded source, unlike the tracked path", async () => {
+    await activateGeneration(repo({ branch: "main" }), deps());
+    const recordPath = path.join(activeLinkPath(stateDir, "tools"), ".shipit-generation.json");
+    const { source: _dropped, ...legacy } = JSON.parse(fs.readFileSync(recordPath, "utf-8"));
+    fs.writeFileSync(recordPath, JSON.stringify(legacy));
+
+    await retireSelfDeclaredGeneration(stateDir, "tools", undefined, stillSelf);
+
+    expect(fs.existsSync(activeLinkPath(stateDir, "tools"))).toBe(false);
+  });
+
+  /**
+   * Rounds overlap and a new round does not cancel the one before it, so a round
+   * that read the declaration while it said `self` can reach this point long
+   * after the name was re-pointed at a real repository — and the queue only
+   * decides WHEN it runs, not whether it still should. The declaration at the
+   * moment the work runs is the only version worth acting on.
+   */
+  it("does nothing when the name is no longer self by the time it runs", async () => {
+    await activateGeneration(repo({ branch: "main" }), deps());
+
+    await retireSelfDeclaredGeneration(stateDir, "tools", undefined, () => false);
+
+    expect(readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)).not.toBeNull();
+  });
+
+  // It takes the per-repository queue, the same key activation serializes on,
+  // so it can never interleave with a publish for the same name.
+  it("runs on the per-repository queue and releases it", async () => {
+    await retireSelfDeclaredGeneration(stateDir, "tools", undefined, stillSelf);
+    expect(activationQueueSize()).toBe(0);
   });
 });
 

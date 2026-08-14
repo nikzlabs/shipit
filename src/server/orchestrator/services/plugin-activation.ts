@@ -23,6 +23,7 @@ import {
   activateGeneration,
   readActiveGeneration,
   resolveLiveGenerations,
+  retireSelfDeclaredGeneration,
   type ActivationOutcome,
   type BeginGenerationDeletion,
   type GenerationRecord,
@@ -482,6 +483,22 @@ export async function activateDeclaredPlugins(
   } catch {
     return outcomes;
   }
+  // req 27 — the `repo: self` half of the generation-identity guard, and the
+  // only place it can run. A self declaration activates nothing, so no round of
+  // the tracked path below will ever reconcile what sits on disk under its name;
+  // a `repos:` entry re-pointed from `owner/repo` to `self` would otherwise
+  // leave the previous repository's checkout published under this name for the
+  // session's whole life, readable through the read-only store mount. Every
+  // reader already REFUSES it (a self declaration resolves no generation at
+  // all) — this is what stops it lying around, and it is the same retirement,
+  // with the same lease, that `activateOnce` runs before its fetch.
+  //
+  // A narrowed round is left alone: it speaks for the one repository the agent
+  // named, and `shipit plugin refresh` refuses a self name outright.
+  if (!onlyRepo) {
+    await retireSelfDeclaredGenerations(config.plugins.repos, workspaceDir, stateDir, deps, isCancelled);
+  }
+
   if (repos.length === 0) {
     // Nothing to fetch — but a `repo: self` declaration lives entirely in this
     // branch, and it gets the same state directory and settings file a tracked
@@ -629,6 +646,59 @@ function syncPluginState(sessionId: string, workspaceDir: string): void {
       `[plugins:${sessionId}] could not prepare plugin state:`,
       err instanceof Error ? err.message : String(err),
     );
+  }
+}
+
+/**
+ * Retire whatever a previous declaration left published under a name the
+ * project now declares as `repo: self` (req 27).
+ *
+ * Never throws and never fails a round: this is housekeeping behind a guard that
+ * already holds — every reader refuses a generation under a self-declared name,
+ * so a retirement that cannot complete costs disk, not correctness (req 13).
+ */
+async function retireSelfDeclaredGenerations(
+  repos: readonly DeclaredPluginRepo[],
+  workspaceDir: string,
+  stateDir: string,
+  deps: PluginActivationDeps,
+  isCancelled: () => boolean,
+): Promise<void> {
+  for (const repo of repos) {
+    if (repo.source.kind !== "self" || isCancelled()) continue;
+    try {
+      await retireSelfDeclaredGeneration(
+        stateDir,
+        repo.name,
+        deps.beginGenerationDeletion,
+        // Re-read at the moment the queued work runs, never the round's own
+        // captured copy: rounds overlap, and a round that started while this
+        // name said `self` must not delete a generation a later round has since
+        // published for a tracked declaration of it (review finding).
+        () => isSelfDeclared(workspaceDir, repo.name) && !isCancelled(),
+      );
+    } catch (err) {
+      console.warn(
+        `[plugins] ${repo.name}: could not retire a version left under a \`repo: self\` name:`,
+        err instanceof Error ? err.message : String(err),
+      );
+    }
+  }
+}
+
+/**
+ * Does the project declare this name as `repo: self` RIGHT NOW?
+ *
+ * Fails closed: an unreadable or changed declaration answers `false`, so the
+ * retirement it guards does nothing rather than acting on a guess.
+ */
+function isSelfDeclared(workspaceDir: string, repoName: string): boolean {
+  try {
+    return resolveShipitConfig(workspaceDir).plugins.repos.some(
+      (r) => r.source.kind === "self" && r.name.toLowerCase() === repoName.toLowerCase(),
+    );
+  } catch {
+    return false;
   }
 }
 

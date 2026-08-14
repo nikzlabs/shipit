@@ -180,6 +180,74 @@ describe("preparePlugins — skills (req 22)", () => {
     }
   });
 
+  // req 27 — the `repo: self` half of this surface. Same materializer, same
+  // namespace, same git exclude; the ONLY difference is where the skill is read
+  // from, which is the working tree being edited rather than a published
+  // generation. Nothing is duplicated to make it work: the manifest under test
+  // is the project's own `shipit.yaml`, and the skill is the one copy of it in
+  // the repository.
+  const SELF_DECLARATION = "exports:\n  plugins:\n    probe:\n      skills: pkg/skills\n"
+    + "plugins:\n  repos:\n    - repo: self\n      name: dev\n"
+    + "  use:\n    - plugin: probe\n      from: dev\n";
+
+  function writeSelfSkill(body = "---\nname: probe\ndescription: p\n---\n\nBody.\n"): void {
+    fs.mkdirSync(path.join(workspaceDir, "pkg", "skills", "probe"), { recursive: true });
+    fs.writeFileSync(path.join(workspaceDir, "pkg", "skills", "probe", "SKILL.md"), body);
+  }
+
+  it("materializes a `repo: self` import's skills from the working tree (req 27)", () => {
+    declare(SELF_DECLARATION);
+    writeSelfSkill();
+
+    const result = preparePlugins(opts());
+
+    const name = namespacedName("probe", "probe");
+    expect(result.skills).toEqual([name]);
+    expect(result.skillsFailed).toEqual([]);
+    for (const dir of [".claude", ".codex"]) {
+      expect(fs.existsSync(path.join(workspaceDir, dir, "skills", name, "SKILL.md"))).toBe(true);
+    }
+  });
+
+  // An edit is live: there is no generation to stage and no refresh to run
+  // (req 27), so the next pass reads whatever the file says now.
+  it("re-materializes a `repo: self` skill after an edit, with nothing to refresh", () => {
+    declare(SELF_DECLARATION);
+    writeSelfSkill();
+    preparePlugins(opts());
+
+    writeSelfSkill("---\nname: probe\ndescription: p\n---\n\nEdited.\n");
+    preparePlugins(opts());
+
+    const materialized = path.join(
+      workspaceDir, ".claude", "skills", namespacedName("probe", "probe"), "SKILL.md",
+    );
+    expect(fs.readFileSync(materialized, "utf8")).toContain("Edited.");
+  });
+
+  // The identity guard's answer for a self declaration: not "which record proves
+  // this generation is ours?" but "nothing under the store is consulted at all".
+  // A name re-pointed from `owner/repo` to `self` leaves a published generation
+  // behind, and its skills must not be the ones the agent gets.
+  it("ignores a generation left under a `repo: self` name, skills included", () => {
+    declare(SELF_DECLARATION);
+    writeSelfSkill("---\nname: probe\ndescription: p\n---\n\nFrom the working tree.\n");
+    publishGeneration("dev", "a".repeat(40), SKILLS_MANIFEST, {
+      "pkg/skills/probe/SKILL.md": "---\nname: probe\n---\n\nFrom the old repository.\n",
+    });
+
+    const result = preparePlugins(opts());
+
+    const name = namespacedName("probe", "probe");
+    expect(result.skills).toEqual([name]);
+    expect(fs.readFileSync(path.join(workspaceDir, ".claude", "skills", name, "SKILL.md"), "utf8"))
+      .toContain("From the working tree.");
+    // …and the leftover is not linked either. It is the orchestrator's to
+    // retire (`plugin-activation.ts`); this side simply never looks at it.
+    expect(result.linked).toEqual([]);
+    expect(fs.existsSync(path.join(pluginsDir, "dev"))).toBe(false);
+  });
+
   it("uses the consumer's alias as the namespace, not the export name", () => {
     declare(DECLARATION.replace("      from: tools\n", "      from: tools\n      alias: reqs\n"));
     publishGeneration("tools", "a".repeat(40), SKILLS_MANIFEST, {
@@ -479,9 +547,10 @@ describe("preparePlugins — a generation belongs to the repository the declarat
   });
 
   // `repo: self` has no generation, so there is nothing to check and nothing to
-  // refuse. Asserted narrowly on purpose: a self import materializes no skills
-  // today either (its consumer-path parity is still its own piece of work), so
-  // this case must not be read as "self is fully supported".
+  // refuse — the checkout is the working tree, and its skills are materialized
+  // from there (see the skills suite above). What this asserts is the shape of
+  // the guard: a self declaration is never reported as missing or refused,
+  // because the store is never consulted for it.
   it("has nothing to refuse for `repo: self`, which has no generation (req 27)", () => {
     declare("exports:\n  plugins:\n    probe:\n      skills: pkg/skills\n"
       + "plugins:\n  repos:\n    - repo: self\n      name: dev\n"
