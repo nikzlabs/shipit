@@ -243,16 +243,29 @@ export function activeLinkPath(stateDir: string, repoName: string): string {
  * carefully a caller resolves. That is a separate axis with a separate fix: a
  * recorded source, checked on read.
  *
- * **When that check arrives, it has to arrive HERE, not only on the wrappers
- * below.** The wrappers are the obvious place to guard, and guarding only them
- * makes the compiler find every caller *of the wrappers* — which is every
- * reader that displays or validates, and not the one that **executes**.
- * `plugin-cli-run.ts` calls these two directly, having resolved `active`
- * itself, so a required argument added one level down would leave the
- * invocation container mounting and running a repository the declaration no
- * longer names, with the credentials the project stored for the declared one —
- * and no build error to say so. A guard these readers do not take is a guard
- * the executing path opts out of silently.
+ * **A guard on the wrappers alone does not cover a caller that resolved
+ * `active` itself.** Guarding the wrappers makes the compiler find every caller
+ * *of the wrappers* — which is every reader that displays or validates, and not
+ * the one that **executes**: `plugin-cli-run.ts` calls these two directly, so a
+ * required argument one level down leaves the invocation container mounting and
+ * running a repository the declaration no longer names, with the credentials
+ * the project stored for the declared one, and no build error to say so.
+ *
+ * **The check belongs at the point of resolution, not on these readers.** A
+ * caller that resolves the link is the caller that has both halves — the
+ * declaration it started from and the record it just read — so it compares
+ * there and passes on a handle that is *already verified*. Adding
+ * `expectedSource` to these two instead is worse than it looks: only
+ * {@link readGenerationRecordAt} reads the record, so it is the only one that
+ * could compare; {@link readGenerationManifestAt} reads `shipit.yaml` and would
+ * have to re-read the record to check anything — duplicating the read its
+ * caller just did, on the very path whose point is to read once.
+ *
+ * So these stay directory-scoped primitives **for callers that have already
+ * verified identity**, and a caller reaching for them without a verified handle
+ * is the shape to look for in review. That is not a guarantee the compiler
+ * makes; it is the cost of resolving once, and it is why this paragraph is here
+ * rather than in a commit message.
  */
 export function readGenerationRecordAt(generationDir: string): GenerationRecord | null {
   try {
