@@ -351,9 +351,7 @@ describe("plugin services in a session's stack (docs/262)", () => {
     //
     // The check runs when services are RESOLVED. A plugin that is already
     // running has `/project` read-write, and a later `compose up` re-reads the
-    // project file without re-checking collisions — see the "does NOT establish"
-    // note in `plugin-service-boundary.test.ts`, which is where that limit is
-    // recorded.
+    // project file without re-checking collisions — planning#371.
     expect(stack.mgr.getServices().map((s) => s.name)).toEqual(["probe"]);
     expect(stack.mgr.getService("probe")?.origin).toBeUndefined();
     expect(readOverride()["probe-worker"]).toBeUndefined();

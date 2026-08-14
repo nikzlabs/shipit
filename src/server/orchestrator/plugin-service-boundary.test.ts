@@ -52,8 +52,10 @@
  *    with a way to reach that port, but it is named in the exhaustive
  *    environment claim below all the same.
  *  - **Every branch, not once on the main path.** Unchanged, and this surface
- *    has four: tracked, `repo: self`, settings-present, and the production
- *    volume layout.
+ *    has more of them than the CLI: tracked, `repo: self`, settings-present,
+ *    contained-egress, the production volume layout, and credential delivery.
+ *    All six go through the one shared helper, because "this branch checks
+ *    something else" is how a branch stops checking the boundary at all.
  *
  * ## One thing #2264 changed
  *
@@ -76,43 +78,24 @@
  *
  * ## What this file does NOT establish — read this before trusting it
  *
- * Both of these are verified at the source and neither is this slice's to close.
- * They are recorded here because a guard test that reads as a clean bill of
- * health while the boundary is open is worse than no test.
+ * **Req 19 does not hold on the service surface today, by two paths this file
+ * cannot see** — both reach around the override it asserts on, and both are
+ * tracked, with every link verified at the source, on **planning#371**:
  *
- *  1. **A plugin service CAN reach a repository-fetch credential today, and this
- *     file cannot see it.** The chain, every link checked: the service container
- *     sits on the session network, which the orchestrator joins
- *     (`service-manager-setup.ts`'s `networkJoinFn`); it carries the
- *     `shipit-parent-session` label, so `api-container-guard.ts` resolves it
- *     through `getSessionByAnyContainerIp` as a container OF THAT SESSION rather
- *     than as an unrecognised caller; the guard therefore admits its own
- *     session's container-accessible routes, a set that includes
- *     `POST /api/sessions/:id/git/credential` (`api-routes-github.ts`), which
- *     returns a real GitHub token. The one thing that looked like a lock — that
- *     the guard compares the FULL session id and ShipIt hands the service none —
- *     is not one: `/proc/self/mountinfo` exposes each mount's ROOT, and in
- *     production those are volume subpaths of the form
- *     `…/_data/sessions/<full uuid>/workspace`. Confirmed by reading
- *     `/proc/self/mountinfo` inside a live ShipIt session container. The
- *     environment assertion below is worth keeping as hygiene, but it is not the
- *     boundary, and nothing in a compose override could be.
- *  2. **The collision rule stops the project's compose file merging into a
- *     plugin service's entry only until the plugin runs.** Compose merges by
- *     service NAME, so a project entry sharing the name would merge in — a
- *     second spelling for a mount or an environment value that no assertion on
- *     this file could see. Req 20's collision check closes that when services are
- *     RESOLVED, and a collision withholds the whole repository
- *     (`integration_tests/plugin-services.test.ts` asserts the withholding). But
- *     a plugin service has `/project` read-write (reqs 18, 21), every later
- *     `compose up` re-reads the project file, and that re-read re-runs
- *     `validateServiceSecurity` WITHOUT re-checking collisions or re-resolving
- *     plugin services (`service-manager.ts`). Compose also interpolates `${VAR}`
- *     in that file from the environment of the process that runs it — the
- *     orchestrator's, since `compose-cli.ts` spawns with no restricted `env` —
- *     which is the very thing `plugin-compose.ts` escapes every `$` in a
- *     FRAGMENT to prevent. Both findings come from an independent review of this
- *     branch and are reported to the feature's owning session.
+ *  1. A plugin service is classified as a container of its OWN session (the
+ *     `shipit-parent-session` label, `api-container-guard.ts`), so ShipIt's API
+ *     admits it to that session's container-accessible routes — one of which
+ *     brokers a real GitHub token. The session id is not the control it looked
+ *     like: `/proc/self/mountinfo` exposes it.
+ *  2. A running plugin has `/project` read-write and can merge a project compose
+ *     entry into its own service on a later `up`, where Compose interpolates
+ *     `${VAR}` from the orchestrator's environment.
+ *
+ * Recorded here rather than left to the issue alone because a guard test that
+ * reads as a clean bill of health while the boundary is open is worse than no
+ * test. What this file guards is real and worth having — everything ShipIt
+ * WRITES into a plugin service — and it is not the whole boundary. In
+ * particular the session-id assertion below is hygiene, not the control.
  *
  * One further limit, smaller: the environment claim covers what ShipIt WRITES,
  * not the container's effective environment — the daemon merges the image's own
@@ -648,10 +631,9 @@ describe("plugin services — the fetch-authority boundary (req 19)", () => {
     // service container to its OWN session's container-accessible routes, one of
     // which brokers a real GitHub token, so the id is worth not handing over —
     // but a container reads its own mount roots out of `/proc/self/mountinfo`,
-    // and in production those are volume subpaths containing the full id. See
-    // the module note: the boundary is open on that path, and no assertion about
-    // a compose override could close it. What this does catch is the cheap
-    // regression — an `SHIPIT_SESSION_ID=` added "for convenience".
+    // and in production those are volume subpaths carrying the full id
+    // (planning#371). What this catches is the cheap regression: a
+    // `SHIPIT_SESSION_ID=` added "for convenience".
     writeSelfFixture();
 
     const probe = await emitProbeService();
