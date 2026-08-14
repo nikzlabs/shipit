@@ -42,9 +42,9 @@ re-armed after a merge and can open a later PR. There is no general durable
 ## Terms
 
 - **Resolved session:** the existing UI lifecycle classification for a session
-  whose single PR merged and that received no user message after the merge. A
-  merge alone is not sufficient because a later user message makes the session
-  active again.
+  whose PR merged or closed without merge and that had no later turn activity.
+  A terminal PR alone is not sufficient forever because later turn activity
+  makes the session active again.
 - **Cohort delivery:** `shipit session report --to cohort`, which can address the
   reporter's parent and siblings.
 - **Direct delivery:** an existing parent-to-child `shipit session message`.
@@ -62,15 +62,15 @@ re-armed after a merge and can open a later PR. There is no general durable
    session can continue on the same branch, open a later PR, or coordinate its
    children after that PR reaches a terminal state.
 
-4. A child session that the existing UI classifies as resolved — its single PR
-   merged and it received no user message after that merge — must be excluded
+4. A child session that the existing UI classifies as resolved — its PR merged
+   or closed without merge and it had no later turn activity — must be excluded
    from cohort broadcasts. The eligibility check must reuse the existing
    resolved classification rather than create a different report-specific
    approximation.
 
 5. The same recipient eligibility rule applies when a parent sends a direct
    message to its child. A resolved child cannot receive direct coordination. A
-   new user message that moves the child out of the existing resolved
+   new turn that moves the child out of the existing resolved
    classification makes it eligible again. Child-to-parent delivery and resolved
    parent behavior do not change.
 
@@ -93,36 +93,43 @@ re-armed after a merge and can open a later PR. There is no general durable
     eligible recipients. No causal-chain tracking, content fingerprinting, or
     other smart duplicate suppression is added in this remediation.
 
-11. Tests must cover the existing resolved-child classification, a later user
-    message making the child eligible again, parent-to-child direct messages,
+11. Tests must cover the existing resolved-child classification, later turn
+    activity making the child eligible again, parent-to-child direct messages,
     cohort delivery, all severities, and sender-visible skip outcomes.
 
 ## Open questions
 
-### Q6. Does “resolved child” include a PR closed without merge?
+### Q7. What activity makes a resolved child active again?
 
-The existing UI predicate verified at
-`src/client/components/SessionSidebar/useSessionGrouping.ts:isRecentlyResolved`
-and its server counterpart in `src/server/orchestrator/sessions.ts` treats both
-`mergedAt` and `closedAt` as resolved, unless later turn activity reopens the
-session. The approved wording above says “merged.” The implementation cannot
-both reuse the UI predicate and exclude only merged PRs.
+The existing UI baseline uses `lastUsedAt`, which is advanced by every turn,
+including ShipIt-started system wakes. A self merge-wake can therefore make a
+child active immediately after its PR merges even when the user sent no later
+message. This differs from the approved “no later user message” intent.
 
-- **A — Reuse the complete UI predicate (recommended).** Block delivery to a
-  child whose PR merged or closed without merge and that has no later turn
-  activity. This keeps the sidebar and delivery eligibility consistent.
-- **B — Merged PRs only.** Block delivery only when `mergedAt` is set and there
-  is no later turn activity. A closed-without-merge child remains eligible even
-  while the UI shows it under Recently resolved.
+- **A — User-started activity only (recommended).** A resolved child becomes
+  active again only after a new user-started turn. This needs a durable signal
+  distinct from `lastUsedAt`, and the UI and delivery gate must share it.
+- **B — Any turn activity.** Preserve the current UI baseline exactly. A system
+  wake after merge makes the child active and eligible for later messages.
+
+### Q8. Are pinned child coordinators eligible after their PR resolves?
+
+The rendered sidebar adds two exemptions beyond the baseline predicate: a
+pinned session and a child that still has visible children remain in Active.
+
+- **A — Match the rendered UI (recommended).** Keep pinned children and child
+  coordinators eligible while they appear Active.
+- **B — Ignore the UI exemptions.** Block them when their PR is terminal and the
+  activity rule from Q7 says they were not reopened.
 
 ## Resolved questions
 
 - 2026-08-14 — Which terminal-PR sessions are eligible for cohort broadcasts?
-  Chosen: exclude sessions that the existing UI classifies as resolved. For this
-  decision, that is a session whose single PR merged and that received no user
-  message after the merge. Reuse that classification for report eligibility; do
-  not treat every merged PR as completion and do not invent a separate idle/queue
-  approximation.
+  Chosen: exclude sessions that the existing UI classifies as resolved. The
+  initial answer described a single merged PR with no later user message; the
+  later 2026-08-14 receipt below supersedes the merged-only part by including a
+  PR closed without merge. Reuse the UI classification for report eligibility;
+  do not invent a separate idle/queue approximation.
 - 2026-08-14 — Does resolved-session ineligibility apply only to cohort reports?
   Chosen: no. Apply it when a parent directly messages its resolved child too.
   Do not change child-to-parent delivery or resolved-parent behavior. A later
@@ -138,3 +145,6 @@ both reuse the UI predicate and exclude only merged PRs.
 - 2026-08-14 — Should FYI reports stop waking agents? Chosen: no. Do not
   distinguish severities mechanically. Every eligible `fyi`, `warn`, and
   `blocker` report continues to persist a card and start or queue a wake turn.
+- 2026-08-14 — Does “resolved child” include a PR closed without merge? Chosen:
+  match the existing UI predicate. Both merged and closed-without-merge children
+  are resolved until later turn activity makes them active again.
