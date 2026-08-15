@@ -3,6 +3,7 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import path from "path";
 import { execFileSync } from "node:child_process";
+import { frameGuardHeaders, framePolicyFromEnv } from "./src/server/shared/frame-policy.js";
 
 function resolveBuildId(): string | undefined {
   const explicit = process.env.VITE_SHIPIT_BUILD_ID?.trim() || process.env.SHIPIT_BUILD_ID?.trim();
@@ -63,6 +64,20 @@ export default defineConfig({
     // any Host is the right call here. (`allowedHosts: true` only affects
     // `vite dev` — `vite build` is unaffected.)
     allowedHosts: true,
+    // planning#379 — anti-framing, the same policy the orchestrator applies in
+    // `frame-guard.ts`. It has to be repeated here because in BOTH stacks that
+    // run Vite, Vite is what serves the framable document while the
+    // orchestrator listens on another port and never sees the request:
+    // `docker/local/dev/compose.yml` (Vite on CLIENT_DEV_PORT, orchestrator on
+    // PORT) and the dogfood `dev` service (Vite on 3000, orchestrator on 4000).
+    // A guard registered only on Fastify would leave the dev stack's UI — a
+    // real, LAN-reachable ShipIt — frameable.
+    //
+    // `framePolicyFromEnv` is what keeps the dogfood loop alive: that service
+    // sets `RUNTIME_MODE=local`, so it sends no headers and the OUTER ShipIt
+    // can still render the inner UI in its preview pane. The dev stack sets no
+    // RUNTIME_MODE and therefore denies.
+    headers: frameGuardHeaders(framePolicyFromEnv()),
     proxy: {
       "/ws": {
         target: `http://localhost:${process.env.API_PORT || "3000"}`,

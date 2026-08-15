@@ -171,7 +171,10 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   }
 
   // ---- Fastify instance + transport middleware ----
-  const app = await createOrchestratorApp();
+  // `runtimeMode` is passed for the anti-framing policy (planning#379): every
+  // real deployment refuses to be framed, and the dogfood inner orchestrator
+  // (`RUNTIME_MODE=local`) does not, because the outer instance frames it.
+  const app = await createOrchestratorApp(undefined, runtimeMode);
 
   // ---- Managers + collaborator wiring (the DI block) ----
   const rt = await bootstrapManagers({
