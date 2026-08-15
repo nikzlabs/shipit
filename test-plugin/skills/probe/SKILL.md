@@ -22,7 +22,7 @@ nothing. Flags: `--bump` increments the shared counter before reporting;
 | `settings.greeting` | the validated settings file (req 26) |
 | `project.readable` | the workspace handle (req 21) |
 | `state.counter` | shared state with the probe service — `probe --bump`, then reload its page: same number (reqs 17, 18) |
-| `checkout.writable` | a raw observation of this surface's mount only — a consumer CLI sees the writable layer, so this is deliberately NOT the self/consumer signal; that layer writes never reach the checkout is a slice-2 guard test (req 7) |
+| `checkout.writable` | this surface's own mount — not the self/consumer signal (read `mode`), but it does check the rule directly: the plugin's tree is writable exactly when it is the project, so a consumer generation reports `false` and `repo: self` reports `true` (reqs 7, 15, 27). On the service surface it measures this fragment's own `.:/app`, which ShipIt forces read-only for a tracked generation and leaves as declared under `repo: self` |
 | `install.matchesActiveCommit` | install ran for the active generation; `null` under self-use, which has no generations (req 7) |
 
 The probe service renders the same report from the service surface at its

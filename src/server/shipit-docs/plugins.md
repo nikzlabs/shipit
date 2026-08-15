@@ -64,6 +64,15 @@ refresh, and reach nobody.
 The path follows the live generation. When a plugin repository is refreshed
 mid-session, `/plugins/<name>` points at the new commit with no restart.
 
+**The plugin's own code cannot write it either**, and for the same reason. A
+plugin's CLIs and services see that checkout in their own containers, merged
+with the plugin's writable layer, and every mount of it is read-only — at
+`/plugin`, and at whatever path the plugin's own service definition mounts it
+at. So what the Plugins tab says is live is what every surface of that
+repository is running. The one writer is the plugin's `install`, which runs
+before a commit goes live. A plugin's writable surfaces are its state directory
+and this project's workspace, never its own source.
+
 ## Plugin code does not run in your container
 
 Everything a plugin *ships* — its `install`, its CLIs, its services — runs in a
@@ -193,9 +202,11 @@ session's own working tree.** So:
 - There is no separate `/plugins/<name>`; the files are your workspace, where
   you are already editing them. The plugin's own code still sees itself at
   `/plugin`, exactly as it does in a consuming project.
-- The read-only rule above does not apply here. Editing the plugin IS the point,
-  and an edit is live: the next command you run and the next service start read
-  the working tree.
+- The read-only rule above does not apply here — to you or to the plugin's own
+  code. Editing the plugin IS the point, and an edit is live: the next command
+  you run and the next service start read the working tree. `/plugin` is
+  writable in the plugin's CLI and service containers too, because it is the
+  same working tree they already have at `/project`.
 - There is no commit and no generation, so `SHIPIT_PLUGIN_COMMIT` is unset —
   which is how a plugin can tell "being developed in its own repository" from
   "running at a tracked commit".
@@ -205,8 +216,9 @@ session's own working tree.** So:
   a `shipit.yaml` save or the session opening runs.
 - The plugin's `install` does not run: it exists to populate a generation's
   writable layer, and there is none. Your repository's own `agent.install`
-  prepares the working tree that the services and CLIs then run out of. (Whether
-  self-use should run the exported `install` too is an open product question.)
+  prepares the working tree that the services and CLIs then run out of. That is
+  settled, not pending: ShipIt does not write plugin-authored install output
+  into a tree it auto-commits.
 - The repository's issues are already this session's, so `self` registers no
   separate feedback destination. File plugin bugs the ordinary way.
 

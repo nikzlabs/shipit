@@ -114,6 +114,21 @@ function build(fragments: PluginFragmentService[], overrides: {
   });
 }
 
+/**
+ * The same fragment as a TRACKED import: a generation volume instead of the
+ * session's working tree. `self: false` + a commit is what the collector would
+ * have produced for a declared repository.
+ */
+function trackedVolumes(fragment: PluginFragmentService): Record<string, unknown>[] {
+  const built = buildPluginComposeServices([{ ...fragment, self: false, commit: "abc123" }], {
+    sessionDir,
+    workspaceDir,
+    pluginVolumes: new Map([["mine", "shipit-x_plugin-mine"]]),
+    publishedPorts: new Map(),
+  });
+  return built.services[0].definition.volumes as Record<string, unknown>[];
+}
+
 describe("collectPluginFragments", () => {
   it("surfaces a self-declared plugin's services (reqs 3, 27)", () => {
     const { services, issuesByRepo } = collect(SELF_USE);
@@ -469,7 +484,13 @@ describe("buildPluginComposeServices", () => {
     });
   });
 
-  it("mounts the plugin's own tree read-only at /plugin, the path every surface uses", () => {
+  // req 27 — a `repo: self` tree is read-WRITE, and the same rights the caller
+  // gives `/project`, because it is literally the same directory. Read-only
+  // there forbids nothing (the plugin writes it through `/project` instead) and
+  // contradicts "the plugin is editable"; it also made the answer to "can plugin
+  // code write its checkout" depend on which surface asked, which is the
+  // inconsistency this rule settles.
+  it("mounts the plugin's own tree at /plugin, read-write for a self import", () => {
     const { services } = collect(SELF_USE);
     const volumes = build(services).services[0].definition.volumes as Record<string, unknown>[];
     // A `cli:` entrypoint is declared relative to the repository ROOT, so this
@@ -479,7 +500,67 @@ describe("buildPluginComposeServices", () => {
       type: "bind",
       source: workspaceDir,
       target: "/plugin",
+    });
+  });
+
+  // reqs 7, 15 — the other half of the same rule, and the one the companion-CLI
+  // surface had to be brought into line with (`plugin-cli-run.test.ts`): a
+  // generation is read-only to everything that runs at runtime. Its one writer is
+  // `install`, before the generation is published.
+  it("mounts a tracked generation's tree read-only at /plugin", () => {
+    const { services } = collect(SELF_USE);
+    const volumes = trackedVolumes(services[0]);
+    expect(volumes).toContainEqual({
+      type: "volume",
+      source: "shipit-x_plugin-mine",
+      target: "/plugin",
       read_only: true,
+    });
+  });
+
+  // The rule is about the TREE, not about ShipIt's own path for it (review
+  // finding). Compose's default is read-WRITE, so this ordinary declaration —
+  // the one almost every fragment writes without thinking — used to hand a
+  // consumer's service a writable alias of the generation beside a read-only
+  // `/plugin`, which is the same defect as the old CLI mount and reachable
+  // without the plugin author doing anything unusual.
+  it("forces a tracked fragment's own relative mount read-only, whatever it declared", () => {
+    writeFragment(FRAGMENT.replace("- .:/app:ro", "- .:/app\n      - ./service:/srv"));
+    const { services } = collect(SELF_USE);
+    const volumes = trackedVolumes(services[0]);
+
+    expect(volumes).toContainEqual({
+      type: "volume",
+      source: "shipit-x_plugin-mine",
+      target: "/app",
+      volume: { subpath: "tools/probe" },
+      read_only: true,
+    });
+    expect(volumes).toContainEqual({
+      type: "volume",
+      source: "shipit-x_plugin-mine",
+      target: "/srv",
+      volume: { subpath: "tools/probe/service" },
+      read_only: true,
+    });
+    // The sweeping form: NOTHING backed by the generation volume is writable,
+    // so a mount added later cannot reopen this.
+    for (const volume of volumes) {
+      if (volume.source === "shipit-x_plugin-mine") expect(volume.read_only).toBe(true);
+    }
+  });
+
+  // req 27 — the same declaration under `repo: self` keeps what it declared: the
+  // tree there IS the project, which this container already has read-write at
+  // `/project`, so forcing read-only would forbid nothing and break editing.
+  it("leaves a self import's own relative mount writable when it declared none", () => {
+    writeFragment(FRAGMENT.replace("- .:/app:ro", "- .:/app"));
+    const { services } = collect(SELF_USE);
+    const volumes = build(services).services[0].definition.volumes as Record<string, unknown>[];
+    expect(volumes).toContainEqual({
+      type: "bind",
+      source: path.join(workspaceDir, "tools/probe"),
+      target: "/app",
     });
   });
 
@@ -582,7 +663,6 @@ describe("buildPluginComposeServices", () => {
       source: "shipit-workspace",
       target: "/plugin",
       volume: { subpath: "sessions/abc/workspace" },
-      read_only: true,
     });
   });
 

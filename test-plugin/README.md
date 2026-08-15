@@ -17,8 +17,9 @@ checkout, generations, or refresh (req 27):
   declares this repo by `owner/name`: the checkout / generation / pin /
   refresh path. The report must show `mode: consumer-generation` with the
   exact commit, and `install.matchesActiveCommit: true`. (`checkout.writable`
-  is deliberately not the discriminator: a consumer CLI runs through the
-  plugin's writable layer, where writes succeed.)
+  is not the discriminator — read `mode` — but it does check the rule
+  directly: a consumer generation is read-only on every surface, a `repo: self`
+  working tree is writable.)
 
 Layout:
 
