@@ -10,7 +10,7 @@ import { useEgressStore } from "../stores/egress-store.js";
 import type { ToastData } from "../components/Toast.js";
 import { fullResetAllStores } from "../stores/actions/session-actions.js";
 import type { AgentId, SessionInfo, RepoInfo, PrStatusSummary, DockerMemoryStats, SystemInfo, SubscriptionLimitsMap, PermissionMode, CredentialRoute, EgressSettings } from "../../server/shared/types.js";
-import type { ReviewerSlotView } from "../../server/shared/types/agent-types.js";
+import type { ReviewerSlotView, RoleView } from "../../server/shared/types/agent-types.js";
 import { getLoadedClientBuildId, shouldReloadForServerBuild } from "../utils/client-build.js";
 import {
   getParkedHarness,
@@ -539,6 +539,14 @@ export function useServerEvents(): void {
         // older server, so the store keeps what bootstrap gave it.
         reviewers?: ReviewerSlotView[];
         /*
+          docs/264 phase 2 — the roles ride this event for the same reason the
+          reviewer slots do: a role reports `disconnected` the moment the
+          service it names loses its credential, and a Settings tab that does
+          not follow that change shows the answer from before it. Absent means
+          an older server, so the store keeps what bootstrap gave it.
+        */
+        roles?: RoleView[];
+        /*
           docs/252 req 9 — the background-work setting and what it resolves to,
           re-read on every credential change for the same reason `reviewers` is.
           `null` and absent mean different things here: absent is an older
@@ -560,6 +568,9 @@ export function useServerEvents(): void {
       };
       if (data.reviewers) {
         useSettingsStore.getState().setReviewers(data.reviewers);
+      }
+      if (data.roles) {
+        useSettingsStore.getState().setRoles(data.roles);
       }
       if (data.nonTurnModel !== undefined || data.nonTurnModelResolved !== undefined) {
         useSettingsStore.getState().setNonTurnModel(

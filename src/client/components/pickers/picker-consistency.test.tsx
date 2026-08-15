@@ -3,7 +3,7 @@ import { render, screen, cleanup } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { HarnessSelector, ModelSelector } from "../ModelPicker.js";
 import { ReasoningSelector } from "../ReasoningSelector.js";
-import { ReviewerTab } from "../Settings/tabs/ReviewerTab.js";
+import { ReviewerSection } from "../Settings/tabs/ReviewerSection.js";
 import { BackgroundWorkSection } from "../Settings/BackgroundWorkSection.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
 import { Picker, PickerOption, PICKER_TRIGGER_CLASS } from "./Picker.js";
@@ -94,7 +94,7 @@ function triggersOnEverySurface(): Record<string, HTMLButtonElement> {
   cleanup();
 
   useSettingsStore.getState().setReviewers([reviewerSlot("first"), reviewerSlot("second")]);
-  render(<ReviewerTab agentList={agents} />);
+  render(<ReviewerSection agentList={agents} />);
   found["reviewer service"] = screen.getByTestId("reviewer-first-service-trigger") as HTMLButtonElement;
   found["reviewer model"] = screen.getByTestId("reviewer-model-trigger-first") as HTMLButtonElement;
   found["reviewer reasoning"] = screen.getByTestId("reviewer-reasoning-trigger-first") as HTMLButtonElement;
@@ -143,7 +143,7 @@ describe("picker consistency (req 13)", () => {
    */
   it("uses no native select on either Settings surface", () => {
     useSettingsStore.getState().setReviewers([reviewerSlot("first"), reviewerSlot("second")]);
-    const { container: reviewer } = render(<ReviewerTab agentList={agents} />);
+    const { container: reviewer } = render(<ReviewerSection agentList={agents} />);
     expect(reviewer.querySelectorAll("select")).toHaveLength(0);
     cleanup();
 
@@ -206,7 +206,7 @@ describe("picker consistency (req 13)", () => {
       { slot: "first", source: "auto", resolved: undefined },
       { slot: "second", source: "auto", resolved: undefined },
     ]);
-    const { container: reviewer } = render(<ReviewerTab agentList={none} />);
+    const { container: reviewer } = render(<ReviewerSection agentList={none} />);
     expect(reviewer.querySelectorAll("button[aria-label^='Service for']")).toHaveLength(0);
     expect(reviewer.querySelectorAll("button[aria-label^='Model for']")).toHaveLength(0);
     // Both slots say it — the prose is what replaces the controls.

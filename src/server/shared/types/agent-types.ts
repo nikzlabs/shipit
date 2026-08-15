@@ -349,6 +349,35 @@ export interface RoleView {
   earliestResetAt?: string | null;
 }
 
+/**
+ * docs/264 phase 2 (reqs 5, 17, 18) — one role as an **edit** crosses the wire.
+ *
+ * A role is created, renamed, edited and deleted through the existing settings
+ * mutation surface (`PUT /api/settings`), keyed by the name the role will have
+ * afterwards, with `null` for a delete. The whole role is written at once
+ * (req 17): the editor holds a name, a description, standing instructions and
+ * five parameters, and saving it is one write rather than a control-by-control
+ * trickle.
+ *
+ * **`previousName` is what distinguishes a create from an edit**, and the
+ * distinction is req 18's uniqueness rule made checkable. Without it, "create a
+ * role called `deep-dive`" and "edit the existing `deep-dive`" arrive as the
+ * same request, so a create that collides with an existing name would silently
+ * overwrite it instead of being refused. Absent means create; present names the
+ * role being edited, and a `previousName` that differs from the key is a
+ * rename — an ordinary validated write followed by a delete, since nothing holds
+ * a reference to the old name.
+ */
+export interface RoleWrite {
+  /** The role being edited, when one is. Absent ⇒ create; different from the key ⇒ rename. */
+  previousName?: string;
+  /** Req 9 — optional; an empty string clears it. */
+  description?: string;
+  /** Req 8 — optional standing instructions; an empty string clears them. */
+  prompt?: string;
+  params: RoleParams;
+}
+
 export interface AgentCapabilities {
   /** Whether the agent can resume a previous conversation (e.g. --resume). */
   supportsResume: boolean;

@@ -153,7 +153,7 @@ import {
   isPlanPath,
 } from "./utils/doc-paths.js";
 import { dispatchAgentMessage } from "./utils/dispatch-agent-message.js";
-import type { ReviewerSlotView } from "../server/shared/types/agent-types.js";
+import type { ReviewerSlotView, RoleView } from "../server/shared/types/agent-types.js";
 import type { AgentInterfaceProvenance } from "../server/shared/agent-interface-sdk/protocol.js";
 import { buildIssueSeedPrompt } from "../server/shared/issue-ref.js";
 import { sendUserMessage } from "./utils/send-user-message.js";
@@ -1182,6 +1182,8 @@ export default function App() {
             };
             /** docs/261 phase 3 (req 8) — both reviewer slots, pinned or auto-configured. */
             reviewers?: ReviewerSlotView[];
+            /** docs/264 phase 2 — every agent role, each resolved by the server. */
+            roles?: RoleView[];
           };
         }>("/api/bootstrap");
         useGitStore.getState().setIdentity(data.settings.gitIdentity);
@@ -1271,6 +1273,8 @@ export default function App() {
         // tab rather than report anything.
         if (data.settings.reviewers)
           {useSettingsStore.getState().setReviewers(data.settings.reviewers);}
+        // docs/264 phase 2 — guarded on presence for the same reason.
+        if (data.settings.roles) {useSettingsStore.getState().setRoles(data.settings.roles);}
         if (data.settings.providerAccounts)
           {useSettingsStore
             .getState()

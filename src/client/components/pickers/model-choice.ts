@@ -80,6 +80,47 @@ export function modelsOfService(
   return models.filter((m) => serviceKeyOf(m) === key);
 }
 
+/** One harness a role could name, with the levels it declares (docs/264 req 6). */
+export interface HarnessChoice {
+  id: string;
+  name: string;
+  reasoning: AgentOption["reasoning"];
+}
+
+/**
+ * docs/264 req 6 — **which harnesses can run this model**, on this install.
+ *
+ * A role names its harness and never derives it, so the editor has to offer the
+ * set rather than pick from it. Most models have exactly one member here and the
+ * field is a readout; `deepseek-v4-flash` and `deepseek-v4-pro` have two
+ * (`services.ts` declares all three API styles on them, so both harnesses share
+ * one with each), and there the harness is a real choice only the user can make.
+ *
+ * **Read from the server's own per-harness eligibility, not re-derived.** Each
+ * `AgentOption.eligibleModels` is the credential-filtered join the server
+ * computed for that harness, so asking which harnesses list this triple is a
+ * lookup in what the server sent — the opposite of reimplementing `resolveStyle`
+ * in the browser. The server still validates the save (req 6), which is where a
+ * combination this list would allow but the catalogue would not is refused.
+ *
+ * Empty when the model is not eligible anywhere — the stranded case, where the
+ * editor shows the stored harness id as text instead of a control.
+ */
+export function harnessesForModel(
+  agents: AgentOption[],
+  model: { serviceId: string; billingMode: string; modelId: string } | undefined,
+): HarnessChoice[] {
+  if (!model) return [];
+  const key = `${serviceKeyOf(model)}|${model.modelId}`;
+  return agents
+    .filter(
+      (agent) =>
+        agent.installed
+        && (agent.eligibleModels ?? []).some((m) => `${serviceKeyOf(m)}|${m.modelId}` === key),
+    )
+    .map((agent) => ({ id: agent.id, name: agent.name, reasoning: agent.reasoning }));
+}
+
 /** What a caller can hand to {@link modelAfterServiceChange} as "the model now". */
 export interface CurrentModel {
   serviceId: string;

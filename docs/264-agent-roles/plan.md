@@ -568,6 +568,18 @@ to something the user did not choose.
 
 Nothing here is optimistic: the server sends the resolution and the response replaces the list.
 
+**Key files (phase 2).** `services/role-settings.ts` turns a screen's edit back into stored roles —
+one entry per role name, `null` to delete, `previousName` distinguishing an edit from a create so
+req 18's uniqueness is checkable; it validates every entry before writing any, and hands the params
+to phase 1's `validateRolePinnedParams` rather than restating its rules. It is reached through
+`saveGlobalSettings`'s `roles` field (`PUT /api/settings`), and the roles ride `buildAgentListPayload`
+alongside the reviewer slots so an open tab follows a credential change. On the client,
+`Settings/tabs/RolesTab.tsx` is the tab (the Reviewer section, then the summary rows),
+`Settings/tabs/ReviewerSection.tsx` is docs/261's two slot cards unchanged, and
+`Settings/roles/RoleEditor.tsx` is the editor. `pickers/model-choice.ts`'s `harnessesForModel` is
+what makes the harness a picker or a readout — read from the server's per-harness eligible sets,
+not re-derived.
+
 ## Attribution (req 14)
 
 **A one-shot run** is resolved and routed **once**, at spawn admission, and that frozen target is

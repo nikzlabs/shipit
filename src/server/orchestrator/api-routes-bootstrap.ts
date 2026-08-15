@@ -161,6 +161,16 @@ export async function registerBootstrapRoutes(
      * here would let Fastify's own coercion answer first, with a worse message.
      */
     reviewers?: Record<string, unknown>;
+    /**
+     * docs/264 phase 2 (reqs 5, 17, 18) — create, edit, rename or delete a role,
+     * keyed by the name it will have afterwards, with `null` for a delete.
+     *
+     * `unknown` per entry for the same reason `reviewers` is: `applyRoleWrites`
+     * is where a malformed role, a duplicate name, a rename of the reserved
+     * `reviewer` and a tuple whose harness cannot run its model each get their
+     * own 400 naming the parameter.
+     */
+    roles?: Record<string, unknown>;
   } }>(
     "/api/settings",
     async (request, reply) => {
@@ -197,6 +207,7 @@ export async function registerBootstrapRoutes(
           ...(request.body.accountSelectionMode !== undefined ? { accountSelectionMode: request.body.accountSelectionMode } : {}),
           ...(request.body.nonTurnModel !== undefined ? { nonTurnModel: request.body.nonTurnModel } : {}),
           ...(request.body.reviewers !== undefined ? { reviewers: request.body.reviewers } : {}),
+          ...(request.body.roles !== undefined ? { roles: request.body.roles } : {}),
         });
       } catch (err) {
         if (err instanceof ServiceError) {

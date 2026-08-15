@@ -332,9 +332,9 @@ interface CredentialData {
  * the combined prompt is checked again against the destination's own limit after
  * the join, which is phase 3's.
  */
-const MAX_ROLE_NAME_LENGTH = 10_000;
-const MAX_ROLE_DESCRIPTION_LENGTH = 500;
-const MAX_ROLE_PROMPT_LENGTH = 20_000;
+export const MAX_ROLE_NAME_LENGTH = 10_000;
+export const MAX_ROLE_DESCRIPTION_LENGTH = 500;
+export const MAX_ROLE_PROMPT_LENGTH = 20_000;
 
 const DEFAULT_CREDENTIALS_DIR = "/credentials";
 const FILENAME = "shipit-credentials.json";

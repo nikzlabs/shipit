@@ -18,7 +18,7 @@ import { buildAgentSystemInstructions } from "../agent-instructions.js";
 import { readGlobalSystemPrompt, writeGlobalSystemPrompt } from "../global-system-prompt.js";
 import { ServiceError } from "./types.js";
 import type { AgentInfo, GlobalSettings, NonTurnModelResolved, NonTurnModelSelection, ReviewerPinPatch, ReviewerSlotView } from "./types.js";
-import type { ReviewerPin, ReviewerSlot } from "../../shared/types/agent-types.js";
+import type { ReviewerPin, ReviewerSlot, RoleView } from "../../shared/types/agent-types.js";
 import {
   buildReviewerSettings,
   parseReviewerPinPatch,
@@ -26,6 +26,7 @@ import {
   resolveReviewerPinPatch,
 } from "./reviewer-settings.js";
 import { buildRoleSettings } from "./roles.js";
+import { applyRoleWrites } from "./role-settings.js";
 import type { ProviderAccountManager } from "../provider-account-manager.js";
 import type { SessionManager } from "../sessions.js";
 import type { SessionRunnerInterface, SessionRunnerRegistry } from "../session-runner.js";
@@ -299,6 +300,7 @@ export function buildAgentListPayload(
   canRunTurns: boolean;
   harnessOnboardingCompletedAt?: string;
   reviewers: ReviewerSlotView[];
+  roles: RoleView[];
   nonTurnModel: NonTurnModelSelection | null;
   nonTurnModelResolved: NonTurnModelResolved | null;
 } {
@@ -325,6 +327,21 @@ export function buildAgentListPayload(
     agents: listAgents(agentRegistry),
     ...resolveHarnessOnboarding(agentRegistry, credentialStore),
     reviewers: buildReviewerSettings({ credentialStore, providerAccountManager }),
+    /*
+      docs/264 phase 2 — the roles ride this event for the same reason the
+      reviewer slots do: a role's resolution is credential-derived (it reports
+      `disconnected` when the service it names loses its credential, and
+      `quota_exhausted` when a subscription is spent), and a Settings tab that
+      does not follow a credential change shows the answer from before it.
+      Always an array — an install with no store simply has none to send, which
+      is the one case that reports empty rather than wrong.
+    */
+    roles: credentialStore
+      ? buildRoleSettings({
+          credentialStore,
+          ...(providerAccountManager ? { providerAccountManager } : {}),
+        })
+      : [],
     nonTurnModel: nonTurn.nonTurnModel ?? null,
     nonTurnModelResolved: nonTurn.nonTurnModelResolved ?? null,
   };
@@ -536,6 +553,21 @@ export interface SaveGlobalSettingsOptions {
    * malformed slot becomes a 400 naming the field instead of a coerced value.
    */
   reviewers?: Record<string, unknown>;
+  /**
+   * docs/264 phase 2 (reqs 5, 17, 18) — create, edit, rename or delete roles,
+   * keyed by the name each role will have afterwards, with `null` for a delete.
+   *
+   * **The existing mutation surface, not a new set of routes.** A role is one
+   * more thing the user configures about how agents run, so it rides the same
+   * PUT the reviewer slots do — and the response carries the whole resolved list
+   * back, which is what lets the Settings screen replace its list with the
+   * server's answer rather than a local guess.
+   *
+   * `unknown` per entry for the reason `reviewers` is: the values are validated
+   * in `applyRoleWrites`, where a malformed role, a duplicate name, a rename of
+   * the reserved role and a tuple its harness cannot run each get their own 400.
+   */
+  roles?: Record<string, unknown>;
 }
 
 export async function saveGlobalSettings(
@@ -547,7 +579,7 @@ export async function saveGlobalSettings(
     gitIdentity, systemPrompt, maxIdleContainers,
     agentSystemInstructionsEnabled, autoCreatePr, liveSteering,
     autoResolveConflicts, autoFixCi, autoResetMergedBranch, enableSubAgents, voiceDeliveryMode,
-    failoverCutoffs, accountSelectionMode, nonTurnModel, reviewers,
+    failoverCutoffs, accountSelectionMode, nonTurnModel, reviewers, roles,
   } = opts;
 
   // Save git identity if provided
@@ -699,6 +731,19 @@ export async function saveGlobalSettings(
       },
     );
     for (const [slot, pin] of resolved) credentialStore.setReviewerPin(slot, pin);
+  }
+
+  // docs/264 phase 2 (reqs 5, 6, 17, 18) — create, edit, rename or delete roles.
+  //
+  // Validated by phase 1's harness-explicit validator, never by a second copy of
+  // its rules: req 6 says a role whose harness cannot run its model is refused
+  // when it is SAVED, and `validateRolePinnedParams` is what decides that. Every
+  // entry is checked before any entry is written, exactly as the reviewer slots
+  // above are and for the same reason — and here it also keeps a rename atomic,
+  // since the new name is never written when the old one's delete would have
+  // been refused.
+  if (roles !== undefined) {
+    applyRoleWrites(roles, credentialStore, { credentialStore });
   }
 
   // docs/163 — save voice-note delivery mode if provided

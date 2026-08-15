@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { ReviewerTab } from "./ReviewerTab.js";
+import { ReviewerSection } from "./ReviewerSection.js";
 import { useSettingsStore } from "../../../stores/settings-store.js";
 import type { AgentOption } from "../../../agent-types.js";
 import type { ReviewerSlotView } from "../../../../server/shared/types/agent-types.js";
@@ -144,7 +144,7 @@ beforeEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe("ReviewerTab", () => {
+describe("ReviewerSection", () => {
   /**
    * Req 8's visible state, both halves at once: the label AND what the slot
    * resolves to. An untouched install has to read as "auto-configured, and here
@@ -152,7 +152,7 @@ describe("ReviewerTab", () => {
    */
   it("labels an untouched slot auto-configured and names what it resolves to", () => {
     useSettingsStore.getState().setReviewers([autoSlot("first"), autoSlot("second")]);
-    render(<ReviewerTab agentList={agents} />);
+    render(<ReviewerSection agentList={agents} />);
 
     expect(screen.getByTestId("reviewer-state-first").textContent).toBe("Auto-configured");
     expect(screen.getByTestId("reviewer-state-second").textContent).toBe("Auto-configured");
@@ -195,7 +195,7 @@ describe("ReviewerTab", () => {
       }),
       autoSlot("second"),
     ]);
-    render(<ReviewerTab agentList={agents} />);
+    render(<ReviewerSection agentList={agents} />);
 
     expect(screen.getByTestId("reviewer-state-first").textContent).toBe("Pinned");
     expect(screen.getByTestId("reviewer-reset-first")).toBeTruthy();
@@ -211,7 +211,7 @@ describe("ReviewerTab", () => {
   it("renders the derived default as a labelled option at the top of the menu", async () => {
     const user = userEvent.setup();
     useSettingsStore.getState().setReviewers([autoSlot("first"), autoSlot("second")]);
-    render(<ReviewerTab agentList={agents} />);
+    render(<ReviewerSection agentList={agents} />);
 
     await user.click(screen.getByTestId("reviewer-model-trigger-first"));
     const auto = screen.getByTestId("reviewer-model-auto-first");
@@ -231,7 +231,7 @@ describe("ReviewerTab", () => {
       autoSlot("first", { resolved: deepseekResolution }),
       autoSlot("second"),
     ]);
-    render(<ReviewerTab agentList={agents} />);
+    render(<ReviewerSection agentList={agents} />);
 
     await user.click(screen.getByTestId("reviewer-model-trigger-first"));
     expect(screen.getAllByTestId("reviewer-model-option-first-deepseek-v4")).toHaveLength(1);
@@ -249,7 +249,7 @@ describe("ReviewerTab", () => {
     vi.stubGlobal("fetch", fetchMock);
     useSettingsStore.getState().setReviewers([autoSlot("first"), autoSlot("second")]);
 
-    render(<ReviewerTab agentList={agents} />);
+    render(<ReviewerSection agentList={agents} />);
     await user.click(screen.getByTestId("reviewer-model-trigger-first"));
     await user.click(screen.getByTestId("reviewer-model-option-first-claude-sonnet-5"));
 
@@ -272,7 +272,7 @@ describe("ReviewerTab", () => {
     vi.stubGlobal("fetch", fetchMock);
     useSettingsStore.getState().setReviewers([autoSlot("first"), autoSlot("second")]);
 
-    render(<ReviewerTab agentList={agents} />);
+    render(<ReviewerSection agentList={agents} />);
     await user.click(screen.getByTestId("reviewer-reasoning-trigger-first"));
     await user.click(screen.getByTestId("reviewer-reasoning-option-first-low"));
 
@@ -309,7 +309,7 @@ describe("ReviewerTab", () => {
       autoSlot("second"),
     ]);
 
-    render(<ReviewerTab agentList={agents} />);
+    render(<ReviewerSection agentList={agents} />);
     await user.click(screen.getByTestId("reviewer-reasoning-trigger-first"));
     expect(screen.getByTestId("reviewer-reasoning-option-first-minimal")).toBeTruthy();
     expect(screen.queryByTestId("reviewer-reasoning-option-first-low")).toBeNull();
@@ -332,7 +332,7 @@ describe("ReviewerTab", () => {
       autoSlot("second"),
     ]);
 
-    render(<ReviewerTab agentList={agents} />);
+    render(<ReviewerSection agentList={agents} />);
     await user.click(screen.getByTestId("reviewer-reset-first"));
 
     expect(bodyOf(fetchMock)).toEqual({ reviewers: { first: null } });
@@ -364,7 +364,7 @@ describe("ReviewerTab", () => {
     vi.stubGlobal("fetch", okFetch(answered));
     useSettingsStore.getState().setReviewers([autoSlot("first"), autoSlot("second")]);
 
-    render(<ReviewerTab agentList={agents} />);
+    render(<ReviewerSection agentList={agents} />);
     await user.click(screen.getByTestId("reviewer-first-service-trigger"));
     await user.click(screen.getByTestId("reviewer-first-service-option-deepseek:key"));
 
@@ -387,7 +387,7 @@ describe("ReviewerTab", () => {
       },
       { slot: "second", source: "auto", unavailableReason: "nothing_eligible" },
     ]);
-    render(<ReviewerTab agentList={agents} />);
+    render(<ReviewerSection agentList={agents} />);
 
     expect(screen.getByTestId("reviewer-resolution-first").textContent).toContain(
       "no longer available",
@@ -404,7 +404,7 @@ describe("ReviewerTab", () => {
    */
   it("follows a pushed re-resolution while open, still auto-configured", () => {
     useSettingsStore.getState().setReviewers([autoSlot("first"), autoSlot("second")]);
-    const { rerender } = render(<ReviewerTab agentList={agents} />);
+    const { rerender } = render(<ReviewerSection agentList={agents} />);
     expect(screen.getByTestId("reviewer-resolution-second").textContent).toContain("Anthropic");
 
     useSettingsStore.getState().setReviewers([
@@ -423,7 +423,7 @@ describe("ReviewerTab", () => {
         },
       }),
     ]);
-    rerender(<ReviewerTab agentList={agents} />);
+    rerender(<ReviewerSection agentList={agents} />);
 
     expect(screen.getByTestId("reviewer-resolution-second").textContent).toContain("DeepSeek");
     expect(screen.getByTestId("reviewer-state-second").textContent).toBe("Auto-configured");
@@ -461,7 +461,7 @@ describe("ReviewerTab", () => {
     );
     useSettingsStore.getState().setReviewers([autoSlot("first"), autoSlot("second")]);
 
-    render(<ReviewerTab agentList={agents} />);
+    render(<ReviewerSection agentList={agents} />);
     // Write 1 — hangs.
     await user.click(screen.getByTestId("reviewer-reasoning-trigger-second"));
     await user.click(screen.getByTestId("reviewer-reasoning-option-second-low"));
@@ -493,7 +493,7 @@ describe("ReviewerTab", () => {
     );
     useSettingsStore.getState().setReviewers([autoSlot("first"), autoSlot("second")]);
 
-    render(<ReviewerTab agentList={agents} />);
+    render(<ReviewerSection agentList={agents} />);
     await user.click(screen.getByTestId("reviewer-first-service-trigger"));
     await user.click(screen.getByTestId("reviewer-first-service-option-deepseek:key"));
 
@@ -522,7 +522,7 @@ describe("ReviewerTab", () => {
     );
     useSettingsStore.getState().setReviewers([autoSlot("first"), autoSlot("second")]);
 
-    render(<ReviewerTab agentList={agents} />);
+    render(<ReviewerSection agentList={agents} />);
     await user.click(screen.getByTestId("reviewer-first-service-trigger"));
     await user.click(screen.getByTestId("reviewer-first-service-option-deepseek:key"));
 
@@ -541,7 +541,7 @@ describe("ReviewerTab", () => {
   it("offers the service as its own control, with its billing mode on each row", async () => {
     const user = userEvent.setup();
     useSettingsStore.getState().setReviewers([autoSlot("first"), autoSlot("second")]);
-    render(<ReviewerTab agentList={agents} />);
+    render(<ReviewerSection agentList={agents} />);
 
     await user.click(screen.getByTestId("reviewer-first-service-trigger"));
     expect(screen.getByTestId("reviewer-first-service-option-anthropic:sub").textContent)
@@ -560,7 +560,7 @@ describe("ReviewerTab", () => {
   it("lists only the chosen service's models", async () => {
     const user = userEvent.setup();
     useSettingsStore.getState().setReviewers([autoSlot("first"), autoSlot("second")]);
-    render(<ReviewerTab agentList={agents} />);
+    render(<ReviewerSection agentList={agents} />);
 
     await user.click(screen.getByTestId("reviewer-model-trigger-first"));
     expect(screen.getByTestId("reviewer-model-option-first-claude-opus-5")).toBeTruthy();
@@ -581,7 +581,7 @@ describe("ReviewerTab", () => {
     vi.stubGlobal("fetch", fetchMock);
     useSettingsStore.getState().setReviewers([autoSlot("first"), autoSlot("second")]);
 
-    render(<ReviewerTab agentList={agents} />);
+    render(<ReviewerSection agentList={agents} />);
     await user.click(screen.getByTestId("reviewer-first-service-trigger"));
     await user.click(screen.getByTestId("reviewer-first-service-option-openrouter:key"));
 
@@ -609,7 +609,7 @@ describe("ReviewerTab", () => {
     vi.stubGlobal("fetch", fetchMock);
     useSettingsStore.getState().setReviewers([autoSlot("first"), autoSlot("second")]);
 
-    render(<ReviewerTab agentList={agents} />);
+    render(<ReviewerSection agentList={agents} />);
     await user.click(screen.getByTestId("reviewer-first-service-trigger"));
     await user.click(screen.getByTestId("reviewer-first-service-option-deepseek:key"));
 
