@@ -90,47 +90,51 @@ The design is [`plan.md`](./plan.md); the contract is [`requirements.md`](./requ
 
 ## Phase 3 — One API surface (reqs 11, 16)
 
-- [ ] **One shared target resolver behind both commands**: a role name or a complete target in, a
+- [x] **One shared target resolver behind both commands**: a role name or a complete target in, a
       resolved `(harness, selection, effort)` out, with one refusal rule. `sub-agent-target.ts`
       is that function today for the one-shot path; `session create` calls it instead of its own
       `--agent`/`--model` reading
-- [ ] `session create` can express a **complete target** — service, billing mode, model, harness
+- [x] `session create` can express a **complete target** — service, billing mode, model, harness
       and level — which it cannot today (it forwards `--agent`/`--model` bare, so a service,
       billing mode and level are unsayable)
-- [ ] `--role NAME` on both commands
-- [ ] `--role NAME` **plus any subset of the override flags** on both commands — one parser, one
+- [x] `--role NAME` on both commands
+- [x] `--role NAME` **plus any subset of the override flags** on both commands — one parser, one
       validator (req 16). Partial is the ordinary case, not a special one
-- [ ] **The resolver takes a base plus overrides.** Three bases: a **role** (both commands), the
+- [x] **The resolver takes a base plus overrides.** Three bases: a **role** (both commands), the
       **parent session** (`session create` only), or **nothing** (both — and then the call must
       name all five itself). The child's existing `--model X` is a partial call over the *parent*
       base, so docs/261 req 10 keeps holding without a carve-out
-- [ ] **Unify the surface, NOT the completion semantics.** A parent does not complete a call the
+- [x] **Unify the surface, NOT the completion semantics.** A parent does not complete a call the
       way a role does, and the differences are deliberate: `--model X` inherits no service or
       billing mode (`child-sessions.ts:519`); a harness switch clears the selection (`:521-525`);
       a level carries only where the target harness declares it and is otherwise dropped
       (`:599-604`); the stored child target stays partially optional (`:605`), so a parent may not
       even hold a complete tuple. Same flags, same parser, same refusal rule — existing child
       completion behaviour unchanged, with a regression test per bullet
-- [ ] The refusal narrows to **a call with no base and only some parameters** — the one shape with
+- [x] The refusal narrows to **a call with no base and only some parameters** — the one shape with
       nothing to complete it from. It must NOT refuse a partial call over a parent; that is the
       shipped behaviour docs/261 req 10 guarantees, and a regression test should pin it
-- [ ] A role on `session create` resolves **once at creation**, seeds the session row with the
+- [x] A role on `session create` resolves **once at creation**, seeds the session row with the
       complete tuple passed directly (not through `agent`/`model`, which drops service, billing
       mode and level), and then routes like any other session
-- [ ] The one-shot frozen route must NOT be carried into a child, or failover breaks days later
+- [x] The one-shot frozen route must NOT be carried into a child, or failover breaks days later
       under quota exhaustion
-- [ ] Immutable `originRoleName` on the child session row (req 14) — a snapshot, not a live link
-- [ ] The prompt join (req 8): labelled sections, bounded at save, and the combined prompt checked
+- [x] Immutable `originRoleName` on the child session row (req 14) — a snapshot, not a live link
+- [x] The prompt join (req 8): labelled sections, bounded at save, and the combined prompt checked
       against the destination's limit (200k one-shot, 50k child). The no-instructions case returns
       the task unchanged **from the join** — end-to-end byte identity is not claimed, since child
       creation already trims
-- [ ] **Two reads** (req 12): the roles (name plus description), and the parameters this install
+- [x] **Two reads** (req 12): the roles (name plus description), and the parameters this install
       has (eligible models with service and billing mode, harnesses, per-harness reasoning levels).
       The second is what makes an override name something real — shipping overrides without it
       would have the agent naming models from memory
-- [ ] Agent-facing guidance: map the user's intent onto a role; **relay** an override the user
+- [x] Agent-facing guidance: map the user's intent onto a role; **relay** an override the user
       asked for and never **decide** one; default to a bare role. ShipIt cannot tell a relayed
-      value from an invented one, so this rule lives only in the instructions
+      value from an invented one, so this rule lives only in the instructions — landed on the
+      surfaces phase 3 owns (the shim's `--help`, and the footer `shipit agent params` prints
+      where the temptation to assemble actually appears). The injected docs and both system
+      prompts say it too, and phase 4 owns that edit so the two phases cannot collide in the
+      same files
 
 ## Phase 4 — Documentation split (req 15)
 

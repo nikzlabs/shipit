@@ -247,6 +247,23 @@ export interface SessionInfo {
    */
   spawnedByTurn?: string;
   /**
+   * docs/264 req 14 — the **role** this session was started from, when one
+   * started it (`shipit session create --role deep-dive`).
+   *
+   * A **snapshot of the name, not a live link**, and the distinction is the
+   * whole point: a role decides what a child *starts as*, not what it is bound to
+   * (req 11). Editing that role later does not change a running child, deleting
+   * it does not orphan or alter one, and the child may over time run on something
+   * other than what the role named — it keeps the ordinary routing, account
+   * failover and model-retirement behaviour every session has. A field that
+   * looked like a reference would promise a relationship this design deliberately
+   * does not have.
+   *
+   * Immutable: written once at creation and never updated (the setter refuses to
+   * overwrite a value). Absent for every session started any other way.
+   */
+  originRoleName?: string;
+  /**
    * docs/201 — the top-level ancestor of this session's spawn tree. A child can
    * itself spawn grandchildren; `parentSessionId` is single-step, so the sidebar
    * keys its grouping and merged-view-cap exemption off this ROOT instead — a

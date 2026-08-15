@@ -407,10 +407,51 @@ describe("shipit session create", () => {
       },
     );
     expect(out.exitCode).toBe(0);
+    // docs/264 req 16 — the child spawn now sends the SAME wire names the
+    // one-shot spawn does (`agentId`/`modelId`), so one server-side parser reads
+    // both bodies. The flags the agent types are unchanged.
     expect(out.calls[0].body).toMatchObject({
-      agent: "codex",
-      model: "claude-sonnet-4-20250514",
+      agentId: "codex",
+      modelId: "claude-sonnet-4-20250514",
     });
+  });
+
+  // docs/264 req 16 — the rest of the shared vocabulary, which a child session
+  // could not say at all before: a service, a billing mode and a reasoning level.
+  it("forwards --role, --service, --billing-mode and --effort on a child spawn", async () => {
+    const { run } = makeRunner();
+    const pf = await promptFile("x");
+    const out = await run(
+      [
+        "session", "create",
+        "--prompt-file", pf,
+        "--title", "Role spawn",
+        "--role", "deep dive",
+        "--service", "anthropic",
+        "--billing-mode", "sub",
+        "--effort", "high",
+      ],
+      {
+        "POST /agent-ops/session/create": { status: 200, body: { sessionId: "s", branch: "b", status: "running" } },
+      },
+    );
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].body).toMatchObject({
+      role: "deep dive",
+      serviceId: "anthropic",
+      billingMode: "sub",
+      reasoningEffort: "high",
+    });
+  });
+
+  it("refuses a --billing-mode that is neither sub nor key, without a round trip", async () => {
+    const { run } = makeRunner();
+    const pf = await promptFile("x");
+    const out = await run([
+      "session", "create", "--prompt-file", pf, "--title", "T", "--billing-mode", "free",
+    ]);
+    expect(out.exitCode).not.toBe(0);
+    expect(out.calls).toHaveLength(0);
   });
 
   it("rejects --base as an unsupported flag", async () => {
@@ -3140,26 +3181,41 @@ describe("runShim — agent run", () => {
     }
   });
 
-  // The two ways of saying what a run happens on are answers to two different
-  // questions (req 6), so a call making both is refused rather than reconciled —
-  // and refused BEFORE the prompt is read, so nothing is spawned.
-  it("refuses --role combined with an explicit parameter", async () => {
+  // docs/264 req 10 REVERSES docs/261 here: a role alongside a parameter used to
+  // be refused as "two questions at once", and is now the override path. The
+  // parameter rides along and the server validates it against this install.
+  it("carries --role plus a parameter as an override rather than refusing it", async () => {
     const { run } = makeRunner();
     const file = await promptFile("review");
-    const out = await run(["agent", "run", "--role", "reviewer", "--agent", "codex", "--prompt-file", file]);
-    expect(out.exitCode).not.toBe(0);
-    expect(out.stderr).toContain("--role cannot be combined with --agent");
-    expect(out.calls).toHaveLength(0);
+    const out = await run(
+      ["agent", "run", "--role", "reviewer", "--model", "claude-opus-5", "--prompt-file", file],
+      {
+        "POST /agent-ops/agent/spawn": {
+          status: 200,
+          body: { status: "success", text: "ok", truncated: false, durationMs: 10, costUsd: 0 },
+        },
+      },
+    );
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].body).toMatchObject({ role: "reviewer", modelId: "claude-opus-5" });
   });
 
-  it("refuses an unknown role by name", async () => {
+  // req 18 — a role is any name the user typed, and they live server-side. A
+  // compiled-in list here would reject the user's OWN roles, so the shim passes
+  // the name through and the server's refusal names the roles that do exist
+  // (req 13).
+  it("passes an unknown role through to the server rather than judging it locally", async () => {
     const { run } = makeRunner();
     const file = await promptFile("review");
-    const out = await run(["agent", "run", "--role", "critic", "--prompt-file", file]);
+    const out = await run(["agent", "run", "--role", "critic", "--prompt-file", file], {
+      "POST /agent-ops/agent/spawn": {
+        status: 400,
+        body: { error: 'Unknown role "critic". Roles on this install: reviewer.' },
+      },
+    });
     expect(out.exitCode).not.toBe(0);
-    expect(out.stderr).toContain('unknown role "critic"');
-    expect(out.stderr).toContain("reviewer");
-    expect(out.calls).toHaveLength(0);
+    expect(out.calls[0].body).toMatchObject({ role: "critic" });
+    expect(out.stderr).toContain("Roles on this install");
   });
 
   // docs/261 req 7 — the refusal the whole design exists for. A half-specified
@@ -3272,6 +3328,103 @@ describe("runShim — agent run", () => {
     expect(out.stderr).toContain("shipit agent result run-77");
     // The id belongs on stderr — stdout stays the sub-agent's text, verbatim.
     expect(out.stdout).not.toContain("run-77");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// shipit agent roles / params (docs/264 req 12 — what the agent may name)
+// ---------------------------------------------------------------------------
+
+/**
+ * The two reads ship together, and the pairing is the requirement rather than a
+ * convenience: an agent allowed to override a parameter (req 10) but unable to
+ * see which parameters exist would name one from memory, and a remembered model
+ * is indistinguishable from a user-supplied one by the time it reaches ShipIt.
+ */
+describe("runShim — agent roles / params", () => {
+  it("lists the roles this install has, with what each is for", async () => {
+    const { run } = makeRunner();
+    const out = await run(["agent", "roles"], {
+      "GET /agent-ops/agent/roles": {
+        status: 200,
+        body: {
+          roles: [
+            { name: "deep dive", description: "Slow, thorough review", runsOn: "Codex · GPT-5.6 Sol · high" },
+            { name: "reviewer", description: "ShipIt's own reviewer" },
+          ],
+        },
+      },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.stdout).toContain("deep dive");
+    expect(out.stdout).toContain("Slow, thorough review");
+    expect(out.stdout).toContain("reviewer");
+  });
+
+  // A role that cannot run is still listed, with the reason: dropping it would
+  // read as "no such role" and send the agent to invent a different one, and the
+  // three unavailable states need three different remedies (req 7).
+  it("keeps an unavailable role in the list, with its reason", async () => {
+    const { run } = makeRunner();
+    const out = await run(["agent", "roles"], {
+      "GET /agent-ops/agent/roles": {
+        status: 200,
+        body: { roles: [{ name: "deep-dive", unavailable: "quota_exhausted" }] },
+      },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.stdout).toContain("deep-dive");
+    expect(out.stdout).toContain("quota_exhausted");
+  });
+
+  it("prints the roles verbatim with --json", async () => {
+    const { run } = makeRunner();
+    const roles = [{ name: "reviewer" }];
+    const out = await run(["agent", "roles", "--json"], {
+      "GET /agent-ops/agent/roles": { status: 200, body: { roles } },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(JSON.parse(out.stdout)).toEqual(roles);
+  });
+
+  it("lists the harnesses, levels and models an override may name", async () => {
+    const { run } = makeRunner();
+    const out = await run(["agent", "params"], {
+      "GET /agent-ops/agent/params": {
+        status: 200,
+        body: {
+          harnesses: [
+            {
+              id: "codex",
+              name: "Codex",
+              reasoningLevels: ["low", "high"],
+              models: [
+                { serviceId: "openai", billingMode: "sub", modelId: "gpt-5.6-sol", label: "GPT-5.6 Sol" },
+              ],
+            },
+          ],
+        },
+      },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.stdout).toContain("--agent codex");
+    expect(out.stdout).toContain("low, high");
+    expect(out.stdout).toContain("--service openai --billing-mode sub --model gpt-5.6-sol");
+    // The list exists to make an override honest, not to make assembling a
+    // target attractive (req 15) — so it says so where it is read.
+    expect(out.stdout).toContain("Prefer a role");
+  });
+
+  it("says plainly when a harness has no credentialed model", async () => {
+    const { run } = makeRunner();
+    const out = await run(["agent", "params"], {
+      "GET /agent-ops/agent/params": {
+        status: 200,
+        body: { harnesses: [{ id: "claude", name: "Claude Code", reasoningLevels: [], models: [] }] },
+      },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.stdout).toContain("no credential");
   });
 });
 

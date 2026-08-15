@@ -1,53 +1,75 @@
 /**
- * docs/261 phase 2 (reqs 6, 7) — **what a one-shot spawn runs on**.
+ * docs/264 phase 3 (reqs 11, 16) — **what a spawn runs on**, for both spawn
+ * commands.
  *
- * `shipit agent run` answers that question in exactly two ways, and the
- * asymmetry between them is the feature rather than an inconsistency:
+ * This module was docs/261's answer for `shipit agent run` alone. Req 16 makes
+ * it the answer for `shipit session create` too: one parser, one validator, one
+ * refusal rule, so the two commands are consistent *by construction* rather than
+ * by two implementations agreeing.
  *
- *  - a **role** (`--role reviewer`) names what it wants done and lets ShipIt
- *    resolve who does it, from settings the user owns (req 6);
- *  - an **explicit** call names everything — harness, service, billing mode,
- *    model and reasoning level — and an omission is **refused** rather than
- *    completed from a stored default the caller cannot see (req 7).
+ * The shape is always **a base plus overrides**, and the three bases are the
+ * three kinds of {@link SpawnTarget}:
  *
- * That refusal is what let `SubAgentDefaults` be deleted rather than re-keyed:
- * with nothing filling a blank, there is no stored per-harness default left for
- * anything to read. A third path exists and is deliberately governed by neither
- * rule — a **child session** inherits from its parent (req 10) — because a child
- * session *has* a parent to inherit from and a one-shot run has nothing but its
- * own arguments.
+ *  - a **role** (`--role deep-dive`), available to both commands, completed from
+ *    the role's own params — resolved, for the shipped reviewer (docs/264 req 2);
+ *  - **nothing**, available to both, so the call must name all five itself. Kept
+ *    implemented for a repository that holds a complete target of its own
+ *    (req 15);
+ *  - the **parent session**, available to `session create` only, because a
+ *    one-shot run has no parent. That is the *only* difference between the two
+ *    commands.
+ *
+ * **The surface is unified; the completion semantics are not.** A parent does
+ * not complete a partial call the way a role does, and those differences are
+ * docs/261's, deliberate and preserved — they live in `child-sessions.ts`, not
+ * here. This module resolves the two bases that produce a *complete* tuple (a
+ * role, or a five-parameter call) and hands the `inherit` case to the child path
+ * untouched.
+ *
+ * **The refusal narrowed rather than disappearing.** `--role NAME` alongside a
+ * parameter used to be refused and is now the override path (req 10). What stays
+ * refused is a call with **no base and only some parameters** — the one shape
+ * with nothing to complete it from. A partial call over a *parent* is not that
+ * shape and must not be refused: it is the behaviour docs/261 req 10 guarantees.
  *
  * Two functions, split where the information arrives:
  *
- *  - {@link parseSubAgentSpawnTarget} runs at the HTTP edge on an untyped body.
- *    It is the authority, not the shim: the shim's own check buys a better
- *    message, never a guarantee.
- *  - {@link resolveSubAgentSpawnTarget} turns the target into the harness,
- *    selection and effort the spawn runs with. For a role that includes
- *    **routing** it, because req 8's answer is resolved at read time and "read
- *    time" needs a boundary: the target is captured ONCE here, at spawn
- *    admission, and is what retries, attribution and the transcript card all
- *    read afterwards. Recomputing it during a retry is how a review ends up
+ *  - {@link parseSpawnTarget} runs at the HTTP edge on an untyped body. It is
+ *    the authority, not the shim: the shim's own check buys a better message,
+ *    never a guarantee.
+ *  - {@link resolveSpawnTarget} turns a role or an explicit target into the
+ *    harness, selection and effort the spawn runs with. For a ranked reviewer
+ *    that includes **routing** it, because docs/261 req 8's answer is resolved at
+ *    read time and "read time" needs a boundary: the target is captured ONCE, at
+ *    spawn admission, and is what retries, attribution and the transcript card
+ *    all read afterwards. Recomputing it during a retry is how a review ends up
  *    attributed to a model that did not run it.
+ *
+ *    **That frozen route is for the one-shot path only.** A child session must
+ *    NOT carry it — see {@link ResolvedSpawnTarget.route}.
  */
 
 import type {
   AgentId,
   ReviewerSlot,
-  SubAgentRole,
+  RoleOverrides,
+  SessionInfo,
+  SpawnTarget,
   SubAgentSpawnTarget,
 } from "../../shared/types.js";
-import { SUB_AGENT_ROLES } from "../../shared/types.js";
-import type { ModelSelection } from "../../shared/catalogue/types.js";
-import { getHarness, getModel, selectionExists } from "../../shared/catalogue/index.js";
+import { RESERVED_ROLE_NAME } from "../../shared/types.js";
+import type { BillingMode, ModelSelection } from "../../shared/catalogue/types.js";
+import { getHarness, getModel, resolveStyle, selectionExists } from "../../shared/catalogue/index.js";
 import type { ProviderRoute } from "../provider-account-manager.js";
-import {
-  selectReviewer,
-  type ImplementerContext,
-  type ReviewerModelDeps,
-  type ReviewerSource,
-  type ReviewerTier,
+import { parseSpawnIdentity } from "../service-routing.js";
+import { selectionOf } from "../turn-attribution.js";
+import type {
+  ImplementerContext,
+  ReviewerModelDeps,
+  ReviewerSource,
+  ReviewerTier,
 } from "../reviewer-model.js";
+import { resolveRoleByName, type RoleDeps } from "./roles.js";
 import { ServiceError } from "./types.js";
 
 /** The wire shape of a spawn request's target half, before anything is checked. */
@@ -60,7 +82,7 @@ export interface SubAgentSpawnTargetBody {
   reasoningEffort?: unknown;
 }
 
-/** The five fields that together name an explicit run, with the flag that sets each. */
+/** The five fields that together name a complete target, with the flag that sets each. */
 const EXPLICIT_FIELDS = [
   { field: "agentId", flag: "--agent" },
   { field: "serviceId", flag: "--service" },
@@ -73,86 +95,162 @@ function str(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }
 
+/** `sub` / `key` or a refusal naming the flag. Shared by every path that reads one. */
+function readBillingMode(value: unknown): BillingMode {
+  const mode = str(value);
+  if (mode !== "sub" && mode !== "key") {
+    throw new ServiceError(
+      400,
+      `--billing-mode must be "sub" or "key", not "${String(value)}".`,
+    );
+  }
+  return mode;
+}
+
 /**
- * Read a spawn request's target, refusing everything in between (req 7).
+ * A parameter the caller **named**, or `undefined` when it named none.
  *
- * Three refusals, each a different way of asking two questions at once:
- * a role **and** an explicit parameter; an unknown role; and an explicit call
- * missing any of its five. The last is the one the design exists for — a
- * half-specified call that gets silently filled in is precisely the failure mode
- * `SubAgentDefaults` was.
+ * **A field that is present and unusable is refused, not treated as absent.**
+ * That distinction is the difference between an override and a dropped override:
+ * `--role reviewer --model "   "` used to have the blank value evaporate and the
+ * *bare role* run instead, which is a run the caller never asked for — the exact
+ * "a dropped override runs something other than what was asked for" failure
+ * req 10 exists to prevent. Absent means "the base supplies it"; blank means the
+ * caller tried to say something and it did not survive their shell.
+ *
+ * Cross-agent review found this.
  */
-export function parseSubAgentSpawnTarget(body: SubAgentSpawnTargetBody): SubAgentSpawnTarget {
-  const role = str(body.role);
-  const named = EXPLICIT_FIELDS.filter((f) => body[f.field] !== undefined);
-
-  if (role !== undefined) {
-    if (named.length > 0) {
-      throw new ServiceError(
-        400,
-        `A role cannot be combined with ${named.map((f) => f.flag).join(", ")}. `
-          + "--role asks ShipIt for the configured reviewer; the explicit flags name one yourself.",
-      );
-    }
-    if (!(SUB_AGENT_ROLES as readonly string[]).includes(role)) {
-      throw new ServiceError(
-        400,
-        `Unknown role "${role}". Known roles: ${SUB_AGENT_ROLES.join(", ")}.`,
-      );
-    }
-    return { kind: "role", role: role as SubAgentRole };
-  }
-
-  const missing = EXPLICIT_FIELDS.filter((f) => str(body[f.field]) === undefined);
-  if (missing.length > 0) {
+function readNamed(value: unknown, flag: string): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  const text = str(value);
+  if (text === undefined) {
     throw new ServiceError(
       400,
-      "A run that names no role must name every parameter it runs on — missing "
-        + `${missing.map((f) => f.flag).join(", ")}. Nothing is filled in from a stored setting. `
-        + "Use --role reviewer to have ShipIt choose the reviewer instead.",
+      `${flag} was given an empty value. Pass a value, or omit the flag entirely — `
+        + "a named parameter is never silently dropped.",
     );
   }
-  const billingMode = str(body.billingMode);
-  if (billingMode !== "sub" && billingMode !== "key") {
-    throw new ServiceError(
-      400,
-      `--billing-mode must be "sub" or "key", not "${String(body.billingMode)}".`,
-    );
-  }
-  // Non-null: the `missing` check above proved each of these is a non-blank
-  // string, which is the only thing `str` can return besides `undefined`.
+  return text;
+}
+
+/** Whichever of the five the caller named, as overrides over whatever base it chose. */
+function readOverrides(body: SubAgentSpawnTargetBody): RoleOverrides {
+  const harnessId = readNamed(body.agentId, "--agent");
+  const serviceId = readNamed(body.serviceId, "--service");
+  const modelId = readNamed(body.modelId, "--model");
+  const reasoningEffort = readNamed(body.reasoningEffort, "--effort");
   return {
-    kind: "explicit",
-    subAgentId: str(body.agentId) as AgentId,
-    serviceId: str(body.serviceId)!,
-    billingMode,
-    modelId: str(body.modelId)!,
-    reasoningEffort: str(body.reasoningEffort)!,
+    ...(harnessId ? { harnessId: harnessId as AgentId } : {}),
+    ...(serviceId ? { serviceId } : {}),
+    ...(body.billingMode !== undefined && body.billingMode !== null
+      ? { billingMode: readBillingMode(body.billingMode) }
+      : {}),
+    ...(modelId ? { modelId } : {}),
+    ...(reasoningEffort ? { reasoningEffort } : {}),
   };
 }
 
 /**
- * What the spawn runs on, captured once at admission.
+ * Read a spawn request's target — **one parser for both commands** (req 16).
  *
- * `route` is set only for a role, whose reviewer was resolved **and routed** by
- * `selectReviewer`; an explicit run resolves its own route further down
- * `runSubAgent`, where the existing gates and the account-failover loop live.
+ * `parentBase` is the single axis on which they differ: `shipit session create`
+ * has a parent to complete a partial call from, and `shipit agent run` does not.
+ * Everything else — the role, the overrides, the validation — is identical, which
+ * is what req 16 asks for.
+ *
+ * The refusals, in order:
+ *
+ *  1. a **role plus any subset of the parameters** is the override path (req 10),
+ *     not an error. Only the billing mode is checked here, because it is the one
+ *     field with a closed value set the shim can get wrong without the catalogue;
+ *  2. a call with **no base and only some parameters** is refused, naming the
+ *     flags it is missing. This is docs/261 req 7's rule, narrowed to its real
+ *     target: nothing completes it, so filling the blanks would mean guessing;
+ *  3. that refusal is **not** applied when a parent is available. A partial call
+ *     over a parent is ordinary (req 16), and refusing it would delete the
+ *     shipped behaviour docs/261 req 10 guarantees.
+ */
+export function parseSpawnTarget(
+  body: SubAgentSpawnTargetBody,
+  opts: { parentBase: boolean },
+): SpawnTarget {
+  const role = str(body.role);
+  if (role !== undefined) {
+    return { kind: "role", role, overrides: readOverrides(body) };
+  }
+
+  const missing = EXPLICIT_FIELDS.filter((f) => str(body[f.field]) === undefined);
+  if (missing.length === 0) {
+    // Non-null: `missing` being empty proved each is a non-blank string, which is
+    // the only thing `str` can return besides `undefined`.
+    return {
+      kind: "explicit",
+      harnessId: str(body.agentId) as AgentId,
+      serviceId: str(body.serviceId)!,
+      billingMode: readBillingMode(body.billingMode),
+      modelId: str(body.modelId)!,
+      reasoningEffort: str(body.reasoningEffort)!,
+    };
+  }
+  if (opts.parentBase) {
+    // The parent is the base. Partial is ordinary here — including the empty
+    // call, which inherits everything, and the bare `--model X` docs/261 req 10
+    // ships. How much of the parent each override carries is `child-sessions.ts`'s
+    // question, deliberately NOT unified with a role's completion.
+    return { kind: "inherit", overrides: readOverrides(body) };
+  }
+  throw new ServiceError(
+    400,
+    "A run that names no role must name every parameter it runs on — missing "
+      + `${missing.map((f) => f.flag).join(", ")}. Nothing is filled in from a stored setting. `
+      + `Use --role ${RESERVED_ROLE_NAME} (or any role you configured) to run one instead.`,
+  );
+}
+
+/**
+ * {@link parseSpawnTarget} for the one-shot path, which has no parent base.
+ *
+ * A thin alias, kept because the narrowed return type is what `runSubAgent`
+ * needs: a one-shot run cannot inherit, and the type says so.
+ */
+export function parseSubAgentSpawnTarget(body: SubAgentSpawnTargetBody): SubAgentSpawnTarget {
+  return parseSpawnTarget(body, { parentBase: false }) as SubAgentSpawnTarget;
+}
+
+/**
+ * What the spawn runs on, captured once at admission.
  */
 export interface ResolvedSpawnTarget {
   harnessId: AgentId;
   selection: ModelSelection;
-  /** Never absent (req 5): a role carries the reviewer's level, an explicit call its own. */
+  /** Never absent: a role carries its own level, an explicit call the one it named. */
   reasoningEffort: string;
+  /**
+   * The credential this run authenticates with, present only where a **ranked**
+   * reviewer settled it and the caller did not move the tuple off it.
+   *
+   * **For the one-shot path only.** docs/261's rule is that a ranked reviewer
+   * arrives already routed and the spawn must not re-ask, because re-asking
+   * answers a settled question and could answer it differently *within* a single
+   * run. A child session is not a single run: it lives for days and takes many
+   * turns, so carrying this in would pin it to one credential for its whole life
+   * and break account failover the first time that subscription is exhausted.
+   * {@link resolveSpawnTargetForChild} drops it for exactly that reason
+   * (docs/264 req 11 — a role decides what a child *starts as*, not what it is
+   * bound to).
+   */
   route?: ProviderRoute;
   /**
-   * Set for a role — the ranking's own account of itself, for the log line.
+   * Set when the reviewer ranking ran — its own account of itself, for the log
+   * line.
    *
-   * Deliberately NOT on the consult card. Phase 4 persists what the consult RAN
-   * ON (`SubAgentConsultCard.runOn`: service, mode, model, effort, beside the
-   * harness), which is req 9's attribution; which slot won and by which rung is
-   * ShipIt's internal reasoning about that choice, and rendering "reviewer 2 ·
-   * tier 3" in the transcript would ask the user to hold a ranking in their head
-   * to read a card. Settings is where the reviewers explain themselves (phase 3).
+   * Deliberately NOT on the consult card. docs/261 phase 4 persists what the
+   * consult RAN ON (`SubAgentConsultCard.runOn`: service, mode, model, effort,
+   * beside the harness), which is its attribution requirement; which slot won and
+   * by which rung is ShipIt's internal reasoning about that choice, and rendering
+   * "reviewer 2 · tier 3" in the transcript would ask the user to hold a ranking
+   * in their head to read a card. Settings is where the reviewers explain
+   * themselves.
    */
   reviewer?: {
     slot: ReviewerSlot;
@@ -160,28 +258,43 @@ export interface ResolvedSpawnTarget {
     tier: ReviewerTier;
     tierBasis: "model-and-harness" | "harness-only";
   };
+  /**
+   * docs/264 req 14 — the role this target came from, when one did.
+   *
+   * A **snapshot of the name**, for attribution: the consult card reports it, and
+   * a child session records it as `originRoleName`. It is not a live link — see
+   * `sessions.ts`'s `setOriginRoleName`.
+   */
+  roleName?: string;
+  /**
+   * docs/264 req 8 — the role's standing instructions, when it carries any.
+   *
+   * Joined onto the run's own task by {@link joinRolePrompt}. Absent for an
+   * explicit call and for a role without them.
+   */
+  rolePrompt?: string;
 }
 
-export type ResolveSpawnTargetDeps = ReviewerModelDeps;
+export type ResolveSpawnTargetDeps = RoleDeps & ReviewerModelDeps;
 
 /**
  * Turn a parsed target into the harness, model and effort a spawn runs with.
  *
- * For a **role**, the reviewer is ranked against what the *implementer* is
- * running (req 4) and the winner is frozen here. `implementer` is the CALLER's
- * responsibility to capture, and `runSubAgent` takes it from the resident
- * process's spawn stamp rather than the mutable session row — see the comment at
- * that call site for why the difference is not cosmetic. `harnessId` is required
- * because a default would rank against a harness nobody is using; the selection
- * is optional, and its absence makes the model axes undecidable, which the
- * ranking reports through `tierBasis` rather than guessing.
+ * For a **role**, `services/roles.ts` owns the rules: a pinned role's tuple with
+ * the caller's overrides substituted over it, or — for the shipped reviewer —
+ * docs/261's ranking, unchanged when nothing was overridden. The ranking is
+ * against what the *implementer* is running, and `implementer` is the CALLER's
+ * responsibility to capture ({@link implementerFor} is the shared answer).
  *
  * For an **explicit** call, the triple must name a real catalogue row and the
  * effort must be a level the named harness declares. Both are refusals rather
- * than corrections, for req 7's reason: a value quietly replaced by a working
- * one is the same failure as a value quietly supplied.
+ * than corrections, for docs/261 req 7's reason: a value quietly replaced by a
+ * working one is the same failure as a value quietly supplied.
+ *
+ * `inherit` never reaches here — a parent base is completed by
+ * `child-sessions.ts`, whose rules are deliberately not a role's.
  */
-export function resolveSubAgentSpawnTarget(
+export function resolveSpawnTarget(
   target: SubAgentSpawnTarget,
   implementer: ImplementerContext,
   deps: ResolveSpawnTargetDeps,
@@ -199,40 +312,112 @@ export function resolveSubAgentSpawnTarget(
           + `"${target.billingMode}" billing mode.`,
       );
     }
-    const options = getHarness(target.subAgentId)?.capabilities.reasoning?.options ?? [];
+    // **Can this harness speak to this model at all?** A catalogue fact — one API
+    // style in common — and the check that makes this function the single
+    // validator req 16 claims. It used to live only on the one-shot path, in
+    // `runSubAgent`'s `assertHarnessCanRunSelection`, so a child session naming a
+    // complete target was accepted with an incoherent pair (`--agent claude
+    // --model gpt-5.6-sol`), persisted, and left for turn-time routing to fail on.
+    // Cross-agent review found that. Asked here, of the catalogue only: whether a
+    // credential exists is a different question with a different remedy, and the
+    // registry gate downstream still owns it.
+    const model = getModel(selection);
+    if (model && resolveStyle(target.harnessId, model) === undefined) {
+      const harnessName = getHarness(target.harnessId)?.name ?? target.harnessId;
+      throw new ServiceError(
+        400,
+        `${harnessName} cannot run ${model.label} — they share no API style.`,
+      );
+    }
+    const options = getHarness(target.harnessId)?.capabilities.reasoning?.options ?? [];
     if (options.length > 0 && !options.some((o) => o.value === target.reasoningEffort)) {
       throw new ServiceError(
         400,
-        `Invalid --effort "${target.reasoningEffort}" for ${target.subAgentId}. `
+        `Invalid --effort "${target.reasoningEffort}" for ${target.harnessId}. `
           + `Valid levels: ${options.map((o) => o.value).join(", ")}.`,
       );
     }
     return {
-      harnessId: target.subAgentId,
+      harnessId: target.harnessId,
       selection,
       reasoningEffort: target.reasoningEffort,
     };
   }
 
-  const chosen = selectReviewer(implementer, deps);
-  if (!chosen.ok) {
-    throw new ServiceError(
-      400,
-      "No reviewer is available: neither configured reviewer has a credential that can run "
-        + "right now. Connect a service in Settings, or wait for the quota to reset.",
-    );
-  }
+  const resolved = resolveRoleByName(target.role, target.overrides, implementer, deps);
   return {
-    harnessId: chosen.target.harnessId,
-    selection: chosen.target.selection,
-    reasoningEffort: chosen.target.reasoningEffort,
-    route: chosen.target.route,
-    reviewer: {
-      slot: chosen.target.slot,
-      source: chosen.target.source,
-      tier: chosen.tier,
-      tierBasis: chosen.tierBasis,
-    },
+    harnessId: resolved.harnessId,
+    selection: { ...resolved.selection },
+    reasoningEffort: resolved.reasoningEffort,
+    roleName: resolved.roleName,
+    ...(resolved.prompt ? { rolePrompt: resolved.prompt } : {}),
+    ...(resolved.route ? { route: { ...resolved.route } } : {}),
+    ...(resolved.reviewer ? { reviewer: { ...resolved.reviewer } } : {}),
+  };
+}
+
+/** docs/261's name for {@link resolveSpawnTarget}, kept for the one-shot call site. */
+export const resolveSubAgentSpawnTarget = resolveSpawnTarget;
+
+/**
+ * {@link resolveSpawnTarget} for a **child session** — the same resolution with
+ * the frozen route deliberately removed (docs/264 req 11).
+ *
+ * A one-shot run is admitted, routed and finished inside one request, so freezing
+ * its credential is what keeps its attribution honest. A child session outlives
+ * that by days: it takes turns of its own, each of which resolves its own route
+ * through the ordinary session machinery, with account failover and
+ * model-retirement behaviour intact. Handing it a route captured at creation
+ * would pin it to one credential for its whole life, and the failure would not
+ * appear until that subscription hit its quota — long after anyone would connect
+ * the two. So the role decides what the child *starts as* and stops being
+ * involved.
+ *
+ * `reviewer` goes with it: a ranking's account of a choice made once has nothing
+ * to say about the child's later turns.
+ */
+export function resolveSpawnTargetForChild(
+  target: SubAgentSpawnTarget,
+  implementer: ImplementerContext,
+  deps: ResolveSpawnTargetDeps,
+): ResolvedSpawnTarget {
+  const { route: _route, reviewer: _reviewer, ...rest } = resolveSpawnTarget(
+    target,
+    implementer,
+    deps,
+  );
+  return rest;
+}
+
+/**
+ * What a spawn's role resolution is ranked *against* — the session that is doing
+ * the asking.
+ *
+ * Shared by both commands because both need the same answer and getting it wrong
+ * is invisible: the implementer is what the session is **running**, not what its
+ * row says. `runner.appliedSpawnIdentity` is the stamp taken when the resident
+ * CLI was spawned and moves only on a respawn; the row is mutable under a running
+ * turn (`set_model`). Ranking against the row lets this happen: a Claude harness
+ * is producing work with DeepSeek, the user switches the picker to Opus, the
+ * agent then asks for a review — and the ranking, comparing against Opus, hands
+ * the work to DeepSeek, the exact thing that wrote it, which docs/261 req 4
+ * forbids whenever an alternative is configured.
+ *
+ * The row stays the fallback for a session with no resident process (a fresh
+ * runner, a local runtime, a test), where there is no capture to prefer.
+ */
+export function implementerFor(
+  session: SessionInfo,
+  harnessId: AgentId,
+  appliedSpawnIdentity: string | undefined,
+): ImplementerContext {
+  const captured = parseSpawnIdentity(appliedSpawnIdentity);
+  return {
+    harnessId,
+    selection:
+      captured?.harnessId === harnessId && captured.selection
+        ? captured.selection
+        : selectionOf(session),
   };
 }
 

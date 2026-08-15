@@ -24,6 +24,8 @@ import {
   parseSubAgentSpawnTarget,
   getSubAgentResult,
   waitForSubAgentResult,
+  listRolesForAgent,
+  listSpawnParameters,
   DEFAULT_SUB_AGENT_WAIT_MS,
   MAX_SUB_AGENT_WAIT_MS,
   ServiceError,
@@ -175,6 +177,54 @@ export async function registerAgentRoutes(
         }
         reply.code(500).send({ error: `Sub-agent spawn failed: ${getErrorMessage(err)}` });
       }
+    },
+  );
+
+  // GET /api/sessions/:id/agent/roles — docs/264 req 12, the first of the two
+  // reads: the roles this install has, so the agent can map an intent onto one
+  // (req 3), tell the user what exists, and name one it knows is there rather
+  // than guessing at a name the refusal would then have to correct.
+  //
+  // Session-scoped like every other agent-ops route (the worker injects the
+  // trusted SESSION_ID), though the answer is global: roles are a ShipIt-wide
+  // setting. The scoping is the container-access contract, not a filter.
+  app.get<{ Params: { id: string } }>(
+    "/api/sessions/:id/agent/roles",
+    { config: { containerAccessible: true } },
+    async (request, reply) => {
+      const session = deps.sessionManager.get(request.params.id);
+      if (!session) {
+        reply.code(404).send({ error: "Session not found" });
+        return;
+      }
+      reply.send({
+        roles: listRolesForAgent({
+          credentialStore: deps.credentialStore,
+          ...(deps.providerAccountManager ? { providerAccountManager: deps.providerAccountManager } : {}),
+        }),
+      });
+    },
+  );
+
+  // GET /api/sessions/:id/agent/params — docs/264 req 12's second read: the
+  // parameters an override may name (req 10), for THIS install — the harnesses
+  // it installed, each one's reasoning levels, and the models it holds a
+  // credential for.
+  //
+  // The two ship together deliberately: an agent allowed to override a parameter
+  // but unable to see which parameters exist would fill the gap from memory, and
+  // a remembered model is indistinguishable from a supplied one by the time it
+  // reaches ShipIt.
+  app.get<{ Params: { id: string } }>(
+    "/api/sessions/:id/agent/params",
+    { config: { containerAccessible: true } },
+    async (request, reply) => {
+      const session = deps.sessionManager.get(request.params.id);
+      if (!session) {
+        reply.code(404).send({ error: "Session not found" });
+        return;
+      }
+      reply.send(listSpawnParameters(deps.agentRegistry));
     },
   );
 

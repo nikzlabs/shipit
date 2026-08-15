@@ -919,3 +919,59 @@ describe("resolveRoleView — the three ways a role cannot run", () => {
     expect(view.invalidField).toBeUndefined();
   });
 });
+
+/**
+ * docs/264 phase 3 (req 8) — the prompt join.
+ *
+ * A sub-agent has ONE prompt channel (docs/144), so a role's standing
+ * instructions and the run's own task have to become one string. Three
+ * properties, and the middle one is the easiest to lose: the halves are
+ * labelled, a role with no instructions changes nothing at all, and the length
+ * check runs on the COMBINED string with the role named in the failure.
+ */
+describe("joinRolePrompt (req 8)", () => {
+  it("labels both halves so the callee can tell a standing brief from the task", async () => {
+    const { joinRolePrompt } = await import("./roles.js");
+    const joined = joinRolePrompt(
+      "Review PR 12.",
+      { roleName: "deep dive", rolePrompt: "Check against requirements.md." },
+      200_000,
+    );
+    expect(joined).toContain("deep dive");
+    expect(joined).toContain("Check against requirements.md.");
+    expect(joined).toContain("Your task");
+    expect(joined).toContain("Review PR 12.");
+    // Order matters: the standing brief frames the task, not the other way round.
+    expect(joined.indexOf("Check against")).toBeLessThan(joined.indexOf("Review PR 12."));
+  });
+
+  it("returns the task unchanged — byte for byte — when the role carries nothing", async () => {
+    const { joinRolePrompt } = await import("./roles.js");
+    const task = "Review PR 12.\n\n## Not a heading of ours\n";
+    expect(joinRolePrompt(task, { roleName: "plain" }, 200_000)).toBe(task);
+    expect(joinRolePrompt(task, {}, 200_000)).toBe(task);
+    // Whitespace-only instructions are nothing, not a header with a blank body.
+    expect(joinRolePrompt(task, { roleName: "plain", rolePrompt: "   \n" }, 200_000)).toBe(task);
+  });
+
+  /**
+   * The failure names the ROLE. A stored prompt is bounded at save and a task can
+   * be valid on its own, so the pair going over is a fact about the join —
+   * blaming the task would send the caller to shorten the one half it did not
+   * write and cannot see.
+   */
+  it("checks the COMBINED length and names the role in the refusal", async () => {
+    const { joinRolePrompt } = await import("./roles.js");
+    const task = "x".repeat(60);
+    // The task alone fits; the pair does not.
+    expect(() => joinRolePrompt(task, {}, 100)).not.toThrow();
+    expect(() =>
+      joinRolePrompt(task, { roleName: "deep dive", rolePrompt: "y".repeat(60) }, 100),
+    ).toThrow(/deep dive/);
+  });
+
+  it("still refuses an over-long task when no role is involved", async () => {
+    const { joinRolePrompt } = await import("./roles.js");
+    expect(() => joinRolePrompt("x".repeat(200), {}, 100)).toThrow(/exceeds/);
+  });
+});

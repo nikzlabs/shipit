@@ -154,6 +154,12 @@ export interface GraduateSessionOpts {
   /** Optional spawn-turn id paired with `parentSessionId`. */
   spawnedByTurn?: string;
   /**
+   * docs/264 req 14 — the role this session was created from, when one created
+   * it (`shipit session create --role deep-dive`). Written once here and never
+   * again: it is a snapshot of the name, not a live link to the role (req 11).
+   */
+  originRoleName?: string;
+  /**
    * docs/201 — top-level ancestor of the spawn tree, paired with
    * `parentSessionId`. The spawn caller computes it as
    * `parent.rootSessionId ?? parent.id`; forwarded verbatim to
@@ -183,7 +189,7 @@ export function graduateSession(deps: GraduateSessionDeps, opts: GraduateSession
     ensureAgentTokenFresh, providerAccountManager, credentialsDir,
     credentialStore, chatHistoryManager, usageManager,
   } = deps;
-  const { sessionId, userText, agentId, explicitTitle, explicitBranch, skipBranchRename, model, serviceId, billingMode, reasoning, parentSessionId, spawnedByTurn, rootSessionId } = opts;
+  const { sessionId, userText, agentId, explicitTitle, explicitBranch, skipBranchRename, model, serviceId, billingMode, reasoning, parentSessionId, spawnedByTurn, rootSessionId, originRoleName } = opts;
 
   // 1. Activation — flip warm to false (no-op when already active, e.g. fork).
   sessionManager.setWarm(sessionId, false);
@@ -209,6 +215,10 @@ export function graduateSession(deps: GraduateSessionDeps, opts: GraduateSession
     }
   }
   if (reasoning) sessionManager.setReasoning(sessionId, reasoning);
+  // docs/264 req 14 — provenance, before any linkage: which role started this
+  // session. `setOriginRoleName` is write-once, so a re-graduation (a fork, a
+  // rollback) cannot rewrite what the original creation recorded.
+  if (originRoleName) sessionManager.setOriginRoleName(sessionId, originRoleName);
   if (parentSessionId) {
     sessionManager.setParentSession(sessionId, parentSessionId, spawnedByTurn, rootSessionId);
   } else if (spawnedByTurn) {

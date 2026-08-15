@@ -105,6 +105,24 @@ export interface SubAgentConsultCard {
    */
   runOn?: SubAgentRunTarget;
   /**
+   * docs/264 req 14 — the **role** that started this run, when one did.
+   *
+   * {@link runOn} says what ran; this says what was *asked for*. They are
+   * different facts and neither implies the other: a role resolves to a tuple
+   * (and the reviewer's resolves per run), so a card carrying only the tuple
+   * cannot answer "was this the reviewer, or `deep-dive`?" — which is the
+   * question a user reading the transcript actually has.
+   *
+   * A **snapshot of the name**, taken at spawn admission. Editing or deleting the
+   * role afterwards does not reach back into a card that already exists — the
+   * same rule a child session's `originRoleName` follows.
+   *
+   * Absent for a run that named all five parameters itself, and for rows written
+   * before this phase. Serializes into the card's single json column, so no
+   * migration and no `CARD_MESSAGE_FIELDS` change.
+   */
+  roleName?: string;
+  /**
    * `pending` while the spawn is in flight; otherwise the terminal status,
    * which drives the verb ("Consulted" / "Cancelled" / …).
    */

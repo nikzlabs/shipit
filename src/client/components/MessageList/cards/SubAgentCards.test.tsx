@@ -125,6 +125,26 @@ describe("SubAgentConsultCardRow run-on attribution (docs/261 req 9)", () => {
       .toBe("OpenRouter · API key · Claude · High reasoning");
   });
 
+  /**
+   * docs/264 req 14 — the role is what the caller ASKED FOR, and it is not
+   * recoverable from the tuple: two roles can resolve to the same model, and the
+   * reviewer's params resolve per run. A card that showed only the tuple left the
+   * reader unable to tell a `reviewer` run from a `deep dive` one, and the name
+   * was already being persisted.
+   */
+  it("names the role the run was started as, when one was", () => {
+    render(<SubAgentConsultCardRow card={card({ subAgentId: "claude", runOn, roleName: "deep dive" })} />);
+    expect(screen.getByTestId("sub-agent-consult-run-on").textContent)
+      .toBe("as deep dive · Anthropic · Subscription · Claude · High reasoning");
+  });
+
+  it("says nothing about a role when the call named all five parameters itself", () => {
+    // An invented role name would be worse than an absent one: the run really did
+    // come from a target the caller assembled, and nothing chose it by name.
+    render(<SubAgentConsultCardRow card={card({ subAgentId: "claude", runOn })} />);
+    expect(screen.getByTestId("sub-agent-consult-run-on").textContent).not.toContain("as ");
+  });
+
   it("shows the attribution while the consult is still in flight", () => {
     render(<SubAgentConsultCardRow card={card({
       status: "pending", durationMs: undefined, costUsd: undefined, subAgentId: "claude", runOn,

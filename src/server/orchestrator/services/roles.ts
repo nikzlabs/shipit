@@ -7,7 +7,10 @@
  * caller's overrides to them, and the projection the Settings payload renders.
  *
  * The storage half is `credential-store.ts` (`getRoles` / `getRole` / `setRole`).
- * The two spawn commands are phase 3's, and nothing here is wired to them yet.
+ * Phase 3 wired both spawn commands to it through `services/sub-agent-target.ts`,
+ * which is the one parser and the one refusal rule in front of everything here
+ * (req 16); {@link joinRolePrompt} is the other half a spawn needs — a role's
+ * standing instructions, joined onto the run's own task (req 8).
  *
  * Four rules live here.
  *
@@ -44,6 +47,7 @@
 import type {
   AgentId,
   AgentRole,
+  RoleOverrides,
   RolePinnedParams,
   RoleResolved,
   RoleUnavailableReason,
@@ -52,7 +56,7 @@ import type {
   ServiceRouting,
 } from "../../shared/types/agent-types.js";
 import { RESERVED_ROLE_NAME } from "../../shared/types/agent-types.js";
-import type { BillingMode, ModelSelection } from "../../shared/catalogue/index.js";
+import type { ModelSelection } from "../../shared/catalogue/index.js";
 import {
   getHarness,
   getModel,
@@ -101,17 +105,11 @@ export type RoleValidatorDeps = Pick<RoleDeps, "credentialStore" | "env" | "isIn
  * Any subset of a role's parameters, named by a caller at the moment it starts
  * one (req 10).
  *
- * Every field optional, and that is req 16's "partial is the normal case":
- * a caller names what it cares about and the role supplies the rest. The empty
- * object is the ordinary path — a bare role name, nothing overridden.
+ * Declared in `shared/types/agent-types.ts` as of phase 3, because
+ * `SpawnTarget` carries it over the wire to both spawn commands; re-exported
+ * here so phase 1's callers keep one import site.
  */
-export interface RoleOverrides {
-  harnessId?: AgentId | undefined;
-  serviceId?: string | undefined;
-  billingMode?: BillingMode | undefined;
-  modelId?: string | undefined;
-  reasoningEffort?: string | undefined;
-}
+export type { RoleOverrides };
 
 /**
  * A role resolved into something a spawn can run, frozen with the role's name on
@@ -626,6 +624,63 @@ function freezeTarget(
         }
       : {}),
   });
+}
+
+// ---- The prompt join (req 8) -----------------------------------------------
+
+/**
+ * The destination limits a joined prompt is checked against, named where they
+ * are enforced rather than restated at each call site.
+ *
+ * They differ because the two destinations differ: a one-shot consult is handed
+ * a diff and a task in one channel, a child session gets an opening instruction
+ * it will build on for days. Both numbers are the ones already shipped
+ * (`shipit-agent.ts`, `child-sessions.ts`); nothing here changes them.
+ */
+export const ROLE_PROMPT_LIMITS = { oneShot: 200_000, child: 50_000 } as const;
+
+/**
+ * docs/264 req 8 — join a role's **standing instructions** onto the task a run
+ * was given.
+ *
+ * A sub-agent has ONE prompt channel (docs/144), so the two have to become one
+ * string, and three things about that join are load-bearing:
+ *
+ *  - **Framing.** The halves are labelled, so the callee can tell a standing
+ *    brief ("what this job is") from the thing it was asked to do now. Unlabelled
+ *    concatenation reads as one instruction and invites the callee to treat the
+ *    task as a continuation of the brief.
+ *  - **Identity when there is nothing to add.** A role with no standing
+ *    instructions returns the task **unchanged** — no header, no separator, not
+ *    one byte. That is a promise about *this function*, not end to end: child
+ *    creation trims the prompt it is handed (`child-sessions.ts`), so claiming
+ *    byte-identity all the way to the callee would be false.
+ *  - **Length.** The stored prompt is bounded at save (`credential-store.ts`),
+ *    but a bounded prompt plus a valid task can still exceed the destination's
+ *    limit — so the *combined* string is checked here, and the failure **names
+ *    the role**. Blaming the task would send the caller to shorten the one half
+ *    it did not choose.
+ */
+export function joinRolePrompt(
+  task: string,
+  target: { roleName?: string | undefined; rolePrompt?: string | undefined },
+  limit: number,
+): string {
+  const standing = target.rolePrompt?.trim();
+  const joined = standing
+    ? `## Standing instructions for the "${target.roleName}" role\n\n${standing}\n\n## Your task\n\n${task}`
+    : task;
+  if (joined.length > limit) {
+    throw new ServiceError(
+      400,
+      standing
+        ? `The "${target.roleName}" role's standing instructions plus this task exceed `
+          + `${limit.toLocaleString()} characters (${joined.length.toLocaleString()}). `
+          + "Shorten the task, or the role's standing instructions in Settings."
+        : `The prompt exceeds ${limit.toLocaleString()} characters.`,
+    );
+  }
+  return joined;
 }
 
 // ---- The settings payload --------------------------------------------------

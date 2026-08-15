@@ -70,7 +70,12 @@ import {
   handleIssueStatuses,
   handleIssueView,
 } from "./shipit-issue.js";
-import { handleAgentRun, handleAgentResult } from "./shipit-agent.js";
+import {
+  handleAgentRun,
+  handleAgentResult,
+  handleAgentRoles,
+  handleAgentParams,
+} from "./shipit-agent.js";
 import {
   handleServiceList,
   handleServiceLogs,
@@ -110,7 +115,8 @@ const HELP = `${SHIM_NAME} — agent-driven session management.
 
 Supported subcommands:
   shipit session create  --prompt-file FILE --title T
-                          [--agent claude|codex] [--model M]
+                          [--role NAME] [--agent claude|codex] [--model M]
+                          [--service S] [--billing-mode sub|key] [--effort E]
                           [--turn ID] [--detached] [--shipit-source] [--approximate] [--json]
   shipit session list    [--turn ID] [--json]
   shipit session view    <id> [--json]
@@ -260,19 +266,33 @@ Compose services (docs/238 — start the services declared in docker-compose.yml
   compose file and ShipIt reconciles it.
 
 Sub-agents (docs/144 — spawn another agent for a one-shot sub-task):
-  shipit agent run --role reviewer --prompt-file FILE [--json]
+  shipit agent run --role NAME [OVERRIDES] --prompt-file FILE [--json]
   shipit agent run --agent claude|codex --service S --billing-mode sub|key
                    --model M --effort E --prompt-file FILE [--json]
   shipit agent result [RUN-ID] [--wait [--timeout SECONDS]] [--json]
+  shipit agent roles  [--json]     the roles configured on this install
+  shipit agent params [--json]     the harnesses, levels and models it has
 
-  There are two ways to say what the run happens on, and they do not mix
-  (docs/261). '--role reviewer' asks ShipIt for the reviewer the USER
-  configured — you name the role, never the reviewer, and supply no service,
-  model or harness. Prefer it for a second opinion: which model reviews is a
-  ShipIt setting, not your call. Anything else names EVERY parameter — the
-  harness, the service, the billing mode, the model and the reasoning level.
-  Nothing is filled in from a stored default, so an incomplete call is refused
-  rather than quietly completed from somewhere you cannot see.
+  What a run happens on is said the SAME way here and on 'shipit session
+  create' (docs/264): name a ROLE, and override only what the user asked to
+  change. '--role reviewer' asks ShipIt for the reviewer the USER configured —
+  you name the role, never the reviewer. 'shipit agent roles' lists the roles
+  this install has; map the user's intent onto one ("review the PR" -> the
+  reviewer role) rather than assembling a target of your own.
+
+  An override rides alongside and names only what changes:
+  '--role deep-dive --model M', '--role reviewer --effort high'. RELAY an
+  override the user asked for; never DECIDE one — which model or effort a run
+  deserves is the user's call, and ShipIt cannot tell the two apart.
+  'shipit agent params' is what makes an override name something real on this
+  install, instead of a model you remember from somewhere else.
+
+  A run that names NO role must name EVERY parameter — harness, service,
+  billing mode, model, reasoning level. Nothing is filled in from a stored
+  default, so an incomplete call is refused rather than quietly completed from
+  somewhere you cannot see. (On 'session create' the same partial call IS
+  allowed, because a child has a parent to inherit the rest from. That is the
+  only difference between the two commands.)
 
   'run' spawns ANOTHER registered agent with the prompt from --prompt-file (or
   --prompt-file - for stdin) and prints its final text on stdout. Use it for a
@@ -566,6 +586,11 @@ const AGENT_HANDLERS: Record<
 > = {
   run: handleAgentRun,
   result: handleAgentResult,
+  // docs/264 req 12 — the two reads that make `--role NAME` and an override
+  // nameable: what roles exist here, and what parameters exist here. They ship
+  // together deliberately; see `shipit-agent.ts`.
+  roles: handleAgentRoles,
+  params: handleAgentParams,
 };
 
 /**

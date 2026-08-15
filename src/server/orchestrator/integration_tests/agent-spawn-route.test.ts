@@ -95,16 +95,22 @@ describe("Integration: POST /api/sessions/:id/agent/spawn — the spawn target (
     expect(error).toContain("--effort");
   });
 
-  it("400 — a role combined with an explicit parameter is refused", async () => {
+  // docs/264 req 10 REVERSES docs/261 here: this combination used to be refused
+  // at the edge and is now the override path, so it must reach the service (the
+  // 404 is the made-up session id, i.e. "the parse let it through").
+  it("accepts a role combined with a parameter — the override path", async () => {
     const res = await post({ role: "reviewer", agentId: "codex", prompt: "review", depth: 0 });
-    expect(res.statusCode).toBe(400);
-    expect(res.json().error as string).toContain("--agent");
+    expect(res.statusCode).toBe(404);
+    expect(res.json().error as string).toMatch(/session not found/i);
   });
 
-  it("400 — an unknown role is refused by name", async () => {
+  // req 18 — the name is the user's, so the edge does not judge it. An unknown
+  // one is refused by RESOLUTION, which is the only thing that knows the set,
+  // and its refusal names it (see the live-session case below).
+  it("does not reject an unknown role name at the edge", async () => {
     const res = await post({ role: "critic", prompt: "review", depth: 0 });
-    expect(res.statusCode).toBe(400);
-    expect(res.json().error as string).toContain("critic");
+    expect(res.statusCode).toBe(404);
+    expect(res.json().error as string).toMatch(/session not found/i);
   });
 
   /**
@@ -157,7 +163,20 @@ describe("Integration: POST /api/sessions/:id/agent/spawn — the spawn target (
     it("routes a role to the reviewer resolver", async () => {
       const res = await live({ role: "reviewer", prompt: "review this", depth: 0 });
       expect(res.statusCode).toBe(400);
-      expect(res.json().error as string).toMatch(/No reviewer is available/);
+      // docs/264 — the refusal is now the ROLE's, since every role resolves
+      // through one path. The remedy is unchanged.
+      expect(res.json().error as string).toMatch(/role "reviewer" cannot run/);
+    });
+
+    // req 13 — the refusal is the remedy: it names the roles that DO exist, so an
+    // agent that guessed learns what it could have said. On a bare install that
+    // is the reviewer, which is always present (req 2).
+    it("refuses an unknown role at resolution, listing the roles that exist", async () => {
+      const res = await live({ role: "critic", prompt: "review this", depth: 0 });
+      expect(res.statusCode).toBe(400);
+      const error = res.json().error as string;
+      expect(error).toContain("critic");
+      expect(error).toContain("reviewer");
     });
 
     it("routes an explicit call to the named harness's own gates", async () => {
@@ -167,5 +186,45 @@ describe("Integration: POST /api/sessions/:id/agent/spawn — the spawn target (
       // — not about a reviewer, and not about the session's own agent.
       expect(res.json().error as string).toMatch(/Codex is not signed in/);
     });
+
+    /**
+     * docs/264 req 12 — the two reads, which ship together. Without them an
+     * agent allowed to name a role and override a parameter would be naming both
+     * from memory: it cannot see the user's roles (they are settings) and cannot
+     * see which models this install holds a credential for.
+     */
+    it("lists the install's roles, the reviewer included on a bare install", async () => {
+      const res = await app.inject({
+        method: "GET",
+        url: `/api/sessions/${client.sessionId}/agent/roles`,
+      });
+      expect(res.statusCode).toBe(200);
+      const roles = (res.json() as { roles: { name: string }[] }).roles;
+      expect(roles.map((r) => r.name)).toContain("reviewer");
+    });
+
+    it("lists the parameters an override may name", async () => {
+      const res = await app.inject({
+        method: "GET",
+        url: `/api/sessions/${client.sessionId}/agent/params`,
+      });
+      expect(res.statusCode).toBe(200);
+      const harnesses = (res.json() as { harnesses: { id: string; reasoningLevels: string[] }[] })
+        .harnesses;
+      expect(harnesses.length).toBeGreaterThan(0);
+      // Each entry carries the axes `--agent` / `--effort` / the model triple are
+      // chosen from; the levels are the harness's own, never a shared list.
+      for (const harness of harnesses) {
+        expect(typeof harness.id).toBe("string");
+        expect(Array.isArray(harness.reasoningLevels)).toBe(true);
+      }
+    });
+  });
+
+  it("404s both reads for a session that does not exist", async () => {
+    for (const path of ["roles", "params"]) {
+      const res = await app.inject({ method: "GET", url: `/api/sessions/nope/agent/${path}` });
+      expect(res.statusCode).toBe(404);
+    }
   });
 });

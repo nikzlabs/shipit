@@ -96,8 +96,18 @@ export async function handleSessionCreate(args: string[], deps: RunDeps): Promis
     values: {
       "--prompt-file": "promptFile", "-f": "promptFile", "-F": "promptFile",
       "-t": "title", "--title": "title",
+      // docs/264 req 16 — the SAME target vocabulary `shipit agent run` takes:
+      // a role by name, any subset of its parameters as overrides, or all five
+      // named. `--agent`/`--model` are two of those five and keep working
+      // exactly as they did; `--role`, `--service`, `--billing-mode` and
+      // `--effort` are new here — a child session could not say a service, a
+      // billing mode or a reasoning level at all before this.
+      "--role": "role",
       "--agent": "agent",
       "--model": "model",
+      "--service": "service",
+      "--billing-mode": "billingMode",
+      "--effort": "effort",
       "--turn": "turn",
       "--repo": "repo", "-R": "repo",
       "--owner": "owner",
@@ -171,10 +181,30 @@ export async function handleSessionCreate(args: string[], deps: RunDeps): Promis
     );
   }
 
+  // docs/264 req 16 — the shared vocabulary, in the wire names both spawn
+  // commands use, so one server-side parser reads both bodies. `--billing-mode`
+  // is checked here for the same reason `agent run` checks it: it is the one
+  // field with a closed value set the shim can reject without the catalogue,
+  // which buys a message instead of a round trip. Everything else — an unknown
+  // role, a model this install does not have, a level the harness does not
+  // declare — is resolved server-side, whose refusal names the roles or the
+  // parameter. The shim buys a message for what it can know and does not pretend
+  // to know the rest.
+  const billingMode = parsed.values.billingMode;
+  if (billingMode !== undefined && billingMode !== "sub" && billingMode !== "key") {
+    fail(
+      deps.io,
+      `shipit session create: --billing-mode must be "sub" (a subscription) or "key" (a metered API key), not "${billingMode}".`,
+    );
+  }
   const payload: Record<string, unknown> = { prompt };
   if (parsed.values.title) payload.title = parsed.values.title;
-  if (parsed.values.agent) payload.agent = parsed.values.agent;
-  if (parsed.values.model) payload.model = parsed.values.model;
+  if (parsed.values.role) payload.role = parsed.values.role;
+  if (parsed.values.agent) payload.agentId = parsed.values.agent;
+  if (parsed.values.model) payload.modelId = parsed.values.model;
+  if (parsed.values.service) payload.serviceId = parsed.values.service;
+  if (billingMode) payload.billingMode = billingMode;
+  if (parsed.values.effort) payload.reasoningEffort = parsed.values.effort;
   if (parsed.values.turn) payload.spawnedByTurn = parsed.values.turn;
   if (parsed.booleans.has("detached")) payload.detached = true;
   if (parsed.booleans.has("shipitSource")) payload.shipitSource = true;
@@ -192,11 +222,20 @@ export async function handleSessionCreate(args: string[], deps: RunDeps): Promis
   }
 
   // Plain-text rendering. Keep this stable — the agent learns to parse it.
+  const session = (res.body.session ?? {}) as Record<string, unknown>;
   const lines = [
     `session-id: ${asString(res.body.sessionId)}`,
     `branch:     ${asString(res.body.branch)}`,
     `status:     ${asString(res.body.status) || "running"}`,
   ];
+  // docs/264 req 14 — say which role started it, and that this is where the
+  // role's involvement ends: the child routes like any other session afterwards,
+  // so a later "why is it on a different model?" has its answer up front.
+  if (session.originRoleName) {
+    lines.push(
+      `role:       ${asString(session.originRoleName)} (starting point only — the session routes on its own from here)`,
+    );
+  }
   // docs/205 — make it unmistakable that a detached spawn is severed: the agent
   // must not expect to `wait`/`view`/`message` it afterward.
   if (parsed.booleans.has("detached")) {
@@ -609,6 +648,12 @@ export async function handleSessionView(args: string[], deps: RunDeps): Promise<
   }
   if (child.model) {
     lines.push(`model:      ${asString(child.model)}`);
+  }
+  // docs/264 req 14 — what STARTED it, beside what it runs on now. The two can
+  // legitimately differ: a role hands a child its opening tuple and stops being
+  // involved, so a child may have moved on through ordinary routing.
+  if (child.originRoleName) {
+    lines.push(`role:       ${asString(child.originRoleName)} (at creation)`);
   }
   if (child.spawnedByTurn) {
     lines.push(`turn:       ${asString(child.spawnedByTurn)}`);
