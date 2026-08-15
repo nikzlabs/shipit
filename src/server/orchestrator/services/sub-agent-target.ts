@@ -119,6 +119,15 @@ function readBillingMode(value: unknown): BillingMode {
  * caller tried to say something and it did not survive their shell.
  *
  * Cross-agent review found this.
+ *
+ * **JSON `null` is absence, deliberately, and it is the one exception.** The rule
+ * above is about a value that *failed*: a flag whose shell expansion produced
+ * nothing. A `null` cannot come from a shell — the CLI cannot spell one — so it
+ * only ever arrives from a caller writing a body directly, where `null` is the
+ * ordinary way JSON says "no value" (`{ modelId: user.model ?? null }`).
+ * Refusing it would refuse the idiom rather than catching a mistake, so it reads
+ * as "the base supplies it", exactly as an absent key does. Pinned by a test, so
+ * the next reader sees a decision rather than an oversight.
  */
 function readNamed(value: unknown, flag: string): string | undefined {
   if (value === undefined || value === null) return undefined;

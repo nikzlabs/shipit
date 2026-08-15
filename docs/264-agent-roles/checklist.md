@@ -201,5 +201,3 @@ see it: the rule is stated in one phase and violated by another phase's layer in
       through the shared field reader, so `" reviewer "` — an ordinary role, distinct from the
       reserved one — ran ShipIt's automatic reviewer, and `" deep dive "` was refused as unknown
       while existing. The name is now the one field passed through untouched; blank stays refused
-- [ ] **A model-only override relocates the service** (reqs 7, 10) — the fourth finding, owned
-      separately: it needs a decision (refuse vs relocate) rather than a fix

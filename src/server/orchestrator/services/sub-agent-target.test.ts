@@ -250,6 +250,23 @@ describe("parseSpawnTarget — the role path with overrides (docs/264 reqs 10, 1
     }
   });
 
+  /**
+   * The one value that is present and still reads as absence, and it is a
+   * decision rather than a gap: a `null` cannot come from a shell — the CLI
+   * cannot spell one — so it only arrives from a caller writing a body, where
+   * `null` is how JSON says "no value". Refusing it would refuse the idiom
+   * (`{ modelId: user.model ?? null }`) instead of catching a failed expansion,
+   * which is what the blank rule above is for.
+   */
+  it("reads an explicit null as absence, unlike a blank string", async () => {
+    const { parseSubAgentSpawnTarget } = await import("./sub-agent-target.js");
+    expect(parseSubAgentSpawnTarget({ role: "reviewer", modelId: null, agentId: null })).toEqual({
+      kind: "role",
+      role: "reviewer",
+      overrides: {},
+    });
+  });
+
   it("still refuses a billing mode that is neither sub nor key, even as an override", async () => {
     const { parseSubAgentSpawnTarget } = await import("./sub-agent-target.js");
     expect(() => parseSubAgentSpawnTarget({ role: "reviewer", billingMode: "free" })).toThrow(/sub/);
