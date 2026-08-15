@@ -8,7 +8,7 @@ const routing: ServiceRouting = {
   billingMode: "key",
   style: "openai-responses",
   baseUrl: "https://ai-gateway.vercel.sh/v1",
-  credentialSourceEnv: "AI_GATEWAY_API_KEY",
+  credentialSourceEnv: "VERCEL_AI_GATEWAY_API_KEY",
   credentialTarget: { kind: "env", name: "OPENAI_API_KEY" },
 };
 

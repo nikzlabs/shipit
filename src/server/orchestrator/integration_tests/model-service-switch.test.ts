@@ -63,7 +63,7 @@ describe("Integration: mid-session model switching across services (docs/252 pha
     // harness (req 8). Delivered through the environment rather than the
     // credential store because `listConfiguredCredentials` reads both and the
     // env path needs no fixture.
-    for (const name of ["OPENROUTER_API_KEY", "AI_GATEWAY_API_KEY"]) {
+    for (const name of ["OPENROUTER_API_KEY", "VERCEL_AI_GATEWAY_API_KEY"]) {
       savedEnv[name] = process.env[name];
       process.env[name] = `test-${name}`;
     }
@@ -241,7 +241,7 @@ describe("Integration: mid-session model switching across services (docs/252 pha
     const claude2 = await waitForClaude(() => lastClaude, claude1);
     expect(claude2.lastServiceRouting?.serviceId).toBe("vercel");
     expect(claude2.lastServiceRouting?.baseUrl).toBe(VERCEL_BASE);
-    expect((claude2.lastServiceRouting as AnyMsg)?.credentialSourceEnv).toBe("SHIPIT_CREDENTIAL_ENV_AI_GATEWAY_API_KEY");
+    expect((claude2.lastServiceRouting as AnyMsg)?.credentialSourceEnv).toBe("SHIPIT_CREDENTIAL_ENV_VERCEL_AI_GATEWAY_API_KEY");
     expect(sessionManager.get(sessionId)?.providerRouteId).toBeUndefined();
 
     client.close();

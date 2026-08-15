@@ -753,7 +753,7 @@ export const SERVICES = [
     modes: [{ kind: "key", credentials: [{ via: "string", storageEnv: "OPENROUTER_API_KEY" }],
               endpoints: { /* 🔍 */ }, models: [ /* 🔍 */ ], retired: [] }] },
   { id: "vercel", name: "Vercel AI Gateway",
-    modes: [{ kind: "key", credentials: [{ via: "string", storageEnv: "VERCEL_AI_GATEWAY_KEY" }],
+    modes: [{ kind: "key", credentials: [{ via: "string", storageEnv: "VERCEL_AI_GATEWAY_API_KEY" }],
               endpoints: { /* 🔍 */ }, models: [ /* 🔍 */ ], retired: [] }] },
 ] as const satisfies readonly ServiceDef[];
 ```
