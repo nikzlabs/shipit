@@ -561,6 +561,17 @@ export function registerAgentOpsRoutes(
     async (request, reply) => relay("POST", "/agent/spawn", request.body ?? {}, reply, { timeoutMs: 0 }),
   );
 
+  // GET /agent-ops/agent/roles — docs/264 req 12. The roles this install has
+  // (name, description, what each resolves to), so `--role NAME` can name one
+  // the agent knows exists. Cheap read; the default timeout applies.
+  app.get("/agent-ops/agent/roles", async (_request, reply) => relay("GET", "/agent/roles", undefined, reply));
+
+  // GET /agent-ops/agent/params — docs/264 req 12's other half: the harnesses,
+  // reasoning levels and credentialed models an override (req 10) may name on
+  // this install. Ships with the roles read, never without it — an agent that may
+  // name a model and cannot see which models exist names one from memory.
+  app.get("/agent-ops/agent/params", async (_request, reply) => relay("GET", "/agent/params", undefined, reply));
+
   // GET /agent-ops/agent/result[?spawnId=…&wait=true&timeout=N&segment=S] —
   // planning#247. Re-read a completed spawn's persisted consult card: the same
   // artifact the UI renders, so the agent can verify its copy or recover one
@@ -609,12 +620,27 @@ export function registerAgentOpsRoutes(
   // ---------------------------------------------------------------------------
 
   // POST /agent-ops/session/create — create a new spawned child session
+  //
+  // docs/264 req 16 — the target half is the SAME vocabulary `agent/spawn`
+  // carries: a role with any subset of its parameters overridden, or all five
+  // named. `agentId` / `reasoningEffort` are the wire names both commands use, so
+  // one parser reads both bodies; the legacy `agent` / `model` keys stay accepted
+  // because the shim has sent them since docs/117. Declared here rather than left
+  // to the `relay` pass-through so this hop states what it carries — a field
+  // named by nothing between the shim and the spawn is exactly how `--model` went
+  // missing for three releases.
   app.post<{
     Body: {
       prompt?: string;
       title?: string;
       agent?: string;
       model?: string;
+      role?: string;
+      agentId?: string;
+      serviceId?: string;
+      billingMode?: string;
+      modelId?: string;
+      reasoningEffort?: string;
       // docs/205 — completely separate (parentless) spawn; forwarded verbatim.
       detached?: boolean;
     };

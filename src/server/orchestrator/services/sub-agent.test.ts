@@ -56,13 +56,30 @@ function explicit(
   subAgentId: "codex" | "claude",
   over: Partial<Extract<SubAgentSpawnTarget, { kind: "explicit" }>> = {},
 ): SubAgentSpawnTarget {
-  return {
-    kind: "explicit",
-    subAgentId,
+  // docs/264 — the triple is the named harness's OWN vendor, because resolution
+  // now refuses a harness pointed at a model it shares no API style with (the
+  // check that used to exist only as `assertHarnessCanRunSelection`, and so was
+  // absent from the child path entirely). This fixture used to hand Claude Code
+  // a GPT model on every call and pass, because the fake registry's eligible set
+  // said it could — a fixture blind to the very pairing the real catalogue
+  // forbids. Cross-agent review surfaced the missing check; the fixture was how
+  // it stayed invisible.
+  const claude = {
+    serviceId: "anthropic",
+    billingMode: "sub" as const,
+    modelId: "claude-opus-5",
+    reasoningEffort: "high",
+  };
+  const codex = {
     serviceId: "openai",
-    billingMode: "sub",
+    billingMode: "sub" as const,
     modelId: "gpt-5.6-sol",
     reasoningEffort: "high",
+  };
+  return {
+    kind: "explicit",
+    harnessId: subAgentId,
+    ...(subAgentId === "claude" ? claude : codex),
     ...over,
   };
 }
@@ -92,11 +109,20 @@ function makeDeps(opts: {
   runnerPresent?: boolean;
   /** docs/261 — credential routes the reviewer resolution can choose between. */
   credentialRoutes?: { id: string; serviceId: string; billingMode: "sub" | "key"; via: string; status: string; priority: number; isPrimary: boolean; label: string; createdAt: number; updatedAt: number }[];
+  /** docs/264 req 8 — standing instructions stored on the role being started. */
+  rolePrompt?: string;
 }) {
   const session: FakeSession | null =
     opts.session === undefined ? { id: "s1", agentId: "claude", agentPinned: true } : opts.session;
   const emitMessage = vi.fn();
   const record = vi.fn();
+  // docs/264 — the reviewer as the store synthesizes it: automatic params, plus
+  // whatever editable metadata was stored under its reserved key.
+  const reviewerRole = {
+    name: "reviewer",
+    params: { kind: "auto" as const },
+    ...(opts.rolePrompt ? { prompt: opts.rolePrompt } : {}),
+  };
   const getSessionUsage = vi.fn(() => ({
     sessionId: "s1",
     totalCostUsd: 0.03,
@@ -161,6 +187,11 @@ function makeDeps(opts: {
       // routes. Unpinned + whatever routes the test wired: an unpinned slot is
       // *auto-configured*, which is the state a fresh install is in.
       getReviewerPin: () => undefined,
+      // docs/264 — a role now resolves through the role store, and the reviewer
+      // is the role it always yields (synthesized, params resolved by ShipIt), so
+      // `--role reviewer` reaches exactly docs/261's ranking through one more hop.
+      getRoles: () => [reviewerRole],
+      getRole: (name: string) => (name === "reviewer" ? reviewerRole : undefined),
       listCredentialRoutes: (serviceId?: string, billingMode?: string) =>
         (opts.credentialRoutes ?? []).filter(
           (r) =>
@@ -203,6 +234,18 @@ function makeDeps(opts: {
                 serviceId: "anthropic",
                 serviceName: "Anthropic",
                 billingMode: "key",
+                modelId: "claude-opus-5",
+                label: "Opus 5",
+              },
+              // …and the same model on the SUBSCRIPTION, which is what an
+              // `explicit("claude")` target names: a Claude Code spawn has to be
+              // pointed at a model Claude Code can actually speak to, now that
+              // resolution refuses the pairing rather than leaving it to a
+              // registry set a fake could always widen.
+              {
+                serviceId: "anthropic",
+                serviceName: "Anthropic",
+                billingMode: "sub",
                 modelId: "claude-opus-5",
                 label: "Opus 5",
               },
@@ -286,10 +329,20 @@ describe("runSubAgent — authorization gates", () => {
   // docs/261 — a harness pointed at a model no credential of its own offers is
   // refused rather than rerouted: an explicit call is taken literally.
   it("rejects an explicit selection the named harness cannot run (400)", async () => {
+    // A REAL catalogue row on the other vendor, so what is being refused is the
+    // pairing rather than a typo'd model id. docs/264 moved this refusal into
+    // resolution (`resolveSpawnTarget`, a catalogue fact — no API style in
+    // common) so that BOTH spawn commands get it; it used to live only in
+    // `assertHarnessCanRunSelection` here, which is why a child session naming
+    // the same incoherent pair was accepted and persisted.
     const { deps, runner } = makeDeps({});
     const err = await expectServiceError(
       runSubAgent(deps, "s1", {
-        target: explicit("claude", { modelId: "gpt-5.6-luna" }),
+        target: explicit("claude", {
+          serviceId: "openai",
+          billingMode: "sub",
+          modelId: "gpt-5.6-sol",
+        }),
         prompt: "review",
         depth: 0,
       }),
@@ -334,7 +387,7 @@ describe("runSubAgent — authorization gates", () => {
   it("refuses a recursive role call for recursion, not for an unresolvable reviewer", async () => {
     const { deps } = makeDeps({ credentialRoutes: [] });
     await expectServiceError(
-      runSubAgent(deps, "s1", { target: { kind: "role", role: "reviewer" }, prompt: "review", depth: 1 }),
+      runSubAgent(deps, "s1", { target: { kind: "role", role: "reviewer", overrides: {} }, prompt: "review", depth: 1 }),
       403,
     );
   });
@@ -342,7 +395,7 @@ describe("runSubAgent — authorization gates", () => {
   it("refuses a capped role call for the cap, not for an unresolvable reviewer", async () => {
     const { deps } = makeDeps({ credentialRoutes: [], subAgentSpawnsThisTurn: SUB_AGENT_PER_TURN_CAP });
     await expectServiceError(
-      runSubAgent(deps, "s1", { target: { kind: "role", role: "reviewer" }, prompt: "review", depth: 0 }),
+      runSubAgent(deps, "s1", { target: { kind: "role", role: "reviewer", overrides: {} }, prompt: "review", depth: 0 }),
       429,
     );
   });
@@ -372,7 +425,7 @@ describe("runSubAgent — --role reviewer", () => {
       session: { id: "s1", agentId: "claude", agentPinned: true },
       credentialRoutes: [keyRoute("openai"), keyRoute("anthropic")],
     });
-    await runSubAgent(deps, "s1", { target: { kind: "role", role: "reviewer" }, prompt: "review", depth: 0 });
+    await runSubAgent(deps, "s1", { target: { kind: "role", role: "reviewer", overrides: {} }, prompt: "review", depth: 0 });
     const arg = (runner.spawnSubAgent as unknown as { mock: { calls: Record<string, unknown>[][] } })
       .mock.calls[0][0];
     // A Claude session's work goes to the GPT reviewer on the other harness —
@@ -400,7 +453,7 @@ describe("runSubAgent — --role reviewer", () => {
       session: { id: "s1", agentId: "claude", agentPinned: true },
       credentialRoutes: [keyRoute("openai"), keyRoute("anthropic")],
     });
-    await runSubAgent(deps, "s1", { target: { kind: "role", role: "reviewer" }, prompt: "review", depth: 0 });
+    await runSubAgent(deps, "s1", { target: { kind: "role", role: "reviewer", overrides: {} }, prompt: "review", depth: 0 });
 
     const arg = (runner.spawnSubAgent as unknown as { mock: { calls: Record<string, unknown>[][] } })
       .mock.calls[0][0];
@@ -425,6 +478,76 @@ describe("runSubAgent — --role reviewer", () => {
     expect(record.mock.calls[0][5]).toMatchObject({ model: arg.model });
   });
 
+  /**
+   * docs/264 req 14 — the card says what was ASKED FOR as well as what ran.
+   *
+   * `runOn` alone cannot answer "was this the reviewer, or `deep-dive`?": a role
+   * resolves to a tuple, and the reviewer's resolves differently per run, so the
+   * tuple is not the name and the name is not recoverable from it.
+   */
+  it("records the ROLE on the consult card, beside what it resolved to", async () => {
+    const { deps, emitMessage } = makeDeps({
+      session: { id: "s1", agentId: "claude", agentPinned: true },
+      credentialRoutes: [keyRoute("openai"), keyRoute("anthropic")],
+    });
+    await runSubAgent(deps, "s1", { target: { kind: "role", role: "reviewer", overrides: {} }, prompt: "review", depth: 0 });
+    const cards = emitMessage.mock.calls
+      .map((c) => c[0] as { type: string; card?: Record<string, unknown> })
+      .filter((m) => m.type === "sub_agent_consult_card")
+      .map((m) => m.card!);
+    expect(cards).toHaveLength(2);
+    for (const card of cards) expect(card.roleName).toBe("reviewer");
+  });
+
+  it("leaves the role off the card when the caller named all five parameters", async () => {
+    // Nothing was asked for by name, so there is nothing to attribute — an
+    // invented role name would be worse than an absent one.
+    const { deps, emitMessage } = makeDeps({});
+    await runSubAgent(deps, "s1", { target: explicit("codex"), prompt: "go", depth: 0 });
+    const card = emitMessage.mock.calls
+      .map((c) => c[0] as { type: string; card?: Record<string, unknown> })
+      .filter((m) => m.type === "sub_agent_consult_card")
+      .map((m) => m.card)[0];
+    expect(card).toBeDefined();
+    expect(card?.roleName).toBeUndefined();
+  });
+
+  /**
+   * docs/264 req 8 — a role's standing instructions reach the callee, labelled,
+   * with the run's own task. A sub-agent has one prompt channel, so this is the
+   * only way a role can say what the job IS rather than only what runs it.
+   */
+  it("joins the role's standing instructions onto the prompt it spawns with", async () => {
+    const { deps, runner } = makeDeps({
+      credentialRoutes: [keyRoute("openai"), keyRoute("anthropic")],
+      rolePrompt: "Check the diff against requirements.md.",
+    });
+    await runSubAgent(deps, "s1", {
+      target: { kind: "role", role: "reviewer", overrides: {} },
+      prompt: "Review PR 12.",
+      depth: 0,
+    });
+    const arg = (runner.spawnSubAgent as unknown as { mock: { calls: Record<string, unknown>[][] } })
+      .mock.calls[0][0];
+    expect(arg.prompt).toContain("Check the diff against requirements.md.");
+    expect(arg.prompt).toContain("Review PR 12.");
+    expect(arg.prompt).toContain("Standing instructions");
+  });
+
+  it("passes the task through untouched when the role carries no instructions", async () => {
+    const { deps, runner } = makeDeps({
+      credentialRoutes: [keyRoute("openai"), keyRoute("anthropic")],
+    });
+    await runSubAgent(deps, "s1", {
+      target: { kind: "role", role: "reviewer", overrides: {} },
+      prompt: "Review PR 12.",
+      depth: 0,
+    });
+    const arg = (runner.spawnSubAgent as unknown as { mock: { calls: Record<string, unknown>[][] } })
+      .mock.calls[0][0];
+    expect(arg.prompt).toBe("Review PR 12.");
+  });
+
   // req 4 — "reviewing works whichever model is implementing", with nothing to
   // keep in sync. The same install, a different implementer, a different answer.
   it("sends a Codex session's work the other way, with nothing reconfigured", async () => {
@@ -432,7 +555,7 @@ describe("runSubAgent — --role reviewer", () => {
       session: { id: "s1", agentId: "codex", agentPinned: true },
       credentialRoutes: [keyRoute("openai"), keyRoute("anthropic")],
     });
-    await runSubAgent(deps, "s1", { target: { kind: "role", role: "reviewer" }, prompt: "review", depth: 0 });
+    await runSubAgent(deps, "s1", { target: { kind: "role", role: "reviewer", overrides: {} }, prompt: "review", depth: 0 });
     const arg = (runner.spawnSubAgent as unknown as { mock: { calls: Record<string, unknown>[][] } })
       .mock.calls[0][0];
     expect(arg.agentId).toBe("claude");
@@ -465,7 +588,7 @@ describe("runSubAgent — --role reviewer", () => {
     });
     // What is actually producing the work: DeepSeek, on the Claude harness.
     runner.appliedSpawnIdentity = "claude|deepseek|key|deepseek-v4-flash|anthropic-messages|https://x";
-    await runSubAgent(deps, "s1", { target: { kind: "role", role: "reviewer" }, prompt: "review", depth: 0 });
+    await runSubAgent(deps, "s1", { target: { kind: "role", role: "reviewer", overrides: {} }, prompt: "review", depth: 0 });
     const arg = (runner.spawnSubAgent as unknown as { mock: { calls: Record<string, unknown>[][] } })
       .mock.calls[0][0];
     // Anthropic: a different family from what ran. Ranking against the ROW would
@@ -478,10 +601,14 @@ describe("runSubAgent — --role reviewer", () => {
   it("refuses when no configured reviewer has a usable credential", async () => {
     const { deps, runner } = makeDeps({ credentialRoutes: [] });
     const err = await expectServiceError(
-      runSubAgent(deps, "s1", { target: { kind: "role", role: "reviewer" }, prompt: "review", depth: 0 }),
+      runSubAgent(deps, "s1", { target: { kind: "role", role: "reviewer", overrides: {} }, prompt: "review", depth: 0 }),
       400,
     );
-    expect(err.message).toContain("No reviewer is available");
+    // docs/264 — the refusal is now the ROLE's ("the role X cannot run: …"),
+    // because every role resolves through one path. The remedy is what matters
+    // and it is unchanged: connect a service, or wait for the quota.
+    expect(err.message).toContain('role "reviewer" cannot run');
+    expect(err.message).toContain("Connect a service in Settings");
     expect(runner.spawnSubAgent).not.toHaveBeenCalled();
   });
 
@@ -493,7 +620,7 @@ describe("runSubAgent — --role reviewer", () => {
       credentialRoutes: [keyRoute("openai"), keyRoute("anthropic")],
     });
     await expectServiceError(
-      runSubAgent(deps, "s1", { target: { kind: "role", role: "reviewer" }, prompt: "review", depth: 0 }),
+      runSubAgent(deps, "s1", { target: { kind: "role", role: "reviewer", overrides: {} }, prompt: "review", depth: 0 }),
       403,
     );
   });

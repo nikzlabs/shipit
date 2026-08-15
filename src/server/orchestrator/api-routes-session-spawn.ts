@@ -16,6 +16,7 @@ import {
   listWorktrees,
   getChatHistory,
   spawnChildSession,
+  parseSpawnTarget,
   listSpawnedChildren,
   getSpawnedChild,
   sendChildMessage,
@@ -258,6 +259,13 @@ export async function registerSessionSpawnRoutes(
   // ===========================================================================
 
   // POST /api/sessions/:parentId/spawn — agent-driven session spawn
+  //
+  // docs/264 phase 3 (req 16) — the target half of the body is now the SAME
+  // vocabulary the one-shot spawn takes, read by the SAME parser
+  // (`parseSpawnTarget`), with one difference stated as a flag: `parentBase:
+  // true`, because a child has a parent to complete a partial call from and a
+  // one-shot run does not. `agent`/`model` remain accepted as the shim has sent
+  // them since docs/117 and are folded into the same shape.
   app.post<{
     Params: { parentId: string };
     Body: {
@@ -265,6 +273,13 @@ export async function registerSessionSpawnRoutes(
       title?: string;
       agent?: AgentId;
       model?: string;
+      // docs/264 — the shared target vocabulary: a role ± overrides, or all five.
+      role?: string;
+      agentId?: string;
+      serviceId?: string;
+      billingMode?: string;
+      modelId?: string;
+      reasoningEffort?: string;
       spawnedByTurn?: string;
       // docs/205 — spawn a completely separate (parentless) session instead of
       // a child: no linkage, no sidebar nesting, no coordination, no chat card.
@@ -283,8 +298,13 @@ export async function registerSessionSpawnRoutes(
       // the telemetry record always carries an `agent` dimension, even when
       // the request fails before `spawnChildSession` reaches its own
       // resolution.
+      // docs/264 — `agentId` is the wire name the shared vocabulary uses, and
+      // `agent` is what a shim predating it sends; reading only the latter would
+      // file every role-era spawn under the parent's harness and quietly hollow
+      // out this dimension.
       const parentAgentId = sessionManager.get(request.params.parentId)?.agentId;
-      const effectiveAgentId = body.agent ?? parentAgentId ?? deps.defaultAgentId;
+      const effectiveAgentId =
+        ((body.agentId ?? body.agent) as AgentId | undefined) ?? parentAgentId ?? deps.defaultAgentId;
       try {
         // docs/162 — when `--shipit-source` is set, the child targets the
         // ShipIt source repo (not the parent's repo) and is pinned to the exact
@@ -295,6 +315,23 @@ export async function registerSessionSpawnRoutes(
         const { effectivePrompt, sourceBase, repoUrlOverride, shipitFixMeta } =
           await prepareShipitFixSpawn(deps, request.params.parentId, body);
 
+        // docs/264 req 16 — one parser, one refusal rule, both commands. The
+        // legacy `agent`/`model` keys are read as overrides so a shim that
+        // predates the target sends the same shape; `parentBase: true` is the one
+        // difference from `agent run`, and it is what keeps the shipped partial
+        // form (`--model X`, everything else from the parent) legal here.
+        const target = parseSpawnTarget(
+          {
+            ...(body.role !== undefined ? { role: body.role } : {}),
+            ...(body.agentId ?? body.agent ? { agentId: body.agentId ?? body.agent } : {}),
+            ...(body.serviceId !== undefined ? { serviceId: body.serviceId } : {}),
+            ...(body.billingMode !== undefined ? { billingMode: body.billingMode } : {}),
+            ...(body.modelId ?? body.model ? { modelId: body.modelId ?? body.model } : {}),
+            ...(body.reasoningEffort !== undefined ? { reasoningEffort: body.reasoningEffort } : {}),
+          },
+          { parentBase: true },
+        );
+
         const result = await spawnChildSession(
           sessionManager,
           deps.runnerRegistry,
@@ -304,8 +341,7 @@ export async function registerSessionSpawnRoutes(
             prompt: effectivePrompt,
             ...(body.title !== undefined ? { title: body.title } : {}),
             ...(sourceBase !== undefined ? { base: sourceBase } : {}),
-            ...(body.agent !== undefined ? { agent: body.agent } : {}),
-            ...(body.model !== undefined ? { model: body.model } : {}),
+            target,
             ...(body.spawnedByTurn !== undefined ? { spawnedByTurn: body.spawnedByTurn } : {}),
             ...(body.detached ? { detached: true } : {}),
             ...(repoUrlOverride !== undefined ? { repoUrlOverride } : {}),
@@ -355,7 +391,13 @@ export async function registerSessionSpawnRoutes(
         recordSpawnInvocation({
           parentSessionId: request.params.parentId,
           ...(body.spawnedByTurn ? { spawnedByTurn: body.spawnedByTurn } : {}),
-          agentId: effectiveAgentId,
+          // docs/264 — the harness the child ACTUALLY got, which a role decides
+          // and the request cannot state. `effectiveAgentId` is resolved before
+          // the spawn so a FAILURE still carries the dimension, but on success a
+          // role-started child would otherwise be filed under the parent's
+          // harness — telemetry claiming Claude drove a spawn Codex is driving.
+          // Cross-agent review found this.
+          agentId: result.agentId,
           outcome: "success",
           statusCode: 200,
           childSessionId: result.sessionId,

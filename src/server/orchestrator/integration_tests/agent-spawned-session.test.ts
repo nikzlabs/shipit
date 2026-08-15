@@ -41,6 +41,7 @@ import { RepoStore } from "../repo-store.js";
 import { AuthManager } from "../agents/claude/auth-manager.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 import { DatabaseManager } from "../../shared/database.js";
+import type { CredentialStore } from "../credential-store.js";
 import { DEFAULT_MAX_SPAWNED_SESSIONS_PER_TURN } from "../services/child-sessions.js";
 import {
   StubAuthManager,
@@ -86,6 +87,8 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
   /** Capture every FakeClaudeProcess the orchestrator creates so Phase 3
    *  tests can drive them to `finish()` and assert idle/archive behavior. */
   let createdClaudes: FakeClaudeProcess[];
+  /** docs/264 — hoisted so the role tests can write a role and a credential. */
+  let credentialStore: CredentialStore;
 
   beforeEach(async () => {
     dbManager = createTestDatabaseManager();
@@ -105,7 +108,7 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     // writes the `insteadOf` redirect into it, and we need that done before
     // any `git fetch SPAWN_REPO_URL` fires (i.e. before buildApp's startup
     // warming runs).
-    const credentialStore = createTestCredentialStore(tmpDir);
+    credentialStore = createTestCredentialStore(tmpDir);
 
     // Spawn always routes through the home-screen claim service — the parent
     // must be backed by a "ready" registered repo. The helper seeds the bare
@@ -1055,6 +1058,278 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     });
     expect(same.statusCode).toBe(200);
     expect((same.json() as { session: { model?: string } }).session.model).toBe("claude-opus-4-7");
+  });
+
+  // -------------------------------------------------------------------------
+  // docs/264 phase 3 (reqs 8, 11, 14, 16) — one spawn vocabulary
+  //
+  // The tests above are the regression set for the completion semantics this
+  // phase deliberately did NOT unify: `--model X` inherits no service or
+  // billing mode, a harness switch clears the selection, an inherited level
+  // carries only where the child's harness declares it, and the stored child
+  // target stays partially optional. They now run through the shared parser, so
+  // they are also the evidence that unifying the SURFACE left them alone.
+  //
+  // What follows is what the surface gained.
+  // -------------------------------------------------------------------------
+
+  /** A role the install can actually run: Claude Code on Anthropic's metered key. */
+  function seedPinnedRole(name: string, prompt?: string): void {
+    credentialStore.upsertCredentialRouteWithSecret(
+      {
+        id: "anthropic-key",
+        serviceId: "anthropic",
+        billingMode: "key",
+        via: "string",
+        status: "ready",
+        priority: 0,
+        isPrimary: true,
+        label: "test",
+        createdAt: 0,
+        updatedAt: 0,
+      },
+      "sk-test",
+    );
+    credentialStore.setRole(name, {
+      name,
+      description: "Slow, thorough review",
+      ...(prompt ? { prompt } : {}),
+      params: {
+        kind: "pinned",
+        harnessId: "claude",
+        serviceId: "anthropic",
+        billingMode: "key",
+        modelId: "claude-opus-5",
+        reasoningEffort: "high",
+      },
+    });
+  }
+
+  it("a role seeds the child's COMPLETE tuple, not just an agent and a model", { timeout: 15_000 }, async () => {
+    // The thing `--agent`/`--model` could not express: a service, a billing mode
+    // and a reasoning level. Passing a role through those two options would drop
+    // three of the five, which is why the resolved target is handed over directly.
+    seedPinnedRole("deep dive");
+    const parentId = await createParentSession();
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: { prompt: "x", title: "Role spawn", role: "deep dive" },
+    });
+    expect(res.statusCode).toBe(200);
+    const childId = (res.json() as { sessionId: string }).sessionId;
+    const child = sessionManager.get(childId);
+    expect(child?.agentId).toBe("claude");
+    expect(child?.model).toBe("claude-opus-5");
+    expect(child?.serviceId).toBe("anthropic");
+    expect(child?.billingMode).toBe("key");
+    expect(child?.reasoningEffort).toBe("high");
+    // req 14 — provenance: which role started it.
+    expect(child?.originRoleName).toBe("deep dive");
+  });
+
+  it("keeps originRoleName as a snapshot when the role is edited or deleted", { timeout: 15_000 }, async () => {
+    // req 11 — a role decides what a child STARTS as, not what it is bound to.
+    // A live link would make a deleted role rewrite history; this is provenance,
+    // so it survives its subject.
+    seedPinnedRole("deep dive");
+    const parentId = await createParentSession();
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: { prompt: "x", title: "Role spawn", role: "deep dive" },
+    });
+    const childId = (res.json() as { sessionId: string }).sessionId;
+    credentialStore.setRole("deep dive", null);
+    expect(sessionManager.get(childId)?.originRoleName).toBe("deep dive");
+    // And what it runs on is untouched: the role stopped being involved the
+    // moment the child was created.
+    expect(sessionManager.get(childId)?.model).toBe("claude-opus-5");
+  });
+
+  it("joins a role's standing instructions onto the child's first prompt (req 8)", { timeout: 15_000 }, async () => {
+    seedPinnedRole("deep dive", "Check the code against requirements.md.");
+    const parentId = await createParentSession();
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: { prompt: "Review PR 12", title: "Role spawn", role: "deep dive" },
+    });
+    expect(res.statusCode).toBe(200);
+
+    const deadline = Date.now() + 3000;
+    while (createdClaudes.length === 0 && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    const cp = createdClaudes[createdClaudes.length - 1];
+    const runDeadline = Date.now() + 3000;
+    while (!cp.runCalled && Date.now() < runDeadline) {
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    // Labelled, so the callee can tell the standing brief from the task it was
+    // given now — the two arrive on one channel and unlabelled concatenation
+    // reads as a single instruction.
+    expect(cp.lastPrompt).toContain("Check the code against requirements.md.");
+    expect(cp.lastPrompt).toContain("Review PR 12");
+    expect(cp.lastPrompt).toContain("Standing instructions");
+  });
+
+  it("still refuses an empty prompt when the role carries standing instructions", { timeout: 15_000 }, async () => {
+    // The join must not make an empty task look non-empty. Standing instructions
+    // say what the job IS; they are never a substitute for what to do now, and a
+    // child spawned holding only a brief has nothing to work on.
+    seedPinnedRole("deep dive", "Check the code against requirements.md.");
+    const parentId = await createParentSession();
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: { prompt: "   ", title: "Empty", role: "deep dive" },
+    });
+    expect(res.statusCode).toBe(400);
+    expect((res.json() as { error: string }).error).toMatch(/prompt is required/);
+  });
+
+  it("refuses an unknown role and names the roles that do exist (req 13)", { timeout: 15_000 }, async () => {
+    seedPinnedRole("deep dive");
+    const parentId = await createParentSession();
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: { prompt: "x", title: "Bad role", role: "critic" },
+    });
+    expect(res.statusCode).toBe(400);
+    const err = (res.json() as { error: string }).error;
+    expect(err).toContain("critic");
+    // The list IS the remedy — the agent learns what it could have said.
+    expect(err).toContain("deep dive");
+    expect(err).toContain("reviewer");
+  });
+
+  it("lets a child name a COMPLETE target, which it could not do before", { timeout: 15_000 }, async () => {
+    seedPinnedRole("unused");
+    const parentId = await createParentSession();
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: {
+        prompt: "x",
+        title: "Explicit target",
+        agentId: "claude",
+        serviceId: "anthropic",
+        billingMode: "key",
+        modelId: "claude-opus-5",
+        reasoningEffort: "high",
+      },
+    });
+    expect(res.statusCode).toBe(200);
+    const child = sessionManager.get((res.json() as { sessionId: string }).sessionId);
+    expect(child?.serviceId).toBe("anthropic");
+    expect(child?.billingMode).toBe("key");
+    expect(child?.reasoningEffort).toBe("high");
+    // No role was named, so there is no provenance to record.
+    expect(child?.originRoleName).toBeUndefined();
+  });
+
+  it("refuses a complete target whose harness cannot speak to its model", { timeout: 15_000 }, async () => {
+    // The check used to live only on the one-shot path, so a child naming this
+    // pair was accepted, persisted, and left for its first turn to fail on.
+    // Claude Code speaks `anthropic-messages`; a GPT model does not.
+    const parentId = await createParentSession();
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: {
+        prompt: "x",
+        title: "Incoherent",
+        agentId: "claude",
+        serviceId: "openai",
+        billingMode: "sub",
+        modelId: "gpt-5.6-sol",
+        reasoningEffort: "high",
+      },
+    });
+    expect(res.statusCode).toBe(400);
+    expect((res.json() as { error: string }).error).toMatch(/cannot run/);
+  });
+
+  it("files a role-started spawn's telemetry under the harness the ROLE chose", { timeout: 15_000 }, async () => {
+    // The dimension is meant to say which CLI drives the spawned session. It was
+    // computed from the request and the parent, before role resolution — so a
+    // Claude parent starting a Codex role recorded Claude, and the counter said
+    // the opposite of what the child row says.
+    credentialStore.upsertCredentialRouteWithSecret(
+      {
+        id: "openai-key",
+        serviceId: "openai",
+        billingMode: "key",
+        via: "string",
+        status: "ready",
+        priority: 0,
+        isPrimary: true,
+        label: "test",
+        createdAt: 0,
+        updatedAt: 0,
+      },
+      "sk-test",
+    );
+    credentialStore.setRole("gpt reviewer", {
+      name: "gpt reviewer",
+      params: {
+        kind: "pinned",
+        harnessId: "codex",
+        serviceId: "openai",
+        billingMode: "key",
+        modelId: "gpt-5.6-sol",
+        reasoningEffort: "high",
+      },
+    });
+    const parentId = await createParentSession();
+    resetSpawnTelemetry();
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: { prompt: "x", title: "Codex role", role: "gpt reviewer" },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(sessionManager.get((res.json() as { sessionId: string }).sessionId)?.agentId).toBe("codex");
+    expect(getSpawnTelemetrySnapshot().byAgent.codex).toBe(1);
+    expect(getSpawnTelemetrySnapshot().byAgent.claude ?? 0).toBe(0);
+  });
+
+  it("does NOT refuse a partial call over a parent — the refusal narrowed (req 16)", { timeout: 15_000 }, async () => {
+    // The regression this phase most has to avoid. `agent run` refuses a call
+    // naming only `--effort` because it has nothing to complete it from; a child
+    // has a parent, so the same call is ordinary here. Refusing it would delete
+    // the shipped behaviour docs/261 req 10 guarantees.
+    const parentId = await createParentSession();
+    sessionManager.setModel(parentId, "claude-opus-4-7");
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: { prompt: "x", title: "Level only", reasoningEffort: "high" },
+    });
+    expect(res.statusCode).toBe(200);
+    const child = sessionManager.get((res.json() as { sessionId: string }).sessionId);
+    expect(child?.reasoningEffort).toBe("high");
+    // The rest still came from the parent, which is what "partial over a base"
+    // means.
+    expect(child?.model).toBe("claude-opus-4-7");
+  });
+
+  it("refuses a NAMED level the child's harness does not declare, rather than dropping it", { timeout: 15_000 }, async () => {
+    // The contrast with the inherited case above is the point: an inherited
+    // level is dropped when it does not fit (the caller merely happens to have
+    // it), and a level the caller NAMED is refused (a dropped override runs
+    // something other than what was asked for). `max` is Claude's; Codex stops
+    // at `xhigh`.
+    const parentId = await createParentSession();
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: { prompt: "x", title: "Bad level", agentId: "codex", reasoningEffort: "max" },
+    });
+    expect(res.statusCode).toBe(400);
+    expect((res.json() as { error: string }).error).toContain("max");
   });
 
   it("POST /spawn rejects an unknown agent id with 400", { timeout: 15_000 }, async () => {

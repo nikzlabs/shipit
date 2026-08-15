@@ -310,6 +310,32 @@ or a complete target in, a resolved `(harness, selection, effort)` out, with one
 `session create` calls the same thing instead of its own two-flag reading. That is what makes the
 two commands *consistent by construction* rather than by two implementations agreeing.
 
+**Where phase 3 landed it.** `services/sub-agent-target.ts` holds the one parser
+(`parseSpawnTarget`, whose single `parentBase` flag is the only difference between the commands)
+and the two resolvers — `resolveSpawnTarget` for a one-shot run and `resolveSpawnTargetForChild`,
+which is the same resolution with the frozen route removed. `SpawnTarget` (three bases) lives in
+`shared/types/agent-types.ts` so both wire hops carry one vocabulary;
+`SubAgentSpawnTarget` is now a narrowing of it rather than a second union, which states the
+one-difference rule in the type. The prompt join is `services/roles.ts`'s `joinRolePrompt`, and
+the two agent-facing reads are `services/spawn-inventory.ts` behind
+`GET /api/sessions/:id/agent/roles` and `…/agent/params` (`shipit agent roles` / `shipit agent
+params`).
+
+**One validator means the harness/model check moved.** "Can this harness speak to this model at
+all" — one API style in common — used to be asked only on the one-shot path, inside `runSubAgent`
+(`assertHarnessCanRunSelection`, against the registry's eligible set). A child session naming a
+complete target never reached it, so `--agent claude … --model gpt-5.6-sol` was accepted, persisted,
+and left for the child's first turn to fail on. It is now asked in `resolveSpawnTarget` itself, of
+the catalogue only, so both commands refuse it identically; the registry gate downstream still owns
+the credential half, which is a different question with a different remedy. Cross-agent review found
+the gap, and the fixture that hid it — the one-shot tests had been pairing Claude Code with a GPT
+model on every call, and passing, because the fake registry said it could.
+
+**A named-but-blank parameter is refused rather than dropped.** `--role reviewer --model "   "` used
+to have the blank evaporate and the *bare role* run — a run nobody asked for, which is exactly the
+dropped override req 10 forbids. Absent means "the base supplies it"; blank means the caller tried to
+say something that did not survive its shell, and the two must not look alike.
+
 **Where they legitimately differ, and it is one thing only.** A child has a parent available as a
 base; a one-shot run does not, so naming a role (or a complete target) is how it says anything at
 all. Everything else — the role, the overrides, the refusal — is identical, which is what req 16
@@ -338,16 +364,20 @@ parameters**, which is the one shape ShipIt would have to guess at.
 a parent completes a partial call *exactly* as a role does. It does not, and the difference is
 deliberate, documented, and must be preserved rather than unified away:
 
-- a bare `--model X` inherits **no** service or billing mode from the parent
-  (`child-sessions.ts:519` — `if (opts.model) return { model: opts.model }`), because a model id
-  names one backend's catalogue;
-- a harness switch **clears** the inherited selection entirely, for the same reason spelled out at
-  `child-sessions.ts:521-525`;
+- a bare `--model X` inherits **no** service or billing mode from the parent (the `inherited`
+  IIFE's first branch in `spawnChildSession`), because a model id names one backend's catalogue;
+- a harness switch **clears** the inherited selection entirely (`if (childAgentId !== parentAgentId)
+  return {}`), for the same reason;
 - a reasoning level carries only where the target harness declares it, and is otherwise **dropped**
-  (`child-sessions.ts:599-604`) — a level is a depth that means the same thing on either backend,
+  (the `inheritedReasoning` IIFE) — a level is a depth that means the same thing on either backend,
   a model id is not;
-- the stored child target stays **partially optional** (`child-sessions.ts:605`), so a parent does
-  not even always hold a complete tuple to copy.
+- the stored child target stays **partially optional** (`selection` is spread field-by-field into
+  `graduateSession`), so a parent does not even always hold a complete tuple to copy.
+
+*Verified 2026-08-15, at those functions rather than at the line numbers this list used to carry:
+every behaviour holds exactly as described, and each now has a named regression test in
+`integration_tests/agent-spawned-session.test.ts`. The line numbers had drifted by ~14 lines and
+are replaced with the function and branch names, which do not rot the same way.*
 
 So "base plus overrides" is the **shape of the call**, not a claim that every base completes the
 same way. A role completes from its own params; a parent completes by the rules above, which are

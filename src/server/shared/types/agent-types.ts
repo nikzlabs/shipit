@@ -34,52 +34,90 @@ export interface AgentReasoningCapability {
   options: { value: string; label: string }[];
 }
 
-/**
- * docs/261 req 6 — the roles an agent may ask for by name.
- *
- * A role is the **implicit** path: the caller names what it wants done and
- * ShipIt resolves who does it, from settings the user owns. It supplies no
- * service, no model and no harness — asking for a review and choosing the
- * reviewer are two different things, and only the first belongs to the agent.
- *
- * One role today. It is a list rather than a literal because the CLI has to
- * reject an unknown role by name, and a second role (a summarizer, a test
- * writer) would land here rather than growing another flag.
+/*
+ * docs/261's `SUB_AGENT_ROLES` — a compiled-in list of the roles that exist —
+ * is **deleted** here rather than extended (docs/264 reqs 13, 18). A role is now
+ * any name the user typed, stored server-side, so no constant can hold the set
+ * and every caller that checked against one was rejecting the user's own roles.
+ * The name that remains constant is the reserved one: {@link RESERVED_ROLE_NAME},
+ * below. Resolution — and the refusal that names the roles that do exist — is
+ * `services/roles.ts`'s.
  */
-export const SUB_AGENT_ROLES = ["reviewer"] as const;
-export type SubAgentRole = (typeof SUB_AGENT_ROLES)[number];
 
 /**
- * docs/261 req 7 — what a one-shot `shipit agent run` runs on.
+ * docs/264 req 10 — any subset of a role's parameters, named by the caller at
+ * the moment it starts one.
  *
- * Exactly two shapes, and the asymmetry between them is the feature:
+ * Every field optional, and that is req 16's "partial is the normal case": a
+ * caller names what it cares about and the **base** supplies the rest. The empty
+ * object is the ordinary path — a bare role name, nothing overridden.
  *
- *  - **`role`** — resolved from ShipIt's settings (req 6). The caller names
- *    nothing else, and naming a role *and* an explicit parameter is refused
- *    rather than reconciled: they are answers to two different questions.
- *  - **`explicit`** — the caller states everything, and an omission is an
- *    **error** rather than a silent completion from a stored default the caller
- *    cannot see (req 7). That is why every field here is required: a
- *    half-specified explicit call is not expressible, which is the type-level
- *    statement of the rule the whole feature exists to establish.
- *
- * A **child session** is neither, and deliberately so (req 10): it inherits from
- * its parent, because it *has* a parent, where a one-shot run has nothing but
- * its own arguments. `shipit session create` is untouched by this type.
+ * Shared rather than orchestrator-local because {@link SpawnTarget} carries it
+ * over the wire, and a second declaration is how the two come to disagree about
+ * a field.
  */
-export type SubAgentSpawnTarget =
-  | { kind: "role"; role: SubAgentRole }
+export interface RoleOverrides {
+  harnessId?: AgentId | undefined;
+  serviceId?: string | undefined;
+  billingMode?: BillingMode | undefined;
+  modelId?: string | undefined;
+  reasoningEffort?: string | undefined;
+}
+
+/**
+ * docs/264 req 16 — what a spawn runs on, in the one vocabulary **both** spawn
+ * commands speak.
+ *
+ * The shape is always *a base plus overrides*, and the three kinds are the three
+ * bases:
+ *
+ *  - **`role`** — a role by name (reqs 3, 4), with any subset of its parameters
+ *    overridden (req 10). Available to both commands. The role supplies
+ *    everything the caller did not name; for the shipped reviewer ShipIt
+ *    resolves the params instead (req 2).
+ *  - **`explicit`** — no base at all, so the call must name all five itself.
+ *    Available to both commands. Kept implemented for a repository that holds a
+ *    complete target of its own (req 15), and no longer the shape ShipIt teaches.
+ *  - **`inherit`** — the **parent session** is the base (`shipit session create`
+ *    only, because a one-shot run has no parent). This is the shipped
+ *    `--model X` form docs/261 req 10 guarantees, and it is now one of the
+ *    general cases rather than an exception.
+ *
+ * **The surface is unified; the completion semantics are NOT.** A parent does
+ * not complete a partial call the way a role does — a model id names one
+ * backend's catalogue, so it carries no service, and a harness switch clears the
+ * inherited selection entirely. Those rules are docs/261's and stay exactly as
+ * they are (`services/child-sessions.ts`); this type says only that the two
+ * commands *accept* the same things.
+ */
+export type SpawnTarget =
+  | {
+      kind: "role";
+      /** Any name the user typed (req 18) — resolved server-side, never checked against a list. */
+      role: string;
+      overrides: RoleOverrides;
+    }
   | {
       kind: "explicit";
-      /** The harness that runs (req 3's `--agent`). */
-      subAgentId: AgentId;
-      /** The `(service, billing mode, model)` triple that identifies a model (req 3). */
+      /** The harness that runs (docs/261 req 3's `--agent`). */
+      harnessId: AgentId;
+      /** The `(service, billing mode, model)` triple that identifies a model. */
       serviceId: string;
       billingMode: BillingMode;
       modelId: string;
-      /** The reasoning level (req 5) — part of the call, never the harness's default. */
+      /** The reasoning level — part of the call, never the harness's default. */
       reasoningEffort: string;
-    };
+    }
+  | { kind: "inherit"; overrides: RoleOverrides };
+
+/**
+ * What a **one-shot** `shipit agent run` runs on: {@link SpawnTarget} minus the
+ * parent base, which it has no access to.
+ *
+ * Expressed as a narrowing rather than a second union so the one place the two
+ * commands differ is stated once, in the type, exactly as req 16 states it.
+ */
+export type SubAgentSpawnTarget = Extract<SpawnTarget, { kind: "role" | "explicit" }>;
 
 /**
  * docs/261 req 4 — which of the two configured reviewers a slot is.

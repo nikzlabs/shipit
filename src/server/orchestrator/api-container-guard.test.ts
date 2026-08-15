@@ -533,6 +533,16 @@ const GOLDEN_CONTAINER_ROUTES = [
   // returns only that session's own persisted consult cards (planning#247).
   "POST /api/sessions/:id/agent/spawn",
   "GET /api/sessions/:id/agent/result",
+  // docs/264 req 12 — the two reads that make `--role NAME` and an override
+  // nameable. Deliberately container-reachable: the agent cannot name a role it
+  // cannot see, and an agent allowed to override a parameter without the list
+  // names one from memory. Neither read carries anything session-private — the
+  // roles are a ShipIt-wide SETTING (name, description, what each resolves to)
+  // and the parameters are this install's harnesses, levels and credentialed
+  // model IDS. No secrets, no credentials, no other session's anything; the path
+  // id is the caller's own, injected by the worker as on every route here.
+  "GET /api/sessions/:id/agent/roles",
+  "GET /api/sessions/:id/agent/params",
   // session — shipit session create/list/view/wait/message/archive + notify-on-merge
   "POST /api/sessions/:parentId/spawn",
   "GET /api/sessions/:parentId/children",

@@ -24,8 +24,15 @@ const SUB_AGENT_DISPLAY_NAMES: Record<string, string> = { claude: "Claude", code
  *    Claude Code can drive a non-Anthropic model that sentence can be true while
  *    being wrong about everything the reader cares about.
  *  - `attribution` is the quieter second line: service, billing mode, the
- *    harness that drove it, and the reasoning level (req 5 — part of the
- *    reviewer, so it is part of the report).
+ *    harness that drove it, the reasoning level (req 5 — part of the reviewer, so
+ *    it is part of the report), and — docs/264 req 14 — the **role** the run was
+ *    started as, when one was.
+ *
+ * The role leads that line because it is what the caller actually asked for, and
+ * it is not recoverable from the tuple beside it: two roles can resolve to the
+ * same model, and the reviewer's resolves per run, so a card showing only the
+ * tuple cannot answer "was this the reviewer, or `deep-dive`?" — which is the
+ * question a reader of the transcript has.
  *
  * Every id is resolved through the catalogue and falls back to itself, so a
  * model or service the catalogue has since dropped renders as a raw id rather
@@ -44,6 +51,7 @@ function describeRun(card: SubAgentConsultCardData): { subject: string; attribut
   return {
     subject: getModel(runOn)?.label ?? runOn.modelId,
     attribution: [
+      ...(card.roleName ? [`as ${card.roleName}`] : []),
       serviceLabel(runOn.serviceId),
       billingModeLabel(runOn.billingMode),
       harness,

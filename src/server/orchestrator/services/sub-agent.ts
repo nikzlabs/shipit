@@ -15,14 +15,20 @@
  * `finally`. The run itself is delegated to `runner.spawnSubAgent`.
  *
  * Review is the first *consumer* of this primitive, not the primitive itself —
- * but since docs/261 it is a consumer with a name. A spawn carries a
- * {@link RunSubAgentInput.target}: either a **role**, which ShipIt resolves from
- * the user's reviewer settings (`services/sub-agent-target.ts` →
- * `reviewer-model.ts`), or an **explicit** call naming the harness, service,
- * billing mode, model and reasoning level. There is no third shape. In
- * particular there is no longer a bare `subAgentId` with a stored per-harness
- * default filling in the rest, which is what "get a second opinion from Codex"
- * used to mean.
+ * but since docs/261 it is a consumer with a name, and since docs/264 that name
+ * is one of many. A spawn carries a {@link RunSubAgentInput.target}: either a
+ * **role** (± the caller's overrides), resolved from the user's own settings
+ * (`services/sub-agent-target.ts` → `services/roles.ts`, with the shipped
+ * reviewer delegating to `reviewer-model.ts`), or an **explicit** call naming the
+ * harness, service, billing mode, model and reasoning level. There is no third
+ * shape here — a child session's third base, its parent, has no counterpart for a
+ * one-shot run. In particular there is no longer a bare `subAgentId` with a
+ * stored per-harness default filling in the rest, which is what "get a second
+ * opinion from Codex" used to mean.
+ *
+ * docs/264 adds two things to the run itself: the role's standing instructions
+ * are joined onto the task (req 8), and the role's NAME rides the consult card
+ * beside what it resolved to (req 14).
  *
  * ## Observability (planning#280)
  *
@@ -38,12 +44,8 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { resolveTurnCost, selectionOf, turnAttributionFor } from "../turn-attribution.js";
-import {
-  parseSpawnIdentity,
-  selectRouteForSelection,
-  serviceRoutingForSelection,
-} from "../service-routing.js";
+import { resolveTurnCost, turnAttributionFor } from "../turn-attribution.js";
+import { selectRouteForSelection, serviceRoutingForSelection } from "../service-routing.js";
 import type {
   AgentId,
   SubAgentConsultCard,
@@ -52,9 +54,11 @@ import type {
 } from "../../shared/types.js";
 import {
   assertHarnessCanRunSelection,
+  implementerFor,
   resolveSubAgentSpawnTarget,
   type ResolvedSpawnTarget,
 } from "./sub-agent-target.js";
+import { joinRolePrompt, ROLE_PROMPT_LIMITS } from "./roles.js";
 import type { SessionManager } from "../sessions.js";
 import type { CredentialStore } from "../credential-store.js";
 import type { AgentRegistry } from "../../shared/agent-registry.js";
@@ -223,9 +227,14 @@ export async function runSubAgent(
   sessionId: string,
   input: RunSubAgentInput,
 ): Promise<RunSubAgentResult> {
-  const { target, prompt, depth } = input;
-  const requested = target.kind === "role" ? `role:${target.role}` : target.subAgentId;
-  const promptBytes = typeof prompt === "string" ? Buffer.byteLength(prompt) : 0;
+  const { target, depth } = input;
+  const requested = target.kind === "role" ? `role:${target.role}` : target.harnessId;
+  // The task as the caller sent it. A role's standing instructions are joined
+  // onto it *after* resolution (req 8) — the role that carries them is not known
+  // until then — so `prompt` is reassigned once, below, and everything that
+  // reads it (the size log, the spawn) reads the joined value.
+  let prompt = input.prompt;
+  let promptBytes = typeof prompt === "string" ? Buffer.byteLength(prompt) : 0;
   console.log(
     `[sub-agent] requested session=${sessionId} target=${requested} depth=${depth} promptBytes=${promptBytes}`,
   );
@@ -313,14 +322,7 @@ export async function runSubAgent(
   // wrote it, which req 4 forbids whenever an alternative is configured. The row
   // stays the fallback for a session with no resident process (a fresh runner, a
   // local runtime, a test), where there is no capture to prefer.
-  const captured = parseSpawnIdentity(runner.appliedSpawnIdentity);
-  const implementer = {
-    harnessId: implementerHarness,
-    selection:
-      captured?.harnessId === implementerHarness && captured.selection
-        ? captured.selection
-        : selectionOf(session),
-  };
+  const implementer = implementerFor(session, implementerHarness, runner.appliedSpawnIdentity);
   let resolvedTarget: ResolvedSpawnTarget;
   try {
     resolvedTarget = resolveSubAgentSpawnTarget(target, implementer, {
@@ -333,6 +335,22 @@ export async function runSubAgent(
     }
     throw err;
   }
+
+  // docs/264 req 8 — the role's standing instructions and this run's task become
+  // the sub-agent's one prompt, labelled so the callee can tell the standing
+  // brief from what it was asked to do now. A role without them returns the task
+  // unchanged, byte for byte. The limit is checked on the JOINED string and the
+  // failure names the role: the caller cannot shorten instructions it did not
+  // write, and blaming its task would send it to fix the wrong half.
+  try {
+    prompt = joinRolePrompt(prompt, resolvedTarget, ROLE_PROMPT_LIMITS.oneShot);
+  } catch (err) {
+    if (err instanceof ServiceError) {
+      throw rejectSpawn(sessionId, requested, err.statusCode, "prompt_too_long", err.message);
+    }
+    throw err;
+  }
+  promptBytes = Buffer.byteLength(prompt);
   const subAgentId = resolvedTarget.harnessId;
   if (resolvedTarget.reviewer) {
     const r = resolvedTarget.reviewer;
@@ -486,10 +504,17 @@ export async function runSubAgent(
   // ran, so it leaves this untouched by construction.) Set HERE, on the pending
   // card, rather than at completion: a consult is in flight for minutes, and
   // "who is being asked" is the first thing the row has to answer.
+  //
+  // docs/264 req 14 — plus the ROLE, when one started the run. A role is what
+  // the caller actually named, so a card that reports only the resolved tuple
+  // cannot say whether a review ran as `reviewer` or as `deep-dive`, which is the
+  // thing a user reading the transcript asked for. A snapshot of the name, like
+  // every other field here: editing the role later does not rewrite this card.
   const pendingCard: SubAgentConsultCard = {
     cardId,
     spawnId,
     subAgentId,
+    ...(resolvedTarget.roleName ? { roleName: resolvedTarget.roleName } : {}),
     runOn: {
       serviceId: subSelection.serviceId,
       billingMode: subSelection.billingMode,

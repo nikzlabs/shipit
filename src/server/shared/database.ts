@@ -1341,6 +1341,21 @@ const MIGRATIONS: Migration[] = [
       }
     }
   },
+  // docs/264 req 14 — provenance for a child session started from a role:
+  // WHICH role started it. NULL for every existing row and for every session
+  // started any other way, which is the correct reading — nothing to backfill,
+  // because a session that predates roles was not started from one.
+  //
+  // A snapshot, not a reference: no foreign key, and nothing rewrites it when the
+  // role is renamed or deleted. That is the design (req 11), not an omission —
+  // the role decides what the child starts as and stops being involved.
+  //
+  // Guarded, like the docs/252 columns: the migration tests rewind
+  // `user_version` and replay the tail, so an unguarded `ALTER` fails there on a
+  // column that is already present.
+  (db) => {
+    addSessionColumnIfMissing(db, "origin_role_name");
+  },
 ];
 
 /**

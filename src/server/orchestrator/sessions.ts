@@ -88,6 +88,8 @@ interface SessionRow {
   spawned_by_turn: string | null;
   /** docs/201 — top-level ancestor of the spawn tree; NULL on a top-level session. */
   root_session_id: string | null;
+  /** docs/264 — the role this session was created from; NULL when none was named. Write-once. */
+  origin_role_name: string | null;
   /** docs/182 — 1 when the session's last completed turn ended in an error. */
   last_turn_errored: number;
   /** docs/186 — 1 when the auto-fix-CI loop is paused for this session. */
@@ -369,6 +371,7 @@ export class SessionManager {
     }
     if (row.parent_session_id) info.parentSessionId = row.parent_session_id;
     if (row.spawned_by_turn) info.spawnedByTurn = row.spawned_by_turn;
+    if (row.origin_role_name) info.originRoleName = row.origin_role_name;
     if (row.root_session_id) info.rootSessionId = row.root_session_id;
     if (row.last_turn_errored) info.lastTurnErrored = true;
     if (row.auto_fix_ci_paused) info.autoFixCiPaused = true;
@@ -1078,6 +1081,26 @@ export class SessionManager {
    */
   setSpawnedByTurn(id: string, spawnedByTurn: string): void {
     this.db.prepare("UPDATE sessions SET spawned_by_turn = ? WHERE id = ?").run(spawnedByTurn, id);
+  }
+
+  /**
+   * docs/264 req 14 — record WHICH role started this session. Write-once.
+   *
+   * **The `IS NULL` clause is the immutability**, not a comment about it: a
+   * second call cannot change what a first one recorded, so the field means "the
+   * role this session was created from" for as long as the row exists. Provenance
+   * that could be rewritten would answer a different question every time it was
+   * asked, and this one is read long after the fact — by a user asking what a
+   * child in their sidebar came from.
+   *
+   * It is deliberately a **snapshot of the name** and not a reference: renaming
+   * or deleting the role does not reach in here, and the child may over time run
+   * on something other than what the role named (req 11).
+   */
+  setOriginRoleName(id: string, originRoleName: string): void {
+    this.db.prepare(
+      "UPDATE sessions SET origin_role_name = ? WHERE id = ? AND origin_role_name IS NULL",
+    ).run(originRoleName, id);
   }
 
   /**

@@ -10,8 +10,15 @@
 import simpleGit from "simple-git";
 import type { SessionManager } from "../sessions.js";
 import type { SessionRunnerRegistry, SessionRunnerInterface } from "../session-runner.js";
-import type { SessionInfo, AgentId, SessionMergeWatch } from "../../shared/types.js";
+import type { SessionInfo, AgentId, SessionMergeWatch, SpawnTarget } from "../../shared/types.js";
 import type { BillingMode } from "../../shared/catalogue/index.js";
+import { selectionExists } from "../../shared/catalogue/index.js";
+import {
+  implementerFor,
+  resolveSpawnTargetForChild,
+  type ResolvedSpawnTarget,
+} from "./sub-agent-target.js";
+import { joinRolePrompt, ROLE_PROMPT_LIMITS } from "./roles.js";
 import { applyModelRetirement } from "../model-retirement.js";
 import type { CredentialStore } from "../credential-store.js";
 import type { ProviderAccountManager } from "../provider-account-manager.js";
@@ -163,6 +170,23 @@ export interface SpawnChildSessionOptions {
   /** Optional model override. Defaults to the parent's selected model. */
   model?: string;
   /**
+   * docs/264 phase 3 (reqs 11, 16) — what this child runs on, in the vocabulary
+   * both spawn commands share: a **role** (± overrides), a **complete target**
+   * naming all five parameters, or **inheritance** from this parent.
+   *
+   * Supersedes {@link SpawnChildSessionOptions.agent} / `model`, which remain for
+   * the callers that predate it (and are read as `{ kind: "inherit" }` overrides
+   * when no `target` is given, so there is exactly one code path below rather
+   * than two that must agree).
+   *
+   * **A role decides what the child STARTS as, not what it is bound to** (req 11).
+   * It is resolved once, here, before any disk work; from then on the child is an
+   * ordinary session with the ordinary routing, account-failover and
+   * model-retirement behaviour. Nothing re-reads the role afterwards, and
+   * `originRoleName` is a snapshot of the name rather than a live link.
+   */
+  target?: SpawnTarget;
+  /**
    * Free-form id of the parent turn that triggered the spawn. Persisted as
    * `spawnedByTurn` so `shipit session list` can sort "this turn first"
    * without walking chat history.
@@ -209,6 +233,19 @@ export interface SpawnChildSessionOptions {
 export interface SpawnChildSessionResult {
   /** The newly-created child session. */
   session: SessionInfo;
+  /**
+   * The harness the child was actually created on — an explicit `--agent`, the
+   * one derived from a model, the one a **role** resolved to, or the parent's.
+   *
+   * Returned rather than read back off {@link SpawnChildSessionResult.session},
+   * whose snapshot is taken BEFORE `prepareSessionAgentEnvironment` pins the
+   * agent and therefore usually carries no `agentId` at all. A caller that needs
+   * to say what drives this child — the spawn telemetry does — would otherwise
+   * fall back to the request, and a role-started child would be filed under the
+   * parent's harness while its row says the opposite. Cross-agent review found
+   * that.
+   */
+  agentId: AgentId;
   /** Convenience field for the CLI shim's text output. */
   sessionId: string;
   /** The child's branch name (generated or user-supplied). */
@@ -251,14 +288,6 @@ export async function spawnChildSession(
   providerAccountManager: ProviderAccountManager | undefined,
   graduationDeps: GraduateSessionDeps,
 ): Promise<SpawnChildSessionResult> {
-  const trimmedPrompt = opts.prompt?.trim();
-  if (!trimmedPrompt) {
-    throw new ServiceError(400, "prompt is required");
-  }
-  if (trimmedPrompt.length > 50_000) {
-    throw new ServiceError(400, "prompt exceeds 50,000 characters");
-  }
-
   const parent = sessionManager.get(parentSessionId);
   if (!parent) throw new ServiceError(404, "Parent session not found");
   if (parent.archived) throw new ServiceError(400, "Parent session is archived");
@@ -266,15 +295,79 @@ export async function spawnChildSession(
     throw new ServiceError(400, "Parent session has no workspace");
   }
 
+  // docs/264 phase 3 (req 16) — one vocabulary, three bases. `agent`/`model` from
+  // a caller that predates the target are read as overrides over the parent, so
+  // everything below has exactly one shape to handle and the shipped `--model X`
+  // form is a partial call over a base rather than a special case.
+  const target: SpawnTarget = opts.target ?? {
+    kind: "inherit",
+    overrides: {
+      ...(opts.agent ? { harnessId: opts.agent } : {}),
+      ...(opts.model ? { modelId: opts.model } : {}),
+    },
+  };
+
+  // docs/264 req 11 — a role (or a complete target) is resolved ONCE, here,
+  // before any disk work, and hands the child a complete starting tuple. The
+  // one-shot path's frozen ROUTE is deliberately not carried in
+  // (`resolveSpawnTargetForChild`): a child takes turns of its own for days, and
+  // a credential pinned at creation would break account failover the first time
+  // that subscription hit its quota — long after anyone would connect the two.
+  const seeded = ((): ResolvedSpawnTarget | undefined => {
+    if (target.kind === "inherit") return undefined;
+    if (!credentialStore) {
+      // Roles live in the credential store, so without one there is nothing to
+      // resolve a role or validate a complete target against. Said plainly rather
+      // than dereferenced: a minimal runtime (a test harness) can still spawn a
+      // child by inheritance, which needs none of this.
+      throw new ServiceError(
+        500,
+        "This runtime cannot resolve a role or an explicit target (no credential store).",
+      );
+    }
+    return resolveSpawnTargetForChild(
+      target,
+      implementerFor(
+        parent,
+        parent.agentId ?? defaultAgentId,
+        runnerRegistry.get(parentSessionId)?.appliedSpawnIdentity,
+      ),
+      {
+        credentialStore,
+        ...(providerAccountManager ? { providerAccountManager } : {}),
+      },
+    );
+  })();
+  const overrides = target.kind === "inherit" ? target.overrides : {};
+
+  // The TASK is checked for emptiness before anything is joined onto it. A role's
+  // standing instructions are never a substitute for one: joining first would
+  // make an empty prompt non-empty and spawn a child holding a standing brief and
+  // no task at all.
+  const task = opts.prompt?.trim();
+  if (!task) {
+    throw new ServiceError(400, "prompt is required");
+  }
+  // docs/264 req 8 — the role's standing instructions and the spawn's own prompt
+  // become the child's first message, labelled. The length check runs on the
+  // JOINED string (that is what is sent) and its refusal names the ROLE, because
+  // the caller cannot shorten instructions it did not write.
+  const trimmedPrompt = seeded
+    ? joinRolePrompt(task, seeded, ROLE_PROMPT_LIMITS.child)
+    : task;
+  if (trimmedPrompt.length > ROLE_PROMPT_LIMITS.child) {
+    throw new ServiceError(400, "prompt exceeds 50,000 characters");
+  }
+
   // Resolve and validate the agent/model overrides BEFORE any disk work, so a
   // bad value fails fast (400 surfaced on the shim) instead of booting a
   // container that 401s or errors on its first turn. The spawning agent supplies
   // these as free text — an LLM picking an exact model id is a known source of
   // typos and cross-backend mismatches — so the registry is the source of truth.
-  if (opts.agent && !getAgentCapabilities(opts.agent)) {
+  if (overrides.harnessId && !getAgentCapabilities(overrides.harnessId)) {
     throw new ServiceError(
       400,
-      `Unknown agent '${opts.agent}'. Valid agents: ${KNOWN_AGENT_IDS.join(", ")}.`,
+      `Unknown agent '${overrides.harnessId}'. Valid agents: ${KNOWN_AGENT_IDS.join(", ")}.`,
     );
   }
   // Mirror the client's rule that the model is the source of truth and the agent
@@ -298,9 +391,9 @@ export async function spawnChildSession(
   const parentAgentId: AgentId = parent.agentId ?? defaultAgentId;
   const harnessOffersModel = (harnessId: AgentId, modelId: string): boolean =>
     (getAgentCapabilities(harnessId)?.models ?? []).includes(modelId);
-  let agentOverride: AgentId | undefined = opts.agent;
-  if (opts.model) {
-    const modelOwner = agentIdForModel(opts.model);
+  let agentOverride: AgentId | undefined = overrides.harnessId;
+  if (overrides.modelId) {
+    const modelOwner = agentIdForModel(overrides.modelId);
     if (modelOwner && !agentOverride) {
       // A shared id needs no switch: the parent's own harness can run it, so
       // "the model is the source of truth" is already satisfied where the child
@@ -313,11 +406,11 @@ export async function spawnChildSession(
       // stop failing fast with 400 and start creating a Claude child whose first
       // turn cannot run. Same resolved harness either way; the gate keeps its
       // subject. Cross-agent review caught this.
-      agentOverride = harnessOffersModel(parentAgentId, opts.model) ? parentAgentId : modelOwner;
-    } else if (modelOwner && agentOverride && !harnessOffersModel(agentOverride, opts.model)) {
+      agentOverride = harnessOffersModel(parentAgentId, overrides.modelId) ? parentAgentId : modelOwner;
+    } else if (modelOwner && agentOverride && !harnessOffersModel(agentOverride, overrides.modelId)) {
       throw new ServiceError(
         400,
-        `Model '${opts.model}' belongs to agent '${modelOwner}', not '${agentOverride}'. ` +
+        `Model '${overrides.modelId}' belongs to agent '${modelOwner}', not '${agentOverride}'. ` +
           `Pass --agent ${modelOwner}, or omit --agent to derive it from the model.`,
       );
     }
@@ -333,6 +426,43 @@ export async function spawnChildSession(
       400,
       `Agent '${agentOverride}' is not installed in this deployment.`,
     );
+  }
+  // Same gate for a seeded target. A ROLE's harness was already checked by the
+  // role validator, but a **complete target** names its harness directly and
+  // reaches here unexamined — so this covers it rather than letting a five-flag
+  // spawn boot a container whose CLI is absent.
+  if (seeded && !isHarnessInstalled(seeded.harnessId)) {
+    throw new ServiceError(
+      400,
+      `Agent '${seeded.harnessId}' is not installed in this deployment.`,
+    );
+  }
+
+  // docs/264 req 16 — a reasoning level is now sayable on a child spawn, which it
+  // was not before (`session create` parsed `--agent`/`--model` and nothing
+  // else). A NAMED level is validated against the harness the child will run and
+  // **refused** when that harness does not declare it — an override the caller
+  // wrote is never dropped, because a dropped override runs something other than
+  // what was asked for.
+  //
+  // Deliberately different from the INHERITED level below, which is dropped
+  // rather than refused when it does not fit. The two are different things: the
+  // caller chose one and merely happens to have the other, so failing a spawn
+  // over a parent's setting would be hostile where failing over a stated one is
+  // the point.
+  const namedReasoning = overrides.reasoningEffort;
+  if (namedReasoning) {
+    const childHarness = agentOverride ?? parentAgentId;
+    const options = getAgentCapabilities(childHarness)?.reasoning?.options ?? [];
+    if (!options.some((o) => o.value === namedReasoning)) {
+      const valid = options.length > 0
+        ? `Valid levels: ${options.map((o) => o.value).join(", ")}.`
+        : "That agent declares no reasoning levels.";
+      throw new ServiceError(
+        400,
+        `Invalid --effort '${namedReasoning}' for agent '${childHarness}'. ${valid}`,
+      );
+    }
   }
 
   // Quota: per-parent cap on active spawned children. Fail-closed.
@@ -528,9 +658,36 @@ export async function spawnChildSession(
   // relative to it. (`parentAgentId` itself is resolved with the validation
   // block above, which needs it to answer whether an explicit `--model` the
   // parent's harness already offers implies a switch at all.)
-  const childAgentId: AgentId = agentOverride ?? parentAgentId;
+  //
+  // docs/264 req 11 — a SEEDED target (a role, or a complete five-parameter
+  // call) skips all of this: it already holds the harness, and the block below
+  // is about completing from a parent, which a seeded child does not do. The
+  // completion rules stay exactly as they are for the inheriting case, which is
+  // the whole of "unify the surface, not the completion semantics".
+  const childAgentId: AgentId = seeded?.harnessId ?? agentOverride ?? parentAgentId;
   const inherited = ((): { model?: string; serviceId?: string; billingMode?: BillingMode } => {
-    if (opts.model) return { model: opts.model };
+    // A seeded target names the complete triple; nothing is inherited and
+    // nothing is dropped.
+    if (seeded) {
+      return {
+        model: seeded.selection.modelId,
+        serviceId: seeded.selection.serviceId,
+        billingMode: seeded.selection.billingMode,
+      };
+    }
+    // A named model inherits NO service or billing mode from the parent
+    // (docs/261 req 10, preserved verbatim): a model id names one backend's
+    // catalogue, so a service the caller did not name must not be attached to a
+    // model it did. What is new is only that the caller may now name the service
+    // and mode ITSELF — `--service`/`--billing-mode` are part of the shared
+    // vocabulary (req 16) — and a named half is honoured rather than dropped.
+    if (overrides.modelId) {
+      return {
+        model: overrides.modelId,
+        ...(overrides.serviceId ? { serviceId: overrides.serviceId } : {}),
+        ...(overrides.billingMode ? { billingMode: overrides.billingMode } : {}),
+      };
+    }
     // A bare `--agent codex` from a Claude parent inherits NOTHING of the
     // selection: a model id names one backend's catalogue, so carrying the
     // parent's across a harness switch pins the child to a model its own CLI
@@ -542,12 +699,39 @@ export async function spawnChildSession(
     if (childAgentId !== parentAgentId) return {};
     applyModelRetirement(sessionManager, parent, parentAgentId);
     const fresh = sessionManager.get(parentSessionId) ?? parent;
+    const serviceId = overrides.serviceId ?? fresh.serviceId;
+    const billingMode = overrides.billingMode ?? fresh.billingMode;
     return {
       ...(fresh.model ? { model: fresh.model } : {}),
-      ...(fresh.serviceId ? { serviceId: fresh.serviceId } : {}),
-      ...(fresh.billingMode ? { billingMode: fresh.billingMode } : {}),
+      // A named service or billing mode wins over the inherited one, on the
+      // inherited model — the caller moved half the location and the rest stands.
+      ...(serviceId ? { serviceId } : {}),
+      ...(billingMode ? { billingMode } : {}),
     };
   })();
+  // req 16 — a NAMED service or billing mode is validated against the resulting
+  // triple and **refused** when the catalogue has no such row, never dropped. The
+  // inherited case below keeps its own rule (drop, do not refuse) for the reason
+  // stated there: the caller chose one and merely happens to have the other.
+  if ((overrides.serviceId || overrides.billingMode) && !seeded) {
+    const named = inherited.model && inherited.serviceId && inherited.billingMode
+      ? {
+          serviceId: inherited.serviceId,
+          billingMode: inherited.billingMode,
+          modelId: inherited.model,
+        }
+      : undefined;
+    if (!named || !selectionExists(named)) {
+      throw new ServiceError(
+        400,
+        `No model '${inherited.model ?? "(none)"}' is offered by `
+          + `'${inherited.serviceId ?? "(no service)"}' on the `
+          + `'${inherited.billingMode ?? "(no billing mode)"}' billing mode. `
+          + "Name --service, --billing-mode and --model together, or omit them to inherit "
+          + "the parent's selection.",
+      );
+    }
+  }
   // planning#304 — the cross-backend guard is asked of the **resolved** pair, not
   // only of the flags the caller passed. The rejection above inspects `opts.model`
   // alone, so inheritance sat outside it entirely and could assemble a
@@ -586,9 +770,17 @@ export async function spawnChildSession(
   // actually run (`firstEligibleSelectionForHarness`, planning#353). Keep the
   // harness and drop the model — the rule the WS connect path already applies to a
   // pinned session's incoherent row (`route-registry.ts`).
+  //
+  // A SEEDED target is exempt: this rule repairs a stale PARENT row, and a
+  // seeded child has no parent row in its history. Its tuple came from the role
+  // validator, which asked the sharper question (`resolveStyle` — do the harness
+  // and the model share an API style) against the harness the role named, so
+  // degrading it here on the coarser membership test could silently drop a
+  // perfectly valid role — the substitution req 7 forbids.
   const inheritedModel = inherited.model;
   const childHarnessOffersModel =
-    inheritedModel === undefined
+    seeded !== undefined
+    || inheritedModel === undefined
     || harnessOffersModel(childAgentId, inheritedModel)
     // No harness lists it: unproven, so unchanged.
     || agentIdForModel(inheritedModel) === undefined;
@@ -609,7 +801,13 @@ export async function spawnChildSession(
   // a depth the user asked for, and `high` means the same thing on either
   // backend, so it carries whenever the target harness offers it. A model id
   // names one backend's catalogue and can mean nothing at all on the other.
+  //
+  // docs/264 req 16 — a NAMED `--effort` (validated far above, against the
+  // child's harness) and a SEEDED role's level both win outright: they are what
+  // the caller asked for, not something the child happens to have inherited.
   const inheritedReasoning = ((): string | undefined => {
+    if (seeded) return seeded.reasoningEffort;
+    if (namedReasoning) return namedReasoning;
     const level = parent.reasoningEffort;
     if (!level) return undefined;
     const options = getAgentCapabilities(childAgentId)?.reasoning?.options;
@@ -625,6 +823,12 @@ export async function spawnChildSession(
     ...(selection.serviceId ? { serviceId: selection.serviceId } : {}),
     ...(selection.billingMode ? { billingMode: selection.billingMode } : {}),
     ...(inheritedReasoning ? { reasoning: inheritedReasoning } : {}),
+    // docs/264 req 14 — provenance: which role started this session. Written at
+    // creation and never again (see `sessions.ts`'s `setOriginRoleName`), because
+    // it is a SNAPSHOT of the name and not a live link: editing that role later
+    // does not change this child, deleting it does not orphan it, and the child
+    // may over time run on something other than what the role named (req 11).
+    ...(seeded?.roleName ? { originRoleName: seeded.roleName } : {}),
     ...(opts.detached ? {} : { parentSessionId, rootSessionId }),
     ...(opts.spawnedByTurn ? { spawnedByTurn: opts.spawnedByTurn } : {}),
   });
@@ -695,6 +899,7 @@ export async function spawnChildSession(
   return {
     session: child,
     sessionId: child.id,
+    agentId: childAgentId,
     branch: branchName,
     sessions: sessionManager.list(),
   };
@@ -730,6 +935,12 @@ export interface ChildSessionView {
    * default (no explicit `--model` and no parent model pin).
    */
   model?: string;
+  /**
+   * docs/264 req 14 — the role this child was started from, when one started it.
+   * A snapshot of the name: it says what was asked for at creation, not what the
+   * child is running now (`agent`/`model` above answer that, per turn).
+   */
+  originRoleName?: string;
 }
 
 /**
@@ -840,6 +1051,7 @@ export function buildChildView(
   if (child.spawnedByTurn) view.spawnedByTurn = child.spawnedByTurn;
   if (child.agentId) view.agent = child.agentId;
   if (child.model) view.model = child.model;
+  if (child.originRoleName) view.originRoleName = child.originRoleName;
   const latest = projections.chatHistoryManager?.loadLatestAssistantText(child.id);
   if (latest) view.latestAssistantMessage = latest;
   const pr = projections.prStatusPoller?.getStatus(child.id);

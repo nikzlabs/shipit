@@ -46,6 +46,7 @@ export * from "./agent.js";
 export * from "./sub-agent.js";
 export * from "./sub-agent-commit.js";
 export * from "./sub-agent-target.js";
+export * from "./spawn-inventory.js";
 export * from "./voice.js";
 export * from "./redaction.js";
 export * from "./bug-report.js";

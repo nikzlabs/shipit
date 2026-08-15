@@ -24,6 +24,37 @@ describe("SessionManager", () => {
     dbManager.close();
   });
 
+  /**
+   * docs/264 req 14 — provenance for a child started from a role.
+   *
+   * Write-once by construction (`WHERE origin_role_name IS NULL`), because it is
+   * read long after the fact — by a user asking what a session in their sidebar
+   * came from — and provenance that could be rewritten answers a different
+   * question every time it is asked.
+   */
+  describe("originRoleName (docs/264 req 14)", () => {
+    it("records the role a session was created from, and reads it back", () => {
+      const mgr = new SessionManager(dbManager);
+      mgr.track("sess-1");
+      mgr.setOriginRoleName("sess-1", "deep dive");
+      expect(mgr.get("sess-1")?.originRoleName).toBe("deep dive");
+    });
+
+    it("is absent for a session no role started", () => {
+      const mgr = new SessionManager(dbManager);
+      mgr.track("sess-1");
+      expect(mgr.get("sess-1")?.originRoleName).toBeUndefined();
+    });
+
+    it("cannot be rewritten by a second write", () => {
+      const mgr = new SessionManager(dbManager);
+      mgr.track("sess-1");
+      mgr.setOriginRoleName("sess-1", "deep dive");
+      mgr.setOriginRoleName("sess-1", "something else");
+      expect(mgr.get("sess-1")?.originRoleName).toBe("deep dive");
+    });
+  });
+
   it("starts with an empty list when no sessions exist", () => {
     const mgr = new SessionManager(dbManager);
     expect(mgr.list()).toEqual([]);

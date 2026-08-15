@@ -739,6 +739,39 @@ describe("agent-ops routes", () => {
     expect(client.calls[0].body).toEqual({ role: "reviewer", prompt: "review", depth: 0 });
   });
 
+  // docs/264 req 10 — and a role WITH overrides goes over the same hop. The
+  // combination used to be refused; it is now the override path, so the relay
+  // has to carry both halves.
+  it("POST /agent-ops/agent/spawn forwards a role together with its overrides", async () => {
+    client.setResponse("POST", "/agent/spawn", { ok: true, status: 200, body: { status: "success", text: "ok" } });
+    const payload = { role: "deep dive", modelId: "claude-opus-5", reasoningEffort: "high", prompt: "review", depth: 0 };
+    const res = await app.inject({ method: "POST", url: "/agent-ops/agent/spawn", payload });
+    expect(res.statusCode).toBe(200);
+    expect(client.calls[0].body).toEqual(payload);
+  });
+
+  // docs/264 req 12 — the two reads. They exist so an agent names a role and an
+  // override that are real on THIS install rather than remembered from another.
+  it("GET /agent-ops/agent/roles relays the install's roles", async () => {
+    client.setResponse("GET", "/agent/roles", {
+      ok: true, status: 200, body: { roles: [{ name: "reviewer" }] },
+    });
+    const res = await app.inject({ method: "GET", url: "/agent-ops/agent/roles" });
+    expect(res.statusCode).toBe(200);
+    expect(client.calls[0].path).toBe("/agent/roles");
+    expect(res.json()).toEqual({ roles: [{ name: "reviewer" }] });
+  });
+
+  it("GET /agent-ops/agent/params relays the install's spawn parameters", async () => {
+    client.setResponse("GET", "/agent/params", {
+      ok: true, status: 200, body: { harnesses: [{ id: "codex", name: "Codex", reasoningLevels: [], models: [] }] },
+    });
+    const res = await app.inject({ method: "GET", url: "/agent-ops/agent/params" });
+    expect(res.statusCode).toBe(200);
+    expect(client.calls[0].path).toBe("/agent/params");
+    expect((res.json() as { harnesses: unknown[] }).harnesses).toHaveLength(1);
+  });
+
   it("GET /agent-ops/agent/result forwards the run id as ?spawnId (planning#247)", async () => {
     client.setResponse("GET", "/agent/result", {
       ok: true, status: 200,
