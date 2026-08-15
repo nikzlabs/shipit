@@ -261,8 +261,15 @@ receipts below keep the original "tools" vocabulary of the early rounds.
     letting containment imply otherwise. What containment buys is a limit on
     the damage a repository can do if it turns hostile or is compromised
     upstream: it cannot read the credentials ShipIt uses to fetch
-    repositories, cannot reach the host or ShipIt's own controls, and cannot
-    modify its own source (req 7). **It can write the consuming project's
+    repositories, reaches no route of ShipIt's own API, and cannot modify its
+    own source (req 7). It is **not** claimed to be unable to reach the host —
+    that sentence was here and was withdrawn on 2026-08-15 rather than
+    weakened, because it was not true: a top-level compose volume's
+    `driver_opts` can encode a host bind and nothing validates it
+    (`parseUserNamedVolumes` reads names only; `validateServiceSecurity` sees a
+    service, never the top-level `volumes:` block). A containment claim is only
+    worth what it is verified to, and this one was worth nothing.
+    **It can write the consuming project's
     files, and that is a purpose rather than a leak** — a plugin that
     generates, formats or records into the project is the ordinary case, and
     req 26's settings exist precisely to tell it where (reqs 18, 21). So the
