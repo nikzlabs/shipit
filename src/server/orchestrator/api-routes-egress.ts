@@ -16,6 +16,15 @@
  * decision, but it cannot GRANT anything (granting is the browser-only
  * `egress_decision` WS path), so an agent that calls it directly can at most
  * propose a card it can't approve.
+ *
+ * planning#371 — that flag covers the AGENT container only. A Compose service's
+ * proxy asks the same question from the service's own network namespace, and
+ * every Compose-service IP is now denied the whole `/api/*` surface
+ * (`api-container-guard.ts` §0.5) precisely because the service and its proxy
+ * are indistinguishable by address. That query is admitted instead by the token
+ * the sidecar was launched with (`egress-decision-auth.ts`), which is why the
+ * route needs no per-caller change here: the guard decides who reaches it, and
+ * the answer is unchanged for everyone it still admits.
  */
 
 import type { FastifyInstance, FastifyReply } from "fastify";

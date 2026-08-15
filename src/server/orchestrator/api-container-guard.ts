@@ -23,7 +23,14 @@
  * whenever the orchestrator gets around to registering its address. Any future
  * container that runs code ShipIt did not write belongs on such a network.
  *
- * For a container-originated request the guard is **default-deny**: it passes
+ * **Only the session's own AGENT container gets the opt-in table below**
+ * (planning#371). Every OTHER container of a session — a Compose service, the
+ * project's own as much as a plugin's — is denied the whole `/api/*` surface,
+ * with one exception admitted by a secret rather than by an address: the Tier C
+ * egress decision query, made by the SNI proxy sidecar from inside the service's
+ * network namespace (`egress-decision-auth.ts`). See §0.5 in the hook.
+ *
+ * For an agent-originated request the guard is **default-deny**: it passes
  * only `/api/sessions/<its-own-session>/<allowlisted-suffix>`, where the
  * allowlist is the set of routes that opted in with
  * `config: { containerAccessible: true }`. Three layers, in order:
@@ -43,6 +50,11 @@
 
 import type { FastifyInstance } from "fastify";
 import { parsePreviewSubdomain } from "./preview-proxy.js";
+import {
+  isEgressDecisionPath,
+  presentedEgressDecisionToken,
+  verifyEgressDecisionToken,
+} from "./egress-decision-auth.js";
 
 // ---------------------------------------------------------------------------
 // Fastify type augmentation
@@ -257,27 +269,76 @@ export function registerContainerOriginGuard(
     // Inert without an IP→session map (no real containers to gate).
     if (!containerManager) return;
 
+    // The session's AGENT container, and — only when the IP is not that — any
+    // OTHER container of a session: a Compose service, or a sidecar borrowing
+    // one's network namespace. The two are deliberately kept apart (planning#371).
+    // `getSessionByContainerIp` reads the manager's own record of the container
+    // ShipIt created and runs the agent in; `getSessionByAnyContainerIp`
+    // (`session-container.ts:1228`) resolves anything carrying the
+    // `shipit-parent-session` label, which `compose-generator.ts:1113` stamps on
+    // every generated service — the project's own and a plugin's alike.
     let caller: { sessionId: string } | undefined;
+    let otherContainer: { sessionId: string } | undefined;
     try {
-      caller = ip
-        ? containerManager.getSessionByContainerIp(ip)
-          ?? await containerManager.getSessionByAnyContainerIp?.(ip)
-        : undefined;
+      caller = ip ? containerManager.getSessionByContainerIp(ip) : undefined;
+      if (ip && !caller) {
+        otherContainer = await containerManager.getSessionByAnyContainerIp?.(ip);
+      }
     } catch {
       if (ip && containerManager.isLikelySessionContainerIp?.(ip)) {
         return reply.code(403).send({ error: "Container origin could not be verified." });
       }
       return;
     }
-    // Not a known session container → browser/host origin → unchanged.
-    if (!caller) return;
+    // Neither → browser/host origin → unchanged.
+    if (!caller && !otherContainer) return;
 
     const pathname = (request.url ?? "/").split("?")[0];
+    const ownerSessionId = (caller ?? otherContainer)!.sessionId;
 
     // Preserve same-session preview traffic. The preview proxy handles this
     // host before any API route, but this guard's root hook runs first.
+    //
+    // The Host header is the caller's to set, so this looks like a way around
+    // everything below — it is not: `registerPreviewProxy`'s own `onRequest`
+    // hook (`preview-proxy.ts:639`) hijacks EVERY request whose Host matches
+    // `{uuid}--{port}.`, whatever its path, and proxies it to the container. A
+    // request that takes this early return therefore never reaches an API route.
     const previewOwner = parsePreviewSubdomain(request.headers.host)?.sessionId.toLowerCase();
-    if (previewOwner === caller.sessionId.toLowerCase()) return;
+    if (previewOwner === ownerSessionId.toLowerCase()) return;
+
+    // §0.5 planning#371 — a Compose service container reaches NO `/api/*` route.
+    //
+    // Not a narrowed opt-in table, not a third caller class: a service needs no
+    // orchestrator API at all. Reading it as "a container of this session" gave
+    // any service — including a plugin's, which is third-party code the user
+    // declared and does not necessarily read — the session's whole
+    // container-accessible table, and `POST /api/sessions/:id/git/credential`
+    // (`api-routes-github.ts:479`) is in it. The own-session comparison was no
+    // obstacle: a service's workspace mount is a volume subpath, so
+    // `/proc/self/mountinfo` names the full session id.
+    //
+    // The ONE query that legitimately comes from here is the Tier C egress
+    // decision (docs/172) — issued by the SNI proxy sidecar INSIDE the service's
+    // network namespace, which is exactly why no IP rule can separate the two.
+    // It is admitted by the token that sidecar was launched with instead
+    // (`egress-decision-auth.ts`), scoped to its own session by the token, not
+    // by a string the caller supplies.
+    if (otherContainer) {
+      if (isEgressDecisionPath(pathname)) {
+        const token = presentedEgressDecisionToken(request.headers);
+        const scoped = new URLSearchParams((request.url ?? "").split("?")[1] ?? "").get("session");
+        if (token && scoped === otherContainer.sessionId
+          && await verifyEgressDecisionToken(otherContainer.sessionId, token)) {
+          return;
+        }
+      }
+      return reply
+        .code(403)
+        .send({ error: "This endpoint is not available to session containers." });
+    }
+    // Narrowed by the check above; the three layers below are the agent's.
+    if (!caller) return;
 
     // §1 hard-deny backstop — independent of the opt-in flag.
     if (isHardDeniedGlobal(pathname)) {

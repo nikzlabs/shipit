@@ -7,6 +7,8 @@ package main
 import (
 	"crypto/tls"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 )
@@ -202,5 +204,55 @@ func TestPeekSNI(t *testing.T) {
 	}
 	if res.n == 0 {
 		t.Errorf("peekSNI recorded 0 bytes; expected the ClientHello to be captured for replay")
+	}
+}
+
+// planning#371 — the decision query carries its own credential. The orchestrator
+// no longer trusts this connection's source IP, because it belongs to the
+// workload whose network namespace this proxy shares.
+func TestFetchDecisionSendsToken(t *testing.T) {
+	var gotToken, gotSession, gotHost string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotToken = r.Header.Get(decisionTokenHeader)
+		gotSession = r.URL.Query().Get("session")
+		gotHost = r.URL.Query().Get("host")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"allow":true}`))
+	}))
+	defer srv.Close()
+
+	prevURL, prevToken, prevSession := decisionURL, decisionToken, sessionID
+	defer func() { decisionURL, decisionToken, sessionID = prevURL, prevToken, prevSession }()
+	decisionURL, decisionToken, sessionID = srv.URL, "tok-123", "sess-1"
+
+	if !fetchDecision("example.com") {
+		t.Fatal("expected the orchestrator's allow to be honoured")
+	}
+	if gotToken != "tok-123" {
+		t.Errorf("token header = %q, want %q", gotToken, "tok-123")
+	}
+	if gotSession != "sess-1" || gotHost != "example.com" {
+		t.Errorf("query = session %q host %q; want sess-1 / example.com", gotSession, gotHost)
+	}
+}
+
+// With no token configured the header is omitted entirely rather than sent
+// empty — the agent container's own proxy is admitted by its address, and an
+// empty credential must not read as a presented one.
+func TestFetchDecisionOmitsAbsentToken(t *testing.T) {
+	present := true
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, present = r.Header[decisionTokenHeader]
+		_, _ = w.Write([]byte(`{"allow":false}`))
+	}))
+	defer srv.Close()
+
+	prevURL, prevToken := decisionURL, decisionToken
+	defer func() { decisionURL, decisionToken = prevURL, prevToken }()
+	decisionURL, decisionToken = srv.URL, ""
+
+	fetchDecision("example.com")
+	if present {
+		t.Error("no token configured, but the header was sent")
 	}
 }

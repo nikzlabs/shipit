@@ -110,7 +110,13 @@
  *  - **No Tier C decision URL.** The agent's SNI proxy asks
  *    `/api/egress/decision` about a host outside its static allowlist; this
  *    proxy shares the plugin network, where that whole surface is 403 by design
- *    (req 19). Instead the session's in-memory allow-once hosts are snapshotted
+ *    (req 19). planning#371 changed how the SERVICE surface reaches that endpoint —
+ *    a Compose service's IP is now denied outright and its proxy is admitted by
+ *    a per-sidecar token instead — and changes nothing here: `launchEgressProxy`
+ *    mints a token only alongside a decision URL, so this proxy is handed
+ *    neither, and the §0 untrusted-subnet denial that covers these two
+ *    containers is unchanged and still checked first. Instead the session's
+ *    in-memory allow-once hosts are snapshotted
  *    into the static allowlist at launch (`listEgressAllowedHosts`), which is
  *    what keeps this container's reach equal to the agent's — and exactly equal
  *    to what `pluginHostAllowance` reports. A host allowed DURING a call is not

@@ -26,6 +26,11 @@ import {
   clearUntrustedContainerNetworks,
   isUntrustedContainerIp,
 } from "./api-container-guard.js";
+import {
+  EGRESS_DECISION_HEADER,
+  mintEgressDecisionToken,
+  clearAllEgressDecisionTokens,
+} from "./egress-decision-auth.js";
 
 import { buildApp } from "./index.js";
 import { GitManager } from "../shared/git.js";
@@ -89,7 +94,9 @@ describe("normalizeRemoteIp", () => {
 const CONTAINER_IP = "172.18.0.5";
 const SERVICE_IP = "172.18.0.6";
 const BROWSER_IP = "10.0.0.9";
-const OWN_SESSION = "sess-own";
+// A real uuid, so the preview-subdomain cases below parse the way production
+// hosts do (`parsePreviewSubdomain` matches a uuid, never an arbitrary label).
+const OWN_SESSION = "98f05156-7e64-422d-81bc-ba677fda60e0";
 
 describe("registerContainerOriginGuard — request gating", () => {
   let app: FastifyInstance;
@@ -129,6 +136,7 @@ describe("registerContainerOriginGuard — request gating", () => {
 
   afterEach(async () => {
     await app.close();
+    clearAllEgressDecisionTokens();
   });
 
   it("allows a container to reach an allowlisted route for its OWN session", async () => {
@@ -167,19 +175,88 @@ describe("registerContainerOriginGuard — request gating", () => {
     expect(res.statusCode).toBe(403);
   });
 
-  it("treats a Compose service IP as a container origin", async () => {
-    const denied = await app.inject({
+  // planning#371 — a Compose service reaches NO `/api/*` route, not even the
+  // container-accessible ones of its own session. It used to reach all of them,
+  // and `POST /api/sessions/:id/git/credential` is one.
+  it("denies a Compose service IP the whole API, including its own session's routes", async () => {
+    const global = await app.inject({
       method: "GET",
       url: "/api/bootstrap",
       remoteAddress: SERVICE_IP,
     });
-    expect(denied.statusCode).toBe(403);
+    expect(global.statusCode).toBe(403);
     const own = await app.inject({
       method: "GET",
       url: `/api/sessions/${OWN_SESSION}/services`,
       remoteAddress: SERVICE_IP,
     });
-    expect(own.statusCode).toBe(200);
+    expect(own.statusCode).toBe(403);
+  });
+
+  it("denies a Compose service the egress decision query with no token", async () => {
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/egress/decision?host=example.com&session=${OWN_SESSION}`,
+      remoteAddress: SERVICE_IP,
+    });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it("admits the egress decision query from a service netns with its sidecar's token", async () => {
+    const token = mintEgressDecisionToken(OWN_SESSION);
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/egress/decision?host=example.com&session=${OWN_SESSION}`,
+      headers: { [EGRESS_DECISION_HEADER]: token },
+      remoteAddress: SERVICE_IP,
+    });
+    expect(res.statusCode).toBe(200);
+  });
+
+  it("refuses a sidecar token minted for a DIFFERENT session", async () => {
+    const token = mintEgressDecisionToken("sess-other");
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/egress/decision?host=example.com&session=${OWN_SESSION}`,
+      headers: { [EGRESS_DECISION_HEADER]: token },
+      remoteAddress: SERVICE_IP,
+    });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it("refuses a valid token presented for a route other than the decision query", async () => {
+    const token = mintEgressDecisionToken(OWN_SESSION);
+    const res = await app.inject({
+      method: "GET",
+      url: `/api/sessions/${OWN_SESSION}/services`,
+      headers: { [EGRESS_DECISION_HEADER]: token },
+      remoteAddress: SERVICE_IP,
+    });
+    expect(res.statusCode).toBe(403);
+  });
+
+  it("refuses a valid token whose ?session= names another session", async () => {
+    const token = mintEgressDecisionToken(OWN_SESSION);
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/egress/decision?host=example.com&session=sess-other",
+      headers: { [EGRESS_DECISION_HEADER]: token },
+      remoteAddress: SERVICE_IP,
+    });
+    expect(res.statusCode).toBe(403);
+  });
+
+  // The preview proxy's own hook hijacks any request carrying this Host before
+  // routing (`preview-proxy.ts:639`), so the early return cannot reach an API
+  // route — a service fetching its own session's preview keeps working.
+  it("leaves same-session preview traffic from a service alone", async () => {
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/bootstrap",
+      headers: { host: `${OWN_SESSION}--5173.localhost` },
+      remoteAddress: SERVICE_IP,
+    });
+    expect(res.statusCode).toBe(200);
   });
 
   it("does not bypass the guard for an invalid preview port", async () => {

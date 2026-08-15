@@ -56,6 +56,7 @@ import { ServiceRetryManager } from "./service-retry-manager.js";
 import { removeSessionServiceEnvDir, removeSessionSecretsDir } from "./secret-resolver.js";
 import {
   ComposeCli,
+  composeSpawnEnv,
   type ComposeRunner,
   type ComposeQuery,
   type ComposeOutputSink,
@@ -1163,6 +1164,9 @@ export class ServiceManager extends EventEmitter {
       try {
         const proc = spawn("docker", args, {
           cwd: this.workspaceDir,
+          // planning#371 — `logs` names the project compose file too, so Compose
+          // parses and interpolates it here exactly as `up` does.
+          env: composeSpawnEnv(),
           stdio: ["ignore", "pipe", "pipe"],
         });
         let out = "";
@@ -1582,6 +1586,8 @@ export class ServiceManager extends EventEmitter {
     const args = this.compose.args("logs", "-f", "--tail", tail, "--no-log-prefix", name);
     const proc = spawn("docker", args, {
       cwd: this.workspaceDir,
+      // planning#371 — same project file, same interpolation. See `composeSpawnEnv`.
+      env: composeSpawnEnv(),
       stdio: ["ignore", "pipe", "pipe"],
     });
 

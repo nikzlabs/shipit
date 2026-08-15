@@ -56,6 +56,9 @@
 //	EGRESS_PROXY_DECISION_URL    optional orchestrator endpoint for unknown hosts (Tier C allow-once);
 //	                             unset → unknown SNI is denied-fast (the safe default).
 //	EGRESS_PROXY_SESSION_ID      session id, sent with decision queries
+//	EGRESS_PROXY_DECISION_TOKEN  credential for the decision query (planning#371), sent as the
+//	                             X-Shipit-Egress-Token header. Unset → the header is omitted,
+//	                             which the orchestrator accepts only from the agent container.
 //	EGRESS_PROXY_IDENTITY_RULES  optional JSON array of per-host identity rules (Phase 2). Each:
 //	                               {"host":".s3.amazonaws.com","identities":["my-bucket"]}
 //	                             `host` is the multi-tenant base (leading-dot or exact, normalized
@@ -88,11 +91,21 @@ import (
 
 const soOriginalDst = 80 // SO_ORIGINAL_DST (linux/netfilter_ipv4.h)
 
+// decisionTokenHeader carries EGRESS_PROXY_DECISION_TOKEN on the decision query.
+// Keep in sync with EGRESS_DECISION_HEADER in egress-decision-auth.ts.
+const decisionTokenHeader = "X-Shipit-Egress-Token"
+
 var (
 	listenAddr  = envOr("EGRESS_PROXY_LISTEN", "127.0.0.1:8443")
 	allowlist   = strings.Fields(os.Getenv("EGRESS_PROXY_ALLOWED"))
 	decisionURL = os.Getenv("EGRESS_PROXY_DECISION_URL")
 	sessionID   = os.Getenv("EGRESS_PROXY_SESSION_ID")
+
+	// planning#371 — the decision query's credential. The orchestrator no longer
+	// trusts the source IP for this route: this proxy shares a network namespace
+	// with the workload it fronts, so the address is the workload's too. It does
+	// NOT share a filesystem or a PID namespace, so this variable is ours alone.
+	decisionToken = os.Getenv("EGRESS_PROXY_DECISION_TOKEN")
 
 	// Phase-2 SNI-scoped identity rules. Parsed once in main() (after logging is
 	// configured), then read-only — handle() goroutines only read it, so no lock.
@@ -374,6 +387,9 @@ func fetchDecision(sni string) bool {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return false
+	}
+	if decisionToken != "" {
+		req.Header.Set(decisionTokenHeader, decisionToken)
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
