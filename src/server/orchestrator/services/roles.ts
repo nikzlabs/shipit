@@ -377,8 +377,11 @@ export function validateRolePinnedParams(
  * Three paths, and the branch is on the params kind and on how much was
  * overridden:
  *
- *  - **`pinned`** — the role's tuple with any override substituted over it. The
- *    harness is the role's unless overridden; nothing is derived.
+ *  - **`pinned`** — the role's tuple with any override substituted over it, and
+ *    nothing else moved: the harness is the role's unless overridden, and so are
+ *    the service and the billing mode when only the model is overridden. A model
+ *    the role's service does not offer is **refused naming the parameter**
+ *    rather than relocated — see {@link applyOverrides}.
  *  - **`auto` with no override** — docs/261's ranking, unchanged, distance
  *    guarantee and all. The one path that carries a route.
  *  - **`auto` with a COMPLETE override** — resolved directly, and
@@ -413,7 +416,7 @@ export function resolveRoleByName(
 
   if (role.params.kind === "pinned") {
     const params = validateRolePinnedParams(
-      applyOverrides(role.params, overrides, deps),
+      applyOverrides(role.params, overrides, deps, "role"),
       deps,
       overridden ? `The role "${name}" with those overrides` : `The role "${name}"`,
     );
@@ -470,7 +473,7 @@ export function resolveRoleByName(
     return freezeTarget(role, base, false, chosen);
   }
   const params = validateRolePinnedParams(
-    applyOverrides(base, overrides, deps),
+    applyOverrides(base, overrides, deps, "ranked"),
     deps,
     `The role "${name}" with those overrides`,
   );
@@ -507,27 +510,58 @@ function completeOverride(overrides: RoleOverrides): RolePinnedParams | undefine
 }
 
 /**
+ * Whose decision the base tuple is, which is the one thing an override has to
+ * treat differently.
+ *
+ *  - **`role`** — the five choices the user made and can see in Settings.
+ *  - **`ranked`** — ShipIt's own working state for a ranking it just performed:
+ *    the winner `selectReviewer` returned for an `auto` role, whose
+ *    `(service, billing mode, model)` may come from a **reviewer slot pin**.
+ *
+ * They are not the same object wearing two labels. A slot pin is a note ShipIt
+ * keeps about how to rank; a pinned role is five parameters the user chose.
+ */
+type OverrideBaseKind = "role" | "ranked";
+
+/**
  * Substitute a caller's overrides over a base tuple.
  *
- * **A pin is a `(service, billing mode, model)` triple, not three independent
- * fields**, which is the one subtlety here. Overriding the **model** replaces
- * the triple as a whole and re-resolves where that model lives — not because
- * pins may be discarded, but because a service pinned *for model M* says nothing
- * about model X, so there is no surviving decision to honour. Overriding the
- * **level** or the **harness** leaves the triple untouched. Nothing the user
- * chose that still applies is ever dropped.
+ * **What the model override does depends on whose tuple it lands on**, and that
+ * is the whole subtlety here.
  *
- * The caller's own `--service` / `--billing-mode` still win where it named them:
- * re-resolution fills only the half of the location it left unsaid.
+ * **`ranked` — a pin is a `(service, billing mode, model)` triple, not three
+ * independent fields** (plan rule (c), the `auto`/reviewer branch). Overriding
+ * the **model** replaces the triple as a whole and re-resolves where that model
+ * lives — not because pins may be discarded, but because a slot pinned *for
+ * model M* says nothing about model X, so there is no surviving decision to
+ * honour. The caller's own `--service` / `--billing-mode` still win where it
+ * named them: re-resolution fills only the half of the location it left unsaid.
+ *
+ * **`role` — "everything not overridden" is literal (req 10), and an override
+ * that makes the tuple incoherent is refused rather than repaired.** Overriding
+ * the model does not entitle ShipIt to move the service or the billing mode to
+ * wherever that model happens to live: those came from the role, the caller did
+ * not name them, and changing them would be a substitution invisible in the
+ * request, which req 7 forbids. Where the role's service does not offer the
+ * overridden model the call is **refused naming the parameter**, and the caller
+ * names `--service` too.
+ *
+ * The accepted cost: `--model X` alone now fails whenever the role's service
+ * does not offer X. Req 12's inventory is what makes that discoverable rather
+ * than a guessing game.
+ *
+ * Overriding the **level** or the **harness** leaves the triple untouched on
+ * either base.
  */
 function applyOverrides(
   base: RolePinnedParams,
   overrides: RoleOverrides,
   deps: RoleValidatorDeps,
+  baseKind: OverrideBaseKind,
 ): RolePinnedParams {
   const harnessId = overrides.harnessId ?? base.harnessId;
   const reasoningEffort = overrides.reasoningEffort ?? base.reasoningEffort;
-  if (overrides.modelId !== undefined) {
+  if (baseKind === "ranked" && overrides.modelId !== undefined) {
     const located = locateModel(overrides.modelId, overrides, harnessId, deps);
     if (!located) {
       throw new ServiceError(
@@ -538,7 +572,7 @@ function applyOverrides(
     }
     return { kind: "pinned", harnessId, ...located, reasoningEffort };
   }
-  return {
+  const substituted: RolePinnedParams = {
     kind: "pinned",
     harnessId,
     serviceId: overrides.serviceId ?? base.serviceId,
@@ -546,6 +580,77 @@ function applyOverrides(
     modelId: overrides.modelId ?? base.modelId,
     reasoningEffort,
   };
+  if (baseKind === "role" && overrides.modelId !== undefined) {
+    refuseModelAwayFromRolesService(substituted, overrides);
+  }
+  return substituted;
+}
+
+/**
+ * The refusal that stands where the relocation used to (reqs 7, 10).
+ *
+ * The validator refuses this tuple too — `No model "X" is offered by <service>
+ * on the "<mode>" billing mode` — but it cannot carry the remedy, and that is
+ * why this refusal exists rather than falling through to it. The same validator
+ * message is what a **save** from the role editor reports, where "name
+ * `--service`" is advice about a flag that is not there. So the override-time
+ * refusal is stated here, beside the substitution it replaces, and names the
+ * parameter the caller still has to say.
+ *
+ * **It asks for the SMALLEST set of flags that actually reaches the model**, not
+ * for both halves of the location every time. `claude-opus-5` is offered on
+ * `anthropic/sub` and `anthropic/key`, so a role pinned to `deepseek/key` needs
+ * `--service anthropic` and nothing else — telling that caller to name
+ * `--billing-mode` too would be advice to restate a value that is already right.
+ *
+ * Where nothing the caller can still name would reach the model, this falls
+ * through to the validator, whose message is then the true one. That covers both
+ * the caller who named the whole location already and the model no service
+ * offers at all — pointing either at `--service` would be false.
+ */
+function refuseModelAwayFromRolesService(
+  params: RolePinnedParams,
+  overrides: RoleOverrides,
+): void {
+  const selection: ModelSelection = {
+    serviceId: params.serviceId,
+    billingMode: params.billingMode,
+    modelId: params.modelId,
+  };
+  if (selectionExists(selection)) return;
+  const elsewhere = modesOfferingModel(params.modelId);
+  if (elsewhere.length === 0) return;
+  const freeService = overrides.serviceId === undefined;
+  const freeMode = overrides.billingMode === undefined;
+  // Each option is "the flags the caller would have to add", cheapest first.
+  const options: { flags: string[]; reaches: boolean }[] = [
+    {
+      flags: ["--service"],
+      reaches: freeService && elsewhere.some((c) => c.billingMode === params.billingMode),
+    },
+    {
+      flags: ["--billing-mode"],
+      reaches: freeMode && elsewhere.some((c) => c.serviceId === params.serviceId),
+    },
+    { flags: ["--service", "--billing-mode"], reaches: freeService && freeMode },
+  ];
+  const remedy = options.find((option) => option.reaches);
+  if (!remedy) return;
+  const service = getService(params.serviceId);
+  const offered = [...new Set(elsewhere.map((c) => `${c.serviceId}/${c.billingMode}`))].join(", ");
+  throw new ServiceError(
+    400,
+    // Says "a service or billing mode you did not name" rather than "the role's
+    // service", because the caller may well have named one of the two: a role on
+    // DeepSeek invoked with `--service zai --model glm-5.2[1m]` is refused for
+    // the *billing mode*, which came from the role, on a service the caller
+    // moved itself. Naming the wrong half in the explanation would send the
+    // reader looking at a parameter they had already set correctly.
+    `${service?.name ?? params.serviceId} does not offer "${params.modelId}" on the `
+      + `"${params.billingMode}" billing mode. Overriding the model does not move a service or `
+      + `billing mode you did not name — that came from the role. Name `
+      + `${remedy.flags.join(" and ")} as well; "${params.modelId}" is offered on ${offered}.`,
+  );
 }
 
 /**
