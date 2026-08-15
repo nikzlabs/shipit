@@ -163,13 +163,55 @@ interface BootstrapResponse {
 let historyLoadSeq = 0;
 
 /**
+ * The load `historyLoadSeq` currently names, so issuing a newer one can CANCEL
+ * it rather than merely discard its answer (planning#375).
+ *
+ * `historyLoadSeq` alone makes a superseded response harmless, not free: the
+ * body is still streamed to the browser and still `JSON.parse`d before the
+ * guard above drops it. A DevTools trace of a foreground reconnect caught the
+ * cost — two `/history` requests 480 ms apart, **2.67 MB each**, one of them
+ * downloaded and parsed purely to be thrown away, on a main thread that was
+ * already the bottleneck.
+ *
+ * Aborting, rather than having the new caller AWAIT the in-flight one: the
+ * whole reason a second load exists is that the socket the first was issued for
+ * is gone (see the `closed`/`connecting` branch of `useConnectionSync`, which
+ * deliberately frees the next open to issue its own). Chaining the fresh load
+ * onto a request whose connection is dead would hang the transcript behind a
+ * fetch that may never settle — the failure the seq guard was written to avoid,
+ * re-introduced from the other side.
+ *
+ * The seq guard stays regardless: `abort()` races a response that is already
+ * being applied, and it is the guard — not the cancellation — that makes
+ * out-of-order application impossible.
+ */
+let inFlightHistoryLoad: { seq: number; controller: AbortController } | null = null;
+
+/**
  * Fetch session history via HTTP and populate stores.
  * Shared between useConnectionSync (WS reconnect) and session-actions (session resume).
  */
 export async function loadSessionHistory(sessionId: string): Promise<void> {
   const seq = ++historyLoadSeq;
-  const res = await fetch(`/api/sessions/${sessionId}/history`);
-  const data = await res.json() as HistoryResponse;
+  // Supersede the previous load — including one for a different session, since
+  // `historyLoadSeq` is global and "last request wins" is too.
+  inFlightHistoryLoad?.controller.abort();
+  const controller = new AbortController();
+  inFlightHistoryLoad = { seq, controller };
+  let data: HistoryResponse;
+  try {
+    const res = await fetch(`/api/sessions/${sessionId}/history`, { signal: controller.signal });
+    data = await res.json() as HistoryResponse;
+  } catch (err) {
+    // A load we cancelled ourselves is not a failure. Return rather than throw,
+    // matching what a superseded load has always done — `useConnectionSync`
+    // relies on that (it logs a throw as "Failed to load session history" and
+    // suppresses its retry nudge).
+    if (controller.signal.aborted) return;
+    throw err;
+  } finally {
+    if (inFlightHistoryLoad?.seq === seq) inFlightHistoryLoad = null;
+  }
   // Still the newest load for this session? A superseded response must not
   // write anything — see `historyLoadSeq`.
   const isStillActiveSession = () =>

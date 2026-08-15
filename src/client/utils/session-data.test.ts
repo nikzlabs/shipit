@@ -430,3 +430,89 @@ describe("loadSessionHistory — a superseded load must not clobber the transcri
     expect(useSessionStore.getState().historyLoaded).toBe(true);
   });
 });
+
+/**
+ * planning#375 — the seq guard makes a superseded load harmless, not free. A
+ * DevTools trace of a foreground reconnect caught two `/history` requests
+ * 480 ms apart at 2.67 MB each, the older one downloaded and `JSON.parse`d
+ * purely to be discarded, on the main thread that was already the bottleneck.
+ * Issuing a load now cancels the one it supersedes.
+ */
+describe("loadSessionHistory — a superseded load is cancelled, not just discarded", () => {
+  let calls: { url: string; signal: AbortSignal; resolve: (v: unknown) => void }[];
+
+  const historyPayload = (texts: string[]) => ({
+    ok: true,
+    json: () => Promise.resolve({
+      messages: texts.map((text) => ({ role: "assistant", text })),
+      commits: [],
+      fileTree: [],
+      agentRunning: false,
+    }),
+  });
+
+  beforeEach(() => {
+    useUiStore.getState().reset();
+    useSessionStore.getState().reset();
+    useGitStore.getState().reset();
+    useFileStore.getState().reset();
+    useSessionStore.getState().setSessionId("s1");
+    calls = [];
+    globalThis.fetch = vi.fn((url: string, init?: RequestInit) => {
+      if (!url.includes("/history")) return Promise.resolve({ ok: false, status: 404 });
+      const signal = init!.signal!;
+      return new Promise((resolve, reject) => {
+        calls.push({ url, signal, resolve });
+        // A real fetch rejects with an AbortError the moment the signal fires.
+        signal.addEventListener("abort", () => {
+          reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+        });
+      });
+    }) as unknown as typeof fetch;
+  });
+
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it("aborts the in-flight request when a second load is issued", async () => {
+    const first = loadSessionHistory("s1");
+    await vi.waitFor(() => expect(calls.length).toBe(1));
+    expect(calls[0].signal.aborted).toBe(false);
+
+    const second = loadSessionHistory("s1");
+    await vi.waitFor(() => expect(calls.length).toBe(2));
+
+    // The older request is cancelled — its body is never downloaded or parsed.
+    expect(calls[0].signal.aborted).toBe(true);
+    expect(calls[1].signal.aborted).toBe(false);
+
+    // And the cancelled load resolves rather than throwing: `useConnectionSync`
+    // treats a throw as a real failure and suppresses its retry nudge.
+    await expect(first).resolves.toBeUndefined();
+
+    calls[1].resolve(historyPayload(["GROUP-ONE", "GROUP-TWO"]));
+    await second;
+    expect(useSessionStore.getState().messages.map((m) => m.text))
+      .toEqual(["GROUP-ONE", "GROUP-TWO"]);
+  });
+
+  it("does not abort a load that already settled", async () => {
+    const first = loadSessionHistory("s1");
+    await vi.waitFor(() => expect(calls.length).toBe(1));
+    calls[0].resolve(historyPayload(["ONE"]));
+    await first;
+
+    // The second load has nothing to supersede, so it must not fire an abort
+    // at a controller whose response is already applied.
+    const second = loadSessionHistory("s1");
+    await vi.waitFor(() => expect(calls.length).toBe(2));
+    expect(calls[1].signal.aborted).toBe(false);
+    calls[1].resolve(historyPayload(["ONE", "TWO"]));
+    await second;
+    expect(useSessionStore.getState().messages.map((m) => m.text)).toEqual(["ONE", "TWO"]);
+  });
+
+  it("propagates a genuine network failure", async () => {
+    globalThis.fetch = vi.fn(() => Promise.reject(new Error("offline"))) as unknown as typeof fetch;
+    await expect(loadSessionHistory("s1")).rejects.toThrow("offline");
+  });
+});
