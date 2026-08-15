@@ -16,7 +16,7 @@ and optionally a description and standing instructions describing the job. An ag
 **by name**; where the user wants a variation, it may override any parameter the role carries.
 
 There is one kind of role. What a role's params may be is where the only variation lives: the
-user pins them (req 7), and ShipIt ships one role — the reviewer — whose params it resolves
+user pins them (req 1), and ShipIt ships one role — the reviewer — whose params it resolves
 instead (req 2).
 
 ## Requirements
@@ -237,7 +237,7 @@ _None._
   alternative stated; he took the recommendation — *"ok good."*
 
   So there is **one kind of role**, and the variation lives in a role's params: a user pins them
-  (req 7), and ShipIt ships one role whose params it resolves (req 2). The reviewer is not a
+  (req 1), and ShipIt ships one role whose params it resolves (req 2). The reviewer is not a
   different sort of object, and it is not exempt from anything else a role is — it is named the
   same way, started the same way, refused the same way and reported the same way.
 
@@ -292,12 +292,12 @@ _None._
   the only surface that can show that set.
 
 - 2026-08-14 — **Must a role's params be pinned, or may ShipIt resolve them?** **Chosen:
-  pinned.** Req 7, with the shipped reviewer the single exception — see the reviewer receipt
+  pinned.** Req 1, with the shipped reviewer the single exception — see the reviewer receipt
   above.
 
 - 2026-08-14 — **May a role be overridden when it is started?** **Chosen: no — a role is a
-  unit.** Req 10, which covers every parameter that says what to run on, not only a
-  model or a level.
+  unit.** **Superseded the same day** by the override receipt at the top of this list, which
+  reverses it. Kept because the reversal is only legible next to what it reversed.
 
 - 2026-08-14 — **Does a role carry a standing prompt?** **Chosen: yes, optional.** Req 8. A separate short description (req 9)
   says what a role is for whether or not it carries standing instructions.
