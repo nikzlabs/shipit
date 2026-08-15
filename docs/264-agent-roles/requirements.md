@@ -50,11 +50,11 @@ instead (req 2).
    role explicitly, and that name is used as given rather than re-interpreted. Mapping an intent
    onto a role is the agent's judgement; what that role runs on is the user's (req 1).
 
-   **When starting a role, the agent supplies its name and nothing else.** This governs the role
-   path only. It is not a claim that an agent may never carry parameters at all: a repository may
-   hand an agent a complete target and have it passed through unchanged, which is a different
-   invocation and stays available (req 15). What an agent may never do is *assemble* such a target
-   itself.
+   **A name is all the agent needs to supply.** Where the user asked for a variation the agent
+   relays it as an override (req 10); what the agent may never do is *assemble* a target of its
+   own choosing, whether by inventing an override or by naming every parameter from scratch. A
+   repository that holds a complete target of its own may still hand one over to be passed through
+   unchanged, which is a different invocation and stays available (req 15).
 
 4. **Starting a role costs a name.** A role is invoked in one word, or in no word at all when the
    intent alone resolves it (req 3). Nothing else has to be restated at the moment of use — that
@@ -174,7 +174,38 @@ other agent settings already do.
 
 ## Open questions
 
-_None._
+1. **When the reviewer is overridden, what happens to the promise that it avoids the implementing
+   model?** Req 2 says a review is never done by the model that produced the work whenever an
+   alternative exists. Req 10 says any parameter may be overridden. `--role reviewer --model X`
+   puts the two in direct conflict when X is the implementer's own model. A second half: an
+   override that names no model at all — a reasoning level, or a harness — does not identify a
+   target by itself, so "resolve the named parameter and derive the rest" has no defined meaning
+   for it.
+
+   - **(a) The override narrows the ranking; it does not replace it.** The named parameter filters
+     the reviewer's candidates and the distance ranking picks among whatever survives, so req 2
+     keeps holding wherever the filter leaves a choice. Where the override matches nothing
+     configured, it becomes a directly resolved target with the rest derived, and ShipIt says the
+     distance guarantee did not apply. — *Recommended:* one rule covers all five parameters
+     including the ones that name no model, and req 2 survives everywhere it still can.
+   - **(b) The override replaces the resolution entirely** (what the plan says today). Simple, but
+     undefined for a level-only or harness-only override, and it drops req 2 silently.
+   - **(c) The reviewer refuses overrides.** Req 2 stays pure at the cost of contradicting req 10's
+     "any parameter".
+
+2. **Does the existing bare `session create --model X` survive — no role, some parameters, the
+   rest inherited from the parent?** docs/261 req 10 guarantees this today and states outright that
+   it is *deliberately opposite* to the one-shot refusal. Req 16 asks the two commands to share one
+   surface with one set of refusals, and the one-shot side refuses exactly this shape.
+
+   - **(a) Keep it, as a third input shape the shared resolver names explicitly** — a role with
+     optional overrides, a complete target, or (child only) a partial target with a parent to
+     complete it from. — *Recommended:* it is shipped behaviour under a standing requirement, and
+     removing it is a regression nobody asked for. Req 16 already allows the carve-out in the words
+     "a child session has a parent and so may also inherit"; this makes it a designed shape rather
+     than an aside.
+   - **(b) Drop it.** One refusal everywhere, and a child must name a role or a complete target.
+     Cleaner, at the price of breaking a guarantee docs/261 shipped on purpose.
 
 ## Resolved questions
 
@@ -186,10 +217,13 @@ _None._
   level, whatever there is. And so we need to make sure that the agent knows what are the params
   available."*
 
-  This **reverses** an earlier decision that a role is a unit and an override is refused, and it
-  closes the question of whether a child keeps partial override — everything overrides everywhere,
-  so the inherit-versus-name distinction that question turned on no longer separates anything.
-  Reqs 4, 7, 10 and 16 are rewritten accordingly.
+  This **reverses** an earlier decision that a role is a unit and an override is refused. Reqs 4,
+  7, 10 and 16 are rewritten accordingly.
+
+  **What it does not settle**, recorded so the gap is not mistaken for a decision: whether the
+  existing bare `session create --model X` — no role, some parameters, the rest inherited from the
+  parent — survives. The words above approve *role* overrides on both commands and say nothing
+  about that form. It is open question 2.
 
   **The third sentence is the load-bearing one, and it is why this is coherent rather than a
   loosening.** Overrides and the parameter inventory arrive together: an agent that may name a
@@ -282,9 +316,10 @@ _None._
 - 2026-08-14 — **Who picks the role — the user's exact word, or the agent's reading of the
   intent?** **Chosen: the agent works out which role is meant.** The human: *"The agent should be
   able to figure out the correct role. E.g. 'review the PR' -> role == reviewer."* Req 3. The
-  agent still supplies no param: it may choose a role, and may never choose a model or a level,
-  which are values it has no way to enumerate. Req 12 exists because an agent can only map an
-  intent onto roles it can see.
+  agent may choose a *role*; it may never choose a model or a level on its own. **Partly
+  superseded** by the override receipt at the top of this list: the agent may now carry a
+  parameter the user named, and can enumerate the parameters this install offers (req 12). What
+  survives unchanged is the line between relaying a value and deciding one.
 
 - 2026-08-14 — **Is role creation chat-native?** **Chosen: no — roles are created in the UI.**
   The human: *"In v1 roles are fully created in the UI."* Req 5. Choosing a role's params means

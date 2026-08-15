@@ -28,16 +28,22 @@ The design is [`plan.md`](./plan.md); the contract is [`requirements.md`](./requ
 - [ ] Save checks **compatibility only**, never live route availability — a role must remain
       saveable while a subscription is exhausted or a provider is down
 - [ ] `resolveRoleByName(name, overrides, …)` — `pinned` applies overrides over the role's tuple;
-      `auto` with no override delegates to `selectReviewer` unchanged, and `auto` **with** an
-      override resolves the named parameter directly instead of ranking-then-substituting (half a
-      ranked winner plus a swapped field is a tuple nobody chose). Both freeze with the role's name
+      `auto` with no override delegates to `selectReviewer` unchanged. Both freeze with the role's
+      name
+- [ ] **Blocked on open question 1** — what an override does to `auto` (the reviewer). Ranking then
+      swapping a field yields a tuple nobody chose; replacing the ranking outright drops req 2's
+      distance guarantee and says nothing about an override naming only a level or only a harness.
+      `selectReviewer` ranks whole slot targets (`reviewer-model.ts:265`), so there is no existing
+      constrained-partial behaviour to inherit — this has to be designed, not discovered
 - [ ] **An overridden tuple is validated exactly as a stored one** by the same harness-explicit
       validator, and an invalid override is **refused naming the parameter**, never dropped —
       a dropped override runs something other than what was asked for
 - [ ] No combination is reachable via override that a role could not have been saved with
-- [ ] **Stranded and quota-exhausted report differently**: a gone model/service/harness needs a
-      Settings edit and is never re-pointed through a retirement successor (req 7, open question
-      1); a spent subscription says when to retry and keeps the exact tuple
+- [ ] **Three failure states, not two**, because the remedy differs in each: **stranded** (gone
+      model/service/harness — needs a Settings edit, never re-pointed through a retirement
+      successor, req 7); **disconnected** (`auth_required` — the tuple is valid, the service lost
+      its credential, so reconnect the service and do NOT tell the user to edit the role); and
+      **quota-exhausted** (`all_exhausted` — says when to retry, keeps the exact tuple)
 - [ ] Unknown role name refused, listing the roles that exist (req 13)
 - [ ] Settings payload carries the roles, each resolved (server sends the resolution)
 
@@ -74,10 +80,15 @@ The design is [`plan.md`](./plan.md); the contract is [`requirements.md`](./requ
       billing mode and level are unsayable)
 - [ ] `--role NAME` on both commands
 - [ ] `--role NAME` **plus override flags** on both commands — one parser, one validator, one set
-      of refusals (req 16). What stays refused is a call naming no role and only *some* parameters:
-      an incomplete target with nothing to complete it from (docs/261 req 7, untouched)
-- [ ] Inheritance stays child-only — it is the one thing the two commands legitimately differ on,
-      because only a child has a parent
+      of refusals (req 16). What stays refused on the **one-shot** path is a call naming no role and
+      only *some* parameters: an incomplete target with nothing to complete it from (docs/261 req 7,
+      untouched)
+- [ ] **Blocked on open question 2** — the resolver's input type cannot be fixed until it is
+      answered. The same partial-no-role shape that the one-shot path refuses is *guaranteed* on
+      the child path by docs/261 req 10, which calls it deliberately opposite. Either the resolver
+      gains a third input shape accepted only where a parent exists, or the child form goes — and
+      the second breaks a shipped guarantee. Do not implement the resolver against "one set of
+      refusals" as if this were settled
 - [ ] A role on `session create` resolves **once at creation**, seeds the session row with the
       complete tuple passed directly (not through `agent`/`model`, which drops service, billing
       mode and level), and then routes like any other session
@@ -98,13 +109,21 @@ The design is [`plan.md`](./plan.md); the contract is [`requirements.md`](./requ
 
 ## Phase 4 — Documentation split (req 15)
 
-- [ ] The five-parameter shape leaves **every injected surface**: `shipit-docs/agent.md` *and*
-      both harness system prompts, which spell it out in full today
+- [ ] The five-parameter shape leaves **every injected surface** — `shipit-docs/agent.md`, both
+      harness system prompts, *and* `shipit-docs/sandbox-session.md:93-97`, which teaches the same
+      five flags in prose. Derive the list from what is actually injected rather than writing it
+      out, so the next page added is covered without anyone remembering
 - [ ] The repository override stays documented in the human-facing reference, keeping docs/261
       phase 5's line: pass a complete target through unchanged, never assemble one
 - [ ] The replacement guidance says a role plus an override does the same job in less — the reason
       the five-parameter form is not taught is no longer that the agent cannot use it
-- [ ] `review-command-callers.test.ts` inverts: add a **negative** `completeExplicitRuns`
-      assertion across every `buildAgentSystemInstructions` variant and every injected doc — the
-      guard today only rejects *incomplete* runs there, so a complete one passes unnoticed — and
-      move the positive "documented somewhere" assertion to the human-facing reference
+- [ ] `review-command-callers.test.ts` inverts: add a **negative** assertion across every
+      `buildAgentSystemInstructions` variant and every injected doc — the guard today only rejects
+      *incomplete* runs there, so a complete one passes unnoticed
+- [ ] That negative assertion must catch **prose, not only a runnable command line**:
+      `completeExplicitRuns` matches an invocation, and `sandbox-session.md` names the five flags
+      in a sentence, so a command-shaped matcher would report success on a page that still teaches
+      assembly
+- [ ] The positive "documented somewhere" assertion gets a **named target** —
+      `docs/261-configurable-reviewer/plan.md`, which already addresses whoever writes repository
+      policy. Without naming it, the assertion is dropped rather than moved

@@ -153,12 +153,14 @@ caller overrode, and returns a frozen target:
 2. **`pinned` params** → the role's tuple, with any override substituted over it. The harness is
    the role's unless overridden (req 6 — never derived), and the only question left is whether the
    result has a **usable route**.
-3. **`auto` params** (the reviewer) → **an override replaces the resolution rather than editing
-   it.** Ranking two candidates and then swapping a field of the winner would produce a tuple
-   nobody chose: the ranking's answer is a *whole* selection, and half of it plus a substituted
-   model is neither what ShipIt picked nor what the user asked for. So a reviewer run with no
-   override ranks as it does today; one with an override resolves the named parameter directly and
-   derives the rest around it.
+3. **`auto` params** (the reviewer) → a run with **no** override ranks exactly as it does today.
+   What an override does to that ranking is **open question 1 and is not designed here.** The
+   reasoning that led to the current text still stands and is why the question is not trivial:
+   ranking two candidates and then swapping a field of the winner produces a tuple nobody chose —
+   the ranking's answer is a *whole* selection, and half of it plus a substituted model is neither
+   what ShipIt picked nor what the user asked for. What that reasoning missed is that replacing the
+   resolution outright drops req 2's distance guarantee silently, and says nothing at all about an
+   override naming only a level or only a harness, which identifies no target by itself.
 
 Either way, freeze the target with the role's name on it.
 
@@ -177,16 +179,25 @@ reachable through `--role X --model Y` that a role could not have been configure
 an override. Every field the caller did not name comes from the role, and every field the role does
 not carry (the reviewer's case) is derived.
 
-A role that cannot run says which of the two it is: **stranded** (its model, service or harness is
-gone — it needs a Settings edit, and is never silently repaired) or **temporarily unroutable** (its
-subscription is spent — nothing to fix, it recovers when the quota resets). Route selection already
-distinguishes these, and collapsing them would send a user to edit a role that is perfectly
-correct.
+A role that cannot run says which of **three** things it is, because the remedy differs in each and
+collapsing them sends the user to the wrong place:
+
+- **stranded** — its model, service or harness no longer exists. It needs a **Settings edit**, and
+  is never silently repaired.
+- **disconnected** — the tuple is still structurally valid, but the service it names has no usable
+  credential any more. The remedy is to **reconnect the service**, and the role itself is correct;
+  editing it would be the wrong advice. Route selection reports this as `auth_required`
+  (`service-routing.ts:383`, `:479`), separately from exhaustion.
+- **temporarily unroutable** — its subscription is spent. Nothing to fix; it recovers when the
+  quota resets, and the tuple is kept exactly. Reported as `all_exhausted` (`service-routing.ts:469`).
+
+The first is a stored-state problem, the second an account problem, the third a clock problem. Only
+the first is the role's fault.
 
 ## The reviewer (req 2)
 
 There is **one kind of role**, and the variation lives in a role's params: the user pins them
-(req 7), and ShipIt ships one role — the reviewer — whose params it resolves (req 2). In the data
+(req 1), and ShipIt ships one role — the reviewer — whose params it resolves (req 2). In the data
 that is a single discriminator:
 
 ```
@@ -234,7 +245,7 @@ the two commands answer it in two different vocabularies, and req 16 collapses t
 | | `shipit agent run` | `shipit session create` |
 |---|---|---|
 | **Today** | a role, or all five params; an omission refused | `--agent` and `--model` only, forwarded as bare values — no service, no billing mode, **no reasoning level at all**; everything else inherited |
-| **Becomes** | a role, a role ± overrides, or a complete target | the same three, plus inherit when nothing is named |
+| **Becomes** | a role, a role ± overrides, or a complete target | the same three, plus inherit when nothing is named — and, pending **open question 2**, the existing partial-with-inheritance form |
 
 **The child session gains the most, and that is the point.** It cannot express a complete target
 at all right now: `session create` parses `--agent`/`--model` and forwards them bare
@@ -257,6 +268,14 @@ is identical, which is what req 16 asks for.
 modifies whatever base the caller named: a role, or the child's inheritance. It is always
 *something the caller wrote* over *something the caller can point at*, which is the property that
 keeps docs/261 req 7's rule intact — no blank is ever filled from a place the caller cannot see.
+
+**A collision this section previously papered over.** "An override modifies the child's
+inheritance" *is* the bare `session create --model X` form — no role, one parameter named, the rest
+taken from the parent. docs/261 req 10 guarantees it and calls it *deliberately opposite* to the
+one-shot refusal of a partial target. So "one set of refusals" and "inheritance stays child-only"
+cannot both be unqualified: the shared resolver needs a **third input shape**, accepted only where
+a parent exists. Whether to design that shape or drop the form is **open question 2**, and the
+resolver's input type cannot be settled before it is answered.
 
 **What a role does to a child, once resolved.** A role decides what the child *starts as*, not
 what it is bound to (req 11). The resolution happens once, before any disk work; it seeds the new
@@ -371,6 +390,27 @@ explicit runs there (`incompleteExplicitRuns`), so a complete one passes unnotic
 the mirror assertion: **no `completeExplicitRuns` in any `buildAgentSystemInstructions` variant or
 any injected doc**, with the positive "it is documented somewhere" assertion pointed at the
 human-facing reference instead.
+
+**Two things about that mirror assertion, both of which would otherwise let it pass while req 15
+is still violated.**
+
+*The surface is four pages, not three.* `shipit-docs/sandbox-session.md:93-97` teaches the same
+five parameters — "names all five of `--agent`, `--service`, `--billing-mode`, `--model`,
+`--effort`" — and it is injected like the others. Any enumeration that lists only `agent.md` and
+the two system prompts leaves it behind. The enumeration should be derived from what is injected
+rather than written out by hand, so the next page added is covered without anyone remembering.
+
+*A matcher for a literal command does not see prose.* `completeExplicitRuns` detects a complete
+*invocation*; `sandbox-session.md` names the five flags in a **sentence**, and would pass a
+command-shaped matcher untouched. So the negative assertion has to catch the parameter names
+appearing together as guidance, not only a runnable line — otherwise the guard reports success on
+a page that still teaches assembly.
+
+*The positive assertion needs a named destination.* Saying it "moves to the human-facing
+reference" is not yet a target a test can point at. The complete shape lands in **`docs/261-
+configurable-reviewer/plan.md`**, which already documents the repository-override path for exactly
+this audience, and the guard asserts against that path. Naming it here is what stops the positive
+assertion from being quietly dropped when `agent.md` stops serving the role.
 
 ## Settings (req 5)
 
