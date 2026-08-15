@@ -449,6 +449,30 @@ exit 17
     expect((err as Error).message.length).toBeLessThan(10_000);
   });
 
+  // planning#371 — Compose interpolates `${VAR}` in the project's compose file from
+  // the environment of the process that runs it, and that process is the
+  // orchestrator. The child must therefore inherit a named minimum, never the
+  // whole thing: `LEAK: ${GITHUB_TOKEN}` in a repository's compose file used to
+  // resolve against the orchestrator's own credentials.
+  it("hands the docker child a minimal environment, not the orchestrator's", async () => {
+    fakeDocker(`env >&2`);
+    process.env.SHIPIT_TEST_ORCHESTRATOR_SECRET = "s3cr3t";
+    process.env.DOCKER_HOST = "unix:///var/run/docker.sock";
+    try {
+      const chunks: string[] = [];
+      await cliUnderTest().upService("dev", (chunk: string) => { chunks.push(chunk); });
+      const childEnv = chunks.join("");
+      expect(childEnv).not.toContain("SHIPIT_TEST_ORCHESTRATOR_SECRET");
+      expect(childEnv).not.toContain("s3cr3t");
+      // …while what the CLI genuinely needs is still there.
+      expect(childEnv).toContain("DOCKER_HOST=unix:///var/run/docker.sock");
+      expect(childEnv).toMatch(/^PATH=/m);
+    } finally {
+      delete process.env.SHIPIT_TEST_ORCHESTRATOR_SECRET;
+      delete process.env.DOCKER_HOST;
+    }
+  });
+
   it("flushes a trailing line the command never terminated with a newline", async () => {
     fakeDocker(`printf '#5 building' >&2`);
     const chunks: string[] = [];

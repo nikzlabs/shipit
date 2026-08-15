@@ -348,6 +348,88 @@ export class ComposeCli {
 }
 
 // ---------------------------------------------------------------------------
+// Spawn environment
+// ---------------------------------------------------------------------------
+
+/**
+ * The only variables a `docker` / `docker compose` child inherits (planning#371).
+ *
+ * **Compose interpolates `${VAR}` in the compose file from the environment of
+ * the process that runs it**, and that process is the ORCHESTRATOR — whose
+ * environment holds its GitHub credentials, its provider keys, and everything
+ * else a deployment sets. A `LEAK: ${GITHUB_TOKEN}` in a repository's own
+ * compose file resolved against it and arrived inside a container. This is
+ * exactly what `plugin-compose.ts` escapes every `$` in a plugin fragment to
+ * prevent; the project file was the way around that escaping, and it is worth
+ * closing on its own merits well beyond plugins — the file is repository content
+ * either way, and no repository has a reason to read the orchestrator's env.
+ *
+ * Interpolation itself still works, from the sources Compose documents for it:
+ * a `.env` file in the project directory, `env_file:`, and `environment:`. Only
+ * the accidental inheritance is gone.
+ *
+ * **This alone does not put the orchestrator's environment out of reach, and
+ * saying so would be the overstatement this area keeps shipping** (review
+ * finding). A scrubbed `env` does not unmount `/proc`: the child runs as the
+ * same uid as its parent, so `/proc/1/environ` — mode 0400, owned by the
+ * orchestrator process — is readable to it. What closes that is the companion
+ * rule in `compose-generator.ts`'s `validateTopLevelSecrets`, which keeps a
+ * repository's `secrets:` sources inside the workspace: a BUILD secret is the
+ * one compose-file field that makes the CLI read an arbitrary path in ITS own
+ * filesystem and hand the contents to a container. The two are one fix; neither
+ * half is sufficient.
+ *
+ * The list is what the CLI needs to find the daemon and its own config, and
+ * nothing else:
+ *  - `PATH` — Node resolves the executable through the env it is handed, so
+ *    omitting this makes the spawn fail with ENOENT rather than run unconfigured.
+ *  - `HOME` / `DOCKER_CONFIG` — where the CLI reads `config.json` (registry
+ *    auth for a `build:`/`image:` pull, buildx state).
+ *  - `DOCKER_HOST` + the TLS/context vars — which daemon, and how to reach it.
+ *  - `DOCKER_BUILDKIT` / `BUILDKIT_PROGRESS` / `COMPOSE_DOCKER_CLI_BUILD` —
+ *    builder selection and output format, which deployments do set.
+ *  - `TMPDIR` — buildx and compose write temporary files.
+ *
+ * Deliberately NOT forwarded: `COMPOSE_FILE`, `COMPOSE_PROJECT_NAME`,
+ * `COMPOSE_PROFILES` and friends. ShipIt passes `-f` and `-p` explicitly, and a
+ * deployment-level value for them would silently redefine which stack a session
+ * is operating on.
+ */
+const COMPOSE_ENV_PASSTHROUGH = [
+  "PATH",
+  "HOME",
+  "TMPDIR",
+  "DOCKER_HOST",
+  "DOCKER_CONFIG",
+  "DOCKER_CONTEXT",
+  "DOCKER_CERT_PATH",
+  "DOCKER_TLS_VERIFY",
+  "DOCKER_API_VERSION",
+  "DOCKER_BUILDKIT",
+  "BUILDKIT_PROGRESS",
+  "COMPOSE_DOCKER_CLI_BUILD",
+] as const;
+
+/**
+ * Build the environment for a `docker` spawn — see {@link COMPOSE_ENV_PASSTHROUGH}.
+ *
+ * Exported because every `docker` invocation that names a compose FILE must use
+ * it, not just the two in this module: `ServiceManager`'s log snapshot and log
+ * follower spawn `docker compose … logs` with the same `-f <project file>`, so
+ * Compose parses and interpolates that file for them too.
+ */
+export function composeSpawnEnv(
+  source: NodeJS.ProcessEnv = process.env,
+): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {};
+  for (const key of COMPOSE_ENV_PASSTHROUGH) {
+    const value = source[key];
+    if (value !== undefined) env[key] = value;
+  }
+  return env;
+}
+
+// ---------------------------------------------------------------------------
 // Default compose runner / query
 // ---------------------------------------------------------------------------
 
@@ -371,6 +453,7 @@ function defaultComposeRunner(
     const proc = spawn("docker", args, {
       cwd,
       stdio: ["ignore", "pipe", "pipe"],
+      env: composeSpawnEnv(),
     });
 
     let stderr = "";
@@ -406,6 +489,7 @@ function defaultComposeQuery(args: string[], cwd: string): Promise<string> {
     const proc = spawn("docker", args, {
       cwd,
       stdio: ["ignore", "pipe", "pipe"],
+      env: composeSpawnEnv(),
     });
 
     let stdout = "";

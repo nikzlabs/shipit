@@ -12,8 +12,14 @@ import {
   EGRESS_PROXY_PORT,
   EGRESS_PROXY_LISTEN,
   EGRESS_PROXY_LABEL,
+  dockerEgressDecisionTokenRecovery,
 } from "./egress-proxy-install.js";
 import { EGRESS_DEFAULT_ALLOWLIST } from "./egress-allowlist.js";
+import {
+  EGRESS_DECISION_TOKEN_ENV,
+  clearAllEgressDecisionTokens,
+  verifyEgressDecisionToken,
+} from "./egress-decision-auth.js";
 
 describe("egressProxyEnabled", () => {
   it("is ON by default (all tiers default on)", () => {
@@ -105,6 +111,61 @@ describe("launchEgressProxy", () => {
     });
     const cfg = calls.create as { Env: string[] };
     expect(cfg.Env).toContain("EGRESS_PROXY_DECISION_URL=http://shipit:3000/api/egress/decision");
+  });
+
+  // planning#371 — the token travels with the decision URL and only with it. A
+  // proxy that makes no query holds no credential to leak, which is what keeps
+  // the plugin CLI / install namespaces (`plugin-egress.ts`, no decision URL)
+  // exactly as denied as req 19 wants them.
+  it("mints a session-scoped decision token alongside the decision URL", async () => {
+    const { docker, calls } = fakeDocker();
+    await launchEgressProxy(docker, {
+      agentContainerId: "agent123",
+      sidecarImage: "egress:1",
+      allowed: "github.com",
+      sessionId: "s1",
+      decisionUrl: "http://shipit:3000/api/egress/decision",
+    });
+    const cfg = calls.create as { Env: string[] };
+    const entry = cfg.Env.find((e) => e.startsWith(`${EGRESS_DECISION_TOKEN_ENV}=`));
+    expect(entry).toBeDefined();
+    const token = entry!.slice(EGRESS_DECISION_TOKEN_ENV.length + 1);
+    expect(await verifyEgressDecisionToken("s1", token)).toBe(true);
+    expect(await verifyEgressDecisionToken("s2", token)).toBe(false);
+    clearAllEgressDecisionTokens();
+  });
+
+  it("mints NO token for a proxy with no decision URL", async () => {
+    const { docker, calls } = fakeDocker();
+    await launchEgressProxy(docker, {
+      agentContainerId: "agent123",
+      sidecarImage: "egress:1",
+      allowed: "github.com",
+      sessionId: "s1",
+    });
+    const cfg = calls.create as { Env: string[] };
+    expect(cfg.Env.some((e) => e.startsWith(`${EGRESS_DECISION_TOKEN_ENV}=`))).toBe(false);
+  });
+});
+
+describe("dockerEgressDecisionTokenRecovery", () => {
+  it("reads every live proxy sidecar's token back out of its env", async () => {
+    const inspected: string[] = [];
+    const recover = dockerEgressDecisionTokenRecovery({
+      listContainers: (async (opts: unknown) => {
+        expect(opts).toEqual({ filters: { label: [`${EGRESS_PROXY_LABEL}=s1`] } });
+        return [{ Id: "proxy-1" }, { Id: "proxy-2" }, { Id: "gone" }];
+      }) as never,
+      getContainer: ((id: string) => ({
+        inspect: async () => {
+          inspected.push(id);
+          if (id === "gone") throw new Error("no such container");
+          return { Config: { Env: [`${EGRESS_DECISION_TOKEN_ENV}=token-${id}`] } };
+        },
+      })) as never,
+    });
+    expect(await recover("s1")).toEqual(["token-proxy-1", "token-proxy-2"]);
+    expect(inspected).toEqual(["proxy-1", "proxy-2", "gone"]);
   });
 
   it("passes EGRESS_PROXY_IDENTITY_RULES when Phase-2 identity rules are wired", async () => {

@@ -27,6 +27,12 @@
 import type Docker from "dockerode";
 import { EGRESS_DEFAULT_ALLOWLIST } from "./egress-allowlist.js";
 import { egressDnsEnabled } from "./egress-dns-install.js";
+import {
+  EGRESS_DECISION_TOKEN_ENV,
+  mintEgressDecisionToken,
+  tokenFromContainerEnv,
+  type EgressDecisionTokenRecovery,
+} from "./egress-decision-auth.js";
 
 /**
  * Uid the SNI proxy runs as. The Tier A installer REDIRECTs the agent's :443 to
@@ -108,7 +114,15 @@ export async function launchEgressProxy(docker: Docker, opts: LaunchProxyOpts): 
     `EGRESS_PROXY_ALLOWED=${opts.allowed}`,
     `EGRESS_PROXY_SESSION_ID=${opts.sessionId}`,
   ];
-  if (opts.decisionUrl) env.push(`EGRESS_PROXY_DECISION_URL=${opts.decisionUrl}`);
+  if (opts.decisionUrl) {
+    env.push(`EGRESS_PROXY_DECISION_URL=${opts.decisionUrl}`);
+    // planning#371 — the decision query's own credential, minted HERE rather than at
+    // the three call sites so no launcher can forget it and so a proxy with no
+    // decision URL (the plugin namespaces) provably has no token to leak. It is
+    // readable only inside this sidecar, which shares nothing but a network
+    // namespace with the workload it fronts (`egress-decision-auth.ts`).
+    env.push(`${EGRESS_DECISION_TOKEN_ENV}=${mintEgressDecisionToken(opts.sessionId)}`);
+  }
   if (opts.identityRules) env.push(`EGRESS_PROXY_IDENTITY_RULES=${opts.identityRules}`);
 
   const container = await docker.createContainer({
@@ -126,4 +140,36 @@ export async function launchEgressProxy(docker: Docker, opts: LaunchProxyOpts): 
   });
   await container.start();
   return container.id;
+}
+
+/**
+ * planning#371 — rebuild a session's decision-query tokens from its live proxy
+ * sidecars, for an orchestrator that did not mint them (a restart; the sidecars
+ * outlive the process that launched them).
+ *
+ * Lives here rather than beside the registry because it is the proxy sidecar's
+ * own shape it reads: {@link EGRESS_PROXY_LABEL} identifies them and the token
+ * is in the env this module wrote. Keeping it here also keeps
+ * `egress-decision-auth.ts` free of any dependency on this module.
+ */
+export function dockerEgressDecisionTokenRecovery(
+  docker: Pick<Docker, "listContainers" | "getContainer">,
+): EgressDecisionTokenRecovery {
+  return async (sessionId: string): Promise<string[]> => {
+    const entries = await docker.listContainers({
+      filters: { label: [`${EGRESS_PROXY_LABEL}=${sessionId}`] },
+    });
+    const tokens: string[] = [];
+    for (const entry of entries) {
+      let env: string[] | undefined;
+      try {
+        env = (await docker.getContainer(entry.Id).inspect()).Config?.Env;
+      } catch {
+        continue; // gone between the list and the inspect
+      }
+      const token = tokenFromContainerEnv(env);
+      if (token) tokens.push(token);
+    }
+    return tokens;
+  };
 }

@@ -513,6 +513,130 @@ services:
     expect(() => parseComposeFile(p, { dockerSocket: false })).toThrow("Path traversal");
   });
 
+  // planning#371 (review finding) — a `secrets:` entry is the volumes rule's
+  // primitive by another name: a service secret is bind-mounted by the daemon
+  // (a host path), and a BUILD secret is read client-side, in the
+  // orchestrator's own filesystem — which is how a compose file could still
+  // reach the environment `composeSpawnEnv` stops passing.
+  it("rejects an absolute env_file path (the CLI reads it, in the orchestrator's own fs)", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `
+services:
+  web:
+    image: node:20
+    env_file: /proc/1/environ
+`);
+    expect(() => parseComposeFile(p, { dockerSocket: false })).toThrow("absolute path");
+  });
+
+  it("rejects an escaping env_file in list and object form", () => {
+    const dir = setup();
+    const list = writeCompose(dir, `
+services:
+  web:
+    image: node:20
+    env_file:
+      - ./ok.env
+      - ../../root/.env
+`);
+    expect(() => parseComposeFile(list, { dockerSocket: false })).toThrow("path traversal");
+    const obj = writeCompose(dir, `
+services:
+  web:
+    image: node:20
+    env_file:
+      - path: /proc/1/environ
+        required: false
+`);
+    expect(() => parseComposeFile(obj, { dockerSocket: false })).toThrow("absolute path");
+  });
+
+  it("rejects an absolute config file path", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `
+configs:
+  leak:
+    file: /etc/shadow
+services:
+  web:
+    image: node:20
+    configs:
+      - leak
+`);
+    expect(() => parseComposeFile(p, { dockerSocket: false })).toThrow("absolute path");
+  });
+
+  it("allows a workspace-relative env_file", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `
+services:
+  web:
+    image: node:20
+    env_file: ./.env
+`);
+    expect(parseComposeFile(p, { dockerSocket: false })).toHaveLength(1);
+  });
+
+  it("rejects an absolute secret file path", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `
+secrets:
+  leak:
+    file: /proc/1/environ
+services:
+  web:
+    image: node:20
+    build:
+      context: .
+      secrets:
+        - leak
+`);
+    expect(() => parseComposeFile(p, { dockerSocket: false })).toThrow("absolute path");
+  });
+
+  it("rejects path traversal in a secret file path", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `
+secrets:
+  leak:
+    file: ../../root/.docker/config.json
+services:
+  web:
+    image: node:20
+`);
+    expect(() => parseComposeFile(p, { dockerSocket: false })).toThrow("path traversal");
+  });
+
+  // The literal is validated here and resolved by Compose, so an interpolated
+  // path would sail past both checks above.
+  it("rejects an interpolated secret file path", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `
+secrets:
+  leak:
+    file: \${HOME}/.docker/config.json
+services:
+  web:
+    image: node:20
+`);
+    expect(() => parseComposeFile(p, { dockerSocket: false })).toThrow("interpolation is not allowed");
+  });
+
+  it("allows a workspace-relative secret file", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `
+secrets:
+  api_key:
+    file: ./secrets/api_key.txt
+services:
+  web:
+    image: node:20
+    secrets:
+      - api_key
+`);
+    expect(parseComposeFile(p, { dockerSocket: false })).toHaveLength(1);
+  });
+
   it("handles long-syntax port definitions", () => {
     const dir = setup();
     const p = writeCompose(dir, `

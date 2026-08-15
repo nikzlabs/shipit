@@ -64,6 +64,7 @@ import {
 import type { ResolvedEgressConfig } from "./egress-allowlist.js";
 import { readonlyRootfsTmpfs } from "./container-hardening.js";
 import { generateWorkerToken, setWorkerAuthToken, clearWorkerAuthToken } from "./worker-auth.js";
+import { clearEgressDecisionTokens } from "./egress-decision-auth.js";
 import { WORKER_TOKEN_ENV } from "../shared/worker-auth.js";
 
 // ---------------------------------------------------------------------------
@@ -1396,6 +1397,10 @@ export async function destroyContainer(
   // recycled, so a stale entry would otherwise hand the previous container's
   // token to whatever lands on that address next.
   clearWorkerAuthToken(sc.workerUrl);
+  // planning#371 — the same for the session's egress decision-query tokens: this
+  // teardown reaps every `shipit-parent-session` child below, sidecars included,
+  // so nothing that could present one survives it.
+  clearEgressDecisionTokens(sessionId);
 
   // Stop the session container first so it can't create new child resources
   try {

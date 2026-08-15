@@ -64,6 +64,8 @@ import { SessionRunner } from "./session-runner.js";
 import { prepareDispatch } from "./prepared-dispatch.js";
 import { buildAgentListPayload } from "./services/settings.js";
 import { sweepSubAgentCredentialsOnSignOut } from "./services/sub-agent.js";
+import { setEgressDecisionTokenRecovery } from "./egress-decision-auth.js";
+import { dockerEgressDecisionTokenRecovery } from "./egress-proxy-install.js";
 
 // ---- Re-exports for extracted modules ----
 //
@@ -249,6 +251,14 @@ export async function setupContainerManager(
         };
       });
       if (rediscovered > 0) console.log(`[server] Rediscovered ${rediscovered} container(s) from previous run`);
+      // planning#371 — this process did not mint the decision-query tokens of the
+      // sidecars that survived the previous one, and a container-facing control
+      // that only works until the orchestrator restarts is the failure this area
+      // has shipped before. The sidecar's own env is the source of truth
+      // (`worker-auth.ts`'s precedent); this seam re-reads it on a miss.
+      setEgressDecisionTokenRecovery(
+        dockerEgressDecisionTokenRecovery(containerManager.getDockerClient()),
+      );
       await containerManager.startHealthMonitor();
       console.log("[server] Docker container mode enabled");
     } else {
