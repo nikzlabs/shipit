@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import type { PluginReposSnapshot } from "../../server/shared/plugin-repos.js";
+import type { EgressHostGrantOutcome } from "../../server/shared/types.js";
 import { useSessionStore } from "./session-store.js";
 
 /**
@@ -46,7 +47,8 @@ interface PluginReposState {
   /** Which session `snapshot` belongs to — read alongside it, never on its own. */
   forSessionId: string | null;
   fetchSnapshot: (sessionId: string) => Promise<void>;
-  allowHost: (host: string, scope: PluginHostGrantScope) => Promise<void>;
+  /** Resolves with what the add took effect on (planning#376), or null if the server said nothing. */
+  allowHost: (host: string, scope: PluginHostGrantScope) => Promise<EgressHostGrantOutcome | null>;
   reset: () => void;
 }
 
@@ -84,18 +86,32 @@ export const usePluginReposStore = create<PluginReposState>((set, get) => ({
    * refresh failed closed", so the host may be allowed even when the call
    * reports failure, and a card left naming a gap the user has closed is the
    * bug the credentials row already fixed by refetching after "Add key…".
+   *
+   * It resolves with the route's `grant` — what the add actually took effect on
+   * (planning#376). The two scopes diverge sharply (a session add is live
+   * everywhere at once; a global one reaches only containers started from now
+   * on), so the row states the outcome afterwards instead of the button
+   * predicting it in a tooltip nobody could reach after clicking. For a global
+   * add the session travels as a REPORTING hint — the entry still lands at
+   * instance scope; the id only says which session's surfaces to report on.
    */
   allowHost: async (host: string, scope: PluginHostGrantScope) => {
     const sessionId = get().forSessionId;
     const trimmed = host.trim();
-    if (!sessionId || !trimmed) return;
+    if (!sessionId || !trimmed) return null;
     try {
       const res = await fetch("/api/egress/hosts", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ host: trimmed, scope: scope === "global" ? "global" : sessionId }),
+        body: JSON.stringify(
+          scope === "global"
+            ? { host: trimmed, scope: "global", session: sessionId }
+            : { host: trimmed, scope: sessionId },
+        ),
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const body = (await res.json()) as { grant?: EgressHostGrantOutcome };
+      return body?.grant ?? null;
     } finally {
       await get().fetchSnapshot(sessionId);
     }

@@ -83,6 +83,74 @@ export interface EgressAllowlistEntry {
   removable: boolean;
 }
 
+// ---- What an allowlist ADD actually took effect on (planning#376) ----
+
+/**
+ * One class of surface an allowlist add either has already reached or has not.
+ *
+ *  - `new-containers` — anything created from now on reads the live config, so
+ *    it starts with the new host: a fresh session container, and notably a
+ *    plugin's companion-CLI or install container, which is created per
+ *    invocation (`plugin-egress.ts`).
+ *  - `agent` — the session's agent container. Its Tier B resolver and Tier C
+ *    proxy are launched with a snapshot taken at container creation, so it is
+ *    reached live only by a `reloadEgress` (a session-scoped add), never by a
+ *    global one.
+ *  - `services` — the session's running Compose services, re-contained by the
+ *    same `reloadEgress` and otherwise stale until they restart.
+ */
+export type EgressGrantSurface = "new-containers" | "agent" | "services";
+
+/**
+ * planning#376 — what an allowlist add took effect on, reported BY the route
+ * that performed it.
+ *
+ * The two scopes behave very differently (a session add reloads the live
+ * resolver, proxy and every running service; a global add reloads nothing), and
+ * predicting that in a tooltip beforehand was both unreachable after the click
+ * and wrong. The server knows which reload it ran and what is running, so it
+ * says so; the client renders this rather than re-deriving it from the scope,
+ * which would be a second source of truth for one answer.
+ *
+ * `liveNow` and `staleUntilRestart` are disjoint, and a surface absent from both
+ * is one this outcome makes no claim about.
+ */
+export interface EgressHostGrantOutcome {
+  /** The host as the user gave it, for the confirmation sentence. */
+  host: string;
+  /** Where the entry was written — this session's extras, or the instance. */
+  scope: "session" | "global";
+  /** Surfaces already running the new allowlist. */
+  liveNow: EgressGrantSurface[];
+  /** Surfaces that keep the OLD allowlist until their next start. */
+  staleUntilRestart: EgressGrantSurface[];
+  /**
+   * The session whose container restart would bring `staleUntilRestart` in
+   * step, when one is in scope and there is something to fix. `null` means the
+   * client must not offer a restart: nothing is stale, or the add was made
+   * where no single session is in scope (the global Settings editor), where
+   * "restart" has no unambiguous subject.
+   */
+  restartSessionId: string | null;
+  /**
+   * True when the in-scope session's own resolved egress config excludes the
+   * host whatever the allowlist holds — docs/211's Network-off sandbox, which
+   * resolves to a lifeline-only config carrying no user hosts. The entry is
+   * saved (and reaches other sessions, for a global add), but THIS session
+   * cannot reach it and no restart changes that, so both lists are empty and
+   * the client must not offer one.
+   */
+  excludedBySessionPolicy: boolean;
+}
+
+/**
+ * `POST /api/egress/hosts` — the scope's refreshed settings view (unchanged, so
+ * existing readers keep working) plus what the add actually took effect on.
+ */
+export type EgressHostAddResponse = (EgressSettings | EgressSessionSettings) & {
+  grant: EgressHostGrantOutcome;
+};
+
 /**
  * The full effective-allowlist view for the Settings editor: every host the
  * session can reach (with provenance), the global containment toggle, and — when

@@ -14,7 +14,12 @@ import { EgressAllowlistStore, EGRESS_GLOBAL_SCOPE } from "./egress-allowlist-st
 import { registerEgressRoutes } from "./api-routes-egress.js";
 import type { ApiDeps } from "./api-routes.js";
 import type { CredentialStore } from "./credential-store.js";
-import type { EgressSettings, EgressSessionSettings, EgressAllowlistView } from "../shared/types.js";
+import type {
+  EgressSettings,
+  EgressSessionSettings,
+  EgressAllowlistView,
+  EgressHostAddResponse,
+} from "../shared/types.js";
 
 const stubCredentialStore = {
   getAllMcpServers: () => ({}),
@@ -30,6 +35,10 @@ describe("egress settings routes", () => {
   // Mutable map of live container records, so a test can simulate "this session
   // has a running container that started Contained" for the pending-restart diff.
   let liveContainers: Map<string, { status: string; egressContainedAtStart?: boolean }>;
+  // The session's RESOLVED egress config — the seam the Plugins card and the
+  // plugin containers' enforcement read (planning#376). Absent = no resolver
+  // wired, which must never render as a positive claim about reachability.
+  let resolvedEgress: Map<string, { contained: boolean; extraHosts: string[]; base?: string[] }>;
 
   beforeEach(async () => {
     db = new DatabaseManager(":memory:");
@@ -37,6 +46,7 @@ describe("egress settings routes", () => {
     reloadEgress = vi.fn(async () => true);
     broadcasts = [];
     liveContainers = new Map();
+    resolvedEgress = new Map();
     app = Fastify();
     const deps = {
       egressAllowlistStore: store,
@@ -44,7 +54,11 @@ describe("egress settings routes", () => {
       // This deployment can enforce (enforcement on + sidecar image configured).
       egressEnforcementActive: true,
       sseBroadcast: (event: string, data: unknown) => broadcasts.push({ event, data }),
-      containerManager: { reloadEgress, get: (id: string) => liveContainers.get(id) } as unknown,
+      containerManager: {
+        reloadEgress,
+        get: (id: string) => liveContainers.get(id),
+        resolveEgress: (id: string) => resolvedEgress.get(id),
+      } as unknown,
       runnerRegistry: { get: () => undefined },
       chatHistoryManager: {},
     } as unknown as ApiDeps;
@@ -136,6 +150,117 @@ describe("egress settings routes", () => {
     expect(res.statusCode).toBe(200);
     expect(res.json<EgressSessionSettings>().hosts).toEqual(["api.example.com"]);
     expect(reloadEgress).toHaveBeenCalledWith("session-1");
+  });
+
+  // planning#376 — the route ran the reload (or didn't) and can see what is
+  // running, so it reports what took effect instead of the browser predicting
+  // the difference between the two scopes in a button tooltip.
+  describe("the response reports what the add took effect on", () => {
+    it("a session add is live everywhere, with nothing to restart", async () => {
+      liveContainers.set("session-1", { status: "running", egressContainedAtStart: true });
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/egress/hosts",
+        payload: { host: "api.example.com", scope: "session-1" },
+      });
+      expect(res.json<EgressHostAddResponse>().grant).toEqual({
+        host: "api.example.com",
+        scope: "session",
+        liveNow: ["new-containers", "agent", "services"],
+        staleUntilRestart: [],
+        restartSessionId: null,
+        excludedBySessionPolicy: false,
+      });
+    });
+
+    it("a session add whose reload declined is reported as pending, not as live", async () => {
+      // `reloadEgress` answers false for a deployment with the Tier B/C
+      // sidecars off, among others — the agent is then holding the old list,
+      // and reading "session scope" as "it reloaded" would state the opposite.
+      reloadEgress.mockResolvedValueOnce(false);
+      liveContainers.set("session-1", { status: "running", egressContainedAtStart: true });
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/egress/hosts",
+        payload: { host: "api.example.com", scope: "session-1" },
+      });
+      expect(res.json<EgressHostAddResponse>().grant).toMatchObject({
+        scope: "session",
+        staleUntilRestart: ["agent", "services"],
+        restartSessionId: "session-1",
+      });
+    });
+
+    it("a global add names the AGENT as stale too, and offers that session's restart", async () => {
+      liveContainers.set("session-1", { status: "running", egressContainedAtStart: true });
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/egress/hosts",
+        // `session` is reporting-only: the entry still lands at global scope.
+        payload: { host: "api.example.com", scope: "global", session: "session-1" },
+      });
+      const body = res.json<EgressHostAddResponse>();
+      expect(body.grant).toEqual({
+        host: "api.example.com",
+        scope: "global",
+        liveNow: ["new-containers"],
+        staleUntilRestart: ["agent", "services"],
+        restartSessionId: "session-1",
+        excludedBySessionPolicy: false,
+      });
+      expect(store.listHosts(EGRESS_GLOBAL_SCOPE)).toEqual(["api.example.com"]);
+      expect(store.listHosts("session-1")).toEqual([]);
+      expect(reloadEgress).not.toHaveBeenCalled();
+    });
+
+    // docs/211 — a Network-off sandbox resolves to a lifeline-only config that
+    // carries no user hosts at all. The entry saves and the reload runs, and
+    // the session still cannot reach the host, for good.
+    it("a session whose resolved config excludes the host is not reported as allowed", async () => {
+      liveContainers.set("session-1", { status: "running", egressContainedAtStart: true });
+      resolvedEgress.set("session-1", { contained: true, extraHosts: [], base: [".anthropic.com"] });
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/egress/hosts",
+        payload: { host: "api.example.com", scope: "session-1" },
+      });
+      expect(res.json<EgressHostAddResponse>().grant).toEqual({
+        host: "api.example.com",
+        scope: "session",
+        liveNow: [],
+        staleUntilRestart: [],
+        restartSessionId: null,
+        excludedBySessionPolicy: true,
+      });
+    });
+
+    it("a host the resolved config DOES carry is reported normally", async () => {
+      liveContainers.set("session-1", { status: "running", egressContainedAtStart: true });
+      // Suffix entries match the way the proxy matches them.
+      resolvedEgress.set("session-1", { contained: true, extraHosts: [".example.com"] });
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/egress/hosts",
+        payload: { host: "api.example.com", scope: "session-1" },
+      });
+      expect(res.json<EgressHostAddResponse>().grant).toMatchObject({
+        excludedBySessionPolicy: false,
+        staleUntilRestart: [],
+      });
+    });
+
+    it("a global add with no session in scope offers no restart", async () => {
+      const res = await app.inject({
+        method: "POST",
+        url: "/api/egress/hosts",
+        payload: { host: "api.example.com" },
+      });
+      expect(res.json<EgressHostAddResponse>().grant).toMatchObject({
+        scope: "global",
+        staleUntilRestart: ["agent", "services"],
+        restartSessionId: null,
+      });
+    });
   });
 
   it("POST /api/egress/hosts reports a fail-closed live refresh failure", async () => {
