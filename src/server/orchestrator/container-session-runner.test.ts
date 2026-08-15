@@ -58,6 +58,53 @@ describe("ContainerSessionRunner — dependency-input change detection (#1622)",
   });
 });
 
+/**
+ * Which changed files mean "the session's configuration moved".
+ *
+ * The conventional filenames are a guess at the project's compose file, and a
+ * repo whose `compose:` block names something else (`deploy/compose.yml`) was
+ * left out of it entirely: its own compose edits reached no reconcile at all,
+ * and docs/262 req 20's plugin-service re-resolution — which hangs off this same
+ * signal, because the project's service names seed the plugin name domain —
+ * never ran against the edited file.
+ */
+describe("ContainerSessionRunner — config-file change detection", () => {
+  /** Attach a manager stand-in without wiring its whole event surface. */
+  function withComposeFile(runner: ContainerSessionRunner, file: string): void {
+    (runner as unknown as { _serviceManager: unknown })._serviceManager = { composeFilePath: file };
+  }
+
+  const isConfig = (runner: ContainerSessionRunner, p: string): boolean =>
+    (runner as unknown as { isConfigFileChange(p: string): boolean }).isConfigFileChange(p);
+
+  it("matches the conventional names before any manager exists", () => {
+    const runner = makeRunner();
+    // This half must keep answering with no manager: a repo that ADDS a
+    // `compose:` block has none yet, and that edit is what creates one.
+    expect(isConfig(runner, "shipit.yaml")).toBe(true);
+    expect(isConfig(runner, "./docker-compose.yml")).toBe(true);
+    expect(isConfig(runner, "compose.yaml")).toBe(true);
+    expect(isConfig(runner, "deploy/compose.yml")).toBe(false);
+    expect(isConfig(runner, "src/App.tsx")).toBe(false);
+  });
+
+  it("also matches the compose file the session's config actually names", () => {
+    const runner = makeRunner();
+    withComposeFile(runner, "deploy/compose.yml");
+
+    expect(isConfig(runner, "deploy/compose.yml")).toBe(true);
+    expect(isConfig(runner, "./deploy/compose.yml")).toBe(true);
+    // Still not every YAML under that directory.
+    expect(isConfig(runner, "deploy/other.yml")).toBe(false);
+  });
+
+  it("normalizes a `./` the configured path itself carries", () => {
+    const runner = makeRunner();
+    withComposeFile(runner, "./deploy/compose.yml");
+    expect(isConfig(runner, "deploy/compose.yml")).toBe(true);
+  });
+});
+
 describe("ContainerSessionRunner — dependency-change reinstall throttle (#1622)", () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());

@@ -228,7 +228,15 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
    */
   removeVolumesOnDispose = false;
 
-  /** Config files that trigger a compose reconcile when changed. */
+  /**
+   * Conventional config files that trigger a compose reconcile when changed.
+   *
+   * Static because it has to answer before any ServiceManager exists — a repo
+   * that ADDS a `compose:` block is exactly the case
+   * `applyShipitConfigChange` delegates back to full setup for. The file the
+   * session's config actually NAMES is asked for separately; see
+   * {@link isConfigFileChange}.
+   */
   private static readonly CONFIG_FILES = new Set([
     "shipit.yaml",
     "docker-compose.yml",
@@ -1889,6 +1897,29 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   }
 
   /**
+   * True when a changed path means this session's configuration moved.
+   *
+   * The conventional names ({@link CONFIG_FILES}) are only half of it. A repo's
+   * `compose:` block may name any workspace-relative path — `deploy/compose.yml`
+   * is a case `applyShipitConfigChange` already handles — and an edit to THAT
+   * file is as much a configuration change as an edit to a conventionally-named
+   * one. Matching names alone meant such a project's own compose edits reached
+   * nothing: no reconcile, so a service it added never started, and (docs/262
+   * req 20) the plugin services, whose name domain is seeded from this file,
+   * were never re-resolved against it. So the file the session's manager
+   * actually reads is asked for too.
+   *
+   * Pure and instance-scoped rather than static, since the answer depends on
+   * this session's resolved config. Paths arrive workspace-relative and may
+   * carry a `./`; both sides are normalized before comparison.
+   */
+  private isConfigFileChange(rawPath: string): boolean {
+    const p = rawPath.replace(/^\.\//, "");
+    if (ContainerSessionRunner.CONFIG_FILES.has(p)) return true;
+    return p === this._serviceManager?.composeFilePath.replace(/^\.\//, "");
+  }
+
+  /**
    * True when a changed path is one of this session's dependency input files.
    * Paths arrive workspace-relative; the watcher and `git` may prefix `./`, so
    * normalize before comparing. Pure so the predicate is unit-testable.
@@ -2410,10 +2441,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
           this.emitMessage({ type: "files_changed", paths });
 
           // Detect config file changes and re-evaluate the session's config
-          const hasConfigChange = paths.some(p =>
-            ContainerSessionRunner.CONFIG_FILES.has(p) ||
-            ContainerSessionRunner.CONFIG_FILES.has(p.replace(/^\.\//, "")),
-          );
+          const hasConfigChange = paths.some(p => this.isConfigFileChange(p));
           if (hasConfigChange) {
             console.log(`[container-runner:${this.sessionId}] Config file changed, re-evaluating session config`);
             this.reevaluateWorkspaceConfig();

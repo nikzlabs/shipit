@@ -812,6 +812,20 @@ export class ServiceManager extends EventEmitter {
     return changed;
   }
 
+  /**
+   * The project compose file this manager reads, workspace-relative — the
+   * `compose.file` `shipit.yaml` resolved to, which is any path the repository
+   * chose and not necessarily a conventional name.
+   *
+   * Exposed for the runner's config-change detection: an edit to the file this
+   * names is a configuration change whatever it is called, and a hard-coded list
+   * of conventional filenames cannot know that (see
+   * `ContainerSessionRunner.isConfigFileChange`).
+   */
+  get composeFilePath(): string {
+    return this.composeConfig.file;
+  }
+
   /** Refresh the boot-effective egress policy when a preserved manager is adopted. */
   updateEgressContainment(
     containServicesFn: ((serviceNames: string[]) => Promise<void>) | undefined,
