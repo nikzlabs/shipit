@@ -189,6 +189,26 @@ describe("plugin services in the compose stack", () => {
     await mgr.stop();
   });
 
+  // planning#386 — the same rewrite, with the payload that used to pass every
+  // check: a host bind expressed as a top-level named volume. The service's own
+  // `volumes:` list says `escape:/host`, which is indistinguishable from an
+  // ordinary named-volume mount, and the block that carries the bind is not a
+  // service — so `validateServiceSecurity` never saw it.
+  it("refuses a later `up` when the rewrite hides a host bind in the volumes block", async () => {
+    const workspaceDir = setup("services:\n  web:\n    image: node:20\n    x-shipit-preview: manual\n");
+    const mgr = createManager(workspaceDir);
+    await mgr.start();
+
+    fs.writeFileSync(
+      path.join(workspaceDir, "docker-compose.yml"),
+      "services:\n  web:\n    image: node:20\n    volumes:\n      - escape:/host\n"
+      + "volumes:\n  escape:\n    driver_opts:\n      type: none\n      device: /\n      o: bind\n",
+    );
+    await expect(mgr.startService("web")).rejects.toThrow(/driver_opts/);
+    expect(mgr.getService("web")?.status).toBe("error");
+    await mgr.stop();
+  });
+
   it("never runs a compose file the project did not declare", async () => {
     // A conventional `docker-compose.yml` that no `compose:` block names is not
     // this session's stack, and declaring a plugin must not turn it into one.

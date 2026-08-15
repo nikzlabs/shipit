@@ -5,6 +5,7 @@ import os from "node:os";
 import { parse as parseYaml } from "yaml";
 import {
   parseComposeFile,
+  parseUserNamedVolumes,
   generateComposeOverride,
   writeComposeOverride,
   ComposeValidationError,
@@ -336,6 +337,77 @@ services:
       .toThrow("reserved `shipit-session` network");
   });
 
+  // planning#386 — an Open session's override APPENDS `shipit-session` instead of
+  // `!override`-ing the list, so Compose merges the project's declaration into
+  // ShipIt's own. `driver:` is a key the override never sets, so it survives.
+  it("rejects a project declaration of the reserved network in an Open session too", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `services:\n  web:\n    image: node:20\nnetworks:\n  shipit-session:\n    driver: macvlan\n`);
+    expect(() => parseComposeFile(p, { dockerSocket: false }))
+      .toThrow("reserved `shipit-session` network");
+  });
+
+  it("rejects a network driver that attaches the host's own segment", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `
+services:
+  web:
+    image: node:20
+    networks: [lan]
+networks:
+  lan:
+    driver: macvlan
+    driver_opts:
+      parent: eth0
+`);
+    expect(() => parseComposeFile(p, { dockerSocket: false })).toThrow("network driver");
+  });
+
+  it("rejects an external network declaration", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `
+services:
+  web:
+    image: node:20
+    networks: [borrowed]
+networks:
+  borrowed:
+    external: true
+    name: shipit-session-11111111-2222-3333-4444-555555555555
+`);
+    expect(() => parseComposeFile(p, { dockerSocket: false })).toThrow("external");
+  });
+
+  it("rejects a top-level network `name:` override", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `
+services:
+  web:
+    image: node:20
+networks:
+  backend:
+    name: shipit-session-11111111-2222-3333-4444-555555555555
+`);
+    expect(() => parseComposeFile(p, { dockerSocket: false })).toThrow("name:");
+  });
+
+  it("allows an ordinary project-declared bridge network", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `
+services:
+  web:
+    image: node:20
+    networks: [backend]
+networks:
+  backend:
+  frontend:
+    driver: bridge
+    driver_opts:
+      com.docker.network.driver.mtu: "1450"
+`);
+    expect(() => parseComposeFile(p, { dockerSocket: false })).not.toThrow();
+  });
+
   it("rejects volumes_from in contained services", () => {
     const dir = setup();
     const p = writeCompose(dir, `services:\n  web:\n    image: attacker/example\n    user: "1001"\n    volumes_from: [docker-socket-proxy]\n`);
@@ -511,6 +583,139 @@ services:
       - ../secret:/data
 `);
     expect(() => parseComposeFile(p, { dockerSocket: false })).toThrow("Path traversal");
+  });
+
+  // planning#386 — the top-level `volumes:` block is the service-level bind rule's
+  // primitive by another name, and it was reaching the daemon unvalidated: the
+  // local driver's `driver_opts` (`type: none` / `device:` / `o: bind`) IS a
+  // host bind, and the service that mounts it declares nothing but a name, so
+  // every check above sees an ordinary named volume.
+  it("rejects a host bind encoded in a top-level volume's driver_opts (planning#386)", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `
+services:
+  web:
+    image: node:20
+    volumes:
+      - escape:/host
+volumes:
+  escape:
+    driver: local
+    driver_opts:
+      type: none
+      device: /
+      o: bind
+`);
+    expect(() => parseComposeFile(p, { dockerSocket: false })).toThrow(ComposeValidationError);
+    expect(() => parseComposeFile(p, { dockerSocket: false })).toThrow("driver_opts");
+  });
+
+  it("rejects a driver_opts host bind in a contained session too", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `
+services:
+  web:
+    image: node:20
+    user: "1000:1000"
+    volumes:
+      - escape:/host
+volumes:
+  escape:
+    driver_opts:
+      type: none
+      device: /var/lib/shipit
+      o: bind
+`);
+    expect(() => parseComposeFile(p, { dockerSocket: false, containEgress: true }))
+      .toThrow("driver_opts");
+  });
+
+  // The same block reaches the network the same way: `type: nfs` mounts from
+  // the HOST's network namespace, so it is not stopped by containment either.
+  it("rejects a remote-filesystem volume declaration", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `
+services:
+  web:
+    image: node:20
+    volumes:
+      - share:/data
+volumes:
+  share:
+    driver_opts:
+      type: nfs
+      o: addr=10.0.0.1,rw
+      device: ":/export"
+`);
+    expect(() => parseComposeFile(p, { dockerSocket: false })).toThrow("driver_opts");
+  });
+
+  it("rejects a non-local volume driver", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `
+services:
+  web:
+    image: node:20
+    volumes:
+      - store:/data
+volumes:
+  store:
+    driver: some-host-plugin
+`);
+    expect(() => parseComposeFile(p, { dockerSocket: false })).toThrow("volume driver");
+  });
+
+  // `external: true` attaches a volume this session did not create — on a
+  // shared daemon that includes another session's workspace volume, whose name
+  // is not a secret.
+  it("rejects an external volume declaration", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `
+services:
+  web:
+    image: node:20
+    volumes:
+      - borrowed:/data
+volumes:
+  borrowed:
+    external: true
+    name: shipit-dev_workspace
+`);
+    expect(() => parseComposeFile(p, { dockerSocket: false })).toThrow("external");
+  });
+
+  it("rejects a top-level volume that renames itself onto an existing volume", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `
+services:
+  web:
+    image: node:20
+    volumes:
+      - data:/data
+volumes:
+  data:
+    name: shipit-dev_workspace
+`);
+    expect(() => parseComposeFile(p, { dockerSocket: false })).toThrow("name:");
+  });
+
+  it("allows ordinary Compose-managed named volumes", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `
+services:
+  web:
+    image: node:20
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - cache:/cache
+volumes:
+  pgdata:
+  cache:
+    labels:
+      com.example.keep: "true"
+`);
+    expect(() => parseComposeFile(p, { dockerSocket: false })).not.toThrow();
+    expect(parseUserNamedVolumes(p).map((v) => v.name)).toEqual(["pgdata", "cache"]);
   });
 
   // planning#371 (review finding) — a `secrets:` entry is the volumes rule's

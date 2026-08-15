@@ -502,6 +502,15 @@ services:
   setup, run commands in the `command` field or use multi-step entrypoints.
 - **Don't use absolute volume paths** — all paths must be relative to the
   workspace root.
+- **Keep top-level `volumes:` and `networks:` plain.** A named volume must be an
+  ordinary Compose-managed one (`pgdata:` with nothing under it, or just
+  `labels:`), and a network an ordinary `bridge`. ShipIt rejects the whole file
+  when either block carries `external:`, a `name:` override, a non-`local`
+  volume driver or a non-`bridge` network driver, or — for a volume —
+  `driver_opts:`. Those attach storage or a network the session did not create:
+  `driver_opts: {type: none, device: /…, o: bind}` is a host bind mount written
+  as a volume, and `driver: macvlan` puts the container on the host's own
+  network segment. For scratch space use a service's `tmpfs:` instead.
 - **Don't run `npm install` (or pnpm/yarn/bun install) in a service's
   `command`** when the same install lives in `agent.install`. Two
   containers writing to the same bind-mounted `node_modules` race each

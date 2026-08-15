@@ -265,10 +265,16 @@ receipts below keep the original "tools" vocabulary of the early rounds.
     own source (req 7). It is **not** claimed to be unable to reach the host —
     that sentence was here and was withdrawn on 2026-08-15 rather than
     weakened, because it was not true: a top-level compose volume's
-    `driver_opts` can encode a host bind and nothing validates it
+    `driver_opts` could encode a host bind and nothing validated it
     (`parseUserNamedVolumes` reads names only; `validateServiceSecurity` sees a
     service, never the top-level `volumes:` block). A containment claim is only
-    worth what it is verified to, and this one was worth nothing.
+    worth what it is verified to, and this one was worth nothing. That
+    particular hole was closed on 2026-08-15 (planning#386 —
+    `validateTopLevelVolumes`/`validateTopLevelNetworks` now refuse the block),
+    and the withdrawal **stands**: closing one route is not the same as
+    verifying the claim, the path checks around it are still defeatable by a
+    workspace symlink, and restoring a claim of this kind is the user's
+    decision rather than a consequence of a fix.
     **It can write the consuming project's
     files, and that is a purpose rather than a leak** — a plugin that
     generates, formats or records into the project is the ordinary case, and
