@@ -599,11 +599,17 @@ describe("install runs before publish (req 13, req 15)", () => {
     // dogfood ever showed and the one it showed WRONG ("`probe` declare an
     // install command … the plugin is active"). A card is the whole report a
     // user gets about a partial version (req 13).
-    expect((outcome as { warning?: string }).warning).toBe(
+    //
+    // It lives in the generation record and NOWHERE ELSE. It was also returned
+    // as the attempt `warning`, and `buildRepoView` unshifts both channels into
+    // one `issues` list — so the dogfood card showed the same sentence twice.
+    // The record is the durable of the two: a session that reopens without
+    // activating anything has no attempt at all, and must still be told.
+    expect(readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)?.manifestWarnings).toContain(
       "`probe` declares an install command, which this runtime cannot run — "
       + "the plugin is active but was not installed.",
     );
-    expect(readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)?.manifestWarnings.join(" ")).toContain("`probe`");
+    expect((outcome as { warning?: string }).warning).toBeUndefined();
   });
 
   it("agrees with itself when two selected exports declare one", async () => {
@@ -617,10 +623,11 @@ describe("install runs before publish (req 13, req 15)", () => {
     const outcome = await activateGeneration(repo({ branch: "main" }), deps(["probe", "other"]));
 
     expect(outcome.status).toBe("activated");
-    expect((outcome as { warning?: string }).warning).toBe(
+    expect(readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)?.manifestWarnings).toContain(
       "`probe`, `other` declare an install command, which this runtime cannot run — "
       + "the plugins are active but were not installed.",
     );
+    expect((outcome as { warning?: string }).warning).toBeUndefined();
   });
 
   it("stays quiet when nothing selected declares an install", async () => {
