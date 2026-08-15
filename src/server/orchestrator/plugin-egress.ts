@@ -46,11 +46,28 @@
  *    isolated from. Registering that subnet untrusted instead would deny the
  *    agent its own container-accessible routes.
  *
- * So the container gets its own equivalent containment, configured from the same
- * resolved config the session's resolver and proxy are launched with — the
+ * So the container gets its own equivalent containment, configured from the
  * `ContainerSessionManager.resolveEgress` seam `plugin-hosts.ts` already reports
- * from. Same allowlist, same tiers, same enable flags; the enforcement and the
- * card cannot disagree, because they read one answer.
+ * the Plugins card from. Same allowlist, same tiers, same enable flags; the
+ * enforcement and the card cannot disagree, because they read one answer.
+ *
+ * **That answer is the config as it is NOW, which is not always the one the
+ * agent's own resolver is running** (review finding — the earlier wording here
+ * claimed it was, and this feature has shipped that class of claim three times).
+ * The agent's resolver and proxy are launched with a snapshot taken at container
+ * creation (`container-lifecycle.ts:1079`). `reloadEgress` relaunches them for a
+ * **session-scoped** add, so that case stays in step; an **instance-scoped** add
+ * and every **removal** reach the agent only at its next start
+ * (`api-routes-egress.ts`). For that window a fresh plugin container is ahead of
+ * the agent: it permits a host the agent cannot yet resolve, and denies one the
+ * agent can still reach.
+ *
+ * Deliberately not "fixed" by snapshotting a config at session start. Being
+ * ahead means honouring the user's most recent decision — a grant they just made,
+ * a removal they just made — while a snapshot would make a container created
+ * minutes ago run a policy the user has since revoked. And it would put the
+ * enforcement out of step with the card, which reads the same live answer. The
+ * divergence is with a stale agent, and it closes when the agent restarts.
  *
  * ## The namespace holder
  *
@@ -99,7 +116,7 @@
  *    to what `pluginHostAllowance` reports. A host allowed DURING a call is not
  *    picked up; these containers are short-lived and the next call gets it.
  *
- * ## Two things this does NOT change, stated so the next reader need not re-derive them
+ * ## Three things this does NOT close, stated so the next reader need not re-derive them
  *
  *  - **The plugin networks are shared across sessions**, and Tier A re-opens the
  *    local bridge subnet, so one session's plugin container can address
@@ -107,16 +124,32 @@
  *    containment narrows what leaves the bridge, not who is on it. Closing it
  *    means a network per session, which costs a third per-session subnet on a
  *    daemon that already carries `shipit-session-<id>` and `shipit-egress-<id>`.
- *  - **The tier uids must not collide with the workload's.** The firewall's
- *    owner-match exempts uid 911 (resolver) from the DNS lock and uid 912
- *    (proxy) from the `:443` redirect, so a workload running as either would be
- *    exempt from the tier it names. Plugin containers run as
- *    `SHIPIT_SESSION_WORKER_UID` (or root), and that is a deployment-wide
- *    invariant rather than this path's: the agent container shares the netns
- *    arrangement, the uids and the assumption (`container-lifecycle.ts`), and
- *    the boot check for that variable lives in `index.ts`
- *    (`assertWorkerUidConsistency`). A guard here would cover one of the two
- *    surfaces that would break together.
+ *  - **The tier uids must not collide with the workload's, and NOTHING enforces
+ *    that.** The firewall's owner-match exempts uid 911 (resolver) from the DNS
+ *    lock and uid 912 (proxy) from the `:443` redirect, so a workload running as
+ *    either is exempt from the tier that names it. Plugin containers run as
+ *    `SHIPIT_SESSION_WORKER_UID`, which `session-worker-uid.ts:36` accepts at any
+ *    non-negative value; `assertWorkerUidConsistency` (`index.ts`) detects
+ *    *rollback drift* in that variable and does **not** reject 911 or 912 (review
+ *    finding — an earlier version of this note implied it did). The deployment
+ *    files use 1000. It is left unenforced here rather than guarded here because
+ *    the agent container shares the netns arrangement, the uids and the exposure
+ *    (`container-lifecycle.ts`): a check on this path would cover one of the two
+ *    surfaces that break together, and would read as protection while the other
+ *    stayed open. The honest fix is a range check where the variable is parsed.
+ *
+ *  - **The resolver and proxy are STARTED before the workload, not proven
+ *    ready.** `launchEgressResolver` / `launchEgressProxy` return once Docker
+ *    reports the container started; their own docstrings say readiness is gated
+ *    by the agent's subsequent worker health check, which a plugin container has
+ *    no equivalent of (review finding). So a first DNS or TLS request could in
+ *    principle reach a redirect whose listener has not bound. This is inherited
+ *    rather than introduced: `compose-service-egress.ts` unpauses a service
+ *    within milliseconds of the same two launches, whereas the workload here is
+ *    still a `createContainer` + `attach` + `start` round trip away — strictly
+ *    more slack than a surface already shipping. Worth a real readiness probe
+ *    the day it flakes; it would be one more container per invocation and would
+ *    fix one of three surfaces.
  *
  * ## Fail closed
  *
@@ -128,7 +161,12 @@
  */
 
 import type Docker from "dockerode";
-import type { ResolvedEgressConfig } from "./egress-allowlist.js";
+import {
+  EGRESS_DEFAULT_ALLOWLIST,
+  hostMatchesEntry,
+  normalizeHost,
+  type ResolvedEgressConfig,
+} from "./egress-allowlist.js";
 import {
   buildTierAEgressInputs,
   installEgressFirewall,
@@ -317,9 +355,29 @@ export async function preparePluginNetns(
     },
   });
 
+  /**
+   * Sidecars first, then the holder — and RETRIED, because the deadline path
+   * abandons work that is still running.
+   *
+   * One pass is enough on every ordinary path (nothing is in flight by the time
+   * a caller releases). It is not enough after a timeout: a `createContainer`
+   * for a sidecar can cross the deadline, so the sweep can list before that
+   * sidecar exists and the holder removal then fails — Docker refuses to remove
+   * a container whose namespace another container is borrowing. A second pass
+   * sees the sidecar that appeared in between. Bounded at two, because the
+   * abandoned continuation creates at most one more container after any given
+   * sweep, and the boot sweep is the backstop for anything stranger.
+   */
   const release = async (): Promise<void> => {
-    await removeNetnsSidecars(opts.docker, opts.sessionId, holder.id);
-    await holder.remove({ force: true }).catch(() => undefined);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await removeNetnsSidecars(opts.docker, opts.sessionId, holder.id);
+      try {
+        await holder.remove({ force: true });
+        return;
+      } catch {
+        /* a sidecar is still borrowing the namespace — sweep again */
+      }
+    }
   };
 
   try {
@@ -406,6 +464,41 @@ async function withDeadline<T>(ms: number, work: () => Promise<T>): Promise<T> {
   } finally {
     if (timer) clearTimeout(timer);
   }
+}
+
+/**
+ * Which of `declared` this session's egress does NOT currently permit — req 24's
+ * visibility half, for the one moment the Plugins card cannot cover.
+ *
+ * The card resolves declared hosts from the **live** generation
+ * (`plugin-hosts.ts` → `liveManifestReader`), so a plugin whose very FIRST
+ * activation fails has no live generation and therefore no need-rows and no
+ * "Allow" buttons. Containing `install` makes that reachable: a plugin whose
+ * install pulls from its own vendor host now fails where it used to succeed, and
+ * without this the user gets a package-manager DNS error and nothing else — "a
+ * surprise or a guessing game", which is the phrase req 24 uses for what must
+ * not happen. Naming the hosts in the failure the card DOES show restores the
+ * guided step. (The buttons for a never-activated plugin would mean carrying a
+ * staged manifest into the degraded state; that is the visibility surface's own
+ * work, not this one's.)
+ *
+ * Matches by the same `hostMatchesEntry` rule the resolver and proxy are
+ * configured with, so it cannot name a host that would actually have been
+ * permitted. Empty for an uncontained session, where nothing is denied.
+ */
+export function unreachableDeclaredHosts(
+  policy: PluginEgressPolicy,
+  declared: readonly string[],
+): string[] {
+  if (!policy.contained || declared.length === 0) return [];
+  const allowed = allowedHosts(policy);
+  const entries = [...(allowed.base ?? EGRESS_DEFAULT_ALLOWLIST), ...allowed.extras]
+    .map(normalizeHost);
+  return [...new Set(
+    declared
+      .map(normalizeHost)
+      .filter((host) => host && !entries.some((entry) => hostMatchesEntry(host, entry))),
+  )];
 }
 
 /**

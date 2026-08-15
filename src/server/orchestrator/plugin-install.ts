@@ -61,6 +61,7 @@ import { chownToSessionWorker, chownTreeToSessionWorker, sessionWorkerUid } from
 import { ensureUntrustedPluginNetwork, waitForContainerExit } from "./plugin-container.js";
 import {
   preparePluginNetns,
+  unreachableDeclaredHosts,
   UNCONTAINED_PLUGIN_EGRESS,
   PLUGIN_NETNS_LABEL,
   type PluginEgressPolicy,
@@ -263,6 +264,10 @@ export function createPluginInstallRunner(
       return { ok: false, reason: `could not prepare the plugin's writable layer: ${message(err)}` };
     }
 
+    // req 24 — resolved ONCE, outside the try, and reused by both the namespace
+    // and the failure message: a policy read twice could report blocked hosts
+    // against a different allowlist from the one the namespace was built with.
+    const policy = deps.egress?.() ?? UNCONTAINED_PLUGIN_EGRESS;
     let outcome: { ok: boolean; reason?: string };
     let netns: PluginNetns | null = null;
     try {
@@ -275,7 +280,7 @@ export function createPluginInstallRunner(
         sessionId: deps.sessionId,
         network: PLUGIN_INSTALL_NETWORK,
         holderImage: deps.image,
-        policy: deps.egress?.() ?? UNCONTAINED_PLUGIN_EGRESS,
+        policy,
       });
       outcome = { ok: true };
       for (const { plugin, command } of commands) {
@@ -289,7 +294,10 @@ export function createPluginInstallRunner(
           deps, job, spec.volumeName, command, netns.networkMode,
         );
         if (failure) {
-          outcome = { ok: false, reason: `install for \`${plugin}\` ${failure}` };
+          outcome = {
+            ok: false,
+            reason: `install for \`${plugin}\` ${failure}${blockedHostsClause(policy, job)}`,
+          };
           break;
         }
       }
@@ -356,6 +364,31 @@ export function createPluginInstallRunner(
     await writeStamp(stampPath, stamp, basePins);
     return { ok: true, ...(basePins.length > 0 ? { basePins } : {}) };
   };
+}
+
+/**
+ * The clause that turns a package-manager DNS error into the guided onboarding
+ * step req 24 asks for.
+ *
+ * A plugin's FIRST activation has no live generation, so the Plugins card cannot
+ * show its declared hosts or the "Allow" buttons — the card resolves them from
+ * live generations only (`plugin-hosts.ts`). Containing `install` made that
+ * reachable: an install pulling from a vendor host now fails where it used to
+ * succeed, and the failure the user sees is whatever `npm` printed. This appends
+ * the declared hosts the session does not currently permit, so the reason on the
+ * degraded card names them and says where to grant them.
+ *
+ * Empty when nothing is denied, when the plugin declared nothing, or when every
+ * declared host is already allowed — in which case the install failed for some
+ * other reason and saying "egress" would be a wrong guess.
+ */
+function blockedHostsClause(policy: PluginEgressPolicy, job: PluginInstallJob): string {
+  const declared = job.exports.flatMap((e) => e.hosts ?? []);
+  const blocked = unreachableDeclaredHosts(policy, declared);
+  if (blocked.length === 0) return "";
+  return `\n\nThis plugin declares ${blocked.map((h) => `\`${h}\``).join(", ")}, which `
+    + `${blocked.length === 1 ? "is" : "are"} not in this session's egress allowlist. `
+    + "Allow it in the Plugins tab (or Settings → Network egress) and refresh the plugin.";
 }
 
 /**

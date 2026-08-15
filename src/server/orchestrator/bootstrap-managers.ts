@@ -71,9 +71,12 @@ import { resolveSessionPluginServices } from "./services/plugin-services.js";
 import { createStagedGenerationGate } from "./services/plugin-preflight.js";
 import type { PluginComposeService } from "./plugin-compose.js";
 import { emitPluginReposUpdated } from "./service-manager-setup.js";
-import { createPluginInstallRunner } from "./plugin-install.js";
+import { createPluginInstallRunner, PLUGIN_INSTALL_NETWORK } from "./plugin-install.js";
+import { registerExistingPluginNetworks } from "./plugin-container.js";
 import { createGenerationDeletionLease } from "./plugin-leases.js";
-import { runPluginCommand, type PluginCliRequest, type PluginCliResult } from "./plugin-cli-run.js";
+import {
+  runPluginCommand, PLUGIN_CLI_NETWORK, type PluginCliRequest, type PluginCliResult,
+} from "./plugin-cli-run.js";
 import { sessionStateDirForWorkspace } from "./session-state-dir.js";
 import { pinStorePath } from "./plugin-pins.js";
 import { createPluginRepoFetcher } from "./plugin-fetch.js";
@@ -142,6 +145,19 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   const { containerManager, dockerProxyServer } = await setupContainerManager({
     deps, isTestMode, credentialsDir, stateDir, sessionManager, runtimeMode, resolveEgressConfig,
   });
+
+  // docs/262 req 19 — re-declare the plugin networks untrusted BEFORE this
+  // process can accept a request. The registry is process memory while the
+  // networks and any container still on them belong to the daemon, so a restart
+  // with a plugin container alive left its subnet unknown and the guard read it
+  // as a browser caller. Awaited here rather than left to the boot orphan sweep,
+  // which is fire-and-forget and paced. See `registerExistingPluginNetworks`.
+  if (containerManager) {
+    await registerExistingPluginNetworks(
+      containerManager.dockerClient,
+      [PLUGIN_CLI_NETWORK, PLUGIN_INSTALL_NETWORK],
+    );
+  }
 
   // ---- Docker instance for memory stats ----
   const dockerForStats = containerManager ? new Docker() : null;

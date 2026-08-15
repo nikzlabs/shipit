@@ -493,6 +493,50 @@ describe("createPluginInstallRunner", () => {
     expect(containers).toHaveLength(0);
   });
 
+  /**
+   * req 24's guided-onboarding clause, at the one moment the Plugins card cannot
+   * cover it. A plugin's FIRST activation has no live generation, so the card
+   * resolves no declared hosts and shows no "Allow" buttons — and containing
+   * `install` is what made that reachable, by turning a working install into a
+   * failing one. Without this the user gets a package-manager DNS error and is
+   * left to reverse-engineer the host, which is the phrase req 24 uses for what
+   * must not happen.
+   */
+  it("names the declared hosts the session blocks when a contained install fails", async () => {
+    const { docker } = fakeDocker({ exit: 1, logs: "npm ERR! getaddrinfo EAI_AGAIN\n" });
+    const probe = { ...exportWith("probe", "npm ci"), hosts: ["downloads.vendor.example"] };
+
+    const result = await createPluginInstallRunner({
+      docker, image: "worker:test", sessionId: "s1", stateDir,
+      egress: () => CONTAINED_EGRESS,
+    })(job([probe]));
+
+    expect(result.ok).toBe(false);
+    expect(result.reason).toContain("downloads.vendor.example");
+    expect(result.reason).toContain("egress allowlist");
+    // The package manager's own output is still there — the clause is added to
+    // the failure, not substituted for it.
+    expect(result.reason).toContain("EAI_AGAIN");
+  });
+
+  // Saying "egress" about an install that failed for another reason points the
+  // user at the wrong thing, so a declared host that IS allowed stays silent.
+  it("says nothing about egress when the declared host is already allowed", async () => {
+    const { docker } = fakeDocker({ exit: 1, logs: "npm ERR! syntax error\n" });
+    const probe = { ...exportWith("probe", "npm ci"), hosts: ["ok.example"] };
+
+    const result = await createPluginInstallRunner({
+      docker, image: "worker:test", sessionId: "s1", stateDir,
+      egress: () => ({
+        ...CONTAINED_EGRESS,
+        config: { contained: true, extraHosts: ["ok.example"] },
+      }),
+    })(job([probe]));
+
+    expect(result.ok).toBe(false);
+    expect(result.reason).not.toContain("egress allowlist");
+  });
+
   // The other half of req 24's sentence: an uncontained session's plugin code
   // must reach what its own code reaches, which there is everything.
   it("leaves an uncontained session's install on the plugin network unchanged", async () => {

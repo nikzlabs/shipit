@@ -61,6 +61,7 @@ vi.mock("./egress-proxy-install.js", async (load) => ({
 
 import {
   preparePluginNetns,
+  unreachableDeclaredHosts,
   PLUGIN_NETNS_LABEL,
   PLUGIN_NETNS_PARENT_LABEL,
   UNCONTAINED_PLUGIN_EGRESS,
@@ -83,6 +84,8 @@ function fakeDocker(events: string[] = []) {
   const removed: string[] = [];
   let listed: Docker.ContainerInfo[] = [];
   let seq = 0;
+  /** Models Docker refusing to remove a container whose netns is borrowed. */
+  let failHolder: { id: string; shouldFail: () => boolean } | null = null;
   const docker = {
     createContainer: async (opts: Record<string, unknown>) => {
       const id = `c-${++seq}`;
@@ -90,7 +93,12 @@ function fakeDocker(events: string[] = []) {
       return {
         id,
         start: async () => { events.push(`start:${id}`); },
-        remove: async () => { removed.push(id); },
+        remove: async () => {
+          if (failHolder?.id === id && failHolder.shouldFail()) {
+            throw new Error(`container ${id} is using its network — cannot remove`);
+          }
+          removed.push(id);
+        },
       };
     },
     listContainers: async () => listed,
@@ -104,6 +112,7 @@ function fakeDocker(events: string[] = []) {
     removed,
     /** What a later `listContainers` should report — the launched sidecars. */
     setListed: (entries: Docker.ContainerInfo[]) => { listed = entries; },
+    failHolderRemove: (id: string, shouldFail: () => boolean) => { failHolder = { id, shouldFail }; },
   };
 }
 
@@ -372,6 +381,31 @@ describe("what the container reaches and what the card reports", () => {
   });
 });
 
+/**
+ * req 24's visibility half, for the one moment the Plugins card cannot cover: a
+ * plugin whose FIRST activation fails has no live generation, so the card
+ * resolves no declared hosts and offers no "Allow" buttons. Containing `install`
+ * made that reachable, so the failure has to name the hosts itself.
+ */
+describe("unreachableDeclaredHosts", () => {
+  it("names only the declared hosts this session does not already permit", () => {
+    expect(unreachableDeclaredHosts(
+      contained({
+        config: { contained: true, base: ["base.example"], extraHosts: [".suffix.example"] },
+        allowOnceHosts: ["once.example"],
+      }),
+      ["base.example", "api.suffix.example", "once.example", "vendor.example", "VENDOR.example"],
+    )).toEqual(["vendor.example"]);
+  });
+
+  // Saying "egress" about an install that failed for some other reason is a
+  // wrong guess pointed at the user, so silence is the answer here.
+  it("says nothing when the session denies nothing, or the plugin declared nothing", () => {
+    expect(unreachableDeclaredHosts(UNCONTAINED_PLUGIN_EGRESS, ["vendor.example"])).toEqual([]);
+    expect(unreachableDeclaredHosts(contained(), [])).toEqual([]);
+  });
+});
+
 describe("preparePluginNetns — failing closed", () => {
   // The same choice `containComposeServices` makes for a service and
   // `ensureUntrustedPluginNetwork` makes for the API boundary: a contained
@@ -406,6 +440,35 @@ describe("preparePluginNetns — failing closed", () => {
     // And the abandoned work cannot outlive the namespace: force-removing the
     // holder is what makes the timeout safe rather than merely prompt.
     expect(fake.removed).toEqual([fake.created[0].id]);
+  });
+
+  /**
+   * The timeout abandons work that is still running, so a sidecar can appear
+   * AFTER the sweep listed and BEFORE the holder is removed — and Docker refuses
+   * to remove a container whose namespace another container is borrowing. One
+   * pass would leave a holder plus a restart-policy resolver and proxy stranded
+   * until the next boot, once per timeout.
+   */
+  it("sweeps again when a sidecar appears between the listing and the holder removal", async () => {
+    const fake = fakeDocker();
+    const netns = await prepare(fake.docker, contained());
+    const holderId = fake.created[0].id;
+    // First removal fails the way Docker fails it; the late sidecar is visible
+    // only from the second listing.
+    let holderAttempts = 0;
+    fake.failHolderRemove(holderId, () => {
+      holderAttempts++;
+      if (holderAttempts > 1) return false;
+      fake.setListed([
+        { Id: "late-sidecar", Labels: { [PLUGIN_NETNS_PARENT_LABEL]: holderId } },
+      ] as unknown as Docker.ContainerInfo[]);
+      return true;
+    });
+
+    await netns.release();
+
+    expect(fake.removed).toContain("late-sidecar");
+    expect(fake.removed).toContain(holderId);
   });
 
   it("tears the holder down and throws when a tier cannot be installed", async () => {
