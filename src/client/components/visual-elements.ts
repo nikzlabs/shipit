@@ -116,12 +116,96 @@ export type VisualElement =
   | { kind: "task-panel"; tasks: TaskItem[]; messageIndex: number };
 
 /**
+ * Is `next` the same element as `prev`, such that the row rendering it would
+ * draw exactly the same thing?
+ *
+ * Tool and result objects are compared by REFERENCE, not by value: they are the
+ * very objects hanging off `ChatMessage`, so an unchanged message yields
+ * unchanged refs and a changed one yields fresh ones. That is precisely the
+ * signal we want, and it costs nothing.
+ *
+ * A `message` element deliberately carries no message content — the row takes
+ * `messages[index]` as its own prop, so the message's identity (not this
+ * element's) is what re-renders a bubble whose text just grew.
+ */
+function sameElement(prev: VisualElement, next: VisualElement): boolean {
+  if (prev.kind !== next.kind) return false;
+  switch (next.kind) {
+    case "message": {
+      const p = prev as Extract<VisualElement, { kind: "message" }>;
+      return p.index === next.index && p.hideTools === next.hideTools;
+    }
+    case "tool-group": {
+      const p = prev as Extract<VisualElement, { kind: "tool-group" }>;
+      return p.streaming === next.streaming
+        && p.messageIndices.length === next.messageIndices.length
+        && p.messageIndices.every((v, i) => v === next.messageIndices[i])
+        && p.items.length === next.items.length
+        && p.items.every((it, i) =>
+          it.tool === next.items[i].tool
+          && it.result === next.items[i].result
+          && it.isLast === next.items[i].isLast);
+    }
+    case "subagent": {
+      const p = prev as Extract<VisualElement, { kind: "subagent" }>;
+      return p.tool === next.tool && p.streaming === next.streaming && p.messageIndex === next.messageIndex;
+    }
+    case "standalone-tool": {
+      const p = prev as Extract<VisualElement, { kind: "standalone-tool" }>;
+      return p.tool === next.tool && p.result === next.result
+        && p.streaming === next.streaming && p.messageIndex === next.messageIndex;
+    }
+    case "task-panel": {
+      const p = prev as Extract<VisualElement, { kind: "task-panel" }>;
+      return p.messageIndex === next.messageIndex
+        && p.tasks.length === next.tasks.length
+        && p.tasks.every((t, i) => {
+          const o = next.tasks[i];
+          return t.id === o.id && t.subject === o.subject
+            && t.status === o.status && t.activeForm === o.activeForm;
+        });
+    }
+  }
+}
+
+/**
+ * Reuse the previous run's object for every element that would render
+ * identically (planning#375).
+ *
+ * `buildVisualElements` allocates a fresh object for every element on every
+ * call, so before this pass NOTHING in the transcript was ever referentially
+ * equal between two renders — which made `React.memo` on a row useless and left
+ * every update re-rendering all ~2,000 rows at a measured 92 ms a time.
+ *
+ * Alignment is positional, and it does not have to be clever: during a
+ * streaming turn elements are appended, so the whole prefix aligns and the
+ * comparison is a handful of reference checks per element. An insertion in the
+ * middle (a rewind, a card landing out of order) breaks alignment from that
+ * point on, and everything after it is simply treated as new — correct, just
+ * not free. This walk is O(n) in cheap comparisons; the 92 ms it replaces was
+ * O(n) in React fiber work.
+ */
+function reuseUnchanged(previous: VisualElement[], next: VisualElement[]): VisualElement[] {
+  const out = next;
+  const shared = Math.min(previous.length, next.length);
+  for (let i = 0; i < shared; i++) {
+    if (sameElement(previous[i], next[i])) out[i] = previous[i];
+    else break;
+  }
+  return out;
+}
+
+/**
  * Build a flat list of visual elements from messages.
  * Extracts groupable tools from consecutive assistant messages into shared tool-groups.
  * Text/images/files render as separate message bubbles without tools.
  * Preserves original chronological order — tools from a message appear after that message's text.
+ *
+ * `previous` is the last result this caller got. When supplied, unchanged
+ * elements come back as the SAME objects, so a memoized row can bail out — see
+ * `reuseUnchanged`. Omit it and the function behaves exactly as it always did.
  */
-export function buildVisualElements(messages: ChatMessage[]): VisualElement[] {
+export function buildVisualElements(messages: ChatMessage[], previous?: VisualElement[]): VisualElement[] {
   const elements: VisualElement[] = [];
   // The task panel is its own element, not something a message bubble draws.
   // It has to be: the calls that build it carry no text, so the message holding
@@ -257,5 +341,8 @@ export function buildVisualElements(messages: ChatMessage[]): VisualElement[] {
     }
   }
 
-  return elements;
+  // Strictly after the post-process, which MUTATES `streaming` in place. Run it
+  // the other way round and the pass would rewrite an element the previous
+  // render is still holding.
+  return previous ? reuseUnchanged(previous, elements) : elements;
 }

@@ -1,6 +1,4 @@
-import { Fragment, useMemo, useDeferredValue, type ReactNode } from "react";
-import { TodoPanel } from "../TodoPanel.js";
-import { isTaskListTool } from "../../../server/shared/task-list-tools.js";
+import { useMemo, useRef, useDeferredValue, type ReactNode } from "react";
 import { CircleNotchIcon } from "@phosphor-icons/react";
 import type { SearchMatch } from "../../hooks/useSearch.js";
 import { buildVisualElements, type VisualElement } from "../visual-elements.js";
@@ -9,22 +7,18 @@ import type { WsRewindPreview, ReleaseMechanism } from "../../../server/shared/t
 import { isPlanDocumentWrite } from "../../../server/shared/transcript-input-policy.js";
 
 // Sub-component imports
-import { ToolUseItem } from "../message-tools.js";
-import { parseMessageSegments, MarkdownContent, CodeBlock, ShipitPointerSessionProvider } from "../message-markdown.js";
-import { getSegmentMatches, HighlightedText } from "../message-highlighting.js";
-import { MessageFileAttachments, MessageImages } from "../message-media.js";
+import { ShipitPointerSessionProvider } from "../message-markdown.js";
 import { useSessionStore } from "../../stores/session-store.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
-import { PlayTurnButton } from "../PlayTurnButton.js";
 import { ChatQuoteReply } from "../ChatQuoteReply.js";
 import { extractTurnProse, hasSpeakableProse } from "../../voice/extract-turn-prose.js";
 
 import type { ChatMessage } from "./types.js";
 import { useMessageScroll } from "./hooks/useMessageScroll.js";
-import { MessageToolElement } from "./MessageToolUse.js";
 import type { AnswerQuestionFn } from "../AskUserQuestion.js";
-import { renderMessageCard } from "./cards/MessageCards.js";
 import { SubAgentSpawnChipRow } from "./cards/SubAgentCards.js";
+import { TranscriptRow } from "./TranscriptRow.js";
+import { RowHandlersProvider, type RowHandlers } from "./row-context.js";
 import type { TrackerId } from "../../../server/shared/types.js";
 
 function defaultSessionNameFor(value: string): string {
@@ -226,15 +220,20 @@ export function MessageList({
     };
   }, [messages]);
 
-  // Group search matches by message index for efficient lookup
-  const matchesByMessage = new Map<number, SearchMatch[]>();
-  if (searchMatches) {
-    for (const m of searchMatches) {
-      const arr = matchesByMessage.get(m.messageIndex) ?? [];
-      arr.push(m);
-      matchesByMessage.set(m.messageIndex, arr);
+  // Group search matches by message index for efficient lookup.
+  // Memoized: a fresh Map every render would be a volatile prop on every row,
+  // and rows are memoized on exactly this kind of reference (planning#375).
+  const matchesByMessage = useMemo(() => {
+    const map = new Map<number, SearchMatch[]>();
+    if (searchMatches) {
+      for (const m of searchMatches) {
+        const arr = map.get(m.messageIndex) ?? [];
+        arr.push(m);
+        map.set(m.messageIndex, arr);
+      }
     }
-  }
+    return map;
+  }, [searchMatches]);
 
   const getPreview = (gapPosition: number, action: RewindGapAction): WsRewindPreview | undefined =>
     rewindPreviews?.[`${gapPosition}:${action}`];
@@ -291,7 +290,35 @@ export function MessageList({
     );
   };
 
-  const visualElements = useMemo(() => buildVisualElements(messages), [messages]);
+  // planning#375 — the previous run is fed back in so unchanged elements come
+  // back as the SAME objects, which is what lets `TranscriptRow`'s memo bail
+  // out. Held in a ref rather than threaded through the memo's deps: it is an
+  // input to the computation, never a reason to redo it.
+  const previousElementsRef = useRef<VisualElement[]>([]);
+  const visualElements = useMemo(() => {
+    const next = buildVisualElements(messages, previousElementsRef.current);
+    previousElementsRef.current = next;
+    return next;
+  }, [messages]);
+
+  // Per-row values the row cannot derive without `messages` (which it never
+  // takes as a prop). Both are primitives, so they cost the row's memo nothing.
+  const rowHandlers: RowHandlers = {
+    messages,
+    findPlanContent,
+    onAnswerQuestion,
+    onSendFollowUp,
+    onSubmitBugReport,
+    onResolvePermission,
+    onEgressDecision,
+    onUndoIssueWrite,
+    onOpenIssue,
+    onResumeSession,
+    onReleaseConfirm,
+    onReleaseCancel,
+    onRequestRewindPreview,
+    onRewindAtGap,
+  };
 
   // Gate on isLoading: a compaction only ever runs mid-turn, so the transient
   // "Compacting…" indicator should never outlive the turn. This backstops any
@@ -310,6 +337,7 @@ export function MessageList({
 
   return (
     <ShipitPointerSessionProvider value={deferred.sessionId ?? null}>
+    <RowHandlersProvider value={rowHandlers}>
     <div
       ref={containerRef}
       className="flex-1 min-h-0 overflow-y-auto px-3 sm:px-6 py-3 sm:py-4"
@@ -331,232 +359,37 @@ export function MessageList({
           or other panels. */}
       <ChatQuoteReply containerRef={containerRef} />
       {withCompactingIndicator(visualElements.map((el) => {
-        // ── The agent's to-do list, folded from its task calls (task-list.ts) ──
-        if (el.kind === "task-panel") {
-          return (
-            // A constant key, not one derived from `messageIndex`: there is only
-            // ever one panel, and it moves down the transcript as the list
-            // changes. Keying on its position would remount it on every move
-            // and reset the scroll of a list taller than `max-h-48`.
-            <div key="task-panel" className="flex justify-start">
-              <div className="max-w-2xl">
-                <TodoPanel tasks={el.tasks} />
-              </div>
-            </div>
-          );
-        }
-
-        // ── Tool-derived elements: grouped tool calls, standalone subagents,
-        //    and standalone tools (ExitPlanMode / AskUserQuestion / present) ──
-        if (el.kind === "tool-group" || el.kind === "subagent" || el.kind === "standalone-tool") {
-          const key =
-            el.kind === "tool-group" ? `tg-${el.messageIndices[0]}`
-            : el.kind === "subagent" ? el.tool.id
-            : `st-${el.tool.id}`;
-          return (
-            <MessageToolElement
-              key={key}
-              el={el}
-              messages={messages}
-              findPlanContent={findPlanContent}
-              onAnswerQuestion={onAnswerQuestion}
-              onSendFollowUp={onSendFollowUp}
-            />
-          );
-        }
-
-        // ── Message bubble ──
-        const i = el.index;
-        const hideTools = el.hideTools;
-        const msg = messages[i];
-
-        // Inline transcript cards (spawned session, review, voice note,
-        // permission/egress/issue prompts, etc.) carry no chat text of their
-        // own — render the card and skip the bubble path. Order is preserved
-        // verbatim inside `renderMessageCard`.
-        const card = renderMessageCard(msg, {
-          ...(activeSessionId ? { sessionId: activeSessionId } : {}),
-          onResumeSession,
-          onSubmitBugReport,
-          onEgressDecision,
-          onResolvePermission,
-          onUndoIssueWrite,
-          onOpenIssue,
-          onSendFollowUp,
-          onReleaseConfirm,
-          onReleaseCancel,
-        });
-        if (card) return <Fragment key={i}>{card}</Fragment>;
-
-        const msgMatches = matchesByMessage.get(i) ?? [];
-        const segments = parseMessageSegments(msg.text);
-        const hasCodeBlocks = segments.some((s) => s.type === "code");
-        const useMarkdown = msg.role === "assistant" && !msg.isError && !msg.notice;
-        // Hide the bubble when it would be empty (no text/images/files and every
-        // tool is a task-list call, which renders as null inside the bubble —
-        // the task panel draws those)
-        const hasVisibleTools = !hideTools && msg.toolUse?.some((t) => !isTaskListTool(t.name));
-        const hideBubble = !msg.text && !msg.images?.length && !msg.files?.length && !hasVisibleTools && !!msg.toolUse?.length;
-
+        // planning#375 — every row is a memoized `TranscriptRow`. This callback
+        // must therefore hand it only values that stay referentially stable
+        // while the row is unchanged; anything volatile goes through
+        // `RowHandlersProvider` instead. Adding a prop here that is rebuilt each
+        // render silently restores the 92 ms whole-transcript re-render.
+        const anchorIndex = elementMessageIndex(el);
+        const key =
+          el.kind === "task-panel" ? "task-panel"
+          : el.kind === "tool-group" ? `tg-${el.messageIndices[0]}`
+          : el.kind === "subagent" ? el.tool.id
+          : el.kind === "standalone-tool" ? `st-${el.tool.id}`
+          : `m-${el.index}`;
+        const isBubble = el.kind === "message";
         return (
-          <Fragment key={i}>
-            {shouldShowGapBefore(i) && renderRewindPoint(i)}
-            {msg.rolledBack && msg.codeRollbackHash && (
-              <div className="flex justify-center">
-                <div className="rounded-full border border-(--color-border-primary) bg-(--color-bg-secondary) px-3 py-1 text-xs text-(--color-text-secondary)">
-                  Code rolled back to {msg.codeRollbackHash.slice(0, 7)}. The changes from the previous response have been reverted.
-                </div>
-              </div>
-            )}
-            {!hideBubble && (
-            <div className={`group flex ${msg.role === "user" ? "justify-end" : "justify-start"} ${msg.rolledBack ? "opacity-40" : ""}`}>
-
-            <div
-              className={`relative text-sm ${
-                !useMarkdown && !hasCodeBlocks ? "whitespace-pre-wrap" : ""
-              } ${
-                msg.role === "user"
-                  ? `rounded-lg px-4 py-3 break-words min-w-0 ${
-                      // A user message with code blocks needs a reasonable
-                      // minimum width so the block isn't squeezed to nothing
-                      // (a code-only message would otherwise collapse, since
-                      // `CodeBlock` contributes ~0 to the bubble's intrinsic
-                      // width via `w-0`). `min(32rem,100%)` floors the width at
-                      // 32rem while the `100%` cap (relative to the full-width
-                      // row) guarantees it never exceeds the column — so long
-                      // lines scroll inside the block instead of widening the
-                      // whole chat into a horizontal scrollbar.
-                      hasCodeBlocks ? "w-[min(32rem,100%)]" : "max-w-full"
-                    }`
-                  : "w-full min-w-0"
-              } ${
-                msg.isError
-                  ? "bg-(--color-error-subtle) text-(--color-error) border border-(--color-error)/50"
-                  : msg.notice
-                  ? `rounded-lg px-3 py-2 border text-xs ${
-                      msg.noticeLevel === "warn"
-                        ? "bg-(--color-warning)/10 text-(--color-warning) border-(--color-warning)/30"
-                        : "bg-(--color-bg-secondary) text-(--color-text-tertiary) border-(--color-border-secondary)"
-                    }`
-                  : msg.queued
-                  ? "bg-(--color-accent)/40 text-(--color-accent-text)/70 border border-(--color-accent)/30"
-                  : msg.role === "user"
-                  ? "bg-(--color-accent) text-(--color-accent-text)"
-                  : "text-(--color-text-primary)"
-              }`}
-            >
-              {msg.agentInterface && (
-                <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-(--color-accent-text)/75">
-                  {msg.agentInterface.surface === "preview" ? "Preview" : "Present"} · Agent Interface SDK
-                </div>
-              )}
-              {msg.messageOrigin && (
-                <div className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-(--color-accent-text)/75">
-                  From {msg.messageOrigin.relation} session · {msg.messageOrigin.sessionTitle}
-                </div>
-              )}
-              {msg.queued && (
-                <div className="flex items-center gap-1.5 mb-1.5 text-xs text-(--color-accent-text)/80 font-medium">
-                  <CircleNotchIcon size={12} className="animate-spin" />
-                  Queued{msg.queuePosition !== undefined ? ` #${msg.queuePosition}` : ""}
-                </div>
-              )}
-              {useMarkdown ? (
-                // `shipitLinks` — the ONE surface where agent-authored pointers
-                // into the Preview / Present tab are live (docs/258). This text
-                // is the agent's own output; every other `MarkdownContent` call
-                // site renders content ShipIt did not author (PR and issue
-                // bodies, comments, reviews, subagent reports) and must not be
-                // able to present a button that starts a Compose service.
-                <MarkdownContent text={msg.text} shipitLinks />
-              ) : hasCodeBlocks ? (
-                segments.map((seg) => {
-                  // Key on the segment's character offset, not its array index.
-                  // While a user message with code blocks is being composed/
-                  // streamed, indices stay stable but a content-derived key is
-                  // sturdier against re-segmentation — it keeps each `CodeBlock`
-                  // instance mounted so its memoized `hljs.highlight` cache
-                  // survives instead of remounting and re-highlighting.
-                  if (seg.type === "code") {
-                    return (
-                      <CodeBlock
-                        key={seg.offset}
-                        code={seg.content}
-                        language={seg.language}
-                      />
-                    );
-                  }
-                  const segMatches = getSegmentMatches(
-                    msgMatches,
-                    seg.offset,
-                    seg.content.length
-                  );
-                  return (
-                    <span key={seg.offset} className="whitespace-pre-wrap">
-                      <HighlightedText
-                        text={seg.content}
-                        matches={segMatches}
-                        currentMatch={currentMatch}
-                        currentMatchRef={currentMatchRef}
-                      />
-                    </span>
-                  );
-                })
-              ) : (
-                <HighlightedText
-                  text={msg.text}
-                  matches={msgMatches}
-                  currentMatch={currentMatch}
-                  currentMatchRef={currentMatchRef}
-                />
-              )}
-
-              {msg.images && msg.images.length > 0 && (
-                <MessageImages images={msg.images} isUserMessage={msg.role === "user"} />
-              )}
-
-              {msg.files && msg.files.length > 0 && (
-                <MessageFileAttachments files={msg.files} />
-              )}
-
-              {!hideTools && msg.toolUse && msg.toolUse.length > 0 && (
-                <div className="mt-2 space-y-1">
-                  {msg.toolUse.map((tool, toolIdx) => {
-                    const toolResult = msg.toolResults?.find((r) => r.toolUseId === tool.id);
-                    const resolvedPlanContent = tool.name === "ExitPlanMode" ? findPlanContent(i) : undefined;
-                    // See note in the standalone-tool branch above — the
-                    // right disable signal is whether the tool has a result,
-                    // not whether the message is last. AskUserQuestion /
-                    // PlanApproval track their submitted state internally
-                    // and read `result` to render the answered state on
-                    // reload.
-                    const questionDisabled = !!toolResult;
-                    return (
-                      <ToolUseItem
-                        key={tool.id}
-                        tool={tool}
-                        result={toolResult}
-                        isLast={toolIdx === msg.toolUse!.length - 1}
-                        isStreaming={!!msg.streaming}
-                        onAnswerQuestion={onAnswerQuestion}
-                        onSendFollowUp={onSendFollowUp}
-                        isQuestionDisabled={questionDisabled}
-                        planContent={resolvedPlanContent}
-                      />
-                    );
-                  })}
-                </div>
-              )}
-
-              {voicePlaybackEnabled && turnProseByLastIndex.has(i) && (
-                <div className="mt-1.5 flex items-center opacity-0 group-hover:opacity-100 focus-within:opacity-100 transition-opacity">
-                  <PlayTurnButton turnId={msg.commitHash ?? `turn-${i}`} text={turnProseByLastIndex.get(i)!} />
-                </div>
-              )}
-            </div>
-            </div>
-            )}
-          </Fragment>
+          <TranscriptRow
+            key={key}
+            el={el}
+            anchor={messages[anchorIndex]}
+            matchesByMessage={matchesByMessage}
+            currentMatch={currentMatch}
+            currentMatchRef={currentMatchRef}
+            isLoading={isLoading}
+            voicePlaybackEnabled={voicePlaybackEnabled}
+            turnProse={isBubble ? turnProseByLastIndex.get(el.index) : undefined}
+            activeSessionId={activeSessionId}
+            hasRewindControls={hasRewindControls}
+            forkDefaultName={forkDefaultName}
+            rewindPreviews={rewindPreviews}
+            showGapBefore={isBubble && shouldShowGapBefore(el.index)}
+            gapPreviousRole={isBubble ? previousRoleBefore(el.index) : null}
+          />
         );
       }), visualElements, compactingAnchor, compactingIndicator)}
 
@@ -575,6 +408,7 @@ export function MessageList({
       {!isLoading && messages.length > 0 && renderRewindPoint(messages.length, true)}
     </div>
     </div>
+    </RowHandlersProvider>
     </ShipitPointerSessionProvider>
   );
 }

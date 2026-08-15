@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { loadSessionHistory } from "./session-data.js";
+import { loadSessionHistory, __resetHistoryCache } from "./session-data.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useGitStore } from "../stores/git-store.js";
@@ -514,5 +514,99 @@ describe("loadSessionHistory — a superseded load is cancelled, not just discar
   it("propagates a genuine network failure", async () => {
     globalThis.fetch = vi.fn(() => Promise.reject(new Error("offline"))) as unknown as typeof fetch;
     await expect(loadSessionHistory("s1")).rejects.toThrow("offline");
+  });
+});
+
+/**
+ * planning#375 — switching between sessions re-downloaded the whole
+ * conversation every time (2.67 MB in the traced session). The response now
+ * carries an ETag and the client revalidates instead.
+ */
+describe("loadSessionHistory — revalidates instead of re-downloading", () => {
+  let requests: { headers: Record<string, string>; cache?: string }[];
+  let etag: string;
+  let body: { messages: { role: string; text: string }[]; commits: never[]; agentRunning: boolean };
+
+  const respond = () => {
+    const ifNoneMatch = requests[requests.length - 1].headers["If-None-Match"];
+    if (ifNoneMatch === etag) {
+      return Promise.resolve({ ok: true, status: 304, headers: new Headers({ etag }), json: () => { throw new Error("must not parse a 304"); } });
+    }
+    return Promise.resolve({ ok: true, status: 200, headers: new Headers({ etag }), json: () => Promise.resolve(body) });
+  };
+
+  beforeEach(() => {
+    useUiStore.getState().reset();
+    useSessionStore.getState().reset();
+    useGitStore.getState().reset();
+    useFileStore.getState().reset();
+    __resetHistoryCache();
+    requests = [];
+    etag = '"v1"';
+    body = { messages: [{ role: "assistant", text: "ONE" }], commits: [], agentRunning: false };
+    globalThis.fetch = vi.fn((url: string, init?: RequestInit) => {
+      if (!url.includes("/history")) return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ tree: [] }) });
+      requests.push({ headers: (init?.headers ?? {}) as Record<string, string>, cache: init?.cache });
+      return respond();
+    }) as unknown as typeof fetch;
+  });
+
+  afterEach(() => { vi.restoreAllMocks(); __resetHistoryCache(); });
+
+  it("sends no validator on the first load and caches what comes back", async () => {
+    useSessionStore.getState().setSessionId("s1");
+    await loadSessionHistory("s1");
+    expect(requests[0].headers["If-None-Match"]).toBeUndefined();
+    expect(useSessionStore.getState().messages.map((m) => m.text)).toEqual(["ONE"]);
+  });
+
+  it("revalidates on the next load and applies the cached transcript on a 304", async () => {
+    useSessionStore.getState().setSessionId("s1");
+    await loadSessionHistory("s1");
+    useSessionStore.getState().setMessages([]);
+
+    await loadSessionHistory("s1");
+    expect(requests[1].headers["If-None-Match"]).toBe('"v1"');
+    // The 304 threw if `json()` was touched, so this transcript came from the
+    // cache — no transfer, no parse.
+    expect(useSessionStore.getState().messages.map((m) => m.text)).toEqual(["ONE"]);
+  });
+
+  it("takes the new body when the server's tag moved", async () => {
+    useSessionStore.getState().setSessionId("s1");
+    await loadSessionHistory("s1");
+
+    etag = '"v2"';
+    body = { messages: [{ role: "assistant", text: "ONE" }, { role: "assistant", text: "TWO" }], commits: [], agentRunning: false };
+    await loadSessionHistory("s1");
+    expect(useSessionStore.getState().messages.map((m) => m.text)).toEqual(["ONE", "TWO"]);
+
+    // …and the fresher body replaced the cached one.
+    await loadSessionHistory("s1");
+    expect(requests[2].headers["If-None-Match"]).toBe('"v2"');
+    expect(useSessionStore.getState().messages.map((m) => m.text)).toEqual(["ONE", "TWO"]);
+  });
+
+  it("bypasses the browser's own HTTP cache so the 304 is visible to us", async () => {
+    useSessionStore.getState().setSessionId("s1");
+    await loadSessionHistory("s1");
+    // Left to the browser, `fetch` would resolve a revalidation as a 200 with
+    // the cached body — and we would re-parse the megabytes we are avoiding.
+    expect(requests[0].cache).toBe("no-store");
+  });
+
+  it("keeps the cache bounded", async () => {
+    for (let i = 0; i < 9; i++) {
+      useSessionStore.getState().setSessionId(`s${i}`);
+      await loadSessionHistory(`s${i}`);
+    }
+    // The oldest sessions were evicted, so they revalidate from scratch.
+    useSessionStore.getState().setSessionId("s0");
+    await loadSessionHistory("s0");
+    expect(requests[requests.length - 1].headers["If-None-Match"]).toBeUndefined();
+    // A recent one is still cached.
+    useSessionStore.getState().setSessionId("s8");
+    await loadSessionHistory("s8");
+    expect(requests[requests.length - 1].headers["If-None-Match"]).toBe('"v1"');
   });
 });

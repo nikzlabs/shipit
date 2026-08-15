@@ -43,22 +43,40 @@ when approving the work.
    cancelled, not merely ignored after it has been downloaded.
    *(Delivered — see `plan.md`.)*
 
+9. Every message stays present in the page. The browser's own Ctrl+F, and "select all →
+   copy", must keep covering the whole conversation, not only the visible part.
+
+10. Switching away from a session and back must not download the conversation again. The
+    user moves between sessions constantly, and each move currently costs megabytes.
+
+11. A transcript shown from a cache must not be stale. What the user sees after switching
+    back must match what the server holds.
+
+12. The file tree must not be re-sent as part of the chat-history response when it has not
+    changed. It is 325 KB of this repository's payload and is unrelated to the transcript.
+
 ## Open questions
 
-- **Q1. Must the whole conversation stay present in the page?** The cheapest way to meet
-  requirement 3 is to keep only the visible part of the transcript rendered ("windowing").
-  That has a cost the user would notice: the browser's own Ctrl+F would find only what is
-  currently on screen, and "select all → copy" would copy only that part. The alternative —
-  keeping every message in the page but skipping the work for messages that did not change —
-  preserves both, and the trace says it is very probably sufficient. It is, however, weaker
-  in the limit: memory and first-open cost still grow with the conversation.
-
-- **Q2. Should the client stop loading the entire history at once?** Today the client fetches
-  the whole conversation on attach; in the traced session that was 2.67 MB. Loading only the
-  recent part, with older messages fetched on demand, would cut the first-open cost and the
-  transfer. This is a change to what the user sees (older messages appear when asked for),
-  so it is not the agent's to decide.
+*(none)*
 
 ## Resolved questions
 
-*(none yet)*
+- **2026-08-15 — Must the whole conversation stay present in the page?** Asked because the
+  cheapest way to meet requirement 3 is to render only the visible part ("windowing"), which
+  would cost the user the browser's own Ctrl+F and select-all across the whole conversation.
+  **The user chose to keep every message mounted** and instead skip the render work for
+  messages that did not change. Added as requirement 9; requirement 3 stands and is met by
+  making the *per-update* cost proportional to what changed rather than to the conversation.
+
+- **2026-08-15 — Should the client stop loading the entire history at once?** Asked because
+  the traced session downloaded 2.67 MB on attach. **The user chose to keep loading it all**,
+  and asked for a cache so that switching back and forth does not re-download it. Added as
+  requirements 10 and 11. Paginated history is not being built.
+
+  The user also asked why the payload is so heavy. Measured for this repository: the
+  recursive workspace file tree in the same response is **325 KB** (2,847 files, 505
+  directories), the git log is capped at 50 commits, and tool inputs/results are already
+  clamped and images already replaced by URLs before serving (docs/244). The remaining
+  ~2.3 MB is the conversation itself. So the payload is heavy because the conversation is
+  long — with one avoidable passenger, the file tree, which has nothing to do with chat
+  history and is re-sent on every attach. That became requirement 12.

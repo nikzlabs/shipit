@@ -1,6 +1,6 @@
 import type { ChatMessage } from "../components/MessageList.js";
 import type { GitCommit } from "../components/GitHistory.js";
-import type { SessionInfo, RepoInfo, FileTreeNode, TurnUsage, SessionUsage, RuntimeMode, CredentialRoute } from "../../server/shared/types.js";
+import type { SessionInfo, RepoInfo, TurnUsage, SessionUsage, RuntimeMode, CredentialRoute } from "../../server/shared/types.js";
 import { turnContextTokens } from "../../server/shared/types.js";
 import { getContextWindowForModel } from "../../server/shared/model-windows.js";
 import type { ReviewerSlotView } from "../../server/shared/types/agent-types.js";
@@ -43,7 +43,6 @@ interface HistoryResponse {
     subagentEvents?: unknown[];
   }[];
   commits: GitCommit[];
-  fileTree: FileTreeNode[];
   agentRunning?: boolean;
   /**
    * docs/235 — descriptions of the outstanding agent-initiated background tasks.
@@ -188,6 +187,41 @@ let historyLoadSeq = 0;
 let inFlightHistoryLoad: { seq: number; controller: AbortController } | null = null;
 
 /**
+ * Parsed `/history` responses, keyed by session, with the ETag they arrived
+ * under (planning#375).
+ *
+ * The user moves between sessions constantly and each move re-downloaded the
+ * whole conversation — 2.67 MB in the traced session. With this, a switch back
+ * sends `If-None-Match`, gets a `304`, and reuses the parsed object: no
+ * transfer, no `JSON.parse`, no re-materialising thousands of message objects.
+ *
+ * Correctness is the server's, not ours: the ETag is a hash of the response
+ * body, so a `304` is a positive statement that nothing changed. We never
+ * decide for ourselves that a cached transcript is still good.
+ *
+ * Bounded because a transcript is megabytes and a long day touches many
+ * sessions. `Map` iterates in insertion order, so the oldest entry is the first
+ * key — re-inserting on every hit keeps the bound honest (LRU, not FIFO).
+ */
+const HISTORY_CACHE_LIMIT = 6;
+const historyCache = new Map<string, { etag: string; data: HistoryResponse }>();
+
+function cacheHistory(sessionId: string, etag: string, data: HistoryResponse): void {
+  historyCache.delete(sessionId);
+  historyCache.set(sessionId, { etag, data });
+  while (historyCache.size > HISTORY_CACHE_LIMIT) {
+    const oldest = historyCache.keys().next().value;
+    if (oldest === undefined) break;
+    historyCache.delete(oldest);
+  }
+}
+
+/** Testing seam — a fresh tab starts with an empty cache, so tests should too. */
+export function __resetHistoryCache(): void {
+  historyCache.clear();
+}
+
+/**
  * Fetch session history via HTTP and populate stores.
  * Shared between useConnectionSync (WS reconnect) and session-actions (session resume).
  */
@@ -200,8 +234,27 @@ export async function loadSessionHistory(sessionId: string): Promise<void> {
   inFlightHistoryLoad = { seq, controller };
   let data: HistoryResponse;
   try {
-    const res = await fetch(`/api/sessions/${sessionId}/history`, { signal: controller.signal });
-    data = await res.json() as HistoryResponse;
+    const cached = historyCache.get(sessionId);
+    const res = await fetch(`/api/sessions/${sessionId}/history`, {
+      signal: controller.signal,
+      // Our own conditional request, so the 304 is visible HERE. Left to the
+      // browser's HTTP cache the revalidation would still happen, but `fetch`
+      // would hand back a 200 with the cached body and we would re-parse the
+      // megabytes we are trying to avoid.
+      cache: "no-store",
+      ...(cached ? { headers: { "If-None-Match": cached.etag } } : {}),
+    });
+    if (res.status === 304 && cached) {
+      data = cached.data;
+    } else {
+      data = await res.json() as HistoryResponse;
+      // Optional: a response with no ETag simply is not cached, which is the
+      // correct degradation (an older server, a proxy that strips it, a test
+      // double). Never cache without a tag — the tag is the only thing that
+      // makes a later reuse safe.
+      const etag = res.headers?.get("etag");
+      if (etag) cacheHistory(sessionId, etag, data);
+    }
   } catch (err) {
     // A load we cancelled ourselves is not a failure. Return rather than throw,
     // matching what a superseded load has always done — `useConnectionSync`
@@ -318,7 +371,10 @@ export async function loadSessionHistory(sessionId: string): Promise<void> {
     session.setRewindRecovery(data.rewindSnapshot);
   }
   useGitStore.getState().setCommits(data.commits);
-  useFileStore.getState().setTree(data.fileTree);
+  // planning#375 — the file tree no longer rides on the history response (325 KB
+  // of it, on a completely different change cadence). Seeded from the dedicated
+  // files endpoint instead; not awaited, so the transcript never waits on it.
+  void useFileStore.getState().fetchTree(sessionId).catch(() => {});
 
   // Seed cost surfaces from the authoritative usage store on reload, so the
   // ContextDial doesn't have to wait for a fresh `usage_update` to know what
