@@ -12,8 +12,18 @@ the install container, the companion-CLI invocation container, the plugin
 service, every mount they carry and every egress rule around them exist only on
 a real Docker deployment. `plan.md` §5 names it as the once-per-milestone check.
 
-Run this against a **real ShipIt deployment** — not a session container, not the
-`dev` Compose service. A human or an agent can execute it.
+Run this against a **real ShipIt deployment**. That does *not* mean "outside a
+session" — the opposite. A session container **on a real deployment** is exactly
+where the plugin containers exist, so that is where the steps run, and an agent
+in such a session can execute them itself. What is excluded is the dogfood
+`dev` Compose service (`RUNTIME_MODE=local`), which has no plugin containers at
+all.
+
+Two things stay out of reach from inside a session container, because
+containment puts them there on purpose: the **Plugins tab card** (the
+orchestrator UI is not reachable from a contained session) and anything needing
+a **second project**. Both belong to a human at the browser, or to a session on
+a consuming project.
 
 ## Why these steps and not others
 
@@ -137,8 +147,13 @@ Do this on a **Contained** session; on an Open session there is nothing to
 enforce and the card correctly shows no host rows.
 
 - **Do:** with `example.com` **not** allowed, run `probe --host-check`.
-- **PASS:** the call fails the way the agent's own call to a non-allowlisted host
-  fails, and the failure names the host.
+- **PASS:** the call fails, and the **same call from the agent's own container
+  fails too** — run it there as the control. Compare the *outcome*, not the
+  message: the agent's `curl` reports `Could not resolve host: <host>` while the
+  plugin's Node `fetch` reports a bare `fetch failed`, because Node wraps the
+  resolver error. Two different strings, one refusal.
+- Note that `example.com` is in the fixture's declared `hosts:` while this step
+  runs. That is the point: **the declaration grants nothing** (req 24).
 - **Do:** press **Allow for session** on the card, then run `probe --host-check`
   again.
 - **PASS:** it now succeeds. This is the claim that enforcement and the card
@@ -222,3 +237,40 @@ says "fine" cannot be compared with the next one.
 Anything that fails belongs in `checklist.md` with the same treatment every
 other finding in this feature got: what the defect is, why it was reachable, and
 what the fix does or does not close.
+
+---
+
+## Run 1 — 2026-08-15, self fixture, real deployment
+
+Run from a session container on the real instance, from the agent side. The
+**self** fixture only; every consumer-fixture step (2, 6, 9, and the
+generation halves of 1 and 3) needs a second project and is untouched.
+
+**Steps 3, 4, 5, 7, 8 and 10 pass.** Recorded fields, not verdicts:
+
+| Step | What the report said |
+|---|---|
+| 3 CLI | `mode: self-or-unprovided`, `SHIPIT_PLUGIN_COMMIT: null`, node `v24.15.0`, `cwd: /project` |
+| 3 mounts | `project: {readable: true, entries: 47}`, `state: {provided: true, writable: true}`, `settings: {provided: true, greeting: "hello from the probe"}` — **no mount empty**, so the volume+Subpath defect is absent on this path |
+| 3 + 4 state | counter `1` on the page and `1` from the CLI; `probe --bump` → CLI `2`, service `2`. Both directions, two containers (CLI node 24 / service node 22) |
+| 4 service | running on `:4820`; page renders the `greeting` default; `/report.json` agrees with the CLI |
+| 5 egress | `--host-check` → `{allowed: false, error: "fetch failed"}` for `example.com`, **which the manifest declares**. Control: the agent's own container gets `Could not resolve host: example.com`, and `github.com` returns 200 there. Declared ≠ allowed |
+| 7 skills | `plugins--probe--probe-<hash>` present in **both** `.claude/skills/` and `.codex/skills/`; `git status --short` empty |
+| 8 SDK | the page's message reached the chat **unprompted**, carrying counter `1`, which the CLI then independently read as `1` |
+| 10 self | `shipit plugin refresh shipit-dev` → **exit 2**, "declared as `repo: self` … it has no version to refresh" |
+
+Two things this run added that the steps above did not ask for:
+
+- **The wrapper is a closed door, from the agent's side too.** `/plugin-bin/probe`
+  is ShipIt-authored and execs the shim with a hardcoded `--command 'probe'`;
+  asking the shim for anything else is refused by name (`sh` is not a command
+  `probe` exports). The containment argument in req 29 is usually told from the
+  plugin's side — this is the other side of the same seam.
+- **The two surfaces disagree about the checkout, and nothing documents it.** The
+  CLI reports its checkout `writable: true`, the service reports `/app`
+  `writable: false`. For self-use a writable tree is the documented intent
+  (editing the plugin IS the point), so neither is wrong on its own — but a
+  surface-dependent answer to "can plugin code write its own checkout" should be
+  a stated rule, not an artefact. Worth a look before anyone relies on either.
+
+Neither is a failure; both are recorded so the next run can compare.
