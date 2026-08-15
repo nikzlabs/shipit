@@ -131,6 +131,12 @@ describe("registerContainerOriginGuard — request gating", () => {
       { config: { containerAccessible: true } },
       async () => ({ sessions: [] }),
     );
+    // docs/264 — same shape, with the target session in a `?target=` query.
+    app.get<{ Params: { id: string } }>(
+      "/api/sessions/:id/host-session-logs",
+      { config: { containerAccessible: true } },
+      async () => ({ entries: [] }),
+    );
     await app.ready();
   });
 
@@ -323,6 +329,21 @@ describe("registerContainerOriginGuard — request gating", () => {
     expect(other.statusCode).toBe(403);
   });
 
+  it("scopes the ops log route on the PATH, not on its ?target= filter (docs/264)", async () => {
+    const own = await app.inject({
+      method: "GET",
+      url: `/api/sessions/${OWN_SESSION}/host-session-logs?target=sess-other`,
+      remoteAddress: CONTAINER_IP,
+    });
+    expect(own.statusCode).toBe(200);
+    const other = await app.inject({
+      method: "GET",
+      url: "/api/sessions/sess-other/host-session-logs",
+      remoteAddress: CONTAINER_IP,
+    });
+    expect(other.statusCode).toBe(403);
+  });
+
   it("lets a NON-container (browser) origin reach everything, including globals", async () => {
     const secrets = await app.inject({ method: "PUT", url: "/api/secrets", remoteAddress: BROWSER_IP });
     expect(secrets.statusCode).toBe(200);
@@ -502,6 +523,11 @@ const GOLDEN_CONTAINER_ROUTES = [
   // only (id/title/branch/repo/parent/PR number+url+state) — never another
   // session's conversation, prompts, secrets, or workspace contents.
   "GET /api/sessions/:id/host-sessions",
+  // docs/264 — `shipit session logs` (ops sessions). Same shape and same second
+  // gate as the inventory above; the session being READ is the `?target=` query
+  // param, never the path. Returns SERVER-source log entries only — orchestrator
+  // lifecycle lines, never the target session's agent output or conversation.
+  "GET /api/sessions/:id/host-session-logs",
   // agent — shipit agent run / shipit agent result. The result read is
   // own-session scoped like the spawn (the worker injects the caller's id), and
   // returns only that session's own persisted consult cards (planning#247).

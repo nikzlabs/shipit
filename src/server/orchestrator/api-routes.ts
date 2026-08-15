@@ -34,6 +34,7 @@ import type { SessionLoopDetector } from "./loop-detector.js";
 import type { RuntimeMode } from "../shared/types.js";
 import type { ProviderAccountManager } from "./provider-account-manager.js";
 import type { ModelRunner } from "./services/redaction.js";
+import type { LogStoreReader } from "./services/host-session-logs.js";
 
 import { ServiceError } from "./services/index.js";
 
@@ -313,6 +314,18 @@ export interface ApiDeps {
    * is archived/deleted. Optional; the disk-janitor sweep is the backstop.
    */
   removeSessionLogs?: (sessionId: string) => void;
+  /**
+   * docs/192 durable per-session log store. Read by the docs/264 Ops route,
+   * which needs the on-disk backlog rather than the in-memory ring so a session
+   * whose container is already gone still answers.
+   *
+   * **Required key, `| undefined` value** — same reason as
+   * `refreshPluginReposForSession` above: an optional key here type-checks when
+   * `route-registry.ts` forgets to forward it, and the route then answers 503 on
+   * every deployment while its co-located tests (which inject the store
+   * directly) stay green. A required key makes the omission a build error.
+   */
+  logStore: LogStoreReader | undefined;
   /**
    * OOM circuit breaker — passed into recovery service handlers so
    * user-initiated restarts reset the trip, and into the diagnostics

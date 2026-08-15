@@ -26,11 +26,26 @@
  * messages, assistant text, secrets, env, or workspace contents. The allowlist
  * that enforces that is `services/host-sessions.ts:buildHostSessionView`; read
  * its docstring before adding a field here.
+ *
+ * docs/264 adds a second route on the same shape and the same gate:
+ *
+ *   GET /api/sessions/:id/host-session-logs?target=<session>[&since=&until=&lines=]
+ *
+ * which returns another session's SERVER-SOURCE log entries — orchestrator
+ * lifecycle text, never agent output. Its allowlist is
+ * `services/host-session-logs.ts:SERVER_LOG_SOURCES`; read that module's
+ * docstring before touching it.
  */
 
 import type { FastifyInstance, FastifyReply } from "fastify";
 import type { ApiDeps } from "./api-routes.js";
-import { ServiceError, queryHostSessions, type HostSessionQuery } from "./services/index.js";
+import {
+  ServiceError,
+  queryHostSessions,
+  queryHostSessionLogs,
+  type HostSessionQuery,
+  type HostSessionLogQuery,
+} from "./services/index.js";
 import { getErrorMessage } from "./validation.js";
 import type { SessionManager } from "./sessions.js";
 
@@ -119,6 +134,53 @@ export async function registerHostSessionRoutes(
         reply
           .code(500)
           .send({ error: `Failed to read host sessions: ${getErrorMessage(err)}` });
+      }
+    },
+  );
+
+  // GET /api/sessions/:id/host-session-logs?target=<session>[&since=&until=&lines=]
+  //
+  // docs/264 — another session's server-source log entries. `:id` is the CALLING
+  // ops session (so the container guard's own-session check is untouched); the
+  // session being READ is the `target=` query param.
+  //
+  // `target=` and not `session=` for the reason the sibling route names its
+  // filter `id=`: `session=` is what `api-container-guard.ts` reads as a SCOPE,
+  // and a filter sharing that name is a trap for whoever edits either file next.
+  app.get<{
+    Params: { id: string };
+    Querystring: { target?: string; since?: string; until?: string; lines?: string };
+  }>(
+    "/api/sessions/:id/host-session-logs",
+    { config: { containerAccessible: true } },
+    async (request, reply) => {
+      if (!requireOpsSession(sessionManager, request.params.id, reply)) return;
+      const { logStore } = deps;
+      if (!logStore) {
+        // Only reachable in a test harness that omits the store. Say so rather
+        // than returning an empty page, which reads as "this session logged
+        // nothing" — the exact wrong conclusion for an incident.
+        reply.code(503).send({ error: "The durable log store is not available on this host." });
+        return;
+      }
+      try {
+        const q = request.query;
+        const query: HostSessionLogQuery = {};
+        if (q.since) query.since = q.since;
+        if (q.until) query.until = q.until;
+        // Pass a bad value THROUGH so the service 400s, exactly as the sibling
+        // route does with `offset`. Dropping it here would return the default
+        // 200 lines dressed as the bound the operator asked for.
+        if (q.lines) query.lines = Number(q.lines);
+        return queryHostSessionLogs(sessionManager, logStore, q.target ?? "", query);
+      } catch (err) {
+        if (err instanceof ServiceError) {
+          reply.code(err.statusCode).send({ error: err.message });
+          return;
+        }
+        reply
+          .code(500)
+          .send({ error: `Failed to read session logs: ${getErrorMessage(err)}` });
       }
     },
   );

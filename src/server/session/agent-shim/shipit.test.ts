@@ -760,6 +760,136 @@ describe("shipit session list --all (docs/255)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// shipit session logs (docs/264 — Ops server-source log read)
+// ---------------------------------------------------------------------------
+
+const LOGS_ROUTE = "GET /agent-ops/session/host-session-logs";
+
+const LOGS_BODY = {
+  sessionId: "7bc72326-c1ad-48fd-ac95-12149a000000",
+  title: "Shipkit multi-repo game tooling",
+  containerName: "agent-7bc72326-c1a",
+  diskTier: "evicted",
+  entries: [
+    {
+      ts: "2026-08-14T22:11:03.000Z",
+      source: "server",
+      text: "Auto-push rejected: branch has diverged from remote. Rebase needed to update.",
+    },
+  ],
+  total: 1,
+  truncated: false,
+  withheldUnclassified: 0,
+  logsRetained: true,
+};
+
+describe("shipit session logs (docs/264)", () => {
+  it("answers the motivating question: the server line that never reached stdout", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "logs", "7bc72326"], {
+      [LOGS_ROUTE]: { status: 200, body: LOGS_BODY },
+    });
+    expect(out.exitCode).toBe(0);
+    expect(out.calls[0].path).toContain("target=7bc72326");
+    expect(out.stdout).toContain("agent-7bc72326-c1a");
+    expect(out.stdout).toContain("Auto-push rejected");
+    expect(out.stdout).toContain("2026-08-14T22:11:03.000Z");
+  });
+
+  it("forwards --since, --until and --lines", async () => {
+    const { run } = makeRunner();
+    const out = await run(
+      ["session", "logs", "7bc72326", "--since", "2h", "--until", "30m", "--lines", "50"],
+      { [LOGS_ROUTE]: { status: 200, body: LOGS_BODY } },
+    );
+    const path = decodeURIComponent(out.calls[0].path);
+    expect(path).toContain("since=2h");
+    expect(path).toContain("until=30m");
+    expect(path).toContain("lines=50");
+  });
+
+  it("requires a session id and points at `session find`", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "logs"]);
+    expect(out.exitCode).toBe(2);
+    expect(out.stderr).toContain("session id is required");
+    expect(out.stderr).toContain("shipit session find");
+    expect(out.calls).toHaveLength(0);
+  });
+
+  it("distinguishes an empty window from pruned logs", async () => {
+    // Identical-looking output, opposite meanings: one says nothing happened,
+    // the other says the evidence is gone. Never let the operator guess.
+    const { run: runEmpty } = makeRunner();
+    const empty = await runEmpty(["session", "logs", "7bc72326", "--since", "10m"], {
+      [LOGS_ROUTE]: {
+        status: 200,
+        body: { ...LOGS_BODY, entries: [], total: 0, logsRetained: true },
+      },
+    });
+    expect(empty.stdout).toContain("No server-source log entries in this window");
+
+    const { run: runPruned } = makeRunner();
+    const pruned = await runPruned(["session", "logs", "7bc72326"], {
+      [LOGS_ROUTE]: {
+        status: 200,
+        body: { ...LOGS_BODY, entries: [], total: 0, logsRetained: false },
+      },
+    });
+    expect(pruned.stdout).toContain("no durable logs on disk");
+    expect(pruned.stdout).toContain("NOT evidence that nothing happened");
+  });
+
+  it("reports withheld lines rather than letting them vanish", async () => {
+    // A non-zero count is the only signal that a producer's wording drifted off
+    // its ops-safe template, so the renderer must never swallow it.
+    const { run } = makeRunner();
+    const out = await run(["session", "logs", "7bc72326"], {
+      [LOGS_ROUTE]: { status: 200, body: { ...LOGS_BODY, withheldUnclassified: 4 } },
+    });
+    expect(out.stdout).toContain("withheld");
+    expect(out.stdout).toContain("4 server line(s)");
+  });
+
+  it("says what was dropped when the tail was capped", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "logs", "7bc72326", "--lines", "1"], {
+      [LOGS_ROUTE]: { status: 200, body: { ...LOGS_BODY, total: 900, truncated: true } },
+    });
+    expect(out.stdout).toContain("of 900");
+    expect(out.stdout).toContain("--lines");
+  });
+
+  it("surfaces the orchestrator's ops-only refusal verbatim", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "logs", "7bc72326"], {
+      [LOGS_ROUTE]: {
+        status: 403,
+        body: { error: "Host session inventory is only available in Ops sessions." },
+      },
+    });
+    expect(out.exitCode).toBe(1);
+    expect(out.stderr).toContain("only available in Ops sessions");
+  });
+
+  it("--json prints the raw body", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "logs", "7bc72326", "--json"], {
+      [LOGS_ROUTE]: { status: 200, body: LOGS_BODY },
+    });
+    expect(JSON.parse(out.stdout)).toEqual(LOGS_BODY);
+  });
+
+  it("rejects an unsupported flag", async () => {
+    const { run } = makeRunner();
+    const out = await run(["session", "logs", "7bc72326", "--follow"]);
+    expect(out.exitCode).toBe(2);
+    expect(out.stderr).toContain("--follow");
+    expect(out.calls).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // shipit session view
 // ---------------------------------------------------------------------------
 

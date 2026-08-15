@@ -113,6 +113,11 @@ production host that ShipIt runs on, **read-only**:
   --branch|--pr|--container|--id\` and \`shipit session list --all\` resolve a
   branch, PR, or container name back to the session that produced it. Never
   another session's conversation, prompts, or workspace contents.
+- **Session server logs (read-only):** \`shipit session logs <id>\` returns a
+  session's **orchestrator lifecycle** lines. These are written per session and
+  never reach the orchestrator container's stdout, so \`docker logs\` is not the
+  whole story. Only text ShipIt itself authored is returned — the agent's own
+  output, and any line quoting workspace content, is withheld and counted.
 
 That is the entire privilege surface. No \`/etc\`, no \`/root\`, no SSH, no write
 access to Docker. See \`/shipit-docs/ops-session.md\` for the full contract.
@@ -123,6 +128,9 @@ Paste one of these into chat instead of reconstructing the commands from memory:
 
 - [\`prompts/trace-a-pr.md\`](prompts/trace-a-pr.md) — take a PR, branch, or
   container name back to the session that produced it.
+- [\`prompts/read-session-logs.md\`](prompts/read-session-logs.md) — the
+  orchestrator log shows nothing but something clearly failed: read the
+  session's own server-source lines.
 - [\`prompts/investigate-loop.md\`](prompts/investigate-loop.md) — find a
   container stuck in a SIGTERM/recreate loop (\`LOOP DETECTED\`).
 - [\`prompts/diagnose-stuck-session.md\`](prompts/diagnose-stuck-session.md) —
@@ -183,9 +191,12 @@ behaving oddly. Figure out what's wrong — read-only.
    \`\`\`
    docker stats --no-stream <name>
    \`\`\`
-3. Recent logs from the container and the orchestrator's journal for that
-   session id:
+3. Recent logs — the session's own server-source lines FIRST, then the container
+   and the orchestrator's journal. The first command is the one that shows what
+   ShipIt itself did for this session; those lines are written per session and
+   never reach the orchestrator's stdout, so \`docker logs\` alone will miss them:
    \`\`\`
+   shipit session logs <session-id> --since 2h
    docker logs --tail 200 <name>
    journalctl -D /var/log/journal --since "30 min ago" --no-pager | grep <session-id>
    \`\`\`
@@ -340,10 +351,15 @@ shipit session list --all --offset 200                    # next page, when outp
 ## 3. Take the answer back to the host
 The record includes the session's container name, so you can go straight on:
 \`\`\`
+shipit session logs <session-id> --since 24h      # the session's own SERVER-source lines
 docker ps -a --filter "name=<containerName>" --format 'table {{.Names}}\\t{{.Status}}'
 docker logs --tail 200 <containerName>
 journalctl -D /var/log/journal --since "24 hours ago" --no-pager | grep <session-id>
 \`\`\`
+Run \`shipit session logs\` FIRST when the question is "what did ShipIt do for
+this session?". Auto-push outcomes, compose reconcile failures and container
+recovery are written per session and never reach the orchestrator's stdout — see
+\`prompts/read-session-logs.md\`.
 
 ## What you will NOT get
 Inventory metadata only: id, title, kind, branch, repo, parent session,
@@ -353,6 +369,76 @@ needs the chat, say so and let the operator open the session in the UI.
 
 Report: the session id and title, its branch and repo, who spawned it, its PR(s)
 and their state, and whether it is still live or archived.
+`;
+
+const PROMPT_READ_SESSION_LOGS = `# Read a session's server-source logs
+
+Something failed for one session — a push that never landed, a service that
+never came up, a container that vanished — and the orchestrator's own log shows
+nothing. Before concluding the event silently vanished, read the session's own
+server-source lines.
+
+## Why \`docker logs\` is not enough
+
+A large class of orchestrator events is written **per session** via
+\`broadcastLog\`, which writes to the durable log store and the in-memory ring and
+makes **no console call**. Those lines never appear in
+\`docker logs shipit-shipit-1\` or in the journal. Auto-push outcomes (including
+\`Auto-push rejected: branch has diverged from remote.\`), compose reconcile
+failures, container re-adoption, idle disposal and OOM notices all live there.
+
+An event missing from the orchestrator log is therefore **not** evidence it
+didn't happen. Check here before saying "the push silently vanished".
+
+## 1. Get the session id
+
+\`\`\`
+shipit session find --branch shipit/<branch>      # or --pr / --container / --id
+\`\`\`
+
+## 2. Read its server lines (docs/264)
+
+\`\`\`
+shipit session logs <session-id>                             # the recent tail
+shipit session logs <session-id> --since 6h                  # 90s / 30m / 2h / 3d, or ISO-8601
+shipit session logs <session-id> --since 2026-08-14T20:00:00Z --until 2026-08-15T02:00:00Z
+shipit session logs <session-id> --lines 500 --json          # pipe it
+\`\`\`
+
+A truncated id from a log line works; an ambiguous prefix is refused rather than
+guessed. An unparseable \`--since\` is refused too — so a bad value can never
+hand you the whole history dressed as the window you asked for.
+
+## 3. Correlate
+
+\`\`\`
+docker logs --tail 200 <containerName>                       # printed by 'session find'
+journalctl -D /var/log/journal --since "6 hours ago" --no-pager | grep <session-id>
+\`\`\`
+
+## Reading the result
+
+- **Narrower than "the session's logs", deliberately.** You get lines whose whole
+  text ShipIt itself authored. The session's agent output, preview errors,
+  install output, prompts and conversation are withheld server-side — and so is
+  any orchestrator line that quotes workspace content or a raw error message
+  (a compose validation error naming a value from the project's own
+  \`docker-compose.yml\`, git's stderr, a provider error). No flag reaches them.
+- **Withheld lines are counted, not hidden.** \`withheld: N server line(s) …\`
+  means those lines exist in that window and were not returned. Most never will
+  be. But if N looks high for the incident you are chasing, the answer you need
+  may be in one of them: ask the operator to read the session's Logs panel for
+  that window rather than concluding nothing happened. The same applies if the
+  chat itself is what the question needs.
+- **Empty window vs pruned logs.** These look the same and mean opposite things,
+  so the output states which one you got. A session's logs are removed when it is
+  archived, deleted, or fully reset — for those, absence is not evidence.
+- **Lines are redacted** (URLs and token-shaped strings collapse to
+  \`[REDACTED]\`). That is deliberate at a session boundary; take identifiers from
+  \`shipit session find\` instead of the log text.
+
+Report: the failing event with its timestamps, how many times it repeated, and
+whether the orchestrator log corroborated it or was silent.
 `;
 
 const PROMPT_REMEDIATE_SHIPIT_BUG = `# Remediate a ShipIt bug from Ops
@@ -444,6 +530,7 @@ export const OPS_TEMPLATE: ProjectTemplate = {
     "shipit.yaml": SHIPIT_YAML,
     "docker-compose.yml": DOCKER_COMPOSE_YML,
     "prompts/trace-a-pr.md": PROMPT_TRACE_A_PR,
+    "prompts/read-session-logs.md": PROMPT_READ_SESSION_LOGS,
     "prompts/investigate-loop.md": PROMPT_INVESTIGATE_LOOP,
     "prompts/diagnose-stuck-session.md": PROMPT_DIAGNOSE_STUCK_SESSION,
     "prompts/daily-health.md": PROMPT_DAILY_HEALTH,

@@ -373,6 +373,100 @@ export async function handleSessionFind(args: string[], deps: RunDeps): Promise<
   success(deps.io, blocks.join("\n\n"));
 }
 
+/**
+ * docs/264 — `shipit session logs <session-id> [--since t] [--until t]
+ * [--lines N] [--json]`.
+ *
+ * Ops-only. Returns another session's orchestrator lifecycle lines — auto-push
+ * outcomes, container recovery, idle disposal, agent process lifecycle. It is
+ * NOT the session's Logs panel: the server returns only lines whose whole text
+ * is one ShipIt itself authored, so agent output, preview errors, install
+ * output, and any line quoting workspace or raw error text are withheld. No
+ * flag reaches them; withheld lines are reported as a count.
+ *
+ * Read from the durable store, so a session whose container is already gone
+ * still answers. The orchestrator's 403 is surfaced verbatim — the shim carries
+ * no second copy of the Ops gate.
+ */
+export async function handleSessionLogs(args: string[], deps: RunDeps): Promise<void> {
+  const parsed = parseFlags(args, {
+    values: {
+      "--since": "since", "-S": "since",
+      "--until": "until", "-U": "until",
+      "--lines": "lines", "-n": "lines",
+      // Muscle-memory alias for the positional id.
+      "--id": "id", "--session": "id",
+    },
+    booleans: { "--json": "json" },
+  });
+  if (parsed.unsupported.length > 0) {
+    fail(deps.io, `Unsupported flag for shipit session logs: ${parsed.unsupported[0]}\n${REJECTED_HELP}`);
+  }
+
+  const target = parsed.positional[0] ?? parsed.values.id;
+  if (!target) {
+    fail(
+      deps.io,
+      "shipit session logs: a session id is required, e.g. `shipit session logs 7bc72326`.\n" +
+        "Resolve one first with `shipit session find --branch|--pr|--container|--id`.",
+    );
+  }
+
+  const params = new URLSearchParams({ target });
+  if (parsed.values.since) params.set("since", parsed.values.since);
+  if (parsed.values.until) params.set("until", parsed.values.until);
+  if (parsed.values.lines) params.set("lines", parsed.values.lines);
+
+  const res = await deps.call(
+    "GET",
+    `/agent-ops/session/host-session-logs?${params.toString()}`,
+    undefined,
+    deps.env,
+  );
+  if (res.status < 200 || res.status >= 300) {
+    fail(deps.io, formatError(res, "Failed to read session logs"), 1);
+  }
+
+  if (parsed.booleans.has("json")) {
+    deps.io.stdout(`${JSON.stringify(res.body)}\n`);
+    deps.io.exit(0);
+    return;
+  }
+
+  const entries = (res.body.entries as Record<string, unknown>[] | undefined) ?? [];
+  const withheld = Number(res.body.withheldUnclassified ?? 0);
+  const header = [
+    `session:   ${asString(res.body.title) || "(untitled)"} (${asString(res.body.sessionId)})`,
+    `container: ${asString(res.body.containerName)}`,
+    `disk:      ${asString(res.body.diskTier)}${res.body.archived === true ? " (archived)" : ""}`,
+    `entries:   ${entries.length}${res.body.truncated === true ? ` of ${asString(res.body.total)} (oldest dropped — raise --lines)` : ""}`,
+  ];
+  // Never silent: these lines exist and were deliberately not returned. Most
+  // carry workspace or raw error text and never will be — but this count is also
+  // the only signal that a producer's wording drifted off its template.
+  if (withheld > 0) {
+    header.push(
+      `withheld:  ${withheld} server line(s) not on the ops-safe template list `
+        + "(they carry workspace or raw error text). Read them with the operator in the session's UI.",
+    );
+  }
+  if (entries.length === 0) {
+    // An empty window and a pruned history look identical in the output but mean
+    // opposite things, so never let the caller guess which one they are reading.
+    header.push(
+      "",
+      res.body.logsRetained === true
+        ? "No server-source log entries in this window. Widen it with --since, or drop --since entirely."
+        : "This session has no durable logs on disk — they are removed when a session is archived, "
+          + "deleted, or fully reset. Absence here is NOT evidence that nothing happened.",
+    );
+    success(deps.io, header.join("\n"));
+    return;
+  }
+  const lines = entries.map((e) => `${asString(e.ts)}  ${asString(e.text)}`);
+  success(deps.io, [...header, "", ...lines].join("\n"));
+}
+
 export async function handleSessionList(args: string[], deps: RunDeps): Promise<void> {
   const parsed = parseFlags(args, {
     values: { "--turn": "turn", "--limit": "limit", "--offset": "offset" },
