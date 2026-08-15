@@ -1041,3 +1041,29 @@ session at a time. A deliberate downgrade sets
 `SHIPIT_SESSION_WORKER_UID_ALLOW_DOWNGRADE=1` (after archiving/resetting the
 affected sessions). The marker is not overwritten on a fatal, so re-setting
 the var on the next boot recovers cleanly.
+
+### The variable may not name a reserved egress UID (docs/263)
+
+Two values are refused outright: `911` (the Tier B resolver) and `912` (the
+Tier C SNI proxy). `docker/egress-sidecar/init-firewall.sh` writes its rules as
+`-m owner ! --uid-owner <uid>` — the DNS redirect at `:202-205` and the `:443`
+SNI redirect at `:229-230` both skip the sidecar's own uid so its upstream dials
+are not re-redirected into itself, and `:161` gives 911 raw port-53 egress.
+Those are not identity checks, so a *workload* holding either uid inherits the
+exemption and runs past the tier that names it.
+
+This variable is that uid for three surfaces at once — the agent container
+(forwarded at `container-lifecycle.ts:510`, `gosu`'d at `entrypoint.sh:23`),
+plugin CLI/install containers, and Compose services that declare no `user:` —
+so the refusal lives at the single parse site, `sessionWorkerUid()`, which
+throws `ReservedWorkerUidError`, plus an unconditional
+`assertWorkerUidNotReserved()` at the top of `buildApp`. A reserved value is
+**not** degraded to `null` the way other invalid input is: the entrypoint reads
+the same raw variable, so the orchestrator would act legacy-root while the
+worker still dropped to 911. There is no override env var — unlike the
+downgrade above, no deployment legitimately wants its workloads to hold the uid
+that disables the tier. Switching away costs nothing beyond the edit: the
+handoff sentinel is UID-stamped (`entrypoint.sh:75`), so each session re-chowns
+once on its next container boot. `assertWorkerUidConsistency` still covers
+rollback drift only; it resolves the current uid through the same parse and so
+inherits this refusal rather than repeating it.

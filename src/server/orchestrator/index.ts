@@ -4,6 +4,7 @@ import { composeEgressExtraHosts, composeEgressIdentityRules, sandboxLifelineEgr
 import type { ResolvedEgressConfig } from "./egress-allowlist.js";
 import { setEgressDurableSource } from "./egress-policy.js";
 import { assertWorkerUidConsistency } from "./worker-uid-guard.js";
+import { assertWorkerUidNotReserved } from "./session-worker-uid.js";
 import { resolveBuildId, resolveVersion } from "./build-id.js";
 import { getUpdateMode } from "./services/updates.js";
 import { readChannel } from "./release-channel.js";
@@ -141,6 +142,14 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     };
   };
   setEgressDurableSource((sessionId) => egressAllowlistStore.effectiveHosts(sessionId));
+
+  // docs/263 — refuse a SHIPIT_SESSION_WORKER_UID that collides with an egress
+  // sidecar uid (911/912). The netns firewall exempts those uids by owner-match,
+  // so a workload holding one runs exempt from the tier that names it — on the
+  // agent container, the plugin containers and the Compose services alike, which
+  // is why the refusal is at the shared parse site and this call is unconditional
+  // (the drift guard below cannot be: it needs the containerized state dir).
+  assertWorkerUidNotReserved();
 
   // docs/150 Rollout — fail-fast on SHIPIT_SESSION_WORKER_UID drift before we
   // accept any traffic or restore containers. Containerized prod only: local

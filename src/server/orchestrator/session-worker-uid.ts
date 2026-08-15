@@ -27,17 +27,90 @@
 import fs from "node:fs";
 import path from "node:path";
 import { resolveShipitConfig, DEFAULT_DEP_DIRS } from "../shared/shipit-config.js";
+import { EGRESS_RESOLVER_UID } from "./egress-dns.js";
+import { EGRESS_PROXY_UID } from "./egress-proxy-install.js";
+
+/**
+ * UIDs no workload may run as, because the netns firewall exempts them by
+ * owner-match (docs/172, docs/263).
+ *
+ * `init-firewall.sh` writes its Tier B/C rules as `-m owner ! --uid-owner <uid>`:
+ * the DNS redirect at `init-firewall.sh:202-205` skips {@link EGRESS_RESOLVER_UID},
+ * and the `:443` SNI redirect at `init-firewall.sh:229-230` skips
+ * {@link EGRESS_PROXY_UID} — plus the filter rule at `:161` gives 911 raw port-53
+ * egress to any address. Those exemptions exist so the resolver's and proxy's own
+ * upstream dials are not re-redirected into themselves; they are not identity
+ * checks, so ANY process with that uid inherits them. A workload running as 911
+ * therefore resolves names past the controlled resolver, and one running as 912
+ * dials `:443` past the SNI proxy.
+ *
+ * `SHIPIT_SESSION_WORKER_UID` is that uid for three surfaces that share the
+ * arrangement: the agent container (`container-lifecycle.ts:510` forwards the
+ * variable, `docker/session-worker/entrypoint.sh:23` gosu's to it), plugin CLI /
+ * install containers (`plugin-cli-run.ts:706`, `plugin-install.ts:470`), and
+ * Compose services that declare no `user:` (`compose-generator.ts:1164`). They
+ * break together, so the refusal lives here at the single parse site rather than
+ * on any one of them.
+ *
+ * A service that declares its OWN `user:` is checked separately, against the same
+ * two constants, in `compose-generator.ts` (`validateService`).
+ */
+export const RESERVED_EGRESS_UIDS: readonly number[] = [EGRESS_RESOLVER_UID, EGRESS_PROXY_UID];
+
+/** Thrown by {@link sessionWorkerUid} for a uid in {@link RESERVED_EGRESS_UIDS}. */
+export class ReservedWorkerUidError extends Error {
+  constructor(readonly uid: number) {
+    super(
+      `[session-worker-uid] Refusing to start: SHIPIT_SESSION_WORKER_UID=${uid} is a reserved ` +
+        `egress-sidecar UID (${EGRESS_RESOLVER_UID}=DNS resolver, ${EGRESS_PROXY_UID}=SNI proxy). ` +
+        `The netns firewall exempts those UIDs from the controls that name them, so every agent, ` +
+        `plugin and Compose-service workload would silently escape ${uid === EGRESS_RESOLVER_UID
+          ? "the DNS lock"
+          : "the :443 SNI redirect"} in contained sessions. Set SHIPIT_SESSION_WORKER_UID to a ` +
+        `non-root UID outside ${RESERVED_EGRESS_UIDS.join("/")} (the deployment files use 1000). ` +
+        `Existing sessions re-chown to the new UID on their next container boot — the entrypoint's ` +
+        `handoff sentinel is UID-stamped (docker/session-worker/entrypoint.sh:75).`,
+    );
+    this.name = "ReservedWorkerUidError";
+  }
+}
 
 /**
  * The UID the session worker runs as, parsed from `SHIPIT_SESSION_WORKER_UID`,
  * or `null` when unset/invalid. `null` means "do not chown" — the orchestrator
  * and worker are both still on root.
+ *
+ * **Throws** {@link ReservedWorkerUidError} for a reserved egress uid, rather
+ * than degrading it to `null`. Degrading would be worse than accepting it: the
+ * container entrypoint reads the SAME raw variable (`entrypoint.sh:23`) and would
+ * still `gosu` to 911, so the orchestrator would behave as legacy-root while the
+ * workload ran exempt from containment — the split-brain the shared gate exists
+ * to make impossible. There is deliberately no override env var: unlike the
+ * downgrade `worker-uid-guard.ts` allows, no deployment legitimately wants its
+ * workloads to hold the uid that disables the tier.
  */
 export function sessionWorkerUid(): number | null {
   const raw = process.env.SHIPIT_SESSION_WORKER_UID;
   if (!raw) return null;
   const n = Number.parseInt(raw, 10);
-  return Number.isInteger(n) && n >= 0 ? n : null;
+  if (!Number.isInteger(n) || n < 0) return null;
+  if (RESERVED_EGRESS_UIDS.includes(n)) throw new ReservedWorkerUidError(n);
+  return n;
+}
+
+/**
+ * Boot-time fail-fast for the reserved-UID refusal above, so a misconfigured
+ * deployment dies at startup with one clear message instead of at the first
+ * chown/container-create that happens to parse the variable.
+ *
+ * Deliberately UNCONDITIONAL, unlike `assertWorkerUidConsistency` (which needs
+ * the containerized state dir and so runs in prod only): the range is a property
+ * of the variable's value, not of the runtime mode, and a refusal that fires only
+ * where containers exist would let a local/dogfood orchestrator carry the bad
+ * value until an unrelated code path threw.
+ */
+export function assertWorkerUidNotReserved(): void {
+  sessionWorkerUid();
 }
 
 /**
