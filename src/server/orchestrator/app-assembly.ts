@@ -3,6 +3,8 @@ import fastifyWebsocket from "@fastify/websocket";
 import fastifyMultipart from "@fastify/multipart";
 import fastifyStatic from "@fastify/static";
 import { registerOriginGuard, type OriginPolicy } from "./api-origin-guard.js";
+import { framePolicyFor, registerFrameGuard } from "./frame-guard.js";
+import type { RuntimeMode } from "../shared/types.js";
 
 /**
  * Create the Fastify instance and register the transport-level middleware that
@@ -15,9 +17,14 @@ import { registerOriginGuard, type OriginPolicy } from "./api-origin-guard.js";
  * part of the P4 split (docs/201).
  *
  * `originPolicy` is a test seam; production reads it from the environment.
+ *
+ * `runtimeMode` selects the anti-framing policy (planning#379). It defaults to
+ * `"containerized"` — the strict answer — so a caller that forgets it fails
+ * closed; production passes the resolved mode from `initializeManagers`.
  */
 export async function createOrchestratorApp(
   originPolicy?: OriginPolicy,
+  runtimeMode: RuntimeMode = "containerized",
 ): Promise<FastifyInstance> {
   // Fastify's maxParamLength defaults to 100: a request whose *decoded* path
   // param exceeds it doesn't 404 — it silently falls through to the SPA static
@@ -44,6 +51,13 @@ export async function createOrchestratorApp(
   // Registered here so it stays the FIRST `onRequest` hook, ahead of the
   // container guard and the preview proxy. See `api-origin-guard.ts`.
   registerOriginGuard(app, originPolicy);
+
+  // ---- Anti-framing / clickjacking (planning#379) ----
+  // The origin guard above cannot see this attack: a clickjack makes ShipIt's
+  // OWN frame issue the request, so it is same-origin and passes. Refuse the
+  // framing instead. Off in local mode, which exists to be framed — see
+  // `frame-guard.ts` for why that split is safe.
+  registerFrameGuard(app, framePolicyFor(runtimeMode));
 
   return app;
 }

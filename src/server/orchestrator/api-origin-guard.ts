@@ -450,6 +450,16 @@ export function markPreviewProxyRegistered(app: FastifyInstance): void {
   appsWithPreviewProxy.add(app);
 }
 
+/**
+ * Whether this app hijacks `{uuid}--{port}.…` hosts into the preview proxy, and
+ * therefore never answers them itself. Read by `frame-guard.ts`, which skips
+ * those responses for the same reason this file does: they are the previewed
+ * app's, not ShipIt's.
+ */
+export function hasPreviewProxy(app: FastifyInstance): boolean {
+  return appsWithPreviewProxy.has(app);
+}
+
 // ---------------------------------------------------------------------------
 // The hook
 // ---------------------------------------------------------------------------

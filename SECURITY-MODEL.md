@@ -374,6 +374,16 @@ but it means **you must not expose a raw ShipIt instance to the public internet.
   loopback / tailnet instance yields a page whose origin *is* the host the request arrives at.
   Closing that needs an allowlist of hostnames ShipIt answers to, which is in tension with
   docs/254's "one instance, many legitimate hostnames"; it is a known residual (planning#378).
+- **The UI refuses to be framed (planning#379).** Every response ShipIt serves carries
+  `Content-Security-Policy: frame-ancestors 'none'` and `X-Frame-Options: DENY`, so a hostile
+  page cannot overlay ShipIt's own UI and trick the user into clicking a real control. This is a
+  distinct attack from the one above and the guard there cannot see it: the click happens inside
+  ShipIt's own frame, so the request that follows is genuinely same-origin. The one deployment
+  that does **not** send the headers is the dogfood inner orchestrator (`RUNTIME_MODE=local`,
+  docs/118), which exists to be framed by the outer instance's preview pane and is reachable
+  only through it; running local mode as a real deployment is an explicit non-goal. Previewed
+  apps are untouched — the preview pane frames them on purpose. See
+  `src/server/orchestrator/frame-guard.ts`.
 
 ## Known limitations and accepted risks
 

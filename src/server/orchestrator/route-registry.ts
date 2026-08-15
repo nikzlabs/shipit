@@ -25,6 +25,7 @@ import {
   markPreviewProxyRegistered,
   readOriginPolicyFromEnv,
 } from "./api-origin-guard.js";
+import { frameGuardHeaders, framePolicyFromEnv } from "../shared/frame-policy.js";
 import { projectTurnSnapshotForWire } from "./transcript-projection.js";
 import type { ConnectionCtx, RunnerCtx, AppCtx } from "./ws-handlers/types.js";
 import * as terminalHandlers from "./ws-handlers/terminal-handlers.js";
@@ -81,6 +82,12 @@ export function registerSseEndpoint(app: FastifyInstance, rt: OrchestratorRuntim
       // work on `reply` never reaches the wire; it has to apply the same policy
       // itself. (The hook still decides whether the request gets this far.)
       ...corsHeadersFor(request.headers.origin, request.headers, originPolicy),
+      // planning#379 — same story for the anti-framing headers: `frame-guard.ts`
+      // sets them on `reply`, which this route never sends. An SSE stream is not
+      // framable UI, so this is contract rather than exposure — but "every
+      // response the orchestrator owns" has to be literally true, or the next
+      // raw-response route inherits an untested exception.
+      ...frameGuardHeaders(framePolicyFromEnv()),
     };
     reply.raw.writeHead(200, headers);
 
