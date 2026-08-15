@@ -60,7 +60,9 @@
  *
  * An unexpected throw refuses the candidate; so does a declaration that has gone
  * away or been re-pointed since the round started, and a project compose file
- * that is declared but unreadable. The alternative in each case is to publish
+ * that is declared but unreadable — or well-formed and refused, which is a
+ * different sentence to the user and the same verdict here (planning#377). The
+ * alternative in each case is to publish
  * without knowing, which is precisely the partial state this exists to prevent.
  * A refusal is visible, leaves the prior version whole, and is retried by the
  * next activation round.
@@ -78,7 +80,7 @@ import {
 import { sessionStateDirForWorkspace } from "../session-state-dir.js";
 import { resolveShipitConfig, type ShipitConfig } from "../../shared/shipit-config.js";
 import { destinationKey, declaredRefLabel, type DeclaredPluginRepo } from "../../shared/plugin-repos.js";
-import { readProjectServices } from "./plugin-services.js";
+import { readProjectServices, type ProjectServices } from "./plugin-services.js";
 
 export interface StagedGenerationGateDeps {
   /** The consuming project's workspace — the declaration and the compose file. */
@@ -139,12 +141,7 @@ export function createStagedGenerationGate(
       // an unknown name domain is how a colliding candidate goes live and has
       // its services withheld by the very next service round.
       if (project.unknown) {
-        return {
-          ok: false,
-          reason: `${staged.commit.slice(0, 9)} was not activated: ShipIt could not read this `
-            + "project's own compose file, so it cannot tell whether the plugin's services collide "
-            + "with it.",
-        };
+        return { ok: false, reason: projectStackUnreadable(staged, project) };
       }
 
       const collect = (live: LiveGenerations): Map<string, string[]> => collectPluginFragments({
@@ -173,6 +170,32 @@ export function createStagedGenerationGate(
       };
     }
   };
+}
+
+/**
+ * Why this candidate is held back by the PROJECT'S own compose file
+ * (planning#377).
+ *
+ * The refusal is the same either way — the name domain is unknown and
+ * publishing against an unknown one is what this gate exists to prevent — but
+ * what the user can do about it is not, and this is the sentence they read: it
+ * becomes the failed attempt's `error`, which the Plugins tab renders on the
+ * repository's card and `shipit plugin refresh` prints as the row's detail.
+ *
+ * A file ShipIt could not parse says so, now with the parser's own message so
+ * the user knows where it gave up. A file ShipIt UNDERSTOOD and refused says
+ * that instead, and carries the rule verbatim — for a contained session that
+ * message is "declare a numeric, non-root `user:`", which is the one line that
+ * fixes it. Calling that "could not read" sent the user looking for a syntax
+ * error that was never there.
+ */
+function projectStackUnreadable(staged: StagedGeneration, project: ProjectServices): string {
+  const detail = project.failure ? ` ${project.failure.message}` : "";
+  const opening = project.failure?.kind === "refused"
+    ? "ShipIt refuses this project's own compose file"
+    : "ShipIt could not read this project's own compose file";
+  return `${staged.commit.slice(0, 9)} was not activated: ${opening}, so it cannot tell whether the `
+    + `plugin's services collide with it.${detail}`;
 }
 
 /**

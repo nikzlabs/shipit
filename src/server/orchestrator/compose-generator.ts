@@ -280,10 +280,30 @@ export const OVERRIDE_SENTINELS: readonly string[] = [
   "__RESET_DNS__",
 ];
 
+/**
+ * The two ways a compose file can be unusable, which are not one outcome
+ * (planning#377).
+ *
+ * - `malformed` — ShipIt could not UNDERSTAND the file: unreadable on disk,
+ *   invalid YAML, or not a compose document at all. Nothing about it is known,
+ *   and there is nothing to say beyond where the parse gave up.
+ * - `refused` — ShipIt understood the file perfectly and DECLINED it. The
+ *   message names the rule and the fix, so a caller that can only report one
+ *   sentence should report this one.
+ *
+ * `refused` is the default because every rule below is one: a check added later
+ * without a thought for this field is still a refusal, and reporting it as one
+ * is right. Only the four "could not parse it at all" sites opt out.
+ */
+export type ComposeValidationKind = "malformed" | "refused";
+
 export class ComposeValidationError extends Error {
-  constructor(message: string) {
+  readonly kind: ComposeValidationKind;
+
+  constructor(message: string, kind: ComposeValidationKind = "refused") {
     super(message);
     this.name = "ComposeValidationError";
+    this.kind = kind;
   }
 }
 
@@ -346,7 +366,7 @@ export function parseComposeFile(
   try {
     content = fs.readFileSync(composePath, "utf-8");
   } catch {
-    throw new ComposeValidationError(`Cannot read compose file: ${composePath}`);
+    throw new ComposeValidationError(`Cannot read compose file: ${composePath}`, "malformed");
   }
 
   let doc: Record<string, unknown> | null;
@@ -380,10 +400,10 @@ export function parseComposeFile(
     // user's compose file is briefly invalid while they're typing or while
     // a merge has left conflict markers in the file.
     const msg = err instanceof Error ? err.message : String(err);
-    throw new ComposeValidationError(`Compose file is not valid YAML: ${msg}`);
+    throw new ComposeValidationError(`Compose file is not valid YAML: ${msg}`, "malformed");
   }
   if (!doc || typeof doc !== "object") {
-    throw new ComposeValidationError("Compose file must be a YAML mapping");
+    throw new ComposeValidationError("Compose file must be a YAML mapping", "malformed");
   }
   if (opts.containEgress && doc.include !== undefined) {
     throw new ComposeValidationError("Compose `include` is not supported for contained services.");
@@ -403,7 +423,7 @@ export function parseComposeFile(
 
   const services = doc.services as Record<string, Record<string, unknown>> | undefined;
   if (!services || typeof services !== "object") {
-    throw new ComposeValidationError("Compose file must have a `services` section");
+    throw new ComposeValidationError("Compose file must have a `services` section", "malformed");
   }
 
   const result: ComposeService[] = [];

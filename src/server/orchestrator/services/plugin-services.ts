@@ -26,7 +26,11 @@
 import fs from "node:fs";
 import path from "node:path";
 import type Docker from "dockerode";
-import { parseComposeFile } from "../compose-generator.js";
+import {
+  ComposeValidationError,
+  parseComposeFile,
+  type ComposeValidationKind,
+} from "../compose-generator.js";
 import {
   buildPluginComposeServices,
   collectPluginFragments,
@@ -109,6 +113,18 @@ export async function resolveSessionPluginServices(
   }
 
   const project = readProjectServices(workspaceDir, config, deps.containEgress);
+  if (project.failure) {
+    // This round still surfaces its plugin services — the project's stack is a
+    // collision domain here, not a gate (see `readProjectServices`). But the
+    // reason is no longer thrown away on this path either (planning#377): the
+    // domain being unknown is why a later name collision can go unreported, and
+    // this line is the only place that says so. The gate says it to the USER.
+    console.warn(
+      `[plugins:${sessionId}] the project's own compose file ${
+        project.failure.kind === "refused" ? "is refused" : "could not be read"
+      }, so plugin service names are checked against an unknown domain: ${project.failure.message}`,
+    );
+  }
   const { services: fragments } = collectPluginFragments({
     workspaceDir,
     // One resolution per repository for this build, so a fragment and the tree
@@ -228,6 +244,27 @@ export interface ProjectServices {
    * bug the gate exists to prevent, arriving through the gate itself.
    */
   unknown: boolean;
+  /**
+   * Why the names are unknown — present exactly when `unknown` is true
+   * (planning#377).
+   *
+   * The two failures behind that one flag are not the same event. A `malformed`
+   * file is one ShipIt could not understand, and "could not read it" is the
+   * whole of what there is to say. A `refused` one ShipIt understood and
+   * DECLINED, and the message already names the rule and the one line that
+   * fixes it — which matters because docs/263's containment rules refuse a
+   * STOCK compose file, the normal starting state for any project not written
+   * for containment. Reporting that as unreadable leaves the user with an empty
+   * service list, a card blaming their file, and nothing to act on.
+   */
+  failure?: ProjectComposeFailure;
+}
+
+/** Why {@link readProjectServices} could not name the project's services. */
+export interface ProjectComposeFailure {
+  kind: ComposeValidationKind;
+  /** The parser's own message — it names the service, the rule and the fix. */
+  message: string;
 }
 
 /**
@@ -271,8 +308,19 @@ export function readProjectServices(
       }
     }
     return { names: parsed.map((s) => s.name), ports, unknown: false };
-  } catch {
-    return { names: [], ports: new Set(), unknown: true };
+  } catch (err) {
+    // planning#377 — the reason is CARRIED, not discarded. A caller that must
+    // fail closed still fails closed on `unknown`; what it gains is the ability
+    // to say which of the two things happened. A non-`ComposeValidationError`
+    // is by definition something ShipIt did not anticipate, so it reads as
+    // malformed: only a deliberate refusal can claim to name a fix.
+    const kind: ComposeValidationKind = err instanceof ComposeValidationError ? err.kind : "malformed";
+    return {
+      names: [],
+      ports: new Set(),
+      unknown: true,
+      failure: { kind, message: err instanceof Error ? err.message : String(err) },
+    };
   }
 }
 

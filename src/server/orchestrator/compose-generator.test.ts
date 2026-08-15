@@ -723,6 +723,47 @@ services:
     expect(() => parseComposeFile(p, { dockerSocket: false }))
       .toThrow(/not valid YAML/);
   });
+
+  /**
+   * planning#377 — a caller that can only report one sentence needs to know
+   * which of the two things happened, because only one of them has a fix to
+   * name. A file ShipIt could not understand is `malformed`; a file it
+   * understood and DECLINED is `refused`, and its message already carries the
+   * rule and the line to add.
+   */
+  describe("distinguishes a malformed file from a refused one", () => {
+    function kindOf(content: string, opts: { dockerSocket: boolean; containEgress?: boolean }): string {
+      const p = writeCompose(tmpDir, content);
+      try {
+        parseComposeFile(p, opts);
+      } catch (err) {
+        return err instanceof ComposeValidationError ? err.kind : "not-a-validation-error";
+      }
+      return "no-throw";
+    }
+
+    it("marks a file it cannot parse at all as malformed", () => {
+      setup();
+      expect(kindOf("services: [oh: : no\n", { dockerSocket: false })).toBe("malformed");
+      expect(kindOf("version: '3'\n", { dockerSocket: false })).toBe("malformed");
+      expect(kindOf("- a\n- b\n", { dockerSocket: false })).toBe("malformed");
+    });
+
+    it("marks a well-formed file it declines as refused", () => {
+      setup();
+      // The one that made this worth telling apart: docs/263 refuses a STOCK
+      // compose file on a contained session for the missing `user:`.
+      expect(kindOf(`services:
+  web:
+    image: node:22-alpine
+`, { dockerSocket: false, containEgress: true })).toBe("refused");
+      expect(kindOf(`services:
+  web:
+    image: node:22-alpine
+    privileged: true
+`, { dockerSocket: false })).toBe("refused");
+    });
+  });
 });
 
 describe("generateComposeOverride", () => {

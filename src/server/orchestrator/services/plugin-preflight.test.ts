@@ -18,6 +18,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { createStagedGenerationGate } from "./plugin-preflight.js";
+import { buildPluginReposSnapshot } from "../../shared/plugin-repos.js";
+import { resolveShipitConfig } from "../../shared/shipit-config.js";
 import { SESSION_STATE_SUBDIR, SESSION_WORKSPACE_SUBDIR } from "../session-state-dir.js";
 import type { StagedGeneration } from "../plugin-generations.js";
 
@@ -90,10 +92,13 @@ function writeStaged(manifest: string, fragment: string): void {
   fs.writeFileSync(path.join(stagingDir, "probe", "docker-compose.yml"), fragment);
 }
 
-function judge(over: Partial<StagedGeneration> = {}): ReturnType<ReturnType<typeof createStagedGenerationGate>> {
+function judge(
+  over: Partial<StagedGeneration> = {},
+  opts: { containEgress?: boolean } = {},
+): ReturnType<ReturnType<typeof createStagedGenerationGate>> {
   return createStagedGenerationGate({
     workspaceDir,
-    containEgress: () => false,
+    containEgress: () => opts.containEgress ?? false,
   })({ repoName: "tools", source: TOOLS_SOURCE, commit: COMMIT, stagingDir, ...over });
 }
 
@@ -332,7 +337,64 @@ describe("the phase-3 gate fails closed (reqs 13, 15)", () => {
     const verdict = judge();
 
     expect(verdict.ok).toBe(false);
-    expect((verdict as { reason: string }).reason).toContain("could not read this project's own compose file");
+    const reason = (verdict as { reason: string }).reason;
+    expect(reason).toContain("could not read this project's own compose file");
+    // planning#377 — and where the parse gave up, which used to be discarded.
+    expect(reason).toContain("not valid YAML");
+  });
+
+  /**
+   * planning#377 — the file is not unreadable. ShipIt read it, understood it,
+   * and REFUSED it, and it already holds the sentence that names the one line
+   * to add. Calling that "could not read" sent the user hunting for a syntax
+   * error in a file that has none — and the rule refuses STOCK compose files,
+   * so this is the normal first contact with a contained session, not an edge.
+   */
+  it("says a refused project compose file was refused, and why", () => {
+    declareProjectStack(`
+services:
+  web:
+    image: node:22-alpine
+`);
+    const verdict = judge({}, { containEgress: true });
+
+    expect(verdict.ok).toBe(false);
+    const reason = (verdict as { reason: string }).reason;
+    expect(reason).toContain("refuses this project's own compose file");
+    expect(reason).not.toContain("could not read");
+    // The actionable half: the rule, and the line that satisfies it.
+    expect(reason).toContain("`web`");
+    expect(reason).toContain("`user:`");
+    expect(reason).toContain(COMMIT.slice(0, 9));
+  });
+
+  /**
+   * The reason is only a fix if the user can see it. It travels:
+   * verdict → `activateGeneration`'s failed outcome → the repository's
+   * activation state `error` → the runtime entry the `/api/plugin-repos` route
+   * builds → `issues[0]` on the card the Plugins tab renders. This asserts the
+   * last hop with the real message, so a reason that reaches a new field and
+   * stops there fails here.
+   */
+  it("puts that reason at the top of the repository's card", () => {
+    declareProjectStack(`
+services:
+  web:
+    image: node:22-alpine
+`);
+    const reason = (judge({}, { containEgress: true }) as { reason: string }).reason;
+
+    const snapshot = buildPluginReposSnapshot(
+      resolveShipitConfig(workspaceDir).plugins,
+      [],
+      null,
+      [],
+      { tools: { activating: false, error: reason } },
+    );
+
+    // `error` is unshifted ahead of every advisory — the failure is the headline.
+    expect(snapshot.repos[0].issues[0]).toBe(reason);
+    expect(snapshot.repos[0].issues[0]).toContain("`user:`");
   });
 
   it("refuses when it cannot read the declaration at all", () => {
