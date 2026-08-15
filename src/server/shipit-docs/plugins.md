@@ -87,7 +87,11 @@ Read this before you treat a plugin's output as trustworthy.
 
 Containment limits what a plugin repository can **do**: it cannot read the
 credentials ShipIt uses to fetch repositories, cannot reach the host or
-ShipIt's own controls, and cannot write the project's repository.
+ShipIt's own controls, and cannot write the project's repository. A plugin
+service's **pages** cannot call ShipIt's own API either — the preview origin is
+refused, so a page cannot act as the user by borrowing their browser session.
+The Agent Interface SDK is unaffected: it messages the trusted parent frame and
+never calls the API from the page.
 
 Containment does not limit what a plugin **tells you to do**, and nothing
 could. A plugin's skills are instructions you follow. A plugin CLI's output is
