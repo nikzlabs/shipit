@@ -388,8 +388,13 @@ is seeing the fix, **not a regression**.
 - **Run step 5's unallowed half before the grant**, as Run 1 already noted, and
   note additionally that a session-scoped grant survives for the session's life:
   a second measurement in the same session measures the granted state.
-- **Nobody has looked at the rendered card.** Both runs read `GET
-  /api/plugin-repos`, which is the card's data source and not the card. Every
-  claim above about what the card "reads" is a claim about that payload.
-  planning#377 is precisely a case where the payload is right and the rendering
-  is not, so this gap is not theoretical.
+- **The rendered card was read on 2026-08-15, after this run**, on a session on
+  `nicolasalt-shipit/tanks`, and it is correct on every point checked: the ref
+  and an exact commit **agreeing with the CLI's `SHIPIT_PLUGIN_COMMIT`**, an
+  unsatisfied `PROBE_TOKEN` with an `Add key…` action, and `example.com` as a
+  host row with both scope buttons on a Contained session. Note what that does
+  and does not settle: every *other* claim in Runs 1 and 2 about what the card
+  "reads" is still a claim about `GET /api/plugin-repos`, its data source. The
+  card was read once, in one state — `active`, two unmet needs, services
+  accepted. planning#377 and planning#380 both describe states it has never been
+  seen in.
