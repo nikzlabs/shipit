@@ -19,6 +19,7 @@ import {
   readAgentConfig,
 } from "./session-container.js";
 import type { ContainerConfig } from "./session-container.js";
+import { allowEgressHost, clearEgressPolicy } from "./egress-policy.js";
 
 // ---------------------------------------------------------------------------
 // Mock Docker types
@@ -466,6 +467,76 @@ describe("SessionContainerManager", () => {
     expect(disconnect).toHaveBeenCalledTimes(2);
     expect(disconnect).toHaveBeenCalledWith({ Container: "web-id", Force: true });
     expect(disconnect).toHaveBeenCalledWith({ Container: "db-id", Force: true });
+  });
+
+  /**
+   * docs/262 req 24 — the seam that hands the two plugin containers the
+   * session's own egress posture (`plugin-egress.ts`).
+   *
+   * It exists so that enforcement and the Plugins card read ONE answer: the card
+   * (`plugin-hosts.ts`) already asks `isEgressContained` + `resolveEgress`, and
+   * this composes the same two plus the tier flags. Re-deriving either from the
+   * allowlist store is the thing not to do — a Network-off sandbox runs on a
+   * narrowed base with empty extras, and a store-derived answer reports hosts
+   * that session cannot reach.
+   */
+  describe("pluginEgressPolicy", () => {
+    let savedEnv: NodeJS.ProcessEnv;
+    beforeEach(() => {
+      savedEnv = { ...process.env };
+      process.env.SESSION_EGRESS_ENFORCE = "1";
+      process.env.SESSION_EGRESS_SIDECAR_IMAGE = "egress-sidecar:test";
+    });
+    afterEach(() => {
+      process.env = savedEnv;
+    });
+
+    function managerWith(contained: boolean): SessionContainerManager {
+      return new SessionContainerManager({
+        docker: mockDocker as any,
+        imageName: "shipit-session-worker:test",
+        networkName: "shipit-test",
+        skipHealthCheck: true,
+        resolveEgressConfig: () => ({
+          contained, base: ["base.example"], extraHosts: ["extra.example"],
+        }),
+      });
+    }
+
+    it("reports the session's own resolved config, tiers, and allow-once hosts", () => {
+      allowEgressHost("test-session-1", "once.example");
+
+      const policy = managerWith(true).pluginEgressPolicy("test-session-1");
+
+      expect(policy.contained).toBe(true);
+      // By identity of content with what the card reads, not a re-derivation.
+      expect(policy.config).toEqual({
+        contained: true, base: ["base.example"], extraHosts: ["extra.example"],
+      });
+      expect(policy.allowOnceHosts).toEqual(["once.example"]);
+      expect(policy.sidecarImage).toBe("egress-sidecar:test");
+      expect(policy.dnsEnabled).toBe(true);
+      expect(policy.proxyEnabled).toBe(true);
+      clearEgressPolicy("test-session-1");
+    });
+
+    // An Open session denies nothing, so a plugin container that denied
+    // something would reach LESS than equivalent same-repo code — which req 24
+    // forbids in the same sentence that asks for the containment.
+    it("reports an Open session as uncontained, with nothing to snapshot", () => {
+      allowEgressHost("test-session-1", "once.example");
+
+      const policy = managerWith(false).pluginEgressPolicy("test-session-1");
+
+      expect(policy.contained).toBe(false);
+      expect(policy.allowOnceHosts).toEqual([]);
+      clearEgressPolicy("test-session-1");
+    });
+
+    it("reports uncontained when the deployment does not enforce at all", () => {
+      process.env.SESSION_EGRESS_ENFORCE = "0";
+      expect(managerWith(true).pluginEgressPolicy("test-session-1").contained).toBe(false);
+    });
   });
 
   // --- docs/172 Gap 5 (planning#99) — kernel-tier hardening (env-gated, default-OFF) ---

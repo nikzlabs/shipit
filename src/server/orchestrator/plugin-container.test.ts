@@ -8,7 +8,11 @@
 
 import { describe, it, expect, afterEach } from "vitest";
 import type Docker from "dockerode";
-import { ensureUntrustedPluginNetwork, waitForContainerExit } from "./plugin-container.js";
+import {
+  ensureUntrustedPluginNetwork,
+  registerExistingPluginNetworks,
+  waitForContainerExit,
+} from "./plugin-container.js";
 import { clearUntrustedContainerNetworks, isUntrustedContainerIp } from "./api-container-guard.js";
 
 afterEach(() => {
@@ -105,6 +109,56 @@ describe("ensureUntrustedPluginNetwork", () => {
     const { docker, createSpecs } = fakeDocker(["172.30.0.0/16"]);
     await ensureUntrustedPluginNetwork(docker, "shipit-plugin-test");
     expect(createSpecs[0]).toMatchObject({ Driver: "bridge", EnableIPv6: false });
+  });
+});
+
+/**
+ * docs/262 req 19, across an orchestrator restart.
+ *
+ * The untrusted-subnet registry is process memory while the networks and any
+ * container on them belong to the daemon. So a crash or a restart with a plugin
+ * container still running left the replacement process with an EMPTY set: the
+ * container survives, its subnet is unknown, and `api-container-guard.ts` reads
+ * its packets as a browser/host caller — the most trusted class there is, and
+ * one request away from `/api/sessions/<id>/git/credential`. A companion CLI
+ * that polls the host gateway across a restart is the whole exploit.
+ *
+ * The boot orphan sweep would eventually remove that container, but it rides the
+ * fire-and-forget, deliberately paced disk janitor and defers to the next boot on
+ * any Docker error — so the API is listening long before it lands. This is the
+ * deterministic half, awaited before the process can accept a request.
+ */
+describe("registerExistingPluginNetworks", () => {
+  it("re-denies the subnets of networks a previous process left behind", async () => {
+    const { docker, created } = fakeDocker(["172.30.0.0/16"]);
+    // A network from the previous boot: it exists on the daemon, and this
+    // process has never heard of it.
+    created.push("shipit-plugin-cli");
+    expect(isUntrustedContainerIp("172.30.4.9")).toBe(false);
+
+    await registerExistingPluginNetworks(docker, ["shipit-plugin-cli"]);
+
+    expect(isUntrustedContainerIp("172.30.4.9")).toBe(true);
+  });
+
+  // Creating one would mean a bridge per install on every host that has never
+  // run a plugin, for a subnet with nothing on it.
+  it("creates nothing for a network that does not exist", async () => {
+    const { docker, createSpecs } = fakeDocker(["172.30.0.0/16"]);
+
+    await registerExistingPluginNetworks(docker, ["shipit-plugin-cli"]);
+
+    expect(createSpecs).toEqual([]);
+  });
+
+  // Boot must not fail over this: the same verdict is reached one step later,
+  // where `ensureUntrustedPluginNetwork` refuses to run anything on it.
+  it("warns rather than throwing on a subnet it cannot deny", async () => {
+    const { docker, created } = fakeDocker(["fd00:dead:beef::/64"]);
+    created.push("shipit-plugin-cli");
+
+    await expect(registerExistingPluginNetworks(docker, ["shipit-plugin-cli"]))
+      .resolves.toBeUndefined();
   });
 });
 

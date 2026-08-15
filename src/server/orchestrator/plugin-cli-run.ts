@@ -31,6 +31,15 @@
  *  - the plugin's **declared** credential names, resolved from the consuming
  *    project's own secret store, and nothing else from it (req 23).
  *
+ * **And it reaches only what the session reaches** (req 24, `plugin-egress.ts`).
+ * On a contained session the container runs in the namespace of a ShipIt-owned
+ * holder that already carries the Tier A/B/C stack, configured from the session's
+ * own `resolveEgress` — so a companion CLI's outbound reach equals the agent's,
+ * and the Plugins card's declared-host report describes what actually happens.
+ * The holder lives on the same untrusted plugin network, so req 19's API denial
+ * is unchanged; sharing a SESSION container's namespace would break it, which is
+ * why this is containment of its own rather than the session's.
+ *
  * **Collisions are re-checked here, not trusted from the wrapper** (req 20).
  * The wrapper is a file on a container filesystem and a declaration can change
  * under it; the requirement is that ShipIt reports the collision *before
@@ -79,6 +88,12 @@ import {
   readGenerationRecordAt,
 } from "./plugin-generations.js";
 import { ensureUntrustedPluginNetwork, waitForContainerExit } from "./plugin-container.js";
+import {
+  preparePluginNetns,
+  UNCONTAINED_PLUGIN_EGRESS,
+  type PluginEgressPolicy,
+  type PluginNetns,
+} from "./plugin-egress.js";
 import { holdGeneration, type ReleaseHold } from "./plugin-leases.js";
 import { ensurePluginRuntimeOverlay, resolvePluginOverlayRoots } from "./plugin-overlay.js";
 import { resolveLiveGenerations } from "./plugin-generations.js";
@@ -143,6 +158,17 @@ export interface PluginCliDeps {
    */
   depStoreDir?: string;
   timeoutMs?: number;
+  /**
+   * docs/262 req 24 — this session's egress posture, read at CALL time.
+   *
+   * A thunk rather than a value for the reason `createStagedGenerationGate`
+   * takes one: a companion CLI can be invoked half an hour after the session
+   * opened, after the user has granted a host or flipped the session to Open,
+   * and the container must be built against the posture that holds now. Absent
+   * only where there is no container manager (local mode, tests), which is also
+   * where there is no invocation container.
+   */
+  egress?: () => PluginEgressPolicy;
   /**
    * Whether the session this call belongs to is gone (archived, reset,
    * disposed). Without it the `"cancelled"` branch below is unreachable and a
@@ -403,6 +429,26 @@ async function runHeldPluginCommand(
     return refuse(`the plugin network could not be prepared: ${message(err)}`);
   }
 
+  // req 24 — and fail closed for the same reason the network is: a contained
+  // session whose plugin container cannot be contained does not get an
+  // uncontained one. On an uncontained session this is a no-op that hands back
+  // the plugin network itself, which is exactly what this container has always
+  // used.
+  let netns: PluginNetns;
+  try {
+    netns = await preparePluginNetns({
+      docker: deps.docker,
+      sessionId: deps.sessionId,
+      network: PLUGIN_CLI_NETWORK,
+      // The holder borrows the same toolchain image, for the same reason this
+      // container does: it is already here.
+      holderImage: deps.image,
+      policy: deps.egress?.() ?? UNCONTAINED_PLUGIN_EGRESS,
+    });
+  } catch (err) {
+    return refuse(`this session's network policy could not be applied to the plugin container: ${message(err)}`);
+  }
+
   const entry = path.posix.join(CONTAINER_PLUGIN_DIR, surfaced.entry);
   try {
     return await execute(deps, {
@@ -412,6 +458,7 @@ async function runHeldPluginCommand(
       args: req.args,
       workingDir: mapWorkingDir(deps.workspaceDir, req.cwd),
       stdin: req.stdin ?? "",
+      networkMode: netns.networkMode,
     });
   } catch (err) {
     // The daemon refusing to create or start the container is the ordinary
@@ -420,6 +467,11 @@ async function runHeldPluginCommand(
     // would reach the agent as an opaque 500 with the cause only in the
     // orchestrator's log.
     return refuse(`\`${surfaced.name}\` could not be started (${entry}): ${message(err)}`);
+  } finally {
+    // The holder outlives the workload by construction — the workload is IN its
+    // namespace — so this has to run on every path, including the refusal above
+    // and a `execute` that threw before creating anything.
+    await netns.release();
   }
 }
 
@@ -640,6 +692,13 @@ interface ExecuteSpec {
   args: string[];
   workingDir: string;
   stdin: string;
+  /**
+   * The plugin network, or `container:<holder>` when this session's egress is
+   * contained (req 24, `plugin-egress.ts`). Never a session container's
+   * namespace — that would make the worker's loopback credential broker this
+   * container's own (req 19).
+   */
+  networkMode: string;
 }
 
 /** Create, attach, run, and collect. */
@@ -667,7 +726,7 @@ async function execute(deps: PluginCliDeps, spec: ExecuteSpec): Promise<PluginCl
       // `MountSettings` demands every `VolumeOptions` field, while the daemon
       // accepts `Subpath` alone.
       Mounts: spec.mounts as unknown as Docker.MountSettings[],
-      NetworkMode: PLUGIN_CLI_NETWORK,
+      NetworkMode: spec.networkMode,
       AutoRemove: false, // removed below, after the exit code is read
       CapDrop: ["ALL"],
       SecurityOpt: ["no-new-privileges"],

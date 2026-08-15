@@ -59,6 +59,14 @@ import {
 } from "./plugin-overlay.js";
 import { chownToSessionWorker, chownTreeToSessionWorker, sessionWorkerUid } from "./session-worker-uid.js";
 import { ensureUntrustedPluginNetwork, waitForContainerExit } from "./plugin-container.js";
+import {
+  preparePluginNetns,
+  unreachableDeclaredHosts,
+  UNCONTAINED_PLUGIN_EGRESS,
+  PLUGIN_NETNS_LABEL,
+  type PluginEgressPolicy,
+  type PluginNetns,
+} from "./plugin-egress.js";
 import { PLUGIN_CLI_LABEL, sessionPathMount, type MountSpec } from "./plugin-cli-run.js";
 import { DEP_CACHE_CONTAINER_PATH } from "../shared/fs-constants.js";
 
@@ -129,6 +137,13 @@ export interface PluginInstallDeps {
   workspaceVolume?: string;
   stateRoot?: string;
   timeoutMs?: number;
+  /**
+   * docs/262 req 24 — this session's egress posture, read when the install runs
+   * rather than when the runner is built: activation can be triggered by a
+   * refresh long after the session opened. Absent only where there is no
+   * container manager, which is also where there is no install container.
+   */
+  egress?: () => PluginEgressPolicy;
 }
 
 /** One export's install command, already trimmed and known non-empty. */
@@ -249,8 +264,24 @@ export function createPluginInstallRunner(
       return { ok: false, reason: `could not prepare the plugin's writable layer: ${message(err)}` };
     }
 
+    // req 24 — resolved ONCE, outside the try, and reused by both the namespace
+    // and the failure message: a policy read twice could report blocked hosts
+    // against a different allowlist from the one the namespace was built with.
+    const policy = deps.egress?.() ?? UNCONTAINED_PLUGIN_EGRESS;
     let outcome: { ok: boolean; reason?: string };
+    let netns: PluginNetns | null = null;
     try {
+      // req 24 — the same egress the session's own code gets, and fail-closed
+      // for the same reason the network above is. ONE namespace for the whole
+      // run: a generation's install commands are one logical install, and each
+      // namespace costs a holder plus its sidecars.
+      netns = await preparePluginNetns({
+        docker: deps.docker,
+        sessionId: deps.sessionId,
+        network: PLUGIN_INSTALL_NETWORK,
+        holderImage: deps.image,
+        policy,
+      });
       outcome = { ok: true };
       for (const { plugin, command } of commands) {
         // Between commands as well as before the first: disposal during a long
@@ -259,14 +290,23 @@ export function createPluginInstallRunner(
           outcome = { ok: false, reason: "the session went away during install" };
           break;
         }
-        const failure = await runInstallContainer(deps, job, spec.volumeName, command);
+        const failure = await runInstallContainer(
+          deps, job, spec.volumeName, command, netns.networkMode,
+        );
         if (failure) {
-          outcome = { ok: false, reason: `install for \`${plugin}\` ${failure}` };
+          outcome = {
+            ok: false,
+            reason: `install for \`${plugin}\` ${failure}${blockedHostsClause(policy, job)}`,
+          };
           break;
         }
       }
     } catch (err) {
       outcome = { ok: false, reason: `install could not run: ${message(err)}` };
+    } finally {
+      // The holder owns the namespace every install container ran in, so it has
+      // to outlive them and then go — on the failure paths too.
+      await netns?.release();
     }
 
     // The volume MUST go, and whether it went is part of the result. The
@@ -324,6 +364,31 @@ export function createPluginInstallRunner(
     await writeStamp(stampPath, stamp, basePins);
     return { ok: true, ...(basePins.length > 0 ? { basePins } : {}) };
   };
+}
+
+/**
+ * The clause that turns a package-manager DNS error into the guided onboarding
+ * step req 24 asks for.
+ *
+ * A plugin's FIRST activation has no live generation, so the Plugins card cannot
+ * show its declared hosts or the "Allow" buttons — the card resolves them from
+ * live generations only (`plugin-hosts.ts`). Containing `install` made that
+ * reachable: an install pulling from a vendor host now fails where it used to
+ * succeed, and the failure the user sees is whatever `npm` printed. This appends
+ * the declared hosts the session does not currently permit, so the reason on the
+ * degraded card names them and says where to grant them.
+ *
+ * Empty when nothing is denied, when the plugin declared nothing, or when every
+ * declared host is already allowed — in which case the install failed for some
+ * other reason and saying "egress" would be a wrong guess.
+ */
+function blockedHostsClause(policy: PluginEgressPolicy, job: PluginInstallJob): string {
+  const declared = job.exports.flatMap((e) => e.hosts ?? []);
+  const blocked = unreachableDeclaredHosts(policy, declared);
+  if (blocked.length === 0) return "";
+  return `\n\nThis plugin declares ${blocked.map((h) => `\`${h}\``).join(", ")}, which `
+    + `${blocked.length === 1 ? "is" : "are"} not in this session's egress allowlist. `
+    + "Allow it in the Plugins tab (or Settings → Network egress) and refresh the plugin.";
 }
 
 /**
@@ -400,6 +465,7 @@ async function runInstallContainer(
   job: PluginInstallJob,
   volumeName: string,
   command: string,
+  networkMode: string,
 ): Promise<string | null> {
   const uid = sessionWorkerUid();
   const depCache = resolveDepCacheMount(deps, job);
@@ -444,8 +510,11 @@ async function runInstallContainer(
       ...(depCache ? { Mounts: [depCache] as unknown as Docker.MountSettings[] } : {}),
       // Its own network (see PLUGIN_INSTALL_NETWORK): never a session's, and
       // never the default bridge, whose addresses ShipIt's own API guard reads
-      // as a trusted host caller.
-      NetworkMode: PLUGIN_INSTALL_NETWORK,
+      // as a trusted host caller. On a contained session this is instead the
+      // namespace of a holder ON that network, already carrying the session's
+      // own egress policy (req 24, `plugin-egress.ts`) — still never a session
+      // container's namespace, which is what req 19 forbids.
+      NetworkMode: networkMode,
       AutoRemove: false, // removed below, after the exit code is read
       CapDrop: ["ALL"],
       SecurityOpt: ["no-new-privileges"],
@@ -524,8 +593,9 @@ async function logTail(container: Docker.Container): Promise<string> {
 
 /**
  * Boot-only crash recovery: remove every plugin container this orchestrator's
- * predecessor left behind — `install` containers **and companion-CLI
- * invocation containers** (`plugin-cli-run.ts`) — **and every plugin
+ * predecessor left behind — `install` containers, **companion-CLI invocation
+ * containers** (`plugin-cli-run.ts`), and the **netns holders and egress
+ * sidecars** that contain either (`plugin-egress.ts`) — **and every plugin
  * generation volume**.
  *
  * Each of those containers is awaited inside one call, in this process, so
@@ -556,11 +626,15 @@ export async function reapOrphanPluginInstalls(
     if (opts.paceMs) await sleep(opts.paceMs);
   };
 
-  // Both kinds of plugin container: `install` and a companion-CLI invocation.
-  // Neither can outlive the process that started it — each is awaited inside
-  // one call — so at boot anything still labelled is an orphan by definition,
-  // whatever state it is in.
-  for (const label of [PLUGIN_INSTALL_LABEL, PLUGIN_CLI_LABEL]) {
+  // Every kind of plugin container: `install`, a companion-CLI invocation, and
+  // the netns holders + egress sidecars that contain them (req 24,
+  // `plugin-egress.ts`). None can outlive the process that started it — each is
+  // awaited inside one call and released in a `finally` — so at boot anything
+  // still labelled is an orphan by definition, whatever state it is in. The
+  // holders matter more than the workloads here, not less: they are the only
+  // ones with a `RestartPolicy` sidecar attached, and a leaked holder keeps a
+  // resolver and an SNI proxy running for nothing.
+  for (const label of [PLUGIN_INSTALL_LABEL, PLUGIN_CLI_LABEL, PLUGIN_NETNS_LABEL]) {
     try {
     const containers = await docker.listContainers({
       all: true,

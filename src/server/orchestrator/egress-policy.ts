@@ -72,6 +72,28 @@ export function isEgressHostAllowed(sessionId: string, host: string): boolean {
   return false;
 }
 
+/**
+ * The hosts this session's user allowed **in memory** (allow-once / add), as a
+ * list rather than a predicate.
+ *
+ * Exists for a caller that has to hand a static allowlist to a resolver and an
+ * SNI proxy it launches ITSELF, rather than ask a question per host: docs/262's
+ * plugin containers (`plugin-egress.ts`), which are on a network denied the whole
+ * `/api/*` surface and so cannot reach the Tier C decision endpoint the agent's
+ * proxy queries live. Snapshotting the set at launch is what makes such a
+ * container reach the same hosts the agent does.
+ *
+ * Deliberately NOT reconciled with {@link durableSource}, unlike
+ * {@link isEgressHostAllowed}: the durable hosts are already in every caller's
+ * `ResolvedEgressConfig.extraHosts` (`index.ts` composes both from
+ * `egressAllowlistStore.effectiveHosts`), so folding them in here would be a
+ * second copy that could drift. Config entries ∪ this set is therefore exactly
+ * config entries ∪ `isEgressHostAllowed`.
+ */
+export function listEgressAllowedHosts(sessionId: string): string[] {
+  return [...(policies.get(sessionId)?.allowed ?? [])];
+}
+
 /** Record a user allow decision for a host (allow-once or add-to-allowlist). */
 export function allowEgressHost(sessionId: string, host: string): void {
   get(sessionId).allowed.add(normalizeHost(host));

@@ -98,6 +98,59 @@ export async function ensureUntrustedPluginNetwork(
   }
 }
 
+/**
+ * Re-register the subnets of plugin networks that ALREADY exist, at boot,
+ * before the API accepts a request.
+ *
+ * **The registry is process memory** (`api-container-guard.ts`'s
+ * `untrustedCidrs`), while the networks and the containers on them are the
+ * daemon's and outlive any one orchestrator. So a crash or a restart with a
+ * plugin container still running left the replacement process with an EMPTY set:
+ * the container survives, its subnet is unknown, and `api-container-guard.ts`
+ * reads its packets as a browser/host caller — the most trusted class there is.
+ * A companion CLI that simply polls the host gateway across a restart could then
+ * enumerate sessions and ask `/api/sessions/<id>/git/credential` for a real
+ * GitHub token, which is exactly what req 19 forbids.
+ *
+ * Nothing already closed that. The boot orphan sweep
+ * (`reapOrphanPluginInstalls`) would remove the container, but it runs inside
+ * the fire-and-forget disk janitor (`startup-monitors.ts`) and is deliberately
+ * paced, so the API is listening long before it arrives — and it defers to the
+ * next boot on any Docker error. And `ensureUntrustedPluginNetwork` re-registers
+ * only when the next plugin operation happens to run.
+ *
+ * This is the deterministic half: cheap (one inspect per network), synchronous
+ * with respect to accepting traffic, and idempotent. It deliberately does NOT
+ * create anything — a deployment that has never run a plugin has no network to
+ * register, and creating one at every boot would be a bridge per install for
+ * nothing. A network that exists but cannot be denied is logged and left to
+ * {@link ensureUntrustedPluginNetwork}'s fail-closed refusal at first use, which
+ * is the same verdict reached one step later.
+ */
+export async function registerExistingPluginNetworks(
+  docker: Docker,
+  names: readonly string[],
+): Promise<void> {
+  for (const name of names) {
+    let info: { IPAM?: { Config?: { Subnet?: string }[] } };
+    try {
+      info = await docker.getNetwork(name).inspect();
+    } catch {
+      continue; // never created on this host, or the daemon is unavailable
+    }
+    const subnets = (info.IPAM?.Config ?? [])
+      .map((c) => c.Subnet)
+      .filter((s): s is string => Boolean(s));
+    const undeniable = subnets.filter((s) => !registerUntrustedContainerNetwork(s));
+    if (undeniable.length > 0) {
+      console.warn(
+        `[plugins] network ${name} carries ${undeniable.length} subnet(s) ShipIt cannot deny at its own API `
+        + `(${undeniable.join(", ")}); plugin containers on it will be refused at first use`,
+      );
+    }
+  }
+}
+
 function errStatus(err: unknown): number {
   return err && typeof err === "object" && "statusCode" in err
     ? (err as { statusCode: number }).statusCode
