@@ -372,14 +372,68 @@ describe("resolveRoleByName — a pinned role (reqs 6, 7, 10)", () => {
     expect(target.overridden).toBe(true);
   });
 
-  it("re-resolves where an overridden MODEL lives — the triple is replaced as a whole", async () => {
+  /**
+   * **Reverses a behaviour this suite previously pinned** (planning#388,
+   * finding 1). The old test asserted that a role pinned to DeepSeek, invoked
+   * with only `--model claude-opus-5`, relocated to `anthropic/key`. That is
+   * two parameters the caller never named, changed invisibly — the substitution
+   * req 7 forbids, and "the role supplies everything not overridden" (req 10)
+   * read literally forbids it too.
+   *
+   * The relocation rule it came from (`plan.md` rule (c)) is sound *where it was
+   * written*: the `auto` branch, where the base is a reviewer **slot pin** —
+   * ShipIt's own working state for a ranking it performs. It was generalised to
+   * pinned roles, where the base is five choices the user made and can see. The
+   * test below this one holds rule (c) in place for the reviewer.
+   */
+  it("refuses a model the role's service does not offer, rather than relocating the service", async () => {
     const { resolveRoleByName } = await import("./roles.js");
-    // The role is pinned to DeepSeek; the override names an Anthropic model and
-    // no service, so the pinned service says nothing about it and the location
-    // is resolved afresh.
+    expect(() =>
+      resolveRoleByName(
+        "deep-dive",
+        { modelId: "claude-opus-5" },
+        CLAUDE_IMPLEMENTER,
+        deps([pinnedRole("deep-dive", DEEPSEEK_ON_CLAUDE)]),
+      ),
+    ).toThrow(/does not offer "claude-opus-5"/);
+    // Actionable, not just correct: the refusal names the flag that fixes it and
+    // where the model actually lives (req 12's inventory, in the message).
+    expect(() =>
+      resolveRoleByName(
+        "deep-dive",
+        { modelId: "claude-opus-5" },
+        CLAUDE_IMPLEMENTER,
+        deps([pinnedRole("deep-dive", DEEPSEEK_ON_CLAUDE)]),
+      ),
+    ).toThrow(/Name --service as well .* offered on anthropic\/sub, anthropic\/key/s);
+  });
+
+  /**
+   * The refusal asks for the **smallest** set of flags that actually reaches the
+   * model, which is what keeps it advice rather than boilerplate. `zai` offers
+   * `glm-5.2` on `key` only and `glm-5.2[1m]` on `sub` only — the same service
+   * both times — so the service is already right and only the billing mode has
+   * to move.
+   */
+  it("names only the billing mode when the role's service does offer the model", async () => {
+    const { resolveRoleByName } = await import("./roles.js");
+    const role = pinnedRole("zai-role", {
+      harnessId: "claude",
+      serviceId: "zai",
+      billingMode: "key",
+      modelId: "glm-5.2",
+      reasoningEffort: "high",
+    });
+    expect(() =>
+      resolveRoleByName("zai-role", { modelId: "glm-5.2[1m]" }, CLAUDE_IMPLEMENTER, deps([role])),
+    ).toThrow(/Name --billing-mode as well/);
+  });
+
+  it("honours a model override that names the service alongside it", async () => {
+    const { resolveRoleByName } = await import("./roles.js");
     const target = resolveRoleByName(
       "deep-dive",
-      { modelId: "claude-opus-5" },
+      { serviceId: "anthropic", billingMode: "key", modelId: "claude-opus-5" },
       CLAUDE_IMPLEMENTER,
       deps([pinnedRole("deep-dive", DEEPSEEK_ON_CLAUDE)]),
     );
@@ -389,6 +443,21 @@ describe("resolveRoleByName — a pinned role (reqs 6, 7, 10)", () => {
       modelId: "claude-opus-5",
     });
     expect(target.harnessId).toBe("claude");
+  });
+
+  it("keeps the role's service when the overridden model lives on it too", async () => {
+    const { resolveRoleByName } = await import("./roles.js");
+    const target = resolveRoleByName(
+      "deep-dive",
+      { modelId: "deepseek-v4-pro" },
+      CLAUDE_IMPLEMENTER,
+      deps([pinnedRole("deep-dive", DEEPSEEK_ON_CLAUDE)]),
+    );
+    expect(target.selection).toEqual({
+      serviceId: "deepseek",
+      billingMode: "key",
+      modelId: "deepseek-v4-pro",
+    });
   });
 
   it("refuses an incoherent override, naming the parameter, rather than dropping it", async () => {
@@ -440,7 +509,8 @@ describe("resolveRoleByName — a pinned role (reqs 6, 7, 10)", () => {
       {},
       { reasoningEffort: "max" },
       { harnessId: "codex" as const, reasoningEffort: "none" },
-      { modelId: "claude-opus-5" },
+      { modelId: "deepseek-v4-pro" },
+      { serviceId: "anthropic", billingMode: "key" as const, modelId: "claude-opus-5" },
       { serviceId: "deepseek", billingMode: "key" as const, modelId: "deepseek-v4-pro" },
     ]) {
       const target = resolveRoleByName("deep-dive", overrides, CLAUDE_IMPLEMENTER, d);
@@ -658,6 +728,46 @@ describe("resolveRoleByName — the reviewer, overridden (reqs 10, 16)", () => {
     );
     expect(moved.selection.modelId).toBe("deepseek-v4-pro");
     expect(moved.route).toBeUndefined();
+  });
+
+  /**
+   * **The behaviour planning#388's fix must NOT break**, pinned here because
+   * without a test the next person will "fix" it too.
+   *
+   * `plan.md` rule (c) — overriding the model replaces the
+   * `(service, billing mode, model)` triple as a whole and re-resolves where
+   * that model lives — is written for **this** branch, and stays. The base here
+   * is a reviewer slot pin: ShipIt's own working state for a ranking it
+   * performs, and a slot pinned *for model M* says nothing about model X, so
+   * there is no surviving user decision to honour. A **pinned role** is the
+   * opposite case — five choices the user made and can see — and refuses; see
+   * "refuses a model the role's service does not offer".
+   */
+  it("still re-resolves the service on a model override — plan rule (c), the `auto` branch", async () => {
+    const { resolveRoleByName } = await import("./roles.js");
+    const deps = () => ({
+      credentialStore: storeWith({ routes: [ANTHROPIC_KEY, DEEPSEEK_KEY], roles: [REVIEWER] }),
+      env: EMPTY_ENV,
+      isInstalled: ALL_INSTALLED,
+    });
+    // The ranking runs away from the Anthropic implementer, so the winner it
+    // completes from is on DeepSeek — which is what makes the relocation
+    // observable rather than a no-op.
+    const ranked = resolveRoleByName("reviewer", {}, CLAUDE_IMPLEMENTER, deps());
+    expect(ranked.selection.serviceId).toBe("deepseek");
+    // Only the model is named. `claude-opus-5` lives on Anthropic and nowhere
+    // else, so honouring it means moving the service the ranking had chosen.
+    const moved = resolveRoleByName(
+      "reviewer",
+      { harnessId: "claude", modelId: "claude-opus-5" },
+      CLAUDE_IMPLEMENTER,
+      deps(),
+    );
+    expect(moved.selection).toEqual({
+      serviceId: "anthropic",
+      billingMode: "key",
+      modelId: "claude-opus-5",
+    });
   });
 
   /**
