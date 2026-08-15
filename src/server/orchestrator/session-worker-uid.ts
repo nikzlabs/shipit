@@ -44,16 +44,20 @@ import { EGRESS_PROXY_UID } from "./egress-proxy-install.js";
  * therefore resolves names past the controlled resolver, and one running as 912
  * dials `:443` past the SNI proxy.
  *
- * `SHIPIT_SESSION_WORKER_UID` is that uid for three surfaces that share the
- * arrangement: the agent container (`container-lifecycle.ts:510` forwards the
- * variable, `docker/session-worker/entrypoint.sh:23` gosu's to it), plugin CLI /
- * install containers (`plugin-cli-run.ts:706`, `plugin-install.ts:470`), and
- * Compose services that declare no `user:` (`compose-generator.ts:1164`). They
- * break together, so the refusal lives here at the single parse site rather than
- * on any one of them.
+ * `SHIPIT_SESSION_WORKER_UID` is that uid for the TWO contained surfaces that
+ * share the arrangement: the agent container (`container-lifecycle.ts:510`
+ * forwards the variable, `docker/session-worker/entrypoint.sh:23` gosu's to it)
+ * and plugin CLI / install containers (`plugin-cli-run.ts:706`,
+ * `plugin-install.ts:470`). They break together, so the refusal lives here at the
+ * single parse site rather than on either of them.
  *
- * A service that declares its OWN `user:` is checked separately, against the same
- * two constants, in `compose-generator.ts` (`validateService`).
+ * Compose services are NOT a third such surface, though the fallback at
+ * `compose-generator.ts:1164` also reads this variable: a *contained* service
+ * must declare its own numeric, non-root, non-reserved `user:` — checked against
+ * these same two constants at `compose-generator.ts:850`, which throws during
+ * validation (`compose-generator.ts:415`) before any override is generated. So
+ * the worker-uid fallback reaches only Open services, where there is no tier to
+ * escape.
  */
 export const RESERVED_EGRESS_UIDS: readonly number[] = [EGRESS_RESOLVER_UID, EGRESS_PROXY_UID];
 
@@ -64,12 +68,14 @@ export class ReservedWorkerUidError extends Error {
       `[session-worker-uid] Refusing to start: SHIPIT_SESSION_WORKER_UID=${uid} is a reserved ` +
         `egress-sidecar UID (${EGRESS_RESOLVER_UID}=DNS resolver, ${EGRESS_PROXY_UID}=SNI proxy). ` +
         `The netns firewall exempts those UIDs from the controls that name them, so every agent, ` +
-        `plugin and Compose-service workload would silently escape ${uid === EGRESS_RESOLVER_UID
+        `and plugin workload would silently escape ${uid === EGRESS_RESOLVER_UID
           ? "the DNS lock"
           : "the :443 SNI redirect"} in contained sessions. Set SHIPIT_SESSION_WORKER_UID to a ` +
         `non-root UID outside ${RESERVED_EGRESS_UIDS.join("/")} (the deployment files use 1000). ` +
-        `Existing sessions re-chown to the new UID on their next container boot — the entrypoint's ` +
-        `handoff sentinel is UID-stamped (docker/session-worker/entrypoint.sh:75).`,
+        `Ownership follows on its own: the entrypoint's handoff sentinel is UID-stamped ` +
+        `(docker/session-worker/entrypoint.sh:75), so each session re-chowns once the next time ` +
+        `its container is CREATED. Containers already running under ${uid} are adopted as-is on ` +
+        `restart and keep that UID — archive or reset those sessions to retire them.`,
     );
     this.name = "ReservedWorkerUidError";
   }
@@ -119,6 +125,13 @@ export function assertWorkerUidNotReserved(): void {
  * the path vanished mid-flight) is logged, never thrown — the caller's write
  * already succeeded and a stale-ownership read surfaces as an auth failure the
  * next sync repairs.
+ *
+ * "Never thrown" covers the FILESYSTEM operation, not the uid resolution: every
+ * helper here resolves the uid first, so a reserved-uid misconfiguration
+ * propagates as {@link ReservedWorkerUidError} rather than being swallowed as a
+ * chown failure. Swallowing it is what would be unsafe — the container entrypoint
+ * would still `gosu` to it. Unreachable in practice: `assertWorkerUidNotReserved`
+ * refuses the boot before any of these run.
  */
 export function chownToSessionWorker(targetPath: string): void {
   const uid = sessionWorkerUid();

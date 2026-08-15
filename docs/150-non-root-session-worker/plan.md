@@ -1052,18 +1052,37 @@ are not re-redirected into itself, and `:161` gives 911 raw port-53 egress.
 Those are not identity checks, so a *workload* holding either uid inherits the
 exemption and runs past the tier that names it.
 
-This variable is that uid for three surfaces at once — the agent container
-(forwarded at `container-lifecycle.ts:510`, `gosu`'d at `entrypoint.sh:23`),
-plugin CLI/install containers, and Compose services that declare no `user:` —
-so the refusal lives at the single parse site, `sessionWorkerUid()`, which
-throws `ReservedWorkerUidError`, plus an unconditional
-`assertWorkerUidNotReserved()` at the top of `buildApp`. A reserved value is
-**not** degraded to `null` the way other invalid input is: the entrypoint reads
-the same raw variable, so the orchestrator would act legacy-root while the
-worker still dropped to 911. There is no override env var — unlike the
-downgrade above, no deployment legitimately wants its workloads to hold the uid
-that disables the tier. Switching away costs nothing beyond the edit: the
-handoff sentinel is UID-stamped (`entrypoint.sh:75`), so each session re-chowns
-once on its next container boot. `assertWorkerUidConsistency` still covers
+This variable is that uid for two contained surfaces at once — the agent
+container (forwarded at `container-lifecycle.ts:510`, `gosu`'d at
+`entrypoint.sh:23`) and plugin CLI/install containers — so the refusal lives at
+the single parse site, `sessionWorkerUid()`, which throws
+`ReservedWorkerUidError`, plus an unconditional `assertWorkerUidNotReserved()`
+as the FIRST statement of `buildApp` (ahead of `initializeManagers`, so a boot
+about to be refused cannot migrate the database or write credentials on its way
+out). Compose services are not a third such surface: a contained service must
+declare its own non-reserved numeric `user:`, checked against the same two
+constants at `compose-generator.ts:850`, so the worker-uid fallback there
+reaches only Open services.
+
+A reserved value is **not** degraded to `null` the way other invalid input is:
+the entrypoint reads the same raw variable, so the orchestrator would act
+legacy-root while the worker still dropped to 911. There is no override env var
+— unlike the downgrade above, no deployment legitimately wants its workloads to
+hold the uid that disables the tier. `assertWorkerUidConsistency` still covers
 rollback drift only; it resolves the current uid through the same parse and so
 inherits this refusal rather than repeating it.
+
+**What the refusal does not retire.** It validates the environment, not the
+containers already running in it. A session container created under a reserved
+uid survives an orchestrator restart by design (`shutdown-manager.ts`), is
+rediscovered without its stored `SHIPIT_SESSION_WORKER_UID` being compared to
+the current one (`container-discovery.ts`), and is reconnected to rather than
+recreated (`app-lifecycle.ts`). So a deployment that ran 911, upgraded, and
+corrected the variable boots clean while its inherited containers keep the
+exempt uid until they are disposed. Left as-is deliberately: the exposure
+belongs to the old configuration, which was uncontained on every surface for its
+whole life, and forcing recreation at rediscovery would kill a live session's
+container to repair a config the operator has already fixed. Archiving or
+resetting those sessions retires them; a fresh container gets the corrected uid,
+and the handoff sentinel is UID-stamped (`entrypoint.sh:75`) so it re-chowns
+once on creation.

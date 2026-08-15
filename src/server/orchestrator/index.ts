@@ -87,6 +87,22 @@ export type {
  *   6. `route-registry.ts` — register HTTP routes + the WebSocket route
  */
 export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
+  // docs/263 — refuse a SHIPIT_SESSION_WORKER_UID that collides with an egress
+  // sidecar uid (911/912) BEFORE anything else runs. The netns firewall exempts
+  // those uids by owner-match, so a workload holding one runs exempt from the
+  // tier that names it — the agent container and the plugin containers share
+  // that arrangement, which is why the refusal lives at the shared parse site
+  // rather than on either path.
+  //
+  // First statement in the composition root, ahead of `initializeManagers`,
+  // because that step migrates the database, adopts environment credentials and
+  // writes the global gitconfig — a boot we are about to refuse must not mutate
+  // durable state first. It also pre-empts `initGlobalGitConfig`, which parses
+  // the same variable (`git-config.ts:59`) and would otherwise throw the same
+  // error from a call that does not explain itself. Unconditional, unlike the
+  // drift guard below, which needs the containerized state dir.
+  assertWorkerUidNotReserved();
+
   // Captured once at process startup so the client can render a live
   // uptime badge. This is the user's only signal that "Just Restart"
   // actually bounced the orchestrator — without it, a restart that
@@ -142,14 +158,6 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     };
   };
   setEgressDurableSource((sessionId) => egressAllowlistStore.effectiveHosts(sessionId));
-
-  // docs/263 — refuse a SHIPIT_SESSION_WORKER_UID that collides with an egress
-  // sidecar uid (911/912). The netns firewall exempts those uids by owner-match,
-  // so a workload holding one runs exempt from the tier that names it — on the
-  // agent container, the plugin containers and the Compose services alike, which
-  // is why the refusal is at the shared parse site and this call is unconditional
-  // (the drift guard below cannot be: it needs the containerized state dir).
-  assertWorkerUidNotReserved();
 
   // docs/150 Rollout — fail-fast on SHIPIT_SESSION_WORKER_UID drift before we
   // accept any traffic or restore containers. Containerized prod only: local
