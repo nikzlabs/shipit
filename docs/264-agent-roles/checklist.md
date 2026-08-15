@@ -30,11 +30,17 @@ The design is [`plan.md`](./plan.md); the contract is [`requirements.md`](./requ
 - [ ] `resolveRoleByName(name, overrides, …)` — `pinned` applies overrides over the role's tuple;
       `auto` with no override delegates to `selectReviewer` unchanged. Both freeze with the role's
       name
-- [ ] **Blocked on open question 1** — what an override does to `auto` (the reviewer). Ranking then
-      swapping a field yields a tuple nobody chose; replacing the ranking outright drops req 2's
-      distance guarantee and says nothing about an override naming only a level or only a harness.
-      `selectReviewer` ranks whole slot targets (`reviewer-model.ts:265`), so there is no existing
-      constrained-partial behaviour to inherit — this has to be designed, not discovered
+- [ ] `auto` **with** an override: rank first (`selectReviewer` unchanged), then apply the override
+      over the ranked tuple. The ranked tuple is the base because it is the only complete one, so a
+      level-only or harness-only override still resolves. **The distance guarantee is off for that
+      run** (req 10) — do not try to preserve it, and do not refuse the call to protect it
+- [ ] Where an override makes the ranked base incoherent, **re-derive the dependent fields around
+      the override** rather than failing: overridden fields fixed, invalidated fields re-derived,
+      the rest as ranked. Refuse only what cannot be satisfied at all (no service carries that
+      model, no installed harness can run it)
+- [ ] A test that an **un-overridden** reviewer run still avoids the implementer (req 2 intact) and
+      an **overridden** one is allowed to land on the implementer's own model — the second is the
+      requirement, not a bug to be fixed later
 - [ ] **An overridden tuple is validated exactly as a stored one** by the same harness-explicit
       validator, and an invalid override is **refused naming the parameter**, never dropped —
       a dropped override runs something other than what was asked for
@@ -79,16 +85,15 @@ The design is [`plan.md`](./plan.md); the contract is [`requirements.md`](./requ
       and level — which it cannot today (it forwards `--agent`/`--model` bare, so a service,
       billing mode and level are unsayable)
 - [ ] `--role NAME` on both commands
-- [ ] `--role NAME` **plus override flags** on both commands — one parser, one validator, one set
-      of refusals (req 16). What stays refused on the **one-shot** path is a call naming no role and
-      only *some* parameters: an incomplete target with nothing to complete it from (docs/261 req 7,
-      untouched)
-- [ ] **Blocked on open question 2** — the resolver's input type cannot be fixed until it is
-      answered. The same partial-no-role shape that the one-shot path refuses is *guaranteed* on
-      the child path by docs/261 req 10, which calls it deliberately opposite. Either the resolver
-      gains a third input shape accepted only where a parent exists, or the child form goes — and
-      the second breaks a shipped guarantee. Do not implement the resolver against "one set of
-      refusals" as if this were settled
+- [ ] `--role NAME` **plus any subset of the override flags** on both commands — one parser, one
+      validator (req 16). Partial is the ordinary case, not a special one
+- [ ] **The resolver takes a base plus overrides.** Three bases: a **role** (both commands), the
+      **parent session** (`session create` only), or **nothing** (both — and then the call must
+      name all five itself). The child's existing `--model X` is a partial call over the *parent*
+      base, so docs/261 req 10 keeps holding without a carve-out
+- [ ] The refusal narrows to **a call with no base and only some parameters** — the one shape with
+      nothing to complete it from. It must NOT refuse a partial call over a parent; that is the
+      shipped behaviour docs/261 req 10 guarantees, and a regression test should pin it
 - [ ] A role on `session create` resolves **once at creation**, seeds the session row with the
       complete tuple passed directly (not through `agent`/`model`, which drops service, billing
       mode and level), and then routes like any other session

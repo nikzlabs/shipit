@@ -31,7 +31,8 @@ instead (req 2).
    that:
 
    - a review is never performed by the model that produced the work, whenever any alternative
-     is available;
+     is available — this is what automatic params buy, and it is **set aside when the caller
+     overrides the reviewer** (req 10), because the caller has then said what they want;
    - reviewing works on an install where nobody has configured anything;
    - the reviewer improves by itself as the install changes — adding a service can make it a
      better reviewer with no one editing it.
@@ -100,6 +101,11 @@ instead (req 2).
     not overridden. Wanting a variation is common enough that requiring a whole second role for
     it would be the wrong trade.
 
+    **Overriding the reviewer sets aside its guarantees.** A reviewer run that is not overridden
+    still avoids the model that produced the work (req 2). Once the caller overrides it, no promise
+    survives that the review runs on anything different — the caller has named what they want, and
+    ShipIt does not overrule them or quietly refuse. It stays visible in the request that made it.
+
     **An override comes from the user, and the agent relays it rather than choosing it.** This is
     the line that has to survive: an agent may carry "review this with Opus at high effort"
     because the user said so, and may not decide on its own which model or level a run deserves.
@@ -148,10 +154,17 @@ instead (req 2).
     repositories that hold a complete target of their own.
 
 16. **The two ways of starting an agent have the same API surface.** A one-shot run and a child
-    session accept the same things in the same way: a role, a role with overrides (req 10), or a
-    complete target naming every parameter — with the same refusals in both. Where they differ is
-    only where they must: a child session has a parent and so may also inherit, and a one-shot run
-    has nothing to inherit from.
+    session accept the same things in the same way: a role, a role with **any subset** of its
+    parameters overridden (req 10), or a complete target naming every parameter.
+
+    **Partial is the normal case, not a special one.** A caller names the parameters it cares
+    about and nothing more, in both commands alike. What may not be partial is a call with nothing
+    to complete it from: naming neither a role nor a parent, and only some parameters, leaves
+    ShipIt guessing at the rest, and that is refused.
+
+    A child session therefore keeps what it can already do — naming one parameter and taking the
+    rest from its parent — because a parent is something to complete from, exactly as a role is.
+    That is the one place the two commands differ, and only because a one-shot run has no parent.
 
     Today they differ far more than that — a child session can name only a harness and a model,
     so it cannot express a complete target at all, and its service, billing mode and reasoning
@@ -174,40 +187,37 @@ other agent settings already do.
 
 ## Open questions
 
-1. **When the reviewer is overridden, what happens to the promise that it avoids the implementing
-   model?** Req 2 says a review is never done by the model that produced the work whenever an
-   alternative exists. Req 10 says any parameter may be overridden. `--role reviewer --model X`
-   puts the two in direct conflict when X is the implementer's own model. A second half: an
-   override that names no model at all — a reasoning level, or a harness — does not identify a
-   target by itself, so "resolve the named parameter and derive the rest" has no defined meaning
-   for it.
-
-   - **(a) The override narrows the ranking; it does not replace it.** The named parameter filters
-     the reviewer's candidates and the distance ranking picks among whatever survives, so req 2
-     keeps holding wherever the filter leaves a choice. Where the override matches nothing
-     configured, it becomes a directly resolved target with the rest derived, and ShipIt says the
-     distance guarantee did not apply. — *Recommended:* one rule covers all five parameters
-     including the ones that name no model, and req 2 survives everywhere it still can.
-   - **(b) The override replaces the resolution entirely** (what the plan says today). Simple, but
-     undefined for a level-only or harness-only override, and it drops req 2 silently.
-   - **(c) The reviewer refuses overrides.** Req 2 stays pure at the cost of contradicting req 10's
-     "any parameter".
-
-2. **Does the existing bare `session create --model X` survive — no role, some parameters, the
-   rest inherited from the parent?** docs/261 req 10 guarantees this today and states outright that
-   it is *deliberately opposite* to the one-shot refusal. Req 16 asks the two commands to share one
-   surface with one set of refusals, and the one-shot side refuses exactly this shape.
-
-   - **(a) Keep it, as a third input shape the shared resolver names explicitly** — a role with
-     optional overrides, a complete target, or (child only) a partial target with a parent to
-     complete it from. — *Recommended:* it is shipped behaviour under a standing requirement, and
-     removing it is a regression nobody asked for. Req 16 already allows the carve-out in the words
-     "a child session has a parent and so may also inherit"; this makes it a designed shape rather
-     than an aside.
-   - **(b) Drop it.** One refusal everywhere, and a child must name a role or a complete target.
-     Cleaner, at the price of breaking a guarantee docs/261 shipped on purpose.
+_None._
 
 ## Resolved questions
+
+- 2026-08-15 — **When the reviewer is overridden, does the promise that it avoids the implementing
+  model still hold?** **Chosen: no — an override sets the guarantee aside.** The human: *"When
+  there is an override, any guarantees about the model being different are off."*
+
+  Reqs 2 and 10 now say so in both directions: an un-overridden reviewer run still avoids the model
+  that produced the work, and an overridden one carries no such promise. This dissolves the
+  conflict rather than balancing it — ShipIt does not overrule the caller, and does not refuse them
+  either.
+
+  The cost, accepted: a user can ask for a review by the model that just wrote the code, and get
+  one. That is the same trade every override makes — the caller's stated wish beats ShipIt's
+  default — and it is the reason the bare `reviewer` role stays the shortest thing to type.
+
+- 2026-08-15 — **Does a child session keep naming one parameter and inheriting the rest?**
+  **Chosen: yes — partial is the normal case in both commands.** The human: *"when we create a
+  child session or a sub-agent with a role, in both cases we should be able to partially override
+  any of the params."*
+
+  Req 16 was the thing at fault, not the child: its "one set of refusals" swept up a shape docs/261
+  req 10 deliberately guarantees. Rewritten so that **partial is ordinary** and what is refused is
+  narrower — a call with nothing to complete itself from, naming neither a role nor a parent and
+  only some parameters.
+
+  **One reading recorded as a reading:** the words above are about the role path, and the bare
+  `session create --model X` with no role named is not literally mentioned. It is kept, because a
+  parent completes a partial call exactly as a role does, so treating them alike is what makes the
+  two commands one surface — and because removing shipped behaviour was never asked for.
 
 - 2026-08-14 — **May a role be overridden when it is started, and do the two commands share one
   API surface?** **Chosen: yes to both — a role may be overridden in any parameter, and the two
@@ -220,10 +230,10 @@ other agent settings already do.
   This **reverses** an earlier decision that a role is a unit and an override is refused. Reqs 4,
   7, 10 and 16 are rewritten accordingly.
 
-  **What it does not settle**, recorded so the gap is not mistaken for a decision: whether the
+  **What it did not settle**, recorded because it was briefly mistaken for a decision: whether the
   existing bare `session create --model X` — no role, some parameters, the rest inherited from the
   parent — survives. The words above approve *role* overrides on both commands and say nothing
-  about that form. It is open question 2.
+  about that form. Settled separately the next day; see the partial-override receipt above.
 
   **The third sentence is the load-bearing one, and it is why this is coherent rather than a
   loosening.** Overrides and the parameter inventory arrive together: an agent that may name a
@@ -384,6 +394,12 @@ his. What he actually said:
   agent knows what are the params available." → reqs 10, 12 and 16, and the rewrites of reqs 4
   and 7. The pairing of the two halves — overrides *and* an inventory — is his, and it is what
   keeps the override from being a licence to guess.
+- "When there is an override, any guarantees about the model being different are off." → the
+  carve-out in req 2 and the second paragraph of req 10.
+- "when we create a child session or a sub-agent with a role, in both cases we should be able to
+  partially override any of the params" → req 16's rewrite. He read the refusal as the defect
+  rather than the child's behaviour, which is what turned a blocking contradiction into a
+  narrowing.
 
 Reqs 7 and 10 are his answers to questions put to him, recorded above.
 

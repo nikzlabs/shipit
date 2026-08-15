@@ -153,16 +153,34 @@ caller overrode, and returns a frozen target:
 2. **`pinned` params** → the role's tuple, with any override substituted over it. The harness is
    the role's unless overridden (req 6 — never derived), and the only question left is whether the
    result has a **usable route**.
-3. **`auto` params** (the reviewer) → a run with **no** override ranks exactly as it does today.
-   What an override does to that ranking is **open question 1 and is not designed here.** The
-   reasoning that led to the current text still stands and is why the question is not trivial:
-   ranking two candidates and then swapping a field of the winner produces a tuple nobody chose —
-   the ranking's answer is a *whole* selection, and half of it plus a substituted model is neither
-   what ShipIt picked nor what the user asked for. What that reasoning missed is that replacing the
-   resolution outright drops req 2's distance guarantee silently, and says nothing at all about an
-   override naming only a level or only a harness, which identifies no target by itself.
+3. **`auto` params** (the reviewer) → a run with **no** override ranks exactly as it does today,
+   distance guarantee and all. A run **with** an override starts from that ranked tuple and
+   applies the override over it — and the guarantee is **off** for that run (req 10), which is what
+   makes this simple rather than a balancing act.
+
+   The ranked tuple is the base for a plain reason: it is the only thing that supplies a *complete*
+   selection, so an override naming only a reasoning level or only a harness — which identifies no
+   target by itself — still resolves. The earlier objection to this ("half a ranked winner plus a
+   swapped field is a tuple nobody chose") was really an objection to *silently* losing req 2. Said
+   out loud, it stops being a problem: the caller chose the swapped field, and req 2 was never
+   promised for this run.
+
+   **Where the override makes the base incoherent, the dependent fields move rather than the call
+   failing.** `--model X` where the ranked winner's service does not carry X re-derives the service,
+   billing mode and harness *around* X, because with the guarantee off there is nothing left to
+   preserve by staying. Overridden fields are fixed; fields the override invalidates are re-derived;
+   everything else stays as ranked. A refusal is reserved for an override that cannot be satisfied
+   at all — no service carries that model, or no installed harness can.
 
 Either way, freeze the target with the role's name on it.
+
+**The two cases treat an incoherent override differently, and the asymmetry is deliberate.** A
+`pinned` role is refused (naming the parameter); an `auto` reviewer re-derives around the override.
+The difference is what the un-named fields *mean*. In a pinned role the user chose every one of
+them, so moving one to accommodate an override would discard a decision they made — that is the
+substitution req 7 forbids. In the reviewer's case ShipIt was choosing them anyway, so re-deriving
+is the same act it was already performing, on a narrower input. Req 7's exemption for "the
+reviewer's params, which ShipIt resolves by design" is exactly what this rests on.
 
 **An overridden tuple is validated exactly as a stored one is** — the model exists on that service
 and billing mode, the harness can carry it, the level is one that harness declares. The same
@@ -245,7 +263,7 @@ the two commands answer it in two different vocabularies, and req 16 collapses t
 | | `shipit agent run` | `shipit session create` |
 |---|---|---|
 | **Today** | a role, or all five params; an omission refused | `--agent` and `--model` only, forwarded as bare values — no service, no billing mode, **no reasoning level at all**; everything else inherited |
-| **Becomes** | a role, a role ± overrides, or a complete target | the same three, plus inherit when nothing is named — and, pending **open question 2**, the existing partial-with-inheritance form |
+| **Becomes** | a role, a role ± overrides, or a complete target | the same three, plus the parent as a base — so its existing partial form is one of the general cases rather than an exception |
 
 **The child session gains the most, and that is the point.** It cannot express a complete target
 at all right now: `session create` parses `--agent`/`--model` and forwards them bare
@@ -259,23 +277,34 @@ or a complete target in, a resolved `(harness, selection, effort)` out, with one
 `session create` calls the same thing instead of its own two-flag reading. That is what makes the
 two commands *consistent by construction* rather than by two implementations agreeing.
 
-**Where they legitimately differ, and it is one thing only.** A child has a parent and so may
-inherit when nothing is named; a one-shot run has nothing to inherit from, so naming a role (or a
-target) is how it says anything at all. Everything else — the role, the overrides, the refusals —
-is identical, which is what req 16 asks for.
+**Where they legitimately differ, and it is one thing only.** A child has a parent available as a
+base; a one-shot run does not, so naming a role (or a complete target) is how it says anything at
+all. Everything else — the role, the overrides, the refusal — is identical, which is what req 16
+asks for.
 
 **Overriding is not the same as inheriting, and the two do not stack confusingly.** An override
 modifies whatever base the caller named: a role, or the child's inheritance. It is always
 *something the caller wrote* over *something the caller can point at*, which is the property that
 keeps docs/261 req 7's rule intact — no blank is ever filled from a place the caller cannot see.
 
-**A collision this section previously papered over.** "An override modifies the child's
-inheritance" *is* the bare `session create --model X` form — no role, one parameter named, the rest
-taken from the parent. docs/261 req 10 guarantees it and calls it *deliberately opposite* to the
-one-shot refusal of a partial target. So "one set of refusals" and "inheritance stays child-only"
-cannot both be unqualified: the shared resolver needs a **third input shape**, accepted only where
-a parent exists. Whether to design that shape or drop the form is **open question 2**, and the
-resolver's input type cannot be settled before it is answered.
+**The resolver takes a base and a set of overrides, and that is the whole shape.** What counts as
+a base is where the two commands differ, and it is the only place they do:
+
+| Base | Available to | Completed from |
+|---|---|---|
+| a **role** | both commands | the role's params (resolved, for the reviewer) |
+| the **parent session** | `session create` only | the parent's harness, selection and level |
+| **nothing** | both commands | nothing — so the call must name all five itself |
+
+Overrides apply over whichever base was named. This is what makes req 16 true without a carve-out:
+partial is ordinary, the child's existing `--model X` is not a special case but a partial call over
+the *parent* base, and the refusal narrows to its real target — **a call with no base and only some
+parameters**, which is the one shape ShipIt would have to guess at.
+
+That reading matters because an earlier draft had "one set of refusals" sweeping up a form docs/261
+req 10 deliberately guarantees. The defect was in the rule, not in the child: a parent completes a
+partial call exactly as a role does, so treating the two alike is what unifies the commands instead
+of forcing one of them to lose something.
 
 **What a role does to a child, once resolved.** A role decides what the child *starts as*, not
 what it is bound to (req 11). The resolution happens once, before any disk work; it seeds the new
