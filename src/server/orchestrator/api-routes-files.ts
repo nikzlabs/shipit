@@ -74,7 +74,13 @@ async function commitManualEdit(
     // not block the save response, and auth failures surface on the next
     // post-turn auto-push rather than here.
     if (commitHash && deps.githubAuthManager.authenticated) {
-      void pushToOrigin(git).catch((err: unknown) => {
+      // `onSkip` for the same reason the post-turn scheduler passes one: both of
+      // `pushToOrigin`'s null returns are otherwise a commit that lands and a
+      // push that says nothing anywhere.
+      void pushToOrigin(git, (reason) => {
+        const why = reason === "no-origin" ? "no `origin` remote" : "no current branch (detached HEAD)";
+        console.warn(`[files] manual-edit auto-push skipped for ${sessionId}: ${why}`);
+      }).catch((err: unknown) => {
         console.warn("[files] manual-edit auto-push failed:", getErrorMessage(err));
       });
     }

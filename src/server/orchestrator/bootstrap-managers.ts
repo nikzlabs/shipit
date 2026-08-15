@@ -366,6 +366,10 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     githubAuthManager,
     getRunner: (sessionId) => registryHolder.ref?.get(sessionId) ?? null,
     broadcastLog,
+    // A rejected (diverged) push leaves a persisted transcript notice, not just
+    // a log-ring line — the 2026-08-15 incident, where ten hours of rejections
+    // were invisible on every surface the user or the agent reads.
+    chatHistory: chatHistoryManager,
     notifyAutoPush: (sessionId) => prStatusPollerRef.ref?.notifyAutoPush(sessionId),
   });
 
