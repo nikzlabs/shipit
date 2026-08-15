@@ -37,16 +37,20 @@ const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms
  */
 let fetchGeneration = 0;
 
+/** req 24 — where a granted host lands: this session only, or the whole instance. */
+export type PluginHostGrantScope = "session" | "global";
+
 interface PluginReposState {
   /** The active session's snapshot; null until the first fetch lands. */
   snapshot: PluginReposSnapshot | null;
   /** Which session `snapshot` belongs to — read alongside it, never on its own. */
   forSessionId: string | null;
   fetchSnapshot: (sessionId: string) => Promise<void>;
+  allowHost: (host: string, scope: PluginHostGrantScope) => Promise<void>;
   reset: () => void;
 }
 
-export const usePluginReposStore = create<PluginReposState>((set) => ({
+export const usePluginReposStore = create<PluginReposState>((set, get) => ({
   snapshot: null,
   forSessionId: null,
 
@@ -59,6 +63,41 @@ export const usePluginReposStore = create<PluginReposState>((set) => ({
     // the caller (a render effect) cheap.
     if (applied && (applied.pending || applied.activating)) {
       void retryWhilePending(sessionId, generation, set);
+    }
+  },
+
+  /**
+   * req 24's affordance: add a plugin's declared host to the user's egress
+   * allowlist, for this session or for the whole ShipIt instance.
+   *
+   * It posts to the **existing** egress route (docs/172 / docs/263) rather than
+   * to anything plugin-shaped — req 24 is explicit that a plugin declaration
+   * never widens reach by itself, so the grant has to be the same user act, on
+   * the same allowlist, that a user without plugins performs. That route is
+   * denied to session containers (no `containerAccessible`), so no plugin
+   * service, companion CLI or agent can call it. What that does NOT cover is
+   * any page the user's browser loads, which today's API cannot tell from the
+   * user — planning#370, and see `shared/plugin-hosts.ts`.
+   *
+   * The snapshot is refetched afterwards **on every outcome, including a
+   * failed one**: `POST /api/egress/hosts` answers 503 for "saved, but the live
+   * refresh failed closed", so the host may be allowed even when the call
+   * reports failure, and a card left naming a gap the user has closed is the
+   * bug the credentials row already fixed by refetching after "Add key…".
+   */
+  allowHost: async (host: string, scope: PluginHostGrantScope) => {
+    const sessionId = get().forSessionId;
+    const trimmed = host.trim();
+    if (!sessionId || !trimmed) return;
+    try {
+      const res = await fetch("/api/egress/hosts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ host: trimmed, scope: scope === "global" ? "global" : sessionId }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    } finally {
+      await get().fetchSnapshot(sessionId);
     }
   },
 
@@ -139,13 +178,17 @@ export function pluginsTabVisible(snapshot: PluginReposSnapshot | null): boolean
 }
 
 /**
- * The warn dot (plan §3): parse warnings, per-repo issues, and an unsatisfied
- * plugin credential (req 23) all count; the v0 `declared`
- * (mechanics-not-built-yet) status deliberately does not.
+ * The warn dot (plan §3): parse warnings, per-repo issues, an unsatisfied
+ * plugin credential (req 23) and a declared host the session may not reach
+ * (req 24) all count; the v0 `declared` (mechanics-not-built-yet) status
+ * deliberately does not.
  *
- * A missing key belongs on the dot for the reason the dot exists: the plugin
- * cannot do its job until the user acts, and a closed tab may hide information
- * but never a problem.
+ * A missing key or an unallowed host belongs on the dot for the reason the dot
+ * exists: the plugin cannot do its job until the user acts, and a closed tab
+ * may hide information but never a problem. Req 24 asks for exactly that —
+ * wiring a plugin that calls external APIs should be "a known, guided
+ * onboarding step rather than a surprise or a guessing game", which a gap
+ * nobody is told about is not.
  */
 export function pluginsAttention(snapshot: PluginReposSnapshot | null): boolean {
   if (!snapshot) return false;
@@ -154,9 +197,11 @@ export function pluginsAttention(snapshot: PluginReposSnapshot | null): boolean 
     snapshot.repos.some(
       (r) =>
         r.issues.length > 0 ||
-        // `?? []` — a snapshot cached by an older client build has no
-        // `credentials` on its use entries; a stale shape must not throw here.
-        r.uses.some((u) => (u.credentials ?? []).some((c) => !c.satisfied)),
+        // `?? []` — a snapshot cached by an older client build has neither
+        // `credentials` nor `hosts` on its use entries; a stale shape must not
+        // throw here.
+        r.uses.some((u) => (u.credentials ?? []).some((c) => !c.satisfied)) ||
+        r.uses.some((u) => (u.hosts ?? []).some((h) => !h.allowed)),
     )
   );
 }

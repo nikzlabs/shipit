@@ -114,14 +114,14 @@ describe("Integration: GET /api/plugin-repos (docs/262)", () => {
     expect(dev).toMatchObject({ source: "self", status: "self", ref: null, commit: null });
     // Self resolves its selectors against the same file's manifest (its
     // phase 2 needs no fetch).
-    expect(dev.uses).toEqual([{ plugin: "probe", alias: "probe", found: true, credentials: [] }]);
+    expect(dev.uses).toEqual([{ plugin: "probe", alias: "probe", found: true, credentials: [], hosts: [] }]);
 
     const tools = snap.repos.find((r) => r.name === "tools")!;
     // Nothing has been activated in this test (activation is a lifecycle
     // trigger, never a GET side effect), so the tracked repo reads as
     // unavailable with no commit — req 13's "session runs without it".
-    expect(tools).toMatchObject({ source: "nikzlabs/shipit", status: "unavailable", ref: "main", commit: null });
-    expect(tools.uses).toEqual([{ plugin: "probe", alias: "remote-probe", found: null, credentials: [] }]);
+    expect(tools).toMatchObject({ source: "nikzlabs/shipit", status: "unavailable", ref: "branch main", commit: null });
+    expect(tools.uses).toEqual([{ plugin: "probe", alias: "remote-probe", found: null, credentials: [], hosts: [] }]);
   });
 
   it("no plugins block → not declared; the tab has nothing to gate on", async () => {
@@ -144,7 +144,7 @@ describe("Integration: GET /api/plugin-repos (docs/262)", () => {
     writeConfig("plugins:\n  repos:\n    - repo: self\n      name: dev\n  use:\n    - plugin: ghost\n      from: dev\n");
     const snap = await snapshot();
     const dev = snap.repos[0];
-    expect(dev.uses).toEqual([{ plugin: "ghost", alias: "ghost", found: false, credentials: [] }]);
+    expect(dev.uses).toEqual([{ plugin: "ghost", alias: "ghost", found: false, credentials: [], hosts: [] }]);
     expect(dev.issues).toContainEqual(expect.stringContaining("`ghost`"));
   });
 
@@ -383,6 +383,56 @@ plugins:
       });
       const snap = await snapshot();
       expect(snap.repos[0].uses[0].credentials).toEqual([{ name: "FAL_KEY", satisfied: false }]);
+    });
+  });
+
+  // docs/262 req 24 — the tab is where a declared host becomes visible, and the
+  // answer beside it comes from the SESSION's egress configuration, never from
+  // the manifest that named the host.
+  describe("host needs", () => {
+    const WITH_HOST = `
+exports:
+  plugins:
+    probe:
+      hosts: [fal.run]
+plugins:
+  repos:
+    - repo: self
+      name: dev
+  use:
+    - plugin: probe
+      from: dev
+`;
+
+    it("surfaces the declared host on the plugin that declares it", async () => {
+      writeConfig(WITH_HOST);
+      const snap = await snapshot();
+      expect(snap.repos[0].uses[0]).toMatchObject({
+        alias: "probe",
+        hosts: [{ host: "fal.run", allowed: true }],
+      });
+    });
+
+    it("a session with no containment reports no gap — nothing is denied there", async () => {
+      // This app has no container manager, so `isEgressContained` is false and
+      // the session reaches everything. Naming a gap here would send the user
+      // to grant what was never blocked. The predicate's contained branch is
+      // covered directly in `plugin-hosts.test.ts`, where a store can be built.
+      writeConfig(WITH_HOST);
+      const snap = await snapshot();
+      expect(snap.repos[0].uses[0].hosts.every((h) => h.allowed)).toBe(true);
+      expect(snap.repos[0].issues).toEqual([]);
+    });
+
+    it("a GET grants nothing — the declaration alone never widens reach (req 24)", async () => {
+      writeConfig(WITH_HOST);
+      await snapshot();
+      // The allowlist the session actually runs on is untouched by reading the
+      // card: granting is a POST the user makes, on a browser-only route.
+      const view = await app.inject({ method: "GET", url: "/api/egress/allowlist?session=sess" });
+      expect(view.statusCode).toBe(200);
+      const entries = (view.json() as { entries: { host: string }[] }).entries;
+      expect(entries.map((e) => e.host)).not.toContain("fal.run");
     });
   });
 

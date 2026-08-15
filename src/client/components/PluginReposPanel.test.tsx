@@ -1,7 +1,7 @@
 // docs/262 — the Plugins tab pane: cards, identity, warnings, issue rows.
 
 import { describe, it, expect, afterEach } from "vitest";
-import { render, cleanup, screen, fireEvent } from "@testing-library/react";
+import { render, cleanup, screen, fireEvent, waitFor } from "@testing-library/react";
 import { PluginReposPanel } from "./PluginReposPanel.js";
 import { usePluginReposStore } from "../stores/plugin-repos-store.js";
 import { useUiStore } from "../stores/ui-store.js";
@@ -24,16 +24,16 @@ const FIXTURE: PluginReposSnapshot = {
       ref: null,
       commit: null,
       status: "self",
-      uses: [{ plugin: "probe", alias: "probe", found: true, credentials: [] }],
+      uses: [{ plugin: "probe", alias: "probe", found: true, credentials: [], hosts: [] }],
       issues: [],
     },
     {
       name: "tools",
       source: "nikzlabs/shipit",
-      ref: "main",
+      ref: "branch main",
       commit: null,
       status: "active",
-      uses: [{ plugin: "probe", alias: "remote-probe", found: null, credentials: [] }],
+      uses: [{ plugin: "probe", alias: "remote-probe", found: null, credentials: [], hosts: [] }],
       issues: [],
     },
   ],
@@ -54,7 +54,7 @@ describe("PluginReposPanel", () => {
     expect(screen.getByText("tools")).toBeTruthy();
     expect(screen.getByText("nikzlabs/shipit")).toBeTruthy();
     // Tracked repos show ref @ commit even before a commit exists.
-    expect(screen.getByText("main @ —")).toBeTruthy();
+    expect(screen.getByText("branch main @ —")).toBeTruthy();
   });
 
   it("shows what each repo's plugins are used as", () => {
@@ -76,7 +76,7 @@ describe("PluginReposPanel", () => {
       repos: [
         {
           ...FIXTURE.repos[0],
-          uses: [{ plugin: "ghost", alias: "ghost", found: false, credentials: [] }],
+          uses: [{ plugin: "ghost", alias: "ghost", found: false, credentials: [], hosts: [] }],
           issues: ["`ghost` is not in this repository's `exports.plugins` manifest."],
         },
       ],
@@ -118,7 +118,7 @@ describe("PluginReposPanel", () => {
       repos: [
         {
           ...FIXTURE.repos[1],
-          uses: [{ plugin: "palette", alias: "artk", found: true, credentials }],
+          uses: [{ plugin: "palette", alias: "artk", found: true, credentials, hosts: [] }],
         },
       ],
     });
@@ -162,6 +162,93 @@ describe("PluginReposPanel", () => {
       render(<PluginReposPanel />);
       expect(screen.getByTestId("plugin-credential-need-artk-FAL_KEY")).toBeTruthy();
       expect(screen.queryByText("Add key…")).toBeNull();
+    });
+  });
+
+  // docs/262 req 24 — the same visibility for declared hosts, plus the grant.
+  describe("host needs", () => {
+    const withHosts = (hosts: { host: string; allowed: boolean }[]): PluginReposSnapshot => ({
+      ...FIXTURE,
+      repos: [
+        {
+          ...FIXTURE.repos[1],
+          uses: [{ plugin: "palette", alias: "artk", found: true, credentials: [], hosts }],
+        },
+      ],
+    });
+
+    it("names the host and the plugin that declares it", () => {
+      setSnapshot(withHosts([{ host: "fal.run", allowed: false }]));
+      render(<PluginReposPanel />);
+      const row = screen.getByTestId("plugin-host-need-artk-fal.run");
+      expect(row.textContent).toContain("fal.run");
+      expect(row.textContent).toContain("artk");
+      expect(screen.getByText("1 need")).toBeTruthy();
+    });
+
+    it("an allowed host is stated, not silently dropped", () => {
+      setSnapshot(withHosts([{ host: "fal.run", allowed: true }]));
+      render(<PluginReposPanel />);
+      expect(screen.queryByTestId("plugin-host-need-artk-fal.run")).toBeNull();
+      expect(screen.queryByText("1 need")).toBeNull();
+      const allowed = screen.getByTestId("plugin-hosts-allowed");
+      expect(allowed.textContent).toContain("fal.run");
+      expect(allowed.textContent).toContain("artk");
+    });
+
+    it("credential gaps and host gaps count toward one needs chip", () => {
+      setSnapshot({
+        ...FIXTURE,
+        repos: [
+          {
+            ...FIXTURE.repos[1],
+            uses: [
+              {
+                plugin: "palette",
+                alias: "artk",
+                found: true,
+                credentials: [{ name: "FAL_KEY", satisfied: false }],
+                hosts: [{ host: "fal.run", allowed: false }],
+              },
+            ],
+          },
+        ],
+      });
+      render(<PluginReposPanel />);
+      expect(screen.getByText("2 needs")).toBeTruthy();
+    });
+
+    // req 24: the grant is a deliberate user act on the USER's egress
+    // allowlist, at one of the two scopes the requirement names — never
+    // anything plugin-local, and never a side effect of the declaration.
+    it("each scope posts to the existing egress route with that scope", async () => {
+      const snapshot = withHosts([{ host: "fal.run", allowed: false }]);
+      setSnapshot(snapshot);
+      const grants: unknown[] = [];
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = ((url: string, init?: RequestInit) => {
+        if (url === "/api/egress/hosts") {
+          grants.push(JSON.parse(typeof init?.body === "string" ? init.body : "null"));
+          return Promise.resolve({ ok: true, json: async () => ({}) } as Response);
+        }
+        // The store refetches its own snapshot after a grant; answering with the
+        // same one keeps the row rendered so the second scope can be clicked.
+        return Promise.resolve({ ok: true, json: async () => snapshot } as Response);
+      }) as typeof fetch;
+      try {
+        render(<PluginReposPanel />);
+        fireEvent.click(screen.getByText("Allow for session"));
+        await waitFor(() => expect(grants).toHaveLength(1));
+        // Session scope travels as the session id — the shape `/api/egress/hosts`
+        // reads as "this session's extras" (`global` is the reserved word).
+        expect(grants[0]).toEqual({ host: "fal.run", scope: "sess" });
+
+        fireEvent.click(screen.getByText("Allow for ShipIt"));
+        await waitFor(() => expect(grants).toHaveLength(2));
+        expect(grants[1]).toEqual({ host: "fal.run", scope: "global" });
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
     });
   });
 });

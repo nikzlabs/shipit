@@ -22,7 +22,7 @@
 import { activateDeclaredPlugins, type PluginActivationDeps } from "./plugin-activation.js";
 import { readActiveGeneration } from "../plugin-generations.js";
 import { resolveShipitConfig } from "../../shared/shipit-config.js";
-import { destinationKey } from "../../shared/plugin-repos.js";
+import { destinationKey, declaredRefLabel } from "../../shared/plugin-repos.js";
 import { sessionStateDirForWorkspace } from "../session-state-dir.js";
 
 /** One repository's before/after, as the shim prints it. */
@@ -77,7 +77,7 @@ export async function refreshPluginRepos(
       .filter((r) => r.source.kind === "github")
       .map((r) => ({
         name: r.name,
-        ref: r.pin ? `pin ${r.pin}` : `branch ${r.branch ?? "(default)"}`,
+        ref: declaredRefLabel(r),
         source: destinationKey(r.source),
       }));
     selfNames = config.plugins.repos.filter((r) => r.source.kind === "self").map((r) => r.name);

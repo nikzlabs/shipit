@@ -25,12 +25,14 @@ import {
   type PluginRepoRuntime,
 } from "../shared/plugin-repos.js";
 import { resolvePluginCredentials } from "../shared/plugin-credentials.js";
+import { resolvePluginHosts } from "../shared/plugin-hosts.js";
 import { resolveLiveGenerations, type LiveGenerations } from "./plugin-generations.js";
 import {
   pluginCredentialDeclarationsFor,
   loadSatisfiedPluginCredentialNames,
 } from "./plugin-credentials.js";
 import { pluginCommandIssuesByRepo } from "./plugin-commands.js";
+import { pluginHostAllowance, pluginHostDeclarationsFor } from "./plugin-hosts.js";
 import type { PluginCliRequest } from "./plugin-cli-run.js";
 import { pluginSettingsIssuesByRepo } from "./plugin-state.js";
 import {
@@ -191,6 +193,34 @@ export async function registerPluginRepoRoutes(
           pluginCredentialDeclarationsFor(config.plugins, config.pluginExports, live),
           loadSatisfiedPluginCredentialNames(deps.secretStore, consumerRepoUrl),
         );
+        // docs/262 req 20 — a fragment is validated against the rules THIS
+        // session applies, and a contained session applies more of them
+        // (docs/263). Reporting under the wrong rule set would show a card with
+        // no problem for a plugin the session will refuse to start. The same
+        // value answers req 24's question below: an Open session denies
+        // nothing, so no declared host is "not yet allowed" there.
+        const containEgress = request.query.sessionId
+          ? deps.containerManager?.isEgressContained(request.query.sessionId) ?? false
+          : false;
+        // req 24 — what each activated plugin declares it must reach, resolved
+        // against this session's OWN egress allowlist. The declaration is an
+        // input to the report and never to the allowance: showing a host must
+        // not widen reach, and granting one is a deliberate user act on the
+        // browser-only egress routes.
+        const hostGroups = resolvePluginHosts(
+          pluginHostDeclarationsFor(config.plugins, config.pluginExports, live),
+          pluginHostAllowance({
+            contained: containEgress,
+            // The same seam the resolver and SNI proxy are configured from, so
+            // the card cannot answer from a composition the session does not
+            // actually run on (a Network-off sandbox is the case that made this
+            // a correctness matter rather than a tidiness one).
+            ...(request.query.sessionId
+              ? { config: deps.containerManager?.resolveEgress(request.query.sessionId) }
+              : {}),
+            sessionId: request.query.sessionId,
+          }),
+        );
         return buildPluginReposSnapshot(
           config.plugins,
           config.pluginExports,
@@ -202,15 +232,10 @@ export async function registerPluginRepoRoutes(
           // activates anything — that runs on session activation and on a
           // shipit.yaml edit.
           readRuntimeState(request.query.sessionId, session.workspaceDir, config, live, {
-            // docs/262 req 20 — a fragment is validated against the rules THIS
-            // session applies, and a contained session applies more of them
-            // (docs/263). Reporting under the wrong rule set would show a card
-            // with no problem for a plugin the session will refuse to start.
-            containEgress: request.query.sessionId
-              ? deps.containerManager?.isEgressContained(request.query.sessionId) ?? false
-              : false,
+            containEgress,
           }),
           credentialGroups,
+          hostGroups,
         );
       } catch (err) {
         // A malformed *document* (bad YAML, a bad `release` block) must not
@@ -304,6 +329,17 @@ function readRuntimeState(
       const attempt = getActivationState(sessionId, repo.name);
       if (generation) {
         entry.commit = generation.commit;
+        // req 19 — the ref BEING EXECUTED, taken from the same record as the
+        // commit. Reading it off the declaration instead is what let an edited
+        // declaration render `active` at the new ref and the old commit, a pair
+        // no round ever produced.
+        //
+        // Guarded because the record is read with an unchecked cast
+        // (`readGenerationRecordAt`), so a truncated or hand-written one can
+        // carry no `ref` at all. Absent, the card falls back to the declared
+        // ref — the behaviour before this change — rather than rendering
+        // `undefined` and rather than claiming a mismatch it cannot know about.
+        if (typeof generation.ref === "string" && generation.ref) entry.ref = generation.ref;
         entry.exports = generation.exports;
         if (generation.manifestWarnings?.length) entry.manifestWarnings = generation.manifestWarnings;
       }

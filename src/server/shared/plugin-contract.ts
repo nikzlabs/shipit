@@ -71,6 +71,29 @@ export const PLUGIN_PROJECT_ENV = "SHIPIT_PROJECT_DIR";
 export const PLUGIN_COMMIT_ENV = "SHIPIT_PLUGIN_COMMIT";
 
 /**
+ * The environment names ShipIt itself sets in every container that runs plugin
+ * code — the in-session usage contract, as a set.
+ *
+ * A plugin may not declare a credential (req 23) under one of these names: the
+ * two delivery surfaces would answer differently and neither answer is
+ * specified. The compose surface drops such a name defensively when it merges
+ * delivered values (`compose-generator.ts`), while the CLI surface appends the
+ * credential as a second `Env` entry after ShipIt's own, whose resolution is
+ * the daemon's business rather than a decision anyone took. Nothing crosses a
+ * boundary either way — the mounts are the same — so this is a coherence
+ * defect, and the fix belongs where both surfaces inherit one answer: the
+ * manifest parser refuses the declaration (`plugin-repos.ts`), so the plugin
+ * author is told at declaration time instead of a name being silently ignored
+ * on one surface and duplicated on the other.
+ */
+export const PLUGIN_CONTRACT_ENV_NAMES: ReadonlySet<string> = new Set([
+  PLUGIN_STATE_ENV,
+  PLUGIN_SETTINGS_ENV,
+  PLUGIN_PROJECT_ENV,
+  PLUGIN_COMMIT_ENV,
+]);
+
+/**
  * Where generated companion-CLI wrappers live inside the **agent** container
  * (req 17). A directory of ShipIt-authored shell wrappers — no plugin code, and
  * no plugin credential, ever lands here; each wrapper brokers an invocation
