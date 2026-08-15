@@ -24,6 +24,7 @@ import { createIssue as createIssueImpl } from "./github-auth-issues.js";
 import type { CreateIssueResult } from "./github-auth-issues.js";
 import { addReviewThreadReply as addReviewThreadReplyImpl, resolveReviewThread as resolveReviewThreadImpl, unresolveReviewThread as unresolveReviewThreadImpl, submitPullRequestReview as submitPullRequestReviewImpl } from "./github-auth-review-threads.js";
 import type { PullRequestReviewThreadDraft } from "./github-auth-review-threads.js";
+import { gitArgsWithHooksDisabled } from "../shared/git-hooks-guard.js";
 
 export interface GitHubAuthStatus {
   authenticated: boolean;
@@ -389,7 +390,7 @@ export class GitHubAuthManager extends EventEmitter {
     try {
       execFileSync(
         "git",
-        ["config", "--replace-all", "credential.helper", CONTAINER_CREDENTIAL_HELPER],
+        gitArgsWithHooksDisabled(["config", "--replace-all", "credential.helper", CONTAINER_CREDENTIAL_HELPER]),
         { cwd, stdio: "pipe" },
       );
       // User identity is inherited from global git config (set by setToken/loadUserInfo).

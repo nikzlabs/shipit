@@ -23,6 +23,7 @@ import {
 import type { ReleaseChannel } from "../release-channel.js";
 import { resolveVersion } from "../build-id.js";
 import { parseGitHubRemote } from "../git-utils.js";
+import { gitArgsWithHooksDisabled } from "../../shared/git-hooks-guard.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -138,7 +139,7 @@ async function resolveReleaseUrl(
   if (channel !== "stable" || !/^v\d+\.\d+\.\d+/.test(version)) return undefined;
   try {
     const { stdout } = await execFileAsync(
-      "git", ["remote", "get-url", "origin"], gitOpts,
+      "git", gitArgsWithHooksDisabled(["remote", "get-url", "origin"]), gitOpts,
     );
     const parsed = parseGitHubRemote(stdout.trim());
     if (!parsed) return undefined;
@@ -157,7 +158,7 @@ async function describeRef(
   // Tag name when the ref points exactly at a release tag, else main @ <sha>.
   try {
     const { stdout } = await execFileAsync(
-      "git", ["describe", "--tags", "--exact-match", ref], gitOpts,
+      "git", gitArgsWithHooksDisabled(["describe", "--tags", "--exact-match", ref]), gitOpts,
     );
     const tag = stdout.trim();
     if (tag && channel === "stable") return tag;
@@ -165,7 +166,7 @@ async function describeRef(
     // not on a tag — fall through to sha form
   }
   try {
-    const { stdout } = await execFileAsync("git", ["rev-parse", "--short", ref], gitOpts);
+    const { stdout } = await execFileAsync("git", gitArgsWithHooksDisabled(["rev-parse", "--short", ref]), gitOpts);
     return `main @ ${stdout.trim()}`;
   } catch {
     return ref;
@@ -188,7 +189,7 @@ async function resolveLatestStableTag(
 ): Promise<{ tag: string; commit: string } | null> {
   let tags: string[];
   try {
-    const { stdout } = await execFileAsync("git", ["tag", "--merged", "origin/stable"], gitOpts);
+    const { stdout } = await execFileAsync("git", gitArgsWithHooksDisabled(["tag", "--merged", "origin/stable"]), gitOpts);
     tags = stdout.split("\n").map((t) => t.trim()).filter(Boolean);
   } catch {
     return null;
@@ -197,7 +198,7 @@ async function resolveLatestStableTag(
   if (!tag) return null;
   try {
     // Resolve the (annotated) tag to its commit SHA.
-    const { stdout } = await execFileAsync("git", ["rev-parse", `${tag}^{commit}`], gitOpts);
+    const { stdout } = await execFileAsync("git", gitArgsWithHooksDisabled(["rev-parse", `${tag}^{commit}`]), gitOpts);
     return { tag, commit: stdout.trim() };
   } catch {
     return null;
@@ -230,14 +231,14 @@ export async function checkForUpdates(): Promise<UpdateStatus> {
 
   // Fetch the channel's branch plus tags (needed to resolve/name the version).
   try {
-    await execFileAsync("git", ["fetch", "origin", branch, "--tags"], gitOpts);
+    await execFileAsync("git", gitArgsWithHooksDisabled(["fetch", "origin", branch, "--tags"]), gitOpts);
   } catch (err) {
     throw new ServiceError(503, `Failed to fetch updates: ${(err as Error).message}`);
   }
 
   try {
     const { stdout: currentCommit } = await execFileAsync(
-      "git", ["rev-parse", "HEAD"], gitOpts,
+      "git", gitArgsWithHooksDisabled(["rev-parse", "HEAD"]), gitOpts,
     );
     const current = currentCommit.trim();
     const currentVersion = await describeRef("HEAD", channel, gitOpts);
@@ -274,7 +275,7 @@ export async function checkForUpdates(): Promise<UpdateStatus> {
     }
 
     const { stdout: latestCommit } = await execFileAsync(
-      "git", ["rev-parse", targetRef], gitOpts,
+      "git", gitArgsWithHooksDisabled(["rev-parse", targetRef]), gitOpts,
     );
     const latest = latestCommit.trim();
 
@@ -299,7 +300,7 @@ export async function checkForUpdates(): Promise<UpdateStatus> {
 
     // How many commits the target ref is ahead of HEAD.
     const { stdout: countStr } = await execFileAsync(
-      "git", ["rev-list", "--count", `HEAD..${targetRef}`], gitOpts,
+      "git", gitArgsWithHooksDisabled(["rev-list", "--count", `HEAD..${targetRef}`]), gitOpts,
     );
     const behindBy = parseInt(countStr.trim(), 10) || 0;
 
@@ -311,7 +312,7 @@ export async function checkForUpdates(): Promise<UpdateStatus> {
 
     const { stdout: logOutput } = await execFileAsync(
       "git",
-      ["log", "--oneline", "--no-decorate", isDowngrade ? `${targetRef}..HEAD` : `HEAD..${targetRef}`],
+      gitArgsWithHooksDisabled(["log", "--oneline", "--no-decorate", isDowngrade ? `${targetRef}..HEAD` : `HEAD..${targetRef}`]),
       gitOpts,
     );
     const commitMessages = logOutput.trim().split("\n").filter(Boolean);

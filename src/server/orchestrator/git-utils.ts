@@ -1,5 +1,5 @@
 import crypto from "node:crypto";
-import simpleGit from "simple-git";
+import { safeSimpleGit } from "../shared/git-hooks-guard.js";
 import type { GitManager } from "../shared/git.js";
 
 /** Generate a short random branch suffix for the "shipit/" namespace. */
@@ -293,7 +293,7 @@ export async function fetchAndResolveDefaultBranch(
   // paths to arbitrary configs/binaries) and refuses to spawn — so we opt in
   // explicitly. The env here is ours, not user-controlled, so the protection
   // is a false positive for this code path.
-  const sg = simpleGit(workspaceDir, {
+  const sg = safeSimpleGit(workspaceDir, {
     timeout: { block: FETCH_STALL_TIMEOUT_MS },
     unsafe: { allowUnsafeConfigPaths: true, allowUnsafeEditor: true },
   })
@@ -365,7 +365,7 @@ export async function fetchAndResolveDefaultBranch(
  * ref, or any git error just skips the sync.
  */
 export async function syncLocalDefaultBranchToOrigin(workspaceDir: string): Promise<void> {
-  const sg = simpleGit(workspaceDir);
+  const sg = safeSimpleGit(workspaceDir);
   // Resolve origin's default branch name (origin/HEAD → main/master), then
   // fall back to probing the common names if the symbolic ref isn't set.
   let branch: string | undefined;
@@ -430,7 +430,7 @@ export async function syncLocalDefaultBranchToOrigin(workspaceDir: string): Prom
  *     dir is exactly "the commit the prefetcher last advanced `main`
  *     to" — the same commit a fresh `--local` clone would see as its
  *     `origin/HEAD`.
- *   - The workspace clone is read via `simpleGit(workspaceDir)` rather
+ *   - The workspace clone is read via `safeSimpleGit(workspaceDir)` rather
  *     than through `RepoGit`, since `RepoGit` models the bare-cache
  *     side. We try `origin/HEAD` first (`cloneFromCache` preserves it)
  *     and fall back to `origin/main` / `origin/master` for older
@@ -441,9 +441,9 @@ export async function isWorkspaceCloneInSyncWithCache(
   cacheDir: string,
 ): Promise<boolean> {
   try {
-    const cacheHead = (await simpleGit(cacheDir).raw(["rev-parse", "HEAD"])).trim();
+    const cacheHead = (await safeSimpleGit(cacheDir).raw(["rev-parse", "HEAD"])).trim();
     if (!cacheHead) return false;
-    const sg = simpleGit(workspaceDir);
+    const sg = safeSimpleGit(workspaceDir);
     for (const ref of ["origin/HEAD", "origin/main", "origin/master"]) {
       try {
         const cloneHead = (await sg.raw(["rev-parse", ref])).trim();

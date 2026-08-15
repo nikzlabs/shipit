@@ -22,7 +22,7 @@
  * fast with a clear message before claiming a workspace if it's missing.
  */
 
-import simpleGit from "simple-git";
+import { safeSimpleGit } from "../../shared/git-hooks-guard.js";
 import type { SessionManager } from "../sessions.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
 import type { RepoStore } from "../repo-store.js";
@@ -100,11 +100,11 @@ export async function installPluginAsSession(
   // 2. Rename the claim branch (`shipit/<rand>`) to a readable install branch.
   let branchName: string;
   try {
-    const currentBranch = (await simpleGit(workspaceDir).raw(["branch", "--show-current"])).trim();
+    const currentBranch = (await safeSimpleGit(workspaceDir).raw(["branch", "--show-current"])).trim();
     const randomSlug = currentBranch.replace(/^shipit\//, "") || "skill";
     branchName = `shipit/install-${slugify(opts.pluginName)}-${randomSlug}`;
     if (currentBranch && currentBranch !== branchName) {
-      await simpleGit(workspaceDir).raw(["branch", "-m", currentBranch, branchName]);
+      await safeSimpleGit(workspaceDir).raw(["branch", "-m", currentBranch, branchName]);
     }
   } catch (err) {
     throw new ServiceError(500, `Failed to prepare install branch: ${String(err)}`);

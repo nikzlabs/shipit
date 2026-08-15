@@ -162,6 +162,19 @@ be hostile.
   defense-in-depth that shrinks in-container blast radius; it does **not** replace
   credential brokering or egress control (the agent's own credentials are still reachable
   by the uid-1000 agent — see Known limitations). See `docs/150-non-root-session-worker/`.
+- **Orchestrator-side git never executes repository hooks.** A session's workspace is
+  bind-mounted read-write into the session container and into plugin CLI/service
+  containers, whose code is untrusted by design — so `.git/hooks/pre-commit` is a file
+  that side can write. The orchestrator then runs git on that same tree (post-turn
+  auto-commit, merge, rebase, checkout, push) as **root**, with the credential store, the
+  host Docker socket, and every session's workspace mounted. Every git invocation the
+  orchestrator makes therefore carries `-c core.hooksPath=/dev/null`, with the equivalent
+  `GIT_CONFIG_*` environment pairs installed process-wide as a backstop
+  (`shared/git-hooks-guard.ts`, enforced by an ESLint rule against importing `simple-git`
+  directly). Both beat a repository-local `.git/config`, which sits on the same writable
+  mount. Git inside the *session* container is deliberately unchanged: the agent is
+  already inside the trust boundary, and a project's own hooks running when the agent
+  commits is the behaviour a user expects. See planning#384.
 - **Optional kernel-tier hardening, default-OFF.** Three further controls
   (`container-hardening.ts`, planning#99, `docs/172` Gap 5) can be switched on per deployment:
   a **read-only root filesystem** (`SESSION_READONLY_ROOTFS=1` → `ReadonlyRootfs: true`

@@ -23,6 +23,7 @@ import { promisify } from "node:util";
 import { ServiceError } from "./types.js";
 import { resolveBuildId } from "../build-id.js";
 import { stripUrlCredentials, canonicalRepoKey } from "../git-utils.js";
+import { gitArgsWithHooksDisabled } from "../../shared/git-hooks-guard.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -80,7 +81,7 @@ export interface ShipitSourceDeps {
 }
 
 async function defaultRunGit(dir: string, args: string[]): Promise<string> {
-  const { stdout } = await execFileAsync("git", ["-C", dir, ...args], {
+  const { stdout } = await execFileAsync("git", gitArgsWithHooksDisabled(["-C", dir, ...args]), {
     timeout: GIT_TIMEOUT_MS,
     maxBuffer: 16 * 1024 * 1024,
     encoding: "utf8",

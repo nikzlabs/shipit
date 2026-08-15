@@ -55,7 +55,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
-import simpleGit from "simple-git";
+import { safeSimpleGit } from "../shared/git-hooks-guard.js";
 import { parse as parseYaml } from "yaml";
 import type { DeclaredPluginRepo, PluginExport } from "../shared/plugin-repos.js";
 import { parsePluginExports, destinationKey, declaredRefLabel } from "../shared/plugin-repos.js";
@@ -926,7 +926,7 @@ async function resolveCommit(
   repo: DeclaredPluginRepo,
   deps: ActivateDeps,
 ): Promise<{ commit: string; warning?: string }> {
-  const git = simpleGit(deps.bareCacheDir);
+  const git = safeSimpleGit(deps.bareCacheDir);
 
   if (repo.pin) {
     if (SHA_RE.test(repo.pin)) return { commit: repo.pin.toLowerCase() };
@@ -956,7 +956,7 @@ async function resolveCommit(
  * must not swallow.
  */
 async function revParse(
-  git: ReturnType<typeof simpleGit>,
+  git: ReturnType<typeof safeSimpleGit>,
   repo: DeclaredPluginRepo,
   rev: string,
 ): Promise<string> {
@@ -979,14 +979,14 @@ async function revParse(
 }
 
 async function defaultBranch(bareCacheDir: string): Promise<string> {
-  const head = (await simpleGit(bareCacheDir).raw(["symbolic-ref", "--short", "HEAD"])).trim();
+  const head = (await safeSimpleGit(bareCacheDir).raw(["symbolic-ref", "--short", "HEAD"])).trim();
   return head || "main";
 }
 
 /** Materialize `commit` into `targetDir` from the bare cache (hardlinked objects). */
 async function checkoutCommit(bareCacheDir: string, targetDir: string, commit: string): Promise<void> {
-  await simpleGit().raw(["clone", "--local", "--no-checkout", bareCacheDir, targetDir]);
-  const git = simpleGit(targetDir);
+  await safeSimpleGit().raw(["clone", "--local", "--no-checkout", bareCacheDir, targetDir]);
+  const git = safeSimpleGit(targetDir);
   await git.raw(["config", "gc.auto", "0"]);
   await git.raw(["checkout", "--detach", commit]);
 }

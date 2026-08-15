@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { killChild } from "../shared/kill-child.js";
+import { gitArgsWithHooksDisabled } from "../shared/git-hooks-guard.js";
 
 /**
  * Git LFS support for session provisioning (docs/231).
@@ -104,7 +105,7 @@ export function runGit(args: string[], cwd: string, timeoutMs: number): Promise<
   return new Promise((resolve) => {
     let proc;
     try {
-      proc = spawn("git", args, {
+      proc = spawn("git", gitArgsWithHooksDisabled(args), {
         cwd,
         env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
         stdio: ["ignore", "pipe", "pipe"],

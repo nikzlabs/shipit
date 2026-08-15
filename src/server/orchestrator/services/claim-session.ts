@@ -19,7 +19,7 @@ import { existsSync, unlinkSync } from "node:fs";
 import { sessionStateDirForWorkspace, sessionSharedStateDir, INSTALL_MARKER_FILE } from "../session-state-dir.js";
 import { rm } from "node:fs/promises";
 import path from "node:path";
-import simpleGit from "simple-git";
+import { safeSimpleGit } from "../../shared/git-hooks-guard.js";
 import type { SessionManager } from "../sessions.js";
 import type { GitManager } from "../../shared/git.js";
 import type { RepoGit } from "../repo-git.js";
@@ -420,7 +420,7 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
         }
         const branchArgs = ["checkout", "-b", branchPrefix];
         if (resetTarget) branchArgs.push(resetTarget);
-        await simpleGit(workspaceDir).raw(branchArgs);
+        await safeSimpleGit(workspaceDir).raw(branchArgs);
 
         // Realign local `main` with `origin/main` (see syncLocalDefaultBranchToOrigin):
         // the branch was just cut from the freshly-fetched `origin/HEAD`, but

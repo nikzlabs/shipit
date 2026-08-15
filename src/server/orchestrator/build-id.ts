@@ -2,13 +2,14 @@ import { execFileSync } from "node:child_process";
 import { HOST_REPO_DIR } from "./release-channel.js";
 import type { ReleaseChannel } from "./release-channel.js";
 import type { VersionInfo } from "../shared/types.js";
+import { gitArgsWithHooksDisabled } from "../shared/git-hooks-guard.js";
 
 export function resolveBuildId(env: NodeJS.ProcessEnv = process.env): string | undefined {
   const explicit = normalizeBuildId(env.SHIPIT_BUILD_ID);
   if (explicit) return explicit;
 
   try {
-    return normalizeBuildId(execFileSync("git", ["rev-parse", "HEAD"], {
+    return normalizeBuildId(execFileSync("git", gitArgsWithHooksDisabled(["rev-parse", "HEAD"]), {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
     }));
@@ -24,7 +25,7 @@ export function normalizeBuildId(buildId: string | undefined): string | undefine
 
 function gitInHostRepo(args: string[]): string | undefined {
   try {
-    return execFileSync("git", args, {
+    return execFileSync("git", gitArgsWithHooksDisabled(args), {
       cwd: HOST_REPO_DIR,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],

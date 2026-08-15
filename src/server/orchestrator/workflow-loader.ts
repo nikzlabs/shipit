@@ -28,7 +28,7 @@
  * to "treat as always-applies", which preserves the conservative behavior.
  */
 
-import simpleGit from "simple-git";
+import { safeSimpleGit } from "../shared/git-hooks-guard.js";
 import { parse as parseYaml } from "yaml";
 
 /** PR-relevant trigger event names (we ignore manual/scheduled triggers). */
@@ -98,7 +98,7 @@ export interface PrTriggerContext {
 export async function loadAndParseWorkflows(
   bareRepoDir: string,
 ): Promise<ParsedWorkflow[] | null> {
-  const git = simpleGit(bareRepoDir);
+  const git = safeSimpleGit(bareRepoDir);
   let lsTreeOutput: string;
   try {
     lsTreeOutput = await git.raw([

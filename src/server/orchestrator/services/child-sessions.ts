@@ -7,7 +7,7 @@
  * with its own clone, branch, chat history, and runner.
  */
 
-import simpleGit from "simple-git";
+import { safeSimpleGit } from "../../shared/git-hooks-guard.js";
 import type { SessionManager } from "../sessions.js";
 import type { SessionRunnerRegistry, SessionRunnerInterface } from "../session-runner.js";
 import type { SessionInfo, AgentId, SessionMergeWatch } from "../../shared/types.js";
@@ -455,7 +455,7 @@ export async function spawnChildSession(
   // verbatim instead of renaming.
   let branchName: string;
   try {
-    branchName = (await simpleGit(newWorkspaceDir).raw(["branch", "--show-current"])).trim();
+    branchName = (await safeSimpleGit(newWorkspaceDir).raw(["branch", "--show-current"])).trim();
     if (!branchName) {
       throw new Error("claim produced an empty branch name");
     }
@@ -470,7 +470,7 @@ export async function spawnChildSession(
   // yet. Generic fan-out spawns pass no `base` and stay on `origin/main`.
   if (opts.base) {
     try {
-      await simpleGit(newWorkspaceDir).raw(["reset", "--hard", opts.base]);
+      await safeSimpleGit(newWorkspaceDir).raw(["reset", "--hard", opts.base]);
     } catch (err) {
       throw new ServiceError(400, `Failed to reset to base '${opts.base}': ${String(err)}`);
     }

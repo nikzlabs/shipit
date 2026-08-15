@@ -1,5 +1,5 @@
 import fs from "node:fs/promises";
-import simpleGit from "simple-git";
+import { safeSimpleGit } from "../shared/git-hooks-guard.js";
 import type { RepoStore } from "./repo-store.js";
 import type { SessionManager } from "./sessions.js";
 import type { RepoGit } from "./repo-git.js";
@@ -163,7 +163,7 @@ export function createWarmPool(
         }
         const branchArgs = ["checkout", "-b", branchPrefix];
         if (resetTarget) branchArgs.push(resetTarget);
-        await simpleGit(workspaceDir).raw(branchArgs);
+        await safeSimpleGit(workspaceDir).raw(branchArgs);
 
         // Realign the local default branch (`main`) with `origin/main` so a
         // later "review the PR" comparison against `main` doesn't pick up
