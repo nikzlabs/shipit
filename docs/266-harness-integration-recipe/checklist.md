@@ -7,4 +7,4 @@
 - [x] Write the recipe (`plan.md`)
 - [x] Write candidate fact sheets (`candidates.md`)
 - [x] Mark `docs/158-add-an-agent` as superseded
-- [ ] Independent reviewer pass against the numbered requirements
+- [x] Independent reviewer pass against the numbered requirements (findings verified at source and applied)

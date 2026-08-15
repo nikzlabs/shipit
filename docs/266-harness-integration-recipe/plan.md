@@ -26,10 +26,11 @@ which CLI is running.
 
 - **The adapter contract** is `AgentProcess`
   (`src/server/shared/types/agent-types.ts:1174`): an
-  `EventEmitter<AgentProcessEvents>` with `run()`, `writeStdin()`,
-  `sendUserMessage()`, `interrupt()`, `kill()`, `isStreaming`,
-  `writeMcpConfig()`, and optional `setPermissionMode()`, `compact()`,
-  `setPermissionRequester()`. It emits the normalized thirteen-member
+  `EventEmitter<AgentProcessEvents>` with `agentId`, `capabilities`,
+  `run()`, `writeStdin()`, `sendUserMessage()`, `interrupt()`, `kill()`,
+  `isStreaming`, `writeMcpConfig()`, and optional `setPermissionMode()`,
+  `compact()`, `setPermissionRequester()`, `resolvePermission()`
+  (ProxyAgentProcess only), `setDeliveryId()`. It emits the normalized thirteen-member
   `AgentEvent` union (`agent-types.ts:919`): `agent_init`, `agent_assistant`,
   `agent_tool_result`, `agent_result`, `agent_rate_limits`,
   `agent_steer_rejected`, `agent_user_replay`, `agent_compaction_started`,
@@ -64,14 +65,19 @@ which CLI is running.
   (`orchestrator/proxy-agent-process.ts`) and the whole orchestrator↔worker
   HTTP/SSE plumbing are agent-agnostic. Never read its hardcoded
   `capabilities` stub for a real decision — resolve through `AgentRegistry`.
-  The `shipit`/`shipit-agent` shims and the worker wire contract
-  (`worker-wire-contract.test.ts` deliberately types `agentId` as `string`)
-  are likewise untouched.
+  The worker wire contract (`worker-wire-contract.test.ts` deliberately
+  types `agentId` as `string`) is likewise untouched. The
+  `shipit`/`shipit-agent` shims parse generically, but 🚩 their *help text*
+  hardcodes `--agent claude|codex` (`session/agent-shim/shipit.ts:118,270`).
 
 ## Phase 0 — assess the candidate before writing code (req 4)
 
-A candidate CLI must answer all of these; a "no" on 1–4 blocks integration,
-a "no" elsewhere is a capability flag honestly set to `false`.
+A candidate CLI must answer all of these. Blocker semantics: a "no" on 1–4
+blocks integration outright; a "no" on 5 (no injectable auth path) or 6 (no
+pinnable install) blocks until an explicit design/policy decision is signed
+off — neither is improvisable; a "no" or "unknown" on 12 blocks the
+*reviewer* wiring specifically (see step 4); everything else is a capability
+flag honestly set to `false`.
 
 1. **Headless mode**: accepts a prompt non-interactively (no TTY) and runs a
    full agentic turn to completion in a Docker container.
@@ -107,7 +113,18 @@ a "no" elsewhere is a capability flag honestly set to `false`.
     recall; ShipIt only proves how it drives the local CLI
     (`docs/252-custom-models/catalogue.md`, "verified negatives").
 12. **Reasoning-effort control**: flag, config key, or none
-    (`capabilities.reasoning`, `REVIEWER_DEFAULT_EFFORT`).
+    (`capabilities.reasoning`). A harness with *no* reasoning levels
+    currently fails `reviewer-model.test.ts:192` ("names a level every
+    harness actually offers" asserts a non-empty option list per harness) —
+    verified at source; integrating such a CLI requires first extending the
+    reviewer-default mechanism, a design decision, not a recipe step.
+13. **The remaining `AgentCapabilities` declarations**, answered honestly
+    up front: image input (`supportsImages`), mid-turn steering
+    (`supportsSteering`), resident-process turn behavior (`startsOwnTurns`),
+    native compaction (`supportsCompaction`), review usability
+    (`supportsReview`), and the skill invocation prefix — each shapes UI and
+    turn plumbing, and a wrong guess here surfaces as runtime behavior, not
+    a type error.
 
 ## The recipe
 
@@ -154,13 +171,15 @@ are **silent**: no compile error and no existing test fails if you miss them.
   default set changes — `agent-cli-install.test.ts` asserts the literal and
   enumerates the Dockerfiles.
 - 🚩 Credential symlinks are hand-written per backend in
-  `Dockerfile.session-worker.prod` (~`:271`), `.dev` (~`:175`), and
-  `Dockerfile.prod` (~`:101`): `ln -s /credentials/<dotfiles>` + `chown -h`.
-  Miss this and credentials never reach the CLI.
+  `Dockerfile.session-worker.prod` (~`:271`), `.dev` (~`:175`) — both
+  `ln -s /credentials/<dotfiles>` + `chown -h` — and `Dockerfile.prod`
+  (~`:101`, root, symlinks only). Miss this and credentials never reach the
+  CLI.
 - `deployment/vps/setup.sh`: `SUPPORTED_HARNESSES` (~`:294`) — guard-tested —
   plus 🚩 the interactive prompt's hardcoded `[claude,codex]` copy (~`:319`),
   which is not.
-- `docker/local/prod/compose.yml` `SHIPIT_HARNESSES` defaults (×2).
+- `docker/local/prod/compose.yml` `SHIPIT_HARNESSES` defaults (×2) and 🚩
+  `deployment/vps/docker-compose.yml:26,167` (same default, un-guard-tested).
 - Note: `agent-cli-install.test.ts:189` uses `cursor` as its *bogus-id*
   fixture — repick if you're adding Cursor.
 
@@ -182,11 +201,21 @@ guard-tested), client `harnessNames`
 (`Settings/ProviderAccountRows.tsx:91`).
 
 Also compiler-forced: the `switch` in `buildLocalAgentFactory`
-(`orchestrator/app-di.ts:702` — exhaustive `never` default) and the four
-runtime tables in `orchestrator/agents/index.ts` (`authManagers` — keyed by
-`LoginIntegrationId` —, `limitsProviders`, `runParamsPreps`,
-`parallelSessionsSections`; the file header states the rule: one new folder +
-one entry per table).
+(`orchestrator/app-di.ts:702` — exhaustive `never` default).
+
+🚩 **Not** compiler-forced, despite looking like it: the four runtime tables
+in `orchestrator/agents/index.ts` (`buildAgentRuntime`) are ordinary `Map`s
+— widening `AgentId` does not error on a missing entry. `authManagers` is
+keyed by `LoginIntegrationId` (self-keyed from each manager's `loginId`, so
+it can't disagree with what it holds); `limitsProviders`, `runParamsPreps`,
+and `parallelSessionsSections` are `Map<AgentId, …>` appended by hand — the
+file header states the rule (one new folder + one entry per map), but only
+review enforces it. Separately, `agent-instructions.ts:41` has its **own**
+local `PARALLEL_SESSIONS_SECTIONS` map, deliberately *not* derived from
+`buildAgentRuntime`'s (static module constants; also used by the Settings
+baseline path with no app-DI context) — missing it silently gives the new
+backend no parallel-sessions prompt fragment, and `PRECOMPUTED_INSTRUCTIONS`
+grows from *this* map's keys, not the runtime one's.
 
 ### 5. 🚩 The silent sites — nothing forces these; work the list
 
@@ -200,8 +229,8 @@ String-literal validators that **drop or reject a new id**:
 - `agent-registry.ts:226` `AUTH_ENV_KEYS` if the CLI has a key env var.
 - `orchestrator/session-agent-credentials.ts:92,149` — persisted
   resident-route JSON parsing; a new id is silently dropped on read.
-- `orchestrator/services/sessions.ts:356` — DB-row `agent_id` validator;
-  same failure on SQLite read-back.
+- `orchestrator/sessions.ts:356` — DB-row `agent_id` validator; same
+  failure on SQLite read-back.
 - `orchestrator/services/settings.ts:1242` `requireAccountService` — the
   provider-account HTTP surface throws 400 for any new id.
 - `orchestrator/api-routes-files.ts:290,298` and
@@ -209,7 +238,8 @@ String-literal validators that **drop or reject a new id**:
   Codex-only built-in-skills branch (the disable comment names the fix: an
   optional `getBuiltinSkills?()` method).
 - `client/utils/local-storage.ts:122,182` — saved-agent and parked-harness
-  validators; a new id round-trips to `"claude"`.
+  validators; an unknown saved agent falls back to `"claude"`, an unknown
+  parked harness is dropped (`undefined`).
 - Defaults: `app-di.ts:611` (default agent), `keep-preview-running.ts:27`,
   `services/session-fork-merge.ts:113` — `?? "claude"` fallbacks; audit
   whether each should learn the new id.
@@ -227,6 +257,16 @@ String-literal validators that **drop or reject a new id**:
 - MCP tool subsets are hardcoded **inside each adapter**
   (`claude/adapter.ts:578`, `codex/adapter.ts:597`) — the new adapter picks
   its own `SHIPIT_MCP_TOOLS` list; nothing centralizes it.
+- `orchestrator/session-agent-credentials.ts:333,373` —
+  `POST_PROVISION_CONFIG` / `LOCAL_WORKSPACE_TRUST`, optional
+  (`Partial<Record<…>>`) per-agent hooks for post-provision config seeding
+  and workspace-trust suppression. Claude-only today; the extension point
+  for a CLI with onboarding or workspace-trust prompts (Cursor's `--trust`).
+- `session/agent-shim/shipit.ts:118,270` — the shim help text's
+  `--agent claude|codex` copy.
+- `client/components/MessageList/cards/SubAgentCards.tsx:14` —
+  `SUB_AGENT_DISPLAY_NAMES`; a missing entry shows the raw id on
+  consult/spawn cards.
 
 ### 6. The session adapter — `src/server/session/agents/<id>/`
 

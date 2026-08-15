@@ -7,6 +7,35 @@ Assessed 2026-08-15 against the Phase 0 checklist in [plan.md](./plan.md)
 ship fast; re-verify against `--help` output when integration starts. Items
 marked *(third-party)* come from community references, not vendor docs.
 
+## Assessment matrix
+
+Explicit outcome per Phase 0 item: ✅ documented by the vendor, ⚠️ partial
+or caveated, ❌ absent, ❓ unknown — an unknown is an open research item,
+and on items 2, 5, 6, and 12 it is a start-blocker per plan.md's blocker
+semantics, not a shrug.
+
+| Phase 0 item | Cursor CLI | Grok Build | OpenCode |
+|---|---|---|---|
+| 1. Headless mode | ✅ `-p` | ✅ `-p` | ✅ `run` |
+| 2. Streaming schema | ✅ documented NDJSON | ❓ undocumented — capture + conformance test required | ⚠️ documented but coarse; loss bugs (see verdict) |
+| 3. Session resume | ✅ | ✅ | ✅ |
+| 4. Full-auto permissions | ✅ `--force` + allow/deny | ✅ `--always-approve` + modes | ✅ `--auto` + config |
+| 5. Auth injectable | ⚠️ key env ✅ / subscription ❓ (path undocumented) | ✅ `~/.grok/auth.json`; device-auth *(third-party)* | ✅ plain file; ❌ no Anthropic subscription |
+| 6. Pinnable install | ❌ none documented — policy gate | ⚠️ pinned install script *(third-party)* | ✅ npm exact |
+| 7. Instructions | ✅ AGENTS.md/CLAUDE.md | ✅ AGENTS.md | ✅ AGENTS.md |
+| 8. MCP | ✅ `mcp.json` | ✅ `config.toml` | ✅ `opencode.json` |
+| 9. Skills disclosure | ❓ empirical, untested | ❓ empirical, untested | ❓ empirical, untested |
+| 10. Token telemetry | ❌ none in result event | ❓ claimed in stream, schema unverified | ✅ per-step tokens + cost (verify overlap) |
+| 11. API style to redirected endpoint | ❓ (service-fused; likely none) | ❓ | ❓ (many claimed) |
+| 12. Reasoning control | ❓ | ❓ | ⚠️ `reasoningEffort` config *(per docs/252 survey)* |
+| 13. Remaining capability flags | ❓ empirical | ❓ empirical | ❓ empirical |
+
+Row 12 matters more than it looks: a harness that turns out to have *no*
+reasoning levels hits the `reviewer-model.test.ts` constraint (plan.md
+Phase 0.12) and needs a reviewer-default design decision before any recipe
+step. Rows 9 and 13 are empirical-by-design for every candidate — they are
+Phase 10 verification work, not desk research.
+
 ## Cursor CLI
 
 - **Binary / install**: `agent` (renamed from `cursor-agent`);
@@ -37,9 +66,14 @@ marked *(third-party)* come from community references, not vendor docs.
   `WebFetch()`/`Mcp()` tokens in `cli-config.json`, deny wins; own
   `--sandbox` flags.
 - **Verdict**: protocol-wise the easiest — the surface closely parallels
-  Claude Code (Claude-shaped adapter). Two real frictions: version pinning
-  (image-bake required) and undocumented credential storage for
-  subscription auth.
+  Claude Code (Claude-shaped adapter). But on the recipe's own blocker
+  semantics, **integration is blocked until the pinning question is
+  settled**: baking the binary into the image freezes one build, it does
+  not make *acquisition* exact or reproducible, so starting requires either
+  a pin-capable distribution path from Cursor or an explicitly signed-off
+  exception to the dependency policy. Subscription credential storage being
+  undocumented is the second start-blocker (item 5) unless metered API-key
+  auth is accepted for launch.
 
 ## Grok Build (xAI)
 
@@ -69,10 +103,13 @@ projects are unrelated.
   MCP in `~/.grok/config.toml` / project `.grok/config.toml`
   (`[mcp_servers]`, stdio + HTTP); Claude-Code-style `--permission-mode`
   and `--allow`/`--deny` rules plus `--always-approve`.
-- **Verdict**: nominally complete against the checklist and deliberately
-  Claude-flag-compatible (Claude-shaped adapter), but immature: undocumented
-  stream schema, much detail only third-party-sourced, beta subscription
-  gating, defensive parsing required.
+- **Verdict**: deliberately Claude-flag-compatible (Claude-shaped adapter),
+  but the matrix shows four unknowns — stream schema, token telemetry,
+  reasoning control, API style — of which the stream schema is a
+  start-blocker (item 2) until captured and conformance-tested. Add the
+  third-party sourcing of most flag detail, beta subscription gating, and
+  0.x churn: the fact sheet is promising but not yet integration-ready
+  evidence.
 
 ## OpenCode
 
@@ -112,7 +149,12 @@ projects are unrelated.
 - **Verdict**: easiest overall — pinnable, open source, plain-file auth,
   documented permissions, and the serve API option. Costs: coarse event
   stream with known loss bugs, fast-churn version bumps, and no Anthropic
-  subscription path.
+  subscription path. The loss bugs don't fail Phase 0 item 2, but only
+  under an explicit conformance criterion the adapter must meet: **treat
+  process exit as the synthesized terminal result** (exit code + last
+  captured state) whenever the final `step_finish` never arrives, and lock
+  that behavior with a test — the same "every terminal path commits" shape
+  ShipIt already applies to crashed agents.
 
 ## Cross-cutting
 
@@ -120,8 +162,9 @@ projects are unrelated.
   spawn-per-turn adapters. OpenCode is the outlier rewarding attach-to-server.
 - The two facts most likely to force design decisions: Cursor's
   unpinnable auto-updating install, and Grok's undocumented stream schema.
-- Suggested order by integration risk (lowest first): OpenCode, Cursor,
-  Grok.
+- Suggested order by integration risk (lowest first): OpenCode, then
+  Cursor and Grok — each of which carries a start-blocker to clear first
+  (Cursor: the pinning policy decision; Grok: stream-schema capture).
 
 ## Sources
 
