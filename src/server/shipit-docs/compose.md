@@ -530,9 +530,10 @@ services:
 - **Keep top-level `volumes:` and `networks:` plain.** A named volume must be an
   ordinary Compose-managed one (`pgdata:` with nothing under it, or just
   `labels:`), and a network an ordinary `bridge`. ShipIt rejects the whole file
-  when either block carries `driver_opts:`, `external:`, a `name:` override, a
-  non-`local` volume driver, a non-`bridge` network driver, or (networks)
-  `ipam:`. Those attach storage or networking the session did not create:
+  when either block carries options under `driver_opts:`, a true `external:`, a
+  `name:` override, a non-`local` volume driver, a non-`bridge` network driver,
+  or (networks) an `ipam:` config. An empty `driver_opts: {}` or `ipam: {}` is
+  fine — it asks for nothing. Those attach storage or networking the session did not create:
   `driver_opts: {type: none, device: /…, o: bind}` is a host bind mount written
   as a volume, and `driver: macvlan` puts the container on the host's own
   network segment. For scratch space use a service's `tmpfs:` instead.

@@ -811,6 +811,41 @@ function showValue(value: unknown): string {
 }
 
 /**
+ * Does an options map (`driver_opts:`, `ipam:`) actually carry an option?
+ *
+ * `driver_opts: {}` and `ipam: {}` are accepted by Compose and reach nothing —
+ * a templating layer emits them for a case that produced no options (review
+ * finding). Refusing them is a false refusal with no safety to show for it. An
+ * absent key and an empty map are the same statement; anything else is not.
+ */
+function hasOptions(value: unknown): boolean {
+  if (value === undefined || value === null) return false;
+  if (typeof value === "object" && !Array.isArray(value)) {
+    return Object.keys(value).length > 0;
+  }
+  // A scalar or a list where Compose expects a mapping: not empty, not
+  // understood, and not something to wave through.
+  return true;
+}
+
+/**
+ * Is `value` a compose `external:` that means "not external"?
+ *
+ * Only the FALSE spellings are enumerated, and only the ones verified to be
+ * read that way, because the two directions are not symmetric: admitting one
+ * Compose reads as TRUE attaches a foreign volume, while refusing one it reads
+ * as false costs a user a clear error on a spelling nobody uses on purpose. So
+ * `false` and any casing of `"false"` (Compose coerces quoted booleans
+ * case-insensitively — review finding, compose-go `loader/interpolate.go`) are
+ * admitted, and `no` / `off` / `0` are left to be refused rather than added on
+ * the strength of a guess about a second coercion path.
+ */
+function meansNotExternal(value: unknown): boolean {
+  if (value === undefined || value === false) return true;
+  return typeof value === "string" && value.trim().toLowerCase() === "false";
+}
+
+/**
  * The top-level `volumes:` block (planning#386).
  *
  * The `volumes:` rule inside {@link validateServiceSecurity} refuses a host path
@@ -873,7 +908,7 @@ function validateTopLevelVolumes(block: unknown): void {
       );
     }
     const vol = entry as Record<string, unknown>;
-    if (vol.driver_opts !== undefined) {
+    if (hasOptions(vol.driver_opts)) {
       throw new ComposeValidationError(
         `Volume \`${name}\`: \`driver_opts\` is not allowed. They can attach a host path `
         + "or a remote filesystem to the session (`type: none` + `device:` is a bind mount). "
@@ -886,10 +921,10 @@ function validateTopLevelVolumes(block: unknown): void {
         + "Only Docker's built-in `local` driver is supported.",
       );
     }
-    // `external: false` is the default written out; only a truthy one attaches
-    // pre-existing storage. The legacy `external: { name: … }` object form is
-    // truthy too, and is caught by the same test.
-    if (vol.external !== undefined && vol.external !== false && vol.external !== "false") {
+    // Only a value that does NOT mean false attaches pre-existing storage. The
+    // legacy `external: { name: … }` object form is one such, and is caught by
+    // the same test.
+    if (!meansNotExternal(vol.external)) {
       throw new ComposeValidationError(
         `Volume \`${name}\`: \`external\` volumes are not allowed. They attach storage this `
         + "session did not create, including volumes belonging to other sessions.",
@@ -965,15 +1000,15 @@ function validateTopLevelNetworks(block: unknown): void {
         + "container to the host's own network segment.",
       );
     }
-    if (net.driver_opts !== undefined || net.ipam !== undefined) {
-      const key = net.driver_opts !== undefined ? "driver_opts" : "ipam";
+    if (hasOptions(net.driver_opts) || hasOptions(net.ipam)) {
+      const key = hasOptions(net.driver_opts) ? "driver_opts" : "ipam";
       throw new ComposeValidationError(
         `Network \`${name}\`: \`${key}\` is not allowed. It reaches host networking — a bridge `
         + "name is a host interface, and an address pool decides what a container presents as "
         + "its source IP. Declare the network with no options.",
       );
     }
-    if (net.external !== undefined && net.external !== false && net.external !== "false") {
+    if (!meansNotExternal(net.external)) {
       throw new ComposeValidationError(
         `Network \`${name}\`: \`external\` networks are not allowed. They join a network this `
         + "session did not create, including networks belonging to other sessions.",
@@ -995,10 +1030,16 @@ function validateTopLevelNetworks(block: unknown): void {
  * closing the sibling blocks (planning#386) rather than left unexamined:
  *
  *  - `content:` (configs) is an inline literal — it reaches nothing.
- *  - `external: true` / `name:` resolve against SWARM secrets and configs, which
- *    a non-swarm daemon does not have; Compose fails the file rather than
- *    finding something. Unlike the volumes and networks blocks, where the same
- *    keys resolve against ordinary daemon objects that DO exist.
+ *  - `external: true` / `name:` never become a host-file read. A referenced
+ *    external secret or config is refused by Compose itself as UNSUPPORTED —
+ *    not looked up and not found missing (`docker/compose` `pkg/compose/create.go`,
+ *    review finding; an earlier draft of this comment said it resolved against
+ *    swarm objects a non-swarm daemon lacks, which reached the same verdict by
+ *    a mechanism that does not exist). A bare `name:` fails source validation
+ *    instead. Either way there is no path from these two keys to a file. This
+ *    is the difference from the volumes and networks blocks, where the same
+ *    keys name ordinary daemon objects that DO exist and belong to other
+ *    sessions — which is why they are refused there and left here.
  *  - `environment: VAR` materializes a value from the environment Compose is
  *    interpolating with, which is `composeSpawnEnv()`'s allowlist plus the
  *    project's own `.env`. It is deliberately NOT refused: the allowlist
