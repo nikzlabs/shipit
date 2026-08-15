@@ -1278,26 +1278,7 @@ export class ServiceManager extends EventEmitter {
     await this.secrets.sync(parsedServices, this.pluginServices);
 
     // Generate override
-    const userNamedVolumes = parseUserNamedVolumes(composePath);
-    const dockerSecretsBuild = this.secrets.getDockerSecretsBuild();
-    const serviceEnvFiles = this.secrets.getServiceEnvFiles();
-    const pluginServiceEnv = this.secrets.getPluginServiceEnv();
-    const overrideOpts: ComposeOverrideOptions = {
-      sessionId: this.sessionId,
-      composeConfig: this.composeConfig,
-      workspaceVolume: this.workspaceVolume,
-      workspaceSubpath: this.workspaceSubpath,
-      stackName: this.stackName,
-      userNamedVolumes,
-      ...(this.containServicesFn ? { containEgress: true } : {}),
-      ...(this.containServiceDns ? { containDns: true } : {}),
-      ...(this.containServiceProxy ? { containProxy: true } : {}),
-      ...(dockerSecretsBuild ? { dockerSecrets: dockerSecretsBuild } : {}),
-      ...(serviceEnvFiles ? { serviceEnvFiles } : {}),
-      ...(pluginServiceEnv ? { pluginServiceEnv } : {}),
-      ...(this.overlayDepDirs.length > 0 ? { overlayDepDirs: this.overlayDepDirs } : {}),
-    };
-    const overrideContent = generateComposeOverride(overrideServices, overrideOpts);
+    const overrideContent = generateComposeOverride(overrideServices, this.buildOverrideOptions());
     writeComposeOverride(this.overrideDir, overrideContent);
 
     // Mark auto services as starting (silently — _startupComplete is false)
@@ -1863,31 +1844,14 @@ export class ServiceManager extends EventEmitter {
     // before it existed. That is the same disagreement req 23 forbids, one
     // rebuild later.
     const dockerSecretsBuild = this.secrets.getDockerSecretsBuild();
-    const pluginServiceEnv = this.secrets.getPluginServiceEnv();
     if (dockerSecretsBuild || this.pluginServices.length > 0) {
-      const composePath = path.join(this.workspaceDir, this.composeConfig.file);
-      const userNamedVolumes = parseUserNamedVolumes(composePath);
-      const overrideOpts: ComposeOverrideOptions = {
-        sessionId: this.sessionId,
-        composeConfig: this.composeConfig,
-        userNamedVolumes,
-        ...(this.workspaceVolume ? { workspaceVolume: this.workspaceVolume } : {}),
-        ...(this.workspaceSubpath ? { workspaceSubpath: this.workspaceSubpath } : {}),
-        ...(this.stackName ? { stackName: this.stackName } : {}),
-        ...(this.containServicesFn ? { containEgress: true } : {}),
-        ...(this.containServiceDns ? { containDns: true } : {}),
-        ...(this.containServiceProxy ? { containProxy: true } : {}),
-        ...(this.overlayDepDirs.length > 0 ? { overlayDepDirs: this.overlayDepDirs } : {}),
-        ...(pluginServiceEnv ? { pluginServiceEnv } : {}),
-        ...(dockerSecretsBuild ? { dockerSecrets: dockerSecretsBuild } : {}),
-      };
       // docs/262 — plugin services must survive this rewrite: the override is
       // the ONLY place their definitions exist, so regenerating it from the
       // project's services alone would delete them from the stack on the next
       // secret save.
       const overrideContent = generateComposeOverride(
         [...parsedServices, ...this.pluginServices.map(toComposeService)],
-        overrideOpts,
+        this.buildOverrideOptions(),
       );
       writeComposeOverride(this.overrideDir, overrideContent);
     }
@@ -1924,6 +1888,53 @@ export class ServiceManager extends EventEmitter {
   // -----------------------------------------------------------------------
   // Private helpers
   // -----------------------------------------------------------------------
+
+  /**
+   * Every option the compose override is generated from, in ONE place.
+   *
+   * The two generation sites — `start()` and `refreshSecrets()` — used to build
+   * this object separately, and `refreshSecrets()` omitted `serviceEnvFiles`.
+   * That was invisible for as long as its regeneration branch was
+   * Docker-secrets-only (that mode delivers via `secrets:`, so the omitted
+   * option is genuinely unused). docs/262 widened the branch to
+   * `dockerSecretsBuild || this.pluginServices.length > 0`, and from then on any
+   * session surfacing a plugin service rewrote its override on every secret
+   * save WITHOUT the `env_file:` entries — silently stripping every project
+   * service's `x-shipit-secrets` delivery, for the whole session, with no error
+   * anywhere. The dogfood `dev` service simply stopped receiving `GITHUB_TOKEN`
+   * and every provider key.
+   *
+   * So the fix is not "add the missing line back": it is that there is no
+   * second place to forget it. What this does NOT establish is atomicity: it
+   * reads the resolver's live state through its getters, and override writers
+   * are not serialized against each other (`refreshSecrets()` is called
+   * fire-and-forget per session from two places), so a concurrent pass can land
+   * between the `sync()` a caller awaited and the read here. That race predates
+   * this and is not what stripped the env files; it is called out so the shape
+   * of the guarantee is not overstated — every option comes from ONE place, not
+   * from one instant.
+   */
+  private buildOverrideOptions(): ComposeOverrideOptions {
+    const composePath = path.join(this.workspaceDir, this.composeConfig.file);
+    const dockerSecretsBuild = this.secrets.getDockerSecretsBuild();
+    const serviceEnvFiles = this.secrets.getServiceEnvFiles();
+    const pluginServiceEnv = this.secrets.getPluginServiceEnv();
+    return {
+      sessionId: this.sessionId,
+      composeConfig: this.composeConfig,
+      workspaceVolume: this.workspaceVolume,
+      workspaceSubpath: this.workspaceSubpath,
+      stackName: this.stackName,
+      userNamedVolumes: parseUserNamedVolumes(composePath),
+      ...(this.containServicesFn ? { containEgress: true } : {}),
+      ...(this.containServiceDns ? { containDns: true } : {}),
+      ...(this.containServiceProxy ? { containProxy: true } : {}),
+      ...(dockerSecretsBuild ? { dockerSecrets: dockerSecretsBuild } : {}),
+      ...(serviceEnvFiles ? { serviceEnvFiles } : {}),
+      ...(pluginServiceEnv ? { pluginServiceEnv } : {}),
+      ...(this.overlayDepDirs.length > 0 ? { overlayDepDirs: this.overlayDepDirs } : {}),
+    };
+  }
 
   /**
    * Parse and security-validate the project's own compose file.

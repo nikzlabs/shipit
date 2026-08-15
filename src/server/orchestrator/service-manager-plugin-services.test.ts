@@ -327,4 +327,50 @@ describe("plugin credential delivery, end to end (req 23)", () => {
     expect(Object.keys(readOverride(workspaceDir).services).sort()).toEqual(["probe", "web"]);
     await mgr.stop();
   });
+
+  /**
+   * The regression this file's own widening caused, and the reason it went a
+   * day unnoticed: an absent environment variable produces no error anywhere.
+   *
+   * `refreshSecrets()` regenerates the override whenever the session surfaces a
+   * plugin service — the branch directly above needs that. It built its own
+   * option object and omitted `serviceEnvFiles`, which was harmless while the
+   * branch was Docker-secrets-only (that mode doesn't use `env_file:`) and
+   * silently fatal afterwards: saving ANY secret stripped the `env_file:` line
+   * from every project service, so the whole stack lost its `x-shipit-secrets`
+   * on the next start and kept losing them for the rest of the session.
+   *
+   * Asserted on the project service, on the save path, with a plugin present —
+   * all three are required to reproduce it.
+   *
+   * The save also newly satisfies a credential the PLUGIN declared, so the
+   * override provably gets rewritten between the two reads. Without that, a
+   * `refreshSecrets()` that stopped regenerating the override at all would
+   * leave `start()`'s correct `env_file:` in place and the test would pass for
+   * the wrong reason.
+   */
+  it("a secret save keeps every project service's env_file — the plugin path must not strip it", async () => {
+    const workspaceDir = setup(
+      "services:\n  web:\n    image: node:20\n    x-shipit-secrets:\n      - GITHUB_TOKEN\n",
+    );
+    let stored: Record<string, string> = { GITHUB_TOKEN: "ghp_old" };
+    const mgr = createManager(workspaceDir, { userSecrets: () => stored });
+    mgr.setPluginServices([pluginService({ credentials: ["FAL_KEY"] })]);
+    await mgr.start();
+
+    const envFile = path.join(sessionDir, "service-env", "11111111-2222-3333-4444-555555555555", ".env.web");
+    expect(readOverride(workspaceDir).services.web.env_file).toEqual([envFile]);
+    expect(envOf(workspaceDir).FAL_KEY).toBeUndefined();
+
+    stored = { GITHUB_TOKEN: "ghp_new", FAL_KEY: "sk-live" };
+    await mgr.refreshSecrets();
+
+    // The override was rewritten — the plugin's newly-satisfied credential is in it…
+    expect(envOf(workspaceDir).FAL_KEY).toBe("sk-live");
+    // …and that rewrite still points the project service at its env file…
+    expect(readOverride(workspaceDir).services.web.env_file).toEqual([envFile]);
+    // …whose contents carry the new value.
+    expect(fs.readFileSync(envFile, "utf-8")).toContain("GITHUB_TOKEN=ghp_new");
+    await mgr.stop();
+  });
 });

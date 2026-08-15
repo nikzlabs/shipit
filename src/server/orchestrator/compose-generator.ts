@@ -1365,7 +1365,24 @@ export function generateComposeOverride(
       // means `sync()` hasn't run, which is also when there is no file to point
       // at.
       const envFilePath = opts.serviceEnvFiles?.[svc.name];
-      if (envFilePath) entry.env_file = [envFilePath];
+      if (envFilePath) {
+        entry.env_file = [envFilePath];
+      } else {
+        // …and SAY SO. `sync()` writes one entry per secret-declaring service
+        // (even when every value is unset — the file is then empty), and it
+        // always runs before this, so a gap here means the caller generated the
+        // override from resolver state it never read. That is exactly how the
+        // dogfood `dev` service silently lost every secret for a whole session:
+        // `refreshSecrets()` regenerated the override without `serviceEnvFiles`
+        // and nothing anywhere reported an absent env var. The delivery is
+        // still omitted rather than guessed — there is no in-clone path to fall
+        // back to (planning#292) — but it is no longer invisible.
+        console.warn(
+          `[compose:${opts.sessionId}] service "${svc.name}" declares ` +
+            `${svc.secrets.length} x-shipit-secrets entr${svc.secrets.length === 1 ? "y" : "ies"} ` +
+            `but no env file was resolved for it — ShipIt will NOT inject those variables`,
+        );
+      }
     }
 
     // docs/183 Phase 5 — append nested overlay dep-dir mounts for services that
