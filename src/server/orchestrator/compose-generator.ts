@@ -398,6 +398,8 @@ export function parseComposeFile(
     }
   }
 
+  validateTopLevelSecrets(doc.secrets);
+
   const services = doc.services as Record<string, Record<string, unknown>> | undefined;
   if (!services || typeof services !== "object") {
     throw new ComposeValidationError("Compose file must have a `services` section");
@@ -636,6 +638,65 @@ export function validateDevices(
       throw new ComposeValidationError(
         `Service \`${name}\`: \`/dev/kvm\` passthrough is disabled on this deployment ` +
         `(SESSION_ALLOW_DEV_KVM=0). Ask the operator to enable it, or use a cloud device farm.`,
+      );
+    }
+  }
+}
+
+/**
+ * A repository's top-level `secrets:` block may only name files INSIDE its own
+ * workspace (planning#371, review finding).
+ *
+ * The `volumes:` rule below already rejects an absolute bind source, because a
+ * host path is an escape from the workspace. A `secrets:` entry is the same
+ * primitive by another name, and it was unchecked — with a second, sharper edge
+ * the volumes rule does not have:
+ *
+ *  - A **service** secret is bind-mounted at `/run/secrets/<name>` by the
+ *    DAEMON, so its `file:` resolves on the host — an arbitrary host-file read
+ *    into a contained container.
+ *  - A **build** secret (`build.secrets`, which references this same block) is
+ *    read CLIENT-side and streamed to the builder, so its `file:` resolves in
+ *    the ORCHESTRATOR's own filesystem. That is what makes it a way around
+ *    {@link composeSpawnEnv}: scrubbing the child's environment does not remove
+ *    `/proc/1/environ`, which a same-uid child can read (mode 0400, owned by
+ *    the orchestrator process). A path escaping the workspace could therefore
+ *    hand the container the very environment the spawn no longer passes.
+ *
+ * So a source must be a plain workspace-relative path: no leading `/`, no `..`,
+ * and no `${…}` — an interpolated path would be validated as the literal here
+ * and resolved to something else by Compose (`${HOME}/.docker/config.json` is
+ * the whole attack in one line).
+ *
+ * ShipIt's OWN docker-secrets mode writes absolute `file:` paths, and is
+ * unaffected: it emits them into the generated OVERRIDE, which is never parsed
+ * here. A plugin fragment cannot declare `secrets:` at all
+ * (`plugin-compose.ts`'s `ALLOWED_SERVICE_KEYS` / `ALLOWED_TOP_LEVEL_KEYS`);
+ * this covers the project file, which is the surface a plugin with `/project`
+ * write access — or the project itself — can author.
+ */
+function validateTopLevelSecrets(secrets: unknown): void {
+  if (!secrets || typeof secrets !== "object" || Array.isArray(secrets)) return;
+  for (const [name, entry] of Object.entries(secrets as Record<string, unknown>)) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const file = (entry as Record<string, unknown>).file;
+    if (typeof file !== "string" || file.length === 0) continue;
+    if (file.includes("${")) {
+      throw new ComposeValidationError(
+        `Secret \`${name}\`: variable interpolation is not allowed in a secret's \`file:\` path. `
+        + "Use a resolved path inside the workspace.",
+      );
+    }
+    if (file.startsWith("/")) {
+      throw new ComposeValidationError(
+        `Secret \`${name}\`: absolute secret path \`${file}\` is not allowed. `
+        + "Use a relative path within the workspace.",
+      );
+    }
+    if (file.includes("..")) {
+      throw new ComposeValidationError(
+        `Secret \`${name}\`: path traversal \`${file}\` is not allowed. `
+        + "Secret files must stay within the workspace.",
       );
     }
   }

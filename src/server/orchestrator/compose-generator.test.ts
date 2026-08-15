@@ -513,6 +513,71 @@ services:
     expect(() => parseComposeFile(p, { dockerSocket: false })).toThrow("Path traversal");
   });
 
+  // planning#371 (review finding) — a `secrets:` entry is the volumes rule's
+  // primitive by another name: a service secret is bind-mounted by the daemon
+  // (a host path), and a BUILD secret is read client-side, in the
+  // orchestrator's own filesystem — which is how a compose file could still
+  // reach the environment `composeSpawnEnv` stops passing.
+  it("rejects an absolute secret file path", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `
+secrets:
+  leak:
+    file: /proc/1/environ
+services:
+  web:
+    image: node:20
+    build:
+      context: .
+      secrets:
+        - leak
+`);
+    expect(() => parseComposeFile(p, { dockerSocket: false })).toThrow("absolute secret path");
+  });
+
+  it("rejects path traversal in a secret file path", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `
+secrets:
+  leak:
+    file: ../../root/.docker/config.json
+services:
+  web:
+    image: node:20
+`);
+    expect(() => parseComposeFile(p, { dockerSocket: false })).toThrow("path traversal");
+  });
+
+  // The literal is validated here and resolved by Compose, so an interpolated
+  // path would sail past both checks above.
+  it("rejects an interpolated secret file path", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `
+secrets:
+  leak:
+    file: \${HOME}/.docker/config.json
+services:
+  web:
+    image: node:20
+`);
+    expect(() => parseComposeFile(p, { dockerSocket: false })).toThrow("interpolation is not allowed");
+  });
+
+  it("allows a workspace-relative secret file", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `
+secrets:
+  api_key:
+    file: ./secrets/api_key.txt
+services:
+  web:
+    image: node:20
+    secrets:
+      - api_key
+`);
+    expect(parseComposeFile(p, { dockerSocket: false })).toHaveLength(1);
+  });
+
   it("handles long-syntax port definitions", () => {
     const dir = setup();
     const p = writeCompose(dir, `

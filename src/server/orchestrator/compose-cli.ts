@@ -368,6 +368,17 @@ export class ComposeCli {
  * a `.env` file in the project directory, `env_file:`, and `environment:`. Only
  * the accidental inheritance is gone.
  *
+ * **This alone does not put the orchestrator's environment out of reach, and
+ * saying so would be the overstatement this area keeps shipping** (review
+ * finding). A scrubbed `env` does not unmount `/proc`: the child runs as the
+ * same uid as its parent, so `/proc/1/environ` — mode 0400, owned by the
+ * orchestrator process — is readable to it. What closes that is the companion
+ * rule in `compose-generator.ts`'s `validateTopLevelSecrets`, which keeps a
+ * repository's `secrets:` sources inside the workspace: a BUILD secret is the
+ * one compose-file field that makes the CLI read an arbitrary path in ITS own
+ * filesystem and hand the contents to a container. The two are one fix; neither
+ * half is sufficient.
+ *
  * The list is what the CLI needs to find the daemon and its own config, and
  * nothing else:
  *  - `PATH` — Node resolves the executable through the env it is handed, so

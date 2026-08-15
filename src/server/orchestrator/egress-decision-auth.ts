@@ -66,11 +66,18 @@ const TOKEN_BYTES = 32;
 /**
  * How many tokens a session keeps. A session mints one per proxy launch, and a
  * proxy is relaunched on every allowlist reload and every service recreation, so
- * an unbounded set would grow for the session's whole life. The old sidecar is
- * removed before the new one starts, so in practice only the newest is live;
- * the slack covers a reload racing a `compose up` on a multi-service stack.
+ * an unbounded set would grow for the session's whole life.
+ *
+ * **It must exceed the number of tokens that can be LIVE at once, by a wide
+ * margin** (review finding — an earlier value of 16 did not). `containComposeServices`
+ * launches one proxy per contained service container in a single pass, plus the
+ * agent's own: a stack with more services than the cap would evict tokens whose
+ * sidecars are still running, and the eviction would not heal — the Docker
+ * recovery re-registers the live set and re-caps it, so the same overflow
+ * repeats and some services are permanently denied their allow-once query. The
+ * cost of the margin is a few tens of KB per session, cleared at teardown.
  */
-const MAX_TOKENS_PER_SESSION = 16;
+const MAX_TOKENS_PER_SESSION = 512;
 
 /** Don't re-inspect Docker more often than this per session on a token miss. */
 const RECOVERY_INTERVAL_MS = 5_000;

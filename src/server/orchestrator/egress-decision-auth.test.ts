@@ -45,6 +45,16 @@ describe("egress decision tokens", () => {
     expect(await verifyEgressDecisionToken("sess-a", second)).toBe(true);
   });
 
+  // Review finding — `containComposeServices` launches one proxy per contained
+  // service in a single pass, so the cap has to sit well above any real stack
+  // or it evicts credentials whose sidecars are still running.
+  it("keeps every token of a stack larger than any real one live at once", async () => {
+    const tokens = Array.from({ length: 64 }, () => mintEgressDecisionToken("sess-a"));
+    for (const token of tokens) {
+      expect(await verifyEgressDecisionToken("sess-a", token)).toBe(true);
+    }
+  });
+
   it("rejects a malformed token without consulting the recovery seam", async () => {
     const recover = vi.fn(async () => []);
     setEgressDecisionTokenRecovery(recover);
