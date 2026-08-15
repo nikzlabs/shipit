@@ -24,8 +24,36 @@ import {
  * must not change is which command comes out the other end.
  */
 
-/** The five flags that together name an explicit run (req 7). */
-const EXPLICIT_FLAGS = ["--agent", "--service", "--billing-mode", "--model", "--effort"];
+/**
+ * The five parameters that together name an explicit run (req 7), each as every
+ * spelling the CLI accepts.
+ *
+ * **`-a` is a real alias for `--agent`** (`shipit-agent.ts`'s `parseFlags` map),
+ * and a guard that only knows the long form can be walked straight past: `shipit
+ * agent run -a codex --service … --billing-mode … --model … --effort …` is a
+ * complete, runnable, five-parameter command that a `--agent`-only matcher scores
+ * as naming four. Cross-agent review found that. Matched as **tokens**, not
+ * substrings — `-a` as a substring occurs inside `sub-agent` and would otherwise
+ * mark the slot satisfied on almost any page, weakening the check instead of
+ * tightening it.
+ *
+ * As a token it can still match an unrelated `-a` (`git tag -a` on
+ * `release.md`), and that is the acceptable direction: a false positive only
+ * makes the page-level check **stricter**, and it can only fail a page that also
+ * names the other four.
+ */
+const EXPLICIT_FLAG_FORMS: readonly (readonly RegExp[])[] = [
+  [/--agent\b/, /(^|\s)-a(?![\w-])/m],
+  [/--service\b/],
+  [/--billing-mode\b/],
+  [/--model\b/],
+  [/--effort\b/],
+];
+
+/** Does this text name the parameter, in any spelling the CLI accepts? */
+function namesFlag(text: string, forms: readonly RegExp[]): boolean {
+  return forms.some((form) => form.test(text));
+}
 
 /** Split into commands, joining `\` continuations so a wrapped example is one. */
 function commandLines(text: string): string[] {
@@ -34,31 +62,103 @@ function commandLines(text: string): string[] {
 
 /**
  * Lines that invoke `shipit agent run` with an `--agent VALUE` but not all five
- * explicit flags — i.e. the pre-docs/261 shape, which the orchestrator now
- * refuses. A line that merely *names* the flag (`no --agent`, `` `--agent` ``)
- * does not match: the value is what makes it a generated command.
+ * explicit flags — i.e. the pre-docs/261 shape, which the orchestrator refuses. A
+ * line that merely *names* the flag (`no --agent`, `` `--agent` ``) does not
+ * match: the value is what makes it a generated command.
+ *
+ * **A line naming a `--role` is NOT excluded, and that is deliberate** (docs/264
+ * phase 4). Such a call is now *accepted* by the orchestrator — a role is the
+ * base and the harness is an override over it (req 10) — so an exclusion would be
+ * defensible as a validity check. It is refused here anyway, because this guard's
+ * subject is not validity but **authorship**: docs/261's rule is that no command
+ * ShipIt itself writes picks the reviewer by harness. An override is legitimate
+ * precisely because a *user* asked for it, and a line compiled into a page or a
+ * system prompt has no user behind it — so `--role reviewer --agent codex`
+ * authored by ShipIt is exactly what docs/261 removed, wearing a role as cover.
+ * The injected pages therefore say "relay the override the user named" in prose
+ * and spell no harness, which costs nothing: `shipit agent params` lists the
+ * harnesses, and the user supplies the value at the moment it is needed.
  */
 function incompleteExplicitRuns(text: string): string[] {
   return commandLines(text).filter(
     (line) =>
-      /shipit agent run\b.*--agent\s+\S/.test(line)
-      && !EXPLICIT_FLAGS.every((flag) => line.includes(flag)),
+      /shipit agent run\b.*(^|\s)(--agent|-a)\s+\S/m.test(line)
+      && !EXPLICIT_FLAG_FORMS.every((forms) => namesFlag(line, forms)),
   );
 }
 
-/** Lines that invoke `shipit agent run` with all five explicit flags. */
+/** Lines that invoke `shipit agent run` with all five explicit parameters. */
 function completeExplicitRuns(text: string): string[] {
   return commandLines(text).filter(
     (line) =>
-      /shipit agent run\b.*--agent\s+\S/.test(line)
-      && EXPLICIT_FLAGS.every((flag) => line.includes(flag)),
+      /shipit agent run\b.*(^|\s)(--agent|-a)\s+\S/m.test(line)
+      && EXPLICIT_FLAG_FORMS.every((forms) => namesFlag(line, forms)),
   );
 }
 
+/**
+ * The pages that must mention the role positively. A subset, deliberately: not
+ * every page has a reason to talk about reviews.
+ */
 const SHIPIT_DOC_PAGES = ["agent.md", "spec-discipline.md", "sandbox-session.md"] as const;
+
+/**
+ * **Every** page ShipIt injects, read from the directory rather than written out
+ * (docs/264 phase 4).
+ *
+ * The whole directory is baked into the session worker image
+ * (`COPY src/server/shipit-docs/ /shipit-docs/`), so "what is injected" is a
+ * filesystem fact and enumerating it by hand is how a page gets left behind —
+ * which is exactly what happened to `sandbox-session.md`, whose five-flag prose
+ * a three-page list did not cover. Deriving it means the next page added is
+ * scanned without anyone remembering to add it here.
+ */
+function everyInjectedDoc(): { name: string; text: string }[] {
+  const dir = new URL("../shipit-docs/", import.meta.url);
+  return fs
+    .readdirSync(dir)
+    .filter((name) => name.endsWith(".md"))
+    .sort()
+    .map((name) => ({ name, text: fs.readFileSync(new URL(name, dir), "utf8") }));
+}
 
 function readShipitDoc(name: string): string {
   return fs.readFileSync(new URL(`../shipit-docs/${name}`, import.meta.url), "utf8");
+}
+
+/**
+ * docs/264 req 15 — the five parameters named **together** as guidance, in any
+ * form: a runnable command, a table row, or a sentence.
+ *
+ * Scoped to the whole page on purpose, and both halves of that are deliberate:
+ *
+ *  - **Not a command matcher.** {@link completeExplicitRuns} finds an
+ *    *invocation*, and `sandbox-session.md` used to name the five flags in a
+ *    **sentence** ("names all five of `--agent`, `--service`, …"). A
+ *    command-shaped matcher reports success on a page that still teaches
+ *    assembly, which is the failure this replaces.
+ *  - **Not a window either.** A paragraph- or block-sized window is gamed by a
+ *    blank line. A page that has a reason to name all five is a page teaching the
+ *    complete shape, so the page is the unit. Today's margin is wide — no
+ *    injected page names more than two of them — because the enumeration the
+ *    agent actually needs lives in `shipit agent params`' own output (req 12),
+ *    not in prose.
+ *
+ * Which is why this is scoped to what ShipIt **injects**, never to "anywhere
+ * agent-facing": `shipit agent params` prints all five flag names by design —
+ * that output *is* the inventory — and a guard drawn any wider would fail on the
+ * one place they legitimately must appear.
+ */
+function namesEveryExplicitFlag(text: string): boolean {
+  return EXPLICIT_FLAG_FORMS.every((forms) => namesFlag(text, forms));
+}
+
+/** The human-facing reference the complete shape moved to (docs/264 phase 4). */
+function readReviewerReference(): string {
+  return fs.readFileSync(
+    new URL("../../../docs/261-configurable-reviewer/plan.md", import.meta.url),
+    "utf8",
+  );
 }
 
 /**
@@ -124,21 +224,91 @@ describe("product-owned review commands (docs/261 phase 5)", () => {
     expect(incompleteExplicitRuns(text)).toEqual([]);
   });
 
-  it("still documents the explicit shape as ONE complete command, so the override stays reachable", () => {
-    // req 2: a repository may override ShipIt's reviewer, and req 7 makes that
-    // an explicit call naming every parameter. Asserting each flag appears
-    // *somewhere on the page* would pass on a page that never shows them
-    // together — which is precisely the call the orchestrator refuses. So
-    // require at least one invocation carrying all five at once.
-    expect(completeExplicitRuns(readShipitDoc("agent.md")).length).toBeGreaterThan(0);
-  });
-
-  it("keeps the child-session path documented as inheriting, not as a one-shot", () => {
-    // The three paths must not collapse into one rule: `shipit session create
-    // --agent codex` is complete because a child has a parent to inherit the
-    // rest from, while the same flags alone are refused on a one-shot run.
+  it("keeps the child-session path documented as completing from the parent, not as a one-shot", () => {
+    // The paths must not collapse into one rule: `shipit session create --model
+    // X` is complete because a child has a parent to complete it from, while the
+    // same flag alone is refused on a one-shot run. docs/264 req 16 unified the
+    // *surface*, deliberately not the completion semantics.
     const text = readShipitDoc("agent.md");
     expect(text).toContain("shipit session create");
-    expect(text).toContain("Inherited from you");
+    expect(text).toContain("inherited from you");
+  });
+});
+
+/**
+ * docs/264 req 15 — **a role is the path ShipIt teaches; assembling a target
+ * from five parameters is not.**
+ *
+ * The mirror of the block above, and the inversion of what this file asserted
+ * for docs/261: that guard required `agent.md` to carry one *complete* five-flag
+ * invocation, precisely so a repository's override stayed documented. Req 15
+ * removes that shape from the pages ShipIt injects into a session, so both can
+ * no longer hold for the same page and the audiences separate — the complete
+ * shape belongs to whoever writes repository policy, and the assertion moves
+ * **with** it rather than being dropped.
+ *
+ * The reason the shape left is no longer "the agent cannot use it": req 12's
+ * inventory (`shipit agent params`) means it could. It is that a role plus an
+ * override does the same job in less and keeps what runs anchored to something
+ * the user configured.
+ */
+describe("the five-parameter shape is not what ShipIt teaches (docs/264 req 15)", () => {
+  it("names no complete five-parameter target in any system-prompt variant", () => {
+    for (const opts of ALL_VARIANTS) {
+      const text = buildAgentSystemInstructions(opts);
+      expect(completeExplicitRuns(text), `${JSON.stringify(opts)} authors a complete explicit run`)
+        .toEqual([]);
+      expect(
+        namesEveryExplicitFlag(text),
+        `${JSON.stringify(opts)} still names all five parameters together`,
+      ).toBe(false);
+    }
+  });
+
+  it("names no complete five-parameter target on any injected page", () => {
+    const pages = everyInjectedDoc();
+    // A derived enumeration that silently found nothing would pass every
+    // assertion below, so pin that it is reading real pages.
+    expect(pages.map((p) => p.name)).toContain("agent.md");
+    expect(pages.map((p) => p.name)).toContain("sandbox-session.md");
+    for (const { name, text } of pages) {
+      expect(completeExplicitRuns(text), `${name} authors a complete explicit run`).toEqual([]);
+      // The half a command matcher cannot see: `sandbox-session.md` taught the
+      // same five flags in prose and passed the command-shaped guard untouched.
+      expect(namesEveryExplicitFlag(text), `${name} still names all five parameters together`)
+        .toBe(false);
+    }
+  });
+
+  it("tells the agent to name a role rather than assemble a target", () => {
+    // The spawn guidance lives in the per-agent "Parallel sessions" section, and
+    // a render with no `agentId` omits that section entirely — so this is the
+    // set of variants that HAS spawn guidance to check, not a narrowing of the
+    // rule. Both real callers pass an `agentId`
+    // (`session-agent-run-params.ts`, `services/settings.ts`); the bare render is
+    // the no-options test fixture. The negative assertions above stay on every
+    // variant, since absence is checkable everywhere.
+    const withGuidance = ALL_VARIANTS.filter((opts) => opts.agentId !== undefined);
+    expect(withGuidance.length).toBeGreaterThan(0);
+    for (const opts of withGuidance) {
+      const text = buildAgentSystemInstructions(opts);
+      expect(text).toContain("--role NAME");
+      // The rule ShipIt cannot enforce anywhere else: an override is the USER's,
+      // and the agent relays it (req 10). It exists only in what the agent is
+      // told, so its absence is invisible until an agent picks a model for
+      // itself. The anchor is the command token plus this clause.
+      expect(text).toContain("never decide one yourself");
+      expect(text).toContain("shipit agent params");
+    }
+  });
+
+  it("still documents the complete shape as ONE command in the human-facing reference", () => {
+    // Named target, not "somewhere" (docs/264 phase 4): without a destination
+    // the positive assertion is dropped rather than moved, and the repository
+    // override req 2 guarantees stops being documented at all. Asserting each
+    // flag appears *somewhere on the page* would pass on a page that never shows
+    // them together — which is precisely the call the orchestrator refuses — so
+    // require at least one invocation carrying all five at once.
+    expect(completeExplicitRuns(readReviewerReference()).length).toBeGreaterThan(0);
   });
 });

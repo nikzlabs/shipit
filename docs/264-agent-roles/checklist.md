@@ -138,21 +138,44 @@ The design is [`plan.md`](./plan.md); the contract is [`requirements.md`](./requ
 
 ## Phase 4 — Documentation split (req 15)
 
-- [ ] The five-parameter shape leaves **every injected surface** — `shipit-docs/agent.md`, both
+- [x] The five-parameter shape leaves **every injected surface** — `shipit-docs/agent.md`, both
       harness system prompts, *and* `shipit-docs/sandbox-session.md:93-97`, which teaches the same
       five flags in prose. Derive the list from what is actually injected rather than writing it
       out, so the next page added is covered without anyone remembering
-- [ ] The repository override stays documented in the human-facing reference, keeping docs/261
+- [x] The repository override stays documented in the human-facing reference, keeping docs/261
       phase 5's line: pass a complete target through unchanged, never assemble one
-- [ ] The replacement guidance says a role plus an override does the same job in less — the reason
+- [x] The replacement guidance says a role plus an override does the same job in less — the reason
       the five-parameter form is not taught is no longer that the agent cannot use it
-- [ ] `review-command-callers.test.ts` inverts: add a **negative** assertion across every
+- [x] `review-command-callers.test.ts` inverts: add a **negative** assertion across every
       `buildAgentSystemInstructions` variant and every injected doc — the guard today only rejects
       *incomplete* runs there, so a complete one passes unnoticed
-- [ ] That negative assertion must catch **prose, not only a runnable command line**:
+- [x] That negative assertion must catch **prose, not only a runnable command line**:
       `completeExplicitRuns` matches an invocation, and `sandbox-session.md` names the five flags
       in a sentence, so a command-shaped matcher would report success on a page that still teaches
       assembly
-- [ ] The positive "documented somewhere" assertion gets a **named target** —
+- [x] The positive "documented somewhere" assertion gets a **named target** —
       `docs/261-configurable-reviewer/plan.md`, which already addresses whoever writes repository
       policy. Without naming it, the assertion is dropped rather than moved
+
+### Added after phase 3 landed
+
+Phase 3 shipped real CLI surface that is documented nowhere, because it was deliberately scoped
+out of these files so the two phases could not collide in them. Settling that debt is phase 4's
+job, and the bullets above only describe the *removal* half.
+
+- [x] **Document what phase 3 added.** `shipit-docs/sessions.md` and `shipit-docs/agent.md` both
+      still described the old surface: `shipit session create` gained `--role`, `--service`,
+      `--billing-mode` and `--effort` (`shipit-session.ts:105-110`), with `--agent` / `--model`
+      unchanged in meaning; `shipit agent run` gained `--role NAME` plus any subset of the override
+      flags; and `shipit agent roles` / `shipit agent params` are entirely new subcommands
+      (`shipit-agent.ts:275`, `:328`)
+- [x] **Do not quote the old un-runnable-reviewer sentence.** Every role now resolves through one
+      path, so that message was replaced by one naming the role (`roles.ts:439`). The old wording is
+      deliberately not reproduced anywhere in this repository's markdown — quoting it *here* would
+      be the same defect the bullet forbids. No markdown quoted it before; none does now. The
+      remedy text — connect a service, or wait for the quota — is unchanged
+- [x] **Scope the negative assertion to injected surfaces**, never "anywhere agent-facing".
+      `shipit agent params` prints the five flag names in its own output **by design** — that output
+      *is* the inventory (req 12). A guard scoped to what ShipIt injects is unaffected; one written
+      as "these five words never appear together" would fail on the one place they legitimately
+      must appear

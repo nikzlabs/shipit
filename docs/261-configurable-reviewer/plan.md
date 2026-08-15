@@ -498,6 +498,42 @@ why req 2 is written as a default rather than a rule — ShipIt cannot detect th
 between an agent following repository policy and an agent making its own choice, so claiming
 to forbid it would be asserting a guarantee the product does not have.
 
+### The complete shape, for whoever writes repository policy
+
+**This is the reference copy, and it is deliberately here rather than in anything ShipIt
+injects into a session** (docs/264 req 15). The path stays implemented and reachable; what
+changed is who is taught it. An agent is taught to name a **role** and to relay an override —
+a role plus an override does the same job in less and keeps what runs anchored to something
+the user configured — so the injected pages and both harness system prompts no longer carry
+this command. A repository that holds a complete target of its own is a different caller: it
+already knows all five values, so it is not guessing, and it hands the command over to be
+passed through unchanged.
+
+Written out in full, every parameter mandatory:
+
+```sh
+shipit agent run --agent codex --service openai --billing-mode sub \
+                 --model gpt-5.6-sol --effort high --prompt-file - <<'EOF'
+Review only — do not edit this workspace.
+Review this diff for correctness bugs. Report each finding as `file:line — comment`.
+EOF
+```
+
+- **`--agent`** — the harness to spawn (`claude` or `codex`).
+- **`--service`** and **`--billing-mode`** (`sub` for a subscription, `key` for a metered API
+  key) — together with `--model` these say *which* offering runs, because one model id can be
+  served by several services and only the pair says which credential pays.
+- **`--model`** — the model id as the catalogue lists it for that service.
+- **`--effort`** — the reasoning level, validated against the named harness's own levels.
+
+Omitting any of them is an **error** naming the missing flags, never a silent completion from
+a stored default (req 7). That refusal is what makes writing such a policy safe: a half-written
+override fails loudly at the edge instead of quietly running on something nobody chose.
+
+`docs/264-agent-roles/` also gives the repository a lighter option that did not exist when this
+was written — `--role NAME` with only the parameters it cares about overridden. Naming all five
+remains correct and supported; it is simply no longer the only way to be specific.
+
 ## Settings
 
 The audit (`../252-custom-models/ui-audit.md`, D16) found the per-vendor Claude/Codex tabs

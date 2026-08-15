@@ -116,7 +116,7 @@ override the parent.
 
 | Subcommand | Notes |
 |---|---|
-| `shipit session create --prompt-file FILE --title T [--agent claude\|codex] [--model M] [--turn ID] [--detached] [--json]` | Spawn a sibling session with the prompt from `FILE` (or `-` for stdin) as its first user message. The child always branches off the parent repo's freshly-fetched `origin/main`, so a change you just merged (e.g. a design doc) is visible to it — there is no `--base` to pin it elsewhere. `--title` is **required** — you name the session. There is no inline `-p`/`--prompt` — the prompt must come from a file or stdin so backticks and `$(...)` aren't evaluated by the shell. The child's branch is auto-generated (`shipit/<random>`) — you cannot name it. `--detached` makes the new session **completely separate** instead of a child — see *Child vs detached* below. Returns the child's id, branch, and status on stdout. **`--agent`/`--model` selection (set these only when the user asks for a specific backend/model — e.g. "do this part with Codex"):** the **model is the source of truth** — pass `--model gpt-5.5` alone and the child is routed to its owning backend (Codex) automatically; you don't also need `--agent`. Pass `--agent` on its own to switch backend while keeping that backend's default model. A bad value fails fast before the child boots: an unknown `--agent`, or a `--model` that belongs to a *different* backend than the `--agent` you named, is rejected with a clear error (a model the picker hasn't surfaced yet is still accepted — the CLI forwards it as-is). When neither flag is set, the child inherits the parent's agent and model. The child always inherits the parent's **reasoning level** (there is no `--reasoning` flag); it is dropped only when the child is routed to a backend that doesn't offer that level. |
+| `shipit session create --prompt-file FILE --title T [--role NAME] [OVERRIDE…] [--turn ID] [--detached] [--json]` | Spawn a sibling session with the prompt from `FILE` (or `-` for stdin) as its first user message. The child always branches off the parent repo's freshly-fetched `origin/main`, so a change you just merged (e.g. a design doc) is visible to it — there is no `--base` to pin it elsewhere. `--title` is **required** — you name the session. There is no inline `-p`/`--prompt` — the prompt must come from a file or stdin so backticks and `$(...)` aren't evaluated by the shell. The child's branch is auto-generated (`shipit/<random>`) — you cannot name it. `--detached` makes the new session **completely separate** instead of a child — see *Child vs detached* below. Returns the child's id, branch, and status on stdout. **What the child runs on** is named the same way as for `shipit agent run` — see *What the child runs on* below. |
 | `shipit session list [--turn ID] [--json]` | List sessions spawned by this parent. With `--turn`, sessions spawned in the given turn bubble to the top. |
 | `shipit session view <id> [--json]` | Read a child session: status (`running`/`idle`/`error`), branch, queue length, spawn timestamp, latest assistant message preview, PR URL when available, and the resolved `agent` + `model` the child actually runs on (use these to confirm the backend/model rather than trusting the child's own self-report, which models are unreliable at). |
 | `shipit session message <id> -m "TEXT" [--json]` | Send a follow-up prompt to a child this parent spawned. The orchestrator either starts a turn immediately (if the child is idle) or enqueues the prompt. A resolved child rejects the message, receives no card or wake, and returns a named non-zero result. |
@@ -165,6 +165,60 @@ non-zero with a pointer back to `--prompt-file`.
 know what the session is for, so you name it: pass a short, human-readable title
 (e.g. `--title "Port API to TypeScript"`) that identifies the session in the
 sidebar. A spawn with no title exits non-zero before any session is created.
+
+### What the child runs on
+
+**The same vocabulary as `shipit agent run`** — one parser, one validator, one
+refusal rule, so a flag means the same thing on both commands. See
+[agent.md](agent.md) for the whole of it; what follows is only what is specific
+to a child.
+
+**Name a role** when the user wants the child to run on something specific:
+
+```sh
+shipit session create --role deep-dive --title "Audit the auth layer" --prompt-file - <<'EOF'
+…
+EOF
+```
+
+The role supplies the harness, the model and the reasoning level together. It is
+resolved **once, at creation**, and decides what the child *starts* as — not what
+it is bound to. From then on the child is an ordinary session with the normal
+routing, account failover and model-retirement behaviour, and editing or deleting
+that role afterwards does not reach back into it. The child records which role
+started it. `shipit agent roles` lists the roles; `shipit agent params` lists
+every parameter an override may name on this install, and the flag that names
+each — read it rather than naming a model from memory.
+
+**Name no role and YOU are the base.** This is the shipped behaviour and it is
+unchanged: the child inherits your harness, model and reasoning level, and any
+parameter you *did* name overrides that. Set one only when the user asks for a
+specific backend or model — e.g. "do this part with Codex".
+
+Inheritance is per-parameter, and the rules are deliberately not a role's:
+
+- **`--model M` alone** moves the child to a backend that can actually run that
+  model, so you do not also need `--agent`: pass `--model gpt-5.5` from a Claude
+  parent and the child lands on Codex. It switches only when it has to — where
+  **your own** harness already offers the model (a few models are carried by
+  both), the child stays on yours rather than being moved to a backend you never
+  named. It inherits **no** service or billing mode from you either way, because
+  a model id names one backend's catalogue and a credential you did not name must
+  not be attached to it. Name those alongside it (`shipit agent params` prints
+  the exact triple to copy) when the model needs them.
+- **`--agent` alone** switches backend and keeps that backend's default model —
+  your model is **not** carried across, for the same reason.
+- **`--effort LEVEL`** sets the child's reasoning level, validated against the
+  harness the child will actually run on. Omit it and the child inherits yours;
+  that inheritance is dropped only where the child's backend does not offer that
+  level (a level is a depth that means the same thing on either backend, so it
+  travels where a model id cannot).
+
+A bad value fails fast, before the child boots: an unknown `--agent`, a `--model`
+that belongs to a *different* backend than the `--agent` you named, a level the
+child's harness does not declare, or a named parameter with an empty value are
+each rejected with a clear error rather than quietly dropped. A model id the
+picker hasn't surfaced yet is still accepted — the CLI forwards it as-is.
 
 **Ops-only** (`kind: "ops"` sessions — see `ops-session.md`): pass
 `--shipit-source` to `shipit session create` to spawn a fix session that targets
