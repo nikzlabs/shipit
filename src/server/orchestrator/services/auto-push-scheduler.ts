@@ -35,6 +35,38 @@
  * force here, because unlike the merged-branch guard this failure is not a
  * decision anyone made.
  *
+ * That claim was once only half true, and the missing half cost two days of
+ * undetected data loss. `broadcastLog` writes to the durable log store and the
+ * in-memory ring — it makes NO console call — so an operator reading
+ * `docker logs` saw a commit line followed by nothing at all, which reads as a
+ * push that succeeded. Every `report()` now carries a `console.warn` of its own,
+ * as does the non-fast-forward branch and each of `pushToOrigin`'s two skips.
+ *
+ * ## A rejected push is a transcript notice, not just a log line
+ *
+ * The incident (2026-08-14/15, session 7bc72326): a branch was rebased onto a
+ * fresh base after a merge — which ShipIt's own agent instructions prescribe —
+ * so the local history no longer fast-forwarded onto the remote. The unforced
+ * post-turn push was rejected on every turn for ten hours. Nine commits stayed
+ * local; two pull requests then merged at the state of the last SUCCESSFUL push,
+ * seven and two commits behind. One of the resulting PR titles records the
+ * damage: "…and five slice records the merge left behind."
+ *
+ * Refusing to force a divergence is right, and stays. What was wrong is that the
+ * refusal reached neither surface that could act on it: the log-ring line lives
+ * in a panel nobody had open, and the `git_push_rejected` WS message is
+ * transient client state. So a rejection now also leaves a PERSISTED transcript
+ * notice, exactly as the merged-push guard does — naming the branch, the reason,
+ * and the two commands that actually ship the work.
+ *
+ * **One notice per divergence EPISODE, not per rejection.** Nine identical
+ * notices is noise that trains the reader to skip the tenth; the episode flag is
+ * cleared by the next successful push, so a divergence that is healed (by
+ * `gh pr create`'s force-push, by a rebase, by the user) and later recurs gets a
+ * fresh notice rather than being suppressed forever. Every rejection still
+ * reaches the log ring and the server log — the suppression is on the transcript
+ * only.
+ *
  * ## One body, two callers
  *
  * The WS path (`route-registry.ts`) and the system-turn path
@@ -47,11 +79,54 @@
 
 import type { GitManager } from "../../shared/git.js";
 import type { LogSource } from "../../shared/types.js";
+import type { PersistedMessage } from "../chat-history.js";
 import type { SessionRunnerInterface } from "../session-runner.js";
 import { pushToOrigin, isGitAuthError } from "../git-utils.js";
 import { isNonFastForwardError } from "./git.js";
+import { emitNoticePostTurn } from "../chat-card-persistence.js";
 import { agentLogAppend } from "../log-emit.js";
 import { getErrorMessage } from "../validation.js";
+
+/**
+ * The persisted transcript notice for a push rejected as non-fast-forward. It
+ * answers the three questions the user asked during the incident, in order: what
+ * happened to my commit, why, and how do I ship it.
+ *
+ * Plain prose, no markdown emphasis — `MessageList` renders a `notice` as
+ * pre-wrapped text (`useMarkdown` is false for notices), so `**bold**` would show
+ * up literally. Backticks match the neighbouring merged-push / conflict notices.
+ *
+ * The branch may be unknown (the rejection came from `git push`, and re-reading
+ * the branch afterwards can itself fail), so every mention degrades gracefully
+ * rather than printing "undefined".
+ *
+ * The merged-branch clause is not padding. This notice's firing condition
+ * OVERLAPS the state planning#267 guards: a branch rebased off a merged tip still
+ * has `mergedAt` set (the docs/202 re-arm clears it later), which arms
+ * `SHIPIT_GUARD_DESTRUCTIVE_GIT=1` — and `docker/agent-hooks/block-branch-ops.mjs`
+ * then blocks a hand-rolled `git push --force-with-lease` outright. A remedy the
+ * agent is refused when it tries it is the same dead end in a friendlier voice,
+ * so the sanctioned command for that state is named alongside it.
+ */
+export function formatDivergedPushNotice(branch: string | null): string {
+  const named = branch ? ` ${branch}` : "";
+  const ref = branch ? `origin ${branch}` : "origin <branch>";
+  return (
+    `Not pushed — this session's branch${named} has diverged from its remote.\n\n`
+    + `The commit is safe in this session's local history, but the push was rejected as `
+    + `non-fast-forward: the remote branch carries commits this branch does not, or this `
+    + `branch's history was rewritten (a rebase or a reset onto a fresh base). ShipIt never `
+    + `force-pushes automatically, so the branch on GitHub stays frozen at its last successful `
+    + `push — and a pull request on it would merge WITHOUT this commit. Every further commit `
+    + `stays local too, until the divergence is resolved.\n\n`
+    + `To ship it, reconcile with the remote (\`git pull --rebase ${ref}\`) and the next turn's `
+    + `push will land — or, when the rewrite was deliberate, publish it with `
+    + `\`git push --force-with-lease ${ref}\`. \`gh pr create\` also force-pushes on its own path.\n\n`
+    + `If this session's pull request has already merged, ShipIt blocks a hand-rolled force-push: `
+    + `run \`shipit branch reset-to-base\` to return the branch to the fresh base, then re-apply `
+    + `this work there and open a new pull request.`
+  );
+}
 
 /** What the push body needs. All session-keyed — none of it is runner-scoped. */
 export interface AutoPushDeps {
@@ -73,6 +148,17 @@ export interface AutoPushDeps {
    * container the turn ran in is already gone.
    */
   broadcastLog: (sessionId: string, source: LogSource, text: string) => void;
+  /**
+   * Durable chat history — only `append` is used. A rejected push fires from the
+   * debounce timer AFTER the turn has finalized, so the notice takes the
+   * append-a-final-row path (`emitNoticePostTurn`); an in-progress persist here
+   * would revive the finished turn as a duplicate `in_progress=1` row set that
+   * the next turn's `replaceInProgress` deletes.
+   *
+   * Required, not optional: an optional persist dep is exactly how a transcript
+   * card ships emit-only, which is the bug class this notice exists to end.
+   */
+  chatHistory: { append(sessionId: string, message: PersistedMessage): unknown };
   /**
    * Bump this session's repo to fast PR-status cadence after a push lands — CI
    * is about to register. Optional so tests can leave it out.
@@ -100,13 +186,22 @@ export interface AutoPushScheduler {
 
 export function createAutoPushScheduler(deps: AutoPushDeps): AutoPushScheduler {
   const timers = new Map<string, ReturnType<typeof setTimeout>>();
+  /**
+   * Sessions whose current divergence episode has already produced a transcript
+   * notice. Cleared by the next successful push, so a healed-then-recurring
+   * divergence is notified again rather than suppressed for the session's life.
+   */
+  const notifiedDiverged = new Set<string>();
 
   /**
-   * Say what happened, whether or not anyone is attached. The log ring is the
-   * durable half (a viewer that reconnects still finds it); `emitMessage` is the
-   * live half and is simply skipped when the runner is gone.
+   * Say what happened, whether or not anyone is attached — on all three
+   * surfaces. The log ring is the durable half (a viewer that reconnects still
+   * finds it); `emitMessage` is the live half and is simply skipped when the
+   * runner is gone; `console.warn` is the operator's half, and its absence is
+   * what made this bug invisible in `docker logs` for two days.
    */
   const report = (sessionId: string, text: string): void => {
+    console.warn(`[auto-push] ${sessionId}: ${text}`);
     deps.broadcastLog(sessionId, "server", text);
     deps.getRunner(sessionId)?.emitMessage(agentLogAppend("server", text));
   };
@@ -168,6 +263,7 @@ export function createAutoPushScheduler(deps: AutoPushDeps): AutoPushScheduler {
     cancel,
     cancelAll(): void {
       for (const sessionId of [...timers.keys()]) cancel(sessionId);
+      notifiedDiverged.clear();
     },
     pending(sessionId: string): boolean {
       return timers.has(sessionId);
@@ -186,8 +282,23 @@ export function createAutoPushScheduler(deps: AutoPushDeps): AutoPushScheduler {
       return;
     }
     try {
-      const branch = await pushToOrigin(git);
+      // The `onSkip` callback closes the module's last fully silent exit: both
+      // of `pushToOrigin`'s null returns used to land on a bare `if (!branch)
+      // return;`, which said nothing anywhere. Named separately because the two
+      // mean very different things — "no origin" is normal for a session with no
+      // remote, "no branch" means a detached HEAD and is a real anomaly.
+      const branch = await pushToOrigin(git, (reason) => {
+        report(
+          sessionId,
+          reason === "no-origin"
+            ? "Not pushed: this session's workspace has no `origin` remote. The commit stays in local history."
+            : "Not pushed: the workspace has no current branch (detached HEAD). The commit stays in local history.",
+        );
+      });
       if (!branch) return;
+      // A push landed, so whatever divergence there was is over — the next one
+      // gets its own notice.
+      notifiedDiverged.delete(sessionId);
       deps.getRunner(sessionId)?.emitMessage({
         type: "github_push_result",
         success: true,
@@ -202,11 +313,14 @@ export function createAutoPushScheduler(deps: AutoPushDeps): AutoPushScheduler {
       deps.notifyAutoPush?.(sessionId);
     } catch (err) {
       if (isNonFastForwardError(err)) {
-        // Branch has diverged — emit so the client can offer a rebase, and log
-        // it either way so a detached session still records the divergence.
-        deps.broadcastLog(
+        // Branch has diverged. Three surfaces, three different jobs:
+        //   - `report` — the log ring (durable, replayed to a late viewer) and
+        //     the server log. EVERY rejection, so the operator sees the run.
+        //   - `git_push_rejected` — transient client state that drives the
+        //     rebase banner. Every rejection too; the client owns its lifetime.
+        //   - the persisted notice — the transcript, ONCE per episode.
+        report(
           sessionId,
-          "server",
           "Auto-push rejected: branch has diverged from remote. Rebase needed to update.",
         );
         deps.getRunner(sessionId)?.emitMessage({
@@ -214,6 +328,35 @@ export function createAutoPushScheduler(deps: AutoPushDeps): AutoPushScheduler {
           reason: "non_fast_forward",
           message: "Branch has diverged from remote. Rebase needed to update.",
         });
+        if (!notifiedDiverged.has(sessionId)) {
+          notifiedDiverged.add(sessionId);
+          // Best-effort: the push already failed, so re-reading the branch may
+          // fail too. The notice degrades to an unnamed branch rather than
+          // being lost — it is the whole point of this path.
+          let branch: string | null = null;
+          try {
+            branch = await git.getCurrentBranch();
+          } catch { /* notice names no branch */ }
+          const runner = deps.getRunner(sessionId);
+          try {
+            emitNoticePostTurn(
+              // Fires from the debounce timer, so the runner may already be
+              // gone. The append is the half that matters; the emit is the
+              // live-viewer nicety and is simply skipped.
+              runner ? (m) => runner.emitMessage(m) : () => {},
+              deps.chatHistory,
+              sessionId,
+              formatDivergedPushNotice(branch),
+              "warn",
+            );
+          } catch (noticeErr) {
+            // Never let the notice cost the log line or the lease release. Also
+            // un-mark the episode so the next rejection retries the notice
+            // rather than inheriting a flag set for a notice that never landed.
+            notifiedDiverged.delete(sessionId);
+            console.error(`[auto-push] ${sessionId}: diverged-push notice failed:`, noticeErr);
+          }
+        }
         return;
       }
       const errMsg = getErrorMessage(err);

@@ -24,9 +24,11 @@ let client: TestClient;
 let githubAuth: StubGitHubAuthManager;
 let latestClaude: FakeClaudeProcess | null = null;
 let dbManager: DatabaseManager;
+let chatHistory: ChatHistoryManager;
 
 beforeEach(async () => {
   dbManager = createTestDatabaseManager();
+  chatHistory = new ChatHistoryManager(dbManager);
   tmpDir = fs.mkdtempSync("/tmp/shipit-auto-push-test-");
   latestClaude = null;
 
@@ -43,7 +45,7 @@ beforeEach(async () => {
     authManager: new StubAuthManager() as any,
     githubAuthManager: githubAuth as any,
     sessionManager: new SessionManager(dbManager),
-    chatHistoryManager: new ChatHistoryManager(dbManager),
+    chatHistoryManager: chatHistory,
     usageManager: new UsageManager(dbManager),
     serveStatic: false,
     autoPushDebounceMs: 100,
@@ -197,6 +199,59 @@ describe("auto-push: success and failure", () => {
       type: "github_push_result",
       success: true,
     });
+  });
+
+  /**
+   * The 2026-08-15 incident, end to end. A branch whose history was rewritten
+   * (a rebase onto a fresh base after a merge — the flow ShipIt's own agent
+   * instructions prescribe) no longer fast-forwards onto its remote, so every
+   * unforced post-turn push is rejected. That refusal is correct; its INVISIBILITY
+   * is the defect. It reached only the session log ring and a transient WS
+   * message, so nine commits stayed local for ten hours and two pull requests
+   * merged behind the branch head.
+   *
+   * The load-bearing assertion is the PERSISTED row: a notice that is merely
+   * emitted survives a reconnect and then vanishes on the next reload, which is
+   * the same silence wearing a different hat.
+   */
+  it("persists a transcript notice when the push is rejected as non-fast-forward", { timeout: 15_000 }, async () => {
+    await githubAuth.setToken("test-token");
+    const { sessionId, sessionDir } = await createSession();
+    createBareRemote(sessionDir);
+
+    // Rewrite the branch's history so the remote no longer fast-forwards. This
+    // is what a post-merge rebase leaves behind. The message MUST change: an
+    // `--amend --no-edit` seconds after the original commit reproduces the same
+    // tree, parent, message and committer second, so git hands back the
+    // identical SHA and there is no divergence to detect.
+    execSync('git commit --amend --allow-empty -m "rewritten by a rebase onto a fresh base"', {
+      cwd: sessionDir,
+      env: { ...process.env, HOME: tmpDir },
+    });
+
+    fs.writeFileSync(path.join(sessionDir, "stranded.txt"), "this commit must not vanish quietly");
+
+    client.send({ type: "send_message", text: "turn on a diverged branch", sessionId });
+    const prevClaude = latestClaude;
+    const claude2 = await waitForClaude(() => latestClaude, prevClaude);
+    claude2.finish("test-session-1");
+
+    const isNotice = (m: WsServerMessage) => m.type === "system_notice" && m.message.includes("diverged");
+    const messages = await client.collectUntil(isNotice, { quietMs: 250 });
+
+    // The live half — what an attached viewer sees immediately.
+    const notice = messages.find(isNotice);
+    expect(notice).toMatchObject({ type: "system_notice", level: "warn", sessionId });
+    expect((notice as { message: string }).message).toContain("--force-with-lease");
+
+    // The durable half — what survives the reload. This is the assertion that
+    // fails without the fix.
+    const persisted = chatHistory.load(sessionId).filter((m) => m.notice && m.text?.includes("diverged"));
+    expect(persisted).toHaveLength(1);
+    expect(persisted[0]?.noticeLevel).toBe("warn");
+
+    // ...and no success message was ever claimed for this push.
+    expect(messages.find((m) => m.type === "github_push_result" && m.success)).toBeUndefined();
   });
 
   it("push failure is non-fatal and emits a log entry", { timeout: 15_000 }, async () => {

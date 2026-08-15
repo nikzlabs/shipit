@@ -516,6 +516,7 @@ describe("dispatched-turn settlement (docs/240 Fix B)", () => {
       githubAuthManager: { authenticated: true, markTokenInvalid: async () => false },
       getRunner: () => runner,
       broadcastLog: () => {},
+      chatHistory: { append: () => {} },
     });
     scheduler.schedule({} as never, "s1");
     expect(scheduler.pending("s1")).toBe(true);

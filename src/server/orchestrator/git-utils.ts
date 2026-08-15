@@ -143,16 +143,34 @@ export function canonicalRepoKey(url: string): string {
   }
 }
 
+/** Why `pushToOrigin` returned without pushing anything. */
+export type PushSkipReason = "no-origin" | "no-branch";
+
 /**
  * Push the current branch to origin. Returns the branch name on success, or null
  * if there is no origin remote or no current branch.
+ *
+ * `onSkip` names WHICH of those two conditions applied. It exists because the
+ * bare `null` is indistinguishable between them and, on the post-turn auto-push
+ * path, was the last fully silent exit left in the module: a commit landed, the
+ * push returned null, and nothing on any surface said so. Callers that genuinely
+ * do not care (the file-editing fire-and-forget push) simply omit it.
  */
-export async function pushToOrigin(git: GitManager): Promise<string | null> {
+export async function pushToOrigin(
+  git: GitManager,
+  onSkip?: (reason: PushSkipReason) => void,
+): Promise<string | null> {
   const remotes = await git.getRemotes();
   const origin = remotes.find((r) => r.name === "origin");
-  if (!origin) return null;
+  if (!origin) {
+    onSkip?.("no-origin");
+    return null;
+  }
   const branch = await git.getCurrentBranch();
-  if (!branch) return null;
+  if (!branch) {
+    onSkip?.("no-branch");
+    return null;
+  }
   await git.push("origin", branch);
   return branch;
 }
