@@ -168,10 +168,10 @@ export async function registerHostSessionRoutes(
         const query: HostSessionLogQuery = {};
         if (q.since) query.since = q.since;
         if (q.until) query.until = q.until;
-        if (q.lines) {
-          const lines = Number(q.lines);
-          if (Number.isFinite(lines)) query.lines = lines;
-        }
+        // Pass a bad value THROUGH so the service 400s, exactly as the sibling
+        // route does with `offset`. Dropping it here would return the default
+        // 200 lines dressed as the bound the operator asked for.
+        if (q.lines) query.lines = Number(q.lines);
         return queryHostSessionLogs(sessionManager, logStore, q.target ?? "", query);
       } catch (err) {
         if (err instanceof ServiceError) {

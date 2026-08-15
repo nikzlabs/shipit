@@ -18,3 +18,7 @@
       the two host-facing recipes reordered to run it first
 - [x] `npm run test:dev`, `npm run lint:dev`, `npm run typecheck`
 - [x] Independent reviewer pass against every numbered requirement
+- [x] Act on the review: content-template filter replacing the source-only
+      allowlist (req 4), full-retention store read, `--lines` validation,
+      strict ISO bounds, compile-time-exhaustive source sweep
+- [x] Second independent reviewer pass on the narrowed design

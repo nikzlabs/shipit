@@ -114,9 +114,10 @@ production host that ShipIt runs on, **read-only**:
   branch, PR, or container name back to the session that produced it. Never
   another session's conversation, prompts, or workspace contents.
 - **Session server logs (read-only):** \`shipit session logs <id>\` returns a
-  session's **orchestrator-generated** log lines. These are written per session
-  and never reach the orchestrator container's stdout, so \`docker logs\` is not
-  the whole story. Server-source only — the agent's own output is filtered out.
+  session's **orchestrator lifecycle** lines. These are written per session and
+  never reach the orchestrator container's stdout, so \`docker logs\` is not the
+  whole story. Only text ShipIt itself authored is returned — the agent's own
+  output, and any line quoting workspace content, is withheld and counted.
 
 That is the entire privilege surface. No \`/etc\`, no \`/root\`, no SSH, no write
 access to Docker. See \`/shipit-docs/ops-session.md\` for the full contract.
@@ -417,10 +418,18 @@ journalctl -D /var/log/journal --since "6 hours ago" --no-pager | grep <session-
 
 ## Reading the result
 
-- **Server-source only.** You get orchestrator-generated lines. The session's
-  agent output, preview errors, install output, prompts and conversation are
-  filtered out server-side and no flag reaches them. If the question truly needs
-  the chat, say so and let the operator open the session in the UI.
+- **Narrower than "the session's logs", deliberately.** You get lines whose whole
+  text ShipIt itself authored. The session's agent output, preview errors,
+  install output, prompts and conversation are withheld server-side — and so is
+  any orchestrator line that quotes workspace content or a raw error message
+  (a compose validation error naming a value from the project's own
+  \`docker-compose.yml\`, git's stderr, a provider error). No flag reaches them.
+- **Withheld lines are counted, not hidden.** \`withheld: N server line(s) …\`
+  means those lines exist in that window and were not returned. Most never will
+  be. But if N looks high for the incident you are chasing, the answer you need
+  may be in one of them: ask the operator to read the session's Logs panel for
+  that window rather than concluding nothing happened. The same applies if the
+  chat itself is what the question needs.
 - **Empty window vs pruned logs.** These look the same and mean opposite things,
   so the output states which one you got. A session's logs are removed when it is
   archived, deleted, or fully reset — for those, absence is not evidence.

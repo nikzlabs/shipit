@@ -40,28 +40,64 @@ req 5).
 | Worker relay (injects the trusted caller id) | `session/agent-ops-routes.ts` |
 | Shim (flags + rendering) | `session/agent-shim/shipit-session.ts` |
 
-## Why this is not the boundary it looks like
+## The filter is on content, not on the producer
 
 `/shipit-docs/ops-session.md` states that there is no subcommand returning
 another session's chat history, prompts, queued messages, assistant output,
 secrets, or workspace files, and that none will be added. This change was
-weighed against that statement rather than around it.
+weighed against that statement rather than around it — and the first attempt
+failed that test.
 
-The durable agent channel is a **mixed stream**: one `agent.jsonl` per session
-carries the agent CLI's own stdout/stderr *and* the orchestrator's lifecycle
-lines. A subcommand that returned "the session's logs" would plainly cross the
-boundary. What ships instead is an **allowlist on `source`** applied where the
-store is read (req 3): `SERVER_LOG_SOURCES = {"server"}`, and everything else —
-`stdout`, `stderr` (agent output), `preview` (the user's app), `install` (the
-workspace), and any source that is missing, mis-cased, or added later — is
-withheld (req 4). Server-source lines are orchestrator-generated text, the same
-category as the orchestrator's own stdout, merely routed per session. The
-boundary as written is untouched: the conversation is still unreachable.
+**What was tried first, and why it was wrong.** The durable agent channel is a
+mixed stream: one `agent.jsonl` per session carries the agent CLI's own
+stdout/stderr *and* the orchestrator's lifecycle lines. The obvious filter is an
+allowlist on `source` — return `"server"`, withhold everything else. That is
+what the first implementation did, and an independent review refuted it with a
+concrete path:
 
-The filter is a membership test, so it fails closed. `host-session-logs.test.ts`
-sweeps every member of the `LogSource` union and asserts that only `server`
-survives — adding a source to that union without deciding about it fails the
-build.
+1. a project's own `docker-compose.yml` holds an invalid value;
+2. `compose-generator.ts` quotes that value **verbatim** in a
+   `ComposeValidationError` (`device \`${shown}\``, `absolute path \`${file}\``);
+3. `service-manager-setup.ts:handleStackError` broadcasts
+   `[compose] Stack error: ${err.message}` as source `"server"`.
+
+A project could therefore put arbitrary text — including a short secret — into a
+compose value and have it read from another session. `compose-cli.ts` puts raw
+`docker compose` stderr into an `Error` the same way, and `agent-listeners.ts`
+broadcasts a raw agent/provider `err.message`. `"server"` labels the **producer**;
+it says nothing about the **content**.
+
+Worth recording *how* that got shipped: the call sites were audited, and each
+one's literal template looked fine. `${err.message}` was read as "an
+orchestrator error string" without following it back to where the message is
+built. An audit of interpolation sites is only as good as the transitive read
+behind every placeholder — which is precisely why the fix is a mechanism that
+does not depend on such an audit staying correct.
+
+**What ships instead.** A line is returned only when its WHOLE text matches one
+of `OPS_SAFE_TEMPLATES` — anchored patterns ShipIt itself authored, whose only
+variable parts are ShipIt-controlled tokens (a count, an exit code, a duration).
+Free-text interpolation cannot match one, so a line carrying workspace, agent,
+or user content is withheld **by construction** (req 4). `source === "server"`
+remains as a cheap first cut so agent stdout that happens to quote one of these
+strings can't match either. Both cuts run at the store read (req 3).
+
+Two properties make the table safe to live with:
+
+- **It fails closed.** An unrecognized line is withheld, not passed through. A
+  meta-test asserts every pattern is anchored at both ends and contains no
+  `.*`/`.+` wildcard, because one wildcard would silently reopen the hole while
+  every other test stayed green.
+- **It is never silent.** Unmatched server lines are counted into
+  `withheldUnclassified` and reported by the CLI. Most are lines that
+  legitimately carry workspace or raw error text and never will be returned —
+  but the count is also the only signal that a producer's wording drifted off its
+  template, so a needed line cannot just stop appearing with nothing to notice.
+
+The cost is real and accepted: an operator who needs a withheld line has to ask
+for the session's Logs panel. That is the same answer the boundary already gives
+for the conversation, and the docs say so rather than implying the command shows
+everything.
 
 ## Decisions worth recording
 
@@ -72,13 +108,17 @@ whose orchestrator has since restarted, still answers — which is the state the
 incident was in. The integration test seeds `sessions/<id>/logs/agent.jsonl` by
 hand and never creates a runner, so this is asserted rather than assumed.
 
-**Redact with `redactStage1` (req 6).** The same deterministic Stage-1 floor the
-bug-report path uses (docs/164), and the Stage-2 LLM pass is deliberately not
-run — this is a synchronous read. It costs readability: a URL or a 40+ character
-token collapses to `[REDACTED]`. That is the right trade at a session boundary,
-because `Auto-push failed: ${errMsg}` carries git's own stderr verbatim and a
-push failure is exactly where a credentialed remote URL appears. Identifiers
-should come from `shipit session find`, not from log prose.
+**Redact with `redactStage1` (req 6) — as defense in depth, not as the
+boundary.** The same deterministic Stage-1 floor the bug-report path uses
+(docs/164); the Stage-2 LLM pass is deliberately not run, since this is a
+synchronous read. It runs *after* the template match, on text that is already
+ShipIt's own, and collapses a URL or a long opaque token to `[REDACTED]`.
+
+Worth being explicit, because the first design leaned on it and should not have:
+redaction only recognizes known shapes, so it could never have made a free-text
+line safe to cross a session boundary. A short secret pasted into a compose value
+has no recognizable shape at all. The template table is what holds requirement 4;
+this is a second layer behind it.
 
 **`logsRetained`, so absence is never misread.** A session's logs are removed on
 archive / delete / full reset. An empty window and a pruned history render
@@ -86,19 +126,31 @@ identically otherwise, and they mean opposite things — one says nothing
 happened, the other says the evidence is gone. The response carries the
 distinction and the shim prints it in words.
 
-**Known limitation, documented rather than papered over.** The channel keeps a
-bounded tail (`LogStore` rotates at 1 MB and a snapshot reads at most the last
-1 MB), and it is a *mixed* stream — so a session whose agent wrote a lot of
-output can push its own older server lines out of retention. Nothing here can
-recover them, so the ops doc says plainly that a quiet distant past on a busy
-session means "not retained", not "nothing happened". Raising the retention is a
-docs/192 change, not this one.
+**Read the FULL retained window, not the default one.** `LogStore` keeps two
+generations per channel (active + `.1`, 1 MB each) but `snapshotEntries`
+defaults to reading only *one* — right for seeding a viewer, wrong for a reader
+that filters. A first version took that default and would have hidden server
+lines that were still on disk behind a megabyte of agent stdout, reporting a
+confident "no auto-push failures in this window" while the evidence sat in the
+rotated file. `snapshotEntries` now takes an explicit `maxBytes` and this
+service passes `MAX_RETAINED_CHANNEL_BYTES`. A unit test seeds the server line
+into the rotated generation only, so a regression to the default returns nothing
+and fails.
 
-**Reject an unparseable `--since`, don't ignore it.** A silently-dropped bound
-returns the whole history dressed as the window the operator asked for, and an
-operator reading "nothing in the last 10 minutes" off a full-history dump draws
-exactly the wrong conclusion. Bounds accept ISO-8601 or a relative age
-(`90s`/`30m`/`2h`/`3d`); anything else is a 400.
+Beyond that window the tail really is gone — the channel is bounded and shared
+with agent stdout, so a chatty session can push its own older server lines out of
+retention. Nothing here can recover them, so the ops doc says plainly that a
+quiet distant past on a busy session means "not retained", not "nothing
+happened". Raising the retention is a docs/192 change, not this one.
+
+**Reject a bound that was never applied, don't ignore it.** A silently-dropped
+`--since` returns the whole history dressed as the window the operator asked
+for, and an operator reading "nothing in the last 10 minutes" off a full-history
+dump draws exactly the wrong conclusion. Bounds accept strict ISO-8601 (not
+whatever `Date.parse` happens to take, so the enforced contract matches the
+documented one) or a relative age (`90s`/`30m`/`2h`/`3d`); anything else is a
+400, as is a `--lines` that isn't a positive integer. Clamping `--lines` DOWN
+from a too-large value stays silent — `truncated` and `total` already report it.
 
 **Resolve a truncated id prefix, refuse an ambiguous one.** The operator's input
 is usually a short id from a journal line, so `find`-style prefix resolution
@@ -140,4 +192,8 @@ packet scoped it out. This is the read capability only.
   `prompts/read-session-logs.md`.
 - `src/server/orchestrator/services/host-session-logs.test.ts`,
   `src/server/orchestrator/integration_tests/ops-session-logs.test.ts` — the
-  source filter, the kind gate, and the container-is-gone case (req 9).
+  content and source filters, the kind gate, and the container-is-gone case
+  (req 9). `withholds a server line that quotes workspace content` is the
+  regression test for the defect described above; do not delete it.
+- `src/server/orchestrator/log-store.ts` — `MAX_RETAINED_CHANNEL_BYTES` and the
+  `maxBytes` parameter on `snapshotEntries`.

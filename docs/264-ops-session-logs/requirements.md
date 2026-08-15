@@ -60,4 +60,19 @@ the redaction posture, and the doc updates.
   only `"server"` is orchestrator-generated. `stdout`/`stderr` are the agent
   CLI's own streams (requirement 4 forbids them), `preview` is error text posted
   by the user's running app, and `install` is the workspace's install command
-  output. The allowlist is therefore exactly `{"server"}`.
+  output. The source allowlist is therefore exactly `{"server"}`.
+
+- **2026-08-15 — a source allowlist does not satisfy requirement 4, so the
+  filter moved to the content.** The first implementation filtered on
+  `source === "server"` alone. An independent review (`shipit agent run --role
+  reviewer`) showed that violates requirement 4 with a concrete path: a value in
+  a project's own `docker-compose.yml` is quoted verbatim by
+  `compose-generator.ts` into a `ComposeValidationError`, which
+  `service-manager-setup.ts:handleStackError` broadcasts as a `"server"` line —
+  so a project could put arbitrary text into a compose value and have it read
+  from another session. Verified at those two files before acting on it.
+
+  Requirements 3 and 4 are unchanged; the *design* changed to satisfy both. The
+  source cut stays as a first pass, and the boundary is now a full-line template
+  allowlist (`plan.md` § *The filter is on content*). Requirement 3's "filter at
+  the store read" still holds — both cuts happen there.

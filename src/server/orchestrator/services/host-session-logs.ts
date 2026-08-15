@@ -23,43 +23,173 @@
  *
  * `/shipit-docs/ops-session.md` states, and this module does not weaken, that
  * there is no way for an ops session to read another session's chat history,
- * prompts, queued messages, assistant output, secrets, or workspace files. The
- * agent log channel is a mixed stream: the SAME `agent.jsonl` file carries the
- * agent CLI's own stdout/stderr alongside orchestrator lifecycle lines. So the
- * boundary is held by an ALLOWLIST on `source`, applied here at the store read:
+ * prompts, queued messages, assistant output, secrets, or workspace files.
  *
- *   - `"server"`   → orchestrator-generated. The only source that is returned.
- *   - `"stdout"` / `"stderr"` → the agent CLI's own streams. Never returned.
- *   - `"preview"`  → error text posted by the user's running app. Never returned.
- *   - `"install"`  → the workspace's install command output. Never returned.
- *   - anything else, including a missing/empty source → never returned.
+ * **A `source` allowlist is NOT sufficient to hold that line, and the first
+ * version of this module was wrong to think so.** `"server"` labels the
+ * PRODUCER, not the CONTENT, and several server-source producers interpolate
+ * text they do not control. The concrete path that killed that design:
  *
- * Fail-closed: the filter is a membership test against {@link SERVER_LOG_SOURCES},
- * so a `LogSource` added later is withheld until someone deliberately adds it.
- * `host-session-logs.test.ts` asserts a non-server entry can never appear.
+ *   1. a project's own `docker-compose.yml` holds an invalid value;
+ *   2. `compose-generator.ts` quotes that value VERBATIM in a
+ *      `ComposeValidationError` (`device \`${shown}\``, `absolute path
+ *      \`${file}\``, `entry \`${trimmed}\``);
+ *   3. `service-manager-setup.ts:handleStackError` broadcasts
+ *      `[compose] Stack error: ${err.message}` as source `"server"`.
+ *
+ * So a project could put arbitrary text — including a short secret — into a
+ * compose value and have it read from another session. `compose-cli.ts` places
+ * raw `docker compose` stderr in an `Error` the same way, and
+ * `agent-listeners.ts` broadcasts a raw agent/provider `err.message`.
+ *
+ * The filter is therefore on the CONTENT: a line is returned only when its
+ * WHOLE text matches one of {@link OPS_SAFE_TEMPLATES} — patterns ShipIt itself
+ * authored, whose only variable parts are ShipIt-controlled tokens (a count, an
+ * exit code, a duration). Free-text interpolation cannot match one, so a line
+ * carrying workspace, agent, or user content is withheld by construction rather
+ * than by an audit that has to stay correct forever.
+ *
+ * `source === "server"` is still required as a cheap first cut, so agent
+ * stdout/stderr that happens to quote one of these strings can't match either.
+ *
+ * **The table fails closed and says so.** An unmatched server line is counted
+ * into `withheldUnclassified` and reported, so a producer whose wording drifts
+ * shows up as "N lines withheld" instead of silently disappearing. Add a
+ * template only for a line whose text is fully ShipIt-authored; when a producer
+ * needs to surface interpolated detail, give it a structured field rather than
+ * widening a pattern to `.*`.
  *
  * ## Redaction
  *
- * Every returned line goes through `redactStage1` — the same deterministic floor
- * the bug-report path uses (docs/164). It costs some readability (a URL or a
- * 40+ character token collapses to `[REDACTED]`), and that is the right trade at
- * a session boundary: a git error message reaches this stream verbatim, and
- * `pushToOrigin` failures are exactly where a credentialed remote URL shows up.
- * The Stage-2 LLM pass is deliberately NOT run — this is a synchronous read, and
- * Stage 1 is the guaranteed floor.
+ * Matched lines still go through `redactStage1` — defense in depth, not the
+ * boundary. It only recognizes known shapes (token prefixes, URLs, long opaque
+ * strings, absolute paths), so it could never have carried the load the source
+ * allowlist put on it. The Stage-2 LLM pass is deliberately NOT run — this is a
+ * synchronous read.
  */
 
 import type { SessionInfo } from "../../shared/types.js";
 import type { SessionManager } from "../sessions.js";
 import { redactStage1 } from "./redaction.js";
 import { containerNameForSession } from "./host-sessions.js";
+import { MAX_RETAINED_CHANNEL_BYTES } from "../log-store.js";
 import { ServiceError } from "./types.js";
 
 /**
  * The ONLY `LogSource` values an ops session may read across the session
- * boundary. See the module docstring before adding one.
+ * boundary — the cheap first cut, NOT the boundary itself. See
+ * {@link OPS_SAFE_TEMPLATES}, which is what actually holds it.
  */
 export const SERVER_LOG_SOURCES: ReadonlySet<string> = new Set(["server"]);
+
+/**
+ * Full-line patterns for orchestrator log lines whose text is entirely
+ * ShipIt-authored. A server-source line is returned ONLY if it matches one.
+ *
+ * Rules for adding an entry, in order of importance:
+ *
+ *  1. **No free-text placeholder.** Every variable part must be a
+ *     ShipIt-controlled token — a count, an exit code, a duration. A `.*` or a
+ *     `[\s\S]+` in one of these patterns re-opens the exact hole this table was
+ *     written to close.
+ *  2. **Anchored.** `^…$` both ends, so a longer line that merely starts with a
+ *     safe prefix cannot match.
+ *  3. **Name the producer** in the comment, so the next person can check the
+ *     pattern against the source string it mirrors.
+ *
+ * Deliberately ABSENT, with the reason, because these are the tempting ones:
+ *
+ *  - `Auto-push failed: ${errMsg}` (auto-push-scheduler) — carries git's own
+ *    stderr. Its two FIXED variants (invalid token, missing `workflow` scope)
+ *    are listed instead.
+ *  - `[compose] Stack error: …`, `[compose] Failed to start: …`,
+ *    `[compose] Reconcile failed: …` — quote workspace compose values and raw
+ *    `docker compose` stderr. This is the family that broke the first design.
+ *  - `[compose] <service> exited with code N` — the service NAME comes from the
+ *    project's compose file. An ops session reads service names from Docker
+ *    directly, so nothing is lost by withholding it here.
+ *  - `Session container exited unexpectedly: <error>` — the `: <error>` form
+ *    carries raw Docker text. The `(exit N)` form is listed.
+ *  - `Agent process error: …`, `Session workspace could not be restored: …` —
+ *    raw agent/provider/git error text.
+ */
+export const OPS_SAFE_TEMPLATES: readonly { producer: string; pattern: RegExp }[] = [
+  // services/auto-push-scheduler.ts — the incident that motivated docs/264.
+  {
+    producer: "auto-push-scheduler: non-fast-forward",
+    pattern: /^Auto-push rejected: branch has diverged from remote\. Rebase needed to update\.$/,
+  },
+  {
+    producer: "auto-push-scheduler: invalid token",
+    pattern: /^Auto-push failed: your GitHub token is invalid or expired\. Sign in again in Settings → GitHub\.$/,
+  },
+  {
+    // The trailing URL is a CONSTANT in the producer, so match it literally
+    // rather than as `\S+` — a placeholder that loose invites someone to reuse
+    // the pattern for a line whose URL is interpolated.
+    producer: "auto-push-scheduler: missing workflow scope",
+    pattern: /^Auto-push failed: your GitHub token needs the `workflow` scope to push changes to GitHub Actions workflow files\. Update your token at https:\/\/github\.com\/settings\/tokens\.$/,
+  },
+  // idle-enforcer.ts — why a container went away.
+  {
+    producer: "idle-enforcer: idle shutdown",
+    pattern: /^Session container shut down after (?:\d+s|idle period) idle \(workspace preserved\)\. Send a message to resume — a fresh container starts automatically\.$/,
+  },
+  {
+    producer: "idle-enforcer: memory pressure",
+    pattern: /^Session container shut down to reclaim memory \(workspace preserved\)\. Send a message to resume\.$/,
+  },
+  // app-lifecycle.ts — orphan runner recovery.
+  {
+    producer: "app-lifecycle: container re-adopted",
+    pattern: /^Recovered a session container that had lost its orchestrator tracking entry — no restart needed\.$/,
+  },
+  // startup-tasks.ts — the exit-code form only; the `: <error>` form is excluded.
+  {
+    producer: "startup-tasks: container exited",
+    pattern: /^Session container exited unexpectedly(?: \(exit -?\d+\))?\.$/,
+  },
+  // turn-executor.ts / ws-handlers — agent process lifecycle.
+  {
+    producer: "turn-executor: agent exit code",
+    pattern: /^Agent process exited with code -?\d+$/,
+  },
+  { producer: "agent-listeners: agent started", pattern: /^Agent process started$/ },
+  {
+    producer: "misc-handlers: user interrupt",
+    pattern: /^Agent process interrupted by user$/,
+  },
+  {
+    // The interpolated value is an `AgentId` from the registry ("claude" /
+    // "codex"), never user text. Matched as a bounded slug rather than a
+    // hardcoded list so adding a backend doesn't silently drop the line — a
+    // space or quote still fails the match.
+    producer: "agent-listeners: steer rejected",
+    pattern: /^Live steer rejected by [a-z0-9-]{1,32} \(turn not steerable\) — re-queued for the next turn\.$/,
+  },
+  {
+    producer: "agent-listeners: awaiting question",
+    pattern: /^Agent interrupted: waiting for AskUserQuestion answer$/,
+  },
+  {
+    producer: "agent-listeners: awaiting plan approval",
+    pattern: /^Agent interrupted: waiting for plan approval$/,
+  },
+  // keep-preview-running.ts — reserved preview restarts.
+  {
+    producer: "keep-preview-running: restart attempt",
+    pattern: /^Restarting reserved preview runtime \(attempt \d+\/\d+\)\.$/,
+  },
+  {
+    producer: "keep-preview-running: gave up",
+    pattern: /^Reserved preview runtime could not be restored after bounded retries\. The reservation remains enabled; check session and service logs\.$/,
+  },
+];
+
+/** Whether a line's WHOLE text is one ShipIt authored. See the table above. */
+export function isOpsSafeLine(text: string): boolean {
+  return OPS_SAFE_TEMPLATES.some((t) => t.pattern.test(text));
+}
 
 /** The durable channel the orchestrator's per-session log lines land in. */
 const AGENT_CHANNEL = "agent";
@@ -73,11 +203,13 @@ export const MAX_LOG_LINES = 2000;
  * How many raw entries to parse out of the durable channel before filtering.
  *
  * Deliberately far above {@link MAX_LOG_LINES}: the tail is taken AFTER the
- * source filter, and the channel is a mixed stream where a chatty agent's
- * stdout can outnumber the orchestrator's lines by orders of magnitude. A small
- * scan window would silently starve the server lines this surface exists to
- * return. Bounded by construction — `LogStore` retains at most two 1 MB files
- * per channel, so this can never read more than a couple of megabytes.
+ * filter, and the channel is a mixed stream where a chatty agent's stdout can
+ * outnumber the orchestrator's lines by orders of magnitude, so a small scan
+ * window starves exactly the lines this surface exists to return. Paired with
+ * `MAX_RETAINED_CHANNEL_BYTES` at the call below — the line cap alone is not
+ * enough, because `snapshotEntries` defaults to reading only ONE generation and
+ * would drop the rotated half of the retained window before this cap ever
+ * applies. Bounded by construction: the store retains at most 2 MB per channel.
  */
 const MAX_SCAN_ENTRIES = 200_000;
 
@@ -87,6 +219,7 @@ export interface LogStoreReader {
     sessionId: string,
     channel: string,
     maxLines?: number,
+    maxBytes?: number,
   ): { ts: string; source: string; text: string }[];
   hasChannel(sessionId: string, channel: string): boolean;
 }
@@ -119,6 +252,17 @@ export interface HostSessionLogResult {
   total: number;
   /** True when older matches were dropped to honour `lines`. */
   truncated: boolean;
+  /**
+   * Server-source lines in the window that matched no {@link OPS_SAFE_TEMPLATES}
+   * entry and were therefore withheld.
+   *
+   * Reported rather than swallowed. Most of these are lines that legitimately
+   * carry workspace or raw error text and will never be returned — but a
+   * non-zero count is also the ONLY signal that a producer's wording drifted
+   * away from its template, so a line an operator needs would otherwise just
+   * stop appearing with nothing to notice.
+   */
+  withheldUnclassified: number;
   /**
    * Whether the durable channel holds ANY bytes for this session.
    *
@@ -168,6 +312,12 @@ function resolveTarget(sessionManager: SessionManager, target: string): SessionI
   );
 }
 
+/**
+ * ISO-8601 date, or date + time with an optional zone. Anchored so a bound is
+ * accepted only in the form the CLI documents.
+ */
+const ISO_8601 = /^\d{4}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:?\d{2})?)?$/;
+
 /** `30m` / `2h` / `3d` / `90s` — the unit multipliers for a relative bound. */
 const RELATIVE_UNITS: Record<string, number> = {
   s: 1_000,
@@ -190,9 +340,18 @@ export function parseTimeBound(raw: string, flag: string, nowMs: number): number
   const value = raw.trim();
   const relative = /^(\d+)([smhd])$/.exec(value);
   if (relative) {
-    return nowMs - Number(relative[1]) * RELATIVE_UNITS[relative[2]];
+    const bound = nowMs - Number(relative[1]) * RELATIVE_UNITS[relative[2]];
+    // `999999999999d` overflows into -Infinity, which compares as "before
+    // everything" and silently widens the window to the whole history.
+    if (!Number.isFinite(bound)) {
+      throw new ServiceError(400, `Invalid ${flag} value "${raw}": the age is out of range.`);
+    }
+    return bound;
   }
-  const parsed = Date.parse(value);
+  // Strict ISO-8601 only. `Date.parse` also accepts implementation-defined
+  // formats ("Aug 15 2026", "1 Jan"), so accepting whatever it likes would make
+  // the contract the docs state differ from the one the code enforces.
+  const parsed = ISO_8601.test(value) ? Date.parse(value) : Number.NaN;
   if (Number.isNaN(parsed)) {
     throw new ServiceError(
       400,
@@ -203,10 +362,25 @@ export function parseTimeBound(raw: string, flag: string, nowMs: number): number
   return parsed;
 }
 
-/** Clamp `lines` into `[1, MAX_LOG_LINES]`, falling back to the default. */
+/**
+ * Clamp `lines` into `[1, MAX_LOG_LINES]`, REJECTING a value that isn't a
+ * positive integer.
+ *
+ * Same reasoning as the time bounds: `--lines 0` / `--lines -1` /
+ * `--lines garbage` silently becoming 200 tells the operator a bound was
+ * applied that never was. Clamping DOWN from a too-large value is different and
+ * stays silent — the response says `truncated` and reports `total`, so nothing
+ * is hidden.
+ */
 function normalizeLines(lines: number | undefined): number {
-  if (lines === undefined || !Number.isFinite(lines) || lines <= 0) return DEFAULT_LOG_LINES;
-  return Math.min(Math.floor(lines), MAX_LOG_LINES);
+  if (lines === undefined) return DEFAULT_LOG_LINES;
+  if (!Number.isFinite(lines) || !Number.isInteger(lines) || lines <= 0) {
+    throw new ServiceError(
+      400,
+      `Invalid --lines value: must be a positive integer, got ${lines}.`,
+    );
+  }
+  return Math.min(lines, MAX_LOG_LINES);
 }
 
 /**
@@ -233,9 +407,19 @@ export function queryHostSessionLogs(
   const lines = normalizeLines(query.lines);
 
   const matched: HostSessionLogEntry[] = [];
-  for (const entry of logStore.snapshotEntries(session.id, AGENT_CHANNEL, MAX_SCAN_ENTRIES)) {
-    // THE boundary. Everything else in this channel belongs to the session's own
-    // user — see the module docstring.
+  let withheldUnclassified = 0;
+  // MAX_RETAINED_CHANNEL_BYTES, not the default: this read FILTERS the stream,
+  // so the default one-generation window would hide server lines that are still
+  // on disk behind a megabyte of agent stdout.
+  const scanned = logStore.snapshotEntries(
+    session.id,
+    AGENT_CHANNEL,
+    MAX_SCAN_ENTRIES,
+    MAX_RETAINED_CHANNEL_BYTES,
+  );
+  for (const entry of scanned) {
+    // First cut: producer. Everything else in this channel belongs to the
+    // session's own user.
     if (!SERVER_LOG_SOURCES.has(entry.source)) continue;
     if (sinceMs !== undefined || untilMs !== undefined) {
       const ts = Date.parse(entry.ts);
@@ -245,6 +429,13 @@ export function queryHostSessionLogs(
       if (Number.isNaN(ts)) continue;
       if (sinceMs !== undefined && ts < sinceMs) continue;
       if (untilMs !== undefined && ts > untilMs) continue;
+    }
+    // THE boundary: content, not producer. A line whose whole text is not one
+    // ShipIt authored is withheld — but COUNTED, so a drifted producer surfaces
+    // as "N withheld" instead of vanishing.
+    if (!isOpsSafeLine(entry.text)) {
+      withheldUnclassified++;
+      continue;
     }
     matched.push({ ts: entry.ts, source: entry.source, text: redactStage1(entry.text).text });
   }
@@ -258,6 +449,7 @@ export function queryHostSessionLogs(
     entries: page,
     total: matched.length,
     truncated: page.length < matched.length,
+    withheldUnclassified,
     logsRetained: logStore.hasChannel(session.id, AGENT_CHANNEL),
   };
   if (session.userArchived) result.archived = true;

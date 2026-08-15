@@ -122,11 +122,20 @@ dropped unless the session was created as an ops session.
   shipit session logs 7bc72326 --since 2026-08-14T20:00:00Z --until 2026-08-15T02:00:00Z
   shipit session logs 7bc72326 --lines 500 --json
   ```
-  This returns **server-source entries only** — orchestrator-generated lines,
-  the same category as the orchestrator's own stdout, merely routed per session.
-  The agent CLI's stdout/stderr, preview errors from the user's app, and install
-  output are filtered out server-side; no flag reaches them (see the boundary
-  below). Lines are redacted the same way the rest of the ops surface is.
+  What comes back is **narrower than "the session's logs", deliberately**: only
+  lines whose whole text is one ShipIt itself authored — a fixed template whose
+  variable parts are ShipIt-controlled tokens (a count, an exit code, a
+  duration). The agent CLI's stdout/stderr, preview errors from the user's app,
+  install output, and any orchestrator line that quotes workspace content or a
+  raw error message are all withheld; no flag reaches them (see the boundary
+  below). Matched lines are then redacted like the rest of the ops surface.
+
+  Lines that were withheld are **counted and reported**, not silently dropped —
+  `withheld: N server line(s) …`. Most of those legitimately carry workspace or
+  raw error text and never will be returned. But a count that looks too high for
+  the incident is also the only signal that a producer's wording has drifted off
+  its template, so treat it as "ask the operator to read the session's Logs panel
+  for this window", not as noise.
 
   It reads the durable store, so a session whose container is already gone still
   answers. If a session's logs were pruned — archive, delete, or full reset
@@ -214,17 +223,25 @@ apply here.
   the reason the inventory surface exists as its own narrow route rather than as
   general access to the sessions API.
 
-  `shipit session logs` does not weaken this, and it is worth being precise
-  about why. The durable log channel is a *mixed* stream: the same file carries
-  the agent CLI's own stdout/stderr alongside the orchestrator's lifecycle
-  lines. The subcommand returns **only** entries whose source is the
-  server/orchestrator kind, filtered where the store is read — never
-  `stdout`/`stderr` (the agent's own output), never `preview` (error text from
-  the user's running app), never `install` (the workspace's install output), and
-  never a source that is missing or unrecognized. The allowlist fails closed, so
-  a log source added later is withheld until someone decides otherwise. If the
-  question genuinely needs the session's chat, that is still a "ask the operator
-  to open it in the UI" answer.
+  `shipit session logs` does not weaken this, and the reason is worth stating
+  precisely — because the obvious version of it *would* have.
+
+  The durable log channel is a *mixed* stream: the same file carries the agent
+  CLI's own stdout/stderr alongside the orchestrator's lifecycle lines. Filtering
+  that stream by its `source` label is **not** enough, and an early version of
+  this subcommand that did so was wrong. `"server"` names the producer, not the
+  content, and several orchestrator producers interpolate text they don't
+  control: an invalid value in a project's own `docker-compose.yml` is quoted
+  verbatim into a validation error that is then broadcast as a `"server"` line.
+
+  So the filter is on the **content**. A line is returned only when its whole
+  text matches a template ShipIt authored, whose variable parts are
+  ShipIt-controlled tokens. Free-text interpolation cannot match one, so a line
+  carrying workspace, agent, or user content is withheld by construction rather
+  than by an audit someone has to keep correct. Unmatched lines are counted and
+  reported. If the question genuinely needs the session's chat — or one of those
+  withheld lines — that is still an "ask the operator to open it in the UI"
+  answer.
 - **No writes to ShipIt source.** `shipit source` is read-only — there is no
   `edit`, `commit`, `push`, `checkout`, or `git` subcommand. Change ShipIt only
   through a spawned `--shipit-source` fix session, which goes through the normal

@@ -7,9 +7,10 @@
  *
  *  - the Ops GATE — 200 for an ops session, 403 for an ordinary one, 404 for a
  *    caller session that doesn't exist;
- *  - the SOURCE filter — a non-server entry can never appear in the response,
- *    exercised end-to-end through the real `LogStore` file layout rather than a
- *    fake, so the filter is proven against the bytes the orchestrator writes;
+ *  - the CONTENT filter — neither a non-server entry NOR a server entry quoting
+ *    workspace text can appear in the response, exercised end-to-end through the
+ *    real `LogStore` file layout rather than a fake, so it is proven against the
+ *    bytes the orchestrator actually writes;
  *  - CONTAINER-IS-GONE — the subject session has no runner and no container in
  *    this test at all. Everything answered comes off `sessions/<id>/logs/`.
  */
@@ -101,6 +102,14 @@ describe("Integration: Ops session logs (docs/264)", () => {
       { ts: "2026-08-14T10:00:01.000Z", source: "stderr", text: "AGENT-STDERR-MARKER" },
       { ts: "2026-08-14T10:00:02.000Z", source: "preview", text: "PREVIEW-ERROR-MARKER" },
       { ts: "2026-08-14T10:00:03.000Z", source: "install", text: "INSTALL-OUTPUT-MARKER" },
+      // A server line that quotes the project's own docker-compose.yml. This is
+      // the path an independent review found against the first design, which
+      // filtered on the source alone and returned it.
+      {
+        ts: "2026-08-14T10:00:04.000Z",
+        source: "server",
+        text: "[compose] Stack error: Service `web`: device `WORKSPACE-CONTENT-MARKER` is not allowed.",
+      },
       {
         ts: "2026-08-14T22:11:03.000Z",
         source: "server",
@@ -123,6 +132,7 @@ describe("Integration: Ops session logs (docs/264)", () => {
       containerName: string;
       entries: { source: string; text: string }[];
       logsRetained: boolean;
+      withheldUnclassified: number;
     };
     expect(body.sessionId).toBe(SUBJECT);
     expect(body.containerName).toBe("agent-7bc72326-c1a");
@@ -131,7 +141,7 @@ describe("Integration: Ops session logs (docs/264)", () => {
     expect(body.entries[0].text).toContain("Auto-push rejected");
   });
 
-  it("never returns a non-server source, in any part of the payload", async () => {
+  it("never returns agent output OR workspace content, in any part of the payload", async () => {
     const ops = await createSession("ops");
     seedSubject();
 
@@ -145,9 +155,13 @@ describe("Integration: Ops session logs (docs/264)", () => {
       "AGENT-STDERR-MARKER",
       "PREVIEW-ERROR-MARKER",
       "INSTALL-OUTPUT-MARKER",
+      // The source label said "server"; the CONTENT is the project's compose file.
+      "WORKSPACE-CONTENT-MARKER",
     ]) {
       expect(res.body).not.toContain(marker);
     }
+    // Withheld, and reported — never silently dropped.
+    expect((res.json() as { withheldUnclassified: number }).withheldUnclassified).toBe(1);
   });
 
   it("answers for a session with no runner and no container", async () => {
@@ -197,6 +211,18 @@ describe("Integration: Ops session logs (docs/264)", () => {
     });
     expect(res.statusCode).toBe(200);
     expect((res.json() as { sessionId: string }).sessionId).toBe(SUBJECT);
+  });
+
+  it("400s an invalid --lines rather than silently applying the default", async () => {
+    const ops = await createSession("ops");
+    seedSubject();
+    for (const value of ["0", "-1", "garbage"]) {
+      const res = await app.inject({
+        method: "GET",
+        url: `/api/sessions/${ops}/host-session-logs?target=${SUBJECT}&lines=${value}`,
+      });
+      expect(res.statusCode, `lines=${value}`).toBe(400);
+    }
   });
 
   it("400s an unparseable --since rather than returning the whole history", async () => {

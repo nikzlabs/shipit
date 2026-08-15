@@ -779,6 +779,7 @@ const LOGS_BODY = {
   ],
   total: 1,
   truncated: false,
+  withheldUnclassified: 0,
   logsRetained: true,
 };
 
@@ -837,6 +838,17 @@ describe("shipit session logs (docs/264)", () => {
     });
     expect(pruned.stdout).toContain("no durable logs on disk");
     expect(pruned.stdout).toContain("NOT evidence that nothing happened");
+  });
+
+  it("reports withheld lines rather than letting them vanish", async () => {
+    // A non-zero count is the only signal that a producer's wording drifted off
+    // its ops-safe template, so the renderer must never swallow it.
+    const { run } = makeRunner();
+    const out = await run(["session", "logs", "7bc72326"], {
+      [LOGS_ROUTE]: { status: 200, body: { ...LOGS_BODY, withheldUnclassified: 4 } },
+    });
+    expect(out.stdout).toContain("withheld");
+    expect(out.stdout).toContain("4 server line(s)");
   });
 
   it("says what was dropped when the tail was capped", async () => {

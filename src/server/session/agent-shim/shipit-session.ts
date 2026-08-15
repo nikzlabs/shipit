@@ -377,11 +377,12 @@ export async function handleSessionFind(args: string[], deps: RunDeps): Promise<
  * docs/264 — `shipit session logs <session-id> [--since t] [--until t]
  * [--lines N] [--json]`.
  *
- * Ops-only. Returns another session's SERVER-SOURCE log entries — the
- * orchestrator's own per-session lifecycle text (auto-push outcomes, compose
- * reconcile failures, container recovery, idle disposal). It is NOT the
- * session's Logs panel: agent stdout/stderr, preview errors and install output
- * are filtered out server-side and no flag reaches them.
+ * Ops-only. Returns another session's orchestrator lifecycle lines — auto-push
+ * outcomes, container recovery, idle disposal, agent process lifecycle. It is
+ * NOT the session's Logs panel: the server returns only lines whose whole text
+ * is one ShipIt itself authored, so agent output, preview errors, install
+ * output, and any line quoting workspace or raw error text are withheld. No
+ * flag reaches them; withheld lines are reported as a count.
  *
  * Read from the durable store, so a session whose container is already gone
  * still answers. The orchestrator's 403 is surfaced verbatim — the shim carries
@@ -433,11 +434,22 @@ export async function handleSessionLogs(args: string[], deps: RunDeps): Promise<
   }
 
   const entries = (res.body.entries as Record<string, unknown>[] | undefined) ?? [];
+  const withheld = Number(res.body.withheldUnclassified ?? 0);
   const header = [
     `session:   ${asString(res.body.title) || "(untitled)"} (${asString(res.body.sessionId)})`,
     `container: ${asString(res.body.containerName)}`,
+    `disk:      ${asString(res.body.diskTier)}${res.body.archived === true ? " (archived)" : ""}`,
     `entries:   ${entries.length}${res.body.truncated === true ? ` of ${asString(res.body.total)} (oldest dropped — raise --lines)` : ""}`,
   ];
+  // Never silent: these lines exist and were deliberately not returned. Most
+  // carry workspace or raw error text and never will be — but this count is also
+  // the only signal that a producer's wording drifted off its template.
+  if (withheld > 0) {
+    header.push(
+      `withheld:  ${withheld} server line(s) not on the ops-safe template list `
+        + "(they carry workspace or raw error text). Read them with the operator in the session's UI.",
+    );
+  }
   if (entries.length === 0) {
     // An empty window and a pruned history look identical in the output but mean
     // opposite things, so never let the caller guess which one they are reading.
