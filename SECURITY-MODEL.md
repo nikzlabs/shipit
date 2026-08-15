@@ -358,6 +358,22 @@ but it means **you must not expose a raw ShipIt instance to the public internet.
 - All session/preview/API routes validate the session ID against the session manager, but
   that is authorization *within* a trusted instance — it is not a substitute for the access
   layer above.
+- **The API is same-origin only (planning#370).** Reaching the port is necessary but no longer
+  sufficient: `/api/*` and `/ws/*` refuse any request a browser marks as coming from another
+  origin, and CORS reflects only origins ShipIt owns rather than whatever arrives. This closes
+  the case the access layer above cannot: a page the *user's own browser* loads — an
+  agent-authored preview at `{sessionId}--{port}.<host>`, or any site they visit while a
+  loopback / tailnet instance is running — passes the access layer by definition, because it is
+  the user's own authenticated browser making the request. The preview origin is a subdomain of
+  the main host and is deliberately treated as **untrusted**: same *site* is not same *origin*.
+  Requests with no `Origin` are not browser requests and are unaffected — that is how a session
+  container's CLI reaches its sanctioned routes, and `api-container-guard.ts` (source IP) is
+  what governs that direction. See `src/server/orchestrator/api-origin-guard.ts`. Still not
+  authentication: anyone who can reach the port can drive ShipIt from a non-browser client, and
+  it does not stop **DNS rebinding** — a name the attacker controls that re-resolves to a
+  loopback / tailnet instance yields a page whose origin *is* the host the request arrives at.
+  Closing that needs an allowlist of hostnames ShipIt answers to, which is in tension with
+  docs/254's "one instance, many legitimate hostnames"; it is a known residual.
 
 ## Known limitations and accepted risks
 

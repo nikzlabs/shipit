@@ -87,6 +87,14 @@ you control, and don't count on a host firewall to contain it (Docker's publishe
 
 See [`docs/254-local-bind-and-tailnet-access`](../docs/254-local-bind-and-tailnet-access/plan.md).
 
+However you reach it, `/api/*` and `/ws/*` accept browser requests only from ShipIt's own
+origin — the one in the address bar, whatever hostname that is (loopback, a tailnet IP, a
+MagicDNS name, your domain). Nothing to configure: it is derived per request. Set
+`SHIPIT_ALLOWED_ORIGINS` (comma-separated) **only** if your reverse proxy rewrites the `Host`
+header to an internal name, which would otherwise make the browser's own requests look
+cross-origin. Caddy, Cloudflare and the Tailscale forwarder all preserve `Host`, so the
+supported setups need nothing.
+
 Day-to-day, from your checkout (default `~/.shipit`):
 
 ```bash

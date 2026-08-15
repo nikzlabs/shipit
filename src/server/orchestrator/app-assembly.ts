@@ -2,17 +2,23 @@ import Fastify, { type FastifyInstance } from "fastify";
 import fastifyWebsocket from "@fastify/websocket";
 import fastifyMultipart from "@fastify/multipart";
 import fastifyStatic from "@fastify/static";
+import { registerOriginGuard, type OriginPolicy } from "./api-origin-guard.js";
 
 /**
  * Create the Fastify instance and register the transport-level middleware that
- * every route depends on: WebSocket + multipart support and the dev CORS hook.
+ * every route depends on: WebSocket + multipart support and the CORS /
+ * browser-origin guard.
  *
  * This is pure app assembly — it instantiates and configures the server but
  * registers no application routes (those live in `route-registry.ts`) and wires
  * no managers (that's `bootstrap-managers.ts`). Extracted from `index.ts` as
  * part of the P4 split (docs/201).
+ *
+ * `originPolicy` is a test seam; production reads it from the environment.
  */
-export async function createOrchestratorApp(): Promise<FastifyInstance> {
+export async function createOrchestratorApp(
+  originPolicy?: OriginPolicy,
+): Promise<FastifyInstance> {
   // Fastify's maxParamLength defaults to 100: a request whose *decoded* path
   // param exceeds it doesn't 404 — it silently falls through to the SPA static
   // handler. The repo-scoped routes (DELETE /api/repos/:url and
@@ -30,21 +36,14 @@ export async function createOrchestratorApp(): Promise<FastifyInstance> {
     },
   });
 
-  // ---- CORS for dev (client on a different port) ----
-  app.addHook("onRequest", (request, reply, done) => {
-    const origin = request.headers.origin;
-    if (origin) {
-      reply.header("Access-Control-Allow-Origin", origin);
-      reply.header("Access-Control-Allow-Credentials", "true");
-      reply.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, PATCH, OPTIONS");
-      reply.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
-    }
-    if (request.method === "OPTIONS") {
-      reply.status(204).send();
-      return;
-    }
-    done();
-  });
+  // ---- CORS + browser-origin trust boundary (planning#370) ----
+  // This hook used to reflect ANY `Origin` back with
+  // `Access-Control-Allow-Credentials: true`, which let any page the user's
+  // browser loaded — a preview page most of all — call `/api/*` and read the
+  // answers. It is now an allowlist plus a refusal on `/api/*` and `/ws/*`.
+  // Registered here so it stays the FIRST `onRequest` hook, ahead of the
+  // container guard and the preview proxy. See `api-origin-guard.ts`.
+  registerOriginGuard(app, originPolicy);
 
   return app;
 }
