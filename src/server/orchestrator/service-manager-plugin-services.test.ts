@@ -342,6 +342,12 @@ describe("plugin credential delivery, end to end (req 23)", () => {
    *
    * Asserted on the project service, on the save path, with a plugin present —
    * all three are required to reproduce it.
+   *
+   * The save also newly satisfies a credential the PLUGIN declared, so the
+   * override provably gets rewritten between the two reads. Without that, a
+   * `refreshSecrets()` that stopped regenerating the override at all would
+   * leave `start()`'s correct `env_file:` in place and the test would pass for
+   * the wrong reason.
    */
   it("a secret save keeps every project service's env_file — the plugin path must not strip it", async () => {
     const workspaceDir = setup(
@@ -349,18 +355,21 @@ describe("plugin credential delivery, end to end (req 23)", () => {
     );
     let stored: Record<string, string> = { GITHUB_TOKEN: "ghp_old" };
     const mgr = createManager(workspaceDir, { userSecrets: () => stored });
-    mgr.setPluginServices([pluginService()]);
+    mgr.setPluginServices([pluginService({ credentials: ["FAL_KEY"] })]);
     await mgr.start();
 
     const envFile = path.join(sessionDir, "service-env", "11111111-2222-3333-4444-555555555555", ".env.web");
     expect(readOverride(workspaceDir).services.web.env_file).toEqual([envFile]);
+    expect(envOf(workspaceDir).FAL_KEY).toBeUndefined();
 
-    stored = { GITHUB_TOKEN: "ghp_new" };
+    stored = { GITHUB_TOKEN: "ghp_new", FAL_KEY: "sk-live" };
     await mgr.refreshSecrets();
 
-    // The override still points the project service at its env file…
+    // The override was rewritten — the plugin's newly-satisfied credential is in it…
+    expect(envOf(workspaceDir).FAL_KEY).toBe("sk-live");
+    // …and that rewrite still points the project service at its env file…
     expect(readOverride(workspaceDir).services.web.env_file).toEqual([envFile]);
-    // …and the file behind that path carries the new value.
+    // …whose contents carry the new value.
     expect(fs.readFileSync(envFile, "utf-8")).toContain("GITHUB_TOKEN=ghp_new");
     await mgr.stop();
   });

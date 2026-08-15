@@ -1353,7 +1353,7 @@ export function generateComposeOverride(
         console.warn(
           `[compose:${opts.sessionId}] service "${svc.name}" declares ` +
             `${svc.secrets.length} x-shipit-secrets entr${svc.secrets.length === 1 ? "y" : "ies"} ` +
-            `but no env file was resolved for it — it will start with those variables UNSET`,
+            `but no env file was resolved for it — ShipIt will NOT inject those variables`,
         );
       }
     }

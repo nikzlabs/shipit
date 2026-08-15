@@ -1890,19 +1890,6 @@ export class ServiceManager extends EventEmitter {
   // -----------------------------------------------------------------------
 
   /**
-   * Parse and security-validate the project's own compose file.
-   *
-   * One place, because it is re-run before every `docker compose up` (see
-   * {@link withUpInFlight}) and not only at `start()`. docs/262 is what forces
-   * that: plugin services get the project workspace read-write at `/project`
-   * (reqs 18, 21), so third-party code can now REWRITE this file — and every
-   * later `up` (a manual start, a restart, an OOM or install retry, the gate
-   * release) re-reads it from disk. Validating it only at `start()` left a
-   * window in which a rewritten file was executed with none of the checks it
-   * was admitted under: `privileged: true`, a Docker-socket bind, an absolute
-   * host path. The file is small and the parse is cheap; the window is not.
-   */
-  /**
    * Every option the compose override is generated from, in ONE place.
    *
    * The two generation sites — `start()` and `refreshSecrets()` — used to build
@@ -1918,9 +1905,14 @@ export class ServiceManager extends EventEmitter {
    * and every provider key.
    *
    * So the fix is not "add the missing line back": it is that there is no
-   * second place to forget it. Both sites read the resolver state as of the
-   * sync that just ran, which is the only state the override may describe —
-   * `sync()` always precedes generation at both call sites.
+   * second place to forget it. What this does NOT establish is atomicity: it
+   * reads the resolver's live state through its getters, and override writers
+   * are not serialized against each other (`refreshSecrets()` is called
+   * fire-and-forget per session from two places), so a concurrent pass can land
+   * between the `sync()` a caller awaited and the read here. That race predates
+   * this and is not what stripped the env files; it is called out so the shape
+   * of the guarantee is not overstated — every option comes from ONE place, not
+   * from one instant.
    */
   private buildOverrideOptions(): ComposeOverrideOptions {
     const composePath = path.join(this.workspaceDir, this.composeConfig.file);
@@ -1944,6 +1936,19 @@ export class ServiceManager extends EventEmitter {
     };
   }
 
+  /**
+   * Parse and security-validate the project's own compose file.
+   *
+   * One place, because it is re-run before every `docker compose up` (see
+   * {@link withUpInFlight}) and not only at `start()`. docs/262 is what forces
+   * that: plugin services get the project workspace read-write at `/project`
+   * (reqs 18, 21), so third-party code can now REWRITE this file — and every
+   * later `up` (a manual start, a restart, an OOM or install retry, the gate
+   * release) re-reads it from disk. Validating it only at `start()` left a
+   * window in which a rewritten file was executed with none of the checks it
+   * was admitted under: `privileged: true`, a Docker-socket bind, an absolute
+   * host path. The file is small and the parse is cheap; the window is not.
+   */
   private parseProjectCompose(composePath: string): ComposeService[] {
     return parseComposeFile(composePath, {
       dockerSocket: this.composeConfig.dockerSocket || this.opsSession,
