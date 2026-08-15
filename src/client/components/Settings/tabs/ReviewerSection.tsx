@@ -29,6 +29,13 @@
  *    slot — a pinned level over a still-derived model — is not expressible, on
  *    the wire or here.
  *
+ * **docs/264 phase 2 made this a SECTION rather than a tab.** The tab it used to
+ * own is now `RolesTab`, which renders this above the list of pinned roles: the
+ * reviewer is one role among many (docs/264 req 2), and the only one whose
+ * params are two ranked candidates rather than one tuple — which is exactly why
+ * it keeps its own cards instead of becoming a row. Nothing below changed;
+ * the outer padding and scroll container moved to the tab.
+ *
  * **Phase 6 (reqs 11, 12, 13) changed what is selectable here.** The tab shipped
  * with the service as a *report* — named on the resolution line, and again as a
  * group header inside one flat menu holding every eligible model of every
@@ -39,7 +46,7 @@
  * level, still one atomic pin.
  */
 
-import { useRef, useState } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { ArrowCounterClockwiseIcon, BrainIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../../../design-tokens.js";
 import { Badge } from "../../ui/badge.js";
@@ -94,7 +101,24 @@ function reasoningFor(agents: AgentOption[], harnessId: string | undefined) {
   return agents.find((a) => a.id === harnessId)?.reasoning;
 }
 
-export function ReviewerTab({ agentList = [] }: { agentList?: AgentOption[] }) {
+export function ReviewerSection({
+  agentList = [],
+  metadata,
+}: {
+  agentList?: AgentOption[];
+  /**
+   * docs/264 phase 2 (reqs 8, 9) — the reviewer's description and standing
+   * instructions, which are ordinary role metadata and editable like any other
+   * role's. Rendered between the section's own prose and the two slot cards,
+   * because it describes the reviewer rather than either candidate.
+   *
+   * A slot rather than state of this file's own: what the reviewer IS lives in
+   * the roles list, and the editor that writes it belongs to `RolesTab`. Passing
+   * the node keeps this file about the two ranked candidates, which is the one
+   * thing here that is not shaped like every other role.
+   */
+  metadata?: ReactNode;
+}) {
   const reviewers = useSettingsStore((s) => s.reviewers);
   /**
    * The slots with a write in flight — a SET, not one slot id.
@@ -165,7 +189,7 @@ export function ReviewerTab({ agentList = [] }: { agentList?: AgentOption[] }) {
   };
 
   return (
-    <div className="px-5 py-4 flex flex-col gap-4 overflow-y-auto h-full" data-testid="reviewer-tab">
+    <div className="flex flex-col gap-4" data-testid="reviewer-tab">
       <div>
         <h3 className="text-sm font-medium text-(--color-text-primary)">Reviewer</h3>
         <p className="mt-0.5 text-xs text-(--color-text-tertiary)">
@@ -176,6 +200,8 @@ export function ReviewerTab({ agentList = [] }: { agentList?: AgentOption[] }) {
           improves on its own.
         </p>
       </div>
+
+      {metadata}
 
       {reviewers.length === 0 ? (
         <div

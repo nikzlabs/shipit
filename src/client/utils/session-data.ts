@@ -4,7 +4,7 @@ import type { FileTreeNode } from "../../server/shared/types.js";
 import type { SessionInfo, RepoInfo, TurnUsage, SessionUsage, RuntimeMode, CredentialRoute } from "../../server/shared/types.js";
 import { turnContextTokens } from "../../server/shared/types.js";
 import { getContextWindowForModel } from "../../server/shared/model-windows.js";
-import type { ReviewerSlotView } from "../../server/shared/types/agent-types.js";
+import type { ReviewerSlotView, RoleView } from "../../server/shared/types/agent-types.js";
 import type { AgentOption } from "../agent-types.js";
 import type { TemplateInfo } from "./template-info.js";
 import { useSessionStore } from "../stores/session-store.js";
@@ -119,6 +119,8 @@ interface BootstrapResponse {
     };
     /** docs/261 phase 3 (req 8) — both reviewer slots, pinned or auto-configured. */
     reviewers?: ReviewerSlotView[];
+    /** docs/264 phase 2 — every agent role, each resolved by the server. */
+    roles?: RoleView[];
     /** docs/150 reqs 4-6 — per-provider proactive failover cutoffs, keyed by agent id. */
     failoverCutoffs?: Record<string, { session: number; weekly: number }>;
     accountSelectionMode?: Record<string, "strict" | "balanced">;
@@ -579,6 +581,8 @@ export async function loadBootstrapData(): Promise<void> {
   // state "no pin", while an absent `reviewers` only ever means an older server.
   // Clearing the array would empty the Reviewer tab rather than say anything.
   if (data.settings.reviewers) useSettingsStore.getState().setReviewers(data.settings.reviewers);
+  // docs/264 phase 2 — the roles, guarded on presence for the same reason.
+  if (data.settings.roles) useSettingsStore.getState().setRoles(data.settings.roles);
   useUiStore.getState().setRuntimeMode(data.runtimeMode ?? "containerized");
   useUiStore.getState().setTailnetPreviewHost(data.tailnetPreviewHost ?? null);
   useUiStore.getState().setBootstrapLoaded(true);

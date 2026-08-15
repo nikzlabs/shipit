@@ -13,7 +13,7 @@ import { InstructionsTab } from "./tabs/InstructionsTab.js";
 import { GitTab } from "./tabs/GitTab.js";
 import { VoiceTab } from "./tabs/VoiceTab.js";
 import { AdvancedTab } from "./tabs/AdvancedTab.js";
-import { ReviewerTab } from "./tabs/ReviewerTab.js";
+import { RolesTab } from "./tabs/RolesTab.js";
 
 // On mobile the tab list collapses from a vertical sidebar into a horizontal
 // scrollable strip — each trigger sizes to its label and gets pill-like styling
@@ -31,13 +31,16 @@ const mobileTabClass = "max-md:w-auto max-md:whitespace-nowrap max-md:rounded-md
  * of the Services cards, so the tab was a second editor for one fact. The tabs
  * are gone, Services is first, and Services is where Settings opens.
  */
-type Tab = "services" | "reviewer" | "integrations" | "git" | "instructions" | "skills" | "keyboard" | "voice" | "network" | "advanced";
+type Tab = "services" | "roles" | "integrations" | "git" | "instructions" | "skills" | "keyboard" | "voice" | "network" | "advanced";
 
-// docs/261 phase 3 — `reviewer` sits directly after `services`, because it is
-// the one setting that reads entirely off the credentials that tab configures:
-// an auto-configured reviewer changes the moment a service is added. Services
-// stays first and stays the default (docs/252 D1); nothing here reorders it.
-const TABS = ["services", "reviewer", "integrations", "git", "instructions", "skills", "keyboard", "voice", "network", "advanced"] as const;
+// docs/261 phase 3 — this tab sits directly after `services`, because it is the
+// one setting that reads entirely off the credentials that tab configures: an
+// auto-configured reviewer changes the moment a service is added, and a role
+// reports itself disconnected the moment its service loses its credential.
+// Services stays first and stays the default (docs/252 D1); nothing here
+// reorders it. docs/264 phase 2 renamed it `reviewer` → `roles`, since the
+// reviewer is now one role among many rather than the only one.
+const TABS = ["services", "roles", "integrations", "git", "instructions", "skills", "keyboard", "voice", "network", "advanced"] as const;
 
 export interface SettingsProps {
   initialContent: string;
@@ -107,7 +110,7 @@ export function Settings({
   const tabLabel = (tab: Tab) => {
     switch (tab) {
       case "services": return "Services";
-      case "reviewer": return "Reviewer";
+      case "roles": return "Roles";
       case "integrations": return "Integrations";
       case "git": return "Git";
       case "instructions": return "Instructions";
@@ -202,10 +205,11 @@ export function Settings({
             </div>
           </TabsContent>
 
-          {/* docs/261 phase 3 (reqs 1, 5, 8) — the two configured reviewers,
-              each labelled auto-configured or pinned with what it resolves to. */}
-          <TabsContent value="reviewer">
-            <ReviewerTab agentList={agentList} />
+          {/* docs/264 phase 2 (reqs 5, 17) — every agent role: the reviewer with
+              its two ranked candidate slots (docs/261 phase 3, reqs 1, 5, 8),
+              then the list of pinned roles, each edited in the role editor. */}
+          <TabsContent value="roles">
+            <RolesTab agentList={agentList} />
           </TabsContent>
 
           <TabsContent value="integrations">

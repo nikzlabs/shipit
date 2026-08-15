@@ -65,26 +65,26 @@ The design is [`plan.md`](./plan.md); the contract is [`requirements.md`](./requ
 
 ## Phase 2 — Settings (the only way a role is created, req 5)
 
-- [ ] Role CRUD through the **existing settings mutation surface**, validated by the
+- [x] Role CRUD through the **existing settings mutation surface**, validated by the
       harness-explicit validator above — not a new set of routes
-- [ ] The description (req 9) and the standing instructions (req 8) are separate fields and
+- [x] The description (req 9) and the standing instructions (req 8) are separate fields and
       **both optional**; where both are absent, the name is the fallback. Standing instructions
       have a **stored maximum**
-- [ ] **A Reviewer section, not a row**: its description and standing instructions above the two
+- [x] **A Reviewer section, not a row**: its description and standing instructions above the two
       existing slot cards, unchanged. No rename, no delete, no single model control
-- [ ] A separate list of pinned roles, each row a **summary** (name, description, what it resolves
+- [x] A separate list of pinned roles, each row a **summary** (name, description, what it resolves
       to) with open / delete — not inline controls
-- [ ] **A role editor** (req 17): one place editing name, description, standing instructions and
+- [x] **A role editor** (req 17): one place editing name, description, standing instructions and
       the parameters together, saving the whole role in one write. The shared service / model /
       reasoning controls live inside it, with the harness beside them
-- [ ] Rename happens in the editor, for pinned roles only, with its uniqueness and failure tests;
+- [x] Rename happens in the editor, for pinned roles only, with its uniqueness and failure tests;
       the reviewer is explicitly excluded
-- [ ] The harness is shown on every pinned role and filled from the single valid option where a
+- [x] The harness is shown on every pinned role and filled from the single valid option where a
       model has one; it is a **real picker** where a model is carried by more than one — which is
       **already the case**, not future work: `deepseek-v4-flash` and `deepseek-v4-pro` run on both
       harnesses (`services.ts:250-251`). A read-only readout would leave a DeepSeek role unable to
       say which harness it means. Pin it against those two real rows
-- [ ] **Unresolved-role view**: a role whose stored model, service or harness no longer exists
+- [x] **Unresolved-role view**: a role whose stored model, service or harness no longer exists
       renders its raw tuple as text, names the invalid field, and stays editable and deletable —
       it must not vanish or be silently rewritten to the first available option
 

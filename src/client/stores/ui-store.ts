@@ -38,7 +38,7 @@ type SettingsTab =
   | "services"
   // docs/261 — the two configured reviewers. Directly after Services because it
   // reads entirely off the credentials that tab configures.
-  | "reviewer"
+  | "roles"
   | "integrations"
   | "git"
   | "instructions"

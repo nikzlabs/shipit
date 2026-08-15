@@ -1,7 +1,7 @@
 import type { LoginIntegrationId } from "../../server/shared/catalogue/types.js";
 import { create } from "zustand";
 import type { CredentialRoute, PermissionMode, FileContextRef } from "../../server/shared/types.js";
-import type { ReviewerSlotView } from "../../server/shared/types/agent-types.js";
+import type { ReviewerSlotView, RoleView } from "../../server/shared/types/agent-types.js";
 import {
   getSavedNotifyOnFinish, saveNotifyOnFinish,
   getSavedSoundOnFinish, saveSoundOnFinish,
@@ -323,6 +323,21 @@ interface SettingsState {
    */
   reviewers: ReviewerSlotView[];
   /**
+   * docs/264 phase 2 (req 5) — every agent role this install has, sorted by
+   * name, each carrying what it resolves to or why it cannot run.
+   *
+   * Resolved server-side and never re-derived here, for the reason `reviewers`
+   * is: which harness can carry a model and which levels it declares are
+   * catalogue rules, and a second implementation in the browser is how the
+   * Settings screen starts promising something other than what runs.
+   *
+   * Hydrated from `GET /api/bootstrap` and pushed on every `agent_list` SSE —
+   * that second channel is what makes a role go `disconnected` in an open tab
+   * when its service loses its credential, rather than on the next reload.
+   * Empty only before bootstrap lands: the reviewer is always among them.
+   */
+  roles: RoleView[];
+  /**
    * In-flight account-scoped sign-in challenges, keyed by
    * {@link providerAccountAuthKey} so concurrent row sign-ins stay independent.
    */
@@ -398,6 +413,14 @@ interface SettingsState {
    * produced.
    */
   setReviewers: (reviewers: ReviewerSlotView[]) => void;
+  /**
+   * docs/264 phase 2 — replace the whole role list.
+   *
+   * Whole-array replacement, like {@link SettingsState.setReviewers}: the server
+   * resolves every role together against one credential snapshot, so a per-role
+   * merge could leave the tab showing a set the server never produced.
+   */
+  setRoles: (roles: RoleView[]) => void;
   /** Set (or clear, with `null`) one account's in-flight sign-in challenge. */
   setProviderAccountAuth: (loginId: LoginIntegrationId, accountId: string, auth: ProviderAccountAuth | null) => void;
   /** Set (or clear, with `null`) one account's last sign-in failure message. */
@@ -474,6 +497,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   nonTurnModel: null,
   nonTurnModelResolved: null,
   reviewers: [],
+  roles: [],
   providerAccountAuths: {},
   providerAccountAuthErrors: {},
 
@@ -672,6 +696,7 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   setCredentialRoutes: (routes) => set({ credentialRoutes: routes }),
   setNonTurnModel: (pinned, resolved) => set({ nonTurnModel: pinned, nonTurnModelResolved: resolved }),
   setReviewers: (reviewers) => set({ reviewers }),
+  setRoles: (roles) => set({ roles }),
   setProviderAccountAuth: (loginId, accountId, auth) =>
     set((state) => ({
       providerAccountAuths: withKey(
