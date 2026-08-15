@@ -298,6 +298,49 @@ describe("checkRolePinnedParams — compatibility only, never live availability"
     expect(view.unavailableReason).toBe("quota_exhausted");
     expect(view.earliestResetAt).toBe("2026-08-15T18:00:00.000Z");
   });
+
+  /**
+   * The purpose split, in both directions and on one tuple: a **save** must not
+   * refuse a role for a credential this install does not hold (that is the
+   * service's state, reported as `disconnected` with "reconnect the service" as
+   * the remedy — so refusing the write made a disconnected role uneditable),
+   * while a **run** must, because there is nothing to authenticate it with.
+   */
+  it("passes a credential-less tuple for a save and refuses it for a run", async () => {
+    const { checkRolePinnedParams } = await import("./roles.js");
+    const deps = {
+      credentialStore: storeWith({ routes: [] }),
+      env: EMPTY_ENV,
+      isInstalled: ALL_INSTALLED,
+    };
+    const params = pinnedRole("deep-dive", DEEPSEEK_ON_CLAUDE).params as never;
+    expect(checkRolePinnedParams(params, deps, "save").ok).toBe(true);
+    const forRun = checkRolePinnedParams(params, deps, "run");
+    expect(forRun.ok).toBe(false);
+    if (!forRun.ok) expect(forRun.kind).toBe("credential");
+  });
+
+  it("keeps refusing a tuple fault on a save — only the credential step is skipped", async () => {
+    const { checkRolePinnedParams } = await import("./roles.js");
+    const deps = {
+      credentialStore: storeWith({ routes: [] }),
+      env: EMPTY_ENV,
+      isInstalled: ALL_INSTALLED,
+    };
+    // `max` is Claude Code's level and not Codex's. Both faults at once, and the
+    // editable one is still what a save reports — the ordering is untouched.
+    const broken = pinnedRole("deep-dive", {
+      ...DEEPSEEK_ON_CLAUDE,
+      harnessId: "codex",
+      reasoningEffort: "max",
+    }).params as never;
+    const checked = checkRolePinnedParams(broken, deps, "save");
+    expect(checked.ok).toBe(false);
+    if (!checked.ok) {
+      expect(checked.kind).toBe("catalogue");
+      expect(checked.field).toBe("reasoningEffort");
+    }
+  });
 });
 
 // ---- resolveRoleByName (reqs 10, 13) ---------------------------------------

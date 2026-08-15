@@ -26,10 +26,11 @@
  *
  * **2. Saving checks COMPATIBILITY, never live availability.** Whether a
  * credential routes *right now* changes without anyone editing a role — a
- * subscription's quota resets — so requiring a live route at save would refuse a
- * perfectly good role during an outage. The save checks what cannot change on
- * its own (the catalogue row, the harness, the level); routing is checked when
- * the role runs, and reported by {@link resolveRoleView}.
+ * subscription's quota resets, an account is disconnected — so requiring one at
+ * save would refuse a perfectly good role during an outage. The save checks what
+ * cannot change on its own (the catalogue row, the harness, the level); routing
+ * is checked when the role runs, and reported by {@link resolveRoleView}. That
+ * is what {@link RoleParamsPurpose} says at each call site.
  *
  * **3. Nothing is ever substituted** (req 7). No harness derivation, and no
  * retirement successor: a role pinned to a retired model reports that it is
@@ -186,11 +187,35 @@ export type RoleInvalidField =
  *    **reconnect the service**; the role is correct and editing it would be the
  *    wrong advice.
  *
- * A **save** refuses both (the plan's validator checks "installed, able to carry
- * the model *and* credentialed"). A **view** must not report them alike, which
- * is the whole reason this discriminator exists rather than one boolean.
+ * A **run** refuses both — it needs a credential now. A **save** refuses only the
+ * first, and a **view** must not report the two alike, which is the whole reason
+ * this discriminator exists rather than one boolean. See
+ * {@link RoleParamsPurpose}.
  */
 export type RoleCheckFailureKind = "catalogue" | "credential";
+
+/**
+ * What a params check is FOR, which is the one thing that decides whether a
+ * missing credential refuses.
+ *
+ *  - **`"run"`** — the role is starting *now*, so a `(service, billing mode)`
+ *    this install holds no credential for is a refusal: there is nothing to
+ *    authenticate the run with, and saying so by name beats failing downstream.
+ *  - **`"save"`** — the role is being written, and a save checks **compatibility
+ *    only** (rule 2 in this module's header). A credential is an *account* fact
+ *    that changes without anyone editing a role, and {@link resolveRoleView}
+ *    already reports its absence as `disconnected` — "reconnect the service, the
+ *    role is correct". Refusing the save contradicted that in the one place it
+ *    mattered most: a disconnected role could not be edited at all, because
+ *    every write revalidates the whole role, so changing only its *description*
+ *    was rejected for a credential the edit did not touch and could not restore.
+ *
+ * The check itself is unchanged and stays in its place — **last, after every
+ * catalogue check** — so a role with two faults still reports the one an edit
+ * fixes rather than sending the user to reconnect a service that would not have
+ * helped. `"save"` skips that final step; it never reorders it.
+ */
+export type RoleParamsPurpose = "run" | "save";
 
 export type RoleParamsCheck =
   | { ok: true; params: RolePinnedParams }
@@ -221,10 +246,15 @@ export type RoleParamsCheck =
  *
  * **Every catalogue check runs before the credential one**, so a role with two
  * faults reports the one an edit fixes. See the comment at the credential step.
+ *
+ * `purpose` decides whether the credential step runs at all — see
+ * {@link RoleParamsPurpose}. It defaults to `"run"`, the stricter answer, so a
+ * caller that has not thought about it gets the safe one.
  */
 export function checkRolePinnedParams(
   params: RolePinnedParams,
   deps: RoleValidatorDeps,
+  purpose: RoleParamsPurpose = "run",
 ): RoleParamsCheck {
   const { harnessId } = params;
   const selection: ModelSelection = {
@@ -326,6 +356,11 @@ export function checkRolePinnedParams(
   // reported `disconnected` — sending the user to reconnect a service that would
   // not have fixed it, while the edit it actually needed went unmentioned.
   // Cross-agent review found that; every tuple fault now outranks it.
+  //
+  // **A save skips it entirely** (rule 2, {@link RoleParamsPurpose}), which is
+  // the only thing `purpose` changes: the ordering above is untouched, so a role
+  // with two faults still reports the editable one on every path.
+  if (purpose === "save") return { ok: true, params: normalize(params) };
   const credentials = listConfiguredCredentials(deps.credentialStore, deps.env ?? process.env);
   if (!isSelectionEligible(harnessId, selection, credentials)) {
     return {
@@ -337,16 +372,18 @@ export function checkRolePinnedParams(
         + `${params.serviceId}/${params.billingMode}.`,
     };
   }
+  return { ok: true, params: normalize(params) };
+}
+
+/** The checked tuple, rebuilt field by field so nothing a caller passed rides along. */
+function normalize(params: RolePinnedParams): RolePinnedParams {
   return {
-    ok: true,
-    params: {
-      kind: "pinned",
-      harnessId,
-      serviceId: params.serviceId,
-      billingMode: params.billingMode,
-      modelId: params.modelId,
-      reasoningEffort: params.reasoningEffort,
-    },
+    kind: "pinned",
+    harnessId: params.harnessId,
+    serviceId: params.serviceId,
+    billingMode: params.billingMode,
+    modelId: params.modelId,
+    reasoningEffort: params.reasoningEffort,
   };
 }
 
@@ -357,13 +394,17 @@ export function checkRolePinnedParams(
  * `what` prefixes the message so one rule can report two situations honestly:
  * a stored role that no longer works and an override that never would are the
  * same defect and a different remedy.
+ *
+ * `purpose` is the save/run distinction {@link RoleParamsPurpose} states, and it
+ * is the whole of what a save does differently.
  */
 export function validateRolePinnedParams(
   params: RolePinnedParams,
   deps: RoleValidatorDeps,
   what = "This role",
+  purpose: RoleParamsPurpose = "run",
 ): RolePinnedParams {
-  const checked = checkRolePinnedParams(params, deps);
+  const checked = checkRolePinnedParams(params, deps, purpose);
   if (!checked.ok) throw new ServiceError(400, `${what} cannot run: ${checked.message}`);
   return checked.params;
 }

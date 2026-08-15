@@ -320,13 +320,22 @@ export async function registerSessionSpawnRoutes(
         // predates the target sends the same shape; `parentBase: true` is the one
         // difference from `agent run`, and it is what keeps the shipped partial
         // form (`--model X`, everything else from the parent) legal here.
+        // Presence, never truthiness: a parameter the caller sent EMPTY is one it
+        // tried to name, and swallowing it here would spawn the child off the
+        // bare role or the bare inheritance — the dropped override req 10
+        // forbids, and the refusal `parseSpawnTarget` owns. `??` is the right
+        // join for the legacy aliases even so: it falls through only on
+        // `null`/`undefined`, so an explicitly empty `agentId` still beats a
+        // populated `agent`.
+        const aliasedAgentId = body.agentId ?? body.agent;
+        const aliasedModelId = body.modelId ?? body.model;
         const target = parseSpawnTarget(
           {
             ...(body.role !== undefined ? { role: body.role } : {}),
-            ...(body.agentId ?? body.agent ? { agentId: body.agentId ?? body.agent } : {}),
+            ...(aliasedAgentId !== undefined ? { agentId: aliasedAgentId } : {}),
             ...(body.serviceId !== undefined ? { serviceId: body.serviceId } : {}),
             ...(body.billingMode !== undefined ? { billingMode: body.billingMode } : {}),
-            ...(body.modelId ?? body.model ? { modelId: body.modelId ?? body.model } : {}),
+            ...(aliasedModelId !== undefined ? { modelId: aliasedModelId } : {}),
             ...(body.reasoningEffort !== undefined ? { reasoningEffort: body.reasoningEffort } : {}),
           },
           { parentBase: true },

@@ -212,6 +212,61 @@ describe("parseSpawnTarget — the role path with overrides (docs/264 reqs 10, 1
     });
   }
 
+  /**
+   * **A role name survives verbatim, because resolution is by EXACT key**
+   * (req 18). Storage stores the key as typed (`credential-store.ts`'s `setRole`,
+   * deliberately un-normalized), so trimming here does not tidy a name — it names
+   * a different role. Two ways that failed, both reachable on a name req 18
+   * permits: `" reviewer "` is an ordinary role, distinct from the reserved one,
+   * and ran ShipIt's automatic reviewer instead of itself (reqs 3, 4, 7);
+   * `" deep dive "` was refused as unknown while existing.
+   */
+  it("passes a role name through exactly as typed, spaces included (req 18)", async () => {
+    const { parseSubAgentSpawnTarget } = await import("./sub-agent-target.js");
+    for (const name of [" reviewer ", " deep dive ", "deep dive "]) {
+      expect(parseSubAgentSpawnTarget({ role: name })).toEqual({
+        kind: "role",
+        role: name,
+        overrides: {},
+      });
+    }
+  });
+
+  /**
+   * The blank case is the one thing a verbatim name still refuses, and it costs
+   * nothing: a name blank once whitespace is discounted cannot be stored, so it
+   * can never be a role — while `--role ""` is something the caller TRIED to say
+   * (the same rule every other named parameter follows above).
+   */
+  it("refuses a --role that is present but empty rather than reading it as absent", async () => {
+    const { parseSubAgentSpawnTarget } = await import("./sub-agent-target.js");
+    for (const value of ["", "   ", 42]) {
+      // The message matters as much as the throw: without it the call fell
+      // through to the explicit path and was refused for "missing --agent,
+      // --service, …", which names every flag but the one at fault.
+      expect(() => parseSubAgentSpawnTarget({ role: value })).toThrow(
+        /--role was given an empty value/,
+      );
+    }
+  });
+
+  /**
+   * The one value that is present and still reads as absence, and it is a
+   * decision rather than a gap: a `null` cannot come from a shell — the CLI
+   * cannot spell one — so it only arrives from a caller writing a body, where
+   * `null` is how JSON says "no value". Refusing it would refuse the idiom
+   * (`{ modelId: user.model ?? null }`) instead of catching a failed expansion,
+   * which is what the blank rule above is for.
+   */
+  it("reads an explicit null as absence, unlike a blank string", async () => {
+    const { parseSubAgentSpawnTarget } = await import("./sub-agent-target.js");
+    expect(parseSubAgentSpawnTarget({ role: "reviewer", modelId: null, agentId: null })).toEqual({
+      kind: "role",
+      role: "reviewer",
+      overrides: {},
+    });
+  });
+
   it("still refuses a billing mode that is neither sub nor key, even as an override", async () => {
     const { parseSubAgentSpawnTarget } = await import("./sub-agent-target.js");
     expect(() => parseSubAgentSpawnTarget({ role: "reviewer", billingMode: "free" })).toThrow(/sub/);
@@ -433,6 +488,45 @@ describe("resolveSpawnTarget", () => {
         { credentialStore: storeWith([]), env: {} },
       ),
     ).toThrow(/cannot run/);
+  });
+
+  /**
+   * The whole of the trimming defect, end to end: a user's own role named
+   * `" reviewer "` (req 18 permits it, and storage keeps the two apart) must run
+   * ITS tuple, not ShipIt's automatic reviewer. Trimming at the parser made the
+   * two names one, so the run silently landed on the ranked reviewer — the
+   * substitution req 7 forbids, on a role that exists.
+   */
+  it("runs the role whose name matches exactly, not the reserved one it resembles", async () => {
+    installAll();
+    const { parseSubAgentSpawnTarget, resolveSubAgentSpawnTarget } = await import(
+      "./sub-agent-target.js"
+    );
+    const spaced: AgentRole = {
+      name: " reviewer ",
+      params: {
+        kind: "pinned",
+        harnessId: "claude",
+        serviceId: "anthropic",
+        billingMode: "key",
+        modelId: "claude-opus-5",
+        reasoningEffort: "high",
+      },
+    };
+    const resolved = resolveSubAgentSpawnTarget(
+      parseSubAgentSpawnTarget({ role: " reviewer " }),
+      {
+        harnessId: "claude",
+        selection: { serviceId: "anthropic", billingMode: "key", modelId: "claude-opus-5" },
+      },
+      { credentialStore: storeWith([OPENAI_KEY, ANTHROPIC_KEY], {}, [spaced]), env: {} },
+    );
+    expect(resolved.roleName).toBe(" reviewer ");
+    expect(resolved.harnessId).toBe("claude");
+    expect(resolved.selection.modelId).toBe("claude-opus-5");
+    // The ranking never ran: this is a pinned role, so there is no reviewer
+    // account of a choice — the tell that the reserved role was not what ran.
+    expect(resolved.reviewer).toBeUndefined();
   });
 
   // req 13 — the refusal is the remedy: it names the roles that DO exist, so an

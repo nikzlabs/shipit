@@ -100,6 +100,12 @@ exists, even on an install where nobody has configured anything.
 An unknown role name is refused, and the refusal lists the roles that do exist —
 so a wrong guess corrects itself rather than falling back to something else.
 
+A role is whatever the user named it, and the name is used **exactly as you pass
+it** — nothing is trimmed, folded or otherwise tidied, because two roles may
+differ by no more than that. Copy it from `shipit agent roles` and quote it where
+it needs quoting: `--role "deep dive"`. A flag passed with an empty value
+(`--role=`, `--model=`) is refused rather than ignored, on both commands.
+
 ### Overrides — relay, never decide
 
 Any parameter a role carries may be overridden when you start it, and you name
