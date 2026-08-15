@@ -391,6 +391,31 @@ networks:
     expect(() => parseComposeFile(p, { dockerSocket: false })).toThrow("name:");
   });
 
+  it("rejects network driver_opts and a chosen address pool", () => {
+    const dir = setup();
+    const opts = writeCompose(dir, `
+services:
+  web:
+    image: node:20
+networks:
+  backend:
+    driver_opts:
+      com.docker.network.bridge.name: docker0
+`);
+    expect(() => parseComposeFile(opts, { dockerSocket: false })).toThrow("driver_opts");
+    const ipam = writeCompose(dir, `
+services:
+  web:
+    image: node:20
+networks:
+  backend:
+    ipam:
+      config:
+        - subnet: 172.31.0.0/16
+`);
+    expect(() => parseComposeFile(ipam, { dockerSocket: false })).toThrow("ipam");
+  });
+
   it("allows an ordinary project-declared bridge network", () => {
     const dir = setup();
     const p = writeCompose(dir, `
@@ -402,10 +427,27 @@ networks:
   backend:
   frontend:
     driver: bridge
-    driver_opts:
-      com.docker.network.driver.mtu: "1450"
 `);
     expect(() => parseComposeFile(p, { dockerSocket: false })).not.toThrow();
+  });
+
+  // planning#386 — `include:` does not extend the model this validator reads, it
+  // REPLACES it: the included file's top-level `volumes:` block resolves at
+  // `up` time and is never seen here, so the root file can mount a host bind by
+  // name with nothing to refuse. It was rejected for contained sessions only.
+  it("rejects `include:` in every session, not only contained ones", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `
+include:
+  - ./volumes.yml
+services:
+  web:
+    image: node:20
+    volumes:
+      - escape:/host
+`);
+    expect(() => parseComposeFile(p, { dockerSocket: false })).toThrow("include:");
+    expect(() => parseComposeFile(p, { dockerSocket: false, containEgress: true })).toThrow("include:");
   });
 
   it("rejects volumes_from in contained services", () => {

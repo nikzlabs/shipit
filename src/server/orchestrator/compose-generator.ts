@@ -429,8 +429,20 @@ export function parseComposeFile(
   if (!doc || typeof doc !== "object") {
     throw new ComposeValidationError("Compose file must be a YAML mapping", "malformed");
   }
-  if (opts.containEgress && doc.include !== undefined) {
-    throw new ComposeValidationError("Compose `include` is not supported for contained services.");
+  // planning#386 — unconditional, where this was `containEgress`-only. `include:`
+  // does not add a feature to the model, it REPLACES the model this function
+  // reads: the effective document is the root file plus every included one, and
+  // only the root file is here. That voids the per-service rules below in an
+  // Open session, and it voids {@link validateTopLevelVolumes} outright — the
+  // root file declares a service mounting `escape:/host` (an ordinary named
+  // volume, admitted), an included file declares `escape:` with a bind
+  // `driver_opts`, and Compose resolves both. A rule that a second file can
+  // delete is not a rule.
+  if (doc.include !== undefined) {
+    throw new ComposeValidationError(
+      "Compose `include:` is not supported. ShipIt validates the compose file it is given, "
+      + "and an included file would not be checked. Declare the services in this file.",
+    );
   }
   validateTopLevelFileRefs("Secret", doc.secrets);
   validateTopLevelFileRefs("Config", doc.configs);
@@ -448,6 +460,19 @@ export function parseComposeFile(
     if (typeof svc !== "object" || svc === null) continue;
 
     // Security validation
+    //
+    // `extends:` is the sibling of the `include:` rule above and is deliberately
+    // NOT unconditional (planning#386, review lead). It is the same shape of
+    // problem — the effective service is the local mapping merged with one from
+    // another file, and only the local mapping is validated here, so in an OPEN
+    // session a `privileged: true` or an absolute bind can arrive from the
+    // extended file untouched. Two things make it a separate decision rather
+    // than a line to change here: it cannot reach the top-level `volumes:` block
+    // (Compose requires a named volume an extended service mounts to be declared
+    // in the file doing the extending, which IS this one), so it does not defeat
+    // `validateTopLevelVolumes`; and unlike `include:` it is a widely used
+    // Compose feature, so refusing it in Open sessions is a product call. Stated
+    // rather than left for the next reader to rediscover.
     if (opts.containEgress && svc.extends !== undefined) {
       throw new ComposeValidationError(`Service \`${name}\`: \`extends\` is not supported for contained services.`);
     }
@@ -870,17 +895,22 @@ function validateTopLevelVolumes(block: unknown): void {
  *    sessions too, and `shipit-session-<id>` / the orchestrator's own compose
  *    network are named by a scheme, not by a secret.
  *
- * So: `bridge` (or unstated) driver only, no `external`, no `name:`, and the
- * reserved-name refusal applies to every session rather than contained ones —
- * Compose merges maps key-by-key, so a key the override does not set survives
- * from the project's file, and `driver:` under a project-declared
- * `shipit-session:` is exactly such a key.
+ * So the same shape as the volumes rule: `bridge` (or unstated) driver only, no
+ * `driver_opts`, no `ipam`, no `external`, no `name:`. And the reserved-name
+ * refusal applies to every session rather than contained ones — Compose merges
+ * maps key-by-key, so a key the override does not set survives from the
+ * project's file, and `driver:` under a project-declared `shipit-session:` is
+ * exactly such a key.
  *
- * `driver_opts` is deliberately still allowed on a bridge network (MTU is a
- * real deployment need). The residue that leaves — `com.docker.network.bridge.name`
- * naming an interface the host already has — was assessed and is not a reach:
- * in a contained session nothing joins the network, and in an Open one the
- * bridge it could collide with carries no traffic ShipIt is protecting.
+ * `driver_opts` and `ipam` were the two this nearly kept, on the grounds that
+ * MTU is a real deployment need and that a chosen subnet only collides with
+ * itself. Both are refused instead, because neither reason survived being
+ * written down as a claim: `com.docker.network.bridge.name` names a host
+ * interface, `ipam` picks the address a container presents to everything that
+ * identifies containers by source IP (docs/172), and "assessed and probably
+ * harmless" is the shape of the residue this very block already shipped once. A
+ * refusal is loud and says what to remove; the alternative was a safe-subset
+ * allowlist over an option namespace Docker extends without asking us.
  */
 function validateTopLevelNetworks(block: unknown): void {
   if (!block || typeof block !== "object" || Array.isArray(block)) return;
@@ -895,11 +925,21 @@ function validateTopLevelNetworks(block: unknown): void {
       throw new ComposeValidationError(`Network \`${name}\`: definition must be a mapping.`);
     }
     const net = entry as Record<string, unknown>;
+    // The driver first: `macvlan` needs a `driver_opts.parent`, and naming the
+    // driver is the more useful half of that pair to report.
     if (net.driver !== undefined && net.driver !== "bridge") {
       throw new ComposeValidationError(
         `Network \`${name}\`: network driver \`${showValue(net.driver)}\` is not allowed. `
         + "Only Docker's built-in `bridge` driver is supported — `macvlan`/`ipvlan` attach the "
         + "container to the host's own network segment.",
+      );
+    }
+    if (net.driver_opts !== undefined || net.ipam !== undefined) {
+      const key = net.driver_opts !== undefined ? "driver_opts" : "ipam";
+      throw new ComposeValidationError(
+        `Network \`${name}\`: \`${key}\` is not allowed. It reaches host networking — a bridge `
+        + "name is a host interface, and an address pool decides what a container presents as "
+        + "its source IP. Declare the network with no options.",
       );
     }
     if (net.external !== undefined && net.external !== false && net.external !== "false") {

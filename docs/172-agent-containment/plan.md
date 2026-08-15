@@ -75,7 +75,11 @@ doesn't weaken it:
   blocks are not services, so nothing read them, and a local-driver `driver_opts`
   bind (`type: none` + `device:`) is a host bind that a service mounts by name.
   `validateTopLevelVolumes` / `validateTopLevelNetworks` now refuse `driver_opts`,
-  a non-`local`/`bridge` driver, `external:` and a `name:` override in either block.
+  a non-`local`/`bridge` driver, `external:`, a `name:` override in either block,
+  and `ipam:` on a network — and `include:` is refused in every session rather
+  than contained ones only, since an included file's blocks are never validated.
+  **Still open:** service `extends:` is refused only in contained sessions, so an
+  Open session's effective service definition can arrive from an unvalidated file.
 - **Chat history / usage / session metadata are NOT agent-writable.** They live in the
   orchestrator-host SQLite DB (`.shipit.db`), which is never mounted into the container
   (`app-di.ts:136`). The agent cannot corrupt them from inside — this already realizes
