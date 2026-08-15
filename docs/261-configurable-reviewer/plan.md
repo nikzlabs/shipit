@@ -300,6 +300,14 @@ therefore pinned as a pure function, and what *is* asserted end to end is the pr
 failure would break the product: that the preference does not refuse a model only one harness can
 run. One gateway row gaining a style makes the rest reachable.
 
+> **Correction, 2026-08-15 (docs/264).** The premise above is **no longer true**, and the gateway
+> row it anticipated has already landed. `deepseek/key/deepseek-v4-flash` and
+> `deepseek/key/deepseek-v4-pro` declare `styles: [O_CC, O_RESP, A_MSG]`
+> (`services.ts:250-251`), so both harnesses carry both models — they are the only two rows in the
+> catalogue that do. **Tiers 3 and 5 are therefore reachable through the real catalogue**, and the
+> avoid-the-implementer's-harness preference now has something to prefer between. What this
+> paragraph calls untested is untested and *no longer unreachable*. Tracked as planning#381.
+
 ## The CLI (reqs 6, 7)
 
 `shipit agent run` gains `--role reviewer` and loses its stored defaults. **The explicit path
@@ -713,6 +721,16 @@ Six things worth recording, three of which are decisions the design left open:
   settings-time harness can be carried onto a different harness by `selectReviewer`. Both belong
   to the commit that makes a model dual-harness: that is the change that makes them reachable,
   and the only one that can test them.
+
+  > **Correction, 2026-08-15 (docs/264).** "Unreachable in today's catalogue" is **false as of
+  > now**: the two DeepSeek direct-key rows are dual-harness (see the correction above). Both
+  > deferred defects are therefore **live**, and the commit that made them reachable was a
+  > catalogue edit that did not carry the fix. The latent bug was **reproduced on shipped code**
+  > with a DeepSeek key as the only credential: a pin accepted at effort `max`, validated against
+  > the derived `claude`, resolves onto `codex` — whose levels are `none|minimal|low|medium|high|
+  > xhigh` and include no `max`. This is now planning#381, owned there rather than here; docs/264's
+  > role path does not inherit the defect, because a role's level is validated against the one
+  > harness it names.
 - **Driven in the dogfood instance** across three seeded services: the two Settings surfaces
   render the reference control, the service menu carries a billing-mode pill per row, switching
   Reviewer 1 from Anthropic to OpenRouter kept **Opus 5 and High** and flipped the slot to

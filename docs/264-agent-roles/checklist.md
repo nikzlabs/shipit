@@ -80,7 +80,10 @@ The design is [`plan.md`](./plan.md); the contract is [`requirements.md`](./requ
 - [ ] Rename happens in the editor, for pinned roles only, with its uniqueness and failure tests;
       the reviewer is explicitly excluded
 - [ ] The harness is shown on every pinned role and filled from the single valid option where a
-      model has one; it becomes a real picker where a model is carried by more than one
+      model has one; it is a **real picker** where a model is carried by more than one — which is
+      **already the case**, not future work: `deepseek-v4-flash` and `deepseek-v4-pro` run on both
+      harnesses (`services.ts:250-251`). A read-only readout would leave a DeepSeek role unable to
+      say which harness it means. Pin it against those two real rows
 - [ ] **Unresolved-role view**: a role whose stored model, service or harness no longer exists
       renders its raw tuple as text, names the invalid field, and stays editable and deletable —
       it must not vanish or be silently rewritten to the first available option
