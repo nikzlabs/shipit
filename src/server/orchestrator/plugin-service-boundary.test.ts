@@ -97,11 +97,21 @@
  *     `${VAR}` from the orchestrator's environment. **The interpolation half is
  *     closed**: every `docker` spawn that names a compose file now passes
  *     `composeSpawnEnv()` (`compose-cli.ts`), an allowlist that carries no
- *     credential. The merge-by-name half is unchanged — a later `up` does not
- *     re-check req 20 collisions — so a project entry can still add to a plugin
- *     service what the fragment allowlist would have refused, bounded by
- *     `validateServiceSecurity`, which does re-run. That residue is planning#371's
- *     to settle, not this file's.
+ *     credential. **The merge-by-name half is narrowed, not closed**, and the
+ *     distinction is worth stating precisely rather than as "a later `up` does
+ *     not re-check" (review finding — that was too broad in one direction and
+ *     too reassuring in the other): the normal config-change path DOES
+ *     re-resolve the plugin set against the new project file before reconciling
+ *     (`service-manager-setup.ts`, the req-20 comment), so the residue is the
+ *     cached / racing / missed-watch `up`, not every one. What does NOT hold is
+ *     the bound: `validateServiceSecurity` runs on the project and plugin
+ *     definitions BEFORE Compose merges them, so the effective merged service is
+ *     never validated, its `env_file`/secret/config path checks are documented as
+ *     bypassable through a workspace symlink (`compose-generator.ts`), and
+ *     top-level named volumes are parsed for their NAMES only
+ *     (`parseUserNamedVolumes`) — `driver_opts` are not security-checked, so the
+ *     local driver can encode a host bind that no forbidden absolute service
+ *     bind was needed for. Settling that is planning#371's, not this file's.
  *
  * Recorded here rather than left to the issue alone because a guard test that
  * reads as a clean bill of health while a boundary is open is worse than no
