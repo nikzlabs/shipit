@@ -533,6 +533,56 @@ configurable-reviewer/plan.md`**, which already documents the repository-overrid
 this audience, and the guard asserts against that path. Naming it here is what stops the positive
 assertion from being quietly dropped when `agent.md` stops serving the role.
 
+**Where phase 4 landed it.** The complete shape is gone from all four injected surfaces
+(`shipit-docs/agent.md`, `shipit-docs/sandbox-session.md`, and both harness system prompts) and
+lives in `docs/261-configurable-reviewer/plan.md` § *The complete shape, for whoever writes
+repository policy*. `review-command-callers.test.ts` carries the inverted guard: the injected
+enumeration is **read from the `shipit-docs/` directory** (the whole of which the worker image
+`COPY`s, so "what is injected" is a filesystem fact), and the negative assertion is
+`namesEveryExplicitFlag` — the five flag names anywhere **on a page**, not a matched command line
+and not a paragraph window. Both refinements are load-bearing and were checked by reverting: a
+command matcher passes `sandbox-session.md`'s prose sentence untouched, and any window smaller
+than the page is gamed by a blank line. The margin is wide — no injected page now names more than
+two of the five — because the enumeration the agent actually needs is `shipit agent params`' own
+output rather than prose.
+
+**Two refinements came out of cross-agent review, and both are worth stating because each was a
+way for the guard to pass while req 15 was violated.** *The `-a` alias*: `shipit agent run` accepts
+`-a` for `--agent`, so `-a codex --service … --billing-mode … --model … --effort …` is a complete,
+runnable five-parameter command that a `--agent`-only matcher scores as naming four. The matchers
+now carry every spelling the CLI accepts, as **tokens** rather than substrings — `-a` as a
+substring occurs inside `sub-agent` and would mark the slot satisfied on nearly any page, weakening
+the check instead of tightening it. *The `--role` exclusion, tried and reverted*: a draft excluded
+any line naming a role from `incompleteExplicitRuns`, on the ground that `--role reviewer --agent
+codex` is now an accepted call. It is — but this guard's subject is **authorship, not validity**.
+docs/261's rule is that no command ShipIt itself writes picks the reviewer by harness, and an
+override is legitimate precisely because a *user* asked for it; a line compiled into a page has no
+user behind it. So the exclusion was dropped and the injected pages spell no harness at all, which
+costs nothing: they say "relay the override the user named", and `shipit agent params` supplies the
+value when one is actually needed.
+
+**One over-claim was withdrawn rather than reworded.** A draft of `agent.md` said an un-runnable
+role's refusal always distinguishes stranded / disconnected / quota-exhausted. That holds where the
+role names its own target, and **not** for `--role reviewer`: when neither configured candidate can
+run, the ranking cannot attribute a single cause, so `roles.ts`'s refusal names both remedies at
+once. The page now says so. This is the failure mode CLAUDE.md names — a doc asserting a guarantee
+the code does not provide — caught one phase after the code that would have had to provide it.
+
+**The guard is scoped to what ShipIt *injects*, never to "anywhere agent-facing".** `shipit agent
+params` prints all five flag names by design: that output **is** req 12's inventory. A guard
+written as "these five words never appear together" would fail on the one place they legitimately
+must appear, so the scope is the injected pages plus the `buildAgentSystemInstructions` variants,
+and the shim's own output is deliberately outside it.
+
+**Phase 4 also settled phase 3's documentation debt**, which the removal bullets did not cover:
+`session create`'s four new flags, `agent run`'s `--role` plus overrides, and the two new
+subcommands were shipped undocumented because they were scoped out of these same files so phases 2
+and 3 could run in parallel. `shipit-docs/sessions.md` gains a *What the child runs on* section —
+the shared vocabulary, then the completion rules that are the child's own — and `agent.md` gains
+*Overrides* and *Seeing what exists*. Neither enumerates the five parameters; both point at
+`shipit agent roles` / `shipit agent params`, which is what makes the enumeration unnecessary in
+prose at all.
+
 ## Settings (req 5)
 
 **A role is created and edited in ShipIt's settings UI, and that is the only way it comes from.**
