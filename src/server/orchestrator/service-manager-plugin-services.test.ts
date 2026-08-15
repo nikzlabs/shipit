@@ -47,6 +47,7 @@ function pluginService(overrides: Partial<PluginComposeService> = {}): PluginCom
     definition: { image: "node:22-alpine", command: "node server.mjs" },
     credentials: [],
     externalVolumes: [],
+    self: false,
     ...overrides,
   };
 }

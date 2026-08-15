@@ -24,6 +24,7 @@ nothing. Flags: `--bump` increments the shared counter before reporting;
 | `state.counter` | shared state with the probe service — `probe --bump`, then reload its page: same number (reqs 17, 18) |
 | `checkout.writable` | this surface's own mount — not the self/consumer signal (read `mode`), but it does check the rule directly: the plugin's tree is writable exactly when it is the project, so a consumer generation reports `false` and `repo: self` reports `true` (reqs 7, 15, 27). On the service surface it measures this fragment's own `.:/app`, which ShipIt forces read-only for a tracked generation and leaves as declared under `repo: self` |
 | `install.matchesActiveCommit` | install ran for the active generation; `null` under self-use, which has no generations (req 7) |
+| `dependency.project` / `.plugin` | a real dependency loads from each mount of the tree, reported per root because `/plugin` and `/project` are separate mounts even when they are one tree. Under `repo: self` the CLI must show both `resolved: true, used: true` — the working tree's own `agent.install` prepares the tree the CLIs and services run out of (req 27); the service shows `plugin: resolved false`, since its fragment mounts only its own directory at `/app`. This is the one field that would have caught nikzlabs/shipit#2298 (`test-plugin/README.md` has the full table) |
 
 The probe service renders the same report from the service surface at its
 preview URL, with a counter button and an Agent Interface SDK section: it

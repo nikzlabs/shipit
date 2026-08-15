@@ -224,6 +224,18 @@ Open a session on **this** repository.
   and the service do, with no refresh. What ShipIt *copies* rather than reads
   live — the skill, the wrapper — is re-applied on the next activation round, not
   on the edit.
+- **PASS:** the `dependency` field, on **both** surfaces. `probe` reports
+  `dependency.project` and `dependency.plugin` both `{ resolved: true, used:
+  true }`; the service's `/report.json` reports `project` the same way and
+  `plugin` as `resolved: false`, which is expected there and only there — that
+  fragment mounts its own directory at `/app`, so nothing is reachable above it.
+  **Do not skip this one.** It is the only field that touches the working tree's
+  `node_modules`, and its absence is why Runs 1 and 2 below both passed while
+  self-use could not start an entry point at all (nikzlabs/shipit#2298). Any
+  other combination means the plugin's side of the working tree is not the tree
+  `agent.install` prepared: `dependency.<root>.error` names which mount is
+  wrong. On the **consumer** fixture (step 2) neither root is asserted — both
+  are other trees. `test-plugin/README.md` has the full table.
 
 ---
 

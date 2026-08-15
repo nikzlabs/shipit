@@ -223,6 +223,14 @@ session's own working tree.** So:
   prepares the working tree that the services and CLIs then run out of. That is
   settled, not pending: ShipIt does not write plugin-authored install output
   into a tree it auto-commits.
+
+  Two consequences follow, and they are the ones you would otherwise trip over.
+  Your dependency directories (`agent.dep-dirs`, `node_modules` by default) are
+  the plugin's dependency directories: the same content the agent container
+  sees, at `/plugin` and `/project` alike, since under `repo: self` they are one
+  tree. And a self-declared plugin's **services wait for `agent.install`** the
+  way your own do — they read what it writes, so starting first would start them
+  against a half-written tree.
 - The repository's issues are already this session's, so `self` registers no
   separate feedback destination. File plugin bugs the ordinary way.
 

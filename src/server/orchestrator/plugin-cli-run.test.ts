@@ -110,6 +110,25 @@ function declareConsumer(yaml = CONSUMER): void {
   fs.writeFileSync(path.join(workspaceDir, "shipit.yaml"), yaml);
 }
 
+/** req 27 — the repository consuming its OWN export: no generation, no commit,
+ * and the working tree as the plugin's tree. `probe`/`probe` throughout. */
+function declareSelfUse(): void {
+  declareConsumer(`
+plugins:
+  repos:
+    - repo: self
+      name: here
+  use:
+    - plugin: probe
+      from: here
+exports:
+  plugins:
+    probe:
+      cli:
+        probe: tools/probe
+`);
+}
+
 /**
  * Publish a live generation of `tools`, the way activation would — including
  * `source`. A real activation always records it, and this path REFUSES a
@@ -557,20 +576,7 @@ exports:
   });
 
   it("runs a `repo: self` import against the working tree, with no commit set", async () => {
-    declareConsumer(`
-plugins:
-  repos:
-    - repo: self
-      name: here
-  use:
-    - plugin: probe
-      from: here
-exports:
-  plugins:
-    probe:
-      cli:
-        probe: tools/probe
-`);
+    declareSelfUse();
     const fake = fakeDocker();
 
     const result = await runPluginCommand(deps(fake.docker), { alias: "probe", command: "probe", args: [] });
@@ -580,6 +586,83 @@ exports:
     expect(mountFor(created.HostConfig as { Mounts: Mount[] }, "/plugin"))
       .toMatchObject({ Type: "bind", Source: workspaceDir });
     expect((created.Env as string[]).some((e) => e.startsWith("SHIPIT_PLUGIN_COMMIT"))).toBe(false);
+  });
+
+  /**
+   * nikzlabs/shipit#2298 — on an overlay-backed session the clone's dep dirs are
+   * empty mount points and the content lives only in the per-session overlay
+   * volumes. An invocation container attached none, so `/project` — and, under
+   * `repo: self`, `/plugin` with it — held an empty `node_modules` and no entry
+   * point could load a dependency the working tree plainly has.
+   */
+  describe("the session's overlay dep dirs (docs/183)", () => {
+    const overlayDepDirs = async (): Promise<{ depDir: string; volumeName: string }[]> => [
+      { depDir: "node_modules", volumeName: "shipit-s1_overlay-aaaa" },
+    ];
+
+    it("nests them under BOTH working-tree mounts of a `repo: self` import", async () => {
+      declareSelfUse();
+      const fake = fakeDocker();
+
+      const result = await runPluginCommand(
+        deps(fake.docker, { overlayDepDirs }),
+        { alias: "probe", command: "probe", args: [] },
+      );
+
+      expect(result.error).toBeUndefined();
+      const created = fake.containers[0].opts;
+      const host = created.HostConfig as { Mounts: Mount[] };
+      for (const target of ["/project/node_modules", "/plugin/node_modules"]) {
+        expect(mountFor(host, target)).toMatchObject({
+          Type: "volume",
+          Source: "shipit-s1_overlay-aaaa",
+        });
+      }
+      // req 19 — the branch that ADDS mounts is exactly the branch where an
+      // exhaustive claim earns its keep, and the two exhaustive tests below
+      // cover self-without-overlays and tracked-with-overlays but not this
+      // combination (independent review, this branch).
+      expectBoundaryHolds(created, [
+        "/plugin", "/plugin/node_modules", "/plugin-state", "/project", "/project/node_modules",
+      ]);
+      expect(fake.connected).toEqual([]);
+    });
+
+    // The gate is the reason: a tracked service starts with
+    // `dependsOnInstall: false` because its dependencies are its own, so handing
+    // it the project's `node_modules` would let it read them while
+    // `agent.install` writes them. One rule for both surfaces — see
+    // `compose-generator.ts`'s `overlayMountsForPluginService`.
+    it("adds nothing for a tracked generation — its dependencies are its own", async () => {
+      declareConsumer();
+      publishGeneration();
+      const fake = fakeDocker();
+
+      await runPluginCommand(deps(fake.docker, { overlayDepDirs }), call);
+
+      const host = fake.containers[0].opts.HostConfig as { Mounts: Mount[] };
+      expect(mountFor(host, "/plugin/node_modules")).toBeUndefined();
+      expect(mountFor(host, "/project/node_modules")).toBeUndefined();
+    });
+
+    it("degrades to the mounts it has always had when they cannot be resolved", async () => {
+      // On the SELF branch, because that is where degrading actually costs
+      // something: it restores the empty `node_modules` this feature exists to
+      // fix. Asserted deliberately rather than left to the tracked path, where
+      // the branch does nothing either way.
+      declareSelfUse();
+      const fake = fakeDocker({ stdout: "ok\n" });
+
+      const result = await runPluginCommand(
+        deps(fake.docker, { overlayDepDirs: () => Promise.reject(new Error("daemon down")) }),
+        { alias: "probe", command: "probe", args: [] },
+      );
+
+      // A refusal here would withhold every companion CLI in the session,
+      // including the many with no dependencies at all, over a daemon hiccup.
+      expect(result.error).toBeUndefined();
+      expectBoundaryHolds(fake.containers[0].opts, ["/plugin", "/plugin-state", "/project"]);
+    });
   });
 });
 
@@ -640,6 +723,30 @@ describe("runPluginCommand — the fetch-authority boundary (req 19)", () => {
   // branch: a credential mount added "just for settings", or a broker variable
   // added "just for self-use", would pass every assertion made once on the
   // pinned no-settings path (review finding).
+  it("holds the same boundary when the overlay dep dirs are offered to a tracked import", async () => {
+    vi.stubEnv("GITHUB_TOKEN", "ghp-should-never-be-inherited");
+    declareConsumer();
+    publishGeneration();
+    const fake = fakeDocker();
+
+    await runPluginCommand(
+      deps(fake.docker, {
+        overlayDepDirs: () => Promise.resolve([
+          { depDir: "node_modules", volumeName: "shipit-s1_overlay-aaaa" },
+        ]),
+      }),
+      call,
+    );
+
+    // Unchanged, because a tracked import takes none of them — and stated as an
+    // EXHAUSTIVE list rather than an absent-mount check, since a dep dir is a
+    // directory name out of a repository's own `shipit.yaml` (`..` is refused
+    // where it is parsed, `normalizeLiteralRelPath`, and this is what would
+    // notice if that stopped being true).
+    expectBoundaryHolds(fake.containers[0].opts, ["/plugin", "/plugin-state", "/project"]);
+    expect(fake.connected).toEqual([]);
+  });
+
   it("holds the same boundary on the settings branch", async () => {
     vi.stubEnv("GITHUB_TOKEN", "ghp-should-never-be-inherited");
     declareConsumer();
@@ -659,20 +766,7 @@ describe("runPluginCommand — the fetch-authority boundary (req 19)", () => {
 
   it("holds the same boundary on the `repo: self` branch", async () => {
     vi.stubEnv("GITHUB_TOKEN", "ghp-should-never-be-inherited");
-    declareConsumer(`
-plugins:
-  repos:
-    - repo: self
-      name: here
-  use:
-    - plugin: probe
-      from: here
-exports:
-  plugins:
-    probe:
-      cli:
-        probe: tools/probe
-`);
+    declareSelfUse();
     const fake = fakeDocker();
 
     await runPluginCommand(deps(fake.docker), { alias: "probe", command: "probe", args: [] });

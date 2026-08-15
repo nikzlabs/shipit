@@ -12,6 +12,7 @@
 // the same counter. Bumping is explicit: `probe --bump` / POST /increment.
 
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -29,6 +30,7 @@ const INSTALL_STAMP = path.join(PLUGIN_ROOT, ".install-stamp.json");
 export function buildReport(surface) {
   const env = process.env;
   const activeCommit = env.SHIPIT_PLUGIN_COMMIT ?? null;
+  const projectDir = env.SHIPIT_PROJECT_DIR ?? (surface === "service" ? "/project" : process.cwd());
   return {
     surface,
     node: process.version,
@@ -50,7 +52,9 @@ export function buildReport(surface) {
     // req 23 — presence only; the probe never prints a credential value.
     credential: { name: "PROBE_TOKEN", set: typeof env.PROBE_TOKEN === "string" && env.PROBE_TOKEN.length > 0 },
     settings: readSettings(env.SHIPIT_SETTINGS),
-    project: checkProject(surface, env.SHIPIT_PROJECT_DIR),
+    project: checkProject(projectDir),
+    // req 27 — the working tree's own dependencies, from the plugin's side.
+    dependency: checkDependency(projectDir),
     state: checkState(surface, env.SHIPIT_PLUGIN_STATE),
     checkout: checkCheckoutWritable(),
     install: checkInstallStamp(activeCommit),
@@ -89,13 +93,91 @@ function readSettings(settingsPath) {
 }
 
 /** req 21 — can this surface see the consuming project's files? */
-function checkProject(surface, projectDirEnv) {
-  const dir = projectDirEnv ?? (surface === "service" ? "/project" : process.cwd());
+function checkProject(dir) {
   try {
     const entries = fs.readdirSync(dir);
     return { dir, readable: true, entries: entries.length };
   } catch {
     return { dir, readable: false };
+  }
+}
+
+/** The package the dependency check loads — an ordinary runtime dependency of
+ * this repository, chosen because it is small, pure JavaScript and used by the
+ * server, so it is present in any tree `agent.install` has prepared. */
+const PROBE_DEPENDENCY = "yaml";
+
+/**
+ * req 27 — can the plugin's own code load a dependency out of a `node_modules`?
+ * **This is the check the fixture was missing**, and its absence is why two real
+ * end-to-end runs passed while self-use was broken: every other export here
+ * imports `node:` built-ins and one relative file, so nothing in the fixture
+ * could tell a populated `node_modules` from an empty one
+ * (nikzlabs/shipit#2298).
+ *
+ * Reported per ROOT rather than once, because `/plugin` and `/project` are two
+ * separate mounts even where they are one tree. Under `repo: self` the CLI's
+ * entry point executes out of `/plugin` while its cwd is `/project`, so a single
+ * answer for "the dependency works" would call a half-restored regression fixed.
+ *
+ * Resolution WALKS UP from the root given, exactly as an ordinary `import` in
+ * that file would, so `plugin` is a real test of the `/plugin` mount even though
+ * `PLUGIN_ROOT` is `test-plugin/` inside it rather than the repository root.
+ * On the SERVICE surface `PLUGIN_ROOT` is `/app` — this fragment's own
+ * directory, mounted on its own — and nothing is reachable above it; that root
+ * is expected to report `resolved: false` there, and README.md says so.
+ *
+ * Loaded with `createRequire` rather than a static `import` so a missing
+ * dependency is a REPORTED field and not an `ERR_MODULE_NOT_FOUND` traceback
+ * from a process that never printed a report.
+ */
+function checkDependency(projectDir) {
+  return {
+    package: PROBE_DEPENDENCY,
+    // What the self-use contract promises: the repository's own `agent.install`
+    // prepares the working tree "that the services and CLIs then run out of".
+    // Under a consumer generation this root is somebody else's repository and
+    // has no reason to carry the package, so `resolved: false` is expected.
+    project: resolveFrom(projectDir),
+    // The plugin's own tree: its `install` output for a consumer generation, and
+    // the same working tree as `project` under `repo: self`.
+    plugin: resolveFrom(PLUGIN_ROOT),
+  };
+}
+
+/**
+ * One root's answer. `used` goes one step past resolution: a `node_modules`
+ * mounted from the wrong layer can leave a package directory that resolves and
+ * then fails to load.
+ */
+function resolveFrom(root) {
+  try {
+    const require = createRequire(path.join(root, "probe-resolution-root.mjs"));
+    const entry = require.resolve(PROBE_DEPENDENCY);
+    const loaded = require(PROBE_DEPENDENCY);
+    return {
+      root,
+      resolved: true,
+      entry,
+      version: readDependencyVersion(require),
+      used: loaded.parse("probe: ok\n")?.probe === "ok",
+    };
+  } catch (err) {
+    return {
+      root,
+      resolved: false,
+      error: String(err instanceof Error ? err.message : err),
+    };
+  }
+}
+
+/** Best effort — a package whose `package.json` is not exported still counts as
+ * resolved, so this reports `null` rather than failing the whole check. */
+function readDependencyVersion(require) {
+  try {
+    return require(`${PROBE_DEPENDENCY}/package.json`).version ?? null;
+  } catch {
+    return null;
   }
 }
 

@@ -1246,9 +1246,11 @@ export class ServiceManager extends EventEmitter {
 
     // docs/262 reqs 3, 16 — plugin services join the same map, so every control,
     // status and log path treats them as the first-class services req 3 asks
-    // for. `dependsOnInstall: false`: the consuming project's `agent.install`
-    // has nothing to do with a plugin, whose own install ran before its
-    // generation was published (plan §1b).
+    // for. `dependsOnInstall` is the plugin's own answer and must agree with the
+    // one the override carries (`toComposeService`, which states why the two
+    // cases differ): a tracked plugin ran its install before its generation was
+    // published, while a `repo: self` plugin has no install of its own and runs
+    // out of the tree `agent.install` writes.
     for (const svc of this.pluginServices) {
       this.services.set(svc.name, {
         name: svc.name,
@@ -1256,13 +1258,14 @@ export class ServiceManager extends EventEmitter {
         ...(svc.publishedPort !== undefined ? { publishedPort: svc.publishedPort } : {}),
         preview: svc.preview,
         status: "stopped",
-        dependsOnInstall: false,
+        dependsOnInstall: svc.self,
         origin: {
           kind: "plugin",
           repo: svc.repo,
           alias: svc.alias,
           plugin: svc.plugin,
           sourceName: svc.sourceName,
+          self: svc.self,
         },
       });
     }

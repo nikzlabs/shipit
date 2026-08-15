@@ -40,6 +40,13 @@ export interface ComposeServiceOrigin {
   plugin: string;
   /** The service's name inside the plugin's own fragment, before any `as:`. */
   sourceName: string;
+  /**
+   * docs/262 req 27 — `repo: self`: the plugin's tree is this session's own
+   * working tree, so its dependency directories are the project's. It is the one
+   * fact the override needs about a plugin's origin beyond identity; see
+   * {@link overlayMountsForPluginService}.
+   */
+  self: boolean;
 }
 
 export interface ComposeService {
@@ -279,6 +286,14 @@ export const OVERRIDE_SENTINELS: readonly string[] = [
   "__RESET_NETWORKS__",
   "__RESET_DNS__",
 ];
+
+/**
+ * Compose's name for the workspace volume inside every file ShipIt writes. It
+ * is an ALIAS — the `volumes:` block below declares it `external: true` with
+ * `name:` set to the real volume — so only this module knows what it resolves
+ * to. `plugin-compose.ts` emits its mounts against the same alias.
+ */
+const WORKSPACE_VOLUME_ALIAS = "shipit-workspace";
 
 /**
  * The two ways a compose file can be unusable, which are not one outcome
@@ -1154,6 +1169,82 @@ function overlayMountsForService(
 }
 
 /**
+ * docs/262 req 27 — the same nesting for a **`repo: self`** plugin service.
+ *
+ * A plugin service never reaches {@link overlayMountsForService}: its volumes
+ * are not the user's compose entries but ShipIt's own re-emitted ones
+ * (`plugin-compose.ts`), so a workspace mount is already the workspace VOLUME
+ * with a subpath rather than a `./…` source, and `svc.volumes` — the raw
+ * user-compose list that block reads — is empty for it. So a dep dir was, from a
+ * plugin's side, the empty directory the overlay mounts over everywhere else.
+ * Under `repo: self` that is fatal (nikzlabs/shipit#2298): the plugin's tree IS
+ * the project's tree, there is no generation and no `install` of its own, and
+ * the dependencies its entry points load are exactly the ones `agent.install`
+ * prepared — all of them missing.
+ *
+ * **A tracked generation is deliberately left alone, and the reason is the
+ * install gate.** Its own tree rides its generation volume and already carries
+ * what its own `install` produced, so it needs nothing here; giving it the
+ * project's dep dirs at `/project` as well would look tidier and would create a
+ * race the tracked case has no answer for — it starts with
+ * `dependsOnInstall: false` (rightly: its dependencies are its own), so it would
+ * be reading `node_modules` while `agent.install` writes them, which is the
+ * failure docs/137's gate exists to prevent. Exposing the project's
+ * dependencies to a CONSUMING plugin is a separate decision that has to settle
+ * that gate first; it is not part of fixing self-use.
+ *
+ * So one rule, and the gate follows it exactly: **a plugin sees the project's
+ * dependency directories precisely when the project's tree is its own tree, and
+ * then it waits for the project's install** ({@link toComposeService}).
+ *
+ * `/plugin-state` and `/plugin-settings.json` ride the same volume, under
+ * `sessions/<id>/plugin-data/…`. They are excluded by the very test that
+ * includes `/project`: the subpath must be at or under `workspaceSubpath`, and
+ * `plugin-data/` is a sibling of `workspace/`, not a child.
+ */
+function overlayMountsForPluginService(
+  rawVolumes: unknown[],
+  overlayDepDirs: OverlayDepDirVolume[],
+  workspaceSubpath: string,
+  referenced: Set<string>,
+): Record<string, unknown>[] {
+  const mounts: Record<string, unknown>[] = [];
+  const seenTargets = new Set<string>();
+  for (const vol of rawVolumes) {
+    if (!vol || typeof vol !== "object") continue;
+    const obj = vol as Record<string, unknown>;
+    if (obj.source !== WORKSPACE_VOLUME_ALIAS || typeof obj.target !== "string") continue;
+    const mountSubdir = workspaceSubdirOfMount(workspaceSubpath, obj);
+    if (mountSubdir === null) continue;
+    for (const { depDir, volumeName } of overlayDepDirs) {
+      const rel = depDirWithinMount(mountSubdir, depDir);
+      if (rel === null) continue;
+      const mountTarget = rel ? path.posix.join(obj.target, rel) : obj.target;
+      if (seenTargets.has(mountTarget)) continue;
+      seenTargets.add(mountTarget);
+      referenced.add(volumeName);
+      mounts.push({ type: "volume", source: volumeName, target: mountTarget });
+    }
+  }
+  return mounts;
+}
+
+/**
+ * Where a workspace-volume mount sits INSIDE the session's clone, or null when
+ * it is not inside it at all. "" means the mount is the clone root.
+ */
+function workspaceSubdirOfMount(workspaceSubpath: string, entry: Record<string, unknown>): string | null {
+  const volume = entry.volume;
+  const subpath = volume && typeof volume === "object"
+    ? (volume as Record<string, unknown>).subpath
+    : undefined;
+  if (typeof subpath !== "string") return null;
+  if (subpath === workspaceSubpath) return "";
+  if (subpath.startsWith(`${workspaceSubpath}/`)) return subpath.slice(workspaceSubpath.length + 1);
+  return null;
+}
+
+/**
  * Compose's own escape: `$$` renders as a literal `$` and interpolates nothing.
  *
  * Compose interpolates `${VAR}` and `$VAR` in the files it reads from the
@@ -1374,8 +1465,26 @@ export function generateComposeOverride(
     // mount(s) above and add one volume mount per reachable dep dir. An overlay
     // mount whose target collides with an existing mount (a service mounting a
     // dep dir directly) replaces it so the daemon never sees a duplicate target.
-    if (opts.overlayDepDirs && opts.overlayDepDirs.length > 0 && svc.volumes && opts.workspaceVolume) {
-      const overlayMounts = overlayMountsForService(svc.volumes, opts.overlayDepDirs, referencedOverlayVolumes);
+    const depDirs = opts.overlayDepDirs ?? [];
+    if (depDirs.length > 0 && opts.workspaceVolume) {
+      // docs/262 — a `repo: self` plugin service's mounts are ShipIt's own,
+      // already rewritten onto the workspace volume, so they take the
+      // subpath-shaped matcher; the project's own service still declares `./…`
+      // and takes the other. A TRACKED plugin gets neither — see
+      // `overlayMountsForPluginService` for why that is the gate's doing.
+      const isPlugin = svc.origin?.kind === "plugin";
+      const overlayMounts = isPlugin
+        ? (!svc.origin?.self || opts.workspaceSubpath === undefined ? [] : overlayMountsForPluginService(
+          (entry.volumes as unknown[] | undefined) ?? [],
+          depDirs,
+          opts.workspaceSubpath,
+          referencedOverlayVolumes,
+        ))
+        : (svc.volumes === undefined ? [] : overlayMountsForService(
+          svc.volumes,
+          depDirs,
+          referencedOverlayVolumes,
+        ));
       if (overlayMounts.length > 0) {
         const overlayTargets = new Set(overlayMounts.map((m) => m.target as string));
         const existing = (entry.volumes as unknown[] | undefined) ?? [];

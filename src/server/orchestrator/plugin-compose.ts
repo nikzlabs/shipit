@@ -760,6 +760,12 @@ export interface PluginComposeService {
   /** Volumes the override must declare `external: true` for. */
   externalVolumes: string[];
   /**
+   * `repo: self` — the plugin's tree is this session's own working tree, with no
+   * generation and no `install` of its own (req 27). Carried through because the
+   * install gate depends on it; see {@link toComposeService}.
+   */
+  self: boolean;
+  /**
    * Fingerprint of the validated settings file's CONTENT (req 26), or absent
    * when the import has none.
    *
@@ -939,6 +945,7 @@ export function buildPluginComposeServices(
       // survives untouched (see the module note).
       definition: escapeDollars(definition) as Record<string, unknown>,
       externalVolumes,
+      self: fragment.self,
       ...(settingsFingerprint ? { settingsFingerprint } : {}),
     });
   }
@@ -1236,11 +1243,22 @@ function normalizeEnvironment(raw: unknown): Record<string, string> {
  * gets — labels, the session network, `cap_drop`, the contained-egress overlay,
  * the session-worker uid — from ONE implementation (req 16's lifecycle parity).
  *
- * `dependsOnInstall: false`: the install gate exists for services that read the
- * consuming project's `node_modules` while `agent.install` is writing them
- * (docs/137). A plugin's dependencies are its own, installed into its own layer
- * before its generation was published (plan §1b), so gating it on the project's
- * install would hold it for something it never reads.
+ * `dependsOnInstall` follows the tree the service's own code runs out of, and
+ * the two answers are opposite.
+ *
+ * The install gate exists for services that read the consuming project's
+ * `node_modules` while `agent.install` is writing them (docs/137). A TRACKED
+ * plugin's dependencies are its own, installed into its own layer before its
+ * generation was published (plan §1b), so gating it on the project's install
+ * would hold it for something it never reads — `false`.
+ *
+ * Under `repo: self` that reasoning inverts, because every premise it rests on
+ * is absent: there is no generation, no writable layer and no `install` at all
+ * (req 27). The plugin's dependencies ARE the project's `node_modules` — the
+ * very thing the tracked case assumes it never reads — so its service is
+ * exactly what docs/137 describes and takes the gate. Without it the service can
+ * start against a tree `agent.install` is still writing, which is the same
+ * empty-`node_modules` failure by a different route (nikzlabs/shipit#2298).
  */
 export function toComposeService(svc: PluginComposeService): ComposeService {
   const declaredUser = svc.definition.user;
@@ -1253,11 +1271,12 @@ export function toComposeService(svc: PluginComposeService): ComposeService {
       alias: svc.alias,
       plugin: svc.plugin,
       sourceName: svc.sourceName,
+      self: svc.self,
     },
     pluginDefinition: svc.definition,
     externalVolumes: svc.externalVolumes,
     shipitPreview: svc.preview,
-    dependsOnInstall: false,
+    dependsOnInstall: svc.self,
     // Read back off the definition so the generator does not inject the session
     // worker uid over a `user:` the fragment declared — which a contained
     // session requires it to declare.
