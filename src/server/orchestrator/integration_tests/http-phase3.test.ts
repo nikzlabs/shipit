@@ -166,6 +166,22 @@ describe("Integration: Phase 3 HTTP endpoints", () => {
       expect(second.json().messages).toHaveLength(2);
     });
 
+    /** planning#375 — the tree left `/history`, so it needs its own validator. */
+    it("answers 304 for an unchanged file tree", async () => {
+      await createSession("tree-s", "Tree session");
+      const first = await app.inject({ method: "GET", url: "/api/sessions/tree-s/files" });
+      expect(first.statusCode).toBe(200);
+      const etag = first.headers.etag!;
+      expect(etag).toBeTruthy();
+
+      const again = await app.inject({
+        method: "GET",
+        url: "/api/sessions/tree-s/files",
+        headers: { "if-none-match": etag },
+      });
+      expect(again.statusCode).toBe(304);
+    });
+
     it("returns 404 for non-existent session", async () => {
       const res = await app.inject({ method: "GET", url: "/api/sessions/nonexistent/history" });
       expect(res.statusCode).toBe(404);

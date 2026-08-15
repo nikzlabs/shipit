@@ -35,8 +35,11 @@ import { useRowHandlers } from "./row-context.js";
  *     arriving, a tool result landing, text growing).
  *
  * Everything volatile-but-meaningless — the callbacks, the `messages` array —
- * is read through `useRowHandlers()`, whose identity never changes. Do not turn
- * one of those into a prop without checking `row-context.tsx` first.
+ * is read through `useRowHandlers()`, whose identity never changes and whose
+ * callbacks are permanent wrappers forwarding to the latest ones. That is what
+ * makes it safe to hand them to a child during render from a row that may never
+ * render again. Do not turn one of those into a prop without reading
+ * `row-context.tsx` first.
  */
 export interface TranscriptRowProps {
   el: VisualElement;
@@ -86,7 +89,7 @@ function TranscriptRowInner({
   });
 
   const renderRewindPoint = (gapPosition: number) => {
-    if (!hasRewindControls || !handlers.current.onRewindAtGap) return null;
+    if (!hasRewindControls || !handlers.onRewindAtGap) return null;
     const align = gapPreviousRole === "user" ? "right" : gapPreviousRole === "assistant" ? "left" : "center";
     return (
       <RewindPoint
@@ -96,8 +99,8 @@ function TranscriptRowInner({
         turnRunning={isLoading}
         defaultSessionName={forkDefaultName}
         previews={getPreviewsForGap(gapPosition)}
-        onRequestPreview={handlers.current.onRequestRewindPreview}
-        onRewind={handlers.current.onRewindAtGap}
+        onRequestPreview={handlers.onRequestRewindPreview}
+        onRewind={handlers.onRewindAtGap}
       />
     );
   };
@@ -119,10 +122,10 @@ function TranscriptRowInner({
     return (
       <MessageToolElement
         el={el}
-        messages={handlers.current.messages}
-        findPlanContent={handlers.current.findPlanContent}
-        onAnswerQuestion={handlers.current.onAnswerQuestion}
-        onSendFollowUp={handlers.current.onSendFollowUp}
+        messages={handlers.messages}
+        findPlanContent={handlers.findPlanContent}
+        onAnswerQuestion={handlers.onAnswerQuestion}
+        onSendFollowUp={handlers.onSendFollowUp}
       />
     );
   }
@@ -139,15 +142,15 @@ function TranscriptRowInner({
   // verbatim inside `renderMessageCard`.
   const card = renderMessageCard(msg, {
     ...(activeSessionId ? { sessionId: activeSessionId } : {}),
-    onResumeSession: handlers.current.onResumeSession,
-    onSubmitBugReport: handlers.current.onSubmitBugReport,
-    onEgressDecision: handlers.current.onEgressDecision,
-    onResolvePermission: handlers.current.onResolvePermission,
-    onUndoIssueWrite: handlers.current.onUndoIssueWrite,
-    onOpenIssue: handlers.current.onOpenIssue,
-    onSendFollowUp: handlers.current.onSendFollowUp,
-    onReleaseConfirm: handlers.current.onReleaseConfirm,
-    onReleaseCancel: handlers.current.onReleaseCancel,
+    onResumeSession: handlers.onResumeSession,
+    onSubmitBugReport: handlers.onSubmitBugReport,
+    onEgressDecision: handlers.onEgressDecision,
+    onResolvePermission: handlers.onResolvePermission,
+    onUndoIssueWrite: handlers.onUndoIssueWrite,
+    onOpenIssue: handlers.onOpenIssue,
+    onSendFollowUp: handlers.onSendFollowUp,
+    onReleaseConfirm: handlers.onReleaseConfirm,
+    onReleaseCancel: handlers.onReleaseCancel,
   });
   if (card) return <>{card}</>;
 
@@ -286,7 +289,7 @@ function TranscriptRowInner({
           <div className="mt-2 space-y-1">
             {msg.toolUse.map((tool, toolIdx) => {
               const toolResult = msg.toolResults?.find((r) => r.toolUseId === tool.id);
-              const resolvedPlanContent = tool.name === "ExitPlanMode" ? handlers.current.findPlanContent(i) : undefined;
+              const resolvedPlanContent = tool.name === "ExitPlanMode" ? handlers.findPlanContent(i) : undefined;
               // See note in the standalone-tool branch above — the
               // right disable signal is whether the tool has a result,
               // not whether the message is last. AskUserQuestion /
@@ -301,8 +304,8 @@ function TranscriptRowInner({
                   result={toolResult}
                   isLast={toolIdx === msg.toolUse!.length - 1}
                   isStreaming={!!msg.streaming}
-                  onAnswerQuestion={handlers.current.onAnswerQuestion}
-                  onSendFollowUp={handlers.current.onSendFollowUp}
+                  onAnswerQuestion={handlers.onAnswerQuestion}
+                  onSendFollowUp={handlers.onSendFollowUp}
                   isQuestionDisabled={questionDisabled}
                   planContent={resolvedPlanContent}
                 />

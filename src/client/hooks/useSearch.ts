@@ -25,12 +25,20 @@ export interface SearchState {
  */
 export type UseSearchReturn = ReturnType<typeof useSearch>;
 
+const NO_MATCHES: SearchMatch[] = [];
+
 export function useSearch(messages: ChatMessage[]) {
   const [query, setQuery] = useState("");
   const [currentMatchIndex, setCurrentMatchIndex] = useState(0);
 
   const matches = useMemo(() => {
-    if (!query.trim()) return [];
+    // planning#375 — a SHARED empty array, not a fresh `[]`. This memo depends
+    // on `messages`, so with no active query it used to hand back a new array
+    // on every token. That flowed into `MessageList`'s `matchesByMessage`, which
+    // is a prop on every memoized transcript row — so the no-search case, i.e.
+    // almost always, re-rendered the whole transcript on every token and quietly
+    // undid the row memoization entirely.
+    if (!query.trim()) return NO_MATCHES;
 
     const needle = query.toLowerCase();
     const result: SearchMatch[] = [];

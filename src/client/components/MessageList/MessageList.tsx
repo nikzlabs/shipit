@@ -21,6 +21,9 @@ import { TranscriptRow } from "./TranscriptRow.js";
 import { RowHandlersProvider, type RowHandlers } from "./row-context.js";
 import type { TrackerId } from "../../../server/shared/types.js";
 
+/** Shared, so "no active search" is the same reference on every render. */
+const NO_MATCHES_BY_MESSAGE = new Map<number, SearchMatch[]>();
+
 function defaultSessionNameFor(value: string): string {
   const cleaned = value.trim().replace(/\s+/g, " ").slice(0, 80);
   return cleaned || "Fork from here";
@@ -224,13 +227,16 @@ export function MessageList({
   // Memoized: a fresh Map every render would be a volatile prop on every row,
   // and rows are memoized on exactly this kind of reference (planning#375).
   const matchesByMessage = useMemo(() => {
+    // The no-search case returns ONE shared empty Map, so a caller that hands
+    // us a fresh empty array cannot invalidate every row. `useSearch` no longer
+    // does that, but this prop reaches ~2,000 memoized rows and the failure is
+    // silent — a second caller getting it wrong should cost nothing.
+    if (!searchMatches || searchMatches.length === 0) return NO_MATCHES_BY_MESSAGE;
     const map = new Map<number, SearchMatch[]>();
-    if (searchMatches) {
-      for (const m of searchMatches) {
-        const arr = map.get(m.messageIndex) ?? [];
-        arr.push(m);
-        map.set(m.messageIndex, arr);
-      }
+    for (const m of searchMatches) {
+      const arr = map.get(m.messageIndex) ?? [];
+      arr.push(m);
+      map.set(m.messageIndex, arr);
     }
     return map;
   }, [searchMatches]);

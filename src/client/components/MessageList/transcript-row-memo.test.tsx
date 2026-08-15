@@ -103,4 +103,23 @@ describe("MessageList — memoized rows bail out", () => {
     expect(renders.get("m-0")).toBe(1);
     expect(renders.get("m-1")).toBe(1);
   });
+
+  it("survives a caller that hands a fresh empty searchMatches array each render", () => {
+    // The production regression this guards: `useSearch` memoizes on `messages`
+    // and used to `return []` — a NEW array on every token even with no query.
+    // That rebuilt `matchesByMessage`, a prop on every row, so the no-search
+    // case (i.e. almost always) re-rendered the whole transcript per token and
+    // silently undid this entire change.
+    const base = [user("one"), bot("two")];
+    const { rerender } = render(
+      <MessageList messages={base} isLoading={false} searchMatches={[]} />,
+    );
+    expect(renders.get("m-0")).toBe(1);
+
+    rerender(<MessageList messages={base} isLoading={false} searchMatches={[]} />);
+    rerender(<MessageList messages={[...base]} isLoading={false} searchMatches={[]} />);
+
+    expect(renders.get("m-0")).toBe(1);
+    expect(renders.get("m-1")).toBe(1);
+  });
 });

@@ -1,5 +1,6 @@
 import type { ChatMessage } from "../components/MessageList.js";
 import type { GitCommit } from "../components/GitHistory.js";
+import type { FileTreeNode } from "../../server/shared/types.js";
 import type { SessionInfo, RepoInfo, TurnUsage, SessionUsage, RuntimeMode, CredentialRoute } from "../../server/shared/types.js";
 import { turnContextTokens } from "../../server/shared/types.js";
 import { getContextWindowForModel } from "../../server/shared/model-windows.js";
@@ -205,20 +206,65 @@ let inFlightHistoryLoad: { seq: number; controller: AbortController } | null = n
  */
 const HISTORY_CACHE_LIMIT = 6;
 const historyCache = new Map<string, { etag: string; data: HistoryResponse }>();
+const treeCache = new Map<string, { etag: string; data: FileTreeNode[] }>();
 
-function cacheHistory(sessionId: string, etag: string, data: HistoryResponse): void {
-  historyCache.delete(sessionId);
-  historyCache.set(sessionId, { etag, data });
-  while (historyCache.size > HISTORY_CACHE_LIMIT) {
-    const oldest = historyCache.keys().next().value;
+function remember<T>(cache: Map<string, { etag: string; data: T }>, key: string, etag: string, data: T): void {
+  cache.delete(key);
+  cache.set(key, { etag, data });
+  while (cache.size > HISTORY_CACHE_LIMIT) {
+    const oldest = cache.keys().next().value;
     if (oldest === undefined) break;
-    historyCache.delete(oldest);
+    cache.delete(oldest);
   }
+}
+
+/**
+ * Mark an entry as most-recently-used. Called on a 304 as well as on a fresh
+ * body — without it the map is FIFO despite the LRU intent, and the session the
+ * user keeps returning to (which answers 304 every time, and so never gets
+ * re-inserted) would age out and be re-downloaded in full.
+ */
+function touch(cache: Map<string, { etag: string; data: unknown }>, key: string): void {
+  const entry = cache.get(key);
+  if (!entry) return;
+  cache.delete(key);
+  cache.set(key, entry);
 }
 
 /** Testing seam — a fresh tab starts with an empty cache, so tests should too. */
 export function __resetHistoryCache(): void {
   historyCache.clear();
+  treeCache.clear();
+}
+
+/**
+ * Conditional GET for the workspace file tree (planning#375).
+ *
+ * Fetched HERE rather than through `useFileStore.fetchTree`, and awaited inside
+ * the same `isStillActiveSession()` guard as everything else this function
+ * writes. A fire-and-forget `fetchTree` was the first attempt and it was wrong
+ * twice over: the store's setter has no session check, so a slow response for
+ * the OUTGOING session lands after the switch and overwrites the incoming
+ * session's tree; and the tree arriving strictly after the transcript makes the
+ * Files panel say "No files yet" for the gap. Both disappear when the tree rides
+ * the load it belongs to.
+ */
+async function fetchFileTree(sessionId: string, signal: AbortSignal): Promise<FileTreeNode[] | null> {
+  const cached = treeCache.get(sessionId);
+  const res = await fetch(`/api/sessions/${sessionId}/files`, {
+    signal,
+    cache: "no-store",
+    ...(cached ? { headers: { "If-None-Match": cached.etag } } : {}),
+  });
+  if (res.status === 304 && cached) {
+    touch(treeCache, sessionId);
+    return cached.data;
+  }
+  if (!res.ok) return null;
+  const { tree } = await res.json() as { tree: FileTreeNode[] };
+  const etag = res.headers?.get("etag");
+  if (etag) remember(treeCache, sessionId, etag, tree);
+  return tree;
 }
 
 /**
@@ -233,6 +279,10 @@ export async function loadSessionHistory(sessionId: string): Promise<void> {
   const controller = new AbortController();
   inFlightHistoryLoad = { seq, controller };
   let data: HistoryResponse;
+  // In parallel with the transcript, not after it — two independent conditional
+  // GETs on one round trip's worth of latency. Failure is tolerated (`null`):
+  // an unreachable file tree must never cost the user their transcript.
+  const treePromise = fetchFileTree(sessionId, controller.signal).catch(() => null);
   try {
     const cached = historyCache.get(sessionId);
     const res = await fetch(`/api/sessions/${sessionId}/history`, {
@@ -246,6 +296,7 @@ export async function loadSessionHistory(sessionId: string): Promise<void> {
     });
     if (res.status === 304 && cached) {
       data = cached.data;
+      touch(historyCache, sessionId);
     } else {
       data = await res.json() as HistoryResponse;
       // Optional: a response with no ETag simply is not cached, which is the
@@ -253,7 +304,7 @@ export async function loadSessionHistory(sessionId: string): Promise<void> {
       // double). Never cache without a tag — the tag is the only thing that
       // makes a later reuse safe.
       const etag = res.headers?.get("etag");
-      if (etag) cacheHistory(sessionId, etag, data);
+      if (etag) remember(historyCache, sessionId, etag, data);
     }
   } catch (err) {
     // A load we cancelled ourselves is not a failure. Return rather than throw,
@@ -371,10 +422,11 @@ export async function loadSessionHistory(sessionId: string): Promise<void> {
     session.setRewindRecovery(data.rewindSnapshot);
   }
   useGitStore.getState().setCommits(data.commits);
-  // planning#375 — the file tree no longer rides on the history response (325 KB
-  // of it, on a completely different change cadence). Seeded from the dedicated
-  // files endpoint instead; not awaited, so the transcript never waits on it.
-  void useFileStore.getState().fetchTree(sessionId).catch(() => {});
+  // planning#375 — the tree came from its own conditional GET, started in
+  // parallel above. Applied HERE, inside the active-session guard, so a response
+  // for a session the user has already left cannot overwrite the current one.
+  const tree = await treePromise;
+  if (tree && isStillActiveSession()) useFileStore.getState().setTree(tree);
 
   // Seed cost surfaces from the authoritative usage store on reload, so the
   // ContextDial doesn't have to wait for a fresh `usage_update` to know what

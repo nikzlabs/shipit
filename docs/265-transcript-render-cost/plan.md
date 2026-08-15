@@ -59,10 +59,24 @@ memo needs.
 
 **b. No volatile props.** The per-row component takes only values that are stable while the
 row is unchanged: its element, its message, and indices. Everything volatile — the callback
-props `MessageList` receives (re-created by its parent every render), `currentMatch`,
-`findPlanContent` — moves behind a **ref-backed context**: one context object whose identity
-never changes, holding a `.current` the parent rewrites each render. Rows read handlers at
-call time, so a new callback identity upstream no longer invalidates 2,000 rows.
+props `MessageList` receives (re-created by its parent every render), `messages`,
+`findPlanContent` — moves behind a **ref-backed context** whose identity never changes.
+
+Each callback is exposed as a **permanent wrapper that forwards to the latest one**, not as
+an inline read of `ref.current`. That distinction is load-bearing and was caught in review: a
+row hands these callbacks to its children (`onAnswerQuestion` to a `ToolUseItem`, `onRewind`
+to a `RewindPoint`) and may then never render again, so dereferencing during render would
+leave it holding a dead closure — stable identity bought with a correctness bug. Optionality
+survives the indirection via a getter, because several cards gate a control on whether its
+handler *exists*, and a wrapper where the parent passed nothing would draw a button that does
+nothing.
+
+**The prop-stability contract reaches outside this component, which is its real hazard.**
+`useSearch` memoized on `messages` and returned a fresh `[]` when there was no query — so the
+no-search case, i.e. almost always, produced a new array per token, rebuilt
+`matchesByMessage`, and re-rendered the whole transcript anyway. The fix is a shared empty
+array at the source plus a shared empty `Map` in `MessageList`; the guard test now passes
+`searchMatches` explicitly, because a memo defeated from two components away fails silently.
 
 **c. Per-row work moves into the row.** `parseMessageSegments` and `renderMessageCard` run
 inside the memoized row, so an unchanged row does not run them at all.
@@ -98,11 +112,19 @@ It saves the transfer and the client-side parse and store writes, not the server
 ### 4. Stop shipping the file tree with the transcript (req 12)
 
 `fileTree` is 325 KB of this repository's 2.67 MB payload (2,847 files, 505 directories) and
-has nothing to do with chat history. A dedicated `GET /api/sessions/:id/files` already exists
-and the client already has `useFileStore.fetchTree`. So `/history` stops returning
-`fileTree`, and the attach path seeds the tree from the files endpoint instead — which
-carries its own ETag, and whose content changes on a completely different cadence from the
-transcript.
+has nothing to do with chat history. So `/history` stops returning it, `GET
+/api/sessions/:id/files` gains an ETag of its own, and the attach path fetches the tree from
+there.
+
+**That fetch is issued and applied by `loadSessionHistory`, not fired off into the file
+store.** Delegating to `useFileStore.fetchTree` was the first attempt and review found it
+wrong twice over: the store's setter has no session check, so a slow response for the
+*outgoing* session lands after a switch and overwrites the incoming one's tree; and a tree
+that arrives strictly after the transcript leaves the Files panel saying "No files yet" for
+the gap. Both disappear when the tree rides the load it belongs to — started in parallel with
+the history request, awaited inside the same `isStillActiveSession()` guard that already
+protects every other write in that function, and tolerant of failure so an unreachable tree
+can never cost the user their transcript.
 
 ### 5. Cancel a superseded history load — delivered (req 8)
 
@@ -126,6 +148,8 @@ and it is the guard that makes out-of-order application impossible.
 | `src/client/components/visual-elements.ts` | Reconcile pass for stable element identity |
 | `src/client/utils/session-data.ts` | Abort-on-supersede (done); ETag cache; file tree no longer read from `/history` |
 | `src/server/orchestrator/api-routes-session-spawn.ts` | `/history` ETag + `304`; `fileTree` removed |
+| `src/server/orchestrator/api-routes-files.ts` | `/files` ETag + `304` |
+| `src/client/hooks/useSearch.ts` | Shared empty match array, so no-search stops invalidating every row |
 
 ## Verification
 

@@ -609,4 +609,96 @@ describe("loadSessionHistory — revalidates instead of re-downloading", () => {
     await loadSessionHistory("s8");
     expect(requests[requests.length - 1].headers["If-None-Match"]).toBe('"v1"');
   });
+
+  it("does not evict the session the user keeps coming back to", async () => {
+    // LRU, not FIFO. A 304 has to count as a use — otherwise the ONE session
+    // being revisited is the one that never gets re-inserted, and it ages out
+    // and is re-downloaded in full: exactly backwards.
+    useSessionStore.getState().setSessionId("favourite");
+    await loadSessionHistory("favourite");
+
+    for (let i = 0; i < 5; i++) {
+      useSessionStore.getState().setSessionId(`other${i}`);
+      await loadSessionHistory(`other${i}`);
+      // Revisit the favourite between each, so it stays the most recently used.
+      useSessionStore.getState().setSessionId("favourite");
+      await loadSessionHistory("favourite");
+    }
+
+    expect(requests[requests.length - 1].headers["If-None-Match"]).toBe('"v1"');
+  });
+});
+
+/**
+ * planning#375 — the file tree moved out of the history response. It must still
+ * be session-scoped: a fire-and-forget fetch through the file store had no
+ * active-session check, so a slow response for the session the user just LEFT
+ * would land afterwards and overwrite the one they switched to.
+ */
+describe("loadSessionHistory — the file tree is session-scoped", () => {
+  let treeResolvers: Record<string, (v: unknown) => void>;
+
+  const ok = (json: unknown) => ({ ok: true, status: 200, headers: new Headers(), json: () => Promise.resolve(json) });
+
+  beforeEach(() => {
+    useUiStore.getState().reset();
+    useSessionStore.getState().reset();
+    useGitStore.getState().reset();
+    useFileStore.getState().reset();
+    __resetHistoryCache();
+    treeResolvers = {};
+    globalThis.fetch = vi.fn((url: string) => {
+      const id = /sessions\/([^/]+)\//.exec(url)?.[1] ?? "";
+      if (url.endsWith("/files")) {
+        return new Promise((resolve) => { treeResolvers[id] = resolve; });
+      }
+      return Promise.resolve(ok({
+        messages: [{ role: "assistant", text: id }],
+        commits: [],
+        agentRunning: false,
+      }));
+    }) as unknown as typeof fetch;
+  });
+
+  afterEach(() => { vi.restoreAllMocks(); __resetHistoryCache(); });
+
+  it("drops a tree that arrives for a session the user has left", async () => {
+    useSessionStore.getState().setSessionId("A");
+    const loadA = loadSessionHistory("A");
+    await vi.waitFor(() => expect(treeResolvers.A).toBeDefined());
+
+    // The user switches before A's tree lands.
+    useSessionStore.getState().setSessionId("B");
+    const loadB = loadSessionHistory("B");
+    await vi.waitFor(() => expect(treeResolvers.B).toBeDefined());
+
+    treeResolvers.B(ok({ tree: [{ name: "b.txt", path: "b.txt", type: "file" }] }));
+    await loadB;
+    expect(useFileStore.getState().tree.map((n) => n.name)).toEqual(["b.txt"]);
+
+    // A's tree finally answers. It must not replace B's.
+    treeResolvers.A(ok({ tree: [{ name: "a.txt", path: "a.txt", type: "file" }] }));
+    await loadA;
+    expect(useFileStore.getState().tree.map((n) => n.name)).toEqual(["b.txt"]);
+  });
+
+  it("applies the tree for the session that is still active", async () => {
+    useSessionStore.getState().setSessionId("A");
+    const loadA = loadSessionHistory("A");
+    await vi.waitFor(() => expect(treeResolvers.A).toBeDefined());
+    treeResolvers.A(ok({ tree: [{ name: "a.txt", path: "a.txt", type: "file" }] }));
+    await loadA;
+    expect(useFileStore.getState().tree.map((n) => n.name)).toEqual(["a.txt"]);
+  });
+
+  it("does not lose the transcript when the tree request fails", async () => {
+    globalThis.fetch = vi.fn((url: string) => {
+      if (url.endsWith("/files")) return Promise.reject(new Error("tree down"));
+      return Promise.resolve(ok({ messages: [{ role: "assistant", text: "STILL HERE" }], commits: [], agentRunning: false }));
+    }) as unknown as typeof fetch;
+
+    useSessionStore.getState().setSessionId("A");
+    await loadSessionHistory("A");
+    expect(useSessionStore.getState().messages.map((m) => m.text)).toEqual(["STILL HERE"]);
+  });
 });
