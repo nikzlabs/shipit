@@ -106,12 +106,15 @@
  *     cached / racing / missed-watch `up`, not every one. What does NOT hold is
  *     the bound: `validateServiceSecurity` runs on the project and plugin
  *     definitions BEFORE Compose merges them, so the effective merged service is
- *     never validated, its `env_file`/secret/config path checks are documented as
- *     bypassable through a workspace symlink (`compose-generator.ts`), and
- *     top-level named volumes are parsed for their NAMES only
- *     (`parseUserNamedVolumes`) — `driver_opts` are not security-checked, so the
- *     local driver can encode a host bind that no forbidden absolute service
- *     bind was needed for. Settling that is planning#371's, not this file's.
+ *     never validated, and its `env_file`/secret/config path checks are
+ *     documented as bypassable through a workspace symlink
+ *     (`compose-generator.ts`). Settling that is planning#371's, not this
+ *     file's. The third item here — top-level named volumes parsed for their
+ *     NAMES only, so the local driver's `driver_opts` could encode a host bind
+ *     that no forbidden absolute service bind was needed for — was **closed**
+ *     by planning#386: `validateTopLevelVolumes` and `validateTopLevelNetworks`
+ *     now run inside `parseComposeFile`, on the same pre-`up` re-parse as
+ *     everything else.
  *
  * Recorded here rather than left to the issue alone because a guard test that
  * reads as a clean bill of health while a boundary is open is worse than no

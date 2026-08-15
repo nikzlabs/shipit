@@ -527,6 +527,18 @@ services:
   setup, run commands in the `command` field or use multi-step entrypoints.
 - **Don't use absolute volume paths** — all paths must be relative to the
   workspace root.
+- **Keep top-level `volumes:` and `networks:` plain.** A named volume must be an
+  ordinary Compose-managed one (`pgdata:` with nothing under it, or just
+  `labels:`), and a network an ordinary `bridge`. ShipIt rejects the whole file
+  when either block carries `driver_opts:`, `external:`, a `name:` override, a
+  non-`local` volume driver, a non-`bridge` network driver, or (networks)
+  `ipam:`. Those attach storage or networking the session did not create:
+  `driver_opts: {type: none, device: /…, o: bind}` is a host bind mount written
+  as a volume, and `driver: macvlan` puts the container on the host's own
+  network segment. For scratch space use a service's `tmpfs:` instead.
+- **Don't use `include:`** — ShipIt validates the compose file you name and
+  nothing an included file brings in, so it rejects the key outright. Declare
+  your services in one file.
 - **Don't run `npm install` (or pnpm/yarn/bun install) in a service's
   `command`** when the same install lives in `agent.install`. Two
   containers writing to the same bind-mounted `node_modules` race each
@@ -571,9 +583,11 @@ service network replacement.
 
 Contained services cannot add Linux capabilities, use `deploy.restart_policy`,
 request `use_api_socket`, add lifecycle hooks, or declare labels in ShipIt's
-reserved `shipit-egress-*` namespace. Compose
-`include` and service `extends` are also rejected in contained sessions because
-ShipIt cannot safely validate and override definitions from a second file.
+reserved `shipit-egress-*` namespace. Service `extends` is also rejected in
+contained sessions because ShipIt cannot safely validate and override
+definitions from a second file. Compose `include:` is rejected in **every**
+session for the same reason — the effective model would be the root file plus
+files ShipIt never validated.
 ShipIt replaces `dns:` and removes `SETUID` and `SETGID` for contained services.
 Each service must declare a numeric, non-root `user:` other than the reserved
 UIDs 911 and 912. The image must run directly as that user. Use an Open session

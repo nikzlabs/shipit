@@ -373,11 +373,17 @@ export class ComposeCli {
  * finding). A scrubbed `env` does not unmount `/proc`: the child runs as the
  * same uid as its parent, so `/proc/1/environ` — mode 0400, owned by the
  * orchestrator process — is readable to it. What closes that is the companion
- * rule in `compose-generator.ts`'s `validateTopLevelSecrets`, which keeps a
+ * rule in `compose-generator.ts`'s `validateTopLevelFileRefs`, which keeps a
  * repository's `secrets:` sources inside the workspace: a BUILD secret is the
  * one compose-file field that makes the CLI read an arbitrary path in ITS own
  * filesystem and hand the contents to a container. The two are one fix; neither
  * half is sufficient.
+ *
+ * **The list below is load-bearing in a second place** (planning#386): a
+ * `secrets:`/`configs:` entry may say `environment: VAR` instead of `file:`,
+ * which resolves against exactly this environment and mounts the result in a
+ * container. That is allowed precisely because nothing here is sensitive — so
+ * adding a name that is would open that path without any edit to the validator.
  *
  * The list is what the CLI needs to find the daemon and its own config, and
  * nothing else:

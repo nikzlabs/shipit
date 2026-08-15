@@ -374,12 +374,14 @@ export interface UserNamedVolume {
  * user is mid-edit on their compose file; a transient YAML parse error
  * must not propagate up and break the secrets refresh.
  *
- * Note: entries declared `external: true` in the user's volumes block are
- * still returned. The override's labels overlay is silently ignored by
- * compose for external volumes (they're not created or modified by the
- * compose project), so they won't carry the `shipit-managed` label and
- * the disk-janitor's prune-by-label will skip them. That's the right
- * behavior — externals belong to the user's other workloads, not us.
+ * **Names only, and that is not a check.** This function reads no `driver`,
+ * `driver_opts`, `external` or `name` — it exists to label volumes for the disk
+ * janitor's prune, not to admit them. The security rule over this same block is
+ * {@link validateTopLevelVolumes}, which runs inside {@link parseComposeFile}
+ * before every `up`; planning#386 is what happens when the only reader of the
+ * block is this one. An `external: true` entry no longer reaches here at all
+ * (that call refuses the file), so the old note about externals silently
+ * missing the `shipit-managed` label describes a case that can no longer occur.
  */
 export function parseUserNamedVolumes(composePath: string): UserNamedVolume[] {
   let content: string;
@@ -458,21 +460,25 @@ export function parseComposeFile(
   if (!doc || typeof doc !== "object") {
     throw new ComposeValidationError("Compose file must be a YAML mapping", "malformed");
   }
-  if (opts.containEgress && doc.include !== undefined) {
-    throw new ComposeValidationError("Compose `include` is not supported for contained services.");
+  // planning#386 — unconditional, where this was `containEgress`-only. `include:`
+  // does not add a feature to the model, it REPLACES the model this function
+  // reads: the effective document is the root file plus every included one, and
+  // only the root file is here. That voids the per-service rules below in an
+  // Open session, and it voids {@link validateTopLevelVolumes} outright — the
+  // root file declares a service mounting `escape:/host` (an ordinary named
+  // volume, admitted), an included file declares `escape:` with a bind
+  // `driver_opts`, and Compose resolves both. A rule that a second file can
+  // delete is not a rule.
+  if (doc.include !== undefined) {
+    throw new ComposeValidationError(
+      "Compose `include:` is not supported. ShipIt validates the compose file it is given, "
+      + "and an included file would not be checked. Declare the services in this file.",
+    );
   }
-  if (opts.containEgress) {
-    const networks = doc.networks;
-    if (networks && typeof networks === "object" && !Array.isArray(networks)
-      && Object.hasOwn(networks, "shipit-session")) {
-      throw new ComposeValidationError(
-        "The reserved `shipit-session` network cannot be declared by contained projects.",
-      );
-    }
-  }
-
   validateTopLevelFileRefs("Secret", doc.secrets);
   validateTopLevelFileRefs("Config", doc.configs);
+  validateTopLevelVolumes(doc.volumes);
+  validateTopLevelNetworks(doc.networks);
 
   const services = doc.services as Record<string, Record<string, unknown>> | undefined;
   if (!services || typeof services !== "object") {
@@ -485,6 +491,19 @@ export function parseComposeFile(
     if (typeof svc !== "object" || svc === null) continue;
 
     // Security validation
+    //
+    // `extends:` is the sibling of the `include:` rule above and is deliberately
+    // NOT unconditional (planning#386, review lead). It is the same shape of
+    // problem — the effective service is the local mapping merged with one from
+    // another file, and only the local mapping is validated here, so in an OPEN
+    // session a `privileged: true` or an absolute bind can arrive from the
+    // extended file untouched. Two things make it a separate decision rather
+    // than a line to change here: it cannot reach the top-level `volumes:` block
+    // (Compose requires a named volume an extended service mounts to be declared
+    // in the file doing the extending, which IS this one), so it does not defeat
+    // `validateTopLevelVolumes`; and unlike `include:` it is a widely used
+    // Compose feature, so refusing it in Open sessions is a product call. Stated
+    // rather than left for the next reader to rediscover.
     if (opts.containEgress && svc.extends !== undefined) {
       throw new ComposeValidationError(`Service \`${name}\`: \`extends\` is not supported for contained services.`);
     }
@@ -786,7 +805,210 @@ function validateReadablePath(kind: string, name: string, file: unknown): void {
   }
 }
 
-/** The top-level `secrets:` / `configs:` blocks — see {@link validateReadablePath}. */
+/** A rejected value, rendered for the error message without trusting its shape. */
+function showValue(value: unknown): string {
+  return typeof value === "string" ? value : JSON.stringify(value) ?? String(value);
+}
+
+/**
+ * The top-level `volumes:` block (planning#386).
+ *
+ * The `volumes:` rule inside {@link validateServiceSecurity} refuses a host path
+ * a SERVICE declares. It is the whole check, and it is per-service — so the
+ * top-level block, which is not a service, reached the daemon with nothing read
+ * from it but its keys ({@link parseUserNamedVolumes} returns names only). The
+ * local driver's `driver_opts` is a host bind written in another syntax:
+ *
+ *     volumes:
+ *       escape:
+ *         driver_opts: { type: none, device: /, o: bind }
+ *
+ * The service that mounts it writes `- escape:/host`, which every check above
+ * classifies as an ordinary named volume, because that is exactly what it looks
+ * like. No forbidden absolute path appears anywhere in the file.
+ *
+ * **Why this is not "a project may bind its own host".** The project's compose
+ * file is the project's own code and the user is entitled to trust it; the
+ * question is who else can write it. A PLUGIN can — `/project` is read-write in
+ * its containers by design (docs/262 req 29) — and so can an npm `postinstall`
+ * running in the session worker. The watcher then reconciles the rewritten file
+ * and {@link parseComposeFile} re-runs before every `up`
+ * (`ServiceManager.parseProjectCompose`), so the escape needs no user action
+ * beyond the one they already took.
+ *
+ * So a top-level volume must be a plain, Compose-managed, local volume. Four
+ * refusals, deny-the-primitive rather than a safe subset of `driver_opts` (the
+ * `cap_add` rule's reasoning, and `o:` is an opaque pass-through to `mount(8)`):
+ *
+ *  - **`driver_opts`** — the bind above, and `type: nfs`/`cifs` besides, which
+ *    the KERNEL mounts from the host's network namespace and containment
+ *    therefore does not see at all. A service that wants a scratch filesystem
+ *    has `tmpfs:` for it.
+ *  - **a non-`local` `driver`** — a host-installed volume plugin, whose
+ *    semantics ShipIt cannot know and did not choose.
+ *  - **`external: true`** — attaches a volume this session did not create. On a
+ *    shared daemon that includes ShipIt's own, whose names are not secrets
+ *    (`shipit-<stack>_workspace` holds every session's clone AND state dir).
+ *  - **`name:`** — the same reach without the `external` keyword. Compose's own
+ *    project-label check refuses to adopt a foreign volume today, but that is
+ *    an inherited guarantee in someone else's code; there is no use for a
+ *    stable cross-project volume name inside an ephemeral session anyway.
+ *
+ * Unconditional, exactly like the service-level bind rule it mirrors: the two
+ * are one primitive in two syntaxes, and a rule that fires only when contained
+ * would make the Open-session compose file a different language.
+ *
+ * Not closed here, and not close-able by a string rule: `driver_opts` is only
+ * the reach ShipIt can SEE. See `validateTopLevelFileRefs` on the symlink
+ * limit, which applies to this block's neighbours for the same reason.
+ */
+function validateTopLevelVolumes(block: unknown): void {
+  if (!block || typeof block !== "object" || Array.isArray(block)) return;
+  for (const [name, entry] of Object.entries(block as Record<string, unknown>)) {
+    // `pgdata:` with no body is the ordinary declaration — nothing to check.
+    if (entry === null || entry === undefined) continue;
+    if (typeof entry !== "object" || Array.isArray(entry)) {
+      throw new ComposeValidationError(
+        `Volume \`${name}\`: definition must be a mapping.`,
+      );
+    }
+    const vol = entry as Record<string, unknown>;
+    if (vol.driver_opts !== undefined) {
+      throw new ComposeValidationError(
+        `Volume \`${name}\`: \`driver_opts\` is not allowed. They can attach a host path `
+        + "or a remote filesystem to the session (`type: none` + `device:` is a bind mount). "
+        + "Use an ordinary named volume, or a service `tmpfs:` entry.",
+      );
+    }
+    if (vol.driver !== undefined && vol.driver !== "local") {
+      throw new ComposeValidationError(
+        `Volume \`${name}\`: volume driver \`${showValue(vol.driver)}\` is not allowed. `
+        + "Only Docker's built-in `local` driver is supported.",
+      );
+    }
+    // `external: false` is the default written out; only a truthy one attaches
+    // pre-existing storage. The legacy `external: { name: … }` object form is
+    // truthy too, and is caught by the same test.
+    if (vol.external !== undefined && vol.external !== false && vol.external !== "false") {
+      throw new ComposeValidationError(
+        `Volume \`${name}\`: \`external\` volumes are not allowed. They attach storage this `
+        + "session did not create, including volumes belonging to other sessions.",
+      );
+    }
+    if (vol.name !== undefined) {
+      throw new ComposeValidationError(
+        `Volume \`${name}\`: a \`name:\` override is not allowed — it can point at a volume `
+        + "outside this session. Compose names the volume after the project.",
+      );
+    }
+  }
+}
+
+/**
+ * The top-level `networks:` block — the same structural gap as
+ * {@link validateTopLevelVolumes}, one block over (planning#386).
+ *
+ * A CONTAINED service never joins one of these: the override replaces its
+ * `networks:` with `!override [shipit-session]`, which is why the reserved-name
+ * rule in {@link parseComposeFile} was written for contained sessions only. An
+ * OPEN session's override does not — it appends `shipit-session` and Compose
+ * merges the two lists — so there the project's own networks are joined as
+ * declared, and nothing had ever read this block.
+ *
+ * "Open means unrestricted egress" does not cover what that reaches. Egress is
+ * about routed internet access; these are different primitives:
+ *
+ *  - `driver: macvlan` / `ipvlan` with `driver_opts: {parent: <host nic>}` puts
+ *    the container on the HOST's layer-2 segment with its own MAC — not an
+ *    internet route but a peer on the host's LAN.
+ *  - `external: true` (and its `name:`-only twin) joins a network that already
+ *    exists on the daemon. Session isolation is a claim ShipIt makes in Open
+ *    sessions too, and `shipit-session-<id>` / the orchestrator's own compose
+ *    network are named by a scheme, not by a secret.
+ *
+ * So the same shape as the volumes rule: `bridge` (or unstated) driver only, no
+ * `driver_opts`, no `ipam`, no `external`, no `name:`. And the reserved-name
+ * refusal applies to every session rather than contained ones — Compose merges
+ * maps key-by-key, so a key the override does not set survives from the
+ * project's file, and `driver:` under a project-declared `shipit-session:` is
+ * exactly such a key.
+ *
+ * `driver_opts` and `ipam` were the two this nearly kept, on the grounds that
+ * MTU is a real deployment need and that a chosen subnet only collides with
+ * itself. Both are refused instead, because neither reason survived being
+ * written down as a claim: `com.docker.network.bridge.name` names a host
+ * interface, `ipam` picks the address a container presents to everything that
+ * identifies containers by source IP (docs/172), and "assessed and probably
+ * harmless" is the shape of the residue this very block already shipped once. A
+ * refusal is loud and says what to remove; the alternative was a safe-subset
+ * allowlist over an option namespace Docker extends without asking us.
+ */
+function validateTopLevelNetworks(block: unknown): void {
+  if (!block || typeof block !== "object" || Array.isArray(block)) return;
+  for (const [name, entry] of Object.entries(block as Record<string, unknown>)) {
+    if (name === "shipit-session") {
+      throw new ComposeValidationError(
+        "The reserved `shipit-session` network cannot be declared by a project's compose file.",
+      );
+    }
+    if (entry === null || entry === undefined) continue;
+    if (typeof entry !== "object" || Array.isArray(entry)) {
+      throw new ComposeValidationError(`Network \`${name}\`: definition must be a mapping.`);
+    }
+    const net = entry as Record<string, unknown>;
+    // The driver first: `macvlan` needs a `driver_opts.parent`, and naming the
+    // driver is the more useful half of that pair to report.
+    if (net.driver !== undefined && net.driver !== "bridge") {
+      throw new ComposeValidationError(
+        `Network \`${name}\`: network driver \`${showValue(net.driver)}\` is not allowed. `
+        + "Only Docker's built-in `bridge` driver is supported — `macvlan`/`ipvlan` attach the "
+        + "container to the host's own network segment.",
+      );
+    }
+    if (net.driver_opts !== undefined || net.ipam !== undefined) {
+      const key = net.driver_opts !== undefined ? "driver_opts" : "ipam";
+      throw new ComposeValidationError(
+        `Network \`${name}\`: \`${key}\` is not allowed. It reaches host networking — a bridge `
+        + "name is a host interface, and an address pool decides what a container presents as "
+        + "its source IP. Declare the network with no options.",
+      );
+    }
+    if (net.external !== undefined && net.external !== false && net.external !== "false") {
+      throw new ComposeValidationError(
+        `Network \`${name}\`: \`external\` networks are not allowed. They join a network this `
+        + "session did not create, including networks belonging to other sessions.",
+      );
+    }
+    if (net.name !== undefined) {
+      throw new ComposeValidationError(
+        `Network \`${name}\`: a \`name:\` override is not allowed — it can point at a network `
+        + "outside this session. Compose names the network after the project.",
+      );
+    }
+  }
+}
+
+/**
+ * The top-level `secrets:` / `configs:` blocks — see {@link validateReadablePath}.
+ *
+ * `file:` is the only key checked, and the other three were looked at while
+ * closing the sibling blocks (planning#386) rather than left unexamined:
+ *
+ *  - `content:` (configs) is an inline literal — it reaches nothing.
+ *  - `external: true` / `name:` resolve against SWARM secrets and configs, which
+ *    a non-swarm daemon does not have; Compose fails the file rather than
+ *    finding something. Unlike the volumes and networks blocks, where the same
+ *    keys resolve against ordinary daemon objects that DO exist.
+ *  - `environment: VAR` materializes a value from the environment Compose is
+ *    interpolating with, which is `composeSpawnEnv()`'s allowlist plus the
+ *    project's own `.env`. It is deliberately NOT refused: the allowlist
+ *    carries no credential (that is its whole purpose), a `.env` in the
+ *    workspace is the project's own file, and a project reading its own
+ *    variable into a config is a legitimate pattern. What it does mean is that
+ *    the allowlist is load-bearing HERE too, not only at the spawn — widening
+ *    `COMPOSE_ENV_PASSTHROUGH` with anything sensitive would open this without
+ *    touching this file.
+ */
 function validateTopLevelFileRefs(kind: string, block: unknown): void {
   if (!block || typeof block !== "object" || Array.isArray(block)) return;
   for (const [name, entry] of Object.entries(block as Record<string, unknown>)) {

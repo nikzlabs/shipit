@@ -68,9 +68,18 @@ doesn't weaken it:
 - **Per-session network + label isolation**: each Docker-enabled session gets its own
   bridge network; cross-session access is blocked by source-IP identification with
   `NET_RAW` dropped to prevent spoofing.
-- **Compose has real validation** (`compose-generator.ts:351-421`): rejects
+- **Compose has real validation** (`compose-generator.ts`, `parseComposeFile`): rejects
   `privileged: true`, `network_mode: host`, docker-socket mounts (unless explicitly
-  opted in), absolute bind paths, and `..` traversal.
+  opted in), absolute bind paths, and `..` traversal. Per-service until planning#386,
+  which is the shape of the hole it left: the top-level `volumes:` and `networks:`
+  blocks are not services, so nothing read them, and a local-driver `driver_opts`
+  bind (`type: none` + `device:`) is a host bind that a service mounts by name.
+  `validateTopLevelVolumes` / `validateTopLevelNetworks` now refuse `driver_opts`,
+  a non-`local`/`bridge` driver, `external:`, a `name:` override in either block,
+  and `ipam:` on a network — and `include:` is refused in every session rather
+  than contained ones only, since an included file's blocks are never validated.
+  **Still open:** service `extends:` is refused only in contained sessions, so an
+  Open session's effective service definition can arrive from an unvalidated file.
 - **Chat history / usage / session metadata are NOT agent-writable.** They live in the
   orchestrator-host SQLite DB (`.shipit.db`), which is never mounted into the container
   (`app-di.ts:136`). The agent cannot corrupt them from inside — this already realizes
