@@ -115,7 +115,7 @@ Three-tier **Routes/WS handlers → Services → Managers**: `services/*.ts` are
 
 After a turn (`agent_result` in `agent-execution.ts`): `postTurnCommit()` auto-commits → `scheduleAutoPush()` debounces a 5s push (if GitHub auth) → PR lifecycle card emitted (if a remote exists). **Critical**: session context (sessionId, sessionDir) is captured at turn *start*, not at "done", so a mid-turn session switch can't corrupt commits.
 
-Four invariants govern the rest. Each looks reorderable and is not; each is pinned by a guard test.
+Five invariants govern the rest. Each looks reorderable and is not; each is pinned by a guard test.
 
 **1. The queue never drains before the finished turn's work is committed** (planning#264). A queued turn may begin by discarding working-tree state (`git reset --hard`, a branch reset), and edits that never entered git have no reflog entry and no recovery — so `tryDrain` (`turn-executor.ts`) awaits the LOCAL commit first. Only the local half: the NETWORK half (PR card, merged-session re-arm, release flow) stays *after* the drain, so back-to-back messages never wait on a GitHub round-trip. The guarantee lives inside `tryDrain` rather than at the call sites because the non-streaming path drains at `agent_result` and commits later in `done`. Also load-bearing: `session_agent_finished` fires *after* the drain (no finished→started flicker) but *before* the network flows; the runner "idle" event (`signalIdleIfIdle`, which drives CI-fix / conflict remediation) fires last of all, so remediation never runs against a pre-commit tree.
 
