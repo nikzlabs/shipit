@@ -82,17 +82,26 @@ model-first derivation and is scoped to roles. What it changes:
   the better failure: being told the role cannot run beats being quietly handed a different agent,
   which is the difference requiring it exists to protect.
 
-**It removes a whole failure mode.** docs/261 records a latent bug it deliberately left open
-(`plan.md`, phase 3): a pin's reasoning level is validated against the *settings-time derived*
-harness while the review may run on a **different** one, carrying a level the second harness may
-not declare — fixable there only by choosing between refusing the review and silently
-substituting a default. A role has no such gap: the level is validated against the one harness the
-role names, and that is the harness it runs on.
+**It removes a whole failure mode, and that failure mode is live rather than hypothetical.**
+docs/261 records a latent bug it deliberately left open (`plan.md`, phase 3): a pin's reasoning
+level is validated against the *settings-time derived* harness while the review may run on a
+**different** one, carrying a level the second harness may not declare — fixable there only by
+choosing between refusing the review and silently substituting a default. A role has no such gap:
+the level is validated against the one harness the role names, and that is the harness it runs on.
+
+**Corrected 2026-08-15: two shipped models are dual-harness, so this is reachable today.**
+`deepseek/key/deepseek-v4-flash` and `deepseek/key/deepseek-v4-pro` declare
+`styles: [O_CC, O_RESP, A_MSG]` (`services.ts:250-251`), and `resolveStyle` needs one style in
+common with the harness — `claude` declares `anthropic-messages`, `codex` declares
+`openai-responses` (`harnesses.ts:35`, `:95`), so both harnesses carry both models. They are the
+only two: no other row in the catalogue declares both styles. The bug was reproduced on shipped
+code with a DeepSeek key as the only credential — a pin accepted at effort `max` (validated against
+the derived `claude`) resolves onto `codex`, whose levels stop at `xhigh`.
 
 **What it costs.** The pair (model, harness) can now disagree in a way a model alone could not, so
-the save-time check is load-bearing rather than belt-and-braces. And the *choice* is
-unexercisable on today's catalogue — no shipped model runs on both harnesses — so for now each
-model has exactly one valid harness. That does not make the field derivation with extra steps:
+the save-time check is load-bearing rather than belt-and-braces. The *choice* is exercisable on
+today's catalogue for those two models and unexercisable for every other, so each model but two has
+exactly one valid harness. That does not make the field derivation with extra steps:
 stored-and-frozen behaves differently from derived the moment the install changes, which is why it
 is required.
 
@@ -512,12 +521,20 @@ The Reviewer tab becomes a **Roles** surface in two parts:
   requirement is satisfied without it, so it is gone — a role takes one name and five choices to
   make from scratch.)
 
-**The harness is required in the data; it is not necessarily a required interaction.** Today every
-model has exactly one harness that can run it, so the field is filled from that single valid
-option and *shown* on the row rather than asked for. The day a model is offered by two harnesses
-the same field becomes a real picker, and the stored shape does not change. It is shown read-only
-from day one deliberately: a role's harness is part of what it *is* (req 6), so hiding it until it
-becomes selectable would misrepresent the role.
+**The harness is required in the data, and it is a required interaction for the models that have a
+choice.** Where a model has exactly one harness that can run it, the field is filled from that
+single valid option and *shown* rather than asked for. Where a model has two, it is a **real
+picker**, because nothing else can say which harness the role means.
+
+**Corrected 2026-08-15.** An earlier draft said every model has exactly one harness, so the field
+could ship read-only and become a picker "the day a model is offered by two harnesses". That day
+has already passed: `deepseek-v4-flash` and `deepseek-v4-pro` are carried by both harnesses (see
+*The harness is part of a role*). A read-only readout would make a DeepSeek role unable to express
+which harness it runs — the exact expressiveness req 6 exists to give it — so the picker is phase 2
+work, not deferred work. The stored shape is unchanged either way; only the control is.
+
+It is shown from day one deliberately, picker or readout: a role's harness is part of what it *is*
+(req 6), so hiding it until it becomes selectable would misrepresent the role.
 
 The server is the authority on every write. It does **not** reuse `resolveReviewerPinPatch` as-is:
 that function *derives* a harness (`harnessesForSelection(patch, …)[0]`, `reviewer-settings.ts`)
