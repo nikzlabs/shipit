@@ -272,13 +272,15 @@ succeeds or fails on its own.
 One failure comes from **this project's own** `docker-compose.yml` rather than
 from the plugin: a plugin's services must not collide with the project's, so a
 version is not activated while ShipIt cannot list the project's service names.
-The card and `shipit plugin refresh` say which of the two happened. "ShipIt
-could not read this project's own compose file" means the file does not parse —
-fix the YAML. "ShipIt refuses this project's own compose file" means it parses
-fine and a rule declined it, and the rest of the message names the service, the
-rule and the fix. On a contained session the usual one is a service with no
-`user:`: contained services must declare a numeric, non-root `user:`, so add
-one (or run the project in an Open session if the image needs a root init).
+The card and `shipit plugin refresh` say which of the two happened, and both
+append the detail. "ShipIt could not read this project's own compose file"
+means ShipIt could not make sense of it at all — unreadable on disk, invalid
+YAML, or not a compose document; the appended detail says which. "ShipIt
+refuses this project's own compose file" means it parses fine and a rule
+declined it, and the detail names the service, the rule and the fix. On a
+contained session the usual one is a service with no `user:`: contained
+services must declare a numeric, non-root `user:`, so add one (or run the
+project in an Open session if the image needs a root init).
 
 ## When a declared surface does not appear
 

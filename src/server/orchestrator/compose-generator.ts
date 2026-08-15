@@ -394,6 +394,13 @@ export function parseComposeFile(
     // validation sees the same effective fields in Open mode.
     doc = parseYaml(content, { merge: true }) as Record<string, unknown> | null;
   } catch (err) {
+    // The two containment rules above throw from INSIDE this block, and they
+    // are refusals of a document that parsed perfectly well. Re-thrown as they
+    // are: wrapping them turned "custom YAML tags are not supported" into
+    // "Compose file is not valid YAML: custom YAML tags are not supported",
+    // which is both untrue and — once callers began telling the two apart
+    // (planning#377) — filed under the wrong kind (review finding).
+    if (err instanceof ComposeValidationError) throw err;
     // Surface YAML parse errors as ComposeValidationError so callers (which
     // catch them defensively, e.g. mid-edit / mid-merge reconciles) can log
     // a clean one-liner instead of a full stack trace. Common trigger: the

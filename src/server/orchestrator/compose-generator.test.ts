@@ -749,6 +749,28 @@ services:
       expect(kindOf("- a\n- b\n", { dockerSocket: false })).toBe("malformed");
     });
 
+    /**
+     * The two containment rules that throw from INSIDE the parse `try` block.
+     * They refuse a document that parsed perfectly, so re-wrapping them as
+     * "not valid YAML" was both untrue and — once callers tell the two apart —
+     * the wrong kind (review finding).
+     */
+    it("keeps a refusal raised during the parse pass a refusal", () => {
+      setup();
+      const contained = { dockerSocket: false, containEgress: true };
+      expect(kindOf(
+        `services:\n  web:\n    image: x\n    user: "1001"\n    privileged: !override true\n`,
+        contained,
+      )).toBe("refused");
+      expect(kindOf(
+        `x-base: &base\n  privileged: true\nservices:\n  web:\n    <<: *base\n    image: x\n    user: "1001"\n`,
+        contained,
+      )).toBe("refused");
+      // And the message stays the rule's own, not "not valid YAML: <rule>".
+      const p = writeCompose(tmpDir, `services:\n  web:\n    image: x\n    user: "1001"\n    privileged: !override true\n`);
+      expect(() => parseComposeFile(p, contained)).toThrow(/^Custom YAML tags/);
+    });
+
     it("marks a well-formed file it declines as refused", () => {
       setup();
       // The one that made this worth telling apart: docs/263 refuses a STOCK

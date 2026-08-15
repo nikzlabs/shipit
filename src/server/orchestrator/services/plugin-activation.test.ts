@@ -276,6 +276,39 @@ describe("the phase-3 gate, wired end to end (reqs 13, 15)", () => {
     expect(liveCommit()).toBeUndefined();
   });
 
+  /**
+   * planning#377 — the whole path, on the case that found the bug: a contained
+   * session whose own compose file is a STOCK one. docs/263 refuses it for the
+   * missing `user:`, so the project's service names are unknown and the gate
+   * fails closed — correctly. What the user is told is the part that was
+   * broken: the attempt's `error` is what the Plugins tab renders as the
+   * repository's first issue and what `shipit plugin refresh` prints as the
+   * row's detail, and it used to claim ShipIt could not READ a file that is
+   * perfectly valid YAML, hiding the one line that fixes it.
+   */
+  it("tells the user WHICH rule refused the project's own compose file", async () => {
+    await publishFragment('services:\n  probe:\n    image: node:22-alpine\n    user: "1000"\n');
+    writeConfig(declareProbe);
+    fs.writeFileSync(
+      path.join(workspaceDir, "docker-compose.yml"),
+      "services:\n  web:\n    image: node:22-alpine\n",
+    );
+
+    await activateDeclaredPlugins("sess", workspaceDir, {
+      ...deps(),
+      validateStaged: createStagedGenerationGate({ workspaceDir, containEgress: () => true }),
+    });
+
+    const state = getActivationState("sess", "tools");
+    expect(state?.error).toContain("refuses this project's own compose file");
+    expect(state?.error).not.toContain("could not read");
+    // The actionable half — the service, the rule, and the line to add.
+    expect(state?.error).toContain("`web`");
+    expect(state?.error).toContain("`user:`");
+    // Still fail-closed: an unknown name domain publishes nothing.
+    expect(liveCommit()).toBeUndefined();
+  });
+
   it("keeps the prior version live when a later commit's fragment is rejected", async () => {
     await publishFragment("services:\n  probe:\n    image: node:22-alpine\n");
     writeConfig(declareProbe);

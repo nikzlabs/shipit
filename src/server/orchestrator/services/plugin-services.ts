@@ -112,19 +112,12 @@ export async function resolveSessionPluginServices(
     return nothingToSurface(sessionId);
   }
 
+  // `project.failure` is deliberately NOT reported from this round: it degrades
+  // rather than gates (see `readProjectServices`), and the same message already
+  // reaches the log from the project stack's own reconcile and the user from
+  // the pre-publish gate. A third copy on a path that runs on every settle
+  // would be noise (review finding).
   const project = readProjectServices(workspaceDir, config, deps.containEgress);
-  if (project.failure) {
-    // This round still surfaces its plugin services — the project's stack is a
-    // collision domain here, not a gate (see `readProjectServices`). But the
-    // reason is no longer thrown away on this path either (planning#377): the
-    // domain being unknown is why a later name collision can go unreported, and
-    // this line is the only place that says so. The gate says it to the USER.
-    console.warn(
-      `[plugins:${sessionId}] the project's own compose file ${
-        project.failure.kind === "refused" ? "is refused" : "could not be read"
-      }, so plugin service names are checked against an unknown domain: ${project.failure.message}`,
-    );
-  }
   const { services: fragments } = collectPluginFragments({
     workspaceDir,
     // One resolution per repository for this build, so a fragment and the tree
