@@ -97,6 +97,14 @@ sizing is fully automatic.
   `install-inputs` below). So a new commit that only edits source or docs — but
   not `package.json`/the lockfile — still skips install. A different runtime or a
   changed `install` always re-runs (a warm dependency cache keeps it fast).
+- **A skipped install brings back `dep-dirs`, and nothing else it wrote.** A
+  container is replaced, not paused, so the next one starts from a fresh clone:
+  gitignored paths are not in it, and the declared dependency directories are
+  the only ones restored (from the overlay store). Anything else your install
+  produced — a `dist/`, a generated client, a compiled binary — is absent from
+  the second container onward for a given commit, while the install still
+  reports done. If a build step's output has to be there, declare its directory
+  in `dep-dirs` alongside `node_modules`.
 - When `install` is a string, it's treated as a single-element list.
 
 #### Content-keyed install skip (`install-inputs`)
@@ -153,6 +161,10 @@ Declares which directories hold installed dependencies, so they can be served
 from a shared, copy-on-write **overlay dependency store** instead of a full
 per-session copy (faster fresh-session starts; far less disk). Defaults to
 `[node_modules]`, which covers most Node projects with no configuration.
+
+It is not only an optimization: **this list is also what survives a container
+replacement when the install is skipped** (see § Install behavior above). A
+directory your install writes and git ignores is restored only if it is here.
 
 ```yaml
 agent:
