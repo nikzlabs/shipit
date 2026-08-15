@@ -257,6 +257,7 @@ generation halves of 1 and 3) needs a second project and is untouched.
 | 5 egress | `--host-check` → `{allowed: false, error: "fetch failed"}` for `example.com`, **which the manifest declares**. Control: the agent's own container gets `Could not resolve host: example.com`, and `github.com` returns 200 there. Declared ≠ allowed |
 | 7 skills | `plugins--probe--probe-<hash>` present in **both** `.claude/skills/` and `.codex/skills/`; `git status --short` empty |
 | 8 SDK | the page's message reached the chat **unprompted**, carrying counter `1`, which the CLI then independently read as `1` |
+| 5 grant | after **Allow for session**: `--host-check` → `{allowed: true, status: 200}`, and the agent's control call returns 200 too. **No container restarted**, and none had to |
 | 10 self | `shipit plugin refresh shipit-dev` → **exit 2**, "declared as `repo: self` … it has no version to refresh" |
 
 Two things this run added that the steps above did not ask for:
@@ -274,3 +275,20 @@ Two things this run added that the steps above did not ask for:
   a stated rule, not an artefact. Worth a look before anyone relies on either.
 
 Neither is a failure; both are recorded so the next run can compare.
+
+**A third, raised by the user on seeing the grant work: you cannot tell that it
+worked.** A session-scoped grant is live everywhere immediately — `reloadEgress`
+relaunches the agent's sidecars *and* re-contains every running Compose service —
+but nothing says so. The host row just disappears. A **global** grant behaves
+differently again: it reloads nothing, so the agent and the running services stay
+on the old allowlist while a plugin CLI container, created fresh per invocation,
+is allowed at once. That divergence is deliberate and argued in
+`plugin-egress.ts`; the silence around it is not. Filed as **planning#376**, and
+it is not plugin-specific — Settings → Network egress has the same two scopes and
+the same silence.
+
+**A consequence for step 5's ordering:** run the unallowed half *first*. Once a
+grant is in place there is no supported way to take it back from inside the
+session — the settings route is denied to session containers, which is
+containment working — so a run that grants before it measures cannot measure the
+refusal at all.
