@@ -163,6 +163,13 @@ const HOLDER_MEMORY_BYTES = 64 * 1024 * 1024;
 const HOLDER_PIDS_LIMIT = 16;
 
 /**
+ * How long the whole holder + Tier A/B/C setup may take. Generous — Tier A
+ * resolves its allow-hosts with a bounded DNS pass inside the sidecar — but
+ * bounded, because nothing below it is (see {@link preparePluginNetns}).
+ */
+const DEFAULT_SETUP_TIMEOUT_MS = 90_000;
+
+/**
  * The session's egress posture, as the two plugin container surfaces need it.
  *
  * Read through a thunk at prepare time rather than captured per session, for the
@@ -235,6 +242,8 @@ export interface PreparePluginNetnsOptions {
   /** The holder's image: the session-worker image (see the module docstring). */
   holderImage: string;
   policy: PluginEgressPolicy;
+  /** Deadline for the whole setup. Defaults to {@link DEFAULT_SETUP_TIMEOUT_MS}. */
+  setupTimeoutMs?: number;
 }
 
 /**
@@ -247,6 +256,15 @@ export interface PreparePluginNetnsOptions {
  *
  * Throws when a contained session's containment cannot be installed; the holder
  * and any sidecars are torn down first, so a throw leaves nothing behind.
+ *
+ * **And it is BOUNDED, which the installers it calls are not.**
+ * `installEgressFirewall` awaits `container.wait()` with no deadline. On the
+ * agent-creation path that is tolerable — a hung install stalls one session
+ * start, visibly. Here it sits in front of a companion-CLI call, and
+ * `plugin-container.ts` already worked out why an unbounded wait on this surface
+ * is not acceptable: a nominal timeout downstream becomes an unbounded hang
+ * holding an agent turn and the repository's activation queue. So the whole
+ * setup races a deadline, and a timeout is a refusal like any other.
  */
 export async function preparePluginNetns(
   opts: PreparePluginNetnsOptions,
@@ -255,7 +273,10 @@ export async function preparePluginNetns(
   if (!policy.contained) {
     return { networkMode: opts.network, release: async () => undefined };
   }
-  if (!policy.sidecarImage) {
+  // Bound to a const, not read off `policy` below: the setup runs inside a
+  // closure, where TypeScript drops the narrowing this check just established.
+  const sidecarImage = policy.sidecarImage;
+  if (!sidecarImage) {
     throw new Error(
       "this session's egress is contained but SESSION_EGRESS_SIDECAR_IMAGE is not set, "
       + "so ShipIt cannot contain a plugin container's network",
@@ -302,6 +323,7 @@ export async function preparePluginNetns(
   };
 
   try {
+    await withDeadline(opts.setupTimeoutMs ?? DEFAULT_SETUP_TIMEOUT_MS, async () => {
     await holder.start();
 
     const sidecarLabels = { ...labels, [PLUGIN_NETNS_PARENT_LABEL]: holder.id };
@@ -312,7 +334,7 @@ export async function preparePluginNetns(
     // namespace is NOT contained and nothing may run in it.
     await installEgressFirewall(opts.docker, {
       agentContainerId: holder.id,
-      sidecarImage: policy.sidecarImage,
+      sidecarImage,
       inputs: await buildTierAEgressInputs(),
       ...(policy.dnsEnabled ? { resolverUid: EGRESS_RESOLVER_UID } : {}),
       ...(policy.proxyEnabled
@@ -324,7 +346,7 @@ export async function preparePluginNetns(
     if (policy.dnsEnabled) {
       await launchEgressResolver(opts.docker, {
         agentContainerId: holder.id,
-        sidecarImage: policy.sidecarImage,
+        sidecarImage,
         configB64: buildResolverConfigB64({
           // No internal domains and no unqualified forwarding: a plugin
           // container has no orchestrator to call back to, and giving it a name
@@ -339,7 +361,7 @@ export async function preparePluginNetns(
     if (policy.proxyEnabled) {
       await launchEgressProxy(opts.docker, {
         agentContainerId: holder.id,
-        sidecarImage: policy.sidecarImage,
+        sidecarImage,
         allowed: buildProxyAllowed({
           extraHosts: [...allowed.extras],
           ...(allowed.base ? { base: allowed.base } : {}),
@@ -352,11 +374,37 @@ export async function preparePluginNetns(
         labels: { ...sidecarLabels, [EGRESS_PROXY_LABEL]: opts.sessionId },
       });
     }
-
+    });
     return { networkMode: `container:${holder.id}`, release };
   } catch (err) {
     await release();
     throw err;
+  }
+}
+
+/**
+ * Run `work`, rejecting once the deadline passes.
+ *
+ * The abandoned work keeps running — nothing here can interrupt a `wait()` the
+ * daemon has not answered — which is exactly why the caller's `release()` is
+ * what makes this safe rather than merely prompt: it force-removes the holder,
+ * and a `container:`-mode sidecar cannot outlive the namespace it borrowed.
+ */
+async function withDeadline<T>(ms: number, work: () => Promise<T>): Promise<T> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      work(),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`egress containment did not finish within ${Math.round(ms / 1000)}s`)),
+          ms,
+        );
+        timer.unref?.();
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 

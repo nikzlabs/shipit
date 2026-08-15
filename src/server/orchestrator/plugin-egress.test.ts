@@ -384,6 +384,30 @@ describe("preparePluginNetns — failing closed", () => {
     expect(fake.created).toHaveLength(0);
   });
 
+  /**
+   * `installEgressFirewall` awaits `container.wait()` with no deadline of its
+   * own. On the agent-creation path that stalls one visible session start; here
+   * it would sit in front of a companion-CLI call and hold an agent turn open
+   * indefinitely — the failure `plugin-container.ts`'s bounded reap exists to
+   * prevent, arriving one layer up.
+   */
+  it("gives up rather than hanging when a tier install never returns", async () => {
+    const fake = fakeDocker();
+    installFirewall.mockImplementationOnce(() => new Promise<void>(() => { /* never */ }));
+
+    await expect(preparePluginNetns({
+      docker: fake.docker,
+      sessionId: SESSION,
+      network: NETWORK,
+      holderImage: "worker:test",
+      policy: contained(),
+      setupTimeoutMs: 20,
+    })).rejects.toThrow(/did not finish within/);
+    // And the abandoned work cannot outlive the namespace: force-removing the
+    // holder is what makes the timeout safe rather than merely prompt.
+    expect(fake.removed).toEqual([fake.created[0].id]);
+  });
+
   it("tears the holder down and throws when a tier cannot be installed", async () => {
     const fake = fakeDocker();
     installFirewall.mockRejectedValueOnce(new Error("no NET_ADMIN on this host"));
