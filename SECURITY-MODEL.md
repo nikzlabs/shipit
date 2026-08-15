@@ -373,7 +373,7 @@ but it means **you must not expose a raw ShipIt instance to the public internet.
 - **DNS rebinding is refused too (planning#378).** The same-origin rule above is computed from
   the request's own `Host`, so on its own it is walked around by a name the attacker controls
   that re-resolves to a loopback / tailnet instance: the page's origin *is* the host the request
-  arrives at, and the two agree. A browser request is therefore also checked against a second
+  arrives at, and the two agree. Every guarded request is therefore also checked against a second
   question — **is this a name ShipIt answers to at all?** That is normally an allowlist, in
   tension with docs/254's "one instance, many legitimate hostnames"; here it is a proof instead
   of a list. A name passes when the attacker provably cannot serve a page from it: an IP literal
@@ -383,11 +383,23 @@ but it means **you must not expose a raw ShipIt instance to the public internet.
   tailnet, MagicDNS and sslip.io installs still need **nothing configured**. Only `Host` is read,
   never `X-Forwarded-Host` or `X-Forwarded-Proto`: a rebound request is *same-origin*, so it may
   set any non-forbidden header with no preflight, and `Host` is the one value in it a page cannot
-  choose. Non-browser callers (no `Origin`, no `Sec-Fetch-Site`) are unaffected. **The one case
+  choose. Unlike the same-origin rule above, this one applies to **every** guarded request rather
+  than only browser-shaped ones — a rebound `GET` sends no `Origin`, and Fetch Metadata is
+  appended only for a *potentially trustworthy* URL, so `http://rebind.attacker.example` sends no
+  `Sec-Fetch-Site` either and is indistinguishable from `curl`. That costs nothing: a non-browser
+  caller picks its own `Host` and every ShipIt one already uses a trusted name. **The one case
   that must be declared is a public domain in front of ShipIt** — nothing about
   `shipit.example.com` proves it is ours — so name it in `SHIPIT_ALLOWED_ORIGINS`;
-  `deployment/vps/cloudflare.sh` writes it from the domain you already gave it, and a refusal
-  logs the host and the variable rather than failing silently.
+  `deploy.sh` / `restart.sh` derive it from the domain you already gave `setup.sh`, and a refusal
+  logs the host and the variable rather than failing silently. Two limits are accepted rather
+  than closed: `sslip.io` is a trusted *operator* rather than a proof (a resolver that answered
+  an attacker's address first would mint a passing name — the same trust the preview path already
+  places in it), and a `{sessionId}--{port}.<name>` host is hijacked by the preview proxy before
+  this runs, so rebinding one reaches a **preview** rather than the orchestrator. That second
+  limit matters in exactly one place: the **dogfood inner instance** (`RUNTIME_MODE=local`), where
+  the previewed app *is* an orchestrator and the outer proxy legitimately rewrites `Host` to
+  loopback — it needs a guessed session UUID, and is not separable from the dogfood loop's own
+  traffic.
 - **The UI refuses to be framed (planning#379).** Every response ShipIt serves carries
   `Content-Security-Policy: frame-ancestors 'none'` and `X-Frame-Options: DENY`, so a hostile
   page cannot overlay ShipIt's own UI and trick the user into clicking a real control. This is a

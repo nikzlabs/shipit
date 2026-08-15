@@ -335,13 +335,19 @@ export function isAllowedOrigin(
 // ---------------------------------------------------------------------------
 
 /**
- * TLDs that are reserved by an RFC and therefore cannot be registered by
- * anybody, plus Tailscale's own zone, whose names Tailscale alone issues.
- * A page cannot be served from a name under these that the attacker controls.
+ * Suffixes that cannot be registered by anybody, plus Tailscale's own zone,
+ * whose names Tailscale alone issues. A page cannot be served from a name under
+ * these that the attacker bought.
+ *
+ * `.internal` and `.home.arpa` are answered by the *local* resolver, so — like a
+ * dotless name — they are only as trustworthy as whoever runs your DNS. That is
+ * a party who already owns you; it is not the remote attacker this closes out.
  */
 const UNREGISTRABLE_SUFFIXES = [
   ".localhost", // RFC 6761 — resolvers must answer loopback and must NOT forward.
   ".ts.net",    // Tailscale MagicDNS; records are Tailscale's to set, not a user's.
+  ".internal",  // ICANN-designated private-use TLD (2024). Never delegated.
+  ".home.arpa", // RFC 8375 — home networking. Never delegated.
 ];
 
 // `.local` is deliberately NOT in that list, though RFC 6762 reserves it just as
@@ -364,13 +370,26 @@ const UNREGISTRABLE_SUFFIXES = [
  * resolution is pinned by the name itself. The local and VPS `tailscale.sh`
  * scripts and docs/254 both route previews through sslip.io, and the install is
  * browsed at one.
+ *
+ * Weaker than the categories around it, and worth saying so: this is a trusted
+ * *operator*, not a proof. A resolver that answered the attacker's address first
+ * and ours second would hand them a name that passes. It is the same trust the
+ * preview path already places in sslip.io, so the guard does not widen ShipIt's
+ * exposure — but it does not eliminate it either. A deployment that wants it
+ * gone browses the tailnet IP directly.
  */
 const SELF_DESCRIBING_DNS_SUFFIXES = ["sslip.io", "nip.io"];
+
+/** 0-255, so a look-alike label like `999` is not mistaken for an address. */
+const OCTET = String.raw`(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)`;
+const IPV4 = new RegExp(`^${OCTET}\\.${OCTET}\\.${OCTET}\\.${OCTET}$`);
+const DASHED_IPV4 = new RegExp(`^${OCTET}-${OCTET}-${OCTET}-${OCTET}$`);
+const BARE_OCTET = new RegExp(`^${OCTET}$`);
 
 /** An IPv4 dotted quad, or the bracketed form a `Host` header uses for IPv6. */
 function isIpLiteral(hostname: string): boolean {
   if (hostname.startsWith("[") && hostname.endsWith("]")) return true;
-  return /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(hostname);
+  return IPV4.test(hostname);
 }
 
 /**
@@ -383,8 +402,8 @@ function encodesItsOwnAddress(hostname: string): boolean {
     if (!hostname.endsWith(`.${suffix}`)) continue;
     const labels = hostname.slice(0, -(suffix.length + 1)).split(".");
     const last = labels[labels.length - 1] ?? "";
-    if (/^\d{1,3}-\d{1,3}-\d{1,3}-\d{1,3}$/.test(last)) return true;
-    if (labels.length >= 4 && labels.slice(-4).every((l) => /^\d{1,3}$/.test(l))) return true;
+    if (DASHED_IPV4.test(last)) return true;
+    if (labels.length >= 4 && labels.slice(-4).every((l) => BARE_OCTET.test(l))) return true;
   }
   return false;
 }
@@ -430,11 +449,41 @@ function encodesItsOwnAddress(hostname: string): boolean {
  * (the handshake presents a certificate for a name that is not the attacker's),
  * but we can only learn about it from a header the attacker can forge.
  *
+ * ## Why EVERY guarded request, not just the browser-shaped ones
+ *
+ * The rest of this module tells browsers apart from other callers by `Origin` /
+ * `Sec-Fetch-Site` and leaves the rest to `api-container-guard.ts`. This check
+ * deliberately does not, and an early draft that did was wrong (found in
+ * review): **a rebound request can carry neither header.** It is same-origin, so
+ * a `GET` sends no `Origin`; and Fetch Metadata is appended only for a
+ * *potentially trustworthy* URL, which `http://rebind.attacker.example` is not —
+ * loopback is judged by the URL's own host string, not by what it resolves to.
+ * So the attacker's `fetch("/api/bootstrap")` arrives looking exactly like curl,
+ * and a browser-shaped gate reads it as a container call and waves it through.
+ *
+ * Applying it to everything costs nothing it was buying: a non-browser caller
+ * picks its own `Host` and can simply use a trusted one, which every ShipIt
+ * caller already does (`SHIPIT_ORCHESTRATOR_HOST=shipit` is dotless, loopback is
+ * an IP literal). Only a script pointed at an undeclared public domain is
+ * affected, and that domain has to be declared anyway for the browser.
+ *
  * Consequence, and the deliberate cost: a deployment reached at a **public
- * domain** must name it in `SHIPIT_ALLOWED_ORIGINS`. ShipIt's own VPS installer
- * writes it from the domain the operator already gave it, so the scripted paths
- * need no action; a hand-rolled reverse proxy needs one line, and the refusal
- * says so rather than failing silently.
+ * domain** must name it in `SHIPIT_ALLOWED_ORIGINS`. ShipIt's own VPS scripts
+ * derive it from the domain the operator already gave `setup.sh`, so the
+ * scripted paths need no action; a hand-rolled reverse proxy needs one line, and
+ * the refusal says so rather than failing silently.
+ *
+ * ## The residual this does not reach
+ *
+ * A `Host` of `{uuid}--{port}.<attacker-name>` is hijacked by `preview-proxy.ts`
+ * before this runs, by design — that path belongs to the previewed app. Rebinding
+ * it reaches a *preview*, not the orchestrator, and needs a guessed session UUID.
+ * The one case where that matters is the **dogfood inner instance**, where the
+ * previewed app is itself an orchestrator: the outer proxy rewrites `Host` to
+ * `localhost:<port>`, which the inner instance correctly trusts, and the inner
+ * origin comparison then reads the attacker's name out of `X-Forwarded-Host`.
+ * Not closable here without breaking the dogfood loop's legitimate traffic,
+ * which is indistinguishable; recorded in `SECURITY-MODEL.md` instead.
  *
  * Known limits, both accepted: a machine whose DHCP supplies an attacker's
  * search domain can make a dotless name resolve to them (they already own your
@@ -463,26 +512,6 @@ export function isTrustedRequestHost(
   // part of "is this name ours", and an operator who wrote `https://x.example`
   // has named `x.example` whatever port it is served on.
   return policy.extraOrigins.some((e) => splitHostPort(e.host).hostname === hostname);
-}
-
-/**
- * Whether the request carries the marks of a browser, which is the population
- * this check applies to. A rebound request is same-origin, so it may send no
- * `Origin` — but a browser that omits `Origin` still sends `Sec-Fetch-Site`.
- *
- * Everything with neither is a non-browser caller (a session container's CLI,
- * curl, a health check) and is left alone, exactly as
- * {@link isAllowedWithoutOrigin} leaves it alone: it cannot be the victim's
- * browser, so it has nothing to gain from rebinding a name.
- *
- * The residual matches the one the module docstring already records for
- * `Sec-Fetch-Site`: Safari before 16.4 sends neither header on a same-origin
- * `GET`, so such a read is not host-checked. Every state-changing method sends
- * `Origin` and is.
- */
-export function isBrowserRequest(headers: IncomingHttpHeaders): boolean {
-  return typeof headers.origin === "string"
-    || headerValue(headers["sec-fetch-site"]) !== undefined;
 }
 
 const LOOPBACK_NAMES = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
@@ -672,7 +701,7 @@ export function registerOriginGuard(
     if (isGuardedRequest(request.url, request.routeOptions?.url)) {
       // planning#378 — asked first, because a rebound request passes every test
       // below: it is same-origin with respect to a name the attacker chose.
-      if (isBrowserRequest(request.headers) && !isTrustedRequestHost(host, policy)) {
+      if (!isTrustedRequestHost(host, policy)) {
         warnUntrustedHost(host);
         void reply.code(403).send({
           error: "Request host is not a hostname ShipIt answers to.",

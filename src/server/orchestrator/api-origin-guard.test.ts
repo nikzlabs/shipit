@@ -5,7 +5,6 @@ import {
   isAllowedOrigin,
   isAllowedCrossSiteNavigation,
   isAllowedWithoutOrigin,
-  isBrowserRequest,
   isGuardedRequest,
   isOriginGuardedPath,
   isTrustedRequestHost,
@@ -321,6 +320,9 @@ describe("isTrustedRequestHost", () => {
     expect(isTrustedRequestHost("shipit.localhost", BARE)).toBe(true);
     // MagicDNS (deployment/vps/tailscale.sh serves the app on this).
     expect(isTrustedRequestHost("shipit.tail1a2b3c.ts.net", BARE)).toBe(true);
+    // Private-use suffixes that are never delegated, so never registrable.
+    expect(isTrustedRequestHost("shipit.internal:4123", BARE)).toBe(true);
+    expect(isTrustedRequestHost("shipit.home.arpa:4123", BARE)).toBe(true);
     // The sslip.io preview host, dashed and dotted, bare and prefixed.
     expect(isTrustedRequestHost("100-83-12-47.sslip.io:4123", BARE)).toBe(true);
     expect(isTrustedRequestHost("100.83.12.47.sslip.io:4123", BARE)).toBe(true);
@@ -337,6 +339,9 @@ describe("isTrustedRequestHost", () => {
     // must actually spell an address, or the name proves nothing.
     expect(isTrustedRequestHost("evil.sslip.io.evil.example", BARE)).toBe(false);
     expect(isTrustedRequestHost("notanip.sslip.io", BARE)).toBe(false);
+    // A label that only looks numeric is not an address.
+    expect(isTrustedRequestHost("999-1-1-1.sslip.io", BARE)).toBe(false);
+    expect(isTrustedRequestHost("999.1.1.1", BARE)).toBe(false);
     // ...and of the reserved suffixes.
     expect(isTrustedRequestHost("ts.net.evil.example", BARE)).toBe(false);
     // `.local` is reserved but ANSWERED BY mDNS, so any host on the link can
@@ -376,18 +381,6 @@ describe("isTrustedRequestHost", () => {
   });
 });
 
-describe("isBrowserRequest", () => {
-  it("is true for anything carrying Origin or Sec-Fetch-Site", () => {
-    expect(isBrowserRequest({ origin: "http://localhost:4123" })).toBe(true);
-    expect(isBrowserRequest({ "sec-fetch-site": "same-origin" })).toBe(true);
-  });
-
-  it("is false for a session container's CLI, which sends neither", () => {
-    expect(isBrowserRequest({ host: "shipit:4123" })).toBe(false);
-    expect(isBrowserRequest({})).toBe(false);
-  });
-});
-
 describe("registerOriginGuard — hook behavior", () => {
   async function makeApp(policy: OriginPolicy = BARE, withPreviewProxy = false) {
     const app = Fastify({ logger: false });
@@ -422,7 +415,7 @@ describe("registerOriginGuard — hook behavior", () => {
   });
 
   it("refuses a mutating call from a preview page, and reflects nothing", async () => {
-    const app = await makeApp();
+    const app = await makeApp(DECLARED);
     const res = await app.inject({
       method: "POST",
       url: "/api/egress/hosts",
@@ -438,7 +431,7 @@ describe("registerOriginGuard — hook behavior", () => {
   });
 
   it("refuses a READ from a foreign origin too, so responses can't be exfiltrated", async () => {
-    const app = await makeApp();
+    const app = await makeApp(DECLARED);
     const res = await app.inject({
       method: "GET",
       url: "/api/bootstrap",
@@ -492,7 +485,7 @@ describe("registerOriginGuard — hook behavior", () => {
     // find-my-way decodes static segments when it resolves the route, so
     // `/%61pi/bootstrap` REACHES the `/api/bootstrap` handler while
     // `request.url` still reads `/%61pi/…`. A raw prefix test would miss it.
-    const app = await makeApp();
+    const app = await makeApp(DECLARED);
     const res = await app.inject({
       method: "GET",
       url: "/%61pi/bootstrap",
@@ -522,7 +515,7 @@ describe("registerOriginGuard — hook behavior", () => {
   });
 
   it("does not let the exemption become a general cross-origin hole", async () => {
-    const app = await makeApp();
+    const app = await makeApp(DECLARED);
     // A cross-origin fetch() at the same path is not a navigation.
     const fetched = await app.inject({
       method: "GET",
@@ -553,7 +546,7 @@ describe("registerOriginGuard — hook behavior", () => {
   });
 
   it("refuses an http origin when the proxy says the request arrived over https", async () => {
-    const app = await makeApp();
+    const app = await makeApp(DECLARED);
     const res = await app.inject({
       method: "POST",
       url: "/api/egress/hosts",
@@ -596,7 +589,7 @@ describe("registerOriginGuard — hook behavior", () => {
   });
 
   it("fails a preflight from a foreign origin", async () => {
-    const app = await makeApp();
+    const app = await makeApp(DECLARED);
     const res = await app.inject({
       method: "OPTIONS",
       url: "/api/egress/hosts",
@@ -625,13 +618,15 @@ describe("registerOriginGuard — hook behavior", () => {
 
   it("still guards a preview-shaped Host when no preview proxy is registered", async () => {
     // Local mode (the dogfood inner instance) has no proxy — a forged Host must
-    // not be a way around the check.
+    // not be a way around the check. The Host here is a preview subdomain of a
+    // TRUSTED base (docs/254's sslip.io form), so the refusal is attributable to
+    // the origin rule rather than to the hostname check standing in for it.
     const app = await makeApp(BARE, false);
     const res = await app.inject({
       method: "GET",
       url: "/api/bootstrap",
       headers: {
-        host: "98f05156-7e64-422d-81bc-ba677fda60e0--5173.shipit.example.com",
+        host: "98f05156-7e64-422d-81bc-ba677fda60e0--5173.100-83-12-47.sslip.io",
         origin: "https://evil.example",
       },
     });
@@ -713,16 +708,32 @@ describe("registerOriginGuard — hook behavior", () => {
     await app.close();
   });
 
-  it("leaves a non-browser caller at an unknown Host alone", async () => {
-    // A reverse proxy's health check, a script, a session container's CLI: no
-    // browser headers, nothing to gain from rebinding a name.
+  it("refuses a rebound GET that carries NO browser headers at all", async () => {
+    // The bypass an earlier draft had (found in review). Fetch Metadata is
+    // appended only for a *potentially trustworthy* URL, and
+    // `http://rebind.evil.example` is not one — trustworthiness is judged on the
+    // URL's own host string, not on what it resolves to. So a same-origin `GET`
+    // from the attacker's page sends neither `Origin` nor `Sec-Fetch-Site` and
+    // is indistinguishable from curl. The host check therefore runs on EVERY
+    // guarded request, not only browser-shaped ones.
     const app = await makeApp();
     const res = await app.inject({
       method: "GET",
       url: "/api/bootstrap",
-      headers: { host: "shipit.example.com" },
+      headers: { host: "rebind.evil.example:4123" },
     });
-    expect(res.statusCode).toBe(200);
+    expect(res.statusCode).toBe(403);
+    await app.close();
+  });
+
+  it("still lets a session container in, because its Host is one of ours", async () => {
+    // What the browser-shape gate was buying, bought instead by the fact that a
+    // non-browser caller picks its own Host: SHIPIT_ORCHESTRATOR_HOST=shipit.
+    const app = await makeApp();
+    for (const host of ["shipit:4123", "127.0.0.1:4123", "localhost:4123"]) {
+      const res = await app.inject({ method: "GET", url: "/api/bootstrap", headers: { host } });
+      expect({ host, status: res.statusCode }).toEqual({ host, status: 200 });
+    }
     await app.close();
   });
 

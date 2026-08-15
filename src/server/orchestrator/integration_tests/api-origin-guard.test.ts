@@ -303,6 +303,20 @@ describe("Integration: browser-origin boundary on the orchestrator API", () => {
     expect(res.status).toBe(403);
   });
 
+  it("refuses a rebound GET that sends no browser headers AT ALL", async () => {
+    // The one that matters, and the one an earlier draft let through (found in
+    // review). A same-origin `GET` omits `Origin`, and Fetch Metadata is
+    // appended only for a *potentially trustworthy* URL — which
+    // `http://rebind.evil.example` is not, because trustworthiness is judged on
+    // the URL's own host string rather than on what it resolves to. So the real
+    // browser request has neither marker and looks exactly like the session
+    // container's CLI below. The `Host` is the only thing telling them apart.
+    const res = await request(port, "/api/bootstrap", {
+      headers: { Host: `${REBOUND}:${port}` },
+    });
+    expect(res.status).toBe(403);
+  });
+
   it("refuses a rebound SSE stream", async () => {
     const res = await request(port, "/api/events", {
       headers: {
