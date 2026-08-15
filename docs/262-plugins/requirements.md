@@ -169,7 +169,9 @@ receipts below keep the original "tools" vocabulary of the early rounds.
     a plugin container can read. ShipIt supplies fetch credentials the same
     way for a plugin repository as for the project's own: through a credential
     helper scoped to that remote, for the life of the fetch. A credential a
-    user happens to type into a repository URL is not kept either.
+    user happens to type into a repository URL is not kept either. This
+    protects the user from a plugin that turns hostile; it does not make
+    declaring one a small decision (req 29).
 20. Every surfaced plugin service and companion CLI command has an
     unambiguous identity across the project and all declared plugin
     repositories. When two would collide — with each other or with the
@@ -188,7 +190,8 @@ receipts below keep the original "tools" vocabulary of the early rounds.
     be kept in sync. The instructions reach the agent the same way the
     project's own skills do, **whichever agent backend runs the session**
     (Claude, Codex, or a later one) — a plugin's skills are never tied to one
-    backend.
+    backend. Instructions the agent follows are the sharpest form of the
+    trust a declaration grants (req 29).
 23. A plugin repository declares the **credential names** its services and
     CLIs require for their own job (e.g. a third-party API key). Values come
     from the **consuming project's own secret store**, per repository — the
@@ -253,6 +256,23 @@ receipts below keep the original "tools" vocabulary of the early rounds.
     plugin in another project — already fetched. Reusing a cache never lets
     plugin code reach a fetch credential (req 19), and never lets one
     repository's cached content appear under another's name (req 15).
+29. **Declaring a plugin repository is a decision to trust it**, on the order
+    of adding a dependency to the project — and ShipIt says so rather than
+    letting containment imply otherwise. What containment buys is a limit on
+    the damage a repository can do if it turns hostile or is compromised
+    upstream: it cannot read the credentials ShipIt uses to fetch
+    repositories, cannot reach the host or ShipIt's own controls, and cannot
+    write the project's repository (req 7). What containment cannot limit is
+    what a plugin **tells the agent to do**: its agent instructions are
+    instructions the agent follows (req 22), its companion CLIs' output is
+    material the agent reads and may act on (req 17), and the pages its
+    services serve are pages the user's browser loads (req 21). A project
+    that declares a plugin it has not read is in the position of a project
+    that installs a dependency it has not read. ShipIt makes that decision
+    visible and revocable — the declaration is in the project's own file, the
+    repository and the exact commit being run are always shown (req 19), and
+    removing the declaration removes everything it brought — and it does not
+    claim to make an untrusted plugin safe to declare.
 
 ## Out of scope (v1)
 
@@ -310,7 +330,14 @@ doc review of 2026-08-12, as do req 22's backend-independence sentence and
 requirement 26 (plugin settings) from its third round, the req 23 credential
 scope reduction from its fourth, and req 24's informational host declaration
 from its fifth. Requirement 27 (self-use for plugin development) restates the
-user's follow-up of 2026-08-12 during the design phase.
+user's follow-up of 2026-08-12 during the design phase. Requirement 28
+(reusing the dependency store) comes from the user's review of 2026-08-14.
+Requirement 29 (the trust model) comes from the user's question of
+2026-08-15 — *"Can we even contain a plugin? If the plugin cli is
+compromised, the agent may call in it container and give it all access"* —
+and from the answer that followed: the plugin's code is contained, its
+influence on the agent is not, and the documents said the first without
+ever saying the second.
 
 ## Open questions
 

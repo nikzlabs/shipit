@@ -21,6 +21,30 @@ user-directed revisions (repos+use syntax; the right-rail Plugins tab).
 A plugin crosses one edge: a **plugin repository** exports it; a **consuming
 project** declares it. Each side owns one block in its own `shipit.yaml`.
 
+### The trust model, stated first because everything below reads differently without it (req 29)
+
+The mechanisms in this document contain a plugin's **code**. They do not
+contain its **influence on the agent**, and no mechanism could — a materialized
+skill is instructions the agent follows (req 22), a companion CLI's stdout is
+material the agent reads and may act on (req 17), and a plugin service serves
+pages the user's browser loads (req 21). Those three are the feature, not a
+leak.
+
+So read every containment decision below as bounding the **blast radius** of a
+repository that turns hostile or is compromised upstream — no fetch credential,
+no host reach, no write to the project's repository — and never as making an
+unread plugin safe to declare. Declaring one is a trust decision on the order of
+adding a dependency. This was written down (2026-08-15) after a design
+discussion found that the documents asserted the containment and never stated
+its limit, which let a reader infer a stronger guarantee than the design offers.
+
+Two consequences that are easy to get wrong in a later slice: a defect in the
+containment (planning#370, planning#371) is worth fixing on the blast-radius
+argument alone, even though a declared plugin is trusted; and a proposal to
+"sandbox" skills or CLI output is a category error — the answer there is the
+same one that applies to any ingested content, which is that the agent treats
+it as data rather than as instructions.
+
 ### 1a. Consumer side — `plugins:` (req 11): declared repos + per-plugin use
 
 Two sub-blocks (user decision, 2026-08-12, superseding both earlier shapes):
