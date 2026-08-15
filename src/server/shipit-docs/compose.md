@@ -380,12 +380,14 @@ ShipIt refused this project's compose file, so none of its services are defined:
 
   Service `web`: contained services must declare a numeric, non-root `user:` …
 
-Edit docker-compose.yml to satisfy that rule — see /shipit-docs/compose.md.
+Edit the compose file `shipit.yaml` declares to satisfy that rule — see /shipit-docs/compose.md.
 ```
 
 Do not add a second compose file in response — the one that exists needs the
-named line changed. A file ShipIt could not parse at all is reported the same
-way, without a fix instruction, because there is none to give.
+named line changed, and it is whatever path `compose.file` in `shipit.yaml`
+points at, not necessarily `docker-compose.yml`. A file ShipIt could not parse
+at all is reported the same way, without a fix instruction, because there is
+none to give.
 
 `--json` and `GET /api/sessions/:id/services` carry the same thing as
 `failure: { kind: "refused" | "malformed", message }` beside `services`.

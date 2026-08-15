@@ -1245,6 +1245,12 @@ export class ServiceManager extends EventEmitter {
 
     const composePath = path.join(this.workspaceDir, this.composeConfig.file);
 
+    // planning#382 — "there is no project file" is itself an answer about the
+    // project file, and the only one that arrives without a parse. Placed after
+    // the network preparation above so a throw there leaves the last real
+    // answer standing rather than erasing it (review finding).
+    if (this.noProjectCompose) this._projectComposeFailure = null;
+
     // docs/262 — a project may declare plugins and no stack of its own (req 5:
     // one declaration). There is then no project compose file to parse at all,
     // declared or otherwise, and the plugin services below are the whole stack.
@@ -1715,6 +1721,13 @@ export class ServiceManager extends EventEmitter {
     this.composeConfig = next;
     this.noProjectCompose = noProjectCompose;
     this.compose.setComposeFile(next.file, noProjectCompose);
+    // planning#382 — the recorded failure describes the file we are no longer
+    // reading, or the security interpretation we are no longer reading it
+    // under. Dropped HERE rather than left for the reconcile the caller queues
+    // asynchronously afterwards: that gap is an observable window in which the
+    // service list quotes a rule against a file the project has stopped
+    // declaring. Review finding.
+    this._projectComposeFailure = null;
     return true;
   }
 
@@ -1753,12 +1766,15 @@ export class ServiceManager extends EventEmitter {
     this._started = false;
     this._startupComplete = false;
     this.startError = null;
-    // planning#382 — cleared for the same reason `startError` is, and for one
-    // more: `start()` only re-answers this when there IS a project file to
-    // parse, so a session whose `compose:` block has just been removed
-    // (`noProjectCompose`) would otherwise keep reporting the old file's
-    // refusal against a stack that no longer has one.
-    this._projectComposeFailure = null;
+    // planning#382 — deliberately NOT cleared here, unlike `startError`. This
+    // field is only ever written by an ANSWER about the file: a parse that
+    // threw, or one that succeeded. Clearing it optimistically at the top of a
+    // reconcile looks equivalent and is not, because `start()` can throw before
+    // it reaches the parse (`ensureSessionNetworkModeFn`) — the record would
+    // then be gone while the file is still refused, and the list would go back
+    // to reading as an empty project. `start()` clears it on the one path where
+    // no parse will happen at all (`noProjectCompose`), which is the case this
+    // was reaching for. Review finding.
     await this.start();
   }
 
@@ -1846,11 +1862,21 @@ export class ServiceManager extends EventEmitter {
   async refreshSecretsStatus(): Promise<void> {
     let parsedServices: ComposeService[];
     try {
-      parsedServices = parseComposeFile(path.join(this.workspaceDir, this.composeConfig.file), {
-        dockerSocket: this.composeConfig.dockerSocket || this.opsSession,
-        containEgress: Boolean(this.containServicesFn),
-        trustedOpsProxy: this.opsSession,
-      });
+      // planning#382 — through `parseProjectCompose`, not a second inline copy
+      // of the same call with the same options. This runs when a plugin
+      // activation round settles, so it is a real read of the project's file
+      // and must move the record like every other one: an inline copy neither
+      // recorded a refusal it discovered NOR retracted one the user had since
+      // fixed, which is a stale reason nothing would clear. Review finding.
+      //
+      // `noProjectCompose` short-circuits for the reason `refreshSecrets` has
+      // it: a plugin-only project has no file to read, so parsing the path
+      // anyway would both fail and file a `malformed` reason against a project
+      // that declares no stack. Passing `[]` is safe here precisely because
+      // there are no project services whose env files it could sweep.
+      parsedServices = this.noProjectCompose
+        ? []
+        : this.parseProjectCompose(path.join(this.workspaceDir, this.composeConfig.file));
     } catch {
       return;
     }

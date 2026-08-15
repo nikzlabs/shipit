@@ -80,16 +80,6 @@ function toRow(value: unknown): ServiceRow {
 }
 
 /**
- * Render the service list as an aligned table.
- *
- * Deliberately one call, everything: the agent needs to know in a single read
- * what exists, what's up, and where to point `curl`/`browser_navigate` — so
- * `URL` (the agent-reachable containerIp:port, not the user's preview origin)
- * is a column rather than something to go derive. Per-service errors are
- * appended as their own lines instead of being dropped, since "why is this
- * service in `error`" is the whole reason the agent is looking.
- */
-/**
  * planning#382 — the project's compose file, said in the agent's words.
  *
  * `refused` gets the imperative, because ShipIt understood the file and
@@ -97,13 +87,18 @@ function toRow(value: unknown): ServiceRow {
  * it, so the only thing to add is where to make the edit. `malformed` gets no
  * fix instruction, because there is none to give — ShipIt could not understand
  * the file at all, and the message is where the parse gave up.
+ *
+ * Neither names `docker-compose.yml`. The path is whatever `shipit.yaml`
+ * declares (`deploy/compose.yml` is a real setup), and sending the agent to
+ * edit a file the project does not have is the same class of wrong answer this
+ * whole change is removing. Review finding.
  */
 function renderFailure(failure: ComposeFailureRow): string {
   if (failure.kind === "refused") {
     return (
       "ShipIt refused this project's compose file, so none of its services are defined:\n\n" +
       `  ${failure.message}\n\n` +
-      "Edit docker-compose.yml to satisfy that rule — see /shipit-docs/compose.md."
+      "Edit the compose file `shipit.yaml` declares to satisfy that rule — see /shipit-docs/compose.md."
     );
   }
   return (
@@ -113,14 +108,22 @@ function renderFailure(failure: ComposeFailureRow): string {
 }
 
 /**
- * Render the service list, or — when it is empty for a reason — that reason.
+ * Render the service list as an aligned table, or — when it is empty for a
+ * reason — that reason.
  *
- * The empty case is why `failure` is here at all. "No services defined. Add
- * them to docker-compose.yml" is correct for a project that declares no stack
- * and actively WRONG for one whose stack was refused: it sends the agent to
- * write a file that already exists, instead of to the line it has to change.
- * docs/263's containment rules refuse a stock compose file, so that wrong
- * answer was the first one a normal project got.
+ * Deliberately one call, everything: the agent needs to know in a single read
+ * what exists, what's up, and where to point `curl`/`browser_navigate` — so
+ * `URL` (the agent-reachable containerIp:port, not the user's preview origin)
+ * is a column rather than something to go derive. Per-service errors are
+ * appended as their own lines instead of being dropped, since "why is this
+ * service in `error`" is the whole reason the agent is looking.
+ *
+ * `failure` is the same argument one level up. "No services defined. Add them
+ * to docker-compose.yml" is correct for a project that declares no stack and
+ * actively WRONG for one whose stack was refused: it sends the agent to write a
+ * file that already exists, instead of to the line it has to change. docs/263's
+ * containment rules refuse a stock compose file, so that wrong answer was the
+ * first one a normal project got.
  */
 function renderTable(rows: ServiceRow[], failure?: ComposeFailureRow): string {
   if (rows.length === 0) {
