@@ -53,15 +53,46 @@ function get(sessionId: string): SessionPolicy {
   return p;
 }
 
-/** Has the user allowed this host for the session (matches suffix entries too)? */
-export function isEgressHostAllowed(sessionId: string, host: string): boolean {
+/**
+ * Has the user allowed this host for the session **in memory** (allow-once /
+ * add), ignoring the durable allowlist? The predicate form of
+ * {@link listEgressAllowedHosts}, and it answers for the same reason that
+ * enumerator exists: this set is what a launcher SNAPSHOTS into a container's
+ * static allowlist, so it is the layer that is true of a session no matter how
+ * that session's config was resolved.
+ *
+ * The durable-reconciled {@link isEgressHostAllowed} is NOT that, and a reader
+ * that wants "what does this session actually reach" must not use it —
+ * planning#380: docs/211's Network-off sandbox resolves to a lifeline config
+ * carrying no user hosts, so a durable entry exists while the session's own
+ * resolver and proxy were never launched with it. Composed with a caller's own
+ * `ResolvedEgressConfig` entries, this predicate is exactly the static host set
+ * `plugin-egress.ts` launches a plugin container with.
+ */
+export function isEgressAllowOnceHost(sessionId: string, host: string): boolean {
   const h = normalizeHost(host);
   const p = policies.get(sessionId);
-  if (p) {
-    for (const entry of p.allowed) {
-      if (hostMatchesEntry(h, entry)) return true;
-    }
+  if (!p) return false;
+  for (const entry of p.allowed) {
+    if (hostMatchesEntry(h, entry)) return true;
   }
+  return false;
+}
+
+/**
+ * Has the user allowed this host for the session (matches suffix entries too)?
+ *
+ * The **decision point's** answer: the in-memory allow-once set reconciled with
+ * the durable allowlist, so a host the user added durably is allowed even if
+ * this runner never carded it. That reconciliation is right for the Tier C
+ * decision endpoint — the proxy asking it was launched from the same resolved
+ * config those durable hosts feed — and wrong for a reader asking what a session
+ * reaches. Such a reader wants {@link isEgressAllowOnceHost} plus its own
+ * `ResolvedEgressConfig` entries (see that function's docstring).
+ */
+export function isEgressHostAllowed(sessionId: string, host: string): boolean {
+  const h = normalizeHost(host);
+  if (isEgressAllowOnceHost(sessionId, h)) return true;
   // Reconcile with the durable allowlist (global + per-session). A host the
   // user added durably is allowed even if this runner never carded it.
   if (durableSource) {
@@ -84,11 +115,18 @@ export function isEgressHostAllowed(sessionId: string, host: string): boolean {
  * container reach the same hosts the agent does.
  *
  * Deliberately NOT reconciled with {@link durableSource}, unlike
- * {@link isEgressHostAllowed}: the durable hosts are already in every caller's
- * `ResolvedEgressConfig.extraHosts` (`index.ts` composes both from
- * `egressAllowlistStore.effectiveHosts`), so folding them in here would be a
- * second copy that could drift. Config entries ∪ this set is therefore exactly
- * config entries ∪ `isEgressHostAllowed`.
+ * {@link isEgressHostAllowed}: for an ordinary session the durable hosts are
+ * already in the caller's `ResolvedEgressConfig.extraHosts` (`index.ts` composes
+ * both from `egressAllowlistStore.effectiveHosts`), so folding them in here
+ * would be a second copy that could drift.
+ *
+ * It once said that made "config entries ∪ this set" exactly "config entries ∪
+ * `isEgressHostAllowed`". That is false, and planning#380 is what it cost: a
+ * config can EXCLUDE the durable hosts rather than contain them — docs/211's
+ * Network-off sandbox resolves to a lifeline base with empty extras — so the
+ * two differ by exactly the entries such a session cannot reach. This set is
+ * the one that is true of any session; {@link isEgressAllowOnceHost} is its
+ * predicate form, and a reader must use that, not the reconciled one.
  */
 export function listEgressAllowedHosts(sessionId: string): string[] {
   return [...(policies.get(sessionId)?.allowed ?? [])];

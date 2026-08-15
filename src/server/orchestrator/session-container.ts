@@ -693,7 +693,17 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
    * fail-safe: a no-op when egress isn't enforced, the session has no running
    * container, or the session is in Open mode. Errors are swallowed by the reload
    * module — the durable add already persisted, so the worst case is "applies on
-   * next restart." Returns true if a reload was attempted.
+   * next restart."
+   *
+   * **Returns whether the AGENT's sidecars were relaunched** — the claim its one
+   * reporting caller makes (`computeEgressGrantOutcome`'s `reloaded`). It used to
+   * return `true` on the path where the container is not running and only the
+   * Compose services were refreshed (planning#380): that answer happened to be
+   * unused, because the grant outcome short-circuits on `startedContained ===
+   * null` first, but the next caller would have believed the docstring. The
+   * service refresh below is NOT part of this answer: it runs on every reaching
+   * path and reports failure by throwing, so folding it in would only blur which
+   * surface got the new list.
    */
   async reloadEgress(sessionId: string): Promise<boolean> {
     if (!egressEnforceEnabled()) return false;
@@ -705,7 +715,8 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
     const reloadResolver = egressDnsEnabled();
     const reloadProxy = egressProxyEnabled();
     if (!reloadResolver && !reloadProxy) return false;
-    if (sc?.status === "running" && sc.id) {
+    const agentRunning = sc?.status === "running" && Boolean(sc.id);
+    if (agentRunning && sc?.id) {
       await reloadEgressSidecars({
         docker: this.docker,
         agentContainerId: sc.id,
@@ -728,7 +739,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
       console.error(`[egress:${sessionId}] service allowlist refresh failed closed:`, error);
       throw error;
     }
-    return true;
+    return agentRunning;
   }
 
   /** Build the base label set for containers and networks. */

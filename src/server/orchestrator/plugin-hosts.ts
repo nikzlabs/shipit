@@ -29,6 +29,16 @@
  * store-derived answer reported hosts as reachable that that session cannot
  * reach at all. One seam, one answer.
  *
+ * That holds for the allow-once layer too, and planning#380 is the half that was
+ * missed: this predicate used to finish with `isEgressHostAllowed`, which is the
+ * DECISION point's answer and folds the durable allowlist back in. So the store
+ * re-entered through the layer meant to add only the user's live decisions, and
+ * the sandbox reported a durably-added host as allowed while its own resolver
+ * had never heard of it — the one direction that misleads, since the user's next
+ * move is to debug a plugin whose network really is the problem. The narrow
+ * {@link isEgressAllowOnceHost} is the layer that is true of any session: it is
+ * the set `plugin-egress.ts` snapshots into the container it launches.
+ *
  * Containment itself is asked separately, of `isEgressContained`: that is the
  * boot-effective truth (does this deployment enforce at all, and what did the
  * LIVE container start with), where the config's own `contained` is only the
@@ -71,7 +81,7 @@ import {
   normalizeHost,
   type ResolvedEgressConfig,
 } from "./egress-allowlist.js";
-import { isEgressHostAllowed } from "./egress-policy.js";
+import { isEgressAllowOnceHost } from "./egress-policy.js";
 import { declaredPluginHosts, type PluginHostDeclaration } from "../shared/plugin-hosts.js";
 import type { PluginExport, PluginReposConfig } from "../shared/plugin-repos.js";
 import { liveManifestReader } from "./plugin-credentials.js";
@@ -114,7 +124,12 @@ export interface PluginHostAllowanceInput {
    * the proxy is launched with. Absent in a runtime with no resolver wired.
    */
   config?: ResolvedEgressConfig | undefined;
-  /** Scopes the allow-once lookup; without it that layer is simply not counted. */
+  /**
+   * Scopes the allow-once lookup; without it that layer is simply not counted.
+   * It scopes the IN-MEMORY decisions only — never the durable allowlist, whose
+   * hosts reach this predicate through `config.extraHosts` or not at all
+   * (planning#380).
+   */
   sessionId?: string | undefined;
 }
 
@@ -146,6 +161,8 @@ export function pluginHostAllowance(
     const h = normalizeHost(host);
     if (!h) return false;
     if (entries.some((entry) => hostMatchesEntry(h, entry))) return true;
-    return sessionId ? isEgressHostAllowed(sessionId, h) : false;
+    // The in-memory allow-once set ONLY. `isEgressHostAllowed` would re-admit
+    // the durable store here and undo the composition above (planning#380).
+    return sessionId ? isEgressAllowOnceHost(sessionId, h) : false;
   };
 }
