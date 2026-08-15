@@ -19,6 +19,12 @@ import { notableFilesForBranch } from "./services/notable-files.js";
 import { emitResetEligible } from "./services/pre-turn-reset.js";
 import { AgentTurnAdmissionError, type SessionRunnerInterface } from "./session-runner.js";
 import { registerPreviewProxy } from "./preview-proxy.js";
+import {
+  corsHeadersFor,
+  isWebSocketOriginAllowed,
+  markPreviewProxyRegistered,
+  readOriginPolicyFromEnv,
+} from "./api-origin-guard.js";
 import { projectTurnSnapshotForWire } from "./transcript-projection.js";
 import type { ConnectionCtx, RunnerCtx, AppCtx } from "./ws-handlers/types.js";
 import * as terminalHandlers from "./ws-handlers/terminal-handlers.js";
@@ -62,20 +68,20 @@ export function registerSseEndpoint(app: FastifyInstance, rt: OrchestratorRuntim
     dockerForStats, limitsRegistry,
     processStartedAt, buildId, version, updateMode,
   } = rt;
+  const originPolicy = readOriginPolicyFromEnv();
 
   // SSE endpoint — long-lived HTTP response with text/event-stream
   app.get("/api/events", (request, reply) => {
-    const origin = request.headers.origin;
     const headers: Record<string, string> = {
       "Content-Type": "text/event-stream",
       "Cache-Control": "no-cache",
       Connection: "keep-alive",
+      // planning#370 — the allowlist, not a reflection of whatever arrived. This
+      // route writes its headers onto the RAW response, so the origin hook's
+      // work on `reply` never reaches the wire; it has to apply the same policy
+      // itself. (The hook still decides whether the request gets this far.)
+      ...corsHeadersFor(request.headers.origin, request.headers, originPolicy),
     };
-    // Allow cross-origin requests in dev (client on different port)
-    if (origin) {
-      headers["Access-Control-Allow-Origin"] = origin;
-      headers["Access-Control-Allow-Credentials"] = "true";
-    }
     reply.raw.writeHead(200, headers);
 
     const client = {
@@ -278,6 +284,7 @@ export async function registerRoutes(
     clientDir, logStore, buildId,
   } = rt;
   const { kickDiskEscalation } = monitors;
+  const wsOriginPolicy = readOriginPolicyFromEnv();
 
   // ---- HTTP API routes ----
   await registerApiRoutes(app, {
@@ -390,6 +397,12 @@ export async function registerRoutes(
   // ---- Preview reverse proxy (container mode) ----
   if (containerManager) {
     registerPreviewProxy(app, { containerManager, serviceManagers, runnerRegistry });
+    // planning#370 — from here on, a `{uuid}--{port}.…` Host is hijacked by the
+    // proxy above and cannot reach an API route, so the origin guard steps
+    // aside for it. Told to the guard at the registration site (rather than
+    // read from a module flag) so a runtime WITHOUT the proxy — local mode —
+    // keeps checking those hosts instead of being bypassed by a forged Host.
+    markPreviewProxyRegistered(app);
   }
 
   // ---- Test-only session creation endpoint ----
@@ -486,6 +499,25 @@ export async function registerRoutes(
     { websocket: true },
     (socket, request) => {
       const { sessionId } = request.params;
+      // planning#370 — CORS does not apply to WebSockets: the browser sends
+      // `Origin` on the handshake and then does whatever the server allows, so
+      // a CORS-only fix would leave the whole session channel open to any page
+      // the user loads. A handshake with no `Origin` is a non-browser client
+      // and passes.
+      //
+      // Today the global hook (`api-origin-guard.ts`) already refuses such an
+      // upgrade with a 403 — `onRequest` hooks run for the upgrade request too
+      // — so this is a backstop, not the only check. It is here because that is
+      // a property of how @fastify/websocket routes upgrades, not of anything
+      // this code states, and the cost of being wrong about it is the whole
+      // session channel.
+      if (!isWebSocketOriginAllowed(request.headers, wsOriginPolicy, {
+        requestIsSecure: (request.headers["x-forwarded-proto"] ?? "").toString().startsWith("https"),
+      })) {
+        console.warn(`[ws] refused upgrade from origin ${String(request.headers.origin)}`);
+        socket.close(4403, "Cross-origin connection refused");
+        return;
+      }
       const session = sessionManager.get(sessionId);
       if (!session) {
         socket.close(4004, "Session not found");
