@@ -104,14 +104,25 @@
  * and access control"); this closes the case that layer cannot see, because the
  * request comes from the user's own authenticated browser.
  *
- * **Not a defence against DNS rebinding.** An attacker-controlled name that
- * re-resolves to a loopback / tailnet instance produces a page whose `Origin`
- * and the request's `Host` are both that name, so the same-origin test passes.
- * Closing it needs an allowlist of the hostnames ShipIt answers to, which is in
- * direct tension with docs/254 — the whole point there is that one instance is
- * legitimately reached by loopback, a tailnet IP, a MagicDNS name and a domain
- * at once, with nothing to keep in sync. Left as a known residual rather than
- * half-solved; tracked as planning#378.
+ * **Not clickjacking protection.** Framing is a separate boundary with separate
+ * headers; tracked as planning#379.
+ *
+ * ## DNS rebinding (planning#378)
+ *
+ * The same-origin test above is computed from the request's own `Host`, so an
+ * attacker-controlled name that re-resolves to a loopback / tailnet instance
+ * passes it: the page's `Origin` and the request's `Host` are both that name.
+ * {@link isTrustedRequestHost} closes that by asking a question the origin
+ * comparison cannot — **is this a name ShipIt answers to at all?**
+ *
+ * The reason that is normally in tension with docs/254 ("one instance, many
+ * legitimate hostnames, nothing to configure") is that an allowlist is assumed
+ * to be a *list*. This one is a **proof obligation** instead: a name is ours
+ * when the attacker provably cannot serve a page from it, which is decidable
+ * from the name's own shape for every hostname docs/254 supports — an IP
+ * literal (loopback, LAN, tailnet), a reserved TLD, or a wildcard-DNS name that
+ * encodes its own address. No list, nothing to keep in sync, nothing to
+ * configure. See {@link isTrustedRequestHost} for the rule and its limits.
  */
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
@@ -252,13 +263,19 @@ function splitHostPort(hostHeader: string): { hostname: string; port: string | n
  * that compared `Origin` against `Host` alone would refuse every write and
  * every WebSocket from its own UI.
  *
- * Trusting `X-Forwarded-Host` does not hand anything to the attacker this guard
- * is about. A web page cannot set it: a custom request header makes the request
- * non-simple, so the browser preflights, and the preflight is refused on its
- * `Origin` — `Access-Control-Allow-Headers` never names it either. A caller
- * that CAN set arbitrary headers is not a browser, and a non-browser caller is
- * `api-container-guard.ts`'s business, which runs after this and judges by
- * source IP rather than by anything in the request.
+ * Trusting `X-Forwarded-Host` does not hand anything to the **cross-origin**
+ * attacker this comparison is about. Such a page cannot set it: a custom request
+ * header makes the request non-simple, so the browser preflights, and the
+ * preflight is refused on its `Origin` — `Access-Control-Allow-Headers` never
+ * names it either. A caller that CAN set arbitrary headers is not a browser, and
+ * a non-browser caller is `api-container-guard.ts`'s business, which runs after
+ * this and judges by source IP rather than by anything in the request.
+ *
+ * That argument covers this function and stops there. It does NOT extend to a
+ * **same-origin** request, where a page may set any non-forbidden header with no
+ * preflight at all — which is exactly the shape a rebound request has. So the
+ * rebinding check below reads `Host` and nothing else; see
+ * {@link isTrustedRequestHost}.
  */
 export function selfHostsFrom(headers: IncomingHttpHeaders): string[] {
   const out: string[] = [];
@@ -311,6 +328,161 @@ export function isAllowedOrigin(
   }
 
   return false;
+}
+
+// ---------------------------------------------------------------------------
+// DNS rebinding — is this a name ShipIt answers to?  (planning#378)
+// ---------------------------------------------------------------------------
+
+/**
+ * TLDs that are reserved by an RFC and therefore cannot be registered by
+ * anybody, plus Tailscale's own zone, whose names Tailscale alone issues.
+ * A page cannot be served from a name under these that the attacker controls.
+ */
+const UNREGISTRABLE_SUFFIXES = [
+  ".localhost", // RFC 6761 — resolvers must answer loopback and must NOT forward.
+  ".ts.net",    // Tailscale MagicDNS; records are Tailscale's to set, not a user's.
+];
+
+// `.local` is deliberately NOT in that list, though RFC 6762 reserves it just as
+// firmly. It is unregistrable in *public* DNS and answered by mDNS instead — and
+// any host on the link may answer, with any address it likes, at a TTL it
+// chooses. That is a rebinding primitive handed to an attacker on the same wifi:
+// advertise `x.local` as themselves, serve the page, re-advertise it as
+// 127.0.0.1. Reserved-ness is the wrong test; *who may answer* is the right one.
+//
+// What it costs is a user who set `SHIPIT_BIND_ADDR=0.0.0.0` and reaches their
+// laptop at `http://macbook.local:4123` from another device. They can declare
+// that name, and the refusal tells them to. The trade is deliberate: that user
+// has already accepted an unauthenticated port on their LAN, where an attacker
+// needs no rebinding at all — while the user this protects is on the loopback
+// default, has no use for a `.local` name, and would otherwise be reachable from
+// the same wifi through one.
+
+/**
+ * Wildcard DNS services whose names *encode* the address they resolve to, so
+ * resolution is pinned by the name itself. The local and VPS `tailscale.sh`
+ * scripts and docs/254 both route previews through sslip.io, and the install is
+ * browsed at one.
+ */
+const SELF_DESCRIBING_DNS_SUFFIXES = ["sslip.io", "nip.io"];
+
+/** An IPv4 dotted quad, or the bracketed form a `Host` header uses for IPv6. */
+function isIpLiteral(hostname: string): boolean {
+  if (hostname.startsWith("[") && hostname.endsWith("]")) return true;
+  return /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(hostname);
+}
+
+/**
+ * `1-2-3-4.sslip.io`, `1.2.3.4.sslip.io`, and any prefixed form of either
+ * (`{id}--{port}.100-83-12-47.sslip.io`) — the labels immediately left of the
+ * suffix must spell an address, which is what makes the name self-describing.
+ */
+function encodesItsOwnAddress(hostname: string): boolean {
+  for (const suffix of SELF_DESCRIBING_DNS_SUFFIXES) {
+    if (!hostname.endsWith(`.${suffix}`)) continue;
+    const labels = hostname.slice(0, -(suffix.length + 1)).split(".");
+    const last = labels[labels.length - 1] ?? "";
+    if (/^\d{1,3}-\d{1,3}-\d{1,3}-\d{1,3}$/.test(last)) return true;
+    if (labels.length >= 4 && labels.slice(-4).every((l) => /^\d{1,3}$/.test(l))) return true;
+  }
+  return false;
+}
+
+/**
+ * planning#378 — whether the `Host` a request arrived at is a name ShipIt can
+ * **prove** is its own.
+ *
+ * The one question the same-origin comparison cannot answer. Under DNS
+ * rebinding the attacker's page and the request agree perfectly on a name the
+ * attacker chose, so comparing them establishes nothing; what does is asking
+ * whether the name could have been theirs in the first place.
+ *
+ * A name passes when the attacker **cannot serve a page from it**, because that
+ * is the whole precondition of the attack. Five ways to know that, and every
+ * hostname docs/254 supports is covered by one of them with nothing configured:
+ *
+ *   1. **An IP literal.** Serving a page whose origin is `http://100.83.12.47`
+ *      means controlling 100.83.12.47, which is us. Covers loopback, a LAN
+ *      address and a tailnet address at once.
+ *   2. **A dotless name** (`shipit`, `localhost`). Not publicly registrable, so
+ *      it cannot be pointed anywhere from the internet. This is also the form a
+ *      reverse proxy leaves behind when it rewrites `Host` to a service name.
+ *   3. **A reserved suffix** — {@link UNREGISTRABLE_SUFFIXES}.
+ *   4. **A self-describing wildcard-DNS name** — {@link encodesItsOwnAddress}.
+ *      `100-83-12-47.sslip.io` resolves to 100.83.12.47 by construction, so
+ *      whoever serves it is whoever holds that address.
+ *   5. **A host the operator declared** in `SHIPIT_ALLOWED_ORIGINS`. The
+ *      existing escape hatch, and the *only* case that needs configuration:
+ *      a public domain in front of ShipIt.
+ *
+ * ## Why `Host` and only `Host`
+ *
+ * `X-Forwarded-Host` is deliberately NOT consulted here, even though
+ * {@link selfHostsFrom} trusts it for the origin comparison. The argument there
+ * — a page cannot set a custom header without a preflight — holds for a
+ * *cross-origin* page and fails for this one: a rebound request is **same
+ * origin**, so it may set any non-forbidden header with no preflight at all.
+ * `Host` is a forbidden header name, so it is the one value in the request the
+ * page cannot choose. Reading `X-Forwarded-Host` here would hand the attacker
+ * the answer. The same applies to `X-Forwarded-Proto`, which is why arriving
+ * "over TLS" is not one of the ways above: TLS genuinely does defeat rebinding
+ * (the handshake presents a certificate for a name that is not the attacker's),
+ * but we can only learn about it from a header the attacker can forge.
+ *
+ * Consequence, and the deliberate cost: a deployment reached at a **public
+ * domain** must name it in `SHIPIT_ALLOWED_ORIGINS`. ShipIt's own VPS installer
+ * writes it from the domain the operator already gave it, so the scripted paths
+ * need no action; a hand-rolled reverse proxy needs one line, and the refusal
+ * says so rather than failing silently.
+ *
+ * Known limits, both accepted: a machine whose DHCP supplies an attacker's
+ * search domain can make a dotless name resolve to them (they already own your
+ * resolver), and this reads `Host` per request rather than proving reachability,
+ * so it is a hostname test, not a network one.
+ */
+export function isTrustedRequestHost(
+  hostHeader: string | undefined,
+  policy: OriginPolicy,
+): boolean {
+  // No `Host` at all is not a browser — browsers always send one, and the
+  // callers that don't are the container guard's business.
+  if (!hostHeader) return true;
+  // `http://localhost./` is a legal spelling of the same name — the root-anchored
+  // form — and browsers pass the dot straight through into `Host`. Dropping it
+  // can only ever make a name MORE recognisable, and never widens the set: a
+  // name that resolves somewhere with the dot resolves to the same place without.
+  const { hostname: raw } = splitHostPort(hostHeader);
+  const hostname = raw.endsWith(".") ? raw.slice(0, -1) : raw;
+  if (!hostname) return true;
+  if (isIpLiteral(hostname)) return true;
+  if (!hostname.includes(".")) return true;
+  if (UNREGISTRABLE_SUFFIXES.some((s) => hostname.endsWith(s))) return true;
+  if (encodesItsOwnAddress(hostname)) return true;
+  // Declared by the operator. Compared on the hostname alone: the port is not
+  // part of "is this name ours", and an operator who wrote `https://x.example`
+  // has named `x.example` whatever port it is served on.
+  return policy.extraOrigins.some((e) => splitHostPort(e.host).hostname === hostname);
+}
+
+/**
+ * Whether the request carries the marks of a browser, which is the population
+ * this check applies to. A rebound request is same-origin, so it may send no
+ * `Origin` — but a browser that omits `Origin` still sends `Sec-Fetch-Site`.
+ *
+ * Everything with neither is a non-browser caller (a session container's CLI,
+ * curl, a health check) and is left alone, exactly as
+ * {@link isAllowedWithoutOrigin} leaves it alone: it cannot be the victim's
+ * browser, so it has nothing to gain from rebinding a name.
+ *
+ * The residual matches the one the module docstring already records for
+ * `Sec-Fetch-Site`: Safari before 16.4 sends neither header on a same-origin
+ * `GET`, so such a read is not host-checked. Every state-changing method sends
+ * `Origin` and is.
+ */
+export function isBrowserRequest(headers: IncomingHttpHeaders): boolean {
+  return typeof headers.origin === "string"
+    || headerValue(headers["sec-fetch-site"]) !== undefined;
 }
 
 const LOOPBACK_NAMES = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
@@ -401,7 +573,8 @@ export function corsHeadersFor(
   policy: OriginPolicy,
   opts: { requestIsSecure?: boolean } = {},
 ): Record<string, string> {
-  if (!origin || !isAllowedOrigin(origin, selfHostsFrom(headers), policy, opts)) return {};
+  if (!origin || !isTrustedRequestHost(headers.host, policy)) return {};
+  if (!isAllowedOrigin(origin, selfHostsFrom(headers), policy, opts)) return {};
   return {
     "Access-Control-Allow-Origin": origin,
     "Access-Control-Allow-Credentials": "true",
@@ -428,6 +601,9 @@ export function isWebSocketOriginAllowed(
 ): boolean {
   const origin = headers.origin;
   if (typeof origin !== "string" || origin === "") return true;
+  // planning#378 — a rebound handshake agrees with itself on the attacker's
+  // name, so the same-origin comparison below cannot see it.
+  if (!isTrustedRequestHost(headers.host, policy)) return false;
   return isAllowedOrigin(origin, selfHostsFrom(headers), policy, opts);
 }
 
@@ -494,6 +670,18 @@ export function registerOriginGuard(
     if (origin) reply.header("Vary", "Origin");
 
     if (isGuardedRequest(request.url, request.routeOptions?.url)) {
+      // planning#378 — asked first, because a rebound request passes every test
+      // below: it is same-origin with respect to a name the attacker chose.
+      if (isBrowserRequest(request.headers) && !isTrustedRequestHost(host, policy)) {
+        warnUntrustedHost(host);
+        void reply.code(403).send({
+          error: "Request host is not a hostname ShipIt answers to.",
+          host: host ?? null,
+          hint: "If this is your own domain, add it to SHIPIT_ALLOWED_ORIGINS "
+            + "(see SECURITY-MODEL.md, 'Network exposure and access control').",
+        });
+        return;
+      }
       const allowed = origin
         ? isAllowedOrigin(origin, selfHostsFrom(request.headers), policy, secure)
         : isAllowedWithoutOrigin(headerValue(request.headers["sec-fetch-site"]))
@@ -520,4 +708,25 @@ export function registerOriginGuard(
 
 function headerValue(raw: string | string[] | undefined): string | undefined {
   return Array.isArray(raw) ? raw[0] : raw;
+}
+
+/**
+ * Say it out loud, once per host. A hostname refusal is the one verdict here a
+ * *legitimate* operator can trigger — a public domain in front of ShipIt that
+ * nobody declared — and the symptom is a UI that loads and then fails every
+ * call, which looks like anything but a hostname policy. So the server log
+ * names the host and the variable. Deduplicated, and bounded, because the
+ * attack case is the one that repeats.
+ */
+const warnedHosts = new Set<string>();
+
+function warnUntrustedHost(host: string | undefined): void {
+  const key = host ?? "(no Host header)";
+  if (warnedHosts.has(key) || warnedHosts.size >= 100) return;
+  warnedHosts.add(key);
+  console.warn(
+    `[origin-guard] refused an API request whose Host is "${key}" — not a hostname `
+    + "ShipIt can prove is its own (planning#378, DNS-rebinding protection). If this is "
+    + "your own domain in front of ShipIt, set SHIPIT_ALLOWED_ORIGINS to include it.",
+  );
 }

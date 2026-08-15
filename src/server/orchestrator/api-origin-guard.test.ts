@@ -5,8 +5,10 @@ import {
   isAllowedOrigin,
   isAllowedCrossSiteNavigation,
   isAllowedWithoutOrigin,
+  isBrowserRequest,
   isGuardedRequest,
   isOriginGuardedPath,
+  isTrustedRequestHost,
   isWebSocketOriginAllowed,
   selfHostsFrom,
   markPreviewProxyRegistered,
@@ -17,6 +19,19 @@ import {
 } from "./api-origin-guard.js";
 
 const BARE: OriginPolicy = { extraOrigins: [], devClientPort: null };
+
+/**
+ * planning#378 — a deployment reached at a **public domain**, which is the one
+ * case that must declare itself: `shipit.example.com` is registrable, so
+ * nothing about the name proves it is ShipIt's rather than an attacker's.
+ * The tests below that use that hostname are about the *origin* boundary, so
+ * they run under the declaration and let the host boundary have its own
+ * describe block.
+ */
+const DECLARED: OriginPolicy = {
+  extraOrigins: [{ host: "shipit.example.com", protocol: null }],
+  devClientPort: null,
+};
 
 describe("parseOriginHost", () => {
   it("returns the lowercased host[:port]", () => {
@@ -253,7 +268,7 @@ describe("selfHostsFrom", () => {
 
 describe("corsHeadersFor", () => {
   it("reflects only an allowed origin", () => {
-    expect(corsHeadersFor("https://shipit.example.com", { host: "shipit.example.com" }, BARE))
+    expect(corsHeadersFor("https://shipit.example.com", { host: "shipit.example.com" }, DECLARED))
       .toMatchObject({
         "Access-Control-Allow-Origin": "https://shipit.example.com",
         "Access-Control-Allow-Credentials": "true",
@@ -274,14 +289,102 @@ describe("isWebSocketOriginAllowed", () => {
 
   it("allows the same origin and refuses a preview / foreign one", () => {
     expect(isWebSocketOriginAllowed(
-      { host: "shipit.example.com", origin: "https://shipit.example.com" }, BARE,
+      { host: "shipit.example.com", origin: "https://shipit.example.com" }, DECLARED,
     )).toBe(true);
     expect(isWebSocketOriginAllowed(
-      { host: "shipit.example.com", origin: "https://a--5173.shipit.example.com" }, BARE,
+      { host: "shipit.example.com", origin: "https://a--5173.shipit.example.com" }, DECLARED,
     )).toBe(false);
     expect(isWebSocketOriginAllowed(
-      { host: "shipit.example.com", origin: "https://evil.example" }, BARE,
+      { host: "shipit.example.com", origin: "https://evil.example" }, DECLARED,
     )).toBe(false);
+  });
+
+  it("refuses a rebound handshake, which agrees with itself on the attacker's name", () => {
+    expect(isWebSocketOriginAllowed(
+      { host: "rebind.evil.example:4123", origin: "http://rebind.evil.example:4123" }, BARE,
+    )).toBe(false);
+    // The `ws` npm client sends no Origin and is still a non-browser caller.
+    expect(isWebSocketOriginAllowed({ host: "rebind.evil.example:4123" }, BARE)).toBe(true);
+  });
+});
+
+describe("isTrustedRequestHost", () => {
+  it("trusts every hostname docs/254 supports, with nothing configured", () => {
+    // Loopback, a LAN address and a tailnet address — all IP literals, so
+    // serving a page from one of them means holding the address.
+    expect(isTrustedRequestHost("127.0.0.1:4123", BARE)).toBe(true);
+    expect(isTrustedRequestHost("192.168.1.20:4123", BARE)).toBe(true);
+    expect(isTrustedRequestHost("100.83.12.47:4123", BARE)).toBe(true);
+    expect(isTrustedRequestHost("[::1]:4123", BARE)).toBe(true);
+    // localhost and the RFC-reserved suffixes.
+    expect(isTrustedRequestHost("localhost:4123", BARE)).toBe(true);
+    expect(isTrustedRequestHost("shipit.localhost", BARE)).toBe(true);
+    // MagicDNS (deployment/vps/tailscale.sh serves the app on this).
+    expect(isTrustedRequestHost("shipit.tail1a2b3c.ts.net", BARE)).toBe(true);
+    // The sslip.io preview host, dashed and dotted, bare and prefixed.
+    expect(isTrustedRequestHost("100-83-12-47.sslip.io:4123", BARE)).toBe(true);
+    expect(isTrustedRequestHost("100.83.12.47.sslip.io:4123", BARE)).toBe(true);
+    expect(isTrustedRequestHost("a--5173.100-83-12-47.sslip.io:4123", BARE)).toBe(true);
+    expect(isTrustedRequestHost("100-83-12-47.nip.io", BARE)).toBe(true);
+    // A dotless name — what a reverse proxy leaves behind, and not registrable.
+    expect(isTrustedRequestHost("shipit:4123", BARE)).toBe(true);
+  });
+
+  it("refuses a registrable domain nobody declared — the rebinding shape", () => {
+    expect(isTrustedRequestHost("rebind.evil.example:4123", BARE)).toBe(false);
+    expect(isTrustedRequestHost("shipit.example.com", BARE)).toBe(false);
+    // A look-alike of a self-describing name: the labels left of the suffix
+    // must actually spell an address, or the name proves nothing.
+    expect(isTrustedRequestHost("evil.sslip.io.evil.example", BARE)).toBe(false);
+    expect(isTrustedRequestHost("notanip.sslip.io", BARE)).toBe(false);
+    // ...and of the reserved suffixes.
+    expect(isTrustedRequestHost("ts.net.evil.example", BARE)).toBe(false);
+    // `.local` is reserved but ANSWERED BY mDNS, so any host on the link can
+    // claim a name and re-point it. Reserved-ness is not the test.
+    expect(isTrustedRequestHost("macbook.local:4123", BARE)).toBe(false);
+    expect(isTrustedRequestHost("localhost.evil.example", BARE)).toBe(false);
+  });
+
+  it("trusts a public domain once the operator declares it", () => {
+    expect(isTrustedRequestHost("shipit.example.com", DECLARED)).toBe(true);
+    // The port is not part of "is this name ours".
+    expect(isTrustedRequestHost("shipit.example.com:8443", DECLARED)).toBe(true);
+    expect(isTrustedRequestHost("other.example.com", DECLARED)).toBe(false);
+  });
+
+  it("reads Host alone — X-Forwarded-Host is the attacker's to set here", () => {
+    // A rebound request is SAME ORIGIN, so it may set any non-forbidden header
+    // with no preflight. `Host` is forbidden; `X-Forwarded-Host` is not.
+    expect(isTrustedRequestHost("rebind.evil.example", BARE)).toBe(false);
+    const headers = { host: "rebind.evil.example", "x-forwarded-host": "localhost:4123" };
+    expect(corsHeadersFor("http://rebind.evil.example", headers, BARE)).toEqual({});
+  });
+
+  it("sees through spellings of the same name", () => {
+    // Uppercase, and the root-anchored trailing dot browsers pass through.
+    expect(isTrustedRequestHost("LocalHost:4123", BARE)).toBe(true);
+    expect(isTrustedRequestHost("localhost.:4123", BARE)).toBe(true);
+    expect(isTrustedRequestHost("100-83-12-47.sslip.io.", BARE)).toBe(true);
+    expect(isTrustedRequestHost("ShipIt.Example.COM", DECLARED)).toBe(true);
+    // Normalizing must not widen it: the dot does not launder a foreign name.
+    expect(isTrustedRequestHost("rebind.evil.example.", BARE)).toBe(false);
+  });
+
+  it("leaves a caller that sends no Host at all to the container guard", () => {
+    expect(isTrustedRequestHost(undefined, BARE)).toBe(true);
+    expect(isTrustedRequestHost("", BARE)).toBe(true);
+  });
+});
+
+describe("isBrowserRequest", () => {
+  it("is true for anything carrying Origin or Sec-Fetch-Site", () => {
+    expect(isBrowserRequest({ origin: "http://localhost:4123" })).toBe(true);
+    expect(isBrowserRequest({ "sec-fetch-site": "same-origin" })).toBe(true);
+  });
+
+  it("is false for a session container's CLI, which sends neither", () => {
+    expect(isBrowserRequest({ host: "shipit:4123" })).toBe(false);
+    expect(isBrowserRequest({})).toBe(false);
   });
 });
 
@@ -303,7 +406,7 @@ describe("registerOriginGuard — hook behavior", () => {
   }
 
   it("allows a same-origin call and reflects the origin", async () => {
-    const app = await makeApp();
+    const app = await makeApp(DECLARED);
     const res = await app.inject({
       method: "POST",
       url: "/api/egress/hosts",
@@ -353,7 +456,7 @@ describe("registerOriginGuard — hook behavior", () => {
   it("refuses a no-Origin sub-resource load from another site", async () => {
     // `<img src="https://shipit/api/...">` from a preview page: no Origin
     // header, but Sec-Fetch-Site gives it away.
-    const app = await makeApp();
+    const app = await makeApp(DECLARED);
     const res = await app.inject({
       method: "GET",
       url: "/api/bootstrap",
@@ -375,7 +478,7 @@ describe("registerOriginGuard — hook behavior", () => {
   });
 
   it("allows a same-origin GET, which sends no Origin header", async () => {
-    const app = await makeApp();
+    const app = await makeApp(DECLARED);
     const res = await app.inject({
       method: "GET",
       url: "/api/bootstrap",
@@ -403,7 +506,7 @@ describe("registerOriginGuard — hook behavior", () => {
     // The provider's redirect is a cross-site top-level navigation and is the
     // route's ONLY normal caller. The route authenticates the landing itself
     // (one-time `state`), which is why the exemption is safe.
-    const app = await makeApp();
+    const app = await makeApp(DECLARED);
     const res = await app.inject({
       method: "GET",
       url: "/api/mcp-servers/oauth/callback?code=C&state=S",
@@ -481,7 +584,7 @@ describe("registerOriginGuard — hook behavior", () => {
   });
 
   it("answers a preflight from an allowed origin with 204 + headers", async () => {
-    const app = await makeApp();
+    const app = await makeApp(DECLARED);
     const res = await app.inject({
       method: "OPTIONS",
       url: "/api/egress/hosts",
@@ -553,6 +656,84 @@ describe("registerOriginGuard — hook behavior", () => {
         origin: `https://${browserHost}`,
         "sec-fetch-site": "same-origin",
       },
+    });
+    expect(res.statusCode).toBe(200);
+    await app.close();
+  });
+
+  it("refuses a rebound request, which the origin comparison cannot see", async () => {
+    // planning#378 — the attacker's page is served from a name they control
+    // that has since re-resolved to this instance, so `Origin` and `Host` agree
+    // perfectly. Every same-origin test passes; the hostname is what gives it
+    // away.
+    const app = await makeApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/egress/hosts",
+      headers: {
+        host: "rebind.evil.example:4123",
+        origin: "http://rebind.evil.example:4123",
+        "sec-fetch-site": "same-origin",
+      },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.json().hint).toContain("SHIPIT_ALLOWED_ORIGINS");
+    expect(res.headers["access-control-allow-origin"]).toBeUndefined();
+    await app.close();
+  });
+
+  it("refuses a rebound GET, which carries no Origin at all", async () => {
+    // A same-origin GET omits `Origin`, and a rebound fetch IS same-origin —
+    // so `Sec-Fetch-Site` is the only thing marking it as a browser.
+    const app = await makeApp();
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/bootstrap",
+      headers: { host: "rebind.evil.example:4123", "sec-fetch-site": "same-origin" },
+    });
+    expect(res.statusCode).toBe(403);
+    await app.close();
+  });
+
+  it("does not let a rebound request forge its way past on X-Forwarded-Host", async () => {
+    // Same-origin requests need no preflight, so the page CAN set this header.
+    const app = await makeApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/egress/hosts",
+      headers: {
+        host: "rebind.evil.example:4123",
+        "x-forwarded-host": "localhost:4123",
+        "x-forwarded-proto": "https",
+        origin: "http://rebind.evil.example:4123",
+        "sec-fetch-site": "same-origin",
+      },
+    });
+    expect(res.statusCode).toBe(403);
+    await app.close();
+  });
+
+  it("leaves a non-browser caller at an unknown Host alone", async () => {
+    // A reverse proxy's health check, a script, a session container's CLI: no
+    // browser headers, nothing to gain from rebinding a name.
+    const app = await makeApp();
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/bootstrap",
+      headers: { host: "shipit.example.com" },
+    });
+    expect(res.statusCode).toBe(200);
+    await app.close();
+  });
+
+  it("leaves non-API paths reachable at any Host, so the UI still loads", async () => {
+    // The refusal must not turn into a blank page with no explanation: the SPA
+    // is served, its first API call 403s with the hint, and the server logs it.
+    const app = await makeApp();
+    const res = await app.inject({
+      method: "GET",
+      url: "/anything",
+      headers: { host: "shipit.example.com", "sec-fetch-site": "same-origin" },
     });
     expect(res.statusCode).toBe(200);
     await app.close();

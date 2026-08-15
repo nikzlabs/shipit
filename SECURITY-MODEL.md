@@ -369,11 +369,25 @@ but it means **you must not expose a raw ShipIt instance to the public internet.
   Requests with no `Origin` are not browser requests and are unaffected — that is how a session
   container's CLI reaches its sanctioned routes, and `api-container-guard.ts` (source IP) is
   what governs that direction. See `src/server/orchestrator/api-origin-guard.ts`. Still not
-  authentication: anyone who can reach the port can drive ShipIt from a non-browser client, and
-  it does not stop **DNS rebinding** — a name the attacker controls that re-resolves to a
-  loopback / tailnet instance yields a page whose origin *is* the host the request arrives at.
-  Closing that needs an allowlist of hostnames ShipIt answers to, which is in tension with
-  docs/254's "one instance, many legitimate hostnames"; it is a known residual (planning#378).
+  authentication: anyone who can reach the port can drive ShipIt from a non-browser client.
+- **DNS rebinding is refused too (planning#378).** The same-origin rule above is computed from
+  the request's own `Host`, so on its own it is walked around by a name the attacker controls
+  that re-resolves to a loopback / tailnet instance: the page's origin *is* the host the request
+  arrives at, and the two agree. A browser request is therefore also checked against a second
+  question — **is this a name ShipIt answers to at all?** That is normally an allowlist, in
+  tension with docs/254's "one instance, many legitimate hostnames"; here it is a proof instead
+  of a list. A name passes when the attacker provably cannot serve a page from it: an IP literal
+  (loopback, LAN, tailnet), a dotless name, `*.localhost` (which resolvers must answer as loopback
+  and must not forward) or Tailscale's `.ts.net`, or a wildcard-DNS name that encodes its own address
+  (`100-83-12-47.sslip.io`). Every hostname docs/254 supports is one of those, so loopback,
+  tailnet, MagicDNS and sslip.io installs still need **nothing configured**. Only `Host` is read,
+  never `X-Forwarded-Host` or `X-Forwarded-Proto`: a rebound request is *same-origin*, so it may
+  set any non-forbidden header with no preflight, and `Host` is the one value in it a page cannot
+  choose. Non-browser callers (no `Origin`, no `Sec-Fetch-Site`) are unaffected. **The one case
+  that must be declared is a public domain in front of ShipIt** — nothing about
+  `shipit.example.com` proves it is ours — so name it in `SHIPIT_ALLOWED_ORIGINS`;
+  `deployment/vps/cloudflare.sh` writes it from the domain you already gave it, and a refusal
+  logs the host and the variable rather than failing silently.
 - **The UI refuses to be framed (planning#379).** Every response ShipIt serves carries
   `Content-Security-Policy: frame-ancestors 'none'` and `X-Frame-Options: DENY`, so a hostile
   page cannot overlay ShipIt's own UI and trick the user into clicking a real control. This is a
