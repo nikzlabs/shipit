@@ -317,6 +317,30 @@ export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps):
         return { allow: false };
       }
 
+      // planning#380 — a session that admits no user hosts is answered here and
+      // goes no further. docs/211's Network-off sandbox is that session: its
+      // `network` capability "only ever tightens", its reach is the lifeline, and
+      // `sandboxLifelineEgressConfig` ignores the allowlist store outright.
+      //
+      // This was a hole, not merely an optimistic answer, because Tier A's ipset
+      // floor is session-INDEPENDENT: `EGRESS_TIER_A_RESOLVE_HOSTS` plus the
+      // GitHub CIDRs are admitted in every session, sandbox included. A workload
+      // that pins a co-tenant IP from that floor (`curl --resolve`, /etc/hosts)
+      // skips the resolver entirely and arrives here with the excluded host's
+      // SNI — and `allow` splices it. That is the CDN co-tenancy case Tier C
+      // exists to refuse.
+      //
+      // No card either, and that is the same rule rather than an omission: the
+      // card's whole content is a grant offer, a durable add is inert in this
+      // session (#2284's grant report already says so), and an allow-once would
+      // widen a session the user sealed. docs/211 places the "allow this host?"
+      // card under Network ON for exactly this reason. The user is not left
+      // guessing in practice — Tier B refuses the name on every ordinary attempt,
+      // so this path is only reached by deliberate IP-pinning.
+      if (deps.containerManager?.resolveEgress(sessionId)?.userHostsExcluded) {
+        return { allow: false };
+      }
+
       if (isEgressHostAllowed(sessionId, host)) {
         return { allow: true };
       }

@@ -12,7 +12,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { DatabaseManager } from "../shared/database.js";
 import { EgressAllowlistStore, EGRESS_GLOBAL_SCOPE } from "./egress-allowlist-store.js";
-import { allowEgressHost, _resetEgressPolicies } from "./egress-policy.js";
+import { allowEgressHost, _resetEgressPolicies, setEgressDurableSource } from "./egress-policy.js";
 import {
   composeEgressExtraHosts,
   sandboxLifelineBase,
@@ -68,10 +68,16 @@ describe("pluginHostAllowance", () => {
     db = new DatabaseManager(":memory:");
     store = new EgressAllowlistStore(db);
     _resetEgressPolicies();
+    // Exactly `index.ts`'s injection. Wired here because leaving it null is what
+    // let the sandbox case below pass while production still reported a durable
+    // host as allowed there (planning#380): the durable store reached the
+    // predicate through `isEgressHostAllowed`, which this fixture had disabled.
+    setEgressDurableSource((sessionId) => store.effectiveHosts(sessionId));
   });
 
   afterEach(() => {
     _resetEgressPolicies();
+    setEgressDurableSource(null);
     db.close();
   });
 
@@ -149,6 +155,52 @@ describe("pluginHostAllowance", () => {
     // The user's own allowlist entry does not reach a session whose extras are
     // emptied — the store would have said otherwise.
     expect(isAllowed("fal.run")).toBe(false);
+  });
+
+  // planning#380 — the same sandbox, reached through the OTHER door. The config
+  // composition above was already right; the allow-once fallback finished with
+  // the durable-reconciled `isEgressHostAllowed` and let the store back in, so
+  // the card said "allowed" for a host this session's resolver will never
+  // resolve — while the grant-outcome report on the same card said the opposite.
+  it("a durably-added host stays a gap in a Network-off sandbox", () => {
+    store.addHost(EGRESS_GLOBAL_SCOPE, "fal.run");
+    store.addHost("sess-a", "cdn.example.com");
+    const sandbox: ResolvedEgressConfig = {
+      contained: true,
+      extraHosts: [],
+      base: sandboxLifelineBase({ git: false }),
+      userHostsExcluded: true,
+    };
+    const isAllowed = pluginHostAllowance({ contained: true, config: sandbox, sessionId: "sess-a" });
+    expect(isAllowed("fal.run")).toBe(false);
+    expect(isAllowed("cdn.example.com")).toBe(false);
+    // An ordinary contained session carries the same durable hosts in its own
+    // resolved extras, so nothing is lost by refusing to read the store here.
+    expect(allowance()("fal.run")).toBe(true);
+    expect(allowance()("cdn.example.com")).toBe(true);
+  });
+
+  // The allow-once layer goes with it for such a session, which is the second
+  // review's correction and docs/211's own words: `network` off "only ever
+  // tightens", so a live decision may not widen it either. The card and the
+  // container agree because `pluginEgressPolicy` empties `allowOnceHosts` for the
+  // same config — otherwise a plugin container would be the one surface that
+  // reaches what the sealed session cannot.
+  it("does not count an allow-once decision in a Network-off sandbox", () => {
+    allowEgressHost("sess-a", "fal.run");
+    const isAllowed = pluginHostAllowance({
+      contained: true,
+      config: {
+        contained: true,
+        extraHosts: [],
+        base: sandboxLifelineBase({ git: false }),
+        userHostsExcluded: true,
+      },
+      sessionId: "sess-a",
+    });
+    expect(isAllowed("fal.run")).toBe(false);
+    // The lifeline itself is untouched — this narrows nothing else.
+    expect(isAllowed("api.anthropic.com")).toBe(true);
   });
 
   it("counts a host the user allowed on an inline card this session", () => {

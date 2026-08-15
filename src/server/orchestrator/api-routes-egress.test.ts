@@ -12,6 +12,8 @@ import Fastify, { type FastifyInstance } from "fastify";
 import { DatabaseManager } from "../shared/database.js";
 import { EgressAllowlistStore, EGRESS_GLOBAL_SCOPE } from "./egress-allowlist-store.js";
 import { registerEgressRoutes } from "./api-routes-egress.js";
+import { allowEgressHost, setEgressDurableSource, _resetEgressPolicies } from "./egress-policy.js";
+import type { ResolvedEgressConfig } from "./egress-allowlist.js";
 import type { ApiDeps } from "./api-routes.js";
 import type { CredentialStore } from "./credential-store.js";
 import type {
@@ -38,7 +40,9 @@ describe("egress settings routes", () => {
   // The session's RESOLVED egress config — the seam the Plugins card and the
   // plugin containers' enforcement read (planning#376). Absent = no resolver
   // wired, which must never render as a positive claim about reachability.
-  let resolvedEgress: Map<string, { contained: boolean; extraHosts: string[]; base?: string[] }>;
+  // Typed as the real shape rather than a hand-written subset, so a fixture can
+  // never describe a config the resolver could not produce (planning#380).
+  let resolvedEgress: Map<string, ResolvedEgressConfig>;
 
   beforeEach(async () => {
     db = new DatabaseManager(":memory:");
@@ -427,6 +431,139 @@ describe("egress settings routes", () => {
       const view = res.json<EgressSessionSettings>();
       expect(view.startedContained).toBeNull();
       expect(view.pendingRestart).toBe(false);
+    });
+  });
+
+  /**
+   * planning#380 — the Tier C decision endpoint, for a session whose own resolved
+   * config excludes the durable allowlist.
+   *
+   * This is not a display concern like the Plugins card: Tier A's ipset floor is
+   * session-independent, so a Network-off sandbox can still address every IP
+   * admitted for npm, PyPI or GitHub. A workload that pins a co-tenant IP reaches
+   * the proxy with the excluded host's SNI, and a durable `allow` here is the
+   * splice Tier C exists to refuse.
+   */
+  describe("GET /api/egress/decision — a session admitting no user hosts is answered here", () => {
+    const SANDBOX = {
+      contained: true,
+      extraHosts: [] as string[],
+      base: [".anthropic.com", "platform.claude.com"],
+      userHostsExcluded: true,
+    };
+    const ask = (host: string, session = "session-1") =>
+      app.inject({ method: "GET", url: `/api/egress/decision?host=${host}&session=${session}` });
+
+    beforeEach(() => {
+      _resetEgressPolicies();
+      // Exactly `index.ts`'s injection.
+      setEgressDurableSource((sessionId) => store.effectiveHosts(sessionId));
+      store.addHost(EGRESS_GLOBAL_SCOPE, "fal.run");
+    });
+    afterEach(() => {
+      _resetEgressPolicies();
+      setEgressDurableSource(null);
+    });
+
+    it("honours the durable allowlist for an ordinary contained session", async () => {
+      // Its own extras carry that host, so the live proxy asking about it is the
+      // instance-scope case the reconciliation was written for.
+      resolvedEgress.set("session-1", { contained: true, extraHosts: ["fal.run"] });
+      expect((await ask("fal.run")).json()).toEqual({ allow: true });
+    });
+
+    it("refuses it for a Network-off sandbox, whose policy admits no user hosts", async () => {
+      resolvedEgress.set("session-1", SANDBOX);
+      expect((await ask("fal.run")).json()).toEqual({ allow: false });
+      // Narrowed per session, not globally: an ordinary session carrying the same
+      // durable host in its own extras is unaffected. (The lifeline hosts are not
+      // asked about at all — the proxy queries this route only for a host outside
+      // the static allowlist it was launched with.)
+      resolvedEgress.set("session-2", { contained: true, extraHosts: ["fal.run"] });
+      expect((await ask("fal.run", "session-2")).json()).toEqual({ allow: true });
+    });
+
+    it("refuses a decision the user took in that session too — off only tightens", async () => {
+      // docs/211: `network` off is lifeline-only and "only ever tightens, never
+      // loosens", and the Tier C card belongs to Network ON. A live allow-once
+      // would re-widen a session the user sealed, and would survive into every
+      // plugin container the session launches.
+      resolvedEgress.set("session-1", SANDBOX);
+      allowEgressHost("session-1", "fal.run");
+      expect((await ask("fal.run")).json()).toEqual({ allow: false });
+      // The same decision in an ordinary contained session still works — this is
+      // a property of the session's policy, not a narrowing of allow-once.
+      resolvedEgress.set("session-2", { contained: true, extraHosts: [] });
+      allowEgressHost("session-2", "fal.run");
+      expect((await ask("fal.run", "session-2")).json()).toEqual({ allow: true });
+    });
+
+    it("falls back to the durable answer when no resolver is wired", async () => {
+      // "Not knowable" must not become a positive claim of exclusion — the same
+      // fail-open `excludedBySessionPolicy` takes for the grant report.
+      expect((await ask("fal.run")).json()).toEqual({ allow: true });
+    });
+  });
+
+  /**
+   * The card is a grant OFFER, so it belongs to the sessions that can grant. The
+   * pair of tests below is the whole rule: an ordinary session must keep carding
+   * (breaking that would kill the Tier C allow-once flow outright), and a session
+   * that admits no user hosts must not, because approving would either do nothing
+   * or re-widen a sealed sandbox.
+   */
+  describe("GET /api/egress/decision — the card follows what a grant could do", () => {
+    let emitted: unknown[];
+    let appended: unknown[];
+
+    beforeEach(async () => {
+      _resetEgressPolicies();
+      emitted = [];
+      appended = [];
+      await app.close();
+      app = Fastify();
+      store.addHost(EGRESS_GLOBAL_SCOPE, "fal.run");
+      setEgressDurableSource((sessionId) => store.effectiveHosts(sessionId));
+      await registerEgressRoutes(app, {
+        egressAllowlistStore: store,
+        credentialStore: stubCredentialStore,
+        egressEnforcementActive: true,
+        sseBroadcast: () => {},
+        containerManager: { reloadEgress, get: () => undefined, resolveEgress: (id: string) => resolvedEgress.get(id) },
+        runnerRegistry: {
+          get: () => ({ emitMessage: (m: unknown) => emitted.push(m), running: false }),
+        },
+        chatHistoryManager: { append: (_id: string, m: unknown) => appended.push(m) },
+      } as unknown as ApiDeps);
+      await app.ready();
+    });
+    afterEach(() => {
+      _resetEgressPolicies();
+      setEgressDurableSource(null);
+    });
+
+    const ask = (session: string) =>
+      app.inject({ method: "GET", url: `/api/egress/decision?host=new.example.com&session=${session}` });
+
+    it("cards an ordinary contained session's unknown host, and persists it", async () => {
+      resolvedEgress.set("session-1", { contained: true, extraHosts: [] });
+      expect((await ask("session-1")).json()).toEqual({ allow: false });
+      expect(emitted).toHaveLength(1);
+      expect(emitted[0]).toMatchObject({ type: "egress_prompt_card", host: "new.example.com" });
+      // A card the user may act on tomorrow is transcript content, not transport.
+      expect(appended).toHaveLength(1);
+    });
+
+    it("offers no card to a session that admits no user hosts", async () => {
+      resolvedEgress.set("session-1", {
+        contained: true,
+        extraHosts: [],
+        base: [".anthropic.com"],
+        userHostsExcluded: true,
+      });
+      expect((await ask("session-1")).json()).toEqual({ allow: false });
+      expect(emitted).toEqual([]);
+      expect(appended).toEqual([]);
     });
   });
 });

@@ -589,6 +589,31 @@ describe("SessionContainerManager", () => {
       process.env.SESSION_EGRESS_ENFORCE = "0";
       expect(managerWith(true).pluginEgressPolicy("test-session-1").contained).toBe(false);
     });
+
+    // planning#380 — docs/211's `network` capability "only ever tightens", and a
+    // plugin container must not be the one surface that widens a sealed sandbox.
+    // Its own decision route refuses to card such a session, so this set is empty
+    // in practice; it is emptied here so that stays true however it got filled.
+    it("snapshots no allow-once host for a session that admits none", () => {
+      allowEgressHost("test-session-1", "once.example");
+      const manager = new SessionContainerManager({
+        docker: mockDocker as any,
+        imageName: "shipit-session-worker:test",
+        networkName: "shipit-test",
+        skipHealthCheck: true,
+        resolveEgressConfig: () => ({
+          contained: true, base: ["lifeline.example"], extraHosts: [], userHostsExcluded: true,
+        }),
+      });
+
+      const policy = manager.pluginEgressPolicy("test-session-1");
+
+      expect(policy.contained).toBe(true);
+      expect(policy.allowOnceHosts).toEqual([]);
+      // The lifeline base still reaches the container — this narrows one layer.
+      expect(policy.config?.base).toEqual(["lifeline.example"]);
+      clearEgressPolicy("test-session-1");
+    });
   });
 
   // --- docs/172 Gap 5 (planning#99) — kernel-tier hardening (env-gated, default-OFF) ---

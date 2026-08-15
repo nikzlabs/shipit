@@ -29,6 +29,16 @@
  * store-derived answer reported hosts as reachable that that session cannot
  * reach at all. One seam, one answer.
  *
+ * That holds for the allow-once layer too, and planning#380 is the half that was
+ * missed: this predicate used to finish with `isEgressHostAllowed`, which is the
+ * DECISION point's answer and folds the durable allowlist back in. So the store
+ * re-entered through the layer meant to add only the user's live decisions, and
+ * the sandbox reported a durably-added host as allowed while its own resolver
+ * had never heard of it — the one direction that misleads, since the user's next
+ * move is to debug a plugin whose network really is the problem. The narrow
+ * {@link isEgressAllowOnceHost} is the layer that is true of any session: it is
+ * the set `plugin-egress.ts` snapshots into the container it launches.
+ *
  * Containment itself is asked separately, of `isEgressContained`: that is the
  * boot-effective truth (does this deployment enforce at all, and what did the
  * LIVE container start with), where the config's own `contained` is only the
@@ -59,6 +69,20 @@
  *    (its network is denied ShipIt's API by req 19), so the allow-once set is
  *    snapshotted into its static allowlist at launch. The next invocation has
  *    it. The agent's own proxy, which can ask, is unaffected.
+ *  - **A Tier A-only deployment (`SESSION_EGRESS_DNS=0`) permits far less than
+ *    this reports**, and the gap is not the sandbox's: with no resolver and no
+ *    proxy, `preparePluginNetns` installs the fixed Tier A IP floor alone, so a
+ *    host outside `EGRESS_TIER_A_RESOLVE_HOSTS` is blocked at the ipset however
+ *    the allowlist reads — for every session, not only a narrowed one. Left
+ *    reported-as-allowed deliberately: the honest row there is not "not yet
+ *    allowed" but "this deployment cannot allow it", and the card's grant button
+ *    could not close it. Naming the state properly is a surface of its own.
+ *  - **Identity rules are a within-host allowance this predicate does not
+ *    model.** `ResolvedEgressConfig.identityRules` reaches the plugin proxy
+ *    (`plugin-egress.ts`) and can refuse a tenant on a host whose ENTRY is
+ *    allowed. The question this predicate answers — is the host in the session's
+ *    allowlist — stays correctly answered; the tenant half is not a host fact,
+ *    and rendering it as one would report a gap no host grant can close.
  *
  * The card therefore says a host is not in the session's egress allowlist, not
  * that a call was blocked, and the instance-scope button says when it takes
@@ -71,7 +95,7 @@ import {
   normalizeHost,
   type ResolvedEgressConfig,
 } from "./egress-allowlist.js";
-import { isEgressHostAllowed } from "./egress-policy.js";
+import { isEgressAllowOnceHost } from "./egress-policy.js";
 import { declaredPluginHosts, type PluginHostDeclaration } from "../shared/plugin-hosts.js";
 import type { PluginExport, PluginReposConfig } from "../shared/plugin-repos.js";
 import { liveManifestReader } from "./plugin-credentials.js";
@@ -114,7 +138,12 @@ export interface PluginHostAllowanceInput {
    * the proxy is launched with. Absent in a runtime with no resolver wired.
    */
   config?: ResolvedEgressConfig | undefined;
-  /** Scopes the allow-once lookup; without it that layer is simply not counted. */
+  /**
+   * Scopes the allow-once lookup; without it that layer is simply not counted.
+   * It scopes the IN-MEMORY decisions only — never the durable allowlist, whose
+   * hosts reach this predicate through `config.extraHosts` or not at all
+   * (planning#380).
+   */
   sessionId?: string | undefined;
 }
 
@@ -142,10 +171,17 @@ export function pluginHostAllowance(
     ? [...(input.config.base ?? EGRESS_DEFAULT_ALLOWLIST), ...input.config.extraHosts].map(normalizeHost)
     : [];
 
+  // A session that admits no user hosts has no allow-once layer to count either:
+  // the decision route never cards it, and `pluginEgressPolicy` hands its plugin
+  // containers an empty allow-once set, so the entries above are the whole answer.
+  const allowOnce = sessionId && !input.config?.userHostsExcluded ? sessionId : null;
+
   return (host: string): boolean => {
     const h = normalizeHost(host);
     if (!h) return false;
     if (entries.some((entry) => hostMatchesEntry(h, entry))) return true;
-    return sessionId ? isEgressHostAllowed(sessionId, h) : false;
+    // The in-memory allow-once set ONLY. `isEgressHostAllowed` would re-admit
+    // the durable store here and undo the composition above (planning#380).
+    return allowOnce ? isEgressAllowOnceHost(allowOnce, h) : false;
   };
 }

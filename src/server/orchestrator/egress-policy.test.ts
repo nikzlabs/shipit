@@ -5,6 +5,7 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import {
   isEgressHostAllowed,
+  isEgressAllowOnceHost,
   allowEgressHost,
   shouldCardEgressHost,
   clearEgressPolicy,
@@ -67,13 +68,36 @@ describe("egress-policy", () => {
     });
 
     // Deliberately NOT reconciled with the durable source, unlike
-    // `isEgressHostAllowed`: every caller already carries the durable hosts in
-    // its `ResolvedEgressConfig.extraHosts`, and a second copy is a second thing
-    // to drift.
+    // `isEgressHostAllowed`: an ordinary caller already carries the durable
+    // hosts in its `ResolvedEgressConfig.extraHosts`, and a second copy is a
+    // second thing to drift — while a docs/211 sandbox's config carries none of
+    // them, which is why the two are not interchangeable (planning#380).
     it("leaves the durable source to the caller's own config", () => {
       setEgressDurableSource(() => [".durable.example.com"]);
       expect(listEgressAllowedHosts("s1")).toEqual([]);
       expect(isEgressHostAllowed("s1", "api.durable.example.com")).toBe(true);
+    });
+  });
+
+  /**
+   * planning#380 — the predicate half of the same rule, for a reader asking what
+   * a session actually reaches rather than what the decision point answers.
+   */
+  describe("isEgressAllowOnceHost", () => {
+    it("answers from the in-memory set alone, ignoring the durable source", () => {
+      setEgressDurableSource(() => [".durable.example.com"]);
+      allowEgressHost("s1", "once.example.com");
+      expect(isEgressAllowOnceHost("s1", "once.example.com")).toBe(true);
+      // The divergence that matters: a docs/211 sandbox holds this durable entry
+      // in the store and never in its own resolved config.
+      expect(isEgressAllowOnceHost("s1", "api.durable.example.com")).toBe(false);
+      expect(isEgressHostAllowed("s1", "api.durable.example.com")).toBe(true);
+    });
+
+    it("normalizes and scopes like the reconciled predicate", () => {
+      allowEgressHost("s1", ".Fal.Run.");
+      expect(isEgressAllowOnceHost("s1", "cdn.fal.run")).toBe(true);
+      expect(isEgressAllowOnceHost("s2", "cdn.fal.run")).toBe(false);
     });
   });
 

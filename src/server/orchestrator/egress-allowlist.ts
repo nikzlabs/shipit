@@ -481,6 +481,21 @@ export interface ResolvedEgressConfig {
    * "" / unset → no identity scoping (the host allowlist still applies).
    */
   identityRules?: string;
+  /**
+   * This session's policy admits **no user hosts at all** — today only docs/211's
+   * Network-off sandbox, whose `network` capability "only ever tightens, never
+   * loosens" and whose reach is the lifeline, full stop.
+   *
+   * A session-level fact, deliberately not a per-host one, because the two are
+   * opposite answers to the same shape (planning#380). "This host is not in the
+   * config" describes an ORDINARY session's brand-new host — precisely when the
+   * Tier C card should appear and a user grant will work. Here no grant can ever
+   * work: `sandboxLifelineEgressConfig` ignores the allowlist store, so a durable
+   * add is inert and an allow-once decision would widen a session the user sealed.
+   * A reader must ask *this*, not diff the host against the entries, or it will
+   * suppress the allow-once flow for every normal session.
+   */
+  userHostsExcluded?: boolean;
 }
 
 /**
@@ -506,6 +521,10 @@ export function sandboxLifelineEgressConfig(
     extraHosts: [],
     base: sandboxLifelineBase({ git: session.capabilities.git }),
     ...(identityRules ? { identityRules } : {}),
+    // Stated rather than left to be inferred from the empty extras: a reader
+    // cannot tell "this session drops user hosts" from "this user has added
+    // none", and planning#380 is what guessing cost.
+    userHostsExcluded: true,
   };
 }
 
