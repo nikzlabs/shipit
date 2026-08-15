@@ -232,6 +232,38 @@ export const JAVA_HOME = "/opt/java";
  */
 export const PNPM_STORE_CONTAINER_PATH = "/workspace/.pnpm-store";
 
+/**
+ * Create the shared pnpm store dir on the host and hand it to the session-worker
+ * UID, before any container mounts it (planning#2286).
+ *
+ * The chown is the load-bearing half. Every OTHER writable mount is handed over
+ * by the entrypoint's chown loop (`docker/session-worker/entrypoint.sh`), which
+ * stamps a `.shipit-uid-<uid>` sentinel into each one. The pnpm store is not in
+ * that loop and cannot be: it is mounted NESTED at `/workspace/.pnpm-store`, so
+ * it was only ever chowned as collateral of the `chown -R /workspace` walk — and
+ * that walk is sentinel-gated on the WORKSPACE, whose sentinel is stamped on the
+ * session's first boot. A store dir created after that boot (a container
+ * recreated post-idle, a warm session claimed into a pnpm repo, a runtime-key
+ * rotation, or a janitor sweep that reclaimed the previous store) is therefore
+ * never walked, and stays `root:root` from this very `mkdirSync`. The agent runs
+ * as `SHIPIT_SESSION_WORKER_UID` with no `sudo`, and the dir is a mount point it
+ * can neither chown nor remove, so `pnpm install` dead-ends on
+ * `EACCES: permission denied, mkdir '/workspace/.pnpm-store/…'` with no in-session
+ * recovery.
+ *
+ * Chowning here instead makes the handoff unconditional — it runs on every
+ * container create, so it also repairs a store left root-owned by an earlier
+ * build. Non-recursive on purpose: the store's CONTENTS are written only by pnpm
+ * inside the container (already worker-owned), and this runs on a hot path where
+ * a recursive walk of a multi-gigabyte content-addressed store would cost a
+ * visible slice of every pnpm session's startup. No-op when
+ * `SHIPIT_SESSION_WORKER_UID` is unset (legacy root runtime).
+ */
+export function ensurePnpmStoreDir(storeDir: string): void {
+  fs.mkdirSync(storeDir, { recursive: true });
+  chownToSessionWorker(storeDir);
+}
+
 export function buildMounts(
   config: ContainerConfig,
   workspaceVolume: string | undefined,
@@ -779,7 +811,7 @@ export async function createContainer(
 
   // docs/197 Part 2 — create the shared pnpm store dir lazily before mounting it.
   if (config.pnpmStoreDir) {
-    fs.mkdirSync(config.pnpmStoreDir, { recursive: true });
+    ensurePnpmStoreDir(config.pnpmStoreDir);
   }
 
   // docs/138 — create the session's private credentials subtree before the

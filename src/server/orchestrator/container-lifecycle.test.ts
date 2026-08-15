@@ -15,6 +15,7 @@ import {
   buildContainerConfig,
   destroyContainer,
   prepareOverlayDirs,
+  ensurePnpmStoreDir,
   selfHealWorkspaceOwnership,
   type LifecycleDeps,
   DEP_CACHE_CONTAINER_PATH,
@@ -961,6 +962,83 @@ describe("prepareOverlayDirs (planning#147)", () => {
     const spec = makeSpec(tmpDir, "cccc3333");
     delete spec.orchDirs; // mock/unit configs have no orchestrator state dir
     expect(() => prepareOverlayDirs([spec])).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ensurePnpmStoreDir (planning#2286)
+// ---------------------------------------------------------------------------
+
+describe("ensurePnpmStoreDir (planning#2286)", () => {
+  let tmpDir: string;
+  const prevUid = process.env.SHIPIT_SESSION_WORKER_UID;
+
+  afterEach(() => {
+    if (prevUid === undefined) delete process.env.SHIPIT_SESSION_WORKER_UID;
+    else process.env.SHIPIT_SESSION_WORKER_UID = prevUid;
+    if (tmpDir) fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("creates the store dir and its parents", () => {
+    delete process.env.SHIPIT_SESSION_WORKER_UID; // legacy root runtime
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pnpm-store-"));
+    const storeDir = path.join(tmpDir, "pnpm-store", "deadbeefcafe0001");
+    ensurePnpmStoreDir(storeDir);
+    expect(fs.existsSync(storeDir)).toBe(true);
+  });
+
+  // The whole point: the entrypoint's chown loop never reaches this mount (it is
+  // nested under /workspace and gated on the workspace's own sentinel), so the
+  // orchestrator must hand it over itself or the non-root agent EACCESes on
+  // `pnpm install`.
+  it("hands the store dir to the worker uid", () => {
+    const myUid = process.getuid?.();
+    if (myUid === undefined) return; // not POSIX — skip
+    process.env.SHIPIT_SESSION_WORKER_UID = String(myUid);
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pnpm-store-"));
+    const storeDir = path.join(tmpDir, "pnpm-store", "deadbeefcafe0002");
+    ensurePnpmStoreDir(storeDir);
+    expect(fs.lstatSync(storeDir).uid).toBe(myUid);
+  });
+
+  // The store is SHARED, so most creations find the dir already there — a
+  // create-only chown would leave every store that predates this fix root-owned.
+  it("re-chowns an existing store dir (repairs one left root-owned by an earlier build)", () => {
+    const myUid = process.getuid?.();
+    if (myUid === undefined) return; // not POSIX — skip
+    process.env.SHIPIT_SESSION_WORKER_UID = String(myUid);
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pnpm-store-"));
+    const storeDir = path.join(tmpDir, "pnpm-store", "deadbeefcafe0003");
+    fs.mkdirSync(storeDir, { recursive: true });
+    const spy = vi.spyOn(fs, "lchownSync");
+    ensurePnpmStoreDir(storeDir);
+    expect(spy).toHaveBeenCalledWith(storeDir, myUid, myUid);
+    spy.mockRestore();
+  });
+
+  // Non-recursive by design — this runs on the container-create hot path and the
+  // store's contents are written by pnpm inside the container (already worker-owned).
+  it("does not walk the store contents", () => {
+    const myUid = process.getuid?.();
+    if (myUid === undefined) return; // not POSIX — skip
+    process.env.SHIPIT_SESSION_WORKER_UID = String(myUid);
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pnpm-store-"));
+    const storeDir = path.join(tmpDir, "pnpm-store", "deadbeefcafe0004");
+    fs.mkdirSync(path.join(storeDir, "files", "00"), { recursive: true });
+    const spy = vi.spyOn(fs, "lchownSync");
+    ensurePnpmStoreDir(storeDir);
+    expect(spy).toHaveBeenCalledTimes(1);
+    spy.mockRestore();
+  });
+
+  it("chowns nothing when SHIPIT_SESSION_WORKER_UID is unset (legacy root runtime)", () => {
+    delete process.env.SHIPIT_SESSION_WORKER_UID;
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pnpm-store-"));
+    const storeDir = path.join(tmpDir, "pnpm-store", "deadbeefcafe0005");
+    const spy = vi.spyOn(fs, "lchownSync");
+    ensurePnpmStoreDir(storeDir);
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
   });
 });
 

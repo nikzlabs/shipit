@@ -147,6 +147,19 @@ skip and the store mount derive from one decision.
 - Reclaim: disk-janitor sweeps store dirs whose runtimeKey is no longer current and
   untouched stores past the cold-artifact retention (`DISK_JANITOR_COLD_ARTIFACT_RETENTION_DAYS`, planning#199).
   pnpm's own `store prune` can run as part of the sweep for the live store.
+- Ownership: the orchestrator chowns the store dir to `SHIPIT_SESSION_WORKER_UID`
+  when it creates it (`ensurePnpmStoreDir`, container-lifecycle.ts). This mount is the
+  one writable mount the entrypoint's chown loop cannot cover — it is nested at
+  `/workspace/.pnpm-store`, so it was only ever chowned as collateral of the
+  `chown -R /workspace` walk, which is sentinel-gated on the *workspace* and therefore
+  skipped on every boot after the session's first. A store dir created after that
+  boot (container recreated post-idle, warm session claimed into a pnpm repo,
+  runtime-key rotation, janitor sweep) stayed `root:root` and dead-ended `pnpm install`
+  on EACCES with no in-session recovery — the agent has no `sudo`, and a mount point
+  can be neither chowned nor removed from inside (planning#2286). The chown runs on
+  every container create, so it also repairs stores left root-owned by an earlier
+  build; it is non-recursive because the store's contents are written only by pnpm
+  inside the container, already worker-owned.
 - Known caveat (document in shipit-docs): in-place mutation of hardlinked store files
   (patch-package style) — pnpm's own ecosystem answer (copy-on-patch via
   `pnpm patch`) applies; the store is also integrity-checked by pnpm on link, so
