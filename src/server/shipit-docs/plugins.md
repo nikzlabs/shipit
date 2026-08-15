@@ -23,7 +23,24 @@ plugins:
     - plugin: requirements     # an export the repo's manifest declares
       from: tools
       alias: reqs              # optional local name (default: the plugin name)
+      overrides:               # everything the CONSUMER gets to decide
+        settings:
+          root: docs/specs     # a value for a setting the manifest declares
+        services:
+          api: { autostart: false, as: reqs-api }
+        commands:
+          reqs: { as: requirements }
 ```
+
+**`overrides` is the consumer's whole say**, and it is one level deeper than it
+looks like it should be. `settings`, `services` and `commands` go **under
+`overrides:`** — writing `settings:` directly on the `use` entry sets nothing,
+and ShipIt reports it on the Plugins card as an unknown key rather than failing.
+
+A setting's value is type-checked against the plugin's declared default, so a
+string setting cannot be given a number. A setting the consumer does not set
+takes the manifest's default; a setting with no default and no value is simply
+absent from the file.
 
 The plugin repository declares what it exports, in **its** `shipit.yaml`:
 
@@ -45,6 +62,10 @@ exports:
           description: Directory the plugin reads and writes
           default: docs
 ```
+
+A plugin reads its settings from the JSON file at `$SHIPIT_SETTINGS`, which
+ShipIt writes from the manifest's defaults merged with the consumer's
+`overrides.settings` above.
 
 Declaring a repository is a standing grant: ShipIt fetches and activates it
 with no prompt on every session. The Plugins tab always shows which repository,
