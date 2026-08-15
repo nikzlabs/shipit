@@ -306,6 +306,15 @@ describe("runPluginCommand — the container it builds", () => {
     const host = created.HostConfig as { Mounts: Mount[]; NetworkMode: string; CapDrop: string[] };
     expect(mountFor(host, "/plugin")?.Type).toBe("volume");
     expect(mountFor(host, "/project")).toMatchObject({ Type: "bind", Source: workspaceDir });
+    // reqs 7, 15 — a generation is read-only to everything that runs at
+    // runtime, and the answer does not depend on which surface asks: a plugin
+    // SERVICE attaches this very volume read-only (`plugin-compose.ts`). This
+    // mount was read-write until the two surfaces were reconciled, which let a
+    // command copy-up into the generation's layer and change the code its own
+    // services ran, for the rest of the session, under a SHIPIT_PLUGIN_COMMIT
+    // that no longer described it. `install` is the one writer, and it runs
+    // before publication.
+    expect(mountFor(host, "/plugin")?.ReadOnly).toBe(true);
     expect(mountFor(host, "/plugin-state")).toMatchObject({
       Type: "bind", Source: path.join(sessionDir, "plugin-data", "reqs", "state"),
     });
@@ -416,7 +425,9 @@ exports:
       Type: "volume",
       Source: "shipit-ws",
       // Read-WRITE: under `repo: self` the plugin is deliberately live and
-      // editable, which is req 27's whole point.
+      // editable, which is req 27's whole point — and it is the same tree this
+      // container already has read-write at `/project`, so the plugin service
+      // that mounts it gets the same rights (`plugin-compose.ts`).
       ReadOnly: false,
       VolumeOptions: { Subpath: `${rel}/workspace` },
     });

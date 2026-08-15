@@ -13,9 +13,13 @@
  * What it DOES hold is exactly the in-session usage contract:
  *
  *  - `/plugin` — the generation's overlay volume, the pristine checkout merged
- *    with its install output. Under `repo: self` (req 27) it is the session's
- *    own working tree instead, mounted read-write, because there the plugin is
- *    deliberately live and editable. The tracked case takes the **consumer
+ *    with its install output, mounted **read-only**: a generation is what req 15
+ *    says every surface of that repository corresponds to, and `install` — which
+ *    runs before the generation is published — is its one writer (req 7,
+ *    `plugin-compose.ts`'s `pluginTreeMount` states the whole rule). Under
+ *    `repo: self` (req 27) it is the session's own working tree instead, mounted
+ *    read-write, because there the plugin is deliberately live and editable and
+ *    the same tree is `/project` anyway. The tracked case takes the **consumer
  *    lease** (`plugin-leases.ts`, req 15) for the whole call, so a refresh
  *    landing mid-command cannot delete the checkout this container is running
  *    from — it is the same lease a plugin service takes, because both attach the
@@ -333,8 +337,9 @@ async function runHeldPluginCommand(
   }
 
   // The plugin's own tree. Tracked: the generation's overlay volume, so the CLI
-  // sees the SAME merged checkout+install-output the installer produced. Self:
-  // the working tree itself, live and writable — req 27's whole point.
+  // sees the SAME merged checkout+install-output the installer produced —
+  // read-ONLY, like the service that attaches the same volume. Self: the working
+  // tree itself, live and writable — req 27's whole point.
   const mounts: MountSpec[] = [];
   // Collected rather than thrown, so ONE refusal names the first untranslatable
   // path instead of an exception reaching the agent as an opaque 500. See
@@ -371,7 +376,15 @@ async function runHeldPluginCommand(
       // A NAMED volume, so it needs no path translation: the daemon already
       // knows where it is, which is exactly why install could get away with one
       // bind and this cannot.
-      mounts.push({ Type: "volume", Source: volume, Target: CONTAINER_PLUGIN_DIR, ReadOnly: false });
+      //
+      // **Read-only, and this is the surface that used to get it wrong.** The
+      // volume is the SAME one the plugin's services attach, and they have had it
+      // read-only from the start; a writable CLI mount meant a command could
+      // copy-up into the generation's layer and change the code its own services
+      // were running, for the rest of the session, under a
+      // `SHIPIT_PLUGIN_COMMIT` that no longer described it (reqs 7, 15). Only
+      // `install` writes a generation, and it does so before publication.
+      mounts.push({ Type: "volume", Source: volume, Target: CONTAINER_PLUGIN_DIR, ReadOnly: true });
     } catch (err) {
       return refuse(`\`${repoName}\`'s plugin tree could not be prepared: ${message(err)}`);
     }

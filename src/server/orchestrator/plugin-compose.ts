@@ -1001,10 +1001,25 @@ function rewriteFragmentVolume(
  * relative to the repository root resolves identically in a CLI invocation and
  * in a service (`plugin-contract.ts`).
  *
- * **Read-only**, unlike the install container's view of the same volume. Req 7
- * keeps the plugin source unmodified, and a service's writable surfaces are
- * `/plugin-state` (session-scoped state, req 18) and `/project` (durable output,
- * reqs 18, 21) — not the layer its CLI is running out of.
+ * **`/plugin` carries the writability of what it IS, and the answer never
+ * depends on which surface asks** (plan §1b; the rule the two surfaces once
+ * disagreed about, real-instance-e2e Run 1).
+ *
+ * - **A tracked generation is read-only**, on services and on companion-CLI
+ *   invocations alike (`plugin-cli-run.ts` mounts the same volume the same way),
+ *   and unlike the install container's view of it. Req 7 keeps the plugin source
+ *   unmodified, and req 15 says the files, the CLIs and the services of a
+ *   repository all correspond to ONE commit — a surface that can copy-up into the
+ *   generation's layer breaks that for every other surface in the session, with
+ *   `SHIPIT_PLUGIN_COMMIT` still naming the commit it no longer is. `install` is
+ *   the one writer, and it runs before the generation is published. A plugin's
+ *   writable surfaces at runtime are `/plugin-state` (session-scoped state,
+ *   req 18) and `/project` (durable output, reqs 18, 21).
+ * - **A `repo: self` working tree is read-write**, for the same reason: req 27
+ *   makes the checkout this session's own tree, editable and live, and binds req
+ *   7 to consuming projects only. Read-only here would not be containment at
+ *   all — it is the very same tree this function's caller mounts read-write at
+ *   `/project`, so it only forbids naming it `/plugin`.
  *
  * The volume root IS the repository root, so no subpath: the fragment's own
  * relative mounts are the ones anchored at the fragment's directory.
@@ -1019,17 +1034,16 @@ function pluginTreeMount(
   }
   // A `repo: self` import has no generation: its tree is the session's own
   // working copy, which is also its `/project` (req 27 — the plugin repository
-  // IS the consuming project there).
+  // IS the consuming project there), and it is mounted with the same rights.
   if (volume) {
     return {
       type: "volume",
       source: WORKSPACE_VOLUME_ALIAS,
       target: CONTAINER_PLUGIN_DIR,
       volume: { subpath: volume.workspaceSubpath },
-      read_only: true,
     };
   }
-  return { type: "bind", source: opts.workspaceDir, target: CONTAINER_PLUGIN_DIR, read_only: true };
+  return { type: "bind", source: opts.workspaceDir, target: CONTAINER_PLUGIN_DIR };
 }
 
 /** req 21 — the consuming project's workspace, at the one path every plugin can name. */

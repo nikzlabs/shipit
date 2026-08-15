@@ -274,6 +274,20 @@ Two things this run added that the steps above did not ask for:
   surface-dependent answer to "can plugin code write its own checkout" should be
   a stated rule, not an artefact. Worth a look before anyone relies on either.
 
+  **Settled 2026-08-15** — the rule is now stated in plan §2 ("`/plugin` is
+  writable exactly when it is the project") and enforced on both surfaces. Two
+  things about *this* measurement, for the next run:
+  - The service's `writable: false` was never ShipIt's answer. The probe's
+    `PLUGIN_ROOT` on that surface is `/app`, i.e. the fragment's own
+    `- .:/app:ro`, which the plugin author wrote. ShipIt's `/plugin` mount is a
+    separate one the report does not observe there.
+  - The CLI's `writable: true` was correct for this run (self fixture, so the
+    checkout is the working tree) but would have been true in **consumer** mode
+    too, which was the actual defect: it let a command write the generation's
+    layer and change the code its own services ran. That mount is now read-only,
+    so a consumer-fixture run must report `checkout.writable: false` from the
+    CLI and a self run must still report `true`.
+
 Neither is a failure; both are recorded so the next run can compare.
 
 **A third, raised by the user on seeing the grant work: you cannot tell that it

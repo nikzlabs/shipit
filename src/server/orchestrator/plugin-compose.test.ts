@@ -469,7 +469,13 @@ describe("buildPluginComposeServices", () => {
     });
   });
 
-  it("mounts the plugin's own tree read-only at /plugin, the path every surface uses", () => {
+  // req 27 — a `repo: self` tree is read-WRITE, and the same rights the caller
+  // gives `/project`, because it is literally the same directory. Read-only
+  // there forbids nothing (the plugin writes it through `/project` instead) and
+  // contradicts "the plugin is editable"; it also made the answer to "can plugin
+  // code write its checkout" depend on which surface asked, which is the
+  // inconsistency this rule settles.
+  it("mounts the plugin's own tree at /plugin, read-write for a self import", () => {
     const { services } = collect(SELF_USE);
     const volumes = build(services).services[0].definition.volumes as Record<string, unknown>[];
     // A `cli:` entrypoint is declared relative to the repository ROOT, so this
@@ -478,6 +484,27 @@ describe("buildPluginComposeServices", () => {
     expect(volumes).toContainEqual({
       type: "bind",
       source: workspaceDir,
+      target: "/plugin",
+    });
+  });
+
+  // reqs 7, 15 — the other half of the same rule, and the one the companion-CLI
+  // surface had to be brought into line with (`plugin-cli-run.test.ts`): a
+  // generation is read-only to everything that runs at runtime. Its one writer is
+  // `install`, before the generation is published.
+  it("mounts a tracked generation's tree read-only at /plugin", () => {
+    const { services } = collect(SELF_USE);
+    const tracked = { ...services[0], self: false, commit: "abc123" };
+    const built = buildPluginComposeServices([tracked], {
+      sessionDir,
+      workspaceDir,
+      pluginVolumes: new Map([["mine", "shipit-x_plugin-mine"]]),
+      publishedPorts: new Map(),
+    });
+    const volumes = built.services[0].definition.volumes as Record<string, unknown>[];
+    expect(volumes).toContainEqual({
+      type: "volume",
+      source: "shipit-x_plugin-mine",
       target: "/plugin",
       read_only: true,
     });
@@ -582,7 +609,6 @@ describe("buildPluginComposeServices", () => {
       source: "shipit-workspace",
       target: "/plugin",
       volume: { subpath: "sessions/abc/workspace" },
-      read_only: true,
     });
   });
 

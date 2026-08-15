@@ -64,6 +64,14 @@ refresh, and reach nobody.
 The path follows the live generation. When a plugin repository is refreshed
 mid-session, `/plugins/<name>` points at the new commit with no restart.
 
+**The plugin's own code cannot write it either**, and for the same reason. A
+plugin's CLIs and services see that checkout at `/plugin` in their own
+containers, merged with the plugin's writable layer, and that view is read-only
+on both — so what the Plugins tab says is live is what every surface of that
+repository is running. The one writer is the plugin's `install`, which runs
+before a commit goes live. A plugin's writable surfaces are its state directory
+and this project's workspace, never its own source.
+
 ## Plugin code does not run in your container
 
 Everything a plugin *ships* — its `install`, its CLIs, its services — runs in a
@@ -193,9 +201,11 @@ session's own working tree.** So:
 - There is no separate `/plugins/<name>`; the files are your workspace, where
   you are already editing them. The plugin's own code still sees itself at
   `/plugin`, exactly as it does in a consuming project.
-- The read-only rule above does not apply here. Editing the plugin IS the point,
-  and an edit is live: the next command you run and the next service start read
-  the working tree.
+- The read-only rule above does not apply here — to you or to the plugin's own
+  code. Editing the plugin IS the point, and an edit is live: the next command
+  you run and the next service start read the working tree. `/plugin` is
+  writable in the plugin's CLI and service containers too, because it is the
+  same working tree they already have at `/project`.
 - There is no commit and no generation, so `SHIPIT_PLUGIN_COMMIT` is unset —
   which is how a plugin can tell "being developed in its own repository" from
   "running at a tracked commit".

@@ -450,6 +450,46 @@ instead of a repeat.
   `/plugins/<name>`. That is the whole reason it stays browsable and
   refresh-follows-instantly, and it is enough: nothing the agent itself runs
   needs the merged tree.
+
+  **`/plugin` is writable exactly when it is the project** (settled 2026-08-15,
+  after the real-instance run found the two surfaces disagreeing — see
+  `real-instance-e2e.md`, Run 1). The rule is one sentence because the answer
+  must not depend on which surface asks; both halves already follow from reqs 7,
+  15 and 27, so nothing new is required:
+
+  | What `/plugin` is | Companion CLI | Service | `install` |
+  |---|---|---|---|
+  | A tracked **generation** (overlay volume) | read-only | read-only | **read-write** — the one writer, and it runs *before* publication |
+  | A **`repo: self`** working tree | read-write | read-write | does not run (req 27) |
+
+  For a generation, read-only is req 7 (the source stays unmodified; the writable
+  location a plugin gets is `/plugin-state`, and its durable output is `/project`)
+  and req 15 (the files, the CLIs and the services of a repository all correspond
+  to ONE commit). A runtime surface that can write the merged view copies up into
+  the generation's upper layer, so it changes the code *every other surface in
+  that session* then runs, for the life of the generation, while
+  `SHIPIT_PLUGIN_COMMIT` still names the commit it is no longer running — and, in
+  the words `plugins.md` already uses for the agent's own checkout, the edit
+  "applies to this one session, vanishes on the next refresh, and reaches
+  nobody". **The companion CLI mounted it read-write until this was settled**
+  (`plugin-cli-run.ts`); the service never did.
+
+  For a `repo: self` tree, read-write is req 27 ("the read-only rule binds only
+  consuming projects"), and read-only there would be a boundary in name only:
+  it is the same directory the same container has read-write at `/project`, so
+  forbidding the `/plugin` path forbids nothing and only makes self-use behave
+  unlike the mode it exists to rehearse. **The service mounted it read-only until
+  this was settled** (`plugin-compose.ts`).
+
+  What the rule does *not* rest on is overlayfs: writes through a merged mount
+  never reach the generation directory on disk, and a shared dependency base
+  (req 28) is stacked as a **lowerdir**, which the kernel makes read-only. So the
+  fix is about coherence within a session — one commit, one answer per path — not
+  about containment across sessions, which the layout already provides (a
+  generation lives under `<sessionDir>/state/plugins/…`, and the only trees
+  shared beyond a session are the dep-store bases, which no container mounts
+  writable, and the per-repository package download cache, which only `install`
+  writes).
 - **The consumer lease** (req 15) — **implemented** (`plugin-leases.ts`): a
   generation's checkout and writable layer are deleted only when nothing is
   running against them.
@@ -674,7 +714,9 @@ instead of a repeat.
   independently created overlay mounts and the CLI container asks for the same
   volume. `/plugin` is mounted **read-only** for a service: req 7 keeps the
   plugin source unmodified, and a service's writable surfaces are `/plugin-state`
-  and `/project`, not the layer its own CLI runs out of.
+  and `/project`, not the layer its own CLI runs out of. The full rule, which
+  binds the companion-CLI surface identically, is **"`/plugin` is writable
+  exactly when it is the project"** — see §2 below.
 
   **The consumer lease is what keeps a service's tree from disappearing under
   it** (`plugin-leases.ts`, req 15 — see §2 "The consumer lease" below). This
@@ -987,9 +1029,11 @@ instead of a repeat.
   and the declaration can change under it.
 
   **What the invocation container gets**: the generation's overlay volume at
-  `/plugin` (the same merged checkout+install-output the installer produced —
-  under `repo: self` the session's own working tree instead, live and writable
-  per req 27), the project workspace at `/project` and as the cwd, this
+  `/plugin`, read-only (the same merged checkout+install-output the installer
+  produced — under `repo: self` the session's own working tree instead, live and
+  writable per req 27; the rule both surfaces follow is stated under "`/plugin`
+  is writable exactly when it is the project" below), the project workspace at
+  `/project` and as the cwd, this
   import's state directory at `/plugin-state`, its validated settings file
   read-only at `/plugin-settings.json`, `SHIPIT_PROJECT_DIR` /
   `SHIPIT_PLUGIN_STATE` / `SHIPIT_SETTINGS` / `SHIPIT_PLUGIN_COMMIT` (the last

@@ -124,13 +124,19 @@ function checkState(surface, stateDirEnv) {
 }
 
 /**
- * Raw observation of this surface's own mount — NOT the self/consumer
- * discriminator. A consumer CLI runs through the plugin's writable layer
- * (plan §1b: install output must be visible), so its writes succeed there
- * too; and the compose fragment mounts the plugin read-only into the service
- * in both modes. Discriminate the fixtures via `mode` /
- * `env.SHIPIT_PLUGIN_COMMIT` instead. That layer writes never reach the
- * underlying checkout is a slice-2 guard test — unobservable from in here.
+ * Raw observation of this surface's own mount — still NOT the self/consumer
+ * discriminator (use `mode` / `env.SHIPIT_PLUGIN_COMMIT`), but since
+ * 2026-08-15 it is a direct check of the rule ShipIt now states: **`/plugin`
+ * is writable exactly when it is the project** (plan §2). So on the CLI
+ * surface, whose PLUGIN_ROOT is `/plugin`, a consumer generation reports
+ * `false` and a `repo: self` working tree reports `true`.
+ *
+ * On the SERVICE surface PLUGIN_ROOT is `/app` — this fragment's own
+ * `- .:/app:ro`, which the plugin author wrote and ShipIt only rewrites the
+ * source of. It therefore reports `false` in both modes and says nothing about
+ * ShipIt's `/plugin` mount. (An earlier revision of this comment read the two
+ * surfaces' disagreement as by-design; it was not, and the CLI half was the
+ * bug.)
  */
 function checkCheckoutWritable() {
   const probeFile = path.join(PLUGIN_ROOT, ".probe-write-test");
