@@ -1414,6 +1414,7 @@ describe("generateComposeOverride env_file injection", () => {
         alias: "artk",
         plugin: "palette",
         sourceName: "probe",
+        self: false,
       },
       pluginDefinition: {
         image: "node:22-alpine",
@@ -1765,6 +1766,89 @@ describe("generateComposeOverride — overlay dep-dir mounts (docs/183 Phase 5)"
     expect(atNodeModules).toEqual([
       { type: "volume", source: NM.volumeName, target: "/app/node_modules" },
     ]);
+  });
+
+  // docs/262 / nikzlabs/shipit#2298 — a plugin service's mounts are ShipIt's own,
+  // already rewritten onto the workspace volume with a subpath, so the
+  // relative-source matcher above never saw them and every dep dir reached a
+  // plugin as the empty mount point it is on the volume.
+  describe("plugin services (docs/262)", () => {
+    const WS = "sessions/abc/workspace";
+    const pluginService = (
+      volumes: unknown[],
+      self = true,
+    ): Parameters<typeof generateComposeOverride>[0][number] => ({
+      name: "probe",
+      origin: { kind: "plugin", repo: "tools", alias: "tools", plugin: "probe", sourceName: "probe", self },
+      pluginDefinition: { image: "node:22-alpine", volumes },
+    });
+    const projectMount = { type: "volume", source: "shipit-workspace", target: "/project", volume: { subpath: WS } };
+    const stateMount = {
+      type: "volume",
+      source: "shipit-workspace",
+      target: "/plugin-state",
+      volume: { subpath: "sessions/abc/plugin-data/tools/state" },
+    };
+
+    it("nests the overlay dep dir under both working-tree mounts of a `repo: self` plugin", () => {
+      const selfPluginMount = {
+        type: "volume",
+        source: "shipit-workspace",
+        target: "/plugin",
+        volume: { subpath: WS },
+      };
+      const doc = overrideDoc(generateComposeOverride(
+        [pluginService([selfPluginMount, projectMount])],
+        { ...baseOpts, workspaceSubpath: WS, overlayDepDirs: [NM] },
+      ));
+      const vols = doc.services.probe.volumes ?? [];
+      expect(vols).toContainEqual(projectMount); // the tree mounts survive
+      expect(vols).toContainEqual({ type: "volume", source: NM.volumeName, target: "/plugin/node_modules" });
+      expect(vols).toContainEqual({ type: "volume", source: NM.volumeName, target: "/project/node_modules" });
+      expect(doc.volumes?.[NM.volumeName]).toEqual({ name: NM.volumeName, external: true });
+    });
+
+    it("leaves the state dir alone — plugin-data/ is a sibling of workspace/, not a child", () => {
+      const vols = overrideDoc(generateComposeOverride(
+        [pluginService([stateMount])],
+        { ...baseOpts, workspaceSubpath: WS, overlayDepDirs: [NM] },
+      )).services.probe.volumes ?? [];
+      expect(vols.some((v) => isObj(v) && v.source === NM.volumeName)).toBe(false);
+    });
+
+    // Its dependencies are its own, and it starts with `dependsOnInstall: false`
+    // — so the project's `node_modules` would be a tree it could read while
+    // `agent.install` writes it. Exposing them to a consuming plugin is a
+    // separate decision that has to settle the gate first.
+    it("adds nothing for a TRACKED plugin, including at its /project mount", () => {
+      const generationMount = { type: "volume", source: "shipit-abc_plugin-tools", target: "/plugin", read_only: true };
+      const doc = overrideDoc(generateComposeOverride(
+        [pluginService([generationMount, projectMount], false)],
+        { ...baseOpts, workspaceSubpath: WS, overlayDepDirs: [NM] },
+      ));
+      const vols = doc.services.probe.volumes ?? [];
+      expect(vols.some((v) => isObj(v) && v.source === NM.volumeName)).toBe(false);
+      expect(doc.volumes?.[NM.volumeName]).toBeUndefined(); // unused → not declared
+    });
+
+    it("maps a fragment's own subdirectory mount and skips dep dirs outside it", () => {
+      const fragmentMount = {
+        type: "volume",
+        source: "shipit-workspace",
+        target: "/app",
+        volume: { subpath: `${WS}/packages/api` },
+      };
+      const vols = overrideDoc(generateComposeOverride(
+        [pluginService([fragmentMount])],
+        {
+          ...baseOpts,
+          workspaceSubpath: WS,
+          overlayDepDirs: [NM, { depDir: "packages/api/node_modules", volumeName: "vol-api" }],
+        },
+      )).services.probe.volumes ?? [];
+      expect(vols).toContainEqual({ type: "volume", source: "vol-api", target: "/app/node_modules" });
+      expect(vols.some((v) => isObj(v) && v.source === NM.volumeName)).toBe(false);
+    });
   });
 });
 

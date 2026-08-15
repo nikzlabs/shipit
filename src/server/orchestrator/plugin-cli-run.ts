@@ -161,6 +161,34 @@ export interface PluginCliDeps {
    * about daemon-path translation, so it is present whenever there is a store.
    */
   depStoreDir?: string;
+  /**
+   * docs/183 — this session's overlay dep-dir volumes, resolved at CALL time.
+   *
+   * They are what makes a mount of the working tree show the dependencies
+   * `agent.install` produced: on an overlay-backed session the clone's
+   * `node_modules` is an empty mount point and the content lives only in these
+   * volumes, which the agent container and the project's own compose services
+   * attach. An invocation container attached neither, so `/project` — and,
+   * under `repo: self`, `/plugin` with it — held an empty directory where the
+   * plugin's own dependencies should be, and no entry point could start
+   * (nikzlabs/shipit#2298).
+   *
+   * A thunk for the reason `egress` is one: a companion CLI can be invoked long
+   * after the session opened, and the volumes are created with the agent
+   * container. Absent in dev, in local mode and in tests — all places where
+   * there is no overlay and nothing to nest.
+   *
+   * **It re-derives from `shipit.yaml`; it does not read back what the agent
+   * container actually mounted** — nothing exposes that, and the creation-time
+   * specs are not kept anywhere a later call can reach. So editing
+   * `agent.dep-dirs` mid-session makes this answer and the container's mounts
+   * disagree until the container is recreated (an edit to `dep-dirs` takes
+   * effect next session by design — docs/183). Re-deriving is still the better
+   * of the two: it CONVERGES on the container's next recreate, where a value
+   * frozen once per session would stay wrong for good. Reviewed and accepted
+   * rather than overlooked (independent review, this branch).
+   */
+  overlayDepDirs?: () => Promise<readonly { depDir: string; volumeName: string }[]>;
   timeoutMs?: number;
   /**
    * docs/262 req 24 — this session's egress posture, read at CALL time.
@@ -352,9 +380,16 @@ async function runHeldPluginCommand(
       mountErrors.push(message(err));
     }
   };
+  // Where the session's overlay dep dirs are nested below, and it is empty for a
+  // tracked import — see {@link PluginCliDeps.overlayDepDirs} and the same rule
+  // stated for services in `compose-generator.ts`.
+  const workspaceTreeTargets: string[] = [];
   let commit: string | null = null;
   if (!pinned) {
     addSessionMount(deps.workspaceDir, CONTAINER_PLUGIN_DIR, false);
+    // req 27 — under `repo: self` the working tree is BOTH of these, and the
+    // dependencies the plugin's own entry point loads are the project's.
+    workspaceTreeTargets.push(CONTAINER_PLUGIN_DIR, CONTAINER_PROJECT_DIR);
   } else {
     commit = pinned.commit;
     try {
@@ -415,6 +450,36 @@ async function runHeldPluginCommand(
     // would hand the plugin a directory it can write, and settings a plugin can
     // rewrite were never validated.
     addSessionMount(hostSettings, CONTAINER_PLUGIN_SETTINGS_FILE, true);
+  }
+  // docs/183 — nest this session's overlay dep dirs under the working-tree
+  // mounts, so `/plugin` and `/project` hold the dependencies the agent
+  // container sees rather than the empty mount point they are on the volume.
+  //
+  // A failure to resolve them degrades rather than refusing, and that is a
+  // deliberate choice with a cost: under `repo: self` it restores exactly the
+  // empty `node_modules` this exists to fix, so a plugin with dependencies fails
+  // on its own import instead of on a sentence from ShipIt. It is still the
+  // better of the two, because the alternative withholds every companion CLI in
+  // the session — including the many that have no dependencies at all — over a
+  // daemon hiccup. The log line below is the thing that makes the import error
+  // diagnosable, so it must stay.
+  try {
+    for (const { depDir, volumeName } of (await deps.overlayDepDirs?.()) ?? []) {
+      for (const target of workspaceTreeTargets) {
+        mounts.push({
+          Type: "volume",
+          Source: volumeName,
+          Target: path.posix.join(target, depDir),
+        });
+      }
+    }
+  } catch (err) {
+    console.warn(
+      `[plugins:${deps.sessionId}] could not resolve this session's overlay dep dirs for `
+      + `\`${req.command}\` — a plugin that loads a dependency out of the project's tree will `
+      + `fail to import it:`,
+      message(err),
+    );
   }
   if (mountErrors.length > 0) {
     return refuse(

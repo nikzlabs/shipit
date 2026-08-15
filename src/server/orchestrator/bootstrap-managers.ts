@@ -51,7 +51,7 @@ import { MergeWatchManager } from "./merge-watch.js";
 import { createSessionLoopDetector } from "./loop-detector.js";
 import { createRepoPrefetcher, type RepoPrefetcher } from "./repo-prefetch.js";
 import { pruneSessionVolumes } from "./disk-janitor.js";
-import { isOverlayEnabled } from "./overlay-session.js";
+import { isOverlayEligible, isOverlayEnabled } from "./overlay-session.js";
 import { publishDepDirOverlayBases, type DepDirPublishOutcome } from "./overlay-publish.js";
 import type { ContainerSessionRunner } from "./container-session-runner.js";
 import { ClaudeOAuthRefresher } from "./agents/claude/oauth-refresher.js";
@@ -752,6 +752,24 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
           // invoked long after the session opened, after a grant or a flip to
           // Open mode.
           egress: () => containerManager.pluginEgressPolicy(sessionId),
+          // docs/183 — the overlay dep dirs this session's agent container
+          // attaches, so `/project` (and `/plugin` under `repo: self`) hold the
+          // dependencies `agent.install` produced rather than the empty mount
+          // point they are on the volume. `requireProvisioned` for the reason
+          // the compose path passes it: the volumes are created with the agent
+          // container, and referencing one that does not exist fails the whole
+          // run rather than degrading.
+          overlayDepDirs: async () => {
+            const live = sessionManager.get(sessionId);
+            if (!live || !isOverlayEligible(live)) return [];
+            const specs = await containerManager.prepareOverlaySpecs({
+              sessionId,
+              workspaceDir,
+              session: live,
+              requireProvisioned: true,
+            });
+            return specs.map((s) => ({ depDir: s.depDir, volumeName: s.volumeName }));
+          },
           ...(containerManager.workspaceVolumeName
             ? { workspaceVolume: containerManager.workspaceVolumeName, stateRoot: stateDir }
             : {}),

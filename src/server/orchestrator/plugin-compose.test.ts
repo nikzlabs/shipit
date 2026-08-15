@@ -700,6 +700,23 @@ describe("buildPluginComposeServices", () => {
     expect(doc.services.probe.labels["shipit-plugin-settings"]).toBe(second);
   });
 
+  // nikzlabs/shipit#2298 — the gate follows the tree the service's own code runs
+  // out of, and the two cases are opposite. A tracked generation installed its
+  // own dependencies before it was published; a `repo: self` plugin has no
+  // install at all (req 27) and runs out of the tree `agent.install` writes.
+  it("gates a `repo: self` service on the project's install, and a tracked one not (docs/137, req 27)", () => {
+    const { services } = collect(SELF_USE);
+    expect(toComposeService(build(services).services[0]).dependsOnInstall).toBe(true);
+
+    const tracked = buildPluginComposeServices([{ ...services[0], self: false, commit: "abc123" }], {
+      sessionDir,
+      workspaceDir,
+      pluginVolumes: new Map([["mine", "shipit-x_plugin-mine"]]),
+      publishedPorts: new Map(),
+    });
+    expect(toComposeService(tracked.services[0]).dependsOnInstall).toBe(false);
+  });
+
   it("names the contract in the environment, without a commit for a self import (req 15)", () => {
     const { services } = collect(SELF_USE);
     const env = build(services).services[0].definition.environment as Record<string, string>;
@@ -786,6 +803,44 @@ describe("override emission", () => {
     expect(probe.user).toBe("1000:1000");
     // No host publishing — the preview proxy reaches it on the session network.
     expect(probe.ports).toBeUndefined();
+  });
+
+  /**
+   * The two modules end to end, because that is where this bug lived: each half
+   * was self-consistent and the mount they compose to was empty
+   * (nikzlabs/shipit#2298). `buildPluginComposeServices` emits the real mount
+   * shape — `escapeDollars` and all — and only the generator knows the session's
+   * overlay dep dirs, so neither file's own tests could have caught it.
+   */
+  it("nests the session's overlay dep dirs under a `repo: self` plugin's tree", () => {
+    const { services } = collect(SELF_USE);
+    const built = build(services, {
+      workspaceVolume: "shipit-ws",
+      workspaceSubpath: "sessions/s1/workspace",
+      sessionSubpath: "sessions/s1",
+    });
+    const yaml = generateComposeOverride([toComposeService(built.services[0])], {
+      sessionId: "session-1",
+      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      workspaceVolume: "shipit-ws",
+      workspaceSubpath: "sessions/s1/workspace",
+      overlayDepDirs: [{ depDir: "node_modules", volumeName: "shipit-s1_overlay-aaaa" }],
+    });
+    const doc = parseYaml(yaml) as {
+      services: Record<string, { volumes: Record<string, unknown>[] }>;
+      volumes: Record<string, unknown>;
+    };
+    const targets = doc.services.probe.volumes.map((v) => v.target);
+    expect(targets).toContain("/plugin/node_modules");
+    expect(targets).toContain("/project/node_modules");
+    // The fragment's own `.:/app` is `test-plugin/`, which no dep dir is under.
+    expect(targets).not.toContain("/app/node_modules");
+    // …and the state dir is a SIBLING of the clone, so it is never nested under.
+    expect(targets).not.toContain("/plugin-state/node_modules");
+    expect(doc.volumes["shipit-s1_overlay-aaaa"]).toEqual({
+      name: "shipit-s1_overlay-aaaa",
+      external: true,
+    });
   });
 
   it("declares the plugin's overlay volume external so compose only references it", () => {
