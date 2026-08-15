@@ -21,6 +21,30 @@ user-directed revisions (repos+use syntax; the right-rail Plugins tab).
 A plugin crosses one edge: a **plugin repository** exports it; a **consuming
 project** declares it. Each side owns one block in its own `shipit.yaml`.
 
+### The trust model, stated first because everything below reads differently without it (req 29)
+
+The mechanisms in this document contain a plugin's **code**. They do not
+contain its **influence on the agent**, and no mechanism could — a materialized
+skill is instructions the agent follows (req 22), a companion CLI's stdout is
+material the agent reads and may act on (req 17), and a plugin service serves
+pages the user's browser loads (req 21). Those three are the feature, not a
+leak.
+
+So read every containment decision below as bounding the **blast radius** of a
+repository that turns hostile or is compromised upstream — no fetch credential,
+no host reach, no write to the project's repository — and never as making an
+unread plugin safe to declare. Declaring one is a trust decision on the order of
+adding a dependency. This was written down (2026-08-15) after a design
+discussion found that the documents asserted the containment and never stated
+its limit, which let a reader infer a stronger guarantee than the design offers.
+
+Two consequences that are easy to get wrong in a later slice: a defect in the
+containment (planning#370, planning#371) is worth fixing on the blast-radius
+argument alone, even though a declared plugin is trusted; and a proposal to
+"sandbox" skills or CLI output is a category error — the answer there is the
+same one that applies to any ingested content, which is that the agent treats
+it as data rather than as instructions.
+
 ### 1a. Consumer side — `plugins:` (req 11): declared repos + per-plugin use
 
 Two sub-blocks (user decision, 2026-08-12, superseding both earlier shapes):
@@ -1985,20 +2009,36 @@ What runs where — the dogfood boundary:
   skips Docker entirely, so plugin services cannot start there. Covered in
   the inner loop: declaration parsing and phased validation, checkout and
   generation mechanics, the Plugins tab (gating, warn dot, cards, grants),
-  needs plumbing (`secrets_status` origin, egress rows), CLI wrapper
-  generation, skills materialization, and — via the consumer
-  fixture — checkout/generation mechanics and `shipit plugin refresh`
-  through the agent-ops relay (which local mode's explicit route allowlist
-  must admit; see §2).
+  needs plumbing (`secrets_status` origin, egress rows), and — via the
+  consumer fixture — checkout/generation mechanics and `shipit plugin
+  refresh` through the agent-ops relay (which local mode's explicit route
+  allowlist must admit; see §2).
 
-  **Corrected on implementation:** CLI *execution* is not in the inner loop.
-  Running a companion CLI needs the invocation container (§2), and local mode
-  has no Docker — so `shipit plugin exec` there answers "this runtime cannot run
-  plugin commands" rather than pretending. What the inner loop does exercise is
-  everything up to it: the plan, the collision refusals, the wrappers on PATH,
-  and the agent-ops relay reaching the route. Execution itself — the mounts, the
-  credential injection, the boundary — is covered by co-located tests over a
-  fake daemon and, end to end, on a real instance.
+  **Corrected twice on implementation, both times by driving it.**
+
+  First: CLI *execution* is not in the inner loop. Running a companion CLI
+  needs the invocation container (§2), and local mode has no Docker — so
+  `shipit plugin exec` there answers "this runtime cannot run plugin commands"
+  rather than pretending. Execution itself — the mounts, the credential
+  injection, the boundary — is covered by co-located tests over a fake daemon
+  and, end to end, on a real instance.
+
+  Second (2026-08-14, #2263): **CLI wrapper generation and skills
+  materialization are not in the inner loop either**, and the list above used
+  to claim they were. Both live in `session/plugin-runtime.ts`, which runs in
+  the session worker; `emitPluginReposUpdated` reaches them through
+  `container.preparePlugins?.()` — an *optional* property, optional precisely
+  because the local runner has none. So the dogfood exercises everything up to
+  the container hand-off and nothing past it. They were driven instead by
+  invoking `preparePlugins` directly against each inner session's real
+  workspace with temporary output directories, which is honest about what it
+  covers: real declarations, real generations, real manifests, no container.
+
+  One more measured limit, so the next reader does not re-derive it:
+  `Dockerfile.dogfood` installs the `gh` shim and deliberately **not** the
+  `shipit` one (planning#305). Admitting `plugin/refresh` in local mode's
+  route allowlist is therefore necessary but not sufficient — the verb is
+  drivable over HTTP, not through the shim, until that decision changes.
 - **Integration tests** (`isTestMode`, fakes — the existing pattern): the
   service path — compose-fragment merge, per-service startup and overrides,
   origin on `service_list`/`service_status`, collision activation failures.
