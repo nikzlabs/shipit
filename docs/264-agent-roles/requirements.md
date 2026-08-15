@@ -175,6 +175,10 @@ instead (req 2).
     description, standing instructions and the parameters it runs on; opening it gives one place
     to edit all of them together.
 
+18. **A role may be given any name the user types, and the only rule is that it is unique.** No
+    token shape, no case rule, no length limit beyond what storage needs. A name that needs
+    quoting where it is used is quoted, in the way a session title already is.
+
 
 ## Scope
 
@@ -255,6 +259,9 @@ _None._
 - 2026-08-14 — **What may a role be named?** **Chosen: any name the user types, with only
   uniqueness enforced.** The human agreed with the recommendation. No token shape, no case rule,
   no length rule beyond what storage needs; a name that needs quoting on a command line is quoted.
+  **Req 18**, added 2026-08-15: this receipt sat for a day with no numbered requirement to match
+  it, while the plan and checklist treated it as binding — so the contract an independent review
+  checks against did not contain it.
 
 - 2026-08-14 — **Do reqs 9, 13 and 14 stand?** **Chosen: yes, all three — with req 9 weakened to
   optional.** The human agreed to each, and of the description: *"agree, but optional."* So a role

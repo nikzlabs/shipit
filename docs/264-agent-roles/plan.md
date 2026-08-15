@@ -46,7 +46,7 @@ tuple.
 ## What a role is
 
 ```
-role   = { name, description, prompt?, params }
+role   = { name, description?, prompt?, params }
 params = { kind: "pinned", harnessId, serviceId, billingMode, modelId, reasoningEffort }
        | { kind: "auto" }                                    // the shipped reviewer — reqs 2, 7
 ```
@@ -154,33 +154,56 @@ caller overrode, and returns a frozen target:
    the role's unless overridden (req 6 — never derived), and the only question left is whether the
    result has a **usable route**.
 3. **`auto` params** (the reviewer) → a run with **no** override ranks exactly as it does today,
-   distance guarantee and all. A run **with** an override starts from that ranked tuple and
-   applies the override over it — and the guarantee is **off** for that run (req 10), which is what
-   makes this simple rather than a balancing act.
+   distance guarantee and all. A run **with** an override is where the care is needed, and two
+   facts about the existing code shape the rule:
 
-   The ranked tuple is the base for a plain reason: it is the only thing that supplies a *complete*
-   selection, so an override naming only a reasoning level or only a harness — which identifies no
-   target by itself — still resolves. The earlier objection to this ("half a ranked winner plus a
-   swapped field is a tuple nobody chose") was really an objection to *silently* losing req 2. Said
-   out loud, it stops being a problem: the caller chose the swapped field, and req 2 was never
-   promised for this run.
+   - **`selectReviewer` can fail.** When neither configured slot has a usable route it returns no
+     target at all (`reviewer-model.ts:492-500`, `pin_unavailable` / `nothing_eligible`).
+   - **The reviewer's "automatic" params are not all ShipIt's choices.** A slot may be
+     **user-pinned**, and `slotPlans` reads those pins directly (`reviewer-model.ts:317`), with a
+     pinned reasoning level preserved rather than derived (`reviewer-model.ts:540`). docs/261 req 8
+     is explicit that a pin wins.
 
-   **Where the override makes the base incoherent, the dependent fields move rather than the call
-   failing.** `--model X` where the ranked winner's service does not carry X re-derives the service,
-   billing mode and harness *around* X, because with the guarantee off there is nothing left to
-   preserve by staying. Overridden fields are fixed; fields the override invalidates are re-derived;
-   everything else stays as ranked. A refusal is reserved for an override that cannot be satisfied
-   at all — no service carries that model, or no installed harness can.
+   So the rule is **rank only when the call needs a base**, and never discard a pin that still
+   applies:
+
+   **(a) A complete override needs no base.** Where the caller names all five, resolve it directly
+   and do not call `selectReviewer` at all. Ranking first would let a failed ranking reject a
+   perfectly valid target the caller fully specified — which reqs 10 and 16 both forbid, since
+   "any subset" includes the whole set.
+
+   **(b) A partial override completes from the ranked winner**, because that is the only thing
+   that supplies the rest. An override naming only a reasoning level or only a harness identifies
+   no target by itself, and this is what lets it resolve. If the ranking fails here, the call fails
+   with the ranking's own reason — there is genuinely nothing to complete from, and inventing one
+   would be the substitution req 7 forbids.
+
+   **(c) A pin is a `(service, billing mode, model)` triple, not three independent fields.**
+   Overriding the **model** replaces the triple as a whole and re-resolves where that model lives —
+   not because pins may be discarded, but because a service pinned *for model M* says nothing about
+   model X, so there is no surviving decision to honour. Overriding the **level** or the **harness**
+   leaves the triple untouched. Nothing the user chose that still applies is ever dropped.
+
+   **(d) What remains incoherent is refused, naming the parameter** — an overridden harness that
+   cannot carry the pinned model, a model no service offers. Refusal here matches the pinned-role
+   case exactly, which is why there is no longer an asymmetry to justify.
+
+   The earlier objection to overlaying at all ("half a ranked winner plus a swapped field is a
+   tuple nobody chose") was really an objection to *silently* losing req 2. Said out loud, it stops
+   being a problem: the caller chose the swapped field, and req 2 was never promised for that run.
 
 Either way, freeze the target with the role's name on it.
 
-**The two cases treat an incoherent override differently, and the asymmetry is deliberate.** A
-`pinned` role is refused (naming the parameter); an `auto` reviewer re-derives around the override.
-The difference is what the un-named fields *mean*. In a pinned role the user chose every one of
-them, so moving one to accommodate an override would discard a decision they made — that is the
-substitution req 7 forbids. In the reviewer's case ShipIt was choosing them anyway, so re-deriving
-is the same act it was already performing, on a narrower input. Req 7's exemption for "the
-reviewer's params, which ShipIt resolves by design" is exactly what this rests on.
+**Both cases refuse an incoherent override, and that uniformity is the point.** An earlier draft
+had the reviewer *re-derive* around an override while a pinned role refused, justified by the claim
+that ShipIt chose the reviewer's dependent fields anyway. **That claim is false**: a reviewer slot
+may be user-pinned, and `slotPlans` reads those pins directly. Once the premise goes the asymmetry
+has nothing holding it up, and removing it makes the design smaller — one refusal rule, stated
+once, for every params kind.
+
+What survives from that draft is only rule (c) above, which is not re-derivation: overriding a
+model re-resolves where *that model* lives, because the pinned triple it replaces made no claim
+about it.
 
 **An overridden tuple is validated exactly as a stored one is** — the model exists on that service
 and billing mode, the harness can carry it, the level is one that harness declares. The same
@@ -249,7 +272,8 @@ store, one lookup, one refusal, one attribution path) and stops at the screen, w
 place for it to stop.
 
 **The reviewer is otherwise a role in every respect**: named the same way, started the same way
-(both shapes below), refused the same way, reported the same way. It is also the one role whose
+(both shapes below), reported the same way, and — since the asymmetry came out — refused the same
+way, an incoherent override naming its parameter whichever params kind it lands on. It is also the one role whose
 name is reserved and which cannot be renamed or deleted (req 2) — "review this" has to keep
 resolving to something, and reviewing has to work on an install nobody has configured.
 
@@ -301,10 +325,26 @@ partial is ordinary, the child's existing `--model X` is not a special case but 
 the *parent* base, and the refusal narrows to its real target — **a call with no base and only some
 parameters**, which is the one shape ShipIt would have to guess at.
 
-That reading matters because an earlier draft had "one set of refusals" sweeping up a form docs/261
-req 10 deliberately guarantees. The defect was in the rule, not in the child: a parent completes a
-partial call exactly as a role does, so treating the two alike is what unifies the commands instead
-of forcing one of them to lose something.
+**What "base" does and does not mean, because an earlier draft overreached here.** That draft said
+a parent completes a partial call *exactly* as a role does. It does not, and the difference is
+deliberate, documented, and must be preserved rather than unified away:
+
+- a bare `--model X` inherits **no** service or billing mode from the parent
+  (`child-sessions.ts:519` — `if (opts.model) return { model: opts.model }`), because a model id
+  names one backend's catalogue;
+- a harness switch **clears** the inherited selection entirely, for the same reason spelled out at
+  `child-sessions.ts:521-525`;
+- a reasoning level carries only where the target harness declares it, and is otherwise **dropped**
+  (`child-sessions.ts:599-604`) — a level is a depth that means the same thing on either backend,
+  a model id is not;
+- the stored child target stays **partially optional** (`child-sessions.ts:605`), so a parent does
+  not even always hold a complete tuple to copy.
+
+So "base plus overrides" is the **shape of the call**, not a claim that every base completes the
+same way. A role completes from its own params; a parent completes by the rules above, which are
+docs/261's and stay exactly as they are. Unifying the *surface* — same flags, same parser, same
+refusal rule — is what req 16 asks for; unifying the *completion semantics* would silently change
+child behaviour nobody asked to change.
 
 **What a role does to a child, once resolved.** A role decides what the child *starts as*, not
 what it is bound to (req 11). The resolution happens once, before any disk work; it seeds the new
@@ -467,8 +507,10 @@ The Reviewer tab becomes a **Roles** surface in two parts:
   cards exactly as docs/261 ships them. No rename, no delete, no single model control, because its
   params are two ranked candidates (req 2);
 - a **list of pinned roles**. Each row is a *summary* — the name, the description, and what it
-  resolves to — plus open, duplicate and delete. Editing happens in a **role editor** (req 17),
-  not in the row.
+  resolves to — plus open and delete. Editing happens in a **role editor** (req 17), not in the
+  row. (An earlier draft also offered *duplicate*. No requirement or receipt asks for it, and every
+  requirement is satisfied without it, so it is gone — a role takes one name and five choices to
+  make from scratch.)
 
 **The harness is required in the data; it is not necessarily a required interaction.** Today every
 model has exactly one harness that can run it, so the field is filled from that single valid
@@ -487,8 +529,8 @@ credentialed, and the level must be one that harness declares. The two validator
 catalogue and credential checks; only the harness step differs, and it differs in the direction
 that matters.
 
-Name validation is server-side too, and is only uniqueness (req 9's sibling decision): any name
-the user types is accepted.
+Name validation is server-side too, and is only uniqueness (req 18): any name the user types is
+accepted.
 
 **The role editor (req 17).** A role carries a name, a description, standing instructions and
 five parameters. That is more than a row of inline dropdowns can hold legibly, and standing
@@ -562,8 +604,8 @@ deliberately does not have.
 
 | # | Phase | Reqs | Done when |
 |---|---|---|---|
-| 1 | Storage + resolution: the role record, the params discriminator, the synthesized reviewer, `resolveRoleByName` with overrides, the harness-explicit validator | 1, 2, 6, 7, 8, 9, 10, 13 | A role resolves on the harness it names; an override substitutes over it and is validated as a stored tuple would be, refused by name when invalid; an override on the reviewer replaces the ranking rather than editing its winner; `getRoles()` yields the reviewer on an empty store |
-| 2 | Settings: role CRUD through the existing mutation surface, the Reviewer section above the pinned-role list, the **role editor**, the unresolved-role view | 1, 2, 5, 6, 8, 9, 17 | A role is created, edited and deleted from one editor rather than inline controls; the reviewer has no rename or delete and keeps its two slot cards; a role whose model or harness is gone still renders its stored tuple and stays editable |
+| 1 | Storage + resolution: the role record, the params discriminator, the synthesized reviewer, `resolveRoleByName` with overrides, the harness-explicit validator | 1, 2, 6, 7, 8, 9, 10, 13 | A role resolves on the harness it names; an override substitutes over it and is validated as a stored tuple would be, refused by name when invalid; a **complete** override on the reviewer resolves without ranking at all, a **partial** one completes from the ranked winner, and an incoherent one is refused exactly as on a pinned role; `getRoles()` yields the reviewer on an empty store |
+| 2 | Settings: role CRUD through the existing mutation surface, the Reviewer section above the pinned-role list, the **role editor**, the unresolved-role view | 1, 2, 5, 6, 8, 9, 17, 18 | A role is created, edited and deleted from one editor rather than inline controls; the reviewer has no rename or delete and keeps its two slot cards; a role whose model or harness is gone still renders its stored tuple and stays editable |
 | 3 | One API surface: the shared target resolver behind both commands, `--role NAME` plus override flags on each, both reads, the prompt join, the intent-to-role guidance | 3, 4, 10, 11, 12, 14, 16 | Both commands take a role, a role with overrides, and a complete target through **one** parser and validator; a child can finally name a service, billing mode and level; a child seeded from a role then routes like any other session, carrying an immutable `originRoleName`; the agent can list roles *and* available parameters |
 | 4 | Documentation split: the five-parameter shape leaves every injected surface and moves to the human-facing reference, with its guard inverted | 15 | Neither injected doc nor any system-prompt variant contains a complete five-flag command; the agent is told to name a role and relay an override rather than assemble a target; the repository override is documented for whoever writes repository policy, and the guard asserts it *there* |
 

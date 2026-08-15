@@ -12,8 +12,8 @@ The design is [`plan.md`](./plan.md); the contract is [`requirements.md`](./requ
 
 - [ ] Role record in the credential store, keyed by name: `getRoles` (sorted by name at read time,
       no stored rank), `setRole(name, role | null)`. No reorder, no rename primitive
-- [ ] **Any name the user types**, with only uniqueness enforced — no token shape, case or length
-      rule; quoted where a command line needs it
+- [ ] **Any name the user types**, with only uniqueness enforced (req 18) — no token shape, case or
+      length rule; quoted where a command line needs it
 - [ ] Params are a discriminator — `{ kind: "pinned", … }` or `{ kind: "auto" }` — so the shipped
       reviewer is a role with automatic params rather than a second kind of object (reqs 2, 7)
 - [ ] `{ kind: "auto" }` is **rejected for every name but `reviewer`**
@@ -30,14 +30,24 @@ The design is [`plan.md`](./plan.md); the contract is [`requirements.md`](./requ
 - [ ] `resolveRoleByName(name, overrides, …)` — `pinned` applies overrides over the role's tuple;
       `auto` with no override delegates to `selectReviewer` unchanged. Both freeze with the role's
       name
-- [ ] `auto` **with** an override: rank first (`selectReviewer` unchanged), then apply the override
-      over the ranked tuple. The ranked tuple is the base because it is the only complete one, so a
-      level-only or harness-only override still resolves. **The distance guarantee is off for that
-      run** (req 10) — do not try to preserve it, and do not refuse the call to protect it
-- [ ] Where an override makes the ranked base incoherent, **re-derive the dependent fields around
-      the override** rather than failing: overridden fields fixed, invalidated fields re-derived,
-      the rest as ranked. Refuse only what cannot be satisfied at all (no service carries that
-      model, no installed harness can run it)
+- [ ] `auto` **with a complete override**: resolve it directly and **do not call `selectReviewer`
+      at all**. It can fail when neither slot is routable (`reviewer-model.ts:492-500`), and
+      ranking first would reject a fully-specified valid target — reqs 10 and 16 allow *any*
+      subset, which includes all of it. Pin this with a fixture where both slots are unroutable
+- [ ] `auto` **with a partial override**: complete from the ranked winner, which is the only thing
+      that supplies the rest — this is what lets a level-only or harness-only override resolve. If
+      the ranking fails, the call fails with the ranking's own reason; do not invent a base
+- [ ] **The distance guarantee is off for any overridden run** (req 10) — do not preserve it, and
+      do not refuse the call to protect it
+- [ ] **A reviewer slot may be user-pinned** (`slotPlans` reads `getReviewerPin`,
+      `reviewer-model.ts:317`; a pinned level is preserved, not derived, at `:540`), and docs/261
+      req 8 says a pin wins. Treat a pin as a `(service, billing mode, model)` **triple**:
+      overriding the *model* re-resolves where that model lives (the triple made no claim about it);
+      overriding the *level* or *harness* leaves it untouched. Never drop a pinned field that still
+      applies
+- [ ] What stays incoherent is **refused naming the parameter, on every params kind alike** — no
+      re-derivation branch for the reviewer. The earlier asymmetry rested on "ShipIt chose those
+      fields anyway", which the pin above disproves
 - [ ] A test that an **un-overridden** reviewer run still avoids the implementer (req 2 intact) and
       an **overridden** one is allowed to land on the implementer's own model — the second is the
       requirement, not a bug to be fixed later
@@ -63,7 +73,7 @@ The design is [`plan.md`](./plan.md); the contract is [`requirements.md`](./requ
 - [ ] **A Reviewer section, not a row**: its description and standing instructions above the two
       existing slot cards, unchanged. No rename, no delete, no single model control
 - [ ] A separate list of pinned roles, each row a **summary** (name, description, what it resolves
-      to) with open / duplicate / delete — not inline controls
+      to) with open / delete — not inline controls
 - [ ] **A role editor** (req 17): one place editing name, description, standing instructions and
       the parameters together, saving the whole role in one write. The shared service / model /
       reasoning controls live inside it, with the harness beside them
@@ -91,6 +101,13 @@ The design is [`plan.md`](./plan.md); the contract is [`requirements.md`](./requ
       **parent session** (`session create` only), or **nothing** (both — and then the call must
       name all five itself). The child's existing `--model X` is a partial call over the *parent*
       base, so docs/261 req 10 keeps holding without a carve-out
+- [ ] **Unify the surface, NOT the completion semantics.** A parent does not complete a call the
+      way a role does, and the differences are deliberate: `--model X` inherits no service or
+      billing mode (`child-sessions.ts:519`); a harness switch clears the selection (`:521-525`);
+      a level carries only where the target harness declares it and is otherwise dropped
+      (`:599-604`); the stored child target stays partially optional (`:605`), so a parent may not
+      even hold a complete tuple. Same flags, same parser, same refusal rule — existing child
+      completion behaviour unchanged, with a regression test per bullet
 - [ ] The refusal narrows to **a call with no base and only some parameters** — the one shape with
       nothing to complete it from. It must NOT refuse a partial call over a parent; that is the
       shipped behaviour docs/261 req 10 guarantees, and a regression test should pin it
