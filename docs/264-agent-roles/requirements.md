@@ -101,6 +101,13 @@ instead (req 2).
     not overridden. Wanting a variation is common enough that requiring a whole second role for
     it would be the wrong trade.
 
+    **"Everything not overridden" is literal, and an override that makes the tuple incoherent is
+    refused rather than repaired.** Overriding the model does not entitle ShipIt to move the
+    service or the billing mode to wherever that model happens to live: those came from the role,
+    the caller did not name them, and changing them would be a substitution invisible in the
+    request (req 7). Where the role's service does not offer the overridden model, the call is
+    **refused naming the parameter**, and the caller names the service too.
+
     **Overriding the reviewer sets aside its guarantees.** A reviewer run that is not overridden
     still avoids the model that produced the work (req 2). Once the caller overrides it, no promise
     survives that the review runs on anything different — the caller has named what they want, and
@@ -194,6 +201,25 @@ other agent settings already do.
 _None._
 
 ## Resolved questions
+
+- 2026-08-15 — **When only the model is overridden, may ShipIt move the service and billing mode to
+  wherever that model lives?** **Chosen: no — refuse, naming the parameter.** Put to the human as a
+  real choice with the cost of each side stated; he chose refusal.
+
+  Found by an end-to-end review of the merged feature (planning#388), not during implementation:
+  `applyOverrides` relocated a role pinned to DeepSeek/key onto Anthropic/key when the caller
+  named only `--model claude-opus-5`, and a test locked the behaviour in.
+
+  **The design and the contract genuinely disagreed here, which is why it needed a human.**
+  `plan.md`'s rule (c) endorses the relocation, with sound reasoning — a service pinned *for model
+  M* says nothing about model X, so there is no surviving decision to honour. But rule (c) sits
+  under the **`auto` (reviewer) branch** of *Resolution*, where "a pin" means a reviewer slot pin;
+  the implementation generalised it to pinned roles, where reqs 7 and 10 say the opposite. Req 10
+  now states the literal reading, and rule (c) stays scoped to the reviewer.
+
+  The cost, accepted: `--model X` on its own fails whenever the role's service does not offer X,
+  and the caller must name `--service` as well. Req 12's inventory is what makes that discoverable
+  rather than a guessing game.
 
 - 2026-08-15 — **When the reviewer is overridden, does the promise that it avoids the implementing
   model still hold?** **Chosen: no — an override sets the guarantee aside.** The human: *"When

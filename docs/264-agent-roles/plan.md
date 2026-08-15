@@ -187,11 +187,21 @@ caller overrode, and returns a frozen target:
    with the ranking's own reason — there is genuinely nothing to complete from, and inventing one
    would be the substitution req 7 forbids.
 
-   **(c) A pin is a `(service, billing mode, model)` triple, not three independent fields.**
-   Overriding the **model** replaces the triple as a whole and re-resolves where that model lives —
-   not because pins may be discarded, but because a service pinned *for model M* says nothing about
-   model X, so there is no surviving decision to honour. Overriding the **level** or the **harness**
-   leaves the triple untouched. Nothing the user chose that still applies is ever dropped.
+   **(c) A reviewer slot pin is a `(service, billing mode, model)` triple, not three independent
+   fields.** Overriding the **model** replaces the triple as a whole and re-resolves where that
+   model lives — not because pins may be discarded, but because a service pinned *for model M* says
+   nothing about model X, so there is no surviving decision to honour. Overriding the **level** or
+   the **harness** leaves the triple untouched. Nothing the user chose that still applies is ever
+   dropped.
+
+   **This rule is scoped to the reviewer's slot pins and does not generalise to a pinned role**
+   (corrected 2026-08-15, planning#388). The implementation applied it to both, so a role pinned to
+   DeepSeek/key and invoked with only `--model claude-opus-5` silently relocated to Anthropic/key.
+   On a **pinned role** the caller's override is substituted over the role's tuple and nothing else
+   moves: where the role's service does not offer the overridden model, the call is **refused
+   naming the parameter** (rule (d), and req 10's literal reading). The distinction is that a
+   reviewer slot pin is ShipIt's own working state for a ranking it performs, while a pinned role
+   is five choices the user made and can see.
 
    **(d) What remains incoherent is refused, naming the parameter** — an overridden harness that
    cannot carry the pinned model, a model no service offers. Refusal here matches the pinned-role
