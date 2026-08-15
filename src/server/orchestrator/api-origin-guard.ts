@@ -71,17 +71,23 @@
  * A missing `Origin` is NOT hostile. Session containers reach the orchestrator
  * over plain HTTP with no browser headers at all (`shipit issue`, PR operations,
  * the egress-decision sidecar), and same-origin `GET` from the browser also
- * omits it. Those two are told apart by `Sec-Fetch-Site`, which only a browser
- * sends: absent → non-browser → allowed (and `api-container-guard.ts` governs
- * it); `same-origin`/`none` → allowed; `same-site`/`cross-site` → refused.
+ * omits it. `Sec-Fetch-Site` is what separates them when it is there:
+ * `same-origin`/`none` → allowed; `same-site`/`cross-site` → refused; absent →
+ * allowed, and `api-container-guard.ts` governs that direction by source IP.
  *
- * A browser too old to send `Sec-Fetch-Site` (Safari before 16.4) therefore
- * lands in the "non-browser" branch for its no-`Origin` requests. It degrades
- * gracefully rather than opening a hole: every state-changing method carries
- * `Origin` and is still refused, and a cross-origin *read* is still unreadable
- * because the CORS half sends no `Access-Control-Allow-Origin`. What is lost is
- * only the extra refusal on a cross-site sub-resource GET, whose response that
- * page could not have read anyway.
+ * **Absent does not mean "not a browser"**, and nothing here may infer that.
+ * Only a browser *sends* the header, but a browser omits it for any URL that is
+ * not *potentially trustworthy* — judged on the URL's own host string, so every
+ * plain-HTTP request to a named host qualifies — and an old one (Safari before
+ * 16.4) never sends it at all. Both land in the absent branch.
+ *
+ * That branch degrades gracefully rather than opening a hole, which is why it is
+ * allowed: every state-changing method carries `Origin` and is still refused,
+ * and a cross-origin *read* is still unreadable because the CORS half sends no
+ * `Access-Control-Allow-Origin`. What is lost is only the extra refusal on a
+ * cross-site sub-resource GET, whose response that page could not have read
+ * anyway. What must NOT be built on it is a *new* check that treats the branch
+ * as trusted — {@link isTrustedRequestHost} documents where that went wrong.
  *
  * `same-site` must be refused rather than allowed, and that is the whole point:
  * the preview host is a *subdomain* of the main host, so a preview page's

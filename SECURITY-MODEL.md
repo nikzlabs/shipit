@@ -366,9 +366,10 @@ but it means **you must not expose a raw ShipIt instance to the public internet.
   loopback / tailnet instance is running — passes the access layer by definition, because it is
   the user's own authenticated browser making the request. The preview origin is a subdomain of
   the main host and is deliberately treated as **untrusted**: same *site* is not same *origin*.
-  Requests with no `Origin` are not browser requests and are unaffected — that is how a session
+  Requests carrying no browser markers at all are unaffected by *this* rule — that is how a session
   container's CLI reaches its sanctioned routes, and `api-container-guard.ts` (source IP) is
-  what governs that direction. See `src/server/orchestrator/api-origin-guard.ts`. Still not
+  what governs that direction. (Unaffected, not *presumed friendly*: see the rule at the end of
+  this section for why absent markers do not mean "not a browser".) See `src/server/orchestrator/api-origin-guard.ts`. Still not
   authentication: anyone who can reach the port can drive ShipIt from a non-browser client.
 - **DNS rebinding is refused too (planning#378).** The same-origin rule above is computed from
   the request's own `Host`, so on its own it is walked around by a name the attacker controls
@@ -383,11 +384,9 @@ but it means **you must not expose a raw ShipIt instance to the public internet.
   tailnet, MagicDNS and sslip.io installs still need **nothing configured**. Only `Host` is read,
   never `X-Forwarded-Host` or `X-Forwarded-Proto`: a rebound request is *same-origin*, so it may
   set any non-forbidden header with no preflight, and `Host` is the one value in it a page cannot
-  choose. Unlike the same-origin rule above, this one applies to **every** guarded request rather
-  than only browser-shaped ones — a rebound `GET` sends no `Origin`, and Fetch Metadata is
-  appended only for a *potentially trustworthy* URL, so `http://rebind.attacker.example` sends no
-  `Sec-Fetch-Site` either and is indistinguishable from `curl`. That costs nothing: a non-browser
-  caller picks its own `Host` and every ShipIt one already uses a trusted name. **The one case
+  choose. Unlike the same-origin rule above, it applies to **every** guarded request rather than
+  only browser-shaped ones (see the rule below); that costs nothing, because a non-browser caller
+  picks its own `Host` and every ShipIt one already uses a trusted name. **The one case
   that must be declared is a public domain in front of ShipIt** — nothing about
   `shipit.example.com` proves it is ours — so name it in `SHIPIT_ALLOWED_ORIGINS`;
   `deploy.sh` / `restart.sh` derive it from the domain you already gave `setup.sh`, and a refusal
@@ -410,6 +409,24 @@ but it means **you must not expose a raw ShipIt instance to the public internet.
   only through it; running local mode as a real deployment is an explicit non-goal. Previewed
   apps are untouched — the preview pane frames them on purpose. See
   `src/server/orchestrator/frame-guard.ts`.
+
+**Rule for any check added here later: over plain HTTP you cannot tell a browser from a script.**
+It is tempting to narrow a new check to "browser requests" — meaning those carrying `Origin` or
+`Sec-Fetch-*` — so that session containers, curl and health probes stay untouched. That
+narrowing is unsound, and the exemption is exactly where an attacker lands:
+
+- a **same-origin** request sends no `Origin` on `GET`/`HEAD`, and the request a DNS-rebinding
+  page makes *is* same-origin, because the name it was served from is the name it is calling;
+- **Fetch Metadata is appended only for a potentially trustworthy URL**, and trustworthiness is
+  judged on the URL's own host string, not on the address it resolves to. So
+  `http://rebind.attacker.example` gets no `Sec-Fetch-Site` even though it resolves to `127.0.0.1`.
+
+Both together mean a hostile browser request over plain HTTP can arrive with **no browser markers
+at all**, indistinguishable from `curl`. planning#378's first draft was gated this way and was
+bypassable; the gate was removed rather than patched. So: gate a new check on something the
+attacker cannot choose (`Host` is a forbidden header name; the TCP source IP is
+`api-container-guard.ts`'s business), never on the *absence* of a header a browser is free to
+omit. Treat "no `Origin`, no `Sec-Fetch-Site`" as "unknown caller", never as "not a browser".
 
 ## Known limitations and accepted risks
 
