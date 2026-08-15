@@ -1,6 +1,6 @@
 import path from "node:path";
 import type { BillingMode } from "../../shared/catalogue/index.js";
-import simpleGit from "simple-git";
+import { safeSimpleGit } from "../../shared/git-hooks-guard.js";
 import type { SessionManager } from "../sessions.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
 import type { SessionInfo, AgentId, UploadRef, IssueRef } from "../../shared/types.js";
@@ -177,9 +177,9 @@ export async function createHeadlessSession(
   const newWorkspaceDir = claimed.workspaceDir;
 
   try {
-    const currentBranch = (await simpleGit(newWorkspaceDir).raw(["branch", "--show-current"])).trim();
+    const currentBranch = (await safeSimpleGit(newWorkspaceDir).raw(["branch", "--show-current"])).trim();
     if (currentBranch && currentBranch !== branchName) {
-      await simpleGit(newWorkspaceDir).raw(["branch", "-m", currentBranch, branchName]);
+      await safeSimpleGit(newWorkspaceDir).raw(["branch", "-m", currentBranch, branchName]);
     }
   } catch (err) {
     throw new ServiceError(400, `Failed to rename branch to '${branchName}': ${String(err)}`);

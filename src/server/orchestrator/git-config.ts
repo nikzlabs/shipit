@@ -10,6 +10,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { chownToSessionWorker, sessionWorkerUid } from "./session-worker-uid.js";
+import { gitArgsWithHooksDisabled } from "../shared/git-hooks-guard.js";
 
 export interface GitIdentity {
   name: string;
@@ -33,7 +34,7 @@ export function initGlobalGitConfig(credentialsDir: string): void {
 
   // Ensure commit signing is always disabled
   try {
-    execFileSync("git", ["config", "--global", "commit.gpgsign", "false"]);
+    execFileSync("git", gitArgsWithHooksDisabled(["config", "--global", "commit.gpgsign", "false"]));
   } catch {
     // git may not be installed yet (unlikely but safe)
   }
@@ -58,7 +59,7 @@ export function initGlobalGitConfig(credentialsDir: string): void {
   // `--replace-all` keeps it idempotent across repeated init calls (tests).
   if (sessionWorkerUid() !== null) {
     try {
-      execFileSync("git", ["config", "--global", "--replace-all", "safe.directory", "*"]);
+      execFileSync("git", gitArgsWithHooksDisabled(["config", "--global", "--replace-all", "safe.directory", "*"]));
     } catch {
       // git may not be installed yet (unlikely but safe)
     }
@@ -90,9 +91,9 @@ export function initGlobalGitConfig(credentialsDir: string): void {
     ["ssh://git@github.com/", "^ssh://git@github\\.com/$"],
   ] as const) {
     try {
-      execFileSync("git", [
+      execFileSync("git", gitArgsWithHooksDisabled([
         "config", "--global", "--replace-all", GITHUB_HTTPS_INSTEAD_OF, from, valueRegex,
-      ]);
+      ]));
     } catch {
       // git may not be installed yet (unlikely but safe)
     }
@@ -159,7 +160,7 @@ export function writeContainerGitConfig(destPath: string): void {
   fs.writeFileSync(destPath, "", { mode: 0o600 });
 
   const set = (key: string, value: string): void => {
-    execFileSync("git", ["config", "--file", destPath, key, value]);
+    execFileSync("git", gitArgsWithHooksDisabled(["config", "--file", destPath, key, value]));
   };
 
   // The user's real identity when there is one, a placeholder when there isn't.
@@ -199,10 +200,10 @@ export function writeContainerGitConfig(destPath: string): void {
  */
 export function getGitIdentity(): GitIdentity | null {
   try {
-    const name = execFileSync("git", ["config", "--global", "user.name"], {
+    const name = execFileSync("git", gitArgsWithHooksDisabled(["config", "--global", "user.name"]), {
       encoding: "utf-8",
     }).trim();
-    const email = execFileSync("git", ["config", "--global", "user.email"], {
+    const email = execFileSync("git", gitArgsWithHooksDisabled(["config", "--global", "user.email"]), {
       encoding: "utf-8",
     }).trim();
     if (name && email) return { name, email };
@@ -216,8 +217,8 @@ export function getGitIdentity(): GitIdentity | null {
  * Write git identity to the global config. All repos inherit it automatically.
  */
 export function setGitIdentity(name: string, email: string): void {
-  execFileSync("git", ["config", "--global", "user.name", name]);
-  execFileSync("git", ["config", "--global", "user.email", email]);
+  execFileSync("git", gitArgsWithHooksDisabled(["config", "--global", "user.name", name]));
+  execFileSync("git", gitArgsWithHooksDisabled(["config", "--global", "user.email", email]));
 }
 
 /**
@@ -240,7 +241,7 @@ export function setGlobalCredentialHelper(token: string): void {
   // `!f() { echo "password=TOKEN"; echo "username=x-access-token"; }; f` —
   // git invokes the value as a shell command when the leading char is `!`.
   const helper = `!f() { echo "password=${token}"; echo "username=x-access-token"; }; f`;
-  execFileSync("git", ["config", "--global", "credential.helper", helper]);
+  execFileSync("git", gitArgsWithHooksDisabled(["config", "--global", "credential.helper", helper]));
 }
 
 /**
@@ -250,7 +251,7 @@ export function setGlobalCredentialHelper(token: string): void {
  */
 export function clearGlobalCredentialHelper(): void {
   try {
-    execFileSync("git", ["config", "--global", "--unset", "credential.helper"]);
+    execFileSync("git", gitArgsWithHooksDisabled(["config", "--global", "--unset", "credential.helper"]));
   } catch {
     // Already unset — `git config --unset` exits non-zero in that case.
   }

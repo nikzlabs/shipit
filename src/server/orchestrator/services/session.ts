@@ -10,7 +10,7 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
-import simpleGit from "simple-git";
+import { safeSimpleGit } from "../../shared/git-hooks-guard.js";
 import type { SessionManager } from "../sessions.js";
 import { holdsActiveReservation } from "../sessions.js";
 import type { ChatHistoryManager, PersistedMessage } from "../chat-history.js";
@@ -256,7 +256,7 @@ export async function unarchiveSession(
 
     const branchArgs = ["checkout", "-b", newBranch];
     if (startPoint) branchArgs.push(startPoint);
-    await simpleGit(session.workspaceDir).raw(branchArgs);
+    await safeSimpleGit(session.workspaceDir).raw(branchArgs);
 
     // Configure credentials
     if (githubAuthManager.authenticated) {
@@ -411,7 +411,7 @@ async function restoreSessionWorkspaceImpl(
   // unrecoverable (never pushed, cache too stale), (re-)create it off the
   // default branch so the session is at least usable rather than dead.
   if (session.branch) {
-    const wsGit = simpleGit(session.workspaceDir);
+    const wsGit = safeSimpleGit(session.workspaceDir);
     try {
       await wsGit.raw(["checkout", session.branch]);
     } catch {

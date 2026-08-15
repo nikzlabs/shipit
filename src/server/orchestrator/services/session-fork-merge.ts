@@ -7,7 +7,7 @@
  */
 
 import path from "node:path";
-import simpleGit from "simple-git";
+import { safeSimpleGit } from "../../shared/git-hooks-guard.js";
 import type { SessionManager } from "../sessions.js";
 import type { GitManager } from "../../shared/git.js";
 import type { RepoGit } from "../repo-git.js";
@@ -51,8 +51,8 @@ export async function forkSession(
   // (commit not yet auto-pushed, or pruned after the PR branch was deleted).
   // --local hardlinks objects on the same filesystem, so disk cost matches
   // the old cache-clone path.
-  await simpleGit().raw(["clone", "--local", activeSessionDir, newWorkspaceDir]);
-  const newGit = simpleGit(newWorkspaceDir);
+  await safeSimpleGit().raw(["clone", "--local", activeSessionDir, newWorkspaceDir]);
+  const newGit = safeSimpleGit(newWorkspaceDir);
   // Disable auto-gc so hardlinks aren't broken in either clone.
   await newGit.raw(["config", "gc.auto", "0"]);
   // Reset origin to the real remote (clone --local sets it to activeSessionDir).
@@ -140,7 +140,7 @@ export async function mergeSession(
   if (!sourceSession.branch) throw new ServiceError(400, "Source session has no branch");
 
   const git = createGitManager(activeSessionDir);
-  const sg = simpleGit(activeSessionDir);
+  const sg = safeSimpleGit(activeSessionDir);
 
   // With separate clones, we need to get the source branch into this clone.
   // Strategy 1: Push source to origin, then fetch in target (production path).

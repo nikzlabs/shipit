@@ -1,8 +1,9 @@
-import simpleGit, { type SimpleGit, type LogResult } from "simple-git";
+import { type SimpleGit, type LogResult } from "simple-git";
 import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { scanDiffForSecrets, redactSecretsInText, type SecretFinding } from "./secret-scan.js";
+import { safeSimpleGit, gitArgsWithHooksDisabled } from "./git-hooks-guard.js";
 
 const DEFAULT_WORKSPACE_DIR = "/workspace";
 
@@ -204,7 +205,11 @@ export class GitManager {
    */
   constructor(workspaceDir?: string) {
     this.workspaceDir = workspaceDir ?? DEFAULT_WORKSPACE_DIR;
-    this.git = simpleGit(this.workspaceDir);
+    // planning#384 — `safeSimpleGit`, never bare `simpleGit`: this class drives
+    // commit/merge/rebase/checkout/push against a tree that untrusted plugin
+    // code can write `.git/hooks/*` into, from a process that is root in the
+    // orchestrator container. See `git-hooks-guard.ts`.
+    this.git = safeSimpleGit(this.workspaceDir);
   }
 
   /**
@@ -819,7 +824,7 @@ export class GitManager {
     return new Promise((resolve) => {
       execFile(
         "git",
-        ["show", `${commitHash}:${filePath}`],
+        gitArgsWithHooksDisabled(["show", `${commitHash}:${filePath}`]),
         { cwd: this.workspaceDir, encoding: "buffer", maxBuffer: maxBytes },
         (err, stdout) => {
           if (err || !stdout || stdout.length === 0) resolve(null);

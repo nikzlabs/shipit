@@ -2,7 +2,8 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
-import simpleGit, { type SimpleGit } from "simple-git";
+import { type SimpleGit } from "simple-git";
+import { safeSimpleGit, gitArgsWithHooksDisabled } from "../shared/git-hooks-guard.js";
 import { ensurePnpmStoreGitExcluded } from "../shared/git.js";
 import { hasUrlCredentials, stripRemoteUrlCredentials } from "./git-utils.js";
 import { chownTreeToSessionWorker } from "./session-worker-uid.js";
@@ -144,6 +145,14 @@ const UNSAFE_GIT_ENV = [
  * The environment a credentialed git child gets: ours, minus the variables
  * above, minus any `GIT_CONFIG_KEY_<n>` / `GIT_CONFIG_VALUE_<n>` pairs the
  * dropped `GIT_CONFIG_COUNT` addressed.
+ *
+ * planning#384 — this drop is one of two reasons the hooks guard lives on the
+ * command line rather than in the environment: whatever `GIT_CONFIG_*` pairs the
+ * orchestrator sets, this path deletes them. Hooks stay disabled here through
+ * the `-c core.hooksPath=…` that `safeSimpleGit` puts on every argv, which no
+ * environment rebuild can remove. (The other reason is that simple-git refuses
+ * to spawn at all when it sees `GIT_CONFIG_COUNT` in the environment — see
+ * `shared/git-hooks-guard.ts`.)
  */
 export function sanitizeGitEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const out: NodeJS.ProcessEnv = { ...env };
@@ -208,7 +217,7 @@ export class RepoGit {
   constructor(repoDir: string, credential?: GitRemoteCredential) {
     this.repoDir = repoDir;
     this.git = credential
-      ? simpleGit(repoDir, {
+      ? safeSimpleGit(repoDir, {
         config: gitCredentialConfig(credential),
         // The three simple-git guards this path opts out of, none of them
         // user-supplied: our own credential helper (host validated, token in
@@ -228,7 +237,7 @@ export class RepoGit {
         // credential is refused.
         GIT_TERMINAL_PROMPT: "0",
       })
-      : simpleGit(repoDir);
+      : safeSimpleGit(repoDir);
   }
 
   /**
@@ -372,7 +381,7 @@ export class RepoGit {
    */
   async cloneFromCache(sessionDir: string, remoteUrl?: string): Promise<void> {
     // git clone --local creates hardlinks for objects on the same volume
-    await simpleGit().raw(["clone", "--local", this.repoDir, sessionDir]);
+    await safeSimpleGit().raw(["clone", "--local", this.repoDir, sessionDir]);
     // docs/232 — `clone --local` hardlinks `.git/objects` but does NOT carry
     // `.git/lfs`, so an LFS repo's clone starts with an empty content store and
     // re-downloads every asset. Extend the same hardlink trick to the LFS store.
@@ -380,7 +389,7 @@ export class RepoGit {
     // still fetched by the provisioning `git lfs pull`.
     linkLfsObjectsIntoClone(this.repoDir, sessionDir);
     // Disable auto-gc in the session clone to prevent hardlink breakage
-    const sessionGit = simpleGit(sessionDir);
+    const sessionGit = safeSimpleGit(sessionDir);
     await sessionGit.raw(["config", "gc.auto", "0"]);
     // Reset origin to the real remote URL (clone --local sets it to the bare
     // cache path). Credential-free: this write lands in the session clone's
@@ -459,7 +468,7 @@ export class RepoGit {
       try {
         const proc = spawn(
           "git",
-          ["merge-base", "--is-ancestor", ancestor, descendant],
+          gitArgsWithHooksDisabled(["merge-base", "--is-ancestor", ancestor, descendant]),
           { cwd: this.repoDir, stdio: "ignore" },
         );
         proc.on("error", () => resolve(false));

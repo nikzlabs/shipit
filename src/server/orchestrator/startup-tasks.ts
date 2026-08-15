@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
 import { existsSync } from "node:fs";
-import simpleGit from "simple-git";
+import { safeSimpleGit } from "../shared/git-hooks-guard.js";
 import type { RepoStore } from "./repo-store.js";
 import type { SessionManager } from "./sessions.js";
 import type { ChatHistoryManager } from "./chat-history.js";
@@ -256,7 +256,7 @@ async function scrubGitRemotes(dir: string): Promise<boolean> {
   // remote below.
   if (!/^\s*(push)?url\s*=\s*\S*(:\/\/[^\s/@]+@|\?)/m.test(text)) return false;
 
-  const git = simpleGit(dir);
+  const git = safeSimpleGit(dir);
   const remotes = await git.getRemotes(true);
   let changed = false;
   for (const remote of remotes) {

@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { isGitLfsAvailable } from "./git-lfs.js";
 import { killChild } from "../shared/kill-child.js";
+import { gitArgsWithHooksDisabled } from "../shared/git-hooks-guard.js";
 
 /**
  * Resolve a Git LFS pointer blob to the bytes it stands for, for *rendering*
@@ -147,7 +148,7 @@ function smudgeLfsObject(workspaceDir: string, pointerText: string, filePath: st
   return new Promise((resolve) => {
     let proc;
     try {
-      proc = spawn("git", ["lfs", "smudge", "--", filePath], {
+      proc = spawn("git", gitArgsWithHooksDisabled(["lfs", "smudge", "--", filePath]), {
         cwd: workspaceDir,
         env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
         stdio: ["pipe", "pipe", "ignore"],

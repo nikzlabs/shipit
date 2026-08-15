@@ -311,6 +311,57 @@ export default tseslint.config(
       ],
     },
   },
+  // ── planning#384: orchestrator-side git must not run repository hooks ─────
+  // A session workspace is bind-mounted read-write into containers whose code
+  // is untrusted by design (docs/262 req 19), so `.git/hooks/pre-commit` is a
+  // file that side can write — and the orchestrator, which is root and mounts
+  // the credential store and the Docker socket, then runs `git commit` on that
+  // very tree. `safeSimpleGit` (`shared/git-hooks-guard.ts`) is the same
+  // `simpleGit` with `-c core.hooksPath=/dev/null` on every command; a bare
+  // `import simpleGit from "simple-git"` re-opens the hole silently, so it is
+  // an error rather than a convention.
+  //
+  // Declared as its own late block (not folded into the boundary blocks above)
+  // so it can exempt the guard module and tests without those exemptions also
+  // dropping the orchestrator↔session import boundary — flat config replaces a
+  // rule wholesale per matching block, and an earlier block still applies to
+  // files a later one `ignores`.
+  {
+    files: ["src/server/orchestrator/**/*.ts"],
+    ignores: ["src/server/orchestrator/integration_tests/**", "**/*.test.ts"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [{
+            group: ["**/session/**"],
+            message: "Orchestrator must not import from session/. Move shared types to shared/types/.",
+          }],
+          paths: [{
+            name: "simple-git",
+            importNames: ["default"],
+            message: "Use `safeSimpleGit` from shared/git-hooks-guard.js — bare `simpleGit` runs repository-controlled git hooks as root in the orchestrator (planning#384). Type-only imports (`import { type SimpleGit }`) are fine.",
+          }],
+        },
+      ],
+    },
+  },
+  {
+    files: ["src/server/shared/**/*.ts"],
+    ignores: ["src/server/shared/git-hooks-guard.ts", "**/*.test.ts"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          paths: [{
+            name: "simple-git",
+            importNames: ["default"],
+            message: "Use `safeSimpleGit` from ./git-hooks-guard.js — bare `simpleGit` runs repository-controlled git hooks as root in the orchestrator (planning#384). Type-only imports (`import { type SimpleGit }`) are fine.",
+          }],
+        },
+      ],
+    },
+  },
   {
     ignores: [
       "dist/",

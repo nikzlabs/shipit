@@ -25,7 +25,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import simpleGit from "simple-git";
+import { safeSimpleGit } from "../../shared/git-hooks-guard.js";
 import type { GitManager } from "../../shared/git.js";
 import type { AgentRegistry } from "../../shared/agent-registry.js";
 import { frontmatterField, scanSkillsDir } from "../../shared/skill-scan.js";
@@ -129,7 +129,7 @@ export async function ensureCatalogCloned(
   const alreadyCloned = hasGit;
   try {
     if (alreadyCloned) {
-      const git = simpleGit(cacheDir);
+      const git = safeSimpleGit(cacheDir);
       await git.fetch("origin");
       if (ref) {
         await git.checkout(ref);
@@ -140,7 +140,7 @@ export async function ensureCatalogCloned(
       }
     } else {
       await fs.mkdir(cacheRoot, { recursive: true });
-      const git = simpleGit();
+      const git = safeSimpleGit();
       const cloneArgs = ["--depth", "1"];
       if (ref) cloneArgs.push("--branch", ref);
       await git.clone(url, cacheDir, cloneArgs);

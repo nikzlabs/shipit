@@ -26,7 +26,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import simpleGit from "simple-git";
+import { safeSimpleGit } from "../shared/git-hooks-guard.js";
 import type { SessionInfo } from "../shared/types.js";
 import { resolveShipitConfig, DEFAULT_DEP_DIRS } from "../shared/shipit-config.js";
 import {
@@ -363,7 +363,7 @@ export async function validDepDirsForOverlay(
     // every dep dir on exactly the sessions the overlay targets. The slash
     // form matches the pattern regardless of on-disk presence.
     const queries = parentExists.flatMap((d) => [d, `${d}/`]);
-    const ignored = new Set(await simpleGit(workspaceDir).checkIgnore(queries));
+    const ignored = new Set(await safeSimpleGit(workspaceDir).checkIgnore(queries));
     return parentExists.filter((d) => ignored.has(d) || ignored.has(`${d}/`));
   } catch {
     return [];
@@ -554,7 +554,7 @@ export async function preStampInstallMarker(args: {
 
   let head: string;
   try {
-    head = (await simpleGit(workspaceDir).revparse(["HEAD"])).trim();
+    head = (await safeSimpleGit(workspaceDir).revparse(["HEAD"])).trim();
   } catch {
     return false;
   }

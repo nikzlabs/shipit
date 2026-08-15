@@ -111,6 +111,14 @@ container start. Restart the container to pick up a new pin.
 `git commit`, `git add`, or `git push` — this is handled automatically. The
 commit message is derived from your turn summary.
 
+The auto-commit runs **with the repository's git hooks disabled**, and so does
+every other git operation ShipIt itself performs on the workspace (merge,
+rebase, checkout, push). ShipIt's git runs outside your container with more
+privilege than your container has, so it does not execute hooks the repository
+carries. A project's `pre-commit` formatter therefore does **not** run on the
+auto-commit — if the repository expects one, run it yourself as part of your
+turn. Hooks are unaffected when *you* run git inside the session container.
+
 **Hot reload**: When you edit files, compose services with mounted volumes
 pick up changes automatically. No need to restart dev servers after code edits.
 
