@@ -955,6 +955,20 @@ export function buildPluginComposeServices(
  * `- .:/app` mean "this plugin", exactly as it does standalone. A `repo: self`
  * import has no generation (req 27): its tree is the session's own working
  * copy, reached the same way the project's own services reach it.
+ *
+ * **A tracked mount is forced read-only, whatever the fragment declared** — the
+ * rule is about the TREE, not about the path ShipIt happens to mount it at
+ * ({@link pluginTreeMount}). Compose's default is read-write, so the ordinary
+ * `- .:/app` handed a consumer's service a writable alias of the generation
+ * while `/plugin` next to it was read-only: the service could copy-up into the
+ * layer and change the code its own repository's CLIs then executed, under a
+ * `SHIPIT_PLUGIN_COMMIT` that no longer described it (reqs 7, 15). Forced
+ * rather than refused, because the read-write form is a default almost no
+ * fragment means, and refusing would withhold a whole plugin's services over
+ * a colon nobody typed.
+ *
+ * A `repo: self` fragment keeps what it declared: there the tree IS the project,
+ * which the same container already has read-write at `/project` (req 27).
  */
 function rewriteFragmentVolume(
   entry: unknown,
@@ -975,7 +989,7 @@ function rewriteFragmentVolume(
       source: volumeName,
       target,
       ...(withinRepo ? { volume: { subpath: withinRepo } } : {}),
-      ...(readOnly ? { read_only: true } : {}),
+      read_only: true,
     };
   }
   if (volume) {

@@ -209,17 +209,18 @@ Rules (review findings, both rounds):
   to. Everything read live — the service's tree, the CLI's tree, `/project` —
   needs nothing.
 
-  **And `install` does not run under self — which is where the design stands,
-  not a settled answer.** A plugin's `install` populates a generation's writable
+  **And `install` does not run under self — settled by the user on 2026-08-14
+  ("keep it out"), and now in req 27's own words** (`requirements.md` → Resolved
+  questions; the paragraph below is why it was asked). A plugin's `install`
+  populates a generation's writable
   layer and self has neither, so the repository's own `agent.install` is what
   prepares the working tree its services and CLIs run out of. An independent
   review read that as a req 27 violation — "nothing is duplicated to make
   self-use work" — against req 27's own enumeration, which does not name install;
   `test-plugin/` assumes the reviewer's reading (it gitignores a stamp only a
-  self-mode install could write). **It is a question for the user, recorded under
-  `requirements.md` → Open questions**, because running it means a new
-  install-container branch over the session's working tree, and that is
-  mechanism no requirement has asked for yet.
+  self-mode install could write). It went to the user rather than being decided
+  here, because running it would mean a new install-container branch over the
+  session's working tree — mechanism no requirement had asked for.
 
 ### 1b. Plugin side — `exports.plugins:` (reqs 5, 17, 22, 23, 24, 26)
 
@@ -457,10 +458,22 @@ instead of a repeat.
   must not depend on which surface asks; both halves already follow from reqs 7,
   15 and 27, so nothing new is required:
 
-  | What `/plugin` is | Companion CLI | Service | `install` |
+  | What the tree is | Companion CLI | Service | `install` |
   |---|---|---|---|
   | A tracked **generation** (overlay volume) | read-only | read-only | **read-write** — the one writer, and it runs *before* publication |
   | A **`repo: self`** working tree | read-write | read-write | does not run (req 27) |
+
+  **It is a rule about the TREE, not about the path** — which is the half a
+  review caught after the first fix. A service also mounts its own tree through
+  its *fragment's* relative volumes (`- .:/app`), and those are rewritten onto
+  the same generation volume; Compose's default there is read-WRITE, so a
+  read-only `/plugin` sat beside a writable alias of the identical layer, and the
+  ordinary declaration almost every fragment writes was enough to reach it.
+  `rewriteFragmentVolume` now forces read-only for a tracked generation and
+  leaves a `repo: self` fragment's declared mode alone. Forced rather than
+  refused: the read-write form is a default nobody typed on purpose, and
+  refusing would withhold a whole repository's services (§2's all-or-nothing
+  rule) over it.
 
   For a generation, read-only is req 7 (the source stays unmodified; the writable
   location a plugin gets is `/plugin-state`, and its durable output is `/project`)
@@ -471,25 +484,39 @@ instead of a repeat.
   `SHIPIT_PLUGIN_COMMIT` still names the commit it is no longer running — and, in
   the words `plugins.md` already uses for the agent's own checkout, the edit
   "applies to this one session, vanishes on the next refresh, and reaches
-  nobody". **The companion CLI mounted it read-write until this was settled**
-  (`plugin-cli-run.ts`); the service never did.
+  nobody". **Both surfaces could write it until this was settled** — the
+  companion CLI directly at `/plugin` (`plugin-cli-run.ts`), a service through
+  its own fragment's `- .:/app` (`plugin-compose.ts`, see the next paragraph).
 
   For a `repo: self` tree, read-write is req 27 ("the read-only rule binds only
   consuming projects"), and read-only there would be a boundary in name only:
   it is the same directory the same container has read-write at `/project`, so
   forbidding the `/plugin` path forbids nothing and only makes self-use behave
-  unlike the mode it exists to rehearse. **The service mounted it read-only until
-  this was settled** (`plugin-compose.ts`).
+  unlike the mode it exists to rehearse. **The service mounted `/plugin`
+  read-only until this was settled** (`plugin-compose.ts`), while mounting the
+  same tree writable at the fragment's own path — the two halves of this rule
+  were each wrong on a different surface.
 
-  What the rule does *not* rest on is overlayfs: writes through a merged mount
-  never reach the generation directory on disk, and a shared dependency base
-  (req 28) is stacked as a **lowerdir**, which the kernel makes read-only. So the
-  fix is about coherence within a session — one commit, one answer per path — not
-  about containment across sessions, which the layout already provides (a
-  generation lives under `<sessionDir>/state/plugins/…`, and the only trees
-  shared beyond a session are the dep-store bases, which no container mounts
-  writable, and the per-repository package download cache, which only `install`
-  writes).
+  **What the rule is about is coherence within a session — one commit, one
+  answer per path — not containment across sessions**, and the second claim
+  needs stating narrowly, because a broad version of it is false. What holds:
+  **a plugin's RUNTIME code cannot mutate another session's generation, or a
+  dependency base that has already been published.** A generation lives under
+  `<sessionDir>/state/plugins/…`, so it is per session to begin with; a write
+  through a merged mount never reaches the generation directory on disk; and a
+  shared dependency base (req 28) is stacked as a **lowerdir**
+  (`buildPluginOverlaySpec`), which the kernel makes read-only, so a write
+  copies up into the caller's own layer.
+
+  What is deliberately shared, and should not be read as excluded by the above:
+  a plugin's **`install` is plugin-authored code with a read-write mount of that
+  repository's package download cache** (`resolveDepCacheMount`), which every
+  session and project installing the same plugin repository shares; and its
+  output is **promoted into a shared dependency base** for later sessions
+  (req 28's whole point). The orchestrator performs the promotion and a
+  published base is immutable afterwards, but the bytes in it were produced by
+  the plugin. Both are req 28 working as designed — the trust that pays for them
+  is the standing grant of req 19, not a containment property.
 - **The consumer lease** (req 15) — **implemented** (`plugin-leases.ts`): a
   generation's checkout and writable layer are deleted only when nothing is
   running against them.

@@ -65,9 +65,10 @@ The path follows the live generation. When a plugin repository is refreshed
 mid-session, `/plugins/<name>` points at the new commit with no restart.
 
 **The plugin's own code cannot write it either**, and for the same reason. A
-plugin's CLIs and services see that checkout at `/plugin` in their own
-containers, merged with the plugin's writable layer, and that view is read-only
-on both — so what the Plugins tab says is live is what every surface of that
+plugin's CLIs and services see that checkout in their own containers, merged
+with the plugin's writable layer, and every mount of it is read-only — at
+`/plugin`, and at whatever path the plugin's own service definition mounts it
+at. So what the Plugins tab says is live is what every surface of that
 repository is running. The one writer is the plugin's `install`, which runs
 before a commit goes live. A plugin's writable surfaces are its state directory
 and this project's workspace, never its own source.
@@ -215,8 +216,9 @@ session's own working tree.** So:
   a `shipit.yaml` save or the session opening runs.
 - The plugin's `install` does not run: it exists to populate a generation's
   writable layer, and there is none. Your repository's own `agent.install`
-  prepares the working tree that the services and CLIs then run out of. (Whether
-  self-use should run the exported `install` too is an open product question.)
+  prepares the working tree that the services and CLIs then run out of. That is
+  settled, not pending: ShipIt does not write plugin-authored install output
+  into a tree it auto-commits.
 - The repository's issues are already this session's, so `self` registers no
   separate feedback destination. File plugin bugs the ordinary way.
 

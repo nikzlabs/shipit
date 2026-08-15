@@ -132,11 +132,16 @@ function checkState(surface, stateDirEnv) {
  * `false` and a `repo: self` working tree reports `true`.
  *
  * On the SERVICE surface PLUGIN_ROOT is `/app` — this fragment's own
- * `- .:/app:ro`, which the plugin author wrote and ShipIt only rewrites the
- * source of. It therefore reports `false` in both modes and says nothing about
- * ShipIt's `/plugin` mount. (An earlier revision of this comment read the two
- * surfaces' disagreement as by-design; it was not, and the CLI half was the
- * bug.)
+ * `- .:/app:ro`. That mount is the plugin author's, but ShipIt now FORCES it
+ * read-only for a tracked generation (a fragment's relative mounts are rewritten
+ * onto the same volume, and Compose's default is read-write), so a consumer
+ * service reports `false` whether or not the author wrote `:ro`. Under
+ * `repo: self` the declared mode is kept, so dropping the `:ro` here would
+ * report `true`.
+ *
+ * (An earlier revision of this comment read the two surfaces' disagreement as
+ * by-design. It was not: the CLI mount and the tracked fragment mount were both
+ * writable, and both are now fixed.)
  */
 function checkCheckoutWritable() {
   const probeFile = path.join(PLUGIN_ROOT, ".probe-write-test");
