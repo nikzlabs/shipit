@@ -4,8 +4,9 @@
  * These guard the complaint's shape: the two scopes behave very differently,
  * and every qualification below is a state where the confident answer would be
  * false — an unenforced deployment, a container that started Open, a session
- * with no live container, a reload that declined, and a session whose own
- * policy excludes user hosts entirely.
+ * with no live container, a reload that declined, and a host no user act can
+ * reach at all — because the session admits no user hosts, or the deployment
+ * installs nothing that could act on the entry.
  */
 
 import { describe, it, expect } from "vitest";
@@ -18,7 +19,7 @@ const ctx = (over: Partial<EgressGrantContext>): EgressGrantContext => ({
   sessionId: "sess-1",
   enforcementActive: true,
   startedContained: true,
-  excludedBySessionPolicy: false,
+  reach: "grantable",
   ...over,
 });
 
@@ -100,12 +101,30 @@ describe("computeEgressGrantOutcome", () => {
   // still cannot reach the host. No restart ever fixes that.
   it("a session excluded by its own policy claims no surface and offers no restart", () => {
     const out = computeEgressGrantOutcome(
-      ctx({ scope: "session", reloaded: true, excludedBySessionPolicy: true }),
+      ctx({ scope: "session", reloaded: true, reach: "blocked-by-session" }),
     );
     expect(out.liveNow).toEqual([]);
     expect(out.staleUntilRestart).toEqual([]);
     expect(out.restartSessionId).toBeNull();
-    expect(out.excludedBySessionPolicy).toBe(true);
+    expect(out.reach).toBe("blocked-by-session");
+  });
+
+  // planning#383 — the same shape one level up. With no Tier B resolver there is
+  // nothing to act on the entry in ANY session, so a global add that would
+  // otherwise read "live for anything started from now on" reaches nothing.
+  it("a deployment that can grant nothing claims no surface either", () => {
+    const out = computeEgressGrantOutcome(ctx({ reach: "blocked-by-deployment" }));
+    expect(out.liveNow).toEqual([]);
+    expect(out.staleUntilRestart).toEqual([]);
+    expect(out.restartSessionId).toBeNull();
+    expect(out.reach).toBe("blocked-by-deployment");
+  });
+
+  it("blocks before the enforcement branch — 'not enforced' must not read as live", () => {
+    // The order matters: `enforcementActive: false` short-circuits to "live
+    // everywhere", which is the exact claim a blocked host must never produce.
+    const out = computeEgressGrantOutcome(ctx({ enforcementActive: false, reach: "blocked-by-deployment" }));
+    expect(out.liveNow).toEqual([]);
   });
 
   it("carries the host as given, for the confirmation sentence", () => {

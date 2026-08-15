@@ -592,11 +592,11 @@ describe("buildPluginReposSnapshot", () => {
 
     it("attaches each group to its own use entry, by alias", () => {
       const card = build([
-        { repo: "tools", plugin: "palette", alias: "artk", hosts: [{ host: "fal.run", allowed: false }] },
+        { repo: "tools", plugin: "palette", alias: "artk", hosts: [{ host: "fal.run", reach: "grantable" }] },
       ]);
       expect(card.uses[0]).toMatchObject({
         alias: "artk",
-        hosts: [{ host: "fal.run", allowed: false }],
+        hosts: [{ host: "fal.run", reach: "grantable" }],
       });
       expect(card.uses[1]).toMatchObject({ alias: "probe", hosts: [] });
     });
@@ -605,7 +605,7 @@ describe("buildPluginReposSnapshot", () => {
       // A gap the user may close deliberately is not a malfunction of the
       // version: the plugin is live and whole, one allowlist entry away.
       const card = build([
-        { repo: "tools", plugin: "palette", alias: "artk", hosts: [{ host: "fal.run", allowed: false }] },
+        { repo: "tools", plugin: "palette", alias: "artk", hosts: [{ host: "fal.run", reach: "grantable" }] },
       ]);
       expect(card.status).toBe("active");
       expect(card.issues).toEqual([]);

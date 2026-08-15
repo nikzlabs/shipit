@@ -1,4 +1,4 @@
-import type { EgressHostGrantOutcome } from "../../server/shared/types.js";
+import type { EgressHostGrantOutcome, EgressHostReach } from "../../server/shared/types.js";
 
 /**
  * planning#376 — the one wording for "you allowed a host; here is what took
@@ -22,8 +22,35 @@ export type EgressGrantKind =
   | "next-start"
   /** Fresh containers have it; something already running does not, until it restarts. */
   | "partly-live"
-  /** Saved, but this session's own network policy excludes it — a restart won't help. */
+  /** Saved, but nothing here can act on it — a restart won't help (`blocked-*`). */
   | "excluded";
+
+/**
+ * planning#383 — why a host cannot be granted, in the words the user needs, for
+ * the surface that must say it INSTEAD of offering a button.
+ *
+ * Shared with {@link summarizeEgressGrant} so the Plugins card's buttonless row
+ * and the after-the-click report say the same thing about the same state. Only
+ * the two `blocked-*` verdicts have an answer here; the others are not a reason
+ * anything failed, so asking for one is a caller bug and reads as `null`.
+ */
+export function egressBlockedReason(reach: EgressHostReach): { headline: string; detail: string } | null {
+  if (reach === "blocked-by-deployment") {
+    return {
+      headline: "This ShipIt can't allow extra hosts.",
+      detail:
+        "Its network control is set to the built-in floor only, so an allowlist entry has nothing to act on — the same in every session. Whoever runs this ShipIt has to turn DNS-based egress control on.",
+    };
+  }
+  if (reach === "blocked-by-session") {
+    return {
+      headline: "This session can't reach it whatever the allowlist says.",
+      detail:
+        "Its network access is off, so it is limited to ShipIt and the model API. Turn network access on for the session to use the host here.",
+    };
+  }
+  return null;
+}
 
 export interface EgressGrantSummary {
   kind: EgressGrantKind;
@@ -53,18 +80,19 @@ export function summarizeEgressGrant(outcome: EgressHostGrantOutcome): EgressGra
       ? `${host} is allowed for this session.`
       : `${host} is allowed for every session on this ShipIt.`;
 
-  // The entry saved, and this session still cannot reach the host: its own
-  // network policy carries no user hosts (a sandbox with network access off).
-  // Saying "allowed" here would be the flattest wrong claim of the set.
-  if (outcome.excludedBySessionPolicy) {
+  // The entry saved and still reaches nothing here — this session carries no
+  // user hosts (a sandbox with network access off), or this deployment installs
+  // nothing that could act on the entry at all. Saying "allowed" would be the
+  // flattest wrong claim of the set.
+  const blocked = egressBlockedReason(outcome.reach);
+  if (blocked) {
     return {
       kind: "excluded",
       headline:
         outcome.scope === "session"
           ? `${host} was added to this session's allowlist.`
           : `${host} was added for every session on this ShipIt.`,
-      detail:
-        "This session still can't reach it: its network access is off, so it is limited to ShipIt and the model API whatever the allowlist says. Turn network access on for the session to use the host here.",
+      detail: `${blocked.headline} ${blocked.detail}`,
       restartSessionId: null,
     };
   }

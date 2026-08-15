@@ -263,6 +263,17 @@ export interface ApiDeps {
    * setups / deployments without egress wiring).
    */
   egressEnforcementActive?: boolean;
+  /**
+   * docs/172 Tier B (planning#383) — whether this deployment installs the
+   * controlled resolver at all (`egressDnsEnabled()`). False
+   * (`SESSION_EGRESS_DNS=0`) means a contained session runs the fixed Tier A IP
+   * floor alone, so NO allowlist entry and no user grant can widen it, in any
+   * session. Every host surface reads it through `egressHostReach`, which
+   * defaults it to true when omitted — a pure env read is never unknowable in
+   * production, and a test runtime must not be told its deployment can grant
+   * nothing.
+   */
+  egressDnsControlDeployed?: boolean;
   /** File review store — unified review surface persistence (per session/file). */
   reviewStore?: FileReviewStore;
   /**

@@ -32,7 +32,8 @@ import {
   loadSatisfiedPluginCredentialNames,
 } from "./plugin-credentials.js";
 import { pluginCommandIssuesByRepo } from "./plugin-commands.js";
-import { pluginHostAllowance, pluginHostDeclarationsFor } from "./plugin-hosts.js";
+import { pluginHostDeclarationsFor } from "./plugin-hosts.js";
+import { egressHostReach } from "./egress-host-reach.js";
 import type { PluginCliRequest } from "./plugin-cli-run.js";
 import { pluginSettingsIssuesByRepo } from "./plugin-state.js";
 import {
@@ -209,8 +210,11 @@ export async function registerPluginRepoRoutes(
         // browser-only egress routes.
         const hostGroups = resolvePluginHosts(
           pluginHostDeclarationsFor(config.plugins, config.pluginExports, live),
-          pluginHostAllowance({
+          egressHostReach({
             contained: containEgress,
+            // planning#383 — the deployment axis. Without it the card offers a
+            // grant on an install where no grant can take effect.
+            dnsControlDeployed: deps.egressDnsControlDeployed,
             // The same seam the resolver and SNI proxy are configured from, so
             // the card cannot answer from a composition the session does not
             // actually run on (a Network-off sandbox is the case that made this

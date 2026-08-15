@@ -145,7 +145,7 @@ describe("SettingsEgress (docs/172, planning#92)", () => {
           staleUntilRestart: ["agent", "services"],
           // App-wide dialog: no session is in scope, so "restart" has no subject.
           restartSessionId: null,
-          excludedBySessionPolicy: false,
+          reach: "grantable",
         },
       });
       await add();

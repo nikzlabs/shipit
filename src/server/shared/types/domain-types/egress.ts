@@ -83,6 +83,38 @@ export interface EgressAllowlistEntry {
   removable: boolean;
 }
 
+// ---- Can a host be made reachable at all, and by whom (planning#383) ----
+
+/**
+ * The answer to ONE question about one host in one session: **can this host be
+ * made reachable, and by whom?** Every surface that reports on a declared or
+ * denied host reads this verdict, and nothing re-derives its own.
+ *
+ * It exists because three defects came out of the same requirement (docs/262
+ * req 24 — enforcement and the card must not disagree) and differed only in what
+ * the reporting side was optimistic ABOUT: a compose file (planning#377), a
+ * session (planning#380), a deployment (planning#383). Three predicates that
+ * each get one case right is the defect pattern, so there is one:
+ * `orchestrator/egress-host-reach.ts`.
+ *
+ *  - `allowed` — reachable as things stand. Nothing to grant.
+ *  - `grantable` — not reachable, and a USER act closes it: adding the host for
+ *    this session or for the whole instance takes effect. This is the only
+ *    verdict that may render a grant button.
+ *  - `blocked-by-session` — no user grant can work HERE: this session's own
+ *    resolved policy carries no user hosts at all (docs/211's Network-off
+ *    sandbox, whose `network` capability only ever tightens). The entry saves
+ *    and stays inert; another session on the same deployment is unaffected.
+ *  - `blocked-by-deployment` — no user grant can work in ANY session on this
+ *    deployment: with `SESSION_EGRESS_DNS=0` there is no Tier B resolver and no
+ *    Tier C proxy, so a contained session reaches the fixed Tier A IP floor and
+ *    nothing else, however the allowlist reads. Only an operator can change it.
+ *
+ * The two `blocked-*` verdicts are the ones a button may never sit on: every
+ * button there writes a durable entry that changes nothing.
+ */
+export type EgressHostReach = "allowed" | "grantable" | "blocked-by-session" | "blocked-by-deployment";
+
 // ---- What an allowlist ADD actually took effect on (planning#376) ----
 
 /**
@@ -133,14 +165,17 @@ export interface EgressHostGrantOutcome {
    */
   restartSessionId: string | null;
   /**
-   * True when the in-scope session's own resolved egress config excludes the
-   * host whatever the allowlist holds — docs/211's Network-off sandbox, which
-   * resolves to a lifeline-only config carrying no user hosts. The entry is
-   * saved (and reaches other sessions, for a global add), but THIS session
-   * cannot reach it and no restart changes that, so both lists are empty and
-   * the client must not offer one.
+   * {@link EgressHostReach} for this host, from the one predicate every host
+   * surface reads (`egress-host-reach.ts`) — so what the Plugins card said
+   * BEFORE the click and what this outcome says after it cannot disagree.
+   *
+   * Either `blocked-*` verdict means the entry was saved and still reaches
+   * nothing here: `blocked-by-session` for docs/211's Network-off sandbox
+   * (another session on this deployment is fine), `blocked-by-deployment` for a
+   * deployment that installs no resolver or proxy (no session is fine). Both
+   * empty the surface lists and offer no restart, because no restart helps.
    */
-  excludedBySessionPolicy: boolean;
+  reach: EgressHostReach;
 }
 
 /**

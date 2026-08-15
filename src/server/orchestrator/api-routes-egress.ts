@@ -35,9 +35,8 @@ import {
   normalizeHost,
   buildEffectiveAllowlist,
   isBuiltinDefault,
-  hostMatchesEntry,
-  EGRESS_DEFAULT_ALLOWLIST,
 } from "./egress-allowlist.js";
+import { egressHostReach } from "./egress-host-reach.js";
 import { EGRESS_GLOBAL_SCOPE } from "./egress-allowlist-store.js";
 import type { EgressAllowlistStore } from "./egress-allowlist-store.js";
 import type { CredentialStore } from "./credential-store.js";
@@ -46,6 +45,7 @@ import type {
   EgressSessionSettings,
   EgressAllowlistView,
   EgressHostGrantOutcome,
+  EgressHostReach,
 } from "../shared/types.js";
 import { computeEgressGrantOutcome } from "./egress-grant-outcome.js";
 import type { PersistedEgressPrompt } from "./chat-history.js";
@@ -125,6 +125,9 @@ export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps):
   // function of the process env. The honest signal the browser uses to
   // distinguish containment policy from enforcement (docs/172, planning#92).
   const enforcementActive = deps.egressEnforcementActive ?? false;
+  // planning#383 — whether Tier B exists on this deployment at all. Resolved
+  // once here for the same reason: a fixed function of the process env.
+  const dnsControlDeployed = deps.egressDnsControlDeployed;
 
   // The containment a session's LIVE container was actually started with — the
   // source of truth for "pending · restart to apply" (docs/172). `null` when no
@@ -138,22 +141,36 @@ export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps):
     return sc.egressContainedAtStart ?? null;
   };
 
-  // planning#376 — does this session's RESOLVED egress config exclude the host
-  // whatever the allowlist holds? docs/211's Network-off sandbox resolves to a
-  // lifeline-only config that carries no user hosts at all, so an add there
-  // saves the entry, reloads happily, and leaves the session unable to reach it
-  // — for good. Read from `resolveEgress`, the same seam the Plugins card and
-  // the plugin containers' enforcement read, so the report cannot contradict
-  // them. Fails OPEN (false) when nothing is knowable — an unwired resolver
-  // must not be rendered as a positive claim that the host is excluded.
-  const excludedBySessionPolicy = (sessionId: string, host: string): boolean => {
-    const cfg = deps.containerManager?.resolveEgress(sessionId);
-    if (!cfg?.contained) return false;
-    const h = normalizeHost(host);
-    // Exactly the composition the proxy is launched with (`pluginHostAllowance`,
-    // `buildProxyAllowed`): an omitted `base` means the full default list.
-    const entries = [...(cfg.base ?? EGRESS_DEFAULT_ALLOWLIST), ...cfg.extraHosts];
-    return !entries.some((entry) => hostMatchesEntry(h, normalizeHost(entry)));
+  // planning#376/#380/#383 — can this host be made reachable at all, and by
+  // whom? ONE predicate answers it for every host surface (`egress-host-reach.ts`),
+  // so what the Plugins card said before the click and what this route reports
+  // after it cannot disagree. This used to be a local re-derivation of the
+  // proxy's composition, which is how the three defects each got one case right
+  // and the next one wrong.
+  //
+  // The containment asked about is `isEgressContained`'s own rule — what the
+  // LIVE container started with, else the resolved policy, else the deployment's
+  // enforcement — because that is the rule the Plugins card asks, and the two
+  // stating different things about one host is the whole defect class. (Review
+  // finding: reading the policy alone reported "reaches nothing" for a session
+  // whose running container started Open and is unrestricted right now, while
+  // the card said `allowed` about the same host.) Fails to `grantable` when
+  // nothing is knowable — an unwired resolver must not be rendered as a
+  // positive claim that no grant can work.
+  //
+  // The app-wide Settings editor has NO session, and that is not a special case
+  // either: the same predicate answers it with no config at all, so a
+  // deployment-wide fact still lands (`blocked-by-deployment`) while a host the
+  // Tier A floor admits does not get swept up with it.
+  const reachFor = (sessionId: string | null, host: string): EgressHostReach => {
+    const config = sessionId ? deps.containerManager?.resolveEgress(sessionId) : undefined;
+    const startedContained = sessionId ? liveContained(sessionId) : null;
+    return egressHostReach({
+      contained: startedContained ?? config?.contained ?? enforcementActive,
+      dnsControlDeployed,
+      config,
+      ...(sessionId ? { sessionId } : {}),
+    })(host);
   };
 
   // ---- Browser-only egress settings (docs/172, planning#92) ------------------
@@ -225,7 +242,7 @@ export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps):
             sessionId: reportSession,
             enforcementActive,
             startedContained: reportSession ? liveContained(reportSession) : null,
-            excludedBySessionPolicy: reportSession ? excludedBySessionPolicy(reportSession, host) : false,
+            reach: reachFor(reportSession, host),
           });
         // Re-adding a removed built-in default just un-suppresses it (it's a
         // default, not a user entry). Otherwise it's a user-added host.
@@ -317,10 +334,22 @@ export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps):
         return { allow: false };
       }
 
-      // planning#380 — a session that admits no user hosts is answered here and
-      // goes no further. docs/211's Network-off sandbox is that session: its
-      // `network` capability "only ever tightens", its reach is the lifeline, and
-      // `sandboxLifelineEgressConfig` ignores the allowlist store outright.
+      // The verdict is read EXHAUSTIVELY, and that is the point rather than a
+      // formality (review finding): a partial reading left the sealed session
+      // below sealed for an unknown host and open for a lifeline one, which is
+      // two predicates again. `allowed` is the session's own configured reach —
+      // the live answer for a host the proxy's creation-time snapshot lacks;
+      // `grantable` continues to the decision flow below; either `blocked-*` is
+      // refused outright.
+      //
+      // planning#380 — a session no user grant can widen is answered here and
+      // goes no further, and the SAME predicate the Plugins card reads decides
+      // that (planning#383). docs/211's Network-off sandbox is the case that
+      // exists today: its `network` capability "only ever tightens", its reach
+      // is the lifeline, and `sandboxLifelineEgressConfig` ignores the allowlist
+      // store outright. A `blocked-by-deployment` verdict cannot arrive here in
+      // practice — with Tier B off there is no Tier C proxy to ask — and is
+      // refused by the same rule rather than by an exception to it.
       //
       // This was a hole, not merely an optimistic answer, because Tier A's ipset
       // floor is session-INDEPENDENT: `EGRESS_TIER_A_RESOLVE_HOSTS` plus the
@@ -337,9 +366,8 @@ export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps):
       // card under Network ON for exactly this reason. The user is not left
       // guessing in practice — Tier B refuses the name on every ordinary attempt,
       // so this path is only reached by deliberate IP-pinning.
-      if (deps.containerManager?.resolveEgress(sessionId)?.userHostsExcluded) {
-        return { allow: false };
-      }
+      const reach = reachFor(sessionId, host);
+      if (reach !== "grantable") return { allow: reach === "allowed" };
 
       if (isEgressHostAllowed(sessionId, host)) {
         return { allow: true };

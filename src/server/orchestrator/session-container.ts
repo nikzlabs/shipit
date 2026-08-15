@@ -549,7 +549,7 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
    * allow-once hosts — a plugin container's SNI proxy is on a network denied
    * ShipIt's whole API, so it cannot ask the decision endpoint and the answer
    * has to travel with it. That set plus the config's entries is exactly what
-   * `pluginHostAllowance` reports on the Plugins card, so enforcement and the
+   * `egressHostReach` reports on the Plugins card, so enforcement and the
    * card cannot disagree.
    */
   pluginEgressPolicy(sessionId: string): PluginEgressPolicy {

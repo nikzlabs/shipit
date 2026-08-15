@@ -119,7 +119,7 @@
  *    in-memory allow-once hosts are snapshotted
  *    into the static allowlist at launch (`listEgressAllowedHosts`), which is
  *    what keeps this container's reach equal to the agent's — and exactly equal
- *    to what `pluginHostAllowance` reports. A host allowed DURING a call is not
+ *    to what `egressHostReach` reports. A host allowed DURING a call is not
  *    picked up; these containers are short-lived and the next call gets it.
  *
  * ## Three things this does NOT close, stated so the next reader need not re-derive them
@@ -169,11 +169,10 @@
 
 import type Docker from "dockerode";
 import {
-  EGRESS_DEFAULT_ALLOWLIST,
-  hostMatchesEntry,
   normalizeHost,
   type ResolvedEgressConfig,
 } from "./egress-allowlist.js";
+import { egressHostReach } from "./egress-host-reach.js";
 import {
   buildTierAEgressInputs,
   installEgressFirewall,
@@ -234,7 +233,7 @@ export interface PluginEgressPolicy {
   /**
    * `ContainerSessionManager.resolveEgress` — the same `base` + `extraHosts` the
    * session's own resolver and proxy are launched with, and the same pair
-   * `pluginHostAllowance` reports the Plugins card from.
+   * `egressHostReach` reports the Plugins card from.
    */
   config?: ResolvedEgressConfig | undefined;
   /**
@@ -489,22 +488,31 @@ async function withDeadline<T>(ms: number, work: () => Promise<T>): Promise<T> {
  * staged manifest into the degraded state; that is the visibility surface's own
  * work, not this one's.)
  *
- * Matches by the same `hostMatchesEntry` rule the resolver and proxy are
- * configured with, so it cannot name a host that would actually have been
- * permitted. Empty for an uncontained session, where nothing is denied.
+ * Answers from `egressHostReach` — the ONE predicate the card, the grant route
+ * and the Tier C decision route read — rather than composing the allowlist
+ * itself. It composed it here until planning#383, and that made this the fourth
+ * surface with its own opinion: on a deployment running `SESSION_EGRESS_DNS=0`
+ * the composition is not what the netns admits at all (there is no resolver to
+ * pin an allowed name's IPs), so the failure message would OMIT a declared host
+ * that the install had genuinely just been blocked from reaching — the same
+ * defect as the card's, pointing the other way. Empty for an uncontained
+ * session, where nothing is denied.
  */
 export function unreachableDeclaredHosts(
   policy: PluginEgressPolicy,
   declared: readonly string[],
 ): string[] {
   if (!policy.contained || declared.length === 0) return [];
-  const allowed = allowedHosts(policy);
-  const entries = [...(allowed.base ?? EGRESS_DEFAULT_ALLOWLIST), ...allowed.extras]
-    .map(normalizeHost);
+  // The allow-once set travels as a snapshot here, for the reason this whole
+  // module exists: this container's proxy cannot ask the decision endpoint.
+  const reach = egressHostReach({
+    contained: true,
+    dnsControlDeployed: policy.dnsEnabled,
+    config: policy.config,
+    allowOnceHosts: policy.allowOnceHosts,
+  });
   return [...new Set(
-    declared
-      .map(normalizeHost)
-      .filter((host) => host && !entries.some((entry) => hostMatchesEntry(host, entry))),
+    declared.map(normalizeHost).filter((host) => host && reach(host) !== "allowed"),
   )];
 }
 
@@ -514,7 +522,7 @@ export function unreachableDeclaredHosts(
  *
  * `base` is passed through rather than defaulted, so a config that means "the
  * full built-in list" stays that and a Network-off sandbox's narrowed lifeline
- * base stays narrowed — the same composition `pluginHostAllowance` and
+ * base stays narrowed — the same composition `egressHostReach` and
  * `buildProxyAllowed` already agree on.
  */
 function allowedHosts(policy: PluginEgressPolicy): {

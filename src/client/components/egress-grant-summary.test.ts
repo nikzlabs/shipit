@@ -9,7 +9,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { summarizeEgressGrant } from "./egress-grant-summary.js";
+import { egressBlockedReason, summarizeEgressGrant } from "./egress-grant-summary.js";
 import type { EgressHostGrantOutcome } from "../../server/shared/types.js";
 
 const outcome = (over: Partial<EgressHostGrantOutcome>): EgressHostGrantOutcome => ({
@@ -18,7 +18,7 @@ const outcome = (over: Partial<EgressHostGrantOutcome>): EgressHostGrantOutcome 
   liveNow: ["new-containers"],
   staleUntilRestart: ["agent", "services"],
   restartSessionId: "sess-1",
-  excludedBySessionPolicy: false,
+  reach: "grantable",
   ...over,
 });
 
@@ -87,13 +87,36 @@ describe("summarizeEgressGrant", () => {
         liveNow: [],
         staleUntilRestart: [],
         restartSessionId: null,
-        excludedBySessionPolicy: true,
+        reach: "blocked-by-session",
       }),
     );
     expect(s.kind).toBe("excluded");
-    expect(s.detail).toContain("still can't reach it");
+    expect(s.detail).toContain("can't reach it");
     expect(s.detail).toContain("network access is off");
     expect(s.restartSessionId).toBeNull();
+  });
+
+  // planning#383 — the same claim one level up, and the one the old boolean
+  // could not express: the entry saved, and NO session on this deployment can
+  // act on it, so the report must not say "anything started from now on has it".
+  it("a deployment that can grant nothing says so, and blames nobody the user can be", () => {
+    const s = summarizeEgressGrant(
+      outcome({ liveNow: [], staleUntilRestart: [], restartSessionId: null, reach: "blocked-by-deployment" }),
+    );
+    expect(s.kind).toBe("excluded");
+    expect(s.detail).toContain("can't allow extra hosts");
+    expect(s.detail).toContain("Whoever runs this ShipIt");
+    expect(s.detail).not.toContain("Anything started from now on");
+    expect(s.restartSessionId).toBeNull();
+  });
+
+  // The row the Plugins card renders INSTEAD of a grant button reads the same
+  // helper, so the before-the-click and after-the-click wordings cannot drift.
+  it("egressBlockedReason answers for the two blocked verdicts and nothing else", () => {
+    expect(egressBlockedReason("blocked-by-deployment")?.headline).toContain("This ShipIt can't allow extra hosts");
+    expect(egressBlockedReason("blocked-by-session")?.headline).toContain("whatever the allowlist says");
+    expect(egressBlockedReason("grantable")).toBeNull();
+    expect(egressBlockedReason("allowed")).toBeNull();
   });
 
   it("quotes the host as markup the renderer turns into code", () => {

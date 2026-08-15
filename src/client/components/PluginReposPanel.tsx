@@ -16,7 +16,7 @@ import { useSessionStore } from "../stores/session-store.js";
 import { useApi, ApiError } from "../hooks/useApi.js";
 import type { PluginRepoCardView } from "../../server/shared/plugin-repos.js";
 import type { EgressHostGrantOutcome } from "../../server/shared/types.js";
-import { summarizeEgressGrant } from "./egress-grant-summary.js";
+import { egressBlockedReason, summarizeEgressGrant } from "./egress-grant-summary.js";
 import { RichErrorText } from "./PrLifecycleCard/RichErrorText.js";
 
 /**
@@ -103,17 +103,29 @@ function PluginRepoCard({
   const setKeys = repo.uses.flatMap((u) =>
     (u.credentials ?? []).filter((c) => c.satisfied).map((c) => ({ alias: u.alias, name: c.name })),
   );
-  // req 24 — the same two lists for declared external hosts. A host the session
-  // may not reach is a gap the user closes deliberately; a host it may reach is
-  // stated quietly, because the requirement asks the session to SHOW what a
-  // plugin needs, not only what is broken.
-  const blockedHosts = repo.uses.flatMap((u) =>
-    (u.hosts ?? []).filter((h) => !h.allowed).map((h) => ({ alias: u.alias, host: h.host })),
-  );
+  // req 24 — the same lists for declared external hosts. A host the session may
+  // reach is stated quietly, because the requirement asks the session to SHOW
+  // what a plugin needs, not only what is broken.
   const allowedHosts = repo.uses.flatMap((u) =>
-    (u.hosts ?? []).filter((h) => h.allowed).map((h) => ({ alias: u.alias, host: h.host })),
+    (u.hosts ?? []).filter((h) => h.reach === "allowed").map((h) => ({ alias: u.alias, host: h.host })),
   );
-  const needCount = missingKeys.length + blockedHosts.length;
+  // A gap the user closes deliberately — the only one that may carry a button.
+  const grantableHosts = repo.uses.flatMap((u) =>
+    (u.hosts ?? []).filter((h) => h.reach === "grantable").map((h) => ({ alias: u.alias, host: h.host })),
+  );
+  // planning#383 — and a gap NO user act closes: this deployment installs no
+  // resolver, or this session admits no user hosts at all. Both buttons would
+  // write a durable entry that changes nothing, so the card states the fact
+  // instead of offering one. Collapsed into a single row because the reason is a
+  // property of the session or the deployment, not of each host: repeating it
+  // per host would read as several different problems.
+  const ungrantableHosts = repo.uses.flatMap((u) =>
+    (u.hosts ?? [])
+      .filter((h) => h.reach === "blocked-by-session" || h.reach === "blocked-by-deployment")
+      .map((h) => ({ alias: u.alias, host: h.host, reach: h.reach })),
+  );
+  const blockedReason = ungrantableHosts[0] ? egressBlockedReason(ungrantableHosts[0].reach) : null;
+  const needCount = missingKeys.length + grantableHosts.length + ungrantableHosts.length;
   // planning#376 — what the last grant on THIS card took effect on, and the
   // failure if it had one. Both live here rather than in the row that made the
   // grant because the row unmounts on the way out: a success removes the gap the
@@ -241,7 +253,7 @@ function PluginRepoCard({
       {/* req 24 — the same shape for a declared host the session may not reach,
           with the two scopes the requirement names. The declaration itself
           granted nothing: pressing one of these is the deliberate user act. */}
-      {blockedHosts.map((need) => (
+      {grantableHosts.map((need) => (
         <HostNeedRow
           key={`${need.alias}:${need.host}`}
           alias={need.alias}
@@ -256,6 +268,28 @@ function PluginRepoCard({
           }}
         />
       ))}
+
+      {/* planning#383 — ONE row for every host no grant can reach, and NO button
+          on it, because every button there is a lie. It names the hosts so the
+          gap is still visible (req 24's whole point), and says who could change
+          it — which is never the person reading the card. */}
+      {blockedReason && (
+        <div
+          className="flex flex-wrap items-start gap-2 border-t border-(--color-border-primary) px-3 py-2 text-sm"
+          data-testid="plugin-hosts-ungrantable"
+        >
+          <GlobeIcon size={ICON_SIZE.SM} className="mt-0.5 flex-none text-(--color-warning)" />
+          <div className="min-w-0 flex-1 space-y-0.5 break-words">
+            <p className="text-(--color-text-primary)">
+              <RichErrorText
+                text={`${ungrantableHosts.map((h) => `\`${h.host}\``).join(", ")} — ${blockedReason.headline}`}
+                links={false}
+              />
+            </p>
+            <p className="text-xs text-(--color-text-secondary)">{blockedReason.detail}</p>
+          </div>
+        </div>
+      )}
 
       {grant && <HostGrantOutcomeRow grant={grant} onDismiss={() => setGrant(null)} />}
 

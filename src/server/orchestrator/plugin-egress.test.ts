@@ -67,7 +67,7 @@ import {
   UNCONTAINED_PLUGIN_EGRESS,
   type PluginEgressPolicy,
 } from "./plugin-egress.js";
-import { pluginHostAllowance } from "./plugin-hosts.js";
+import { egressHostReach } from "./egress-host-reach.js";
 import { hostMatchesEntry } from "./egress-allowlist.js";
 import { allowEgressHost, listEgressAllowedHosts, _resetEgressPolicies } from "./egress-policy.js";
 
@@ -341,7 +341,7 @@ describe("preparePluginNetns — a contained session", () => {
  *
  * Both answers are derived here from ONE session state — a resolved config plus
  * an allow-once decision — and compared host by host: what
- * `pluginHostAllowance` renders as allowed on the card is what the container's
+ * `egressHostReach` renders as allowed on the card is what the container's
  * SNI proxy will actually splice. Before this slice the card was the only one of
  * the two that existed for a CLI container, and it reported against an allowlist
  * nothing enforced.
@@ -365,19 +365,59 @@ describe("what the container reaches and what the card reports", () => {
     }));
     const proxyAllowed = launchProxy.mock.calls[0][1].allowed.split(" ");
 
-    const reportsAllowed = pluginHostAllowance({ contained: true, config, sessionId: SESSION });
+    const reportsAllowed = egressHostReach({
+      contained: true,
+      dnsControlDeployed: true,
+      config,
+      sessionId: SESSION,
+    });
     for (const host of [
       "base.example",         // the effective base
       "api.suffix.example",   // a suffix entry, matched rather than equalled
       "once.example",         // the allow-once decision
       "denied.example",       // and one nobody granted
     ]) {
-      expect({ host, allowed: reportsAllowed(host) }).toEqual({
+      expect({ host, allowed: reportsAllowed(host) === "allowed" }).toEqual({
         host,
         allowed: proxyAllowed.some((entry) => hostMatchesEntry(host, entry)),
       });
     }
     _resetEgressPolicies();
+  });
+
+  /**
+   * planning#383 — the same claim for the deployment that runs NO resolver and
+   * NO proxy. There is then nothing for an allowlist entry to act on, and the
+   * card must stop reporting against the allowlist and offering grants.
+   *
+   * Asserted against what `preparePluginNetns` actually launched, so the two
+   * cannot drift: the container's own tiers are the enforcement truth here.
+   */
+  it("and agree that a floor-only deployment can grant nothing", async () => {
+    const config = { contained: true, base: ["base.example"], extraHosts: ["extra.example"] };
+    const fake = fakeDocker();
+    await prepare(fake.docker, contained({ config, dnsEnabled: false, proxyEnabled: false }));
+
+    // Nothing was launched that could act on `base.example` or `extra.example`.
+    expect(launchResolver).not.toHaveBeenCalled();
+    expect(launchProxy).not.toHaveBeenCalled();
+    // And the one thing that WAS installed does not admit them either — read
+    // off the Tier A inputs rather than inferred from the two absences, or this
+    // test would be comparing the predicate with itself (review finding).
+    const inputs = (installFirewall.mock.calls[0][1] as { inputs: { hosts: string[] } }).inputs;
+    expect(inputs.hosts).not.toContain("base.example");
+    expect(inputs.hosts).not.toContain("extra.example");
+    // (No positive assertion off `inputs`: this suite stubs
+    // `buildTierAEgressInputs`, so its floor is a fixture. The real floor is
+    // `EGRESS_TIER_A_RESOLVE_HOSTS`, which both halves read.)
+
+    const reach = egressHostReach({ contained: true, dnsControlDeployed: false, config, sessionId: SESSION });
+    // So neither entry may read as reachable, and neither may read as a gap a
+    // user grant closes — the state the card had no way to render at all.
+    expect(reach("base.example")).toBe("blocked-by-deployment");
+    expect(reach("extra.example")).toBe("blocked-by-deployment");
+    // What the installer itself resolves stays reachable, because it is.
+    expect(reach("api.anthropic.com")).toBe("allowed");
   });
 });
 
@@ -403,6 +443,22 @@ describe("unreachableDeclaredHosts", () => {
   it("says nothing when the session denies nothing, or the plugin declared nothing", () => {
     expect(unreachableDeclaredHosts(UNCONTAINED_PLUGIN_EGRESS, ["vendor.example"])).toEqual([]);
     expect(unreachableDeclaredHosts(contained(), [])).toEqual([]);
+  });
+
+  // planning#383 — this was the FOURTH surface with its own opinion, and its
+  // optimism pointed the other way: on a floor-only deployment the allowlist is
+  // not what the netns admits, so an install blocked from `base.example` got a
+  // failure message that did not name it. It reads the one predicate now.
+  it("names a host the allowlist carries but a floor-only deployment does not admit", () => {
+    expect(unreachableDeclaredHosts(
+      contained({
+        config: { contained: true, base: ["base.example"], extraHosts: [".suffix.example"] },
+        allowOnceHosts: ["once.example"],
+        dnsEnabled: false,
+        proxyEnabled: false,
+      }),
+      ["base.example", "api.suffix.example", "once.example", "api.anthropic.com"],
+    )).toEqual(["base.example", "api.suffix.example", "once.example"]);
   });
 });
 

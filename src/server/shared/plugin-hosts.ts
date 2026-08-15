@@ -32,18 +32,22 @@
 
 import { declaredPluginNeeds } from "./plugin-needs.js";
 import type { PluginExport, PluginReposConfig } from "./plugin-repos.js";
+import type { EgressHostReach } from "./types.js";
 
-/** One declared host and whether this session's egress configuration allows it. */
+/** One declared host and what this session's egress configuration says about it. */
 export interface PluginHostNeed {
   host: string;
   /**
-   * True when the session can reach it today — because the session is not
-   * contained at all, or because the host matches its effective allowlist.
-   * False is the "not yet allowed" req 24 asks the session to show; it is a
-   * gap to grant, never a failure, and never something a declaration closed
-   * by itself.
+   * The one verdict every host surface reads (`orchestrator/egress-host-reach.ts`):
+   * reachable, closable by a user grant, or closable by nobody the user can be.
+   *
+   * `grantable` is the "not yet allowed" req 24 asks the session to show — a gap
+   * to grant, never a failure, and never something a declaration closed by
+   * itself. A `blocked-*` verdict is the gap the requirement's affordance CANNOT
+   * close, and the card must state it without a button rather than offer a grant
+   * that writes an inert entry (planning#383).
    */
-  allowed: boolean;
+  reach: EgressHostReach;
 }
 
 /** What one activated plugin declares, before allowance is known. */
@@ -89,19 +93,20 @@ export function declaredPluginHosts(
 /**
  * Resolve declared hosts against what the session may actually reach.
  *
- * `isAllowed` is the session's own egress answer — never anything derived from
+ * `reachOf` is the session's own egress answer — never anything derived from
  * the plugin declaration, which is the whole point of req 24's "grants
- * nothing". The orchestrator half (`orchestrator/plugin-hosts.ts`) builds it
- * from the same effective allowlist the Settings editor renders.
+ * nothing". It is `orchestrator/egress-host-reach.ts`, the same predicate the
+ * grant route and the Tier C decision route read, so this projection cannot
+ * report a state the enforcement side disagrees with.
  */
 export function resolvePluginHosts(
   declarations: readonly PluginHostDeclaration[],
-  isAllowed: (host: string) => boolean,
+  reachOf: (host: string) => EgressHostReach,
 ): PluginHostGroup[] {
   return declarations.map((d) => ({
     repo: d.repo,
     plugin: d.plugin,
     alias: d.alias,
-    hosts: d.hosts.map((host) => ({ host, allowed: isAllowed(host) })),
+    hosts: d.hosts.map((host) => ({ host, reach: reachOf(host) })),
   }));
 }
