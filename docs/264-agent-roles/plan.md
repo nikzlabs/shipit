@@ -12,8 +12,9 @@ Implements [`requirements.md`](./requirements.md). Requirement numbers below ref
 
 A **role** is a named unit of agent work the user configures once: the harness that runs it, the
 model it runs and the reasoning level, plus an optional description and standing instructions. An
-agent starts a role **by name** and supplies nothing else (reqs 3, 4) — by the same command
-vocabulary whether it wants a one-shot consult or a child session (req 16).
+agent starts a role **by name** (reqs 3, 4), optionally overriding any parameter the user asked to
+change (req 10) — through the same API surface whether it wants a one-shot consult or a child
+session (req 16).
 
 The reviewer is a role (req 2). ShipIt's existing review path — `--role reviewer`, resolved from
 two configured candidates ranked by distance from whatever is implementing (docs/261) — becomes
@@ -26,14 +27,21 @@ whose params ShipIt supplies. See *The reviewer*.
 There is no second flag and no second name-space, so "review with `deep-dive`" and "review this"
 differ only in whether the user said the name out loud.
 
-**The agent names a role; it never names a param.** That is the whole boundary, and it is the one
-docs/261 req 6 already draws — *name the role, never the reviewer*. Choosing which role fits an
-intent is judgement, and judgement is what an agent is for: turning "review the PR" into the
-reviewer role is the same act as turning "review this" into `--role reviewer` today. Choosing a
-**model** or a **level** is not judgement — those are values an agent cannot enumerate (see
-*The inventory*), so a guess is indistinguishable from a fact. Roles keep the agent on the right
-side of that line by construction: the user configured the params, so the agent has nothing to
-guess.
+**The agent chooses a role; it never chooses a parameter.** Choosing which role fits an intent is
+judgement, and judgement is what an agent is for: turning "review the PR" into the reviewer role
+is the same act as turning "review this" into `--role reviewer` today.
+
+A parameter is different, and the difference survives overrides being allowed (req 10). An agent
+may **relay** one — "review this with Opus at high effort" is the user's instruction and the agent
+carries it verbatim — and may not **decide** one. The distinction is invisible to ShipIt: a model
+the agent remembered and a model the user named arrive identically. So it is held in two places at
+once — the agent is told to relay and not decide, and the inventory (below) means a relayed value
+can at least be checked against what this install actually has, rather than being taken on faith
+from the agent's memory of models that may not exist here.
+
+**The default stays a bare role**, which is what keeps this from drifting back to the agent
+assembling targets: a run with no override names one word and inherits a complete, user-configured
+tuple.
 
 ## What a role is
 
@@ -137,23 +145,37 @@ or deleted at all (req 2), which the reserved key enforces rather than the UI.
 
 ## Resolution
 
-`resolveRoleByName(name, implementer, deps)` looks the name up and returns a frozen target:
+`resolveRoleByName(name, overrides, implementer, deps)` looks the name up, applies whatever the
+caller overrode, and returns a frozen target:
 
 1. **Unknown name → `ServiceError` listing the roles that do exist** (req 13). The list is the
    whole remedy; nothing else needs saying.
-2. **`auto` params** → delegate to `selectReviewer` (docs/261, unchanged), which ranks the two
-   candidates against `implementer` and returns an already-routed target. This is the only branch
-   that needs to know what is implementing.
-3. **`pinned` params** → the role's own tuple. The harness is the one the role names (req 6 — not
-   derived, no implementer preference), and the only question left is whether it still has a
-   **usable route**. The level is the role's, already validated at save against that same harness.
+2. **`pinned` params** → the role's tuple, with any override substituted over it. The harness is
+   the role's unless overridden (req 6 — never derived), and the only question left is whether the
+   result has a **usable route**.
+3. **`auto` params** (the reviewer) → **an override replaces the resolution rather than editing
+   it.** Ranking two candidates and then swapping a field of the winner would produce a tuple
+   nobody chose: the ranking's answer is a *whole* selection, and half of it plus a substituted
+   model is neither what ShipIt picked nor what the user asked for. So a reviewer run with no
+   override ranks as it does today; one with an override resolves the named parameter directly and
+   derives the rest around it.
 
 Either way, freeze the target with the role's name on it.
 
-The pinned branch is **simpler** than the auto one, not a parallel implementation of it: the
-ranking machinery exists to *choose* a harness and a model, and a pinned role has already chosen.
-What is shared is the routing and the freezing; what the pinned branch skips is every step that
-was deciding something the role states.
+**An overridden tuple is validated exactly as a stored one is** — the model exists on that service
+and billing mode, the harness can carry it, the level is one that harness declares. The same
+harness-explicit validator does both, because an override reaching the run is the same object as a
+role reaching the run; the only difference is where the fields came from. An override that does
+not validate is **refused, naming the parameter**, never quietly dropped: a dropped override runs
+something other than what was asked for, which is the failure this whole design exists to prevent.
+
+**Overriding cannot make a role run something it could not be saved as.** That symmetry matters
+because it is what stops the override path from being a hole in req 6: there is no combination
+reachable through `--role X --model Y` that a role could not have been configured to hold.
+
+**Precedence, stated once:** an override beats the role; the role beats derivation; nothing beats
+an override. Every field the caller did not name comes from the role, and every field the role does
+not carry (the reviewer's case) is derived.
 
 A role that cannot run says which of the two it is: **stranded** (its model, service or harness is
 gone — it needs a Settings edit, and is never silently repaired) or **temporarily unroutable** (its
@@ -212,7 +234,7 @@ the two commands answer it in two different vocabularies, and req 16 collapses t
 | | `shipit agent run` | `shipit session create` |
 |---|---|---|
 | **Today** | a role, or all five params; an omission refused | `--agent` and `--model` only, forwarded as bare values — no service, no billing mode, **no reasoning level at all**; everything else inherited |
-| **Becomes** | a role, or a complete target | a role, or a complete target, or inherit (± overrides — open question 1) |
+| **Becomes** | a role, a role ± overrides, or a complete target | the same three, plus inherit when nothing is named |
 
 **The child session gains the most, and that is the point.** It cannot express a complete target
 at all right now: `session create` parses `--agent`/`--model` and forwards them bare
@@ -226,11 +248,15 @@ or a complete target in, a resolved `(harness, selection, effort)` out, with one
 `session create` calls the same thing instead of its own two-flag reading. That is what makes the
 two commands *consistent by construction* rather than by two implementations agreeing.
 
-**Where they legitimately differ, and why that is not a inconsistency.** Only a child has a parent,
-so only a child can inherit. docs/261 req 7 refuses an incomplete one-shot call precisely because
-there is nowhere honest to fill a blank from; a child *has* somewhere, and it is visible. So:
-**naming a target is whole; modifying an inheritance is partial** — and whether the partial mode
-survives at all is open question 1.
+**Where they legitimately differ, and it is one thing only.** A child has a parent and so may
+inherit when nothing is named; a one-shot run has nothing to inherit from, so naming a role (or a
+target) is how it says anything at all. Everything else — the role, the overrides, the refusals —
+is identical, which is what req 16 asks for.
+
+**Overriding is not the same as inheriting, and the two do not stack confusingly.** An override
+modifies whatever base the caller named: a role, or the child's inheritance. It is always
+*something the caller wrote* over *something the caller can point at*, which is the property that
+keeps docs/261 req 7's rule intact — no blank is ever filled from a place the caller cannot see.
 
 **What a role does to a child, once resolved.** A role decides what the child *starts as*, not
 what it is bound to (req 11). The resolution happens once, before any disk work; it seeds the new
@@ -241,9 +267,11 @@ account failover and retirement behaviour, per turn. The one-shot path's frozen 
 carried in, or a child is pinned to one credential for its whole life and failover breaks days
 later under quota exhaustion.
 
-**Mutual exclusion, both commands.** `--role NAME` together with any parameter that says what to
-run on is refused (req 10) — all five explicit flags on the one-shot path, which is what the
-server already enforces, and `--agent`/`--model` on the child path.
+**Overrides replace the old mutual exclusion.** `--role NAME` alongside a parameter used to be
+refused; it is now the override path (req 10). What stays refused is a call that names *no* role
+and *some* parameters — an incomplete target with nothing to complete it from, which is docs/261
+req 7's rule and is untouched. So the refusal moves rather than disappearing: it now fires on
+incompleteness, not on the combination.
 
 ## The CLI
 
@@ -259,6 +287,20 @@ EOF
 A role name may contain anything the user typed, so it is quoted where it needs quoting —
 `--role "deep dive"` — exactly as a title already is.
 
+An override rides alongside, on either command, and names only what changes:
+
+```
+shipit agent run      --role deep-dive --model claude-opus-5 --prompt-file - <<'EOF'
+…
+EOF
+shipit session create --role deep-dive --effort high --title "…" --prompt-file - <<'EOF'
+…
+EOF
+```
+
+The role supplies everything not named. **The same flags mean the same thing on both commands**,
+which is the whole of req 16: one parser, one validator, one set of refusals.
+
 **The shim's role check changes shape.** Today it rejects an unknown role locally against a
 compiled-in list, to give the agent a fast message. It cannot know the user's roles — they live
 server-side — so the local check becomes a pass-through and the server's resolution is the
@@ -267,61 +309,68 @@ what it can know and does not pretend to know the rest.
 
 ## The inventory (req 12)
 
-An agent can only map an intent onto roles it can see. Today it can see nothing of the sort: the
-session shim exposes `agent run` and `agent result` and nothing that lists services, models,
-levels **or roles**.
+An agent can only name what it can see. Today it can see nothing: the session shim exposes
+`agent run` and `agent result` and nothing that lists roles, models, harnesses or levels.
 
-The smallest thing that satisfies req 12 is a **read of the roles, and only the roles** —
-`shipit agent roles`, each entry a name and its description (req 9, which is why the description
-is its own field rather than the prompt's first line: a role need not have a prompt, and one
-without a description would be unchooseable).
+Req 12 needs two reads, and they exist for different reasons:
 
-**Roles only, and that is a scope choice rather than a consequence.** Exposing the service and
-model catalogue would make the fully-specified path *enumerable*, and therefore usable — which is
-not what req 15 forbids; req 15 is about not documenting a path the agent cannot use. So the
-honest statement is narrower: the role list is the smallest surface that answers req 3, and it
-keeps the division this feature is built on — the user chooses params, the agent chooses roles.
-Whether ShipIt should ever expose the catalogue to an agent is a separate product question this
-design does not settle.
+- **The roles** — name and description (req 9), so an intent can be mapped onto one (req 3) and
+  the user can be told what exists. Where a role has no description the name stands alone.
+- **The parameters this install actually has** — the eligible models with their service and
+  billing mode, the harnesses, and each harness's reasoning levels. This is what makes an override
+  (req 10) name something real.
 
-The refusal (req 13) carries the same list, so an unknown role is self-correcting: the agent
-learns the real names at the moment it guessed wrong.
+**The second read is the one that changed, and it changed a boundary this design had twice drawn
+the other way.** While a role was a unit, withholding the catalogue kept the agent out of the
+business of choosing params. Once an override is allowed, withholding it does the opposite: the
+agent still names a model, but names it from memory, and a remembered model may not exist on this
+install at all. **Allowing overrides and withholding the list is strictly the worst combination**,
+so the two ship together.
+
+What this does *not* become is an invitation to assemble targets from scratch — that is req 15's
+subject, and the answer there is unchanged: a role is the path, an override is a modification to
+it, and the parameter list exists to make the modification honest rather than to make the
+five-parameter form attractive.
+
+The refusal (req 13) carries the role list, so an unknown role is self-correcting; an override
+that names something this install does not have is refused the same way, naming the parameter.
 
 ## What the agent is told (req 15)
 
 ShipIt injects instructions into every session, and today they document a run that names every
-parameter — harness, service, billing mode, model and level, all mandatory, an incomplete call
-refused. **An agent cannot satisfy that call**, because nothing in its environment enumerates
-services, models, billing modes or levels; the only way to produce one is to guess, and a guessed
-parameter is indistinguishable from a supplied one.
+parameter — harness, service, billing mode, model and level, all mandatory. That shape leaves the
+injected documentation, and req 12's inventory changes *why* rather than whether.
 
-So that shape leaves the injected documentation. What the agent is told is: name a role, and if
-you need one that does not exist, say so — the user creates it in Settings (req 5).
+**The reason is no longer "the agent cannot".** With the parameter list available, an agent could
+assemble such a call. The reason is that it should not have to: **a role, with an override where
+one is wanted, does the same job in less and keeps what runs anchored to something the user
+configured.** A five-flag call names a target nobody chose in Settings and that nothing in the
+product remembers; `--role deep-dive --model X` says the same thing while staying attached to a
+role the user owns.
+
+So the agent is told: name a role; carry an override when the user asked for one; if the role you
+need does not exist, say so — the user creates it in Settings (req 5).
 
 **The path stays implemented, and the repository override stays reachable.** docs/261 req 2 lets a
 repository override the reviewer by naming all five parameters, and its phase 5 drew the line on
 *what the caller was handed*: no complete target ⇒ use the role; a complete target ⇒ pass it
-through. A flat "always name a role" would delete that carve-out, so the injected guidance keeps
-it in the only form that cannot teach guessing: **if repository policy hands you a complete
-target, pass it through unchanged; never assemble one yourself.**
+through. The injected guidance keeps that carve-out in the form that cannot teach assembly: **if
+repository policy hands you a complete target, pass it through unchanged.**
 
 **This collides with a shipped guard, and the collision is the work.**
 `review-command-callers.test.ts` asserts that `shipit-docs/agent.md` contains at least one
-*complete* five-flag invocation, precisely so the override stays documented — a test written to
-stop this shape being lost. Req 15 removes it from the pages ShipIt injects into a session. Both
-cannot hold for the same page, so the audiences separate: the complete shape belongs in the
-human-facing reference for whoever writes repository policy, and the guard moves with it,
-asserting it is documented *there*.
+*complete* five-flag invocation, precisely so the override stays documented. Req 15 removes it from
+the pages ShipIt injects into a session. Both cannot hold for the same page, so the audiences
+separate: the complete shape belongs in the human-facing reference for whoever writes repository
+policy, and the guard moves with it.
 
 **The removal surface is wider than that one page, and the existing guard cannot see the rest.**
 Both harness system prompts (`agents/claude/system-prompt.md`, `agents/codex/system-prompt.md`)
 also spell the complete five-flag command out in full. The guard today rejects only *incomplete*
-explicit runs in those prompts (`incompleteExplicitRuns`), so a complete one passes unnoticed —
-which is correct for the rule it was written for and wrong for req 15's. So phase 4 needs the
-mirror assertion: **no `completeExplicitRuns` in any `buildAgentSystemInstructions` variant or any
-injected doc**, with the positive "it is documented somewhere" assertion pointed at the
-human-facing reference instead. Without that, req 15 lands on one page and leaves the same command
-in the two places every session actually reads.
+explicit runs there (`incompleteExplicitRuns`), so a complete one passes unnoticed. Phase 4 needs
+the mirror assertion: **no `completeExplicitRuns` in any `buildAgentSystemInstructions` variant or
+any injected doc**, with the positive "it is documented somewhere" assertion pointed at the
+human-facing reference instead.
 
 ## Settings (req 5)
 
@@ -416,9 +465,13 @@ deliberately does not have.
   settings store, two text fields on the row, and a length rule where they meet the task. The real
   cost is that a role carrying instructions invites the user to treat it as a custom agent
   definition — which is the invitation this feature intends.
-- **A new agent-facing read** (req 12). One small list endpoint, whose cost is not the endpoint
-  but the **boundary**: widening it to the catalogue would put the agent back to assembling
-  params, which is the division this feature exists to draw.
+- **Two new agent-facing reads** (req 12) — the roles, and the parameters this install has. The
+  second is the real cost, and it is a **product** cost rather than an engineering one: an agent
+  that can see every model is an agent that can be asked to pick one, and the only thing keeping
+  it from doing so is what it is told (req 10's relay-don't-decide rule). That rule is
+  unenforceable by construction, which is worth stating plainly rather than discovering later.
+  The mitigation is that the default path — a bare role — remains shorter and easier than
+  assembling anything.
 - **A required harness** (req 6) is one more thing that can go stale and one more pair that can
   disagree — answered by the save-time check and the stale-pin path. Set against that, it removes
   the effort-across-harnesses failure mode entirely.
@@ -427,10 +480,10 @@ deliberately does not have.
 
 | # | Phase | Reqs | Done when |
 |---|---|---|---|
-| 1 | Storage + resolution: the role record, the params discriminator, the synthesized reviewer, `resolveRoleByName`, the harness-explicit validator | 1, 2, 6, 7, 8, 9, 13 | A role is stored, resolved and routed on the harness it names; a level is validated against *that* harness; `getRoles()` yields the reviewer on an empty store; stranded and quota-exhausted are reported differently; an unknown name is refused listing the known ones |
+| 1 | Storage + resolution: the role record, the params discriminator, the synthesized reviewer, `resolveRoleByName` with overrides, the harness-explicit validator | 1, 2, 6, 7, 8, 9, 10, 13 | A role resolves on the harness it names; an override substitutes over it and is validated as a stored tuple would be, refused by name when invalid; an override on the reviewer replaces the ranking rather than editing its winner; `getRoles()` yields the reviewer on an empty store |
 | 2 | Settings: role CRUD through the existing mutation surface, the Reviewer section above the pinned-role list, the **role editor**, the unresolved-role view | 1, 2, 5, 6, 8, 9, 17 | A role is created, edited and deleted from one editor rather than inline controls; the reviewer has no rename or delete and keeps its two slot cards; a role whose model or harness is gone still renders its stored tuple and stays editable |
-| 3 | One spawn vocabulary: the shared target resolver behind both commands, `--role NAME` on each, the roles read, the prompt join, the intent-to-role guidance | 3, 4, 10, 11, 12, 14, 16 | Both commands take a role and a complete target through **one** resolver; a child can finally name a service, billing mode and level; a child seeded from a role then routes like any other session, carrying an immutable `originRoleName`; `--role` plus any what-to-run-on parameter is refused |
-| 4 | Documentation split: the five-parameter shape leaves every injected surface and moves to the human-facing reference, with its guard inverted | 15 | Neither injected doc nor any system-prompt variant contains a complete five-flag command; the repository override is documented for whoever writes repository policy, and the guard asserts it *there* |
+| 3 | One API surface: the shared target resolver behind both commands, `--role NAME` plus override flags on each, both reads, the prompt join, the intent-to-role guidance | 3, 4, 10, 11, 12, 14, 16 | Both commands take a role, a role with overrides, and a complete target through **one** parser and validator; a child can finally name a service, billing mode and level; a child seeded from a role then routes like any other session, carrying an immutable `originRoleName`; the agent can list roles *and* available parameters |
+| 4 | Documentation split: the five-parameter shape leaves every injected surface and moves to the human-facing reference, with its guard inverted | 15 | Neither injected doc nor any system-prompt variant contains a complete five-flag command; the agent is told to name a role and relay an override rather than assemble a target; the repository override is documented for whoever writes repository policy, and the guard asserts it *there* |
 
 Phase 1 carries the params discriminator, so `selectReviewer` and the two-slot settings survive
 intact behind the `auto` branch rather than being retired or reimplemented.

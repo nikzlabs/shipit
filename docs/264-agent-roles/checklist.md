@@ -27,8 +27,14 @@ The design is [`plan.md`](./plan.md); the contract is [`requirements.md`](./requ
       removes — pin it with a fabricated dual-harness fixture whose effort sets differ
 - [ ] Save checks **compatibility only**, never live route availability — a role must remain
       saveable while a subscription is exhausted or a provider is down
-- [ ] `resolveRoleByName` — `auto` delegates to `selectReviewer` unchanged; `pinned` runs on the
-      harness the role names, checked only for a usable route; both freeze with the role's name
+- [ ] `resolveRoleByName(name, overrides, …)` — `pinned` applies overrides over the role's tuple;
+      `auto` with no override delegates to `selectReviewer` unchanged, and `auto` **with** an
+      override resolves the named parameter directly instead of ranking-then-substituting (half a
+      ranked winner plus a swapped field is a tuple nobody chose). Both freeze with the role's name
+- [ ] **An overridden tuple is validated exactly as a stored one** by the same harness-explicit
+      validator, and an invalid override is **refused naming the parameter**, never dropped —
+      a dropped override runs something other than what was asked for
+- [ ] No combination is reachable via override that a role could not have been saved with
 - [ ] **Stranded and quota-exhausted report differently**: a gone model/service/harness needs a
       Settings edit and is never re-pointed through a retirement successor (req 7, open question
       1); a spent subscription says when to retry and keeps the exact tuple
@@ -57,7 +63,7 @@ The design is [`plan.md`](./plan.md); the contract is [`requirements.md`](./requ
       renders its raw tuple as text, names the invalid field, and stays editable and deletable —
       it must not vanish or be silently rewritten to the first available option
 
-## Phase 3 — One spawn vocabulary (reqs 11, 16)
+## Phase 3 — One API surface (reqs 11, 16)
 
 - [ ] **One shared target resolver behind both commands**: a role name or a complete target in, a
       resolved `(harness, selection, effort)` out, with one set of refusals. `sub-agent-target.ts`
@@ -67,11 +73,11 @@ The design is [`plan.md`](./plan.md); the contract is [`requirements.md`](./requ
       and level — which it cannot today (it forwards `--agent`/`--model` bare, so a service,
       billing mode and level are unsayable)
 - [ ] `--role NAME` on both commands
-- [ ] `--role NAME` refused together with **any** what-to-run-on parameter (req 10): all five
-      explicit flags on the one-shot path — matching what the server already enforces — and
-      `--agent`/`--model` on the child path
-- [ ] Inheritance stays child-only, and whether it keeps partial override is **open question 1** —
-      do not implement a partial override against a role or a complete target either way
+- [ ] `--role NAME` **plus override flags** on both commands — one parser, one validator, one set
+      of refusals (req 16). What stays refused is a call naming no role and only *some* parameters:
+      an incomplete target with nothing to complete it from (docs/261 req 7, untouched)
+- [ ] Inheritance stays child-only — it is the one thing the two commands legitimately differ on,
+      because only a child has a parent
 - [ ] A role on `session create` resolves **once at creation**, seeds the session row with the
       complete tuple passed directly (not through `agent`/`model`, which drops service, billing
       mode and level), and then routes like any other session
@@ -82,9 +88,13 @@ The design is [`plan.md`](./plan.md); the contract is [`requirements.md`](./requ
       against the destination's limit (200k one-shot, 50k child). The no-instructions case returns
       the task unchanged **from the join** — end-to-end byte identity is not claimed, since child
       creation already trims
-- [ ] The roles read (req 12) — name plus description, scoped to roles
-- [ ] Agent-facing guidance: map the user's intent onto a role, pass an explicitly named role
-      through unchanged, and supply no param
+- [ ] **Two reads** (req 12): the roles (name plus description), and the parameters this install
+      has (eligible models with service and billing mode, harnesses, per-harness reasoning levels).
+      The second is what makes an override name something real — shipping overrides without it
+      would have the agent naming models from memory
+- [ ] Agent-facing guidance: map the user's intent onto a role; **relay** an override the user
+      asked for and never **decide** one; default to a bare role. ShipIt cannot tell a relayed
+      value from an invented one, so this rule lives only in the instructions
 
 ## Phase 4 — Documentation split (req 15)
 
@@ -92,6 +102,8 @@ The design is [`plan.md`](./plan.md); the contract is [`requirements.md`](./requ
       both harness system prompts, which spell it out in full today
 - [ ] The repository override stays documented in the human-facing reference, keeping docs/261
       phase 5's line: pass a complete target through unchanged, never assemble one
+- [ ] The replacement guidance says a role plus an override does the same job in less — the reason
+      the five-parameter form is not taught is no longer that the agent cannot use it
 - [ ] `review-command-callers.test.ts` inverts: add a **negative** `completeExplicitRuns`
       assertion across every `buildAgentSystemInstructions` variant and every injected doc — the
       guard today only rejects *incomplete* runs there, so a complete one passes unnoticed — and

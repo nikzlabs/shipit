@@ -13,7 +13,7 @@ does today.
 A user preconfigures **agent roles**: named units of agent work, each naming the harness that
 runs it, the model it runs (a service, a billing mode and a model id) and the reasoning level,
 and optionally a description and standing instructions describing the job. An agent starts a role
-**by name**, and supplies nothing else.
+**by name**; where the user wants a variation, it may override any parameter the role carries.
 
 There is one kind of role. What a role's params may be is where the only variation lives: the
 user pins them (req 7), and ShipIt ships one role — the reviewer — whose params it resolves
@@ -22,8 +22,8 @@ instead (req 2).
 ## Requirements
 
 1. **A user can create any number of agent roles**, and each role is a **complete** unit — the
-   harness, the service, the billing mode, the model and the reasoning level. Nothing about a
-   role is left for the agent to decide when it starts one.
+   harness, the service, the billing mode, the model and the reasoning level. A role is complete
+   on its own: starting one needs nothing added to it.
 
 2. **The reviewer is a role, and it is the one role whose params ShipIt resolves.** Asking for a
    review and asking for any other role are the same action: name the role. What sets the
@@ -56,9 +56,10 @@ instead (req 2).
    invocation and stays available (req 15). What an agent may never do is *assemble* such a target
    itself.
 
-4. **Starting a role costs a name and nothing else.** A role is invoked in one word, or in no
-   word at all when the intent alone resolves it (req 3). The user never restates the model, the
-   level or the harness at the moment of use — that is what they configured the role for.
+4. **Starting a role costs a name.** A role is invoked in one word, or in no word at all when the
+   intent alone resolves it (req 3). Nothing else has to be restated at the moment of use — that
+   is what the role was configured for. A caller that wants a variation may say so (req 10), but
+   it is never required to.
 
 5. **Roles are created and edited in ShipIt's settings UI.** The UI is where a role comes from:
    it is the surface that can show the user which services, models, harnesses and reasoning
@@ -77,9 +78,11 @@ instead (req 2).
    (req 2), and its harness is part of what ShipIt resolves — that is the exception req 2 already
    names, not a second rule.
 
-7. **Starting a role runs exactly what the role names.** Resolving a role never substitutes a
-   different model, harness or level for the ones it carries. The single exception is the reviewer
-   ShipIt ships, whose params ShipIt resolves by design (req 2).
+7. **A role runs what it names, and ShipIt never substitutes anything for it.** Resolution does
+   not quietly swap a model, a harness or a level — a role that cannot run says so rather than
+   running on something else. Two things are not substitutions and are allowed: the reviewer's
+   params, which ShipIt resolves by design (req 2), and an override the caller asked for
+   (req 10), which is visible in the request that made it.
 
    This governs **resolution**. What a child session does over its own life afterwards is req 11's
    subject, and the two are deliberately different: a role hands a child its starting tuple and
@@ -92,9 +95,17 @@ instead (req 2).
    read. It is optional, like standing instructions — a role without one is complete, and the
    agent falls back to the name.
 
-10. **A role is a unit; it is not overridden when it is started.** Naming a role together with
-    any parameter that would say what to run on — a harness, a service, a billing mode, a model
-    or a reasoning level — is refused. A variation the user wants is a different role.
+10. **A role may be overridden when it is started, in any parameter it carries** — the harness,
+    the service, the billing mode, the model, the reasoning level. The role supplies everything
+    not overridden. Wanting a variation is common enough that requiring a whole second role for
+    it would be the wrong trade.
+
+    **An override comes from the user, and the agent relays it rather than choosing it.** This is
+    the line that has to survive: an agent may carry "review this with Opus at high effort"
+    because the user said so, and may not decide on its own which model or level a run deserves.
+    A value the agent invented and a value the user asked for are indistinguishable once they
+    reach ShipIt, so the rule lives in what the agent is told rather than in what ShipIt can
+    detect.
 
 11. **A role can be used for either way of starting an agent: a one-shot run, or a child
     session.** These are the two shapes a sub-agent takes — a consult that returns its output to
@@ -108,14 +119,17 @@ instead (req 2).
     than what the role named. Editing or deleting the role afterwards does not reach back into a
     child that already exists.
 
-12. **The agent can see which roles exist.** It can read this install's roles — their names and
-    what each is for (req 9) — so that it can map an intent onto one (req 3), tell the user what
-    is available when they ask, and name the alternatives when a role does not resolve (req 13).
-    An agent that has to guess a role name is the same failure as an agent that has to guess a
-    model: a confident wrong answer whose origin the user cannot see.
+12. **The agent can see what it is allowed to name — both the roles and the parameters.** It can
+    read this install's roles (their names, and what each is for — req 9) so it can map an intent
+    onto one (req 3) and tell the user what exists; and it can read the parameters that are
+    actually available here — the models, the harnesses, the reasoning levels — so that an
+    override (req 10) names something real.
 
-    This is scoped to **roles**: it is the smallest surface that answers req 3, and it keeps the
-    agent choosing roles rather than assembling params.
+    **This is what makes overriding safe rather than a licence to guess.** An override the agent
+    cannot check is a guess, and a guessed parameter is indistinguishable from one the user
+    supplied. Allowing overrides and withholding the list would be the worst of both: the agent
+    would fill the gap from memory, naming models this install does not have. So the two go
+    together — the ability to name a parameter, and the ability to see which parameters exist.
 
 13. **An unknown role name is refused, and the refusal names the roles that do exist.** The name
     is resolved server-side, and the user is told what they can say next rather than what they
@@ -126,18 +140,18 @@ instead (req 2).
     billing mode that served it. This holds for both ways of starting a role (req 11), and a child
     session also records which role started it.
 
-15. **ShipIt does not tell an agent to assemble a run out of parameters it cannot enumerate.**
-    The instructions ShipIt injects into a session do not describe a way of starting an agent
-    that requires naming a harness, a service, a billing mode, a model and a level together,
-    because nothing in a session lets an agent discover those values. The path remains
-    implemented, and remains documented for the humans and repositories that do hold those
-    values — it simply stops being offered to the caller that cannot.
+15. **A role is the path ShipIt teaches; naming every parameter from scratch is not.** The
+    instructions ShipIt injects do not present starting an agent by assembling a harness, a
+    service, a billing mode, a model and a level together — a role, with an override where one is
+    wanted (req 10), does the same job in less and keeps what runs anchored to something the user
+    configured. That path remains implemented, and remains documented for the humans and
+    repositories that hold a complete target of their own.
 
-16. **The two ways of starting an agent take the same vocabulary for saying what it runs on.** A
-    one-shot run and a child session both accept **a role**, and both accept **a complete target**
-    naming every parameter; the same things are refused in both, and a role is a unit in both
-    (req 10). Where they differ is only where they must: a child session has a parent, so it may
-    also inherit, and a one-shot run has nothing to inherit from.
+16. **The two ways of starting an agent have the same API surface.** A one-shot run and a child
+    session accept the same things in the same way: a role, a role with overrides (req 10), or a
+    complete target naming every parameter — with the same refusals in both. Where they differ is
+    only where they must: a child session has a parent and so may also inherit, and a one-shot run
+    has nothing to inherit from.
 
     Today they differ far more than that — a child session can name only a harness and a model,
     so it cannot express a complete target at all, and its service, billing mode and reasoning
@@ -160,22 +174,33 @@ other agent settings already do.
 
 ## Open questions
 
-1. **Does a child session keep "inherit, then override one parameter"?** Req 16 unifies how the
-   two commands *name* a target — a role, or a complete target, all-or-nothing in both. That
-   leaves one mode only a child can have: inherit its parent's tuple and change part of it, which
-   is what `--agent` and `--model` do today.
-
-   **Recommended: keep it, and scope it to inheritance.** A partial override is coherent exactly
-   when there is a complete base to modify and the user can see where the rest came from — the
-   parent. It is *not* coherent against a role (req 10) or a complete target, where a blank would
-   be filled from somewhere invisible, which is the failure docs/261 req 7 exists to prevent. So
-   the line is: **naming a target is whole; modifying an inheritance is partial.**
-
-   The alternative is to drop partial override entirely, making a child either fully inherit or
-   fully name a target. That is simpler and more uniform, and it removes a convenience you have
-   called convenient — which is why it is your call rather than a recommendation I should take.
+_None._
 
 ## Resolved questions
+
+- 2026-08-14 — **May a role be overridden when it is started, and do the two commands share one
+  API surface?** **Chosen: yes to both — a role may be overridden in any parameter, and the two
+  commands are the same surface.** The human: *"I feel like sub-agents and children should have
+  the same API surface, and we probably cannot avoid overriding parameters. So let's say that a
+  role can be overridden by any modification, which would include the model, the harness, thinking
+  level, whatever there is. And so we need to make sure that the agent knows what are the params
+  available."*
+
+  This **reverses** an earlier decision that a role is a unit and an override is refused, and it
+  closes the question of whether a child keeps partial override — everything overrides everywhere,
+  so the inherit-versus-name distinction that question turned on no longer separates anything.
+  Reqs 4, 7, 10 and 16 are rewritten accordingly.
+
+  **The third sentence is the load-bearing one, and it is why this is coherent rather than a
+  loosening.** Overrides and the parameter inventory arrive together: an agent that may name a
+  model but cannot see which models exist would fill the gap from memory, and a remembered model
+  is indistinguishable from a supplied one by the time it reaches ShipIt. Req 12 therefore grows
+  from roles-only to roles-and-parameters, reversing a boundary this document had drawn twice.
+
+  **What survives, stated because it is now the only thing standing between this and an agent
+  choosing models for itself:** an override is *the user's*, relayed. The agent may carry "review
+  this with Opus at high effort" and may not decide that a run deserves a different model. ShipIt
+  cannot tell the two apart, so the rule lives in what the agent is told (req 10).
 
 - 2026-08-14 — **What happens to a role whose model is retired?** **Chosen: the role stops working
   and says so, and the user re-points it in Settings.** The human agreed with the recommendation.
@@ -199,7 +224,8 @@ other agent settings already do.
   accepts only `--agent` and `--model` and forwards them as bare values, so a child session cannot
   express a service, a billing mode or a reasoning level at all — the two commands answer the same
   question in two different vocabularies, and unifying them *adds* to the child rather than only
-  constraining it. What becomes of the child's partial override is open question 1.
+  constraining it. How far the unification goes was settled the same day — see the override
+  receipt above.
 
 - 2026-08-14 — **How is a role edited?** **Chosen: a dedicated role editor, not inline controls.**
   The human: *"Need a separate 'role editor dialog' instead of inline dropdowns like it is now, to
@@ -311,11 +337,18 @@ his. What he actually said:
 
 - "need to unify the 'child spawn' and 'sub-agent within the session' spawn api. Both should be
   able to take roles, but a child spawn is now more flexible, allowing overriding a model … This is
-  convenient, but becomes inconsistent with the sub-agent changes." → req 16, and open question 1,
-  which is the part he identified as a tension rather than decided.
+  convenient, but becomes inconsistent with the sub-agent changes." → req 16. He resolved the
+  tension he identified here in the same session, by making overrides general rather than
+  removing them.
 - "Need a separate 'role editor dialog' instead of inline dropdowns like it is now, to edit name,
   description, prompt." → req 17.
 - "agree, but optional" (of the description) → req 9's optionality.
+- "sub-agents and children should have the same API surface, and we probably cannot avoid
+  overriding parameters … a role can be overridden by any modification, which would include the
+  model, the harness, thinking level, whatever there is. And so we need to make sure that the
+  agent knows what are the params available." → reqs 10, 12 and 16, and the rewrites of reqs 4
+  and 7. The pairing of the two halves — overrides *and* an inventory — is his, and it is what
+  keeps the override from being a licence to guess.
 
 Reqs 7 and 10 are his answers to questions put to him, recorded above.
 
