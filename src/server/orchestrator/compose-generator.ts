@@ -19,12 +19,7 @@ import { sessionWorkerUid } from "./session-worker-uid.js";
 import { COMPOSE_OVERRIDE_FILE } from "./session-state-dir.js";
 import { EGRESS_RESOLVER_UID } from "./egress-dns.js";
 import { EGRESS_PROXY_UID } from "./egress-proxy-install.js";
-import {
-  PLUGIN_COMMIT_ENV,
-  PLUGIN_PROJECT_ENV,
-  PLUGIN_SETTINGS_ENV,
-  PLUGIN_STATE_ENV,
-} from "../shared/plugin-contract.js";
+import { PLUGIN_CONTRACT_ENV_NAMES } from "../shared/plugin-contract.js";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -1091,11 +1086,6 @@ function mergePluginCredentialEnv(
   }
   return base;
 }
-
-/** ShipIt's own in-container contract — never overridable by a stored secret. */
-const PLUGIN_CONTRACT_ENV_NAMES: ReadonlySet<string> = new Set([
-  PLUGIN_PROJECT_ENV, PLUGIN_STATE_ENV, PLUGIN_SETTINGS_ENV, PLUGIN_COMMIT_ENV,
-]);
 
 /**
  * Generate the `.shipit/compose.override.yml` content.

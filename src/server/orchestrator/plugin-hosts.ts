@@ -35,19 +35,30 @@
  * policy. An Open session denies nothing, so nothing there is "not yet
  * allowed" — naming a gap would send the user to grant what was never blocked.
  *
- * ## What this cannot see, stated rather than left implied
+ * ## What this report covers, and where it is still narrower than it looks
+ *
+ * All three execution surfaces are now bound by the allowlist this reads:
+ * plugin **services** through docs/263's `containComposeServices`, and the
+ * **companion-CLI invocation** and **install** containers through
+ * `plugin-egress.ts`, which builds each one a namespace carrying the Tier A/B/C
+ * stack from this same `resolveEgress` answer. (Those two used to join a plain
+ * NAT bridge with nothing installed — a gap in req 24's enforcement half that
+ * this report was careful not to claim was closed. It is closed now.)
  *
  * Two divergences between "the configuration permits it" and "the call will
- * succeed", both recorded because the honest report is narrower than it looks:
+ * succeed" remain, recorded because the honest report is narrower than it looks:
  *
- *  - A **companion-CLI invocation** container joins its own
- *    `shipit-plugin-cli` bridge (`plugin-container.ts`) with no firewall,
- *    resolver or proxy installed, so it is not bound by this allowlist at all.
- *    That is a gap in req 24's enforcement half, not in this report.
  *  - An **instance-scoped** grant applies to the running resolver and proxy
  *    only at the next container start (`api-routes-egress.ts` reloads for a
  *    session-scoped add alone), though the proxy's decision endpoint honours it
- *    live for a host outside the static set.
+ *    live for a host outside the static set. Plugin CLI and install containers
+ *    are built per call, so for them "the next container start" is the next
+ *    invocation.
+ *  - An **allow-once** decision taken WHILE a plugin CLI or install is running
+ *    does not reach it: that container's proxy has no decision endpoint to ask
+ *    (its network is denied ShipIt's API by req 19), so the allow-once set is
+ *    snapshotted into its static allowlist at launch. The next invocation has
+ *    it. The agent's own proxy, which can ask, is unaffected.
  *
  * The card therefore says a host is not in the session's egress allowlist, not
  * that a call was blocked, and the instance-scope button says when it takes

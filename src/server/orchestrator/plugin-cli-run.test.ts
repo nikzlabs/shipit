@@ -27,6 +27,39 @@ import {
   generationHoldCount,
   releaseSessionGenerationHolds,
 } from "./plugin-leases.js";
+import { UNCONTAINED_PLUGIN_EGRESS, type PluginEgressPolicy } from "./plugin-egress.js";
+
+// docs/262 req 24 — the tier launchers shell out to a privileged sidecar on a
+// live host and `buildTierAEgressInputs` fetches GitHub's meta endpoint, so the
+// contained branch below stubs them at the same seam
+// `compose-service-egress.test.ts` does. Everything from `runPluginCommand` down
+// to the namespace decision is the production path; what these stub is the
+// privileged work the namespace decision leads to.
+vi.mock("./egress-firewall-install.js", async (load) => ({
+  // eslint-disable-next-line no-restricted-syntax -- Vitest partial-module mock typing
+  ...(await load<typeof import("./egress-firewall-install.js")>()),
+  buildTierAEgressInputs: vi.fn(async () => ({ hosts: [], cidrs: [] })),
+  installEgressFirewall: vi.fn(async () => undefined),
+}));
+vi.mock("./egress-dns-install.js", async (load) => ({
+  // eslint-disable-next-line no-restricted-syntax -- Vitest partial-module mock typing
+  ...(await load<typeof import("./egress-dns-install.js")>()),
+  launchEgressResolver: vi.fn(async () => "resolver-id"),
+}));
+vi.mock("./egress-proxy-install.js", async (load) => ({
+  // eslint-disable-next-line no-restricted-syntax -- Vitest partial-module mock typing
+  ...(await load<typeof import("./egress-proxy-install.js")>()),
+  launchEgressProxy: vi.fn(async () => "proxy-id"),
+}));
+
+/** A contained session's posture, as `ContainerSessionManager` would report it. */
+const CONTAINED_EGRESS: PluginEgressPolicy = {
+  contained: true,
+  config: { contained: true, extraHosts: [] },
+  sidecarImage: "egress-sidecar:test",
+  dnsEnabled: true,
+  proxyEnabled: true,
+};
 
 const COMMIT = "d".repeat(40);
 
@@ -99,6 +132,8 @@ function publishGeneration(manifest = MANIFEST, source = "acme/tools"): void {
 }
 
 interface Created {
+  /** The daemon's id, so a `container:<holder>` namespace can be traced to one. */
+  id: string;
   opts: Record<string, unknown>;
   /**
    * Whether this container's own subnet was already denied at ShipIt's API when
@@ -161,12 +196,16 @@ function fakeDocker(opts: { exit?: number; stdout?: string; stderr?: string } = 
       },
       remove: async () => { volumes.delete(name); },
     }),
+    listContainers: async () => [],
+    getContainer: (_id: string) => ({ remove: async () => undefined }),
     createContainer: async (createOpts: Record<string, unknown>) => {
       containers.push({
+        id: `c-${containers.length + 1}`,
         opts: createOpts,
         deniedAtCreate: isUntrustedContainerIp(CLI_SUBNET_ADDRESS),
       });
       return {
+        id: `c-${containers.length}`,
         attach: async () => {
           // Flowing, so `end()` actually reaches `end`/`close` — the real
           // hijacked stream is consumed by dockerode's demuxer.
@@ -193,7 +232,18 @@ function fakeDocker(opts: { exit?: number; stdout?: string; stderr?: string } = 
  * `repo: self` branch would evade an assertion made once, on the pinned
  * no-settings path (review finding).
  */
-function expectBoundaryHolds(created: Record<string, unknown>, expectedTargets: string[]): void {
+function expectBoundaryHolds(
+  created: Record<string, unknown>,
+  expectedTargets: string[],
+  /**
+   * The namespace this container may run in. Defaults to the plugin network —
+   * an uncontained session, and every branch below except the contained one. A
+   * PARAMETER rather than a fixed value because req 24 made a second correct
+   * answer possible (`container:<holder>`), and the wrong one — a session
+   * container's namespace — is neither: see the contained test for why.
+   */
+  expectedNetworkMode: string = PLUGIN_CLI_NETWORK,
+): void {
   const host = created.HostConfig as {
     Mounts: Mount[];
     Binds?: string[];
@@ -213,7 +263,7 @@ function expectBoundaryHolds(created: Record<string, unknown>, expectedTargets: 
   // session's bridge as well would reach ShipIt's API from an address in no
   // registered untrusted subnet, which the guard reads as a browser caller.
   expect(created.NetworkingConfig).toBeUndefined();
-  expect(host.NetworkMode).toBe(PLUGIN_CLI_NETWORK);
+  expect(host.NetworkMode).toBe(expectedNetworkMode);
   for (const m of host.Mounts) {
     expect(`${m.Source} ${m.Target}`).not.toMatch(/credential/i);
   }
@@ -680,7 +730,7 @@ exports:
     publishGeneration();
     const fake = fakeDocker();
 
-    await runPluginCommand(deps(fake.docker), call);
+    await runPluginCommand(deps(fake.docker, { egress: () => UNCONTAINED_PLUGIN_EGRESS }), call);
 
     const host = fake.containers[0].opts.HostConfig as {
       NetworkMode: string;
@@ -689,9 +739,9 @@ exports:
       CapAdd?: string[];
     };
     expect(host.NetworkMode).toBe(PLUGIN_CLI_NETWORK);
-    // Spelled out as well as pinned, because the two namespace-sharing modes
-    // are what the assertion above is really for, and a future change that
-    // renames the network must not read as permission to use one of them.
+    // Spelled out as well as pinned, because the namespace-sharing modes are
+    // what the assertion above is really for, and a future change that renames
+    // the network must not read as permission to use one of them.
     expect(host.NetworkMode).not.toBe("host");
     expect(host.NetworkMode.startsWith("container:")).toBe(false);
     // Nor a hand-written route back to the host, where ShipIt's own API is
@@ -699,6 +749,67 @@ exports:
     expect(host.ExtraHosts ?? []).toEqual([]);
     expect(host.Privileged ?? false).toBe(false);
     expect(host.CapAdd ?? []).toEqual([]);
+  });
+
+  /**
+   * docs/262 req 24 — and the reason the assertion above is stated as "not a
+   * SESSION container's namespace" rather than "not a `container:` mode at all".
+   *
+   * A contained session's companion CLI DOES run in a shared namespace now, so
+   * that it reaches exactly what the agent reaches. What makes that safe is
+   * WHOSE namespace: a holder ShipIt created for this call, on the same
+   * untrusted plugin network, running nothing. The session's container is on the
+   * session bridge and serves `/agent-ops/*` on its loopback, so joining it
+   * instead would turn `git -C /project fetch` into a token read — with the
+   * mount and environment assertions in this file still green.
+   */
+  it("joins a ShipIt-owned holder on the plugin network when the session is contained", async () => {
+    declareConsumer();
+    publishGeneration();
+    const fake = fakeDocker();
+
+    const result = await runPluginCommand(
+      deps(fake.docker, { egress: () => CONTAINED_EGRESS }),
+      call,
+    );
+
+    expect(result.error).toBeUndefined();
+    const [holder, workload] = fake.containers;
+    // The holder is created FIRST and is the namespace the workload joins.
+    expect((workload.opts.HostConfig as { NetworkMode: string }).NetworkMode)
+      .toBe(`container:${holder.id}`);
+    // …and the holder itself is on the untrusted plugin network, holding
+    // nothing: no repository code, no mounts, no environment. Everything it can
+    // reach, plugin code can reach.
+    const holderHost = holder.opts.HostConfig as Record<string, unknown>;
+    expect(holderHost.NetworkMode).toBe(PLUGIN_CLI_NETWORK);
+    expect(holderHost.Mounts ?? []).toEqual([]);
+    expect(holderHost.Binds ?? []).toEqual([]);
+    expect(holder.opts.Env ?? []).toEqual([]);
+    // The workload's own boundary is unchanged by any of this — it did not
+    // acquire a mount or a capability along with a namespace.
+    expectBoundaryHolds(
+      workload.opts, ["/plugin", "/project", "/plugin-state"], `container:${holder.id}`,
+    );
+  });
+
+  // Fail closed, and at the surface: a contained session whose deployment cannot
+  // install containment gets a refusal, not a plugin container with unrestricted
+  // egress. Nothing is created — not even the holder, since the missing image is
+  // what would have contained it.
+  it("refuses to run a contained session's CLI when containment cannot be installed", async () => {
+    declareConsumer();
+    publishGeneration();
+    const fake = fakeDocker();
+
+    const result = await runPluginCommand(
+      deps(fake.docker, { egress: () => ({ ...CONTAINED_EGRESS, sidecarImage: undefined }) }),
+      call,
+    );
+
+    expect(result.exitCode).toBe(126);
+    expect(result.error).toContain("network policy could not be applied");
+    expect(fake.containers).toHaveLength(0);
   });
 
   /**

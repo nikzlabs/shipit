@@ -519,6 +519,9 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
       // is not about daemon-path translation, so a bind-mount deployment needs
       // it just as much.
       depStoreDir: stateDir,
+      // req 24 — a thunk, so a refresh hours later installs under the posture
+      // that holds then rather than the one this runner was built under.
+      egress: () => containerManager.pluginEgressPolicy(sessionId),
       // Both omitted in dev/dogfood bind-mount mode, where the daemon and this
       // process see the same paths and no translation is needed.
       ...(containerManager.workspaceVolumeName
@@ -725,6 +728,10 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
           },
           // req 28 — where a generation's pinned dependency bases resolve.
           depStoreDir: stateDir,
+          // req 24 — read per call, not per session: a companion CLI can be
+          // invoked long after the session opened, after a grant or a flip to
+          // Open mode.
+          egress: () => containerManager.pluginEgressPolicy(sessionId),
           ...(containerManager.workspaceVolumeName
             ? { workspaceVolume: containerManager.workspaceVolumeName, stateRoot: stateDir }
             : {}),

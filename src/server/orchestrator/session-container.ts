@@ -68,6 +68,8 @@ import {
   readonlyRootfsEnabled,
 } from "./container-hardening.js";
 import { reloadEgressSidecars } from "./egress-reload.js";
+import { listEgressAllowedHosts } from "./egress-policy.js";
+import type { PluginEgressPolicy } from "./plugin-egress.js";
 import type { ResolvedEgressConfig } from "./egress-allowlist.js";
 import type { SessionInfo } from "../shared/types.js";
 
@@ -534,6 +536,32 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
    */
   resolveEgress(sessionId: string): ResolvedEgressConfig | undefined {
     return this.resolveEgressConfig?.(sessionId);
+  }
+
+  /**
+   * docs/262 req 24 — the same posture, shaped for the two plugin containers
+   * that run outside Compose (`plugin-egress.ts`).
+   *
+   * It composes the answers above rather than adding a second source: the
+   * containment verdict, the resolved config the session's own resolver and
+   * proxy were launched with, the tier flags, the sidecar image, and this
+   * manager's labels. The one thing it adds is the session's in-memory
+   * allow-once hosts — a plugin container's SNI proxy is on a network denied
+   * ShipIt's whole API, so it cannot ask the decision endpoint and the answer
+   * has to travel with it. That set plus the config's entries is exactly what
+   * `pluginHostAllowance` reports on the Plugins card, so enforcement and the
+   * card cannot disagree.
+   */
+  pluginEgressPolicy(sessionId: string): PluginEgressPolicy {
+    const contained = this.isEgressContained(sessionId);
+    return {
+      contained,
+      config: this.resolveEgressConfig?.(sessionId),
+      allowOnceHosts: contained ? listEgressAllowedHosts(sessionId) : [],
+      sidecarImage: process.env.SESSION_EGRESS_SIDECAR_IMAGE,
+      dnsEnabled: this.isEgressDnsContained(sessionId),
+      proxyEnabled: this.isEgressProxyContained(sessionId),
+    };
   }
 
   isEgressDnsContained(sessionId: string): boolean {

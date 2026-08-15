@@ -30,6 +30,37 @@ import { clearUntrustedContainerNetworks, isUntrustedContainerIp } from "./api-c
 import { pluginWorkDir } from "./plugin-overlay.js";
 import type { PluginInstallJob } from "./plugin-generations.js";
 import type { PluginExport } from "../shared/plugin-repos.js";
+import { UNCONTAINED_PLUGIN_EGRESS, type PluginEgressPolicy } from "./plugin-egress.js";
+
+// docs/262 req 24 — the privileged tier launchers, stubbed at the same seam
+// `compose-service-egress.test.ts` uses (they need a live host, and
+// `buildTierAEgressInputs` fetches GitHub's meta endpoint). What stays real is
+// the decision this file is about: which namespace the install container runs in.
+vi.mock("./egress-firewall-install.js", async (load) => ({
+  // eslint-disable-next-line no-restricted-syntax -- Vitest partial-module mock typing
+  ...(await load<typeof import("./egress-firewall-install.js")>()),
+  buildTierAEgressInputs: vi.fn(async () => ({ hosts: [], cidrs: [] })),
+  installEgressFirewall: vi.fn(async () => undefined),
+}));
+vi.mock("./egress-dns-install.js", async (load) => ({
+  // eslint-disable-next-line no-restricted-syntax -- Vitest partial-module mock typing
+  ...(await load<typeof import("./egress-dns-install.js")>()),
+  launchEgressResolver: vi.fn(async () => "resolver-id"),
+}));
+vi.mock("./egress-proxy-install.js", async (load) => ({
+  // eslint-disable-next-line no-restricted-syntax -- Vitest partial-module mock typing
+  ...(await load<typeof import("./egress-proxy-install.js")>()),
+  launchEgressProxy: vi.fn(async () => "proxy-id"),
+}));
+
+/** A contained session's posture, as `ContainerSessionManager` would report it. */
+const CONTAINED_EGRESS: PluginEgressPolicy = {
+  contained: true,
+  config: { contained: true, extraHosts: [] },
+  sidecarImage: "egress-sidecar:test",
+  dnsEnabled: true,
+  proxyEnabled: true,
+};
 
 // --- fixtures ---------------------------------------------------------------
 
@@ -47,6 +78,8 @@ function exportWith(name: string, install?: string): PluginExport {
 }
 
 interface CreatedContainer {
+  /** The daemon's id, so a `container:<holder>` namespace can be traced to one. */
+  id: string;
   opts: Record<string, unknown>;
   killed: boolean;
   removed: boolean;
@@ -112,12 +145,20 @@ function fakeDocker(opts: {
         deleted.add(name);
       },
     }),
+    listContainers: async () => [],
+    getContainer: (_id: string) => ({ remove: async () => undefined }),
     createContainer: async (createOpts: Record<string, unknown>) => {
-      const record: CreatedContainer = { opts: createOpts, killed: false, removed: false };
+      const record: CreatedContainer = {
+        id: `c-${containers.length + 1}`,
+        opts: createOpts,
+        killed: false,
+        removed: false,
+      };
       containers.push(record);
       let finish: (v: { StatusCode: number }) => void = () => undefined;
       const waited = new Promise<{ StatusCode: number }>((resolve) => { finish = resolve; });
       return {
+        id: record.id,
         start: async () => { opts.onStart?.(); },
         wait: async () => {
           if (opts.exit === "hang") return waited;
@@ -336,11 +377,15 @@ describe("createPluginInstallRunner", () => {
     expect(second.containers).toHaveLength(1);
   });
 
-  it("reaps both kinds of plugin container a previous process left behind", async () => {
+  it("reaps every kind of plugin container a previous process left behind", async () => {
     const removed: string[] = [];
     const byLabel: Record<string, string> = {
       "shipit-plugin-install": "install-1",
       "shipit-plugin-cli": "cli-1",
+      // req 24's netns holder. It matters MORE than the two above, not less: it
+      // is the only one with `RestartPolicy` sidecars attached, so a leak keeps
+      // a resolver and an SNI proxy alive for a call that ended at a crash.
+      "shipit-plugin-netns": "netns-1",
     };
     const docker = {
       listContainers: async (opts: { filters: { label: string[] } }) => {
@@ -358,8 +403,8 @@ describe("createPluginInstallRunner", () => {
     // inside one request, so a survivor of either kind at boot is an orphan by
     // definition — and until it is removed it holds the generation's overlay
     // volume, which then cannot be removed either.
-    expect(await reapOrphanPluginInstalls(docker)).toBe(2);
-    expect(removed).toEqual(["install-1", "cli-1"]);
+    expect(await reapOrphanPluginInstalls(docker)).toBe(3);
+    expect(removed).toEqual(["install-1", "cli-1", "netns-1"]);
   });
 
   // The finding this encodes: on ANY unregistered network the orchestrator's
@@ -379,6 +424,88 @@ describe("createPluginInstallRunner", () => {
     expect(isUntrustedContainerIp("172.28.0.7")).toBe(true);
     // A session container's own bridge address is untouched by this.
     expect(isUntrustedContainerIp("172.18.0.4")).toBe(false);
+  });
+
+  /**
+   * docs/262 req 24 — an install is repo-authored code with outbound access
+   * (`npm ci` fetches), and until this it had UNRESTRICTED outbound while the
+   * project's own `agent.install` ran under the session's allowlist. Now it runs
+   * in a ShipIt-owned holder carrying that same allowlist.
+   *
+   * The req-19 half is what the assertion is really about: the holder is on the
+   * install network, whose subnet the guard denies, so the namespace change buys
+   * the install no API reach. A SESSION container's namespace would have.
+   */
+  it("runs a contained session's install in a holder on the install network", async () => {
+    const { docker, containers } = fakeDocker();
+
+    const result = await createPluginInstallRunner({
+      docker, image: "worker:test", sessionId: "s1", stateDir,
+      egress: () => CONTAINED_EGRESS,
+    })(job([exportWith("probe", "npm ci")]));
+
+    expect(result).toEqual({ ok: true });
+    const [holder, install] = containers;
+    expect((install!.opts.HostConfig as { NetworkMode: string }).NetworkMode)
+      .toBe(`container:${holder!.id}`);
+    const holderHost = holder!.opts.HostConfig as Record<string, unknown>;
+    expect(holderHost.NetworkMode).toBe(PLUGIN_INSTALL_NETWORK);
+    expect(holderHost.Binds ?? []).toEqual([]);
+    expect(holder!.opts.Env ?? []).toEqual([]);
+    // Released when the install ends: the holder outlives every install
+    // container by construction, so nothing else can remove it.
+    expect(holder!.removed).toBe(true);
+  });
+
+  // One holder for the whole run, not one per command: a generation's install
+  // commands are one logical install, and each namespace costs a holder plus its
+  // sidecars.
+  it("shares one namespace across a generation's install commands", async () => {
+    const { docker, containers } = fakeDocker();
+
+    await createPluginInstallRunner({
+      docker, image: "worker:test", sessionId: "s1", stateDir,
+      egress: () => CONTAINED_EGRESS,
+    })(job([exportWith("a", "npm ci"), exportWith("b", "npm run build")]));
+
+    const [holder, ...installs] = containers;
+    expect(installs).toHaveLength(2);
+    for (const one of installs) {
+      expect((one.opts.HostConfig as { NetworkMode: string }).NetworkMode)
+        .toBe(`container:${holder!.id}`);
+    }
+  });
+
+  // Fail closed, and BEFORE the install container: a contained session whose
+  // deployment cannot install containment gets a failed activation (which
+  // degrades to the prior generation, req 15), never an install with
+  // unrestricted egress.
+  it("fails a contained session's install when containment cannot be installed", async () => {
+    const { docker, containers } = fakeDocker();
+
+    const result = await createPluginInstallRunner({
+      docker, image: "worker:test", sessionId: "s1", stateDir,
+      egress: () => ({ ...CONTAINED_EGRESS, sidecarImage: undefined }),
+    })(job([exportWith("probe", "npm ci")]));
+
+    expect(result.ok).toBe(false);
+    expect(result.reason).toContain("SESSION_EGRESS_SIDECAR_IMAGE");
+    expect(containers).toHaveLength(0);
+  });
+
+  // The other half of req 24's sentence: an uncontained session's plugin code
+  // must reach what its own code reaches, which there is everything.
+  it("leaves an uncontained session's install on the plugin network unchanged", async () => {
+    const { docker, containers } = fakeDocker();
+
+    await createPluginInstallRunner({
+      docker, image: "worker:test", sessionId: "s1", stateDir,
+      egress: () => UNCONTAINED_PLUGIN_EGRESS,
+    })(job([exportWith("probe", "npm ci")]));
+
+    expect(containers).toHaveLength(1);
+    expect((containers[0]!.opts.HostConfig as { NetworkMode: string }).NetworkMode)
+      .toBe(PLUGIN_INSTALL_NETWORK);
   });
 
   it("refuses to install when its network has no subnet it can deny", async () => {

@@ -246,3 +246,11 @@ manifest, a service whose fragment was rejected — each says so on the card.
 Declared `hosts:` are the exception, and by design: they tell you which external
 hosts a plugin needs, and grant nothing. A plugin reaches exactly what any other
 code in this session reaches, under the session's own egress configuration.
+
+That applies to all three ways plugin code runs — a plugin service, a companion
+CLI you invoke, and the plugin's own `install`. So on a contained session a call
+to a host outside the allowlist fails the same way it would from your own code,
+and the fix is the same: the repository's card lists the declared hosts that are
+not allowed yet and offers to add them, for this session or for the whole
+instance. Adding one takes effect on the next companion-CLI call; there is no
+allow-once prompt from inside a plugin container.

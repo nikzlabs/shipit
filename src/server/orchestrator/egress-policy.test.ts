@@ -9,6 +9,7 @@ import {
   shouldCardEgressHost,
   clearEgressPolicy,
   setEgressDurableSource,
+  listEgressAllowedHosts,
   _resetEgressPolicies,
 } from "./egress-policy.js";
 
@@ -48,6 +49,32 @@ describe("egress-policy", () => {
     allowEgressHost("s1", "x.com");
     clearEgressPolicy("s1");
     expect(isEgressHostAllowed("s1", "x.com")).toBe(false);
+  });
+
+  /**
+   * docs/262 req 24 — the enumerator a plugin container's launcher needs,
+   * because its SNI proxy is on a network denied ShipIt's whole API and so
+   * cannot ask the decision endpoint one host at a time.
+   */
+  describe("listEgressAllowedHosts", () => {
+    it("lists this session's in-memory decisions, normalized and scoped", () => {
+      allowEgressHost("s1", "API.Example.Com");
+      allowEgressHost("s1", "other.example");
+      allowEgressHost("s2", "elsewhere.example");
+
+      expect(listEgressAllowedHosts("s1").sort()).toEqual(["api.example.com", "other.example"]);
+      expect(listEgressAllowedHosts("s3")).toEqual([]);
+    });
+
+    // Deliberately NOT reconciled with the durable source, unlike
+    // `isEgressHostAllowed`: every caller already carries the durable hosts in
+    // its `ResolvedEgressConfig.extraHosts`, and a second copy is a second thing
+    // to drift.
+    it("leaves the durable source to the caller's own config", () => {
+      setEgressDurableSource(() => [".durable.example.com"]);
+      expect(listEgressAllowedHosts("s1")).toEqual([]);
+      expect(isEgressHostAllowed("s1", "api.durable.example.com")).toBe(true);
+    });
   });
 
   describe("durable source reconciliation", () => {
