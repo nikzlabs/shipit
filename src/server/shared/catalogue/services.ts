@@ -357,7 +357,14 @@ export const SERVICES = [
           // The Anthropic SDK's base URL omits `/v1`, which it appends itself.
           [A_MSG]: "https://ai-gateway.vercel.sh",
         },
-        credentials: [{ via: "string", storageEnv: "AI_GATEWAY_API_KEY" }],
+        // Vercel's own docs call this `AI_GATEWAY_API_KEY`, and we deliberately
+        // do not. A `storageEnv` names the slot ShipIt reads a secret *from*,
+        // and every other row names its service (`OPENROUTER_API_KEY`,
+        // `ZAI_API_KEY`, …) — a bare `AI_GATEWAY_*` identifies none, while this
+        // service's id is `vercel`. The name is ours to choose because it never
+        // leaves ShipIt: `applyServiceRouting` copies the value into the
+        // *harness's* variable at spawn, so nothing downstream reads this one.
+        credentials: [{ via: "string", storageEnv: "VERCEL_AI_GATEWAY_API_KEY" }],
         retired: [],
         models: [
           { id: "anthropic/claude-opus-5", label: "Opus 5", ...MODEL_IDENTITIES.opus5, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: ANTHROPIC_PRICES.opus5 },

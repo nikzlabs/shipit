@@ -242,7 +242,7 @@ services:
       - { name: ZAI_CODING_PLAN_KEY }
       - { name: ZAI_API_KEY }
       - { name: OPENROUTER_API_KEY }
-      - { name: AI_GATEWAY_API_KEY }
+      - { name: VERCEL_AI_GATEWAY_API_KEY }
 
   # A ShipIt that has never been set up — for testing onboarding (docs/257).
   #

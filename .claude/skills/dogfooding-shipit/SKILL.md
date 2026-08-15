@@ -26,7 +26,7 @@ Full design: `docs/118-shipit-ui-local`.
 
 The `dev` service's credentials are **user-supplied secrets**, set once in the outer **Settings → Secrets** (`docs/184-remove-platform-secret-forwarding`). Platform secret forwarding was deliberately removed, so nothing is inherited.
 
-`GITHUB_TOKEN` plus **any service credential you want to exercise** is the set. The `x-shipit-secrets` block in `docker-compose.yml` declares every `storageEnv` name the model catalogue knows — `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, `ZAI_CODING_PLAN_KEY`, `ZAI_API_KEY`, `OPENROUTER_API_KEY`, `AI_GATEWAY_API_KEY` — so a key set once out there appears in every dogfood session without a visit to inner Settings (docs/131 req 11).
+`GITHUB_TOKEN` plus **any service credential you want to exercise** is the set. The `x-shipit-secrets` block in `docker-compose.yml` declares every `storageEnv` name the model catalogue knows — `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `DEEPSEEK_API_KEY`, `ZAI_CODING_PLAN_KEY`, `ZAI_API_KEY`, `OPENROUTER_API_KEY`, `VERCEL_AI_GATEWAY_API_KEY` — so a key set once out there appears in every dogfood session without a visit to inner Settings (docs/131 req 11).
 
 **Declaring a name costs nothing; supplying a value is the opt-in.** An unset secret resolves to nothing and seeds nothing. That per-name choice is the only granularity there is — there is no second switch.
 
