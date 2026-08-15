@@ -812,13 +812,7 @@ export function setupServiceManager(
     // (see `serializeStackOp`): a plugin round that settles between them would
     // otherwise reconcile into a start that is still running.
     await serializeStackOp(runner.sessionId, async () => {
-      if (deps.resolvePluginServices) {
-        try {
-          mgr.setPluginServices(await deps.resolvePluginServices(runner.sessionId, workspaceDir));
-        } catch (err) {
-          console.error(`[plugins:${runner.sessionId}] service resolution failed:`, getErrorMessage(err));
-        }
-      }
+      await resolvePluginServicesInto(runner.sessionId, workspaceDir, mgr, deps);
       // The awaits above (a prior stack's `compose down`, worker readiness) can
       // each outlive the runner. Its `disposed` handler has by then dropped the
       // manager from `serviceManagers` and stopped it — but `start()` resets
@@ -977,22 +971,62 @@ async function refreshPluginServices(
   if (!mgr || !deps.resolvePluginServices) return;
   const session = deps.sessionManager.get(runner.sessionId);
   const workspaceDir = session?.workspaceDir ?? runner.sessionDir;
-  const resolve = deps.resolvePluginServices;
   try {
     // Inside the queue, not before it: this rounds's answer must be compared
     // against what the stack has ACTUALLY consumed. Resolving first and queueing
     // second would compare against a `start()` that has not read the services
     // yet, and then reconcile a stack that already has them.
     await serializeStackOp(runner.sessionId, async () => {
-      const services = await resolve(runner.sessionId, workspaceDir);
-      if (!mgr.setPluginServices(services)) return;
+      const { changed, count } = await resolvePluginServicesInto(
+        runner.sessionId, workspaceDir, mgr, deps,
+      );
+      if (!changed) return;
       console.log(
-        `[plugins:${runner.sessionId}] plugin services changed (${services.length}) — reconciling`,
+        `[plugins:${runner.sessionId}] plugin services changed (${count}) — reconciling`,
       );
       await mgr.reconcile();
     });
   } catch (err) {
     console.error(`[plugins:${runner.sessionId}] plugin service reconcile failed:`, getErrorMessage(err));
+  }
+}
+
+/**
+ * Re-resolve the plugin services this session surfaces and hand them to its
+ * manager. Reports whether the surfaced set actually changed, and how many
+ * services it now holds.
+ *
+ * **The caller must already hold the session's stack op** ({@link
+ * serializeStackOp}, which is not reentrant). The answer is only worth as much
+ * as its adjacency to the `start()` that consumes it: resolved outside the
+ * queue, it is compared against a stack that may not have read the previous
+ * answer yet.
+ *
+ * A resolution that throws leaves the previous set in place. This is the LAST
+ * resort, not the failure policy: the resolver's own contract is that it never
+ * fails a session, and its one daemon round-trip degrades to a per-repository
+ * reason on the card instead of throwing (`resolveSessionPluginServices`), so
+ * reaching this catch means a fault nothing can attribute. Then the previous set
+ * is the least-bad answer — refusing the project's own reconcile over a plugin
+ * fault inverts req 14, and dropping every repository's services over a fault
+ * none of them can be blamed for takes working siblings away, which is the
+ * asymmetry `plugin-preflight.ts` already establishes. `changed: false` likewise
+ * when no resolver is wired at all: local mode has no Compose, and most unit
+ * setups have no Docker.
+ */
+async function resolvePluginServicesInto(
+  sessionId: string,
+  workspaceDir: string,
+  mgr: ServiceManager,
+  deps: Pick<ServiceSetupDeps, "resolvePluginServices">,
+): Promise<{ changed: boolean; count: number }> {
+  if (!deps.resolvePluginServices) return { changed: false, count: 0 };
+  try {
+    const services = await deps.resolvePluginServices(sessionId, workspaceDir);
+    return { changed: mgr.setPluginServices(services), count: services.length };
+  } catch (err) {
+    console.error(`[plugins:${sessionId}] service resolution failed:`, getErrorMessage(err));
+    return { changed: false, count: 0 };
   }
 }
 
@@ -1128,7 +1162,31 @@ export function applyShipitConfigChange(
   // in-flight bookkeeping before calling `start()`, so two of them overlapping
   // is not a harmless duplicate refresh (review finding). A burst of file events
   // is coalesced into an ordered sequence.
-  void serializeStackOp(runner.sessionId, () => mgr.reconcile()).catch((err: unknown) => {
+  void serializeStackOp(runner.sessionId, async () => {
+    // docs/262 req 20 — the project's OWN service names are an input to the
+    // plugin service set (`collectPluginFragments` seeds the name domain with
+    // them, and they always win), and this is the one moment they can change.
+    // Without this the reconcile below would merge the plugin set resolved
+    // against the PREVIOUS project file with the file it is about to run, so a
+    // service name the project just took would be handed to Compose as two
+    // definitions of one name — the plugin's overlaying the user's — and the
+    // collision would only be computed when some later activation round
+    // happened to settle, which for a repository that has to be fetched is
+    // network-far away. Req 20 asks for the report BEFORE the ambiguous one
+    // runs, so the computation has to run before the override is generated,
+    // not after it is up. It is the existing computation, not a second one:
+    // this re-resolves through `resolveSessionPluginServices`, whose collision
+    // domain is seeded by a fresh read of the project's compose file.
+    if ((await resolvePluginServicesInto(runner.sessionId, workspaceDir, mgr, deps)).changed) {
+      // The withholding without the report is half of req 20 — a plugin's
+      // service would simply vanish from the list. The Plugins card recomputes
+      // the collision itself on every snapshot (`api-routes-plugin-repos.ts`),
+      // so telling viewers to refetch is what makes the reason arrive with the
+      // change rather than whenever the fetch behind the next round finishes.
+      runner.emitMessage({ type: "plugin_repos_updated", sessionId: runner.sessionId });
+    }
+    await mgr.reconcile();
+  }).catch((err: unknown) => {
     const errMsg = getErrorMessage(err);
     console.error(`[compose:${runner.sessionId}] Reconcile after config change failed:`, errMsg);
     mgr.startError = errMsg;

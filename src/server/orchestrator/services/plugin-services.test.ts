@@ -140,6 +140,27 @@ services:
     expect(services[0].publishedPort).toBe(PLUGIN_PORT_BAND_START);
   });
 
+  /**
+   * req 20 — the project's own service names are read HERE, from the compose
+   * file as it is right now, and they always win. That is what makes re-running
+   * this resolver the answer when the project's file changes: the collision
+   * judgement itself lives in `collectPluginFragments` and needs no second
+   * implementation, it just needs to be asked again with the current file.
+   *
+   * The REASON is not remembered here — the snapshot route recomputes it from
+   * the same pure collector (`api-routes-plugin-repos.ts`), which is why a
+   * re-resolution that changes the surfaced set tells viewers to refetch.
+   */
+  it("withholds a plugin service whose name the project's own compose file has taken", async () => {
+    writeConfig(`compose: docker-compose.yml\n${SELF_DECLARATION}`);
+    fs.writeFileSync(path.join(workspaceDir, "docker-compose.yml"), `
+services:
+  probe:
+    image: node:20
+`);
+    expect(await resolve()).toEqual([]);
+  });
+
   it("returns nothing, and records nothing, for a project that declares no plugins", async () => {
     writeConfig("compose: docker-compose.yml\n");
     expect(await resolve()).toEqual([]);
@@ -308,6 +329,38 @@ describe("resolveSessionPluginServices — the consumer lease", () => {
     });
 
     expect(heldAtFirstDaemonCall).toBe(1);
+  });
+
+  /**
+   * The "never throws, never fails a session" contract, at the one place on this
+   * function's own path that talks to the daemon.
+   *
+   * It matters beyond tidiness: every caller resolves INSIDE the session's stack
+   * queue and compares the answer against what the stack has consumed. A throw
+   * leaves them holding the PREVIOUS answer, and after a project compose edit
+   * that answer is a set nothing has checked against the file about to run
+   * (req 20). Degrading here turns that into the visible per-repository
+   * degradation req 13 asks for instead.
+   */
+  it("degrades with a reason when the daemon will not answer, rather than throwing", async () => {
+    publishTrackedGeneration();
+    writeConfig(TRACKED_DECLARATION);
+
+    const docker = {
+      getVolume: () => ({
+        inspect: async () => { throw new Error("Cannot connect to the Docker daemon"); },
+      }),
+    } as unknown as Docker;
+
+    const services = await resolveSessionPluginServices(SESSION_ID, workspaceDir, {
+      containEgress: false,
+      docker,
+      workspaceVolume: "shipit-workspace-vol",
+      stateRoot: path.dirname(sessionDir),
+    });
+
+    expect(services).toEqual([]);
+    expect(getPluginServiceFailures(SESSION_ID, "tools")[0]).toContain("writable layer is not available");
   });
 
   it("leaves out a repository whose generation is being pruned right now", async () => {

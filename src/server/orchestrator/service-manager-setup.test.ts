@@ -198,6 +198,111 @@ describe("applyShipitConfigChange", () => {
     });
   });
 
+  /**
+   * docs/262 req 20 — a collision the project's OWN compose file gains after the
+   * last activation round.
+   *
+   * The plugin service set is derived from three inputs: the declaration, each
+   * repository's live generation, and the project's own service names
+   * (`collectPluginFragments` seeds its name domain with them). Only the first
+   * two used to re-resolve it. So a user who added a service under a name an
+   * imported plugin already surfaces got both definitions handed to Compose as
+   * one service — the plugin's overlaying theirs — with the collision computed
+   * only when some later activation round happened to settle, which for a
+   * repository that has to be fetched is a network round-trip away.
+   */
+  describe("plugin services on a project config change (docs/262 req 20)", () => {
+    /** A manager that records the ORDER the applier drives it in. */
+    function makeRecordingManager(surfacedLastRound: unknown[]) {
+      const calls: string[] = [];
+      const mgr = {
+        ...makeFakeManager(),
+        reconcile: vi.fn(async () => { calls.push("reconcile"); }),
+        setPluginServices: vi.fn((next: unknown[]) => {
+          calls.push("setPluginServices");
+          return JSON.stringify(next) !== JSON.stringify(surfacedLastRound);
+        }),
+      };
+      return { mgr, calls };
+    }
+
+    it("re-resolves the plugin services before the reconcile runs the new file", async () => {
+      writeConfig("compose: docker-compose.yml\n");
+      const runner = makeRunner();
+      // Last round surfaced the plugin's `probe`; the project's compose file has
+      // just taken that name, so this round withholds it.
+      const { mgr, calls } = makeRecordingManager([{ name: "probe" }]);
+      const deps = { ...makeLiveDeps(mgr), resolvePluginServices: vi.fn(async () => [] as never) };
+
+      applyShipitConfigChange(runner, deps);
+      await vi.waitFor(() => expect(mgr.reconcile).toHaveBeenCalled());
+
+      expect(deps.resolvePluginServices).toHaveBeenCalledWith("s1", tmpDir);
+      // BEFORE, not after: `reconcile()` regenerates the override and runs
+      // `compose up`, so a set resolved afterwards is one the ambiguous service
+      // has already been started against.
+      expect(calls).toEqual(["setPluginServices", "reconcile"]);
+    });
+
+    it("tells viewers to refetch when the re-resolution changed the set", async () => {
+      writeConfig("compose: docker-compose.yml\n");
+      const runner = makeRunner();
+      const { mgr } = makeRecordingManager([{ name: "probe" }]);
+      const deps = { ...makeLiveDeps(mgr), resolvePluginServices: vi.fn(async () => [] as never) };
+
+      applyShipitConfigChange(runner, deps);
+      await vi.waitFor(() => expect(mgr.reconcile).toHaveBeenCalled());
+
+      // The withholding alone would make the plugin's service vanish with no
+      // reason attached. The card recomputes the collision on every snapshot, so
+      // the push is what makes the reason arrive with the change.
+      expect(runner.emitMessage).toHaveBeenCalledWith({
+        type: "plugin_repos_updated",
+        sessionId: "s1",
+      });
+    });
+
+    it("says nothing extra when the set is unchanged, and still reconciles", async () => {
+      writeConfig("compose: docker-compose.yml\n");
+      const runner = makeRunner();
+      const { mgr } = makeRecordingManager([]);
+      const deps = { ...makeLiveDeps(mgr), resolvePluginServices: vi.fn(async () => [] as never) };
+
+      applyShipitConfigChange(runner, deps);
+      await vi.waitFor(() => expect(mgr.reconcile).toHaveBeenCalled());
+
+      // An ordinary compose edit that collides with nothing must not light the
+      // Plugins tab up — the reconcile is the whole of its effect.
+      expect(runner.emitMessage).not.toHaveBeenCalledWith(
+        expect.objectContaining({ type: "plugin_repos_updated" }),
+      );
+    });
+
+    // The last-resort path. The resolver's own contract is that it never fails a
+    // session — its one daemon round-trip degrades to a per-repository reason on
+    // the card (`plugin-services.ts`) — so reaching this catch at all means an
+    // unattributable fault. Then: reconcile the project's file anyway on the
+    // previous plugin set. Refusing the project's own reconcile over a plugin
+    // fault inverts req 14, and dropping every repository's services over a
+    // fault none of them can be blamed for takes working siblings away.
+    it("reconciles anyway when the resolution itself fails", async () => {
+      writeConfig("compose: docker-compose.yml\n");
+      const runner = makeRunner();
+      const { mgr } = makeRecordingManager([]);
+      const deps = {
+        ...makeLiveDeps(mgr),
+        resolvePluginServices: vi.fn(async () => { throw new Error("docker is away"); }),
+      };
+
+      applyShipitConfigChange(runner, deps);
+
+      // req 13 — the project's own stack comes up regardless, on the previous
+      // plugin set rather than on none.
+      await vi.waitFor(() => expect(mgr.reconcile).toHaveBeenCalled());
+      expect(mgr.setPluginServices).not.toHaveBeenCalled();
+    });
+  });
+
   it("reconciles when only the compose file's contents changed", async () => {
     writeConfig("compose: docker-compose.yml\n");
     const runner = makeRunner();

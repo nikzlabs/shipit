@@ -132,8 +132,23 @@ export async function resolveSessionPluginServices(
   // re-create its work directories and build an overlay whose lowerdir is gone.
   const { tracked, held } = holdResolvedGenerations(sessionId, fragments);
 
+  // The one daemon round-trip on this function's own path, and the only place it
+  // could break the "never throws" contract above. A daemon that will not answer
+  // must degrade the way an unusable generation already does — every affected
+  // repository loses its services WITH a reason on its card
+  // (`ensurePluginVolumes` → "the plugin's writable layer is not available") —
+  // rather than throwing past every caller. A throw would leave whoever asked
+  // holding the PREVIOUS answer, and a set resolved against a project file that
+  // has since changed is exactly the unknown version req 13 forbids running.
   const roots = deps.docker
     ? await resolvePluginOverlayRoots(deps.docker, deps.workspaceVolume, deps.stateRoot)
+      .catch((err: unknown) => {
+        console.warn(
+          `[plugins:${sessionId}] could not resolve the plugin overlay roots:`,
+          err instanceof Error ? err.message : String(err),
+        );
+        return {};
+      })
     : {};
   const pluginVolumes = await ensurePluginVolumes(sessionId, stateDir, tracked, held, deps, roots);
 
