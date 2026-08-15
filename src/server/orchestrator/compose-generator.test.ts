@@ -652,6 +652,77 @@ volumes:
     expect(() => parseComposeFile(p, { dockerSocket: false })).toThrow("driver_opts");
   });
 
+  // The check reads the RESOLVED document, and that is the load-bearing half:
+  // a rewritten compose file can hide the payload behind an anchor defined
+  // anywhere in the file, or behind a merge key, and a validator that pattern-
+  // matched the source text would see neither. An alias is not a custom tag, so
+  // it survives the contained-mode tag refusal and has to be caught here.
+  it("cannot be evaded by hiding the driver_opts behind an anchor", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `
+x-anchors: &bind
+  type: none
+  device: /
+  o: bind
+services:
+  web:
+    image: node:20
+    user: "1000:1000"
+    volumes:
+      - escape:/host
+volumes:
+  escape:
+    driver_opts: *bind
+`);
+    expect(() => parseComposeFile(p, { dockerSocket: false })).toThrow("driver_opts");
+    expect(() => parseComposeFile(p, { dockerSocket: false, containEgress: true }))
+      .toThrow("driver_opts");
+  });
+
+  it("cannot be evaded by a merge key on the volume entry", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `
+x-anchors: &escape
+  driver_opts:
+    type: none
+    device: /
+    o: bind
+services:
+  web:
+    image: node:20
+    volumes:
+      - escape:/host
+volumes:
+  escape:
+    <<: *escape
+`);
+    // Open mode resolves merge keys (\`parseYaml(…, { merge: true })\`) and the
+    // rule sees the merged entry; contained mode refuses merge keys outright,
+    // one layer earlier. Both refuse — for different stated reasons.
+    expect(() => parseComposeFile(p, { dockerSocket: false })).toThrow("driver_opts");
+    expect(() => parseComposeFile(p, { dockerSocket: false, containEgress: true }))
+      .toThrow("merge keys");
+  });
+
+  // The list form is skipped by the rule (it is not a mapping), and that is
+  // safe on its own terms rather than because Compose rejects it: a sequence
+  // entry is a bare volume NAME with no room for a `driver_opts`, a `driver` or
+  // an `external`. Pinned so the early return is not read as an oversight.
+  it("has nothing to refuse in the list form of a volumes block", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `
+services:
+  web:
+    image: node:20
+    volumes:
+      - pgdata:/data
+volumes:
+  - pgdata
+`);
+    expect(() => parseComposeFile(p, { dockerSocket: false })).not.toThrow();
+    expect(parseUserNamedVolumes(p)).toEqual([]);
+  });
+
   it("rejects a driver_opts host bind in a contained session too", () => {
     const dir = setup();
     const p = writeCompose(dir, `
@@ -739,6 +810,47 @@ volumes:
     name: shipit-dev_workspace
 `);
     expect(() => parseComposeFile(p, { dockerSocket: false })).toThrow("name:");
+  });
+
+  // Review findings — two false refusals, neither with any safety to show for
+  // it. An empty options map is what a templating layer emits for a case that
+  // produced no options, and Compose coerces a quoted boolean
+  // case-insensitively, so `"FALSE"` means false there.
+  it("allows empty option maps and every casing of a false `external`", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `
+services:
+  web:
+    image: node:20
+    volumes:
+      - data:/data
+volumes:
+  data:
+    driver_opts: {}
+    external: "FALSE"
+  spare:
+    external: false
+networks:
+  backend:
+    driver_opts: {}
+    ipam: {}
+`);
+    expect(() => parseComposeFile(p, { dockerSocket: false })).not.toThrow();
+  });
+
+  it("still refuses a true `external` however it is spelled", () => {
+    const dir = setup();
+    for (const value of ['true', '"TRUE"', '"yes"', "1", "{ name: other }"]) {
+      const p = writeCompose(dir, `
+services:
+  web:
+    image: node:20
+volumes:
+  data:
+    external: ${value}
+`);
+      expect(() => parseComposeFile(p, { dockerSocket: false })).toThrow("external");
+    }
   });
 
   it("allows ordinary Compose-managed named volumes", () => {
