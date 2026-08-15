@@ -355,6 +355,9 @@ export async function registerRoutes(
     ...(isTestMode ? { bugReportModelRunner: async () => null } : {}),
     getLogBuffer,
     removeSessionLogs,
+    // docs/264 — the Ops log-read route reads the DURABLE store, not the
+    // in-memory ring, so it answers for a session whose container is gone.
+    logStore,
     agentFactory,
     oomBreaker,
     loopDetector,

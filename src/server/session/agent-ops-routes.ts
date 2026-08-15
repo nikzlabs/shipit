@@ -667,6 +667,28 @@ export function registerAgentOpsRoutes(
     },
   );
 
+  // GET /agent-ops/session/host-session-logs?target=&since=&until=&lines=
+  //
+  // docs/264 — another session's SERVER-SOURCE log entries, Ops sessions only.
+  // Backs `shipit session logs`. The worker injects the trusted SESSION_ID as
+  // the CALLER; the session being read is `target`. The orchestrator gates on
+  // `session.kind === "ops"` and returns orchestrator-generated lines only —
+  // never agent output, prompts, assistant text, or workspace contents.
+  app.get<{
+    Querystring: { target?: string; since?: string; until?: string; lines?: string };
+  }>(
+    "/agent-ops/session/host-session-logs",
+    async (request, reply) => {
+      const params = new URLSearchParams();
+      for (const key of ["target", "since", "until", "lines"] as const) {
+        const value = request.query[key];
+        if (value) params.set(key, value);
+      }
+      const qs = params.toString() ? `?${params.toString()}` : "";
+      return relay("GET", `/host-session-logs${qs}`, undefined, reply);
+    },
+  );
+
   // GET /agent-ops/session/view/:childId — view a single child session
   app.get<{ Params: { childId: string } }>(
     "/agent-ops/session/view/:childId",

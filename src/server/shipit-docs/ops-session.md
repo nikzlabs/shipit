@@ -108,6 +108,32 @@ dropped unless the session was created as an ops session.
   This replaces the old dead end where the only way from a PR to a session was
   guessing between candidate UUIDs by timestamp. Reach for it first.
 
+- **Read-only session server logs.** `docker logs shipit-shipit-1` is **not the
+  whole story.** A large class of orchestrator events is written per session
+  through `broadcastLog`, which goes to the durable log store and the in-memory
+  ring and makes **no console call at all** — so it never appears in the
+  orchestrator container's stdout or the journal. Auto-push outcomes, compose
+  reconcile failures, container recovery/re-adoption, idle disposal and OOM
+  notices all live there. From the host, a failure in that class looks like
+  nothing happened:
+  ```bash
+  shipit session logs 7bc72326                       # full id or the prefix from a log line
+  shipit session logs 7bc72326 --since 2h            # ISO-8601, or a relative age: 90s/30m/2h/3d
+  shipit session logs 7bc72326 --since 2026-08-14T20:00:00Z --until 2026-08-15T02:00:00Z
+  shipit session logs 7bc72326 --lines 500 --json
+  ```
+  This returns **server-source entries only** — orchestrator-generated lines,
+  the same category as the orchestrator's own stdout, merely routed per session.
+  The agent CLI's stdout/stderr, preview errors from the user's app, and install
+  output are filtered out server-side; no flag reaches them (see the boundary
+  below). Lines are redacted the same way the rest of the ops surface is.
+
+  It reads the durable store, so a session whose container is already gone still
+  answers. If a session's logs were pruned — archive, delete, or full reset
+  removes them — the output says so explicitly. Read that carefully: an empty
+  window and a pruned history look the same otherwise, and "no lines" is not
+  evidence that nothing happened.
+
 - **Spawn a ShipIt fix session.** Once you have a root-cause hypothesis and the
   suspect files, delegate the fix to a normal repo-backed session branched from
   the exact commit you inspected:
@@ -181,6 +207,18 @@ apply here.
   output, secrets, or workspace files, and none will be added — that boundary is
   the reason the inventory surface exists as its own narrow route rather than as
   general access to the sessions API.
+
+  `shipit session logs` does not weaken this, and it is worth being precise
+  about why. The durable log channel is a *mixed* stream: the same file carries
+  the agent CLI's own stdout/stderr alongside the orchestrator's lifecycle
+  lines. The subcommand returns **only** entries whose source is the
+  server/orchestrator kind, filtered where the store is read — never
+  `stdout`/`stderr` (the agent's own output), never `preview` (error text from
+  the user's running app), never `install` (the workspace's install output), and
+  never a source that is missing or unrecognized. The allowlist fails closed, so
+  a log source added later is withheld until someone decides otherwise. If the
+  question genuinely needs the session's chat, that is still a "ask the operator
+  to open it in the UI" answer.
 - **No writes to ShipIt source.** `shipit source` is read-only — there is no
   `edit`, `commit`, `push`, `checkout`, or `git` subcommand. Change ShipIt only
   through a spawned `--shipit-source` fix session, which goes through the normal
@@ -190,6 +228,8 @@ apply here.
 
 - `prompts/trace-a-pr.md` — take a PR, branch, or container name back to the
   session that produced it.
+- `prompts/read-session-logs.md` — when the orchestrator log shows nothing:
+  read a session's own server-source log lines.
 - `prompts/investigate-loop.md` — a container stuck in a SIGTERM/recreate loop.
 - `prompts/diagnose-stuck-session.md` — one misbehaving session container.
 - `prompts/daily-health.md` — a quick host-health snapshot.

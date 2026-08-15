@@ -93,11 +93,20 @@ describe("getTemplate", () => {
         "prompts/daily-health.md",
         "prompts/verify-ops-access.md",
         "prompts/remediate-shipit-bug.md",
+        "prompts/read-session-logs.md",
       ]),
     );
     // docs/162 — the remediation prompt drives the inspect-source → spawn-fix flow.
     expect(ops.files["prompts/remediate-shipit-bug.md"]).toContain("shipit source status");
     expect(ops.files["prompts/remediate-shipit-bug.md"]).toContain("--shipit-source");
+    // docs/264 — every ops workspace ships the "docker logs is not the whole
+    // story" recipe, and the two host-facing recipes point at it rather than
+    // dead-ending at the orchestrator's stdout.
+    expect(ops.files["prompts/read-session-logs.md"]).toContain("shipit session logs");
+    expect(ops.files["prompts/read-session-logs.md"]).toContain("broadcastLog");
+    expect(ops.files["prompts/diagnose-stuck-session.md"]).toContain("shipit session logs");
+    expect(ops.files["prompts/trace-a-pr.md"]).toContain("shipit session logs");
+    expect(ops.files["README.md"]).toContain("shipit session logs");
     // The proxy mounts the real socket read-only; nothing else gets it.
     expect(ops.files["docker-compose.yml"]).toContain("docker-socket-proxy");
     expect(ops.files["docker-compose.yml"]).toContain("x-shipit-preview: auto");

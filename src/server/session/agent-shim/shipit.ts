@@ -49,6 +49,7 @@ import {
   handleSessionCreate,
   handleSessionFind,
   handleSessionList,
+  handleSessionLogs,
   handleSessionMessage,
   handleSessionNotifyOnMerge,
   handleSessionRename,
@@ -508,6 +509,9 @@ const SESSION_HANDLERS: Record<
   // docs/255 — Ops-only host inventory: resolve a branch / PR / container name
   // back to the session that produced it. Read-only, metadata only.
   find: handleSessionFind,
+  // docs/264 — Ops-only: another session's SERVER-SOURCE log entries. Read-only,
+  // orchestrator lifecycle lines only; never that session's agent output.
+  logs: handleSessionLogs,
   view: handleSessionView,
   message: handleSessionMessage,
   wait: handleSessionWait,
