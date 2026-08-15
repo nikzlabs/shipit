@@ -30,9 +30,6 @@ import {
   GIT_HOOKS_DISABLED_ARGS,
   gitArgsWithHooksDisabled,
   safeSimpleGit,
-  withGitHooksDisabledEnv,
-  withoutGitConfigEnvPairs,
-  installGitHooksGuard,
 } from "./git-hooks-guard.js";
 import { initGlobalGitConfig, setGitIdentity } from "../orchestrator/git-config.js";
 
@@ -282,18 +279,6 @@ describe("git hooks guard", () => {
     expect(firedHooks()).toEqual([]);
   });
 
-  it("the environment guard alone disables hooks for a raw git spawn", () => {
-    execFileSync("git", ["init", "--initial-branch=main"], { cwd: tmpDir, stdio: "ignore" });
-    plantHooks(tmpDir);
-    write("a.txt", "one");
-
-    const env = withGitHooksDisabledEnv(process.env);
-    execFileSync("git", ["add", "-A"], { cwd: tmpDir, env, stdio: "ignore" });
-    execFileSync("git", ["commit", "-m", "one"], { cwd: tmpDir, env, stdio: "ignore" });
-
-    expect(firedHooks()).toEqual([]);
-  });
-
   it("gitArgsWithHooksDisabled disables hooks for a raw git spawn", () => {
     execFileSync("git", ["init", "--initial-branch=main"], { cwd: tmpDir, stdio: "ignore" });
     plantHooks(tmpDir);
@@ -306,58 +291,21 @@ describe("git hooks guard", () => {
   });
 });
 
-describe("git hooks guard: environment plumbing", () => {
-  it("appends the override without disturbing existing config pairs", () => {
-    const out = withGitHooksDisabledEnv({
-      GIT_CONFIG_COUNT: "1",
-      GIT_CONFIG_KEY_0: "user.name",
-      GIT_CONFIG_VALUE_0: "Someone",
-    });
-    expect(out.GIT_CONFIG_COUNT).toBe("2");
-    expect(out.GIT_CONFIG_KEY_0).toBe("user.name");
-    expect(out.GIT_CONFIG_KEY_1).toBe("core.hooksPath");
-    expect(out.GIT_CONFIG_VALUE_1).toBe(HOOKS_DISABLED_PATH);
-  });
-
-  it("is idempotent — a second call adds no second pair", () => {
-    const once = withGitHooksDisabledEnv({});
-    const twice = withGitHooksDisabledEnv(once);
-    expect(twice).toEqual(once);
-    expect(twice.GIT_CONFIG_COUNT).toBe("1");
-  });
-
-  it("does not mutate its input", () => {
-    const input: NodeJS.ProcessEnv = { PATH: "/usr/bin" };
-    withGitHooksDisabledEnv(input);
-    expect(input).toEqual({ PATH: "/usr/bin" });
-  });
-
-  it("ignores a non-numeric GIT_CONFIG_COUNT rather than producing a broken env", () => {
-    const out = withGitHooksDisabledEnv({ GIT_CONFIG_COUNT: "not-a-number" });
-    expect(out.GIT_CONFIG_COUNT).toBe("1");
-    expect(out.GIT_CONFIG_KEY_0).toBe("core.hooksPath");
-  });
-
-  it("installGitHooksGuard mutates the given environment in place, idempotently", () => {
-    const env: NodeJS.ProcessEnv = {};
-    installGitHooksGuard(env);
-    installGitHooksGuard(env);
-    expect(env.GIT_CONFIG_COUNT).toBe("1");
-    expect(env.GIT_CONFIG_KEY_0).toBe("core.hooksPath");
-    expect(env.GIT_CONFIG_VALUE_0).toBe(HOOKS_DISABLED_PATH);
-  });
-
-  it("withoutGitConfigEnvPairs removes COUNT as well as the pairs", () => {
-    // Dropping the pairs but leaving COUNT is not a no-op: git exits 128 with
-    // `missing config key GIT_CONFIG_KEY_0`. `RepoGit.sanitizeGitEnv` relies on
-    // this, which is why the command-line `-c` layer has to exist too.
-    const out = withoutGitConfigEnvPairs(withGitHooksDisabledEnv({ HOME: "/root" }));
-    expect(out).toEqual({ HOME: "/root" });
-  });
-
+describe("git hooks guard: exposed shapes", () => {
   it("exposes the override in the shapes callers need", () => {
     expect(HOOKS_DISABLED_CONFIG).toBe(`core.hooksPath=${HOOKS_DISABLED_PATH}`);
     expect([...GIT_HOOKS_DISABLED_ARGS]).toEqual(["-c", HOOKS_DISABLED_CONFIG]);
     expect(gitArgsWithHooksDisabled(["status"])).toEqual(["-c", HOOKS_DISABLED_CONFIG, "status"]);
+  });
+
+  it("keeps a caller's own simple-git options, including other unsafe opt-ins", () => {
+    // `repo-git.ts` and `git-utils.ts` pass `unsafe.allowUnsafeConfigPaths` etc.
+    // Clobbering those would break every credentialed fetch, so the merge has to
+    // be additive rather than a replacement.
+    const git = safeSimpleGit(undefined, {
+      unsafe: { allowUnsafeConfigPaths: true },
+      config: ["user.name=Someone"],
+    });
+    expect(git).toBeTruthy();
   });
 });

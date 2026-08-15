@@ -2,7 +2,25 @@
  * planning#384 — stop ORCHESTRATOR-SIDE git from executing hooks that live in a
  * repository ShipIt does not trust.
  *
- * ## The escalation this closes
+ * ## What this is, and what it is NOT
+ *
+ * It is ONE control against a writable `.git`, not the boundary. Hooks are
+ * merely the cheapest of several executable registrations a writable `.git`
+ * offers: `.git/config` — same mount, same writer — also carries
+ * `filter.*.clean`/`smudge`, `core.fsmonitor`, `credential.helper`,
+ * `core.sshCommand` and remote helpers, and `core.hooksPath` affects none of
+ * them. Several cannot be disabled the way hooks can, because ShipIt depends on
+ * them (git-lfs *is* a filter). A writable workspace also reaches ShipIt's own
+ * execution outside git entirely — `shipit.yaml`'s `agent.install` commands and
+ * `docker-compose.yml` are read from it and re-run by the watcher.
+ *
+ * So do not read a green `git-hooks-guard.test.ts` as "a plugin can no longer
+ * run code in the orchestrator". The real question — whether `.git` and the
+ * workspace's control files should be writable by plugin containers at all — is
+ * a product decision about what plugins are for, and is open in planning#384.
+ * This module raises the cost of one route and pins it with a test.
+ *
+ * ## The escalation this route allows
  *
  * A session's workspace is bind-mounted read-write into containers whose code is
  * untrusted by design — a plugin CLI run and a plugin service both get
@@ -19,7 +37,7 @@
  * cheapest vector; git fires hooks on checkout, merge, rebase, push, `am`, and —
  * via `reference-transaction` — on essentially any ref update.
  *
- * ## Why `core.hooksPath`, and why that is COMPLETE for hooks
+ * ## Why `core.hooksPath` — complete for HOOKS, and only for hooks
  *
  * Git resolves every hook through ONE function (`find_hook()` in `hook.c`):
  * when `core.hooksPath` is set it looks under that directory, otherwise under
@@ -35,22 +53,35 @@
  * class with a separate fix — several of them are load-bearing for legitimate
  * behaviour here (git-lfs is a `filter`), so they cannot be blanket-disabled.
  *
- * ## Two layers, deliberately
+ * ## One instrument, on the command line — and why not the environment
  *
- * 1. **`-c core.hooksPath=…` on the command line** ({@link safeSimpleGit},
- *    {@link gitArgsWithHooksDisabled}). Explicit, greppable, and immune to a
- *    caller that replaces the child environment — `RepoGit` does exactly that
- *    via `sanitizeGitEnv`.
- * 2. **`GIT_CONFIG_*` environment pairs on the orchestrator process**
- *    ({@link installGitHooksGuard}). A backstop that reaches raw `spawn("git",
- *    …)` / `execFileSync("git", …)` call sites and any future one, since every
- *    such site here inherits `process.env`.
+ * The override travels as `-c core.hooksPath=…` on every git argv:
+ * {@link safeSimpleGit} for simple-git callers, {@link gitArgsWithHooksDisabled}
+ * for raw `spawn`/`execFile`/`execFileSync`. It beats a repository-local
+ * `.git/config` (git reads `-c` *after* every config file), which matters
+ * because `.git/config` sits on the same writable mount as `.git/hooks` — a fix
+ * that could only win on config-file precedence would just be re-overridden.
  *
- * Both beat a repository-local `.git/config` (git reads `-c` and the
- * `GIT_CONFIG_KEY_n` pairs *after* every config file), which matters because
- * `.git/config` sits on the same writable mount as `.git/hooks` — an attacker
- * who could only be beaten by config-file precedence could simply set
- * `core.hooksPath` back.
+ * Git's `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n` environment protocol expresses the
+ * same override with the same precedence, and installing it once on the
+ * orchestrator process looks like a strictly better backstop: it would reach
+ * every raw git spawn, including ones nobody has written yet. **It was tried and
+ * rejected**, because it breaks simple-git for every command:
+ * `blockUnsafeOperationsPlugin` inspects the *environment* as well as the argv,
+ * so any instance that forwards `process.env` (e.g. `fetchAndResolveDefaultBranch`)
+ * throws `GitPluginError: Use of "GIT_CONFIG_COUNT" is not permitted` before git
+ * runs. The only way to keep it would be `unsafe.allowUnsafeConfigEnvCount:
+ * true`, which switches off simple-git's protection against *inherited* config
+ * injection wholesale — the same class of protection `RepoGit.sanitizeGitEnv`
+ * and `server-test-setup.ts` exist to preserve. Trading a real guard against
+ * arbitrary inherited config for a redundant second copy of this one is a bad
+ * bargain. (Caught by `warm-sessions.test.ts`, which went red on it.)
+ *
+ * What the environment layer would have bought — coverage of a raw git spawn
+ * someone adds later — is bought instead by `git-hooks-guard-coverage.test.ts`,
+ * which fails the build when a `git` process is spawned without going through
+ * {@link gitArgsWithHooksDisabled}. That fails loudly at CI rather than quietly
+ * at runtime, which is the better trade anyway.
  *
  * ## Not applied inside the session container
  *
@@ -115,67 +146,4 @@ export function safeSimpleGit(baseDir?: string, options?: Partial<SimpleGitOptio
   // simple-git rejects `baseDir: undefined` in the options-object form, so keep
   // the two-argument shape when we have a directory and the bare one when not.
   return baseDir === undefined ? simpleGit(merged) : simpleGit(baseDir, merged);
-}
-
-const COUNT_KEY = "GIT_CONFIG_COUNT";
-
-/**
- * Merge the hooks-disabled override into a git environment as
- * `GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_n` / `GIT_CONFIG_VALUE_n` pairs, without
- * disturbing pairs that are already there.
- *
- * Returns a NEW object; the input is not mutated. Idempotent — calling it twice
- * on the same environment produces the same result rather than a second,
- * redundant pair.
- */
-export function withGitHooksDisabledEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  const out: NodeJS.ProcessEnv = { ...env };
-  const parsed = Number.parseInt(out[COUNT_KEY] ?? "", 10);
-  const count = Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
-  for (let i = 0; i < count; i++) {
-    if (out[`GIT_CONFIG_KEY_${i}`] === "core.hooksPath" && out[`GIT_CONFIG_VALUE_${i}`] === HOOKS_DISABLED_PATH) {
-      return out; // already installed — don't grow the list on every call
-    }
-  }
-  out[`GIT_CONFIG_KEY_${count}`] = "core.hooksPath";
-  out[`GIT_CONFIG_VALUE_${count}`] = HOOKS_DISABLED_PATH;
-  out[COUNT_KEY] = String(count + 1);
-  return out;
-}
-
-/**
- * Install the override on the orchestrator process itself, so every `git` it
- * spawns — through simple-git or through a bare `spawn`/`execFileSync` — starts
- * with hooks disabled.
- *
- * Called once at orchestrator start-up ({@link file://./../orchestrator/index.ts}).
- * The command-line `-c` layer is what actually guarantees coverage for the
- * paths that rebuild the child environment; this is the sweep for everything
- * else, including call sites nobody has written yet.
- *
- * Idempotent and cheap, so start-up ordering can't produce a double entry.
- */
-export function installGitHooksGuard(env: NodeJS.ProcessEnv = process.env): void {
-  const next = withGitHooksDisabledEnv(env);
-  for (const [key, value] of Object.entries(next)) {
-    if (env[key] !== value) env[key] = value;
-  }
-}
-
-/**
- * Strip the `GIT_CONFIG_*` pairs this module installs from a child environment.
- *
- * Needed by anything that rebuilds a git environment and drops
- * `GIT_CONFIG_KEY_n`/`GIT_CONFIG_VALUE_n` (`RepoGit.sanitizeGitEnv`): a
- * `GIT_CONFIG_COUNT` left pointing at keys that are no longer there is not a
- * silent no-op — git exits 128 with `missing config key GIT_CONFIG_KEY_0`. Such
- * callers keep hooks disabled through the `-c` layer instead.
- */
-export function withoutGitConfigEnvPairs(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
-  const out: NodeJS.ProcessEnv = { ...env };
-  Reflect.deleteProperty(out, COUNT_KEY);
-  for (const key of Object.keys(out)) {
-    if (/^GIT_CONFIG_(KEY|VALUE)_\d+$/.test(key)) Reflect.deleteProperty(out, key);
-  }
-  return out;
 }

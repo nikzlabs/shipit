@@ -146,12 +146,13 @@ const UNSAFE_GIT_ENV = [
  * above, minus any `GIT_CONFIG_KEY_<n>` / `GIT_CONFIG_VALUE_<n>` pairs the
  * dropped `GIT_CONFIG_COUNT` addressed.
  *
- * planning#384 — that drop takes `installGitHooksGuard`'s env pairs with it (it
- * has to: a surviving `GIT_CONFIG_COUNT` whose keys were deleted makes git exit
- * 128 with `missing config key GIT_CONFIG_KEY_0`). Hooks stay disabled on this
- * path through the `-c core.hooksPath=…` that `safeSimpleGit` puts on the
- * command line, which no environment rebuild can remove. This is precisely why
- * the guard is two layers rather than env alone.
+ * planning#384 — this drop is one of two reasons the hooks guard lives on the
+ * command line rather than in the environment: whatever `GIT_CONFIG_*` pairs the
+ * orchestrator sets, this path deletes them. Hooks stay disabled here through
+ * the `-c core.hooksPath=…` that `safeSimpleGit` puts on every argv, which no
+ * environment rebuild can remove. (The other reason is that simple-git refuses
+ * to spawn at all when it sees `GIT_CONFIG_COUNT` in the environment — see
+ * `shared/git-hooks-guard.ts`.)
  */
 export function sanitizeGitEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   const out: NodeJS.ProcessEnv = { ...env };

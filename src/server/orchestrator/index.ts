@@ -8,7 +8,6 @@ import { assertWorkerUidNotReserved } from "./session-worker-uid.js";
 import { resolveBuildId, resolveVersion } from "./build-id.js";
 import { getUpdateMode } from "./services/updates.js";
 import { readChannel } from "./release-channel.js";
-import { installGitHooksGuard } from "../shared/git-hooks-guard.js";
 
 import type { PrStatusPoller } from "./pr-status-poller.js";
 import type { ReleaseStatusPoller } from "./release-status-poller.js";
@@ -68,17 +67,6 @@ export type {
   StartupDeps,
   ShutdownDeps,
 } from "./app-lifecycle.js";
-
-// planning#384 — disable repository git hooks for THIS process and everything it
-// spawns, at module load, before any code here can reach a `git` invocation.
-//
-// The explicit `-c core.hooksPath=…` that `safeSimpleGit` / `gitArgsWithHooksDisabled`
-// put on the command line is the layer that actually guarantees coverage (it
-// survives a caller rebuilding the child environment, which `RepoGit` does). This
-// is the sweep: every `spawn("git", …)` / `execFileSync("git", …)` in the
-// orchestrator inherits `process.env`, so it covers call sites that have not been
-// written yet, and it is what a forgotten one falls back on.
-installGitHooksGuard();
 
 /**
  * Build and configure the Fastify app with all routes and WebSocket handlers.
