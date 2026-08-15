@@ -78,7 +78,7 @@ The design is [`plan.md`](./plan.md); the contract is [`requirements.md`](./requ
 ## Phase 3 — One API surface (reqs 11, 16)
 
 - [ ] **One shared target resolver behind both commands**: a role name or a complete target in, a
-      resolved `(harness, selection, effort)` out, with one set of refusals. `sub-agent-target.ts`
+      resolved `(harness, selection, effort)` out, with one refusal rule. `sub-agent-target.ts`
       is that function today for the one-shot path; `session create` calls it instead of its own
       `--agent`/`--model` reading
 - [ ] `session create` can express a **complete target** — service, billing mode, model, harness

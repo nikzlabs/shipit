@@ -272,7 +272,7 @@ that wants a child on a specific model at a specific effort cannot ask for it. U
 therefore additive there rather than only restrictive.
 
 **One resolver, two call sites.** The shared piece is "what does this spawn run on" — a role name
-or a complete target in, a resolved `(harness, selection, effort)` out, with one set of refusals.
+or a complete target in, a resolved `(harness, selection, effort)` out, with one refusal rule.
 `sub-agent-target.ts` already is that function for the one-shot path; roles extend it, and
 `session create` calls the same thing instead of its own two-flag reading. That is what makes the
 two commands *consistent by construction* rather than by two implementations agreeing.
@@ -347,7 +347,20 @@ EOF
 ```
 
 The role supplies everything not named. **The same flags mean the same thing on both commands**,
-which is the whole of req 16: one parser, one validator, one set of refusals.
+which is the whole of req 16: one parser, one validator, one refusal rule.
+
+On `session create` the role may also be left out, and then the **parent** is the base — this is
+the form docs/261 req 10 already ships, and it is unchanged:
+
+```
+shipit session create --model claude-opus-5 --title "…" --prompt-file - <<'EOF'
+…
+EOF
+```
+
+Not a special case: a partial call over a base, where the base happens to be the parent rather than
+a role. The same call on `shipit agent run` is refused, because a one-shot run has no parent and
+so nothing to complete itself from — which is the *only* difference between the two commands.
 
 **The shim's role check changes shape.** Today it rejects an unknown role locally against a
 compiled-in list, to give the agent a fast message. It cannot know the user's roles — they live
