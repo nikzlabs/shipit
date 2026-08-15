@@ -12,7 +12,8 @@ import type Docker from "dockerode";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { resolveSessionPluginServices } from "./plugin-services.js";
+import { readProjectServices, resolveSessionPluginServices } from "./plugin-services.js";
+import { resolveShipitConfig } from "../../shared/shipit-config.js";
 import { getPluginServiceFailures } from "./plugin-activation.js";
 import {
   claimGenerationDeletion,
@@ -376,5 +377,69 @@ describe("resolveSessionPluginServices — the consumer lease", () => {
     } finally {
       done();
     }
+  });
+});
+
+/**
+ * planning#377 — the project's own name domain, and WHY it is unknowable when
+ * it is.
+ *
+ * The flag alone collapsed two different events into one, and the caller that
+ * must fail closed on it (`plugin-preflight.ts`) could then only say "could not
+ * read this file". For a contained session that was wrong in the way that costs
+ * the most: docs/263 refuses a STOCK compose file for a missing `user:`, so the
+ * first thing a user saw was a card blaming a file that is perfectly valid.
+ */
+describe("readProjectServices carries why the name domain is unknown", () => {
+  const read = (containEgress: boolean): ReturnType<typeof readProjectServices> =>
+    readProjectServices(workspaceDir, resolveShipitConfig(workspaceDir), containEgress);
+
+  function declareStack(body: string): void {
+    writeConfig("compose: docker-compose.yml\n");
+    fs.writeFileSync(path.join(workspaceDir, "docker-compose.yml"), body);
+  }
+
+  it("reports a file it cannot parse as malformed, with where the parse gave up", () => {
+    declareStack("services: [oh: : no\n");
+    const project = read(false);
+
+    expect(project.unknown).toBe(true);
+    expect(project.failure?.kind).toBe("malformed");
+    expect(project.failure?.message).toContain("not valid YAML");
+  });
+
+  it("reports a file the containment rules refuse as refused, naming the fix", () => {
+    // A stock compose file. Nothing is wrong with it — it just does not declare
+    // the `user:` a contained session requires.
+    declareStack(`
+services:
+  web:
+    image: node:22-alpine
+`);
+    const project = read(true);
+
+    expect(project.unknown).toBe(true);
+    expect(project.failure?.kind).toBe("refused");
+    expect(project.failure?.message).toContain("`user:`");
+    // The SAME file on an Open session is not refused at all, which is the
+    // whole reason "could not read it" misled: the file never changed.
+    const open = read(false);
+    expect(open).toMatchObject({ names: ["web"], unknown: false });
+    expect(open.failure).toBeUndefined();
+  });
+
+  it("says nothing when the project's stack reads cleanly", () => {
+    declareStack(`
+services:
+  web:
+    image: node:22-alpine
+    ports:
+      - "3000:3000"
+`);
+    const project = read(false);
+
+    expect(project).toMatchObject({ names: ["web"], unknown: false });
+    expect(project.failure).toBeUndefined();
+    expect([...project.ports]).toEqual([3000]);
   });
 });
