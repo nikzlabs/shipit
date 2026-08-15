@@ -1,4 +1,5 @@
 ---
+issue: planning#374
 title: Ops session — read another session's server logs
 description: A read-only `shipit session logs` subcommand that returns server-source log entries for any session on the host, gated on ops sessions.
 ---

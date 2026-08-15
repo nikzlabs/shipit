@@ -317,10 +317,15 @@ export interface ApiDeps {
   /**
    * docs/192 durable per-session log store. Read by the docs/264 Ops route,
    * which needs the on-disk backlog rather than the in-memory ring so a session
-   * whose container is already gone still answers. Optional — a test harness
-   * that omits it gets a 503 from that route rather than a misleading empty page.
+   * whose container is already gone still answers.
+   *
+   * **Required key, `| undefined` value** — same reason as
+   * `refreshPluginReposForSession` above: an optional key here type-checks when
+   * `route-registry.ts` forgets to forward it, and the route then answers 503 on
+   * every deployment while its co-located tests (which inject the store
+   * directly) stay green. A required key makes the omission a build error.
    */
-  logStore?: LogStoreReader;
+  logStore: LogStoreReader | undefined;
   /**
    * OOM circuit breaker — passed into recovery service handlers so
    * user-initiated restarts reset the trip, and into the diagnostics

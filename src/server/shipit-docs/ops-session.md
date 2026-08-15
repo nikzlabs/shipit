@@ -134,6 +134,12 @@ dropped unless the session was created as an ops session.
   window and a pruned history look the same otherwise, and "no lines" is not
   evidence that nothing happened.
 
+  One more reason not to read absence as proof: the underlying channel keeps a
+  bounded tail (docs/192 rotates it), and it is a *mixed* stream, so a session
+  whose agent wrote a lot of output can push its own older server lines out of
+  retention. On a busy session, treat a quiet distant past as "not retained",
+  not as "nothing happened then".
+
 - **Spawn a ShipIt fix session.** Once you have a root-cause hypothesis and the
   suspect files, delegate the fix to a normal repo-backed session branched from
   the exact commit you inspected:

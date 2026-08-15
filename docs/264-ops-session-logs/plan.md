@@ -1,4 +1,5 @@
 ---
+issue: planning#374
 title: Ops session — read another session's server logs
 description: Design for `shipit session logs`, the Ops-gated read of a session's orchestrator-generated log entries.
 ---
@@ -84,6 +85,14 @@ archive / delete / full reset. An empty window and a pruned history render
 identically otherwise, and they mean opposite things — one says nothing
 happened, the other says the evidence is gone. The response carries the
 distinction and the shim prints it in words.
+
+**Known limitation, documented rather than papered over.** The channel keeps a
+bounded tail (`LogStore` rotates at 1 MB and a snapshot reads at most the last
+1 MB), and it is a *mixed* stream — so a session whose agent wrote a lot of
+output can push its own older server lines out of retention. Nothing here can
+recover them, so the ops doc says plainly that a quiet distant past on a busy
+session means "not retained", not "nothing happened". Raising the retention is a
+docs/192 change, not this one.
 
 **Reject an unparseable `--since`, don't ignore it.** A silently-dropped bound
 returns the whole history dressed as the window the operator asked for, and an
