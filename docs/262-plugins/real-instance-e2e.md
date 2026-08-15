@@ -360,6 +360,25 @@ deliberate refusal into one `unknown: true` (`plugin-services.ts:276`, verified)
 Failing closed is right; being unable to say why is the gap. Filed as
 **planning#377**.
 
+### The one expected value that CHANGED after this run
+
+**Do not read Run 2's checkout writability as the criterion.** During Run 2 a
+consumer CLI reported `checkout: {writable: true}`. #2282 then settled the rule
+and changed it deliberately:
+
+| Fixture | Surface | Expected now |
+|---|---|---|
+| consumer (tracked generation) | CLI **and** service | `writable: false`, whatever the fragment declares |
+| `repo: self` | CLI and service | `writable: true` |
+
+A tracked generation is read-only at runtime because req 15 wants the files, the
+CLIs and the services to correspond to **one** commit — a runtime write copies up
+into the generation's upper layer, which every other surface attaches, so one
+call could change the code the rest of the session runs while
+`SHIPIT_PLUGIN_COMMIT` still named the commit it was no longer running. `install`
+is the one writer, before publication. A future run seeing `false` on a consumer
+is seeing the fix, **not a regression**.
+
 ### Three things to know before the next run
 
 - **`registry.npmjs.org` is a built-in allowlist default**, so a plugin service
