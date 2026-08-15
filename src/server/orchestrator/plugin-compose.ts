@@ -862,8 +862,14 @@ export function buildPluginComposeServices(
 ): { services: PluginComposeService[]; issuesByRepo: Map<string, string[]> } {
   const services: PluginComposeService[] = [];
   const issuesByRepo = new Map<string, string[]>();
+  // Both failures below are per IMPORT, while the loops that reach them run per
+  // SERVICE — so an import with three services said the same thing three times
+  // on its card. Deduplicated here rather than at the reader: the card's unit is
+  // the repository, and one fact stated once is what it is for.
   const addIssue = (repo: string, issue: string): void => {
-    issuesByRepo.set(repo, [...(issuesByRepo.get(repo) ?? []), issue]);
+    const existing = issuesByRepo.get(repo) ?? [];
+    if (existing.includes(issue)) return;
+    issuesByRepo.set(repo, [...existing, issue]);
   };
 
   // Resolved ONCE, and every session-path mount below takes it rather than
