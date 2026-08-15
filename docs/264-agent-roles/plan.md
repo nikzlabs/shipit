@@ -11,8 +11,9 @@ Implements [`requirements.md`](./requirements.md). Requirement numbers below ref
 ## What this is
 
 A **role** is a named unit of agent work the user configures once: the harness that runs it, the
-model it runs, the reasoning level, and optionally a standing prompt describing the job. An agent
-starts a role **by name** and supplies nothing else (reqs 3, 4).
+model it runs and the reasoning level, plus an optional description and standing instructions. An
+agent starts a role **by name** and supplies nothing else (reqs 3, 4) — by the same command
+vocabulary whether it wants a one-shot consult or a child session (req 16).
 
 The reviewer is a role (req 2). ShipIt's existing review path — `--role reviewer`, resolved from
 two configured candidates ranked by distance from whatever is implementing (docs/261) — becomes
@@ -44,13 +45,12 @@ params = { kind: "pinned", harnessId, serviceId, billingMode, modelId, reasoning
 
 Every field of a `pinned` tuple is required, the harness included (reqs 1, 6).
 
-- **`name`** — unique per install; a duplicate is refused. **Any further restriction is open
-  question 2 and is deliberately not decided here**: the design assumes only uniqueness, and a
-  name needing quoting on a command line is quoted. A lowercase-token rule would be a
-  user-visible restriction nobody asked for.
-- **`description`** — a short line saying what the role is for (req 9). Separate from the prompt
-  and **not** derived from it: standing instructions are optional, so a role that has none would
-  otherwise have nothing for the inventory or the Settings list to show.
+- **`name`** — **any name the user types, with only uniqueness enforced.** No token shape, no
+  case rule, no length rule beyond what storage needs; a name that needs quoting on a command line
+  is quoted. A restriction here would be user-visible and nobody asked for one.
+- **`description`** — an optional short line saying what the role is for (req 9). Separate from
+  the standing instructions and **not** derived from them, since either may be absent; where both
+  are absent the inventory and the Settings list fall back to the name.
 - **`prompt`** — optional standing instructions (req 8). See *The prompt*.
 - **`params`** — the complete tuple, including the harness. See *The harness is part of a role*.
 
@@ -202,54 +202,62 @@ place for it to stop.
 name is reserved and which cannot be renamed or deleted (req 2) — "review this" has to keep
 resolving to something, and reviewing has to work on an install nobody has configured.
 
-## Starting a role: the two shapes (req 11)
+## One spawn vocabulary, two commands (reqs 11, 16)
 
-A role names what runs, and that question is the same whichever way a sub-agent is started:
+A role names what runs, and that is the same question whichever way a sub-agent is started. Today
+the two commands answer it in two different vocabularies, and req 16 collapses that.
 
-| Shape | Command | What a role supplies |
+**What each can say today, and what it becomes:**
+
+| | `shipit agent run` | `shipit session create` |
 |---|---|---|
-| One-shot run | `shipit agent run --role NAME` | the harness, model and level for the consult |
-| Child session | `shipit session create --role NAME` | the same, for the session's own agent |
+| **Today** | a role, or all five params; an omission refused | `--agent` and `--model` only, forwarded as bare values — no service, no billing mode, **no reasoning level at all**; everything else inherited |
+| **Becomes** | a role, or a complete target | a role, or a complete target, or inherit (± overrides — open question 1) |
 
-**The child session is the one that gains most.** It accepts `--agent` and `--model` today and
-**no reasoning flag at all**, so a parent can currently override two of the three parameters that
-decide what a child runs on. A role supplies all of them at once, which is what makes it worth
-naming there.
+**The child session gains the most, and that is the point.** It cannot express a complete target
+at all right now: `session create` parses `--agent`/`--model` and forwards them bare
+(`shipit-session.ts`), so a service, a billing mode and a reasoning level are unsayable. A parent
+that wants a child on a specific model at a specific effort cannot ask for it. Unification is
+therefore additive there rather than only restrictive.
 
-`--role NAME` on a child session **replaces inheritance** rather than layering over it: docs/261
-req 10 has a child inherit its parent's parameters, and a role is a complete unit (reqs 1, 10), so
-naming one answers the whole question. A child session with no `--role` inherits exactly as it
-does today.
+**One resolver, two call sites.** The shared piece is "what does this spawn run on" — a role name
+or a complete target in, a resolved `(harness, selection, effort)` out, with one set of refusals.
+`sub-agent-target.ts` already is that function for the one-shot path; roles extend it, and
+`session create` calls the same thing instead of its own two-flag reading. That is what makes the
+two commands *consistent by construction* rather than by two implementations agreeing.
 
-**A child session is not a frozen consult, and the difference is load-bearing** (req 11). A
-one-shot run resolves *and routes* once and holds that target for its life — correct for
-something that lasts minutes. A child session lives for days, across many turns and process
-restarts, and must keep the routing, account failover and model-retirement behaviour every other
-session has. So the role is resolved **once, at creation**: it seeds the new session's stored
-harness, selection and reasoning level, and from then on that session is an ordinary session.
-Carrying the consult's frozen provider route into it would pin a child to one credential for its
-whole life and break failover — a bug that would surface only under quota exhaustion, days later.
+**Where they legitimately differ, and why that is not a inconsistency.** Only a child has a parent,
+so only a child can inherit. docs/261 req 7 refuses an incomplete one-shot call precisely because
+there is nowhere honest to fill a blank from; a child *has* somewhere, and it is visible. So:
+**naming a target is whole; modifying an inheritance is partial** — and whether the partial mode
+survives at all is open question 1.
 
-Concretely: resolve the role before any disk work, write the complete tuple onto the session row,
-and let normal session routing take it from there. `--role` decides what the child *starts as*,
-not what it is permanently bound to.
+**What a role does to a child, once resolved.** A role decides what the child *starts as*, not
+what it is bound to (req 11). The resolution happens once, before any disk work; it seeds the new
+session's stored harness, selection and reasoning level — passing a resolved selection and effort
+**directly**, not squeezed through today's `agent`/`model` options, which would silently drop the
+service, billing mode and level. From then on the child is an ordinary session: normal routing,
+account failover and retirement behaviour, per turn. The one-shot path's frozen route must not be
+carried in, or a child is pinned to one credential for its whole life and failover breaks days
+later under quota exhaustion.
 
-**Mutual exclusion, both shapes.** `--role NAME` combined with any parameter that says what to run
-on is refused (req 10). For a one-shot run that is all five of the explicit flags, which is what
-the server already enforces for a role today (`sub-agent-target.ts`) — the role path must not
-quietly narrow that to two. For a child session it is the flags that exist there now, `--agent`
-and `--model`, and any override added later.
+**Mutual exclusion, both commands.** `--role NAME` together with any parameter that says what to
+run on is refused (req 10) — all five explicit flags on the one-shot path, which is what the
+server already enforces, and `--agent`/`--model` on the child path.
 
 ## The CLI
 
 ```
-shipit agent run     --role deep-dive --prompt-file - <<'EOF'
+shipit agent run      --role deep-dive --prompt-file - <<'EOF'
 …
 EOF
 shipit session create --role deep-dive --title "…" --prompt-file - <<'EOF'
 …
 EOF
 ```
+
+A role name may contain anything the user typed, so it is quoted where it needs quoting —
+`--role "deep dive"` — exactly as a title already is.
 
 **The shim's role check changes shape.** Today it rejects an unknown role locally against a
 compiled-in list, to give the agent a fast message. It cannot know the user's roles — they live
@@ -327,9 +335,9 @@ The Reviewer tab becomes a **Roles** surface in two parts:
 - a **Reviewer** section — its description and standing instructions, then the two existing slot
   cards exactly as docs/261 ships them. No rename, no delete, no single model control, because its
   params are two ranked candidates (req 2);
-- a **list of pinned roles**, each with a name, a description (req 9), optional standing
-  instructions (req 8), the shared service / model / reasoning controls (docs/261 req 13 binds
-  them by construction), its harness, a rename, a delete, and a *New role* row.
+- a **list of pinned roles**. Each row is a *summary* — the name, the description, and what it
+  resolves to — plus open, duplicate and delete. Editing happens in a **role editor** (req 17),
+  not in the row.
 
 **The harness is required in the data; it is not necessarily a required interaction.** Today every
 model has exactly one harness that can run it, so the field is filled from that single valid
@@ -348,7 +356,18 @@ credentialed, and the level must be one that harness declares. The two validator
 catalogue and credential checks; only the harness step differs, and it differs in the direction
 that matters.
 
-Name validation is server-side too, and its policy is open question 2.
+Name validation is server-side too, and is only uniqueness (req 9's sibling decision): any name
+the user types is accepted.
+
+**The role editor (req 17).** A role carries a name, a description, standing instructions and
+five parameters. That is more than a row of inline dropdowns can hold legibly, and standing
+instructions are free text that needs room — so opening a role gives one place to edit all of it,
+and saving is one write of the whole role rather than a control-by-control trickle. The shared
+service / model / reasoning controls live inside it (docs/261 req 13 still binds their appearance),
+with the harness beside them.
+
+The reviewer opens the same editor for its name-less, description-and-instructions half; its
+params stay the two slot cards, because they are two candidates rather than one tuple.
 
 **A role that cannot run still has to be editable, which is the case a picker-based UI gets
 wrong.** When a stored model, service or harness no longer exists, the shared pickers have no
@@ -381,8 +400,9 @@ deliberately does not have.
 
 - **Stored state with staleness — and two kinds of it, which must not be reported alike.** A role
   whose model is retired, whose service is removed or whose harness is uninstalled is **stranded**:
-  it cannot run until someone edits it, and req 7 means it is never silently re-pointed (the trade
-  is open question 1). A role whose subscription is merely **quota-exhausted** is not stranded at
+  it cannot run until someone edits it, and req 7 means it is never silently re-pointed — including
+  through a catalogue retirement successor, which is the settled divergence from how a reviewer pin
+  behaves. A role whose subscription is merely **quota-exhausted** is not stranded at
   all — routing already distinguishes that case, and it recovers on its own when the quota resets.
   Telling that user to go and edit a perfectly good role would be wrong, so the two report
   differently: one says the role needs fixing, the other says when to try again.
@@ -407,9 +427,9 @@ deliberately does not have.
 
 | # | Phase | Reqs | Done when |
 |---|---|---|---|
-| 1 | Storage + resolution: the role record, the params discriminator, the synthesized reviewer, `resolveRoleByName`, the harness-explicit validator | 1, 2, 6, 7, 9, 13 | A role is stored, resolved and routed on the harness it names; a level is validated against *that* harness; `getRoles()` yields the reviewer on an empty store; stranded and quota-exhausted are reported differently; an unknown name is refused listing the known ones |
-| 2 | Settings: role CRUD through the existing mutation surface, the Reviewer section above the pinned-role list, the unresolved-role view | 1, 2, 5, 6, 8, 9 | A role is created, edited, renamed and deleted in the UI; the reviewer has no rename or delete and keeps its two slot cards; a role whose model or harness is gone still renders its stored tuple and stays editable |
-| 3 | Starting a role: `--role NAME` on the one-shot run and the child session, the roles read, the prompt join, the intent-to-role guidance | 3, 4, 8, 10, 11, 12, 14 | `--role deep-dive` starts that role either way; a child is seeded with the complete tuple and then routes like any other session, carrying an immutable `originRoleName`; `--role` plus any what-to-run-on parameter is refused; the combined prompt is bounded at save and checked against the destination's limit |
+| 1 | Storage + resolution: the role record, the params discriminator, the synthesized reviewer, `resolveRoleByName`, the harness-explicit validator | 1, 2, 6, 7, 8, 9, 13 | A role is stored, resolved and routed on the harness it names; a level is validated against *that* harness; `getRoles()` yields the reviewer on an empty store; stranded and quota-exhausted are reported differently; an unknown name is refused listing the known ones |
+| 2 | Settings: role CRUD through the existing mutation surface, the Reviewer section above the pinned-role list, the **role editor**, the unresolved-role view | 1, 2, 5, 6, 8, 9, 17 | A role is created, edited and deleted from one editor rather than inline controls; the reviewer has no rename or delete and keeps its two slot cards; a role whose model or harness is gone still renders its stored tuple and stays editable |
+| 3 | One spawn vocabulary: the shared target resolver behind both commands, `--role NAME` on each, the roles read, the prompt join, the intent-to-role guidance | 3, 4, 10, 11, 12, 14, 16 | Both commands take a role and a complete target through **one** resolver; a child can finally name a service, billing mode and level; a child seeded from a role then routes like any other session, carrying an immutable `originRoleName`; `--role` plus any what-to-run-on parameter is refused |
 | 4 | Documentation split: the five-parameter shape leaves every injected surface and moves to the human-facing reference, with its guard inverted | 15 | Neither injected doc nor any system-prompt variant contains a complete five-flag command; the repository override is documented for whoever writes repository policy, and the guard asserts it *there* |
 
 Phase 1 carries the params discriminator, so `selectReviewer` and the two-slot settings survive

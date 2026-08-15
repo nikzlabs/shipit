@@ -8,13 +8,12 @@ description: Per-phase build steps for docs/264.
 
 The design is [`plan.md`](./plan.md); the contract is [`requirements.md`](./requirements.md).
 
-Reqs 9, 13 and 14 are marked provisional in `requirements.md` (open question 3). The steps below
-implement them; if any is struck, the matching steps go with it.
-
 ## Phase 1 — Storage + resolution
 
 - [ ] Role record in the credential store, keyed by name: `getRoles` (sorted by name at read time,
       no stored rank), `setRole(name, role | null)`. No reorder, no rename primitive
+- [ ] **Any name the user types**, with only uniqueness enforced — no token shape, case or length
+      rule; quoted where a command line needs it
 - [ ] Params are a discriminator — `{ kind: "pinned", … }` or `{ kind: "auto" }` — so the shipped
       reviewer is a role with automatic params rather than a second kind of object (reqs 2, 7)
 - [ ] `{ kind: "auto" }` is **rejected for every name but `reviewer`**
@@ -40,34 +39,45 @@ implement them; if any is struck, the matching steps go with it.
 
 - [ ] Role CRUD through the **existing settings mutation surface**, validated by the
       harness-explicit validator above — not a new set of routes
-- [ ] The description (req 9) and the optional standing instructions (req 8) are separate fields;
-      standing instructions have a **stored maximum**
+- [ ] The description (req 9) and the standing instructions (req 8) are separate fields and
+      **both optional**; where both are absent, the name is the fallback. Standing instructions
+      have a **stored maximum**
 - [ ] **A Reviewer section, not a row**: its description and standing instructions above the two
       existing slot cards, unchanged. No rename, no delete, no single model control
-- [ ] A separate list of pinned roles: name, description, standing instructions, the shared
-      service / model / reasoning controls, the harness, rename, delete, New role
-- [ ] Rename flow for pinned roles only, with its uniqueness and failure tests; the reviewer is
-      explicitly excluded
+- [ ] A separate list of pinned roles, each row a **summary** (name, description, what it resolves
+      to) with open / duplicate / delete — not inline controls
+- [ ] **A role editor** (req 17): one place editing name, description, standing instructions and
+      the parameters together, saving the whole role in one write. The shared service / model /
+      reasoning controls live inside it, with the harness beside them
+- [ ] Rename happens in the editor, for pinned roles only, with its uniqueness and failure tests;
+      the reviewer is explicitly excluded
 - [ ] The harness is shown on every pinned role and filled from the single valid option where a
       model has one; it becomes a real picker where a model is carried by more than one
 - [ ] **Unresolved-role view**: a role whose stored model, service or harness no longer exists
       renders its raw tuple as text, names the invalid field, and stays editable and deletable —
       it must not vanish or be silently rewritten to the first available option
 
-## Phase 3 — Starting a role
+## Phase 3 — One spawn vocabulary (reqs 11, 16)
 
-- [ ] `--role NAME` on `shipit agent run`: the shim passes the name through, the server resolves
-- [ ] `--role NAME` on `shipit session create` (req 11) — resolves **once at creation**, seeds the
-      session row with the complete harness/selection/effort tuple, and then routes like any other
-      session. It must pass a resolved selection and effort directly rather than through today's
-      `agent`/`model` options, which would silently drop the service, billing mode and level
-- [ ] The one-shot frozen route must NOT be carried into a child, or failover breaks days later
-      under quota exhaustion
-- [ ] Immutable `originRoleName` on the child session row (req 14) — a snapshot, not a live link:
-      editing or deleting the role afterwards does not alter an existing child
+- [ ] **One shared target resolver behind both commands**: a role name or a complete target in, a
+      resolved `(harness, selection, effort)` out, with one set of refusals. `sub-agent-target.ts`
+      is that function today for the one-shot path; `session create` calls it instead of its own
+      `--agent`/`--model` reading
+- [ ] `session create` can express a **complete target** — service, billing mode, model, harness
+      and level — which it cannot today (it forwards `--agent`/`--model` bare, so a service,
+      billing mode and level are unsayable)
+- [ ] `--role NAME` on both commands
 - [ ] `--role NAME` refused together with **any** what-to-run-on parameter (req 10): all five
       explicit flags on the one-shot path — matching what the server already enforces — and
-      `--agent`/`--model` on the child-session path
+      `--agent`/`--model` on the child path
+- [ ] Inheritance stays child-only, and whether it keeps partial override is **open question 1** —
+      do not implement a partial override against a role or a complete target either way
+- [ ] A role on `session create` resolves **once at creation**, seeds the session row with the
+      complete tuple passed directly (not through `agent`/`model`, which drops service, billing
+      mode and level), and then routes like any other session
+- [ ] The one-shot frozen route must NOT be carried into a child, or failover breaks days later
+      under quota exhaustion
+- [ ] Immutable `originRoleName` on the child session row (req 14) — a snapshot, not a live link
 - [ ] The prompt join (req 8): labelled sections, bounded at save, and the combined prompt checked
       against the destination's limit (200k one-shot, 50k child). The no-instructions case returns
       the task unchanged **from the join** — end-to-end byte identity is not claimed, since child

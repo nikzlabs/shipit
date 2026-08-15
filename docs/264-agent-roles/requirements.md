@@ -11,8 +11,8 @@ too, and is not restated here** — existing behaviour must keep working at leas
 does today.
 
 A user preconfigures **agent roles**: named units of agent work, each naming the harness that
-runs it, the model it runs (a service, a billing mode and a model id), the reasoning level, what
-the role is for, and optionally standing instructions describing the job. An agent starts a role
+runs it, the model it runs (a service, a billing mode and a model id) and the reasoning level,
+and optionally a description and standing instructions describing the job. An agent starts a role
 **by name**, and supplies nothing else.
 
 There is one kind of role. What a role's params may be is where the only variation lives: the
@@ -88,9 +88,9 @@ instead (req 2).
 8. **A role may carry standing instructions — what the job is — which apply whenever the role is
    started, in addition to the task it is given.** A role without them is a complete role.
 
-9. *(Provisional — agent-supplied, open question 3.)* **Every role says what it is for**, in a
-   short description the agent and the user can both read, whether or not it carries standing
-   instructions.
+9. **A role may say what it is for**, in a short description the agent and the user can both
+   read. It is optional, like standing instructions — a role without one is complete, and the
+   agent falls back to the name.
 
 10. **A role is a unit; it is not overridden when it is started.** Naming a role together with
     any parameter that would say what to run on — a harness, a service, a billing mode, a model
@@ -117,14 +117,14 @@ instead (req 2).
     This is scoped to **roles**: it is the smallest surface that answers req 3, and it keeps the
     agent choosing roles rather than assembling params.
 
-13. *(Provisional — agent-supplied, open question 3.)* **An unknown role name is refused, and the
-    refusal names the roles that do exist.** The name is resolved server-side, and the user is told
-    what they can say next rather than what they did wrong.
+13. **An unknown role name is refused, and the refusal names the roles that do exist.** The name
+    is resolved server-side, and the user is told what they can say next rather than what they
+    did wrong.
 
-14. *(Provisional — agent-supplied, open question 3.)* **What a role's run did is reported and
-    attributed** — the service, the model, the harness and the level it actually ran on, with its
-    usage and cost attributed to the service and billing mode that served it. This holds for both
-    ways of starting a role (req 11), and a child session also records which role started it.
+14. **What a role's run did is reported and attributed** — the service, the model, the harness
+    and the level it actually ran on, with its usage and cost attributed to the service and
+    billing mode that served it. This holds for both ways of starting a role (req 11), and a child
+    session also records which role started it.
 
 15. **ShipIt does not tell an agent to assemble a run out of parameters it cannot enumerate.**
     The instructions ShipIt injects into a session do not describe a way of starting an agent
@@ -132,6 +132,22 @@ instead (req 2).
     because nothing in a session lets an agent discover those values. The path remains
     implemented, and remains documented for the humans and repositories that do hold those
     values — it simply stops being offered to the caller that cannot.
+
+16. **The two ways of starting an agent take the same vocabulary for saying what it runs on.** A
+    one-shot run and a child session both accept **a role**, and both accept **a complete target**
+    naming every parameter; the same things are refused in both, and a role is a unit in both
+    (req 10). Where they differ is only where they must: a child session has a parent, so it may
+    also inherit, and a one-shot run has nothing to inherit from.
+
+    Today they differ far more than that — a child session can name only a harness and a model,
+    so it cannot express a complete target at all, and its service, billing mode and reasoning
+    level are not sayable. Two commands answering the same question in two vocabularies is what
+    this removes.
+
+17. **A role is edited in its own editor, not in a row of inline controls.** A role has a name, a
+    description, standing instructions and the parameters it runs on; opening it gives one place
+    to edit all of them together.
+
 
 ## Scope
 
@@ -144,36 +160,51 @@ other agent settings already do.
 
 ## Open questions
 
-1. **What happens to a role whose model is retired?** ShipIt's catalogue can retire a model and
-   declare a successor, and sessions and reviewer pins are moved onto it automatically. Req 7
-   says a role runs on what it names and is never re-pointed, so the two rules collide the first
-   time a role's model is retired.
+1. **Does a child session keep "inherit, then override one parameter"?** Req 16 unifies how the
+   two commands *name* a target — a role, or a complete target, all-or-nothing in both. That
+   leaves one mode only a child can have: inherit its parent's tuple and change part of it, which
+   is what `--agent` and `--model` do today.
 
-   **Recommended: the role stops working and says so, and the user re-points it in Settings.**
-   That is what req 7 already promises, and it is the behaviour the required harness was chosen
-   for — being told a job cannot run beats being quietly handed a different one. The cost is that
-   a retirement can leave a role broken until someone edits it, where a reviewer pin would have
-   carried on. If that cost is not wanted, the alternative is to amend req 7 to allow retirement
-   successors specifically, which is a change to what "pinned" means and so is yours to make.
+   **Recommended: keep it, and scope it to inheritance.** A partial override is coherent exactly
+   when there is a complete base to modify and the user can see where the rest came from — the
+   parent. It is *not* coherent against a role (req 10) or a complete target, where a blank would
+   be filled from somewhere invisible, which is the failure docs/261 req 7 exists to prevent. So
+   the line is: **naming a target is whole; modifying an inheritance is partial.**
 
-2. **What may a role be named?** The design assumes a short token — lowercase letters, digits and
-   dashes — so `--role NAME` is one word. That is a user-visible restriction nobody asked for.
-   **Recommended: allow any name the user types, with only uniqueness enforced**, and quote it
-   where a command needs to. The stricter rule is worth taking only if role names should be
-   guaranteed typeable without quoting.
-
-3. **Do reqs 9, 13 and 14 stand?** All three are the agent's, not yours — req 9 so an agent can
-   choose between roles it can only otherwise see the names of, req 13 so a name-space open to
-   user-defined names fails legibly, and req 14 because attribution is an obligation ShipIt
-   already has and this feature must not lose it. None came from anything you said.
-
-   They are marked *provisional* in the list above rather than being either silently settled or
-   held outside it: the design implements all three, so pretending they are absent would
-   misdescribe it, and pretending they are approved would put words in your mouth.
-   **Recommended: keep all three** — but a requirement nobody asked for should be struck rather
-   than inherited by default, so this is a real question.
+   The alternative is to drop partial override entirely, making a child either fully inherit or
+   fully name a target. That is simpler and more uniform, and it removes a convenience you have
+   called convenient — which is why it is your call rather than a recommendation I should take.
 
 ## Resolved questions
+
+- 2026-08-14 — **What happens to a role whose model is retired?** **Chosen: the role stops working
+  and says so, and the user re-points it in Settings.** The human agreed with the recommendation.
+  Req 7 stands as written: resolving a role never substitutes a different model. The cost is
+  accepted — a retirement can leave a role broken until someone edits it, where a reviewer pin
+  would have carried on.
+
+- 2026-08-14 — **What may a role be named?** **Chosen: any name the user types, with only
+  uniqueness enforced.** The human agreed with the recommendation. No token shape, no case rule,
+  no length rule beyond what storage needs; a name that needs quoting on a command line is quoted.
+
+- 2026-08-14 — **Do reqs 9, 13 and 14 stand?** **Chosen: yes, all three — with req 9 weakened to
+  optional.** The human agreed to each, and of the description: *"agree, but optional."* So a role
+  may say what it is for and need not; the agent falls back to the name. The provisional markers
+  are removed and all three are ordinary requirements.
+
+- 2026-08-14 — **Unify the two spawn APIs.** The human: *"need to unify the 'child spawn' and
+  'sub-agent within the session' spawn api. Both should be able to take roles, but a child spawn
+  is now more flexible, allowing overriding a model, for example. This is convenient, but becomes
+  inconsistent with the sub-agent changes."* Req 16. Checked rather than assumed: `session create`
+  accepts only `--agent` and `--model` and forwards them as bare values, so a child session cannot
+  express a service, a billing mode or a reasoning level at all — the two commands answer the same
+  question in two different vocabularies, and unifying them *adds* to the child rather than only
+  constraining it. What becomes of the child's partial override is open question 1.
+
+- 2026-08-14 — **How is a role edited?** **Chosen: a dedicated role editor, not inline controls.**
+  The human: *"Need a separate 'role editor dialog' instead of inline dropdowns like it is now, to
+  edit name, description, prompt."* Req 17. A role carries a name, a description, standing
+  instructions and five parameters, which is more than a row of dropdowns can hold legibly.
 
 - 2026-08-14 — **Should the reviewer keep behaving differently from every other role?** **Chosen:
   keep the behaviour, drop the framing.** Put to the human as a real choice, with the cost of the
@@ -278,11 +309,17 @@ his. What he actually said:
   is *one kind of role with automatic params on one of them*, rather than either "two kinds" or
   "no exception", came out of answering it.
 
+- "need to unify the 'child spawn' and 'sub-agent within the session' spawn api. Both should be
+  able to take roles, but a child spawn is now more flexible, allowing overriding a model … This is
+  convenient, but becomes inconsistent with the sub-agent changes." → req 16, and open question 1,
+  which is the part he identified as a tension rather than decided.
+- "Need a separate 'role editor dialog' instead of inline dropdowns like it is now, to edit name,
+  description, prompt." → req 17.
+- "agree, but optional" (of the description) → req 9's optionality.
+
 Reqs 7 and 10 are his answers to questions put to him, recorded above.
 
-**Reqs 9, 13 and 14 are the agent's**, and are marked *provisional* in the list above pending
-open question 3 — req 9 so an agent can choose between roles it can otherwise only see the names
-of, req 13 so a name-space open to user-defined names fails legibly, and req 14 because
-attribution is an obligation ShipIt already has and this feature must not lose it. The design
-implements all three, which is why they are numbered rather than held outside the list; the
-marking is what stops that from reading as approval.
+**Reqs 9, 13 and 14 originated with the agent** rather than with anything he said, and all three
+were put to him and agreed — req 9 with the modification that it is optional. They are ordinary
+requirements now; the provenance is recorded because where a requirement came from should stay
+legible after it is approved.
