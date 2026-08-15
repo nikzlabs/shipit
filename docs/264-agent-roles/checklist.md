@@ -201,3 +201,18 @@ see it: the rule is stated in one phase and violated by another phase's layer in
       through the shared field reader, so `" reviewer "` — an ordinary role, distinct from the
       reserved one — ran ShipIt's automatic reviewer, and `" deep dive "` was refused as unknown
       while existing. The name is now the one field passed through untouched; blank stays refused
+- [x] **A model-only override no longer relocates a pinned role's service** (reqs 7, 10).
+      `applyOverrides` re-resolved where the overridden model lives and returned that service and
+      billing mode with it, so a role pinned to DeepSeek/key ran on Anthropic/key when the caller
+      named only `--model`. A parameter the caller never named changed, which req 7's
+      visible-in-the-request exception does not cover. It is now **refused naming the parameter**,
+      and the caller names `--service` too.
+
+      **This one needed the human, because the plan and the contract disagreed** — plan rule (c)
+      endorsed the relocation, but only ever meant it for a **reviewer slot pin**, and the
+      implementation generalised it to pinned roles. The decision (2026-08-15, recorded in
+      `requirements.md`) keeps rule (c) for the reviewer and makes req 10 literal for a role. The
+      fix encodes the distinction as an `OverrideBaseKind` of `role` vs `ranked`: a slot pin is
+      ShipIt's own working state for a ranking it performs, a pinned role is five choices the user
+      made and can see. A regression test pins **both** sides, so the reviewer's relocation is not
+      "fixed" away by the next reader
