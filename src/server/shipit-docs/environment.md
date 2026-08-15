@@ -177,7 +177,7 @@ When a session sits idle (no one viewing it and no agent turn running), ShipIt
 this "shutting down" or "pausing," but it is a full teardown — `docker stop` +
 `docker rm`, **not** `docker pause`. The container is not frozen and later
 thawed; it is deleted. When the user sends the next message, a **brand-new**
-container is created and `/workspace` is re-cloned from git.
+container is created and re-mounted onto the same host clone at `/workspace`.
 
 The user can explicitly enable **Keep preview running** for a session from its
 overflow menu. While enabled, ShipIt reserves that session's container and its
@@ -195,9 +195,16 @@ no durability guarantee and belong in `docker-compose.yml`.
   eviction and does **not** come back. The next message lands in a fresh
   container with none of it running.
 - **`/workspace` (the git repo) and `/persist` (non-git scratch) persist** —
-  `/workspace` via re-clone, `/persist` because it's host-backed and re-mounted.
-  In-memory state, processes, and files written *elsewhere* (outside `/workspace`,
-  `/persist`, and declared volumes) are gone after eviction.
+  both are host-backed and re-mounted onto the new container. In-memory state,
+  processes, and files written *elsewhere* (outside `/workspace`, `/persist`,
+  and declared volumes) are gone after eviction.
+- **Only committed work is guaranteed.** ShipIt may reclaim an idle session's
+  checkout for disk and re-clone it from git on the next message. Committed
+  files come back, and so do the dependency directories declared in
+  `agent.dep-dirs`; anything else that is gitignored — a `dist/`, a scratch
+  file at the repo root — does not. Nothing warns you first, so put scratch that
+  must survive in `/persist` and declare build output you depend on
+  ([shipit-yaml.md](shipit-yaml.md) → Dependency directories).
 - **There is a grace period of 10 minutes** after the last viewer detaches
   before a container becomes eligible for eviction (host memory pressure can
   cut this short). A short-lived timer may fire within that window, but **do

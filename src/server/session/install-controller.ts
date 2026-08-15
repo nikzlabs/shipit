@@ -30,6 +30,7 @@ import {
   type InstallMarkerStamp,
 } from "../shared/install-marker.js";
 import { emptyDepDirsContradictingMarker } from "./overlay-dep-check.js";
+import { installSkipOutputWarning } from "./install-skip-warning.js";
 import { formatInstallFailureMessage, INSTALL_STDERR_TAIL_BYTES } from "./install-failure.js";
 import { computeInstallDepsHash } from "../shared/deps-hash.js";
 import { resolveShipitConfig } from "../shared/shipit-config.js";
@@ -159,6 +160,10 @@ export class InstallController {
         // keep the marker-skip — non-overlay/no-deps sessions stay unchanged.
         const contradicted = emptyDepDirsContradictingMarker(this.workspaceDir);
         if (contradicted.length === 0) {
+          // planning#2315 — the skip is honored, but say so when it is likely to
+          // have dropped output no dep dir covers. Advisory only: never blocks,
+          // never re-runs the install.
+          this.warnOnSkippedInstallOutput(commands);
           return { skipped: true, reason: "marker" };
         }
         console.warn(
@@ -486,6 +491,27 @@ export class InstallController {
       // Unreadable/invalid config — fall back to the command-derived inputs.
     }
     return computeInstallDepsHash(this.workspaceDir, commands, installInputs);
+  }
+
+  /**
+   * planning#2315 — warn when a skipped install probably wrote something no
+   * declared dep dir brings back. `installSkipOutputWarning` owns the whole
+   * decision (and the reasoning); this only resolves `dep-dirs` and picks the
+   * surfaces. Both are used deliberately: an idle-recreate install runs with no
+   * viewer attached, where the `install_log` line has nobody to reach, and the
+   * worker's own stdout is the only place it lands.
+   */
+  private warnOnSkippedInstallOutput(commands: string[]): void {
+    let depDirs: string[];
+    try {
+      depDirs = resolveShipitConfig(this.workspaceDir).agent.depDirs;
+    } catch {
+      return; // Unreadable/invalid config — a skip is not the place to report that.
+    }
+    const warning = installSkipOutputWarning(commands, depDirs);
+    if (!warning) return;
+    console.warn(warning);
+    this.broadcastSSE({ type: "install_log", data: { text: `${warning}\n`, stream: "stderr" } });
   }
 
   /**

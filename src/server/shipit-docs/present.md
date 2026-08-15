@@ -160,8 +160,9 @@ what the user sees and would defeat the point of the check.
   container restart** — their metadata is saved durably on the orchestrator (not
   in the container), and the bytes are re-read from the source file on demand.
   Both tiers re-render fully after the container is recycled: a **tracked
-  workspace file** is still on disk (re-cloned from git), and a **`/persist`
-  throwaway** survives because `/persist` is host-backed and re-mounted. (A file
+  workspace file** is still on disk (and comes back from git even if the
+  checkout is reclaimed), and a **`/persist` throwaway** survives because
+  `/persist` is host-backed and re-mounted. (A file
   written to a truly ephemeral, non-persistent location would be gone after a
   restart and show a graceful "source no longer available" placeholder — which is
   exactly why presented artifacts go to `/persist`.) The Present tab is only fully

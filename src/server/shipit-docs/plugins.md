@@ -150,14 +150,20 @@ Plugins tab reports why, with the command's own output.
 
 You will not see the result. Dependencies and build output land in that
 writable layer, which belongs to the plugin's execution environment; your
-`/plugins/<name>` still shows plain source.
+`/plugins/<name>` still shows plain source. The plugin's own containers see all
+of it: the layer is merged over the checkout, so **everything an install writes
+reaches `/plugin` whether or not the directory is declared in `dep-dirs`** — a
+build artifact in `dist/` arrives exactly like `node_modules`.
 
 **It does not run once per commit — it runs once per set of dependencies.** The
 directories a plugin declares in `dep-dirs` (default `[node_modules]`) are
 promoted into a store shared by every session and every project, keyed by the
 repository, the runtime, and the *content* of the install's inputs. A new commit
 whose `package-lock.json` did not change reuses that tree and runs no install at
-all; a commit that does change it installs once, for everybody.
+all; a commit that does change it installs once, for everybody. So `dep-dirs`
+decides what is **shared**, not what arrives: a declared directory reaches
+`/plugin` mounted back out of that store, an undeclared one by staying in the
+writable layer, and both are there.
 
 Two things turn the reuse off, deliberately, and both are the plugin author's to
 control:
@@ -169,7 +175,10 @@ control:
 
 In either case, declaring `install-inputs` says what the install actually
 consumes and turns reuse back on — it **replaces** the default input set, so
-list every file that changes the result.
+list every file that changes the result. Turning it back on for an install that
+*builds* means declaring the build's output directory in `dep-dirs` too: a store
+hit clears the writable layer and runs nothing, so output the store holds no
+copy of is the one thing that does not arrive.
 
 ## Skills
 
@@ -242,7 +251,10 @@ session's own working tree.** So:
 - `shipit plugin refresh dev` is refused: there is no version to move to. What
   ShipIt *copies* rather than reads live — the materialized skills and the
   generated command wrappers — is re-applied on the next activation round, which
-  a `shipit.yaml` save or the session opening runs.
+  a `shipit.yaml` save or the session opening runs. Editing a file the manifest
+  *points at* does not run one, so a service you rename in the exported compose
+  file keeps its old name — under the old definition — until you save
+  `shipit.yaml`.
 - The plugin's `install` does not run: it exists to populate a generation's
   writable layer, and there is none. Your repository's own `agent.install`
   prepares the working tree that the services and CLIs then run out of. That is

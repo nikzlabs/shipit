@@ -262,3 +262,10 @@ declared in any compose service. Those are kept in the per-repo secret
 store but are NOT injected anywhere — declaring them in
 `x-shipit-secrets` is what wires them up. This keeps services scoped to
 exactly what they asked for.
+
+**So deleting a service is also a secrets change.** A declaration is the only
+thing that injects a value, and it lives on a service. Delete the last service
+declaring a name — even for an unrelated reason, like dropping a redundant
+preview — and that name becomes undeclared: the value stays in the store, and it
+stops reaching every container, including the agent's if it was `agent: true`.
+Re-declare it on a service that survives.
