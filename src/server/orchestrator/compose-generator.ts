@@ -398,7 +398,8 @@ export function parseComposeFile(
     }
   }
 
-  validateTopLevelSecrets(doc.secrets);
+  validateTopLevelFileRefs("Secret", doc.secrets);
+  validateTopLevelFileRefs("Config", doc.configs);
 
   const services = doc.services as Record<string, Record<string, unknown>> | undefined;
   if (!services || typeof services !== "object") {
@@ -421,6 +422,7 @@ export function parseComposeFile(
       opts.containEgress ?? false,
       opts.trustedOpsProxy ?? false,
     );
+    validateServiceEnvFile(name, svc.env_file);
 
     // Extract ports (supports short syntax "8080:80" and long syntax { published, target })
     const rawPorts = Array.isArray(svc.ports) ? svc.ports : undefined;
@@ -644,60 +646,93 @@ export function validateDevices(
 }
 
 /**
- * A repository's top-level `secrets:` block may only name files INSIDE its own
- * workspace (planning#371, review finding).
+ * Every file a repository's compose model asks ShipIt to READ must be inside
+ * that repository's workspace (planning#371, review finding).
  *
  * The `volumes:` rule below already rejects an absolute bind source, because a
- * host path is an escape from the workspace. A `secrets:` entry is the same
- * primitive by another name, and it was unchecked — with a second, sharper edge
- * the volumes rule does not have:
+ * host path is an escape from the workspace. Three other fields are the same
+ * primitive by another name and were unchecked — with a sharper edge the
+ * volumes rule does not have, because two of them are read by the **CLI**, in
+ * the orchestrator's own filesystem, rather than bound by the daemon:
  *
- *  - A **service** secret is bind-mounted at `/run/secrets/<name>` by the
- *    DAEMON, so its `file:` resolves on the host — an arbitrary host-file read
- *    into a contained container.
- *  - A **build** secret (`build.secrets`, which references this same block) is
- *    read CLIENT-side and streamed to the builder, so its `file:` resolves in
- *    the ORCHESTRATOR's own filesystem. That is what makes it a way around
- *    {@link composeSpawnEnv}: scrubbing the child's environment does not remove
- *    `/proc/1/environ`, which a same-uid child can read (mode 0400, owned by
- *    the orchestrator process). A path escaping the workspace could therefore
- *    hand the container the very environment the spawn no longer passes.
+ *  - `secrets:` / `configs:` (top level) — a service reference bind-mounts the
+ *    file at `/run/secrets/<name>` or `/<name>`, resolved by the DAEMON, so an
+ *    absolute path is an arbitrary HOST-file read into a contained container.
+ *  - `build.secrets` references that same `secrets:` block, and a BUILD secret
+ *    is read CLIENT-side and streamed to the builder.
+ *  - `env_file:` is read CLIENT-side too — Compose must read it to render the
+ *    model — and its contents become the service's environment.
  *
- * So a source must be a plain workspace-relative path: no leading `/`, no `..`,
- * and no `${…}` — an interpolated path would be validated as the literal here
- * and resolved to something else by Compose (`${HOME}/.docker/config.json` is
- * the whole attack in one line).
+ * The client-side pair is what makes them a way around {@link composeSpawnEnv}:
+ * scrubbing the child's environment does not remove `/proc/1/environ`, which a
+ * same-uid child can read (mode 0400, owned by the orchestrator process). So
+ * `env_file: /proc/1/environ` would hand a container the very environment the
+ * spawn no longer passes.
  *
- * ShipIt's OWN docker-secrets mode writes absolute `file:` paths, and is
- * unaffected: it emits them into the generated OVERRIDE, which is never parsed
- * here. A plugin fragment cannot declare `secrets:` at all
+ * A source must therefore be a plain workspace-relative path: no leading `/`,
+ * no `..`, and no `${…}` — an interpolated path would be validated as the
+ * literal here and resolved to something else by Compose
+ * (`${HOME}/.docker/config.json` is the whole attack in one line).
+ *
+ * **What this does NOT close, so the next reader need not re-derive it.** These
+ * are string rules over a declared path, exactly like the `volumes:` rule they
+ * mirror, and a **symlink inside the workspace defeats them** — the workspace
+ * is writable by the agent and by any plugin service holding `/project`. Making
+ * them airtight means resolving each path and proving containment, which is a
+ * TOCTOU race against a writer who can swap the link afterwards; the durable
+ * fix is not a longer deny-list but running the CLI without access to anything
+ * worth reading. That is its own change, tracked as planning#373. This closes the
+ * direct references; it does not make the compose file safe.
+ *
+ * ShipIt's OWN generated override writes absolute `file:` and `env_file:`
+ * paths, and is unaffected: those go into the override, which is never parsed
+ * here. A plugin fragment can declare none of these keys
  * (`plugin-compose.ts`'s `ALLOWED_SERVICE_KEYS` / `ALLOWED_TOP_LEVEL_KEYS`);
  * this covers the project file, which is the surface a plugin with `/project`
  * write access — or the project itself — can author.
  */
-function validateTopLevelSecrets(secrets: unknown): void {
-  if (!secrets || typeof secrets !== "object" || Array.isArray(secrets)) return;
-  for (const [name, entry] of Object.entries(secrets as Record<string, unknown>)) {
+function validateReadablePath(kind: string, name: string, file: unknown): void {
+  if (typeof file !== "string" || file.length === 0) return;
+  if (file.includes("${")) {
+    throw new ComposeValidationError(
+      `${kind} \`${name}\`: variable interpolation is not allowed in a file path. `
+      + "Use a resolved path inside the workspace.",
+    );
+  }
+  if (file.startsWith("/")) {
+    throw new ComposeValidationError(
+      `${kind} \`${name}\`: absolute path \`${file}\` is not allowed. `
+      + "Use a relative path within the workspace.",
+    );
+  }
+  if (file.includes("..")) {
+    throw new ComposeValidationError(
+      `${kind} \`${name}\`: path traversal \`${file}\` is not allowed. `
+      + "Referenced files must stay within the workspace.",
+    );
+  }
+}
+
+/** The top-level `secrets:` / `configs:` blocks — see {@link validateReadablePath}. */
+function validateTopLevelFileRefs(kind: string, block: unknown): void {
+  if (!block || typeof block !== "object" || Array.isArray(block)) return;
+  for (const [name, entry] of Object.entries(block as Record<string, unknown>)) {
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
-    const file = (entry as Record<string, unknown>).file;
-    if (typeof file !== "string" || file.length === 0) continue;
-    if (file.includes("${")) {
-      throw new ComposeValidationError(
-        `Secret \`${name}\`: variable interpolation is not allowed in a secret's \`file:\` path. `
-        + "Use a resolved path inside the workspace.",
-      );
-    }
-    if (file.startsWith("/")) {
-      throw new ComposeValidationError(
-        `Secret \`${name}\`: absolute secret path \`${file}\` is not allowed. `
-        + "Use a relative path within the workspace.",
-      );
-    }
-    if (file.includes("..")) {
-      throw new ComposeValidationError(
-        `Secret \`${name}\`: path traversal \`${file}\` is not allowed. `
-        + "Secret files must stay within the workspace.",
-      );
+    validateReadablePath(kind, name, (entry as Record<string, unknown>).file);
+  }
+}
+
+/**
+ * A service's `env_file:`, in each of the three shapes Compose accepts: a bare
+ * string, a list of strings, and a list of `{ path, required }` objects.
+ */
+function validateServiceEnvFile(name: string, envFile: unknown): void {
+  const entries = Array.isArray(envFile) ? envFile : [envFile];
+  for (const entry of entries) {
+    if (typeof entry === "string") {
+      validateReadablePath("Service", name, entry);
+    } else if (entry && typeof entry === "object") {
+      validateReadablePath("Service", name, (entry as Record<string, unknown>).path);
     }
   }
 }

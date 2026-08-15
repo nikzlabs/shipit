@@ -518,6 +518,65 @@ services:
   // (a host path), and a BUILD secret is read client-side, in the
   // orchestrator's own filesystem — which is how a compose file could still
   // reach the environment `composeSpawnEnv` stops passing.
+  it("rejects an absolute env_file path (the CLI reads it, in the orchestrator's own fs)", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `
+services:
+  web:
+    image: node:20
+    env_file: /proc/1/environ
+`);
+    expect(() => parseComposeFile(p, { dockerSocket: false })).toThrow("absolute path");
+  });
+
+  it("rejects an escaping env_file in list and object form", () => {
+    const dir = setup();
+    const list = writeCompose(dir, `
+services:
+  web:
+    image: node:20
+    env_file:
+      - ./ok.env
+      - ../../root/.env
+`);
+    expect(() => parseComposeFile(list, { dockerSocket: false })).toThrow("path traversal");
+    const obj = writeCompose(dir, `
+services:
+  web:
+    image: node:20
+    env_file:
+      - path: /proc/1/environ
+        required: false
+`);
+    expect(() => parseComposeFile(obj, { dockerSocket: false })).toThrow("absolute path");
+  });
+
+  it("rejects an absolute config file path", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `
+configs:
+  leak:
+    file: /etc/shadow
+services:
+  web:
+    image: node:20
+    configs:
+      - leak
+`);
+    expect(() => parseComposeFile(p, { dockerSocket: false })).toThrow("absolute path");
+  });
+
+  it("allows a workspace-relative env_file", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `
+services:
+  web:
+    image: node:20
+    env_file: ./.env
+`);
+    expect(parseComposeFile(p, { dockerSocket: false })).toHaveLength(1);
+  });
+
   it("rejects an absolute secret file path", () => {
     const dir = setup();
     const p = writeCompose(dir, `
@@ -532,7 +591,7 @@ services:
       secrets:
         - leak
 `);
-    expect(() => parseComposeFile(p, { dockerSocket: false })).toThrow("absolute secret path");
+    expect(() => parseComposeFile(p, { dockerSocket: false })).toThrow("absolute path");
   });
 
   it("rejects path traversal in a secret file path", () => {
