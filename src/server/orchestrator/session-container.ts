@@ -554,10 +554,16 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
    */
   pluginEgressPolicy(sessionId: string): PluginEgressPolicy {
     const contained = this.isEgressContained(sessionId);
+    const config = this.resolveEgressConfig?.(sessionId);
     return {
       contained,
-      config: this.resolveEgressConfig?.(sessionId),
-      allowOnceHosts: contained ? listEgressAllowedHosts(sessionId) : [],
+      config,
+      // A session that admits no user hosts admits no live decision either
+      // (docs/211's tighten-only `network` capability, planning#380). Its own
+      // decision route refuses to card, so this set is empty in practice — kept
+      // explicit so a plugin container cannot become the one surface that widens
+      // a sealed sandbox.
+      allowOnceHosts: contained && !config?.userHostsExcluded ? listEgressAllowedHosts(sessionId) : [],
       sidecarImage: process.env.SESSION_EGRESS_SIDECAR_IMAGE,
       dnsEnabled: this.isEgressDnsContained(sessionId),
       proxyEnabled: this.isEgressProxyContained(sessionId),
@@ -690,10 +696,17 @@ export class SessionContainerManager extends EventEmitter<SessionContainerManage
    * contained session by relaunching the Tier B resolver + Tier C proxy with the
    * regenerated config, so the host resolves (DNS + ipset auto-pin) and its SNI
    * is permitted without waiting for the next container start. Best-effort and
-   * fail-safe: a no-op when egress isn't enforced, the session has no running
-   * container, or the session is in Open mode. Errors are swallowed by the reload
-   * module — the durable add already persisted, so the worst case is "applies on
-   * next restart."
+   * A no-op when egress isn't enforced, the session has no running container, or
+   * the session is in Open mode.
+   *
+   * **It throws on failure, and the failure is not benign.** This said "errors
+   * are swallowed by the reload module — the worst case is applies on next
+   * restart", and neither half is true: `reloadEgressSidecars` propagates, and it
+   * REMOVES the old resolver/proxy before launching the replacement, so a failed
+   * launch leaves the agent with no DNS or no SNI proxy rather than with a stale
+   * allowlist. Both callers catch — the route answers 503 and says the refresh
+   * failed closed, the WS handler logs — which is what makes it survivable, not
+   * anything this method does.
    *
    * **Returns whether the AGENT's sidecars were relaunched** — the claim its one
    * reporting caller makes (`computeEgressGrantOutcome`'s `reloaded`). It used to

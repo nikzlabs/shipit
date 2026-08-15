@@ -420,6 +420,16 @@ describe("sandboxLifelineEgressConfig", () => {
     expect(cfg!.base).toEqual([...EGRESS_LIFELINE_ALLOWLIST]);
   });
 
+  it("network OFF states that it admits no user hosts, rather than leaving it inferred", () => {
+    // planning#380 — an empty `extraHosts` cannot be told apart from "this user
+    // added no hosts", and every reader that guessed got it wrong in the same
+    // direction. The flag is what the decision route and the Plugins card ask.
+    expect(sandboxLifelineEgressConfig(sandbox({ network: false }), "")!.userHostsExcluded).toBe(true);
+    // Never set on the paths that DO carry user hosts — a normal session's config
+    // comes from `index.ts`, which does not set it at all.
+    expect(sandboxLifelineEgressConfig(sandbox({ network: true }), "")).toBeNull();
+  });
+
   it("network OFF + git ON → github.com spliced into the lifeline base", () => {
     const cfg = sandboxLifelineEgressConfig(sandbox({ network: false, git: true }), "");
     expect(cfg!.base).toContain(".github.com");

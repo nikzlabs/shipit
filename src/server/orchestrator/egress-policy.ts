@@ -9,8 +9,14 @@
  *   - `carded`   — hosts already surfaced as a card, so a re-denied host doesn't
  *                  spam a new card every retry.
  *
- * Scope (C2): per-session and **in-memory** — a decision lasts the session/runner
- * lifetime. "Add to allowlist" reuses the same set; durable, cross-restart
+ * Scope (C2): per-session and **in-memory** — a decision lasts the ORCHESTRATOR
+ * PROCESS's lifetime, not the runner's. This said "the session/runner lifetime"
+ * and that is not what the code does: {@link clearEgressPolicy} exists for it but
+ * has no production caller, so a decision survives runner disposal and container
+ * recreation, and is snapshotted into plugin containers launched long after
+ * (`plugin-egress.ts`). Recorded rather than changed — narrowing it would re-card
+ * hosts after a routine idle disposal, which is a product call, not a cleanup.
+ * "Add to allowlist" reuses the same set; durable, cross-restart
  * persistence + an editor is the Settings-UI follow-up (see checklist). The chat
  * card itself persists (chat history), so the user's decision is never lost from
  * the transcript; only the live allow-set is ephemeral. A module-level Map is the
@@ -142,6 +148,11 @@ export function allowEgressHost(sessionId: string, host: string): void {
  * host is not already allowed AND hasn't been carded yet — and marks it carded so
  * the proxy's retry loop (it re-queries after a short negative cache) doesn't emit
  * a fresh card each time. A subsequent user "deny" leaves it carded (no re-card).
+ *
+ * Only reached for a session that CAN grant: the decision route answers a
+ * session admitting no user hosts (`ResolvedEgressConfig.userHostsExcluded`,
+ * planning#380) before it gets here, because there the card would offer a grant
+ * that cannot take effect.
  */
 export function shouldCardEgressHost(sessionId: string, host: string): boolean {
   const h = normalizeHost(host);

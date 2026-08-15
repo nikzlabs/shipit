@@ -169,6 +169,7 @@ describe("pluginHostAllowance", () => {
       contained: true,
       extraHosts: [],
       base: sandboxLifelineBase({ git: false }),
+      userHostsExcluded: true,
     };
     const isAllowed = pluginHostAllowance({ contained: true, config: sandbox, sessionId: "sess-a" });
     expect(isAllowed("fal.run")).toBe(false);
@@ -179,17 +180,27 @@ describe("pluginHostAllowance", () => {
     expect(allowance()("cdn.example.com")).toBe(true);
   });
 
-  // The allow-once layer is kept for the sandbox, because it is snapshotted into
-  // the static allowlist of every plugin container the session launches
-  // (`plugin-egress.ts`) — so it IS reachable there, unlike a durable entry.
-  it("counts an allow-once decision even in a Network-off sandbox", () => {
+  // The allow-once layer goes with it for such a session, which is the second
+  // review's correction and docs/211's own words: `network` off "only ever
+  // tightens", so a live decision may not widen it either. The card and the
+  // container agree because `pluginEgressPolicy` empties `allowOnceHosts` for the
+  // same config — otherwise a plugin container would be the one surface that
+  // reaches what the sealed session cannot.
+  it("does not count an allow-once decision in a Network-off sandbox", () => {
     allowEgressHost("sess-a", "fal.run");
     const isAllowed = pluginHostAllowance({
       contained: true,
-      config: { contained: true, extraHosts: [], base: sandboxLifelineBase({ git: false }) },
+      config: {
+        contained: true,
+        extraHosts: [],
+        base: sandboxLifelineBase({ git: false }),
+        userHostsExcluded: true,
+      },
       sessionId: "sess-a",
     });
-    expect(isAllowed("fal.run")).toBe(true);
+    expect(isAllowed("fal.run")).toBe(false);
+    // The lifeline itself is untouched — this narrows nothing else.
+    expect(isAllowed("api.anthropic.com")).toBe(true);
   });
 
   it("counts a host the user allowed on an inline card this session", () => {
