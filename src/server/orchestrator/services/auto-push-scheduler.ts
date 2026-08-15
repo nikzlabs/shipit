@@ -100,13 +100,31 @@ import { getErrorMessage } from "../validation.js";
  * the branch afterwards can itself fail), so every mention degrades gracefully
  * rather than printing "undefined".
  *
- * The merged-branch clause is not padding. This notice's firing condition
- * OVERLAPS the state planning#267 guards: a branch rebased off a merged tip still
- * has `mergedAt` set (the docs/202 re-arm clears it later), which arms
- * `SHIPIT_GUARD_DESTRUCTIVE_GIT=1` — and `docker/agent-hooks/block-branch-ops.mjs`
- * then blocks a hand-rolled `git push --force-with-lease` outright. A remedy the
- * agent is refused when it tries it is the same dead end in a friendlier voice,
- * so the sanctioned command for that state is named alongside it.
+ * ## Why the remedy is three branches and not one line
+ *
+ * A remedy the agent is refused when it runs it is the same dead end in a
+ * friendlier voice, so each branch was checked against the code that would
+ * refuse it. Divergence has two causes with opposite fixes, and this notice's
+ * firing condition OVERLAPS a third state that forbids both:
+ *
+ *  - **The remote is ahead** — an ordinary reconcile, `git pull --rebase`.
+ *  - **This branch's history was rewritten** — pulling would drag the replaced
+ *    history back in, so the fix is `--force-with-lease`.
+ *  - **…and the session's pull request has already merged.** A branch rebased
+ *    off a merged tip still has `mergedAt` set (the docs/202 re-arm clears it
+ *    only later), which arms `SHIPIT_GUARD_DESTRUCTIVE_GIT=1` and makes
+ *    `docker/agent-hooks/block-branch-ops.mjs` block a hand-rolled
+ *    `--force-with-lease` outright. The sanctioned command is
+ *    `shipit branch reset-to-base` — but a PLAIN one refuses here too, with
+ *    `head-moved` (`services/pre-turn-reset.ts`), because new commits sit on top
+ *    of the merged SHA. `--force --reason "<why>"` is the documented escape for
+ *    exactly this shape (CLAUDE.md post-turn invariant 4), so that is what the
+ *    notice names.
+ *
+ * `gh pr create` is named with its condition attached rather than as a blanket
+ * escape hatch: it `forcePush`es ONLY when re-arming past a merged pull request
+ * (`services/github.ts`). Against an OPEN pull request it uses a plain
+ * `git.push`, which a diverged branch rejects exactly as the auto-push did.
  */
 export function formatDivergedPushNotice(branch: string | null): string {
   const named = branch ? ` ${branch}` : "";
@@ -119,12 +137,18 @@ export function formatDivergedPushNotice(branch: string | null): string {
     + `force-pushes automatically, so the branch on GitHub stays frozen at its last successful `
     + `push — and a pull request on it would merge WITHOUT this commit. Every further commit `
     + `stays local too, until the divergence is resolved.\n\n`
-    + `To ship it, reconcile with the remote (\`git pull --rebase ${ref}\`) and the next turn's `
-    + `push will land — or, when the rewrite was deliberate, publish it with `
-    + `\`git push --force-with-lease ${ref}\`. \`gh pr create\` also force-pushes on its own path.\n\n`
-    + `If this session's pull request has already merged, ShipIt blocks a hand-rolled force-push: `
-    + `run \`shipit branch reset-to-base\` to return the branch to the fresh base, then re-apply `
-    + `this work there and open a new pull request.`
+    + `To ship it, take the case that applies:\n\n`
+    + `1. The remote simply has commits this branch does not — reconcile with `
+    + `\`git pull --rebase ${ref}\`, and the next turn's push lands.\n`
+    + `2. This branch's history was rewritten on purpose — publish it with `
+    + `\`git push --force-with-lease ${ref}\`.\n`
+    + `3. This session's pull request has ALREADY MERGED — ShipIt blocks a hand-rolled `
+    + `force-push in that state, and a plain \`shipit branch reset-to-base\` refuses it too `
+    + `(\`head-moved\`) once new commits sit on the merged tip. Use `
+    + `\`shipit branch reset-to-base --force --reason "<why>"\`, then re-apply this work on the `
+    + `fresh base and open a new pull request.\n\n`
+    + `Note that \`gh pr create\` force-pushes only when it re-arms past a merged pull request; `
+    + `against an open one it uses a plain push and is rejected the same way.`
   );
 }
 
@@ -188,8 +212,16 @@ export function createAutoPushScheduler(deps: AutoPushDeps): AutoPushScheduler {
   const timers = new Map<string, ReturnType<typeof setTimeout>>();
   /**
    * Sessions whose current divergence episode has already produced a transcript
-   * notice. Cleared by the next successful push, so a healed-then-recurring
+   * notice. Cleared by the next successful push — the auto-push here, and the
+   * synchronous `gh pr create` push via `cancel` — so a healed-then-recurring
    * divergence is notified again rather than suppressed for the session's life.
+   *
+   * Two bounded imprecisions, both stated rather than engineered away. It holds
+   * one string per session that diverged in this process's lifetime and is not
+   * pruned on session teardown (the scheduler has no teardown hook, and the cost
+   * is a session id). And it does not survive an orchestrator restart, so a
+   * still-standing divergence is notified once more after one — which is the
+   * safe direction: a repeated warning about a real problem, not a swallowed one.
    */
   const notifiedDiverged = new Set<string>();
 
@@ -199,11 +231,27 @@ export function createAutoPushScheduler(deps: AutoPushDeps): AutoPushScheduler {
    * finds it); `emitMessage` is the live half and is simply skipped when the
    * runner is gone; `console.warn` is the operator's half, and its absence is
    * what made this bug invisible in `docker logs` for two days.
+   *
+   * Each surface is isolated, because they fail independently and this function
+   * is the FIRST thing the divergence path calls. Unisolated, a throwing log
+   * ring or a wedged viewer transport aborted the branch before it reached the
+   * persisted notice — restoring the exact invisibility this module exists to
+   * end, in the one situation where a reporting surface is already unhealthy.
+   * `console.warn` runs first for the same reason: it is the surface with the
+   * fewest ways to fail.
    */
   const report = (sessionId: string, text: string): void => {
     console.warn(`[auto-push] ${sessionId}: ${text}`);
-    deps.broadcastLog(sessionId, "server", text);
-    deps.getRunner(sessionId)?.emitMessage(agentLogAppend("server", text));
+    try {
+      deps.broadcastLog(sessionId, "server", text);
+    } catch (err) {
+      console.error(`[auto-push] ${sessionId}: could not write to the session log ring:`, err);
+    }
+    try {
+      deps.getRunner(sessionId)?.emitMessage(agentLogAppend("server", text));
+    } catch (err) {
+      console.error(`[auto-push] ${sessionId}: could not emit to attached viewers:`, err);
+    }
   };
 
   /**
@@ -215,13 +263,34 @@ export function createAutoPushScheduler(deps: AutoPushDeps): AutoPushScheduler {
     deps.getRunner(sessionId)?.endPostTurnWork();
   };
 
-  const cancel = (sessionId: string | undefined): void => {
+  /**
+   * Drop the armed timer and give back its hold. Used by `schedule` to REPLACE a
+   * pending push, which is why it must not touch `notifiedDiverged` — re-arming
+   * happens once per turn, so clearing the episode there would defeat the dedup
+   * entirely and put an identical notice after every commit.
+   */
+  const clearTimer = (sessionId: string | undefined): void => {
     if (!sessionId) return;
     const timer = timers.get(sessionId);
     if (!timer) return;
     clearTimeout(timer);
     timers.delete(sessionId);
     releaseHold(sessionId);
+  };
+
+  /**
+   * The PUBLIC cancel, which means something narrower than "drop the timer": a
+   * synchronous push has already replaced this one (`agentCreatePr` →
+   * `dropPendingAutoPush`). That push may have been a `forcePush` that HEALED
+   * the divergence, so the episode ends here too — otherwise the next genuine
+   * divergence is silently suppressed, which is this bug wearing a hat. The
+   * timer is dropped whether or not one was armed, hence the unconditional
+   * `delete` rather than `clearTimer`'s early return.
+   */
+  const cancel = (sessionId: string | undefined): void => {
+    if (!sessionId) return;
+    clearTimer(sessionId);
+    notifiedDiverged.delete(sessionId);
   };
 
   return {
@@ -236,7 +305,7 @@ export function createAutoPushScheduler(deps: AutoPushDeps): AutoPushScheduler {
         );
         return;
       }
-      cancel(sessionId);
+      clearTimer(sessionId);
       // Held from ARM, not from fire: the debounce window is exactly when the
       // idle enforcer used to reclaim the session out from under a commit that
       // had already landed. Released in the timer's `finally` below, and bounded
@@ -323,11 +392,18 @@ export function createAutoPushScheduler(deps: AutoPushDeps): AutoPushScheduler {
           sessionId,
           "Auto-push rejected: branch has diverged from remote. Rebase needed to update.",
         );
-        deps.getRunner(sessionId)?.emitMessage({
-          type: "git_push_rejected",
-          reason: "non_fast_forward",
-          message: "Branch has diverged from remote. Rebase needed to update.",
-        });
+        try {
+          deps.getRunner(sessionId)?.emitMessage({
+            type: "git_push_rejected",
+            reason: "non_fast_forward",
+            message: "Branch has diverged from remote. Rebase needed to update.",
+          });
+        } catch (emitErr) {
+          // Isolated for the same reason `report` isolates its two surfaces: the
+          // rebase banner is the LEAST durable of the three, and it sits ahead of
+          // the persisted notice. A wedged transport must not cost the row.
+          console.error(`[auto-push] ${sessionId}: could not emit git_push_rejected:`, emitErr);
+        }
         if (!notifiedDiverged.has(sessionId)) {
           notifiedDiverged.add(sessionId);
           // Best-effort: the push already failed, so re-reading the branch may
@@ -343,7 +419,18 @@ export function createAutoPushScheduler(deps: AutoPushDeps): AutoPushScheduler {
               // Fires from the debounce timer, so the runner may already be
               // gone. The append is the half that matters; the emit is the
               // live-viewer nicety and is simply skipped.
-              runner ? (m) => runner.emitMessage(m) : () => {},
+              //
+              // Isolated because `emitNoticePostTurn` emits BEFORE it appends,
+              // so an unguarded throw from a wedged viewer transport would cost
+              // the durable row — losing the notice on precisely the sessions
+              // whose live channel is already broken.
+              (m) => {
+                try {
+                  runner?.emitMessage(m);
+                } catch (emitErr) {
+                  console.error(`[auto-push] ${sessionId}: could not emit the diverged-push notice:`, emitErr);
+                }
+              },
               deps.chatHistory,
               sessionId,
               formatDivergedPushNotice(branch),

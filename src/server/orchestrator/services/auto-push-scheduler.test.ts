@@ -397,9 +397,15 @@ describe("auto-push scheduler — a rejected push leaves a transcript notice", (
     expect(notice).toContain("git pull --rebase origin shipit/feature");
     expect(notice).toContain("git push --force-with-lease origin shipit/feature");
     // planning#267 arms a hook that BLOCKS the force-push on a merged branch —
-    // the state this notice routinely fires in — so the sanctioned command for
-    // that case has to be named too, or the remedy is a dead end.
-    expect(notice).toContain("shipit branch reset-to-base");
+    // the state this notice routinely fires in — and a PLAIN reset-to-base
+    // refuses there too (`head-moved`) once commits sit on the merged tip. So
+    // the merged case must name the `--force --reason` escape, or the remedy is
+    // a dead end the agent only discovers by being refused.
+    expect(notice).toContain('shipit branch reset-to-base --force --reason "<why>"');
+    // `gh pr create` force-pushes ONLY when re-arming past a merged PR; against
+    // an open one it plain-pushes and is rejected identically. Promising it as a
+    // blanket escape hatch would send the agent at a command that fails.
+    expect(notice).toContain("force-pushes only when it re-arms past a merged pull request");
     expect(deps.chatHistory.append).toHaveBeenCalledWith(
       "s1",
       expect.objectContaining({ notice: true, noticeLevel: "warn" }),
@@ -447,9 +453,8 @@ describe("auto-push scheduler — a rejected push leaves a transcript notice", (
   });
 
   it("notifies again when a healed divergence recurs", async () => {
-    // `gh pr create` force-pushes and heals the divergence on its own path. If
-    // the episode flag never cleared, a LATER divergence would be suppressed for
-    // the life of the session — the original bug, back again.
+    // If the episode flag never cleared, a LATER divergence would be suppressed
+    // for the life of the session — the original bug, back again.
     const deps = makeDeps();
     const scheduler = createAutoPushScheduler(deps);
 
@@ -463,6 +468,60 @@ describe("auto-push scheduler — a rejected push leaves a transcript notice", (
     scheduler.schedule(divergedGit(), "s1");
     await fireDebounce();
     expect(appendedNotices(deps)).toHaveLength(2);
+  });
+
+  it("ends the episode when a synchronous gh-pr-create push replaces the debounced one", async () => {
+    // `agentCreatePr` force-pushes past a merged PR and then calls `cancel` to
+    // drop the now-redundant debounce (`dropPendingAutoPush`). That force-push
+    // is what HEALS the divergence in practice — it is how the incident's branch
+    // recovered twice — so the episode has to end there too. Clearing only on an
+    // auto-push success suppresses the next genuine divergence indefinitely.
+    const deps = makeDeps();
+    const scheduler = createAutoPushScheduler(deps);
+
+    scheduler.schedule(divergedGit(), "s1");
+    await fireDebounce();
+    expect(appendedNotices(deps)).toHaveLength(1);
+
+    scheduler.cancel("s1"); // the synchronous push landed
+
+    scheduler.schedule(divergedGit(), "s1");
+    await fireDebounce();
+    expect(appendedNotices(deps)).toHaveLength(2);
+  });
+
+  it("does not end the episode merely because the next turn re-arms the push", async () => {
+    // `schedule` replaces a pending push by dropping its timer. That must not go
+    // through the public `cancel`, or the dedup collapses to nothing and every
+    // commit gets an identical notice.
+    const deps = makeDeps();
+    const git = divergedGit();
+    const scheduler = createAutoPushScheduler(deps);
+
+    scheduler.schedule(git, "s1");
+    scheduler.schedule(git, "s1"); // re-armed before the first fired
+    await fireDebounce();
+    scheduler.schedule(git, "s1");
+    await fireDebounce();
+
+    expect(appendedNotices(deps)).toHaveLength(1);
+  });
+
+  it("persists the notice even when the log ring and the viewer transport both throw", async () => {
+    // The divergence path reports BEFORE it persists. Unisolated, a throwing log
+    // ring aborted the branch before the notice — losing the durable record on
+    // exactly the sessions whose other surfaces are already unhealthy.
+    const runner = fakeRunner();
+    runner.emitMessage.mockImplementation(() => { throw new Error("socket is gone"); });
+    const deps = makeDeps({ getRunner: () => runner });
+    deps.broadcastLog.mockImplementation(() => { throw new Error("log ring exploded"); });
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    createAutoPushScheduler(deps).schedule(divergedGit(), "s1");
+
+    await fireDebounce();
+
+    expect(appendedNotices(deps)).toHaveLength(1);
+    expect(runner.endPostTurnWork).toHaveBeenCalledTimes(1);
   });
 
   it("still records the rejection when the notice itself fails, and retries it next time", async () => {

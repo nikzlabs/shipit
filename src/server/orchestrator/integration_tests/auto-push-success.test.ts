@@ -252,6 +252,22 @@ describe("auto-push: success and failure", () => {
 
     // ...and no success message was ever claimed for this push.
     expect(messages.find((m) => m.type === "github_push_result" && m.success)).toBeUndefined();
+
+    // The row must be FINALIZED, not an in-progress one. A card appended through
+    // the mid-turn path after its turn already finalized is re-inserted as a
+    // second `in_progress=1` copy of the whole turn, which the NEXT turn's
+    // `replaceInProgress` deletes wholesale — docs/236, where that silently
+    // destroyed an 18-minute consult's entire output. Running another turn is
+    // the only thing that tells the two apart, and the dedup must not suppress
+    // the record either: still exactly one, still there.
+    fs.writeFileSync(path.join(sessionDir, "second.txt"), "another turn");
+    client.send({ type: "send_message", text: "a following turn", sessionId });
+    const claude3 = await waitForClaude(() => latestClaude, claude2);
+    claude3.finish("test-session-1");
+    await client.drain({ quietMs: 300 });
+
+    const afterNextTurn = chatHistory.load(sessionId).filter((m) => m.notice && m.text?.includes("diverged"));
+    expect(afterNextTurn).toHaveLength(1);
   });
 
   it("push failure is non-fatal and emits a log entry", { timeout: 15_000 }, async () => {
