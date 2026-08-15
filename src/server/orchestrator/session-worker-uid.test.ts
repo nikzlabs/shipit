@@ -4,6 +4,9 @@ import os from "node:os";
 import path from "node:path";
 import {
   sessionWorkerUid,
+  assertWorkerUidNotReserved,
+  ReservedWorkerUidError,
+  RESERVED_EGRESS_UIDS,
   chownToSessionWorker,
   chownTreeToSessionWorker,
   chownWorkspaceGitToSessionWorker,
@@ -45,6 +48,58 @@ describe("session-worker-uid (docs/150 §7)", () => {
     it("returns null for a negative value", () => {
       process.env.SHIPIT_SESSION_WORKER_UID = "-5";
       expect(sessionWorkerUid()).toBeNull();
+    });
+  });
+
+  // docs/263 — the netns firewall exempts the resolver (911) and SNI proxy (912)
+  // uids from the controls that name them (`init-firewall.sh` owner-match), so a
+  // workload holding one escapes containment. Before this guard `sessionWorkerUid()`
+  // accepted any non-negative value, so each of these returned the reserved uid.
+  describe("reserved egress uids (docs/263)", () => {
+    it("names exactly the resolver and proxy uids", () => {
+      expect([...RESERVED_EGRESS_UIDS].sort((a, b) => a - b)).toEqual([911, 912]);
+    });
+
+    for (const uid of [911, 912]) {
+      it(`refuses uid ${uid} at the parse site instead of returning it`, () => {
+        process.env.SHIPIT_SESSION_WORKER_UID = String(uid);
+        expect(() => sessionWorkerUid()).toThrow(ReservedWorkerUidError);
+        expect(() => sessionWorkerUid()).toThrow(String(uid));
+      });
+
+      it(`fails the boot assertion for uid ${uid}`, () => {
+        process.env.SHIPIT_SESSION_WORKER_UID = String(uid);
+        expect(() => assertWorkerUidNotReserved()).toThrow(ReservedWorkerUidError);
+      });
+    }
+
+    it("names a remedy that is not 'disable the check'", () => {
+      process.env.SHIPIT_SESSION_WORKER_UID = "911";
+      expect(() => sessionWorkerUid()).toThrow(/non-root UID outside/);
+    });
+
+    it("allows neighbouring uids — the refusal is the two values, not a span", () => {
+      for (const uid of ["910", "913", "1000"]) {
+        process.env.SHIPIT_SESSION_WORKER_UID = uid;
+        expect(sessionWorkerUid()).toBe(Number(uid));
+      }
+    });
+
+    it("passes the refusal on to every consumer of the parse", () => {
+      // The chown helpers resolve the uid through `sessionWorkerUid()`, so a
+      // reserved value cannot be silently degraded to the legacy root no-op —
+      // which would leave the worker entrypoint gosu'ing to it regardless.
+      process.env.SHIPIT_SESSION_WORKER_UID = "912";
+      const file = path.join(tmpDir, "f");
+      fs.writeFileSync(file, "x");
+      expect(() => chownToSessionWorker(file)).toThrow(ReservedWorkerUidError);
+    });
+
+    it("boot assertion is a no-op for an unset or ordinary uid", () => {
+      delete process.env.SHIPIT_SESSION_WORKER_UID;
+      expect(() => assertWorkerUidNotReserved()).not.toThrow();
+      process.env.SHIPIT_SESSION_WORKER_UID = "1000";
+      expect(() => assertWorkerUidNotReserved()).not.toThrow();
     });
   });
 

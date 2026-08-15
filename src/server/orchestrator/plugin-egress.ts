@@ -124,19 +124,20 @@
  *    containment narrows what leaves the bridge, not who is on it. Closing it
  *    means a network per session, which costs a third per-session subnet on a
  *    daemon that already carries `shipit-session-<id>` and `shipit-egress-<id>`.
- *  - **The tier uids must not collide with the workload's, and NOTHING enforces
- *    that.** The firewall's owner-match exempts uid 911 (resolver) from the DNS
- *    lock and uid 912 (proxy) from the `:443` redirect, so a workload running as
- *    either is exempt from the tier that names it. Plugin containers run as
- *    `SHIPIT_SESSION_WORKER_UID`, which `session-worker-uid.ts:36` accepts at any
- *    non-negative value; `assertWorkerUidConsistency` (`index.ts`) detects
- *    *rollback drift* in that variable and does **not** reject 911 or 912 (review
- *    finding — an earlier version of this note implied it did). The deployment
- *    files use 1000. It is left unenforced here rather than guarded here because
- *    the agent container shares the netns arrangement, the uids and the exposure
- *    (`container-lifecycle.ts`): a check on this path would cover one of the two
- *    surfaces that break together, and would read as protection while the other
- *    stayed open. The honest fix is a range check where the variable is parsed.
+ *  - **The tier uids must not collide with the workload's** — the firewall's
+ *    owner-match exempts uid 911 (resolver) from the DNS lock and uid 912 (proxy)
+ *    from the `:443` redirect, so a workload running as either is exempt from the
+ *    tier that names it. Plugin containers run as `SHIPIT_SESSION_WORKER_UID`,
+ *    and that collision is now refused — but NOT here. It is refused where the
+ *    variable is parsed (`session-worker-uid.ts:sessionWorkerUid`, which throws
+ *    `ReservedWorkerUidError`, plus the unconditional `assertWorkerUidNotReserved`
+ *    at boot in `index.ts`), because the agent container shares the netns
+ *    arrangement, the uids and the exposure (`container-lifecycle.ts`): a check on
+ *    this path alone would have covered one of the two surfaces that break
+ *    together and would have read as protection while the other stayed open.
+ *    `assertWorkerUidConsistency` still covers only *rollback drift* and knows
+ *    nothing about the range — it resolves the current uid through the same parse,
+ *    so it inherits the refusal rather than repeating it.
  *
  *  - **The resolver and proxy are STARTED before the workload, not proven
  *    ready.** `launchEgressResolver` / `launchEgressProxy` return once Docker

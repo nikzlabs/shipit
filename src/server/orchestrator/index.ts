@@ -4,6 +4,7 @@ import { composeEgressExtraHosts, composeEgressIdentityRules, sandboxLifelineEgr
 import type { ResolvedEgressConfig } from "./egress-allowlist.js";
 import { setEgressDurableSource } from "./egress-policy.js";
 import { assertWorkerUidConsistency } from "./worker-uid-guard.js";
+import { assertWorkerUidNotReserved } from "./session-worker-uid.js";
 import { resolveBuildId, resolveVersion } from "./build-id.js";
 import { getUpdateMode } from "./services/updates.js";
 import { readChannel } from "./release-channel.js";
@@ -86,6 +87,22 @@ export type {
  *   6. `route-registry.ts` — register HTTP routes + the WebSocket route
  */
 export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
+  // docs/263 — refuse a SHIPIT_SESSION_WORKER_UID that collides with an egress
+  // sidecar uid (911/912) BEFORE anything else runs. The netns firewall exempts
+  // those uids by owner-match, so a workload holding one runs exempt from the
+  // tier that names it — the agent container and the plugin containers share
+  // that arrangement, which is why the refusal lives at the shared parse site
+  // rather than on either path.
+  //
+  // First statement in the composition root, ahead of `initializeManagers`,
+  // because that step migrates the database, adopts environment credentials and
+  // writes the global gitconfig — a boot we are about to refuse must not mutate
+  // durable state first. It also pre-empts `initGlobalGitConfig`, which parses
+  // the same variable (`git-config.ts:59`) and would otherwise throw the same
+  // error from a call that does not explain itself. Unconditional, unlike the
+  // drift guard below, which needs the containerized state dir.
+  assertWorkerUidNotReserved();
+
   // Captured once at process startup so the client can render a live
   // uptime badge. This is the user's only signal that "Just Restart"
   // actually bounced the orchestrator — without it, a restart that

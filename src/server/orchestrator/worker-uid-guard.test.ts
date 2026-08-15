@@ -6,6 +6,7 @@ import {
   assertWorkerUidConsistency,
   WORKER_UID_MARKER_FILE,
 } from "./worker-uid-guard.js";
+import { ReservedWorkerUidError } from "./session-worker-uid.js";
 
 describe("worker-uid-guard (docs/150 Rollout)", () => {
   let stateDir: string;
@@ -84,6 +85,25 @@ describe("worker-uid-guard (docs/150 Rollout)", () => {
     } finally {
       if (prev === undefined) delete process.env.SHIPIT_SESSION_WORKER_UID_ALLOW_DOWNGRADE;
       else process.env.SHIPIT_SESSION_WORKER_UID_ALLOW_DOWNGRADE = prev;
+    }
+  });
+
+  // docs/263 — this guard covers rollback drift and deliberately knows nothing
+  // about the reserved egress uids: it resolves the current uid through
+  // `sessionWorkerUid()`, so it INHERITS that refusal. Two range checks that can
+  // disagree would be worse than one. Before the parse-site guard this test's
+  // call returned uid 911 and wrote it to the marker instead of throwing.
+  it("inherits the reserved-uid refusal from the parse site (no second range check)", () => {
+    const prev = process.env.SHIPIT_SESSION_WORKER_UID;
+    process.env.SHIPIT_SESSION_WORKER_UID = "911";
+    try {
+      expect(() => assertWorkerUidConsistency({ stateDir, hasPersistedSessions: false })).toThrow(
+        ReservedWorkerUidError,
+      );
+      expect(fs.existsSync(markerOf())).toBe(false);
+    } finally {
+      if (prev === undefined) delete process.env.SHIPIT_SESSION_WORKER_UID;
+      else process.env.SHIPIT_SESSION_WORKER_UID = prev;
     }
   });
 });
