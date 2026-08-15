@@ -2508,7 +2508,14 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       };
 
       switch (action) {
-        case "list":
+        case "list": {
+          // planning#382 — the same `failure` the HTTP route carries. This is
+          // the surface a docs/262 operator actually reported: a compose file
+          // refused for want of a numeric non-root `user:` produced an empty
+          // list, which `shipit service list` rendered as "No services defined.
+          // Add them to docker-compose.yml" — advice for a project that has no
+          // stack, given to one whose stack was declined.
+          const failure = mgr.projectComposeFailure;
           result = {
             services: mgr.getServices().map(s => ({
               name: s.name,
@@ -2518,8 +2525,10 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
               url: s.url,
               error: s.error,
             })),
+            ...(failure ? { failure } : {}),
           };
           break;
+        }
         case "start": {
           if (!name) throw new Error("Service name is required");
           // Report an already-running service as a no-op rather than silently
