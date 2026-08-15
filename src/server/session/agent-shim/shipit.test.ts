@@ -454,6 +454,44 @@ describe("shipit session create", () => {
     expect(out.calls).toHaveLength(0);
   });
 
+  /**
+   * docs/264 reqs 7, 10, 16 — **a named-but-empty parameter rides along instead
+   * of being dropped**, which is what makes the two commands one refusal rule
+   * rather than two implementations that agree on the common case.
+   *
+   * `shipit agent run` has tested presence (`!== undefined`) since phase 3; the
+   * child sent whatever was truthy, so `--role deep-dive --model=""` quietly ran
+   * the BARE role — a run nobody asked for, and exactly the dropped override
+   * req 10 forbids — where the one-shot command refused it. The shim forwards
+   * it; the server names the flag.
+   */
+  for (const [flag, key] of [
+    ["--role", "role"],
+    ["--agent", "agentId"],
+    ["--model", "modelId"],
+    ["--service", "serviceId"],
+    ["--effort", "reasoningEffort"],
+  ] as const) {
+    it(`forwards ${flag} given an empty value rather than dropping it`, async () => {
+      const { run } = makeRunner();
+      const pf = await promptFile("x");
+      const out = await run(
+        [
+          "session", "create",
+          "--prompt-file", pf,
+          "--title", "Empty override",
+          "--role", "deep dive",
+          `${flag}=`,
+        ],
+        {
+          "POST /agent-ops/session/create": { status: 200, body: { sessionId: "s", branch: "b", status: "running" } },
+        },
+      );
+      expect(out.exitCode).toBe(0);
+      expect(out.calls[0].body).toHaveProperty(key, "");
+    });
+  }
+
   it("rejects --base as an unsupported flag", async () => {
     // The agent-facing `--base` was removed: generic fan-out children always
     // branch off the parent repo's freshly-fetched `origin/main`, so a child

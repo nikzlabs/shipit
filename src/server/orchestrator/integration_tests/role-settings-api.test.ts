@@ -224,16 +224,46 @@ describe("Integration: role settings over HTTP (docs/264 phase 2)", () => {
   });
 
   /**
-   * The save's boundary, stated as a test: it checks the harness is installed,
-   * can carry the model, and that this install holds a credential for the
-   * `(service, billing mode)` — and stops there. Whether that credential can be
-   * ROUTED right now is a run-time fact that changes without anyone editing a
-   * role (a subscription's quota resets), so requiring a live route at save
-   * would refuse a perfectly good role during an outage.
+   * The save's boundary, stated as a test: it checks the harness is installed
+   * and can carry the model at the level named — the facts only an edit can
+   * change — and stops there. Whether a credential exists for the
+   * `(service, billing mode)`, and whether it can be routed right now, are
+   * account and clock facts that change without anyone editing a role.
+   *
+   * **Rewritten 2026-08-15 (planning#388).** This test used to assert the
+   * opposite — that a save is refused when no credential exists — which is what
+   * made a **disconnected role uneditable**: the whole role is revalidated on
+   * every write (req 17), so editing only a description was refused for a
+   * credential that edit did not touch, while the list told the user to leave the
+   * role alone and reconnect the service. The next test is the case that could
+   * not be expressed while this one held.
    */
-  it("refuses a tuple this install has no credential for", async () => {
+  it("saves a tuple this install has no credential for, and reports it disconnected", async () => {
     const res = await put({ "deep dive": { params: PINNED } });
+    expect(res.statusCode, res.body).toBe(200);
+    const created = (res.json().roles as RoleView[]).find((r) => r.name === "deep dive");
+    expect(created?.unavailableReason).toBe("disconnected");
+    // No field is marked: the tuple is correct, so there is nothing to edit.
+    expect(created?.invalidField).toBeUndefined();
+    expect(credentialStore.getRole("deep dive")).toMatchObject({ params: PINNED });
+  });
+
+  it("lets a disconnected role's description be edited (req 5)", async () => {
+    await put({ "deep dive": { description: "old", params: PINNED } });
+    const res = await put({
+      "deep dive": { previousName: "deep dive", description: "new", params: PINNED },
+    });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(credentialStore.getRole("deep dive")?.description).toBe("new");
+  });
+
+  it("still refuses a tuple fault while no credential exists", async () => {
+    // The save did not stop checking — `max` is Claude Code's level and not
+    // Codex's, and that is a fact about the catalogue rather than the account.
+    const res = await put({
+      "deep dive": { params: { ...PINNED, harnessId: "codex", reasoningEffort: "max" } },
+    });
     expect(res.statusCode).toBe(400);
-    expect(res.json().error).toContain("DeepSeek");
+    expect(res.json().error).toContain("max");
   });
 });

@@ -213,9 +213,19 @@ function planOne(
 
   const description = boundedText(write.description, MAX_ROLE_DESCRIPTION_LENGTH, "description", name);
   const prompt = boundedText(write.prompt, MAX_ROLE_PROMPT_LENGTH, "standing instructions", name);
+  // `"save"` — compatibility only, never live route availability (req 5, and
+  // `roles.ts`'s `RoleParamsPurpose`). A missing credential is the *service's*
+  // state, which `resolveRoleView` already reports as `disconnected` with
+  // "reconnect the service" as the remedy; refusing the write contradicted that
+  // exactly where it mattered — a disconnected role could not be edited at all,
+  // because the whole role is revalidated on every write (rule 1 above), so
+  // changing only its description was rejected for a credential that edit did
+  // not touch. Every catalogue check still refuses here: req 6's "a role whose
+  // harness cannot run its model is refused when it is saved" is a statement
+  // about the tuple, not about this install's accounts.
   const params: RoleParams =
     write.params.kind === "pinned"
-      ? validateRolePinnedParams(write.params, deps, `The role "${name}"`)
+      ? validateRolePinnedParams(write.params, deps, `The role "${name}"`, "save")
       : write.params;
   return {
     name,

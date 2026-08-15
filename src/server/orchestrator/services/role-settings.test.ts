@@ -309,6 +309,61 @@ describe("applyRoleWrites — params are refused at SAVE, naming the parameter (
   });
 });
 
+/**
+ * **A save checks compatibility, never live availability** — `plan.md`'s rule and
+ * phase 1's own checklist bullet, which the write path did not obey.
+ *
+ * A missing credential is the *service's* state: `resolveRoleView` reports it as
+ * `disconnected` and says the remedy is to reconnect the service and leave the
+ * role alone. Validating it at save contradicted that where it mattered most —
+ * the whole role is revalidated on every write (one editor, one write, req 17),
+ * so a disconnected role could not be edited AT ALL. Changing only its
+ * description was rejected for a credential the edit did not touch and could not
+ * restore. Every catalogue check still refuses, which is what req 6 asks for.
+ */
+describe("applyRoleWrites — a disconnected role is still editable (req 5)", () => {
+  /** The role's service has no credential here: the disconnected state exactly. */
+  const NO_ROUTES: CredentialRoute[] = [];
+
+  function applyWithoutCredentials(roles: unknown, seed: AgentRole[] = [REVIEWER]) {
+    const fixture = storeWith(seed, NO_ROUTES);
+    applyRoleWrites(roles, fixture.store, depsFor(fixture.store));
+    return fixture;
+  }
+
+  it("saves a description-only edit to a role whose credential is gone", () => {
+    const existing: AgentRole = { name: "deep-dive", description: "old", params: PINNED };
+    const { byName } = applyWithoutCredentials(
+      { "deep-dive": write({ previousName: "deep-dive", description: "new" }) },
+      [REVIEWER, existing],
+    );
+    expect(byName.get("deep-dive")).toEqual({
+      name: "deep-dive",
+      description: "new",
+      params: PINNED,
+    });
+  });
+
+  it("creates a role for a service this install has not connected yet", () => {
+    // Nothing about the tuple is wrong, and the list will say `disconnected`
+    // with "reconnect the service" as the remedy — which is a better answer than
+    // refusing the role and leaving the user nothing to reconnect it FOR.
+    const { byName } = applyWithoutCredentials({ "deep-dive": write() });
+    expect(byName.get("deep-dive")?.params).toEqual(PINNED);
+  });
+
+  it("still refuses a tuple fault on the same uncredentialed install", () => {
+    // The save did not stop checking — it stopped checking the one fact that
+    // changes without anyone editing a role.
+    const err = refusal(() =>
+      applyWithoutCredentials({
+        "deep-dive": write({ params: { ...PINNED, harnessId: "codex", reasoningEffort: "max" } }),
+      }),
+    );
+    expect(err.message).toContain("max");
+  });
+});
+
 // ---- Nothing is written until everything validates ---------------------------
 
 describe("planRoleWrites — every entry validated before any is written", () => {

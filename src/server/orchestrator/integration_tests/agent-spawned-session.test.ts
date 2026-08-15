@@ -1205,6 +1205,59 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
     expect(err).toContain("reviewer");
   });
 
+  /**
+   * docs/264 reqs 7, 10, 16 — **an override the caller named EMPTY is refused,
+   * not dropped**, on the child path exactly as on `agent run`.
+   *
+   * The HTTP wrapper had its own truthiness test in front of the shared parser,
+   * so `{ role, modelId: "" }` reached `spawnChildSession` as the bare role and
+   * spawned a child nobody asked for. Both layers now preserve presence and the
+   * one refusal rule answers, naming the flag at fault.
+   */
+  for (const [field, flag] of [
+    ["agentId", "--agent"],
+    ["modelId", "--model"],
+    ["serviceId", "--service"],
+    ["reasoningEffort", "--effort"],
+    // The legacy keys the shim has sent since docs/117 take the same path.
+    ["agent", "--agent"],
+    ["model", "--model"],
+  ] as const) {
+    it(`refuses a child spawn whose ${field} is present but empty`, { timeout: 15_000 }, async () => {
+      seedPinnedRole("deep dive");
+      const parentId = await createParentSession();
+      const before = sessionManager.list().length;
+      const res = await app.inject({
+        method: "POST",
+        url: `/api/sessions/${parentId}/spawn`,
+        payload: { prompt: "x", title: "Empty override", role: "deep dive", [field]: "" },
+      });
+      expect(res.statusCode).toBe(400);
+      expect((res.json() as { error: string }).error).toContain(flag);
+      // The point of the refusal: no child ran the bare role instead.
+      expect(sessionManager.list().length).toBe(before);
+    });
+  }
+
+  /**
+   * docs/264 reqs 3, 4, 7, 18 — a role named with spaces round it is that role.
+   * The parser used to trim, so this spawn either ran ShipIt's automatic reviewer
+   * (for `" reviewer "`) or was refused as unknown while existing.
+   */
+  it("starts a role whose name has spaces round it, exactly as stored", { timeout: 15_000 }, async () => {
+    seedPinnedRole(" deep dive ");
+    const parentId = await createParentSession();
+    const res = await app.inject({
+      method: "POST",
+      url: `/api/sessions/${parentId}/spawn`,
+      payload: { prompt: "x", title: "Spaced role", role: " deep dive " },
+    });
+    expect(res.statusCode).toBe(200);
+    const child = sessionManager.get((res.json() as { sessionId: string }).sessionId);
+    expect(child?.originRoleName).toBe(" deep dive ");
+    expect(child?.model).toBe("claude-opus-5");
+  });
+
   it("lets a child name a COMPLETE target, which it could not do before", { timeout: 15_000 }, async () => {
     seedPinnedRole("unused");
     const parentId = await createParentSession();

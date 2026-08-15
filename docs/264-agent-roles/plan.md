@@ -336,6 +336,24 @@ to have the blank evaporate and the *bare role* run — a run nobody asked for, 
 dropped override req 10 forbids. Absent means "the base supplies it"; blank means the caller tried to
 say something that did not survive its shell, and the two must not look alike.
 
+**That rule is the parser's, and every layer in front of it must preserve presence to reach it —
+which the child path did not** (fixed 2026-08-15, planning#388). Phase 3 stated the rule once and
+implemented it twice: `shipit agent run`'s shim tested `!== undefined`, while `session create`'s
+shim and the `/spawn` route's compatibility wrapper both tested truthiness, so
+`--role deep-dive --model=""` ran the bare role on the child path and was refused on the one-shot
+path. Req 16's "one parser, one refusal rule" is only true if the layers above the parser stay
+transparent: **presence, never truthiness, at every hop**. Two implementations agreeing on the
+common case is precisely what unification was meant to remove.
+
+**A role name reaches resolution verbatim** (reqs 3, 4, 7, 18; fixed 2026-08-15, planning#388). The
+store keeps a name exactly as typed and resolves by *exact* key, so normalizing it at the parser does
+not tidy a name — it names a different role. `" reviewer "` is an ordinary role req 18 permits,
+distinct from the reserved one, and trimming ran ShipIt's automatic reviewer instead of it;
+`" deep dive "` was refused as unknown while existing. The name is therefore the one field the shared
+reader passes through untouched — every other is a catalogue id, where surrounding whitespace cannot
+be part of the value. Blank stays refused, on the named-but-blank rule above rather than a second
+one: a blank name cannot be stored, so it can never be a role.
+
 **Where they legitimately differ, and it is one thing only.** A child has a parent available as a
 base; a one-shot run does not, so naming a role (or a complete target) is how it says anything at
 all. Everything else — the role, the overrides, the refusal — is identical, which is what req 16
@@ -621,10 +639,21 @@ that function *derives* a harness (`harnessesForSelection(patch, …)[0]`, `revi
 and validates the reasoning level against whichever it picked. Handing it a role would reproduce
 exactly the defect the required harness exists to remove — a level checked against one harness and
 run on another. A role needs a validator that **takes `harnessId` as an input**: the triple must
-exist in the catalogue, the named harness must be installed, able to carry the model and
-credentialed, and the level must be one that harness declares. The two validators share their
-catalogue and credential checks; only the harness step differs, and it differs in the direction
-that matters.
+exist in the catalogue, the named harness must be installed and able to carry the model, and the
+level must be one that harness declares. The two validators share their catalogue checks; only the
+harness step differs, and it differs in the direction that matters.
+
+**Corrected 2026-08-15 (planning#388): a save does not check the credential**, and this paragraph
+used to say it did — contradicting *The harness is part of a role* above, which is the rule that
+holds. The two are not interchangeable and the difference was reachable: a role pinned to a service
+whose credential has been removed reads as **disconnected**, whose stated remedy is to reconnect the
+service and leave the role alone — while the save revalidated the whole role on every write (req 17:
+one editor, one write), so editing only its **description** was refused for a credential that edit
+did not touch and could not restore. A disconnected role could not be edited at all. The credential
+check keeps its place in `checkRolePinnedParams` — **last, after every catalogue check**, so a role
+with two faults still reports the one an edit fixes — and a save skips that final step rather than
+reordering it (`roles.ts`'s `RoleParamsPurpose`). Req 6's "refused when it is saved" is a statement
+about the tuple, not about this install's accounts.
 
 Name validation is server-side too, and is only uniqueness (req 18): any name the user types is
 accepted.

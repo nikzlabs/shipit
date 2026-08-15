@@ -179,3 +179,27 @@ job, and the bullets above only describe the *removal* half.
       *is* the inventory (req 12). A guard scoped to what ShipIt injects is unaffected; one written
       as "these five words never appear together" would fail on the one place they legitimately
       must appear
+
+## Cross-phase defects (planning#388)
+
+Found by an end-to-end review of all 18 requirements against the merged result, after the four
+phases landed. Each sits on a **seam between phases**, which is why the per-phase reviews could not
+see it: the rule is stated in one phase and violated by another phase's layer in front of it.
+
+- [x] **The child path preserves an explicitly empty override** (reqs 7, 10, 16). `session create`'s
+      shim and the `/spawn` route's compatibility wrapper both tested truthiness in front of the
+      shared parser, so `--role deep-dive --model=""` ran the *bare role* where `agent run` refused
+      it. Both now test presence, and the parser's one refusal rule answers. `--role=` is refused
+      the same way, naming the flag instead of "missing every parameter"
+- [x] **A disconnected role is editable** (req 5). The save validated the credential, which
+      `resolveRoleView` classifies as the service's fault, so editing a disconnected role's
+      *description* was refused for a credential the edit did not touch. The save now checks
+      compatibility only — the credential check keeps its place (last, after every catalogue check,
+      so a role with two faults still reports the editable one) and a save skips that step rather
+      than reordering it
+- [x] **A role name reaches resolution verbatim** (reqs 3, 4, 7, 18). `parseSpawnTarget` trimmed it
+      through the shared field reader, so `" reviewer "` — an ordinary role, distinct from the
+      reserved one — ran ShipIt's automatic reviewer, and `" deep dive "` was refused as unknown
+      while existing. The name is now the one field passed through untouched; blank stays refused
+- [ ] **A model-only override relocates the service** (reqs 7, 10) — the fourth finding, owned
+      separately: it needs a decision (refuse vs relocate) rather than a fix

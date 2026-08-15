@@ -199,12 +199,19 @@ export async function handleSessionCreate(args: string[], deps: RunDeps): Promis
   }
   const payload: Record<string, unknown> = { prompt };
   if (parsed.values.title) payload.title = parsed.values.title;
-  if (parsed.values.role) payload.role = parsed.values.role;
-  if (parsed.values.agent) payload.agentId = parsed.values.agent;
-  if (parsed.values.model) payload.modelId = parsed.values.model;
-  if (parsed.values.service) payload.serviceId = parsed.values.service;
-  if (billingMode) payload.billingMode = billingMode;
-  if (parsed.values.effort) payload.reasoningEffort = parsed.values.effort;
+  // `!== undefined`, NOT a truthiness test — the same rule `shipit agent run`
+  // states at its own payload builder, and for the same reason: a flag the
+  // caller passed with an empty value is something they TRIED to say, and
+  // dropping it here would run the *bare* role (or the bare inheritance)
+  // instead, which is the dropped override req 10 forbids. It rides along and
+  // the server refuses it by name, so both commands answer `--model=""`
+  // identically — one parser, one refusal rule (req 16).
+  if (parsed.values.role !== undefined) payload.role = parsed.values.role;
+  if (parsed.values.agent !== undefined) payload.agentId = parsed.values.agent;
+  if (parsed.values.model !== undefined) payload.modelId = parsed.values.model;
+  if (parsed.values.service !== undefined) payload.serviceId = parsed.values.service;
+  if (billingMode !== undefined) payload.billingMode = billingMode;
+  if (parsed.values.effort !== undefined) payload.reasoningEffort = parsed.values.effort;
   if (parsed.values.turn) payload.spawnedByTurn = parsed.values.turn;
   if (parsed.booleans.has("detached")) payload.detached = true;
   if (parsed.booleans.has("shipitSource")) payload.shipitSource = true;

@@ -133,6 +133,29 @@ function readNamed(value: unknown, flag: string): string | undefined {
   return text;
 }
 
+/**
+ * The role name the caller named, **exactly as it typed it** (req 18).
+ *
+ * The one field here that is not normalized, and it must not be: a role name is
+ * whatever the user typed, stored verbatim (`credential-store.ts`'s `setRole`
+ * stores the key as given, deliberately) and resolved by **exact** key. Trimming
+ * it here does not tidy a name — it names a *different role*: `" reviewer "` is
+ * an ordinary role a user may create, distinct from the reserved one, and
+ * trimming ran ShipIt's automatic reviewer instead of it; `" deep dive "` was
+ * refused as unknown while existing. Every other field is a catalogue id, where
+ * surrounding whitespace can never be part of the value, so {@link str} still
+ * normalizes those.
+ *
+ * Blank is the one thing refused, on {@link readNamed}'s rule rather than a
+ * second one: a name that is blank once whitespace is discounted cannot be
+ * stored (`setRole` refuses it), so it can never be a role, and a caller that
+ * passed `--role ""` tried to say something that did not survive its shell.
+ */
+function readRoleName(value: unknown): string | undefined {
+  // Non-null: `readNamed` returns a string only where `value` was one.
+  return readNamed(value, "--role") === undefined ? undefined : (value as string);
+}
+
 /** Whichever of the five the caller named, as overrides over whatever base it chose. */
 function readOverrides(body: SubAgentSpawnTargetBody): RoleOverrides {
   const harnessId = readNamed(body.agentId, "--agent");
@@ -174,7 +197,7 @@ export function parseSpawnTarget(
   body: SubAgentSpawnTargetBody,
   opts: { parentBase: boolean },
 ): SpawnTarget {
-  const role = str(body.role);
+  const role = readRoleName(body.role);
   if (role !== undefined) {
     return { kind: "role", role, overrides: readOverrides(body) };
   }
