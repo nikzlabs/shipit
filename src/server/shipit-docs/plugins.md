@@ -251,10 +251,10 @@ session's own working tree.** So:
 - `shipit plugin refresh dev` is refused: there is no version to move to. What
   ShipIt *copies* rather than reads live — the materialized skills and the
   generated command wrappers — is re-applied on the next activation round, which
-  a `shipit.yaml` save or the session opening runs. **Those two are the only
-  triggers.** Editing a file the manifest *points at* is not one, so a service
-  you rename in the exported compose file keeps its old name — under the old
-  definition — until you save `shipit.yaml`.
+  a `shipit.yaml` save or the session opening runs. Editing a file the manifest
+  *points at* does not run one, so a service you rename in the exported compose
+  file keeps its old name — under the old definition — until you save
+  `shipit.yaml`.
 - The plugin's `install` does not run: it exists to populate a generation's
   writable layer, and there is none. Your repository's own `agent.install`
   prepares the working tree that the services and CLIs then run out of. That is

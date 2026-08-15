@@ -97,14 +97,16 @@ sizing is fully automatic.
   `install-inputs` below). So a new commit that only edits source or docs — but
   not `package.json`/the lockfile — still skips install. A different runtime or a
   changed `install` always re-runs (a warm dependency cache keeps it fast).
-- **A skipped install brings back `dep-dirs`, and nothing else it wrote.** A
-  container is replaced, not paused, so the next one starts from a fresh clone:
-  gitignored paths are not in it, and the declared dependency directories are
-  the only ones restored (from the overlay store). Anything else your install
-  produced — a `dist/`, a generated client, a compiled binary — is absent from
-  the second container onward for a given commit, while the install still
-  reports done. If a build step's output has to be there, declare its directory
-  in `dep-dirs` alongside `node_modules`.
+- **A skipped install guarantees `dep-dirs`, and nothing else it wrote.** The
+  stamp can match a checkout that never ran the install — a workspace reclaimed
+  for disk and re-cloned, or a session that mounted an already-published
+  dependency base for this commit. Those clones get the declared dependency
+  directories and the committed files, and nothing else: a gitignored `dist/`, a
+  generated client, or a compiled binary is simply absent, while the install
+  still reports done. (An ordinary idle recreate keeps the same clone, so it
+  usually looks fine — which is what makes this read as intermittent.) If a
+  build step's output has to be there, declare its directory in `dep-dirs`
+  alongside `node_modules`.
 - When `install` is a string, it's treated as a single-element list.
 
 #### Content-keyed install skip (`install-inputs`)

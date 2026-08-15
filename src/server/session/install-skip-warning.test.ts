@@ -30,6 +30,9 @@ describe("installSkipOutputWarning", () => {
   });
 
   it("stays quiet for a pure dependency install", () => {
+    // Including when a lifecycle script hides a build behind `npm ci` — the
+    // known, deliberate gap (see the module docstring: `prepare` is husky on
+    // most repos, and a warning nobody reads makes nothing visible).
     expect(installSkipOutputWarning(["npm ci"], ["node_modules"])).toBeNull();
     expect(installSkipOutputWarning([], ["node_modules"])).toBeNull();
   });
