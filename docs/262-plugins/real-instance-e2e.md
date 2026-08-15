@@ -161,6 +161,20 @@ enforce and the card correctly shows no host rows.
 - **Do:** from inside the plugin service, try a host the plugin never declared.
 - **PASS:** it is refused. A plugin's declaration is informational; it grants
   nothing (req 24).
+- **Do:** bypass DNS — reach a **Tier A floor IP** directly, carrying a
+  different host's SNI (`curl --resolve <excluded-host>:443:<floor-ip>`). A
+  floor IP is one of the fixed CIDRs admitted in *every* session (npm, PyPI,
+  GitHub).
+- **PASS:** it is refused, for the same reason a name is.
+- **Why this check exists, and why every other check in this step misses it:**
+  they all resolve a *name*, so they only ever exercise the Tier B resolver.
+  Tier A's ipset floor is **session-independent**, so a workload that pins a
+  co-tenant IP from it skips DNS entirely and arrives at the proxy with an SNI
+  the resolver never saw — the CDN co-tenancy case Tier C exists to refuse.
+  planning#380 found exactly that reaching the decision endpoint in a
+  Network-off sandbox, where the durable entry spliced it back in. **"Refused
+  by name" is not "refused"**, and a run that only tests names cannot tell the
+  difference.
 - **Failure modes:** a host-check that succeeds while unallowed means the CLI
   container is not contained — check that `preparePluginNetns` built a holder
   rather than joining the plain plugin network. A success *after* the grant that
