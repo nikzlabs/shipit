@@ -222,6 +222,35 @@ Rules (review findings, both rounds):
   here, because running it would mean a new install-container branch over the
   session's working tree — mechanism no requirement had asked for.
 
+  **What `agent.install` prepares has to reach the plugin's containers, and did
+  not** (`nikzlabs/shipit#2298` finding 1, fixed in #2302). On an overlay-eligible
+  session (docs/183) the clone's `node_modules` **is** an empty directory on the
+  workspace volume — the content lives only in per-session `type=overlay` Docker
+  volumes that the agent container and the project's own compose services attach.
+  A plugin's containers attached neither, so under `repo: self` both `/plugin`
+  and `/project` held an empty directory exactly where the plugin's own
+  dependencies belong, and no entry point could start. One rule now covers both
+  surfaces: **a plugin sees the project's dependency directories precisely when
+  the project's tree is its own tree, and then it waits for the project's
+  install** — the nesting targets are empty for a tracked import, and
+  `dependsOnInstall` becomes `svc.self`.
+
+  Two things about that rule are load-bearing rather than incidental. The
+  **self-only narrowing came from review, not from design**: nesting uniformly
+  would have given a *tracked* plugin's `/project` the project's real
+  dependencies while it kept `dependsOnInstall: false`, so it would read
+  `node_modules` while `agent.install` was writing them — the precise race
+  docs/137's gate exists to prevent. And it is the same narrowing the trust
+  boundary needs, for an unrelated reason: a third-party plugin never gets a
+  writable handle on the tree the agent's own processes load code from. Under
+  `repo: self` there is no such boundary to hold — the plugin IS the project.
+
+  This is **not** a new requirement, and deliberately was not written as one. Req
+  27 already says a plugin "works as a plugin inside its own repository", and a
+  companion CLI that exits with `ERR_MODULE_NOT_FOUND` is not working; the
+  outcome was always required. Which directories are mounted where is *how*, so
+  it belongs here rather than in `requirements.md`.
+
 ### 1b. Plugin side — `exports.plugins:` (reqs 5, 17, 22, 23, 24, 26)
 
 The plugin repository's own `shipit.yaml` gains an `exports.plugins` map —
