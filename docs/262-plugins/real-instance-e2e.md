@@ -315,3 +315,109 @@ grant is in place there is no supported way to take it back from inside the
 session — the settings route is denied to session containers, which is
 containment working — so a run that grants before it measures cannot measure the
 refusal at all.
+
+---
+
+## Run 2 — 2026-08-15, consumer fixture, real deployment
+
+The half Run 1 left open. Driven from the **host** of a real deployment
+(`/opt/shipit`, updated to `main` for the run) rather than from inside a session,
+which is what made the two out-of-reach surfaces reachable: a **second project**
+existed (`nikzlabs/todo-app` as the consumer, `nikzlabs/shipit` as the plugin
+repo), and the Plugins card was read from `GET /api/plugin-repos` — **the source
+the card renders, not the card**. Plugin verbs ran in the session container as the
+agent user, so `probe` and `shipit plugin refresh` went through the same wrapper
+and shim the agent uses.
+
+**Steps 1, 2, 3, 4, 5, 6, 7 and 9 pass on the consumer fixture.** Recorded
+fields, not verdicts:
+
+| Step | What the report said |
+|---|---|
+| 1 card | `active`, `source: nikzlabs/shipit`, `ref: branch main`, `commit: 95e8d724328ef1e8568b31a125bcacacc855450e` — exact, and equal to the branch tip on GitHub. `PROBE_TOKEN` `satisfied: false`; `example.com` present as a host row with `allowed: false` on a Contained session, so req 24's visibility half resolves |
+| 2 first install | ran in a container: `installedAt 2026-08-15T12:26:46.929Z`, `node v24.15.0`. The stamp is in the **writable layer** (`work/<sha>/upper/test-plugin/.install-stamp.json`); the pristine checkout has none (req 7) |
+| 2 store | commit B (changed `install.mjs`) installed and **published a base** — `basePins: ["9cf5a562fef12155/g1"]`. Commit C (`install.mjs` untouched) → `d222f71cd reuses shared dependencies — install skipped`, same pin, **no install container**, nothing in its upper layer. A **second session** on the same project at commit C → same pin, skipped again (req 28, cross-session) |
+| 3 CLI | `mode: consumer-generation`, `SHIPIT_PLUGIN_COMMIT` equal to the card's commit, `install.matchesActiveCommit: true` — the discriminator Run 1 could not reach, since self-use has no commit to match |
+| 3 mounts | `project: {dir: /project, readable: true, entries: 14}` — the **consumer's** 14 files, not the plugin repo's 47, so the mount points where it should. `state: {provided: true, writable: true}`, `settings: {provided: true, greeting: "hello from the probe"}`. **No mount empty**: the volume+Subpath defect is absent on the consumer path too |
+| 3 + 4 state | `probe --bump` → CLI `1`, service `1`; **Increment** on the page → `2`, CLI reads `2`. Two containers, CLI node `v24.15.0` / service node `v22.23.2` |
+| 4 service | container up, published `:4820`, `origin: {kind: plugin, repo: shipit-dev, alias: probe}`. Served through the preview proxy (`<sessionId>--4820.<host>`); `/report.json` agrees with the CLI field for field |
+| 5 egress | `--host-check` → `{allowed: false, error: "fetch failed"}` for `example.com`, **declared in the manifest**. Control: the agent's own container also refused (`000`) while `github.com` returns `200`. From **inside the plugin service**, undeclared `en.wikipedia.org` and `ifconfig.me` both refused |
+| 5 grant | after **Allow for session**: card `allowed: true` *and* `--host-check` → `{allowed: true, status: 200}`, live, no restart — enforcement and card read the same seam |
+| 6 credential | `PROBE_TOKEN` set on the **consuming** project → card `satisfied: true`, CLI `set: true` with no restart, and the `auto` service **re-upped** and reported `set: true` from its own surface. That is the #2264 check made from the service, not from the card |
+| 7 skills | `plugins--probe--probe-2e2a468e9ee2` in **both** `.claude/skills/` and `.codex/skills/`; `/plugins/shipit-dev -> /plugin-store/shipit-dev/active`; `git status --short` showed only the two fixture edits and no plugin file. Removing the `use:` entry removed skill, wrapper and service **live, with no session reopen** — the repo stayed `active` with `uses: []` |
+| 9 degradation | nonexistent ref → `shipit plugin refresh shipit-dev` **exit 1**, `refresh failed — still on d222f71cd`, reason `` `no-such-branch-e2e` is not a branch, tag or commit in `nikzlabs/shipit` `` (not `git rev-parse`'s advice). Card `degraded` still naming `d222f71cd`, and service, CLI and skill all still served it |
+| 9 identity | same local name re-pointed to `octocat/Hello-World` → `/plugins/shipit-dev` link gone, skill gone from **both** roots, wrapper gone from `PATH`, plugin service container gone. Card `unavailable`: `` `probe` is not exported by this repository at the declared version `` |
+
+**Step 8 was verified only as far as the injection**: the consumer-origin page is
+served with `<script data-shipit-agent-interface-sdk>` through the preview proxy.
+The click itself needs a browser, which this run did not have; Run 1 already drove
+that hop end to end, and the mechanism is not origin-specific.
+
+### What this run changed, and why
+
+**Step 2's second PASS criterion was not reachable with the fixture as shipped,
+and the fixture is now fixed.** `test-plugin`'s install wrote a stamp and created
+no dependency directory. `promotePluginDepDirs` treats a declared dep dir the
+install does not populate as an ordinary, complete outcome and promotes nothing
+(`plugin-dep-store.ts:325`, verified). So nothing was ever published, no base
+could ever be adopted, and a cold install ran on every commit — `basePins: []` on
+every generation. **The doc asserted a PASS the fixture could not produce.**
+`install.mjs` now creates `node_modules/.e2e-probe/`, and with that the store
+worked on the first try, in the same session and across two: the table above is
+that run.
+
+**Step 2's and step 3's criteria are mutually exclusive on any adopted commit.**
+`install.matchesActiveCommit: true` requires a cold install to have stamped *that*
+commit; "runs no install container at all" means it did not. On commit C the probe
+reported `install: {found: false}` — correct on both counts. Read step 3's
+criterion as applying to a commit that installed cold; on an adopted commit the
+correct expectation is `install: {found: false}` with the dep-dir marker present.
+
+**A compose file refused by containment validation is reported as one ShipIt
+"could not read".** The consumer's stock compose declared no `user:`, which
+docs/263's rule refuses with an actionable message — and that message reached the
+orchestrator log and nothing else. `/services` returned `[]` with no error, and
+the card blamed a file it had in fact read and understood. `readProjectServices`
+ends in a bare `catch` that discards the error, collapsing a malformed file and a
+deliberate refusal into one `unknown: true` (`plugin-services.ts:276`, verified).
+Failing closed is right; being unable to say why is the gap. Filed as
+**planning#377**.
+
+### The one expected value that CHANGED after this run
+
+**Do not read Run 2's checkout writability as the criterion.** During Run 2 a
+consumer CLI reported `checkout: {writable: true}`. #2282 then settled the rule
+and changed it deliberately:
+
+| Fixture | Surface | Expected now |
+|---|---|---|
+| consumer (tracked generation) | CLI **and** service | `writable: false`, whatever the fragment declares |
+| `repo: self` | CLI and service | `writable: true` |
+
+A tracked generation is read-only at runtime because req 15 wants the files, the
+CLIs and the services to correspond to **one** commit — a runtime write copies up
+into the generation's upper layer, which every other surface attaches, so one
+call could change the code the rest of the session runs while
+`SHIPIT_PLUGIN_COMMIT` still named the commit it was no longer running. `install`
+is the one writer, before publication. A future run seeing `false` on a consumer
+is seeing the fix, **not a regression**.
+
+### Three things to know before the next run
+
+- **`registry.npmjs.org` is a built-in allowlist default**, so a plugin service
+  reaching it is containment working, not a leak. Step 5's "a host the plugin
+  never declared" must also be a host the *session* does not allow —
+  `en.wikipedia.org` served here.
+- **Run step 5's unallowed half before the grant**, as Run 1 already noted, and
+  note additionally that a session-scoped grant survives for the session's life:
+  a second measurement in the same session measures the granted state.
+- **The rendered card was read on 2026-08-15, after this run**, on a session on
+  `nicolasalt-shipit/tanks`, and it is correct on every point checked: the ref
+  and an exact commit **agreeing with the CLI's `SHIPIT_PLUGIN_COMMIT`**, an
+  unsatisfied `PROBE_TOKEN` with an `Add key…` action, and `example.com` as a
+  host row with both scope buttons on a Contained session. Note what that does
+  and does not settle: every *other* claim in Runs 1 and 2 about what the card
+  "reads" is still a claim about `GET /api/plugin-repos`, its data source. The
+  card was read once, in one state — `active`, two unmet needs, services
+  accepted. planning#377 and planning#380 both describe states it has never been
+  seen in.
