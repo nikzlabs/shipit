@@ -335,3 +335,17 @@ and the fix is the same: the repository's card lists the declared hosts that are
 not allowed yet and offers to add them, for this session or for the whole
 instance. Adding one takes effect on the next companion-CLI call; there is no
 allow-once prompt from inside a plugin container.
+
+Some hosts cannot be added at all, and the card says so **instead of** offering
+the buttons — one row, no action. Two states read that way, and neither is
+something you or the user can fix from the session:
+
+- **This session's network access is off.** A sandbox session with `network`
+  off reaches ShipIt and the model API and nothing else, whatever the allowlist
+  holds. Turning network access on for the session is the only route.
+- **This ShipIt allows no extra hosts.** The deployment runs egress control at
+  its built-in floor only, so an allowlist entry has nothing to act on — in
+  every session on it. Only whoever operates the deployment can change that.
+
+If a plugin's host is in either state, stop trying to grant it: the entry saves
+and changes nothing. Say which of the two it is and what would have to change.

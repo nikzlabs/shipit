@@ -7,6 +7,7 @@ import { usePluginReposStore } from "../stores/plugin-repos-store.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import type { PluginReposSnapshot } from "../../server/shared/plugin-repos.js";
+import type { PluginHostNeed } from "../../server/shared/plugin-hosts.js";
 import type { EgressHostGrantOutcome } from "../../server/shared/types.js";
 
 function setSnapshot(snapshot: PluginReposSnapshot | null) {
@@ -170,7 +171,7 @@ describe("PluginReposPanel", () => {
 
   // docs/262 req 24 — the same visibility for declared hosts, plus the grant.
   describe("host needs", () => {
-    const withHosts = (hosts: { host: string; allowed: boolean }[]): PluginReposSnapshot => ({
+    const withHosts = (hosts: PluginHostNeed[]): PluginReposSnapshot => ({
       ...FIXTURE,
       repos: [
         {
@@ -181,7 +182,7 @@ describe("PluginReposPanel", () => {
     });
 
     it("names the host and the plugin that declares it", () => {
-      setSnapshot(withHosts([{ host: "fal.run", allowed: false }]));
+      setSnapshot(withHosts([{ host: "fal.run", reach: "grantable" }]));
       render(<PluginReposPanel />);
       const row = screen.getByTestId("plugin-host-need-artk-fal.run");
       expect(row.textContent).toContain("fal.run");
@@ -190,13 +191,78 @@ describe("PluginReposPanel", () => {
     });
 
     it("an allowed host is stated, not silently dropped", () => {
-      setSnapshot(withHosts([{ host: "fal.run", allowed: true }]));
+      setSnapshot(withHosts([{ host: "fal.run", reach: "allowed" }]));
       render(<PluginReposPanel />);
       expect(screen.queryByTestId("plugin-host-need-artk-fal.run")).toBeNull();
       expect(screen.queryByText("1 need")).toBeNull();
       const allowed = screen.getByTestId("plugin-hosts-allowed");
       expect(allowed.textContent).toContain("fal.run");
       expect(allowed.textContent).toContain("artk");
+    });
+
+    /**
+     * planning#383 — a host no user act can reach. The card offered "Allow for
+     * session" / "Allow for ShipIt" here, and either one wrote a durable entry
+     * that changed nothing: on a deployment with no controlled resolver no
+     * grant can take effect, and the user could not learn that from the surface
+     * built to answer exactly this question.
+     */
+    describe("a host no grant can reach", () => {
+      it("states the deployment's limit on one row, and offers NO button", () => {
+        setSnapshot(withHosts([{ host: "fal.run", reach: "blocked-by-deployment" }]));
+        render(<PluginReposPanel />);
+        const row = screen.getByTestId("plugin-hosts-ungrantable");
+        expect(row.textContent).toContain("fal.run");
+        expect(row.textContent).toContain("can't allow extra hosts");
+        // The two lies, by their exact labels.
+        expect(screen.queryByText("Allow for session")).toBeNull();
+        expect(screen.queryByText("Allow for ShipIt")).toBeNull();
+        // And not as a grantable need row either, whose whole content is the grant.
+        expect(screen.queryByTestId("plugin-host-need-artk-fal.run")).toBeNull();
+      });
+
+      it("names a sealed session instead when that is the reason", () => {
+        setSnapshot(withHosts([{ host: "fal.run", reach: "blocked-by-session" }]));
+        render(<PluginReposPanel />);
+        const row = screen.getByTestId("plugin-hosts-ungrantable");
+        expect(row.textContent).toContain("network access is off");
+        expect(screen.queryByText("Allow for session")).toBeNull();
+      });
+
+      it("collapses several such hosts into ONE row that names them all", () => {
+        setSnapshot(
+          withHosts([
+            { host: "fal.run", reach: "blocked-by-deployment" },
+            { host: "api.openai.example", reach: "blocked-by-deployment" },
+          ]),
+        );
+        render(<PluginReposPanel />);
+        const rows = screen.getAllByTestId("plugin-hosts-ungrantable");
+        expect(rows).toHaveLength(1);
+        expect(rows[0].textContent).toContain("fal.run");
+        expect(rows[0].textContent).toContain("api.openai.example");
+      });
+
+      it("is still a need — the gap is visible even though nobody here can close it", () => {
+        setSnapshot(withHosts([{ host: "fal.run", reach: "blocked-by-deployment" }]));
+        render(<PluginReposPanel />);
+        expect(screen.getByText("1 need")).toBeTruthy();
+      });
+
+      it("leaves a grantable host on the same card with its buttons", () => {
+        // The two verdicts are per host, so a deployment-blocked host must not
+        // take the grant away from one the user really can allow.
+        setSnapshot(
+          withHosts([
+            { host: "fal.run", reach: "blocked-by-session" },
+            { host: "cdn.example", reach: "grantable" },
+          ]),
+        );
+        render(<PluginReposPanel />);
+        expect(screen.getByTestId("plugin-hosts-ungrantable").textContent).toContain("fal.run");
+        expect(screen.getByTestId("plugin-host-need-artk-cdn.example")).toBeTruthy();
+        expect(screen.getByText("Allow for session")).toBeTruthy();
+      });
     });
 
     it("credential gaps and host gaps count toward one needs chip", () => {
@@ -211,7 +277,7 @@ describe("PluginReposPanel", () => {
                 alias: "artk",
                 found: true,
                 credentials: [{ name: "FAL_KEY", satisfied: false }],
-                hosts: [{ host: "fal.run", allowed: false }],
+                hosts: [{ host: "fal.run", reach: "grantable" }],
               },
             ],
           },
@@ -225,7 +291,7 @@ describe("PluginReposPanel", () => {
     // allowlist, at one of the two scopes the requirement names — never
     // anything plugin-local, and never a side effect of the declaration.
     it("each scope posts to the existing egress route with that scope", async () => {
-      const snapshot = withHosts([{ host: "fal.run", allowed: false }]);
+      const snapshot = withHosts([{ host: "fal.run", reach: "grantable" }]);
       setSnapshot(snapshot);
       const grants: unknown[] = [];
       const originalFetch = globalThis.fetch;
@@ -263,8 +329,8 @@ describe("PluginReposPanel", () => {
     describe("the outcome is reported after the grant", () => {
       /** Grant, then answer the refetch with a snapshot where the host is allowed. */
       const renderGrant = async (grant: EgressHostGrantOutcome | null, button: string) => {
-        const before = withHosts([{ host: "fal.run", allowed: false }]);
-        const after = withHosts([{ host: "fal.run", allowed: true }]);
+        const before = withHosts([{ host: "fal.run", reach: "grantable" }]);
+        const after = withHosts([{ host: "fal.run", reach: "allowed" }]);
         setSnapshot(before);
         // The store drops a snapshot for a session the app isn't on, and the
         // point of this row is that it OUTLIVES the need row the refetch
@@ -289,7 +355,7 @@ describe("PluginReposPanel", () => {
             liveNow: ["new-containers", "agent", "services"],
             staleUntilRestart: [],
             restartSessionId: null,
-            excludedBySessionPolicy: false,
+            reach: "grantable",
           },
           "Allow for session",
         );
@@ -311,7 +377,7 @@ describe("PluginReposPanel", () => {
             liveNow: ["new-containers"],
             staleUntilRestart: ["agent", "services"],
             restartSessionId: "sess",
-            excludedBySessionPolicy: false,
+            reach: "grantable",
           },
           "Allow for ShipIt",
         );
@@ -332,8 +398,8 @@ describe("PluginReposPanel", () => {
       // silent disappearance the issue is about, so the account moves to the
       // card, where it survives.
       it("a failed grant is reported on the card, not on the row that unmounts", async () => {
-        const before = withHosts([{ host: "fal.run", allowed: false }]);
-        const after = withHosts([{ host: "fal.run", allowed: true }]);
+        const before = withHosts([{ host: "fal.run", reach: "grantable" }]);
+        const after = withHosts([{ host: "fal.run", reach: "allowed" }]);
         setSnapshot(before);
         useSessionStore.setState({ sessionId: "sess" });
         const originalFetch = globalThis.fetch;

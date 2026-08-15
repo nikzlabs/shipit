@@ -9,6 +9,7 @@ import {
 } from "./plugin-repos-store.js";
 import { useSessionStore } from "./session-store.js";
 import type { PluginReposSnapshot } from "../../server/shared/plugin-repos.js";
+import type { EgressHostReach } from "../../server/shared/types.js";
 
 const originalFetch = globalThis.fetch;
 
@@ -181,15 +182,19 @@ describe("tab gating and attention (plan §3)", () => {
   });
 
   it("a declared host the session may not reach fires the dot (req 24)", () => {
-    const use = (allowed: boolean) => ({
+    const use = (reach: EgressHostReach) => ({
       plugin: "palette",
       alias: "artk",
       found: true,
       credentials: [],
-      hosts: [{ host: "fal.run", allowed }],
+      hosts: [{ host: "fal.run", reach }],
     });
-    expect(pluginsAttention(snapshot({ repos: [{ ...card, uses: [use(false)] }] }))).toBe(true);
-    expect(pluginsAttention(snapshot({ repos: [{ ...card, uses: [use(true)] }] }))).toBe(false);
+    expect(pluginsAttention(snapshot({ repos: [{ ...card, uses: [use("grantable")] }] }))).toBe(true);
+    expect(pluginsAttention(snapshot({ repos: [{ ...card, uses: [use("allowed")] }] }))).toBe(false);
+    // planning#383 — a gap nobody the user can be will close is still a gap the
+    // user should be told about: the plugin cannot do its job either way.
+    expect(pluginsAttention(snapshot({ repos: [{ ...card, uses: [use("blocked-by-deployment")] }] }))).toBe(true);
+    expect(pluginsAttention(snapshot({ repos: [{ ...card, uses: [use("blocked-by-session")] }] }))).toBe(true);
   });
 
   it("a snapshot from an older client build has neither list and must not throw", () => {
@@ -250,7 +255,7 @@ describe("allowHost", () => {
       liveNow: ["new-containers"],
       staleUntilRestart: ["agent", "services"],
       restartSessionId: "sess-a",
-      excludedBySessionPolicy: false,
+      reach: "grantable",
     };
     captureFetch(new Response(JSON.stringify({ grant }), { status: 200 }));
     expect(await usePluginReposStore.getState().allowHost("fal.run", "global")).toEqual(grant);

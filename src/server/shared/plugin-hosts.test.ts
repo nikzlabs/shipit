@@ -80,16 +80,16 @@ describe("resolvePluginHosts", () => {
     { repo: "tools", plugin: "palette", alias: "artk", hosts: ["fal.run", "cdn.fal.run"] },
   ];
 
-  it("asks the session's predicate for every host and reports both answers", () => {
+  it("asks the session's predicate for every host and carries its verdict through", () => {
     const asked: string[] = [];
     const groups = resolvePluginHosts(declarations, (h) => {
       asked.push(h);
-      return h === "fal.run";
+      return h === "fal.run" ? "allowed" : "grantable";
     });
     expect(asked).toEqual(["fal.run", "cdn.fal.run"]);
     expect(groups[0].hosts).toEqual([
-      { host: "fal.run", allowed: true },
-      { host: "cdn.fal.run", allowed: false },
+      { host: "fal.run", reach: "allowed" },
+      { host: "cdn.fal.run", reach: "grantable" },
     ]);
   });
 
@@ -97,7 +97,15 @@ describe("resolvePluginHosts", () => {
     // The shape of the guarantee: nothing in this module can turn a declaration
     // into an allowance, so a session that permits nothing shows every host as
     // "not yet allowed" no matter what the manifest says.
-    const groups = resolvePluginHosts(declarations, () => false);
-    expect(groups[0].hosts.every((h) => !h.allowed)).toBe(true);
+    const groups = resolvePluginHosts(declarations, () => "grantable");
+    expect(groups[0].hosts.every((h) => h.reach !== "allowed")).toBe(true);
+  });
+
+  it("passes a verdict no grant can close through unchanged", () => {
+    // The projection must not flatten `blocked-*` back into "not allowed":
+    // that distinction is the whole of planning#383, and the card decides
+    // whether to render a button from it.
+    const groups = resolvePluginHosts(declarations, () => "blocked-by-deployment");
+    expect(groups[0].hosts.map((h) => h.reach)).toEqual(["blocked-by-deployment", "blocked-by-deployment"]);
   });
 });

@@ -27,13 +27,17 @@
  *    session to Open — and one that started Open is unrestricted even while the
  *    policy says Contained. `startedContained` is therefore the input, and the
  *    resolved-now policy is deliberately not.
- *  - **A session can be excluded from its own allowlist.** docs/211's
+ *  - **A grant can be inert, and not only for a session.** docs/211's
  *    Network-off sandbox resolves to a lifeline-only config that carries no user
  *    hosts at all, so the entry saves, the reload runs, and the session still
- *    cannot reach the host — and no restart ever changes that.
+ *    cannot reach the host — and no restart ever changes that. A deployment with
+ *    `SESSION_EGRESS_DNS=0` is the same shape one level up: no resolver, no
+ *    proxy, so no session on it can reach the host either (planning#383). Both
+ *    arrive as the {@link EgressHostReach} verdict from the one predicate every
+ *    host surface reads, rather than as flags this module works out for itself.
  */
 
-import type { EgressGrantSurface, EgressHostGrantOutcome } from "../shared/types.js";
+import type { EgressGrantSurface, EgressHostGrantOutcome, EgressHostReach } from "../shared/types.js";
 
 /** Every surface — the "live everywhere, nothing pending" answer. */
 const ALL_SURFACES: EgressGrantSurface[] = ["new-containers", "agent", "services"];
@@ -72,25 +76,22 @@ export interface EgressGrantContext {
    */
   startedContained: boolean | null;
   /**
-   * True when the session's own resolved egress config excludes the host no
-   * matter what the allowlist holds — today only docs/211's Network-off
-   * sandbox, whose lifeline config carries no user hosts. Read from the same
-   * `resolveEgress` seam the Plugins card and the enforcement path use, so the
-   * report can never contradict them. `false` when the answer isn't knowable
-   * (no resolver wired): "unknown" must not render as a positive claim of
-   * exclusion.
+   * Whether this host can be made reachable at all, and by whom
+   * (`egress-host-reach.ts` — the one predicate the Plugins card, this route and
+   * the Tier C decision route all read, so no two of them can disagree).
+   * `grantable` when the answer isn't knowable: "unknown" must not render as a
+   * positive claim that nothing can work.
    */
-  excludedBySessionPolicy: boolean;
+  reach: EgressHostReach;
 }
 
 export function computeEgressGrantOutcome(ctx: EgressGrantContext): EgressHostGrantOutcome {
-  const base = { host: ctx.host, scope: ctx.scope };
+  const base = { host: ctx.host, scope: ctx.scope, reach: ctx.reach };
   const live = (): EgressHostGrantOutcome => ({
     ...base,
     liveNow: [...ALL_SURFACES],
     staleUntilRestart: [],
     restartSessionId: null,
-    excludedBySessionPolicy: false,
   });
   /** Saved, and reaching only what starts from here — nothing running is stale. */
   const nextStart = (): EgressHostGrantOutcome => ({
@@ -98,20 +99,19 @@ export function computeEgressGrantOutcome(ctx: EgressGrantContext): EgressHostGr
     liveNow: ["new-containers"],
     staleUntilRestart: [],
     restartSessionId: null,
-    excludedBySessionPolicy: false,
   });
   const stale = (restartSessionId: string | null): EgressHostGrantOutcome => ({
     ...base,
     liveNow: ["new-containers"],
     staleUntilRestart: [...SNAPSHOT_SURFACES],
     restartSessionId,
-    excludedBySessionPolicy: false,
   });
 
-  // The session's own policy drops user hosts entirely, so the entry is saved
-  // and this session still cannot reach it — and no restart changes that.
-  if (ctx.excludedBySessionPolicy) {
-    return { ...base, liveNow: [], staleUntilRestart: [], restartSessionId: null, excludedBySessionPolicy: true };
+  // Nothing the user can do reaches this host — the session's own policy drops
+  // user hosts entirely, or the deployment installs nothing that could act on an
+  // allowlist entry. The entry is saved either way, and no restart changes it.
+  if (ctx.reach === "blocked-by-session" || ctx.reach === "blocked-by-deployment") {
+    return { ...base, liveNow: [], staleUntilRestart: [], restartSessionId: null };
   }
 
   // Nothing on this deployment is contained, so no surface is running an

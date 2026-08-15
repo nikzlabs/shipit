@@ -173,7 +173,7 @@ describe("egress settings routes", () => {
         liveNow: ["new-containers", "agent", "services"],
         staleUntilRestart: [],
         restartSessionId: null,
-        excludedBySessionPolicy: false,
+        reach: "grantable",
       });
     });
 
@@ -210,7 +210,7 @@ describe("egress settings routes", () => {
         liveNow: ["new-containers"],
         staleUntilRestart: ["agent", "services"],
         restartSessionId: "session-1",
-        excludedBySessionPolicy: false,
+        reach: "grantable",
       });
       expect(store.listHosts(EGRESS_GLOBAL_SCOPE)).toEqual(["api.example.com"]);
       expect(store.listHosts("session-1")).toEqual([]);
@@ -222,7 +222,18 @@ describe("egress settings routes", () => {
     // the session still cannot reach the host, for good.
     it("a session whose resolved config excludes the host is not reported as allowed", async () => {
       liveContainers.set("session-1", { status: "running", egressContainedAtStart: true });
-      resolvedEgress.set("session-1", { contained: true, extraHosts: [], base: [".anthropic.com"] });
+      // `userHostsExcluded` is the SESSION-level fact `sandboxLifelineEgressConfig`
+      // states, and asking it is the point: the route used to diff the host
+      // against the config's entries instead, which is the reading planning#380
+      // warns against — for an ordinary session that answer means the opposite
+      // ("brand-new host, grant it"), and it only happened to work here because
+      // the entry is added before the outcome is computed.
+      resolvedEgress.set("session-1", {
+        contained: true,
+        extraHosts: [],
+        base: [".anthropic.com"],
+        userHostsExcluded: true,
+      });
       const res = await app.inject({
         method: "POST",
         url: "/api/egress/hosts",
@@ -234,7 +245,7 @@ describe("egress settings routes", () => {
         liveNow: [],
         staleUntilRestart: [],
         restartSessionId: null,
-        excludedBySessionPolicy: true,
+        reach: "blocked-by-session",
       });
     });
 
@@ -248,7 +259,7 @@ describe("egress settings routes", () => {
         payload: { host: "api.example.com", scope: "session-1" },
       });
       expect(res.json<EgressHostAddResponse>().grant).toMatchObject({
-        excludedBySessionPolicy: false,
+        reach: "allowed",
         staleUntilRestart: [],
       });
     });
@@ -263,6 +274,114 @@ describe("egress settings routes", () => {
         scope: "global",
         staleUntilRestart: ["agent", "services"],
         restartSessionId: null,
+      });
+    });
+
+    /**
+     * planning#383 — a deployment running `SESSION_EGRESS_DNS=0`. There is no
+     * resolver to pin an allowed name's IPs and no proxy to permit its SNI, so
+     * the entry saves and reaches nothing, in this session and in every other.
+     * The route used to report it as live for anything started from now on.
+     */
+    describe("a deployment with no controlled resolver", () => {
+      let floorApp: FastifyInstance;
+
+      beforeEach(async () => {
+        floorApp = Fastify();
+        await registerEgressRoutes(floorApp, {
+          egressAllowlistStore: store,
+          credentialStore: stubCredentialStore,
+          egressEnforcementActive: true,
+          egressDnsControlDeployed: false,
+          sseBroadcast: () => {},
+          containerManager: {
+            reloadEgress,
+            get: (id: string) => liveContainers.get(id),
+            resolveEgress: (id: string) => resolvedEgress.get(id),
+          } as unknown,
+          runnerRegistry: { get: () => undefined },
+          chatHistoryManager: {},
+        } as unknown as ApiDeps);
+        await floorApp.ready();
+      });
+      afterEach(async () => {
+        await floorApp.close();
+      });
+
+      it("reports a session add as reaching nothing, with no restart to offer", async () => {
+        liveContainers.set("session-1", { status: "running", egressContainedAtStart: true });
+        resolvedEgress.set("session-1", { contained: true, extraHosts: [] });
+        const res = await floorApp.inject({
+          method: "POST",
+          url: "/api/egress/hosts",
+          payload: { host: "api.example.com", scope: "session-1" },
+        });
+        expect(res.json<EgressHostAddResponse>().grant).toEqual({
+          host: "api.example.com",
+          scope: "session",
+          liveNow: [],
+          staleUntilRestart: [],
+          restartSessionId: null,
+          reach: "blocked-by-deployment",
+        });
+        // The entry is still saved — the user asked for it, and it takes effect
+        // if the deployment ever turns the resolver on.
+        expect(store.listHosts("session-1")).toEqual(["api.example.com"]);
+      });
+
+      it("says the same for the app-wide editor, where no session is in scope", async () => {
+        // The fact is deployment-wide, so it is knowable without a session —
+        // the one thing this route can state with nothing else to read.
+        const res = await floorApp.inject({
+          method: "POST",
+          url: "/api/egress/hosts",
+          payload: { host: "api.example.com" },
+        });
+        expect(res.json<EgressHostAddResponse>().grant).toMatchObject({
+          reach: "blocked-by-deployment",
+          liveNow: [],
+          staleUntilRestart: [],
+        });
+      });
+
+      it("still reports a host on the Tier A floor as reachable", async () => {
+        resolvedEgress.set("session-1", { contained: true, extraHosts: [] });
+        const res = await floorApp.inject({
+          method: "POST",
+          url: "/api/egress/hosts",
+          payload: { host: "registry.npmjs.org", scope: "session-1" },
+        });
+        expect(res.json<EgressHostAddResponse>().grant.reach).toBe("allowed");
+      });
+
+      it("and reports it as reachable with NO session in scope either", async () => {
+        // Review finding: the no-session branch used to answer
+        // `blocked-by-deployment` for every host — a fourth special case beside
+        // the predicate, telling the app-wide editor that npm cannot be reached.
+        const res = await floorApp.inject({
+          method: "POST",
+          url: "/api/egress/hosts",
+          payload: { host: "registry.npmjs.org" },
+        });
+        expect(res.json<EgressHostAddResponse>().grant.reach).toBe("allowed");
+      });
+
+      it("does not call a session unreachable while its LIVE container runs Open", async () => {
+        // Review finding: containment was read from the resolved policy alone,
+        // so a session flipped to Contained but still running the container it
+        // started Open with was reported as reaching nothing — while the Plugins
+        // card, which asks what the container started with, said `allowed`. One
+        // host, two surfaces, opposite answers: the defect class itself.
+        liveContainers.set("session-1", { status: "running", egressContainedAtStart: false });
+        resolvedEgress.set("session-1", { contained: true, extraHosts: [] });
+        const res = await floorApp.inject({
+          method: "POST",
+          url: "/api/egress/hosts",
+          payload: { host: "api.example.com", scope: "session-1" },
+        });
+        const grant = res.json<EgressHostAddResponse>().grant;
+        expect(grant.reach).toBe("allowed");
+        expect(grant.liveNow).toEqual(["new-containers", "agent", "services"]);
       });
     });
   });
@@ -499,8 +618,8 @@ describe("egress settings routes", () => {
     });
 
     it("falls back to the durable answer when no resolver is wired", async () => {
-      // "Not knowable" must not become a positive claim of exclusion — the same
-      // fail-open `excludedBySessionPolicy` takes for the grant report.
+      // "Not knowable" must not become a positive claim that no grant can work —
+      // the predicate fails to `grantable` there, never to a `blocked-*`.
       expect((await ask("fal.run")).json()).toEqual({ allow: true });
     });
   });
@@ -562,6 +681,28 @@ describe("egress settings routes", () => {
         userHostsExcluded: true,
       });
       expect((await ask("session-1")).json()).toEqual({ allow: false });
+      expect(emitted).toEqual([]);
+      expect(appended).toEqual([]);
+    });
+
+    it("offers a sealed session no card for a LIFELINE host either — it needs no grant", async () => {
+      // Review finding: the route reads the verdict exhaustively, and this is
+      // the case a partial reading got wrong. The host is in that session's own
+      // configured reach, so refusing it would be false and carding it would
+      // offer a grant for something already allowed — and this route is
+      // `containerAccessible`, so the agent can ask directly rather than only
+      // through a proxy that would never ask about its own static list.
+      resolvedEgress.set("session-1", {
+        contained: true,
+        extraHosts: [],
+        base: [".anthropic.com"],
+        userHostsExcluded: true,
+      });
+      const res = await app.inject({
+        method: "GET",
+        url: "/api/egress/decision?host=api.anthropic.com&session=session-1",
+      });
+      expect(res.json()).toEqual({ allow: true });
       expect(emitted).toEqual([]);
       expect(appended).toEqual([]);
     });

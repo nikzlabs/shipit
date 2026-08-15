@@ -217,7 +217,11 @@ export function pluginsAttention(snapshot: PluginReposSnapshot | null): boolean 
         // `credentials` nor `hosts` on its use entries; a stale shape must not
         // throw here.
         r.uses.some((u) => (u.credentials ?? []).some((c) => !c.satisfied)) ||
-        r.uses.some((u) => (u.hosts ?? []).some((h) => !h.allowed)),
+        // Every verdict but `allowed` is a gap the user should know about —
+        // including the two no grant closes (planning#383): a plugin that cannot
+        // reach its host is exactly the "surprise" req 24 exists to prevent,
+        // whether or not the fix is the user's to make.
+        r.uses.some((u) => (u.hosts ?? []).some((h) => h.reach !== "allowed")),
     )
   );
 }

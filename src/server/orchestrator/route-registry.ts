@@ -35,6 +35,7 @@ import * as sendMessageHandlers from "./ws-handlers/send-message.js";
 import * as bugReportHandlers from "./ws-handlers/bug-report-handlers.js";
 import * as egressHandlers from "./ws-handlers/egress-handlers.js";
 import { egressEnforcementActive } from "./egress-firewall-install.js";
+import { egressDnsEnabled } from "./egress-dns-install.js";
 import * as permissionHandlers from "./ws-handlers/permission-handlers.js";
 import * as issueWriteHandlers from "./ws-handlers/issue-write-handlers.js";
 import * as serviceHandlers from "./ws-handlers/service-handlers.js";
@@ -348,6 +349,10 @@ export async function registerRoutes(
     // docs/172 (planning#92) — honest enforcement signal for the browser: policy vs
     // actual enforcement. Fixed function of the process env.
     egressEnforcementActive: egressEnforcementActive(),
+    // planning#383 — the other honest deployment signal: with Tier B off there
+    // is no resolver to pin an allowed name's IPs and no proxy to permit its
+    // SNI, so every host surface must stop offering grants that cannot work.
+    egressDnsControlDeployed: egressDnsEnabled(),
     presentStore,
     serviceManagers,
     composeStopPromises,

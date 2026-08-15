@@ -409,7 +409,7 @@ plugins:
       const snap = await snapshot();
       expect(snap.repos[0].uses[0]).toMatchObject({
         alias: "probe",
-        hosts: [{ host: "fal.run", allowed: true }],
+        hosts: [{ host: "fal.run", reach: "allowed" }],
       });
     });
 
@@ -417,10 +417,11 @@ plugins:
       // This app has no container manager, so `isEgressContained` is false and
       // the session reaches everything. Naming a gap here would send the user
       // to grant what was never blocked. The predicate's contained branch is
-      // covered directly in `plugin-hosts.test.ts`, where a store can be built.
+      // covered directly in `egress-host-reach.test.ts`, where a store can be
+      // built.
       writeConfig(WITH_HOST);
       const snap = await snapshot();
-      expect(snap.repos[0].uses[0].hosts.every((h) => h.allowed)).toBe(true);
+      expect(snap.repos[0].uses[0].hosts.every((h) => h.reach === "allowed")).toBe(true);
       expect(snap.repos[0].issues).toEqual([]);
     });
 
