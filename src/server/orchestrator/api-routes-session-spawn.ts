@@ -4,14 +4,13 @@
  * list-children, child view/wait, child message, child archive, notify-on-merge.
  */
 
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 import type { FastifyInstance } from "fastify";
 import type { ApiDeps } from "./api-routes.js";
 import { emitChatCard } from "./chat-card-persistence.js";
 import { prepareShipitFixSpawn } from "./api-routes-shipit-fix.js";
 
 import {
-  getFileTree,
   getGitLog,
   getUsageStats,
   listWorktrees,
@@ -101,7 +100,6 @@ export async function registerSessionSpawnRoutes(
     const messages = getChatHistory(deps.chatHistoryManager, request.params.id) as unknown as Record<string, unknown>[];
 
     let commits: Awaited<ReturnType<typeof getGitLog>> = [];
-    let fileTree: Awaited<ReturnType<typeof getFileTree>> = [];
     if (session.workspaceDir) {
       try {
         const git = createGitManager(session.workspaceDir);
@@ -109,12 +107,12 @@ export async function registerSessionSpawnRoutes(
       } catch {
         // No git repo — empty log
       }
-      try {
-        fileTree = await getFileTree(session.workspaceDir);
-      } catch {
-        // No workspace dir — empty tree
-      }
     }
+    // planning#375 — the workspace file tree used to ride along here. It is
+    // 325 KB of this repository's 2.67 MB payload (2,847 files), it has nothing
+    // to do with chat history, and it changes on a completely different cadence
+    // — so re-sending it with every transcript change was pure waste. The
+    // client seeds it from the dedicated `GET /api/sessions/:id/files` instead.
 
     const runner = deps.runnerRegistry.get(request.params.id);
     const agentRunning = runner?.running ?? false;
@@ -152,10 +150,9 @@ export async function registerSessionSpawnRoutes(
     // idempotent by presentId, so this and the WS replay can't double-render.
     const presentations = deps.presentStore?.listForClient(request.params.id) ?? [];
 
-    return {
+    const payload = {
       messages,
       commits,
-      fileTree,
       agentRunning,
       backgroundTasks,
       rewindSnapshot,
@@ -165,6 +162,26 @@ export async function registerSessionSpawnRoutes(
       cumulativeOutputTokens: tokenTotals?.cumulativeOutputTokens,
       presentations,
     };
+
+    // planning#375 — revalidate instead of re-download. Switching between
+    // sessions is constant, and this response is megabytes on a long one.
+    //
+    // The tag is the hash of the BODY, not a composed version stamp, and that
+    // is the point: the payload is assembled from seven independent sources
+    // (chat rows, git log, runner state, background tasks, usage, presentations,
+    // rewind snapshot), so a stamp that forgets one serves a stale transcript.
+    // Hashing what is about to be sent cannot be wrong. It saves the transfer
+    // and the client's parse, not the server-side build.
+    const body = JSON.stringify(payload);
+    const etag = `"${createHash("sha1").update(body).digest("base64url")}"`;
+    if (request.headers["if-none-match"] === etag) {
+      reply.code(304).send();
+      return;
+    }
+    // `no-cache` = revalidate every time, never serve blind from the browser's
+    // own cache. A stale transcript is worse than a round trip.
+    reply.header("etag", etag).header("cache-control", "no-cache").type("application/json");
+    return reply.send(body);
   });
 
   // GET /api/sessions/:id/usage — usage stats

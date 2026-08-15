@@ -4,6 +4,7 @@
  */
 
 import fs from "node:fs/promises";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { createReadStream } from "node:fs";
 import type { FastifyInstance } from "fastify";
@@ -97,10 +98,24 @@ export async function registerFileRoutes(
   const cacheRoot = getCatalogCacheRoot(deps.stateDir ?? deps.workspaceDir);
 
   // GET /api/sessions/:id/files — file tree
+  //
+  // planning#375 — this is now the ONLY place the workspace tree is served; it
+  // used to ride along with `GET /history` as well, where it was 325 KB of a
+  // 2.67 MB payload re-sent on every transcript change. It carries an ETag for
+  // the same reason the history route does: the tree changes far more rarely
+  // than the transcript, so an attach should usually cost a 304 and nothing
+  // else. The tag is the hash of the body, so it cannot disagree with it.
   app.get<{ Params: { id: string } }>("/api/sessions/:id/files", async (request, reply) => {
     const dir = resolveSessionDir(sessionManager, request.params.id, reply);
     if (!dir) return;
-    return { tree: await getFileTree(dir) };
+    const body = JSON.stringify({ tree: await getFileTree(dir) });
+    const etag = `"${createHash("sha1").update(body).digest("base64url")}"`;
+    if (request.headers["if-none-match"] === etag) {
+      reply.code(304).send();
+      return;
+    }
+    reply.header("etag", etag).header("cache-control", "no-cache").type("application/json");
+    return reply.send(body);
   });
 
   // GET /api/sessions/:id/files/* — file content

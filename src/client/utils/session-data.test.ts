@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { loadSessionHistory } from "./session-data.js";
+import { loadSessionHistory, __resetHistoryCache } from "./session-data.js";
 import { useUiStore } from "../stores/ui-store.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { useGitStore } from "../stores/git-store.js";
@@ -428,5 +428,277 @@ describe("loadSessionHistory — a superseded load must not clobber the transcri
     resolvers[1](historyPayload(["GROUP-ONE", "GROUP-TWO"]));
     await second;
     expect(useSessionStore.getState().historyLoaded).toBe(true);
+  });
+});
+
+/**
+ * planning#375 — the seq guard makes a superseded load harmless, not free. A
+ * DevTools trace of a foreground reconnect caught two `/history` requests
+ * 480 ms apart at 2.67 MB each, the older one downloaded and `JSON.parse`d
+ * purely to be discarded, on the main thread that was already the bottleneck.
+ * Issuing a load now cancels the one it supersedes.
+ */
+describe("loadSessionHistory — a superseded load is cancelled, not just discarded", () => {
+  let calls: { url: string; signal: AbortSignal; resolve: (v: unknown) => void }[];
+
+  const historyPayload = (texts: string[]) => ({
+    ok: true,
+    json: () => Promise.resolve({
+      messages: texts.map((text) => ({ role: "assistant", text })),
+      commits: [],
+      fileTree: [],
+      agentRunning: false,
+    }),
+  });
+
+  beforeEach(() => {
+    useUiStore.getState().reset();
+    useSessionStore.getState().reset();
+    useGitStore.getState().reset();
+    useFileStore.getState().reset();
+    useSessionStore.getState().setSessionId("s1");
+    calls = [];
+    globalThis.fetch = vi.fn((url: string, init?: RequestInit) => {
+      if (!url.includes("/history")) return Promise.resolve({ ok: false, status: 404 });
+      const signal = init!.signal!;
+      return new Promise((resolve, reject) => {
+        calls.push({ url, signal, resolve });
+        // A real fetch rejects with an AbortError the moment the signal fires.
+        signal.addEventListener("abort", () => {
+          reject(Object.assign(new Error("aborted"), { name: "AbortError" }));
+        });
+      });
+    }) as unknown as typeof fetch;
+  });
+
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  it("aborts the in-flight request when a second load is issued", async () => {
+    const first = loadSessionHistory("s1");
+    await vi.waitFor(() => expect(calls.length).toBe(1));
+    expect(calls[0].signal.aborted).toBe(false);
+
+    const second = loadSessionHistory("s1");
+    await vi.waitFor(() => expect(calls.length).toBe(2));
+
+    // The older request is cancelled — its body is never downloaded or parsed.
+    expect(calls[0].signal.aborted).toBe(true);
+    expect(calls[1].signal.aborted).toBe(false);
+
+    // And the cancelled load resolves rather than throwing: `useConnectionSync`
+    // treats a throw as a real failure and suppresses its retry nudge.
+    await expect(first).resolves.toBeUndefined();
+
+    calls[1].resolve(historyPayload(["GROUP-ONE", "GROUP-TWO"]));
+    await second;
+    expect(useSessionStore.getState().messages.map((m) => m.text))
+      .toEqual(["GROUP-ONE", "GROUP-TWO"]);
+  });
+
+  it("does not abort a load that already settled", async () => {
+    const first = loadSessionHistory("s1");
+    await vi.waitFor(() => expect(calls.length).toBe(1));
+    calls[0].resolve(historyPayload(["ONE"]));
+    await first;
+
+    // The second load has nothing to supersede, so it must not fire an abort
+    // at a controller whose response is already applied.
+    const second = loadSessionHistory("s1");
+    await vi.waitFor(() => expect(calls.length).toBe(2));
+    expect(calls[1].signal.aborted).toBe(false);
+    calls[1].resolve(historyPayload(["ONE", "TWO"]));
+    await second;
+    expect(useSessionStore.getState().messages.map((m) => m.text)).toEqual(["ONE", "TWO"]);
+  });
+
+  it("propagates a genuine network failure", async () => {
+    globalThis.fetch = vi.fn(() => Promise.reject(new Error("offline"))) as unknown as typeof fetch;
+    await expect(loadSessionHistory("s1")).rejects.toThrow("offline");
+  });
+});
+
+/**
+ * planning#375 — switching between sessions re-downloaded the whole
+ * conversation every time (2.67 MB in the traced session). The response now
+ * carries an ETag and the client revalidates instead.
+ */
+describe("loadSessionHistory — revalidates instead of re-downloading", () => {
+  let requests: { headers: Record<string, string>; cache?: string }[];
+  let etag: string;
+  let body: { messages: { role: string; text: string }[]; commits: never[]; agentRunning: boolean };
+
+  const respond = () => {
+    const ifNoneMatch = requests[requests.length - 1].headers["If-None-Match"];
+    if (ifNoneMatch === etag) {
+      return Promise.resolve({ ok: true, status: 304, headers: new Headers({ etag }), json: () => { throw new Error("must not parse a 304"); } });
+    }
+    return Promise.resolve({ ok: true, status: 200, headers: new Headers({ etag }), json: () => Promise.resolve(body) });
+  };
+
+  beforeEach(() => {
+    useUiStore.getState().reset();
+    useSessionStore.getState().reset();
+    useGitStore.getState().reset();
+    useFileStore.getState().reset();
+    __resetHistoryCache();
+    requests = [];
+    etag = '"v1"';
+    body = { messages: [{ role: "assistant", text: "ONE" }], commits: [], agentRunning: false };
+    globalThis.fetch = vi.fn((url: string, init?: RequestInit) => {
+      if (!url.includes("/history")) return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ tree: [] }) });
+      requests.push({ headers: (init?.headers ?? {}) as Record<string, string>, cache: init?.cache });
+      return respond();
+    }) as unknown as typeof fetch;
+  });
+
+  afterEach(() => { vi.restoreAllMocks(); __resetHistoryCache(); });
+
+  it("sends no validator on the first load and caches what comes back", async () => {
+    useSessionStore.getState().setSessionId("s1");
+    await loadSessionHistory("s1");
+    expect(requests[0].headers["If-None-Match"]).toBeUndefined();
+    expect(useSessionStore.getState().messages.map((m) => m.text)).toEqual(["ONE"]);
+  });
+
+  it("revalidates on the next load and applies the cached transcript on a 304", async () => {
+    useSessionStore.getState().setSessionId("s1");
+    await loadSessionHistory("s1");
+    useSessionStore.getState().setMessages([]);
+
+    await loadSessionHistory("s1");
+    expect(requests[1].headers["If-None-Match"]).toBe('"v1"');
+    // The 304 threw if `json()` was touched, so this transcript came from the
+    // cache — no transfer, no parse.
+    expect(useSessionStore.getState().messages.map((m) => m.text)).toEqual(["ONE"]);
+  });
+
+  it("takes the new body when the server's tag moved", async () => {
+    useSessionStore.getState().setSessionId("s1");
+    await loadSessionHistory("s1");
+
+    etag = '"v2"';
+    body = { messages: [{ role: "assistant", text: "ONE" }, { role: "assistant", text: "TWO" }], commits: [], agentRunning: false };
+    await loadSessionHistory("s1");
+    expect(useSessionStore.getState().messages.map((m) => m.text)).toEqual(["ONE", "TWO"]);
+
+    // …and the fresher body replaced the cached one.
+    await loadSessionHistory("s1");
+    expect(requests[2].headers["If-None-Match"]).toBe('"v2"');
+    expect(useSessionStore.getState().messages.map((m) => m.text)).toEqual(["ONE", "TWO"]);
+  });
+
+  it("bypasses the browser's own HTTP cache so the 304 is visible to us", async () => {
+    useSessionStore.getState().setSessionId("s1");
+    await loadSessionHistory("s1");
+    // Left to the browser, `fetch` would resolve a revalidation as a 200 with
+    // the cached body — and we would re-parse the megabytes we are avoiding.
+    expect(requests[0].cache).toBe("no-store");
+  });
+
+  it("keeps the cache bounded", async () => {
+    for (let i = 0; i < 9; i++) {
+      useSessionStore.getState().setSessionId(`s${i}`);
+      await loadSessionHistory(`s${i}`);
+    }
+    // The oldest sessions were evicted, so they revalidate from scratch.
+    useSessionStore.getState().setSessionId("s0");
+    await loadSessionHistory("s0");
+    expect(requests[requests.length - 1].headers["If-None-Match"]).toBeUndefined();
+    // A recent one is still cached.
+    useSessionStore.getState().setSessionId("s8");
+    await loadSessionHistory("s8");
+    expect(requests[requests.length - 1].headers["If-None-Match"]).toBe('"v1"');
+  });
+
+  it("does not evict the session the user keeps coming back to", async () => {
+    // LRU, not FIFO. A 304 has to count as a use — otherwise the ONE session
+    // being revisited is the one that never gets re-inserted, and it ages out
+    // and is re-downloaded in full: exactly backwards.
+    useSessionStore.getState().setSessionId("favourite");
+    await loadSessionHistory("favourite");
+
+    for (let i = 0; i < 5; i++) {
+      useSessionStore.getState().setSessionId(`other${i}`);
+      await loadSessionHistory(`other${i}`);
+      // Revisit the favourite between each, so it stays the most recently used.
+      useSessionStore.getState().setSessionId("favourite");
+      await loadSessionHistory("favourite");
+    }
+
+    expect(requests[requests.length - 1].headers["If-None-Match"]).toBe('"v1"');
+  });
+});
+
+/**
+ * planning#375 — the file tree moved out of the history response. It must still
+ * be session-scoped: a fire-and-forget fetch through the file store had no
+ * active-session check, so a slow response for the session the user just LEFT
+ * would land afterwards and overwrite the one they switched to.
+ */
+describe("loadSessionHistory — the file tree is session-scoped", () => {
+  let treeResolvers: Record<string, (v: unknown) => void>;
+
+  const ok = (json: unknown) => ({ ok: true, status: 200, headers: new Headers(), json: () => Promise.resolve(json) });
+
+  beforeEach(() => {
+    useUiStore.getState().reset();
+    useSessionStore.getState().reset();
+    useGitStore.getState().reset();
+    useFileStore.getState().reset();
+    __resetHistoryCache();
+    treeResolvers = {};
+    globalThis.fetch = vi.fn((url: string) => {
+      const id = /sessions\/([^/]+)\//.exec(url)?.[1] ?? "";
+      if (url.endsWith("/files")) {
+        return new Promise((resolve) => { treeResolvers[id] = resolve; });
+      }
+      return Promise.resolve(ok({
+        messages: [{ role: "assistant", text: id }],
+        commits: [],
+        agentRunning: false,
+      }));
+    }) as unknown as typeof fetch;
+  });
+
+  afterEach(() => { vi.restoreAllMocks(); __resetHistoryCache(); });
+
+  it("drops a tree that arrives for a session the user has left", async () => {
+    useSessionStore.getState().setSessionId("A");
+    const loadA = loadSessionHistory("A");
+    await vi.waitFor(() => expect(treeResolvers.A).toBeDefined());
+
+    // The user switches before A's tree lands.
+    useSessionStore.getState().setSessionId("B");
+    const loadB = loadSessionHistory("B");
+    await vi.waitFor(() => expect(treeResolvers.B).toBeDefined());
+
+    treeResolvers.B(ok({ tree: [{ name: "b.txt", path: "b.txt", type: "file" }] }));
+    await loadB;
+    expect(useFileStore.getState().tree.map((n) => n.name)).toEqual(["b.txt"]);
+
+    // A's tree finally answers. It must not replace B's.
+    treeResolvers.A(ok({ tree: [{ name: "a.txt", path: "a.txt", type: "file" }] }));
+    await loadA;
+    expect(useFileStore.getState().tree.map((n) => n.name)).toEqual(["b.txt"]);
+  });
+
+  it("applies the tree for the session that is still active", async () => {
+    useSessionStore.getState().setSessionId("A");
+    const loadA = loadSessionHistory("A");
+    await vi.waitFor(() => expect(treeResolvers.A).toBeDefined());
+    treeResolvers.A(ok({ tree: [{ name: "a.txt", path: "a.txt", type: "file" }] }));
+    await loadA;
+    expect(useFileStore.getState().tree.map((n) => n.name)).toEqual(["a.txt"]);
+  });
+
+  it("does not lose the transcript when the tree request fails", async () => {
+    globalThis.fetch = vi.fn((url: string) => {
+      if (url.endsWith("/files")) return Promise.reject(new Error("tree down"));
+      return Promise.resolve(ok({ messages: [{ role: "assistant", text: "STILL HERE" }], commits: [], agentRunning: false }));
+    }) as unknown as typeof fetch;
+
+    useSessionStore.getState().setSessionId("A");
+    await loadSessionHistory("A");
+    expect(useSessionStore.getState().messages.map((m) => m.text)).toEqual(["STILL HERE"]);
   });
 });

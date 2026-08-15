@@ -876,3 +876,87 @@ describe("buildVisualElements", () => {
     });
   });
 });
+
+/**
+ * planning#375 — before this, every call allocated fresh element objects, so
+ * nothing in the transcript was ever referentially equal between two renders
+ * and `React.memo` on a row could never bail out. A streaming turn therefore
+ * re-rendered all ~2,000 rows per token, measured at 92 ms a time.
+ */
+describe("buildVisualElements — reuses unchanged elements (stable identity)", () => {
+  it("returns the same objects when nothing changed", () => {
+    const messages = [userMsg("hi"), assistantMsg("hello"), userMsg("again")];
+    const first = buildVisualElements(messages);
+    const second = buildVisualElements(messages, first);
+    expect(second).toHaveLength(first.length);
+    second.forEach((el, i) => expect(el).toBe(first[i]));
+  });
+
+  it("keeps the prefix stable when a message is appended", () => {
+    const base = [userMsg("one"), assistantMsg("two")];
+    const first = buildVisualElements(base);
+    const grown = [...base, userMsg("three")];
+    const second = buildVisualElements(grown, first);
+
+    expect(second).toHaveLength(first.length + 1);
+    // Every pre-existing row is the SAME object — those rows bail out.
+    first.forEach((el, i) => expect(second[i]).toBe(el));
+    // The new row is genuinely new.
+    expect(second[second.length - 1]).not.toBe(first[first.length - 1]);
+  });
+
+  it("gives a fresh object to the row whose message changed, and keeps the rest", () => {
+    const base = [userMsg("one"), assistantMsg("partial")];
+    const first = buildVisualElements(base);
+    // The streaming bubble grows: a new ChatMessage object at the same index.
+    const updated = [base[0], { ...base[1], text: "partial text now longer" }];
+    const second = buildVisualElements(updated, first);
+
+    expect(second[0]).toBe(first[0]);
+    // The element for the changed message is positionally identical, so it is
+    // reused too — the ROW re-renders because it takes `messages[index]` as its
+    // own prop, not because this element changed. That split is deliberate.
+    expect(second).toHaveLength(first.length);
+  });
+
+  it("hands back a fresh tool-group when its tool objects change", () => {
+    const t1 = tool("t1", "Read");
+    const first = buildVisualElements([toolMsg([t1])]);
+    const t2 = tool("t1", "Read", { file: "x" });
+    const second = buildVisualElements([toolMsg([t2])], first);
+    expect(second[0]).not.toBe(first[0]);
+  });
+
+  it("does not reuse across a streaming-flag flip", () => {
+    const t1 = tool("t1", "Read");
+    const first = buildVisualElements([toolMsg([t1], { streaming: true })]);
+    expect((first[0] as { streaming: boolean }).streaming).toBe(true);
+    const second = buildVisualElements([toolMsg([t1], { streaming: false })], first);
+    expect(second[0]).not.toBe(first[0]);
+    expect((second[0] as { streaming: boolean }).streaming).toBe(false);
+  });
+
+  it("never mutates an element the previous render still holds", () => {
+    // Two streaming tool messages: the post-process clears `streaming` on all
+    // but the last. If the reuse pass ran before that mutation, it would
+    // rewrite an object the previous render is still rendering.
+    const a = tool("a", "Read");
+    const b = tool("b", "Bash");
+    const first = buildVisualElements([toolMsg([a], { streaming: true })]);
+    const snapshot = JSON.parse(JSON.stringify(first)) as unknown[];
+    buildVisualElements([toolMsg([a], { streaming: true }), toolMsg([b], { streaming: true })], first);
+    expect(JSON.parse(JSON.stringify(first))).toEqual(snapshot);
+  });
+
+  it("produces exactly what a from-scratch build produces", () => {
+    const messages = [
+      userMsg("q"),
+      toolMsg([tool("t1", "Read")], { text: "looking" }),
+      assistantMsg("answer"),
+    ];
+    const first = buildVisualElements([messages[0]]);
+    const incremental = buildVisualElements(messages, first);
+    const scratch = buildVisualElements(messages);
+    expect(incremental).toEqual(scratch);
+  });
+});
