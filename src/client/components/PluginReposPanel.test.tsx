@@ -5,7 +5,9 @@ import { render, cleanup, screen, fireEvent, waitFor } from "@testing-library/re
 import { PluginReposPanel } from "./PluginReposPanel.js";
 import { usePluginReposStore } from "../stores/plugin-repos-store.js";
 import { useUiStore } from "../stores/ui-store.js";
+import { useSessionStore } from "../stores/session-store.js";
 import type { PluginReposSnapshot } from "../../server/shared/plugin-repos.js";
+import type { EgressHostGrantOutcome } from "../../server/shared/types.js";
 
 function setSnapshot(snapshot: PluginReposSnapshot | null) {
   usePluginReposStore.setState({ snapshot, forSessionId: snapshot ? "sess" : null });
@@ -43,6 +45,7 @@ describe("PluginReposPanel", () => {
   afterEach(() => {
     cleanup();
     setSnapshot(null);
+    useSessionStore.setState({ sessionId: undefined });
     useUiStore.getState().setProjectSettingsRepoUrl(null);
   });
 
@@ -245,10 +248,119 @@ describe("PluginReposPanel", () => {
 
         fireEvent.click(screen.getByText("Allow for ShipIt"));
         await waitFor(() => expect(grants).toHaveLength(2));
-        expect(grants[1]).toEqual({ host: "fal.run", scope: "global" });
+        // planning#376 — the session rides along for REPORTING only: the entry
+        // still lands at instance scope, and the id says whose surfaces the
+        // route should report on.
+        expect(grants[1]).toEqual({ host: "fal.run", scope: "global", session: "sess" });
       } finally {
         globalThis.fetch = originalFetch;
       }
+    });
+
+    // planning#376 — the grant used to say nothing at all: on success the row
+    // just disappeared, and the only account of the two scopes' very different
+    // behavior was a `title` on the button you had already pressed.
+    describe("the outcome is reported after the grant", () => {
+      /** Grant, then answer the refetch with a snapshot where the host is allowed. */
+      const renderGrant = async (grant: EgressHostGrantOutcome | null, button: string) => {
+        const before = withHosts([{ host: "fal.run", allowed: false }]);
+        const after = withHosts([{ host: "fal.run", allowed: true }]);
+        setSnapshot(before);
+        // The store drops a snapshot for a session the app isn't on, and the
+        // point of this row is that it OUTLIVES the need row the refetch
+        // removes — so the refetch has to actually land.
+        useSessionStore.setState({ sessionId: "sess" });
+        const originalFetch = globalThis.fetch;
+        globalThis.fetch = ((url: string) =>
+          url === "/api/egress/hosts"
+            ? Promise.resolve({ ok: true, json: async () => ({ grant }) } as Response)
+            : Promise.resolve({ ok: true, json: async () => after } as Response)) as typeof fetch;
+        render(<PluginReposPanel />);
+        fireEvent.click(screen.getByText(button));
+        await waitFor(() => expect(screen.queryByTestId("plugin-host-need-artk-fal.run")).toBeNull());
+        return () => { globalThis.fetch = originalFetch; };
+      };
+
+      it("a session grant confirms it is live everywhere, with no restart offered", async () => {
+        const restore = await renderGrant(
+          {
+            host: "fal.run",
+            scope: "session",
+            liveNow: ["new-containers", "agent", "services"],
+            staleUntilRestart: [],
+            restartSessionId: null,
+            excludedBySessionPolicy: false,
+          },
+          "Allow for session",
+        );
+        try {
+          const row = await screen.findByTestId("plugin-host-grant-outcome");
+          expect(row.textContent).toContain("fal.run");
+          expect(row.textContent).toContain("No restart needed");
+          expect(screen.queryByText("Restart to apply now")).toBeNull();
+        } finally {
+          restore();
+        }
+      });
+
+      it("a global grant names the agent and services as stale and offers the restart", async () => {
+        const restore = await renderGrant(
+          {
+            host: "fal.run",
+            scope: "global",
+            liveNow: ["new-containers"],
+            staleUntilRestart: ["agent", "services"],
+            restartSessionId: "sess",
+            excludedBySessionPolicy: false,
+          },
+          "Allow for ShipIt",
+        );
+        try {
+          const row = await screen.findByTestId("plugin-host-grant-outcome");
+          // The tooltip named services only; the agent is equally stale.
+          expect(row.textContent).toContain("agent");
+          expect(row.textContent).toContain("running service");
+          expect(screen.getByText("Restart to apply now")).toBeTruthy();
+        } finally {
+          restore();
+        }
+      });
+
+      // The 503 is "allowlist saved, but the live service refresh failed
+      // closed" — the host IS durably allowed, so the refetch removes the need
+      // row and any message kept on it would vanish with it. That is the same
+      // silent disappearance the issue is about, so the account moves to the
+      // card, where it survives.
+      it("a failed grant is reported on the card, not on the row that unmounts", async () => {
+        const before = withHosts([{ host: "fal.run", allowed: false }]);
+        const after = withHosts([{ host: "fal.run", allowed: true }]);
+        setSnapshot(before);
+        useSessionStore.setState({ sessionId: "sess" });
+        const originalFetch = globalThis.fetch;
+        globalThis.fetch = ((url: string) =>
+          url === "/api/egress/hosts"
+            ? Promise.resolve({ ok: false, status: 503, json: async () => ({}) } as Response)
+            : Promise.resolve({ ok: true, json: async () => after } as Response)) as typeof fetch;
+        try {
+          render(<PluginReposPanel />);
+          fireEvent.click(screen.getByText("Allow for session"));
+          await waitFor(() => expect(screen.queryByTestId("plugin-host-need-artk-fal.run")).toBeNull());
+          const failed = await screen.findByTestId("plugin-host-grant-failed");
+          expect(failed.textContent).toContain("fal.run");
+          expect(failed.textContent).toContain("without the live refresh");
+        } finally {
+          globalThis.fetch = originalFetch;
+        }
+      });
+
+      it("says nothing when the server reported no outcome (an older orchestrator)", async () => {
+        const restore = await renderGrant(null, "Allow for session");
+        try {
+          expect(screen.queryByTestId("plugin-host-grant-outcome")).toBeNull();
+        } finally {
+          restore();
+        }
+      });
     });
   });
 });

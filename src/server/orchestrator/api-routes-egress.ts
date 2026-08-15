@@ -31,11 +31,23 @@ import type { FastifyInstance, FastifyReply } from "fastify";
 import type { ApiDeps } from "./api-routes.js";
 import { emitChatCard } from "./chat-card-persistence.js";
 import { isEgressHostAllowed, shouldCardEgressHost } from "./egress-policy.js";
-import { normalizeHost, buildEffectiveAllowlist, isBuiltinDefault } from "./egress-allowlist.js";
+import {
+  normalizeHost,
+  buildEffectiveAllowlist,
+  isBuiltinDefault,
+  hostMatchesEntry,
+  EGRESS_DEFAULT_ALLOWLIST,
+} from "./egress-allowlist.js";
 import { EGRESS_GLOBAL_SCOPE } from "./egress-allowlist-store.js";
 import type { EgressAllowlistStore } from "./egress-allowlist-store.js";
 import type { CredentialStore } from "./credential-store.js";
-import type { EgressSettings, EgressSessionSettings, EgressAllowlistView } from "../shared/types.js";
+import type {
+  EgressSettings,
+  EgressSessionSettings,
+  EgressAllowlistView,
+  EgressHostGrantOutcome,
+} from "../shared/types.js";
+import { computeEgressGrantOutcome } from "./egress-grant-outcome.js";
 import type { PersistedEgressPrompt } from "./chat-history.js";
 
 /** Stable per (session, host) so a re-denied host updates one card, never duplicates. */
@@ -126,6 +138,24 @@ export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps):
     return sc.egressContainedAtStart ?? null;
   };
 
+  // planning#376 — does this session's RESOLVED egress config exclude the host
+  // whatever the allowlist holds? docs/211's Network-off sandbox resolves to a
+  // lifeline-only config that carries no user hosts at all, so an add there
+  // saves the entry, reloads happily, and leaves the session unable to reach it
+  // — for good. Read from `resolveEgress`, the same seam the Plugins card and
+  // the plugin containers' enforcement read, so the report cannot contradict
+  // them. Fails OPEN (false) when nothing is knowable — an unwired resolver
+  // must not be rendered as a positive claim that the host is excluded.
+  const excludedBySessionPolicy = (sessionId: string, host: string): boolean => {
+    const cfg = deps.containerManager?.resolveEgress(sessionId);
+    if (!cfg?.contained) return false;
+    const h = normalizeHost(host);
+    // Exactly the composition the proxy is launched with (`pluginHostAllowance`,
+    // `buildProxyAllowed`): an omitted `base` means the full default list.
+    const entries = [...(cfg.base ?? EGRESS_DEFAULT_ALLOWLIST), ...cfg.extraHosts];
+    return !entries.some((entry) => hostMatchesEntry(h, normalizeHost(entry)));
+  };
+
   // ---- Browser-only egress settings (docs/172, planning#92) ------------------
   // NO `containerAccessible` flag: planning#131's default-deny keeps the contained
   // agent from reaching these to loosen its own containment. Registered only
@@ -163,7 +193,14 @@ export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps):
     // editor); a session id scopes it to one session. A global add applies at
     // the next container start; a session-scoped add to a running, contained
     // session is reloaded live (resolver DNS + ipset + proxy SNI).
-    app.post<{ Body: { host?: string; scope?: string } }>(
+    //
+    // planning#376 — the response also carries `grant`: what the add actually
+    // took effect on. The two scopes behave very differently and the browser
+    // used to predict the difference in a button tooltip; the route ran the
+    // reload (or didn't) and can see what is running, so it reports instead.
+    // `session` is REPORTING-only: it names the session the outcome describes
+    // for a global add, and never changes where the entry is written.
+    app.post<{ Body: { host?: string; scope?: string; session?: string } }>(
       "/api/egress/hosts",
       async (request, reply) => {
         const host = typeof request.body?.host === "string" ? request.body.host.trim() : "";
@@ -172,6 +209,24 @@ export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps):
           reply.code(400);
           return { error: "host is required" };
         }
+        const isGlobal = scope === EGRESS_GLOBAL_SCOPE;
+        const reportSession = isGlobal
+          ? (typeof request.body?.session === "string" && request.body.session ? request.body.session : null)
+          : scope;
+        // `reloaded` is `reloadEgress`'s own answer, not an assumption from the
+        // scope: it declines for an unenforced deployment, an Open session, and
+        // a deployment with the Tier B/C sidecars off — and in that last one the
+        // agent really is left holding the old list.
+        const grant = (reloaded: boolean): EgressHostGrantOutcome =>
+          computeEgressGrantOutcome({
+            host,
+            scope: isGlobal ? "global" : "session",
+            reloaded,
+            sessionId: reportSession,
+            enforcementActive,
+            startedContained: reportSession ? liveContained(reportSession) : null,
+            excludedBySessionPolicy: reportSession ? excludedBySessionPolicy(reportSession, host) : false,
+          });
         // Re-adding a removed built-in default just un-suppresses it (it's a
         // default, not a user entry). Otherwise it's a user-added host.
         if (scope === EGRESS_GLOBAL_SCOPE && isBuiltinDefault(host)) {
@@ -181,9 +236,10 @@ export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps):
         }
         deps.sseBroadcast("egress_settings", globalSettings(store, enforcementActive));
         // A per-session add can take effect immediately on a running session.
-        if (scope !== EGRESS_GLOBAL_SCOPE) {
+        if (!isGlobal) {
+          let reloaded: boolean;
           try {
-            await deps.containerManager?.reloadEgress(scope);
+            reloaded = (await deps.containerManager?.reloadEgress(scope)) === true;
           } catch (error) {
             console.error(`[egress:${scope}] allowlist saved but live refresh failed closed:`, error);
             reply.code(503);
@@ -192,9 +248,10 @@ export async function registerEgressRoutes(app: FastifyInstance, deps: ApiDeps):
               settings: sessionSettings(store, scope, enforcementActive, liveContained(scope)),
             };
           }
-          return sessionSettings(store, scope, enforcementActive, liveContained(scope));
+          return { ...sessionSettings(store, scope, enforcementActive, liveContained(scope)), grant: grant(reloaded) };
         }
-        return globalSettings(store, enforcementActive);
+        // A global add reloads nothing at all, by design (`plugin-egress.ts`).
+        return { ...globalSettings(store, enforcementActive), grant: grant(false) };
       },
     );
 

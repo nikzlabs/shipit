@@ -1,9 +1,22 @@
 import { useState } from "react";
-import { WarningIcon, PlugsIcon, KeyIcon, GlobeIcon } from "@phosphor-icons/react";
+import {
+  WarningIcon,
+  PlugsIcon,
+  KeyIcon,
+  GlobeIcon,
+  CheckCircleIcon,
+  ClockClockwiseIcon,
+  XIcon,
+  CircleNotchIcon,
+} from "@phosphor-icons/react";
 import { ICON_SIZE } from "../design-tokens.js";
 import { usePluginReposStore, type PluginHostGrantScope } from "../stores/plugin-repos-store.js";
 import { useUiStore } from "../stores/ui-store.js";
+import { useSessionStore } from "../stores/session-store.js";
+import { useApi, ApiError } from "../hooks/useApi.js";
 import type { PluginRepoCardView } from "../../server/shared/plugin-repos.js";
+import type { EgressHostGrantOutcome } from "../../server/shared/types.js";
+import { summarizeEgressGrant } from "./egress-grant-summary.js";
 import { RichErrorText } from "./PrLifecycleCard/RichErrorText.js";
 
 /**
@@ -101,6 +114,14 @@ function PluginRepoCard({
     (u.hosts ?? []).filter((h) => h.allowed).map((h) => ({ alias: u.alias, host: h.host })),
   );
   const needCount = missingKeys.length + blockedHosts.length;
+  // planning#376 — what the last grant on THIS card took effect on, and the
+  // failure if it had one. Both live here rather than in the row that made the
+  // grant because the row unmounts on the way out: a success removes the gap the
+  // snapshot reported, and so does the 503 "saved, but the live refresh failed
+  // closed" — the host is durably allowed there too. An account left on the row
+  // goes with it, which is exactly the silence the issue records.
+  const [grant, setGrant] = useState<EgressHostGrantOutcome | null>(null);
+  const [failedHost, setFailedHost] = useState<string | null>(null);
   return (
     <div className="rounded-lg border border-(--color-border-primary) bg-(--color-bg-secondary) overflow-hidden">
       <div className="flex flex-wrap items-center gap-2 border-b border-(--color-border-primary) px-3 py-2 text-sm">
@@ -221,8 +242,49 @@ function PluginRepoCard({
           with the two scopes the requirement names. The declaration itself
           granted nothing: pressing one of these is the deliberate user act. */}
       {blockedHosts.map((need) => (
-        <HostNeedRow key={`${need.alias}:${need.host}`} alias={need.alias} host={need.host} />
+        <HostNeedRow
+          key={`${need.alias}:${need.host}`}
+          alias={need.alias}
+          host={need.host}
+          onGranted={(outcome) => {
+            setFailedHost(null);
+            setGrant(outcome);
+          }}
+          onFailed={(host) => {
+            setGrant(null);
+            setFailedHost(host);
+          }}
+        />
       ))}
+
+      {grant && <HostGrantOutcomeRow grant={grant} onDismiss={() => setGrant(null)} />}
+
+      {failedHost && (
+        <div
+          className="flex flex-wrap items-start gap-2 border-t border-(--color-border-primary) px-3 py-2 text-sm"
+          data-testid="plugin-host-grant-failed"
+        >
+          <WarningIcon size={ICON_SIZE.SM} className="mt-0.5 flex-none text-(--color-error)" />
+          <p className="min-w-0 flex-1 break-words text-(--color-text-secondary)">
+            {/* Deliberately covers both failures with one true sentence: the
+                route answers 503 for "saved, but the live refresh failed
+                closed", and the browser cannot tell that from a write that
+                never landed. */}
+            <RichErrorText
+              text={`Allowing \`${failedHost}\` failed. It may have been saved without the live refresh — check Settings → Network egress, then try again.`}
+              links={false}
+            />
+          </p>
+          <button
+            type="button"
+            onClick={() => setFailedHost(null)}
+            aria-label="Dismiss"
+            className="ml-auto flex-none text-(--color-text-tertiary) hover:text-(--color-text-primary) transition-[color] duration-(--duration-fast)"
+          >
+            <XIcon size={ICON_SIZE.SM} />
+          </button>
+        </div>
+      )}
 
       {repo.issues.map((issue, i) => (
         <div
@@ -295,22 +357,36 @@ function PluginRepoCard({
  * covers differs per execution surface (a plugin service rides the session's
  * containment, a companion-CLI invocation container has its own network), and
  * an allowlist entry is the fact both scopes are about either way.
+ *
+ * planning#376 — the OUTCOME is reported after the click, by the card
+ * (`onGranted`), rather than predicted in these tooltips. The two scopes behave
+ * very differently and only the server knows which reload it ran.
  */
-function HostNeedRow({ alias, host }: { alias: string; host: string }) {
+function HostNeedRow({
+  alias,
+  host,
+  onGranted,
+  onFailed,
+}: {
+  alias: string;
+  host: string;
+  onGranted: (outcome: EgressHostGrantOutcome) => void;
+  onFailed: (host: string) => void;
+}) {
   const allowHost = usePluginReposStore((s) => s.allowHost);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
   const grant = async (scope: PluginHostGrantScope) => {
     setBusy(true);
-    setError(null);
     try {
-      await allowHost(host, scope);
+      const outcome = await allowHost(host, scope);
+      if (outcome) onGranted(outcome);
     } catch {
-      // The snapshot was refetched regardless (the store's `finally`), so the
-      // row disappears if the host landed anyway — this only speaks for the
-      // case where it did not.
-      setError("Could not add it to the allowlist. Try again, or add it in Settings → Network egress.");
+      // Reported to the CARD, not kept here: the snapshot is refetched either
+      // way, and on the 503 "saved, but the live refresh failed closed" the host
+      // is durably allowed — so this row unmounts and a message on it would go
+      // with it, silently (planning#376).
+      onFailed(host);
     } finally {
       setBusy(false);
     }
@@ -327,22 +403,123 @@ function HostNeedRow({ alias, host }: { alias: string; host: string }) {
         <span className="font-medium">{alias}</span> declares it
       </span>
       <span className="ml-auto flex flex-none items-center gap-2">
+        {/* Both tooltips state only WHERE the entry lands, which is a fact
+            about the write. Neither predicts which surfaces end up live: the
+            old "a running service may need a restart to pick it up" was wrong
+            in both directions (the agent is equally stale; a plugin's own
+            command container is created per invocation and is allowed at once),
+            and any replacement guess would be wrong for an unenforced
+            deployment, an Open session, or one with no container. That answer
+            is now reported after the click, from the server (planning#376). */}
         <CardAction
           disabled={busy}
-          title="Add it to this session's allowlist. Applies immediately."
+          title="Add it to this session's allowlist — this session only. What it took effect on is reported here afterwards."
           onClick={() => void grant("session")}
         >
           Allow for session
         </CardAction>
         <CardAction
           disabled={busy}
-          title="Add it to the instance-wide allowlist, for this and future sessions. A running service may need a restart to pick it up."
+          title="Add it to the instance-wide allowlist, for this and future sessions. What it took effect on is reported here afterwards."
           onClick={() => void grant("global")}
         >
           Allow for ShipIt
         </CardAction>
       </span>
-      {error && <span className="w-full text-xs text-(--color-error)">{error}</span>}
+    </div>
+  );
+}
+
+/**
+ * planning#376 — the answer to "what did that do?", stated where the act
+ * happened. Before this the host row simply vanished on success and the only
+ * account of the difference between the two scopes was a `title` tooltip on the
+ * button you had already pressed.
+ *
+ * Every fact here comes from the server's `grant`: it ran the reload (or did
+ * not) and can see what is running, so the card reports rather than predicts —
+ * the same reason enforcement and this card read one answer.
+ *
+ * The restart is offered only when the outcome names a session to restart, and
+ * never while a turn is running: restarting the container kills the agent.
+ */
+function HostGrantOutcomeRow({
+  grant,
+  onDismiss,
+}: {
+  grant: EgressHostGrantOutcome;
+  onDismiss: () => void;
+}) {
+  const summary = summarizeEgressGrant(grant);
+  const api = useApi();
+  const agentRunning = useSessionStore((s) => s.isLoading);
+  const [restarting, setRestarting] = useState(false);
+
+  const restart = async (sessionId: string) => {
+    if (restarting || agentRunning) return;
+    setRestarting(true);
+    try {
+      await api.post(`/api/sessions/${encodeURIComponent(sessionId)}/container/restart`);
+      // Re-handshake the WS so the worker reattaches to the freshly-restarted
+      // container — the same bridge the session's own network dialog uses.
+      window.dispatchEvent(new CustomEvent("shipit:reconnect-ws"));
+      useUiStore.getState().setToast({ message: "Restarting the container to apply the allowlist" });
+      onDismiss();
+    } catch (err) {
+      const message = err instanceof ApiError ? err.message : String(err);
+      useUiStore.getState().setToast({ message: `Failed to restart container: ${message}` });
+      console.error("[plugin-hosts] restart-to-apply failed:", err);
+    } finally {
+      setRestarting(false);
+    }
+  };
+
+  return (
+    <div
+      className="flex flex-wrap items-start gap-2 border-t border-(--color-border-primary) px-3 py-2 text-sm"
+      data-testid="plugin-host-grant-outcome"
+    >
+      <span className="mt-0.5 flex-none">
+        {summary.kind === "excluded" ? (
+          <WarningIcon size={ICON_SIZE.SM} className="text-(--color-warning)" />
+        ) : summary.kind === "live-everywhere" ? (
+          <CheckCircleIcon size={ICON_SIZE.SM} className="text-(--color-success)" />
+        ) : (
+          <ClockClockwiseIcon size={ICON_SIZE.SM} className="text-(--color-text-tertiary)" />
+        )}
+      </span>
+      <div className="min-w-0 flex-1 space-y-0.5 break-words">
+        <p className="text-(--color-text-primary)">
+          <RichErrorText text={summary.headline} links={false} />
+        </p>
+        <p className="text-xs text-(--color-text-secondary)">{summary.detail}</p>
+      </div>
+      <span className="ml-auto flex flex-none items-center gap-2">
+        {summary.restartSessionId && (
+          <CardAction
+            disabled={agentRunning || restarting}
+            title={
+              agentRunning
+                ? "Wait for the current turn to finish — a restart would kill it"
+                : "Restart this session's container so the agent and its services pick up the new allowlist now"
+            }
+            onClick={() => void restart(summary.restartSessionId!)}
+          >
+            {restarting ? (
+              <CircleNotchIcon size={ICON_SIZE.XS} className="mr-1 inline animate-spin" />
+            ) : null}
+            Restart to apply now
+          </CardAction>
+        )}
+        <button
+          type="button"
+          onClick={onDismiss}
+          aria-label="Dismiss"
+          className="text-(--color-text-tertiary) hover:text-(--color-text-primary) transition-[color] duration-(--duration-fast)"
+        >
+          <XIcon size={ICON_SIZE.SM} />
+        </button>
+      </span>
     </div>
   );
 }

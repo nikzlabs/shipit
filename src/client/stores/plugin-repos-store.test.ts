@@ -217,7 +217,9 @@ describe("allowHost", () => {
   const captureFetch = (grantResponse: Response): ReturnType<typeof vi.fn> => {
     const impl = vi.fn(async (url: string) =>
       url === "/api/egress/hosts"
-        ? grantResponse
+        ? // Cloned per call: one grant response is reused across the two scopes,
+          // and a body can only be read once.
+          grantResponse.clone()
         : new Response(JSON.stringify(snapshot()), { status: 200 }),
     );
     globalThis.fetch = impl as unknown as typeof fetch;
@@ -231,7 +233,30 @@ describe("allowHost", () => {
 
     impl.mockClear();
     await usePluginReposStore.getState().allowHost("fal.run", "global");
-    expect(JSON.parse(String(impl.mock.calls[0][1].body))).toEqual({ host: "fal.run", scope: "global" });
+    // planning#376 — the session rides along for REPORTING only. The entry
+    // still lands at instance scope; the id says whose surfaces the route
+    // should report on, since a global add reaches them very differently.
+    expect(JSON.parse(String(impl.mock.calls[0][1].body))).toEqual({
+      host: "fal.run",
+      scope: "global",
+      session: "sess-a",
+    });
+  });
+
+  it("resolves with what the add took effect on, and with null when told nothing", async () => {
+    const grant = {
+      host: "fal.run",
+      scope: "global",
+      liveNow: ["new-containers"],
+      staleUntilRestart: ["agent", "services"],
+      restartSessionId: "sess-a",
+      excludedBySessionPolicy: false,
+    };
+    captureFetch(new Response(JSON.stringify({ grant }), { status: 200 }));
+    expect(await usePluginReposStore.getState().allowHost("fal.run", "global")).toEqual(grant);
+
+    captureFetch(new Response("{}", { status: 200 }));
+    expect(await usePluginReposStore.getState().allowHost("fal.run", "global")).toBeNull();
   });
 
   it("refetches the snapshot afterwards, so the card stops naming a closed gap", async () => {
