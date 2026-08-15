@@ -315,6 +315,18 @@ describe("runPluginCommand — the container it builds", () => {
     // that no longer described it. `install` is the one writer, and it runs
     // before publication.
     expect(mountFor(host, "/plugin")?.ReadOnly).toBe(true);
+    // …and `/project` is the exact opposite, asserted here rather than left to
+    // the absence of a flag, because it is the sentence `shipit-docs/plugins.md`
+    // now makes to agents: a plugin CAN write this project's files, and the
+    // project's own files are NOT a containment boundary. The page said the
+    // reverse until nikzlabs/shipit#2298 — "containment means a plugin cannot
+    // write the project's repository" — while the mount below had always been
+    // read-write, which is a security claim overstating the guarantee rather
+    // than a stale line. A future change that flips this to read-only would make
+    // the page true again and break reqs 21 and 26 (a plugin's durable output IS
+    // the project workspace) with nothing else noticing, so the writability is
+    // pinned as deliberately as the generation's read-onlyness above.
+    expect(mountFor(host, "/project")?.ReadOnly).toBe(false);
     expect(mountFor(host, "/plugin-state")).toMatchObject({
       Type: "bind", Source: path.join(sessionDir, "plugin-data", "reqs", "state"),
     });
