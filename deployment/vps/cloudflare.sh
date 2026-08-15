@@ -278,6 +278,25 @@ else
   systemctl enable --now cloudflared
 fi
 
+# planning#378 — the orchestrator must answer to $DOMAIN.
+#
+# The origin guard proves a request's `Host` is ShipIt's own from the name's own
+# shape, which needs no configuration for every loopback / tailnet / MagicDNS /
+# sslip.io name (docs/254). A public domain is the one shape it cannot prove:
+# nothing about "$DOMAIN" distinguishes it from a name a DNS-rebinding attacker
+# owns, and cloudflared passes the browser's `Host` straight through. deploy.sh
+# and restart.sh derive SHIPIT_ALLOWED_ORIGINS from the DOMAIN in setup.conf,
+# which was just written above — but that only reaches the orchestrator when its
+# container is recreated, and setup.sh runs deploy.sh BEFORE this script. So on
+# a fresh install the stack is already up with the variable unset, and the
+# domain would be refused until something else happened to restart it.
+# restart.sh re-sources the env, re-derives, and recreates only the
+# orchestrator, with no rebuild.
+if docker compose -f /opt/shipit/deployment/vps/docker-compose.yml ps -q shipit 2>/dev/null | grep -q .; then
+  echo "==> Restarting ShipIt so it answers to $DOMAIN..."
+  bash /opt/shipit/deployment/vps/restart.sh
+fi
+
 echo ""
 echo "==========================================="
 echo "  Cloudflare access configured"

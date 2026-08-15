@@ -22,6 +22,27 @@ if [ -f "$SHIPIT_ENV_FILE" ]; then
   set +a
 fi
 
+# planning#378 — the hostname the orchestrator answers to.
+#
+# api-origin-guard.ts refuses a request whose `Host` it cannot prove is ShipIt's
+# own, which closes DNS rebinding. Every hostname docs/254 supports proves itself
+# from its own shape (an IP literal, `*.ts.net`, an sslip.io name), so a loopback
+# or tailnet install configures nothing. A **public domain** cannot: nothing about
+# `shipit.example.com` distinguishes it from a name an attacker bought.
+#
+# So it is derived from the domain the operator already gave setup.sh /
+# cloudflare.sh, rather than asked for a second time. Deriving it HERE rather
+# than writing it once at setup time is what covers the installs that already
+# exist: they update through update.sh -> deploy.sh and would otherwise start
+# refusing their own domain, having never been asked anything. An explicit
+# SHIPIT_ALLOWED_ORIGINS in the env file always wins.
+if [ -z "${SHIPIT_ALLOWED_ORIGINS:-}" ] && [ -f /etc/shipit/setup.conf ]; then
+  SHIPIT_SETUP_DOMAIN="$(sed -n 's/^DOMAIN="\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' /etc/shipit/setup.conf | tail -n1)"
+  if [ -n "$SHIPIT_SETUP_DOMAIN" ]; then
+    export SHIPIT_ALLOWED_ORIGINS="https://$SHIPIT_SETUP_DOMAIN"
+  fi
+fi
+
 # docs/113 Phase 1 — do NOT kill session-worker or compose service containers
 # here. Updates replace ONLY the orchestrator; running sessions (and any agent
 # turns mid-flight inside them) survive and the new orchestrator re-adopts them

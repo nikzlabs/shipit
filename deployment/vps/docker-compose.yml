@@ -99,6 +99,18 @@ services:
       # docs/241 — hard admission cap for explicit always-on preview
       # reservations. Empty uses the in-code default of one per deployment.
       - MAX_KEEP_PREVIEW_RUNNING=${MAX_KEEP_PREVIEW_RUNNING:-}
+      # planning#370 / planning#378 — the hostnames this deployment answers to.
+      # api-origin-guard.ts derives every hostname docs/254 supports from the
+      # name's own shape (an IP literal, a reserved TLD, an sslip.io name), so
+      # loopback / tailnet / MagicDNS installs leave this empty. A **public
+      # domain** cannot be derived — nothing about `shipit.example.com` says it
+      # is ours rather than a DNS-rebinding attacker's — so the domain in front
+      # of ShipIt must be named here. cloudflare.sh writes it from the domain
+      # the operator already gave it; this line is what carries it into the
+      # container, exactly like OVERLAY_DEP_STORE below. Without it the variable
+      # is read from a process env it never reaches, and the setting silently
+      # does nothing.
+      - SHIPIT_ALLOWED_ORIGINS=${SHIPIT_ALLOWED_ORIGINS:-}
       # Overlay dep store (docs/183) — opt-in passthrough for the canary soak.
       # The orchestrator reads OVERLAY_DEP_STORE from its own process env;
       # without this line, exporting the flag on the host (per the runbook in

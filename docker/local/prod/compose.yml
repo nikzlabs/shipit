@@ -58,6 +58,13 @@ services:
       # opt-out (SESSION_EGRESS_ENFORCE=0) when this host can't run the sidecar.
       - SESSION_EGRESS_SIDECAR_IMAGE=shipit-egress-sidecar:prod
       - SESSION_EGRESS_ENFORCE=${SESSION_EGRESS_ENFORCE:-}
+      # planning#370 / planning#378 — extra hostnames/origins this install answers
+      # to. Empty for every documented local path: loopback, a tailnet IP, a
+      # MagicDNS name and an sslip.io preview host are all derived from the
+      # name's own shape by api-origin-guard.ts. Needed only if you point an
+      # owned domain at this machine, since a registrable name proves nothing.
+      # Set it in ~/.shipit/.shipit.env, which lib.sh sources before `up`.
+      - SHIPIT_ALLOWED_ORIGINS=${SHIPIT_ALLOWED_ORIGINS:-}
     networks:
       - shipit-prod
 

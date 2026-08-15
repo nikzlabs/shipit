@@ -89,12 +89,29 @@ See [`docs/254-local-bind-and-tailnet-access`](../docs/254-local-bind-and-tailne
 
 However you reach it, `/api/*` and `/ws/*` accept browser requests only from ShipIt's own
 origin — the one in the address bar, whatever hostname that is (loopback, a tailnet IP, a
-MagicDNS name, your domain). Nothing to configure: it is derived per request. Set
-`SHIPIT_ALLOWED_ORIGINS` (comma-separated) **only** if your reverse proxy rewrites the `Host`
-header to an internal name, which would otherwise make the browser's own requests look
-cross-origin. Caddy, Cloudflare and the Tailscale forwarder all preserve `Host`, so the
-supported setups need nothing. Write the scheme (`https://shipit.example.com`) and it is
-matched exactly; write a bare `host:port` and either scheme is accepted.
+MagicDNS name, your domain). Nothing to configure: it is derived per request. Browser requests
+are also checked against the hostname they arrived at, so a name an attacker owns cannot be
+re-pointed at your instance to borrow your browser (DNS rebinding). That check needs no
+configuration either for any hostname this page describes — an IP literal, `localhost`,
+`*.ts.net`, `*.internal`, `*.home.arpa` and `<dashed-ip>.sslip.io` all prove themselves. (An mDNS
+`*.local` name does not: any host on your link can claim one and re-point it, so declare it if
+you use one.)
+
+Set `SHIPIT_ALLOWED_ORIGINS` (comma-separated) in two cases:
+
+- **You point your own domain at ShipIt.** A registrable name proves nothing about who owns it,
+  so it has to be declared. The VPS scripts do this for you from the domain you gave `setup.sh`
+  or `cloudflare.sh` — including on installs that already exist, since `deploy.sh` re-derives it
+  on every update. A hand-rolled reverse proxy (Caddy, nginx, Traefik) or a domain pointed at a
+  local/tailnet install needs the line. If you miss it, ShipIt logs
+  `[origin-guard] refused an API request whose Host is "…"` and every API call answers 403 with
+  the same hint — it does not fail silently.
+- **Your reverse proxy rewrites the `Host` header** to a name other than the browser's, which
+  would otherwise make the browser's own requests look cross-origin. Cloudflare and the
+  Tailscale forwarder both preserve `Host`, so this is rare.
+
+Write the scheme (`https://shipit.example.com`) and it is matched exactly for the cross-origin
+rule; write a bare `host:port` and either scheme is accepted. Either form declares the hostname.
 
 Day-to-day, from your checkout (default `~/.shipit`):
 
@@ -344,6 +361,8 @@ Requirements and caveats:
 #### Optional — an owned wildcard domain (real HTTPS)
 
 For HTTPS instead of HTTP, point a wildcard DNS record you control (`*.shipit-tail.example.com`) at the node's Tailscale IP and open ShipIt through that hostname — real wildcard TLS via DNS-01, at the cost of owning a domain and a DNS provider.
+
+A domain you own is the one hostname shape ShipIt cannot prove is its own, so **declare it**: put `SHIPIT_ALLOWED_ORIGINS=https://shipit-tail.example.com` in `/etc/shipit/shipit.env` and re-run `deploy.sh`. Without it the app loads and every API call answers 403 (see *Network exposure* above). The sslip.io and MagicDNS URLs need nothing.
 
 For unattended setup, provide an auth key:
 

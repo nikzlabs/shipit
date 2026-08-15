@@ -59,12 +59,18 @@ function request(
 }
 
 /** Resolves to the close code (or `"open"` when the handshake succeeded). */
-function dialWs(port: number, sessionId: string, origin?: string): Promise<number | "open"> {
+function dialWs(
+  port: number,
+  sessionId: string,
+  origin?: string,
+  /** Overrides the `Host` header — how a rebound handshake reaches us. */
+  host?: string,
+): Promise<number | "open"> {
   return new Promise((resolve, reject) => {
-    const ws = new WebSocket(
-      `ws://127.0.0.1:${port}/ws/sessions/${sessionId}`,
-      origin ? { origin } : {},
-    );
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/ws/sessions/${sessionId}`, {
+      ...(origin ? { origin } : {}),
+      ...(host ? { headers: { Host: host } } : {}),
+    });
     const timer = setTimeout(() => { ws.terminate(); reject(new Error("ws dial timed out")); }, 5000);
     ws.on("open", () => {
       clearTimeout(timer);
@@ -253,5 +259,103 @@ describe("Integration: browser-origin boundary on the orchestrator API", () => {
 
   it("refuses a WebSocket upgrade from an unrelated site", async () => {
     await expect(dialWs(port, sessionId, "https://evil.example")).resolves.toBe(403);
+  });
+
+  // -------------------------------------------------------------------------
+  // DNS rebinding (planning#378)
+  //
+  // The attacker's page is served from a name they control which has since
+  // re-resolved to this instance. Every request below is genuinely SAME ORIGIN
+  // — that is the point — so the whole boundary above passes it. The socket is
+  // the same one the real browser would dial; only the `Host` differs.
+  // -------------------------------------------------------------------------
+
+  const REBOUND = "rebind.evil.example";
+
+  it("refuses a rebound read", async () => {
+    const res = await request(port, "/api/bootstrap", {
+      headers: {
+        Host: `${REBOUND}:${port}`,
+        Origin: `http://${REBOUND}:${port}`,
+        "Sec-Fetch-Site": "same-origin",
+      },
+    });
+    expect(res.status).toBe(403);
+    expect(res.headers["access-control-allow-origin"]).toBeUndefined();
+  });
+
+  it("refuses a rebound write", async () => {
+    const res = await request(port, `/api/sessions/${sessionId}`, {
+      method: "DELETE",
+      headers: {
+        Host: `${REBOUND}:${port}`,
+        Origin: `http://${REBOUND}:${port}`,
+        "Sec-Fetch-Site": "same-origin",
+      },
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it("refuses a rebound GET that sends no Origin, as a same-origin GET does", async () => {
+    const res = await request(port, "/api/bootstrap", {
+      headers: { Host: `${REBOUND}:${port}`, "Sec-Fetch-Site": "same-origin" },
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it("refuses a rebound GET that sends no browser headers AT ALL", async () => {
+    // The one that matters, and the one an earlier draft let through (found in
+    // review). A same-origin `GET` omits `Origin`, and Fetch Metadata is
+    // appended only for a *potentially trustworthy* URL — which
+    // `http://rebind.evil.example` is not, because trustworthiness is judged on
+    // the URL's own host string rather than on what it resolves to. So the real
+    // browser request has neither marker and looks exactly like the session
+    // container's CLI below. The `Host` is the only thing telling them apart.
+    const res = await request(port, "/api/bootstrap", {
+      headers: { Host: `${REBOUND}:${port}` },
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it("refuses a rebound SSE stream", async () => {
+    const res = await request(port, "/api/events", {
+      headers: {
+        Host: `${REBOUND}:${port}`,
+        Origin: `http://${REBOUND}:${port}`,
+        "Sec-Fetch-Site": "same-origin",
+      },
+    });
+    expect(res.status).toBe(403);
+  });
+
+  it("refuses a rebound WebSocket upgrade", async () => {
+    await expect(
+      dialWs(port, sessionId, `http://${REBOUND}:${port}`, `${REBOUND}:${port}`),
+    ).resolves.toBe(403);
+  });
+
+  it("keeps a loopback instance reachable at every spelling docs/254 supports", async () => {
+    // The regression that would matter most: the fix must not cost the user
+    // their own instance. Each of these is a name this very server is
+    // legitimately reached at, and none of them is configured anywhere.
+    for (const host of [
+      `127.0.0.1:${port}`,
+      `localhost:${port}`,
+      `[::1]:${port}`,
+      `100.83.12.47:${port}`,          // a tailnet address
+      `100-83-12-47.sslip.io:${port}`, // the sslip.io preview host
+      `shipit.tail1a2b3c.ts.net:${port}`, // MagicDNS
+    ]) {
+      const res = await request(port, "/api/bootstrap", {
+        headers: { Host: host, Origin: `http://${host}`, "Sec-Fetch-Site": "same-origin" },
+      });
+      expect({ host, status: res.status }).toEqual({ host, status: 200 });
+    }
+  });
+
+  it("keeps a WebSocket working at a tailnet address and a MagicDNS name", async () => {
+    for (const host of [`100.83.12.47:${port}`, `shipit.tail1a2b3c.ts.net:${port}`]) {
+      await expect(dialWs(port, sessionId, `http://${host}`, host)).resolves.toBe("open");
+    }
   });
 });
