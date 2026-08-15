@@ -640,10 +640,16 @@ function refuseModelAwayFromRolesService(
   const offered = [...new Set(elsewhere.map((c) => `${c.serviceId}/${c.billingMode}`))].join(", ");
   throw new ServiceError(
     400,
+    // Says "a service or billing mode you did not name" rather than "the role's
+    // service", because the caller may well have named one of the two: a role on
+    // DeepSeek invoked with `--service zai --model glm-5.2[1m]` is refused for
+    // the *billing mode*, which came from the role, on a service the caller
+    // moved itself. Naming the wrong half in the explanation would send the
+    // reader looking at a parameter they had already set correctly.
     `${service?.name ?? params.serviceId} does not offer "${params.modelId}" on the `
-      + `"${params.billingMode}" billing mode, and the role's service is not moved to follow an `
-      + `overridden model. Name ${remedy.flags.join(" and ")} as well — "${params.modelId}" is `
-      + `offered on ${offered}.`,
+      + `"${params.billingMode}" billing mode. Overriding the model does not move a service or `
+      + `billing mode you did not name — that came from the role. Name `
+      + `${remedy.flags.join(" and ")} as well; "${params.modelId}" is offered on ${offered}.`,
   );
 }
 

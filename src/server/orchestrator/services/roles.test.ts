@@ -405,7 +405,53 @@ describe("resolveRoleByName — a pinned role (reqs 6, 7, 10)", () => {
         CLAUDE_IMPLEMENTER,
         deps([pinnedRole("deep-dive", DEEPSEEK_ON_CLAUDE)]),
       ),
-    ).toThrow(/Name --service as well .* offered on anthropic\/sub, anthropic\/key/s);
+    ).toThrow(/Name --service as well; .* offered on anthropic\/sub, anthropic\/key/s);
+  });
+
+  /**
+   * **Closes the loop the refusal opens**: doing exactly what the message says —
+   * adding the one flag it named, and nothing else — has to work. Asserted
+   * separately from the "names the service alongside it" test below, which
+   * supplies *both* halves of the location and so cannot show that the suggested
+   * `--service` alone is sufficient.
+   *
+   * The billing mode still comes from the role, which is the point: `key` was
+   * never overridden and is not moved.
+   */
+  it("resolves once the caller adds the --service the refusal asked for", async () => {
+    const { resolveRoleByName } = await import("./roles.js");
+    const target = resolveRoleByName(
+      "deep-dive",
+      { serviceId: "anthropic", modelId: "claude-opus-5" },
+      CLAUDE_IMPLEMENTER,
+      deps([pinnedRole("deep-dive", DEEPSEEK_ON_CLAUDE)]),
+    );
+    expect(target.selection).toEqual({
+      serviceId: "anthropic",
+      billingMode: "key",
+      modelId: "claude-opus-5",
+    });
+  });
+
+  /**
+   * The refusal names a flag only where naming it would help. A caller that has
+   * already said the whole location has nothing left to add, so the message is
+   * the **shared validator's** — the one a Settings save reports too — rather
+   * than advice to restate a flag they set.
+   */
+  it("leaves a fully-named but incoherent location to the shared validator", async () => {
+    const { resolveRoleByName } = await import("./roles.js");
+    const attempt = () =>
+      resolveRoleByName(
+        "deep-dive",
+        { serviceId: "anthropic", billingMode: "sub", modelId: "deepseek-v4-flash" },
+        CLAUDE_IMPLEMENTER,
+        deps([pinnedRole("deep-dive", DEEPSEEK_ON_CLAUDE)]),
+      );
+    expect(attempt).toThrow(
+      /cannot run: No model "deepseek-v4-flash" is offered by anthropic on the "sub" billing mode\./,
+    );
+    expect(attempt).not.toThrow(/Name --/);
   });
 
   /**
@@ -478,16 +524,27 @@ describe("resolveRoleByName — a pinned role (reqs 6, 7, 10)", () => {
     ).toThrow(/cannot run/);
   });
 
-  it("refuses an override naming a model no service offers", async () => {
+  /**
+   * The other fall-through: no service offers the model **at all**, so naming
+   * `--service` would not help and pointing at one would be false.
+   *
+   * Asserted against the shared validator's exact message rather than a loose
+   * `/No model/`, which the old relocating `locateModel` also matched — the
+   * looser form could not tell which of the two produced the refusal.
+   */
+  it("refuses an override naming a model no service offers, without suggesting a flag", async () => {
     const { resolveRoleByName } = await import("./roles.js");
-    expect(() =>
+    const attempt = () =>
       resolveRoleByName(
         "deep-dive",
         { modelId: "no-such-model" },
         CLAUDE_IMPLEMENTER,
         deps([pinnedRole("deep-dive", DEEPSEEK_ON_CLAUDE)]),
-      ),
-    ).toThrow(/No model "no-such-model"/);
+      );
+    expect(attempt).toThrow(
+      /cannot run: No model "no-such-model" is offered by deepseek on the "key" billing mode\./,
+    );
+    expect(attempt).not.toThrow(/Name --/);
   });
 
   /**
@@ -755,8 +812,12 @@ describe("resolveRoleByName — the reviewer, overridden (reqs 10, 16)", () => {
     // observable rather than a no-op.
     const ranked = resolveRoleByName("reviewer", {}, CLAUDE_IMPLEMENTER, deps());
     expect(ranked.selection.serviceId).toBe("deepseek");
-    // Only the model is named. `claude-opus-5` lives on Anthropic and nowhere
-    // else, so honouring it means moving the service the ranking had chosen.
+    // A PARTIAL override, so it cannot take the complete-override shortcut and
+    // genuinely completes from the ranked winner. The harness is named alongside
+    // the model to keep the tuple carryable whichever harness the ranking picked;
+    // neither the service nor the billing mode is named, and those are what the
+    // assertion is about. `claude-opus-5` lives on Anthropic and nowhere else, so
+    // honouring it means moving the service the ranking had chosen.
     const moved = resolveRoleByName(
       "reviewer",
       { harnessId: "claude", modelId: "claude-opus-5" },
