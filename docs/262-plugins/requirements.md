@@ -262,7 +262,14 @@ receipts below keep the original "tools" vocabulary of the early rounds.
     the damage a repository can do if it turns hostile or is compromised
     upstream: it cannot read the credentials ShipIt uses to fetch
     repositories, cannot reach the host or ShipIt's own controls, and cannot
-    write the project's repository (req 7). What containment cannot limit is
+    modify its own source (req 7). **It can write the consuming project's
+    files, and that is a purpose rather than a leak** — a plugin that
+    generates, formats or records into the project is the ordinary case, and
+    req 26's settings exist precisely to tell it where (reqs 18, 21). So the
+    project's own files are NOT a containment boundary and must never be
+    described as one: what a plugin writes there is as untrusted as what it
+    prints, and is the user's to review like any other change. What
+    containment cannot limit is
     what a plugin **tells the agent to do**: its agent instructions are
     instructions the agent follows (req 22), its companion CLIs' output is
     material the agent reads and may act on (req 17), and the pages its
@@ -345,6 +352,23 @@ ever saying the second.
 answer's date and the words that settled it.
 
 ## Resolved questions
+
+- **2026-08-15 — May a plugin write the consuming project?** Raised from
+  outside this repository: an agent building a plugin found that everything its
+  plugin does after a confirmed run writes into the project — files, records,
+  bindings — and that reqs 3, 15 and 26 are about exactly that, while req 29 and
+  `plugins.md` both said containment means a plugin "cannot write the project's
+  repository". It noted, correctly, that the mount it measured was read-write,
+  that both could not be true, and that **self-use cannot settle it because its
+  rules differ by design** (req 27). The user answered: **"plugins should be
+  able to write to the user repo, that is their purpose."** Req 29 now says so
+  in its own words. Two things were wrong rather than merely unstated: the claim
+  itself, and its citation — req 7 makes the PLUGIN's checkout read-only and says
+  nothing about the project's repository, so it never supported the sentence
+  resting on it. Requirements 26 and 29 had also contradicted each other in this
+  file since req 29 was written, with req 26 already describing a plugin reading
+  and writing its durable output in the project workspace. Reported by a user as
+  `nikzlabs/shipit#2298` finding 3.
 
 - **2026-08-14 — Under `repo: self`, does the plugin's declared `install`
   run?** Raised by the self-use slice: req 27's enumeration of what self-use
