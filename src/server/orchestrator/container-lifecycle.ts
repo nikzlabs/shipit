@@ -43,6 +43,7 @@ import {
   chownToSessionWorker,
   handWorkspaceBackToWorker,
   reconcileDepDirCacheOwnership,
+  sessionWorkerUid,
 } from "./session-worker-uid.js";
 import { buildTierAEgressInputs, installEgressFirewall } from "./egress-firewall-install.js";
 import {
@@ -231,6 +232,67 @@ export const JAVA_HOME = "/opt/java";
  * leaving this mount empty and breaking cross-session sharing (canary 2026-06-12).
  */
 export const PNPM_STORE_CONTAINER_PATH = "/workspace/.pnpm-store";
+
+/**
+ * Create the shared pnpm store dir on the host and hand it to the session-worker
+ * UID, before any container mounts it. Returns whether the store is safe to
+ * mount — `false` means the caller must drop the mount (planning#2286).
+ *
+ * The chown is the load-bearing half. Every OTHER writable mount is handed over
+ * by the entrypoint's chown loop (`docker/session-worker/entrypoint.sh`), which
+ * stamps a `.shipit-uid-<uid>` sentinel into each one. The pnpm store is not in
+ * that loop and cannot be: it is mounted NESTED at `/workspace/.pnpm-store`, so
+ * it is only ever chowned as collateral of the `chown -R /workspace` walk — and
+ * that walk is sentinel-gated on the WORKSPACE, whose sentinel is stamped on the
+ * session's first boot. The walk does traverse the nested mount, so a store that
+ * is already mounted at that first boot gets handed over; what the loop never
+ * does is REVISIT the store once the workspace sentinel exists. A store dir
+ * created after that boot — a container recreated post-idle, a runtime-key
+ * rotation, a janitor sweep that reclaimed the previous store — is therefore
+ * never walked, and stays `root:root` from this very `mkdirSync`. The agent runs
+ * as `SHIPIT_SESSION_WORKER_UID` with no `sudo`, and the dir is a mount point it
+ * can neither chown nor remove, so `pnpm install` dead-ends on
+ * `EACCES: permission denied, mkdir '/workspace/.pnpm-store/…'` with no
+ * in-session recovery.
+ *
+ * Chowning here instead makes the handoff unconditional — it runs on every
+ * container create, so it also repairs a store left root-owned by an earlier
+ * build. Two properties are deliberate:
+ *
+ *  - **Verified, not best-effort.** `chownToSessionWorker` logs and swallows a
+ *    failure, which is right for the writers it was built for (a stale credential
+ *    file is repaired by the next sync). Here the same swallow would reproduce
+ *    the unrecoverable EACCES this function exists to prevent. So we re-`lstat`
+ *    and report the truth, and the caller mounts nothing it could not hand over:
+ *    pnpm then falls back to relocating its store into the workspace
+ *    (`.pnpm-store`, already in the template gitignore) — per-session and slower,
+ *    but working, which a root-owned mount is not.
+ *  - **Non-recursive.** The store's CONTENTS can only be root-owned if a *root*
+ *    worker populated them, i.e. under the legacy runtime with the variable
+ *    unset — and setting it later ROTATES the workspace sentinel, so the next
+ *    boot's `chown -R /workspace` walks the nested store and repairs them. A
+ *    store created after the sentinel exists is empty at creation and thereafter
+ *    written only by the worker. Walking a multi-gigabyte content-addressed store
+ *    on every container create would cost a visible slice of every pnpm session's
+ *    startup to repair a case the entrypoint already covers.
+ */
+export function ensurePnpmStoreDir(storeDir: string): boolean {
+  try {
+    fs.mkdirSync(storeDir, { recursive: true });
+  } catch (err) {
+    console.warn(`[containers] pnpm store mkdir failed for ${storeDir}:`, err);
+    return false;
+  }
+  const uid = sessionWorkerUid();
+  if (uid === null) return true; // legacy root runtime — the worker owns everything
+  chownToSessionWorker(storeDir);
+  try {
+    return fs.lstatSync(storeDir).uid === uid;
+  } catch (err) {
+    console.warn(`[containers] pnpm store ownership check failed for ${storeDir}:`, err);
+    return false;
+  }
+}
 
 export function buildMounts(
   config: ContainerConfig,
@@ -777,9 +839,20 @@ export async function createContainer(
     fs.mkdirSync(config.depCacheDir, { recursive: true });
   }
 
-  // docs/197 Part 2 — create the shared pnpm store dir lazily before mounting it.
-  if (config.pnpmStoreDir) {
-    fs.mkdirSync(config.pnpmStoreDir, { recursive: true });
+  // docs/197 Part 2 — create the shared pnpm store dir lazily before mounting it,
+  // and hand it to the worker uid (planning#2286). A store we could not hand over
+  // must not be mounted at all: a root-owned mount point is unrecoverable from
+  // inside the container, whereas dropping it just costs the session the SHARED
+  // store — pnpm relocates into the workspace's own `.pnpm-store` instead. Drop
+  // it before `buildMounts`/`buildEnv` so the mount and `npm_config_store_dir`
+  // can never disagree about whether the store exists.
+  if (config.pnpmStoreDir && !ensurePnpmStoreDir(config.pnpmStoreDir)) {
+    console.warn(
+      `[containers] could not hand pnpm store ${config.pnpmStoreDir} to the session-worker uid; ` +
+        `skipping the shared-store mount for ${config.sessionId} — pnpm will use its own ` +
+        `per-session store (slower, still correct)`,
+    );
+    config = { ...config, pnpmStoreDir: undefined };
   }
 
   // docs/138 — create the session's private credentials subtree before the
