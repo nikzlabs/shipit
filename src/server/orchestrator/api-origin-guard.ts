@@ -100,7 +100,7 @@
  * direct tension with docs/254 — the whole point there is that one instance is
  * legitimately reached by loopback, a tailnet IP, a MagicDNS name and a domain
  * at once, with nothing to keep in sync. Left as a known residual rather than
- * half-solved; tracked separately.
+ * half-solved; tracked as planning#378.
  */
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";

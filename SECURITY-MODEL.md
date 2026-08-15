@@ -373,7 +373,7 @@ but it means **you must not expose a raw ShipIt instance to the public internet.
   it does not stop **DNS rebinding** — a name the attacker controls that re-resolves to a
   loopback / tailnet instance yields a page whose origin *is* the host the request arrives at.
   Closing that needs an allowlist of hostnames ShipIt answers to, which is in tension with
-  docs/254's "one instance, many legitimate hostnames"; it is a known residual.
+  docs/254's "one instance, many legitimate hostnames"; it is a known residual (planning#378).
 
 ## Known limitations and accepted risks
 
