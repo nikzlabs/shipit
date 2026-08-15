@@ -179,6 +179,35 @@ describe("Integration: browser-origin boundary on the orchestrator API", () => {
     expect(res.body).not.toContain("sessions");
   });
 
+  it("still lets an OAuth provider redirect the browser onto the MCP callback", async () => {
+    // The real route, reached the way it is actually reached: a cross-site
+    // top-level navigation with no `Origin`. A guard that refuses every
+    // cross-site request breaks MCP OAuth outright (found in review).
+    const res = await request(port, "/api/mcp-servers/oauth/callback?code=C&state=nope", {
+      headers: {
+        "Sec-Fetch-Site": "cross-site",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Dest": "document",
+      },
+    });
+    // The route rejects the unknown `state` on its own terms — what matters
+    // here is that it RAN, rather than being 403'd by the origin guard.
+    expect(res.status).not.toBe(403);
+    expect(res.headers["content-type"]).toContain("text/html");
+  });
+
+  it("does not let that exemption serve a cross-origin fetch of the same path", async () => {
+    const res = await request(port, "/api/mcp-servers/oauth/callback?code=C&state=nope", {
+      headers: {
+        Origin: "https://evil.example",
+        "Sec-Fetch-Site": "cross-site",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Dest": "empty",
+      },
+    });
+    expect(res.status).toBe(403);
+  });
+
   it("allows a session container's call, which carries no browser headers", async () => {
     const res = await request(port, "/api/bootstrap");
     expect(res.status).toBe(200);

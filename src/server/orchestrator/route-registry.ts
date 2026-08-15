@@ -511,7 +511,9 @@ export async function registerRoutes(
       // a property of how @fastify/websocket routes upgrades, not of anything
       // this code states, and the cost of being wrong about it is the whole
       // session channel.
-      if (!isWebSocketOriginAllowed(request.headers, wsOriginPolicy)) {
+      if (!isWebSocketOriginAllowed(request.headers, wsOriginPolicy, {
+        requestIsSecure: (request.headers["x-forwarded-proto"] ?? "").toString().startsWith("https"),
+      })) {
         console.warn(`[ws] refused upgrade from origin ${String(request.headers.origin)}`);
         socket.close(4403, "Cross-origin connection refused");
         return;

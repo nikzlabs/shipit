@@ -40,12 +40,16 @@
  * set neither (see {@link selfHostsFrom}), while `Origin` names the page
  * itself.
  *
- * Scheme is deliberately NOT compared. ShipIt sits behind Caddy / Cloudflare /
- * a tailnet forwarder, so the orchestrator sees plain HTTP while the browser
- * sees HTTPS; requiring a scheme match would mean trusting `x-forwarded-proto`,
- * and a proxy that sets it wrongly would break the whole product. The residual
- * — an `http://` page on the *same host* talking to the `https://` one — needs
- * an active network attacker, who has better options.
+ * Scheme is compared **one way only**. Requiring a match outright would mean
+ * depending on `x-forwarded-proto`, and a TLS-terminating proxy that fails to
+ * set it would make every request look cross-origin and take the product down.
+ * So: when we can see that the request arrived over TLS, an `http://` origin on
+ * the same host is refused — that page is not the same origin and must not be
+ * able to read the HTTPS API (review finding). When there is no TLS signal at
+ * all, scheme stays ignored, which is exactly today's behaviour and cannot
+ * break a deployment that was working. An origin written WITH a scheme in
+ * `SHIPIT_ALLOWED_ORIGINS` is matched on that scheme exactly, because there the
+ * operator said what they meant.
  *
  * ## What is guarded
  *
@@ -85,6 +89,13 @@
  * — or a wildcard-subdomain CORS rule — would have trusted exactly the attacker
  * this closes out.
  *
+ * The one exception is a route whose normal caller genuinely IS another site
+ * redirecting the browser onto it — an OAuth callback. Those opt in with
+ * `config: { crossOriginNavigation: true }`, and the exemption applies only to a
+ * `GET` top-level document navigation carrying no `Origin`, so a cross-origin
+ * `fetch()` at the same path stays refused. Refusing it outright broke MCP OAuth
+ * outright and was caught in review; see {@link isAllowedCrossSiteNavigation}.
+ *
  * ## What this is NOT
  *
  * **Not authentication.** Anything that is not a browser still reaches the API
@@ -107,16 +118,43 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import type { IncomingHttpHeaders } from "node:http";
 import { parsePreviewSubdomain } from "./preview-proxy.js";
 
+declare module "fastify" {
+  interface FastifyContextConfig {
+    /**
+     * planning#370 — this route is a legitimate **cross-site navigation** target:
+     * the browser lands on it because some other site redirected it here, so
+     * `Sec-Fetch-Site: cross-site` is the normal, correct case rather than an
+     * attack. An OAuth callback is the whole population today.
+     *
+     * Set it only on a route that is safe to reach that way ON ITS OWN — the
+     * MCP callback validates a one-time `state` it issued, so a forged landing
+     * is rejected by the route, not by this guard. The exemption is narrow: it
+     * applies only to a `GET` **top-level document navigation** that carries no
+     * `Origin`, so a cross-origin `fetch()` at the same path is still refused.
+     */
+    crossOriginNavigation?: boolean;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Policy
 // ---------------------------------------------------------------------------
 
-export interface OriginPolicy {
+export interface ConfiguredOrigin {
+  /** Lowercased `host[:port]`. */
+  host: string;
   /**
-   * Additional origins ShipIt owns, normalized to bare `host[:port]`
-   * (scheme dropped, lowercased). From `SHIPIT_ALLOWED_ORIGINS`.
+   * `"http:"` / `"https:"` when the operator wrote a scheme, else `null`.
+   * A written scheme is honoured exactly — configuring `https://x` must not
+   * quietly also trust `http://x`. A bare `host:port` matches either, since
+   * the operator expressed no preference.
    */
-  extraOrigins: string[];
+  protocol: string | null;
+}
+
+export interface OriginPolicy {
+  /** Additional origins ShipIt owns. From `SHIPIT_ALLOWED_ORIGINS`. */
+  extraOrigins: ConfiguredOrigin[];
   /**
    * The Vite dev-server port, when this process is the dev image's
    * orchestrator. `null` in every production runtime.
@@ -126,13 +164,17 @@ export interface OriginPolicy {
 
 /** Read the policy from the environment. Production supplies neither variable. */
 export function readOriginPolicyFromEnv(env: NodeJS.ProcessEnv = process.env): OriginPolicy {
-  const extraOrigins: string[] = [];
+  const extraOrigins: ConfiguredOrigin[] = [];
   for (const raw of (env.SHIPIT_ALLOWED_ORIGINS ?? "").split(",")) {
     const entry = raw.trim();
     if (!entry) continue;
     // Accept both `https://host:port` and a bare `host:port`.
-    const normalized = parseOriginHost(entry) ?? entry.toLowerCase();
-    extraOrigins.push(normalized);
+    const parsed = parseOrigin(entry);
+    extraOrigins.push(
+      parsed
+        ? { host: parsed.host, protocol: parsed.protocol }
+        : { host: entry.toLowerCase(), protocol: null },
+    );
   }
   const devPort = (env.CLIENT_DEV_PORT ?? "").trim();
   return {
@@ -151,15 +193,38 @@ export function readOriginPolicyFromEnv(env: NodeJS.ProcessEnv = process.env): O
  * an http(s) origin. `null` is always a denial: an attacker can produce an
  * opaque origin at will.
  */
-export function parseOriginHost(origin: string): string | null {
+export function parseOrigin(origin: string): { host: string; protocol: string } | null {
   if (!origin || origin === "null") return null;
   try {
     const url = new URL(origin);
     if (url.protocol !== "http:" && url.protocol !== "https:") return null;
-    return url.host.toLowerCase() || null;
+    if (!url.host) return null;
+    return { host: url.host.toLowerCase(), protocol: url.protocol };
   } catch {
     return null;
   }
+}
+
+/** {@link parseOrigin}, host only. */
+export function parseOriginHost(origin: string): string | null {
+  return parseOrigin(origin)?.host ?? null;
+}
+
+/**
+ * Whether the request reached us over TLS, as far as we can tell: the proxy's
+ * `X-Forwarded-Proto` if it set one, else the socket.
+ *
+ * Used ONLY to refuse a downgrade — an `http://` origin claiming to be the same
+ * origin as a request that arrived over `https`. It is deliberately not used to
+ * *require* a scheme match: a proxy that terminates TLS and forgets the header
+ * would then make every request look cross-origin and take the whole product
+ * down. So a deployment that sets the header gets the stricter answer and one
+ * that doesn't keeps today's behaviour, which is the safe direction for both.
+ */
+function requestIsSecure(request: FastifyRequest): boolean {
+  const forwarded = headerValue(request.headers["x-forwarded-proto"])?.split(",")[0]?.trim();
+  if (forwarded) return forwarded.toLowerCase() === "https";
+  return (request.socket as { encrypted?: boolean }).encrypted === true;
 }
 
 /** Split `host[:port]` into its parts, handling the `[::1]:3000` IPv6 form. */
@@ -214,24 +279,45 @@ export function isAllowedOrigin(
   origin: string,
   selfHosts: string[],
   policy: OriginPolicy,
+  opts: { requestIsSecure?: boolean } = {},
 ): boolean {
-  const originHost = parseOriginHost(origin);
-  if (!originHost) return false;
+  const parsed = parseOrigin(origin);
+  if (!parsed) return false;
+  const { host: originHost, protocol } = parsed;
+
+  // Refuse a downgrade: an `http://` page is NOT the same origin as an `https://`
+  // one, and treating it as such would let a page served over plain HTTP on the
+  // same name read the HTTPS API. Only applied when we can tell we are on TLS
+  // (see `requestIsSecure`).
+  if (opts.requestIsSecure && protocol === "http:") return false;
 
   if (selfHosts.includes(originHost)) return true;
 
-  if (policy.extraOrigins.includes(originHost)) return true;
+  if (policy.extraOrigins.some(
+    (e) => e.host === originHost && (e.protocol === null || e.protocol === protocol),
+  )) return true;
 
-  // The dev client: same hostname, the one configured Vite port.
+  // The dev client: same hostname, the one configured Vite port. Loopback
+  // spellings count as the same hostname — the developer may have opened Vite
+  // at `127.0.0.1:3000` while `VITE_API_HOST` says `localhost:3001`, and those
+  // are the same machine by every meaning that matters here. Dev-only: the
+  // whole branch is inert unless `CLIENT_DEV_PORT` is set.
   if (policy.devClientPort) {
     const wanted = splitHostPort(originHost);
     if (wanted.port === policy.devClientPort
-      && selfHosts.some((self) => splitHostPort(self).hostname === wanted.hostname)) {
+      && selfHosts.some((self) => sameDevHostname(splitHostPort(self).hostname, wanted.hostname))) {
       return true;
     }
   }
 
   return false;
+}
+
+const LOOPBACK_NAMES = new Set(["localhost", "127.0.0.1", "[::1]", "::1"]);
+
+function sameDevHostname(a: string, b: string): boolean {
+  if (a === b) return true;
+  return LOOPBACK_NAMES.has(a) && LOOPBACK_NAMES.has(b);
 }
 
 /**
@@ -243,6 +329,27 @@ export function isAllowedOrigin(
 export function isAllowedWithoutOrigin(secFetchSite: string | undefined): boolean {
   if (!secFetchSite) return true;
   return secFetchSite === "same-origin" || secFetchSite === "none";
+}
+
+/**
+ * The one shape of cross-site request that is normal rather than hostile: the
+ * browser being redirected onto one of our routes by another site, which is how
+ * every OAuth callback arrives. Requires the route to have opted in with
+ * `config: { crossOriginNavigation: true }` AND the request to actually be a
+ * top-level document navigation — a `fetch()` to the same path is not one, and
+ * stays refused.
+ *
+ * Only reached when there is no `Origin` header, which a `GET` navigation omits.
+ */
+export function isAllowedCrossSiteNavigation(
+  method: string,
+  headers: IncomingHttpHeaders,
+  routeConfig: { crossOriginNavigation?: boolean } | undefined,
+): boolean {
+  if (routeConfig?.crossOriginNavigation !== true) return false;
+  if (method !== "GET") return false;
+  return headerValue(headers["sec-fetch-mode"]) === "navigate"
+    && headerValue(headers["sec-fetch-dest"]) === "document";
 }
 
 /** Paths the guard covers: the orchestrator's API and WebSocket surfaces. */
@@ -292,8 +399,9 @@ export function corsHeadersFor(
   origin: string | undefined,
   headers: IncomingHttpHeaders,
   policy: OriginPolicy,
+  opts: { requestIsSecure?: boolean } = {},
 ): Record<string, string> {
-  if (!origin || !isAllowedOrigin(origin, selfHostsFrom(headers), policy)) return {};
+  if (!origin || !isAllowedOrigin(origin, selfHostsFrom(headers), policy, opts)) return {};
   return {
     "Access-Control-Allow-Origin": origin,
     "Access-Control-Allow-Credentials": "true",
@@ -316,10 +424,11 @@ export function corsHeadersFor(
 export function isWebSocketOriginAllowed(
   headers: IncomingHttpHeaders,
   policy: OriginPolicy,
+  opts: { requestIsSecure?: boolean } = {},
 ): boolean {
   const origin = headers.origin;
   if (typeof origin !== "string" || origin === "") return true;
-  return isAllowedOrigin(origin, selfHostsFrom(headers), policy);
+  return isAllowedOrigin(origin, selfHostsFrom(headers), policy, opts);
 }
 
 // ---------------------------------------------------------------------------
@@ -364,7 +473,10 @@ export function registerOriginGuard(
     }
 
     const origin = request.headers.origin;
-    for (const [name, value] of Object.entries(corsHeadersFor(origin, request.headers, policy))) {
+    const secure = { requestIsSecure: requestIsSecure(request) };
+    for (const [name, value] of Object.entries(
+      corsHeadersFor(origin, request.headers, policy, secure),
+    )) {
       reply.header(name, value);
     }
     // Announce the dependency even when we send no `Access-Control-Allow-Origin`,
@@ -373,8 +485,13 @@ export function registerOriginGuard(
 
     if (isGuardedRequest(request.url, request.routeOptions?.url)) {
       const allowed = origin
-        ? isAllowedOrigin(origin, selfHostsFrom(request.headers), policy)
-        : isAllowedWithoutOrigin(headerValue(request.headers["sec-fetch-site"]));
+        ? isAllowedOrigin(origin, selfHostsFrom(request.headers), policy, secure)
+        : isAllowedWithoutOrigin(headerValue(request.headers["sec-fetch-site"]))
+          || isAllowedCrossSiteNavigation(
+            request.method,
+            request.headers,
+            request.routeOptions?.config,
+          );
       if (!allowed) {
         void reply
           .code(403)

@@ -3,6 +3,7 @@ import Fastify from "fastify";
 import {
   corsHeadersFor,
   isAllowedOrigin,
+  isAllowedCrossSiteNavigation,
   isAllowedWithoutOrigin,
   isGuardedRequest,
   isOriginGuardedPath,
@@ -89,8 +90,69 @@ describe("isAllowedOrigin", () => {
   });
 
   it("allows a configured extra origin", () => {
-    const policy: OriginPolicy = { extraOrigins: ["shipit.example.com"], devClientPort: null };
+    const policy: OriginPolicy = {
+      extraOrigins: [{ host: "shipit.example.com", protocol: null }],
+      devClientPort: null,
+    };
     expect(isAllowedOrigin("https://shipit.example.com", ["internal-upstream:4123"], policy)).toBe(true);
+    expect(isAllowedOrigin("http://shipit.example.com", ["internal-upstream:4123"], policy)).toBe(true);
+  });
+
+  it("honours a scheme the operator wrote in SHIPIT_ALLOWED_ORIGINS", () => {
+    // Configuring `https://x` must not quietly also trust `http://x`.
+    const policy: OriginPolicy = {
+      extraOrigins: [{ host: "shipit.example.com", protocol: "https:" }],
+      devClientPort: null,
+    };
+    expect(isAllowedOrigin("https://shipit.example.com", ["upstream:4123"], policy)).toBe(true);
+    expect(isAllowedOrigin("http://shipit.example.com", ["upstream:4123"], policy)).toBe(false);
+  });
+
+  it("refuses an http origin on a request that arrived over https", () => {
+    // Scheme confusion: an HTTP page on the same name is not the same origin.
+    expect(isAllowedOrigin(
+      "http://shipit.example.com", ["shipit.example.com"], BARE, { requestIsSecure: true },
+    )).toBe(false);
+    expect(isAllowedOrigin(
+      "https://shipit.example.com", ["shipit.example.com"], BARE, { requestIsSecure: true },
+    )).toBe(true);
+    // With no TLS signal, scheme stays ignored — a proxy that terminates TLS
+    // without setting `X-Forwarded-Proto` must not break the whole product.
+    expect(isAllowedOrigin(
+      "http://shipit.example.com", ["shipit.example.com"], BARE,
+    )).toBe(true);
+  });
+
+  it("treats loopback spellings as the same hostname for the dev-port rule", () => {
+    const dev: OriginPolicy = { extraOrigins: [], devClientPort: "3000" };
+    expect(isAllowedOrigin("http://127.0.0.1:3000", ["localhost:3001"], dev)).toBe(true);
+    expect(isAllowedOrigin("http://localhost:3000", ["127.0.0.1:3001"], dev)).toBe(true);
+    expect(isAllowedOrigin("http://[::1]:3000", ["localhost:3001"], dev)).toBe(true);
+    // Still not a general hostname wildcard.
+    expect(isAllowedOrigin("http://evil.example:3000", ["localhost:3001"], dev)).toBe(false);
+  });
+});
+
+describe("isAllowedCrossSiteNavigation", () => {
+  const NAV = { "sec-fetch-mode": "navigate", "sec-fetch-dest": "document" };
+
+  it("allows an opted-in route reached by a redirect from another site", () => {
+    expect(isAllowedCrossSiteNavigation("GET", NAV, { crossOriginNavigation: true })).toBe(true);
+  });
+
+  it("refuses a route that did not opt in", () => {
+    expect(isAllowedCrossSiteNavigation("GET", NAV, {})).toBe(false);
+    expect(isAllowedCrossSiteNavigation("GET", NAV, undefined)).toBe(false);
+  });
+
+  it("refuses anything that is not a top-level document GET", () => {
+    const cfg = { crossOriginNavigation: true };
+    expect(isAllowedCrossSiteNavigation("POST", NAV, cfg)).toBe(false);
+    expect(isAllowedCrossSiteNavigation("GET", { "sec-fetch-mode": "cors" }, cfg)).toBe(false);
+    expect(isAllowedCrossSiteNavigation(
+      "GET", { "sec-fetch-mode": "navigate", "sec-fetch-dest": "iframe" }, cfg,
+    )).toBe(false);
+    expect(isAllowedCrossSiteNavigation("GET", {}, cfg)).toBe(false);
   });
 });
 
@@ -103,7 +165,10 @@ describe("readOriginPolicyFromEnv", () => {
     const policy = readOriginPolicyFromEnv({
       SHIPIT_ALLOWED_ORIGINS: "https://A.example.com, b.example.com:8443 ,",
     });
-    expect(policy.extraOrigins).toEqual(["a.example.com", "b.example.com:8443"]);
+    expect(policy.extraOrigins).toEqual([
+      { host: "a.example.com", protocol: "https:" },
+      { host: "b.example.com:8443", protocol: null },
+    ]);
   });
 
   it("reads CLIENT_DEV_PORT only when it is numeric", () => {
@@ -227,6 +292,11 @@ describe("registerOriginGuard — hook behavior", () => {
     if (withPreviewProxy) markPreviewProxyRegistered(app);
     app.get("/api/bootstrap", async () => ({ ok: true }));
     app.post("/api/egress/hosts", async () => ({ ok: true }));
+    app.get(
+      "/api/mcp-servers/oauth/callback",
+      { config: { crossOriginNavigation: true } },
+      async () => ({ ok: true }),
+    );
     app.get("/anything", async () => ({ ok: true }));
     await app.ready();
     return app;
@@ -326,6 +396,72 @@ describe("registerOriginGuard — hook behavior", () => {
       headers: { host: "shipit.example.com", origin: "https://evil.example" },
     });
     expect(res.statusCode).toBe(403);
+    await app.close();
+  });
+
+  it("lets an OAuth provider redirect the browser onto the opted-in callback", async () => {
+    // The provider's redirect is a cross-site top-level navigation and is the
+    // route's ONLY normal caller. The route authenticates the landing itself
+    // (one-time `state`), which is why the exemption is safe.
+    const app = await makeApp();
+    const res = await app.inject({
+      method: "GET",
+      url: "/api/mcp-servers/oauth/callback?code=C&state=S",
+      headers: {
+        host: "shipit.example.com",
+        "sec-fetch-site": "cross-site",
+        "sec-fetch-mode": "navigate",
+        "sec-fetch-dest": "document",
+      },
+    });
+    expect(res.statusCode).toBe(200);
+    await app.close();
+  });
+
+  it("does not let the exemption become a general cross-origin hole", async () => {
+    const app = await makeApp();
+    // A cross-origin fetch() at the same path is not a navigation.
+    const fetched = await app.inject({
+      method: "GET",
+      url: "/api/mcp-servers/oauth/callback?code=C&state=S",
+      headers: {
+        host: "shipit.example.com",
+        origin: "https://evil.example",
+        "sec-fetch-site": "cross-site",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-dest": "empty",
+      },
+    });
+    expect(fetched.statusCode).toBe(403);
+
+    // And a route that did not opt in gets nothing from the navigation shape.
+    const other = await app.inject({
+      method: "GET",
+      url: "/api/bootstrap",
+      headers: {
+        host: "shipit.example.com",
+        "sec-fetch-site": "cross-site",
+        "sec-fetch-mode": "navigate",
+        "sec-fetch-dest": "document",
+      },
+    });
+    expect(other.statusCode).toBe(403);
+    await app.close();
+  });
+
+  it("refuses an http origin when the proxy says the request arrived over https", async () => {
+    const app = await makeApp();
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/egress/hosts",
+      headers: {
+        host: "shipit.example.com",
+        "x-forwarded-proto": "https",
+        origin: "http://shipit.example.com",
+      },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(res.headers["access-control-allow-origin"]).toBeUndefined();
     await app.close();
   });
 

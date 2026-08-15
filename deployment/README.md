@@ -93,7 +93,8 @@ MagicDNS name, your domain). Nothing to configure: it is derived per request. Se
 `SHIPIT_ALLOWED_ORIGINS` (comma-separated) **only** if your reverse proxy rewrites the `Host`
 header to an internal name, which would otherwise make the browser's own requests look
 cross-origin. Caddy, Cloudflare and the Tailscale forwarder all preserve `Host`, so the
-supported setups need nothing.
+supported setups need nothing. Write the scheme (`https://shipit.example.com`) and it is
+matched exactly; write a bare `host:port` and either scheme is accepted.
 
 Day-to-day, from your checkout (default `~/.shipit`):
 

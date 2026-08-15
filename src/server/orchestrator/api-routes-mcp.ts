@@ -332,6 +332,16 @@ export async function registerMcpRoutes(
 
   app.get<{ Querystring: { code?: string; state?: string; error?: string; error_description?: string } }>(
     "/api/mcp-servers/oauth/callback",
+    {
+      // planning#370 — the OAuth provider redirects the popup here, so this
+      // lands as a `Sec-Fetch-Site: cross-site` top-level navigation and the
+      // origin guard would otherwise refuse it. Safe to exempt because the
+      // route authenticates the landing itself: `state` is the one-time value
+      // this instance issued at `/oauth/start`, and an unknown one is rejected
+      // below. The exemption covers only a GET document navigation with no
+      // `Origin` — a cross-origin `fetch()` at this path is still refused.
+      config: { crossOriginNavigation: true },
+    },
     async (request, reply) => {
       const { code, state, error, error_description: errorDescription } = request.query;
       // Provider may redirect here with `?error=...` on user-cancel /
