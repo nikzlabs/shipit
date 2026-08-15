@@ -25,6 +25,7 @@ import {
   requireReviewerSlot,
   resolveReviewerPinPatch,
 } from "./reviewer-settings.js";
+import { buildRoleSettings } from "./roles.js";
 import type { ProviderAccountManager } from "../provider-account-manager.js";
 import type { SessionManager } from "../sessions.js";
 import type { SessionRunnerInterface, SessionRunnerRegistry } from "../session-runner.js";
@@ -430,7 +431,20 @@ export async function getGlobalSettings(
   // `agent_list` SSE (see `buildAgentListPayload`), which is what makes an open
   // Reviewer tab follow a credential change instead of showing the stale answer.
   const reviewers = buildReviewerSettings({ credentialStore, providerAccountManager });
-  return { canRunTurns, harnessOnboardingCompletedAt, failoverCutoffs, accountSelectionMode, gitIdentity, systemPrompt, agents, maxIdleContainers, agentSystemInstructionsEnabled, agentSystemInstructions, autoCreatePr, liveSteering, autoResolveConflicts, autoFixCi, autoResetMergedBranch, enableSubAgents, voiceDeliveryMode, voiceWebhookConfigured, providerAccounts, credentialRoutes, reviewers,
+  // docs/264 phase 1 — every role, each carrying what it resolves to, or why it
+  // cannot run. The server sends the resolution for the same reason it sends the
+  // reviewer's: which harness runs a model and which levels it declares are
+  // catalogue rules, and a second implementation in the browser is how the
+  // Settings screen starts promising something other than what runs.
+  //
+  // Always at least one entry, even with no credential store: `getRoles()`
+  // synthesizes the reviewer, so an install nobody has configured still has a
+  // role. With no store there is nothing to read at all, which is the one case
+  // that reports an empty list rather than a wrong one.
+  const roles = credentialStore
+    ? buildRoleSettings({ credentialStore, ...(providerAccountManager ? { providerAccountManager } : {}) })
+    : [];
+  return { canRunTurns, harnessOnboardingCompletedAt, failoverCutoffs, accountSelectionMode, gitIdentity, systemPrompt, agents, maxIdleContainers, agentSystemInstructionsEnabled, agentSystemInstructions, autoCreatePr, liveSteering, autoResolveConflicts, autoFixCi, autoResetMergedBranch, enableSubAgents, voiceDeliveryMode, voiceWebhookConfigured, providerAccounts, credentialRoutes, reviewers, roles,
     ...(nonTurnModel ? { nonTurnModel } : {}),
     ...(nonTurnModelResolved ? { nonTurnModelResolved } : {}) };
 }

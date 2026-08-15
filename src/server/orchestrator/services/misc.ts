@@ -130,6 +130,14 @@ export async function getBootstrapData(deps: {
           { slot: "first", source: "auto", unavailableReason: "nothing_eligible" },
           { slot: "second", source: "auto", unavailableReason: "nothing_eligible" },
         ],
+        // docs/264 req 2 — **the reviewer is always present**, including here.
+        // It is synthesized rather than stored, so its existence does not depend
+        // on the read that just failed, and asserting it costs nothing. The
+        // roles the user created are the part this cannot know, and they are
+        // simply absent: an install with six roles reports one here, which
+        // understates the list rather than contradicting the requirement that
+        // makes "review this" always resolvable.
+        roles: [{ name: "reviewer", params: { kind: "auto" }, reserved: true }],
       };
     }),
     readTailnetPreviewHost(),

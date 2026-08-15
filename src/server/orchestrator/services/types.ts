@@ -3,7 +3,7 @@
  */
 
 import type { AgentId, PermissionMode } from "../../shared/types.js";
-import type { AgentReasoningCapability, ReviewerSlotView } from "../../shared/types/agent-types.js";
+import type { AgentReasoningCapability, ReviewerSlotView, RoleView } from "../../shared/types/agent-types.js";
 import type { EligibleModel } from "../../shared/agent-registry.js";
 import type { AccountSelectionMode, CredentialRoute, FailoverCutoffs, SessionInfo, ProjectTemplate, RepoInfo, RuntimeMode } from "../../shared/types.js";
 import type { VoiceDeliveryMode } from "../../shared/types/voice-note-types.js";
@@ -171,6 +171,20 @@ export interface GlobalSettings {
    * instead of showing the answer from before.
    */
   reviewers: ReviewerSlotView[];
+  /**
+   * docs/264 phase 1 — every agent role, sorted by name, each carrying what it
+   * resolves to right now or why it cannot run.
+   *
+   * **The reviewer is always in this list**, synthesized rather than stored, so
+   * an install nobody has configured still has a role to name. It is the one
+   * entry with no `resolved`: its params are docs/261's two ranked candidate
+   * slots, which ride {@link GlobalSettings.reviewers} above, and a single
+   * resolution here would have to pick one of the two.
+   *
+   * Empty **only** when there is no credential store to read — the same "the
+   * settings read failed" state `reviewers` reports as two unresolved slots.
+   */
+  roles: RoleView[];
 }
 
 /**
@@ -182,6 +196,20 @@ export interface GlobalSettings {
  * the settings layer needs.
  */
 export type { ReviewerPinPatch, ReviewerResolved, ReviewerSlotView } from "../../shared/types/agent-types.js";
+
+/**
+ * docs/264 phase 1 — the role wire shapes, declared beside {@link ReviewerPin}
+ * in `shared/types/agent-types.ts` for the same reason: the browser renders them
+ * verbatim, so they are shared wire types rather than orchestrator-internal
+ * ones. Re-exported so this module stays the one import the settings layer needs.
+ */
+export type {
+  AgentRole,
+  RoleParams,
+  RoleResolved,
+  RoleUnavailableReason,
+  RoleView,
+} from "../../shared/types/agent-types.js";
 
 /** docs/252 phase 7 — the pinned non-turn selection, as it crosses the wire. */
 export interface NonTurnModelSelection {

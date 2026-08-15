@@ -10,13 +10,20 @@ import type {
 import type {
   AgentId,
   AccountSelectionMode,
+  AgentRole,
   CredentialBillingMode,
   CredentialRoute,
   FailoverCutoffs,
   ReviewerPin,
   ReviewerSlot,
+  RolePinnedParams,
 } from "../shared/types.js";
-import { credentialModeKey, DEFAULT_SELECTION_MODE, REVIEWER_SLOTS } from "../shared/types.js";
+import {
+  credentialModeKey,
+  DEFAULT_SELECTION_MODE,
+  RESERVED_ROLE_NAME,
+  REVIEWER_SLOTS,
+} from "../shared/types.js";
 import { DEFAULT_FAILOVER_CUTOFF } from "../shared/types.js";
 import { subscriptionWindowIsCurrent } from "../shared/types/usage-limits-types.js";
 import type { VoiceDeliveryMode } from "../shared/types/voice-note-types.js";
@@ -61,6 +68,29 @@ interface LinearTrackerConfig {
  */
 interface LegacyProviderAccountRow extends Omit<CredentialRoute, "serviceId" | "billingMode" | "via"> {
   provider: AgentId;
+}
+
+/**
+ * docs/264 — one role as it sits on disk.
+ *
+ * A **disk format**, not the domain type. Two differences from {@link AgentRole},
+ * and both are deliberate:
+ *
+ *  - **the name is the key, not a field**, which is what makes req 18's
+ *    uniqueness a property of the storage rather than a check something can
+ *    forget;
+ *  - **`params` is optional**, because the reserved reviewer key stores only its
+ *    editable metadata. Its params are `{ kind: "auto" }` by synthesis, never by
+ *    storage — writing them down would create the seed record req 2's "always
+ *    present" is expressly built to avoid.
+ *
+ * `params` is the pinned shape only. `{ kind: "auto" }` is never stored for
+ * anything, so it cannot be read back for a name that has no business having it.
+ */
+interface StoredRole {
+  description?: string;
+  prompt?: string;
+  params?: RolePinnedParams;
 }
 
 interface CredentialData {
@@ -155,6 +185,25 @@ interface CredentialData {
    * never read again; nothing rewrites the file to remove it.
    */
   reviewers?: Partial<Record<ReviewerSlot, ReviewerPin>>;
+  /**
+   * docs/264 (reqs 1, 2, 6, 8, 9) — the user's agent roles, keyed by name.
+   *
+   * **Keyed by name is req 18's uniqueness rule**, held by the data rather than
+   * checked: two roles cannot share a name because a map cannot hold the key
+   * twice. There is no stored rank — {@link CredentialStore.getRoles} sorts at
+   * read time, so the list is deterministic without an order to migrate — and no
+   * rename primitive, because a rename is a validated write followed by a delete
+   * and nothing holds a reference to the old name.
+   *
+   * **The reviewer is NOT a record here.** `getRoles()` synthesizes it from the
+   * two `reviewers` pins above plus whatever editable metadata is stored under
+   * its reserved key, so an empty store still contains it (req 2) with no seed,
+   * no migration and no story for an install whose record was deleted before the
+   * reserved-name rule existed. Its entry, when present, carries a description
+   * and standing instructions and no `params` at all — its params are resolved,
+   * never stored, which is exactly what makes them automatic.
+   */
+  roles?: Record<string, StoredRole>;
   /**
    * Account-level MCP server configs keyed by name (docs/088). Values use
    * `$secret:` placeholders — the raw secret values live in `agentEnv` under
@@ -266,6 +315,26 @@ interface CredentialData {
    */
   adoptedEnvCredentials?: Record<string, { importedValue?: string; removed?: boolean }>;
 }
+
+/**
+ * docs/264 req 18 — "no length limit beyond what storage needs". These are that
+ * limit and nothing narrower.
+ *
+ * They exist because the credentials file is read whole into memory on every
+ * load, so an unbounded field is a way to make the store unreadable. They are
+ * **pathological-write guards, not product rules**, and the numbers are chosen
+ * so: no name, summary or standing brief a human would type comes near one. An
+ * earlier draft capped a name at 200, which cross-agent review correctly called
+ * a rule req 18 does not permit — JSON has no such boundary, so 200 was a
+ * product decision wearing a storage justification.
+ *
+ * The prompt's bound is also the *stored* half of the pair the plan describes:
+ * the combined prompt is checked again against the destination's own limit after
+ * the join, which is phase 3's.
+ */
+const MAX_ROLE_NAME_LENGTH = 10_000;
+const MAX_ROLE_DESCRIPTION_LENGTH = 500;
+const MAX_ROLE_PROMPT_LENGTH = 20_000;
 
 const DEFAULT_CREDENTIALS_DIR = "/credentials";
 const FILENAME = "shipit-credentials.json";
@@ -1342,6 +1411,171 @@ export class CredentialStore {
     }
     this.data.reviewers = current;
     this.save();
+  }
+
+  // ---- Agent roles (docs/264, reqs 1, 2, 6, 8, 9, 18) ----
+
+  /**
+   * Every role this install has, sorted by name — **the reviewer always among
+   * them** (req 2).
+   *
+   * Sorted at read time rather than stored in an order: there is no reorder
+   * control and no default-role flag, so a stored rank would be state to migrate
+   * for a list that has one correct order anyway.
+   *
+   * **The reviewer is synthesized, not stored.** Seeding a record at first run
+   * would need a migration, an idempotent upgrade path and a story for an
+   * install whose record was deleted before the reserved-name rule existed.
+   * Building it here needs none of those, and an empty store still contains it
+   * because the store is not where it comes from — its params are always
+   * `{ kind: "auto" }`, and only its description and standing instructions are
+   * read from disk.
+   *
+   * Sorting is `localeCompare`, because req 18 lets a name be anything a user
+   * types and code-point order would scatter accented and non-Latin names.
+   */
+  getRoles(): AgentRole[] {
+    const stored = this.data.roles ?? {};
+    const out: AgentRole[] = [];
+    for (const [name, role] of Object.entries(stored)) {
+      // A stored entry with no params is metadata for the reserved name; it is
+      // not a pinned role, and returning one as if it were would produce a role
+      // with nothing to run.
+      if (name === RESERVED_ROLE_NAME || !role.params) continue;
+      out.push({
+        name,
+        ...(role.description ? { description: role.description } : {}),
+        ...(role.prompt ? { prompt: role.prompt } : {}),
+        params: { ...role.params },
+      });
+    }
+    out.push(this.reviewerRole());
+    return out.sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  /** One role by its exact name, reviewer included. `undefined` for a name nobody created. */
+  getRole(name: string): AgentRole | undefined {
+    if (name === RESERVED_ROLE_NAME) return this.reviewerRole();
+    const stored = this.data.roles?.[name];
+    if (!stored?.params) return undefined;
+    return {
+      name,
+      ...(stored.description ? { description: stored.description } : {}),
+      ...(stored.prompt ? { prompt: stored.prompt } : {}),
+      params: { ...stored.params },
+    };
+  }
+
+  /**
+   * Upsert a role, or delete it with `null`.
+   *
+   * One primitive for both, and no rename: a rename is this write under the new
+   * name followed by this delete under the old one, and an atomic version would
+   * only be worth building if something held a reference to the name. Nothing
+   * does.
+   *
+   * What is refused, and why each is a caller bug rather than a state to store:
+   *
+   *  - **a name that is blank once whitespace is discounted**, or one longer
+   *    than {@link MAX_ROLE_NAME_LENGTH}. Req 18 allows any name the user types
+   *    with only uniqueness enforced, so there is no token shape and no case
+   *    rule — and, since cross-agent review, **no normalization either**: the
+   *    name is stored EXACTLY as typed. An earlier draft stored `name.trim()`,
+   *    which quietly made `" deep dive "` into `"deep dive"` and, worse, turned
+   *    `" reviewer "` into the reserved name. Trimming survives only as the test
+   *    for blankness, which is a different thing from rewriting the key;
+   *  - **`{ kind: "auto" }` under any name but the reserved one.** The
+   *    discriminator exists to describe the one role whose params ShipIt
+   *    resolves, not to offer a state nobody can reach — an ordinary role set to
+   *    `auto` would have no params and no way to acquire any;
+   *  - **pinned params under the reserved name, and deleting it at all.** The
+   *    reviewer cannot be renamed or deleted (req 2), and its params are
+   *    resolved rather than pinned. Its description and standing instructions
+   *    *are* editable, which is what a write to that name is for.
+   *
+   * The params themselves are **not** validated here against the catalogue.
+   * That is `services/roles.ts`'s `validateRolePinnedParams`, which needs the
+   * install's credentials — a store that reached for those would be deciding a
+   * policy question, and a role would become unsaveable from a test that has no
+   * credentials wired. It is the same division `setReviewerPin` already makes,
+   * where `resolveReviewerPinPatch` validates at the settings layer.
+   *
+   * **So req 6's "a role whose harness cannot run its model is refused when it
+   * is saved" is not yet true end to end, and that is the phase boundary rather
+   * than a gap.** Phase 1 owns the validator; connecting it to a write is phase
+   * 2's own checklist bullet ("Role CRUD through the existing settings mutation
+   * surface, validated by the harness-explicit validator above"). Nothing calls
+   * this method in production yet, so no user action can persist an invalid
+   * role in the meantime — but a phase-3 or phase-2 caller that writes through
+   * here **must** validate first, and this is the notice that it is not done for
+   * it.
+   */
+  setRole(name: string, role: AgentRole | null): void {
+    // Blankness is the only thing trimming decides. The stored key is `name`
+    // itself, so a name the user typed with spaces round it stays that name.
+    if (!name.trim()) throw new Error("A role name cannot be blank");
+    if (name.length > MAX_ROLE_NAME_LENGTH) {
+      throw new Error(`A role name cannot be longer than ${MAX_ROLE_NAME_LENGTH} characters`);
+    }
+    if (role === null) {
+      if (name === RESERVED_ROLE_NAME) {
+        throw new Error(`The "${RESERVED_ROLE_NAME}" role cannot be deleted (docs/264 req 2)`);
+      }
+      if (!this.data.roles?.[name]) return;
+      const next: Record<string, StoredRole> = {};
+      for (const [key, value] of Object.entries(this.data.roles)) {
+        if (key !== name) next[key] = value;
+      }
+      this.data.roles = next;
+      this.save();
+      return;
+    }
+    if (name === RESERVED_ROLE_NAME) {
+      if (role.params.kind !== "auto") {
+        throw new Error(
+          `The "${RESERVED_ROLE_NAME}" role's params are resolved by ShipIt and cannot be pinned `
+            + "(docs/264 req 2). Its description and standing instructions are editable.",
+        );
+      }
+    } else if (role.params.kind === "auto") {
+      throw new Error(
+        `Only the "${RESERVED_ROLE_NAME}" role may have automatic params (docs/264 req 2); `
+          + `"${name}" must name a harness, a service, a billing mode, a model and a level.`,
+      );
+    }
+    const description = role.description?.trim();
+    const prompt = role.prompt?.trim();
+    if (description && description.length > MAX_ROLE_DESCRIPTION_LENGTH) {
+      throw new Error(
+        `A role description cannot be longer than ${MAX_ROLE_DESCRIPTION_LENGTH} characters`,
+      );
+    }
+    if (prompt && prompt.length > MAX_ROLE_PROMPT_LENGTH) {
+      throw new Error(
+        `A role's standing instructions cannot be longer than ${MAX_ROLE_PROMPT_LENGTH} characters`,
+      );
+    }
+    this.data.roles = {
+      ...this.data.roles,
+      [name]: {
+        ...(description ? { description } : {}),
+        ...(prompt ? { prompt } : {}),
+        // The reserved name stores metadata only — see `StoredRole`.
+        ...(role.params.kind === "pinned" ? { params: { ...role.params } } : {}),
+      },
+    };
+    this.save();
+  }
+
+  /** The reviewer as a role: automatic params, plus whatever metadata was stored under its key. */
+  private reviewerRole(): AgentRole {
+    const stored = this.data.roles?.[RESERVED_ROLE_NAME];
+    return {
+      name: RESERVED_ROLE_NAME,
+      ...(stored?.description ? { description: stored.description } : {}),
+      ...(stored?.prompt ? { prompt: stored.prompt } : {}),
+      params: { kind: "auto" },
+    };
   }
 
   // ---- Utility ----

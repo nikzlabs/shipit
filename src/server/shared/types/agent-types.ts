@@ -189,6 +189,166 @@ export interface ReviewerPinPatch {
   reasoningEffort?: string;
 }
 
+// ---- Agent roles (docs/264 phase 1) ----------------------------------------
+
+/**
+ * docs/264 req 2 — the one role name ShipIt owns.
+ *
+ * Reserved rather than seeded: {@link RoleAutoParams} is rejected for every
+ * other name, this one cannot be renamed or deleted, and `getRoles()`
+ * synthesizes it even on a completely empty store. "Review this" therefore
+ * always has something to resolve to, including on an install nobody has
+ * configured.
+ *
+ * **Reservation is an exact-string match, not a case-insensitive one.** Req 18
+ * says a role may be any name the user types, with only uniqueness enforced and
+ * explicitly "no case rule" — so `Reviewer` is a different name and an ordinary
+ * pinned role. Folding case here would be a restriction nobody asked for, on
+ * the one requirement that says not to add restrictions.
+ */
+export const RESERVED_ROLE_NAME = "reviewer";
+
+/**
+ * docs/264 reqs 1, 6 — a role whose params the **user** pinned: the complete
+ * tuple, the harness included.
+ *
+ * Every field is required, which is req 1's "a role is complete on its own"
+ * stated in the type. `harnessId` is the departure from {@link ReviewerPin},
+ * which deliberately omits it (docs/261 req 3 derives the harness from the
+ * model): a role is a *job definition*, and which agent performs the job is part
+ * of the job — Claude Code driving a model and Codex driving the same model are
+ * different agents. Stored and frozen, never re-derived per run, so a role whose
+ * harness is uninstalled reports that it cannot run rather than quietly running
+ * on another one.
+ */
+export interface RolePinnedParams {
+  kind: "pinned";
+  /** The harness that runs this role (req 6). Required, stored, never derived. */
+  harnessId: AgentId;
+  serviceId: string;
+  billingMode: BillingMode;
+  modelId: string;
+  /** A level the *named* harness declares — validated against that one, not a derived one. */
+  reasoningEffort: string;
+}
+
+/**
+ * docs/264 req 2 — params ShipIt resolves per run, rather than params the user
+ * pinned. The shipped reviewer's, and **only** the shipped reviewer's.
+ *
+ * It carries no fields because there is nothing to carry: the answer is
+ * docs/261's two ranked candidate slots, resolved against whatever is
+ * implementing at the moment the review is asked for. "Use whoever is furthest
+ * from the model that wrote this" is a rule evaluated per run, and no fixed set
+ * of params can encode it — which is the whole and only reason this
+ * discriminator exists.
+ */
+export interface RoleAutoParams {
+  kind: "auto";
+}
+
+/** One role's params — pinned by the user (req 1), or resolved by ShipIt (req 2). */
+export type RoleParams = RolePinnedParams | RoleAutoParams;
+
+/**
+ * docs/264 — a named unit of agent work (reqs 1, 2, 6, 8, 9).
+ *
+ * **There is one kind of role.** The variation lives in {@link RoleParams}, not
+ * in two shapes of object: the reviewer is named, started, refused and reported
+ * exactly as every other role is, and differs only in that ShipIt supplies its
+ * params. That is what keeps one store, one lookup, one refusal and one
+ * attribution path.
+ */
+export interface AgentRole {
+  /**
+   * Any name the user typed (req 18). Unique, non-blank, and bounded only by
+   * what storage needs — no token shape, no case rule. A name that needs quoting
+   * on a command line is quoted, exactly as a session title already is.
+   */
+  name: string;
+  /** Req 9 — what the role is for, in one short line. Optional; the name is the fallback. */
+  description?: string;
+  /** Req 8 — standing instructions, joined with the run's own task at spawn. Optional. */
+  prompt?: string;
+  params: RoleParams;
+}
+
+/**
+ * Why a role cannot run right now. **Three states, not two**, because the remedy
+ * differs in each and collapsing them sends the user to the wrong place.
+ *
+ *  - `stranded` — its model, service or harness no longer exists, or the pair
+ *    no longer agrees. It needs a **Settings edit**, and is never silently
+ *    repaired: req 7 rules out re-pointing it, including through a catalogue
+ *    retirement successor. The role's own fault, and the only one of the three
+ *    that is.
+ *  - `disconnected` — the tuple is still structurally valid, but the service it
+ *    names has no usable credential any more. The remedy is to **reconnect the
+ *    service**; telling the user to edit a perfectly good role would be wrong.
+ *    Route selection reports this as `auth_required`.
+ *  - `quota_exhausted` — the subscription is spent. Nothing to fix; it recovers
+ *    when the quota resets, and the tuple is kept exactly. Route selection
+ *    reports this as `all_exhausted`.
+ */
+export type RoleUnavailableReason = "stranded" | "disconnected" | "quota_exhausted";
+
+/** What a pinned role resolves to today, with labels the Settings list renders. */
+export interface RoleResolved {
+  harnessId: AgentId;
+  harnessName: string;
+  serviceId: string;
+  billingMode: BillingMode;
+  serviceName: string;
+  modelId: string;
+  /** Model label, not the raw id — the same string the picker shows. */
+  label: string;
+  reasoningEffort: string;
+  /** That level's display label on this harness, when the harness declares one. */
+  reasoningLabel?: string;
+}
+
+/**
+ * docs/264 phase 1 — one role as the settings payload carries it.
+ *
+ * **The server sends the resolution**, exactly as it does for a reviewer slot
+ * and for the same reason: which harness runs a model and which levels it
+ * declares are catalogue rules, and a second implementation in the browser is
+ * how the Settings screen starts promising something other than what runs.
+ *
+ * `resolved` is absent for the reviewer, and that is not a gap. Its params are
+ * docs/261's **two ranked candidate slots** rather than one tuple, and those
+ * already ride the same payload as `reviewers` — a single `resolved` here would
+ * have to pick one of the two and would misreport whichever it dropped.
+ */
+export interface RoleView {
+  name: string;
+  description?: string;
+  prompt?: string;
+  params: RoleParams;
+  /** True for {@link RESERVED_ROLE_NAME} — it cannot be renamed or deleted (req 2). */
+  reserved: boolean;
+  /** What a pinned role runs on today. Absent when it cannot run, or for the reviewer. */
+  resolved?: RoleResolved;
+  /** Why there is no `resolved`, when the role is pinned and cannot run. */
+  unavailableReason?: RoleUnavailableReason;
+  /**
+   * Which parameter is at fault, for `stranded` — the field the Settings edit has
+   * to change. Names the parameter rather than describing the failure, because
+   * that is what the editor highlights.
+   *
+   * All five of a role's parameters are nameable, so a service that has left the
+   * catalogue is not reported as a bad *model*: rule (d) says the refusal names
+   * the parameter, and an editor that highlighted the wrong field would send the
+   * user to change something that is correct.
+   *
+   * Absent for `disconnected` and `quota_exhausted`, deliberately — the tuple is
+   * intact in both, so there is no field to highlight and no edit to make.
+   */
+  invalidField?: "harnessId" | "service" | "billingMode" | "model" | "reasoningEffort";
+  /** For `quota_exhausted`: when to try again, when routing could say. */
+  earliestResetAt?: string | null;
+}
+
 export interface AgentCapabilities {
   /** Whether the agent can resume a previous conversation (e.g. --resume). */
   supportsResume: boolean;
