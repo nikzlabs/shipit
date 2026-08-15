@@ -404,6 +404,58 @@ describe("SessionContainerManager", () => {
       );
     });
 
+    // planning#2286 — the shared pnpm store is mounted NESTED at
+    // /workspace/.pnpm-store, so the entrypoint's chown loop does not revisit it
+    // once the workspace sentinel exists. If create() ever goes back to a bare
+    // mkdir, the store lands root:root and the non-root agent EACCESes on
+    // `pnpm install` with no way to recover — hence the wiring is pinned HERE,
+    // where the mkdir actually happens, not only on the helper's own unit tests.
+    it("hands the pnpm store dir to the worker uid before mounting it", async () => {
+      const myUid = process.getuid?.();
+      if (myUid === undefined) return; // not POSIX — skip
+      const prevUid = process.env.SHIPIT_SESSION_WORKER_UID;
+      process.env.SHIPIT_SESSION_WORKER_UID = String(myUid);
+      const storeDir = path.join(TEST_SESSION_DIR, "pnpm-store", "deadbeefcafe0001");
+      const spy = vi.spyOn(fs, "lchownSync");
+      try {
+        await manager.create(buildConfig({ pnpmStoreDir: storeDir }));
+        expect(fs.existsSync(storeDir)).toBe(true);
+        expect(spy).toHaveBeenCalledWith(storeDir, myUid, myUid);
+        // Handoff verified → the mount is still there.
+        const call = mockDocker.createContainer.mock.calls[0][0];
+        expect(call.HostConfig.Binds).toContain(`${storeDir}:/workspace/.pnpm-store:rw`);
+      } finally {
+        spy.mockRestore();
+        if (prevUid === undefined) delete process.env.SHIPIT_SESSION_WORKER_UID;
+        else process.env.SHIPIT_SESSION_WORKER_UID = prevUid;
+      }
+    });
+
+    // A store the orchestrator could not hand over is worse than no shared store:
+    // the mount point is unrecoverable from inside the container, while dropping
+    // it just makes pnpm relocate into the workspace's own (gitignored)
+    // `.pnpm-store`. The env must be dropped with the mount, or pnpm would be
+    // pointed at a path nothing mounted.
+    it("drops the pnpm store mount and env when the handoff fails", async () => {
+      const myUid = process.getuid?.();
+      if (myUid === undefined) return; // not POSIX — skip
+      const prevUid = process.env.SHIPIT_SESSION_WORKER_UID;
+      process.env.SHIPIT_SESSION_WORKER_UID = String(myUid + 1);
+      const storeDir = path.join(TEST_SESSION_DIR, "pnpm-store", "deadbeefcafe0002");
+      // Stand in for the swallowed EPERM (see container-lifecycle.test.ts).
+      const spy = vi.spyOn(fs, "lchownSync").mockImplementation(() => {});
+      try {
+        await manager.create(buildConfig({ pnpmStoreDir: storeDir }));
+        const call = mockDocker.createContainer.mock.calls[0][0];
+        expect(call.HostConfig.Binds).not.toContain(`${storeDir}:/workspace/.pnpm-store:rw`);
+        expect(call.Env).not.toContain("npm_config_store_dir=/workspace/.pnpm-store");
+      } finally {
+        spy.mockRestore();
+        if (prevUid === undefined) delete process.env.SHIPIT_SESSION_WORKER_UID;
+        else process.env.SHIPIT_SESSION_WORKER_UID = prevUid;
+      }
+    });
+
     it("throws when a container already exists for the session", async () => {
       await manager.create(buildConfig());
       await expect(manager.create(buildConfig())).rejects.toThrow(

@@ -983,22 +983,26 @@ describe("ensurePnpmStoreDir (planning#2286)", () => {
     delete process.env.SHIPIT_SESSION_WORKER_UID; // legacy root runtime
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pnpm-store-"));
     const storeDir = path.join(tmpDir, "pnpm-store", "deadbeefcafe0001");
-    ensurePnpmStoreDir(storeDir);
+    expect(ensurePnpmStoreDir(storeDir)).toBe(true);
     expect(fs.existsSync(storeDir)).toBe(true);
   });
 
-  // The whole point: the entrypoint's chown loop never reaches this mount (it is
-  // nested under /workspace and gated on the workspace's own sentinel), so the
-  // orchestrator must hand it over itself or the non-root agent EACCESes on
-  // `pnpm install`.
+  // The whole point: the entrypoint's chown loop does not revisit this mount once
+  // the workspace sentinel exists (the store is nested under /workspace and the
+  // walk is gated on the workspace), so the orchestrator must hand it over itself
+  // or the non-root agent EACCESes on `pnpm install`. Asserted on the chown CALL,
+  // not on the resulting uid: a dir the test process just created already carries
+  // its own uid, so a uid assertion would pass with no chown at all.
   it("hands the store dir to the worker uid", () => {
     const myUid = process.getuid?.();
     if (myUid === undefined) return; // not POSIX — skip
     process.env.SHIPIT_SESSION_WORKER_UID = String(myUid);
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pnpm-store-"));
     const storeDir = path.join(tmpDir, "pnpm-store", "deadbeefcafe0002");
-    ensurePnpmStoreDir(storeDir);
-    expect(fs.lstatSync(storeDir).uid).toBe(myUid);
+    const spy = vi.spyOn(fs, "lchownSync");
+    expect(ensurePnpmStoreDir(storeDir)).toBe(true);
+    expect(spy).toHaveBeenCalledWith(storeDir, myUid, myUid);
+    spy.mockRestore();
   });
 
   // The store is SHARED, so most creations find the dir already there — a
@@ -1011,13 +1015,14 @@ describe("ensurePnpmStoreDir (planning#2286)", () => {
     const storeDir = path.join(tmpDir, "pnpm-store", "deadbeefcafe0003");
     fs.mkdirSync(storeDir, { recursive: true });
     const spy = vi.spyOn(fs, "lchownSync");
-    ensurePnpmStoreDir(storeDir);
+    expect(ensurePnpmStoreDir(storeDir)).toBe(true);
     expect(spy).toHaveBeenCalledWith(storeDir, myUid, myUid);
     spy.mockRestore();
   });
 
-  // Non-recursive by design — this runs on the container-create hot path and the
-  // store's contents are written by pnpm inside the container (already worker-owned).
+  // Non-recursive by design — this runs on the container-create hot path, and
+  // root-owned contents can only come from a root worker, which the entrypoint's
+  // sentinel rotation already repairs on the first boot after the UID flips.
   it("does not walk the store contents", () => {
     const myUid = process.getuid?.();
     if (myUid === undefined) return; // not POSIX — skip
@@ -1036,9 +1041,35 @@ describe("ensurePnpmStoreDir (planning#2286)", () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pnpm-store-"));
     const storeDir = path.join(tmpDir, "pnpm-store", "deadbeefcafe0005");
     const spy = vi.spyOn(fs, "lchownSync");
-    ensurePnpmStoreDir(storeDir);
+    expect(ensurePnpmStoreDir(storeDir)).toBe(true);
     expect(spy).not.toHaveBeenCalled();
     spy.mockRestore();
+  });
+
+  // `chownToSessionWorker` logs and swallows — right for the writers it was built
+  // for, fatal here, because a silently-failed handoff is exactly the root-owned
+  // mount the agent cannot recover from. So the result is VERIFIED, and a failed
+  // handoff reports false rather than "probably fine".
+  it("reports false when the handoff did not take (mount must be dropped)", () => {
+    const myUid = process.getuid?.();
+    if (myUid === undefined) return; // not POSIX — skip
+    process.env.SHIPIT_SESSION_WORKER_UID = String(myUid + 1);
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pnpm-store-"));
+    const storeDir = path.join(tmpDir, "pnpm-store", "deadbeefcafe0006");
+    // Stand in for the swallowed EPERM — deterministic whether or not the test
+    // process happens to be privileged enough for the real chown to succeed.
+    const spy = vi.spyOn(fs, "lchownSync").mockImplementation(() => {});
+    expect(ensurePnpmStoreDir(storeDir)).toBe(false);
+    spy.mockRestore();
+  });
+
+  it("reports false when the store dir cannot be created", () => {
+    delete process.env.SHIPIT_SESSION_WORKER_UID;
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pnpm-store-"));
+    // A regular file where the store dir's parent must be — mkdir -p fails ENOTDIR.
+    const blocker = path.join(tmpDir, "pnpm-store");
+    fs.writeFileSync(blocker, "not a dir");
+    expect(ensurePnpmStoreDir(path.join(blocker, "deadbeefcafe0007"))).toBe(false);
   });
 });
 
