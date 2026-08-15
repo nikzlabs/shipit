@@ -78,24 +78,42 @@
  *
  * ## What this file does NOT establish — read this before trusting it
  *
- * **Req 19 does not hold on the service surface today, by two paths this file
- * cannot see** — both reach around the override it asserts on, and both are
- * tracked, with every link verified at the source, on **planning#371**:
+ * Two paths this file cannot see once reached around the override it asserts
+ * on, and req 19 did not hold on the service surface while they were open. Both
+ * were tracked on **planning#371**, and **both are now closed** — re-verified at
+ * the source while fixing nikzlabs/shipit#2298, because a header claiming a live
+ * hole that has since been shut is as misleading as the clean bill of health it
+ * was written to prevent, in the opposite direction:
  *
- *  1. A plugin service is classified as a container of its OWN session (the
+ *  1. A plugin service was classified as a container of its OWN session (the
  *     `shipit-parent-session` label, `api-container-guard.ts`), so ShipIt's API
- *     admits it to that session's container-accessible routes — one of which
- *     brokers a real GitHub token. The session id is not the control it looked
- *     like: `/proc/self/mountinfo` exposes it.
+ *     admitted it to that session's container-accessible routes — one of which
+ *     brokers a real GitHub token. The session id was not the control it looked
+ *     like: `/proc/self/mountinfo` exposes it. **Closed** at
+ *     `api-container-guard.ts` §0.5, and not by narrowing the table: a Compose
+ *     service container now reaches NO `/api/*` route at all.
  *  2. A running plugin has `/project` read-write and can merge a project compose
- *     entry into its own service on a later `up`, where Compose interpolates
- *     `${VAR}` from the orchestrator's environment.
+ *     entry into its own service on a later `up`, where Compose interpolated
+ *     `${VAR}` from the orchestrator's environment. **The interpolation half is
+ *     closed**: every `docker` spawn that names a compose file now passes
+ *     `composeSpawnEnv()` (`compose-cli.ts`), an allowlist that carries no
+ *     credential. The merge-by-name half is unchanged — a later `up` does not
+ *     re-check req 20 collisions — so a project entry can still add to a plugin
+ *     service what the fragment allowlist would have refused, bounded by
+ *     `validateServiceSecurity`, which does re-run. That residue is planning#371's
+ *     to settle, not this file's.
  *
  * Recorded here rather than left to the issue alone because a guard test that
- * reads as a clean bill of health while the boundary is open is worse than no
+ * reads as a clean bill of health while a boundary is open is worse than no
  * test. What this file guards is real and worth having — everything ShipIt
  * WRITES into a plugin service — and it is not the whole boundary. In
  * particular the session-id assertion below is hygiene, not the control.
+ *
+ * What this file has never established, and what nikzlabs/shipit#2298 makes
+ * explicit: `/project` is read-write **by design**, so a plugin service can
+ * write the consuming project's files. That is the feature (reqs 18, 21), not a
+ * gap — `shipit-docs/plugins.md` now says so. The project's own files are not a
+ * containment boundary and nothing here should be read as making them one.
  *
  * One further limit, smaller: the environment claim covers what ShipIt WRITES,
  * not the container's effective environment — the daemon merges the image's own
