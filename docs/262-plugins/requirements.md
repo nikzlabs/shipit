@@ -418,6 +418,16 @@ answer's date and the words that settled it.
   withdrawn. Worth recording as a caution: it was raised from a design document
   describing the world as it had been, not from the code.
 
+  **Scope note added 2026-08-15.** The question asked about plugin *services*
+  and the verification answered about plugin *services*. It says nothing about
+  the companion-CLI or install containers, and a later reading took it as
+  covering requirement 24 whole. It does not: those containers join a plain
+  bridge network that is deniable at ShipIt's own API — requirement 19's
+  boundary — with no egress restriction of any kind, so a companion CLI can
+  reach the internet freely while an equivalent same-repo command could not.
+  That gap is open and tracked on the checklist. The receipt is accurate; the
+  generalisation drawn from it was not.
+
 - **2026-08-14 — What happens to a plugin's saved state when a project
   re-points a declaration at a different repository?** Raised while
   implementing reqs 17, 18, 26: the state directory and settings file are keyed
