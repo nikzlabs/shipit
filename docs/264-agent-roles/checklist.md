@@ -10,58 +10,58 @@ The design is [`plan.md`](./plan.md); the contract is [`requirements.md`](./requ
 
 ## Phase 1 — Storage + resolution
 
-- [ ] Role record in the credential store, keyed by name: `getRoles` (sorted by name at read time,
+- [x] Role record in the credential store, keyed by name: `getRoles` (sorted by name at read time,
       no stored rank), `setRole(name, role | null)`. No reorder, no rename primitive
-- [ ] **Any name the user types**, with only uniqueness enforced (req 18) — no token shape, case or
+- [x] **Any name the user types**, with only uniqueness enforced (req 18) — no token shape, case or
       length rule; quoted where a command line needs it
-- [ ] Params are a discriminator — `{ kind: "pinned", … }` or `{ kind: "auto" }` — so the shipped
+- [x] Params are a discriminator — `{ kind: "pinned", … }` or `{ kind: "auto" }` — so the shipped
       reviewer is a role with automatic params rather than a second kind of object (reqs 2, 7)
-- [ ] `{ kind: "auto" }` is **rejected for every name but `reviewer`**
-- [ ] **The reviewer is synthesized in `getRoles()`**, from its two existing `getReviewerPin`
+- [x] `{ kind: "auto" }` is **rejected for every name but `reviewer`**
+- [x] **The reviewer is synthesized in `getRoles()`**, from its two existing `getReviewerPin`
       values plus editable metadata under a reserved key — no seed record, no migration, and it is
       present on a completely empty store (req 2). Reserved key enforces no-rename/no-delete
-- [ ] **A validator that takes `harnessId` as an input** (reqs 6, 7): the triple exists and the
+- [x] **A validator that takes `harnessId` as an input** (reqs 6, 7): the triple exists and the
       named harness is installed and can carry the model, and the level is one *that harness*
       declares. It must NOT be `resolveReviewerPinPatch`, which derives a harness
       (`harnessesForSelection(patch, …)[0]`) and would reproduce the defect the required harness
       removes — pin it with a fabricated dual-harness fixture whose effort sets differ
-- [ ] Save checks **compatibility only**, never live route availability — a role must remain
+- [x] Save checks **compatibility only**, never live route availability — a role must remain
       saveable while a subscription is exhausted or a provider is down
-- [ ] `resolveRoleByName(name, overrides, …)` — `pinned` applies overrides over the role's tuple;
+- [x] `resolveRoleByName(name, overrides, …)` — `pinned` applies overrides over the role's tuple;
       `auto` with no override delegates to `selectReviewer` unchanged. Both freeze with the role's
       name
-- [ ] `auto` **with a complete override**: resolve it directly and **do not call `selectReviewer`
+- [x] `auto` **with a complete override**: resolve it directly and **do not call `selectReviewer`
       at all**. It can fail when neither slot is routable (`reviewer-model.ts:492-500`), and
       ranking first would reject a fully-specified valid target — reqs 10 and 16 allow *any*
       subset, which includes all of it. Pin this with a fixture where both slots are unroutable
-- [ ] `auto` **with a partial override**: complete from the ranked winner, which is the only thing
+- [x] `auto` **with a partial override**: complete from the ranked winner, which is the only thing
       that supplies the rest — this is what lets a level-only or harness-only override resolve. If
       the ranking fails, the call fails with the ranking's own reason; do not invent a base
-- [ ] **The distance guarantee is off for any overridden run** (req 10) — do not preserve it, and
+- [x] **The distance guarantee is off for any overridden run** (req 10) — do not preserve it, and
       do not refuse the call to protect it
-- [ ] **A reviewer slot may be user-pinned** (`slotPlans` reads `getReviewerPin`,
+- [x] **A reviewer slot may be user-pinned** (`slotPlans` reads `getReviewerPin`,
       `reviewer-model.ts:317`; a pinned level is preserved, not derived, at `:540`), and docs/261
       req 8 says a pin wins. Treat a pin as a `(service, billing mode, model)` **triple**:
       overriding the *model* re-resolves where that model lives (the triple made no claim about it);
       overriding the *level* or *harness* leaves it untouched. Never drop a pinned field that still
       applies
-- [ ] What stays incoherent is **refused naming the parameter, on every params kind alike** — no
+- [x] What stays incoherent is **refused naming the parameter, on every params kind alike** — no
       re-derivation branch for the reviewer. The earlier asymmetry rested on "ShipIt chose those
       fields anyway", which the pin above disproves
-- [ ] A test that an **un-overridden** reviewer run still avoids the implementer (req 2 intact) and
+- [x] A test that an **un-overridden** reviewer run still avoids the implementer (req 2 intact) and
       an **overridden** one is allowed to land on the implementer's own model — the second is the
       requirement, not a bug to be fixed later
-- [ ] **An overridden tuple is validated exactly as a stored one** by the same harness-explicit
+- [x] **An overridden tuple is validated exactly as a stored one** by the same harness-explicit
       validator, and an invalid override is **refused naming the parameter**, never dropped —
       a dropped override runs something other than what was asked for
-- [ ] No combination is reachable via override that a role could not have been saved with
-- [ ] **Three failure states, not two**, because the remedy differs in each: **stranded** (gone
+- [x] No combination is reachable via override that a role could not have been saved with
+- [x] **Three failure states, not two**, because the remedy differs in each: **stranded** (gone
       model/service/harness — needs a Settings edit, never re-pointed through a retirement
       successor, req 7); **disconnected** (`auth_required` — the tuple is valid, the service lost
       its credential, so reconnect the service and do NOT tell the user to edit the role); and
       **quota-exhausted** (`all_exhausted` — says when to retry, keeps the exact tuple)
-- [ ] Unknown role name refused, listing the roles that exist (req 13)
-- [ ] Settings payload carries the roles, each resolved (server sends the resolution)
+- [x] Unknown role name refused, listing the roles that exist (req 13)
+- [x] Settings payload carries the roles, each resolved (server sends the resolution)
 
 ## Phase 2 — Settings (the only way a role is created, req 5)
 

@@ -732,3 +732,203 @@ describe("CredentialStore — the two reviewers (docs/261 phase 1)", () => {
     expect(new CredentialStore(dir).getReviewerPins()).toEqual({});
   });
 });
+
+/**
+ * docs/264 phase 1 (reqs 1, 2, 18) — the role store.
+ *
+ * Three properties carry most of the weight here: uniqueness is the map's rather
+ * than a check's, the reviewer is **synthesized** so an empty store still has
+ * it, and a name is whatever the user typed.
+ */
+describe("CredentialStore — agent roles (docs/264 phase 1)", () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-roles-"));
+  });
+  afterEach(() => {
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  const pinned = {
+    kind: "pinned" as const,
+    harnessId: "claude" as const,
+    serviceId: "anthropic",
+    billingMode: "key" as const,
+    modelId: "claude-opus-5",
+    reasoningEffort: "high",
+  };
+
+  // ---- The synthesized reviewer (req 2) ----
+
+  it("yields the reviewer on a completely empty store, with automatic params", () => {
+    const store = new CredentialStore(dir);
+    expect(store.getRoles()).toEqual([{ name: "reviewer", params: { kind: "auto" } }]);
+    // No record was written to get it — the point of synthesizing rather than
+    // seeding is that there is nothing to migrate, nothing to upgrade
+    // idempotently, and nothing an install could have deleted before the
+    // reserved-name rule existed.
+    const file = path.join(dir, "shipit-credentials.json");
+    const onDisk = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, "utf8")) : {};
+    expect(onDisk.roles).toBeUndefined();
+  });
+
+  it("carries the reviewer's editable metadata without ever storing its params", () => {
+    const store = new CredentialStore(dir);
+    store.setRole("reviewer", {
+      name: "reviewer",
+      description: "The second opinion",
+      prompt: "Review the diff for correctness only.",
+      params: { kind: "auto" },
+    });
+    expect(store.getRole("reviewer")).toEqual({
+      name: "reviewer",
+      description: "The second opinion",
+      prompt: "Review the diff for correctness only.",
+      params: { kind: "auto" },
+    });
+    // On disk it is metadata only: `params` is never written, which is what
+    // keeps the reviewer's params resolved rather than pinned.
+    const onDisk = JSON.parse(fs.readFileSync(path.join(dir, "shipit-credentials.json"), "utf8"));
+    expect(onDisk.roles.reviewer).toEqual({
+      description: "The second opinion",
+      prompt: "Review the diff for correctness only.",
+    });
+    expect(new CredentialStore(dir).getRole("reviewer")?.description).toBe("The second opinion");
+  });
+
+  it("refuses to delete the reviewer or to pin its params (req 2)", () => {
+    const store = new CredentialStore(dir);
+    expect(() => store.setRole("reviewer", null)).toThrow(/cannot be deleted/);
+    expect(() => store.setRole("reviewer", { name: "reviewer", params: pinned })).toThrow(
+      /resolved by ShipIt and cannot be pinned/,
+    );
+  });
+
+  it("rejects automatic params for every name but the reserved one", () => {
+    const store = new CredentialStore(dir);
+    expect(() =>
+      store.setRole("deep-dive", { name: "deep-dive", params: { kind: "auto" } }),
+    ).toThrow(/Only the "reviewer" role may have automatic params/);
+  });
+
+  // ---- Ordinary roles ----
+
+  it("round-trips a pinned role and deletes it with null", () => {
+    const store = new CredentialStore(dir);
+    store.setRole("deep-dive", { name: "deep-dive", description: "Thorough", params: pinned });
+    expect(store.getRole("deep-dive")).toEqual({
+      name: "deep-dive",
+      description: "Thorough",
+      params: pinned,
+    });
+    expect(new CredentialStore(dir).getRole("deep-dive")?.params).toEqual(pinned);
+
+    store.setRole("deep-dive", null);
+    expect(store.getRole("deep-dive")).toBeUndefined();
+    // The reviewer is untouched by a delete of something else.
+    expect(store.getRoles().map((r) => r.name)).toEqual(["reviewer"]);
+  });
+
+  it("sorts by name at read time, with no stored rank", () => {
+    const store = new CredentialStore(dir);
+    store.setRole("zebra", { name: "zebra", params: pinned });
+    store.setRole("alpha", { name: "alpha", params: pinned });
+    expect(store.getRoles().map((r) => r.name)).toEqual(["alpha", "reviewer", "zebra"]);
+  });
+
+  it("keeps uniqueness by name — a second write to one name replaces it", () => {
+    const store = new CredentialStore(dir);
+    store.setRole("deep-dive", { name: "deep-dive", description: "first", params: pinned });
+    store.setRole("deep-dive", { name: "deep-dive", description: "second", params: pinned });
+    expect(store.getRoles().filter((r) => r.name === "deep-dive")).toHaveLength(1);
+    expect(store.getRole("deep-dive")?.description).toBe("second");
+  });
+
+  // ---- Req 18: any name the user types ----
+
+  it("accepts any name the user types — spaces, case, punctuation, non-Latin", () => {
+    const store = new CredentialStore(dir);
+    for (const name of ["deep dive", "Deep-Dive", "код-ревью", "reviewer #2", "🔍 scan"]) {
+      store.setRole(name, { name, params: pinned });
+      expect(store.getRole(name)?.params).toEqual(pinned);
+    }
+  });
+
+  /**
+   * Reservation is an **exact-string** match. Req 18 says "no case rule", so
+   * `Reviewer` is a different name and an ordinary pinned role — folding case
+   * would be a restriction nobody asked for, on the one requirement that says
+   * not to add restrictions.
+   */
+  it("treats a differently-cased `Reviewer` as an ordinary role", () => {
+    const store = new CredentialStore(dir);
+    store.setRole("Reviewer", { name: "Reviewer", params: pinned });
+    expect(store.getRole("Reviewer")?.params).toEqual(pinned);
+    // …and the reserved one is still automatic, still undeletable.
+    expect(store.getRole("reviewer")?.params).toEqual({ kind: "auto" });
+    expect(() => store.setRole("reviewer", null)).toThrow();
+  });
+
+  /**
+   * The name is stored **exactly as typed** — no trimming, no normalization.
+   * Req 18 enforces uniqueness and nothing else, and a rewritten key is a rule
+   * the user cannot see: it silently merges two names they meant to keep apart,
+   * and it can walk a name into the reserved one.
+   */
+  it("stores the name verbatim, so surrounding whitespace is part of it", () => {
+    const store = new CredentialStore(dir);
+    store.setRole(" deep dive ", { name: " deep dive ", params: pinned });
+    expect(store.getRole(" deep dive ")?.params).toEqual(pinned);
+    expect(store.getRole("deep dive")).toBeUndefined();
+    // The sharp end of the same rule: a padded "reviewer" is an ordinary role,
+    // not the reserved one, so it can be pinned and deleted like any other.
+    store.setRole(" reviewer ", { name: " reviewer ", params: pinned });
+    expect(store.getRole(" reviewer ")?.params).toEqual(pinned);
+    expect(store.getRole("reviewer")?.params).toEqual({ kind: "auto" });
+    store.setRole(" reviewer ", null);
+    expect(store.getRole(" reviewer ")).toBeUndefined();
+  });
+
+  it("refuses a name that is blank once whitespace is discounted", () => {
+    const store = new CredentialStore(dir);
+    expect(() => store.setRole("   ", { name: "   ", params: pinned })).toThrow(/cannot be blank/);
+  });
+
+  it("refuses only a pathological length, not a length a human would type", () => {
+    const store = new CredentialStore(dir);
+    // 500 characters is absurd for a name and still accepted: the bound is a
+    // guard on the store, not a product rule (req 18).
+    const long = "x".repeat(500);
+    store.setRole(long, { name: long, params: pinned });
+    expect(store.getRole(long)?.params).toEqual(pinned);
+
+    const absurd = "x".repeat(10_001);
+    expect(() => store.setRole(absurd, { name: absurd, params: pinned })).toThrow(
+      /longer than 10000/,
+    );
+  });
+
+  it("bounds the stored description and standing instructions", () => {
+    const store = new CredentialStore(dir);
+    expect(() =>
+      store.setRole("a", { name: "a", description: "x".repeat(501), params: pinned }),
+    ).toThrow(/description cannot be longer/);
+    expect(() =>
+      store.setRole("a", { name: "a", prompt: "x".repeat(20_001), params: pinned }),
+    ).toThrow(/standing instructions cannot be longer/);
+  });
+
+  it("ignores a stored entry that carries no params — it is metadata, not a role", () => {
+    // Hand-written on disk: the shape the reserved key uses, under a name that
+    // is not reserved. Returning it as a role would produce one with nothing to
+    // run on.
+    fs.writeFileSync(
+      path.join(dir, "shipit-credentials.json"),
+      JSON.stringify({ roles: { orphan: { description: "left behind" } } }),
+    );
+    const store = new CredentialStore(dir);
+    expect(store.getRole("orphan")).toBeUndefined();
+    expect(store.getRoles().map((r) => r.name)).toEqual(["reviewer"]);
+  });
+});
