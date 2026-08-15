@@ -34,10 +34,12 @@ import { killChild } from "../shared/kill-child.js";
 import { truncateTerminalBuffer } from "./terminal-buffer.js";
 import type { LogStore } from "./log-store.js";
 import {
+  classifyComposeFailure,
   parseComposeFile,
   parseUserNamedVolumes,
   generateComposeOverride,
   writeComposeOverride,
+  type ComposeFailure,
   type ComposeOverrideOptions,
   type ComposeService,
   type ComposeServiceOrigin,
@@ -516,6 +518,23 @@ export class ServiceManager extends EventEmitter {
   private _startupComplete = false;
   /** Error message if the compose stack failed to start. */
   startError: string | null = null;
+  /**
+   * planning#382 — why the project's own compose file yielded no services, when
+   * that is the reason the list is empty.
+   *
+   * Deliberately NOT the same field as {@link startError}, which is every way a
+   * stack can fail to start: an image pull that was denied, a port already
+   * bound, a `compose up` that exited non-zero. This one is narrower and
+   * classified — a file ShipIt could not understand (`malformed`) or one it
+   * understood and DECLINED (`refused`, whose message names the rule and the one
+   * line that fixes it). Only a failure of that shape can be reported as "your
+   * compose file says X"; the rest are reported as stack errors and always were.
+   *
+   * Written by {@link parseProjectCompose} on both edges — set on a throw,
+   * cleared on a parse that succeeds — so it describes the file as of the last
+   * time ShipIt read it, not as of the last `start()`.
+   */
+  private _projectComposeFailure: ComposeFailure | null = null;
   /**
    * Set to `true` once `stop()` has been called. Guards retry callbacks so
    * they don't fire after the manager has been torn down. Reset to `false`
@@ -1085,6 +1104,18 @@ export class ServiceManager extends EventEmitter {
         ? { ...svc, url: `http://${svc.containerIp}:${svc.port}/` }
         : { ...svc },
     );
+  }
+
+  /**
+   * planning#382 — why {@link getServices} is empty, when the answer is the
+   * project's own compose file rather than "nothing is declared".
+   *
+   * Read beside `getServices()` by every surface that renders the list, so an
+   * empty list can state the reason instead of reading as an empty project. See
+   * {@link _projectComposeFailure} for why this is not `startError`.
+   */
+  get projectComposeFailure(): ComposeFailure | null {
+    return this._projectComposeFailure;
   }
 
   /** Get a specific service by name. */
@@ -1722,6 +1753,12 @@ export class ServiceManager extends EventEmitter {
     this._started = false;
     this._startupComplete = false;
     this.startError = null;
+    // planning#382 — cleared for the same reason `startError` is, and for one
+    // more: `start()` only re-answers this when there IS a project file to
+    // parse, so a session whose `compose:` block has just been removed
+    // (`noProjectCompose`) would otherwise keep reporting the old file's
+    // refusal against a stack that no longer has one.
+    this._projectComposeFailure = null;
     await this.start();
   }
 
@@ -1953,11 +1990,35 @@ export class ServiceManager extends EventEmitter {
    * host path. The file is small and the parse is cheap; the window is not.
    */
   private parseProjectCompose(composePath: string): ComposeService[] {
-    return parseComposeFile(composePath, {
-      dockerSocket: this.composeConfig.dockerSocket || this.opsSession,
-      containEgress: Boolean(this.containServicesFn),
-      trustedOpsProxy: this.opsSession,
-    });
+    try {
+      const parsed = parseComposeFile(composePath, {
+        dockerSocket: this.composeConfig.dockerSocket || this.opsSession,
+        containEgress: Boolean(this.containServicesFn),
+        trustedOpsProxy: this.opsSession,
+      });
+      // planning#382 — a parse that succeeds RETRACTS the last failure. This is
+      // the one place the project's compose file is turned into services, so it
+      // is also the only place that can say the reason no longer applies: the
+      // same re-parse runs before every `up` (see the docstring above), so a
+      // file the user has since fixed clears the record without waiting for a
+      // reconcile.
+      this._projectComposeFailure = null;
+      return parsed;
+    } catch (err) {
+      // planning#382 — the reason is RECORDED here rather than only thrown,
+      // because the throw reaches exactly one surface. `start()` propagates it
+      // to `service-manager-setup.ts`, which turns it into `startError` and the
+      // `compose_error` the Preview pane renders; every OTHER reader of this
+      // session's services — `getServices()`, and through it
+      // `GET /api/sessions/:id/services`, the agent bridge's `list` and
+      // `shipit service list` — saw an empty map with nothing attached to it.
+      // "No services" is the wrong answer to "why is this list empty" when the
+      // truth is "refused, here is the line to add", and docs/263's containment
+      // rules refuse a STOCK compose file, so it is the FIRST answer a project
+      // not written for containment gets.
+      this._projectComposeFailure = classifyComposeFailure(err);
+      throw err;
+    }
   }
 
   /**

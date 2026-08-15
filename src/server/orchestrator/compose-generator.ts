@@ -322,6 +322,37 @@ export class ComposeValidationError extends Error {
   }
 }
 
+/**
+ * Why a compose file could not be turned into a list of services — the ONE
+ * classified shape every surface that reports that failure carries
+ * (planning#377, planning#382).
+ *
+ * One shape and one classifier, because the failure now reaches several
+ * surfaces that must not disagree about it: the plugin card
+ * (`readProjectServices`), the session's service list (`ServiceManager`), and
+ * everything the list feeds — `GET /api/sessions/:id/services`, the agent
+ * bridge's `list`, `shipit service list`.
+ */
+export interface ComposeFailure {
+  kind: ComposeValidationKind;
+  /** The parser's own message — it names the service, the rule and the fix. */
+  message: string;
+}
+
+/**
+ * Classify a parse throw into a {@link ComposeFailure}.
+ *
+ * A non-`ComposeValidationError` is by definition something ShipIt did not
+ * anticipate, so it reads as `malformed`: only a deliberate refusal can claim
+ * to name a fix.
+ */
+export function classifyComposeFailure(err: unknown): ComposeFailure {
+  return {
+    kind: err instanceof ComposeValidationError ? err.kind : "malformed",
+    message: err instanceof Error ? err.message : String(err),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Compose file parsing
 // ---------------------------------------------------------------------------

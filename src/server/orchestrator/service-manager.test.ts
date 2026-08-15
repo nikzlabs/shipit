@@ -706,6 +706,84 @@ describe("ServiceManager lifecycle (mocked docker)", () => {
     expect(mgr.startError).toBeNull();
   });
 
+  /**
+   * planning#382 — an empty service list must be able to say WHY.
+   *
+   * The defect these pin: a compose file ShipIt declines throws out of
+   * `start()`, which reaches the Preview pane as `compose_error` and reaches
+   * every reader of the service list as nothing at all. So the list read as
+   * "this project declares no services" when the truth was "refused, here is
+   * the line to change" — and docs/263's containment rules decline a STOCK
+   * compose file, so that was a project's FIRST answer, not an edge case.
+   */
+  describe("projectComposeFailure", () => {
+    it("is null while the compose file parses", async () => {
+      const dir = setup();
+      writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['3000:3000']\n");
+      const mgr = createMockedManager(dir);
+      await mgr.start();
+      expect(mgr.projectComposeFailure).toBeNull();
+    });
+
+    it("records a REFUSED file with the rule's own message", async () => {
+      const dir = setup();
+      writeCompose(dir, "services:\n  web:\n    image: node:20\n    privileged: true\n");
+      const mgr = createMockedManager(dir);
+
+      await expect(mgr.start()).rejects.toThrow(/privileged/);
+
+      // The list is empty, and this is the whole of what makes that empty list
+      // legible: the classification says the file was understood and declined,
+      // and the message is the parser's own — it names the service and the fix.
+      expect(mgr.getServices()).toEqual([]);
+      expect(mgr.projectComposeFailure?.kind).toBe("refused");
+      expect(mgr.projectComposeFailure?.message).toContain("web");
+      expect(mgr.projectComposeFailure?.message).toContain("privileged");
+    });
+
+    it("records a file it could not parse as MALFORMED, not refused", async () => {
+      const dir = setup();
+      // Valid YAML, not a compose document — the "could not understand it"
+      // half, which must NOT claim its message names a fix.
+      writeCompose(dir, "not-a-compose-file: true\n");
+      const mgr = createMockedManager(dir);
+
+      await expect(mgr.start()).rejects.toThrow();
+      expect(mgr.projectComposeFailure?.kind).toBe("malformed");
+    });
+
+    it("retracts the failure once the file parses again", async () => {
+      const dir = setup();
+      writeCompose(dir, "services:\n  web:\n    image: node:20\n    privileged: true\n");
+      const mgr = createMockedManager(dir);
+      await expect(mgr.start()).rejects.toThrow();
+      expect(mgr.projectComposeFailure).not.toBeNull();
+
+      // The user fixes the file and the stack reconciles. A stale refusal here
+      // would keep telling the agent to edit a line it has already edited.
+      writeCompose(dir, "services:\n  web:\n    image: node:20\n    ports: ['3000:3000']\n");
+      await mgr.reconcile();
+      expect(mgr.projectComposeFailure).toBeNull();
+    });
+
+    it("drops a stale failure when the project stops declaring a compose file", async () => {
+      const dir = setup();
+      writeCompose(dir, "services:\n  web:\n    image: node:20\n    privileged: true\n");
+      const mgr = createMockedManager(dir);
+      await expect(mgr.start()).rejects.toThrow();
+
+      // `noProjectCompose` means `start()` never parses, so nothing would clear
+      // the record — the session would report a refusal against a stack that no
+      // longer exists.
+      mgr.updateComposeConfig(
+        { file: "docker-compose.yml", dockerSocket: false },
+        { noProjectCompose: true },
+      );
+      await mgr.reconcile();
+      expect(mgr.projectComposeFailure).toBeNull();
+    });
+  });
+
   it("getLogBuffer returns empty string for unknown service", () => {
     const dir = setup();
     writeCompose(dir, "services:\n  web:\n    image: node:20\n");

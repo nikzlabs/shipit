@@ -367,6 +367,29 @@ inside your container. It is populated only while the service is running.
 
 Add `--json` to any subcommand for a machine-readable object.
 
+### An empty list has two different meanings
+
+`list` prints "No services defined" only when the project genuinely declares
+none. If ShipIt read the compose file and **declined** it — a rule in
+`compose.md` the file does not satisfy, most often the numeric non-root `user:`
+a contained service needs — the list says so instead, and quotes the rule and
+the fix:
+
+```
+ShipIt refused this project's compose file, so none of its services are defined:
+
+  Service `web`: contained services must declare a numeric, non-root `user:` …
+
+Edit docker-compose.yml to satisfy that rule — see /shipit-docs/compose.md.
+```
+
+Do not add a second compose file in response — the one that exists needs the
+named line changed. A file ShipIt could not parse at all is reported the same
+way, without a fix instruction, because there is none to give.
+
+`--json` and `GET /api/sessions/:id/services` carry the same thing as
+`failure: { kind: "refused" | "malformed", message }` beside `services`.
+
 ### Starts can take minutes
 
 A service is `manual` precisely because it's heavy. The first `start` runs

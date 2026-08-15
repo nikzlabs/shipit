@@ -44,6 +44,28 @@ interface ServiceRow {
   alreadyRunning?: boolean;
 }
 
+/**
+ * planning#382 — why the project's compose file contributed no services.
+ *
+ * The orchestrator's `ComposeFailure`, read off the wire. Kept as its own local
+ * shape (like {@link ServiceRow}) because the shim is compiled into the session
+ * image and must not import orchestrator modules.
+ */
+interface ComposeFailureRow {
+  kind: "refused" | "malformed";
+  message: string;
+}
+
+function toFailure(value: unknown): ComposeFailureRow | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const obj = value as Record<string, unknown>;
+  const message = asString(obj.message);
+  if (!message) return undefined;
+  // An unrecognised kind reads as `malformed`, the weaker claim: only a
+  // deliberate refusal can promise the message names a fix.
+  return { kind: obj.kind === "refused" ? "refused" : "malformed", message };
+}
+
 function toRow(value: unknown): ServiceRow {
   const obj = (value && typeof value === "object" ? value : {}) as Record<string, unknown>;
   return {
@@ -67,8 +89,42 @@ function toRow(value: unknown): ServiceRow {
  * appended as their own lines instead of being dropped, since "why is this
  * service in `error`" is the whole reason the agent is looking.
  */
-function renderTable(rows: ServiceRow[]): string {
+/**
+ * planning#382 — the project's compose file, said in the agent's words.
+ *
+ * `refused` gets the imperative, because ShipIt understood the file and
+ * declined it: the message already names the rule and the one line that fixes
+ * it, so the only thing to add is where to make the edit. `malformed` gets no
+ * fix instruction, because there is none to give — ShipIt could not understand
+ * the file at all, and the message is where the parse gave up.
+ */
+function renderFailure(failure: ComposeFailureRow): string {
+  if (failure.kind === "refused") {
+    return (
+      "ShipIt refused this project's compose file, so none of its services are defined:\n\n" +
+      `  ${failure.message}\n\n` +
+      "Edit docker-compose.yml to satisfy that rule — see /shipit-docs/compose.md."
+    );
+  }
+  return (
+    "ShipIt could not read this project's compose file, so none of its services are defined:\n\n" +
+    `  ${failure.message}`
+  );
+}
+
+/**
+ * Render the service list, or — when it is empty for a reason — that reason.
+ *
+ * The empty case is why `failure` is here at all. "No services defined. Add
+ * them to docker-compose.yml" is correct for a project that declares no stack
+ * and actively WRONG for one whose stack was refused: it sends the agent to
+ * write a file that already exists, instead of to the line it has to change.
+ * docs/263's containment rules refuse a stock compose file, so that wrong
+ * answer was the first one a normal project got.
+ */
+function renderTable(rows: ServiceRow[], failure?: ComposeFailureRow): string {
   if (rows.length === 0) {
+    if (failure) return renderFailure(failure);
     return "No services defined. Add them to docker-compose.yml — see /shipit-docs/compose.md.";
   }
   const header = ["NAME", "STATUS", "PREVIEW", "PORT", "URL"];
@@ -89,6 +145,12 @@ function renderTable(rows: ServiceRow[]): string {
   for (const r of rows) {
     if (r.error) out.push(`\n${r.name}: ${r.error}`);
   }
+  // A non-empty list AND a failure is reachable: the project file is re-parsed
+  // before every `docker compose up`, so it can start being refused while the
+  // map still holds the services an earlier parse produced — and a session that
+  // surfaces plugin services has rows the project file never contributed. The
+  // list is what was asked for, so it stays first and the reason follows it.
+  if (failure) out.push(`\n${renderFailure(failure)}`);
   return out.join("\n");
 }
 
@@ -177,7 +239,16 @@ export async function handleServiceList(args: string[], deps: RunDeps): Promise<
     fail(deps.io, serviceError(res, "Failed to list services"));
   }
   const rows = Array.isArray(res.body.services) ? res.body.services.map(toRow) : [];
-  success(deps.io, parsed.booleans.has("json") ? JSON.stringify({ services: rows }, null, 2) : renderTable(rows));
+  // planning#382 — carried on BOTH renderings. `--json` is the machine-readable
+  // one, so omitting the reason there would leave a scripted caller with the
+  // same bare `[]` the human rendering used to give.
+  const failure = toFailure(res.body.failure);
+  success(
+    deps.io,
+    parsed.booleans.has("json")
+      ? JSON.stringify({ services: rows, ...(failure ? { failure } : {}) }, null, 2)
+      : renderTable(rows, failure),
+  );
 }
 
 // ---------------------------------------------------------------------------

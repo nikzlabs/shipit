@@ -27,9 +27,9 @@ import fs from "node:fs";
 import path from "node:path";
 import type Docker from "dockerode";
 import {
-  ComposeValidationError,
+  classifyComposeFailure,
   parseComposeFile,
-  type ComposeValidationKind,
+  type ComposeFailure,
 } from "../compose-generator.js";
 import {
   buildPluginComposeServices,
@@ -253,12 +253,15 @@ export interface ProjectServices {
   failure?: ProjectComposeFailure;
 }
 
-/** Why {@link readProjectServices} could not name the project's services. */
-export interface ProjectComposeFailure {
-  kind: ComposeValidationKind;
-  /** The parser's own message — it names the service, the rule and the fix. */
-  message: string;
-}
+/**
+ * Why {@link readProjectServices} could not name the project's services.
+ *
+ * The shared {@link ComposeFailure} shape, not a private one: planning#382
+ * carries the SAME failure onto the session's service list, and two structurally
+ * identical types is how the two surfaces come to classify one event
+ * differently.
+ */
+export type ProjectComposeFailure = ComposeFailure;
 
 /**
  * The project's own service names and ports, best-effort.
@@ -304,15 +307,13 @@ export function readProjectServices(
   } catch (err) {
     // planning#377 — the reason is CARRIED, not discarded. A caller that must
     // fail closed still fails closed on `unknown`; what it gains is the ability
-    // to say which of the two things happened. A non-`ComposeValidationError`
-    // is by definition something ShipIt did not anticipate, so it reads as
-    // malformed: only a deliberate refusal can claim to name a fix.
-    const kind: ComposeValidationKind = err instanceof ComposeValidationError ? err.kind : "malformed";
+    // to say which of the two things happened. The malformed/refused rule is
+    // `classifyComposeFailure`'s, shared with the service list (planning#382).
     return {
       names: [],
       ports: new Set(),
       unknown: true,
-      failure: { kind, message: err instanceof Error ? err.message : String(err) },
+      failure: classifyComposeFailure(err),
     };
   }
 }
