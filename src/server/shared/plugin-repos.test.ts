@@ -445,6 +445,38 @@ describe("buildPluginReposSnapshot", () => {
       expect(card.issues).toEqual([]);
     });
 
+    // Seen in the dogfood, which has no install runner so EVERY activation
+    // carries this sentence: it rendered twice on the card. `manifestWarnings`
+    // (durable, on the generation record) and `warning` (transient, from the
+    // activation attempt) are both unshifted into one `issues` list, and
+    // `activateGeneration` was writing the same string to both. This asserts
+    // the merge, so a future caller that repopulates both is caught here rather
+    // than by someone reading a card.
+    it("does not render the same sentence twice when both warning channels carry it", () => {
+      const notInstalled =
+        "`p` declares an install command, which this runtime cannot run — "
+        + "the plugin is active but was not installed.";
+      const card = build({
+        tools: { commit: "abc123", exports: ["p"], manifestWarnings: [notInstalled], warning: notInstalled },
+      });
+      expect(card.issues.filter((i) => i === notInstalled)).toHaveLength(1);
+    });
+
+    it("keeps both when the two channels carry DIFFERENT facts", () => {
+      // The reason the fix is "stop writing it twice" and not "dedupe on
+      // render": a moved-tag advisory and an uninstalled generation are
+      // unrelated, and the card must state both.
+      const card = build({
+        tools: {
+          commit: "abc123",
+          exports: ["p"],
+          manifestWarnings: ["`p` declares an install command, which this runtime cannot run."],
+          warning: "the tag moved",
+        },
+      });
+      expect(card.issues).toHaveLength(2);
+    });
+
     it("a selector missing from the live manifest becomes an issue", () => {
       const card = build({ tools: { commit: "abc123", exports: ["other"] } });
       expect(card.uses[0].found).toBe(false);

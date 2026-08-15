@@ -882,9 +882,20 @@ async function activateOnce(repo: DeclaredPluginRepo, deps: ActivateDeps): Promi
     await pruneOldGenerations(stateDir, repo.name, commit, deps.beginGenerationDeletion);
 
     console.log(`[plugins] ${repo.name}: activated ${commit.slice(0, 9)} (${declaredRef})`);
-    // The uninstalled warning outranks a moved-tag advisory: one says the
-    // plugin does not fully work, the other that a pin held.
-    if (notInstalled) return { status: "activated", generation: record, warning: notInstalled };
+    // `notInstalled` is deliberately NOT returned as the attempt `warning` as
+    // well: it is already in the record's `manifestWarnings` above, and
+    // `buildRepoView` unshifts BOTH channels into one `issues` list — so
+    // returning it here rendered the same sentence twice on the card (seen in
+    // the dogfood, where no install runner exists so every activation carries
+    // it). The record is the right home of the two, because it is durable: the
+    // condition holds for as long as that generation is live in this runtime,
+    // and the card must state it on a session that reopens without activating
+    // anything, where there is no attempt to carry a warning at all.
+    //
+    // Returning `warningField` unconditionally also stops it being swallowed.
+    // The old branch returned `notInstalled` INSTEAD of it, so a moved-tag
+    // advisory vanished whenever the runtime could not install — the two are
+    // about different things and are not each other's alternative.
     return { status: "activated", generation: record, ...warningField };
   } catch (err) {
     await fsp.rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);

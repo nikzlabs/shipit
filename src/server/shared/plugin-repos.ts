@@ -1009,6 +1009,19 @@ export function buildPluginReposSnapshot(
     if (live.warning) issues.unshift(live.warning);
     for (const w of live.manifestWarnings ?? []) issues.unshift(w);
     if (live.error) issues.unshift(live.error);
+    // The card is the whole report a user gets (req 13), and the SAME sentence
+    // twice is never part of it. Two channels feed this list — `manifestWarnings`
+    // is durable on the generation record, `warning` is transient from the
+    // activation attempt — and `activateGeneration` once wrote the uninstalled
+    // notice to both, which the dogfood rendered as two identical rows.
+    //
+    // That source is fixed; this makes the property structural rather than
+    // something every future caller has to remember. It collapses only EXACT
+    // repeats and keeps the first, so ordering above is preserved and two
+    // channels carrying different facts still both show.
+    const deduped = [...new Set(issues)];
+    issues.length = 0;
+    issues.push(...deduped);
 
     return {
       name: repo.name,
