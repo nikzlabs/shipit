@@ -381,7 +381,20 @@ the card blamed a file it had in fact read and understood. `readProjectServices`
 ends in a bare `catch` that discards the error, collapsing a malformed file and a
 deliberate refusal into one `unknown: true` (`plugin-services.ts:276`, verified).
 Failing closed is right; being unable to say why is the gap. Filed as
-**planning#377**.
+**planning#377**, and **fixed** — a `ComposeValidationError` now carries
+`kind: "malformed" | "refused"` (defaulting to `refused`, so a rule added later
+is classified correctly without anyone remembering to), `ProjectServices` gained
+a `failure` field, and the card states the rule verbatim.
+
+**One clause above was wrong, and is corrected here rather than deleted**, since
+this run's own record is what a later run compares against: "that message reached
+the orchestrator log and nothing else" is not what the code did. A refusal of the
+project's own compose file propagates out of `ServiceManager.start()`, becomes
+`startError`, and is emitted as `compose_error` — which the client renders in the
+**Preview pane**. What was true is narrower: the **Services list** shows an empty
+list with no reason, so the reason and the emptiness live on two different
+surfaces and only one of them speaks. That is **planning#382**, still open. The
+operator who reported it was reading the right surface; it was the silent one.
 
 ### The one expected value that CHANGED after this run
 
@@ -419,5 +432,5 @@ is seeing the fix, **not a regression**.
   and does not settle: every *other* claim in Runs 1 and 2 about what the card
   "reads" is still a claim about `GET /api/plugin-repos`, its data source. The
   card was read once, in one state — `active`, two unmet needs, services
-  accepted. planning#377 and planning#380 both describe states it has never been
-  seen in.
+  accepted. planning#380 describes a state it has never been seen in, and so did
+  planning#377 before it was fixed.
