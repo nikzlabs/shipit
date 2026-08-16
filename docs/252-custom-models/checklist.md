@@ -439,3 +439,22 @@ the first of these. All six are fixed.
       them, with the dialog wider by exactly that table and only on step 1. Two
       prototypes decided it; the enclosing panel lost because its own padding
       pushed the cells out of line with the rows.
+- [x] **Harness chips in Settings → Services put on one line.** `InstalledHarnesses`
+      stacked one per line; an install has two or three two-word chips, so the
+      column spent three rows saying what fits in one, and a vertical stack read
+      as a list with entries to act on — which is what these are not.
+- [x] **Prototype for reqs 23–24: the supported-models dialog**
+      (`mockup-models.html`, generated from the real catalogue so the harness
+      answers are the picker's). Two variants decided the harness column: named
+      chips per model lost to aligned tick columns. Columns are every harness
+      ShipIt integrates, the ones this deployment lacks marked *not installed*;
+      clicking a column head narrows every service to that harness.
+- [ ] **Build req 23's dialog.** One `SupportedModelsDialog`, opened from the
+      panel's header control and from a card's `N models`; rows are
+      `(label, id, context, price, harness ticks)` per service and mode, and the
+      per-model harness answer is `eligibleEntriesForHarness` asked about a
+      hypothetical credential — never a second style join.
+- [ ] **Retire the card's hover list of model ids.** `ModelsControl`'s tooltip
+      becomes the dialog opener; the count stays.
+- [ ] **Req 24's narrowing**, with a visible statement of what is being shown and
+      the same control clearing it.
