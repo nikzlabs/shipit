@@ -1,0 +1,839 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Supported models — docs/252 reqs 23-24 prototype</title>
+<style>
+  :root {
+    --bg-page: #0a0a0b; --bg-modal: #111113; --bg-secondary: #18181b;
+    --bg-elevated: #1f1f23; --bg-hover: #26262b;
+    --border: #2a2a30; --border-soft: #1f1f24;
+    --text-primary: #ececee; --text-secondary: #a1a1aa; --text-tertiary: #6b6b74;
+    --accent: #6366f1; --success: #22c55e; --warning: #f59e0b;
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 36px 24px 80px; color: var(--text-primary);
+    background: radial-gradient(1200px 600px at 80% -10%, #15151a 0%, transparent 60%), var(--bg-page); }
+  .wrap { max-width: 1040px; margin: 0 auto; }
+  h1 { font-size: 20px; font-weight: 600; margin: 0 0 6px; }
+  .page-sub { font-size: 13px; color: var(--text-secondary); line-height: 1.65; margin: 0 0 26px; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .step { font-size: 11px; letter-spacing: .09em; text-transform: uppercase;
+    color: var(--text-tertiary); margin: 30px 0 10px; }
+  .note { font-size: 12px; color: var(--text-tertiary); line-height: 1.6; margin: 8px 0 0; max-width: 86ch; }
+
+  /* ---- where the trigger lives ---- */
+  .panel { border: 1px solid var(--border); border-radius: 12px; background: var(--bg-modal);
+    padding: 14px 16px; max-width: 520px; }
+  /* The control aligns with the HEADING, not with the block: centred against a
+     two-line header it floated between the title and the caption, pointing at
+     neither. Aligned on the TEXT BASELINE rather than by box centres or a
+     hand-tuned offset — the button's box is 4px taller than the heading's line,
+     so matching boxes puts one of the two visibly high, whichever way it is done. */
+  .panel-head { display: flex; align-items: baseline; gap: 8px; }
+  .panel-head h3 { font-size: 13px; font-weight: 600; margin: 0; }
+  .panel-sub { font-size: 11.5px; color: var(--text-tertiary); margin: 3px 0 0; }
+  .link-btn { display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px;
+    color: var(--text-tertiary); background: transparent; border: 0; padding: 2px 5px;
+    border-radius: 5px; cursor: pointer; font-family: inherit; }
+  .link-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
+  .link-btn.hl { color: var(--text-primary); background: var(--bg-hover);
+    outline: 1px solid color-mix(in oklab, var(--accent) 55%, transparent); }
+  .card { border: 1px solid var(--border); border-radius: 8px; margin-top: 10px; }
+  .card-row { display: flex; align-items: center; gap: 8px; padding: 8px; font-size: 12px; }
+  .cred { display: flex; align-items: center; gap: 8px; padding: 4px 8px 8px; font-size: 12px;
+    color: var(--text-secondary); }
+
+  /* ---- the dialog ---- */
+  .dialog { margin-top: 12px; display: flex; flex-direction: column; background: var(--bg-modal);
+    border: 1px solid var(--border); border-radius: 14px; overflow: hidden; height: 640px; }
+  .dlg-head { padding: 16px 18px 12px; border-bottom: 1px solid var(--border); }
+  .dlg-title { display: flex; align-items: center; gap: 8px; }
+  .dlg-title h2 { font-size: 15px; font-weight: 600; margin: 0; }
+  .dlg-title .count { font-size: 11px; color: var(--text-tertiary); }
+  .dlg-sub { font-size: 12px; color: var(--text-secondary); margin: 6px 0 0; line-height: 1.55; max-width: 78ch; }
+  .filter { margin-top: 11px; display: flex; gap: 8px; align-items: center; }
+  .filter input { flex: 1; font: inherit; font-size: 12px; padding: 6px 9px; border-radius: 7px;
+    background: var(--bg-page); border: 1px solid var(--border); color: var(--text-primary); }
+  .filter input::placeholder { color: var(--text-tertiary); }
+  .toggle { display: flex; border: 1px solid var(--border); border-radius: 7px; overflow: hidden; }
+  .toggle span { font-size: 11.5px; padding: 6px 10px; color: var(--text-tertiary); }
+  .toggle span.on { background: var(--bg-elevated); color: var(--text-primary); }
+
+  /* The narrowing, said in words above the list — and the only way back out. A
+     filter with no visible statement is how a user comes to believe the
+     catalogue is smaller than it is. */
+  .narrowed { display: none; margin-top: 10px; align-items: center; gap: 8px;
+    background: color-mix(in oklab, var(--accent) 14%, var(--bg-secondary));
+    border: 1px solid color-mix(in oklab, var(--accent) 40%, var(--border));
+    border-radius: 8px; padding: 6px 9px; font-size: 11.5px; color: var(--text-primary); }
+  body.filtered .narrowed { display: flex; }
+  .narrowed .shown { color: var(--text-secondary); }
+  .narrowed .clear { margin-left: auto; }
+
+  .dlg-body { display: flex; min-height: 0; flex: 1; }
+  .nav { width: 186px; flex: none; border-right: 1px solid var(--border);
+    background: var(--bg-secondary); padding: 10px 8px; overflow-y: auto; }
+  .nav-head { font-size: 10px; letter-spacing: .09em; text-transform: uppercase;
+    color: var(--text-tertiary); padding: 2px 8px 8px; }
+  .nav-item { display: flex; align-items: center; gap: 7px; font-size: 12.5px; padding: 6px 8px;
+    border-radius: 7px; color: var(--text-secondary); text-decoration: none; }
+  .nav-item:hover { background: var(--bg-elevated); color: var(--text-primary); }
+  .nav-item.configured { color: var(--text-primary); }
+  /* A service the harness cannot run stays in the list, struck through: the nav is
+     also the answer to "which services does this harness reach at all". */
+  .nav-item.empty { opacity: .38; }
+  .nav-item.empty .nav-count { text-decoration: line-through; }
+  .nav-count { margin-left: auto; font-size: 10.5px; color: var(--text-tertiary); }
+  .pane { flex: 1; min-width: 0; overflow-y: auto; padding: 4px 18px 22px; }
+
+  .svc { padding-top: 16px; }
+  .svc-name { display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: 600;
+    margin: 0 0 8px; position: sticky; top: 0; background: var(--bg-modal); padding: 8px 0 6px; z-index: 2; }
+  .avatar { display: inline-flex; align-items: center; justify-content: center; width: 20px;
+    height: 20px; border-radius: 5px; border: 1px solid var(--border); background: var(--bg-secondary);
+    font-size: 11px; color: var(--text-secondary); flex: none; }
+  .avatar.sm { width: 17px; height: 17px; font-size: 10px; border-radius: 4px; }
+  .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--success); }
+  /* A service whose every row is filtered out says so in place, rather than
+     vanishing and leaving a gap the user has to interpret. */
+  .svc-none { display: none; font-size: 11.5px; color: var(--text-tertiary); margin: 0 0 10px; }
+  .svc.none .svc-none { display: block; }
+  .svc.none .mode { display: none; }
+
+  .mode { margin-bottom: 14px; }
+  .mode.none { display: none; }
+  .mode-head { display: flex; align-items: center; gap: 8px; margin: 0 0 5px; }
+  .mode-count { font-size: 10.5px; color: var(--text-tertiary); }
+  .pill { font-size: 10px; padding: 1.5px 7px; border-radius: 999px; border: 1px solid var(--border);
+    color: var(--text-secondary); background: var(--bg-secondary); }
+  .pill.sub { border-color: color-mix(in oklab, var(--success) 40%, var(--border));
+    color: color-mix(in oklab, var(--success) 70%, var(--text-primary)); }
+
+  table.grid { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .grid th { text-align: left; font-weight: 500; font-size: 10px; letter-spacing: .06em;
+    text-transform: uppercase; color: var(--text-tertiary); padding: 4px 8px;
+    border-bottom: 1px solid var(--border-soft); }
+  .grid td { padding: 6px 8px; border-bottom: 1px solid var(--border-soft); vertical-align: middle; }
+  .grid tr:hover td { background: var(--bg-secondary); }
+  .grid tr.hidden { display: none; }
+  .grid .num { text-align: right; white-space: nowrap; color: var(--text-secondary); }
+  .grid th.num { text-align: right; }
+  .mlabel { color: var(--text-primary); }
+  .mid { font-size: 10.5px; color: var(--text-tertiary); }
+  .per { color: var(--text-tertiary); }
+
+  /* ---- the harness columns ---- */
+  .hcol { width: 78px; text-align: center; }
+  th.hcol { padding: 4px 2px; vertical-align: bottom; }
+  .hcol b, .tick b { color: var(--success); font-weight: 600; }
+  .hcol i, .tick i { color: var(--text-tertiary); font-style: normal; }
+  /* A harness ShipIt integrates that this deployment did not install: the column
+     still carries the answer, at an opacity that says it cannot be acted on. */
+  .hcol.absent b, .tick.absent b {
+    color: color-mix(in oklab, var(--success) 45%, var(--text-tertiary)); opacity: .6; }
+  .hcol.absent i, .tick.absent i { opacity: .45; }
+  .hbtn { font: inherit; font-size: 10px; letter-spacing: .06em; text-transform: uppercase;
+    color: var(--text-tertiary); background: transparent; border: 0; padding: 2px 4px;
+    border-radius: 5px; cursor: pointer; line-height: 1.25; white-space: normal; width: 100%; }
+  .hbtn:hover { background: var(--bg-hover); color: var(--text-primary); }
+  .hbtn .tag { display: block; font-size: 8.5px; letter-spacing: .02em; text-transform: none;
+    color: var(--text-tertiary); }
+  .hbtn.on { background: color-mix(in oklab, var(--accent) 34%, var(--bg-elevated));
+    color: var(--text-primary); outline: 1px solid color-mix(in oklab, var(--accent) 60%, transparent); }
+  /* Narrowed to one harness: its column is the one being read, so the others
+     recede rather than disappear — the row is still the pairing's full answer. */
+  body.filtered .hcol.dim { opacity: .3; }
+
+  .foot { padding: 10px 18px; border-top: 1px solid var(--border); font-size: 11.5px;
+    color: var(--text-tertiary); display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+  .legend { display: flex; align-items: center; gap: 6px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Supported models</h1>
+  <p class="page-sub">
+    Prototype for reqs 23&ndash;24 — one place that says what every service in ShipIt's catalogue can
+    run, reachable from Settings &rarr; Services without occupying it. Every row is generated from the
+    real catalogue (38 rows across 6 services), so the harness answers are the
+    ones the picker gives. <strong>Click a harness column head</strong> to narrow the whole list to
+    what that harness can run.
+  </p>
+
+  <div class="step">1 &nbsp;Where it is opened from</div>
+  <div class="panel">
+    <div class="panel-head">
+      <div style="min-width:0">
+        <h3>Services</h3>
+        <p class="panel-sub">ShipIt defines the services; you supply the credential.</p>
+      </div>
+      <span style="flex:1"></span>
+      <button class="link-btn hl">&#9432; Supported models</button>
+    </div>
+    <div class="card">
+      <div class="card-row">
+        <span class="avatar">A</span> Anthropic
+        <span class="pill sub">Subscription</span>
+        <span class="pill">2 credentials</span>
+        <span style="flex:1"></span>
+        <button class="link-btn hl">4 models</button>
+      </div>
+      <div class="cred">&#9776;&nbsp; Anthropic plan token &nbsp;<span style="color:var(--text-tertiary)">5h 42% &middot; 7d 18%</span></div>
+    </div>
+    <p class="note">
+      Two ways in, one destination: the panel's control opens the dialog at the top, a card's
+      <em>N&nbsp;models</em> opens it at that service. The card's hover list of raw ids goes away —
+      the dialog says the same thing with the labels, the window, the price and the harnesses.
+    </p>
+  </div>
+
+  <div class="step">2 &nbsp;The dialog</div>
+  <div class="dialog">
+    <div class="dlg-head">
+      <div class="dlg-title">
+        <h2>Supported models</h2>
+        <span class="count">6 services</span>
+      </div>
+      <p class="dlg-sub">
+        Every model ShipIt's catalogue offers, per service and billing mode. The harness columns are
+        <strong>every harness ShipIt integrates</strong> — a model needs one that speaks its API
+        style, and several may. A column marked <em>not installed</em> is a harness this deployment
+        does not have: the answer is still true, there is just nothing here to run it on. Prices are
+        the service's own published rate per million tokens and are estimates; under a subscription
+        they are what the tokens would have cost, not an extra charge.
+      </p>
+      <div class="filter">
+        <input placeholder="Filter by model, id or service…" />
+        <div class="toggle"><span class="on">All services</span><span>Configured</span></div>
+      </div>
+      <div class="narrowed">
+        Showing only what <strong class="who"></strong> can run
+        <span class="shown"></span>
+        <button type="button" class="link-btn clear">Clear</button>
+      </div>
+    </div>
+    <div class="dlg-body">
+      <nav class="nav">
+        <div class="nav-head">Services</div>
+        <a class="nav-item configured" href="#svc-anthropic" data-svc="anthropic"><span class="avatar sm">A</span>Anthropic<span class="nav-count">4</span></a>
+        <a class="nav-item" href="#svc-openai" data-svc="openai"><span class="avatar sm">O</span>OpenAI<span class="nav-count">8</span></a>
+        <a class="nav-item" href="#svc-deepseek" data-svc="deepseek"><span class="avatar sm">D</span>DeepSeek<span class="nav-count">2</span></a>
+        <a class="nav-item configured" href="#svc-zai" data-svc="zai"><span class="avatar sm">G</span>GLM (Z.ai)<span class="nav-count">1</span></a>
+        <a class="nav-item" href="#svc-openrouter" data-svc="openrouter"><span class="avatar sm">O</span>OpenRouter<span class="nav-count">5</span></a>
+        <a class="nav-item" href="#svc-vercel" data-svc="vercel"><span class="avatar sm">V</span>Vercel AI Gateway<span class="nav-count">5</span></a>
+      </nav>
+      <div class="pane">
+    <section class="svc" id="svc-anthropic">
+      <h3 class="svc-name"><span class="avatar">A</span>Anthropic<span class="dot" title="You have a credential for this service"></span></h3>
+      <div class="mode">
+        <div class="mode-head">
+          <span class="pill sub">Subscription</span>
+          <span class="mode-count">4 models</span>
+        </div>
+        <table class="grid">
+          <thead>
+            <tr>
+              <th>Model</th>
+              <th class="num">Context</th>
+              <th class="num">In / out per M</th>
+              <th class="hcol"><button type="button" class="hbtn" data-harness="Claude Code" title="Show only the models Claude Code can run">Claude Code</button></th><th class="hcol"><button type="button" class="hbtn" data-harness="Codex" title="Show only the models Codex can run">Codex</button></th><th class="hcol absent"><button type="button" class="hbtn" data-harness="OpenCode" title="Show only the models OpenCode can run">OpenCode<span class="tag">not installed</span></button></th>
+            </tr>
+          </thead>
+          <tbody>
+          <tr data-harnesses="Claude Code">
+            <td class="model">
+              <div class="mlabel">Opus 5</div>
+              <div class="mid mono">claude-opus-5</div>
+            </td>
+            <td class="num">1M</td>
+            <td class="num">$5<span class="per"> / </span>$25</td>
+            <td class="hcol" title="Claude Code runs Opus 5"><b>&#10003;</b></td><td class="hcol" title="Codex cannot run Opus 5"><i>&ndash;</i></td><td class="hcol absent" title="OpenCode cannot run Opus 5"><i>&ndash;</i></td>
+          </tr>
+          <tr data-harnesses="Claude Code">
+            <td class="model">
+              <div class="mlabel">Sonnet 5</div>
+              <div class="mid mono">claude-sonnet-5</div>
+            </td>
+            <td class="num">1M</td>
+            <td class="num">$3<span class="per"> / </span>$15</td>
+            <td class="hcol" title="Claude Code runs Sonnet 5"><b>&#10003;</b></td><td class="hcol" title="Codex cannot run Sonnet 5"><i>&ndash;</i></td><td class="hcol absent" title="OpenCode cannot run Sonnet 5"><i>&ndash;</i></td>
+          </tr>
+          <tr data-harnesses="Claude Code">
+            <td class="model">
+              <div class="mlabel">Haiku 4.5</div>
+              <div class="mid mono">haiku</div>
+            </td>
+            <td class="num">200K</td>
+            <td class="num">$1<span class="per"> / </span>$5</td>
+            <td class="hcol" title="Claude Code runs Haiku 4.5"><b>&#10003;</b></td><td class="hcol" title="Codex cannot run Haiku 4.5"><i>&ndash;</i></td><td class="hcol absent" title="OpenCode cannot run Haiku 4.5"><i>&ndash;</i></td>
+          </tr>
+          <tr data-harnesses="Claude Code">
+            <td class="model">
+              <div class="mlabel">Fable 5</div>
+              <div class="mid mono">claude-fable-5</div>
+            </td>
+            <td class="num">1M</td>
+            <td class="num">$10<span class="per"> / </span>$50</td>
+            <td class="hcol" title="Claude Code runs Fable 5"><b>&#10003;</b></td><td class="hcol" title="Codex cannot run Fable 5"><i>&ndash;</i></td><td class="hcol absent" title="OpenCode cannot run Fable 5"><i>&ndash;</i></td>
+          </tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="mode">
+        <div class="mode-head">
+          <span class="pill key">API key</span>
+          <span class="mode-count">4 models</span>
+        </div>
+        <table class="grid">
+          <thead>
+            <tr>
+              <th>Model</th>
+              <th class="num">Context</th>
+              <th class="num">In / out per M</th>
+              <th class="hcol"><button type="button" class="hbtn" data-harness="Claude Code" title="Show only the models Claude Code can run">Claude Code</button></th><th class="hcol"><button type="button" class="hbtn" data-harness="Codex" title="Show only the models Codex can run">Codex</button></th><th class="hcol absent"><button type="button" class="hbtn" data-harness="OpenCode" title="Show only the models OpenCode can run">OpenCode<span class="tag">not installed</span></button></th>
+            </tr>
+          </thead>
+          <tbody>
+          <tr data-harnesses="Claude Code|OpenCode">
+            <td class="model">
+              <div class="mlabel">Opus 5</div>
+              <div class="mid mono">claude-opus-5</div>
+            </td>
+            <td class="num">1M</td>
+            <td class="num">$5<span class="per"> / </span>$25</td>
+            <td class="hcol" title="Claude Code runs Opus 5"><b>&#10003;</b></td><td class="hcol" title="Codex cannot run Opus 5"><i>&ndash;</i></td><td class="hcol absent" title="OpenCode runs Opus 5 — but OpenCode is not installed here"><b>&#10003;</b></td>
+          </tr>
+          <tr data-harnesses="Claude Code|OpenCode">
+            <td class="model">
+              <div class="mlabel">Sonnet 5</div>
+              <div class="mid mono">claude-sonnet-5</div>
+            </td>
+            <td class="num">1M</td>
+            <td class="num">$3<span class="per"> / </span>$15</td>
+            <td class="hcol" title="Claude Code runs Sonnet 5"><b>&#10003;</b></td><td class="hcol" title="Codex cannot run Sonnet 5"><i>&ndash;</i></td><td class="hcol absent" title="OpenCode runs Sonnet 5 — but OpenCode is not installed here"><b>&#10003;</b></td>
+          </tr>
+          <tr data-harnesses="Claude Code|OpenCode">
+            <td class="model">
+              <div class="mlabel">Haiku 4.5</div>
+              <div class="mid mono">haiku</div>
+            </td>
+            <td class="num">200K</td>
+            <td class="num">$1<span class="per"> / </span>$5</td>
+            <td class="hcol" title="Claude Code runs Haiku 4.5"><b>&#10003;</b></td><td class="hcol" title="Codex cannot run Haiku 4.5"><i>&ndash;</i></td><td class="hcol absent" title="OpenCode runs Haiku 4.5 — but OpenCode is not installed here"><b>&#10003;</b></td>
+          </tr>
+          <tr data-harnesses="Claude Code|OpenCode">
+            <td class="model">
+              <div class="mlabel">Fable 5</div>
+              <div class="mid mono">claude-fable-5</div>
+            </td>
+            <td class="num">1M</td>
+            <td class="num">$10<span class="per"> / </span>$50</td>
+            <td class="hcol" title="Claude Code runs Fable 5"><b>&#10003;</b></td><td class="hcol" title="Codex cannot run Fable 5"><i>&ndash;</i></td><td class="hcol absent" title="OpenCode runs Fable 5 — but OpenCode is not installed here"><b>&#10003;</b></td>
+          </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="svc-none">Nothing here for <span class="who"></span>.</p>
+    </section>
+    <section class="svc" id="svc-openai">
+      <h3 class="svc-name"><span class="avatar">O</span>OpenAI</h3>
+      <div class="mode">
+        <div class="mode-head">
+          <span class="pill sub">Subscription</span>
+          <span class="mode-count">8 models</span>
+        </div>
+        <table class="grid">
+          <thead>
+            <tr>
+              <th>Model</th>
+              <th class="num">Context</th>
+              <th class="num">In / out per M</th>
+              <th class="hcol"><button type="button" class="hbtn" data-harness="Claude Code" title="Show only the models Claude Code can run">Claude Code</button></th><th class="hcol"><button type="button" class="hbtn" data-harness="Codex" title="Show only the models Codex can run">Codex</button></th><th class="hcol absent"><button type="button" class="hbtn" data-harness="OpenCode" title="Show only the models OpenCode can run">OpenCode<span class="tag">not installed</span></button></th>
+            </tr>
+          </thead>
+          <tbody>
+          <tr data-harnesses="Codex">
+            <td class="model">
+              <div class="mlabel">GPT-5.6 Sol</div>
+              <div class="mid mono">gpt-5.6-sol</div>
+            </td>
+            <td class="num">272K</td>
+            <td class="num">$5<span class="per"> / </span>$30</td>
+            <td class="hcol" title="Claude Code cannot run GPT-5.6 Sol"><i>&ndash;</i></td><td class="hcol" title="Codex runs GPT-5.6 Sol"><b>&#10003;</b></td><td class="hcol absent" title="OpenCode cannot run GPT-5.6 Sol"><i>&ndash;</i></td>
+          </tr>
+          <tr data-harnesses="Codex">
+            <td class="model">
+              <div class="mlabel">GPT-5.6 Terra</div>
+              <div class="mid mono">gpt-5.6-terra</div>
+            </td>
+            <td class="num">272K</td>
+            <td class="num">$2<span class="per"> / </span>$12</td>
+            <td class="hcol" title="Claude Code cannot run GPT-5.6 Terra"><i>&ndash;</i></td><td class="hcol" title="Codex runs GPT-5.6 Terra"><b>&#10003;</b></td><td class="hcol absent" title="OpenCode cannot run GPT-5.6 Terra"><i>&ndash;</i></td>
+          </tr>
+          <tr data-harnesses="Codex">
+            <td class="model">
+              <div class="mlabel">GPT-5.6 Luna</div>
+              <div class="mid mono">gpt-5.6-luna</div>
+            </td>
+            <td class="num">272K</td>
+            <td class="num">$0.2<span class="per"> / </span>$1.2</td>
+            <td class="hcol" title="Claude Code cannot run GPT-5.6 Luna"><i>&ndash;</i></td><td class="hcol" title="Codex runs GPT-5.6 Luna"><b>&#10003;</b></td><td class="hcol absent" title="OpenCode cannot run GPT-5.6 Luna"><i>&ndash;</i></td>
+          </tr>
+          <tr data-harnesses="Codex">
+            <td class="model">
+              <div class="mlabel">GPT-5.4</div>
+              <div class="mid mono">gpt-5.4</div>
+            </td>
+            <td class="num">272K</td>
+            <td class="num">$2.5<span class="per"> / </span>$15</td>
+            <td class="hcol" title="Claude Code cannot run GPT-5.4"><i>&ndash;</i></td><td class="hcol" title="Codex runs GPT-5.4"><b>&#10003;</b></td><td class="hcol absent" title="OpenCode cannot run GPT-5.4"><i>&ndash;</i></td>
+          </tr>
+          <tr data-harnesses="Codex">
+            <td class="model">
+              <div class="mlabel">GPT-5.4 Mini</div>
+              <div class="mid mono">gpt-5.4-mini</div>
+            </td>
+            <td class="num">272K</td>
+            <td class="num">$0.75<span class="per"> / </span>$4.5</td>
+            <td class="hcol" title="Claude Code cannot run GPT-5.4 Mini"><i>&ndash;</i></td><td class="hcol" title="Codex runs GPT-5.4 Mini"><b>&#10003;</b></td><td class="hcol absent" title="OpenCode cannot run GPT-5.4 Mini"><i>&ndash;</i></td>
+          </tr>
+          <tr data-harnesses="Codex">
+            <td class="model">
+              <div class="mlabel">GPT-5.5</div>
+              <div class="mid mono">gpt-5.5</div>
+            </td>
+            <td class="num">272K</td>
+            <td class="num">$5<span class="per"> / </span>$30</td>
+            <td class="hcol" title="Claude Code cannot run GPT-5.5"><i>&ndash;</i></td><td class="hcol" title="Codex runs GPT-5.5"><b>&#10003;</b></td><td class="hcol absent" title="OpenCode cannot run GPT-5.5"><i>&ndash;</i></td>
+          </tr>
+          <tr data-harnesses="Codex">
+            <td class="model">
+              <div class="mlabel">GPT-5.3 Codex</div>
+              <div class="mid mono">gpt-5.3-codex</div>
+            </td>
+            <td class="num">272K</td>
+            <td class="num">$1.75<span class="per"> / </span>$14</td>
+            <td class="hcol" title="Claude Code cannot run GPT-5.3 Codex"><i>&ndash;</i></td><td class="hcol" title="Codex runs GPT-5.3 Codex"><b>&#10003;</b></td><td class="hcol absent" title="OpenCode cannot run GPT-5.3 Codex"><i>&ndash;</i></td>
+          </tr>
+          <tr data-harnesses="Codex">
+            <td class="model">
+              <div class="mlabel">GPT-5.2</div>
+              <div class="mid mono">gpt-5.2</div>
+            </td>
+            <td class="num">272K</td>
+            <td class="num">$1.75<span class="per"> / </span>$14</td>
+            <td class="hcol" title="Claude Code cannot run GPT-5.2"><i>&ndash;</i></td><td class="hcol" title="Codex runs GPT-5.2"><b>&#10003;</b></td><td class="hcol absent" title="OpenCode cannot run GPT-5.2"><i>&ndash;</i></td>
+          </tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="mode">
+        <div class="mode-head">
+          <span class="pill key">API key</span>
+          <span class="mode-count">8 models</span>
+        </div>
+        <table class="grid">
+          <thead>
+            <tr>
+              <th>Model</th>
+              <th class="num">Context</th>
+              <th class="num">In / out per M</th>
+              <th class="hcol"><button type="button" class="hbtn" data-harness="Claude Code" title="Show only the models Claude Code can run">Claude Code</button></th><th class="hcol"><button type="button" class="hbtn" data-harness="Codex" title="Show only the models Codex can run">Codex</button></th><th class="hcol absent"><button type="button" class="hbtn" data-harness="OpenCode" title="Show only the models OpenCode can run">OpenCode<span class="tag">not installed</span></button></th>
+            </tr>
+          </thead>
+          <tbody>
+          <tr data-harnesses="Codex|OpenCode">
+            <td class="model">
+              <div class="mlabel">GPT-5.6 Sol</div>
+              <div class="mid mono">gpt-5.6-sol</div>
+            </td>
+            <td class="num">272K</td>
+            <td class="num">$5<span class="per"> / </span>$30</td>
+            <td class="hcol" title="Claude Code cannot run GPT-5.6 Sol"><i>&ndash;</i></td><td class="hcol" title="Codex runs GPT-5.6 Sol"><b>&#10003;</b></td><td class="hcol absent" title="OpenCode runs GPT-5.6 Sol — but OpenCode is not installed here"><b>&#10003;</b></td>
+          </tr>
+          <tr data-harnesses="Codex|OpenCode">
+            <td class="model">
+              <div class="mlabel">GPT-5.6 Terra</div>
+              <div class="mid mono">gpt-5.6-terra</div>
+            </td>
+            <td class="num">272K</td>
+            <td class="num">$2<span class="per"> / </span>$12</td>
+            <td class="hcol" title="Claude Code cannot run GPT-5.6 Terra"><i>&ndash;</i></td><td class="hcol" title="Codex runs GPT-5.6 Terra"><b>&#10003;</b></td><td class="hcol absent" title="OpenCode runs GPT-5.6 Terra — but OpenCode is not installed here"><b>&#10003;</b></td>
+          </tr>
+          <tr data-harnesses="Codex|OpenCode">
+            <td class="model">
+              <div class="mlabel">GPT-5.6 Luna</div>
+              <div class="mid mono">gpt-5.6-luna</div>
+            </td>
+            <td class="num">272K</td>
+            <td class="num">$0.2<span class="per"> / </span>$1.2</td>
+            <td class="hcol" title="Claude Code cannot run GPT-5.6 Luna"><i>&ndash;</i></td><td class="hcol" title="Codex runs GPT-5.6 Luna"><b>&#10003;</b></td><td class="hcol absent" title="OpenCode runs GPT-5.6 Luna — but OpenCode is not installed here"><b>&#10003;</b></td>
+          </tr>
+          <tr data-harnesses="Codex|OpenCode">
+            <td class="model">
+              <div class="mlabel">GPT-5.4</div>
+              <div class="mid mono">gpt-5.4</div>
+            </td>
+            <td class="num">272K</td>
+            <td class="num">$2.5<span class="per"> / </span>$15</td>
+            <td class="hcol" title="Claude Code cannot run GPT-5.4"><i>&ndash;</i></td><td class="hcol" title="Codex runs GPT-5.4"><b>&#10003;</b></td><td class="hcol absent" title="OpenCode runs GPT-5.4 — but OpenCode is not installed here"><b>&#10003;</b></td>
+          </tr>
+          <tr data-harnesses="Codex|OpenCode">
+            <td class="model">
+              <div class="mlabel">GPT-5.4 Mini</div>
+              <div class="mid mono">gpt-5.4-mini</div>
+            </td>
+            <td class="num">272K</td>
+            <td class="num">$0.75<span class="per"> / </span>$4.5</td>
+            <td class="hcol" title="Claude Code cannot run GPT-5.4 Mini"><i>&ndash;</i></td><td class="hcol" title="Codex runs GPT-5.4 Mini"><b>&#10003;</b></td><td class="hcol absent" title="OpenCode runs GPT-5.4 Mini — but OpenCode is not installed here"><b>&#10003;</b></td>
+          </tr>
+          <tr data-harnesses="Codex|OpenCode">
+            <td class="model">
+              <div class="mlabel">GPT-5.5</div>
+              <div class="mid mono">gpt-5.5</div>
+            </td>
+            <td class="num">272K</td>
+            <td class="num">$5<span class="per"> / </span>$30</td>
+            <td class="hcol" title="Claude Code cannot run GPT-5.5"><i>&ndash;</i></td><td class="hcol" title="Codex runs GPT-5.5"><b>&#10003;</b></td><td class="hcol absent" title="OpenCode runs GPT-5.5 — but OpenCode is not installed here"><b>&#10003;</b></td>
+          </tr>
+          <tr data-harnesses="Codex|OpenCode">
+            <td class="model">
+              <div class="mlabel">GPT-5.3 Codex</div>
+              <div class="mid mono">gpt-5.3-codex</div>
+            </td>
+            <td class="num">272K</td>
+            <td class="num">$1.75<span class="per"> / </span>$14</td>
+            <td class="hcol" title="Claude Code cannot run GPT-5.3 Codex"><i>&ndash;</i></td><td class="hcol" title="Codex runs GPT-5.3 Codex"><b>&#10003;</b></td><td class="hcol absent" title="OpenCode runs GPT-5.3 Codex — but OpenCode is not installed here"><b>&#10003;</b></td>
+          </tr>
+          <tr data-harnesses="Codex|OpenCode">
+            <td class="model">
+              <div class="mlabel">GPT-5.2</div>
+              <div class="mid mono">gpt-5.2</div>
+            </td>
+            <td class="num">272K</td>
+            <td class="num">$1.75<span class="per"> / </span>$14</td>
+            <td class="hcol" title="Claude Code cannot run GPT-5.2"><i>&ndash;</i></td><td class="hcol" title="Codex runs GPT-5.2"><b>&#10003;</b></td><td class="hcol absent" title="OpenCode runs GPT-5.2 — but OpenCode is not installed here"><b>&#10003;</b></td>
+          </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="svc-none">Nothing here for <span class="who"></span>.</p>
+    </section>
+    <section class="svc" id="svc-deepseek">
+      <h3 class="svc-name"><span class="avatar">D</span>DeepSeek</h3>
+      <div class="mode">
+        <div class="mode-head">
+          <span class="pill key">API key</span>
+          <span class="mode-count">2 models</span>
+        </div>
+        <table class="grid">
+          <thead>
+            <tr>
+              <th>Model</th>
+              <th class="num">Context</th>
+              <th class="num">In / out per M</th>
+              <th class="hcol"><button type="button" class="hbtn" data-harness="Claude Code" title="Show only the models Claude Code can run">Claude Code</button></th><th class="hcol"><button type="button" class="hbtn" data-harness="Codex" title="Show only the models Codex can run">Codex</button></th><th class="hcol absent"><button type="button" class="hbtn" data-harness="OpenCode" title="Show only the models OpenCode can run">OpenCode<span class="tag">not installed</span></button></th>
+            </tr>
+          </thead>
+          <tbody>
+          <tr data-harnesses="Claude Code|Codex|OpenCode">
+            <td class="model">
+              <div class="mlabel">V4 Flash</div>
+              <div class="mid mono">deepseek-v4-flash</div>
+            </td>
+            <td class="num">1M</td>
+            <td class="num">$0.14<span class="per"> / </span>$0.28</td>
+            <td class="hcol" title="Claude Code runs V4 Flash"><b>&#10003;</b></td><td class="hcol" title="Codex runs V4 Flash"><b>&#10003;</b></td><td class="hcol absent" title="OpenCode runs V4 Flash — but OpenCode is not installed here"><b>&#10003;</b></td>
+          </tr>
+          <tr data-harnesses="Claude Code|Codex|OpenCode">
+            <td class="model">
+              <div class="mlabel">V4 Pro</div>
+              <div class="mid mono">deepseek-v4-pro</div>
+            </td>
+            <td class="num">1M</td>
+            <td class="num">$0.435<span class="per"> / </span>$0.87</td>
+            <td class="hcol" title="Claude Code runs V4 Pro"><b>&#10003;</b></td><td class="hcol" title="Codex runs V4 Pro"><b>&#10003;</b></td><td class="hcol absent" title="OpenCode runs V4 Pro — but OpenCode is not installed here"><b>&#10003;</b></td>
+          </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="svc-none">Nothing here for <span class="who"></span>.</p>
+    </section>
+    <section class="svc" id="svc-zai">
+      <h3 class="svc-name"><span class="avatar">G</span>GLM (Z.ai)<span class="dot" title="You have a credential for this service"></span></h3>
+      <div class="mode">
+        <div class="mode-head">
+          <span class="pill sub">Subscription</span>
+          <span class="mode-count">1 models</span>
+        </div>
+        <table class="grid">
+          <thead>
+            <tr>
+              <th>Model</th>
+              <th class="num">Context</th>
+              <th class="num">In / out per M</th>
+              <th class="hcol"><button type="button" class="hbtn" data-harness="Claude Code" title="Show only the models Claude Code can run">Claude Code</button></th><th class="hcol"><button type="button" class="hbtn" data-harness="Codex" title="Show only the models Codex can run">Codex</button></th><th class="hcol absent"><button type="button" class="hbtn" data-harness="OpenCode" title="Show only the models OpenCode can run">OpenCode<span class="tag">not installed</span></button></th>
+            </tr>
+          </thead>
+          <tbody>
+          <tr data-harnesses="Claude Code">
+            <td class="model">
+              <div class="mlabel">GLM-5.2</div>
+              <div class="mid mono">glm-5.2[1m]</div>
+            </td>
+            <td class="num">1M</td>
+            <td class="num">$1.4<span class="per"> / </span>$4.4</td>
+            <td class="hcol" title="Claude Code runs GLM-5.2"><b>&#10003;</b></td><td class="hcol" title="Codex cannot run GLM-5.2"><i>&ndash;</i></td><td class="hcol absent" title="OpenCode cannot run GLM-5.2"><i>&ndash;</i></td>
+          </tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="mode">
+        <div class="mode-head">
+          <span class="pill key">API key</span>
+          <span class="mode-count">1 models</span>
+        </div>
+        <table class="grid">
+          <thead>
+            <tr>
+              <th>Model</th>
+              <th class="num">Context</th>
+              <th class="num">In / out per M</th>
+              <th class="hcol"><button type="button" class="hbtn" data-harness="Claude Code" title="Show only the models Claude Code can run">Claude Code</button></th><th class="hcol"><button type="button" class="hbtn" data-harness="Codex" title="Show only the models Codex can run">Codex</button></th><th class="hcol absent"><button type="button" class="hbtn" data-harness="OpenCode" title="Show only the models OpenCode can run">OpenCode<span class="tag">not installed</span></button></th>
+            </tr>
+          </thead>
+          <tbody>
+          <tr data-harnesses="Claude Code|OpenCode">
+            <td class="model">
+              <div class="mlabel">GLM-5.2</div>
+              <div class="mid mono">glm-5.2</div>
+            </td>
+            <td class="num">1M</td>
+            <td class="num">$1.4<span class="per"> / </span>$4.4</td>
+            <td class="hcol" title="Claude Code runs GLM-5.2"><b>&#10003;</b></td><td class="hcol" title="Codex cannot run GLM-5.2"><i>&ndash;</i></td><td class="hcol absent" title="OpenCode runs GLM-5.2 — but OpenCode is not installed here"><b>&#10003;</b></td>
+          </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="svc-none">Nothing here for <span class="who"></span>.</p>
+    </section>
+    <section class="svc" id="svc-openrouter">
+      <h3 class="svc-name"><span class="avatar">O</span>OpenRouter</h3>
+      <div class="mode">
+        <div class="mode-head">
+          <span class="pill key">API key</span>
+          <span class="mode-count">5 models</span>
+        </div>
+        <table class="grid">
+          <thead>
+            <tr>
+              <th>Model</th>
+              <th class="num">Context</th>
+              <th class="num">In / out per M</th>
+              <th class="hcol"><button type="button" class="hbtn" data-harness="Claude Code" title="Show only the models Claude Code can run">Claude Code</button></th><th class="hcol"><button type="button" class="hbtn" data-harness="Codex" title="Show only the models Codex can run">Codex</button></th><th class="hcol absent"><button type="button" class="hbtn" data-harness="OpenCode" title="Show only the models OpenCode can run">OpenCode<span class="tag">not installed</span></button></th>
+            </tr>
+          </thead>
+          <tbody>
+          <tr data-harnesses="Claude Code|OpenCode">
+            <td class="model">
+              <div class="mlabel">Opus 5</div>
+              <div class="mid mono">anthropic/claude-opus-5</div>
+            </td>
+            <td class="num">1M</td>
+            <td class="num">$5<span class="per"> / </span>$25</td>
+            <td class="hcol" title="Claude Code runs Opus 5"><b>&#10003;</b></td><td class="hcol" title="Codex cannot run Opus 5"><i>&ndash;</i></td><td class="hcol absent" title="OpenCode runs Opus 5 — but OpenCode is not installed here"><b>&#10003;</b></td>
+          </tr>
+          <tr data-harnesses="Claude Code|OpenCode">
+            <td class="model">
+              <div class="mlabel">Sonnet 5</div>
+              <div class="mid mono">anthropic/claude-sonnet-5</div>
+            </td>
+            <td class="num">1M</td>
+            <td class="num">$3<span class="per"> / </span>$15</td>
+            <td class="hcol" title="Claude Code runs Sonnet 5"><b>&#10003;</b></td><td class="hcol" title="Codex cannot run Sonnet 5"><i>&ndash;</i></td><td class="hcol absent" title="OpenCode runs Sonnet 5 — but OpenCode is not installed here"><b>&#10003;</b></td>
+          </tr>
+          <tr data-harnesses="Claude Code|Codex|OpenCode">
+            <td class="model">
+              <div class="mlabel">DeepSeek V4 Flash</div>
+              <div class="mid mono">deepseek/deepseek-v4-flash</div>
+            </td>
+            <td class="num">1M</td>
+            <td class="num">$0.14<span class="per"> / </span>$0.28</td>
+            <td class="hcol" title="Claude Code runs DeepSeek V4 Flash"><b>&#10003;</b></td><td class="hcol" title="Codex runs DeepSeek V4 Flash"><b>&#10003;</b></td><td class="hcol absent" title="OpenCode runs DeepSeek V4 Flash — but OpenCode is not installed here"><b>&#10003;</b></td>
+          </tr>
+          <tr data-harnesses="Claude Code|Codex|OpenCode">
+            <td class="model">
+              <div class="mlabel">DeepSeek V4 Pro</div>
+              <div class="mid mono">deepseek/deepseek-v4-pro</div>
+            </td>
+            <td class="num">1M</td>
+            <td class="num">$0.435<span class="per"> / </span>$0.87</td>
+            <td class="hcol" title="Claude Code runs DeepSeek V4 Pro"><b>&#10003;</b></td><td class="hcol" title="Codex runs DeepSeek V4 Pro"><b>&#10003;</b></td><td class="hcol absent" title="OpenCode runs DeepSeek V4 Pro — but OpenCode is not installed here"><b>&#10003;</b></td>
+          </tr>
+          <tr data-harnesses="Claude Code|OpenCode">
+            <td class="model">
+              <div class="mlabel">GLM-5.2</div>
+              <div class="mid mono">z-ai/glm-5.2</div>
+            </td>
+            <td class="num">1M</td>
+            <td class="num">$1.4<span class="per"> / </span>$4.4</td>
+            <td class="hcol" title="Claude Code runs GLM-5.2"><b>&#10003;</b></td><td class="hcol" title="Codex cannot run GLM-5.2"><i>&ndash;</i></td><td class="hcol absent" title="OpenCode runs GLM-5.2 — but OpenCode is not installed here"><b>&#10003;</b></td>
+          </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="svc-none">Nothing here for <span class="who"></span>.</p>
+    </section>
+    <section class="svc" id="svc-vercel">
+      <h3 class="svc-name"><span class="avatar">V</span>Vercel AI Gateway</h3>
+      <div class="mode">
+        <div class="mode-head">
+          <span class="pill key">API key</span>
+          <span class="mode-count">5 models</span>
+        </div>
+        <table class="grid">
+          <thead>
+            <tr>
+              <th>Model</th>
+              <th class="num">Context</th>
+              <th class="num">In / out per M</th>
+              <th class="hcol"><button type="button" class="hbtn" data-harness="Claude Code" title="Show only the models Claude Code can run">Claude Code</button></th><th class="hcol"><button type="button" class="hbtn" data-harness="Codex" title="Show only the models Codex can run">Codex</button></th><th class="hcol absent"><button type="button" class="hbtn" data-harness="OpenCode" title="Show only the models OpenCode can run">OpenCode<span class="tag">not installed</span></button></th>
+            </tr>
+          </thead>
+          <tbody>
+          <tr data-harnesses="Claude Code|OpenCode">
+            <td class="model">
+              <div class="mlabel">Opus 5</div>
+              <div class="mid mono">anthropic/claude-opus-5</div>
+            </td>
+            <td class="num">1M</td>
+            <td class="num">$5<span class="per"> / </span>$25</td>
+            <td class="hcol" title="Claude Code runs Opus 5"><b>&#10003;</b></td><td class="hcol" title="Codex cannot run Opus 5"><i>&ndash;</i></td><td class="hcol absent" title="OpenCode runs Opus 5 — but OpenCode is not installed here"><b>&#10003;</b></td>
+          </tr>
+          <tr data-harnesses="Claude Code|OpenCode">
+            <td class="model">
+              <div class="mlabel">Sonnet 5</div>
+              <div class="mid mono">anthropic/claude-sonnet-5</div>
+            </td>
+            <td class="num">1M</td>
+            <td class="num">$3<span class="per"> / </span>$15</td>
+            <td class="hcol" title="Claude Code runs Sonnet 5"><b>&#10003;</b></td><td class="hcol" title="Codex cannot run Sonnet 5"><i>&ndash;</i></td><td class="hcol absent" title="OpenCode runs Sonnet 5 — but OpenCode is not installed here"><b>&#10003;</b></td>
+          </tr>
+          <tr data-harnesses="Codex|OpenCode">
+            <td class="model">
+              <div class="mlabel">GPT-5.6 Sol</div>
+              <div class="mid mono">openai/gpt-5.6-sol</div>
+            </td>
+            <td class="num">272K</td>
+            <td class="num">$5<span class="per"> / </span>$30</td>
+            <td class="hcol" title="Claude Code cannot run GPT-5.6 Sol"><i>&ndash;</i></td><td class="hcol" title="Codex runs GPT-5.6 Sol"><b>&#10003;</b></td><td class="hcol absent" title="OpenCode runs GPT-5.6 Sol — but OpenCode is not installed here"><b>&#10003;</b></td>
+          </tr>
+          <tr data-harnesses="Codex|OpenCode">
+            <td class="model">
+              <div class="mlabel">GPT-5.6 Terra</div>
+              <div class="mid mono">openai/gpt-5.6-terra</div>
+            </td>
+            <td class="num">272K</td>
+            <td class="num">$2<span class="per"> / </span>$12</td>
+            <td class="hcol" title="Claude Code cannot run GPT-5.6 Terra"><i>&ndash;</i></td><td class="hcol" title="Codex runs GPT-5.6 Terra"><b>&#10003;</b></td><td class="hcol absent" title="OpenCode runs GPT-5.6 Terra — but OpenCode is not installed here"><b>&#10003;</b></td>
+          </tr>
+          <tr data-harnesses="Claude Code|OpenCode">
+            <td class="model">
+              <div class="mlabel">DeepSeek V4 Flash</div>
+              <div class="mid mono">deepseek/deepseek-v4-flash</div>
+            </td>
+            <td class="num">1M</td>
+            <td class="num">$0.14<span class="per"> / </span>$0.28</td>
+            <td class="hcol" title="Claude Code runs DeepSeek V4 Flash"><b>&#10003;</b></td><td class="hcol" title="Codex cannot run DeepSeek V4 Flash"><i>&ndash;</i></td><td class="hcol absent" title="OpenCode runs DeepSeek V4 Flash — but OpenCode is not installed here"><b>&#10003;</b></td>
+          </tr>
+          </tbody>
+        </table>
+      </div>
+      <p class="svc-none">Nothing here for <span class="who"></span>.</p>
+    </section>
+      </div>
+    </div>
+    <div class="foot">
+      <span class="legend"><span class="dot"></span> you have a credential</span>
+      <span class="legend"><span class="tick"><b>&#10003;</b></span> runs it</span>
+      <span class="legend"><span class="tick absent"><b>&#10003;</b></span> would run it, harness not installed here</span>
+      <span class="legend"><span class="tick"><i>&ndash;</i></span> cannot</span>
+    </div>
+  </div>
+  <p class="note">
+    Prototype. The harness narrowing is live — click a column head, click it again to clear. The
+    text filter and the All&nbsp;/&nbsp;Configured toggle are static.
+  </p>
+</div>
+<script>var HARNESSES = ["Claude Code", "Codex", "OpenCode"];
+(function () {
+  var body = document.body;
+  var rows = Array.prototype.slice.call(document.querySelectorAll('tbody tr'));
+  var buttons = Array.prototype.slice.call(document.querySelectorAll('.hbtn'));
+  var status = document.querySelector('.narrowed .shown');
+  var who = document.querySelector('.narrowed .who');
+  var selected = null;
+
+  function apply() {
+    var shown = 0;
+    rows.forEach(function (row) {
+      var list = (row.dataset.harnesses || '').split('|');
+      var keep = !selected || list.indexOf(selected) !== -1;
+      row.classList.toggle('hidden', !keep);
+      if (keep) shown++;
+    });
+    // A mode with nothing left, and a service with no modes left, say so in
+    // place — see `.svc-none`.
+    document.querySelectorAll('.mode').forEach(function (mode) {
+      var any = mode.querySelector('tbody tr:not(.hidden)');
+      mode.classList.toggle('none', !any);
+    });
+    document.querySelectorAll('.svc').forEach(function (svc) {
+      var any = svc.querySelector('tbody tr:not(.hidden)');
+      svc.classList.toggle('none', !any);
+      var nav = document.querySelector('.nav-item[data-svc="' + svc.id.slice(4) + '"]');
+      if (nav) nav.classList.toggle('empty', !any && !!selected);
+    });
+    // The unselected columns recede; the selected one is the one being read.
+    // Every row, head rows included, so a column dims whole rather than in parts.
+    document.querySelectorAll('tr').forEach(function (row) {
+      row.querySelectorAll('.hcol').forEach(function (cell, i) {
+        cell.classList.toggle('dim', !!selected && HARNESSES[i] !== selected);
+      });
+    });
+    buttons.forEach(function (b) { b.classList.toggle('on', b.dataset.harness === selected); });
+    body.classList.toggle('filtered', !!selected);
+    if (selected) {
+      who.textContent = selected;
+      status.textContent = shown + ' of ' + rows.length + ' rows';
+    } else {
+      // Cleared: the banner is hidden, and it must not keep a count that is no
+      // longer true behind it — the next narrowing would flash the old number.
+      who.textContent = '';
+      status.textContent = '';
+    }
+    document.querySelectorAll('.svc-none .who').forEach(function (el) {
+      el.textContent = selected || '';
+    });
+  }
+
+  buttons.forEach(function (b) {
+    b.addEventListener('click', function () {
+      // Clicking the selected harness again clears it — one control both ways,
+      // so a user who narrowed by accident is not hunting for the way back.
+      selected = selected === b.dataset.harness ? null : b.dataset.harness;
+      apply();
+    });
+  });
+  document.querySelector('.narrowed .clear').addEventListener('click', function () {
+    selected = null;
+    apply();
+  });
+  apply();
+})();
+</script>
+</body>
+</html>

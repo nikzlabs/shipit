@@ -312,11 +312,62 @@ No open questions remain.
     get after. It is a statement, not a gate: a service no installed harness can run is still
     selectable.
 
+23. **What each service can run is readable in one place, before any credential exists.**
+    ShipIt states, per service and per billing mode, every model it offers: the model's name,
+    the id it is called by, how much context it holds, what it costs per million tokens, and
+    which harnesses can run it — **all of them that can**, since a model's support is a set and
+    not a single answer: one model can be runnable on several harnesses, and the next model of
+    the same service on only one. The harnesses named are **every harness ShipIt integrates**,
+    not only the ones this deployment installed, and the ones it did not install are marked as
+    such: a harness that could run a model is a true fact about the pairing, and a user who
+    reads it without being told the harness is absent would go looking for a model this
+    deployment cannot offer. The statement covers **every service ShipIt
+    knows**, not only the ones the user configured, so what a service would give is readable
+    while deciding whether to pay for it. The price is the service's own rate — under a
+    subscription that is what the tokens would have cost, not an extra charge — and is
+    labelled as the estimate req 16 says it is. It is reachable from the services screen
+    without occupying it (req 19), and it is the **one** place the question is answered: a
+    configured service leads to the same statement rather than carrying a second, shorter
+    answer of its own.
+
+24. **The model list narrows to one harness, by naming that harness.** Selecting a harness in
+    the list of supported models (req 23) hides every model that harness cannot run, across
+    every service at once, and shows which harness is being asked about and how much of the
+    catalogue is left. Selecting the same harness again restores the full list. A service that
+    keeps nothing says so in place rather than disappearing, so narrowing never reads as a
+    catalogue that has become smaller. A harness this deployment did not install can be
+    selected too: "what would this harness give me" is a question worth answering before
+    installing one.
+
 ## Open questions
 
 _None._
 
 ## Resolved questions
+
+- 2026-08-16 — Req 19 moved a card's model ids into a hover list on a `N models` control, which
+  left the question "what can this service run" answerable only for a service already
+  configured, and only as a column of raw ids. Where should the full answer live, and how much
+  should it say? **Chosen: one dialog, the whole catalogue, the full detail, and the card's
+  control opens it.** *"Now we need a place to show all the supported models per service. So
+  some kind of button that the user would click, and we show the dialog with all the supported
+  models per service. Maybe we show this button next to the services with the information
+  icon."* Asked which services it lists, how much each model row says, and what becomes of the
+  existing hover list; answered **every service in the catalogue**, **name, id, context, price
+  and harness support**, and **the card's control opens the dialog at that service** rather
+  than keeping a second, shorter list beside it. Req 23 added. Harness support is in the row
+  because a model is runnable only where a harness speaks its API style (req 6), so a list
+  without it can promise a model this install cannot run.
+
+  Two answers followed on the prototype and are in reqs 23–24. **Which harnesses get a
+  column**: *"we also need to indicate which harnesses are installed in this deployment"* — so
+  the columns are every harness ShipIt integrates, with the ones this deployment lacks marked
+  *not installed* rather than dropped; a tick for an absent harness is a true fact about the
+  pairing, and unmarked it would send the user looking for a model they cannot run.
+  **Narrowing**: *"clicking on the harness name would show it as selected and hide all models
+  from all services that are not supported by that harness"* — req 24. Two prototypes decided
+  the column itself: a row of named harness chips per model lost to aligned tick columns, which
+  read as one glyph per harness per row and match the support table req 22 already ships.
 
 - 2026-08-13 — Background work stated which model it runs on and whether that came from the
   user or from ShipIt. Every word for the second half — "on the default", "auto-configured",

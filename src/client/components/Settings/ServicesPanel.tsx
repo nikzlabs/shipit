@@ -59,7 +59,7 @@
 // the event that starts its sign-in — see the call site.
 // eslint-disable-next-line no-restricted-imports -- mount-is-the-event, see above
 import { useEffect, useRef, useState } from "react";
-import { CheckIcon, CircleHalfIcon, MinusIcon, PlusIcon } from "@phosphor-icons/react";
+import { CheckIcon, CircleHalfIcon, InfoIcon, MinusIcon, PlusIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../../design-tokens.js";
 import type { AgentOption } from "../../agent-types.js";
 import type {
@@ -107,6 +107,7 @@ import {
   useProviderAccounts,
   loginForProvider,} from "./ProviderAccountRows.js";
 import { MODE_LABEL, ServiceCard } from "./ServiceCard.js";
+import { SupportedModelsDialog } from "./SupportedModelsDialog.js";
 import { CredentialSelectionModeControl, FailoverCutoffControls } from "./CredentialRouting.js";
 
 /** Every `(service, mode)` the catalogue declares, flattened in catalogue order. */
@@ -240,6 +241,15 @@ export function ServicesPanel({ agentList = [] }: { agentList?: AgentOption[] })
   const [dialog, setDialog] = useState<
     { service?: ServiceDef; mode?: BillingMode; accountId?: string } | null
   >(null);
+  /**
+   * req 23 — the supported-models dialog, and the service it opened at.
+   *
+   * `null` is closed; `""` is "opened from the heading, start at the top"; a
+   * service id is a card's `N models`. One state rather than a boolean beside a
+   * target, for the reason the add dialog's own comment gives: two flags is how a
+   * panel comes to have two dialogs.
+   */
+  const [modelsFor, setModelsFor] = useState<string | null>(null);
 
   /**
    * **A service appears once it has a credential — never before** (req 17).
@@ -299,6 +309,7 @@ export function ServicesPanel({ agentList = [] }: { agentList?: AgentOption[] })
        * click's whole job is to open the dialog on the right step.
        */
       onReconnect={(accountId) => setDialog({ service, mode: billingMode, accountId })}
+      onShowModels={() => setModelsFor(service.id)}
     />
   ));
 
@@ -308,7 +319,23 @@ export function ServicesPanel({ agentList = [] }: { agentList?: AgentOption[] })
 
   return (
     <div className="flex flex-col gap-3" data-testid="services-panel">
-      <div className="min-w-0">
+      {/*
+        **The heading row carries one control, and it is a reference rather than
+        an action** (req 23). `items-baseline`, not `items-center`: the block is
+        two lines and the control belongs to the *heading*, so centring it against
+        the pair left it floating between the title and the caption, pointing at
+        neither. Aligning the boxes instead of the text does not fix that — the
+        button's box is taller than the heading's line, so whichever way they are
+        matched one of the two reads as low.
+
+        This corner is deliberate, and it is the opposite call from "Add a
+        service" below, which was moved OUT of it. That button is the panel's
+        purpose for a first-run user, so stranding it in the far corner across a
+        gap of nothing was wrong. This one is a thing to look up, in the place a
+        section's reference affordance is looked for.
+      */}
+      <div className="flex items-baseline gap-2">
+        <div className="min-w-0">
         <h3 className="text-sm font-medium text-(--color-text-primary)">Services</h3>
         <p
           className="mt-0.5 text-xs text-(--color-text-tertiary)"
@@ -321,6 +348,16 @@ export function ServicesPanel({ agentList = [] }: { agentList?: AgentOption[] })
             ? "Connect one to start — a subscription you already pay for, or an API key."
             : "ShipIt defines the services; you supply the credential."}
         </p>
+        </div>
+        <span className="flex-1" />
+        <button
+          type="button"
+          onClick={() => setModelsFor("")}
+          className="flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-xs text-(--color-text-tertiary) hover:bg-(--color-bg-hover) hover:text-(--color-text-primary) focus:outline-none focus-visible:bg-(--color-bg-hover)"
+          data-testid="services-supported-models"
+        >
+          <InfoIcon aria-hidden size={ICON_SIZE.XS} /> Supported models
+        </button>
       </div>
 
       {cards}
@@ -358,6 +395,18 @@ export function ServicesPanel({ agentList = [] }: { agentList?: AgentOption[] })
         `(service, mode, accountId)`, and that is the entire input reconnect
         has. A test asserts exactly one `add-service-dialog` is mounted.
       */}
+      {/*
+        req 23 — mounted once, whichever control opened it. `modelsFor` holds the
+        service to land on: `""` from the heading (start at the top), an id from a
+        card.
+      */}
+      {modelsFor !== null && (
+        <SupportedModelsDialog
+          agentList={agentList}
+          {...(modelsFor ? { initialServiceId: modelsFor } : {})}
+          onClose={() => setModelsFor(null)}
+        />
+      )}
       {dialog && (
         <AddServiceDialog
           {...(dialog.service ? { initialService: dialog.service } : {})}
@@ -406,12 +455,14 @@ function InstalledHarnesses({ agentList }: { agentList: AgentOption[] }) {
           to drive it.
         </p>
       ) : (
-        // One per line: they are facts to read down, not chips to scan across,
-        // and a wrapped row put two harnesses on one line in the onboarding
-        // panel and one per line in Settings for no reason but the width
-        // available. `items-start` keeps each row the width of its own content
-        // rather than stretching the fill across the panel.
-        <ul className="flex flex-col items-start gap-1">
+        // **One line, wrapping only when the width runs out.** They were one per
+        // line, on the reasoning that a harness row is a fact to read down. In
+        // practice an install has two or three of them, each a two-word chip, so
+        // the column spent three rows of the panel saying what fits in one — and
+        // the vertical stack read as a list with entries to act on, which is
+        // exactly what these are not. `items-center` keeps a wrapped chip
+        // aligned with its neighbours instead of stretching to the row height.
+        <ul className="flex flex-wrap items-center gap-1">
           {installed.map((agent) => (
             <li
               key={agent.id}
@@ -442,6 +493,7 @@ function ServiceModeCard({
   routes,
   agentList,
   onReconnect,
+  onShowModels,
 }: {
   service: ServiceDef;
   billingMode: BillingMode;
@@ -449,6 +501,8 @@ function ServiceModeCard({
   agentList: AgentOption[];
   /** Passed through to the account rows — see their prop's docstring. */
   onReconnect: (accountId: string) => void;
+  /** req 23 — the card's `N models` opens the one dialog at this service. */
+  onShowModels: () => void;
 }) {
   // A mode can hold BOTH shapes at once — Anthropic's subscription takes an
   // OAuth account and an env-supplied token — so this renders whichever are
@@ -623,7 +677,8 @@ function ServiceModeCard({
       billingMode={billingMode}
       credentialCount={credentialCount}
       countNoun={noun}
-      models={modelIds(service, billingMode)}
+      modelCount={modelIds(service, billingMode).length}
+      onShowModels={onShowModels}
       routing={routing}
       testId={`service-card-${credentialModeKey(service.id, billingMode)}`}
     >

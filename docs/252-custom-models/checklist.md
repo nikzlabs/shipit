@@ -439,3 +439,55 @@ the first of these. All six are fixed.
       them, with the dialog wider by exactly that table and only on step 1. Two
       prototypes decided it; the enclosing panel lost because its own padding
       pushed the cells out of line with the rows.
+- [x] **Harness chips in Settings → Services put on one line.** `InstalledHarnesses`
+      stacked one per line; an install has two or three two-word chips, so the
+      column spent three rows saying what fits in one, and a vertical stack read
+      as a list with entries to act on — which is what these are not.
+- [x] **Prototype for reqs 23–24: the supported-models dialog**
+      (`mockup-models.html`, generated from the real catalogue so the harness
+      answers are the picker's). Two variants decided the harness column: named
+      chips per model lost to aligned tick columns. Columns are every harness
+      ShipIt integrates, the ones this deployment lacks marked *not installed*;
+      clicking a column head narrows every service to that harness.
+- [x] **Built req 23's dialog** (`SupportedModelsDialog.tsx`), opened from the
+      panel's header control and from a card's `N models`; rows are
+      `(label, id, context, price, harness ticks)` per service and mode. The
+      per-model harness answer is `eligibleEntriesForHarness` asked about a
+      hypothetical credential of each shape the mode accepts — the same shape as
+      `harnessSupportsMode` one level up, and never a second style join. Columns
+      are every harness the catalogue declares, with the ones this deployment did
+      not install marked and their ticks weakened.
+- [x] **Retired the card's hover list of model ids.** `ModelsControl` opens the
+      dialog at its service; the count stays, and the tooltip says what pressing
+      it does instead of carrying a shorter copy of the answer.
+- [x] **Req 24's narrowing**, from the harness column head, with a banner naming
+      the harness and the row count and the same head clearing it. A service that
+      keeps nothing says so in place; the nav fades it rather than dropping it.
+- [x] **The landing scroll, found broken by driving the real app.** Measuring from
+      the SECTION's ref callback ran while `paneRef.current` was still null —
+      React attaches child refs before the parent's — so the dialog opened at the
+      top of the catalogue however it was opened. It measures from the pane's own
+      callback now, once, guarded so narrowing does not yank the pane back. The
+      first test could not fail on it (every section exists in the DOM whatever
+      `initialServiceId` says); the replacement stubs the geometry and was
+      mutation-checked by breaking the component.
+- [x] **Cross-backend review of reqs 23–24 — three findings taken.** The harness
+      column head announced "Codex, toggle button" and kept its purpose in a
+      `title` a screen reader skips, across up to 27 near-identical buttons: it
+      carries an `aria-label` naming the action, the harness and the service+mode
+      now, the legend says "choose" rather than "click" for a keyboard-operable
+      control, and the heading's icon is `aria-hidden` like every other decorative
+      one. The suite read harness answers off the FIRST matching row, so both
+      gateways were pinned by nothing and skipping a whole service in
+      `buildSupport` shipped green — answers are scoped to their `(service, mode)`
+      table now, every service has written-out expectations, and the mutation was
+      re-run to watch it fail. The price/context and banner-count assertions were
+      shape-only (`/\$/`, `/\d+ of \d+ rows/`) and now pin the figures and the
+      on-screen row count; the heading control had no test at all. **The "you have
+      a credential" dot is removed** rather than kept: reqs 23–24 do not ask for
+      it, and it made the one surface whose premise is readability *before* a
+      credential depend on which credentials exist. Declined: nothing — the
+      remaining note (no marks while the agent list is empty) is the documented
+      "say nothing rather than claim" case. Not exercised by any test, and said
+      here rather than left implied: the per-credential-shape union in
+      `buildSupport`, since no shipped mode disagrees between its shapes today.

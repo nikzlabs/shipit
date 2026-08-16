@@ -87,29 +87,38 @@ function ServiceAvatar({ service }: { service: ServiceDef }) {
  * The ids were a wrapped row of monospace chips under the credentials — the one
  * element on the card that grows with ShipIt's catalogue rather than with the
  * user's setup, so an eight-model service spent three lines saying something
- * the user reads once and then never again. The count is what is worth a
- * glance; the names are worth a hover.
+ * the user reads once and then never again. The count is what is worth a glance.
  *
- * A `<button>` rather than a `<span>`, and not because it does anything: a
- * tooltip must open on keyboard focus as well as on hover, and only a focusable
- * element can be tabbed to. `type="button"` keeps it out of any enclosing form.
+ * **The names are no longer a hover** (req 23). This carried a tooltip listing
+ * the raw ids, which said less than it appeared to: no label, no window, no
+ * price, and no word about which harness could drive any of them — and only for
+ * a service already configured, since an unconfigured one has no card to hover.
+ * The control now opens {@link SupportedModelsDialog} at this service, which
+ * answers all of that in one place; the tooltip says what pressing it does
+ * rather than duplicating a shorter version of the answer.
+ *
+ * `type="button"` keeps it out of any enclosing form.
  */
-function ModelsControl({ models, testId }: { models: string[]; testId: string }) {
+function ModelsControl({
+  count,
+  serviceName,
+  onOpen,
+  testId,
+}: {
+  count: number;
+  serviceName: string;
+  onOpen: () => void;
+  testId: string;
+}) {
   return (
-    <WithTooltip
-      side="left"
-      label={
-        <span className="flex max-w-56 flex-col gap-0.5 font-mono text-[10px]">
-          {models.map((id) => <span key={id}>{id}</span>)}
-        </span>
-      }
-    >
+    <WithTooltip side="left" label={`Every model ${serviceName} offers, and what can run them`}>
       <button
         type="button"
-        className="shrink-0 cursor-default rounded px-1 py-0.5 text-[10px] text-(--color-text-tertiary) hover:bg-(--color-bg-hover) hover:text-(--color-text-secondary) focus:outline-none focus-visible:bg-(--color-bg-hover)"
+        onClick={onOpen}
+        className="shrink-0 rounded px-1 py-0.5 text-[10px] text-(--color-text-tertiary) hover:bg-(--color-bg-hover) hover:text-(--color-text-secondary) focus:outline-none focus-visible:bg-(--color-bg-hover)"
         data-testid={`service-models-${testId}`}
       >
-        {models.length} model{models.length === 1 ? "" : "s"}
+        {count} model{count === 1 ? "" : "s"}
       </button>
     </WithTooltip>
   );
@@ -120,7 +129,8 @@ export function ServiceCard({
   billingMode,
   credentialCount,
   countNoun,
-  models,
+  modelCount,
+  onShowModels,
   routing,
   children,
   testId,
@@ -134,7 +144,10 @@ export function ServiceCard({
   credentialCount: number;
   /** "account" for a login-backed mode, "credential" for a supplied secret. */
   countNoun: string;
-  models: string[];
+  /** How many models this `(service, mode)` offers — the count, never the ids. */
+  modelCount: number;
+  /** Open the supported-models dialog at this service (req 23). */
+  onShowModels: () => void;
   /**
    * The shaded band under the body.
    *
@@ -177,7 +190,14 @@ export function ServiceCard({
             </Badge>
           )}
           <span className="flex-1" />
-          {models.length > 0 && <ModelsControl models={models} testId={testId} />}
+          {modelCount > 0 && (
+            <ModelsControl
+              count={modelCount}
+              serviceName={service.name}
+              onOpen={onShowModels}
+              testId={testId}
+            />
+          )}
         </div>
 
         {children}
