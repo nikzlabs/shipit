@@ -406,12 +406,14 @@ function InstalledHarnesses({ agentList }: { agentList: AgentOption[] }) {
           to drive it.
         </p>
       ) : (
-        // One per line: they are facts to read down, not chips to scan across,
-        // and a wrapped row put two harnesses on one line in the onboarding
-        // panel and one per line in Settings for no reason but the width
-        // available. `items-start` keeps each row the width of its own content
-        // rather than stretching the fill across the panel.
-        <ul className="flex flex-col items-start gap-1">
+        // **One line, wrapping only when the width runs out.** They were one per
+        // line, on the reasoning that a harness row is a fact to read down. In
+        // practice an install has two or three of them, each a two-word chip, so
+        // the column spent three rows of the panel saying what fits in one — and
+        // the vertical stack read as a list with entries to act on, which is
+        // exactly what these are not. `items-center` keeps a wrapped chip
+        // aligned with its neighbours instead of stretching to the row height.
+        <ul className="flex flex-wrap items-center gap-1">
           {installed.map((agent) => (
             <li
               key={agent.id}
