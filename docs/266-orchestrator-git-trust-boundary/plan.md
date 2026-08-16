@@ -275,6 +275,50 @@ Everything else is either root-owned (`/opt/shipit` in `build-id.ts`,
 they name a directory, so the answer comes from the filesystem rather than from
 an assumption that ages.
 
+**A second audit, before arming** (2026-08-16, planning#410). The table above was
+the precondition for shipping the switch; this one is the precondition for
+*arming* it, and it is exhaustive by executor rather than by call site — see
+[arming-runbook.md](./arming-runbook.md) Part 1 for the full tables, the
+residual blind spots, and a verdict per site. It found **one** more, and of the
+shape the first audit was not looking for: not "root git on a session tree" but
+its inverse — **dropped git on a tree ShipIt itself left root-owned**.
+
+`plugin-generations.ts`'s `checkoutCommit` clones a plugin generation with a
+bare `safeSimpleGit()` (root, no ownership predicate) into
+`<sessionDir>/state/plugins/…`, then runs `safeSimpleGit(targetDir)` against it —
+and that path is inside a session, so docs/270's resolver drops to the session's
+uid on a `root:root` tree. It fails *today* (`.git/config.lock` EACCESes) and
+would fail one step earlier once armed. The first audit classified this file as
+"the bare cache, root-owned", which is true of its *other* tree. Fixed the way
+`cloneFromCache` was, with the object-aware handback between the two calls.
+
+**The general statement, which is the useful one.** `safeSimpleGit` resolves the
+drop from `baseDir`, so the choke point is complete for the tree a call site
+**reads** and blind to a tree it **creates**: a `clone` names its destination as
+an *argument*, never as `baseDir`. That is the whole shape of this bug class, and
+it is why the module's own comment — which claimed it "covers call sites nobody
+has written yet" — is corrected in this change. Every site is therefore asked two
+questions, not one: *does it drop uid*, and *what owns the tree it writes into*.
+The second question was re-run over every site the first audit had cleared;
+`session-fork-merge.ts` (chowns the destination to the source's identity before
+cloning), `templates.ts`'s standalone-session `init` (`createSessionDirFactory`
+seals and chowns the empty tree first) and `marketplace.ts` (its cache is a
+sibling of `sessions/`, not under it) all answer it correctly. Nothing else was
+wrong.
+
+That shape now has a CI census rather than a periodic human audit: every
+literally-bare `safeSimpleGit()` — including the `(undefined)` and `("")`
+spellings review found the first version waving through — is listed with what
+owns its destination (`git-hooks-guard-coverage.test.ts`), so adding one is a
+decision someone writes down. It is a **tripwire for the literal shape, not a
+fail-closed guarantee over the class**: `safeSimpleGit(x)` where `x` is
+`undefined` at runtime reaches no regex, and the rule says so in place rather
+than implying coverage it does not have. Both known instances of this bug had exactly that shape, and neither was
+visible at runtime — the drop is gated on `getuid() === 0`, so the suite, the
+dogfood instance and a developer's laptop pass either way. That invisibility is
+why this needed a source audit rather than a failing test, and why arming needs a
+production soak rather than a green local run.
+
 One residual, not fixed: `mergeSession`'s fallback adds a *sibling session's*
 workspace as a local remote and fetches from it. Git refuses a foreign source on
 a local fetch (measured), so this works only while every session shares one

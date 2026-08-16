@@ -219,6 +219,61 @@ Build sequence from [plan.md](./plan.md) §5. Requirements are cited as `(req N)
       would need a revert and a redeploy. Arming actively `--unset-all`s the
       entry an earlier boot wrote — the gitconfig is in the persistent
       credentials volume, so "stop writing it" would have been a no-op there.
+- [x] **The precondition for arming: an exhaustive call-site audit and an
+      operator runbook.** planning#410. [arming-runbook.md](./arming-runbook.md)
+      — every orchestrator git executor with a verdict per site, the residual
+      blind spots each with a reason, and the ordered arm/watch/rollback
+      procedure with the real log strings per surface (post-turn commit,
+      auto-push, LFS provisioning, fork, plugin activation). The audit is by
+      *executor*, not by call site: `safeSimpleGit(dir)` is one verdict covering
+      ~189 `createGitManager` callers, and the raw spawns are enumerated
+      individually.
+- [x] **The gap that audit found, fixed.** `plugin-generations.ts`'s
+      `checkoutCommit` — the **inverse** of the shape the first audit hunted:
+      not root git on a session tree but dropped git on a tree ShipIt itself
+      left `root:root`. A bare `safeSimpleGit()` clone (root, no ownership
+      predicate) into `<sessionDir>/state/plugins/…`, then
+      `safeSimpleGit(targetDir)`, which drops to the session's uid. It fails
+      today (`.git/config.lock` EACCESes) and would fail one step earlier once
+      armed. Fixed the way `cloneFromCache` was: the object-aware
+      `handWorkspaceBackToWorker` between the two calls.
+- [x] **The claim that hid it, corrected at the source.** `safeSimpleGit`'s own
+      comment said it "covers call sites nobody has written yet". It resolves the
+      drop from `baseDir`, so it is complete for the tree a call site **reads**
+      and blind to a tree it **creates** — a `clone` names its destination as an
+      *argument*, never as `baseDir`. That is the general statement, and it tells
+      the next reader which sites to distrust; "one missed site" does not. Every
+      tree-creating site was then re-checked under the second question ("what
+      owns the tree it writes into"), and the rest answer it correctly —
+      `session-fork-merge.ts`, `templates.ts` ×2, `marketplace.ts`,
+      `repo-git.ts`, `route-registry.ts`.
+- [x] **A CI census for the shape, so the next one is not found by a human
+      audit two cycles later.** Every bare `safeSimpleGit()` — the sharpest case
+      of that blindness, no `baseDir` at all — is listed in
+      `git-hooks-guard-coverage.test.ts` with what owns its destination. A
+      tripwire for the literal shape, NOT a fail-closed guarantee over the
+      class: review found the first version waved through `safeSimpleGit(undefined)`
+      and `safeSimpleGit("")` (now caught), and a variable that is `undefined`
+      at runtime reaches no regex at all (said in place, not papered over). Neither
+      known instance of this bug was visible at runtime: the drop is gated on
+      `getuid() === 0`, so the suite, the dogfood instance and a laptop pass
+      either way. That is also why the runbook opens by telling an operator a
+      green local run proves nothing about the armed path.
+- [x] **Six findings from the independent review of that work, all addressed.**
+      Three were the audit failing its own exhaustiveness claim: a raw spawn
+      missing from the table (`repo-git.ts:387`), `updates.ts` counted at half
+      its 10 sites, and a "grepped: none" for variable-binary spawns that was
+      simply wrong — there are three (none of them git), and the grep behind the
+      claim missed them because it required the binary on the *same line* as the
+      call. Two were overclaims: the census was bypassable by spelling
+      (`safeSimpleGit(undefined)`, `safeSimpleGit("")` — now caught, with the
+      variable case named as out of reach rather than papered over), and the
+      fix's docstring stated the shared-cache hardlink protection as settled
+      when `plugin-install.ts:321` plain-chowns the same tree minutes later
+      (**planning#417**, filed; not an arming blocker — git's ownership check
+      reads the repository root, not object files). One was an operator
+      correction: the auto-push failure's transcript copy is `emitMessage`,
+      transport-only, so the runbook now points at the durable log ring.
 - [ ] **Arm it in production, then delete both the switch and the write.**
       **planning#410.** This is the go/no-go planning#403 reserves for a human,
       and it must not happen before E1 has been *seen* working in production —

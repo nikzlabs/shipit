@@ -61,6 +61,7 @@ import type { DeclaredPluginRepo, PluginExport } from "../shared/plugin-repos.js
 import { parsePluginExports, destinationKey, declaredRefLabel } from "../shared/plugin-repos.js";
 import { resolveDurablePin } from "./plugin-pins.js";
 import { writeInstallRecord } from "./plugin-install-record.js";
+import { handWorkspaceBackToWorker } from "./session-worker-uid.js";
 
 /** Subdirectory of the session state dir that holds every plugin checkout. */
 export const PLUGINS_SUBDIR = "plugins";
@@ -1063,9 +1064,55 @@ async function defaultBranch(bareCacheDir: string): Promise<string> {
   return head || "main";
 }
 
-/** Materialize `commit` into `targetDir` from the bare cache (hardlinked objects). */
+/**
+ * Materialize `commit` into `targetDir` from the bare cache (hardlinked objects).
+ *
+ * ## Why the handback sits between the two git calls (docs/266 E2, planning#410)
+ *
+ * This is the same shape `repo-git.ts`'s `cloneFromCache` documents, and it had
+ * the same defect. The clone above is a bare `safeSimpleGit()` — no `baseDir`,
+ * so no ownership predicate — and it therefore runs as **root** and leaves the
+ * whole fresh tree `root:root`. Everything after it goes through
+ * `safeSimpleGit(targetDir)`, and `targetDir` is
+ * `<sessionDir>/state/plugins/…`: a path INSIDE a session, so docs/270's
+ * resolver answers with that session's own uid and the drop fires. Root-owned
+ * tree, dropped uid — the two disagree, and both halves of that disagreement
+ * bite:
+ *
+ *   - **Today**, `git config gc.auto 0` cannot take `.git/config.lock` in a
+ *     `root:root 0755` `.git`, so the write EACCESes and the activation fails.
+ *     Invisible everywhere it is exercised: every test and the dogfood inner
+ *     instance run non-root, where `resolveGitTreeUid` returns null and no drop
+ *     happens at all.
+ *   - **Once `SHIPIT_GIT_STRICT_OWNERSHIP` is armed**, it stops at the step
+ *     before that with `fatal: detected dubious ownership in repository at
+ *     '<staging dir>'`.
+ *
+ * The audit that preceded E2 classified this file as "the bare cache, which is
+ * root-owned" and stopped there — true of `bareCacheDir`, and this function's
+ * OTHER tree is a session's.
+ *
+ * `handWorkspaceBackToWorker` and not `chownTreeToSessionWorker`, for the reason
+ * `cloneFromCache` states: `clone --local` HARDLINKS `.git/objects` from the
+ * shared plugin bare cache, an inode has one owner across every link, and a
+ * plain recursive chown would hand this session ownership of object files every
+ * sibling generation reads. The object-aware walk chowns the fanout directories
+ * and never the data files. It is a no-op wherever the non-root runtime is off.
+ *
+ * **What that does NOT buy, said here because the opposite is easy to assume.**
+ * It is the right walk for these two git calls, and it does not leave the shared
+ * cache protected end-to-end: on the ordinary install path
+ * `plugin-install.ts:321` plain-`chownRecursive`s this same tree minutes later,
+ * data files included, so the cache's object inodes end up session-owned anyway.
+ * That is pre-existing, has its own constraint (overlayfs takes the merged
+ * mount's permissions from the lower dir), and is **planning#417**. Not an
+ * arming blocker: git's ownership check reads the repository root, not object
+ * files. Found by the independent review of PR #2366, which caught this
+ * docstring claiming the protection as settled.
+ */
 async function checkoutCommit(bareCacheDir: string, targetDir: string, commit: string): Promise<void> {
   await safeSimpleGit().raw(["clone", "--local", "--no-checkout", bareCacheDir, targetDir]);
+  handWorkspaceBackToWorker(targetDir);
   const git = safeSimpleGit(targetDir);
   await git.raw(["config", "gc.auto", "0"]);
   await git.raw(["checkout", "--detach", commit]);
