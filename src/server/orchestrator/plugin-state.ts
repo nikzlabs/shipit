@@ -436,7 +436,7 @@ export function preparePluginState(opts: PreparePluginStateOptions): PluginState
       // means the one writable surface a plugin has is not writable — which
       // would surface as an inscrutable EACCES inside third-party code rather
       // than as a problem with the session (review finding).
-      // docs/268 — ask the SAME resolver the chown just used. Comparing against
+      // docs/270 — ask the SAME resolver the chown just used. Comparing against
       // the one global uid would now fail for every session that has an
       // identity of its own, turning a successful handoff into a plugin failure.
       const owner = identityForTarget(stateDir);

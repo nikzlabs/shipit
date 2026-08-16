@@ -424,7 +424,7 @@ export async function copySnapshotToBase(
   const scopeDir = path.dirname(genDir);
   await fs.mkdir(scopeDir, { recursive: true });
 
-  // docs/268 — normalize the SNAPSHOT to the group and mode the published base
+  // docs/270 — normalize the SNAPSHOT to the group and mode the published base
   // will carry, before it is compared against the previous generation.
   //
   // The handoff below adds the shared group plus `g+rw` (a base file must be
@@ -512,7 +512,7 @@ export interface PublishBaseArgs {
    * mode, so a root-owned base dep copied up stays root-owned and the non-root
    * agent EACCESes when it tries to modify that dep.
    *
-   * docs/268 — a base generation is shared by every session in its scope, so the
+   * docs/270 — a base generation is shared by every session in its scope, so the
    * handoff is by GROUP rather than by owner: chowning it to one session's uid
    * would reproduce exactly that EACCES for every other session. The shared
    * group plus group-write is what makes the copied-up file writable, and it is

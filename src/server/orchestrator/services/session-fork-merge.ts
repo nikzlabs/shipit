@@ -101,7 +101,7 @@ export async function forkSession(
   if (cloneUid !== null) await fs.chown(newWorkspaceDir, cloneUid.uid, cloneUid.gid);
   await safeSimpleGit(activeSessionDir).raw(["clone", "--local", activeSessionDir, newWorkspaceDir]);
 
-  // docs/268 — the fork builds `<sessionsRoot>/<id>` itself instead of going
+  // docs/270 — the fork builds `<sessionsRoot>/<id>` itself instead of going
   // through `createSessionDirFactory`, so without this it would be the one kind
   // of session with no identity of its own AND no 0700 seal: requirement 1 would
   // hold everywhere except forks, silently.

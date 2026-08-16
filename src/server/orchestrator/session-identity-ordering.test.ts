@@ -1,5 +1,5 @@
 /**
- * docs/268 — three orderings that cannot be exercised without root, guarded by
+ * docs/270 — three orderings that cannot be exercised without root, guarded by
  * reading the source.
  *
  * A source scan is the weakest kind of test and this file only exists because
@@ -54,12 +54,12 @@ function stripComments(source: string): string {
     .join("\n");
 }
 
-describe("docs/268 — orderings a uid drop depends on", () => {
+describe("docs/270 — orderings a uid drop depends on", () => {
   it("cloneFromCache hands the tree over BEFORE it runs git in it", () => {
     // `safeSimpleGit(sessionDir)` drops to the session's own uid. Run against a
     // tree `git clone --local` just created as root, it EACCESes writing
     // `.git/config` and session creation fails. This held only by accident
-    // before docs/268: a root-owned tree meant "do not drop", which stopped
+    // before docs/270: a root-owned tree meant "do not drop", which stopped
     // being true once the session DIRECTORY became the record instead of the
     // tree.
     const body = bodyOf(read("repo-git.ts"), "async cloneFromCache(");

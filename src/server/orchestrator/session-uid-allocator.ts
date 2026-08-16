@@ -1,5 +1,5 @@
 /**
- * planning#405 / docs/268 — allocate a distinct uid per session.
+ * planning#405 / docs/270 — allocate a distinct uid per session.
  *
  * ## The range, and why these numbers
  *
@@ -16,7 +16,7 @@
  *
  * 2 000 000 is clear of all of them and far below the 32-bit `uid_t` ceiling, so
  * a session identity can never collide with a `user:` a real project declares
- * (docs/268 req 4a). `compose-generator.ts` refuses a declared `user:` inside the
+ * (docs/270 req 4a). `compose-generator.ts` refuses a declared `user:` inside the
  * range, which turns "cannot collide in practice" into "cannot collide".
  *
  * Two properties fall out of the range rather than being enforced by logic:

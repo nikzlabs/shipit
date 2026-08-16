@@ -121,7 +121,7 @@ export function assertWorkerUidNotReserved(): void {
 }
 
 /**
- * docs/268 — the group EVERY session shares, still parsed from
+ * docs/270 — the group EVERY session shares, still parsed from
  * `SHIPIT_SESSION_WORKER_UID`. Only the **uid** became per-session.
  *
  * The shared group is what keeps the four cross-session surfaces working once
@@ -160,7 +160,7 @@ export function sessionWorkerGid(): number | null {
  * The identity of a session named by id rather than by a path — for the callers
  * that have a session id and no filesystem path into it (compose generation,
  * plugin container launch). Falls back to the shared global value exactly like
- * {@link identityForTarget}, so a session that predates docs/268 resolves to
+ * {@link identityForTarget}, so a session that predates docs/270 resolves to
  * what it has always been.
  */
 export function identityForSession(sessionId: string): SessionIdentity | null {
@@ -186,7 +186,7 @@ export function identityForTarget(targetPath: string): SessionIdentity | null {
  * stays root-owned 0755 so each session can still traverse to its own directory.
  *
  * Used for both populations: a new session (its allocated uid) and, at boot, a
- * session that predates docs/268 (the shared global uid). The second is req 8b —
+ * session that predates docs/270 (the shared global uid). The second is req 8b —
  * NOT a migration, which req 8a rules out, but the permission change without
  * which "new sessions only" would leave every new session readable by every old
  * one, and every old one readable by the new.
@@ -221,7 +221,7 @@ export function sealDirMode(dir: string): void {
 }
 
 /**
- * docs/268 req 9 — make a surface that is SHARED between sessions usable by all
+ * docs/270 req 9 — make a surface that is SHARED between sessions usable by all
  * of them, now that they no longer share a uid.
  *
  * The three surfaces this exists for are the per-repo dependency cache, the
@@ -309,7 +309,7 @@ function shareRecursive(p: string, gid: number): void {
 }
 
 /**
- * docs/268 req 8b — seal the session directories that predate per-session uids.
+ * docs/270 req 8b — seal the session directories that predate per-session uids.
  *
  * Requirement 8a says existing sessions are NOT migrated: they keep the shared
  * identity. That answer only means what it says once their directories are also
@@ -356,7 +356,7 @@ export function sealLegacySessionDirs(sessionsRoot: string): number {
     if (sealSessionDir(dir, { uid: gid, gid })) sealed += 1;
   }
   if (sealed > 0) {
-    console.log(`[session-worker-uid] docs/268: sealed ${sealed} pre-existing session director${sealed === 1 ? "y" : "ies"} at the shared uid ${gid}`);
+    console.log(`[session-worker-uid] docs/270: sealed ${sealed} pre-existing session director${sealed === 1 ? "y" : "ies"} at the shared uid ${gid}`);
   }
   return sealed;
 }

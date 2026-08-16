@@ -106,7 +106,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   // drift guard below, which needs the containerized state dir.
   assertWorkerUidNotReserved();
 
-  // docs/268 — the same shape, for the range per-session uids are allocated from.
+  // docs/270 — the same shape, for the range per-session uids are allocated from.
   // The range cannot contain 911/912 as written, so this refusal only fires if
   // the constants are edited into overlap — which is exactly when a silent
   // failure would matter, since a session allocated one of them would run exempt
@@ -135,7 +135,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
     sessionsRoot, credentialsDir,
   } = mgrs;
 
-  // docs/268 — tell the identity resolver where per-session paths live, then
+  // docs/270 — tell the identity resolver where per-session paths live, then
   // seal the session directories that predate it.
   //
   // Ordering: this must precede anything that chowns inside a session, because
@@ -146,7 +146,7 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   // Gated on the non-root runtime by `sealLegacySessionDirs` itself, and on the
   // roots being configured by the resolver — so local mode, dogfood and every
   // test keep exactly the behaviour they had.
-  // docs/268 — the allocation ledger, configured once. See the allocator's own
+  // docs/270 — the allocation ledger, configured once. See the allocator's own
   // note on why this is configured rather than threaded through the two
   // functions that create a session directory.
   configureSessionUidLedger(mgrs.databaseManager.db);

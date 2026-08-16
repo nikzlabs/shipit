@@ -127,8 +127,8 @@ interface RunOpts {
    */
   pluginDir?: string;
   /**
-   * docs/268 — the SHARED gid, forwarded as `SHIPIT_SESSION_WORKER_GID`. Left
-   * unset by default so every pre-docs/268 assertion still describes an
+   * docs/270 — the SHARED gid, forwarded as `SHIPIT_SESSION_WORKER_GID`. Left
+   * unset by default so every pre-docs/270 assertion still describes an
    * orchestrator that forwards only the UID, which the entrypoint must keep
    * booting unchanged.
    */
@@ -193,7 +193,7 @@ function runEntrypoint(dirs: string[], workerUid: string, opts: RunOpts = {}): R
     '#!/bin/sh\nprintf "groupadd %s\\n" "$*" >> "$GROUP_LOG"\n',
     { mode: 0o755 },
   );
-  // docs/268 — `usermod -u` must MODEL its effect, not just record the call.
+  // docs/270 — `usermod -u` must MODEL its effect, not just record the call.
   // The entrypoint runs it so that the passwd lookups AFTER it succeed; a stub
   // that only logs leaves `getent` answering "NONE" forever, so a test could
   // not tell a correctly-ordered `usermod` from one placed after the block that
@@ -215,7 +215,7 @@ function runEntrypoint(dirs: string[], workerUid: string, opts: RunOpts = {}): R
     join(bin, "stat"),
     [
       "#!/bin/sh",
-      // Only the `%g` probe ON A JOURNAL DIR is faked. docs/268 gave the mount
+      // Only the `%g` probe ON A JOURNAL DIR is faked. docs/270 gave the mount
       // loop `%g` probes of its own (the shared-mount sentinel), and a blanket
       // `*%g*` fake answered those from the journal fixture too — which would
       // make a sentinel test pass or fail depending on whether the run happened
@@ -532,7 +532,7 @@ describe("host journal readability (#1917)", () => {
   });
 
   it("gives a UID with no passwd entry one, rather than dropping lossily", () => {
-    // Before docs/268 this case took the explicit `uid:gid` form, which calls
+    // Before docs/270 this case took the explicit `uid:gid` form, which calls
     // setgroups() with an empty list. That was right when "no passwd entry"
     // meant a custom UID nobody had prepared; it is wrong now, when it is the
     // ordinary state of every allocated per-session uid. `usermod` moves the
@@ -572,7 +572,7 @@ describe("host journal readability (#1917)", () => {
     expect(result.stderr).toContain("without supplementary groups");
   });
 
-  // ---- docs/268: per-session uids, one shared gid ----
+  // ---- docs/270: per-session uids, one shared gid ----
 
   it("chowns a per-session mount to the allocated uid and the SHARED gid", () => {
     const dir = tempDir();
@@ -644,7 +644,7 @@ describe("host journal readability (#1917)", () => {
   });
 
   it("does not touch the image account when the uid already resolves", () => {
-    // The pre-docs/268 case: uid 1000 IS the image's `shipit`. Running usermod
+    // The pre-docs/270 case: uid 1000 IS the image's `shipit`. Running usermod
     // there would be a pointless mutation of /etc on every boot.
     const result = runEntrypoint([tempDir()], "1000");
 
@@ -691,7 +691,7 @@ describe("host journal readability (#1917)", () => {
     expect(result.stderr).not.toContain("without supplementary groups");
   });
 
-  // ---- docs/268: the workspace walk must not re-own hardlinked git objects ----
+  // ---- docs/270: the workspace walk must not re-own hardlinked git objects ----
 
   /**
    * Run the entrypoint's own `chown_workspace` against a fixture tree.
@@ -738,7 +738,7 @@ describe("host journal readability (#1917)", () => {
     // file here would hand THIS session ownership (chmod and rewrite rights) of
     // content every sibling session and the cache read. Under one shared uid
     // that was invisible; under per-session uids it is the cross-session write
-    // docs/268 exists to close.
+    // docs/270 exists to close.
     const tree = tempDir();
     mkdirSync(join(tree, ".git/objects/4d"), { recursive: true });
     mkdirSync(join(tree, ".git/objects/pack"), { recursive: true });

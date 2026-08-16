@@ -492,14 +492,14 @@ describe("session-worker-uid (docs/150 §7)", () => {
 
 
 /**
- * docs/268 — per-session identities.
+ * docs/270 — per-session identities.
  *
  * A real uid drop cannot be exercised here (no root, `unshare -r` refused), so
  * these assert what the code SETS and what it RESOLVES, never that another uid
  * was denied. The self-owned cases below are chosen so they run identically
  * privileged or not: chowning to your own uid/gid always succeeds.
  */
-describe("per-session identities (docs/268)", () => {
+describe("per-session identities (docs/270)", () => {
   const prevUid = process.env.SHIPIT_SESSION_WORKER_UID;
   let root: string;
   const selfUid = process.getuid?.() ?? 0;
@@ -614,7 +614,7 @@ describe("per-session identities (docs/268)", () => {
 
   describe("sessionWorkerGid / identityForTarget", () => {
     it("falls back to the global value for a path that belongs to no session", () => {
-      // The dep cache, the bare cache. Every pre-docs/268 caller keeps working
+      // The dep cache, the bare cache. Every pre-docs/270 caller keeps working
       // without a signature change because of exactly this.
       process.env.SHIPIT_SESSION_WORKER_UID = "1000";
       configureSessionIdentityRoots({ sessionsRoot: root });

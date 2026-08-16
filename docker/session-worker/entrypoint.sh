@@ -21,10 +21,10 @@
 set -eu
 
 UID_GID="${SHIPIT_SESSION_WORKER_UID:-}"
-# docs/268 — the UID is now per-session; the GID is SHARED by every session and
+# docs/270 — the UID is now per-session; the GID is SHARED by every session and
 # is what keeps the cross-session surfaces (the dep cache, the pnpm store, the
 # overlay dependency base, the global gitconfig) usable by a session that did not
-# create them. Defaults to the UID so an orchestrator that predates docs/268 —
+# create them. Defaults to the UID so an orchestrator that predates docs/270 —
 # which forwards only SHIPIT_SESSION_WORKER_UID — boots this image unchanged.
 WORKER_GID="${SHIPIT_SESSION_WORKER_GID:-$UID_GID}"
 
@@ -33,7 +33,7 @@ if [ -z "$UID_GID" ]; then
   exec "$@"
 fi
 
-# docs/268 — chown the workspace WITHOUT taking ownership of anything that is
+# docs/270 — chown the workspace WITHOUT taking ownership of anything that is
 # shared with another clone or another session.
 #
 # Two things inside /workspace are not this session's to own:
@@ -46,7 +46,7 @@ fi
 #      therefore chmod and rewrite rights) over object files the shared bare
 #      cache and every sibling session's clone read. Under one shared uid that
 #      was invisible; under per-session uids it is a cross-session write channel
-#      — the very thing docs/268 exists to close.
+#      — the very thing docs/270 exists to close.
 #
 #      The object DIRECTORIES are still chowned: the worker has to be able to
 #      create a new object inside a fanout directory. This is the same split the
@@ -123,7 +123,7 @@ for d in /workspace /uploads /persist /session-state /dep-cache /credentials /ho
   # stale and re-run the handoff. This is what lets git-lfs replace restored,
   # root-owned pointer files instead of merely downloading their objects.
   #
-  # docs/268 — the sentinel and the walk both split by whether the mount is the
+  # docs/270 — the sentinel and the walk both split by whether the mount is the
   # SESSION's or SHARED between sessions.
   #
   #   - A per-session mount is stamped with the uid AND gid, so a change to
@@ -134,7 +134,7 @@ for d in /workspace /uploads /persist /session-state /dep-cache /credentials /ho
   #     with the shared GID, its group is set without touching the owner, and it
   #     is made group-writable with the setgid bit so entries a later session
   #     creates inherit the group too. That is what keeps a shared cache shared
-  #     once uids differ (docs/268 req 9).
+  #     once uids differ (docs/270 req 9).
   #
   # Both sentinels are self-repairing for the same reason the uid one always was:
   # `mkdir` creates the marker as root, and the walk that follows chowns it too,
@@ -179,7 +179,7 @@ if ! (mkdir -p /plugins && chown "${UID_GID}:${WORKER_GID}" /plugins) 2>/dev/nul
   echo "[shipit] warning: could not prepare /plugins for UID ${UID_GID}; plugin checkouts will not be linked" >&2
 fi
 
-# docs/268 — OpenCode's credential home. The image symlinks
+# docs/270 — OpenCode's credential home. The image symlinks
 # ~/.local/share/opencode at /credentials/.local/share/opencode, and unlike the
 # single-segment .claude/.codex targets, a recursive mkdir THROUGH that dangling
 # leaf fails (EEXIST on the link, ENOENT on the stat) — so the target directory
@@ -188,7 +188,7 @@ fi
 # boot must never die over an optional credential surface, and /credentials was
 # just handed off by the loop, so this mkdir+chown succeeds there and warns
 # anywhere it cannot.
-if ! (mkdir -p /credentials/.local/share/opencode && chown "${UID_GID}:${UID_GID}" /credentials/.local/share/opencode) 2>/dev/null; then
+if ! (mkdir -p /credentials/.local/share/opencode && chown "${UID_GID}:${WORKER_GID}" /credentials/.local/share/opencode) 2>/dev/null; then
   echo "[shipit] warning: could not prepare /credentials/.local/share/opencode for UID ${UID_GID}; OpenCode credential writes will fail" >&2
 fi
 
@@ -226,7 +226,7 @@ if [ "${SHIPIT_READONLY_HOME:-0}" = "1" ]; then
   '
 fi
 
-# docs/268 — an ALLOCATED per-session uid has no passwd entry in the image, so
+# docs/270 — an ALLOCATED per-session uid has no passwd entry in the image, so
 # the user form would never be reachable and every session would silently take
 # the lossy path. Move the image's own `shipit` account onto the allocated uid
 # first: `usermod -u` keeps the account's primary gid and its entire

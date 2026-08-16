@@ -1310,7 +1310,7 @@ export function validateServiceSecurity(
       }
     }
   }
-  // docs/268 req 4a — a project may not declare a `user:` inside the range
+  // docs/270 req 4a — a project may not declare a `user:` inside the range
   // ShipIt allocates session identities from.
   //
   // Checked for EVERY service, contained or not, and before the contained-service
@@ -1724,7 +1724,7 @@ export function generateComposeOverride(
     //   - set (e.g. 1000) → both sides share the UID; one deploy flips both.
     // An explicit `user:` in the user's compose file is honored — we never
     // override a deliberate choice.
-    // docs/268 — the session's OWN uid, with the shared gid. Falls back to the
+    // docs/270 — the session's OWN uid, with the shared gid. Falls back to the
     // single global value for a session that predates per-session identities, so
     // its services keep running as exactly what they ran as before.
     const identity = identityForSession(opts.sessionId);

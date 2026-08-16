@@ -1,5 +1,5 @@
 /**
- * planning#405 / docs/268 — which session does a path belong to, and what uid is
+ * planning#405 / docs/270 — which session does a path belong to, and what uid is
  * that session?
  *
  * ## Why the session DIRECTORY is the record
@@ -12,7 +12,7 @@
  * only (`compose-generator.ts`). So a service can `chown` its own session's
  * workspace to any uid, and under per-session uids that is the session choosing
  * the identity ShipIt's own git process will hold, and therefore the identity a
- * `.git/config` payload executes at (docs/268 req 2).
+ * `.git/config` payload executes at (docs/270 req 2).
  *
  * `<sessionsRoot>/<sessionId>` is the fix, because it is the one directory in
  * the chain that no session can write. `buildMounts` mounts
@@ -36,7 +36,7 @@
  *
  * When the roots are NOT configured — local/dogfood mode, and every test —
  * every function here returns `null` and callers fall back to exactly the
- * behaviour they had before docs/268. That is what keeps this change inert
+ * behaviour they had before docs/270. That is what keeps this change inert
  * outside a containerized production orchestrator.
  */
 

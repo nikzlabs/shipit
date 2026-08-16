@@ -1,5 +1,5 @@
 /**
- * docs/268 — which session a path belongs to, and what that session's identity
+ * docs/270 — which session a path belongs to, and what that session's identity
  * is.
  *
  * The interesting state (a directory owned by a uid that is not ours) cannot be
@@ -30,7 +30,7 @@ function owned(owner: { uid: number; gid: number } | null): SessionIdentityDeps 
 
 describe("sessionIdForPath", () => {
   it("returns null everywhere when the roots are unconfigured", () => {
-    // Local mode, dogfood, and every test. This is what keeps docs/268 inert
+    // Local mode, dogfood, and every test. This is what keeps docs/270 inert
     // outside a containerized production orchestrator.
     expect(sessionsRootOrNull()).toBeNull();
     expect(sessionIdForPath(`${SESSIONS}/s1/workspace`)).toBeNull();
@@ -57,7 +57,7 @@ describe("sessionIdForPath", () => {
 
   it("returns null for a path that belongs to no session", () => {
     // The shared bare cache, the dep cache, /opt/shipit. These must keep their
-    // pre-docs/268 handling, which callers express as "fall back to the global".
+    // pre-docs/270 handling, which callers express as "fall back to the global".
     configureSessionIdentityRoots({ sessionsRoot: SESSIONS, credentialsSessionsRoot: CREDS });
     expect(sessionIdForPath("/workspace/repo-cache/abc")).toBeNull();
     expect(sessionIdForPath("/workspace/dep-cache/abc")).toBeNull();
@@ -103,7 +103,7 @@ describe("identityForPath", () => {
   it("returns null for a session directory that is still root-owned", () => {
     // "root" here is the ABSENCE of a record — a session directory the
     // orchestrator has not sealed yet — not a record saying root. Callers fall
-    // back to the global value, which is what a pre-docs/268 session had.
+    // back to the global value, which is what a pre-docs/270 session had.
     configureSessionIdentityRoots({ sessionsRoot: SESSIONS });
     expect(identityForPath(`${SESSIONS}/s1/workspace`, owned({ uid: 0, gid: 0 }))).toBeNull();
   });

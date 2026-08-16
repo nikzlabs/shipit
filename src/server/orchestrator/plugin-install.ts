@@ -526,7 +526,7 @@ async function runInstallContainer(
   command: string,
   networkMode: string,
 ): Promise<string | null> {
-  // docs/268 — a plugin container writes THIS session's workspace and overlay,
+  // docs/270 — a plugin container writes THIS session's workspace and overlay,
   // so it runs as this session's identity rather than the one global uid. A
   // session that predates per-session identities resolves to that global value,
   // so its plugin containers are unchanged.

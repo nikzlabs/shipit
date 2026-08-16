@@ -106,7 +106,7 @@ served either — deleting the highest row lowers the maximum and re-issues its
 uid, which is exactly the reuse requirement 7 forbids.
 
 "Created before this shipped" therefore reads off the filesystem too: a session
-directory whose owner is outside the reserved range is a pre-docs/268 session,
+directory whose owner is outside the reserved range is a pre-docs/270 session,
 which is requirement 8a's population.
 
 ### B. The session directory is the record, and the seal (reqs 1, 2, 5, 8b)
@@ -141,7 +141,7 @@ boundary, which is the shape of gap nobody notices. It does two jobs at once:
   an odd place to stop.
 
 **Old sessions are sealed too, without being migrated (req 8b).** At boot, every
-session directory that is still **root-owned** — the state a pre-docs/268 session
+session directory that is still **root-owned** — the state a pre-docs/270 session
 directory is in, since nothing ever chowned it — is chowned to the *global*
 worker uid and chmod'ed 0700. That is one non-recursive `lchown` + `chmod` per session — no
 tree walk, no first-boot cost, no identity change — and it is what makes Q2's

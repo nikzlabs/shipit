@@ -299,7 +299,7 @@ export class RepoGit {
     // (warm-pool warming, cache recovery) runs after that one-shot, so without
     // this the tree is unwritable to the worker uid.
     //
-    // docs/268 — this MUST come before the `git config` writes below, and it
+    // docs/270 — this MUST come before the `git config` writes below, and it
     // MUST be the object-aware handback rather than a plain recursive chown.
     // Both halves were wrong before per-session uids made them visible:
     //

@@ -1356,7 +1356,7 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     addSessionColumnIfMissing(db, "origin_role_name");
   },
-  // docs/268 — the per-session uid allocation ledger.
+  // docs/270 — the per-session uid allocation ledger.
   //
   // One row, holding only the NEXT uid to hand out. It is deliberately not a
   // column on `sessions`: the record of a session's identity is the OWNER of its

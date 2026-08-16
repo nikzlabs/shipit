@@ -604,7 +604,7 @@ services:
     })).toThrow("reserved UID");
   });
 
-  // docs/268 req 4a — a session identity comes from a reserved high range, and a
+  // docs/270 req 4a — a session identity comes from a reserved high range, and a
   // project may not declare a `user:` inside it. Without this a project could
   // run a service as another session's identity.
   it("rejects a user: inside ShipIt's per-session UID range", () => {

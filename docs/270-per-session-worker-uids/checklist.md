@@ -56,7 +56,7 @@ Build sequence from [plan.md](./plan.md) §2. Requirements are cited as `(req N)
       the hazard is identity rather than egress.
 - [x] **Plugin CLI and install containers** take the session's identity.
 - [x] Tests: `session-identity.test.ts`, `session-uid-allocator.test.ts`,
-      docs/268 blocks in `git-tree-uid.test.ts`, `session-worker-uid.test.ts` and
+      docs/270 blocks in `git-tree-uid.test.ts`, `session-worker-uid.test.ts` and
       `compose-generator.test.ts`, and six new cases in
       `session-worker-entrypoint.test.ts` that **execute** the script — including
       the `chown_workspace` `find` expression, extracted and run against a

@@ -623,7 +623,7 @@ describe("overlay-base: hardlink-dedup materialize (docs/183 generation dedup)",
 
     expect(ino(path.join(g2, "node_modules/run.sh"))).not.toBe(ino(path.join(g1, "node_modules/run.sh")));
     // The EXECUTE bit is what this test is about, and it is still not copied
-    // from the superseded generation. The group-write bit is docs/268's shared
+    // from the superseded generation. The group-write bit is docs/270's shared
     // handoff (a base file must be group-writable, or copy-up produces an
     // unwritable upper for every session that is not its owner), and it is
     // applied uniformly to both generations — which is exactly why it does not

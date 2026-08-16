@@ -41,7 +41,7 @@
  * satisfied; where we fail to drop, git *would* refuse with "detected dubious
  * ownership" rather than execute the payload (docs/266 req 7).
  *
- * ## docs/268: WHICH tree's ownership
+ * ## docs/270: WHICH tree's ownership
  *
  * Once uids differ per session, "the owner of the directory git runs in" stops
  * being a safe predicate, because that directory is bind-mounted read-write into
@@ -129,7 +129,7 @@ export function resolveGitTreeUid(
   // this is the no-op branch, which is what keeps this change inert outside a
   // containerized production orchestrator.
   if (deps.getuid() !== 0) return null;
-  // docs/268 req 2 — when the path belongs to a session, the identity comes from
+  // docs/270 req 2 — when the path belongs to a session, the identity comes from
   // that session's DIRECTORY, which is mounted into nothing and so cannot be
   // re-owned from inside the session. Stat'ing the tree instead would let an
   // Open session's root compose service `chown` its own workspace and thereby

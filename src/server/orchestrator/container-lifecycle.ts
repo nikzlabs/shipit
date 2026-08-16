@@ -287,7 +287,7 @@ export function ensurePnpmStoreDir(storeDir: string): boolean {
   }
   const gid = sessionWorkerGid();
   if (gid === null) return true; // legacy root runtime — the worker owns everything
-  // docs/268 — the store is shared per runtime across sessions, so it is handed
+  // docs/270 — the store is shared per runtime across sessions, so it is handed
   // over by GROUP, not by owner. Chowning it to one session's uid would take it
   // from every other session, which is the failure this dir's own docstring
   // describes (an EACCES with no in-session recovery) arriving by a new route.
@@ -578,9 +578,9 @@ export function buildEnv(
   // own default (1000) still applies in-image, and orchestrator-side chowns are
   // no-ops, preserving today's behavior.
   if (procEnv.SHIPIT_SESSION_WORKER_UID) {
-    // docs/268 — the UID is now per-session and the GID is the shared one. The
+    // docs/270 — the UID is now per-session and the GID is the shared one. The
     // identity is read from the session's own directory (the record the session
-    // cannot write), so a session created before docs/268 resolves to the shared
+    // cannot write), so a session created before docs/270 resolves to the shared
     // value and its container boots exactly as it did. Both are forwarded: the
     // entrypoint needs the pair, because `gosu <uid>:<gid>` and the chown loop
     // can no longer assume they are equal.

@@ -1,5 +1,5 @@
 /**
- * docs/268 — the per-session uid ledger.
+ * docs/270 — the per-session uid ledger.
  *
  * The properties worth guarding are the two that requirements 6 and 7 turn on:
  * two live sessions never share a number, and a number is never handed out

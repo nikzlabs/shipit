@@ -60,7 +60,7 @@ describe("resolveGitTreeUid", () => {
   });
 });
 
-describe("resolveGitTreeUid under per-session identities (docs/268)", () => {
+describe("resolveGitTreeUid under per-session identities (docs/270)", () => {
   // These use the REAL `statOwner` for the session directory, via the module's
   // own default deps, so they exercise the path a production call takes. The
   // injected deps below stand in only for the tree.

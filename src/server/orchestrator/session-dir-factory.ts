@@ -38,7 +38,7 @@ export function createSessionDirFactory(
     // repository. Created up front: writers treat it as existing.
     await fs.mkdir(sessionStateDir(sessionDir), { recursive: true });
 
-    // docs/268 — give the session its own uid and seal its directory, before
+    // docs/270 — give the session its own uid and seal its directory, before
     // anything is written INTO it (the clone, the credential scaffold, the first
     // turn). Order matters in both directions: the mkdirs above must come first
     // so the handoff below has something to hand over, and this must come before
