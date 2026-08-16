@@ -125,6 +125,11 @@ export const MODEL_IDENTITIES = {
   // `glm-5.2` on Z.ai's own key, `z-ai/glm-5.2` at OpenRouter. This is the pair
   // that proves the field is not derivable from the id.
   glm52: identity("glm-5.2", "glm"),
+  // GLM-5.3 (2026-08-14) is a post-training-only release over GLM-5.2 — same base
+  // model, different model. `glm` family (shared training, which is literally
+  // true here), distinct canonical key: a GLM-5.3 review is not a second opinion
+  // on GLM-5.2's work, and vice versa.
+  glm53: identity("glm-5.3", "glm"),
 
   // Gateway-only models (2026-08-16). ShipIt holds no direct credential for
   // Google, xAI, Moonshot or Alibaba, so each of these is reachable ONLY through

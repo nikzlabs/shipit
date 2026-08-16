@@ -361,3 +361,87 @@ Recorded because both produced confident, wrong results that looked fine:
   ids the catalogue declares were run.
 - Each verdict is one trivial turn. It establishes that the pairing *works*, not that the
   model is good at agentic coding through that harness.
+
+## GLM-5.3 on the Z.ai coding plan (2026-08-17)
+
+A single-question probe, run because GLM-5.3 shipped on **2026-08-14** and the obvious
+question — can ShipIt reach it? — was answerable but unanswered. Same method as the sweeps
+above: live turns against the dogfood inner instance, strictly serial, assistant-role text
+only, known-good control included.
+
+**Where GLM-5.3 is.** Not on either gateway: `openrouter.ai/api/v1/models` and
+`ai-gateway.vercel.sh/v1/models` were re-checked on 2026-08-17 and the newest GLM on both is
+still 5.2. That follows from Z.ai holding the weights back ~2 weeks for safety hardening.
+Z.ai's own docs still say *"The GLM-5.3 API is coming soon"* for general API access while
+noting it is live for **GLM Coding Plan** subscribers — which is exactly what ShipIt's
+`zai:sub` mode targets.
+
+The existing `zai` rows needed no structural change to reach it: the endpoint
+(`https://api.z.ai/api/anthropic`), the `ZAI_CODING_PLAN_KEY` credential and the
+`ANTHROPIC_AUTH_TOKEN` `targetOverride` all work unchanged. Only the model rows are new.
+
+### Why the negative control was the point
+
+A passing turn on a new model id does NOT by itself show the id was honoured — a service that
+ignores an unknown model and answers with its default would look identical. So a deliberately
+impossible id was run on the same route first, and it failed with a specific upstream error:
+
+> `API Error: 400 [1214][modelCode: does not exist]`
+
+Z.ai validates model ids and rejects unknown ones. That is what makes the GLM-5.3 pass mean
+"this id exists and was served" rather than "something answered". Without this control the
+probe would have been the same shape as the pass check that could not fail, three sections up.
+
+Asked to self-identify, the 5.2 route answered `GLM-5.2 (Z.ai), context window 1M` and the 5.3
+route answered `Model: glm-5.3[1m].` — recorded as an observation, not evidence. Model
+self-report is unreliable, and the second answer echoes the `[1m]` suffix that Claude Code is
+documented to consume and strip. The negative control, not the self-report, is what carries
+the finding.
+
+### Result: both Z.ai modes ship, `anthropic-messages` only
+
+| Pair | Result |
+|---|---|
+| `claude` / `zai:sub` / **`glm-5.3[1m]`** | **pass** ×3, separate runs |
+| `claude` / `zai:key` / **`glm-5.3`** | **pass** ×3, across two runs |
+| `claude` / `zai:sub` / `glm-5.2[1m]` — control | pass |
+| `claude` / `zai:key` / `glm-5.2` — control | pass |
+| `opencode` / `zai:key` / `glm-5.2` and `glm-5.3` | **no verdict** — see below |
+
+**The metered key already serves GLM-5.3, contradicting the vendor's own docs**, which still
+say the general API is "coming soon". Three passing Claude Code turns on `glm-5.3` against
+`https://api.z.ai/api/anthropic` say otherwise. Documentation is a claim; the turn is the
+contract.
+
+Both rows declare **`anthropic-messages` only**. `openai-chat-completions` is reachable only
+through OpenCode, and OpenCode returned no usable verdict: its turns hung (the harness was
+reported stuck with no output for 60s) and the inner instance fell over during them. Those
+runs are recorded as `INDETERMINATE` / `INSTANCE-DOWN` rather than as failures — the probe
+health-checks the instance either side of every turn precisely so a crash cannot be read as a
+style verdict. Note this makes the new `zai:key` row NARROWER than the `glm-5.2` row beside
+it, which carries an `O_CC` inherited from an earlier pass rather than measured.
+
+### The price is a labelled estimate, and that was a deliberate call
+
+Z.ai has published no per-token rate for GLM-5.3; the figures circulating third-hand are
+GLM-5.2's published rate. Both rows therefore carry `GLM_PRICES.glm53Provisional`, which is
+GLM-5.2's rate under a name that says what it is.
+
+Shipping on an estimate rather than withholding the capability was an explicit product
+decision, and the reasoning is worth keeping because it cuts against this document's usual
+bias:
+
+- Under **`sub`**, `ModelPrice` is only req 16's *"would have cost"* comparison and never a
+  charge, so the figure misprices a comparison at worst.
+- Under **`key`** the number does stand in for what the user paid — the weaker case. It ships
+  anyway because *every* figure derived from these four rates is already surfaced as an
+  **estimate** rather than a billed amount (`catalogue.md`, Pricing), so the gap between a
+  published rate and a same-vendor, same-base-model carry-over sits inside an approximation
+  the UI already labels.
+- The basis is the strongest a carry-over can have: GLM-5.3 is a **post-training-only**
+  release over the same base model, on the same plan, rolled out to existing subscribers at no
+  extra cost.
+
+The alternative — withholding a frontier coding model from users who have already paid for it,
+to avoid an imprecise comparison figure — is the worse trade. Replace both with the published
+rate when Z.ai publishes one.
