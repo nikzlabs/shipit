@@ -26,3 +26,24 @@
 - [x] Resolve LFS pointers in the diff viewer, which reads committed blobs and so
       is untouched by working-tree materialization (design + key files in
       `docs/017-diff-review-panel` § Git LFS images)
+
+## nikzlabs/shipit#2349 — later tree rewrites, not just provisioning
+
+- [x] `restoreLfsAfterTreeRewrite` in `git-lfs.ts`: one named, documented duty
+      every orchestrator-side worktree rewrite owes, over the existing
+      `materializeLfsWithWarning`
+- [x] Restore after the rebase driver's flow — in the `finally`, so an ABORTED
+      sync (which checks the pre-rebase tree back out through the same
+      filter-less git) is covered too, and never between conflict iterations
+- [x] Restore after the merged-branch pre-turn `reset --hard`, before the turn it
+      exists to enable reads those files
+- [x] Restore after `shipit branch reset-to-base` (explicit + `--force`)
+- [x] Restore after a fork-merge into the active session, including its abort
+- [x] Restore after a child spawn pinned to an explicit base with `reset --hard`
+- [x] End-to-end regression against a real git-lfs: a skip-smudge clone, a tree
+      rewrite, pointer text in a tree git calls clean, then real content back
+      with the tree still clean
+- [x] Wiring guards at each call site, including the negatives — no restore when
+      nothing was rewritten, and none mid-conflict
+- [x] Agent-facing `shipit-docs/environment.md`: syncs restore too, so stubs
+      after one are a failure worth reporting rather than the expected state

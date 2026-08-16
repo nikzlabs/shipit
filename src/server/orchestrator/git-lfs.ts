@@ -50,6 +50,16 @@ import { gitSpawnOverridesForTree } from "../shared/git-tree-uid.js";
  *  - **after** `configureGitCredentials` (private repos need the helper), and
  *  - **before** `handWorkspaceBackToWorker` (the pull writes files as root, so
  *    the chown has to come last or the agent can't edit them).
+ *
+ * ## Provisioning is not the only path that has to do this
+ *
+ * The same skip-smudge asymmetry applies to every LATER orchestrator-side
+ * rewrite of a live session's worktree — the rebase driver, the merged-branch
+ * `reset --hard`, the fork-merge. Those run the identical orchestrator git with
+ * the identical disabled smudge filter, so they re-write every LFS-tracked path
+ * they touch as pointer text, and until nikzlabs/shipit#2349 none of them
+ * restored it. {@link restoreLfsAfterTreeRewrite} is the one duty every such
+ * path owes; see its docstring.
  */
 
 /** Set `SHIPIT_GIT_LFS=off` to detect-and-warn instead of downloading content. */
@@ -302,4 +312,67 @@ export async function materializeLfsWithWarning(
   }
   if (result.warning) warn(`${repoLabel}: ${result.warning}`);
   return result;
+}
+
+/**
+ * Re-materialize LFS content after the ORCHESTRATOR rewrote an existing
+ * session's worktree — a rebase, a `reset --hard`, a merge (nikzlabs/shipit#2349).
+ *
+ * ## Why every such path needs this
+ *
+ * Those rewrites run the orchestrator's git, which is installed
+ * `--skip-smudge` (see the module docstring — enabling smudge there would break
+ * `clone --local` outright). So git re-materializes every file the rewrite
+ * touched, and for an LFS-tracked path that means writing back the ~130-byte
+ * **pointer stub** the object database holds, not the asset.
+ *
+ * The reported symptom is exactly what that predicts and is nastier than a
+ * missing file: only the paths the rewrite touched go stale, LFS files it did
+ * not touch keep their real bytes, git reports the tree **clean** (the pointer
+ * in the index never changed), and nothing announces any of it. A dev server
+ * then hands 130 bytes of text to an image/font/model decoder, and the failure
+ * surfaces as corrupted rendering some distance from the cause.
+ *
+ * ## What it runs, and why a pull rather than a checkout
+ *
+ * `git lfs pull` (via {@link materializeLfsContent}), not `git lfs checkout`.
+ * A checkout is enough for the reported case — the object was already in
+ * `.git/lfs/objects` — but a sync onto a moved base can bring in assets this
+ * clone has never seen, and a checkout leaves those as stubs while exiting 0.
+ * When every object is already local the pull makes no network call, so the
+ * cheap case stays cheap. A repo that doesn't use LFS costs one `git grep`.
+ *
+ * ## Ordering
+ *
+ * Call it at a SETTLED tree — after the rebase finishes or is aborted, never
+ * between conflict iterations: mid-rebase, a conflicted LFS path is pointer
+ * text carrying conflict markers, and smudging it would destroy the very
+ * conflict the agent is being asked to resolve. Like the provisioning paths,
+ * call it **before** `handWorkspaceBackToWorker` so the chown has the last
+ * write.
+ *
+ * Best-effort, like everything else here: a session whose assets didn't restore
+ * is degraded, not broken, so the failure is reported and never thrown.
+ * `operation` labels the warning with what rewrote the tree, since the reader
+ * gets it as a bare toast or log line.
+ *
+ * "Never thrown" is stricter here than in {@link materializeLfsWithWarning},
+ * which swallows the materialization but still lets the `warn` SINK throw. Call
+ * sites put this in a `finally` alongside a rewrite that has ALREADY happened,
+ * where a throw would replace the flow's real error with this one — or, on the
+ * pre-turn reset, make a completed reset report itself as not-moved. So the sink
+ * is guarded too.
+ */
+export async function restoreLfsAfterTreeRewrite(
+  workspaceDir: string,
+  operation: string,
+  warn: (message: string) => void = (message) => console.warn(`[git-lfs] ${message}`),
+  opts?: { isAvailable?: () => Promise<boolean> },
+): Promise<LfsResult> {
+  try {
+    return await materializeLfsWithWarning(workspaceDir, operation, warn, opts);
+  } catch (err) {
+    console.warn(`[git-lfs] restore after ${operation} threw for ${workspaceDir}:`, String(err));
+    return { status: "failed", usesLfs: true };
+  }
 }

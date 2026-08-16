@@ -21,6 +21,7 @@ import type { SessionInfo } from "../../shared/types.js";
 import { graduateSession, type GraduateSessionDeps } from "./graduate-session.js";
 import { ServiceError } from "./types.js";
 import { chownTreeToSessionWorker, handWorkspaceBackToWorker } from "../session-worker-uid.js";
+import { restoreLfsAfterTreeRewrite } from "../git-lfs.js";
 import { stripRemoteUrlCredentials } from "../git-utils.js";
 import { resolveGitTreeUid } from "../../shared/git-tree-uid.js";
 
@@ -243,6 +244,15 @@ export async function mergeSession(
         }
       }
     } catch { /* ignore cleanup errors */ }
+    // nikzlabs/shipit#2349: the merge rewrote the worktree through the ORCHESTRATOR's
+    // git, whose LFS smudge filter is disabled by design, so every LFS-tracked
+    // path it touched holds ~130 bytes of pointer text — in a tree git reports as
+    // clean. In the `finally` because a conflicted merge is aborted (`git.merge`
+    // does that itself), and the abort checks the pre-merge tree back out through
+    // the same filter-less git, so it leaves stubs just as a clean merge does.
+    await restoreLfsAfterTreeRewrite(activeSessionDir, "Merge", (message) =>
+      console.warn(`[fork-merge] ${message}`),
+    );
     // docs/150 §7 addendum (planning#146): the push/fetch/merge git ops above ran as
     // the root orchestrator against the active session's (booted) clone,
     // re-rooting BOTH its `.git` and the worktree files the merge rewrote. Hand

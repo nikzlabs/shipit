@@ -23,6 +23,17 @@ vi.mock("../session-worker-uid.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../session-worker-uid.js")>();
   return { ...actual, handWorkspaceBackToWorker: vi.fn() };
 });
+// nikzlabs/shipit#2349: that same merge rewrites the active worktree through the
+// ORCHESTRATOR's git, whose LFS smudge filter is disabled by design, so every
+// LFS-tracked path it touched is left as ~130-byte pointer text in a tree that
+// reports clean. The restore's real behaviour is proven end-to-end against a
+// real git-lfs in `git-lfs.test.ts`; here we assert `mergeSession` wires it.
+vi.mock("../git-lfs.js", () => ({
+  restoreLfsAfterTreeRewrite: vi.fn(() =>
+    Promise.resolve({ status: "not-an-lfs-repo" as const, usesLfs: false }),
+  ),
+}));
+import { restoreLfsAfterTreeRewrite } from "../git-lfs.js";
 
 /** Bare origin + a working clone with one pushed commit on `main`. */
 function setupRepoWithRemote(tmpDir: string, name: string) {
@@ -51,6 +62,7 @@ describe("session-fork-merge: mergeSession ownership handoff (planning#146 analo
 
   beforeEach(() => {
     vi.mocked(handWorkspaceBackToWorker).mockClear();
+    vi.mocked(restoreLfsAfterTreeRewrite).mockClear();
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "fork-merge-"));
     origGitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
     origGitEditor = process.env.GIT_EDITOR;
@@ -90,6 +102,13 @@ describe("session-fork-merge: mergeSession ownership handoff (planning#146 analo
     expect(fs.existsSync(path.join(activeDir, "feature.txt"))).toBe(true);
     // Both handoffs fired against the ACTIVE session dir.
     expect(handWorkspaceBackToWorker).toHaveBeenCalledWith(activeDir);
+    // nikzlabs/shipit#2349 — and the merged LFS assets were restored, not left as
+    // pointer text for the next turn to consume.
+    expect(restoreLfsAfterTreeRewrite).toHaveBeenCalledWith(
+      activeDir,
+      expect.any(String),
+      expect.any(Function),
+    );
   });
 
   it("hands ownership back even when the merge throws (finally runs)", async () => {

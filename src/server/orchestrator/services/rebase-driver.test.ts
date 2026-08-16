@@ -35,6 +35,24 @@ vi.mock("../session-worker-uid.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../session-worker-uid.js")>();
   return { ...actual, handWorkspaceBackToWorker: vi.fn() };
 });
+// nikzlabs/shipit#2349: a rebase re-materializes the worktree through the
+// ORCHESTRATOR's git, whose LFS smudge filter is disabled by design, so every
+// LFS-tracked path it touched is left as ~130-byte pointer text in a tree that
+// reads clean. What the real helper does about that is proven end-to-end against
+// a real git-lfs in `git-lfs.test.ts`; these tests own the other half — that the
+// driver CALLS it, and calls it only where a rewrite actually happened and only
+// once the tree has settled.
+vi.mock("../git-lfs.js", async (importOriginal) => {
+  // eslint-disable-next-line no-restricted-syntax -- vitest's importOriginal generic requires an inline import() type
+  const actual = await importOriginal<typeof import("../git-lfs.js")>();
+  return {
+    ...actual,
+    restoreLfsAfterTreeRewrite: vi.fn(() =>
+      Promise.resolve({ status: "not-an-lfs-repo" as const, usesLfs: false }),
+    ),
+  };
+});
+import { restoreLfsAfterTreeRewrite } from "../git-lfs.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 import type { ChatHistoryManager } from "../chat-history.js";
 import type { SessionManager } from "../sessions.js";
@@ -253,6 +271,7 @@ describe("rebase-driver: runRebaseFlow", () => {
 
   beforeEach(() => {
     vi.mocked(handWorkspaceBackToWorker).mockClear();
+    vi.mocked(restoreLfsAfterTreeRewrite).mockClear();
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-rebase-driver-"));
     origGitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
     origGitEditor = process.env.GIT_EDITOR;
@@ -798,6 +817,133 @@ describe("rebase-driver: runRebaseFlow", () => {
 
     // The finally must still run on the throw path — for both handoffs.
     expect(handWorkspaceBackToWorker).toHaveBeenCalledWith(workDir);
+  });
+
+  it("nikzlabs/shipit#2349: restores LFS content after a clean rebase rewrote the worktree", async () => {
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    createCleanDivergence(bareDir, workDir);
+    execSync("git push -u origin feature", { cwd: workDir, stdio: "pipe" });
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+
+    const result = await runFlow({
+      git,
+      githubAuthManager: makeStubAuth(true),
+      runner,
+      sessionManager: makeStubSessionManager(),
+      chatHistoryManager: makeStubHistory([]),
+      agentFactory: () => new FakeRebaseAgent(() => "should not run") as unknown as AgentProcess,
+      usageManager: makeStubUsageManager(),
+      sseBroadcast: () => {},
+    }, "main");
+
+    expect(result.status).toBe("rebased");
+    expect(restoreLfsAfterTreeRewrite).toHaveBeenCalledWith(
+      workDir,
+      expect.stringContaining("main"),
+      expect.any(Function),
+    );
+  });
+
+  it("nikzlabs/shipit#2349: does NOT restore on the up-to-date path — nothing was rewritten", async () => {
+    const { workDir, git } = setupRepoWithRemote(tmpDir);
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+
+    const result = await runFlow({
+      git,
+      githubAuthManager: makeStubAuth(false),
+      runner,
+      sessionManager: makeStubSessionManager(),
+      chatHistoryManager: makeStubHistory([]),
+      agentFactory: () => new FakeRebaseAgent(() => "should not run") as unknown as AgentProcess,
+      usageManager: makeStubUsageManager(),
+      sseBroadcast: () => {},
+    }, "main");
+
+    expect(result.status).toBe("up_to_date");
+    expect(restoreLfsAfterTreeRewrite).not.toHaveBeenCalled();
+  });
+
+  it("nikzlabs/shipit#2349: restores only AFTER the conflicts settle, never between iterations", async () => {
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    createConflictingDivergence(bareDir, workDir);
+    execSync("git push -u origin feature", { cwd: workDir, stdio: "pipe" });
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+
+    // Smudging mid-rebase would overwrite a conflicted LFS pointer — which is
+    // text carrying conflict markers — with binary content, destroying the very
+    // conflict the agent is being asked to resolve. So the restore must not have
+    // run by the time the resolution turn edits files.
+    let restoredBeforeResolution = false;
+    const result = await runFlow({
+      git,
+      githubAuthManager: makeStubAuth(true),
+      runner,
+      sessionManager: makeStubSessionManager(),
+      chatHistoryManager: makeStubHistory([]),
+      agentFactory: () => new FakeRebaseAgent((cwd) => {
+        restoredBeforeResolution = vi.mocked(restoreLfsAfterTreeRewrite).mock.calls.length > 0;
+        fs.writeFileSync(path.join(cwd, "shared.txt"), "merged result\n");
+        return "Resolved.";
+      }) as unknown as AgentProcess,
+      usageManager: makeStubUsageManager(),
+      sseBroadcast: () => {},
+    }, "main");
+
+    expect(result.status).toBe("conflicts_resolved");
+    expect(restoredBeforeResolution).toBe(false);
+    expect(restoreLfsAfterTreeRewrite).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(restoreLfsAfterTreeRewrite).mock.calls[0]![0]).toBe(workDir);
+  });
+
+  it("nikzlabs/shipit#2349: restores after an aborted rebase — the abort rewrites the tree too", async () => {
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    createConflictingDivergence(bareDir, workDir);
+    execSync("git push -u origin feature", { cwd: workDir, stdio: "pipe" });
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+
+    // The agent dies without resolving, so the driver aborts. `git rebase
+    // --abort` checks the pre-rebase tree back out through the same filter-less
+    // git, so a FAILED sync leaves stubs exactly as a successful one would.
+    await expect(
+      runFlow({
+        git,
+        githubAuthManager: makeStubAuth(true),
+        runner,
+        sessionManager: makeStubSessionManager(),
+        chatHistoryManager: makeStubHistory([]),
+        agentFactory: () => new FakeRebaseAgent(() => {
+          throw new Error("agent died mid-resolution");
+        }) as unknown as AgentProcess,
+        usageManager: makeStubUsageManager(),
+        sseBroadcast: () => {},
+      }, "main"),
+    ).rejects.toThrow();
+
+    expect(restoreLfsAfterTreeRewrite).toHaveBeenCalledWith(
+      workDir,
+      expect.any(String),
+      expect.any(Function),
+    );
+  });
+
+  it("nikzlabs/shipit#2349: does NOT restore when the flow throws before touching the worktree", async () => {
+    const { workDir, git } = setupRepoWithRemote(tmpDir);
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+
+    await expect(
+      runFlow({
+        git,
+        githubAuthManager: makeStubAuth(false),
+        runner,
+        sessionManager: makeStubSessionManager(),
+        chatHistoryManager: makeStubHistory([]),
+        agentFactory: () => new FakeRebaseAgent(() => "ok") as unknown as AgentProcess,
+        usageManager: makeStubUsageManager(),
+        sseBroadcast: () => {},
+      }, "nonexistent-branch-xyz"),
+    ).rejects.toThrow(/Cannot resolve base branch/);
+
+    expect(restoreLfsAfterTreeRewrite).not.toHaveBeenCalled();
   });
 });
 

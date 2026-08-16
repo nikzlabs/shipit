@@ -49,6 +49,7 @@ import type { GitManager } from "../../shared/git.js";
 import type { PrStatusSummary } from "../../shared/types/github-types.js";
 import type { WsServerMessage } from "../../shared/types/ws-server-messages.js";
 import { handWorkspaceBackToWorker } from "../session-worker-uid.js";
+import { restoreLfsAfterTreeRewrite } from "../git-lfs.js";
 import {
   emitNoticeInTurn,
   persistNoticeUnattached,
@@ -784,6 +785,15 @@ export async function autoResetMergedBranchOnContinue(
 
     const { from, to } = await git.resetHardToRemoteBase(base);
 
+    // nikzlabs/shipit#2349 — that `reset --hard` re-materialized the worktree through
+    // the ORCHESTRATOR's git, whose LFS smudge filter is disabled by design, so
+    // every LFS-tracked path it touched now holds ~130 bytes of pointer text in a
+    // tree that reads clean. Restore it here, before the turn this reset exists
+    // to enable runs against those files. Non-LFS repos exit on one `git grep`.
+    await restoreLfsAfterTreeRewrite(sessionDir, `Reset onto ${base}`, (message) =>
+      console.warn(`[pre-turn-reset] ${message}`),
+    );
+
     // Heal the remote branch so later plain auto-pushes fast-forward. The reset
     // moved only the LOCAL branch to origin/<base>; the session's own remote
     // branch (origin/<session-branch>) still points at the old merged commits —
@@ -1414,6 +1424,13 @@ export async function resetBranchToBaseExplicit(
     }
 
     const { from, to } = await git.resetHardToRemoteBase(base);
+
+    // nikzlabs/shipit#2349 — same restore the automatic path above owes, for the same
+    // reason: the reset rewrote the worktree through a git with the LFS smudge
+    // filter disabled, leaving pointer text behind in a clean-looking tree.
+    await restoreLfsAfterTreeRewrite(sessionDir, `Reset onto ${base}`, (message) =>
+      console.warn(`[branch-reset] ${message}`),
+    );
 
     // Heal the remote so later plain auto-pushes fast-forward. STRICT, unlike
     // docs/218's best-effort heal: the reset moved only the local branch, so the

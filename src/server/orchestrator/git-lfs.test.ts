@@ -21,6 +21,7 @@ import {
   repoDeclaresLfs,
   materializeLfsContent,
   materializeLfsWithWarning,
+  restoreLfsAfterTreeRewrite,
   isGitLfsAvailable,
   resetGitLfsAvailabilityCache,
 } from "./git-lfs.js";
@@ -217,6 +218,168 @@ describe("materializeLfsWithWarning", () => {
     );
     expect(result.usesLfs).toBeTypeOf("boolean");
     expect(warnings.length).toBeLessThanOrEqual(1);
+  });
+});
+
+/**
+ * nikzlabs/shipit#2349 — the reported bug, end to end against a real git and a real
+ * git-lfs.
+ *
+ * A stub can't produce it: what goes wrong is that the ORCHESTRATOR's git has
+ * the LFS smudge filter disabled, so a tree rewrite (rebase / `reset --hard` /
+ * merge) re-materializes tracked assets as ~130-byte pointer text, `git status`
+ * reports the tree CLEAN because the pointer in the index never changed, and
+ * files the rewrite did NOT touch keep their real bytes. Every one of those is a
+ * property of the actual filter configuration, so the fixture reproduces that
+ * configuration rather than describing it.
+ */
+describe("restoreLfsAfterTreeRewrite (nikzlabs/shipit#2349)", () => {
+  const dirs: string[] = [];
+  afterEach(() => {
+    for (const d of dirs) fs.rmSync(d, { recursive: true, force: true });
+    dirs.length = 0;
+    resetGitLfsAvailabilityCache();
+  });
+
+  /** Content big enough that a pointer stub is unmistakably the wrong bytes. */
+  const ASSET_V1 = "A".repeat(4096);
+  const ASSET_V2 = "B".repeat(8192);
+  const UNTOUCHED = "C".repeat(2048);
+
+  /**
+   * An origin repo with two commits that change an LFS-tracked asset, plus a
+   * second tracked asset that only ever exists in its v1 form — that one is the
+   * control: a rewrite that doesn't touch it must leave its content alone, which
+   * is what tells "the rewrite path is broken" apart from "LFS is broken here".
+   */
+  function makeLfsOrigin(): string {
+    const dir = makeRepo();
+    dirs.push(dir);
+    git(dir, "lfs install --local");
+    writeFile(dir, ".gitattributes", "*.bin filter=lfs diff=lfs merge=lfs -text\n");
+    writeFile(dir, "asset.bin", ASSET_V1);
+    writeFile(dir, "untouched.bin", UNTOUCHED);
+    commitAll(dir, "v1");
+    writeFile(dir, "asset.bin", ASSET_V2);
+    commitAll(dir, "v2");
+    return dir;
+  }
+
+  /**
+   * A session clone as the orchestrator holds one: cloned `--local` from a
+   * filesystem path, with the clean filter live and smudge disabled — i.e. what
+   * `git lfs install --system --skip-smudge` produces in the orchestrator image.
+   * `git clone --local` does not carry `.git/lfs`, so the object store is copied
+   * in explicitly, mirroring both the docs/232 hardlink seeding and the reported
+   * case (the object was already local; only the working copy was wrong).
+   */
+  function makeSkipSmudgeClone(origin: string): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-lfs-clone-"));
+    dirs.push(dir);
+    // Skip smudge for the clone's own checkout too, not just afterwards: with it
+    // active the clone materializes content and the fixture would never hold the
+    // stubs the orchestrator's clone actually starts from.
+    const skipSmudge = `-c filter.lfs.smudge="git-lfs smudge --skip -- %f" -c filter.lfs.process="git-lfs filter-process --skip"`;
+    execSync(`git ${skipSmudge} clone --quiet --local ${origin} ${dir}`, { stdio: ["ignore", "pipe", "ignore"] });
+    git(dir, 'config user.email "t@example.com"');
+    git(dir, 'config user.name "Test"');
+    git(dir, 'config filter.lfs.clean "git-lfs clean -- %f"');
+    git(dir, 'config filter.lfs.smudge "git-lfs smudge --skip -- %f"');
+    git(dir, 'config filter.lfs.process "git-lfs filter-process --skip"');
+    git(dir, "config filter.lfs.required true");
+    fs.cpSync(path.join(origin, ".git", "lfs"), path.join(dir, ".git", "lfs"), {
+      recursive: true,
+      force: true,
+    });
+    return dir;
+  }
+
+  function read(dir: string, rel: string): string {
+    return fs.readFileSync(path.join(dir, rel), "utf8");
+  }
+
+  it("git-lfs is installed, so the rest of this describe means something", async () => {
+    // Guarding the fixture itself rather than skipping on a missing binary: a
+    // silently-skipped regression test for a silent bug is the worst of both.
+    expect(await isGitLfsAvailable()).toBe(true);
+  });
+
+  it("restores content a tree rewrite left as pointer text, and leaves git clean", async () => {
+    const origin = makeLfsOrigin();
+    const clone = makeSkipSmudgeClone(origin);
+    await restoreLfsAfterTreeRewrite(clone, "clone");
+    expect(read(clone, "asset.bin")).toBe(ASSET_V2);
+
+    // The rewrite: exactly what a sync onto a moved base does to the worktree.
+    git(clone, "reset --hard HEAD~1");
+
+    // The bug, reproduced. Both halves matter — the pointer text AND the fact
+    // that nothing about the repo state says anything is wrong.
+    const stub = read(clone, "asset.bin");
+    expect(stub).toContain("version https://git-lfs.github.com/spec/v1");
+    expect(stub.length).toBeLessThan(200);
+    expect(git(clone, "status --porcelain")).toBe("");
+
+    const warnings: string[] = [];
+    const result = await restoreLfsAfterTreeRewrite(clone, "Sync with main", (m) => warnings.push(m));
+
+    expect(result.status).toBe("materialized");
+    expect(warnings).toEqual([]);
+    expect(read(clone, "asset.bin")).toBe(ASSET_V1);
+    // Restoring content must not dirty the tree: the pointer in the index never
+    // changed, so there is nothing to re-commit (the reporter's own finding).
+    expect(git(clone, "status --porcelain")).toBe("");
+  });
+
+  it("leaves LFS files the rewrite did not touch alone", async () => {
+    const origin = makeLfsOrigin();
+    const clone = makeSkipSmudgeClone(origin);
+    await restoreLfsAfterTreeRewrite(clone, "clone");
+    git(clone, "reset --hard HEAD~1");
+
+    // The tell from the report: only the rewritten path went stale.
+    expect(read(clone, "untouched.bin")).toBe(UNTOUCHED);
+    await restoreLfsAfterTreeRewrite(clone, "Sync with main");
+    expect(read(clone, "untouched.bin")).toBe(UNTOUCHED);
+  });
+
+  it("warns with the operation label when the content cannot be restored", async () => {
+    const origin = makeLfsOrigin();
+    const clone = makeSkipSmudgeClone(origin);
+    const warnings: string[] = [];
+    const result = await restoreLfsAfterTreeRewrite(clone, "Sync with main", (m) => warnings.push(m), {
+      isAvailable: () => Promise.resolve(false),
+    });
+    // The issue's fallback ask: if the content can't be restored, say so rather
+    // than leaving the session to consume the pointer.
+    expect(result.status).toBe("binary-missing");
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("Sync with main");
+  });
+
+  it("swallows a throwing warn sink — callers run it in a `finally`", async () => {
+    // A throw here would replace the rebase driver's real error with this one,
+    // and would make a completed pre-turn reset report itself as not-moved.
+    const origin = makeLfsOrigin();
+    const clone = makeSkipSmudgeClone(origin);
+    const result = await restoreLfsAfterTreeRewrite(
+      clone,
+      "Sync with main",
+      () => { throw new Error("the SSE broadcaster is gone"); },
+      { isAvailable: () => Promise.resolve(false) },
+    );
+    expect(result.status).toBe("failed");
+  });
+
+  it("costs one grep and says nothing on a repo that doesn't use LFS", async () => {
+    const dir = makeRepo();
+    dirs.push(dir);
+    writeFile(dir, "index.js", "console.log(1);\n");
+    commitAll(dir, "initial");
+    const warnings: string[] = [];
+    const result = await restoreLfsAfterTreeRewrite(dir, "Sync with main", (m) => warnings.push(m));
+    expect(result.status).toBe("not-an-lfs-repo");
+    expect(warnings).toEqual([]);
   });
 });
 
