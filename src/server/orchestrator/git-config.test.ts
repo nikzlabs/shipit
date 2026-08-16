@@ -12,6 +12,7 @@ import {
   CONTAINER_CREDENTIAL_HELPER,
   FALLBACK_CONTAINER_GIT_IDENTITY,
   gitStrictOwnership,
+  GLOBAL_CREDENTIAL_FILENAME,
 } from "./git-config.js";
 
 describe("git-config: initGlobalGitConfig", () => {
@@ -154,11 +155,47 @@ describe("git-config: setGlobalCredentialHelper / clearGlobalCredentialHelper", 
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("writes a working credential helper into the global gitconfig", () => {
+  it("keeps the token OUT of the gitconfig and in a 0600 file beside it (docs/266 E3)", () => {
     setGlobalCredentialHelper("ghp_some_token_value");
+
+    // The config is shared with the session-worker uid so a dropped-uid git can
+    // read identity and `url.insteadOf` from it (E1). That sharing is only safe
+    // while the config holds no secret — this is the assertion that keeps it so.
+    const configPath = process.env.GIT_CONFIG_GLOBAL!;
+    expect(fs.readFileSync(configPath, "utf-8")).not.toContain("ghp_some_token_value");
+
     const helper = execSync("git config --global credential.helper", { encoding: "utf-8" }).trim();
-    expect(helper).toContain("ghp_some_token_value");
-    expect(helper).toContain("x-access-token");
+    expect(helper).not.toContain("ghp_some_token_value");
+
+    const credPath = path.join(tmpDir, GLOBAL_CREDENTIAL_FILENAME);
+    expect(helper).toContain(credPath);
+    const contents = fs.readFileSync(credPath, "utf-8");
+    expect(contents).toContain("password=ghp_some_token_value");
+    expect(contents).toContain("username=x-access-token");
+    // Root-only. The whole point is that the worker uid cannot read it; the
+    // mode is the part of that a test running as one uid can check.
+    expect(fs.statSync(credPath).mode & 0o777).toBe(0o600);
+  });
+
+  it("a helper whose credential file is unreadable answers nothing rather than failing git", () => {
+    // The dropped-uid case, approximated with a mode the current uid cannot
+    // read either: the helper must go quiet, not break the git invocation. An
+    // unreadable `include.path` is a hard `fatal:` on every git command, which
+    // is exactly why the token is NOT pulled in that way.
+    setGlobalCredentialHelper("unreachable-token");
+    const credPath = path.join(tmpDir, GLOBAL_CREDENTIAL_FILENAME);
+    fs.chmodSync(credPath, 0o000);
+    try {
+      const out = execSync("git config --get user.email || true", { encoding: "utf-8", shell: "/bin/sh" });
+      expect(out).not.toContain("unreachable-token");
+      const filled = execSync(
+        "printf 'protocol=https\\nhost=github.com\\n\\n' | git credential fill 2>&1 || true",
+        { encoding: "utf-8", shell: "/bin/sh", env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } },
+      );
+      expect(filled).not.toContain("unreachable-token");
+    } finally {
+      fs.chmodSync(credPath, 0o600);
+    }
   });
 
   it("a fresh workspace (no local helper) authenticates against a private remote via the global helper", () => {
@@ -191,16 +228,23 @@ describe("git-config: setGlobalCredentialHelper / clearGlobalCredentialHelper", 
       cleared = true;
     }
     expect(cleared).toBe(true);
+    // docs/266 E3 — clearing must remove the token FILE too. Unsetting the key
+    // alone would leave a revoked PAT on disk until the next one overwrote it.
+    expect(fs.existsSync(path.join(tmpDir, GLOBAL_CREDENTIAL_FILENAME))).toBe(false);
     // Second call must not throw even though the helper is already gone.
     expect(() => { clearGlobalCredentialHelper(); }).not.toThrow();
   });
 
-  it("setGlobalCredentialHelper twice overwrites — no stale token left in config", () => {
+  it("setGlobalCredentialHelper twice overwrites — no stale token left anywhere", () => {
     setGlobalCredentialHelper("old-token");
     setGlobalCredentialHelper("new-token");
-    const helper = execSync("git config --global credential.helper", { encoding: "utf-8" }).trim();
-    expect(helper).toContain("new-token");
-    expect(helper).not.toContain("old-token");
+    const credPath = path.join(tmpDir, GLOBAL_CREDENTIAL_FILENAME);
+    const contents = fs.readFileSync(credPath, "utf-8");
+    expect(contents).toContain("new-token");
+    expect(contents).not.toContain("old-token");
+    const config = fs.readFileSync(process.env.GIT_CONFIG_GLOBAL!, "utf-8");
+    expect(config).not.toContain("old-token");
+    expect(config).not.toContain("new-token");
   });
 });
 

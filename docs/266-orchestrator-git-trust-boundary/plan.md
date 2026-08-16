@@ -9,12 +9,11 @@ description: Five options for closing the .git route, their costs, the recommend
 Implements [requirements.md](./requirements.md). Requirements are cited as
 `(req N)`.
 
-**Status: E1 + E5-detect shipped; E2 built but not armed; E3, E4 and the
+**Status: E1 + E5-detect + E3 shipped; E2 built but not armed; E4 and the
 per-session-uid follow-up outstanding.** All four open questions were answered on
 2026-08-16 (`requirements.md` → Resolved questions). See
 [checklist.md](./checklist.md) for exactly what landed and why each remaining
-piece was split out — planning#403 (E2), planning#404 (E3), planning#405
-(per-session uids).
+piece was split out — planning#403 (E2), planning#405 (per-session uids).
 
 "Built but not armed" is E2's whole shape: the CI-side guard is on, and removing
 `safe.directory=*` is behind `SHIPIT_GIT_STRICT_OWNERSHIP=1`, off by default.
@@ -22,9 +21,9 @@ Arming it is an operator decision to be taken against a running deployment after
 E1 has been observed there — not something a merge should do. §2 (E2) says why.
 
 **planning#384 is not closed by that work**, and the checklist says so in those
-words. The drop removes root, the Docker socket and the credential store as a
-whole from the payload's reach; it does not remove `/credentials`, it is not yet
-fail-closed, and cross-session workspace access remains.
+words. The drop removes root, the Docker socket and the credential store from
+the payload's reach; it is not yet fail-closed (E2), a project's hooks still do
+not fire (E4), and cross-session workspace access remains (req 13).
 
 One correction to §5 from building it: the sequence says "convert the five raw
 sites". There are **13** raw `safeSimpleGit(workspaceDir)` sites across 8 files,
@@ -296,6 +295,52 @@ something the session container can already obtain, so stealing it gains
 nothing — which is what makes E1 sound rather than a credential downgrade in
 disguise.
 
+**Shipped (planning#404), and the shape changed twice on contact.** Two
+mechanisms this section implies were measured and rejected before the third was
+built; the measurements are worth keeping because both look right on paper.
+
+- **Pointing the dropped git at the *sanitized container* config**
+  (`writeContainerGitConfig`) needs a second `GIT_CONFIG_GLOBAL`, which is only
+  expressible through the child environment — the mechanism E1 already tried and
+  reverted, because simple-git's `env(object)` *assigns* the executor
+  environment and any caller chaining `.env()` discards it while the uid drop
+  stays in force. Nothing on the command line can name a global config file.
+- **Pulling the token into the shared config by reference**
+  (`include.path = <root-only file>`) fails harder, and measurably: against git
+  2.39.5 an unreadable `include.path` is `fatal: unable to access …` on *every*
+  git command, so the dropped git would not even run `status`. Its neighbour
+  behaves in the opposite direction — an unreadable `GIT_CONFIG_GLOBAL` is
+  *silently ignored* — which is what makes the pair worth recording rather than
+  reasoning about.
+
+So the shipped shape splits the **secret**, not the file. `.gitconfig` stays
+one file, still shared with the worker uid, and now carries no secret: the PAT
+moves to a root-only `/credentials/.git-credential-github` that the global
+`credential.helper` `cat`s. Root reads it; the dropped git gets EACCES, the
+helper prints nothing (stderr discarded, so E5-detect's classifiers see no new
+noise), and git moves to the next helper — the repo-scoped one the operation
+supplies for itself. That supply rides `-c` for its *shape*
+(`credential.helper=` reset plus a URL-scoped replacement, which no `.env()`
+can remove) and the process environment for its *secret*, on a simple-git
+instance created and consumed inside one function so no caller exists to chain
+`.env()` onto it. Neither half is sufficient alone, which is the whole content
+of the trap E1 hit. Key files: `shared/git-remote-credential.ts`,
+`GitManager.remoteGit`, `services/github.ts`'s
+`resolveOrchestratorGitRemoteCredential`.
+
+Two consequences worth stating, because they are the reason this is not a
+downgrade and not an availability risk:
+
+- **Every failure degrades to E1's behaviour, never to a failed operation.** No
+  resolver, no drop, a non-HTTPS remote, a resolver that returns null or
+  throws, a mint that exceeds its 5s deadline — each falls back to the git that
+  would have run anyway. `getRepoScopedGitCredential` already falls back to the
+  PAT when an App is not configured or a mint fails, so "the dropped git has no
+  credential" is not a reachable state while the orchestrator holds a token.
+- **The commit path never touches any of it.** `autoCommit` is local, so it
+  acquires no network dependency (req 6). Pinned by a test that asserts the
+  resolver is *not* consulted during a commit.
+
 **E4. Let the project's hooks fire again on the session-workspace path**
 (req 9, decided 2026-08-16). Once E1 lands, PR #2301's `core.hooksPath` override
 is no longer doing security work there — it is only suppressing a project's own
@@ -551,8 +596,10 @@ each by name:
 5. **Post-turn work is held on a lease, and the push does not live on the
    runner.** Unaffected. The push still runs from
    `services/auto-push-scheduler.ts` under `beginPostTurnWork`; E changes who the
-   spawned `git push` runs as and which gitconfig it reads (E3), not where the
-   scheduler lives.
+   spawned `git push` runs as and which credential it carries (E3), not where
+   the scheduler lives. E3 adds one thing *inside* that lease — a mint that can
+   take up to 5s — which is why the deadline exists: the lease is
+   deadline-bounded, and an unbounded network call under it could outlive it.
 
 Option C fails 2 and 6 and is rejected on that basis. Options A, B and D satisfy
 all five and fail the requirements instead.
@@ -562,12 +609,34 @@ all five and fail the requirements instead.
 Stated as gaps, not as inherited guarantees (req 8, `CLAUDE.md` "Verify an
 inherited guarantee at the source").
 
-- **Verified, and worse than assumed: the orchestrator's global gitconfig is
-  world-readable and holds the raw PAT.** Read at `git-config.ts:240-245`
+- **Verified, and worse than assumed: the orchestrator's global gitconfig was
+  world-readable and held the raw PAT.** Read at `git-config.ts:240-245`
   (verbatim token in the inline helper) and `git-config.ts:28` (`mkdirSync` with
   no `mode`). I read the writers; I did not stat a live deployment, so the
-  effective mode depends on the orchestrator's umask — the default gives 0755 on
-  the directory and 0644 on the file. Folded into E3.
+  effective mode depended on the orchestrator's umask — the default gives 0755
+  on the directory and 0644 on the file. Fixed: E1 took the directory to 0711
+  and the config to 0600, and E3 took the token out of the config altogether.
+- **E3's mechanism choice is measured, not reasoned.** Run here against git
+  2.39.5: an unreadable `GIT_CONFIG_GLOBAL` is silently ignored (exit 0, no
+  warning), an unreadable `include.path` is `fatal:` on every command, a
+  `!f() { cat <file>; }; f` helper resolves normally for a reader and prints
+  nothing for a non-reader, and an empty `-c credential.helper=` really does
+  reset a helper list a global config has already populated. The last of those
+  is the one the whole design rests on and is pinned by a test that runs real
+  git, not a fake.
+- **E3's dropped-uid branch is exercised only through its injection seam.** The
+  *decision* (which ops resolve a credential, with what remote, and which must
+  never) is covered against real git via `GitManagerOptions.gitTreeUidDeps`. The
+  **setuid spawn itself is still not exercised** — same reason as everything
+  else in this document: no root, `unshare -r` refused. So "a git running as uid
+  1000 gets EACCES on the root-only credential file and continues to the next
+  helper" is inferred from the kernel's permission check plus the measured
+  helper behaviour, not observed end to end.
+- **Not measured: how long a repo-scoped mint takes in production.** The 5s
+  deadline on `resolveOrchestratorGitRemoteCredential` is chosen as "well past a
+  healthy two-request mint, far short of a hang", not from a distribution. It
+  fails toward the PAT, so a badly-chosen value costs tightness rather than
+  availability — but nobody has watched it fire.
 - **Verified: `RepoGit`'s bare cache is not mounted into any container.**
   `buildMounts` (`container-lifecycle.ts:297-519`) binds exactly the workspace,
   the per-session credentials dir, uploads (ro), scratch, session state, the
@@ -668,7 +737,12 @@ Sequence:
    the five raw sites. Gated on `sessionWorkerUid()`, so unset = today.
 2. Point unprivileged git at a sanitized global config + the repo-scoped
    brokering helper (E3), and tighten `/credentials` to 0700 / `.gitconfig` to
-   0600.
+   0600. **Shipped, with two corrections this step got wrong** (see E3 above):
+   `/credentials` is **0711**, not 0700 — 0700 denies *traversal*, so the
+   dropped git could not reach a file it owned — and there is no second
+   config, because nothing on the command line can name a global config file
+   and the environment is not a durable channel. The secret was split out of
+   the one config instead.
 3. Remove `safe.directory=*`; replace with nothing. Any survivor fails loudly.
    *Built as `SHIPIT_GIT_STRICT_OWNERSHIP=1`, off by default — see §2 (E2b) for
    why the removal is a switch an operator arms rather than something a merge

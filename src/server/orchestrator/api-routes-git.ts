@@ -9,6 +9,7 @@ import type { BranchAutoResetCard, PrStatusSummary, WsServerMessage } from "../s
 import type { ApiDeps } from "./api-routes.js";
 import { resolveSessionDir } from "./api-routes.js";
 import { emitChatCard } from "./chat-card-persistence.js";
+import { gitRemoteCredentialResolver } from "./services/github.js";
 import type { ChatHistoryManager } from "./chat-history.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
 
@@ -407,6 +408,7 @@ export async function registerGitRoutes(
       try {
         return await mergeSession(
           sessionManager, createGitManager, dir, request.body.sourceSessionId,
+          gitRemoteCredentialResolver(deps.githubAuthManager),
         );
       } catch (err) {
         if (err instanceof ServiceError) {
