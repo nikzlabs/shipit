@@ -170,6 +170,12 @@ describe("ServicesPanel", () => {
       expect(screen.getByTestId("add-service-support-openai-codex")).toHaveAttribute("data-supported", "yes");
       expect(screen.getByTestId("add-service-support-deepseek-claude")).toHaveAttribute("data-supported", "yes");
       expect(screen.getByTestId("add-service-support-deepseek-codex")).toHaveAttribute("data-supported", "yes");
+      // A gateway ticks EXISTENTIALLY, over its models: OpenRouter's Codex tick
+      // is carried by its two DeepSeek rows (2026-08-15, planning#391) while its
+      // Anthropic and GLM rows speak Anthropic Messages only. Pinned at the UI
+      // level too, because the cell is what the user reads before buying a key.
+      expect(screen.getByTestId("add-service-support-openrouter-claude")).toHaveAttribute("data-supported", "yes");
+      expect(screen.getByTestId("add-service-support-openrouter-codex")).toHaveAttribute("data-supported", "yes");
     });
 
     it("says the answer in words, naming both sides", async () => {

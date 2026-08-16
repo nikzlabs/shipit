@@ -3485,7 +3485,11 @@ are examples, since the list of work ShipIt does outside a turn is not closed.
 **2026-08-13.** Step 1 of *Add a service* listed six services and the billing modes each takes,
 and said nothing about the pairing that decides whether the credential will be usable at all.
 GLM and OpenRouter serve Anthropic Messages and reach only Claude Code; OpenAI serves Responses
-and reaches only Codex. On an install with one harness, a third of the list was a dead end the
+and reaches only Codex. (The OpenRouter half stopped being true on **2026-08-15**, when its
+Responses surface was verified and its DeepSeek rows gained the style — planning#391. Left as
+written because it is what made the case for this change; the cell was always derived, so it
+answered differently the moment the row did.) On an install with one harness, a third of the
+list was a dead end the
 user could only discover **after** buying a key and pasting it — a ShipIt-imposed failure of
 exactly the kind req 1 exists to prevent.
 

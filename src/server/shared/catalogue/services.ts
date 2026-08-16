@@ -395,7 +395,10 @@ export const SERVICES = [
           { id: "anthropic/claude-opus-5", label: "Opus 5", ...MODEL_IDENTITIES.opus5, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: ANTHROPIC_PRICES.opus5 },
           { id: "anthropic/claude-sonnet-5", label: "Sonnet 5", ...MODEL_IDENTITIES.sonnet5, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: ANTHROPIC_PRICES.sonnet5 },
           // Vercel documents a Responses-compatible surface, so these reach
-          // Codex as well as any OpenAI-chat-completions consumer.
+          // Codex as well as any OpenAI-chat-completions consumer. They also
+          // carry the namespaced-id caveat written out on the OpenRouter row
+          // above: Codex has no metadata for `openai/gpt-…` and warns before
+          // falling back. Non-fatal, and not fixable from the catalogue.
           { id: "openai/gpt-5.6-sol", label: "GPT-5.6 Sol", ...MODEL_IDENTITIES.gpt56sol, styles: [O_RESP, O_CC], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.sol },
           { id: "openai/gpt-5.6-terra", label: "GPT-5.6 Terra", ...MODEL_IDENTITIES.gpt56terra, styles: [O_RESP, O_CC], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.terra },
           { id: "deepseek/deepseek-v4-flash", label: "DeepSeek V4 Flash", ...MODEL_IDENTITIES.deepseekV4Flash, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: DEEPSEEK_PRICES.v4flash },

@@ -778,6 +778,34 @@ describe("spawn shaping", () => {
     });
   });
 
+  it("points Codex at OpenRouter's Responses base, which is NOT its Anthropic one", () => {
+    // 2026-08-15 (planning#391). The literal URL is pinned because the row
+    // carries two different base URLs for one host on purpose — `/api/v1` for
+    // Responses (Codex appends `/responses`) and `/api` for Anthropic Messages
+    // (Claude Code appends `/v1/messages`). A `/v1` dropped from either would
+    // still satisfy the generic "every joined entry has an endpoint" guard and
+    // fail only at turn time, against the real gateway.
+    const codex = resolveSpawnShaping("codex", {
+      serviceId: "openrouter",
+      billingMode: "key",
+      modelId: "deepseek/deepseek-v4-flash",
+    });
+    expect(codex?.style).toBe("openai-responses");
+    expect(codex?.endpoint.url).toBe("https://openrouter.ai/api/v1");
+    expect(codex?.credential).toEqual({
+      sourceEnv: "OPENROUTER_API_KEY",
+      target: { kind: "env", name: "OPENAI_API_KEY" },
+    });
+
+    const claude = resolveSpawnShaping("claude", {
+      serviceId: "openrouter",
+      billingMode: "key",
+      modelId: "deepseek/deepseek-v4-flash",
+    });
+    expect(claude?.style).toBe("anthropic-messages");
+    expect(claude?.endpoint.url).toBe("https://openrouter.ai/api");
+  });
+
   it("honours a mode's targetOverride — GLM's plan is a bearer token, not an x-api-key", () => {
     const shaping = resolveSpawnShaping("claude", {
       serviceId: "zai",

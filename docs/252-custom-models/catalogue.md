@@ -936,7 +936,9 @@ Every 🔍, but these change the *shape* rather than the contents:
    authenticated POST returning a genuine `"object":"response"` body where a bogus sibling
    route on the same base 404s, and a real `codex exec` turn completed over it with
    `wire_api = "responses"`. The style is declared on the row's **DeepSeek models only**: the
-   run exercised a DeepSeek id, and one model answering does not establish that the gateway
+   run exercised `deepseek/deepseek-v4-flash` and that id alone, so `deepseek/deepseek-v4-pro`
+   rides on DeepSeek's own verified Responses support rather than on this run. One model
+   answering does not establish that the gateway
    translates for an upstream serving no Responses API of its own — which Anthropic does not,
    and which Z.ai was measured in the same run not to do either.
 6. **What does GLM's coding plan offer, and how does its auth work?** Phase 2 owns the
