@@ -25,9 +25,11 @@
  * A session's workspace is bind-mounted read-write into containers whose code is
  * untrusted by design — a plugin CLI run and a plugin service both get
  * `<workspaceDir>` at `/project` (docs/262 req 19), and
- * `chownWorkspaceGitToSessionWorker` makes `.git` writable to exactly the uid
- * those containers run as. So `/project/.git/hooks/pre-commit` is a file the
- * untrusted side can create.
+ * `chownWorkspaceGitToSessionWorker` makes `.git` writable to the session's own
+ * uid — the one those containers run as (resolved by `resolveGitDirOwner`,
+ * which follows the tree's owner where that and the configured uid disagree;
+ * both answers are the untrusted side, so this argument is unaffected). So
+ * `/project/.git/hooks/pre-commit` is a file the untrusted side can create.
  *
  * ShipIt's own post-turn auto-commit then runs `git commit` on that same tree
  * from **inside the orchestrator process**, which is root and mounts the

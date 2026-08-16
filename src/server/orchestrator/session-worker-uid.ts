@@ -28,6 +28,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { resolveShipitConfig, DEFAULT_DEP_DIRS } from "../shared/shipit-config.js";
 import { identityForPath, sessionDirFor, type SessionIdentity } from "../shared/session-identity.js";
+import { resolveGitTreeUid, type GitTreeUidDeps } from "../shared/git-tree-uid.js";
 import { EGRESS_RESOLVER_UID } from "./egress-dns.js";
 import { EGRESS_PROXY_UID } from "./egress-proxy-install.js";
 
@@ -479,9 +480,15 @@ export function chownTreeToSessionWorker(targetPath: string): void {
 }
 
 /**
- * Hand a session workspace's `.git` directory back to the worker uid after the
- * root orchestrator ran git operations in it (clone, fetch, branch, reset,
- * commit). No-op when `SHIPIT_SESSION_WORKER_UID` is unset.
+ * Hand a session workspace's `.git` directory back to the uid that will next run
+ * git in it, after the root orchestrator ran git operations there (clone, fetch,
+ * branch, reset, commit).
+ *
+ * **That uid is {@link resolveGitDirOwner}'s answer, not `SHIPIT_SESSION_WORKER_UID`
+ * directly** — read it before assuming this is only about the container's uid;
+ * the two differ in exactly the cases that used to strand a turn's work. No-op
+ * when that resolves to null. `deps` is the same injection seam
+ * {@link resolveGitTreeUid} documents, for tests only.
  *
  * docs/150 §7 addendum (planning#33 activation): the worktree files are written by
  * the agent *as the worker uid* inside the container, but git's own writes —
@@ -505,11 +512,128 @@ export function chownTreeToSessionWorker(targetPath: string): void {
  * `objects/` is chowned in full; that's where git's rewritten/appended files
  * (index, reflogs, refs, packed-refs, HEAD) live.
  */
-export function chownWorkspaceGitToSessionWorker(workspaceDir: string): void {
-  const owner = identityForTarget(workspaceDir);
+export function chownWorkspaceGitToSessionWorker(workspaceDir: string, deps?: GitTreeUidDeps): void {
+  const owner = resolveGitDirOwner(workspaceDir, deps);
   if (owner === null) return;
   const gitDir = path.join(workspaceDir, ".git");
   chownGitMetadataRecursive(gitDir, owner, path.join(gitDir, "objects"), path.join(gitDir, "lfs", "objects"));
+}
+
+/**
+ * Who `.git` must belong to — **the identity that will run git in it**, not the
+ * identity ShipIt has recorded for the session.
+ *
+ * ## The defect this closes
+ *
+ * `.git` has two consumers, and until this function they were resolved by two
+ * different questions:
+ *
+ *   - The **agent inside the container** runs at {@link identityForTarget} —
+ *     the session's own allocated uid (docs/270), or the shared global one.
+ *   - **Orchestrator-side git** runs at whatever {@link resolveGitTreeUid}
+ *     resolves — "are we root, and who owns this tree" — since docs/266 E1.
+ *
+ * The handback answered only the first, so where the two disagree the post-turn
+ * commit dropped to the tree's owner and then EACCESed inside a `.git` handed to
+ * someone else. Measured shape, git 2.39.5:
+ * `fatal: could not open '.git/COMMIT_EDITMSG': Permission denied`, exit 128,
+ * **after** `git add -A` has already succeeded — so the turn's work is staged,
+ * uncommitted, and reachable only through `CLAUDE.md` invariant 2's "no reflog
+ * entry and no recovery". Reported in production on 2026-08-16, hours after E1
+ * landed, through `formatUncommittedTurnNotice`'s unclassified path.
+ *
+ * Two ways they disagree, neither hypothetical:
+ *
+ *   - **Nothing is recorded while a drop still applies.** `resolveGitTreeUid`
+ *     consults neither the registry nor `SHIPIT_SESSION_WORKER_UID`, so a root
+ *     orchestrator over a non-root-owned tree (a host-bind dev setup) dropped
+ *     while the handback returned early — leaving any root-owned file inside
+ *     `.git` unwritable **forever**, because nothing else repairs it.
+ *   - **The recorded identity is not the tree's.** An adopted container keeps
+ *     its old uid, so a tree written under one identity can be resolved to
+ *     another. Here the handback was actively harmful: it chowned `.git` *away*
+ *     from the uid git runs as, on every turn, so the failure could never
+ *     converge.
+ *
+ * docs/270 sharpens this rather than retiring it. Per-session uids mean the
+ * recorded answer now varies per session, so "what ShipIt thinks owns this tree"
+ * and "what actually owns it" have more ways to differ, not fewer — `.git` is
+ * exactly where that costs a turn's work.
+ *
+ * docs/266 already fixed this same mismatch once, on the fork path
+ * (`session-fork-merge.ts` — "One predicate, both halves, no window in which
+ * they disagree"). This is the correction on the path that carries a turn's work.
+ *
+ * ## Why the tree's owner wins, and why the fallback is not a compromise
+ *
+ * When a drop applies, orchestrator git *must* be able to write `.git` or the
+ * turn's work does not land — the highest-stakes consumer, and the one git's own
+ * CVE-2022-24765 check already keys on. Taking the drop's pair **whole** (uid and
+ * gid) is what makes it exact: `gitSpawnOverridesForTree` spawns git with those
+ * same two numbers, so `.git` ends up owned by the very process that must write
+ * it. When there is no drop this defers to {@link identityForTarget} — today's
+ * behaviour, per-session record and global fallback included.
+ *
+ * ## Why session setup is unaffected, stated as the invariant rather than a story
+ *
+ * At every `handWorkspaceBackToWorker` site the tree's owner is already one of
+ * exactly two things, and both come out as before:
+ *
+ *   - **The session's own identity**, because `cloneFromCache` ends with
+ *     `chownTreeToSessionWorker(sessionDir)` (`repo-git.ts`) — a fresh clone is
+ *     handed over *before* any handback runs, so the drop resolves to that same
+ *     identity. A later root-side `checkout -b` / `reset --hard` rewrites files
+ *     *inside* the tree without changing the root directory's owner, so claim
+ *     and rebase land here too.
+ *   - **Root**, when nothing is recorded — that clone-time chown is itself a
+ *     no-op then, the drop declines on a root-owned tree, and this returns null:
+ *     nothing happens at all.
+ *
+ * *An earlier version of this comment claimed fresh clones were still root-owned
+ * at handback time and that the FALLBACK was what kept setup safe. That is false
+ * at the source (`repo-git.ts`'s clone-time chown), and it was the reasoning a
+ * future edit would have leaned on — so it is corrected rather than quietly
+ * dropped. The fallback is a safety net for "identity recorded, tree still
+ * root-owned", not the mechanism.*
+ *
+ * In the ordinary steady state both answers are the same identity and nothing
+ * changes at all. Only the disagreement cases above behave differently — and
+ * there the old answer was the bug.
+ *
+ * ## The objection this has to survive, since the answer is not obvious
+ *
+ * Where the two disagree this hands `.git` to a uid the *container* is not
+ * running as — apparently trading the orchestrator's failure for the agent's. It
+ * does not, for two reasons, both verified rather than assumed:
+ *
+ *   - The agent is **already** broken in that window regardless of `.git`: the
+ *     worktree it must edit belongs to the tree's owner too. (True of the
+ *     post-turn path, whose caller chowns `.git` and nothing else. The composite
+ *     {@link handWorkspaceBackToWorker} *does* move the worktree to the recorded
+ *     identity, so there the worktree half is what re-splits the two; that is the
+ *     composite's business, not this decision's.)
+ *   - The window closes on its own. `docker/session-worker/entrypoint.sh` stamps
+ *     its chown sentinel with the uid (`.shipit-uid-${UID_GID}`), so a uid change
+ *     rotates the name and the boot chown re-runs under the new owner — the
+ *     comment there says so explicitly, and that sentinel is the general
+ *     mechanism (`ReservedWorkerUidError`'s docstring describes only the
+ *     reserved-uid case of it). The next container create resolves it, and both
+ *     answers agree again from that point.
+ *
+ * So the choice is between an orchestrator that cannot commit and an agent that
+ * is temporarily no worse off. `CLAUDE.md` invariant 2 settles which of those is
+ * acceptable: uncommitted agent work has no reflog entry and no recovery.
+ *
+ * Returns `null` for "do not chown", which stays a no-op for every test, local
+ * mode, and any deployment with no identity recorded and a root-owned tree.
+ */
+export function resolveGitDirOwner(
+  workspaceDir: string,
+  deps?: GitTreeUidDeps,
+): SessionIdentity | null {
+  const treeUid = deps ? resolveGitTreeUid(workspaceDir, deps) : resolveGitTreeUid(workspaceDir);
+  if (treeUid !== null) return treeUid;
+  return identityForTarget(workspaceDir);
 }
 
 /**

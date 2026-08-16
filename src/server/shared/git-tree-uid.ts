@@ -5,8 +5,11 @@
  *
  * A session's workspace is bind-mounted read-write into containers whose code
  * is untrusted by design (a plugin CLI run, a plugin service), and
- * `chownWorkspaceGitToSessionWorker` makes `.git` writable to exactly the uid
- * those containers run as. An ordinary `npm install` reaches the same place —
+ * `chownWorkspaceGitToSessionWorker` makes `.git` writable to the session's own
+ * uid — the one those containers run as. (It resolves that through
+ * `resolveGitDirOwner`, which follows the *tree's* owner wherever that and the
+ * configured uid disagree; the hazard below is the same either way, since both
+ * answers are the untrusted side.) An ordinary `npm install` reaches the same place —
  * a dependency's `postinstall` runs in the session worker as that same uid, so
  * this is NOT a plugin-specific hazard (docs/266 req 2).
  *

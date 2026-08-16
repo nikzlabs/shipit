@@ -252,6 +252,55 @@ Build sequence from [plan.md](./plan.md) §5. Requirements are cited as `(req N)
       dir to its workspace dir, so the session uid cannot unlink the `uploads/`
       and `logs/` siblings.
 
+## E1 follow-up — the first production failure, 2026-08-16
+
+- [x] **`.git` is handed to the uid that will RUN git in it, not to the uid a
+      variable names.** The first thing E1 broke in production, reported hours
+      after it landed: the post-turn auto-commit died with
+      `fatal: could not open '.git/COMMIT_EDITMSG': Permission denied`.
+
+      `chownWorkspaceGitToSessionWorker` answered "who does the container run
+      as" (`SHIPIT_SESSION_WORKER_UID`) while `safeSimpleGit` answered "who owns
+      this tree" (`resolveGitTreeUid`) — two questions, one directory. Where they
+      disagree the dropped git EACCESes inside a `.git` handed to someone else:
+      with the **variable unset** while a drop still applies, nothing repairs a
+      root-owned file in `.git` ever again; under a **worker-uid migration** the
+      handback chowned `.git` *away* from the uid git runs as on every turn, so
+      it could never converge. Both now resolve through one predicate,
+      `resolveGitDirOwner` — the same correction this feature already made on the
+      fork path, on the path that carries a turn's work.
+
+      **This is the third time the two-predicate mistake has been made in
+      docs/266** (fork handover, this, and the ordering half of planning#412).
+      The shape is always the same: `resolveGitTreeUid` is not
+      `SHIPIT_SESSION_WORKER_UID`, and code written before E1 assumed one uid
+      existed. Any *remaining* site that pairs a drop with a chown should be read
+      with that in mind rather than trusted.
+- [x] **The repair also runs BEFORE the commit**, not only in the post-turn
+      `finally`. Measured why it matters: git raises this at **commit** time,
+      *after* `git add -A` has already succeeded (exit 128), so the turn's work is
+      left **staged and uncommitted** — `CLAUDE.md` invariant 2's unrecoverable
+      case. Post-hoc repair alone converges only on the next turn, and only if
+      there is one. Costs a second bounded O(fanout) walk (~0.5 ms on this repo's
+      own clone), inside the existing workspace lock.
+- [x] **Tests, with the blind spot named.** `git-unreadable.test.ts` gained a
+      real-git block for an unwritable `.git/COMMIT_EDITMSG`: every case in that
+      file made a **worktree** path unreadable, so the entire `.git` dimension was
+      blind by construction — which is how a failure on the commit path shipped
+      unnoticed. It also pins that git's wording here
+      (`could not open '<path>'`) is NOT the add-time classifier's shape
+      (`open(<path>)`), which is why the user got the generic req-15 notice.
+      `session-worker-uid.test.ts` covers the predicate through the injection
+      seam **and the wiring** — the decision tests alone would pass against a
+      `chownWorkspaceGitToSessionWorker` that still called `sessionWorkerUid()`,
+      which is precisely the defect being fixed. Verified red without the fix
+      (`[1500,1500]` where `[1000,100]` is required), not merely green with it.
+- **Not verified, same limit as the rest of E1:** the setuid spawn and genuine
+  foreign ownership. The states are produced with mode bits on self-owned files,
+  because a session container has no root and `unshare -r` is refused. What is
+  measured is the failure mechanism and the decision; what is inferred is that
+  the chown reaches it in production.
+
 ## Known gaps, still open
 
 - **`git lfs pull` drops uid, but the workspace is handed back to the worker
@@ -289,5 +338,15 @@ silently. What is in force today is the CI-side rule, which catches the shape in
 review — a different guarantee, and a weaker one, than git refusing at runtime.
 
 A project's own hooks still do not fire (E4, reqs 9 and 10). Cross-session
-workspace access at the shared uid remains (req 13, planning#405). And nothing
-here has been exercised with a real uid drop — see `plan.md` §4.
+workspace access at the shared uid remains (req 13, planning#405).
+
+**Correction, 2026-08-16.** This section used to end "nothing here has been
+exercised with a real uid drop". That is no longer true, and it was the stale
+claim that mattered most: E1 *has* now run against a production orchestrator,
+and the first thing it did was fail — the `.git/COMMIT_EDITMSG` case in the E1
+follow-up section above. Read that as the correction to `plan.md` §4's "not
+established from here", not as a contradiction of it: what was missing was
+production exposure, and the exposure produced a defect rather than a
+confirmation. E2's go/no-go (planning#410) should weigh that, because arming
+`SHIPIT_GIT_STRICT_OWNERSHIP=1` converts this class of mismatch from an EACCES on
+one path into a hard refusal on every one.
