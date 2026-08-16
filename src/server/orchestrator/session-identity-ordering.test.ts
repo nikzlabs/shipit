@@ -95,6 +95,14 @@ describe("docs/270 — orderings a uid drop depends on", () => {
     // all non-workspace paths — a credentials subtree, a plugin staging dir, a
     // CI log dir, and a session dir that has no `.git` in it yet — so the rule
     // is expressible as "not on something named like a workspace".
+    //
+    // `session-fork-merge.ts` is the ONE exemption, and it is conditional: its
+    // clone passes `--no-hardlinks`, so the fork's object files are its own
+    // copies rather than links into the bare cache, and the blind walk hands
+    // nobody rights over anyone else's content. That premise is not assumed —
+    // the test below asserts the flag is still there, so deleting it turns this
+    // exemption back into the defect it is exempting.
+    const EXEMPT = "services/session-fork-merge.ts";
     const dir = HERE;
     const offenders: string[] = [];
     const walk = (d: string): void => {
@@ -104,6 +112,7 @@ describe("docs/270 — orderings a uid drop depends on", () => {
           if (entry.name === "node_modules") continue;
           walk(full);
         } else if (entry.name.endsWith(".ts") && !entry.name.endsWith(".test.ts")) {
+          if (path.relative(HERE, full) === EXEMPT) continue;
           for (const line of stripComments(fs.readFileSync(full, "utf8")).split("\n")) {
             if (!line.includes("chownTreeToSessionWorker(")) continue;
             if (/chownTreeToSessionWorker\(\s*[\w.]*[Ww]orkspaceDir/.test(line)) {
@@ -115,6 +124,29 @@ describe("docs/270 — orderings a uid drop depends on", () => {
     };
     walk(dir);
     expect(offenders).toEqual([]);
+  });
+
+  it("the fork clone passes --no-hardlinks, or it cannot run at all", () => {
+    // Not a style rule — without this flag forking is BROKEN, and silently so in
+    // any test that runs as root or against a tree it owns.
+    //
+    // A session clone's `.git/objects` are hardlinks into the root-owned shared
+    // bare cache, and docs/270 deliberately leaves them root-owned (chowning
+    // them would hand one session rewrite rights over every sibling's
+    // repository content — the very thing this file's other scanner enforces).
+    // The fork clone runs DROPPED to the source session's uid. With
+    // `/proc/sys/fs/protected_hardlinks=1`, `link()` is permitted only to the
+    // file's owner or to someone with read+write on it, and a non-root uid is
+    // neither for a root-owned `0444` object.
+    //
+    // Measured against git 2.39.5: git does NOT degrade to copying when the link
+    // is refused — it aborts with `fatal: failed to create link '<obj>':
+    // Operation not permitted`. So every fork of a cache-cloned session failed
+    // outright. This asserts the fix and is the premise the blind-walk exemption
+    // above depends on.
+    const source = stripComments(read("services/session-fork-merge.ts"));
+    const clone = source.slice(source.indexOf('"clone"'));
+    expect(clone.slice(0, clone.indexOf("]"))).toContain('"--no-hardlinks"');
   });
 
   it("every path that creates a session directory seals it", () => {
@@ -136,7 +168,11 @@ describe("docs/270 — orderings a uid drop depends on", () => {
     // just created as root.
     const source = stripComments(read("services/session-fork-merge.ts"));
     const seal = source.indexOf("allocateAndSealSessionDir(");
-    const handback = source.indexOf("handWorkspaceBackToWorker(newWorkspaceDir)");
+    // The fork's handback is the FULL walk rather than the object-aware
+    // composite every other path uses, because `--no-hardlinks` above means this
+    // tree shares no inode with the cache or the source. See the exemption in
+    // the blind-walk scanner.
+    const handback = source.indexOf("chownTreeToSessionWorker(newWorkspaceDir)");
     const droppedGit = source.indexOf("safeSimpleGit(newWorkspaceDir)");
     expect(seal).toBeGreaterThan(-1);
     expect(handback).toBeGreaterThan(seal);

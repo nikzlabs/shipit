@@ -1023,17 +1023,38 @@ describe("ensurePnpmStoreDir (planning#2286)", () => {
   // Non-recursive by design — this runs on the container-create hot path, and
   // root-owned contents can only come from a root worker, which the entrypoint's
   // sentinel rotation already repairs on the first boot after the UID flips.
-  it("does not walk the store contents", () => {
+  it("walks the store contents ONCE, then skips on every later create", () => {
+    // This test used to assert the opposite ("does not walk the store
+    // contents"), and that assertion was the defect rather than the guard.
+    // The non-recursive handoff was justified by the entrypoint's
+    // `chown -R /workspace` walking the nested store — which docs/270 stopped
+    // being true when it added `-path "$d/.pnpm-store" -prune`. Nothing was left
+    // repairing a store POPULATED under a previous identity, so an upgraded
+    // deployment handed every new session a store it could read and not write.
+    //
+    // The walk is what makes req 9 hold; the marker is what keeps it off the
+    // container-create hot path. Both halves are asserted, because either one
+    // alone is a bug: no walk is the original defect, and an ungated walk is the
+    // multi-gigabyte cost the original was avoiding.
     const myUid = process.getuid?.();
     if (myUid === undefined) return; // not POSIX — skip
     process.env.SHIPIT_SESSION_WORKER_UID = String(myUid);
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "pnpm-store-"));
     const storeDir = path.join(tmpDir, "pnpm-store", "deadbeefcafe0004");
     fs.mkdirSync(path.join(storeDir, "files", "00"), { recursive: true });
-    const spy = vi.spyOn(fs, "lchownSync");
+    fs.writeFileSync(path.join(storeDir, "files", "00", "abc"), "x");
+
+    const first = vi.spyOn(fs, "lchownSync");
     ensurePnpmStoreDir(storeDir);
-    expect(spy).toHaveBeenCalledTimes(1);
-    spy.mockRestore();
+    // root + files/ + files/00/ + the file itself, i.e. the contents really are
+    // reached — the old behaviour was exactly 1 (the root alone).
+    expect(first.mock.calls.length).toBeGreaterThan(1);
+    first.mockRestore();
+
+    const second = vi.spyOn(fs, "lchownSync");
+    ensurePnpmStoreDir(storeDir);
+    expect(second).not.toHaveBeenCalled();
+    second.mockRestore();
   });
 
   it("chowns nothing when SHIPIT_SESSION_WORKER_UID is unset (legacy root runtime)", () => {

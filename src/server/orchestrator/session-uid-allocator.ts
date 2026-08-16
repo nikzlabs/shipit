@@ -147,7 +147,20 @@ export function allocateAndSealSessionDir(sessionDir: string): SessionIdentity |
   const gid = sessionWorkerGid();
   if (ledger === null || gid === null) return null;
   const identity: SessionIdentity = { uid: allocateSessionUid(ledger), gid };
-  sealSessionDir(sessionDir, identity);
+  // Fail CLOSED on a seal that did not take. `sealSessionDir` returns false when
+  // the chown or the chmod failed, and returning the identity anyway is the
+  // worst of both worlds: callers proceed as though the session owns a 0700
+  // directory, while on disk it is still root-owned 0755 — so every git drop for
+  // this session resolves through the fallback to the shared global uid, giving
+  // it the full cross-session reach of a legacy session, with nothing but a
+  // console warning to say so. Returning null instead means the caller is told
+  // there is no identity, which is the truth.
+  if (!sealSessionDir(sessionDir, identity)) {
+    console.error(
+      `[session-uid] seal failed for ${sessionDir}; refusing to report an identity it does not have`,
+    );
+    return null;
+  }
   return identity;
 }
 

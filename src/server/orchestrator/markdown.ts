@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 
 import { compareDocsByRecency } from "../shared/doc-sort.js";
-import { WORKSPACE_SKIP_DIRS } from "../shared/fs-constants.js";
+import { isWorkspaceSkipDir } from "../shared/fs-constants.js";
 import type { DocEntry } from "../shared/types.js";
 
 /** Frontmatter regex — matches `---\n...\n---` at start of file. */
@@ -214,7 +214,7 @@ async function scanMarkdownFiles(dir: string, prefix: string): Promise<DocEntry[
   const results: DocEntry[] = [];
 
   for (const entry of entries) {
-    if (WORKSPACE_SKIP_DIRS.has(entry.name)) continue;
+    if (isWorkspaceSkipDir(entry.name)) continue;
     const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
     const fullPath = path.join(dir, entry.name);
 

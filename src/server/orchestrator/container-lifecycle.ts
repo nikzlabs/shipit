@@ -44,7 +44,7 @@ import {
   handWorkspaceBackToWorker,
   reconcileDepDirCacheOwnership,
   sessionWorkerGid,
-  shareWithAllSessions,
+  shareTreeOnce,
   identityForTarget,
 } from "./session-worker-uid.js";
 import { buildTierAEgressInputs, installEgressFirewall } from "./egress-firewall-install.js";
@@ -269,14 +269,18 @@ export const PNPM_STORE_CONTAINER_PATH = "/workspace/.pnpm-store";
  *    pnpm then falls back to relocating its store into the workspace
  *    (`.pnpm-store`, already in the template gitignore) — per-session and slower,
  *    but working, which a root-owned mount is not.
- *  - **Non-recursive.** The store's CONTENTS can only be root-owned if a *root*
- *    worker populated them, i.e. under the legacy runtime with the variable
- *    unset — and setting it later ROTATES the workspace sentinel, so the next
- *    boot's `chown -R /workspace` walks the nested store and repairs them. A
- *    store created after the sentinel exists is empty at creation and thereafter
- *    written only by the worker. Walking a multi-gigabyte content-addressed store
- *    on every container create would cost a visible slice of every pnpm session's
- *    startup to repair a case the entrypoint already covers.
+ *  - **Marker-gated for the contents, not blanket-recursive.** This used to be
+ *    flatly non-recursive, justified by "the next boot's `chown -R /workspace`
+ *    walks the nested store and repairs the contents". docs/270 falsified that
+ *    in the same breath as it needed it: `chown_workspace()` now `-prune`s
+ *    `.pnpm-store`, so nothing walks the contents at all. That left an upgraded
+ *    deployment with a store whose entries carry the OLD gid and `0755`/`0644`,
+ *    which a session at an allocated uid can read and cannot add to — `pnpm`
+ *    EACCESes writing into an existing fanout directory, and (with
+ *    `protected_hardlinks=1`) cannot even link an existing store file into
+ *    `node_modules`. `shareTreeOnce` walks it exactly once per gid and costs one
+ *    `existsSync` on every create after that, which keeps the hot path the
+ *    reason the walk was avoided in the first place.
  */
 export function ensurePnpmStoreDir(storeDir: string): boolean {
   try {
@@ -292,7 +296,12 @@ export function ensurePnpmStoreDir(storeDir: string): boolean {
   // from every other session, which is the failure this dir's own docstring
   // describes (an EACCES with no in-session recovery) arriving by a new route.
   // The verification below follows: the property that matters is now the group.
-  shareWithAllSessions(storeDir);
+  //
+  // `shareTreeOnce`, not `shareWithAllSessions`: the dir itself is not enough
+  // when the store was POPULATED under a previous identity, and no other code
+  // path walks its contents any more (see the docstring). The marker keeps that
+  // walk to once per gid.
+  shareTreeOnce(storeDir);
   try {
     return fs.lstatSync(storeDir).gid === gid;
   } catch (err) {
@@ -726,6 +735,17 @@ export function prepareOverlayDirs(specs: DepDirOverlaySpec[] | undefined): void
     fs.mkdirSync(spec.orchDirs.lowerdir, { recursive: true });
     fs.mkdirSync(spec.orchDirs.upperdir, { recursive: true });
     fs.mkdirSync(spec.orchDirs.workdir, { recursive: true });
+    // docs/270 req 9 — a base generation PUBLISHED BEFORE this deployment gained
+    // a shared gid is owned `<old-uid>:<old-gid>` with `0644` files, and nothing
+    // else ever revisits it: `publishBase` shares only the generation it is
+    // creating. overlayfs copy-up preserves the lower file's owner AND mode, so
+    // a session at an allocated uid copies up an unwritable file and EACCESes on
+    // its first edit of an inherited dependency — precisely the bug docs/183's
+    // chown exists to prevent, reintroduced for every pre-upgrade generation.
+    // Marker-gated so the walk happens once per generation per gid; it lives
+    // beside the generation, never inside it, because the generation is mounted
+    // as the user's `node_modules` lower layer.
+    shareTreeOnce(spec.orchDirs.lowerdir, { beside: true });
     // Hand the per-session copy-on-write dirs to the worker uid so the agent's
     // `npm install` of a new dep lands in the upper as the worker, not root.
     chownToSessionWorker(spec.orchDirs.upperdir);

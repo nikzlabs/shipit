@@ -20,7 +20,7 @@ import type { RepoGit } from "../repo-git.js";
 import type { SessionInfo } from "../../shared/types.js";
 import { graduateSession, type GraduateSessionDeps } from "./graduate-session.js";
 import { ServiceError } from "./types.js";
-import { handWorkspaceBackToWorker } from "../session-worker-uid.js";
+import { chownTreeToSessionWorker, handWorkspaceBackToWorker } from "../session-worker-uid.js";
 import { allocateAndSealSessionDir } from "../session-uid-allocator.js";
 import { restoreLfsAfterTreeRewrite, materializeLfsWithWarning } from "../git-lfs.js";
 import { stripRemoteUrlCredentials } from "../git-utils.js";
@@ -58,8 +58,10 @@ export async function forkSession(
   // history's `startPoint` SHA is from an auto-commit in this session — it
   // is guaranteed to exist here, but may be missing from the bare cache
   // (commit not yet auto-pushed, or pruned after the PR branch was deleted).
-  // --local hardlinks objects on the same filesystem, so disk cost matches
-  // the old cache-clone path.
+  // This used to hardlink objects, so its disk cost matched the old cache-clone
+  // path. Under docs/270 it no longer can — see the `--no-hardlinks` note below:
+  // the source's objects are root-owned and a dropped clone may not link them.
+  // A fork now copies the object store.
   //
   // docs/266 E2 / planning#407 — this clone READS a session workspace, which is
   // a tree untrusted code can write, so it must run at that tree's uid like
@@ -96,10 +98,50 @@ export async function forkSession(
   // When it resolves to null nothing happens at all — no chown, no drop, root
   // cloning into a root-owned directory exactly as before. That is every test,
   // local mode, and any deployment whose session trees are root-owned.
+  // `--no-hardlinks` is REQUIRED here, and its absence was a hard break, not a
+  // slow path. Under docs/270 the entrypoint and `chownWorkspaceGitToSessionWorker`
+  // both deliberately skip `.git/objects` data files, because a session clone's
+  // objects are hardlinks into the ROOT-owned shared bare cache and an inode has
+  // exactly one owner across every link — chowning them would hand one session
+  // rewrite rights over every sibling's repository content. So the source's
+  // objects stay `root:root 0444`, and this clone runs DROPPED to the source
+  // session's uid. `/proc/sys/fs/protected_hardlinks` is 1 on the deploy hosts,
+  // which permits `link()` only for the file's owner or someone with read+write
+  // on it; a non-root uid is neither for a root-owned `0444` object.
+  //
+  // Measured here against git 2.39.5, cloning a workspace whose 409 cache-linked
+  // objects were root-owned: git does NOT fall back to copying on link failure —
+  // it aborts with `fatal: failed to create link '<obj>': Operation not
+  // permitted`, so every fork of a cache-cloned session failed outright. With
+  // `--no-hardlinks` the same clone succeeded in ~1s.
+  //
+  // The cost this gives up is real and is the price of the isolation boundary:
+  // the fork now COPIES the object store (142 MiB for the ShipIt repo) instead of
+  // sharing inodes with the bare cache. There is no third option — sharing the
+  // inodes is precisely the cross-session write the 0700 seal exists to deny.
   await fs.mkdir(newWorkspaceDir, { recursive: true });
   const cloneUid = resolveGitTreeUid(activeSessionDir);
-  if (cloneUid !== null) await fs.chown(newWorkspaceDir, cloneUid.uid, cloneUid.gid);
-  await safeSimpleGit(activeSessionDir).raw(["clone", "--local", activeSessionDir, newWorkspaceDir]);
+  if (cloneUid !== null) {
+    // docs/270 req 1 — seal the session dir 0700 to the SOURCE identity for the
+    // duration of the clone, not just at the end. `mkdir` leaves it root-owned
+    // and `0755`, and the clone that follows takes seconds to minutes on a large
+    // repo; for that whole window every other session's uid could traverse
+    // `sessionsRoot` into a directory holding a fresh copy of this session's
+    // workspace — `.env` files, credentials in a checked-out config, the lot.
+    // The final seal below re-owns it to the FORK's identity; this one exists so
+    // there is no moment in between when it belongs to nobody. The source uid is
+    // the right holder here precisely because the clone runs as it.
+    await fs.chown(newSessionDir, cloneUid.uid, cloneUid.gid);
+    await fs.chmod(newSessionDir, 0o700);
+    await fs.chown(newWorkspaceDir, cloneUid.uid, cloneUid.gid);
+  }
+  await safeSimpleGit(activeSessionDir).raw([
+    "clone",
+    "--local",
+    "--no-hardlinks",
+    activeSessionDir,
+    newWorkspaceDir,
+  ]);
 
   // docs/270 — the fork builds `<sessionsRoot>/<id>` itself instead of going
   // through `createSessionDirFactory`, so without this it would be the one kind
@@ -117,17 +159,24 @@ export async function forkSession(
   //     the session record, so the config / fetch / `checkout -b` writes below
   //     already run as the fork. They need the tree to belong to it by then.
   //
-  // The handback is the object-aware one, never a plain recursive chown: this
-  // clone HARDLINKS `.git/objects` from the ACTIVE session's clone, and an inode
-  // has exactly one owner across every link — so chowning object files would
-  // hand the fork ownership, and rewrite rights, over its parent's repository
-  // content, and over the shared bare cache's, since the parent's objects are
-  // themselves hardlinks into it.
+  // The handback here is the FULL recursive one, and this is the one place that
+  // is correct — everywhere else must use the object-aware
+  // `handWorkspaceBackToWorker`. The difference is `--no-hardlinks` above: this
+  // clone shares no inode with the bare cache or with the source session, so
+  // every file under `newWorkspaceDir` is the fork's own and chowning it hands
+  // nobody rights over anyone else's content. Without the full walk the object
+  // files would keep the SOURCE session's uid (the clone ran as it), leaving
+  // another session's uid owning inodes inside this fork's tree — unreachable
+  // through the 0700 seal, but pointless residue that defeats defence in depth
+  // the moment that seal is the only thing standing.
   allocateAndSealSessionDir(newSessionDir);
-  handWorkspaceBackToWorker(newWorkspaceDir);
+  chownTreeToSessionWorker(newWorkspaceDir);
 
   const newGit = safeSimpleGit(newWorkspaceDir);
-  // Disable auto-gc so hardlinks aren't broken in either clone.
+  // Disable auto-gc. It was originally here to stop gc breaking the hardlinks
+  // this clone used to share with the source; under `--no-hardlinks` there are
+  // none left to break, but it stays because a fork still must not repack a
+  // freshly copied object store on its first turn.
   await newGit.raw(["config", "gc.auto", "0"]);
   // Reset origin to the real remote (clone --local sets it to activeSessionDir).
   // Stripped on the way in as well as at the source (`SessionManager.setRemoteUrl`),

@@ -58,7 +58,12 @@ import {
   resolvePluginOverlayRoots,
   PLUGIN_OVERLAY_LABEL,
 } from "./plugin-overlay.js";
-import { chownToSessionWorker, chownTreeToSessionWorker, identityForSession } from "./session-worker-uid.js";
+import {
+  chownToSessionWorker,
+  chownTreeToSessionWorker,
+  identityForSession,
+  shareTreeOnce,
+} from "./session-worker-uid.js";
 import { ensureUntrustedPluginNetwork, waitForContainerExit } from "./plugin-container.js";
 import {
   preparePluginNetns,
@@ -538,7 +543,17 @@ async function runInstallContainer(
     // Bypass the session-worker entrypoint: it prepares a session's mounts and
     // drops privileges for the worker, none of which applies to this container.
     Entrypoint: ["/bin/sh", "-c"],
-    Cmd: [command],
+    // docs/270 — `umask 002`, for the same reason the session entrypoint sets
+    // it, and it has to be repeated here precisely BECAUSE that entrypoint is
+    // bypassed above. Everything this command writes is shared between sessions:
+    // the npm/yarn/pnpm caches under `/dep-cache` (keyed by plugin source), and
+    // the installed dep tree that gets promoted into a shared base other
+    // sessions mount as an overlay lowerdir. At the default 022 those land
+    // `0644`/`0755`, group-readable and not group-writable — so a SECOND
+    // session's install EACCESes appending to an npm cacache `index-v5` entry
+    // (they are appended to, not write-once), and copy-up of a base file it did
+    // not create yields something it cannot edit.
+    Cmd: [`umask 002; ${command}`],
     WorkingDir: PLUGIN_INSTALL_DIR,
     ...(identity !== null ? { User: `${identity.uid}:${identity.gid}` } : {}),
     // The generation's env and nothing else. Notably absent: everything in this
@@ -624,9 +639,16 @@ function resolveDepCacheMount(deps: PluginInstallDeps, job: PluginInstallJob): M
   try {
     const dir = pluginDepCacheDir(deps.depStoreDir, job.source);
     fs.mkdirSync(dir, { recursive: true });
-    // The install runs as the worker uid; a root-created cache dir would be
-    // unwritable, and npm treats an unwritable cache as a hard error.
-    chownToSessionWorker(dir);
+    // docs/270 — this cache is keyed by plugin SOURCE and lives in the
+    // orchestrator's own state dir, so it is SHARED between sessions, while the
+    // install container now runs as the session's OWN uid (see `User:` below).
+    // `chownToSessionWorker` would resolve it to the global fallback uid (the
+    // path is outside `sessionsRoot`, so there is no session record to read) and
+    // hand a `1000:1000 0755` cache to a container running as 2000001 — npm
+    // treats an unwritable cache as a hard error, so every plugin install in
+    // every allocated-uid session would fail. Group-share it like the other
+    // cross-session surfaces, once per gid.
+    shareTreeOnce(dir);
     return sessionPathMount(deps, dir, DEP_CACHE_CONTAINER_PATH, false);
   } catch (err) {
     console.warn(

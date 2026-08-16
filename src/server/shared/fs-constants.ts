@@ -77,13 +77,28 @@ export const WORKSPACE_SKIP_DIRS = new Set([
   "sessions",
   ".shipit",
   ".inner-shipit",
-  // docs/150 — the non-root entrypoint drops a UID-stamped sentinel DIR into
-  // each writable mount (incl. /workspace in prod) to make the boot-time
-  // `chown -R` a one-shot. It's an empty dir, so git never commits it (git
-  // doesn't track empty dirs), but hide it from the file tree / watcher so it
-  // isn't surfaced as workspace noise. Keep in sync with entrypoint.sh.
-  ".shipit-uid-1000",
 ]);
+
+/**
+ * docs/150 — the non-root entrypoint drops an identity-stamped sentinel DIR into
+ * each writable mount (incl. `/workspace` in prod) to make the boot-time
+ * `chown -R` a one-shot. It's an empty dir, so git never commits it (git doesn't
+ * track empty dirs), but it must stay out of the file tree / watcher or it
+ * surfaces as workspace noise.
+ *
+ * It is a PREFIX rather than a literal name because docs/270 made the stamp
+ * carry both halves of the identity — `.shipit-uid-<uid>-<gid>`, so that a
+ * change to either rotates it. The old exact-match entry (`.shipit-uid-1000`)
+ * silently stopped matching the moment the gid was added: EVERY session, legacy
+ * ones included, grew a visible `.shipit-uid-1000-1000` directory in its file
+ * tree. Keep in sync with `entrypoint.sh`.
+ */
+export const SESSION_UID_SENTINEL_PREFIX = ".shipit-uid-";
+
+/** Whether a directory ENTRY NAME should be hidden from the workspace tree. */
+export function isWorkspaceSkipDir(name: string): boolean {
+  return WORKSPACE_SKIP_DIRS.has(name) || name.startsWith(SESSION_UID_SENTINEL_PREFIX);
+}
 
 /**
  * Individual files (not directories) hidden from the workspace file tree.

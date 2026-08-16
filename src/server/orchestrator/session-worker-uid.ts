@@ -124,11 +124,18 @@ export function assertWorkerUidNotReserved(): void {
  * docs/270 — the group EVERY session shares, still parsed from
  * `SHIPIT_SESSION_WORKER_UID`. Only the **uid** became per-session.
  *
- * The shared group is what keeps the four cross-session surfaces working once
- * uids differ: the per-repo dep cache, the pnpm store, the overlay dependency
- * base (whose copy-up preserves the lower file's owner) and the orchestrator's
- * global gitconfig. All four become group-owned and group-writable, which is the
- * only way a session that is *not* their creator can still use them (req 9).
+ * The shared group is what keeps the three cross-session surfaces working once
+ * uids differ: the per-repo dep cache, the pnpm store, and the overlay
+ * dependency base (whose copy-up preserves the lower file's owner AND mode).
+ * All three become group-owned and group-writable, which is the only way a
+ * session that is *not* their creator can still use them (req 9).
+ *
+ * The orchestrator's global gitconfig is deliberately NOT in that list, though
+ * an earlier draft of this comment said it was. docs/266 E3 made it root-owned
+ * `0644` in a `0711` directory precisely so the worker can read it and cannot
+ * write it, and `restoreRootOwnership` exists to keep it that way. Group-writing
+ * it would hand every session the ability to rewrite the config that names the
+ * credential helper — do not "restore" it to this list.
  *
  * It does not weaken the isolation the per-session uid buys, because the
  * isolation is the **0700 session directory**, not the group: a file inside
@@ -251,14 +258,85 @@ export function shareTreeWithAllSessions(targetPath: string): void {
 }
 
 /**
+ * {@link shareTreeWithAllSessions}, but ONCE per tree per gid — for a shared
+ * surface that already has contents from before this deployment carried a shared
+ * group, and is far too large to re-walk on a hot path.
+ *
+ * This exists because the two biggest shared surfaces are populated by the
+ * *previous* build and never touched again by the code that shares them:
+ *
+ *   - The **pnpm store**'s handoff is non-recursive, and its docstring justified
+ *     that by saying the entrypoint's `chown -R /workspace` walks the nested
+ *     store and repairs the contents. Under docs/270 that stopped being true in
+ *     this very branch: `chown_workspace()` now `-prune`s `.pnpm-store`, because
+ *     walking a multi-gigabyte content-addressed store on every boot is exactly
+ *     the cost the prune avoids. Nothing was left repairing the contents.
+ *   - The **overlay base**'s share runs in `finalize`, i.e. only when a NEW
+ *     generation is published. A generation published before the upgrade keeps
+ *     `1000:1000` with `0644` files, and overlayfs copy-up preserves the lower
+ *     file's owner AND mode — so a session at an allocated uid EACCESes on its
+ *     first write to any inherited dependency.
+ *
+ * Both failures are silent, land on an upgraded deployment rather than a fresh
+ * one, and cannot happen in any test that never populated the surface under the
+ * old identity. The marker is what makes the repair affordable: the walk runs on
+ * the first container create after the gid changes and is a single `existsSync`
+ * on every one after it. It is named for the gid, so a later gid change rotates
+ * it exactly like the entrypoint's uid sentinel.
+ *
+ * Deliberately NOT gated on the top directory's own group: `shareRecursive`
+ * marks the root before it descends, so an interrupted walk would leave the root
+ * looking done with its contents unshared. The marker is written only after the
+ * walk returns.
+ *
+ * `beside` puts that bookkeeping file NEXT TO the tree rather than inside it,
+ * for a tree whose contents are USER-VISIBLE. An overlay base generation is
+ * mounted as the lower layer of `/workspace/<depDir>`, so a marker inside it
+ * would surface as a mystery dotfile in the user's `node_modules` and ride into
+ * every copy-up. The gid stays out of the caller's hands either way — it is this
+ * module's business, and a caller that spelled the name itself could rotate on a
+ * different value than the walk used.
+ */
+export function shareTreeOnce(targetPath: string, opts: { beside?: boolean } = {}): void {
+  const gid = sessionWorkerGid();
+  if (gid === null) return;
+  const marker = opts.beside
+    ? `${targetPath}${SHARED_GID_MARKER_PREFIX}${gid}`
+    : path.join(targetPath, `${SHARED_GID_MARKER_PREFIX}${gid}`);
+  try {
+    if (fs.existsSync(marker)) return;
+  } catch {
+    return; // unreadable target — nothing safe to do
+  }
+  shareRecursive(targetPath, gid);
+  try {
+    fs.writeFileSync(marker, "");
+    fs.chmodSync(marker, 0o664);
+    fs.lchownSync(marker, fs.lstatSync(marker).uid, gid);
+  } catch (err) {
+    // A missing marker only costs a repeated walk next time; never fail the
+    // caller over bookkeeping.
+    console.warn(`[session-worker-uid] shared-gid marker write failed for ${targetPath}:`, err);
+  }
+}
+
+/** Prefix of the {@link shareTreeOnce} bookkeeping file. Suffixed with the gid. */
+export const SHARED_GID_MARKER_PREFIX = ".shipit-shared-gid-";
+
+/**
  * {@link shareTreeWithAllSessions} for a single node — no walk.
  *
- * The pnpm store needs exactly this and must NOT get the recursive form: it runs
- * on the container-create hot path and the store is a multi-gigabyte
- * content-addressed tree, which is why its handoff has always been
- * non-recursive. Its contents can only carry the wrong group if a root worker
- * populated them, and the entrypoint's sentinel rotation already repairs that on
- * the first boot after the value changes.
+ * For a shared CONTAINER directory whose contents are shared by something else:
+ * a dep-store scope dir (its generations are shared as they are published) or a
+ * generation dir about to get the recursive treatment from `chownBaseDir`. The
+ * setgid bit is the point — an entry a later session creates inherits the shared
+ * group instead of that session's own.
+ *
+ * An earlier version of this justified its non-recursiveness by claiming the
+ * entrypoint repaired the contents. Do NOT reintroduce that reasoning: the
+ * entrypoint prunes the shared mounts precisely so it does not walk them. If a
+ * tree's CONTENTS need the group, they need {@link shareTreeWithAllSessions} or
+ * {@link shareTreeOnce}, and there is no third party that will do it for you.
  */
 export function shareWithAllSessions(targetPath: string): void {
   const gid = sessionWorkerGid();

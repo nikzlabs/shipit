@@ -80,6 +80,23 @@ Build sequence from [plan.md](./plan.md) §2. Requirements are cited as `(req N)
       is available now) and this feature neither widens nor narrows it. Outside
       req 1's scope, the largest remaining cross-session channel, and filed as
       **planning#414** rather than left as a sentence.
+- [ ] **The entrypoint's workspace walk still descends into overlay-mounted dep
+      dirs.** `chown_workspace()` prunes `.pnpm-store` and git object files, but
+      not the declared dep dirs — so on the one boot where the sentinel is
+      missing it walks `/workspace/node_modules`, and a `chown` on a lower-only
+      file is a metadata write that overlayfs answers with a copy-up. The
+      orchestrator-side walk (`chownWorktreeToSessionWorker`) excludes dep dirs
+      for exactly this reason; the entrypoint does not, and its test fixture has
+      no populated overlay-mounted dep dir, so nothing here can catch it. Raised
+      by the second-round review. **Substantially pre-existing** — the walk has
+      always descended, and `chown_common` sets `ATTR_UID` whether or not the
+      value changes, so the pre-docs/270 same-owner chown was not the no-op the
+      review assumed. What docs/270 adds is one extra re-walk per legacy session,
+      because the sentinel name rotated. Not fixed here: the entrypoint does not
+      know the dep-dir list (it comes from `shipit.yaml`), and the copy-up
+      behaviour cannot be exercised in a session container, so a speculative
+      prune would be an unverified change to the boot path. Filed as **planning#415**
+      rather than guessed at.
 - [ ] **planning#384 / docs/266 is NOT closed.** Two pieces landed while this was
       being built, and are described as they now stand: **E3 (planning#404)**
       shipped, so the dropped git no longer reaches the PAT — it is in a
@@ -159,3 +176,58 @@ most were found by a test rather than by reading:
   every overlay base generation back into a full ~0.5 GB copy. **Found by
   docs/183's own end-to-end dedup test**, which is the only thing that would
   have.
+
+### Found by the second review round (two independent reviewers)
+
+Both reviewers were given pointers, not pastes, and asked to be adversarial.
+They overlapped on almost nothing, which is the argument for running both. Every
+finding below was re-verified at the source before it was acted on — one of the
+three sites a reviewer named turned out not to share the root cause.
+
+- **`git clone --local` in `forkSession` could not run at all.** The entrypoint
+  and the orchestrator handback both (correctly) leave `.git/objects` root-owned,
+  because those inodes are hardlinks into the shared bare cache. The fork clone
+  runs DROPPED to the source session's uid, and with
+  `/proc/sys/fs/protected_hardlinks=1` a non-root uid may not link a root-owned
+  `0444` file. **Measured here:** git does *not* fall back to copying — it aborts
+  with `fatal: failed to create link … Operation not permitted`. Every fork of a
+  cache-cloned session would have failed. Fixed with `--no-hardlinks`; the fork
+  now copies the object store, which is the honest price of the boundary. One
+  reviewer found the area and predicted a silent disk/perf regression; verifying
+  it turned a MEDIUM into a hard break, which is why the claim was tested rather
+  than relayed.
+- **Plugin installs would have failed in every allocated-uid session.** The
+  install container was moved to the session's own identity, but the shared
+  plugin dep cache it writes was still chowned to the *global* uid — a
+  `1000:1000 0755` cache handed to a container running as 2000001, and npm treats
+  an unwritable cache as a hard error. The promoted plugin dep *base* had the
+  same shape. Both now group-shared. A third site the reviewer named with the
+  same wording (`plugin-overlay.ts`) is **per-session**, so it was left alone.
+- **The pnpm store's contents were never repaired.** Its handoff was
+  non-recursive, justified in its own docstring by the entrypoint's
+  `chown -R /workspace` walking the nested store — which *this branch* falsified
+  by adding `-prune` for `.pnpm-store`. An upgraded deployment would hand every
+  new session a store it can read and not write. Same shape for overlay base
+  generations published *before* the upgrade, which nothing revisits.
+  Both fixed with a marker-gated one-time walk (`shareTreeOnce`).
+- **The fork's tree was world-readable for the length of the clone.** `mkdir`
+  leaves the new session directory root-owned `0755`, and the seal ran only
+  after the clone. Now sealed to the source identity *before* the clone and
+  re-sealed to the fork's afterwards, so it never belongs to nobody.
+- **`allocateAndSealSessionDir` ignored a failed seal**, returning an identity
+  for a directory that was still root-owned `0755` — which routes every git drop
+  for that session through the fallback to the shared uid, i.e. full legacy
+  reach, on a `console.warn`. Now fails closed.
+- **The uid sentinel became visible in every user's file tree.** docs/270 renamed
+  it to `.shipit-uid-<uid>-<gid>` while the skip list held the exact string
+  `.shipit-uid-1000`, so *every* session — legacy ones included — grew a stray
+  directory in its file tree, watcher and markdown scan. The skip is now a
+  prefix, asserted by shape rather than by value.
+- **Stale claims corrected**, each of which invited someone to undo a fix:
+  `sessionWorkerGid()` still listed the orchestrator's global gitconfig as a
+  group-shared surface (docs/266 E3 deliberately made it root-owned `0644`), and
+  `git-lfs.ts` still said the LFS pull "writes files as root", which E1 ended.
+- `umask 002` was set only in the session entrypoint, which the plugin install
+  container deliberately bypasses — so its writes into the shared cache and the
+  promoted base landed `0644`, reproducing the npm cacache append `EACCES` this
+  branch had already fixed once. Set explicitly for that container.

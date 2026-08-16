@@ -48,8 +48,14 @@ import { gitSpawnOverridesForTree } from "../shared/git-tree-uid.js";
  *  - **after** the final worktree-materializing `git checkout -b` (an earlier
  *    pull would be overwritten by pointers the checkout re-writes),
  *  - **after** `configureGitCredentials` (private repos need the helper), and
- *  - **before** `handWorkspaceBackToWorker` (the pull writes files as root, so
- *    the chown has to come last or the agent can't edit them).
+ *  - **before** `handWorkspaceBackToWorker`. The original reason was that the
+ *    pull wrote files as root, so the chown had to come last. Since docs/266 E1
+ *    the pull DROPS to the tree's identity, so most of what it writes already
+ *    belongs to the session; the ordering still holds because the drop is a
+ *    no-op wherever the process is not root (local mode, dev, tests) and because
+ *    `git lfs` also writes `.git` metadata the handback is responsible for. Keep
+ *    the order — just don't rely on "the pull writes as root", which is no
+ *    longer true.
  *
  * ## Provisioning is not the only path that has to do this
  *

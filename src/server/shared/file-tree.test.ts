@@ -183,6 +183,23 @@ describe("scanFileTree", () => {
     expect(names).toContain(".npmrc");
   });
 
+  it("hides the uid sentinel whatever identity it is stamped with", async () => {
+    // docs/150 stamps `.shipit-uid-<uid>`; docs/270 added the gid, making it
+    // `.shipit-uid-<uid>-<gid>` so a change to EITHER half rotates it. The skip
+    // list was an exact-match Set holding the literal `.shipit-uid-1000`, so the
+    // rename silently un-hid the sentinel in every session — including legacy
+    // ones, which now stamp `.shipit-uid-1000-1000`. A prefix is the only form
+    // that survives the next identity change, so assert the shape, not a value.
+    fs.mkdirSync(path.join(tmpDir, ".shipit-uid-1000-1000"));
+    fs.mkdirSync(path.join(tmpDir, ".shipit-uid-2000042-1000"));
+    fs.mkdirSync(path.join(tmpDir, ".shipit-uid-1000"));
+    fs.writeFileSync(path.join(tmpDir, "keep.ts"), "");
+
+    const names = (await scanFileTree(tmpDir)).map((n) => n.name);
+    expect(names.filter((n) => n.startsWith(".shipit-uid"))).toEqual([]);
+    expect(names).toContain("keep.ts");
+  });
+
   it("shows .claude/ in the tree (skills are part of the codebase)", async () => {
     // See docs/096-claude-skills-access/plan.md — `.claude/skills/` files are
     // editable artifacts that ship with the project; they must be visible in
