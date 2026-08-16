@@ -442,32 +442,36 @@ export const SERVICES = [
         // the verification turn completed correctly — and not something the
         // catalogue can fix from here.
         //
-        // 2026-08-16 — the four `O_CC`-only rows at the bottom are the models
-        // this pass added, and their single style is deliberate. Anthropic's and
-        // DeepSeek's upstreams publish an Anthropic-Messages API of their own, so
-        // `A_MSG` on those rows asserts only that OpenRouter forwards a format
-        // the upstream already speaks. Google, xAI, Moonshot and Alibaba publish
-        // no such surface, so `A_MSG` (or `O_RESP`) on a Gemini/Grok/Kimi/Qwen
-        // row would assert a gateway TRANSLATION layer nobody here has seen
-        // work — the same claim the dated ✅ notes above exist to avoid making.
-        // `O_CC` needs no such claim: it is OpenRouter's own native API.
+        // ✅ 2026-08-16 — the rows added this pass were MEASURED, one live turn per
+        // (harness, model), serially against the dogfood inner instance. Evidence
+        // and per-round detail: `pair-verification.md`. The result settles what
+        // this row could previously only guess at, and it is not what the
+        // "upstream publishes it" heuristic predicted:
         //
-        // The cost of that honesty, stated plainly: `openai-chat-completions` is
-        // spoken by OpenCode alone, and the default install is
-        // `SHIPIT_HARNESSES=claude,codex`. So these four reach a default install
-        // through NO harness until someone measures the wider styles. Doing so is
-        // cheap — one OpenRouter key, one Claude Code turn against
-        // `https://openrouter.ai/api` and one `codex exec` against
-        // `https://openrouter.ai/api/v1` — and it is the single highest-value
-        // follow-up on this file.
+        // **OpenRouter's Anthropic skin translates for EVERY upstream tested** —
+        // Grok, Gemini, Kimi and Qwen all completed a Claude Code turn, though
+        // xAI, Google, Moonshot and Alibaba publish no Anthropic-Messages API of
+        // their own. So the skin is a genuine gateway-side translation, not a
+        // pass-through, and `A_MSG` is declared on all four.
+        //
+        // **Its Responses surface is the opposite: it carries almost nothing.**
+        // Only `moonshotai/kimi-k3` completed a Codex turn. Grok, Gemini, Qwen and
+        // even `anthropic/claude-fable-5` each failed twice more on re-run, so
+        // `O_RESP` is declared on Kimi alone. The DeepSeek rows keep the style
+        // they were separately measured with above.
+        //
+        // Failure mode worth knowing when triaging: every Codex failure surfaced
+        // as an EMPTY assistant message with no error text, where the Claude
+        // failures surfaced the upstream's own 400. A blank Codex reply on a
+        // gateway model is this, not a hung turn.
         //
         // Deliberately NOT added: `openai/gpt-5.6-sol` and `openai/gpt-5.6-terra`.
         // OpenRouter serves both, but ShipIt already reaches them under two
         // services (OpenAI direct, both modes; Vercel with a measured `O_RESP`),
-        // and a third `O_CC`-only path would add a picker row that no default
-        // install can run AND force a second context-window convention: every
-        // GPT row here carries Codex's assigned 272K, which is the wrong number
-        // for a row Codex cannot reach. Add them WITH `O_RESP`, once measured.
+        // and adding them here would force a second context-window convention:
+        // every GPT row carries Codex's assigned 272K, which is the wrong number
+        // on a gateway whose own figure is 1.05M. Worth doing deliberately, not
+        // as a side effect of a curation pass.
         models: [
           { id: "anthropic/claude-opus-5", label: "Opus 5", ...MODEL_IDENTITIES.opus5, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: ANTHROPIC_PRICES.opus5 },
           { id: "anthropic/claude-sonnet-5", label: "Sonnet 5", ...MODEL_IDENTITIES.sonnet5, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: ANTHROPIC_PRICES.sonnet5 },
@@ -476,20 +480,20 @@ export const SERVICES = [
           // omits it is missing a top-two model. `A_MSG` is the same claim its
           // two siblings above already make, and OpenRouter's rate matches
           // Anthropic's own.
-          { id: "anthropic/claude-fable-5", label: "Fable 5", ...MODEL_IDENTITIES.fable5, styles: [A_MSG, O_CC, O_RESP], contextWindow: ONE_M, price: ANTHROPIC_PRICES.fable5 },
+          { id: "anthropic/claude-fable-5", label: "Fable 5", ...MODEL_IDENTITIES.fable5, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: ANTHROPIC_PRICES.fable5 },
           { id: "deepseek/deepseek-v4-flash", label: "DeepSeek V4 Flash", ...MODEL_IDENTITIES.deepseekV4Flash, styles: [A_MSG, O_CC, O_RESP], contextWindow: ONE_M, price: OPENROUTER_PRICES.v4flash },
           { id: "deepseek/deepseek-v4-pro", label: "DeepSeek V4 Pro", ...MODEL_IDENTITIES.deepseekV4Pro, styles: [A_MSG, O_CC, O_RESP], contextWindow: ONE_M, price: OPENROUTER_PRICES.v4pro },
           { id: "z-ai/glm-5.2", label: "GLM-5.2", ...MODEL_IDENTITIES.glm52, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: OPENROUTER_PRICES.glm52 },
           // Grok 4.6 (2026-08-12) scores an agentic-work Elo behind only Opus 5,
           // and is statistically level with Fable 5 and Qwen3.8 Max.
-          { id: "x-ai/grok-4.6", label: "Grok 4.6", ...MODEL_IDENTITIES.grok46, styles: [A_MSG, O_CC, O_RESP], contextWindow: HALF_M, price: OPENROUTER_PRICES.grok46 },
+          { id: "x-ai/grok-4.6", label: "Grok 4.6", ...MODEL_IDENTITIES.grok46, styles: [A_MSG, O_CC], contextWindow: HALF_M, price: OPENROUTER_PRICES.grok46 },
           // Gemini 3.7 Flash (2026-08-13) is the cheapest frontier-adjacent agent
           // model on either gateway — an order of magnitude under Grok and Kimi.
-          { id: "google/gemini-3.7-flash", label: "Gemini 3.7 Flash", ...MODEL_IDENTITIES.gemini37flash, styles: [A_MSG, O_CC, O_RESP], contextWindow: ONE_M, price: OPENROUTER_PRICES.gemini37flash },
+          { id: "google/gemini-3.7-flash", label: "Gemini 3.7 Flash", ...MODEL_IDENTITIES.gemini37flash, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: OPENROUTER_PRICES.gemini37flash },
           // Kimi K3 leads Terminal-Bench 2.1 (88.3%) and is the strongest
           // open-weight all-rounder.
           { id: "moonshotai/kimi-k3", label: "Kimi K3", ...MODEL_IDENTITIES.kimiK3, styles: [A_MSG, O_CC, O_RESP], contextWindow: ONE_M, price: OPENROUTER_PRICES.kimiK3 },
-          { id: "qwen/qwen3.8-max", label: "Qwen3.8 Max", ...MODEL_IDENTITIES.qwen38max, styles: [A_MSG, O_CC, O_RESP], contextWindow: ONE_M, price: OPENROUTER_PRICES.qwen38max },
+          { id: "qwen/qwen3.8-max", label: "Qwen3.8 Max", ...MODEL_IDENTITIES.qwen38max, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: OPENROUTER_PRICES.qwen38max },
         ],
       },
     ],
@@ -515,20 +519,34 @@ export const SERVICES = [
         // *harness's* variable at spawn, so nothing downstream reads this one.
         credentials: [{ via: "string", storageEnv: "VERCEL_AI_GATEWAY_API_KEY" }],
         retired: [],
-        // The style rule this row follows is the one written out on the
-        // OpenRouter row above, and for the same reason: `A_MSG` is declared only
-        // where the UPSTREAM publishes an Anthropic-Messages API of its own, so
-        // the four vendors added on 2026-08-16 carry Vercel's native `O_CC` and
-        // nothing else until someone measures wider. Note that `A_MSG` here is
-        // also the one style Vercel does not document as covering its whole
-        // catalogue, which is why the Z.ai row below is `O_CC`-only even though
-        // Z.ai does publish an Anthropic surface upstream — OpenRouter's z-ai
-        // pairing was measured, this gateway's was not, and a measurement at one
-        // gateway says nothing about the other.
+        // ✅ 2026-08-16 — measured the same way as the OpenRouter row above (one
+        // live turn per (harness, model), serial, `pair-verification.md`), and
+        // Vercel turns out to be OpenRouter's MIRROR IMAGE. That is the single
+        // most useful fact on these two rows, and neither gateway's docs imply it:
+        //
+        // **Vercel's Responses surface carries essentially everything** — Grok,
+        // Gemini, Kimi, Qwen, GLM-5.2 and DeepSeek V4 Pro all completed a Codex
+        // turn, including three upstreams (xAI, Google, Z.ai) that publish no
+        // Responses API at all. Where OpenRouter served only Kimi over Responses,
+        // Vercel served every model tested but one.
+        //
+        // **Its Anthropic skin is the weaker of the two**, and fails on exactly
+        // one model: `google/gemini-3.7-flash`, twice more on re-run, with a
+        // specific and repeatable upstream error — `400 'system messages are only
+        // supported at the beginning of the conversation'`. Claude Code's system
+        // prompt shape is what the translation cannot carry to Gemini, so that
+        // row alone drops `A_MSG` and reaches Codex instead.
+        //
+        // `anthropic/claude-fable-5` is the one inversion: it passes on the
+        // Anthropic skin and fails Codex 4 runs out of 5. Its `O_RESP` is omitted
+        // on the majority verdict rather than the single pass.
+        //
+        // A measurement at one gateway says nothing about the other — z-ai over
+        // Responses works HERE and was measured not to at Z.ai's own endpoint.
         models: [
           { id: "anthropic/claude-opus-5", label: "Opus 5", ...MODEL_IDENTITIES.opus5, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: ANTHROPIC_PRICES.opus5 },
           { id: "anthropic/claude-sonnet-5", label: "Sonnet 5", ...MODEL_IDENTITIES.sonnet5, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: ANTHROPIC_PRICES.sonnet5 },
-          { id: "anthropic/claude-fable-5", label: "Fable 5", ...MODEL_IDENTITIES.fable5, styles: [A_MSG, O_CC, O_RESP], contextWindow: ONE_M, price: ANTHROPIC_PRICES.fable5 },
+          { id: "anthropic/claude-fable-5", label: "Fable 5", ...MODEL_IDENTITIES.fable5, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: ANTHROPIC_PRICES.fable5 },
           // Vercel documents a Responses-compatible surface, so these reach
           // Codex as well as any OpenAI-chat-completions consumer. They also
           // carry the namespaced-id caveat written out on the OpenRouter row
@@ -543,7 +561,7 @@ export const SERVICES = [
           { id: "deepseek/deepseek-v4-pro", label: "DeepSeek V4 Pro", ...MODEL_IDENTITIES.deepseekV4Pro, styles: [A_MSG, O_CC, O_RESP], contextWindow: ONE_M, price: VERCEL_PRICES.v4pro },
           { id: "zai/glm-5.2", label: "GLM-5.2", ...MODEL_IDENTITIES.glm52, styles: [A_MSG, O_CC, O_RESP], contextWindow: ONE_M, price: VERCEL_PRICES.glm52 },
           { id: "xai/grok-4.6", label: "Grok 4.6", ...MODEL_IDENTITIES.grok46, styles: [A_MSG, O_CC, O_RESP], contextWindow: HALF_M, price: VERCEL_PRICES.grok46 },
-          { id: "google/gemini-3.7-flash", label: "Gemini 3.7 Flash", ...MODEL_IDENTITIES.gemini37flash, styles: [A_MSG, O_CC, O_RESP], contextWindow: ONE_M, price: VERCEL_PRICES.gemini37flash },
+          { id: "google/gemini-3.7-flash", label: "Gemini 3.7 Flash", ...MODEL_IDENTITIES.gemini37flash, styles: [O_CC, O_RESP], contextWindow: ONE_M, price: VERCEL_PRICES.gemini37flash },
           { id: "moonshotai/kimi-k3", label: "Kimi K3", ...MODEL_IDENTITIES.kimiK3, styles: [A_MSG, O_CC, O_RESP], contextWindow: ONE_M, price: VERCEL_PRICES.kimiK3 },
           { id: "alibaba/qwen3.8-max", label: "Qwen3.8 Max", ...MODEL_IDENTITIES.qwen38max, styles: [A_MSG, O_CC, O_RESP], contextWindow: ONE_M, price: VERCEL_PRICES.qwen38max },
         ],
