@@ -1174,3 +1174,139 @@ describe("wireAgentListeners — background-work marker", () => {
     expect(announced).toEqual([]);
   });
 });
+
+/**
+ * docs/267 — a turn the CLI starts on its own must announce itself on the
+ * GLOBAL SSE, not only on the session's own WebSocket.
+ *
+ * `session_status` reaches attached viewers; every other sidebar derives its
+ * dot from `activeRunnerSessions`, whose only additive input is the
+ * `session_agent_started` broadcast. Missing it, `SessionStatusDot` falls
+ * through "agent running" to the green CI checkmark for a session that is
+ * working — the reported bug.
+ *
+ * The pairing is what these pin: the announcement fires on the false→true edge
+ * ONLY, and only where `turn-executor` re-arms a post-turn flow that will
+ * broadcast the matching `session_agent_finished`.
+ */
+describe("wireAgentListeners — a CLI-started turn announces itself cross-session (docs/267)", () => {
+  function wireForAdoption(opts: { useStreaming?: boolean } = {}) {
+    const agent = new FakeAgent();
+    const runner = new SessionRunner({
+      sessionId: "session-wake",
+      sessionDir: "/tmp/session-wake",
+      defaultAgentId: "codex",
+    });
+    runner.setAgent(agent as unknown as AgentProcess);
+    const d = deps();
+    wireAgentListeners(agent as unknown as AgentProcess, runner, d, {
+      capturedSessionId: "session-wake",
+      isNewSession: false,
+      persistUserMessage: vi.fn(),
+      adoptsCliStartedTurns: true,
+      ...(opts.useStreaming !== undefined ? { useStreaming: opts.useStreaming } : {}),
+    });
+    const started = (): unknown[] =>
+      (d.sseBroadcast as ReturnType<typeof vi.fn>).mock.calls
+        .filter(([event]) => event === "session_agent_started")
+        .map(([, payload]) => payload);
+    return { agent, runner, started };
+  }
+
+  /** The orchestrator's own turn, ended by its `agent_result`. */
+  function runAndEndATurn(agent: FakeAgent, runner: SessionRunner): void {
+    runner.running = true;
+    agent.emit("event", {
+      type: "agent_result",
+      status: "success",
+      sessionId: "session-wake",
+    } satisfies AgentEvent);
+  }
+
+  it("broadcasts session_agent_started when a background job wakes the CLI", () => {
+    const { agent, runner, started } = wireForAdoption({ useStreaming: true });
+    runAndEndATurn(agent, runner);
+
+    agent.emit("event", {
+      type: "agent_self_wake",
+      taskId: "bg-1",
+      status: "completed",
+    } satisfies AgentEvent);
+
+    expect(runner.running).toBe(true);
+    expect(started()).toEqual([{ sessionId: "session-wake" }]);
+  });
+
+  it("broadcasts on the assistant edge too, for a steer the CLI ran as its own turn", () => {
+    const { agent, runner, started } = wireForAdoption({ useStreaming: true });
+    runAndEndATurn(agent, runner);
+
+    agent.emit("event", {
+      type: "agent_assistant",
+      content: [{ type: "text", text: "on it" }],
+    } satisfies AgentEvent);
+
+    expect(started()).toEqual([{ sessionId: "session-wake" }]);
+  });
+
+  // The trap: `adoptCliStartedTurn` runs on EVERY task notification — 15+ times
+  // in one session in the production log — and only the first is a real
+  // false→true transition. An unconditional broadcast would emit a burst of SSE
+  // frames to every browser per turn.
+  it("broadcasts exactly once however many notifications one adopted turn produces", () => {
+    const { agent, runner, started } = wireForAdoption({ useStreaming: true });
+    runAndEndATurn(agent, runner);
+
+    const wake = {
+      type: "agent_self_wake",
+      taskId: "bg-1",
+      status: "completed",
+    } satisfies AgentEvent;
+    agent.emit("event", wake);
+    agent.emit("event", wake);
+    agent.emit("event", wake);
+    // …and the adopted turn's own output, which reaches the other adoption edge.
+    agent.emit("event", {
+      type: "agent_assistant",
+      content: [{ type: "text", text: "working" }],
+    } satisfies AgentEvent);
+
+    expect(started()).toHaveLength(1);
+  });
+
+  // A job started earlier in the CURRENT turn reporting back mid-stream is the
+  // common shape (docs/237). It is not a new turn, and the session is already
+  // marked running everywhere.
+  it("stays silent for a notification that lands mid-turn", () => {
+    const { agent, runner, started } = wireForAdoption({ useStreaming: true });
+    runner.running = true;
+
+    agent.emit("event", {
+      type: "agent_self_wake",
+      taskId: "bg-1",
+      status: "completed",
+    } satisfies AgentEvent);
+
+    expect(started()).toEqual([]);
+  });
+
+  // An add with no guaranteed remove is worse than the bug being fixed: only a
+  // STREAMING turn gets `turn-executor`'s re-arm, and only that re-armed flow
+  // broadcasts `session_agent_finished`. A one-shot turn's `done` finds
+  // `running` true (this adoption set it) and suppresses its finished
+  // broadcast — so a start announced there would never be retracted.
+  it("stays silent on a one-shot turn, where nothing would broadcast the matching finish", () => {
+    const { agent, runner, started } = wireForAdoption();
+    runAndEndATurn(agent, runner);
+
+    agent.emit("event", {
+      type: "agent_self_wake",
+      taskId: "bg-1",
+      status: "completed",
+    } satisfies AgentEvent);
+
+    // The runner state is unchanged — this gate is about the broadcast only.
+    expect(runner.running).toBe(true);
+    expect(started()).toEqual([]);
+  });
+});
