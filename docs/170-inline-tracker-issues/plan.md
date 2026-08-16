@@ -234,8 +234,31 @@ So `handleIssueStartSession` parks the ref in the session store
 it to the **first** message as `send_message.issueRef`. Warm graduation is the
 only thing that reads it: it renames the branch via
 `services/issue-seeded-session.ts` (which reuses `seedFromIssueRef`, so both
-paths derive the same branch) and fires `markIssueStartedFromSeed`. A message to
-an already-graduated session ignores the field.
+paths derive the same *shape* of branch) and fires `markIssueStartedFromSeed`. A
+message to an already-graduated session ignores the field.
+
+### The branch is issue-derived, never issue-determined (planning#413)
+
+`seedFromIssueRef` appends a random `generateBranchSlug()` suffix, so `SHI-304`
+seeds `shi-304-k7p2qz`. The pointer alone used to be the whole branch name,
+which made it a pure function of the issue — and sessions on one issue are
+routinely **sequential** (a follow-up, a re-run after the first PR merged, a
+second attempt), not only concurrent. The second session then inherited the
+first's remote branch, and both failure modes are silent:
+
+- **An open PR on that branch is returned as the new session's own.**
+  `createPullRequest` calls `findPullRequest(owner, repo, head)` *before*
+  pushing and short-circuits on a hit, so the new session's card points at
+  someone else's PR and its commits are never pushed anywhere.
+- **A merged one rejects the push.** The surviving remote branch has a commit
+  that is not on the new branch's base, and the create path pushes without
+  `--force-with-lease` outside the docs/202 re-arm case.
+
+Nothing recovers the issue *from* the branch — the pointer travels in the
+session row, the seed prompt, and the PR body's `Closes` line — so the suffix
+costs only a little readability. `isIssueSeededBranch` (the pointer stem, not
+the full name) is what the graduation path tests for idempotence, since a name
+containing fresh randomness can never equal a branch already on disk.
 
 ## Key files
 

@@ -16,7 +16,7 @@ import {
   KNOWN_AGENT_IDS,
 } from "../../shared/agent-registry.js";
 import { isHarnessInstalled } from "../../shared/installed-harnesses.js";
-import { generateBranchPrefix } from "../git-utils.js";
+import { generateBranchPrefix, generateBranchSlug } from "../git-utils.js";
 import { prepareSessionAgentEnvironment } from "../session-agent-env.js";
 import { graduateSession, type GraduateSessionDeps } from "./graduate-session.js";
 import { ServiceError } from "./types.js";
@@ -37,10 +37,58 @@ export interface HeadlessUploadInput {
 }
 
 /**
+ * The stable, issue-derived half of an issue-seeded branch name: the pointer,
+ * lowercased and kebabbed so it stays a valid git ref (`assertValidBranchName`
+ * rejects spaces and specials). `""` when the pointer slugifies to nothing.
+ *
+ * docs/248 req 22 — the issue title is deliberately NOT in the branch name. A
+ * branch gets pushed to a public remote, so a title from a private planning
+ * issue would be published there. The rule is unconditional rather than scoped
+ * to "private" issues because ShipIt has no signal for which repositories are
+ * private: a declared planning repo may be public and a session's own code
+ * repo may be private, so any narrower rule would be a guess. The cost — a
+ * less readable branch for Linear and code-repo issues too — was accepted
+ * explicitly (see the requirements doc's resolved questions).
+ *
+ * Capped at 50 chars so the uniqueness suffix `seedFromIssueRef` appends keeps
+ * the whole ref inside the ~60 chars the old cap allowed.
+ */
+export function issueBranchBase(identifier: string): string {
+  return identifier
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 50)
+    .replace(/-+$/g, "");
+}
+
+/** Does `branch` look like an issue-seeded branch for this pointer? */
+export function isIssueSeededBranch(branch: string, identifier: string): boolean {
+  const base = issueBranchBase(identifier);
+  return base !== "" && (branch === base || branch.startsWith(`${base}-`));
+}
+
+/**
  * docs/170 — turn a fetched tracker issue into a branch slug + seed prompt.
  * Shared seeding primitive: the in-app "Start session" path (pull, docs/170)
  * and the future webhook trigger (push, docs/156) both build an `IssueRef` and
  * route through here, so the branch/prompt derivation stays in one place.
+ *
+ * **The branch is issue-derived but never issue-determined (planning#413).** It
+ * carries a random `generateBranchSlug()` suffix, so `SHI-304` seeds
+ * `shi-304-k7p2qz` and the next session on the same issue gets a different one.
+ * The pointer alone used to be the whole name, which made the branch a pure
+ * function of the issue — and sessions on one issue are routinely *sequential*
+ * (a follow-up, a re-run after a merge, a second attempt), not just concurrent.
+ * The second session then reused the first's remote branch, which fails two
+ * ways and neither is loud: `createPullRequest` finds the branch's existing
+ * open PR first (`findPullRequest`) and returns THAT PR without pushing, so the
+ * new session reports someone else's PR as its own and its commits reach no PR
+ * at all; and where the old PR is already merged, the plain (non-force) push
+ * onto the surviving diverged branch is rejected non-fast-forward. Nothing
+ * reads the branch to recover the issue — the pointer travels in the session
+ * row, the seed prompt and the PR body — so the suffix costs nothing.
  */
 export function seedFromIssueRef(issueRef: IssueRef): {
   prompt: string;
@@ -50,26 +98,8 @@ export function seedFromIssueRef(issueRef: IssueRef): {
   const identifier = issueRef.identifier.trim();
   const titleText = issueRef.title.trim();
 
-  // Branch: the issue's **pointer only**, lowercased and kebabbed so it stays a
-  // valid git ref (assertValidBranchName rejects spaces/specials).
-  //
-  // docs/248 req 22 — the issue title is deliberately NOT in the branch name. A
-  // branch gets pushed to a public remote, so a title from a private planning
-  // issue would be published there. The rule is unconditional rather than scoped
-  // to "private" issues because ShipIt has no signal for which repositories are
-  // private: a declared planning repo may be public and a session's own code
-  // repo may be private, so any narrower rule would be a guess. The cost — a
-  // less readable branch for Linear and code-repo issues too — was accepted
-  // explicitly (see the requirements doc's resolved questions).
-  //
-  // Determinism is unchanged: the branch was already a pure function of the
-  // issue, so two sessions on one issue collide exactly as they did before.
-  const slugify = (s: string) =>
-    s
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "");
-  const branch = slugify(identifier).slice(0, 60).replace(/-+$/g, "") || generateBranchPrefix();
+  const base = issueBranchBase(identifier);
+  const branch = base ? `${base}-${generateBranchSlug()}` : generateBranchPrefix();
 
   // Seed prompt: the pointer only — see `buildIssueSeedPrompt`. The issue's
   // description is deliberately NOT pasted in; the agent fetches it.

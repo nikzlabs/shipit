@@ -10,7 +10,7 @@ import { ProviderAccountManager } from "../provider-account-manager.js";
 import { readSessionAccountMarker } from "../session-credentials.js";
 import { RepoStore } from "../repo-store.js";
 import { GitManager } from "../../shared/git.js";
-import { createHeadlessSession, seedFromIssueRef } from "./headless-sessions.js";
+import { createHeadlessSession, seedFromIssueRef, isIssueSeededBranch } from "./headless-sessions.js";
 import type { GraduateSessionDeps } from "./graduate-session.js";
 import { ServiceError } from "./types.js";
 import type { ClaimSessionService } from "./claim-session.js";
@@ -84,7 +84,7 @@ describe("seedFromIssueRef — branch names carry the pointer only", () => {
       identifier: "SHI-304",
       title: "Acquire competitor before Q3 board meeting",
     });
-    expect(seed.branch).toBe("shi-304");
+    expect(seed.branch).toMatch(/^shi-304-[a-z0-9_-]{1,6}$/);
     expect(seed.branch).not.toMatch(/acquire|competitor|board/);
   });
 
@@ -94,7 +94,7 @@ describe("seedFromIssueRef — branch names carry the pointer only", () => {
       identifier: "acme/planning#42",
       title: "Secret roadmap item",
     });
-    expect(seed.branch).toBe("acme-planning-42");
+    expect(seed.branch).toMatch(/^acme-planning-42-[a-z0-9_-]{1,6}$/);
     expect(seed.branch).not.toMatch(/secret|roadmap/);
   });
 
@@ -132,9 +132,40 @@ describe("seedFromIssueRef — branch names carry the pointer only", () => {
     expect(seed.branch).not.toContain("#");
   });
 
-  it("stays a pure function of the issue, so collisions are unchanged", () => {
+  // planning#413 — the pointer used to BE the branch, so a second session on
+  // one issue reused the first session's remote branch. Sequential sessions on
+  // one issue are ordinary (a follow-up, a re-run after a merge), and the reuse
+  // is silent in both directions: an open PR on that branch is returned as the
+  // new session's own PR with nothing pushed, and a merged one rejects the
+  // push non-fast-forward.
+  it("gives two sessions on the same issue different branches", () => {
     const ref = { tracker: "linear" as const, identifier: "SHI-1", title: "A" };
-    expect(seedFromIssueRef(ref).branch).toBe(seedFromIssueRef({ ...ref, title: "B" }).branch);
+    const first = seedFromIssueRef(ref).branch;
+    const second = seedFromIssueRef(ref).branch;
+    expect(first).not.toBe(second);
+    // …while both still read as that issue's branch.
+    expect(first).toMatch(/^shi-1-/);
+    expect(second).toMatch(/^shi-1-/);
+  });
+
+  it("keeps a long pointer's branch inside a sane length", () => {
+    const seed = seedFromIssueRef({
+      tracker: "github:acme/planning",
+      identifier: `acme/${"very-long-repo-name".repeat(5)}#4321`,
+      title: "T",
+    });
+    expect(seed.branch.length).toBeLessThanOrEqual(60);
+  });
+
+  it("recognizes a branch seeded from a given pointer, and only that pointer", () => {
+    const branch = seedFromIssueRef({ tracker: "linear", identifier: "SHI-1", title: "A" }).branch;
+    expect(isIssueSeededBranch(branch, "SHI-1")).toBe(true);
+    // A pointer whose stem PREFIXES this one must not match — `SHI-1` seeds
+    // `shi-1-<slug>`, and `shi-1` is a prefix of `shi-12`'s stem's characters.
+    expect(isIssueSeededBranch(branch, "SHI-12")).toBe(false);
+    expect(isIssueSeededBranch("shipit/ab12cd", "SHI-1")).toBe(false);
+    // A pointer that slugifies to nothing matches nothing.
+    expect(isIssueSeededBranch("shipit/ab12cd", "###")).toBe(false);
   });
 });
 
@@ -723,13 +754,14 @@ describe("createHeadlessSession", () => {
       graduationDeps,
     );
 
-    // docs/248 req 22 — the branch is the POINTER ONLY. A branch gets pushed to a
-    // public remote, so the issue title must not appear in it. The session title
-    // and the seed prompt still carry it: both stay inside ShipIt.
-    expect(result.branch).toBe("shi-67");
+    // docs/248 req 22 — the branch is the POINTER (plus a uniqueness suffix,
+    // planning#413), never the title. A branch gets pushed to a public remote,
+    // so the issue title must not appear in it. The session title and the seed
+    // prompt still carry it: both stay inside ShipIt.
+    expect(result.branch).toMatch(/^shi-67-[a-z0-9_-]{1,6}$/);
     expect(result.branch).not.toContain("inline");
     expect(result.session.title).toBe("SHI-67: Inline tracker Issues tab");
-    expect(result.session.branch).toBe("shi-67");
+    expect(result.session.branch).toBe(result.branch);
     // The first dispatched prompt names the issue and tells the agent how to
     // read it — it does not carry a copy of the body (see the seed tests above).
     const text = registry.get(result.sessionId)?.dispatch.mock.calls[0][0].text as string;
