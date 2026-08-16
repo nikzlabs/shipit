@@ -147,7 +147,13 @@ nothing, so it is the safe first step when a plugin's surfaces are failing.
 
 Run one imported plugin's companion CLI (docs/262 req 17). You do not normally
 type this: each surfaced command has a generated wrapper on PATH that calls it,
-and the wrapper's name is what a plugin's docs tell you to run.`;
+and the wrapper's name is what a plugin's docs tell you to run.
+
+See /shipit-docs/plugins.md for using a plugin repository — declaring one, the
+read-only checkout, install, and what to read when a plugin is live but broken.
+If THIS repository is the plugin (its shipit.yaml declares exports.plugins),
+/shipit-docs/plugin-authoring.md covers what a consuming project does
+differently.`;
 
 export async function runPlugin(args: string[], deps: RunDeps): Promise<void> {
   const [action, ...rest] = args;

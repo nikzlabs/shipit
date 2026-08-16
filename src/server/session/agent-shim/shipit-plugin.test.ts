@@ -190,6 +190,18 @@ describe("shipit plugin refresh", () => {
     expect(res.stdout).toContain("Usage: shipit plugin refresh");
     expect(res.calls).toHaveLength(0);
   });
+
+  // The help is the only surface that says which page to read, and there are
+  // two: the usage contract and the authoring one. Naming just `plugins.md`
+  // would send an agent editing a plugin repository to the wrong half.
+  it("names both plugin docs, so the reader can pick the right one", async () => {
+    const { run } = makeRunner();
+    const res = await run(["plugin", "--help"]);
+    expect(res.exitCode).toBe(0);
+    expect(res.stdout).toContain("/shipit-docs/plugins.md");
+    expect(res.stdout).toContain("/shipit-docs/plugin-authoring.md");
+    expect(res.calls).toHaveLength(0);
+  });
 });
 
 /**
