@@ -72,6 +72,31 @@ root and mounts `credentials:/credentials`, `/var/run/docker.sock`,
     wants a hook to be able to block a commit, that is a change to this
     requirement.)*
 
+11. Requirement 1 is satisfied when repo-controlled code can only execute at an
+    authority its own author already holds. ShipIt is NOT required to prevent
+    that execution outright. *(Decided by the requester on 2026-08-16 — see
+    Resolved questions, Q2. This is the scoping requirement: it is what makes
+    "run git as the session's own user" a compliant answer and not a partial
+    one.)*
+
+12. A session whose compose services declare an explicit numeric `user:` MUST
+    keep working — the session must start, its services must run, and ShipIt's
+    own git operations on that workspace must not fail because a service wrote
+    files as a different user. This holds both for this feature and for the
+    per-session-uid follow-up (req 13). *(Stated by the requester on
+    2026-08-16.)*
+
+    Two facts make this a mandatory path rather than an edge case, both verified
+    at `compose-generator.ts`: an egress-**contained** service *must* declare a
+    numeric, non-root `user:` that is not one of the two reserved UIDs (`:988-1002`),
+    and an explicit `user:` is never overridden by ShipIt (`:1387` only fills one
+    in when `svc.user === undefined`).
+
+13. Per-session uids MUST be filed as a follow-up, not built here. Until they
+    exist, cross-session workspace access at the shared uid is an accepted,
+    recorded residual — it MUST NOT be described as closed. *(Decided by the
+    requester on 2026-08-16 — see Resolved questions, Q3.)*
+
 ## Requirement provenance
 
 Separating what was asked for from what the design supplied, per `CLAUDE.md`
@@ -90,6 +115,9 @@ into one").
 | 8 | ✅ "say what you could NOT verify" | — |
 | 9 | ✅ decided 2026-08-16 (Q1 → c, "if 'c' is easy, let's do that") | the "costing nothing beyond removing the suppression" condition, which is the requester's "if it's easy" made testable |
 | 10 | — | derived from invariant 2 (see the note on the requirement) |
+| 11 | ✅ decided 2026-08-16 (Q2 → a, "agree") | — |
+| 12 | ✅ "we need to make sure that explicit UIDs in Docker Compose services would not be broken" | the two verified facts under it, which show it is a mandatory path rather than an edge case |
+| 13 | ✅ decided 2026-08-16 (Q3 → a, "Let's do that") | — |
 
 Requirements 6, 7 and 10 are the three places this document went beyond what it
 was handed. All three are load-bearing — 6 rules out the container option, 7
@@ -126,68 +154,36 @@ called out rather than folded in.
 
 ## Open questions
 
-**Q2 — Is it good enough to run git as the session's own user, instead of as
-root?**
-
-In plain terms. Today, two different users touch the same folder:
-
-- **The session's user.** This is who the agent runs as inside its container. It
-  can already do anything it likes in that folder, and it can already run any
-  program it wants there. Nothing is protected from it.
-- **root, in the orchestrator.** This is a *much* more powerful user. It holds
-  the GitHub token, the Docker socket (which is control of the whole machine),
-  and every other session's folder.
-
-The bug is that root goes into that folder and runs `git` there — and the
-session's user can leave a booby trap in the folder that `git` picks up. So the
-weak user gets the powerful user to act for it.
-
-The proposed fix is not to disarm the booby trap. It is to send the *weak* user
-in to run `git` instead of root. The trap still goes off — but it goes off as
-the user who set it, who could already do all of those things. So it gains
-nothing. Nobody is escalated.
-
-The question is whether that is an acceptable answer, or whether ShipIt should
-insist that the trap never goes off at all.
-
-- **(a) Yes — running as the session's own user is good enough.** The trap gains
-  its author no new power. This is the cheapest complete answer, and it lets git
-  itself do the checking: git already refuses to touch a folder owned by someone
-  else, so any place we forget to fix fails loudly instead of quietly running
-  the trap.
-- **(b) No — orchestrator-side git must never run anything the repo controls**,
-  not even as the session's own user. That means running git inside its own
-  container. It is stronger, but it puts Docker on the path of the auto-commit,
-  and if Docker is unhealthy at that moment the turn's work is never committed
-  and cannot be recovered. That conflicts with requirement 6.
-
-*Recommendation: (a).*
-
-A useful cross-check: this is already how the agent's own commits work. When the
-agent runs `git commit` inside its container, a booby-trapped config runs there
-too, at the same user — and that has never been considered a security problem,
-because it is the user's own container. The fix makes ShipIt's commit behave the
-same way.
-
-**Q3 — Per-session uids: now, or accept the residual?**
-Today every session's workspace is owned by the same uid (1000,
-`SHIPIT_SESSION_WORKER_UID`). Under the recommended design a payload that
-executes during an orchestrator git op runs at that uid inside the orchestrator
-container, where **every** session's workspace is mounted at `/workspace`. So
-host root and the credential store are closed, but cross-session workspace
-read/write is not.
-
-- **(a) Accept the residual now, file per-session uids as follow-up.** The
-  change is a strict, large improvement (host root + Docker socket + credential
-  store → one shared unprivileged uid), and per-session uids touch the session
-  image entrypoint, every chown helper, and the plugin/compose uid checks.
-- **(b) Do both together.** Complete, but roughly triples the change and delays
-  closing the root path.
-
-*Recommendation: (a), with the follow-up filed in the same turn the first half
-merges.*
+*(none — Q1–Q4 are all answered; see below. Implementation is unblocked, subject
+to the independent review this repo's requirements discipline requires.)*
 
 ## Resolved questions
+
+**2026-08-16 — Q2: is it good enough to run git as the session's own user
+instead of as root? → (a), yes.** Requester: *"agree"*. Recorded as
+**requirement 11**, which states the scoping consequence: requirement 1 is met
+when repo-controlled code can only execute at an authority its author already
+holds, and ShipIt is not obliged to prevent the execution outright. This is the
+answer the whole design rests on — option (b) would have required running git in
+its own container, which conflicts with requirement 6.
+
+**2026-08-16 — Q3: per-session uids now, or accept the residual? → (a), accept
+now and file the follow-up.** Requester: *"Let's do that. Also, we need to make
+sure that explicit UIDs in Docker Compose services would not be broken."*
+Recorded as **requirement 13** (file the follow-up; the residual stays named,
+never described as closed) and **requirement 12** (the compose-uid constraint).
+
+The compose-uid constraint turned out to be sharper than a follow-up concern,
+and checking it changed the design rather than only the follow-up. Verified at
+`compose-generator.ts`: an egress-contained service is *required* to declare a
+numeric non-root `user:` (`:988-1002`), and ShipIt never overrides an explicit
+one (`:1387`). So a workspace can legitimately contain files owned by a uid that
+is neither root nor the session's. Today root-side git ignores that; unprivileged
+git will not. The analysis and the chosen handling are in `plan.md` §2 (E5) —
+the short version is that this is the *pre-existing* limit the agent already
+lives under, and the design surfaces it rather than restoring root to paper over
+it. No new question was raised, because requirement 12 plus `CLAUDE.md` invariant
+2 already decide it.
 
 **2026-08-16 — Q1: should a project's own git hooks ever run on ShipIt's
 auto-commit? → (c), run them wherever the orchestrator's git runs, once that is

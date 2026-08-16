@@ -9,10 +9,10 @@ description: Five options for closing the .git route, their costs, the recommend
 Implements [requirements.md](./requirements.md). Requirements are cited as
 `(req N)`.
 
-**Status: design only.** Q1 and Q4 were answered on 2026-08-16; **Q2 and Q3
-remain open** in `requirements.md`, so no implementation code has been written
-(`CLAUDE.md`, requirements discipline step 2). Q2 is the load-bearing one — it
-decides whether this design is the right answer at all.
+**Status: design complete, implementation not started.** All four open questions
+were answered on 2026-08-16 (`requirements.md` → Resolved questions), including
+Q2, the load-bearing one. No implementation code has been written in this doc's
+PR — this remains a docs-only change, and the build sequence is §5.
 
 ## 1. The shape of the problem
 
@@ -186,6 +186,59 @@ it for git that runs at the session's uid. Two constraints come with it:
   pass. Sequencing note — the retry must stay inside the same `postTurnStep`
   and before the drain, so invariants 1 and 3 are unaffected.
 
+**E5. Compose services that declare an explicit `user:` (req 12).** This is the
+one place where dropping root has a cost that is not purely security, and it was
+raised in review rather than found by the design.
+
+The setup, verified at `compose-generator.ts`: an egress-**contained** service is
+*required* to declare a numeric, non-root `user:` that is neither reserved UID
+(`:988-1002`), and ShipIt never overrides an explicit one — `:1387` fills in
+`${workerUid}:${workerUid}` only when `svc.user === undefined`, and the comment
+there says so outright ("we never override a deliberate choice"). Compose
+services share the workspace. So a workspace can legitimately hold files, and
+directories, owned by a uid that is neither root nor the session's.
+
+Today root-side git ignores that entirely — root overwrites and unlinks
+regardless of ownership. Unprivileged git will not: it can still *read* such
+files (0644 under the usual umask, so `status` / `add -A` / `commit` are fine),
+but a `checkout`, `reset --hard`, `rebase`, `merge` or `clean` that has to remove
+or replace a file inside a **directory** owned by that other uid gets EACCES.
+
+**The handling is to surface it, not to restore root.** Three reasons, and no
+new question, because req 12 and invariant 2 between them already decide it:
+
+1. **It is a pre-existing limit, not a new one.** The agent runs as the session's
+   uid too. A compose service writing *tracked* files as a foreign uid has
+   already broken the agent's ability to edit them — today ShipIt's root-side git
+   papers over that at commit time, which hides the breakage rather than fixing
+   it. E1 makes ShipIt's git exactly as capable as the agent, which is the
+   correct relationship between the two.
+2. **The realistic collision surface is small.** What a compose service writes
+   into a shared workspace is overwhelmingly build output and caches — `dist/`,
+   `.next/`, `node_modules/.vite` — which are gitignored, and git does not touch
+   ignored paths during checkout, reset or merge. The exposure is a service that
+   writes *committed* files (generated stubs, migrations) while running at a
+   foreign uid.
+3. **The alternative re-opens the boundary.** "Chown the worktree to the session
+   uid before each op" both overrides the user's deliberate `user:` choice — the
+   thing req 12 forbids — and needs a root pass over the tree on the hot path.
+   "Keep worktree-mutating ops as root" is worse: every git op reads
+   `.git/config`, so a root `checkout` is the original bug.
+
+So: requirement 12 is satisfied by *not changing anything about compose* — the
+session starts, the services run, and the explicit `user:` is still honoured.
+What changes is that an ownership collision now fails visibly instead of being
+silently absorbed by root. Concretely, that means the EACCES must carry a
+message naming the path, its owner, and the service that most likely wrote it —
+not a bare errno. And per requirement 10's principle, an auto-commit must still
+land: an EACCES while staging one path must not throw away the rest of the turn.
+
+*Recommended, not required: warn at compose-validation time when a service
+declares a `user:` that differs from the session worker uid and mounts the
+workspace.* That turns a later confusing EACCES into an up-front sentence. It is
+a small addition and it is not needed for req 12 to hold, so it is called out
+here rather than promoted into a requirement.
+
 **Costs and breakage, stated plainly:**
 
 - **Residual: cross-session workspace access.** A payload that executes during
@@ -272,6 +325,15 @@ inherited guarantee at the source").
 - **Not checked: whether any orchestrator HTTP endpoint authorizes on "came from
   loopback".** The residual in §2 depends on this. I did not audit
   `agent-ops-routes.ts` or the credential-broker route's auth.
+- **E5 is reasoned, not measured.** I verified the two `compose-generator.ts`
+  facts it rests on (contained services must declare a `user:`; an explicit one
+  is never overridden) and the POSIX rule that unlink/replace is governed by the
+  *directory's* permissions, not the file's. I did **not** survey real projects
+  for a compose service that writes **committed** files at a foreign uid, so
+  "the collision surface is small" is an argument from what services normally
+  write, not a measurement. If that assumption is wrong, E5 is the part of this
+  design that gets more expensive, and the compose-validation warning stops
+  being optional.
 - **Not checked: git's behaviour on `receive-pack`/`upload-pack` config when a
   local path is used as a remote.** Irrelevant under E (no root-side git touches
   the untrusted tree at all), but it would matter for any variant that keeps a
@@ -288,10 +350,7 @@ inherited guarantee at the source").
 
 ## 5. If the recommendation is accepted
 
-Q1 and Q4 are answered (2026-08-16). **Q2 and Q3 are still open, and Q2 is the
-one that decides whether this design is built at all** — it asks whether running
-git as the session's own user is an acceptable answer. Nothing below starts
-until it is answered.
+All four questions are answered (2026-08-16), so this sequence is live.
 
 Sequence:
 
@@ -310,8 +369,19 @@ Sequence:
    fail when a session-workspace git spawn carries no uid. Note that step 4
    narrows what that test asserts rather than removing it: the override must
    still be present on every root-side git spawn.
-6. File the per-session-uid follow-up (Q3, if answered (a)). The route-2 issue
-   is already filed as planning#400.
+6. Make the ownership-collision EACCES legible (E5, req 12): name the path, its
+   owner, and the likely service. Optionally add the compose-validation warning.
+7. File the per-session-uid follow-up (req 13). The route-2 issue is already
+   filed as planning#400.
+
+The follow-up in step 7 inherits req 12: per-session uids change
+`SHIPIT_SESSION_WORKER_UID` from one global value into an allocated one, so its
+design has to say what happens when an allocated uid **collides with an explicit
+`user:`** a project already declared, and it must never allocate
+`EGRESS_RESOLVER_UID` (911) or `EGRESS_PROXY_UID` (912) — the netns firewall
+exempts both by owner-match, so a workload at either uid escapes egress
+containment (`session-worker-uid.ts:33-60`). That constraint belongs in the
+follow-up's own requirements, and this note is the handoff.
 
 ## Key files
 
