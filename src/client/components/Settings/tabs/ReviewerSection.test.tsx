@@ -171,6 +171,40 @@ describe("ReviewerSection", () => {
     expect(screen.getByTestId("reviewer-mode-pill-first").textContent).toBe("Subscription");
   });
 
+  /**
+   * The harness is the one field on this row that is a PREDICTION, and the row
+   * shipped stating it flat: "running on Claude Code".
+   *
+   * It is not a fact. `resolveReviewerSlots` derives it implementer-independently
+   * (`resolveSlotPlan(plan, …, undefined)`); `selectReviewer` passes the
+   * implementer's harness as `avoidHarnessId`. Where both installed harnesses
+   * carry the model — the shipped `deepseek-v4-flash` does — this view answers
+   * Claude Code and a Claude session's review actually runs on Codex. Users read
+   * the mismatch as their pin failing to apply.
+   *
+   * So this asserts the CLAIM rather than the sentence: the harness is still
+   * named (req 8 keeps it legible) AND it is named conditionally. The pre-fix
+   * assertions could not fail on this — they were `toContain("Claude Code")`,
+   * which a flat prediction satisfies exactly as well as a qualified one.
+   */
+  it("states the derived harness as a per-review choice, not as settled fact", () => {
+    useSettingsStore.getState().setReviewers([autoSlot("first"), autoSlot("second")]);
+    render(<ReviewerSection agentList={agents} />);
+
+    const harness = screen.getByTestId("reviewer-harness-first").textContent ?? "";
+    // Req 8 — the harness stays on the row. Dropping it would make Settings
+    // silent about the axis this feature took away from `CLAUDE.md`.
+    expect(harness).toContain("Claude Code");
+    // ...carried by the clause that makes it conditional, and by the condition
+    // under which the named value is the right one.
+    expect(harness).toMatch(/per review/i);
+    expect(harness).toMatch(/nothing to avoid/i);
+    // And the unqualified claim is gone from the row entirely.
+    expect(screen.getByTestId("reviewer-resolution-first").textContent).not.toMatch(
+      /running on Claude Code/i,
+    );
+  });
+
   it("labels a pinned slot pinned, and offers the way back", () => {
     useSettingsStore.getState().setReviewers([
       autoSlot("first", {

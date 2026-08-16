@@ -336,6 +336,26 @@ function ReviewerSlotCard({
               card states the same pair — a model is selected by `(service,
               billing mode, model)`, so the mode qualifies the service rather
               than the row.
+
+              **The harness is the one field here that is a PREDICTION, and it
+              is worded as one.** The other three are settled: the slot names
+              them, or `resolveReviewerSlots` derives them once and every review
+              uses that answer. The harness does not settle here. This view is
+              implementer-independent by design — `resolveSlotPlan(plan, …,
+              undefined)` — while review time passes the implementer's harness
+              as `avoidHarnessId`, so a model both harnesses can carry resolves
+              to the picker's first harness HERE and to the other one THERE.
+              Stating it flat ("running on Claude Code") read as a promise that
+              a Codex review then broke, and the user reported it as their
+              settings change failing to apply.
+
+              So the rule is stated and the value is given as its no-conflict
+              case. Dropping the harness instead would have been the smaller
+              diff and the wrong one: `--agent codex` in a repository's
+              CLAUDE.md is the half-configured thing this feature took away, and
+              Settings is where the reviewers are supposed to explain
+              themselves. A reviewer screen silent about the harness gives the
+              axis back to nobody.
             */}
             <div
               className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-1 text-xs text-(--color-text-tertiary)"
@@ -349,8 +369,12 @@ function ReviewerSlotCard({
                     data-testid={`reviewer-mode-pill-${view.slot}`}
                   />
                   <span>
-                    · {resolved.label}, running on {resolved.harnessName} at{" "}
+                    · {resolved.label} at{" "}
                     {resolved.reasoningLabel ?? resolved.reasoningEffort}
+                  </span>
+                  <span data-testid={`reviewer-harness-${view.slot}`}>
+                    · harness selected per review, to differ from the reviewed session&apos;s own
+                    — {resolved.harnessName} when there is nothing to avoid
                   </span>
                 </>
               ) : view.unavailableReason === "pin_unavailable" ? (

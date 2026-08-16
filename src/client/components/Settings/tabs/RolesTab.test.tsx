@@ -183,6 +183,38 @@ describe("RolesTab — the list", () => {
     expect(screen.queryByTestId("role-editor-model-trigger")).toBeNull();
   });
 
+  /**
+   * A role row states its harness flat — "running on Claude Code" — and that is
+   * CORRECT here, which is the opposite of the reviewer row's answer to the same
+   * sentence. The two look identical and are not the same claim:
+   *
+   *  - A reviewer slot pins `(service, billing mode, model)` only. Its harness is
+   *    derived (docs/261 req 3) implementer-independently for the Settings view
+   *    and re-derived at review time against `avoidHarnessId`, so the view is a
+   *    prediction and is worded as one.
+   *  - A **pinned role** stores `harnessId` outright, and `resolveRoleByName`'s
+   *    pinned branch takes the role's harness verbatim — `implementer` is read
+   *    only where the ranking runs, which a pinned role never reaches. So this
+   *    row reports what the user chose and what will run.
+   *
+   * The reserved `reviewer` role carries no `resolved` at all (its params are
+   * docs/261's two ranked slots), so it never renders this line either way.
+   *
+   * This test exists because the resemblance already misled a reader into
+   * proposing the reviewer row's fix here too. Qualifying this harness would say
+   * a stored parameter might not apply, which is false and undoes docs/264 req 6.
+   */
+  it("states a pinned role's harness flat — it is stored, not derived", () => {
+    useSettingsStore.getState().setRoles([REVIEWER, pinnedRole()]);
+    render(<RolesTab agentList={agents} />);
+
+    const resolution = screen.getByTestId("role-resolution-deep-dive").textContent ?? "";
+    // The role's OWN stored harness, unhedged.
+    expect(resolution).toContain("running on Claude Code");
+    // And none of the reviewer row's per-review hedging, which would be a lie here.
+    expect(resolution).not.toMatch(/per review|nothing to avoid/i);
+  });
+
   it("says the install has no roles yet without hiding the reviewer", () => {
     render(<RolesTab agentList={agents} />);
     expect(screen.getByTestId("roles-empty")).toBeTruthy();
