@@ -160,12 +160,28 @@ describe("seedFromIssueRef — branch names carry the pointer only", () => {
   it("recognizes a branch seeded from a given pointer, and only that pointer", () => {
     const branch = seedFromIssueRef({ tracker: "linear", identifier: "SHI-1", title: "A" }).branch;
     expect(isIssueSeededBranch(branch, "SHI-1")).toBe(true);
-    // A pointer whose stem PREFIXES this one must not match — `SHI-1` seeds
-    // `shi-1-<slug>`, and `shi-1` is a prefix of `shi-12`'s stem's characters.
-    expect(isIssueSeededBranch(branch, "SHI-12")).toBe(false);
     expect(isIssueSeededBranch("shipit/ab12cd", "SHI-1")).toBe(false);
     // A pointer that slugifies to nothing matches nothing.
     expect(isIssueSeededBranch("shipit/ab12cd", "###")).toBe(false);
+  });
+
+  // One stem being a character-prefix of another is what the trailing delimiter
+  // in the guard exists for, so both directions are pinned — the dangerous one
+  // is `shi-12-…` vs `SHI-1`, where the stem really is a prefix of the branch.
+  it("does not confuse pointers whose stems prefix each other", () => {
+    const one = seedFromIssueRef({ tracker: "linear", identifier: "SHI-1", title: "A" }).branch;
+    const twelve = seedFromIssueRef({ tracker: "linear", identifier: "SHI-12", title: "A" }).branch;
+    expect(isIssueSeededBranch(twelve, "SHI-1")).toBe(false);
+    expect(isIssueSeededBranch(one, "SHI-12")).toBe(false);
+    expect(isIssueSeededBranch(twelve, "SHI-12")).toBe(true);
+  });
+
+  // Branches seeded before the suffix existed are bare stems. They must still
+  // read as that issue's branch, or graduation would rename one out from under
+  // a PR that is already open on it.
+  it("still recognizes a legacy unsuffixed branch", () => {
+    expect(isIssueSeededBranch("shi-304", "SHI-304")).toBe(true);
+    expect(isIssueSeededBranch("shi-304", "SHI-30")).toBe(false);
   });
 });
 

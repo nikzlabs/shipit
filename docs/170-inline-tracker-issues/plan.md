@@ -244,21 +244,35 @@ seeds `shi-304-k7p2qz`. The pointer alone used to be the whole branch name,
 which made it a pure function of the issue — and sessions on one issue are
 routinely **sequential** (a follow-up, a re-run after the first PR merged, a
 second attempt), not only concurrent. The second session then inherited the
-first's remote branch, and both failure modes are silent:
+first's remote branch.
 
-- **An open PR on that branch is returned as the new session's own.**
-  `createPullRequest` calls `findPullRequest(owner, repo, head)` *before*
-  pushing and short-circuits on a hit, so the new session's card points at
-  someone else's PR and its commits are never pushed anywhere.
-- **A merged one rejects the push.** The surviving remote branch has a commit
-  that is not on the new branch's base, and the create path pushes without
-  `--force-with-lease` outside the docs/202 re-arm case.
+The damage is **not** confined to the push, because a branch name is an identity
+several subsystems resolve *through*:
 
-Nothing recovers the issue *from* the branch — the pointer travels in the
-session row, the seed prompt, and the PR body's `Closes` line — so the suffix
-costs only a little readability. `isIssueSeededBranch` (the pointer stem, not
-the full name) is what the graduation path tests for idempotence, since a name
-containing fresh randomness can never equal a branch already on disk.
+- **An open PR on that branch is adopted as the new session's own.**
+  `quickCreatePr` (`services/github.ts`) resolves
+  `findPullRequest(owner, repo, head)` *before* pushing and short-circuits on a
+  hit, so the second session's PR card points at the first session's PR. The
+  debounced auto-push is still armed and fires anyway — and is rejected
+  non-fast-forward.
+- **A merged one takes the new session down with it.** `verifyMissingPr`
+  (`pr-status-poller.ts`) looks a PR up **by branch name only**, so the surviving
+  remote branch promotes the *second* session to terminal-merged: archived, and
+  the merge→issue-lifecycle effects re-fired under a second session id (the
+  fire-once guard is per-session, so the tracker gets a duplicate resolved-by
+  comment). `SessionManager.findByBranch` likewise goes from many:1 back to 1:1.
+
+Nothing recovers the issue *from* the branch — the pointer travels in persisted
+chat history (`issue_ref` on the message row), the seed prompt, and the PR body's
+`Closes` line — so the suffix costs only a little readability.
+`isIssueSeededBranch` (the pointer stem, not the full name) is what the
+graduation path tests for idempotence, since a name containing fresh randomness
+can never equal a branch already on disk.
+
+Uniqueness is a property of the **derived** branch only. `createHeadlessSession`
+still lets an explicit `branch` option beat the seed, so a caller that supplies
+one owns its own collisions — including docs/156's planned `-2`/`-3` suffix
+scheme for webhook re-triggers, which this supersedes if that path ever lands.
 
 ## Key files
 

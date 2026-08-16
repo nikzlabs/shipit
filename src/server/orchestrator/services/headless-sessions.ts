@@ -81,14 +81,19 @@ export function isIssueSeededBranch(branch: string, identifier: string): boolean
  * The pointer alone used to be the whole name, which made the branch a pure
  * function of the issue — and sessions on one issue are routinely *sequential*
  * (a follow-up, a re-run after a merge, a second attempt), not just concurrent.
- * The second session then reused the first's remote branch, which fails two
- * ways and neither is loud: `createPullRequest` finds the branch's existing
- * open PR first (`findPullRequest`) and returns THAT PR without pushing, so the
- * new session reports someone else's PR as its own and its commits reach no PR
- * at all; and where the old PR is already merged, the plain (non-force) push
- * onto the surviving diverged branch is rejected non-fast-forward. Nothing
- * reads the branch to recover the issue — the pointer travels in the session
- * row, the seed prompt and the PR body — so the suffix costs nothing.
+ * The second session then inherited the first's remote branch. What went wrong
+ * there is a branch-name identity problem, so it is not confined to the push:
+ * `quickCreatePr` resolves the branch's existing OPEN PR (`findPullRequest`)
+ * before pushing and returns it, so the new session's card points at the other
+ * session's PR; and where that PR already MERGED, `verifyMissingPr` finds it by
+ * branch name alone and promotes THIS session to terminal-merged, archiving it
+ * and re-firing the merge→issue effects under a second session id. The rejected
+ * non-fast-forward push is the least of it. Nothing reads the branch to recover
+ * the issue — the pointer travels in persisted chat history, the seed prompt and
+ * the PR body's `Closes` line — so the suffix costs only readability.
+ *
+ * Only a DERIVED branch is guaranteed unique: an explicit `opts.branch` still
+ * wins over the seed, so a caller that supplies one owns its collisions.
  */
 export function seedFromIssueRef(issueRef: IssueRef): {
   prompt: string;
