@@ -22,6 +22,11 @@ function layout({
   panel: number;
   iconsWidth?: number;
   labelWidths?: number[];
+  /**
+   * Width the URL wants. Vary this — a short path is narrow however much room
+   * it is given, and treating that as pressure is a defect the default value
+   * cannot expose.
+   */
   addressNatural?: number;
 }) {
   let stage = 0;
@@ -33,7 +38,12 @@ function layout({
     // less than zero. The row overflows only once even a zero-width address
     // cannot save it.
     const addressWidth = Math.max(0, Math.min(addressNatural, panel - fixed));
-    return { overflows: fixed > panel, addressWidth };
+    return {
+      overflows: fixed > panel,
+      addressWidth,
+      // Cut short exactly when it got less than it wanted.
+      addressTruncated: addressWidth < addressNatural,
+    };
   };
   return { apply, probe, getStage: () => stage };
 }
@@ -112,16 +122,41 @@ describe("resolveCollapseStage", () => {
     expect(addressWidth).toBeGreaterThan(0);
   });
 
+  it("does not collapse a roomy toolbar just because the URL is short", () => {
+    // The regression that shipped in the first cut of this hook. The measured
+    // element is content-sized, so "/" is ~8px wide in a 1200px toolbar exactly
+    // as in a 320px one. Testing width alone read that as starvation and hid
+    // every label at every width — on the most ordinary path there is.
+    for (const natural of [8, 40, 90, 129]) {
+      expect(stageAt(1200, ADDRESS_MIN_PX, { addressNatural: natural })).toBe(0);
+    }
+  });
+
+  it("still protects a long URL that is genuinely being squeezed", () => {
+    // The other side of the same rule: being under the minimum counts when the
+    // address is cut short, or the protection would never fire at all.
+    expect(stageAt(520, ADDRESS_MIN_PX, { addressNatural: 400 })).toBeGreaterThan(0);
+  });
+
+  it("does not spend stages on a long URL that already has its minimum", () => {
+    // A very long URL stays truncated no matter how much room it is given, so
+    // truncation alone must not buy a stage — only truncation *below* the
+    // minimum does.
+    const { apply, probe } = layout({ panel: 1200, addressNatural: 5000 });
+    expect(resolveCollapseStage(ADDRESS_MIN_PX, apply, probe)).toBe(0);
+    expect(probe().addressTruncated).toBe(true);
+  });
+
   it("does not collapse for a starved address when there is no address at all", () => {
     // PreviewPath renders no address until the page reports a path. A null
     // width must not read as "starved" — that would collapse a bar that fits.
-    const probe = () => ({ overflows: false, addressWidth: null });
+    const probe = () => ({ overflows: false, addressWidth: null, addressTruncated: false });
     expect(resolveCollapseStage(ADDRESS_MIN_PX, () => {}, probe)).toBe(0);
   });
 
   it("still collapses on real overflow when no address is shown", () => {
     let stage = 0;
-    const probe = () => ({ overflows: stage < 2, addressWidth: null });
+    const probe = () => ({ overflows: stage < 2, addressWidth: null, addressTruncated: false });
     const result = resolveCollapseStage(ADDRESS_MIN_PX, (s) => { stage = s; }, probe);
     expect(result).toBe(2);
   });
@@ -133,7 +168,7 @@ describe("resolveCollapseStage", () => {
 
   it("treats an address sitting exactly on the minimum as satisfied", () => {
     // Sub-pixel widths would otherwise spend a stage that buys nothing.
-    const probe = () => ({ overflows: false, addressWidth: ADDRESS_MIN_PX });
+    const probe = () => ({ overflows: false, addressWidth: ADDRESS_MIN_PX, addressTruncated: true });
     expect(resolveCollapseStage(ADDRESS_MIN_PX, () => {}, probe)).toBe(0);
   });
 });

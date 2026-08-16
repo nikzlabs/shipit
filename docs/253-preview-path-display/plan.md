@@ -103,4 +103,40 @@ and query show (req 2) and that it is read-only with click-to-copy (req 4).
   split, truncation priority, click-to-copy.
 - `src/client/components/PreviewFrame/PreviewFrame.tsx` — `path` message handling,
   validation, per-slot state, absolute-URL resolution.
-- `src/client/components/PreviewFrame/PreviewToolbar.tsx` — hosts the region.
+- `src/client/components/PreviewFrame/PreviewToolbar.tsx` — hosts the region;
+  owns `group/ptb` and the `data-hide-*` flags the labels collapse off.
+- `src/client/hooks/usePreviewToolbarCollapse.ts` — the narrow-panel behaviour
+  (reqs 6–9). See below.
+
+## Narrow panels: what gives way, in what order
+
+The toolbar is one non-wrapping row and used to need ~520px to lay out, so it
+clipped on every phone — and on a desktop split pane past halfway, since the
+preview is a pane rather than a page. Refresh and open-in-new-tab fell off the
+edge entirely.
+
+The rule is req 7: **the address outranks every label.** The labels are a fixed
+cost that buys nothing once you know where you are; the address is the only part
+that changes as you use the preview. So labels convert to icons one at a time —
+viewport, then Auto-fix, then the service name — and each one hands its width
+straight to the address. Only when they are all icons does the address begin to
+shrink, and it shrinks rather than hides (req 8), so it always fills the space
+that exists.
+
+Three things are easy to get wrong here, and each has a guard test:
+
+- **Measure the panel, not the viewport.** `useIsMobile()` would miss the split
+  pane entirely and would deny a landscape phone room it has. A `ResizeObserver`
+  on the bar catches both. Same mechanism as `useTabLabelCollapse`, widened from
+  one boolean to a ladder.
+- **"Under the minimum" is not the same as "being squeezed."** The measured
+  element is content-sized, so `/` is a few pixels wide however much room it has.
+  Testing width alone collapsed the whole bar at every width on the commonest
+  path there is. Starvation is *truncated* **and** under the minimum.
+- **A label outside the ladder defeats the ladder.** A bare text node cannot
+  carry a hide class, so it keeps overflowing after every stage is spent.
+  `PreviewToolbar.test.tsx` walks the rendered bar and fails on any label that
+  is not covered by a `data-hide-*` flag.
+
+The address minimum (130px) is the only tuning number: it decides how early
+labels give way, not whether they do.
