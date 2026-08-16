@@ -111,18 +111,52 @@ Codex spawn in that instance fails to start, so a turn that succeeded cannot hav
 
 ### 2. Codex is unusable in local mode — planning#390
 
-Not a catalogue defect and not a CLI defect. Excluded by measurement, each inside the same
-container as the same uid: the CLI itself (direct `codex exec` works end-to-end), the
-`app-server` subcommand (starts, waits, exits 0 clean when run standalone), `HOME`
-writability, the service/model/credential (identical error across DeepSeek and Vercel), and
-the root-owned `/opt/agent-cli` install tree (its non-writability produces only the
-*non-fatal* PATH-aliases warning).
+Not a catalogue defect and not a CLI defect. **Root cause: the spawn inherits `HOME=/root`.**
 
-Also **refuted**, and recorded because it was the leading hypothesis: the cold-root first-run
-race that `agents/codex/home-init.ts` exists to prevent. After direct runs warmed the root
-(`state_5.sqlite`, `installation_id`, `skills/` all present), all four pairs were re-run and
-failed identically. A plausible cause that survives inspection is still worth killing with an
-experiment.
+The question that cracked it was not "why does Codex fail" but "why does Codex on its own
+**subscription** work in dogfood while Codex on a **custom URL** does not". The asymmetry is
+`session/agents/codex/adapter.ts:254`:
+
+```ts
+const scopedHome = this.resolveHome?.();
+if (scopedHome) {
+  env.HOME = scopedHome;
+  env.CODEX_HOME = this.codexConfigDir();
+}
+```
+
+`resolveLocalAgentHome` returns a scoped home **only for an `account` route**, and
+deliberately `undefined` for a reserved/string route — which is what every custom-URL service
+resolves to. A subscription takes the branch that sets `HOME`; a redirected service takes the
+branch that sets nothing and inherits the orchestrator's own. Read from the live inner
+orchestrator process, that is:
+
+```
+AGENT_HOME=/workspace/.inner-shipit/agent-home
+HOME=/root
+```
+
+`/root` is mode 700 root-owned while the process runs as uid 1000, and Codex keys its config
+root off `$HOME`, not `$AGENT_HOME`. The compose `command` materializes `AGENT_HOME` but never
+overrides `HOME`.
+
+Reproduced with `HOME` as the only variable — same container, user and credential:
+
+| `HOME` | Result |
+|---|---|
+| `/root` | `Error loading config.toml: Failed to read config file /root/.codex/config.toml: Permission denied (os error 13)` |
+| `/workspace/.inner-shipit/agent-home` | turn completes |
+
+This also explains why **Claude** was unaffected across five services: a redirected Claude
+turn authenticates purely through environment variables and never needs a writable config
+root, while Codex must read and write `config.toml`.
+
+Two hypotheses were **refuted** along the way, recorded because both were plausible and one
+was leading. The cold-root first-run race that `agents/codex/home-init.ts` exists to prevent:
+after direct runs warmed the root (`state_5.sqlite`, `installation_id`, `skills/` present),
+all four pairs were re-run and failed identically. And the root-owned `/opt/agent-cli` install
+tree, whose non-writability produces only the *non-fatal* PATH-aliases warning — a red
+herring that appears in the failing output as a side effect of `/root`, not as the cause.
 
 ### 3. OpenRouter's row understates what OpenRouter serves — planning#391
 
@@ -182,7 +216,9 @@ Stated plainly so nobody reads the matrix as broader than it is:
   credential was present. Nothing here says whether they work.
 - **No Codex row has been exercised *through ShipIt*** anywhere in this instance. The Codex
   cells above verify the catalogue's endpoints, styles and model ids at the CLI; they do not
-  verify ShipIt's local-mode spawn path, which is broken (planning#390).
+  verify ShipIt's local-mode spawn path, which is broken (planning#390). Once that lands,
+  those four pairs are worth re-running through the product — the fix is what converts them
+  from CLI-verified to end-to-end verified.
 - The sweep ran **serially by design** — local mode applies `SHIPIT_CREDENTIAL_*` to
   `process.env` around each spawn, so concurrent turns would race on process-global state and
   produce results that mean nothing.
