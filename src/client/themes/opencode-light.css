@@ -28,9 +28,9 @@
   --color-accent-subtle: rgba(180, 110, 20, 0.1);
 
   /* Status */
-  --color-success: #2e7d32;
-  --color-success-subtle: rgba(46, 125, 50, 0.12);
-  --color-success-border: rgba(46, 125, 50, 0.3);
+  --color-success: #1a8a40;
+  --color-success-subtle: rgba(26, 138, 64, 0.12);
+  --color-success-border: rgba(26, 138, 64, 0.3);
   --color-error: #c0392b;
   --color-error-subtle: rgba(192, 57, 43, 0.12);
   --color-warning: #9a7b0a;
@@ -39,16 +39,16 @@
   --color-info-subtle: rgba(44, 111, 156, 0.12);
 
   /* Domain-specific */
-  --color-pr: #6d4fa0;
-  --color-pr-subtle: rgba(109, 79, 160, 0.12);
-  --color-pr-border: rgba(109, 79, 160, 0.3);
-  --color-folder: #8a7a2f;
+  --color-pr: #7050a0;
+  --color-pr-subtle: rgba(112, 80, 160, 0.12);
+  --color-pr-border: rgba(112, 80, 160, 0.3);
+  --color-folder: #a09018;
   --color-autofix: #a6720f;
   --color-attention: #b45309;
   --color-attention-text: #b45309;
 
   /* Context meter */
-  --color-context-ok: #2e7d32;
+  --color-context-ok: #1a8a40;
   --color-context-mid: #9a7b0a;
   --color-context-high: #b45309;
   --color-context-full: #c0392b;
