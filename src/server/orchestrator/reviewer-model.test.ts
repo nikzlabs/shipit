@@ -649,12 +649,107 @@ describe("selecting the reviewer furthest from the implementer (req 4)", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.tierBasis).toBe("harness-only");
-    // "opencode" since docs/268: with the model axes undecidable, BOTH slots
-    // reach a different-harness candidate (slot 1's anthropic key now resolves
-    // onto OpenCode), and an equal tier keeps the earlier slot. Before the
-    // third harness, slot 1 could only resolve onto the implementer's own
-    // Claude Code, so slot 2's Codex won.
-    expect(result.target.harnessId).toBe("opencode");
+    // Since docs/268 BOTH slots reach a different-harness candidate (slot 1's
+    // anthropic key resolves onto OpenCode) and tie at the same rung — and the
+    // harness-only tie-break (planning#408) then prefers the GPT slot: its
+    // family provably differs from Claude Code's native (Anthropic) family,
+    // while slot 1's claude-opus-5 is most likely what the session itself runs.
+    expect(result.target.harnessId).toBe("codex");
+    expect(result.target.selection.serviceId).toBe("openai");
+  });
+
+  /**
+   * planning#408 — the harness-only tie-break is a weak PRIOR, and these are its
+   * fences: it must never override a known-identity comparison, and it must
+   * never outrank a real tier difference.
+   */
+  it("does not apply the harness-only tie-break when the implementer's model is known", async () => {
+    installAll();
+    const { selectReviewer } = await import("./reviewer-model.js");
+    // A GLM session on Claude Code: the harness's native family (claude) is
+    // WRONG for this session, and the identity comparison already knows it.
+    // Both pins land on tier 1 (different family, different harness), so a
+    // tie-break that ignored the known identity would flip to the GPT slot.
+    const result = selectReviewer(
+      {
+        harnessId: "claude",
+        selection: { serviceId: "zai", billingMode: "sub", modelId: "glm-5.2[1m]" },
+      },
+      {
+        credentialStore: storeWith([ANTHROPIC_KEY, OPENAI_KEY], {
+          first: {
+            serviceId: "anthropic",
+            billingMode: "key",
+            modelId: "claude-sonnet-5",
+            reasoningEffort: "high",
+          },
+          second: {
+            serviceId: "openai",
+            billingMode: "key",
+            modelId: "gpt-5.4",
+            reasoningEffort: "high",
+          },
+        }),
+        env: {},
+      },
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.tierBasis).toBe("model-and-harness");
+    expect(result.tier).toBe(1);
+    // The ordinary tie rule holds: equal tier keeps the FIRST slot, even though
+    // its family matches the harness's native one.
+    expect(result.target.slot).toBe("first");
+    expect(result.target.selection.modelId).toBe("claude-sonnet-5");
+  });
+
+  /**
+   * The comparator's fences, pinned as a unit because the catalogue cannot
+   * reach them end to end: no prior-avoiding candidate can land on the
+   * implementer's own harness today (every such model also reaches another
+   * harness and bends away), so a worse-tier prior-avoiding candidate is not
+   * constructible through `selectReviewer` — the same reason tiers 3 and 5 are
+   * unit-pinned above.
+   */
+  it("the tie-break prior decides ties only — never a real tier difference", async () => {
+    const { beatsIncumbentReviewer } = await import("./reviewer-model.js");
+    // A worse tier loses even when it avoids the likely family…
+    expect(
+      beatsIncumbentReviewer(
+        { tier: 2, avoidsLikelyFamily: true },
+        { tier: 1, avoidsLikelyFamily: false },
+      ),
+    ).toBe(false);
+    // …and a better tier wins even when it matches it.
+    expect(
+      beatsIncumbentReviewer(
+        { tier: 1, avoidsLikelyFamily: false },
+        { tier: 2, avoidsLikelyFamily: true },
+      ),
+    ).toBe(true);
+    // On a tie, avoiding the likely family displaces the earlier slot…
+    expect(
+      beatsIncumbentReviewer(
+        { tier: 1, avoidsLikelyFamily: true },
+        { tier: 1, avoidsLikelyFamily: false },
+      ),
+    ).toBe(true);
+    // …but with no prior in play (a known implementer identity computes none,
+    // so both sides read false) the earlier slot keeps the tie.
+    expect(
+      beatsIncumbentReviewer(
+        { tier: 1, avoidsLikelyFamily: false },
+        { tier: 1, avoidsLikelyFamily: false },
+      ),
+    ).toBe(false);
+    // A candidate already avoiding it is not displaced by another that does.
+    expect(
+      beatsIncumbentReviewer(
+        { tier: 1, avoidsLikelyFamily: true },
+        { tier: 1, avoidsLikelyFamily: true },
+      ),
+    ).toBe(false);
   });
 
   it("marks the ranking as model-and-harness when the implementer's model is known", async () => {
