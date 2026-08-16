@@ -2,9 +2,10 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
 // docs/156 — every session-creation surface now ends with `graduateSession`,
 // which fires `generateSessionName` (real CLI child, 15s timeout) for any
-// path without an explicit title+branch. Mock to null so the placeholder
-// title sticks and the branch is unchanged. Without this, the
-// no-explicit-title path would shell out to a real provider CLI.
+// path without an explicit title. Mock to null so the placeholder title sticks
+// and the branch is unchanged. Without this, every test here would shell out to
+// a real provider CLI — since planning#413 the route takes no `branch` either,
+// so nothing on this path can pin a name and skip the namer.
 // docs/252 phase 7 — `generateSessionName` returns `{ name, usage?, failure? }`.
 // `{ name: null }` is "naming produced no title", which is what these tests want.
 vi.mock("../session-namer.js", () => ({
@@ -153,7 +154,6 @@ describe("Integration: quick-capture headless sessions", () => {
       payload: {
         repoUrl: REPO_URL,
         initialPrompt: "Fix the flaky test",
-        branch: "quick/flaky-test",
         agent: "claude",
         model: "claude-sonnet-4-20250514",
       },
@@ -167,16 +167,19 @@ describe("Integration: quick-capture headless sessions", () => {
       session: { id: string; title: string };
     };
     expect(body).toMatchObject({
-      branch: "quick/flaky-test",
       status: "running",
       session: { title: "Fix the flaky test" },
     });
+    // planning#413 — the route takes no `branch`; the name is always generated,
+    // so no two calls can land on one remote branch. `branchRenamed` is
+    // deliberately not asserted here: with neither a branch nor a title pinned,
+    // graduation defers it behind the (mocked) namer.
+    expect(body.branch).toMatch(/^shipit\/[a-z0-9_-]{1,6}$/);
 
     const session = sessionManager.get(body.sessionId);
     expect(session).toMatchObject({
       remoteUrl: REPO_URL,
-      branch: "quick/flaky-test",
-      branchRenamed: true,
+      branch: body.branch,
       model: "claude-sonnet-4-20250514",
       agentId: "claude",
       agentPinned: true,
@@ -188,7 +191,7 @@ describe("Integration: quick-capture headless sessions", () => {
     expect(execSync("git branch --show-current", {
       cwd: session!.workspaceDir!,
       encoding: "utf8",
-    }).trim()).toBe("quick/flaky-test");
+    }).trim()).toBe(body.branch);
   });
 
   it("references an attached image in the dispatched first-turn prompt", { timeout: 15_000 }, async () => {
@@ -208,7 +211,6 @@ describe("Integration: quick-capture headless sessions", () => {
       {
         repoUrl: REPO_URL,
         initialPrompt: "Match this design",
-        branch: "quick/with-image",
         agent: "claude",
       },
       [{ name: "file", filename: "screenshot.png", content: png }],
@@ -305,7 +307,6 @@ describe("Integration: quick-capture headless sessions", () => {
       payload: {
         repoUrl: REPO_URL,
         initialPrompt: "Use the model's agent",
-        branch: "quick/agent-derive",
         agent: "codex",
         model: "claude-opus-5",
       },
@@ -333,7 +334,6 @@ describe("Integration: quick-capture headless sessions", () => {
       payload: {
         repoUrl: REPO_URL,
         initialPrompt: "Use the model's agent",
-        branch: "quick/agent-derive",
         model: "claude-opus-5",
       },
     });
@@ -362,7 +362,6 @@ describe("Integration: quick-capture headless sessions", () => {
       payload: {
         repoUrl: REPO_URL,
         initialPrompt: "Run this on Codex",
-        branch: "quick/agent-honoured",
         agent: "codex",
         model: "deepseek-v4-pro",
       },
@@ -392,7 +391,6 @@ describe("Integration: quick-capture headless sessions", () => {
       payload: {
         repoUrl: REPO_URL,
         initialPrompt: "Bump the dep and merge it",
-        branch: "quick/arm-merge",
         agent: "claude",
         armAutoMerge: true,
       },
@@ -419,7 +417,6 @@ describe("Integration: quick-capture headless sessions", () => {
       payload: {
         repoUrl: REPO_URL,
         initialPrompt: "Just a normal session",
-        branch: "quick/no-arm",
         agent: "claude",
       },
     });
