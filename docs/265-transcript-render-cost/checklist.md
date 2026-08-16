@@ -81,8 +81,8 @@ Over the whole 21.8 s trace the main thread is busy 3,813 ms (17.5%), of which *
 1,669.8 ms — 44%**, at a mean of 0.65 ms across 2,569 events.
 
 **These are two separate problems sharing one trace.** The frames are caused by the interaction
-below, and fixing it removes them. What makes each frame cost 0.65 ms of layerization is
-unexplained and did not reproduce anywhere — see correction 2.
+below, and fixing it removes them. What makes each frame cost 0.65 ms is the size of the
+composited layer tree — a separate problem, reproduced and quantified in correction 2.
 
 The first reading blamed the infinite CSS animation that runs while a tool does —
 `.tool-spinner { animation: spin-slow 1s linear infinite }` (`src/client/index.css:387`), used
@@ -172,10 +172,11 @@ isolation of the observers alone. It slightly exceeding the `today` row is consi
 1. **The spinner already composites.** `transform: rotate()` on it runs entirely on the
    compositor — the fixture's first row is that measurement. "Make the spinner composited" is
    not an available fix, because there is nothing to fix.
-2. **`Layerize` is real, and it is a second problem — not part of this one.** It did not reproduce
-   in anything measured here: up to 2,000 `content-visibility` rows, up to 300 `will-change`
-   layers, and the real UI at three viewport sizes all put `Layerize` at **0.002–0.004 ms/call**,
-   ~1 ms across thousands of frames. Production is **0.65 ms/call**, ~200× that.
+2. **The 0.65 ms per frame is real, and it is a second problem — not part of this one.** It is
+   caused by the size of the composited layer tree, which does reproduce (below) once you promote
+   enough on-screen layers. What did *not* reproduce is the slice **name**: up to 2,000
+   `content-visibility` rows, up to 1,502 promoted layers, and the real UI at three viewport sizes
+   all keep `Layerize` itself at **0.002–0.004 ms/call**.
 
    That gap was checked against the original trace rather than assumed away, and it survives:
    `RunTask` on `CrRendererMain` is 100% depth-0 there, so nothing is double-counted (union-merging
@@ -190,14 +191,42 @@ isolation of the observers alone. It slightly exceeding the `today` row is consi
    2,000-row sweep is several times production's 3,986 DOM nodes and still cheaper, so node count
    is the wrong thing to compare on.
 
-   **Open question, and what has been eliminated.** Viewport is not it: the real UI at
-   3840×2160 shows the same 0.03 `UpdateLayer`/frame and 0.0024 ms `Layerize` as at 1440×900. The
-   trace has a single origin and no preview iframe in the renderer, so an embedded app is not it
-   either. Two candidates remain — the production instance's UI state (sessions, cards and panels
-   this dogfood instance does not have), and **GPU rasterisation**, which tiles layers where this
-   container's software compositing does not, and which cannot be tested here at all. Whoever
-   picks this up should start by counting layers, not nodes; `trace-idle-frames.mjs` reports
-   `updateLayerPerFrame` for exactly that.
+   **Layer count is the axis, and it reproduces.** `?promote=N` puts `will-change: transform` on
+   N small on-screen boxes, so each is a real composited layer. Per-frame main-thread cost then
+   rises linearly with the tree:
+
+   | visible layers | 2 | 52 | 202 | 602 | **1,502** |
+   |---|---|---|---|---|---|
+   | per-frame commit cost | 0.052 | 0.066 | 0.107 | 0.224 | **0.651 ms** |
+   | `Layerize` | 0.0023 | 0.0022 | 0.0025 | 0.0021 | **0.0022 ms** |
+
+   That is ~0.39 µs per layer per frame, and **1,502 layers costs 0.651 ms — production's 0.65 ms
+   to three digits.** So the "large composited layer tree" hypothesis is right, and the tree is of
+   order 1,500 layers. For scale, the dogfood UI reports **3**.
+
+   One discrepancy to be explicit about: in *this* Chrome build the layer-count cost lands in
+   `Commit` (whose slice contains `LayerTreeHost::WaitForCommitCompletion`), and `Layerize` stays
+   flat at ~0.002 ms at every count up to 1,502 — it sits several levels down, under
+   `pushPaintArtifactToCompositor` → `Blink.CompositingCommit.UpdateTime`. Whether production's
+   build attributes the same work to the slice named `Layerize` is not something this container can
+   settle. It does not change the mechanism or the magnitude, only the label.
+
+   **Eliminated, so nobody re-opens them.** Viewport: the real UI at 3840×2160 gives the same 0.03
+   `UpdateLayer`/frame and 0.0024 ms `Layerize` as at 1440×900. An embedded app: the trace has a
+   single origin and no preview iframe in the renderer. **GPU rasterisation**: `RasterTask` fires
+   61 times for 4.6 ms across the whole 21.8 s production trace, i.e. essentially nothing is
+   rasterised — as expected when the only thing changing is a compositor-only transform. That is
+   also the mechanically coherent answer, since `Layerize` is `PaintArtifactCompositor::Update`,
+   main-thread layer-*list* construction from paint chunks; its cost tracks how many layers exist,
+   not how or by what they are later rasterised.
+
+   **What is left is one lookup in the trace that already exists**, no re-recording and no GPU:
+   read `visible_layers` off `draw_property_utils::ComputeDrawPropertiesOfVisibleLayers`, and the
+   whole-trace per-call `Commit`. If `visible_layers` is ~1,500, this is closed and the remaining
+   work is finding what promotes them. `trace-idle-frames.mjs` reports `visibleLayers` for the
+   comparison. Note the CDP `LayerTree` domain is *not* the route: `LayerTree.enable` succeeds in
+   headless and then never emits a single `layerTreeDidChange`, so the counts have to come off cc's
+   own trace events.
 3. **`content-visibility` causes the frames; layerization is what one of them costs.** The
    original section reads as a single phenomenon with the spinner at its root. It is two: the
    observer/animation pairing decides *how many* main-thread frames happen, and the layer tree

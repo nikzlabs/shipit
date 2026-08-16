@@ -39,10 +39,13 @@
  *   --window=<w,h>   browser window size (default 1440,900)
  *   --json=<file>    dump the report plus every raw trace event
  *
- * `updateLayerPerFrame` is reported because it is the axis docs/265's remaining
- * open question turns on: production ShipIt shows ~29 composited layer updates
- * per frame and a 0.65 ms `Layerize`, where every reproduction here — including
- * the real UI at 4K — shows ~0.03 and ~0.0025 ms.
+ * `visibleLayers` / `totalLayers` / `updateLayerPerFrame` exist for docs/265's
+ * remaining open question, which is about the size of the composited layer tree:
+ * `Layerize` is `PaintArtifactCompositor::Update`, main-thread layer-list
+ * construction from paint chunks, so its cost tracks how many layers there are
+ * and not how they are rasterised. Production ShipIt runs ~29 layer updates per
+ * frame and a 0.65 ms `Layerize`; everything measured here sits at ~0.03 and
+ * ~0.0025 ms with a 3-4 layer tree.
  *
  * Note on numbers: a container with no GPU rasterises in software, so absolute
  * milliseconds are not a user's machine. Ratios between conditions are the
@@ -313,6 +316,21 @@ const report = {
       .map(([k, v]) => [k, { totalMs: +v.ms.toFixed(1), calls: v.n, msPerCall: +(v.ms / v.n).toFixed(4) }]),
   ),
 };
+
+// Composited layer-tree size, read out of the trace rather than the CDP
+// LayerTree domain: `LayerTree.enable` succeeds in headless but never emits a
+// single `layerTreeDidChange`, so the domain is unusable here. cc annotates the
+// counts on its own per-frame events instead, which costs nothing extra.
+const layerCounts = { visible: null, total: null };
+for (const e of events) {
+  if (e.pid !== mainPid) continue;
+  const visible = e.args?.visible_layers;
+  if (typeof visible === "number") layerCounts.visible = Math.max(layerCounts.visible ?? 0, visible);
+  const total = e.args?.total_layer_count;
+  if (typeof total === "number") layerCounts.total = Math.max(layerCounts.total ?? 0, total);
+}
+report.visibleLayers = layerCounts.visible;
+report.totalLayers = layerCounts.total;
 
 console.log(JSON.stringify(report, null, 2));
 if (jsonOut) fs.writeFileSync(jsonOut, JSON.stringify({ report, rawEvents: events }));

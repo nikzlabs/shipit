@@ -15,6 +15,15 @@
   pre-paint, the intersection pass and commit every vsync. (Layout and paint do
   NOT run per frame here — nothing is changing size or pixels on the main
   thread; the animation's transform is the compositor's business.)
+
+  A third, independent knob for the layer-tree half of docs/265, since Layerize
+  is layer-list construction and should track how many layers exist:
+
+    ?spin=1&io=1&promote=400   400 on-screen composited layers → Layerize cost
+
+  `promote` puts `will-change: transform` on N small in-viewport boxes, so they
+  are really promoted and really visible. Watch `visibleLayers` and Layerize's
+  msPerCall together.
 -->
 <style>
   @keyframes spin-slow { to { transform: rotate(360deg); } }
@@ -24,6 +33,9 @@
   body { font: 13px system-ui; margin: 0; padding: 8px; }
   .row { padding: 6px 8px; border-bottom: 1px solid #eee; }
   .cv > * { content-visibility: auto; contain-intrinsic-size: auto 5rem; }
+  #promoted { position: fixed; inset: 0; pointer-events: none; }
+  #promoted > i { position: absolute; width: 6px; height: 6px; background: #0c0;
+                  will-change: transform; }
 </style>
 <body>
   <div><span id="spin" class="sp"></span> <span id="label"></span></div>
@@ -43,10 +55,28 @@
       list.appendChild(row);
     }
 
+    // Promoted, on-screen, non-overlapping: each one is a real composited layer.
+    // Offscreen or inside a content-visibility subtree they would be skipped, and
+    // the sweep would measure nothing (which is how an earlier attempt at this
+    // failed to move Layerize at all).
+    const promote = Number(q.get("promote") ?? 0);
+    if (promote > 0) {
+      const holder = document.createElement("div");
+      holder.id = "promoted";
+      const perRow = Math.ceil(Math.sqrt(promote));
+      for (let i = 0; i < promote; i++) {
+        const box = document.createElement("i");
+        box.style.left = `${(i % perRow) * (100 / perRow)}%`;
+        box.style.top = `${Math.floor(i / perRow) * (100 / perRow)}%`;
+        holder.appendChild(box);
+      }
+      document.body.appendChild(holder);
+    }
+
     // A single observer is enough; the cost is per frame, not per observer.
     if (q.get("io") === "1") new IntersectionObserver(() => {}).observe(list);
 
     document.getElementById("label").textContent =
-      `spin=${q.get("spin") ?? 0} cv=${q.get("cv") ?? 0} io=${q.get("io") ?? 0} rows=${rows}`;
+      `spin=${q.get("spin") ?? 0} cv=${q.get("cv") ?? 0} io=${q.get("io") ?? 0} rows=${rows} promote=${promote}`;
   </script>
 </body>
