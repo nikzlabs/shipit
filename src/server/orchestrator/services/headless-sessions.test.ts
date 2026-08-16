@@ -465,7 +465,7 @@ describe("createHeadlessSession", () => {
         graduationDeps,
       )).rejects.toMatchObject({
         statusCode: 400,
-        message: "Unknown agent 'codexx'. Valid agents: claude, codex.",
+        message: "Unknown agent 'codexx'. Valid agents: claude, codex, opencode.",
       });
 
       expect(service.claim).not.toHaveBeenCalled();

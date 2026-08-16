@@ -220,7 +220,9 @@ GLM's Bearer-vs-x-api-key header question, and an image-attachment turn
 - The two pre-existing defects docs/266 names as worsened by a third harness
   (`reviewer-settings.ts:28` harness derivation; `child-sessions.ts:367`
   first-harness-wins for shared models — DeepSeek/GLM now resolve on more
-  harnesses).
+  harnesses). The reviewer one is now OBSERVABLE for sessions with no model
+  selection (the derived reviewer can land same-family on OpenCode) — filed as
+  planning#408 with the candidate fix shape; known-model ranking is unchanged.
 - Fast upstream churn (releases every few days): version bumps are routine
   deliberate edits; `OPENCODE_DISABLE_AUTOUPDATE` stays set so the pinned
   binary never self-replaces.
