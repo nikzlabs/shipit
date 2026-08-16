@@ -373,7 +373,12 @@ function toStatusRepo(value: unknown): StatusRepo {
 
 function describeStatus(repo: StatusRepo): string {
   const where = repo.commit ? `${repo.ref ?? "?"} @ ${repo.commit.slice(0, 9)}` : (repo.ref ?? "nothing live");
-  const verdict = repo.usable ? "usable" : "NOT USABLE";
+  // A round in flight is not a broken plugin. Both are `usable: false` — the
+  // surfaces are not ready either way — but a flat "NOT USABLE" here would
+  // point a reader at `--force` for a repository that is simply mid-refresh.
+  const verdict = repo.usable
+    ? "usable"
+    : repo.status === "activating" ? "not usable yet — a round is in progress" : "NOT USABLE";
   return [
     `${repo.repo} (${repo.source}) — ${repo.status}, ${verdict}`,
     `  running: ${where}`,

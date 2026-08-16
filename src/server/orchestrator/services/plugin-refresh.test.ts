@@ -254,6 +254,17 @@ describe("refreshPluginRepos — diagnosing and retrying a live version", () => 
     expect(forced.error).toContain("needs the name of one plugin repository");
   });
 
+  it("does not claim a re-install when --force ran a FIRST activation", async () => {
+    // Nothing was live, so the forced round is an ordinary activation. Saying
+    // `re-installed` there would describe work on a version that never existed.
+    writeConfig(DECLARATION);
+    const first = await refreshPluginRepos("sess", workspaceDir, deps(), "tools", true);
+
+    expect(first.rows[0]!.status).toBe("activated");
+    expect(first.rows[0]!.before).toBeNull();
+    expect(first.rows[0]!.reinstalled).toBeUndefined();
+  });
+
   it("re-activates the commit already live, instead of reporting `unchanged`", async () => {
     writeConfig(DECLARATION);
     const first = await refreshPluginRepos("sess", workspaceDir, deps());

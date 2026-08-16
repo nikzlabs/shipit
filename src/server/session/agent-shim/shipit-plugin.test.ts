@@ -347,7 +347,25 @@ describe("shipit plugin status", () => {
     });
     expect(res.stdout).toContain("NOT USABLE");
   });
+
+  it("does not point a mid-refresh repository at --force", async () => {
+    // `activating` is also `usable: false`, but it is not a broken version and
+    // must not read like one.
+    const { run } = makeRunner();
+    const res = await run(["plugin", "status"], {
+      [STATUS]: {
+        status: 200,
+        body: {
+          repos: [{ repo: "tools", status: "activating", usable: false, installSummary: "n/a" }],
+          warnings: [],
+        },
+      },
+    });
+    expect(res.stdout).toContain("a round is in progress");
+    expect(res.stdout).not.toContain("NOT USABLE");
+  });
 });
+
 
 describe("shipit plugin refresh --force", () => {
   it("refuses without a repository name, and never calls the orchestrator", async () => {

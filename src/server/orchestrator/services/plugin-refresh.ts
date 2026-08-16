@@ -170,9 +170,16 @@ export async function refreshPluginRepos(
       // way to see the sentence the Plugins card was already showing.
       const degraded = live?.manifestWarnings ?? [];
       // A forced round that reached `activated` re-staged and re-installed the
-      // same commit. Taken from the round's own outcome, because the two
-      // commits — the only other evidence — are identical by construction.
-      const reinstalled = force === true && outcome?.status === "activated";
+      // same commit. The outcome is needed as well as the two commits: for a
+      // re-install they are identical by construction, so `after !== was`
+      // cannot see it. And both halves are needed — `--force` on a repository
+      // with NOTHING live is an ordinary first activation, which must read
+      // `none → <commit>` rather than claiming it re-installed something that
+      // was never there.
+      const reinstalled = force === true
+        && outcome?.status === "activated"
+        && was !== null
+        && was === after;
       return {
         repo: target.name,
         ref: target.ref,
