@@ -20,70 +20,12 @@ drift — treat them as anchors for grep, not gospel.
 
 ## The recipe at a glance
 
-The whole integration, one line per step. Copy this into the integration's
-own `docs/NNN-*/checklist.md`; every line is expanded, with file pointers,
-in the phases below.
-
-**Phase 0 — assess (before any code)**
-- [ ] Candidate passes the 13-point capability checklist; start-blockers
-      cleared or explicitly signed off (stream schema, auth injection,
-      pinnable install, reasoning levels)
-
-**1 — Types**
-- [ ] Widen `AgentId` (+ `LoginIntegrationId`/`QuotaIntegrationId` if the
-      CLI has its own login/quota)
-- [ ] Widen the ESLint leak-guard regex + add the two folder exemptions
-      (same commit)
-
-**2 — Catalogue**
-- [ ] `HarnessDef` row (+ `ServiceDef`/`ApiStyle` for a new vendor or wire
-      format)
-- [ ] `<X>_TOOL_NAMES`
-
-**3 — Install & images**
-- [ ] `install-agent-clis.sh`: known set, pkg prefix, binary
-      (+ `npm rebuild` if native postinstall; non-npm CLI → settled design
-      decision incl. the `installed.json` report)
-- [ ] Pinned dep in `docker/agent-cli/package.json` + lockfile
-- [ ] `SHIPIT_HARNESSES` defaults (5 Dockerfiles, vps setup + prompt copy,
-      both compose files) if the default set changes
-- [ ] Credential symlinks in the 3 Dockerfiles
-
-**4 — Tables**
-- [ ] Every required `Record<AgentId, …>` table (the compiler lists them
-      once the union is widened)
-- [ ] `buildLocalAgentFactory` switch
-- [ ] The four `buildAgentRuntime` Maps + the local
-      `PARALLEL_SESSIONS_SECTIONS` map (NOT compiler-forced)
-
-**5 — Silent sites**
-- [ ] Work the silent-sites list end to end (validators, `?? "claude"`
-      defaults, registry probes, MCP tool subset, shim help text, UI name
-      tables)
-
-**6 — Session adapter**
-- [ ] `session/agents/<id>/` (adapter + tool map + tests); register in
-      barrel, `AGENT_TOOL_MAPS`, `createWorkerAgent` + factory test
-- [ ] Token-usage normalizer if the CLI's cache figures overlap
-
-**7 — Orchestrator folder**
-- [ ] `orchestrator/agents/<id>/` (auth manager, limits provider,
-      run-params prep, system prompt) + one entry per runtime map
-- [ ] Update the *existing* backends' prompts, shipit-docs, and the voice
-      vocabulary that name CLIs by name
-
-**8 — Client**
-- [ ] Theme CSS ×2 + `index.css` + `useTheme`
-- [ ] Auth card (`ServicesPanel`) + `ProviderAccountRows` + misc UI tables
-
-**9 — Tests**
-- [ ] Extend the build-breaking parity tests; sibling auth/turn
-      integration tests; client fixtures
-
-**10 — Verify empirically**
-- [ ] Skills-disclosure probe; stream-capture conformance test; one dogfood
-      turn per auth mode (billing route!); `shipit agent run` both
-      directions
+The compact one-line-per-step checklist lives in
+[integration-checklist.md](./integration-checklist.md) — a standalone
+template to copy into the new integration's own `docs/NNN-*/checklist.md`.
+Every line there is expanded, with file pointers and gotchas, in the phases
+below. Keep the two in sync: a phase added or removed here changes the
+template too.
 
 ## Orientation: what a harness is
 
