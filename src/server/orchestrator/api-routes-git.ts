@@ -9,6 +9,7 @@ import type { BranchAutoResetCard, PrStatusSummary, WsServerMessage } from "../s
 import type { ApiDeps } from "./api-routes.js";
 import { resolveSessionDir } from "./api-routes.js";
 import { emitChatCard } from "./chat-card-persistence.js";
+import { gitRemoteCredentialResolver } from "./services/github.js";
 import type { ChatHistoryManager } from "./chat-history.js";
 import type { SessionRunnerInterface } from "./session-runner.js";
 
@@ -245,7 +246,7 @@ export async function registerGitRoutes(
       }
       try {
         const git = createGitManager(dir);
-        return await getTurnDiff(git, from, to);
+        return await getTurnDiff(git, from, to, gitRemoteCredentialResolver(deps.githubAuthManager));
       } catch (err) {
         reply.code(500).send({ error: `Failed to get diff: ${getErrorMessage(err)}` });
       }
@@ -264,7 +265,7 @@ export async function registerGitRoutes(
         || repoDefaultBranch(deps.repoStore, sessionManager.get(request.params.id)?.remoteUrl);
       try {
         const git = createGitManager(dir);
-        return await getDiffVsBranch(git, baseBranch);
+        return await getDiffVsBranch(git, baseBranch, gitRemoteCredentialResolver(deps.githubAuthManager));
       } catch (err) {
         if (err instanceof ServiceError) {
           reply.code(err.statusCode).send({ error: err.message });
@@ -407,6 +408,7 @@ export async function registerGitRoutes(
       try {
         return await mergeSession(
           sessionManager, createGitManager, dir, request.body.sourceSessionId,
+          gitRemoteCredentialResolver(deps.githubAuthManager),
         );
       } catch (err) {
         if (err instanceof ServiceError) {

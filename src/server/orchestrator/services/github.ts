@@ -14,6 +14,7 @@ import type { PrStatusPoller } from "../pr-status-poller.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
 import type { SessionManager } from "../sessions.js";
 import { parseGitHubRemote } from "../git-utils.js";
+import type { GitRemoteCredentialResolver } from "../../shared/git-remote-credential.js";
 import { resolvePrBaseBranch } from "./git.js";
 import { ServiceError } from "./types.js";
 import { validateNonEmptyString } from "./validation.js";
@@ -263,6 +264,89 @@ export async function getRepoScopedGitCredential(
     );
   }
   return getGitCredential(githubAuthManager, args.host);
+}
+
+/**
+ * How long {@link resolveOrchestratorGitRemoteCredential} waits for a
+ * repo-scoped mint before it stops waiting and uses the PAT.
+ *
+ * The mint is two `api.github.com` round-trips (`GitHubAppTokenMinter.mint`)
+ * with **no timeout of their own**, cached per `owner/repo` for the token's
+ * TTL. Uncapped, a GitHub API that accepts a connection and then stalls would
+ * stall the post-turn auto-push behind it for as long as the socket lives —
+ * and that push is the path `CLAUDE.md` invariant 2 and docs/266 req 6 say
+ * cannot acquire a dependency that can be unavailable. Five seconds is well
+ * past a healthy mint and far short of anything a user would read as a hang.
+ */
+export const REMOTE_CREDENTIAL_DEADLINE_MS = 5_000;
+
+/**
+ * The credential a **dropped-uid** orchestrator git authenticates a remote with
+ * (docs/266 E3, planning#404). Wired into `createGitManager` at `app-di.ts`.
+ *
+ * This is {@link getRepoScopedGitCredential} with a deadline bolted on, and the
+ * deadline is the only difference. The broker path it was built for is a live
+ * HTTP request the caller is already waiting on, so a slow mint there costs one
+ * request; here the caller is `GitManager.push` on the post-turn path, where
+ * the same slow mint would hold a turn's work uncommitted-to-the-remote behind
+ * a network call ShipIt does not need to make. Both outcomes are the PAT — the
+ * fallback `getRepoScopedGitCredential` already takes when minting *fails* — so
+ * exceeding the deadline costs tightness, never availability.
+ */
+export async function resolveOrchestratorGitRemoteCredential(
+  githubAuthManager: GitHubAuthManager,
+  args: { host: string | undefined; owner?: string; repo?: string },
+  deadlineMs: number = REMOTE_CREDENTIAL_DEADLINE_MS,
+): Promise<{ username: string; password: string } | null> {
+  // Resolved first and unconditionally: it is a pure in-memory read, and it is
+  // what every branch below falls back to.
+  const pat = getGitCredential(githubAuthManager, args.host);
+  // No App configured, or no repo to scope to — `getRepoScopedGitCredential`
+  // would return exactly this without touching the network.
+  if (!args.owner || !args.repo || !githubAuthManager.appTokensEnabled()) return pat;
+
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<typeof TIMED_OUT>((resolve) => {
+    timer = setTimeout(() => { resolve(TIMED_OUT); }, deadlineMs);
+    // Never hold the process open on this timer; the race is already settled
+    // by whichever side finishes first.
+    timer.unref?.();
+  });
+  try {
+    const resolved = await Promise.race([
+      getRepoScopedGitCredential(githubAuthManager, args),
+      deadline,
+    ]);
+    if (resolved === TIMED_OUT) {
+      console.warn(
+        `[github] repo-scoped git credential for ${args.owner}/${args.repo} did not resolve within `
+        + `${deadlineMs}ms — using the PAT so the remote operation is not held up`,
+      );
+      return pat;
+    }
+    return resolved;
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/** Sentinel for the race above — distinguishable from a legitimate `null`. */
+const TIMED_OUT = Symbol("credential-deadline");
+
+/**
+ * {@link resolveOrchestratorGitRemoteCredential} in the shape
+ * `shared/git-remote-credential.ts` consumes, so the raw `safeSimpleGit`
+ * remote sites can carry the same credential a `GitManager` does without each
+ * of them restating the mapping.
+ */
+export function gitRemoteCredentialResolver(
+  githubAuthManager: GitHubAuthManager,
+): GitRemoteCredentialResolver {
+  return (remote) => resolveOrchestratorGitRemoteCredential(githubAuthManager, {
+    host: remote.host,
+    owner: remote.owner,
+    repo: remote.repo,
+  });
 }
 
 // ---- Mutation operations ----

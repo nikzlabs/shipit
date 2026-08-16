@@ -7,8 +7,11 @@ Build sequence from [plan.md](./plan.md) §5. Requirements are cited as `(req N)
 - [x] **E1 — orchestrator git on a session workspace runs as the tree's owner**
       (reqs 1, 2, 3, 11). `shared/git-tree-uid.ts` decides by **ownership**, the
       same fact git's own CVE-2022-24765 check tests, applied inside
-      `safeSimpleGit` so all ~189 `createGitManager` call sites and all 13 raw
-      `safeSimpleGit(workspaceDir)` sites are covered without a hand-kept list.
+      `safeSimpleGit` so every `createGitManager` call site and every raw
+      `safeSimpleGit(workspaceDir)` site is covered without a hand-kept list —
+      **that choke point is one of the two shapes that reach git**, and the
+      other (a raw `spawn`/`execFile` of the binary) has no choke point, so it
+      is converted site by site and held there by E2's scanner.
       Gated on `process.getuid() === 0`, so the session worker, local mode and
       every test are unchanged.
 - [x] The two raw git spawns that touch a session workspace converted —
@@ -25,8 +28,10 @@ Build sequence from [plan.md](./plan.md) §5. Requirements are cited as `(req N)
       would have failed "Author identity unknown"); simple-git's `env(object)`
       *assigns* the executor env, so callers chaining `.env()` discarded the
       override while the uid drop stayed in force; and it was hiding a token the
-      dropped git needs anyway in order to push. One config, no override,
-      nothing downstream can undo it.
+      dropped git needed *at the time* in order to push. One config, no
+      override, nothing downstream can undo it. (E3 below removed that last
+      reason: the config is still one file and still shared, and the token is
+      no longer in it.)
 - [x] **E5-detect (reqs 14, 15)** — the two permission states classified and
       surfaced as persisted transcript notices, with different words each:
       "this commit is short" for an unreadable **directory**, "this turn was NOT
@@ -35,6 +40,58 @@ Build sequence from [plan.md](./plan.md) §5. Requirements are cited as `(req N)
 - [x] Tests: `git-tree-uid.test.ts` (the decision, via its injection seam),
       `git-unreadable.test.ts` (both permission states against **real git**), and
       post-turn tests for the two notices plus the secret-block interaction.
+- [x] **E3 — the dropped-uid git no longer needs the PAT** (reqs 1, 11).
+      **planning#404.** Two halves, and neither works alone:
+      `setGlobalCredentialHelper` moves the token out of the worker-readable
+      `.gitconfig` into a **root-only** `/credentials/.git-credential-github`
+      that the global helper `cat`s — so the shared config now carries identity,
+      `commit.gpgsign`, `url.insteadOf` and `safe.directory`, and no secret at
+      all; and each **remote** op on a dropped-uid tree supplies its own
+      credential, the same short-lived single-repo installation token the
+      session container's own broker would hand the agent
+      (`getRepoScopedGitCredential`), falling back to the PAT exactly where that
+      function already does. A **GitHub SSH-form origin** resolves through the
+      same `url.insteadOf` rewrite `git-config.ts` installs (docs/200), because
+      git connects over HTTPS for those and reading the configured URL
+      literally would decline a credential the operation then needs — an
+      availability regression against E1 that the reviewer caught.
+- [x] The mechanism survives a caller chaining `.env()`, which is what killed
+      E1's first attempt: the **shape** rides `-c` (a `credential.helper=` reset
+      plus a URL-scoped replacement — argv, so nothing downstream can remove
+      it), and the **secret** rides the environment of a simple-git instance
+      created and consumed inside one function, so no caller exists to clobber
+      it. `shared/git-remote-credential.ts` (moved down from `repo-git.ts`,
+      which now re-exports it, so the plugin-repo path and this one cannot
+      drift), `GitManager.remoteGit`, `resolveOrchestratorGitRemoteCredential`.
+- [x] **Two mechanisms measured and rejected first**, both of which read as
+      obviously correct: a second `GIT_CONFIG_GLOBAL` (expressible only through
+      the environment — E1's reverted attempt), and pulling the token in by
+      `include.path` (against git 2.39.5 an unreadable include is `fatal:` on
+      *every* command, while an unreadable `GIT_CONFIG_GLOBAL` is *silently
+      ignored* — opposite behaviours from neighbouring features).
+- [x] **Availability, checked against invariant 2 and req 6.** Every failure
+      degrades to E1's behaviour rather than to a failed operation: no drop, a
+      non-HTTPS remote, a resolver that declines or throws, or a mint that
+      exceeds its 5s deadline all fall back to the git that would have run
+      anyway, and `getRepoScopedGitCredential` already falls back to the PAT.
+      The **commit** path never resolves a credential at all — pinned by a test.
+- [x] The raw dropped-uid **network** sites carry the same credential, or they
+      would silently degrade to anonymous on every private repo:
+      `fetchAndResolveDefaultBranch` (claim + warm pool), `mergeSession`'s
+      `origin` fetch, and — found by sweeping for network ops rather than for
+      pushes — **`git lfs smudge`** (`git-lfs-blob.ts`), which authenticates its
+      transfer through `git credential fill` exactly as a push does, and whose
+      failure mode is an LFS asset rendering as pointer text in the diff viewer.
+      Two sites need nothing: `session-fork-merge`'s post-clone fetch runs
+      *before* `chownTreeToSessionWorker`, on a still-root-owned tree, and
+      `git lfs pull` (`git-lfs.ts` `runGit`) does not drop at all — it is a raw
+      spawn E1 never converted, so it still reads the root config.
+- [x] Tests: `git-remote-credential.test.ts` (the `-c` bundle against **real
+      git**, including that the empty reset really does clear an inherited
+      helper — the property the whole design rests on),
+      `git-remote-credential-wiring.test.ts` (which `GitManager` ops ask, via
+      the `gitTreeUidDeps` seam), and the deadline / PAT-fallback cases in
+      `github-credential.test.ts`.
 - [x] **Two defects found after the first pass, both fixed:** the clean-tree
       early return escaped detection entirely (when the unreadable directory
       hid the *only* changes, git reports "nothing to commit" and exits 0 — the
@@ -53,12 +110,6 @@ Build sequence from [plan.md](./plan.md) §5. Requirements are cited as `(req N)
       a session container (no root; `unshare -r` refused). Land E1, observe it in
       production, then remove the `*`. **Built, not armed** — see below. The box
       stays unchecked until it has run armed in production.
-- [ ] **E3 — repo-scoped token instead of the PAT** for the dropped-uid git.
-      **planning#404.** The dropped git must be able to `push`, so it needs a
-      readable credential; today that is the PAT in a 0600 worker-owned file.
-      Reach narrowed (every uid → root + worker uid) but `/credentials` is not
-      out of scope, and **req 1 names it**. The credential is per-session and
-      per-repo, so it cannot live in the boot-time, repo-less writer.
 - [ ] **E4 — let the project's hooks fire again** (reqs 9, 10). Sequenced last
       by `plan.md` §5 because it is the only step that *adds* a way for the
       commit to fail, and it needs the bounded-attempt-then-`--no-verify`
@@ -203,6 +254,12 @@ Build sequence from [plan.md](./plan.md) §5. Requirements are cited as `(req N)
 
 ## Known gaps, still open
 
+- **`git lfs pull` drops uid, but the workspace is handed back to the worker
+  uid AFTER it runs** — a live regression on `main`, owned by **planning#412**,
+  which carries the four call sites, the two now-false comments that justified
+  the ordering, and the measurement that settles it. Raised from this branch,
+  which predicted the shape before E2's conversion landed; the write-up lives on
+  the issue and deliberately not here, so it has one owner rather than two.
 - `mergeSession`'s fallback adds a **sibling session's** workspace as a local
   remote and fetches from it. Git refuses a foreign source on a local fetch, so
   it works only while every session shares one worker uid — a constraint
@@ -220,12 +277,17 @@ both directions.*
 ## Do not write up as closed
 
 planning#384 is **not** closed by this work. E1 removes root, the Docker socket
-and the credential store *as a whole* from the payload's reach on the
-tree-touching and remote paths. It does not remove `/credentials` (E3), and
-cross-session workspace access remains (req 13).
+and the credential store from the payload's reach on the tree-touching and
+remote paths, and E3 removes the PAT from what the dropped uid can read at all
+— so requirement 1's named credential store is now out of reach rather than
+partly in it.
 
-E2 does not close it either, and "built" is not "fail-closed". Until
+E2 does not close it either, and **"built" is not "fail-closed"**. Until
 `SHIPIT_GIT_STRICT_OWNERSHIP=1` is set on a running deployment, git's ownership
 check is still suppressed at runtime and a missed call site still runs as root
 silently. What is in force today is the CI-side rule, which catches the shape in
 review — a different guarantee, and a weaker one, than git refusing at runtime.
+
+A project's own hooks still do not fire (E4, reqs 9 and 10). Cross-session
+workspace access at the shared uid remains (req 13, planning#405). And nothing
+here has been exercised with a real uid drop — see `plan.md` §4.

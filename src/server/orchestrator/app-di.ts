@@ -8,6 +8,8 @@ import { readInstalledHarnesses } from "../shared/installed-harnesses.js";
 import { listConfiguredCredentials } from "./service-routing.js";
 import { collectServiceCredentialEnv } from "./secret-resolver.js";
 import { RepoGit, type GitRemoteCredential } from "./repo-git.js";
+import type { GitRemoteCredentialResolver } from "../shared/git-remote-credential.js";
+import { gitRemoteCredentialResolver } from "./services/github.js";
 import { AuthManager } from "./agents/claude/auth-manager.js";
 import { CodexAuthManager } from "./agents/codex/auth-manager.js";
 import { GitHubAuthManager } from "./github-auth.js";
@@ -434,7 +436,22 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
   const sessionsRoot = path.join(workspaceDir, "sessions");
 
   // ---- Per-session GitManager factory ----
-  const createGitManager = deps.createGitManager ?? ((dir: string) => new GitManager(dir));
+  // docs/266 E3 (planning#404) — every GitManager this factory builds can mint
+  // its own credential for a REMOTE op, so a git that has dropped to the
+  // session's uid never needs to read the orchestrator's PAT.
+  //
+  // A one-field box rather than a direct reference because `githubAuthManager`
+  // is constructed several hundred lines below this factory, and moving either
+  // one past the other would reorder unrelated boot steps. The box is filled in
+  // the same function, before `buildApp` returns and therefore before any route
+  // or turn can call a GitManager; a remote op that somehow ran first sees
+  // `undefined` and behaves exactly as it did before this existed.
+  const remoteCredentialResolver: { resolve?: GitRemoteCredentialResolver } = {};
+  const createGitManager = deps.createGitManager
+    ?? ((dir: string) => new GitManager(dir, {
+      resolveRemoteCredential: async (remote) =>
+        (await remoteCredentialResolver.resolve?.(remote)) ?? null,
+    }));
   const createRepoGit = deps.createRepoGit
     ?? ((dir: string, credential?: GitRemoteCredential) => new RepoGit(dir, credential));
 
@@ -622,6 +639,8 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
   const githubAuthManager = deps.githubAuthManager ?? new GitHubAuthManager(workspaceDir, credentialStore);
   const hasGitHubToken = githubAuthManager.checkCredentials();
   console.log("[server] GitHub credentials found:", hasGitHubToken);
+  // docs/266 E3 — close the loop on the box declared with `createGitManager`.
+  remoteCredentialResolver.resolve = gitRemoteCredentialResolver(githubAuthManager);
   if (hasGitHubToken && !deps.githubAuthManager) {
     // Load user info and configure git credentials in the background
     githubAuthManager.loadUserInfo().catch((err: unknown) => {

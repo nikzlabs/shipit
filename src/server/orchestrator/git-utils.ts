@@ -1,5 +1,10 @@
 import crypto from "node:crypto";
 import { safeSimpleGit } from "../shared/git-hooks-guard.js";
+import {
+  type GitRemoteCredentialResolver,
+  credentialledGit,
+  resolveTreeRemoteCredential,
+} from "../shared/git-remote-credential.js";
 import type { GitManager } from "../shared/git.js";
 
 /** Generate a short random branch suffix for the "shipit/" namespace. */
@@ -276,7 +281,7 @@ export async function fetchAndResolveDefaultBranch(
   // below intentionally does not await the result — the fetch path doesn't
   // need to block on credential invalidation.
   onAuthError?: (err: Error) => unknown,
-  opts?: { skipFetch?: boolean },
+  opts?: { skipFetch?: boolean; resolveRemoteCredential?: GitRemoteCredentialResolver },
 ): Promise<{ resetTarget: string | undefined; fetched: boolean; fetchDurationMs: number; authError: boolean }> {
   const t0 = Date.now();
   // `GIT_TERMINAL_PROMPT=0` makes git fail fast instead of prompting on the
@@ -293,11 +298,23 @@ export async function fetchAndResolveDefaultBranch(
   // paths to arbitrary configs/binaries) and refuses to spawn — so we opt in
   // explicitly. The env here is ours, not user-controlled, so the protection
   // is a false positive for this code path.
-  const sg = safeSimpleGit(workspaceDir, {
+  const gitOptions = {
     timeout: { block: FETCH_STALL_TIMEOUT_MS },
     unsafe: { allowUnsafeConfigPaths: true, allowUnsafeEditor: true },
-  })
-    .env({ ...process.env, GIT_TERMINAL_PROMPT: "0" });
+  };
+  // docs/266 E3 (planning#404) — this fetch runs on a SESSION workspace, so
+  // under E1 it has dropped to the session's uid and can no longer read the
+  // orchestrator's PAT. Without a credential of its own it degrades to an
+  // anonymous fetch, which is invisible on a public repo and an auth failure on
+  // a private one — a failure this function reports as `authError`, i.e. as a
+  // possibly-revoked token. `null` when the drop does not apply (local mode,
+  // tests, a root-owned tree), leaving this path byte-for-byte as it was.
+  const credential = opts?.skipFetch
+    ? null
+    : await resolveTreeRemoteCredential(workspaceDir, "origin", opts?.resolveRemoteCredential);
+  const sg = credential
+    ? credentialledGit(workspaceDir, credential, gitOptions)
+    : safeSimpleGit(workspaceDir, gitOptions).env({ ...process.env, GIT_TERMINAL_PROMPT: "0" });
   let fetched = false;
   let authError = false;
   try {

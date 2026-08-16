@@ -8,6 +8,7 @@ import type { CredentialStore } from "./credential-store.js";
 import type { SessionContainerManager } from "./session-container.js";
 import type { SessionOomCircuitBreaker } from "./oom-circuit-breaker.js";
 import { generateBranchPrefix, fetchAndResolveDefaultBranch, syncLocalDefaultBranchToOrigin } from "./git-utils.js";
+import { gitRemoteCredentialResolver } from "./services/github.js";
 import { handWorkspaceBackToWorker } from "./session-worker-uid.js";
 import { materializeLfsWithWarning } from "./git-lfs.js";
 import { getErrorMessage } from "./validation.js";
@@ -149,6 +150,7 @@ export function createWarmPool(
         const { resetTarget, fetched, authError } = await fetchAndResolveDefaultBranch(
           workspaceDir,
           (err) => githubAuthManager.markTokenInvalid(`warm-pool fetch failed for ${repoUrl}: ${err.message}`),
+          { resolveRemoteCredential: gitRemoteCredentialResolver(githubAuthManager) },
         );
         if (!fetched && !authError) {
           // The workspace-clone fetch failed — the warm branch is being cut

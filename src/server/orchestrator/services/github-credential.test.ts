@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { getGitCredential, getRepoScopedGitCredential } from "./github.js";
+import {
+  getGitCredential,
+  getRepoScopedGitCredential,
+  resolveOrchestratorGitRemoteCredential,
+} from "./github.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 
 /** Minimal stub exposing just the `getToken()` the service reads. */
@@ -103,5 +107,75 @@ describe("getRepoScopedGitCredential (docs/172 Gap 2-R / planning#81)", () => {
   it("returns null when no credential of any kind is available", async () => {
     const auth = stubAppAuth({ token: null, appEnabled: false, minted: null });
     expect(await getRepoScopedGitCredential(auth, { host: "github.com", owner: "octo", repo: "hello" })).toBeNull();
+  });
+});
+
+describe("resolveOrchestratorGitRemoteCredential (docs/266 E3, planning#404)", () => {
+  it("prefers the repo-scoped installation token", async () => {
+    const cred = await resolveOrchestratorGitRemoteCredential(
+      stubAppAuth({ token: "ghp_pat", appEnabled: true, minted: "ghs_scoped" }),
+      { host: "github.com", owner: "acme", repo: "widgets" },
+    );
+    expect(cred).toEqual({ username: "x-access-token", password: "ghs_scoped" });
+  });
+
+  it("falls back to the PAT when no App is configured, without touching the network", async () => {
+    let minted = false;
+    const cred = await resolveOrchestratorGitRemoteCredential(
+      stubAppAuth({
+        token: "ghp_pat", appEnabled: false, minted: "ghs_scoped",
+        onMint: () => { minted = true; },
+      }),
+      { host: "github.com", owner: "acme", repo: "widgets" },
+    );
+    expect(minted).toBe(false);
+    expect(cred).toEqual({ username: "x-access-token", password: "ghp_pat" });
+  });
+
+  it("falls back to the PAT when the repo cannot be identified", async () => {
+    const cred = await resolveOrchestratorGitRemoteCredential(
+      stubAppAuth({ token: "ghp_pat", appEnabled: true, minted: "ghs_scoped" }),
+      { host: "github.com" },
+    );
+    expect(cred).toEqual({ username: "x-access-token", password: "ghp_pat" });
+  });
+
+  it("offers nothing for a host the orchestrator holds no token for", async () => {
+    expect(
+      await resolveOrchestratorGitRemoteCredential(
+        stubAppAuth({ token: "ghp_pat", appEnabled: false, minted: null }),
+        { host: "gitlab.example", owner: "acme", repo: "widgets" },
+      ),
+    ).toBeNull();
+  });
+
+  it("stops waiting on a stalled mint and uses the PAT", async () => {
+    // The mint is two api.github.com round-trips with no timeout of their own.
+    // Uncapped, a socket that accepts and then stalls would hold the post-turn
+    // auto-push behind it — the one path CLAUDE.md invariant 2 and docs/266
+    // req 6 say cannot acquire an availability dependency.
+    const stalled = {
+      getToken: () => "ghp_pat",
+      appTokensEnabled: () => true,
+      mintRepoScopedToken: () => new Promise<string | null>(() => { /* never settles */ }),
+    } as unknown as GitHubAuthManager;
+
+    const started = Date.now();
+    const cred = await resolveOrchestratorGitRemoteCredential(
+      stalled,
+      { host: "github.com", owner: "acme", repo: "widgets" },
+      25,
+    );
+    expect(cred).toEqual({ username: "x-access-token", password: "ghp_pat" });
+    expect(Date.now() - started).toBeLessThan(2_000);
+  });
+
+  it("offers nothing when there is neither an App token nor a PAT", async () => {
+    expect(
+      await resolveOrchestratorGitRemoteCredential(
+        stubAppAuth({ token: null, appEnabled: true, minted: null }),
+        { host: "github.com", owner: "acme", repo: "widgets" },
+      ),
+    ).toBeNull();
   });
 });

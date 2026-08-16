@@ -4,7 +4,31 @@ import fs from "node:fs";
 import path from "node:path";
 import { scanDiffForSecrets, redactSecretsInText, type SecretFinding } from "./secret-scan.js";
 import { safeSimpleGit, gitArgsWithHooksDisabled } from "./git-hooks-guard.js";
-import { gitSpawnOverridesForTree } from "./git-tree-uid.js";
+import {
+  type GitRemoteCredentialResolver,
+  credentialledGit,
+  resolveTreeRemoteCredential,
+} from "./git-remote-credential.js";
+import { type GitTreeUidDeps, gitSpawnOverridesForTree } from "./git-tree-uid.js";
+
+/** Construction-time wiring for {@link GitManager}. */
+export interface GitManagerOptions {
+  /**
+   * docs/266 E3 (planning#404) — mints the credential a **dropped-uid** remote
+   * op authenticates with. Wired at `createGitManager` (`app-di.ts`); omitted
+   * everywhere else, and then every remote op behaves exactly as it did before
+   * this existed.
+   */
+  resolveRemoteCredential?: GitRemoteCredentialResolver;
+  /**
+   * Injection seam for the uid-drop decision, so a test can exercise the
+   * dropped-uid branch. `resolveGitTreeUid` answers "no drop" for any process
+   * that is not root, and a session container has no root and refuses
+   * `unshare -r` — so without this the branch this whole feature exists for is
+   * unreachable from a test.
+   */
+  gitTreeUidDeps?: GitTreeUidDeps;
+}
 
 const DEFAULT_WORKSPACE_DIR = "/workspace";
 
@@ -299,10 +323,25 @@ export class GitManager {
   private stderrTail = "";
 
   /**
+   * docs/266 E3 (planning#404) — mints the credential a **dropped-uid** remote
+   * op authenticates with. Undefined outside the orchestrator (the session
+   * worker constructs a `GitManager` too) and in tests, where every remote op
+   * behaves exactly as it did before this existed.
+   */
+  private readonly resolveRemoteCredential: GitRemoteCredentialResolver | undefined;
+
+  /** Test seam — see {@link GitManagerOptions.gitTreeUidDeps}. */
+  private readonly gitTreeUidDeps: GitTreeUidDeps | undefined;
+
+  /**
    * @param workspaceDir - Git working directory. Defaults to `/workspace`.
    *   Override in tests to use a temp directory.
+   * @param options.resolveRemoteCredential - see
+   *   {@link GitManager.remoteGit}. Wired at `createGitManager` (`app-di.ts`).
    */
-  constructor(workspaceDir?: string) {
+  constructor(workspaceDir?: string, options?: GitManagerOptions) {
+    this.resolveRemoteCredential = options?.resolveRemoteCredential;
+    this.gitTreeUidDeps = options?.gitTreeUidDeps;
     this.workspaceDir = workspaceDir ?? DEFAULT_WORKSPACE_DIR;
     // planning#384 — `safeSimpleGit`, never bare `simpleGit`: this class drives
     // commit/merge/rebase/checkout/push against a tree that untrusted plugin
@@ -330,6 +369,51 @@ export class GitManager {
    */
   get dir(): string {
     return this.workspaceDir;
+  }
+
+  /**
+   * The git instance a **remote** operation on `remote` should run through
+   * (docs/266 E3, planning#404).
+   *
+   * Everything below the first two guards is the dropped-uid path and nothing
+   * else. A root-side git — the bare cache, `/opt/shipit`, local mode, the
+   * session worker, every test — gets `this.git` back and is byte-for-byte
+   * unchanged: it reads the orchestrator's global helper, which reads the
+   * root-only PAT file (`git-config.ts`).
+   *
+   * A dropped-uid git cannot read that file. It is handed its own credential
+   * here instead — a short-lived, single-repo installation token when a GitHub
+   * App is configured, and the PAT when one is not, which is precisely what the
+   * session container's own broker would give the agent
+   * (`getRepoScopedGitCredential`, docs/172 Gap 2-R). So a payload that
+   * executes during a git op and steals it gains nothing the session did not
+   * already have — requirement 11's argument, now true of the credential and
+   * not only of the uid.
+   *
+   * **Availability is the constraint that shapes the fallbacks** (req 6, and
+   * `CLAUDE.md` invariant 2: the post-turn auto-push is not optional). Every
+   * step that can fail to produce a credential falls back to `this.git` rather
+   * than throwing, so the worst case is the authentication behaviour that
+   * shipped with E1, never a push that cannot run. The resolver itself is
+   * deadline-bounded and PAT-backed on its own side (`services/github.ts`).
+   *
+   * Note the *commit* path never reaches here at all — `autoCommit` is purely
+   * local, so it acquires no network dependency from this change.
+   */
+  private async remoteGit(remote: string): Promise<SimpleGit> {
+    const credential = await resolveTreeRemoteCredential(
+      this.workspaceDir,
+      remote,
+      this.resolveRemoteCredential,
+      async () => {
+        const remotes = await this.git.getRemotes(true);
+        const match = remotes.find((r) => r.name === remote);
+        return match?.refs.push || match?.refs.fetch || undefined;
+      },
+      this.gitTreeUidDeps,
+    );
+    if (!credential) return this.git;
+    return credentialledGit(this.workspaceDir, credential);
   }
 
   /** Get the current HEAD commit hash. Returns null if no commits exist. */
@@ -603,7 +687,7 @@ export class GitManager {
   /** Push to a remote. Returns a summary string. */
   async push(remote = "origin", branch?: string): Promise<string> {
     const currentBranch = branch ?? (await this.getCurrentBranch());
-    await this.git.push(remote, currentBranch, ["--set-upstream"]);
+    await (await this.remoteGit(remote)).push(remote, currentBranch, ["--set-upstream"]);
     const msg = `Pushed to ${remote}/${currentBranch}`;
     console.log("[git]", msg);
     return msg;
@@ -612,7 +696,7 @@ export class GitManager {
   /** Pull from a remote. Returns a summary string. */
   async pull(remote = "origin", branch?: string): Promise<string> {
     const currentBranch = branch ?? (await this.getCurrentBranch());
-    await this.git.pull(remote, currentBranch);
+    await (await this.remoteGit(remote)).pull(remote, currentBranch);
     const msg = `Pulled from ${remote}/${currentBranch}`;
     console.log("[git]", msg);
     return msg;
@@ -1038,7 +1122,7 @@ export class GitManager {
 
   /** Fetch from a remote. */
   async fetch(remote = "origin"): Promise<void> {
-    await this.git.fetch(remote);
+    await (await this.remoteGit(remote)).fetch(remote);
     console.log("[git] Fetched from", remote);
   }
 
@@ -1196,7 +1280,7 @@ export class GitManager {
   async remoteBranchSha(remote = "origin", branch?: string): Promise<string | null> {
     const currentBranch = branch ?? (await this.getCurrentBranch());
     try {
-      const out = await this.git.listRemote(["--heads", remote, currentBranch]);
+      const out = await (await this.remoteGit(remote)).listRemote(["--heads", remote, currentBranch]);
       // `<sha>\trefs/heads/<branch>` per matching ref; empty when absent.
       const line = out
         .split("\n")
@@ -1252,7 +1336,7 @@ export class GitManager {
     const args = expectedRemoteSha
       ? [`--force-with-lease=${branch}:${expectedRemoteSha}`, "--set-upstream"]
       : ["--set-upstream"];
-    await this.git.push(remote, branch, args);
+    await (await this.remoteGit(remote)).push(remote, branch, args);
     const msg = `Force pushed to ${remote}/${branch}`;
     console.log("[git]", msg);
     return msg;
@@ -1415,7 +1499,7 @@ export class GitManager {
   async createAndPushTag(tag: string, message: string, remote = "origin", ref?: string): Promise<void> {
     const args = ["tag", "-a", tag, "-m", message, ...(ref ? [ref] : [])];
     await this.git.raw(args);
-    await this.git.push(remote, tag);
+    await (await this.remoteGit(remote)).push(remote, tag);
     console.log("[git] created + pushed tag", tag);
   }
 

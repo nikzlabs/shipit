@@ -222,11 +222,26 @@ called out rather than folded in.
   HEAD is preserved, so this can omit new work but never destroy committed work.
   Worktree-mutating ops behave oppositely and fail loudly (`checkout` exit 255,
   `reset --hard` exit 128). Full table in `plan.md` §2 (E5).
-- **Every orchestrator-side git op on a session workspace flows through one
-  factory.** `app-di.ts:437` — `createGitManager = (dir) => new GitManager(dir)`,
-  used at 189 call sites across 42 files. There are a small number of raw
-  sites beside it (`install-session.ts:103`, `claim-session.ts:423`,
-  `headless-sessions.ts:180`, `github-auth.ts:393`, `git-lfs-blob.ts:151`).
+- **TWO shapes reach git, and only one of them can be covered automatically.**
+  Most orchestrator-side git flows through `createGitManager` (`app-di.ts:437`)
+  into `safeSimpleGit`, which is a choke point: a call site nobody has written
+  yet is covered by construction. The other shape is a raw `spawn` /
+  `execFile` / `execFileSync` of the `git` binary, which no choke point can
+  cover — each site is converted by hand, and E2's scanner
+  (`git-hooks-guard-coverage.test.ts`, planning#403) is what makes an omission
+  fail the build rather than fail silently. That scanner sees a spawn that
+  **names a working directory** (`cwd`, or `-C <dir>`) and fails closed on a
+  shape it cannot read; `git-tree-uid.ts` names what it still cannot see.
+
+  *This bullet used to state a count ("13 raw `safeSimpleGit(workspaceDir)`
+  sites") and list five files. That was the same enumeration error twice over:
+  it counted one shape, and every gap found since has been the other —
+  `git-lfs.ts`'s `git lfs pull`, `getFileBufferAtCommit`, the fork clone, all
+  three found and converted by E2's own audit. A number invites the reader to
+  believe the set is closed, and it never was. Correction made 2026-08-16;
+  updated the same day, once E2 landed, because the first version of it said
+  the raw shape was covered by nothing — true when written, and stale in the
+  direction that understates what ShipIt now has.*
 
 ## Open questions
 

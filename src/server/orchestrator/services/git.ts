@@ -11,6 +11,7 @@ import type { FileDiff } from "../../shared/types.js";
 import { scanFileTree } from "../../shared/file-tree.js";
 import { createLfsBlobResolver, parseLfsPointer, type LfsBlobResolver } from "../git-lfs-blob.js";
 import { stripRemoteUrlCredentials } from "../git-utils.js";
+import type { GitRemoteCredentialResolver } from "../../shared/git-remote-credential.js";
 import { ServiceError } from "./types.js";
 
 // ---- Image diff support ----
@@ -215,6 +216,10 @@ export async function getTurnDiff(
   git: GitManager,
   fromCommit: string,
   toCommit: string,
+  // docs/266 E3 — the LFS smudge below runs on a session workspace, so under E1
+  // it has dropped uid and cannot read the orchestrator's PAT. Without this a
+  // private repo's LFS assets render as pointer text.
+  resolveRemoteCredential?: GitRemoteCredentialResolver,
 ): Promise<{
   fromCommit: string;
   toCommit: string;
@@ -234,7 +239,7 @@ export async function getTurnDiff(
   let totalDeletions = 0;
   // One resolver per diff request: its network-fetch budget is what bounds how
   // long an LFS repo can hold this response open.
-  const resolveLfs = createLfsBlobResolver(git.dir);
+  const resolveLfs = createLfsBlobResolver(git.dir, { resolveRemoteCredential });
 
   for (const entry of changedFiles) {
     const stats = statsMap.get(entry.path) ?? { insertions: 0, deletions: 0, binary: false };
@@ -354,6 +359,8 @@ export async function getSessionChangedPaths(
 export async function getDiffVsBranch(
   git: GitManager,
   baseBranch: string,
+  /** docs/266 E3 — see {@link getTurnDiff}. */
+  resolveRemoteCredential?: GitRemoteCredentialResolver,
 ): Promise<{
   fromCommit: string;
   toCommit: string;
@@ -380,7 +387,7 @@ export async function getDiffVsBranch(
   const files: FileDiff[] = [];
   let totalInsertions = 0;
   let totalDeletions = 0;
-  const resolveLfs = createLfsBlobResolver(git.dir);
+  const resolveLfs = createLfsBlobResolver(git.dir, { resolveRemoteCredential });
 
   for (const entry of changedFiles) {
     const stats = statsMap.get(entry.path) ?? { insertions: 0, deletions: 0, binary: false };

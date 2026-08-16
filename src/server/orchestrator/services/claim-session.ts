@@ -20,6 +20,7 @@ import { sessionStateDirForWorkspace, sessionSharedStateDir, INSTALL_MARKER_FILE
 import { rm } from "node:fs/promises";
 import path from "node:path";
 import { safeSimpleGit } from "../../shared/git-hooks-guard.js";
+import { gitRemoteCredentialResolver } from "./github.js";
 import type { SessionManager } from "../sessions.js";
 import type { GitManager } from "../../shared/git.js";
 import type { RepoGit } from "../repo-git.js";
@@ -201,7 +202,11 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
     if (deps.githubAuthManager.authenticated) {
       deps.githubAuthManager.configureGitCredentials(sessionDir);
     }
-    const { resetTarget, fetched, fetchDurationMs } = await fetchAndResolveDefaultBranch(sessionDir, onAuthError);
+    const { resetTarget, fetched, fetchDurationMs } = await fetchAndResolveDefaultBranch(
+      sessionDir,
+      onAuthError,
+      { resolveRemoteCredential: gitRemoteCredentialResolver(deps.githubAuthManager) },
+    );
     if (resetTarget) {
       await sessionGit.rollback(resetTarget);
     }
@@ -410,7 +415,7 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
         const { resetTarget, fetched, fetchDurationMs, authError } = await fetchAndResolveDefaultBranch(
           workspaceDir,
           (err) => deps.githubAuthManager.markTokenInvalid(`claim-session fetch failed for ${url}: ${err.message}`),
-          { skipFetch },
+          { skipFetch, resolveRemoteCredential: gitRemoteCredentialResolver(deps.githubAuthManager) },
         );
         if (!skipFetch && !fetched && !authError) {
           console.warn(`[claim-session] Workspace fetch failed for ${url} — branching from the bare-cache snapshot, which may be stale`);

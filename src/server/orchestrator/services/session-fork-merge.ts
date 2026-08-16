@@ -9,6 +9,11 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { safeSimpleGit } from "../../shared/git-hooks-guard.js";
+import {
+  type GitRemoteCredentialResolver,
+  credentialledGit,
+  resolveTreeRemoteCredential,
+} from "../../shared/git-remote-credential.js";
 import type { SessionManager } from "../sessions.js";
 import type { GitManager } from "../../shared/git.js";
 import type { RepoGit } from "../repo-git.js";
@@ -172,6 +177,11 @@ export async function mergeSession(
   createGitManager: (dir: string) => GitManager,
   activeSessionDir: string,
   sourceSessionId: string,
+  // docs/266 E3 (planning#404) — the `origin` fetch below runs on a SESSION
+  // workspace, so under E1 it has dropped uid and cannot read the
+  // orchestrator's PAT. Without this it degrades to an anonymous fetch and
+  // silently takes the local-remote fallback on every private repo.
+  resolveRemoteCredential?: GitRemoteCredentialResolver,
 ): Promise<{ success: boolean; message: string; conflicts?: string[] }> {
   const trimmedId = sourceSessionId.trim();
   if (!trimmedId) throw new ServiceError(400, "Source session ID is required");
@@ -194,7 +204,9 @@ export async function mergeSession(
     const sourceGit = createGitManager(sourceSession.workspaceDir);
     try {
       await sourceGit.push("origin", sourceSession.branch);
-      await sg.fetch("origin", sourceSession.branch);
+      const credential = await resolveTreeRemoteCredential(activeSessionDir, "origin", resolveRemoteCredential);
+      const originGit = credential ? credentialledGit(activeSessionDir, credential) : sg;
+      await originGit.fetch("origin", sourceSession.branch);
       fetched = true;
     } catch {
       // Origin push/fetch failed — use local remote instead
