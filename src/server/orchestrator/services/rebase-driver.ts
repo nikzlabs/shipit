@@ -305,6 +305,30 @@ function reevaluateSessionConfig(runner: SessionRunnerInterface): void {
 }
 
 /**
+ * nikzlabs/shipit#2349 — restore the LFS content this flow's worktree rewrite turned
+ * back into pointer text, holding the runner while it runs.
+ *
+ * The hold is the CLAUDE.md invariant-5 rule, and this call needs it for exactly
+ * the reason that invariant exists. The restore runs with `running` already
+ * false, and `systemTurnInProgress` is not consulted by `agentBusy` or by
+ * `dispose()` — so without a lease the idle enforcer sees an idle runner and may
+ * destroy the container mid-restore. That is not a corner case here: the
+ * auto-resolve path runs *precisely* on idle, viewerless sessions, and a pull on
+ * an asset-heavy repo is the longest window in the flow.
+ */
+async function restoreLfsForSync(deps: RebaseDriverDeps, baseBranch: string): Promise<void> {
+  const { runner } = deps;
+  runner.beginPostTurnWork();
+  try {
+    await restoreLfsAfterTreeRewrite(runner.sessionDir, `Sync with ${baseBranch}`, (message) =>
+      deps.sseBroadcast("error", { message }),
+    );
+  } finally {
+    runner.endPostTurnWork();
+  }
+}
+
+/**
  * Run the full rebase flow. Emits WS events through the runner so the client
  * can update its UI as the flow progresses.
  *
@@ -525,11 +549,7 @@ export async function runRebaseFlow(
     // Ahead of the queue release, not after it: a turn queued during the sync
     // would otherwise start against the stubs, which is the exact failure this
     // closes. Non-LFS repos pay one `git grep` for that ordering.
-    if (worktreeRewritten) {
-      await restoreLfsAfterTreeRewrite(runner.sessionDir, `Sync with ${baseBranch}`, (message) =>
-        deps.sseBroadcast("error", { message }),
-      );
-    }
+    if (worktreeRewritten) await restoreLfsForSync(deps, baseBranch);
     // planning#146 / docs/150 §7: every orchestrator git op above (fetch, rebase,
     // rebaseContinue, stageAll, forcePush, rebaseAbort) runs as root and leaves
     // BOTH `.git` and the rewritten worktree files root-owned. Unlike a normal
@@ -983,12 +1003,16 @@ export async function runAutoResolveAttempt(
   // left root-owned without `runRebaseFlow`'s finally having the last write. Hand
   // the whole workspace back here too — redundant but harmless on the normal
   // path. No-op when the flag is unset.
-  //
-  // Deliberately NOT paired with a `restoreLfsAfterTreeRewrite` (nikzlabs/shipit#2349),
-  // unlike every other rewrite site: killing the agent makes the resolution turn
-  // reject, so `runRebaseFlow`'s own finally aborts and restores against this
-  // same clone. A second pull here would race that one for no added coverage.
   handWorkspaceBackToWorker(runner.sessionDir);
+  // nikzlabs/shipit#2349 — and restore LFS content here too, even though
+  // `runRebaseFlow`'s own finally will restore as it unwinds. On the TIMEOUT path
+  // that finally is not enough: the teardown's `git.rebaseAbort()` rewrites the
+  // worktree, then this function drains the queue IMMEDIATELY, while the flow is
+  // still waiting for the killed resolution turn to settle. Without this the
+  // queued turn starts against the stubs — the exact failure #2349 reports — and
+  // the flow's restore lands underneath an already-running turn. The two calls
+  // cannot collide: `restoreLfsAfterTreeRewrite` serializes per workspace.
+  await restoreLfsForSync(deps, baseBranch);
   try {
     await deps.drainQueue?.();
   } catch (err) {

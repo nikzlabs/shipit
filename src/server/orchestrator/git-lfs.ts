@@ -362,6 +362,24 @@ export async function materializeLfsWithWarning(
  * where a throw would replace the flow's real error with this one — or, on the
  * pre-turn reset, make a completed reset report itself as not-moved. So the sink
  * is guarded too.
+ *
+ * ## Serialized per workspace
+ *
+ * Two restores of one clone must never overlap. The rebase driver reaches that
+ * state on its auto-resolve timeout — the teardown restores before draining the
+ * queue, while the killed flow's own `finally` restores as it unwinds — and
+ * `git lfs checkout` writes the working file **in place** (measured against
+ * git-lfs 3.3.0: same inode before and after, mode preserved), so two writers
+ * can interleave inside one asset rather than one simply losing. Calls for the
+ * same directory queue instead; each still sees the tree as it stands when its
+ * turn comes, which is why they chain rather than share one result.
+ *
+ * (That in-place write is also why the ownership ordering matters and a
+ * `git checkout` measurement doesn't transfer: `git checkout` unlinks and
+ * recreates, so the DIRECTORY's permission governs, while git-lfs needs the
+ * FILE. It gets away with a read-only file by chmod'ing around the write, which
+ * only its owner may do — so a root-owned file plus a dropped uid is EACCES,
+ * and the same-owner `0444` case that succeeds proves nothing about it.)
  */
 export async function restoreLfsAfterTreeRewrite(
   workspaceDir: string,
@@ -369,10 +387,29 @@ export async function restoreLfsAfterTreeRewrite(
   warn: (message: string) => void = (message) => console.warn(`[git-lfs] ${message}`),
   opts?: { isAvailable?: () => Promise<boolean> },
 ): Promise<LfsResult> {
+  const run = async (): Promise<LfsResult> => {
+    try {
+      return await materializeLfsWithWarning(workspaceDir, operation, warn, opts);
+    } catch (err) {
+      console.warn(`[git-lfs] restore after ${operation} threw for ${workspaceDir}:`, String(err));
+      return { status: "failed", usesLfs: true };
+    }
+  };
+  // eslint-disable-next-line no-restricted-syntax -- chaining IS the mechanism: `await` here would let a second caller in before the tail is published
+  const chained = (restoreChains.get(workspaceDir) ?? Promise.resolve()).then(run);
+  // The chain link must never reject — `run` already can't, but a rejected tail
+  // would poison every later call for this directory.
+  // eslint-disable-next-line no-restricted-syntax -- Promise two-arg form, to swallow both settlements into a plain marker
+  const tail = chained.then(() => undefined, () => undefined);
+  restoreChains.set(workspaceDir, tail);
   try {
-    return await materializeLfsWithWarning(workspaceDir, operation, warn, opts);
-  } catch (err) {
-    console.warn(`[git-lfs] restore after ${operation} threw for ${workspaceDir}:`, String(err));
-    return { status: "failed", usesLfs: true };
+    return await chained;
+  } finally {
+    // Drop the entry only when nothing queued behind us, so the map doesn't grow
+    // one permanent promise per session workspace for the process's lifetime.
+    if (restoreChains.get(workspaceDir) === tail) restoreChains.delete(workspaceDir);
   }
 }
+
+/** Tail of the in-flight {@link restoreLfsAfterTreeRewrite} chain, per workspace. */
+const restoreChains = new Map<string, Promise<void>>();

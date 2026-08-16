@@ -177,3 +177,110 @@ describe("dispatched turn — pre-turn merged-branch reset (planning#333)", () =
     expect(promptSeen).toBe("keep going");
   });
 });
+
+/**
+ * docs/221 / nikzlabs/shipit#2349 — the parked "your working tree was rewritten"
+ * notice reaches a DISPATCHED turn too.
+ *
+ * docs/221 consumed it in `agent-execution.ts` alone and described it as drained
+ * by "the next interactive turn". A message sent while a sync is still settling
+ * is queued (the flow holds `systemTurnInProgress` through its own teardown) and
+ * `releaseQueuedTurn` releases every queued entry, interactive ones included,
+ * onto `runner.dispatch` — so the turn most likely to need the notice was the
+ * one that could never get it. Found because the #2349 LFS restore widened that
+ * window enough to make the drop deterministic in an integration test.
+ */
+describe("dispatched turn — the parked sync notice (docs/221, nikzlabs/shipit#2349)", () => {
+  let runner: SessionRunner;
+  afterEach(() => { runner?.dispose({ force: true }); vi.restoreAllMocks(); });
+
+  const NOTICE = "[System] While you were idle, this branch was rebased onto origin/main.";
+
+  it("prefixes the prompt with the notice and consumes it exactly once", async () => {
+    const agents: FakeAgent[] = [];
+    const { deps } = makeDispatchTurnDeps(agents, []);
+    let remaining: string | undefined = NOTICE;
+    const consumed: string[] = [];
+    deps.consumePendingAgentNotice = (sessionId) => {
+      consumed.push(sessionId);
+      const value = remaining;
+      remaining = undefined; // read-and-clear, like the real transactional consume
+      return value;
+    };
+    let promptSeen = "";
+    deps.buildRunParams = vi.fn(async (_sid, _agentId, prompt) => {
+      promptSeen = prompt;
+      return { prompt, cwd: "/tmp/s1" } as never;
+    });
+
+    runner = makeRunner();
+    runner.setSystemTurnDeps(deps);
+    runner.dispatch(testDispatch({ text: "carry on" }));
+    await flushTurn();
+
+    expect(consumed).toEqual(["s1"]);
+    expect(promptSeen.startsWith(NOTICE)).toBe(true);
+    expect(promptSeen).toContain("carry on");
+  });
+
+  it("puts the notice ahead of a reset prefix — the sync happened first", async () => {
+    const agents: FakeAgent[] = [];
+    const { deps } = makeDispatchTurnDeps(agents, []);
+    deps.consumePendingAgentNotice = () => NOTICE;
+    const { hook } = makeResetHook();
+    deps.preTurnReset = hook;
+    let promptSeen = "";
+    deps.buildRunParams = vi.fn(async (_sid, _agentId, prompt) => {
+      promptSeen = prompt;
+      return { prompt, cwd: "/tmp/s1" } as never;
+    });
+
+    runner = makeRunner();
+    runner.setSystemTurnDeps(deps);
+    runner.dispatch(testDispatch({ text: "carry on" }));
+    await flushTurn();
+
+    expect(promptSeen.indexOf(NOTICE)).toBe(0);
+    expect(promptSeen.indexOf(NOTICE)).toBeLessThan(promptSeen.indexOf("was merged into main"));
+  });
+
+  it("does NOT consume it for a rebase-resolution turn (postTurn: none)", async () => {
+    // That turn is a step INSIDE the git operation that produced the notice.
+    // Handing it "your branch was rebased" would both misdirect it and burn the
+    // notice the user's next real turn is owed.
+    const agents: FakeAgent[] = [];
+    const { deps } = makeDispatchTurnDeps(agents, []);
+    const consumed: string[] = [];
+    deps.consumePendingAgentNotice = (sessionId) => { consumed.push(sessionId); return NOTICE; };
+    let promptSeen = "";
+    deps.buildRunParams = vi.fn(async (_sid, _agentId, prompt) => {
+      promptSeen = prompt;
+      return { prompt, cwd: "/tmp/s1" } as never;
+    });
+
+    runner = makeRunner();
+    runner.setSystemTurnDeps(deps);
+    runner.dispatch(testDispatch({ text: "resolve the conflicts", postTurn: "none", systemTurn: true }));
+    await flushTurn();
+
+    expect(consumed).toEqual([]);
+    expect(promptSeen).toBe("resolve the conflicts");
+  });
+
+  it("is a no-op when the runtime wires no consumer (minimal setups)", async () => {
+    const agents: FakeAgent[] = [];
+    const { deps } = makeDispatchTurnDeps(agents, []);
+    let promptSeen = "";
+    deps.buildRunParams = vi.fn(async (_sid, _agentId, prompt) => {
+      promptSeen = prompt;
+      return { prompt, cwd: "/tmp/s1" } as never;
+    });
+
+    runner = makeRunner();
+    runner.setSystemTurnDeps(deps);
+    runner.dispatch(testDispatch({ text: "keep going" }));
+    await flushTurn();
+
+    expect(promptSeen).toBe("keep going");
+  });
+});

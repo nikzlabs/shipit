@@ -371,6 +371,48 @@ describe("restoreLfsAfterTreeRewrite (nikzlabs/shipit#2349)", () => {
     expect(result.status).toBe("failed");
   });
 
+  it("serializes concurrent restores of one workspace", async () => {
+    // Two restores of one clone must not overlap: `git lfs checkout` writes the
+    // working file IN PLACE (measured against git-lfs 3.3.0 — same inode before
+    // and after), so two writers can interleave INSIDE one asset rather than one
+    // simply losing. The rebase driver reaches this on its auto-resolve timeout.
+    const origin = makeLfsOrigin();
+    const clone = makeSkipSmudgeClone(origin);
+    const order: string[] = [];
+    const probe = (tag: string) => async () => {
+      order.push(`start:${tag}`);
+      await new Promise((r) => setTimeout(r, 10));
+      order.push(`end:${tag}`);
+      return true;
+    };
+    const [a, b] = await Promise.all([
+      restoreLfsAfterTreeRewrite(clone, "A", () => {}, { isAvailable: probe("A") }),
+      restoreLfsAfterTreeRewrite(clone, "B", () => {}, { isAvailable: probe("B") }),
+    ]);
+    expect(a.status).toBe("materialized");
+    expect(b.status).toBe("materialized");
+    // Never `start:A, start:B, …` — the second waits for the first to finish.
+    expect(order).toEqual(["start:A", "end:A", "start:B", "end:B"]);
+  });
+
+  it("does not serialize across different workspaces", async () => {
+    // The chain is per directory: one asset-heavy session must not delay another.
+    const origin = makeLfsOrigin();
+    const first = makeSkipSmudgeClone(origin);
+    const second = makeSkipSmudgeClone(origin);
+    const order: string[] = [];
+    const probe = (tag: string) => async () => {
+      order.push(`start:${tag}`);
+      await new Promise((r) => setTimeout(r, 10));
+      return true;
+    };
+    await Promise.all([
+      restoreLfsAfterTreeRewrite(first, "A", () => {}, { isAvailable: probe("A") }),
+      restoreLfsAfterTreeRewrite(second, "B", () => {}, { isAvailable: probe("B") }),
+    ]);
+    expect(order).toEqual(["start:A", "start:B"]);
+  });
+
   it("costs one grep and says nothing on a repo that doesn't use LFS", async () => {
     const dir = makeRepo();
     dirs.push(dir);

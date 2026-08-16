@@ -204,11 +204,26 @@ export async function runDispatchedTurn(
     ? await deps.preTurnReset?.(runner, runner.sessionId, sessionDir)
     : undefined;
 
+  // docs/221 / nikzlabs/shipit#2349 — drain the out-of-band sync notice on this
+  // transport too. A manual "Sync with <base>" parks it because it runs with no
+  // turn in flight; the interactive path consumes it, and this one did not — so a
+  // message the user sent while the sync was still settling (queued, then
+  // released onto `dispatch`) resumed the agent against a rewritten tree in
+  // silence. Same `postTurn: "none"` exclusion as the reset above and for the
+  // same reason: a rebase-resolution turn is a step inside the git operation
+  // that produced the notice, not a continuation to be warned about.
+  const pendingNotice = opts.postTurn !== "none"
+    ? deps.consumePendingAgentNotice?.(runner.sessionId) ?? ""
+    : "";
+
   // The `[System] …` prefix rides in FRONT of the assembled prompt, exactly as
   // the interactive path places it: the branch moved (or conspicuously did not)
-  // moments ago, so the agent has to read that before the message it is acting on.
+  // moments ago, so the agent has to read that before the message it is acting
+  // on. Chronological order matches the interactive path — the out-of-band sync
+  // happened before this turn, the reset happened moments ago.
+  const agentPrefix = [pendingNotice, reset?.agentPrefix].filter(Boolean).join("\n\n");
   const prompt =
-    (reset?.agentPrefix ? `${reset.agentPrefix}\n\n` : "") +
+    (agentPrefix ? `${agentPrefix}\n\n` : "") +
     assembleAgentPrompt({
       userText: agentText,
       fileContext,

@@ -174,6 +174,26 @@ orchestrator-side path that rewrites an existing session's worktree calls it:
 | `shipit branch reset-to-base` | `services/pre-turn-reset.ts` | same |
 | Fork-merge into the active session | `services/session-fork-merge.ts` | `git merge` (and its abort) |
 | Child spawn pinned to an explicit base | `services/child-sessions.ts` | `reset --hard <base>` |
+| Chat **rewind** and its undo | `ws-handlers/rollback-handlers.ts` | `rollback` = `reset --hard` |
+| `POST /git/rollback`, `POST /git/pull`, `POST /git/rebase/abort` | `api-routes-git.ts` | `reset --hard`, merge, abort |
+| `shipit release prepare` | `services/release-prepare.ts` | `checkout -B`, `cherry-pick`, merge-override |
+
+**That table is enumerated by a test, not by hand.**
+`git-lfs-rewrite-coverage.test.ts` scans the orchestrator for the worktree-
+rewriting `GitManager` calls and raw argv forms, and fails naming any file that
+rewrites without restoring — with an allowlist that must carry a reason and may
+not go stale. The rule it encodes is the one `git-tree-uid.ts` states for its own
+problem: *a hand-converted list is stale the moment someone adds one more, and
+the failure is silent.* Not hypothetical — the first cut of this fix enumerated
+the first five rows by hand, and an independent review found the last three plus
+the fork gap below. Every one was the reported bug verbatim.
+
+**Adjacent gap closed at the same time:** `forkSession` never materialized LFS at
+all, so forking an LFS repo produced a workspace where *every* asset was a stub —
+the original docs/231 bug in full. Two causes, both in that function:
+`git clone --local` does not carry `.git/lfs` (docs/232), and the `checkout -b`
+runs through the smudge-disabled git. It now makes the same
+`materializeLfsWithWarning` call every other provisioning path does.
 
 Three properties of those call sites are load-bearing, and each is pinned by a
 test:
@@ -188,7 +208,48 @@ test:
    agent is being asked to resolve. The restore waits for a settled tree.
 3. **They restore before the queue drains and before the handback.** A turn
    queued during a sync must not start against the stubs — that is the reported
-   failure — and the ownership chown still has to have the last write.
+   failure — and the ownership chown still has to have the last write. The
+   auto-resolve **timeout** path needs its own restore to get this: its teardown
+   aborts the rebase and then drains immediately, while the flow is still waiting
+   for the killed resolution turn to settle, so the flow's `finally` alone lands
+   *after* the queued turn has started. A test drives the timeout and asserts the
+   order.
+
+The restore is **serialized per workspace** (`git-lfs.ts`) and runs under the
+CLAUDE.md invariant-5 **post-turn hold** on the rebase path. Both follow from
+where it sits: the timeout path deliberately restores twice against one clone,
+and `git lfs checkout` writes the working file *in place* (measured against
+git-lfs 3.3.0 — same inode before and after, mode preserved), so two writers
+interleave inside one asset rather than one simply losing; and the restore runs
+with `running` already false on a path that fires precisely on idle, viewerless
+sessions, which is exactly when the idle enforcer would otherwise destroy the
+container mid-pull.
+
+That in-place write is also why an ownership argument reasoned from `git checkout`
+does not transfer. `git checkout` unlinks and recreates, so the *directory's*
+permission governs; git-lfs needs the *file*, and gets away with a read-only one
+by chmod'ing around the write — which only its owner may do. A same-owner `0444`
+file therefore succeeds and proves nothing about a root-owned file under a
+dropped uid, which is EACCES. In the shipped configuration the question doesn't
+arise: docs/266 makes the rewrite drop to the tree's owner, so the files are
+worker-owned and `runGit` drops to the same uid.
+
+**A neighbouring guarantee this broke, and then fixed.** The restore's few
+milliseconds widened the window in which the sync flow still holds the session,
+and that turned an intermittent hole deterministic: a message sent while the sync
+settles is QUEUED, `releaseQueuedTurn` releases it onto `runner.dispatch`, and the
+docs/221 "your working tree was rewritten" notice was consumed only on the
+INTERACTIVE path. So the turn most likely to need it never got it. docs/221 had
+listed the dispatched drain as a deliberate non-goal on the reasoning that
+"nothing is lost — the user's next interactive turn still delivers it", which is
+true of the database row and false of the guarantee: that queued message IS the
+user's next turn, and it runs dispatched. `dispatched-turn.ts` now drains it too.
+The doc's non-goal is struck through with the correction.
+
+**Where a failed restore is reported.** The rebase path has an SSE toast. The
+pre-turn reset has no toast in scope, so a restore that leaves stubs appends a
+sentence to the reset's **agent prefix** — the issue's own fallback ask, aimed at
+the one party about to read those files. The remaining sites log.
 
 It runs `git lfs pull`, not `git lfs checkout`. A checkout would have been enough
 for the reported case (the object was already local), but a sync onto a moved

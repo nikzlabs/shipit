@@ -21,7 +21,7 @@ import type { SessionInfo } from "../../shared/types.js";
 import { graduateSession, type GraduateSessionDeps } from "./graduate-session.js";
 import { ServiceError } from "./types.js";
 import { chownTreeToSessionWorker, handWorkspaceBackToWorker } from "../session-worker-uid.js";
-import { restoreLfsAfterTreeRewrite } from "../git-lfs.js";
+import { restoreLfsAfterTreeRewrite, materializeLfsWithWarning } from "../git-lfs.js";
 import { stripRemoteUrlCredentials } from "../git-utils.js";
 import { resolveGitTreeUid } from "../../shared/git-tree-uid.js";
 
@@ -128,6 +128,20 @@ export async function forkSession(
   const branchArgs = ["checkout", "-b", trimmed];
   if (startPoint) branchArgs.push(startPoint);
   await newGit.raw(branchArgs);
+
+  // nikzlabs/shipit#2349 (adjacent gap): a fork is a provisioning path that never
+  // materialized LFS content, so forking an LFS repo produced a workspace where
+  // EVERY tracked asset was a pointer stub — the docs/231 bug in full, not just
+  // the paths a rewrite touched. Two causes, both live here: `git clone --local`
+  // does not carry `.git/lfs` (docs/232), so the fork starts with an empty object
+  // store, and the `checkout -b` above ran through the orchestrator's
+  // smudge-disabled git. This is the same call every other provisioning path
+  // makes, at the same point: after the final worktree-materializing checkout and
+  // after `configureGitCredentials` (a private repo's LFS endpoint needs it),
+  // and before the chown, so the ownership handoff still has the last write.
+  await materializeLfsWithWarning(newWorkspaceDir, activeSession?.remoteUrl ?? newWorkspaceDir, (message) =>
+    console.warn(`[fork] ${message}`),
+  );
 
   // docs/150 §7 addendum: the whole fork tree was written by the root
   // orchestrator (`git clone --local` + config + fetch + `checkout -b`) into a

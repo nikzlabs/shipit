@@ -926,6 +926,78 @@ describe("rebase-driver: runRebaseFlow", () => {
     );
   });
 
+  it("nikzlabs/shipit#2349: restores BEFORE the handback and BEFORE the queue release", async () => {
+    // Both orderings are the fix, not incidental. A restore after the queue
+    // release lets a turn queued during the sync start against the stubs — the
+    // exact reported failure — and one after the handback would have the chown
+    // no longer holding the last write. Without this test an implementation that
+    // simply moved the call two lines down still passes everything else.
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    createCleanDivergence(bareDir, workDir);
+    execSync("git push -u origin feature", { cwd: workDir, stdio: "pipe" });
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+
+    // Read the two facts from inside the restore rather than by mocking the
+    // queue module: `systemTurnInProgress` is cleared in the same `finally`
+    // immediately before `releaseQueuedTurn`, so it still being true is exactly
+    // "the queue has not been released yet".
+    let handbacksBefore = -1;
+    let holdStillHeld = false;
+    vi.mocked(restoreLfsAfterTreeRewrite).mockImplementation(() => {
+      handbacksBefore = vi.mocked(handWorkspaceBackToWorker).mock.calls.length;
+      holdStillHeld = runner.systemTurnInProgress;
+      return Promise.resolve({ status: "not-an-lfs-repo" as const, usesLfs: false });
+    });
+
+    await runFlow({
+      git,
+      githubAuthManager: makeStubAuth(true),
+      runner,
+      sessionManager: makeStubSessionManager(),
+      chatHistoryManager: makeStubHistory([]),
+      agentFactory: () => new FakeRebaseAgent(() => "should not run") as unknown as AgentProcess,
+      usageManager: makeStubUsageManager(),
+      sseBroadcast: () => {},
+    }, "main");
+
+    // A clean rebase reaches the `finally` having handed back nothing yet, so the
+    // restore must see zero handbacks — and it must still hold the session.
+    expect(handbacksBefore).toBe(0);
+    expect(holdStillHeld).toBe(true);
+    expect(handWorkspaceBackToWorker).toHaveBeenCalledWith(workDir);
+  });
+
+  it("nikzlabs/shipit#2349: holds the runner while restoring, so the idle enforcer can't cut it short", async () => {
+    // CLAUDE.md invariant 5: the restore runs with `running` already false, and
+    // auto-resolve runs precisely on idle, viewerless sessions — so without a
+    // post-turn hold the enforcer may destroy the container mid-pull.
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    createCleanDivergence(bareDir, workDir);
+    execSync("git push -u origin feature", { cwd: workDir, stdio: "pipe" });
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+
+    let heldDuringRestore = false;
+    vi.mocked(restoreLfsAfterTreeRewrite).mockImplementation(() => {
+      heldDuringRestore = runner.postTurnWorkInFlight && runner.agentBusy;
+      return Promise.resolve({ status: "not-an-lfs-repo" as const, usesLfs: false });
+    });
+
+    await runFlow({
+      git,
+      githubAuthManager: makeStubAuth(true),
+      runner,
+      sessionManager: makeStubSessionManager(),
+      chatHistoryManager: makeStubHistory([]),
+      agentFactory: () => new FakeRebaseAgent(() => "should not run") as unknown as AgentProcess,
+      usageManager: makeStubUsageManager(),
+      sseBroadcast: () => {},
+    }, "main");
+
+    expect(heldDuringRestore).toBe(true);
+    // And released afterwards — a leaked hold pins the container forever.
+    expect(runner.postTurnWorkInFlight).toBe(false);
+  });
+
   it("nikzlabs/shipit#2349: does NOT restore when the flow throws before touching the worktree", async () => {
     const { workDir, git } = setupRepoWithRemote(tmpDir);
     const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
@@ -1337,6 +1409,49 @@ describe("rebase-driver: planning#369 up-to-date branch with unpushed commits", 
     const result = await runAutoResolveAttempt(deps(git, runner, true), "main");
 
     expect(result).toMatchObject({ outcome: "success", forcePushed: true, didWork: true });
+  });
+
+  it("nikzlabs/shipit#2349: on the auto-resolve TIMEOUT, restores before draining the queue", async () => {
+    // The hole a reviewer found in the first cut of this fix. The timeout
+    // teardown aborts the rebase (rewriting the worktree back through the same
+    // smudge-disabled git) and this wrapper then drains IMMEDIATELY, while the
+    // flow is still waiting for the killed resolution turn to settle. Relying on
+    // the flow's own `finally` therefore does NOT order the restore before the
+    // drain: a message queued during the sync starts against the stubs, which is
+    // the exact failure #2349 reports.
+    const { workDir, bareDir, git } = setupRepoWithRemote(tmpDir);
+    createConflictingDivergence(bareDir, workDir);
+    execSync("git push -u origin feature", { cwd: workDir, stdio: "pipe" });
+    const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
+
+    const order: string[] = [];
+    vi.mocked(restoreLfsAfterTreeRewrite).mockImplementation(() => {
+      order.push("restore");
+      return Promise.resolve({ status: "not-an-lfs-repo" as const, usesLfs: false });
+    });
+
+    // An agent that never finishes, so the wall-clock timeout is what settles.
+    const hangingAgent = () => Object.assign(new EventEmitter(), {
+      agentId: "claude" as const,
+      capabilities: {
+        supportsResume: true, supportsImages: false, supportsSystemPrompt: true,
+        supportsPermissionModes: false, supportedPermissionModes: [], toolNames: [],
+        models: [], supportsReview: true,
+      },
+      run: () => {},
+      kill: () => {},
+    }) as unknown as AgentProcess;
+
+    const result = await runAutoResolveAttempt({
+      ...deps(git, runner, true),
+      agentFactory: hangingAgent,
+      timeoutMs: 250,
+      drainQueue: () => { order.push("drain"); },
+    }, "main");
+
+    expect(result).toMatchObject({ outcome: "error", lastError: "timeout" });
+    expect(order.indexOf("restore")).toBeGreaterThanOrEqual(0);
+    expect(order.indexOf("restore")).toBeLessThan(order.indexOf("drain"));
   });
 
   it("auto-resolve: a genuine no-op stays a suppressed deferral", async () => {

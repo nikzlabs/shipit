@@ -152,10 +152,14 @@ already hold their real bytes when your session starts.
 
 It runs the same restore after anything ShipIt does that rewrites your working
 tree from **outside** the session — a sync/rebase onto the base, a reset of a
-merged branch, a merge from another session. Those run a git with the LFS smudge
-filter turned off, so without the restore they would write pointer text over your
-assets. You are told about such a rewrite in a system message; the assets are
-restored before your next turn starts.
+merged branch, a rewind, a pull, a merge from another session, a release prepare.
+Those run a git with the LFS smudge filter turned off, so without the restore
+they would write pointer text over your assets.
+
+The restore is best-effort. When it fails, ShipIt says so — a toast for a sync, a
+note appended to the system message for a merged-branch reset — and then your
+assets ARE stubs. Treat that message as a job: run `git lfs pull` before reading,
+building with, or rendering any LFS-tracked file.
 
 **When they don't, you will see pointer stubs, not an error.** An LFS pointer is
 a ~130-byte text file starting with `version https://git-lfs.github.com/spec/v1`.

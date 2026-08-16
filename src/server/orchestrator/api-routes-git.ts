@@ -37,6 +37,7 @@ import {
   type ExplicitResetOutcome,
 } from "./services/pre-turn-reset.js";
 import { getErrorMessage } from "./validation.js";
+import { restoreLfsAfterTreeRewrite } from "./git-lfs.js";
 
 interface ExplicitResetPresentationDeps {
   runner: SessionRunnerInterface | undefined;
@@ -321,6 +322,13 @@ export async function registerGitRoutes(
       try {
         const git = createGitManager(dir);
         const result = await gitRollback(git, request.body.commitHash);
+        // nikzlabs/shipit#2349 — that rewrite ran through a git with the LFS smudge
+        // filter disabled, so every LFS-tracked path the rollback moved is now
+        // pointer text in a tree that reads clean. Restore it before anything
+        // reads those files.
+        await restoreLfsAfterTreeRewrite(dir, "Rollback", (message) =>
+          console.warn(`[rollback] ${message}`),
+        );
         // A rollback rewrites the working tree from the orchestrator, so the
         // session's `shipit.yaml` / compose file may now describe a different
         // stack. Re-read it rather than relying on the in-container file
@@ -388,7 +396,14 @@ export async function registerGitRoutes(
       if (!dir) return;
       try {
         const git = createGitManager(dir);
-        return await gitPull(git, deps.githubAuthManager, request.body?.remote, request.body?.branch);
+        const pulled = await gitPull(git, deps.githubAuthManager, request.body?.remote, request.body?.branch);
+        // nikzlabs/shipit#2349 — a pull is a fetch + MERGE, so it rewrites the worktree
+        // through the smudge-disabled orchestrator git and leaves LFS-tracked
+        // paths as pointer text.
+        await restoreLfsAfterTreeRewrite(dir, "Pull", (message) =>
+          console.warn(`[git-pull] ${message}`),
+        );
+        return pulled;
       } catch (err) {
         if (err instanceof ServiceError) {
           reply.code(err.statusCode).send({ error: err.message });
@@ -534,6 +549,15 @@ export async function registerGitRoutes(
           const stillInProgress = await git.isRebaseInProgress().catch(() => true);
           if (stillInProgress) throw abortErr;
         }
+        // nikzlabs/shipit#2349 — an abort checks the pre-rebase tree back out through
+        // the same smudge-disabled orchestrator git, so it leaves LFS pointer
+        // text exactly as the rebase did. The rebase DRIVER's own `finally`
+        // covers a flow-initiated abort; this route also serves an abort of an
+        // agent-initiated in-container rebase, where there is no flow to do it.
+        // The two cannot collide — the restore serializes per workspace.
+        await restoreLfsAfterTreeRewrite(dir, "Rebase abort", (message) =>
+          console.warn(`[rebase-abort] ${message}`),
+        );
         if (runner) {
           runner.emitMessage({ type: "rebase_aborted", sessionId: runner.sessionId });
         }

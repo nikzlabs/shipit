@@ -8,12 +8,42 @@ import { archiveSession, forkSession } from "../services/session.js";
 import type { PersistedMessage, RewindSnapshotInfo } from "../chat-history.js";
 import { resolveRunner } from "./resolve-runner.js";
 import { generateBranchSlug, generateBranchPrefix } from "../git-utils.js";
+import { restoreLfsAfterTreeRewrite } from "../git-lfs.js";
 
 type WsRewindAtGap = Extract<WsClientMessage, { type: "rewind_at_gap" }>;
 type WsRewindPreviewRequest = Extract<WsClientMessage, { type: "rewind_preview_request" }>;
 type WsRewindRestoreRequest = Extract<WsClientMessage, { type: "rewind_restore_request" }>;
 
 type RewindCtx = ConnectionCtx & RunnerCtx & AppCtx;
+
+/**
+ * `git.rollback` + the LFS restore it owes (nikzlabs/shipit#2349).
+ *
+ * A rewind's rollback is a `reset --hard` run by the ORCHESTRATOR against the
+ * session's bind-mounted workspace, and the orchestrator's git has the LFS
+ * smudge filter disabled by design (see `git-lfs.ts`). So it re-materializes
+ * every LFS-tracked path the rewind moved as ~130 bytes of pointer text, while
+ * `git status` still reports the tree clean because the pointer in the index
+ * never changed. Rewind is a first-class chat action, which makes it the most
+ * reachable version of that bug — hence one helper rather than four call sites
+ * each remembering.
+ *
+ * Best-effort and never throws: the rollback has already happened by the time
+ * the restore runs, so a failure here must not turn a completed rewind into a
+ * reported failure. `restoreLfsAfterTreeRewrite` warns on every outcome that
+ * leaves stubs behind.
+ */
+async function rollbackAndRestoreLfs(
+  git: { rollback: (commitHash: string) => Promise<void> },
+  workspaceDir: string | null,
+  commitHash: string,
+): Promise<void> {
+  await git.rollback(commitHash);
+  if (!workspaceDir) return;
+  await restoreLfsAfterTreeRewrite(workspaceDir, "Rewind", (message) =>
+    console.warn(`[rewind] ${message}`),
+  );
+}
 
 function findCommitBeforeGap(messages: PersistedMessage[], gapPosition: number): string | null {
   for (let i = gapPosition - 1; i >= 0; i--) {
@@ -334,7 +364,7 @@ export async function handleRewindAtGap(ctx: RewindCtx, msg: WsRewindAtGap): Pro
         ctx.send({ type: "error", message: "No current code state available to restore." });
         return;
       }
-      await ctx.getActiveGitManager().rollback(rollbackHash);
+      await rollbackAndRestoreLfs(ctx.getActiveGitManager(), sessionDir, rollbackHash);
       const flippedMessageIds = ctx.chatHistoryManager.markRolledBackFromIndex(sessionId, gapPosition, rollbackHash);
       const snapshot = ctx.chatHistoryManager.createRewindSnapshot(sessionId, { action: "code", headHash, flippedMessageIds });
       const replay = buildConversationReplay(allMessages);
@@ -359,7 +389,7 @@ export async function handleRewindAtGap(ctx: RewindCtx, msg: WsRewindAtGap): Pro
         return;
       }
       const snapshot = ctx.chatHistoryManager.createRewindSnapshot(sessionId, { action: "both", messages: allMessages, headHash });
-      await ctx.getActiveGitManager().rollback(rollbackHash);
+      await rollbackAndRestoreLfs(ctx.getActiveGitManager(), sessionDir, rollbackHash);
       const truncated = allMessages.slice(0, gapPosition);
       const removed = allMessages.slice(gapPosition);
       if (sessionDir) await deleteUploadsFromMessages(removed, path.join(path.dirname(sessionDir), "uploads"));
@@ -425,10 +455,14 @@ export async function handleRewindRestoreRequest(ctx: RewindCtx, msg: WsRewindRe
       : targetSessionId === ctx.getActiveAppSessionId()
         ? ctx.getActiveGitManager()
         : null;
+    // The workspace `git` operates on, resolved the same two ways — the LFS
+    // restore has to run against the tree the rollback rewrote, not the active
+    // session's (nikzlabs/shipit#2349).
+    const restoreDir = targetSession?.workspaceDir ?? ctx.getActiveSessionDir();
 
     if (snapshot.action === "code") {
       if (!git) throw new Error("No workspace available for code restore");
-      await git.rollback(snapshot.headHash);
+      await rollbackAndRestoreLfs(git, restoreDir, snapshot.headHash);
       ctx.chatHistoryManager.clearRolledBack(targetSessionId, snapshot.flippedMessageIds);
       ctx.sessionManager.clearAgentSessionId(targetSessionId);
       ctx.send({ type: "rewind_restored", sessionId: targetSessionId, action: "code" });
@@ -441,7 +475,7 @@ export async function handleRewindRestoreRequest(ctx: RewindCtx, msg: WsRewindRe
       if (replay) ctx.sessionManager.setConversationReplay(targetSessionId, replay);
       ctx.sessionManager.clearAgentSessionId(targetSessionId);
       if (!git) throw new Error("No workspace available for code restore");
-      await git.rollback(snapshot.headHash);
+      await rollbackAndRestoreLfs(git, restoreDir, snapshot.headHash);
       ctx.send({ type: "rewind_restored", sessionId: targetSessionId, action: "both" });
       return;
     }
