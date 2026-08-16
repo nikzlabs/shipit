@@ -11,12 +11,13 @@ import { HARNESSES } from "../shared/catalogue/index.js";
  * that catalogue's order and about which models actually reach which harness, so
  * a fixture would let them pass here and disagree with what ShipIt does.
  *
- * The ranking itself is exercised as a pure function, because the shipped
- * catalogue cannot reach every rung: Claude's family speaks only
- * Anthropic-Messages and GPT's only Responses, so no family currently spans both
- * harnesses and tiers 3 and 5 are unreachable end to end today. They are not
- * hypothetical — one gateway row gaining a style makes them reachable — so they
- * are pinned where they can be.
+ * The ranking itself is also exercised as a pure function, one rung at a time.
+ * When this file was written no family spanned both harnesses and tiers 3 and 5
+ * were unreachable end to end; docs/268's third harness changed that (an
+ * anthropic-key model now bends onto OpenCode — tier 3 is asserted end to end
+ * in the selection suite below, and tier 5 is reachable the same way through a
+ * gateway row). The unit rungs stay because they pin each predicate in
+ * isolation, not because the catalogue cannot reach them.
  */
 
 function route(
@@ -705,12 +706,9 @@ describe("selecting the reviewer furthest from the implementer (req 4)", () => {
   });
 
   /**
-   * The comparator's fences, pinned as a unit because the catalogue cannot
-   * reach them end to end: no prior-avoiding candidate can land on the
-   * implementer's own harness today (every such model also reaches another
-   * harness and bends away), so a worse-tier prior-avoiding candidate is not
-   * constructible through `selectReviewer` — the same reason tiers 3 and 5 are
-   * unit-pinned above.
+   * The comparator's fences, pinned as a unit — every rung × prior combination
+   * in one place, including combinations the end-to-end test below reaches only
+   * one of.
    */
   it("the tie-break prior decides ties only — never a real tier difference", async () => {
     const { beatsIncumbentReviewer } = await import("./reviewer-model.js");
@@ -750,6 +748,46 @@ describe("selecting the reviewer furthest from the implementer (req 4)", () => {
         { tier: 1, avoidsLikelyFamily: true },
       ),
     ).toBe(false);
+  });
+
+  /**
+   * The tier-dominance fence end to end, through the one shipped row that can
+   * reach it: the Z.ai coding plan's GLM is carrier-restricted to Claude Code
+   * (`carriers: ["claude"]`), so it CANNOT bend away from a Claude implementer
+   * — it lands prior-avoiding (glm ≠ the native claude family) on the
+   * implementer's own harness at tier 2, against a prior-matching claude-opus-5
+   * that reaches OpenCode at tier 1. The tier must win.
+   */
+  it("keeps a further prior-matching reviewer over a nearer prior-avoiding one", async () => {
+    installAll();
+    const { selectReviewer } = await import("./reviewer-model.js");
+    const result = selectReviewer(
+      { harnessId: "claude" },
+      {
+        credentialStore: storeWith([ANTHROPIC_KEY, route({ serviceId: "zai", billingMode: "sub" })], {
+          first: {
+            serviceId: "anthropic",
+            billingMode: "key",
+            modelId: "claude-opus-5",
+            reasoningEffort: "high",
+          },
+          second: {
+            serviceId: "zai",
+            billingMode: "sub",
+            modelId: "glm-5.2[1m]",
+            reasoningEffort: "high",
+          },
+        }),
+        env: {},
+      },
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.tierBasis).toBe("harness-only");
+    expect(result.target.slot).toBe("first");
+    expect(result.target.harnessId).toBe("opencode");
+    expect(result.tier).toBe(1);
   });
 
   it("marks the ranking as model-and-harness when the implementer's model is known", async () => {

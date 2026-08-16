@@ -341,9 +341,10 @@ export function selectReviewer(
  * identity is known (no prior is computed at all), so the prior can never
  * override a real identity comparison; and because it decides ties only, it can
  * never outrank a real tier difference. Exported for the guard tests, which pin
- * both fences — the tier-dominance one is not reachable end to end against
- * today's catalogue (no prior-avoiding candidate can land on the implementer's
- * own harness: every such model also reaches another harness and bends away).
+ * both fences — the tier-dominance one at the unit level and also end to end,
+ * via the one shipped row that CAN land a prior-avoiding candidate on the
+ * implementer's own harness at a worse tier: the Z.ai coding plan's GLM, whose
+ * credential is carrier-restricted to Claude Code and so cannot bend away.
  */
 export function beatsIncumbentReviewer(
   candidate: { tier: ReviewerTier; avoidsLikelyFamily: boolean },
