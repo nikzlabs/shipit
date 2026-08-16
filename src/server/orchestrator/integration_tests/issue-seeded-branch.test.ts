@@ -181,12 +181,15 @@ describe("Integration: issue-seeded session branch + started (planning#322)", ()
       "graduation",
     );
 
-    // The branch is the pointer, slugified — in the DB and on disk.
+    // The branch is the pointer, slugified, plus a random uniqueness suffix
+    // (planning#413) — the same value in the DB and on disk. The suffix is what
+    // stops the NEXT session on this issue from landing on this branch and
+    // adopting its PR; the stem is what keeps the branch readable.
     const branch = sessionManager.get(sessionId)!.branch;
-    expect(branch).toBe("octocat-hello-world-42");
+    expect(branch).toMatch(/^octocat-hello-world-42-[a-z0-9_-]{1,6}$/);
     expect(
       execSync("git branch --show-current", { cwd: sessionDir }).toString().trim(),
-    ).toBe("octocat-hello-world-42");
+    ).toBe(branch);
 
     // docs/248 req 22 — no fragment of the issue title reaches the branch name.
     for (const word of ISSUE_TITLE.toLowerCase().split(/\W+/).filter(Boolean)) {
