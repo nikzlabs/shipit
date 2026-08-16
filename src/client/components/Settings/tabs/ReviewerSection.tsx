@@ -337,17 +337,30 @@ function ReviewerSlotCard({
               billing mode, model)`, so the mode qualifies the service rather
               than the row.
 
-              **The harness is the one field here that is a PREDICTION, and it
-              is worded as one.** The other three are settled: the slot names
-              them, or `resolveReviewerSlots` derives them once and every review
-              uses that answer. The harness does not settle here. This view is
-              implementer-independent by design — `resolveSlotPlan(plan, …,
-              undefined)` — while review time passes the implementer's harness
-              as `avoidHarnessId`, so a model both harnesses can carry resolves
-              to the picker's first harness HERE and to the other one THERE.
-              Stating it flat ("running on Claude Code") read as a promise that
-              a Codex review then broke, and the user reported it as their
-              settings change failing to apply.
+              **The harness is a PREDICTION, and it is worded as one.** The
+              service, the billing mode and the model are settled — the slot
+              names them, or `resolveReviewerSlots` derives them once and every
+              review uses that answer. The harness does not settle here. This
+              view is implementer-independent by design — `resolveSlotPlan(plan,
+              …, undefined)` — while review time passes the implementer's
+              harness as `avoidHarnessId`, so a model both harnesses can carry
+              resolves to the picker's first harness HERE and to the other one
+              THERE. Stating it flat ("running on Claude Code") read as a
+              promise that a Codex review then broke, and the user reported it
+              as their settings change failing to apply.
+
+              **The reasoning level is a second, latent prediction — left
+              stated flat here deliberately.** `buildTarget` sets it to
+              `plan.pin?.reasoningEffort ?? defaultEffortFor(candidate.harnessId)`
+              against the review-time harness, so an auto slot's level follows
+              whichever harness the review bent to (invisible only because both
+              harnesses currently default to `high`), and a pinned slot's level
+              is validated against the harness derived HERE and then copied onto
+              the one derived THERE — a level the second harness may not declare
+              at all. That is planning#381, which owns the choice between
+              refusing and substituting; hedging the level before that choice is
+              made would describe behaviour ShipIt has not settled on. So the
+              defect is named here rather than papered over in the copy.
 
               So the rule is stated and the value is given as its no-conflict
               case. Dropping the harness instead would have been the smaller
@@ -372,9 +385,19 @@ function ReviewerSlotCard({
                     · {resolved.label} at{" "}
                     {resolved.reasoningLabel ?? resolved.reasoningEffort}
                   </span>
+                  {/*
+                    "preferring", not "differing": `harnessesPreferring` moves
+                    the avoided harness to the BACK of the search rather than
+                    removing it, so a review can still land on it when it is the
+                    only routable one. And the named value is qualified by "with
+                    no session to avoid" because that is literally this view's
+                    derivation (`avoidHarnessId: undefined`) — not by "unless the
+                    reviewed session is on it", which would promise a switch that
+                    the fallback does not guarantee.
+                  */}
                   <span data-testid={`reviewer-harness-${view.slot}`}>
-                    · harness selected per review, to differ from the reviewed session&apos;s own
-                    — {resolved.harnessName} when there is nothing to avoid
+                    · harness selected per review, preferring one the reviewed session is
+                    not on — {resolved.harnessName} with no session to avoid
                   </span>
                 </>
               ) : view.unavailableReason === "pin_unavailable" ? (

@@ -182,23 +182,55 @@ describe("ReviewerSection", () => {
    * Claude Code and a Claude session's review actually runs on Codex. Users read
    * the mismatch as their pin failing to apply.
    *
+   * The fixture is the INCIDENT's own shape rather than the file's default
+   * Claude-only slot: `deepseek-v4-flash` is really carried by both installed
+   * harnesses, so it is the row where this view and the review genuinely
+   * disagree — the same pairing `RolesTab.test.tsx` uses for the same reason.
+   *
    * So this asserts the CLAIM rather than the sentence: the harness is still
-   * named (req 8 keeps it legible) AND it is named conditionally. The pre-fix
-   * assertions could not fail on this — they were `toContain("Claude Code")`,
-   * which a flat prediction satisfies exactly as well as a qualified one.
+   * named (req 8 keeps it legible) AND what it depends on is said. Only the
+   * hedge's *subject* is pinned, not its exact phrasing — a reword that keeps
+   * the conditional should not have to touch this test. The pre-fix assertions
+   * could not fail on any of it: they were `toContain("Claude Code")`, which a
+   * flat prediction satisfies exactly as well as a qualified one.
    */
   it("states the derived harness as a per-review choice, not as settled fact", () => {
-    useSettingsStore.getState().setReviewers([autoSlot("first"), autoSlot("second")]);
+    useSettingsStore.getState().setReviewers([
+      autoSlot("first", {
+        source: "pinned",
+        pin: {
+          serviceId: "deepseek",
+          billingMode: "key",
+          modelId: "deepseek-v4-flash",
+          reasoningEffort: "max",
+        },
+        resolved: {
+          serviceId: "deepseek",
+          billingMode: "key",
+          modelId: "deepseek-v4-flash",
+          serviceName: "DeepSeek",
+          label: "V4 Flash",
+          // Derived with no implementer to avoid. A Claude session's review of
+          // this very slot resolves to Codex instead.
+          harnessId: "claude",
+          harnessName: "Claude Code",
+          reasoningEffort: "max",
+          reasoningLabel: "Max",
+        },
+      }),
+      autoSlot("second"),
+    ]);
     render(<ReviewerSection agentList={agents} />);
 
     const harness = screen.getByTestId("reviewer-harness-first").textContent ?? "";
     // Req 8 — the harness stays on the row. Dropping it would make Settings
     // silent about the axis this feature took away from `CLAUDE.md`.
     expect(harness).toContain("Claude Code");
-    // ...carried by the clause that makes it conditional, and by the condition
-    // under which the named value is the right one.
+    // ...and it is tied to the thing it actually varies with. Naming the
+    // reviewed session is the whole correction: without it the row answers for
+    // every session, including the ones it is wrong for.
     expect(harness).toMatch(/per review/i);
-    expect(harness).toMatch(/nothing to avoid/i);
+    expect(harness).toMatch(/reviewed session/i);
     // And the unqualified claim is gone from the row entirely.
     expect(screen.getByTestId("reviewer-resolution-first").textContent).not.toMatch(
       /running on Claude Code/i,
