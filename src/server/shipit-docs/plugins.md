@@ -315,7 +315,10 @@ For a consumer the tree is read-only at `/plugin` **and** at whatever path the
 fragment mounts it at: a `- .:/app` that says nothing about writability is
 forced read-only, because the rule is about the tree, not the path. In your own
 repository the same mount is writable, so this is the rule you cannot break
-locally.
+locally — with one exception worth taking: a `repo: self` fragment **keeps what
+it declared**, so writing `- .:/app:ro` explicitly gives your own session the
+consumer's writability for that mount, at no cost to a consumer who gets it
+either way.
 
 You break it by depending on something that writes, not by writing anything
 yourself. The usual suspects: dev servers and bundlers that cache next to the
@@ -370,7 +373,7 @@ exports:
     web:
       compose: plugins/web/docker-compose.yml   # the PRODUCTION service
       install: npm ci && npm run build
-      dep-dirs: [node_modules, dist]   # `dist` matters as soon as `install-inputs` is set
+      dep-dirs: [node_modules, dist]   # load-bearing the moment you add `install-inputs`
 
 plugins:
   repos:
@@ -402,7 +405,9 @@ services:
 services:
   web-dev:                       # a DIFFERENT name and a DIFFERENT port
     image: node:22-alpine
+    working_dir: /app
     command: npm run dev -- --host 0.0.0.0 --port 4301
+    volumes: [".:/app"]          # writable here; watching and hot reload are fine
     ports: ["4301:4301"]
     x-shipit-preview: auto
 ```
@@ -455,6 +460,9 @@ cp -a <your checkout> /tmp/ro-plugin
 chmod -R a-w /tmp/ro-plugin
 cd /tmp/ro-plugin && <the exact command your fragment declares>
 ```
+
+The copy stands in for the mounted tree, so read the fragment's `/app` (or
+whatever it mounts `.` at) as `/tmp/ro-plugin` when you run the command.
 
 That models the one property a self-consuming session can never have. It is
 cheap enough to run before every publish, and it is the only one of these checks
