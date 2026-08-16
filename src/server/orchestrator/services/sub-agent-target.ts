@@ -463,6 +463,25 @@ export function implementerFor(
  * test registry, a bare runtime), not "nothing is eligible" — so it is skipped
  * rather than refusing everything, and the credential-route check downstream
  * stays the authority in that case.
+ *
+ * **Blaming the credential is accurate here, and only because of what runs
+ * first.** The eligible set is the catalogue join narrowed by credential, so a
+ * miss could in principle mean either "this harness cannot speak that model's API
+ * style" or "it can, and nothing here holds a credential for that row" — two
+ * causes with different remedies (pick another model vs. connect an account), and
+ * naming the wrong one sends the reader to Settings for a pair no credential
+ * could ever fix. What keeps that from happening is that the style question is
+ * already answered, and refused, upstream: `runSubAgent` calls
+ * {@link resolveSpawnTarget} first (`sub-agent.ts`), which throws
+ * "…they share no API style" for an incompatible explicit target, and this
+ * function is called under the SAME `kind === "explicit"` gate. So every
+ * selection that reaches here shares a style, and a credential is the only thing
+ * left to be missing.
+ *
+ * Verified at `sub-agent.ts:runSubAgent` (resolve, then assert) against
+ * `resolveSpawnTarget`'s style check. **Move this call ahead of that one and the
+ * message starts misdirecting** — planning#389 is what that class of misdirection
+ * costs; the fix is to name the cause here, not to reorder the two.
  */
 export function assertHarnessCanRunSelection(
   harnessName: string,

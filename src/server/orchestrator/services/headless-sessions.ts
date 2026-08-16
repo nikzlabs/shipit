@@ -1,5 +1,5 @@
 import path from "node:path";
-import type { BillingMode } from "../../shared/catalogue/index.js";
+import { catalogueModelLabels, type BillingMode } from "../../shared/catalogue/index.js";
 import { safeSimpleGit } from "../../shared/git-hooks-guard.js";
 import type { SessionManager } from "../sessions.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
@@ -9,7 +9,12 @@ import type { ProviderAccountManager } from "../provider-account-manager.js";
 import type { PrStatusPoller } from "../pr-status-poller.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 import { toggleAutoMerge } from "./github.js";
-import { agentIdForModel, getAgentCapabilities } from "../../shared/agent-registry.js";
+import {
+  agentIdForModel,
+  getAgentCapabilities,
+  getAgentDisplayName,
+  KNOWN_AGENT_IDS,
+} from "../../shared/agent-registry.js";
 import { isHarnessInstalled } from "../../shared/installed-harnesses.js";
 import { generateBranchPrefix } from "../git-utils.js";
 import { prepareSessionAgentEnvironment } from "../session-agent-env.js";
@@ -165,30 +170,6 @@ export async function createHeadlessSession(
   const branchName = explicitBranch || generateBranchPrefix();
   assertValidBranchName(branchName);
 
-  // `skipReuse: true` — a headless session is always a *new* session for the
-  // requested work (quick-capture, issue-seeded "Start session", webhooks),
-  // never a recycle of an existing draft. Without it, the claim reuse path
-  // (`findUngraduatedWarm`) could hand back an ungraduated `/{repo}/new` draft
-  // the user is actively typing in for the same repo — graduating it and
-  // dispatching this headless prompt into the session they're viewing (a
-  // message appearing from nowhere mid-compose). Mirrors `spawnChildSession`.
-  const claimed = await claimService.claim(repoUrl, { skipReuse: true });
-  const newSessionId = claimed.sessionId;
-  const newWorkspaceDir = claimed.workspaceDir;
-
-  try {
-    const currentBranch = (await safeSimpleGit(newWorkspaceDir).raw(["branch", "--show-current"])).trim();
-    if (currentBranch && currentBranch !== branchName) {
-      await safeSimpleGit(newWorkspaceDir).raw(["branch", "-m", currentBranch, branchName]);
-    }
-  } catch (err) {
-    throw new ServiceError(400, `Failed to rename branch to '${branchName}': ${String(err)}`);
-  }
-
-  // Workspace-side branch identity must be set before graduateSession so the
-  // session row matches what's on disk.
-  sessionManager.setBranch(newSessionId, branchName);
-
   // Defense-in-depth: the model is the single source of truth (docs/142,
   // Problem C). When a recognized model is supplied, derive the agent from it
   // and prefer that over a conflicting `opts.agent` — this protects any caller
@@ -206,13 +187,101 @@ export async function createHeadlessSession(
   // actually run — so Quick Capture's harness pick was discarded here, write-
   // once, after the client had already honoured it. A caller naming a harness
   // that runs the model is not the stale-key case this guard is for.
+  //
+  // …and EXCEPT when the harness cannot speak the model's API style at all,
+  // which is now a refusal rather than a substitution (planning#389 — see below).
+  // What survives of the derivation is the case it is unambiguously right for: a
+  // caller who named a model and NO harness, or one whose harness this build does
+  // not know.
   const explicitAgent = opts.agent;
-  const requestedAgentId =
-    explicitAgent
-    && opts.model
-    && getAgentCapabilities(explicitAgent)?.models.includes(opts.model)
+  // An id no harness in this build has. `agent` reaches here as free text — the
+  // route casts the JSON field and the multipart part without checking either —
+  // so a typo lands here, and `spawnChildSession` names LLM-written harness ids as
+  // a known source of them.
+  //
+  // Refused rather than repaired, and refused whether or not a model came with it.
+  // The alternative is the same silent substitution planning#389 is about, one
+  // step further out: with a model present the fall-through below resolves to the
+  // MODEL's harness, so `agent: "codexx"` would create a session on Claude, pin it
+  // write-once and bill its first turn — and the installed-harness gate below
+  // cannot catch that, because the id it is finally asked about is a real
+  // installed one.
+  //
+  // This is NOT the req 14 case immediately below it: that one is an id this
+  // deployment merely lacks, which is a real harness a stale picker could
+  // legitimately be holding, so it still falls back. Nothing legitimately holds an
+  // id no build ever declared.
+  const explicitCapabilities = explicitAgent ? getAgentCapabilities(explicitAgent) : undefined;
+  if (explicitAgent && !explicitCapabilities) {
+    throw new ServiceError(
+      400,
+      `Unknown agent '${explicitAgent}'. Valid agents: ${KNOWN_AGENT_IDS.join(", ")}.`,
+    );
+  }
+  const explicitAgentRunsModel = Boolean(
+    explicitCapabilities && opts.model && explicitCapabilities.models.includes(opts.model),
+  );
+
+  // planning#389 — the remaining case is the one this guard used to answer
+  // WRONG: an explicit harness that does NOT list the model. `capabilities.models`
+  // is the catalogue join (`catalogueModelIdsForHarness`), which is the API-style
+  // question asked of every service at once — so "not listed, and some other
+  // harness does list it" is exactly `resolveStyle(harness, model) === undefined`.
+  // Rerouting there sent the turn to the OTHER harness, pinned the session to it
+  // write-once, and billed it, while `pending_agent_notice` stayed NULL: a user
+  // asked for Codex, got Claude, and was told nothing (measured 2026-08-15 in the
+  // docs/252 pair sweep — `codex × openrouter:key × anthropic/claude-opus-5` ran
+  // on Claude for $0.14).
+  //
+  // The other two spawn paths already refuse the same pair, and their reasons are
+  // this one's too: `assertHarnessCanRunSelection` / `resolveSpawnTarget`
+  // (docs/261 req 7 — "the call is taken literally, so a harness pointed at
+  // another vendor's model is an error rather than something to reroute") and
+  // `spawnChildSession`'s `--agent`/`--model` check (planning#304). Headless
+  // creation was the odd one out.
+  //
+  // This DOES narrow docs/166's server-side guard, deliberately: the stale
+  // `vibe-agent-id` case it was written for ("agent codex + a Claude model") is
+  // the *same input* as a caller who means it, so no rule can repair one without
+  // rerouting the other. What docs/166 set out to prevent — a session pinned
+  // write-once to a harness the user did not choose — a refusal prevents too, and
+  // without spending the user's money to do it. The client half of docs/166 (the
+  // overlay derives the harness from the model, `newSessionAgentId`) is untouched
+  // and still keeps that pair from being sent in the first place.
+  //
+  // Membership, not `agentIdForModel`'s single "owner" (planning#304): a model
+  // BOTH harnesses list is not a mismatch, and an explicit harness that can run it
+  // is honoured above. `agentIdForModel` survives here as the "is this id known to
+  // any harness at all" test — an id no harness lists is passed through unchanged,
+  // the same forward-compat rule the child-session and role validators apply.
+  //
+  // Asked of the model ID across the whole catalogue, not of the `(service, mode)`
+  // row `opts.serviceId`/`billingMode` may also name — the same scope
+  // `spawnChildSession` uses. Both shipped harnesses declare exactly ONE style, so
+  // the two answers cannot differ today; if a future catalogue offers one id in a
+  // style a harness speaks through one service and not another, the narrower
+  // question is turn-time routing's (`resolveEndpoint`), which fails loudly rather
+  // than billing the wrong harness — which is the failure this check exists for.
+  const modelOwner = agentIdForModel(opts.model);
+  if (explicitAgent && explicitCapabilities && opts.model && !explicitAgentRunsModel && modelOwner) {
+    const harnessName = getAgentDisplayName(explicitAgent);
+    const label = catalogueModelLabels()[opts.model] ?? opts.model;
+    // Worded for both readers this path has: an HTTP caller reading a 400 body,
+    // and a user reading it as a toast (`startQuickSessionInBackground` surfaces
+    // the server's message verbatim, the overlay having already closed). Hence
+    // both remedies in plain words rather than the name of a request field.
+    throw new ServiceError(
+      400,
+      `${harnessName} cannot run ${label} — they share no API style. `
+        + `Choose a model ${harnessName} can run, or run ${label} on `
+        + `${getAgentDisplayName(modelOwner)}.`,
+    );
+  }
+
+  const requestedAgentId: AgentId =
+    explicitAgent && explicitAgentRunsModel
       ? explicitAgent
-      : (agentIdForModel(opts.model) ?? opts.agent ?? defaultAgentId);
+      : (modelOwner ?? opts.agent ?? defaultAgentId);
 
   // docs/252 phase 9 (req 14) — and the same defense one step further: the model
   // above is matched against the whole catalogue, and `opts.agent` is whatever
@@ -237,6 +306,37 @@ export async function createHeadlessSession(
     opts.reasoning && reasoningOpts?.some((o) => o.value === opts.reasoning)
       ? opts.reasoning
       : undefined;
+
+  // Everything above is a pure question about the request; everything below
+  // touches disk. The order is deliberate (and the same one `spawnChildSession`
+  // gives its `--agent`/`--model` validation): a selection the server is going to
+  // refuse should cost no claimed warm session, no branch rename, and no
+  // container — planning#389's refusal in particular runs before a single
+  // side effect.
+  //
+  // `skipReuse: true` — a headless session is always a *new* session for the
+  // requested work (quick-capture, issue-seeded "Start session", webhooks),
+  // never a recycle of an existing draft. Without it, the claim reuse path
+  // (`findUngraduatedWarm`) could hand back an ungraduated `/{repo}/new` draft
+  // the user is actively typing in for the same repo — graduating it and
+  // dispatching this headless prompt into the session they're viewing (a
+  // message appearing from nowhere mid-compose). Mirrors `spawnChildSession`.
+  const claimed = await claimService.claim(repoUrl, { skipReuse: true });
+  const newSessionId = claimed.sessionId;
+  const newWorkspaceDir = claimed.workspaceDir;
+
+  try {
+    const currentBranch = (await safeSimpleGit(newWorkspaceDir).raw(["branch", "--show-current"])).trim();
+    if (currentBranch && currentBranch !== branchName) {
+      await safeSimpleGit(newWorkspaceDir).raw(["branch", "-m", currentBranch, branchName]);
+    }
+  } catch (err) {
+    throw new ServiceError(400, `Failed to rename branch to '${branchName}': ${String(err)}`);
+  }
+
+  // Workspace-side branch identity must be set before graduateSession so the
+  // session row matches what's on disk.
+  sessionManager.setBranch(newSessionId, branchName);
 
   const runner = runnerRegistry.getOrCreate(newSessionId, newWorkspaceDir, agentId);
   if (credentialsDir && credentialStore) {

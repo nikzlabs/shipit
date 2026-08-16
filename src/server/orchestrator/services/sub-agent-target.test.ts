@@ -633,12 +633,21 @@ describe("assertHarnessCanRunSelection", () => {
     ).toThrow(/cannot run/);
   });
 
+  // planning#389 asked whether the credential blame in this message misdirects,
+  // the way the headless path's silent reroute did. It does not, and the reason
+  // is an ORDERING rather than anything in this function: "refuses a harness
+  // pointed at a model it shares no API style with" above covers the upstream
+  // check `runSubAgent` runs FIRST, under the same `kind === "explicit"` gate, so
+  // a style-incompatible pair never reaches here and a credential is the only
+  // thing left to be missing. Adding the style branch here too would have been
+  // dead code, and a dead branch is not a guard — the ordering is.
+
   // An EMPTY eligible set means no credential source is wired (a test registry,
   // a bare runtime), not "nothing is eligible" — refusing everything there would
   // break installs the route check already covers.
   it("skips the check when the registry reports no eligible set at all", async () => {
     const { assertHarnessCanRunSelection } = await import("./sub-agent-target.js");
-    expect(() => assertHarnessCanRunSelection("Codex", [], selection)).not.toThrow();
-    expect(() => assertHarnessCanRunSelection("Codex", undefined, selection)).not.toThrow();
+    expect(() => assertHarnessCanRunSelection("codex", [], selection)).not.toThrow();
+    expect(() => assertHarnessCanRunSelection("codex", undefined, selection)).not.toThrow();
   });
 });

@@ -223,6 +223,101 @@ Tests: `harness-seed.test.ts`, including the regression itself (a pick still
 names its harness after `useUiStore.reset()`) and its counter-example (writing
 only the harness key fails the same way the bug did).
 
+## Third follow-up — the server guard was rerouting, and rerouting billed
+
+*planning#389. Found by the docs/252 live pair-verification sweep, 2026-08-15.*
+
+The server-side guard added above resolves a mismatched pair by **substituting**
+the model's harness. For a pair the named harness genuinely cannot speak — Codex
+with an `anthropic-messages`-only model — that substitution is not a repair. The
+session was created on Claude, **pinned write-once**, and the first turn RAN and
+BILLED, with `pending_agent_notice` NULL: nothing in the UI or the transcript
+said a substitution had happened. Four requests naming `agent: "codex"` were
+measured doing this, one of them `codex × openrouter:key ×
+anthropic/claude-opus-5` at $0.14. Someone asked for Codex, paid for Claude, and
+was never told.
+
+The other two paths that answer this same question refuse it —
+`assertHarnessCanRunSelection` / `resolveSpawnTarget` on the one-shot spawn
+(docs/261 req 7: "the call is taken literally, so a harness pointed at another
+vendor's model is an error rather than something to reroute") and
+`spawnChildSession`'s `--agent`/`--model` check (planning#304). Headless creation
+was the only one rerouting.
+
+**So it now refuses**, with the harness's and the model's names and the remedy:
+
+> Codex cannot run Opus 5 — they share no API style. Choose a model Codex can
+> run, or run Opus 5 on Claude Code.
+
+Worded for both of this path's readers: an HTTP caller reading a 400 body, and a
+user reading it as a **toast** — `startQuickSessionInBackground` surfaces the
+server's message verbatim, the overlay having already closed — so it names the
+two remedies in plain words rather than a request field.
+
+**This narrows the guard this doc added, and it cannot be otherwise.** The stale
+`vibe-agent-id` case ("agent codex + a Claude model") and a caller who means it
+are the *same request*; no server-side rule distinguishes them, so a repair for
+one is a reroute for the other. What matters is that the harm this doc opened
+with — a session pinned write-once to a harness the user did not choose — is
+prevented either way, and a refusal prevents it without spending money. **The
+client half is untouched**: the overlay still derives the harness from the model
+(`newSessionAgentId` / `persistHarnessPick`), which is what stops the pair being
+sent at all.
+
+Three cases deliberately keep their old behaviour, because none of them is a
+harness the caller cannot run:
+
+- **No harness named** — the model still decides it, over the install default.
+  This is the source-of-truth rule, and it survives whole.
+- **A model both harnesses list** (`deepseek-v4-pro`) — not a disagreement; the
+  named harness wins, as the follow-up above settled.
+- **A model id no harness lists** — forward-compat passthrough, the same rule the
+  child-session and role validators apply.
+
+The **harness-not-installed** fallback below it also stays a fallback, and keeps
+its `console.warn`. It is a different question: that harness *could* run the
+model, this deployment simply does not ship it, and the user cannot re-aim a
+quick capture from where they are.
+
+An **agent id no harness has** is now refused too, whether or not a model came
+with it (`Unknown agent 'codexx'. Valid agents: claude, codex.`, the wording
+`spawnChildSession` already uses). `agent` reaches this path as free text — the
+route casts the JSON field and the multipart part without checking — and with a
+model present the fall-through resolved to the *model's* harness, so a
+one-character typo produced the same silent, billed, write-once substitution one
+step further out. The installed-harness gate cannot catch that: by the time it is
+asked, the id it sees is a real installed one. This is **not** the req 14 case
+below it, which is an id this deployment merely lacks — a real harness a stale
+picker could legitimately hold, so that one still falls back.
+
+The resolution as a whole also moved **above** the workspace claim. It was always
+a pure question about the request, and a refusal should not cost a claimed warm
+session or a branch rename (`spawnChildSession` orders it the same way, for the
+same reason).
+
+### What did *not* need fixing
+
+planning#389 also reported that `assertHarnessCanRunSelection`'s refusal (`… — no
+credential this harness can use offers it`) blames the credential where the real
+cause is API-style incompatibility. On that path it does not, and the reason is an
+ordering rather than anything in the function: `runSubAgent` calls
+`resolveSpawnTarget` **first**, which refuses a style-incompatible explicit target
+with "…they share no API style", and `assertHarnessCanRunSelection` is called
+under the same `kind === "explicit"` gate. So a style-incompatible pair never
+reaches it, and a credential really is the only thing left to be missing.
+
+A first cut of this fix added the style branch there anyway. Independent review
+established it was unreachable — dead code, plus a test asserting behaviour no
+request can produce. It was removed; what stands in its place is the ordering,
+recorded in the function's docstring and in the test file, so that moving the call
+ahead of `resolveSpawnTarget` is visibly what would make the message start
+misdirecting.
+
+Tests: `headless-sessions.test.ts` (the refusal, that it precedes every side
+effect, the unknown-id refusal, and each of the three cases that must *not*
+refuse), `quick-capture-headless.test.ts` (the HTTP 400, and the surviving
+derivation).
+
 ## Related
 
 - docs/142 — agent-auth-recovery-and-model-source-of-truth (Problem C, and the
