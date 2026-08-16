@@ -271,6 +271,242 @@ session's own working tree.** So:
 - The repository's issues are already this session's, so `self` registers no
   separate feedback destination. File plugin bugs the ordinary way.
 
+## Writing a plugin that survives its first consumer
+
+Testing a plugin from its own repository is the right loop, and it is not a
+substitute for a consuming project. Read the list above once more as **a list of
+untested surfaces**: each difference is a place where a plugin works perfectly
+for its author and fails on the first project that declares it.
+
+| | the plugin's own repository | a consuming project |
+|---|---|---|
+| the checkout | this session's working tree, **writable** | a generation, **read-only at every mount** |
+| the manifest's `install` | never runs — `agent.install` prepares the tree | runs, and is the only thing that populates the tree |
+| a watcher on the source | sensible; you are editing it | pointless — the tree is one commit and cannot change |
+
+Everything below follows from those three rows.
+
+### Build in `install`, and declare where the build lands — on both sides
+
+A consumer's `/plugin` is the checkout plus whatever `install` left behind, so
+an install that builds is how built code gets there at all. Everything it writes
+arrives (§ Install), with one exception you opt into: declaring `install-inputs`
+on a *building* install turns store reuse back on, and a store hit clears the
+writable layer and runs nothing — so a build output the store holds no copy of
+is the one thing that does not arrive. Declare that directory in `dep-dirs` too
+— and note that `install-inputs` takes literal paths, no globs, and *replaces*
+the inferred set, so for a build it means naming every file that changes the
+result. Leaving it off is the quiet default: the install re-runs per commit and
+its output stays in the layer.
+
+Under `repo: self` none of that runs. Your repository's own `agent.install` has
+to do the same preparation, and `agent.dep-dirs` has to name the build output
+for the same reason: a session that skips the install gets the committed files
+and the declared dependency directories, and nothing else
+([shipit-yaml.md](shipit-yaml.md) → Install behavior).
+
+So the same preparation is declared **twice** — once in the manifest for
+consumers, once under `agent:` for your own sessions — and only one of the two
+runs in the session you develop in. Change one, change the other.
+
+### Nothing may write the checkout, including the tools you depend on
+
+For a consumer the tree is read-only at `/plugin` **and** at whatever path the
+fragment mounts it at: a `- .:/app` that says nothing about writability is
+forced read-only, because the rule is about the tree, not the path. In your own
+repository the same mount is writable, so this is the rule you cannot break
+locally — with one exception worth taking: a `repo: self` fragment **keeps what
+it declared**, so writing `- .:/app:ro` explicitly gives your own session the
+consumer's writability for that mount, at no cost to a consumer who gets it
+either way.
+
+You break it by depending on something that writes, not by writing anything
+yourself. The usual suspects: dev servers and bundlers that cache next to the
+code they read, anything with `--watch`, code generators, and tools that rewrite
+a lockfile.
+
+What a plugin's service container *can* write: its own image filesystem
+(`/tmp`), any `tmpfs:` it declares, an anonymous volume (a `volumes:` entry with
+no `:`), `/plugin-state`, and `/project`. A fragment cannot declare a named
+volume, and its bind sources may only be its own files. The last two are mounted
+read-write but owned by the session-worker uid (1000), so a service that
+declares some other `user:` can still be refused by the filesystem.
+
+Relocating one tool's writes is the weaker fix — the tool's next release writes
+somewhere new. The recipe below removes the need.
+
+### Ship a built artifact; keep the dev server in your own repository
+
+Nobody in a consuming project edits your source, and nothing a watcher could see
+can ever change there — the tree is one commit, read-only. A dev server in an
+exported fragment costs every consuming session a file watcher over an immutable
+tree, forever, for a feature it structurally cannot use. Polling makes it worse.
+
+Run two servers over one codebase:
+
+1. **The exported fragment serves the build.** A plain HTTP server, no watcher,
+   no `--watch`, no polling. Prefer a server whose own writes land in its image
+   filesystem rather than in the tree it serves.
+2. **The dev server lives in the plugin repository's own `docker-compose.yml`** —
+   the file its `compose:` key names, not the file the manifest exports. Hot
+   reload, watching, whatever you like: it is an ordinary project service in your
+   own session and reaches no consumer.
+3. **Take the exported service off autostart in your own `plugins.use` entry**,
+   so the two do not both claim the preview. It stays one
+   `shipit service start <name>` away, which is how you smoke-test what a
+   consumer actually runs.
+
+One thing collides, and it is the name. A plugin service whose name matches one
+of the project's own service names withholds **every** service that plugin
+repository provides — the project's name wins — so the dev service needs a
+different one. Ports do not collide: ShipIt strips host bindings and reaches
+every service over the session network, so distinct ports are a convenience for
+you, not a requirement.
+
+```yaml
+# the plugin repository's own shipit.yaml
+agent:
+  install:
+    - npm ci
+    - npm run build        # the same build the manifest's `install` runs
+  # a skipped install restores only these, so the build output is named too
+  dep-dirs: [node_modules, plugins/web/dist]
+compose: docker-compose.yml        # the DEV service lives here
+
+exports:
+  plugins:
+    web:
+      compose: plugins/web/docker-compose.yml   # the PRODUCTION service
+      install: npm ci && npm run build
+      # `plugins/web/dist` is load-bearing the moment you add `install-inputs`
+      dep-dirs: [node_modules, plugins/web/dist]
+
+plugins:
+  repos:
+    - repo: self
+      name: dev
+  use:
+    - plugin: web
+      from: dev
+      overrides:
+        services:
+          web: { autostart: false }   # the dev service owns the preview here
+```
+
+```yaml
+# plugins/web/docker-compose.yml — what a consumer runs
+services:
+  web:
+    image: node:22-alpine
+    user: "1000:1000"
+    working_dir: /app
+    command: node /app/serve.mjs     # serves /app/dist; no watcher
+    volumes: [".:/app:ro"]           # `.` is THIS FILE'S directory: plugins/web
+    ports: ["4300:4300"]
+    x-shipit-preview: auto
+```
+
+**A fragment's `.` is the fragment's own directory, not the repository root** —
+the same rule a standalone `docker compose up` in that directory would follow.
+So `/app` above holds `plugins/web`, and the build has to land beside the
+fragment (`plugins/web/dist`) for the service to serve it. Nothing above `/app`
+is reachable from there either, so a server that imports a dependency from the
+repository root's `node_modules` finds nothing. The whole tree is mounted as
+well, at `/plugin`, for a service that would rather run from the root.
+
+```yaml
+# docker-compose.yml — your own session only; never reaches a consumer
+services:
+  web-dev:                       # a DIFFERENT name from the exported service
+    image: node:22-alpine
+    user: "1000:1000"            # a contained session requires this
+    working_dir: /app
+    command: npm run dev -- --host 0.0.0.0 --port 4301
+    volumes: [".:/app"]          # writable here; watching and hot reload are fine
+    ports: ["4301:4301"]
+    x-shipit-preview: auto
+```
+
+Two consequences of running two servers follow, and they are the ones that bite.
+
+### Share the dispatcher, not just the handlers
+
+Extracting the route *handlers* and mounting them two ways leaves the matching
+rules in two places, and they drift immediately — case sensitivity, trailing
+slashes, where a segment ends. That produces a route that behaves one way in
+development and another for a consumer: the exact bug the split was meant to
+remove. Mount your own dispatcher at the root of both servers rather than
+re-implementing a framework's matching rules on the side you do not develop on.
+
+### The framework was catching your exceptions; a plain server is not
+
+An exception thrown synchronously out of a `node:http` handler **exits the
+process**, and the consuming project's preview stays down until someone restarts
+it. Port the boundaries along with the routes:
+
+- Decode failures: `decodeURIComponent('%')` throws. One malformed URL from
+  anywhere is enough. Catch it and return 400.
+- Streams: handle `error` on every one. `existsSync` says yes to a directory,
+  and streaming a directory throws `EISDIR` **asynchronously**, where your
+  `try` has already returned. Stat and check `isFile()`.
+- Path containment: comparing a resolved path against the served root passes a
+  symlink inside the root that points out of it, and the read then follows it.
+  Resolve both sides with `realpathSync` and compare those.
+
+### Write the failure message for someone who cannot see your install log
+
+A *failed* install is the easy case: its output tail rides the failure detail, so
+the Plugins tab shows it and `shipit plugin refresh` reprints it for the agent.
+The hard case is the one this recipe is for — an install that **succeeded** and
+left the wrong tree. Nothing failed, nothing is logged, and `shipit plugin` has
+`refresh` and `exec` and no `logs`, so your runtime error message is the whole
+diagnostic that reader gets:
+
+- **Name the precondition that failed, specifically.** "Dependencies or build
+  missing" is not actionable; "the build (`dist/`) is missing" is, and it tells a
+  failed install apart from a dropped one.
+- **Give the two actions they can take**: `shipit plugin refresh <name>`, and
+  filing an issue on your repository with `shipit issue create --tracker <name>`
+  quoting that line.
+- **Say when their project cannot be the cause** — true of a missing build
+  artifact, and not of a failure that depends on a setting, a credential, an
+  egress rule or project data, which are theirs. Either way never point them at
+  your manifest: it is in a repository they can read and cannot change.
+
+### The read-only smoke test, in three commands
+
+```
+cp -a <your checkout> /tmp/ro-plugin
+chmod -R a-w /tmp/ro-plugin
+cd /tmp/ro-plugin && <the exact command your fragment declares>
+```
+
+The copy stands in for the mounted tree, so read the fragment's `/app` (or
+whatever it mounts `.` at) as `/tmp/ro-plugin` when you run the command.
+
+That models the one property a self-consuming session can never have. It is
+cheap enough to run before every publish, and it is the only one of these checks
+that needs nothing from the platform.
+
+It is an approximation, in one way worth knowing: the errno differs. An
+unwritable copy gives `EACCES` where a real consumer's mount can give `ENOENT`,
+and a dependency with error-code-specific fallbacks can therefore fail two
+different ways for one defect. Trust it for "does anything write the checkout",
+not for how a specific tool reacts.
+
+### Before you publish
+
+- `install` produces everything the plugin needs at run time, and
+  `agent.install` produces the same thing for your own sessions.
+- `dep-dirs` names the build output on both sides.
+- Nothing the fragment runs writes into the tree — verified by the read-only
+  copy above, not by reasoning about it.
+- No watcher, no polling, no dev server in the exported fragment.
+- Every failure message names its precondition and is actionable by someone with
+  no access to your repository.
+- The exported service's name cannot collide with a consumer's own service names
+  (a collision withholds the whole repository's services).
+
 ## Reporting a problem with a plugin
 
 A plugin misbehaving is not something to work around locally, and not something
