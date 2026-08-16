@@ -543,7 +543,12 @@ agent-event stream), so it follows the **voice-note precedent** (`docs/163`):
   NON-system dispatched turn. An SDK click and a `shipit session message` are
   the user speaking too, so a programmatically-driven session is told as well;
   system turns (CI fix, merge wake, rebase step) are excluded, being ShipIt
-  talking to itself.
+  talking to itself. It arrives as the OPTIONAL `SystemTurnDeps.consumeBugOutcomes`
+  (wired in `runner-registry-factory.ts`), exactly like docs/221's
+  `consumePendingAgentNotice` beside it — reaching into
+  `listenerDeps.chatHistoryManager` instead would throw in the minimal setups
+  that stub it, killing the turn during setup. Unlike that notice it has no
+  `restore*` pair, because it is at-most-once by design.
 - `src/server/orchestrator/chat-card-persistence.ts` — `persistCardTransition`
   now gates its in-flight branch on `hasInProgress`, closing the turn-startup
   window described above for every card that shares the primitive.

@@ -250,9 +250,7 @@ export async function runDispatchedTurn(
   // correctness hazard, a missed report status is not.
   const bugOutcomeNotice = opts.systemTurn
     ? ""
-    : buildBugOutcomeNotice(
-        deps.listenerDeps.chatHistoryManager.consumeUnreportedBugOutcomes(runner.sessionId),
-      );
+    : buildBugOutcomeNotice(deps.consumeBugOutcomes?.(runner.sessionId) ?? []);
 
   // The `[System] …` prefix rides in FRONT of the assembled prompt, exactly as
   // the interactive path places it: the branch moved (or conspicuously did not)

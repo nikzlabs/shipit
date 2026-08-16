@@ -639,6 +639,10 @@ export function createRunnerRegistry(
         // settles is released onto `dispatch`, so the interactive-only consume
         // dropped it for exactly the turn most likely to need it.
         consumePendingAgentNotice: (sessionId) => sessionManager.consumePendingAgentNotice(sessionId),
+        // nikzlabs/shipit#2350 — a dispatched NON-system turn is the user speaking (an
+        // SDK click, a `shipit session message`), so it carries a resolved
+        // bug-report card's outcome exactly as a typed turn does.
+        consumeBugOutcomes: (sessionId) => chatHistoryManager.consumeUnreportedBugOutcomes(sessionId),
         // ...and put it back if that turn never reached the agent, so a spawn
         // failure can't burn the only warning that the tree was rewritten.
         restorePendingAgentNotice: (sessionId, notice) => sessionManager.setPendingAgentNotice(sessionId, notice),

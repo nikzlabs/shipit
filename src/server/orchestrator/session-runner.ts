@@ -14,7 +14,7 @@ import type { WsServerMessage, ImageAttachment, FileContextRef, UploadRef, Permi
 import type { PresentStateEntry } from "../shared/types/ws-server-messages.js";
 import type { ServiceManager } from "./service-manager.js";
 import type { AgentListenerDeps } from "./ws-handlers/agent-listeners.js";
-import type { PersistedMessage } from "./chat-history.js";
+import type { PersistedMessage, ResolvedBugReport } from "./chat-history.js";
 import type { SecretFinding } from "../shared/secret-scan.js";
 import type { UnreadableWorkspace } from "../shared/git.js";
 import type { SubAgentSpawnRequest, SubAgentRunResult, SubAgentRunHandle } from "../shared/sub-agent-run.js";
@@ -815,6 +815,22 @@ export interface SystemTurnDeps {
    * latched, so it can neither double-park nor undo a delivered notice.
    */
   restorePendingAgentNotice?: (sessionId: string, notice: string) => void;
+  /**
+   * nikzlabs/shipit#2350 — how the user resolved a bug-report consent card, for a
+   * dispatched turn that is NOT a system turn (an Agent Interface SDK click, a
+   * `shipit session message`). Those are the user speaking too, so a session
+   * driven entirely programmatically must be told as well; the interactive path
+   * consumes the same outcomes in `runAgentWithMessage`.
+   *
+   * Optional for the same reason as `consumePendingAgentNotice` above: minimal
+   * test setups omit it and simply get no notice. Read-and-mark is
+   * transactional, so wiring it on both paths cannot double-deliver.
+   *
+   * Deliberately NOT paired with a `restore*`: unlike the sync notice, this is
+   * at-most-once by design — a repeated "your report was filed" is worse than a
+   * missed one, and the agent-facing copy makes silence the safe fallback.
+   */
+  consumeBugOutcomes?: (sessionId: string) => ResolvedBugReport[];
   /**
    * docs/149 — write a CLI-rotated OAuth token back to the orchestrator source
    * after a system turn. Optional; production wires it to
