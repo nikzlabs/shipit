@@ -201,6 +201,33 @@ export function wireAuthRequiredHandler(
           opts.getCapturedRouteId?.(),
         );
       }
+      // planning#358 — mark the supplied secret here too, and this is the path
+      // that covers the ORDINARY cases rather than the exotic one.
+      //
+      // Reaching `surfaceReauth` means the user is being told the turn died of
+      // authentication: no silent heal saved it, so the failure is terminal by
+      // definition. That makes this the right place, and the `recoverAuth` mark
+      // in `turn-executor` a complement rather than a duplicate — the store's
+      // mark is idempotent, so both firing costs one write and one broadcast.
+      //
+      // Why both are needed: `recoverAuth` runs only when `willRecover` is
+      // true, which requires `sub` billing AND the harness vendor's own service
+      // AND a healer wired. That is `claude-env-oauth` and essentially nothing
+      // else. Every other supplied secret arrives here instead —
+      // `stopsOnFailure` for a metered key (`claude-api-key`, DeepSeek,
+      // OpenRouter, Vercel), and the set-aside branch for a non-vendor
+      // subscription like GLM's plan — and before this line each of those kept
+      // reading `ready` forever, which is the very gap the issue names. Marking
+      // only in `recoverAuth` fixed one row shape and left the most literal
+      // "supplied secret" rows uncovered.
+      //
+      // `reserved` is the capture kind for an env/API-key credential; an account
+      // is skipped because its sign-in flow owns its status, and the store
+      // refuses a non-string row anyway.
+      const failedRouteId = opts.getCapturedRouteId?.();
+      if (failedRouteId && opts.getCapturedRouteKind?.() === "reserved") {
+        deps.markCredentialRouteAuthFailed?.(failedRouteId);
+      }
       persistAuthErrorRow();
       // docs/153, docs/155 — let the per-agent module decide its side effect on
       // auth failure (Claude nudges the silent OAuth refresher; others register

@@ -111,6 +111,98 @@ describe("CredentialStore", () => {
 
   // ---- Agent env ----
 
+  // ---- planning#358: a supplied secret refused for auth ----
+
+  describe("credential route auth_failed", () => {
+    const stringRoute = (id: string) => ({
+      id,
+      serviceId: "anthropic",
+      billingMode: "sub" as const,
+      via: "string" as const,
+      label: id,
+      isPrimary: false,
+      status: "ready" as const,
+      createdAt: 0,
+      updatedAt: 0,
+    });
+
+    const accountRoute = (id: string) => ({ ...stringRoute(id), via: "account" as const });
+
+    it("marks a refused supplied secret, so the row stops reading ready", () => {
+      const store = new CredentialStore(createTmpDir());
+      store.upsertCredentialRouteWithSecret(stringRoute("cred_a"), "tok");
+      expect(store.markCredentialRouteAuthFailed("cred_a")).toBe(true);
+      expect(store.getCredentialRoute("cred_a")?.status).toBe("auth_failed");
+    });
+
+    it("leaves an account row alone — its sign-in flow owns its status", () => {
+      // Two writers for one row is how the two come to disagree.
+      const store = new CredentialStore(createTmpDir());
+      store.upsertCredentialRoute(accountRoute("acct_a"));
+      expect(store.markCredentialRouteAuthFailed("acct_a")).toBe(false);
+      expect(store.getCredentialRoute("acct_a")?.status).toBe("ready");
+    });
+
+    it("reports no change on a second mark, so callers can skip the broadcast", () => {
+      const store = new CredentialStore(createTmpDir());
+      store.upsertCredentialRouteWithSecret(stringRoute("cred_a"), "tok");
+      store.markCredentialRouteAuthFailed("cred_a");
+      expect(store.markCredentialRouteAuthFailed("cred_a")).toBe(false);
+    });
+
+    it("clears on proof by use, so a recovered credential stops demanding attention", () => {
+      // The account twin exists because a row marked once stayed auth_failed
+      // forever while the credential worked again; this is that guard.
+      const store = new CredentialStore(createTmpDir());
+      store.upsertCredentialRouteWithSecret(stringRoute("cred_a"), "tok");
+      store.markCredentialRouteAuthFailed("cred_a");
+      expect(store.clearCredentialRouteAuthFailed("cred_a")).toBe(true);
+      expect(store.getCredentialRoute("cred_a")?.status).toBe("ready");
+    });
+
+    it("clearing a ready row is a no-op, so the success path costs no write", () => {
+      const store = new CredentialStore(createTmpDir());
+      store.upsertCredentialRouteWithSecret(stringRoute("cred_a"), "tok");
+      expect(store.clearCredentialRouteAuthFailed("cred_a")).toBe(false);
+    });
+
+    it("a replaced secret clears the previous value's verdict", () => {
+      // Pasting a fresh token is a complete remedy: the row returns to ready
+      // immediately rather than staying marked until a turn happens to run.
+      const store = new CredentialStore(createTmpDir());
+      store.upsertCredentialRouteWithSecret(stringRoute("cred_a"), "stale");
+      store.markCredentialRouteAuthFailed("cred_a");
+      store.setCredentialSecret("cred_a", "fresh");
+      expect(store.getCredentialRoute("cred_a")?.status).toBe("ready");
+      expect(store.getCredentialSecret("cred_a")).toBe("fresh");
+    });
+
+    it("survives a reload — the verdict is persisted, not in-memory", () => {
+      const dir = createTmpDir();
+      const store = new CredentialStore(dir);
+      store.upsertCredentialRouteWithSecret(stringRoute("cred_a"), "tok");
+      store.markCredentialRouteAuthFailed("cred_a");
+      expect(new CredentialStore(dir).getCredentialRoute("cred_a")?.status).toBe("auth_failed");
+    });
+
+    it("does not bench the route — 358 asks for surfaced state, not exclusion", () => {
+      // A single 401 must not hide a credential with no self-expiry; the
+      // time-boxed bench on the set-aside path is the mechanism for that.
+      const store = new CredentialStore(createTmpDir());
+      store.upsertCredentialRouteWithSecret(stringRoute("cred_a"), "tok");
+      store.markCredentialRouteAuthFailed("cred_a");
+      const route = store.getCredentialRoute("cred_a");
+      expect(route?.exhaustedUntil ?? null).toBeNull();
+      expect(store.getCredentialSecret("cred_a")).toBe("tok");
+    });
+
+    it("ignores an unknown id rather than inventing a row", () => {
+      const store = new CredentialStore(createTmpDir());
+      expect(store.markCredentialRouteAuthFailed("cred_gone")).toBe(false);
+      expect(store.clearCredentialRouteAuthFailed("cred_gone")).toBe(false);
+    });
+  });
+
   describe("agentEnv", () => {
     it("returns undefined for unset key", () => {
       const store = new CredentialStore(createTmpDir());

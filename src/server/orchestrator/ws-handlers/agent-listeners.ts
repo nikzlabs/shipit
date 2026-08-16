@@ -114,6 +114,23 @@ export interface AgentListenerDeps {
    */
   markSessionAccountExhausted?: (sessionId: string, until: number, routeId?: string) => void;
   /**
+   * planning#358 — record/clear "this supplied secret was refused for auth" on
+   * the credential route the turn actually used.
+   *
+   * Callbacks rather than the `CredentialStore` itself, for the same reason as
+   * `markSessionAccountExhausted` directly above: this module knows only that a
+   * turn on route X failed authentication, while deciding what that means for
+   * the stored row — and re-broadcasting Settings — is the orchestrator's job.
+   *
+   * The pair is what keeps the state honest in both directions. Marking without
+   * clearing is the failure mode `markProviderAccountReauthenticated` was
+   * written to fix on the account side: a row stuck `auth_failed` forever while
+   * the credential works again. Optional — tests and local runtime omit them,
+   * which simply leaves the row's status untouched as it is today.
+   */
+  markCredentialRouteAuthFailed?: (routeId: string) => void;
+  clearCredentialRouteAuthFailed?: (routeId: string) => void;
+  /**
    * docs/153 — fire-and-forget nudge to the orchestrator-owned Claude OAuth
    * refresher. Triggered from the session-level `auth_required` handler so a
    * stale per-session token is healed for the next turn. Optional — local
@@ -490,6 +507,9 @@ export function wireAgentListeners(
   // strip its Accept/Suggest buttons before the user could act (see the
   // ExitPlanMode block in the agent_assistant branch below).
   const suppressedToolResultIds = new Set<string>();
+  // planning#358 — see the note at `wireAuthRequiredHandler` below.
+  let sawAuthRequiredThisTurn = false;
+  agent.on("auth_required", () => { sawAuthRequiredThisTurn = true; });
 
   // ---- MCP mid-turn crash detection (docs/088) + per-tool timing (docs/185) ----
   //
@@ -906,6 +926,29 @@ export function wireAgentListeners(
           exhaustionLockoutUntil(detected),
           opts.getCapturedRouteId?.(),
         );
+      }
+      // planning#358 — proof by use: an `agent_result` at all means the CLI got
+      // past authentication on this route, so any earlier `auth_failed` verdict
+      // is stale and must not keep demanding attention in Settings.
+      //
+      // Deliberately NOT gated on the result being error-free. On Claude — the
+      // only backend that can currently reach the mark — an auth failure does
+      // not arrive here: `claude/process.ts` raises `auth_required` and swallows
+      // both auth-shaped events, so an `agent_result` carrying a quota error
+      // still proves the credential authenticated, which is exactly the fact
+      // this clears. Gating on `!event.error` would leave a healthy credential
+      // marked broken whenever its first turn back happened to hit a limit.
+      //
+      // That invariant is backend-specific, not universal, so do not restate it
+      // as one: Codex's handler maps any `turn/completed` with a non-`completed`
+      // status to an `agent_result` with `error` and no auth-shaped exclusion,
+      // which could in principle clear a mark set moments earlier by a
+      // simultaneous `auth_required`. Latent today — the catalogue gives Codex
+      // no string-delivered route that can reach the mark — and the cost if it
+      // ever lands is one stale `ready` that the next failure re-marks.
+      const authenticatedRouteId = opts.getCapturedRouteId?.();
+      if (authenticatedRouteId && !sawAuthRequiredThisTurn) {
+        deps.clearCredentialRouteAuthFailed?.(authenticatedRouteId);
       }
       // A turn the provider refused for quota is a FAILED turn even when the
       // CLI dressed it up as a successful one. Promote it here, where both
@@ -1637,6 +1680,22 @@ export function wireAgentListeners(
   // lives in `agent-auth-handler.ts`. It reads only turn-start-captured values
   // (`opts.capturedSessionId`, the resolved `runner`) and emits via
   // `emitToViewers`, preserving the WS-lifecycle invariant.
+  // planning#358 — turn-scoped latch: did THIS turn fail authentication?
+  //
+  // Registered as its own listener rather than threaded through the auth
+  // handler, because it must be set even on the paths that handler returns
+  // early from. Per-turn by construction: `agent-execution.ts` calls
+  // `removeAllListeners()` before re-wiring a reused process, so this closure
+  // never outlives its turn.
+  //
+  // Measured, not theorised. Against a deliberately invalid DeepSeek key the
+  // sequence was `marked auth_failed` → `cleared auth_failed` → `agent exited`,
+  // all inside one failed turn: the CLI raised `auth_required` AND then emitted
+  // an `agent_result`, so the clear undid the mark and the row went back to
+  // reading `ready` on a credential that had just been refused. "Auth failures
+  // never arrive as `agent_result`" holds for the shapes whose text matches the
+  // CLI's auth patterns and does not hold for a bare upstream 401 from a
+  // redirected service — which is precisely the case this feature exists for.
   wireAuthRequiredHandler(agent, runner, deps, opts, emitToViewers);
 
   agent.on("error", async (err: Error) => {
