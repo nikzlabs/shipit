@@ -2107,8 +2107,10 @@ coherent in one UI.
   `SecretsTab.tsx` — the
   extensions in the table above; the Plugins tab pane (registered in the
   `App.tsx` rail) is the one new component. `PrLifecycleCard/` is untouched.
-- `src/server/shipit-docs/` — a new `plugins.md` for the agent-facing
-  contract, once slice-2 mechanics are settled.
+- `src/server/shipit-docs/` — the agent-facing contract, once slice-2 mechanics
+  are settled. Two pages, split by who is reading: `plugins.md` for a session in
+  a project that **uses** a plugin, `plugin-authoring.md` for a session on the
+  plugin repository itself.
 
 ## 5. Verification: dogfood a plugin inside ShipIt itself
 
