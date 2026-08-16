@@ -203,6 +203,24 @@ export function sealSessionDir(sessionDir: string, identity: SessionIdentity): b
 }
 
 /**
+ * The mode half of {@link sealSessionDir}, for a per-session directory whose
+ * OWNER some other helper has already set — currently the per-session
+ * credentials subtree, which `chownSessionCredentialsTree` hands over by path.
+ *
+ * No-op when the non-root runtime is off. Best-effort: a directory we cannot
+ * chmod must not stop a credential sync, which is the thing that keeps a session
+ * able to authenticate.
+ */
+export function sealDirMode(dir: string): void {
+  if (sessionWorkerGid() === null) return;
+  try {
+    fs.chmodSync(dir, 0o700);
+  } catch (err) {
+    console.warn(`[session-worker-uid] could not seal mode on ${dir}:`, err);
+  }
+}
+
+/**
  * docs/268 req 9 — make a surface that is SHARED between sessions usable by all
  * of them, now that they no longer share a uid.
  *

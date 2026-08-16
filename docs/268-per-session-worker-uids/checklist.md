@@ -112,9 +112,20 @@ most were found by a test rather than by reading:
   "do not drop", which stopped being true when the record moved off the tree.
   **Found by tracing the call path, not by a test**; guarded now by a source
   ordering check, since no test here can exercise a real drop.
-- `cloneFromCache` also used a plain recursive chown, which re-owns the
-  `.git/objects` inodes it hardlinked from the shared bare cache. Same
-  cross-session write channel as the entrypoint's walk, on the orchestrator side.
+- **Four orchestrator paths used the object-blind recursive chown on a
+  workspace**, re-owning the `.git/objects` inodes `git clone --local` hardlinked
+  from the shared bare cache — the same cross-session write channel as the
+  entrypoint's walk, on the orchestrator side. `cloneFromCache`, `forkSession`
+  (whose clone hardlinks from the PARENT session's tree, so a fork would have
+  taken rewrite rights over its parent's repository content), and the two restore
+  paths in `services/session.ts`. All now use the object-aware handback, and a
+  scanner in `session-identity-ordering.test.ts` fails the build on the next one.
+- **`forkSession` builds its own session directory** instead of going through
+  `createSessionDirFactory`, so it got neither an identity nor the 0700 seal:
+  requirement 1 would have held for every kind of session except a fork, silently.
+  Allocation now lives behind one `allocateAndSealSessionDir`, configured at boot
+  rather than threaded through an eleven-parameter call chain, and a guard asserts
+  both creators call it.
 - The `/plugins` and `/plugin-bin` prep blocks still chowned `uid:uid`, leaving
   them group-owned by a gid the worker does not hold. **Found by an entrypoint
   test.**

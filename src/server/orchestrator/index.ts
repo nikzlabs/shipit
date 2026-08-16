@@ -5,7 +5,7 @@ import type { ResolvedEgressConfig } from "./egress-allowlist.js";
 import { setEgressDurableSource } from "./egress-policy.js";
 import { assertWorkerUidConsistency } from "./worker-uid-guard.js";
 import { assertWorkerUidNotReserved, sealLegacySessionDirs, sessionWorkerGid } from "./session-worker-uid.js";
-import { assertSessionUidRange } from "./session-uid-allocator.js";
+import { assertSessionUidRange, configureSessionUidLedger } from "./session-uid-allocator.js";
 import { configureSessionIdentityRoots } from "../shared/session-identity.js";
 import { perSessionCredentialsRoot } from "./session-credentials-scaffold.js";
 import { resolveBuildId, resolveVersion } from "./build-id.js";
@@ -146,6 +146,10 @@ export async function buildApp(deps: AppDeps = {}): Promise<FastifyInstance> {
   // Gated on the non-root runtime by `sealLegacySessionDirs` itself, and on the
   // roots being configured by the resolver — so local mode, dogfood and every
   // test keep exactly the behaviour they had.
+  // docs/268 — the allocation ledger, configured once. See the allocator's own
+  // note on why this is configured rather than threaded through the two
+  // functions that create a session directory.
+  configureSessionUidLedger(mgrs.databaseManager.db);
   const sharedWorkerGid = sessionWorkerGid();
   configureSessionIdentityRoots({
     sessionsRoot,

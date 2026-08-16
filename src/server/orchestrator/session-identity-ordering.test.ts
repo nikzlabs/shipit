@@ -81,16 +81,66 @@ describe("docs/268 — orderings a uid drop depends on", () => {
     expect(body).not.toContain("chownTreeToSessionWorker(");
   });
 
-  it("the session directory is sealed before anything is written into it", () => {
-    // The seal is what makes every later chown and every dropped git resolve to
-    // the allocated uid. Anything written before it resolves to the shared
-    // global value instead, leaving a session whose record and whose contents
-    // disagree.
-    const source = stripComments(read("session-dir-factory.ts"));
-    const seal = source.indexOf("sealSessionDir(");
-    const track = source.indexOf("sessionManager.track(");
+  it("no orchestrator path chowns a session WORKSPACE with the object-blind walk", () => {
+    // `chownTreeToSessionWorker` chowns every file it walks, including
+    // `.git/objects` — which `git clone --local` HARDLINKS from the shared bare
+    // cache and, for a fork, from the parent session's clone. One inode, one
+    // owner, every link: so pointing it at a workspace hands that session
+    // rewrite rights over repository content every other clone of the repo
+    // reads. `handWorkspaceBackToWorker` is the object-aware composite and is
+    // what a workspace must get.
+    //
+    // Scanned rather than asserted per call site because the hazard is the NEXT
+    // one somebody writes. The remaining legitimate uses of the blind walk are
+    // all non-workspace paths — a credentials subtree, a plugin staging dir, a
+    // CI log dir, and a session dir that has no `.git` in it yet — so the rule
+    // is expressible as "not on something named like a workspace".
+    const dir = HERE;
+    const offenders: string[] = [];
+    const walk = (d: string): void => {
+      for (const entry of fs.readdirSync(d, { withFileTypes: true })) {
+        const full = path.join(d, entry.name);
+        if (entry.isDirectory()) {
+          if (entry.name === "node_modules") continue;
+          walk(full);
+        } else if (entry.name.endsWith(".ts") && !entry.name.endsWith(".test.ts")) {
+          for (const line of stripComments(fs.readFileSync(full, "utf8")).split("\n")) {
+            if (!line.includes("chownTreeToSessionWorker(")) continue;
+            if (/chownTreeToSessionWorker\(\s*[\w.]*[Ww]orkspaceDir/.test(line)) {
+              offenders.push(`${path.relative(HERE, full)}: ${line.trim()}`);
+            }
+          }
+        }
+      }
+    };
+    walk(dir);
+    expect(offenders).toEqual([]);
+  });
+
+  it("every path that creates a session directory seals it", () => {
+    // Two functions build `<sessionsRoot>/<id>`: the factory, and `forkSession`,
+    // which does NOT go through the factory. A creator that skipped the seal
+    // would produce the one kind of session with no identity and no 0700
+    // boundary — requirement 1 holding everywhere except there, silently.
+    for (const file of ["session-dir-factory.ts", "services/session-fork-merge.ts"]) {
+      const source = stripComments(read(file));
+      expect(source, `${file} creates a session dir without sealing it`)
+        .toContain("allocateAndSealSessionDir(");
+    }
+  });
+
+  it("the fork seals and hands over before it runs git in the new clone", () => {
+    // Same hazard as `cloneFromCache`, one path over: the config / fetch /
+    // `checkout -b` writes go through `safeSimpleGit(newWorkspaceDir)`, which
+    // drops to the identity the seal records, against a tree `git clone --local`
+    // just created as root.
+    const source = stripComments(read("services/session-fork-merge.ts"));
+    const seal = source.indexOf("allocateAndSealSessionDir(");
+    const handback = source.indexOf("handWorkspaceBackToWorker(newWorkspaceDir)");
+    const droppedGit = source.indexOf("safeSimpleGit(newWorkspaceDir)");
     expect(seal).toBeGreaterThan(-1);
-    expect(track).toBeGreaterThan(seal);
+    expect(handback).toBeGreaterThan(seal);
+    expect(droppedGit).toBeGreaterThan(handback);
   });
 
   it("the identity roots are configured before the legacy seal runs", () => {

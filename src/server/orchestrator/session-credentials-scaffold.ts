@@ -30,7 +30,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { AgentId } from "../shared/types/agent-types.js";
 import { writeContainerGitConfig } from "./git-config.js";
-import { chownTreeToSessionWorker } from "./session-worker-uid.js";
+import { chownTreeToSessionWorker, sealDirMode } from "./session-worker-uid.js";
 
 /** Subdirectory under the credentials root that holds per-session subtrees. */
 export const SESSION_CREDENTIALS_SUBDIR = "sessions";
@@ -103,7 +103,19 @@ export function perSessionCredentialsRoot(credentialsRoot: string): string {
  * this too; the entrypoint chown only runs at container start.
  */
 export function chownSessionCredentialsTree(credentialsRoot: string, sessionId: string): void {
-  chownTreeToSessionWorker(perSessionCredentialsDir(credentialsRoot, sessionId));
+  const dir = perSessionCredentialsDir(credentialsRoot, sessionId);
+  chownTreeToSessionWorker(dir);
+  // docs/268 — seal it, for the same reason and by the same means as the session
+  // directory: once sessions hold different uids, a subtree left at the default
+  // 0755 is one another session's payload can walk into. This one holds the
+  // agent's provider credentials, so it is if anything the worse of the two to
+  // leave open. `chownTreeToSessionWorker` above has already resolved this path
+  // to the owning session, so the mode is all that is missing.
+  //
+  // Directory-level, exactly like the session dir: 0700 denies traversal, so no
+  // credential file inside needs a mode of its own and no writer has to remember
+  // one — which matters here, where several unrelated writers create files.
+  sealDirMode(dir);
 }
 
 /**

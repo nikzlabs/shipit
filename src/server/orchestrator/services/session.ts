@@ -24,7 +24,7 @@ import type { SessionInfo } from "../../shared/types.js";
 import type { RepoStore } from "../repo-store.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 import { generateBranchPrefix } from "../git-utils.js";
-import { chownTreeToSessionWorker } from "../session-worker-uid.js";
+import { handWorkspaceBackToWorker } from "../session-worker-uid.js";
 import { materializeLfsWithWarning } from "../git-lfs.js";
 import { reclaimRegenerableSessionDirs } from "../disk-utils.js";
 import { ServiceError } from "./types.js";
@@ -164,7 +164,13 @@ async function materializeLfsAndChown(workspaceDir: string, repoUrl: string | un
   );
   // Only re-chown when the pull actually wrote files — a non-LFS repo shouldn't
   // pay for a full-tree ownership walk on every restore.
-  if (result.status === "materialized") chownTreeToSessionWorker(workspaceDir);
+  //
+  // docs/268 — the object-aware handback, not a plain recursive chown. A session
+  // clone's `.git/objects` are HARDLINKS into the shared bare cache (`git clone
+  // --local`), and an inode has one owner across every link, so chowning object
+  // files hands this session rewrite rights over content every other clone of
+  // the repo reads. Invisible while all sessions shared one uid.
+  if (result.status === "materialized") handWorkspaceBackToWorker(workspaceDir);
 }
 
 /** Unarchive (restore) a session, recreating clone if needed. */
@@ -432,7 +438,8 @@ async function restoreSessionWorkspaceImpl(
     }
     // `git checkout` rewrote the worktree as the root orchestrator; hand it back
     // to the worker uid so the non-root agent can edit tracked files (docs/150 §7).
-    chownTreeToSessionWorker(session.workspaceDir);
+    // docs/268 — object-aware, for the hardlink reason above.
+    handWorkspaceBackToWorker(session.workspaceDir);
   }
 
   if (githubAuthManager.authenticated) {

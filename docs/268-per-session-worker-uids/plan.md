@@ -111,8 +111,12 @@ which is requirement 8a's population.
 
 ### B. The session directory is the record, and the seal (reqs 1, 2, 5, 8b)
 
-`<sessionsRoot>/<sessionId>` (`session-dir-factory.ts:30`) becomes
-**owned by the session's identity and mode 0700**. It does two jobs at once:
+`<sessionsRoot>/<sessionId>` becomes **owned by the session's identity and mode
+0700**. Two functions create one — `createSessionDirFactory` and `forkSession`,
+which builds the path itself — so both go through a single
+`allocateAndSealSessionDir`, and a guard test asserts they do: a creator that
+skipped it would leave exactly one kind of session with no identity and no
+boundary, which is the shape of gap nobody notices. It does two jobs at once:
 
 - **It is the trusted record of the identity (req 2).** `buildMounts` mounts
   `<sessionDir>/workspace`, the per-session credentials subtree, uploads,
@@ -124,9 +128,17 @@ which is requirement 8a's population.
   *that*". Requirement 5 comes with it: the record is a file-system fact that
   survives every restart, with no cache to go stale.
 - **It is the seal (req 1).** 0700 denies traversal to every other uid, so no
-  inner file's mode matters — a session's workspace, its state dir, its scratch
-  and its credentials subtree are all behind one directory bit. `sessionsRoot`
-  itself stays root-owned 0755 so each session can traverse to its own.
+  inner file's mode matters — a session's workspace, its state dir and its
+  scratch are all behind one directory bit, and no writer downstream has to
+  remember a mode. `sessionsRoot` itself stays root-owned 0755 so each session
+  can traverse to its own.
+
+  The per-session **credentials** subtree is sealed the same way, and it is worth
+  saying it is not part of requirement 1 — that requirement is scoped to another
+  session's *workspace*. It is included because it is the same directory bit on a
+  directory the same code already hands to the same identity, and leaving the
+  agent's provider credentials cross-readable while sealing source trees would be
+  an odd place to stop.
 
 **Old sessions are sealed too, without being migrated (req 8b).** At boot, every
 session directory that is still **root-owned** — the state a pre-docs/268 session

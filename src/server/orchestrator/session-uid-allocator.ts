@@ -43,7 +43,8 @@
  */
 
 import type Database from "better-sqlite3";
-import { RESERVED_EGRESS_UIDS } from "./session-worker-uid.js";
+import { RESERVED_EGRESS_UIDS, sealSessionDir, sessionWorkerGid } from "./session-worker-uid.js";
+import type { SessionIdentity } from "../shared/session-identity.js";
 
 /** First uid available to a session. See the module header for the choice. */
 export const SESSION_UID_MIN = 2_000_000;
@@ -106,6 +107,51 @@ export function assertSessionUidRange(): void {
  * the correct trade against ever reusing one.
  */
 export function allocateSessionUid(db: Database.Database): number {
+  return takeNextUid(db);
+}
+
+let ledger: Database.Database | null = null;
+
+/**
+ * Point the allocator at the database, once, from orchestrator startup.
+ *
+ * Configured rather than threaded for the same reason `session-identity.ts` is:
+ * the two functions that create a session directory sit at the end of long
+ * positional call chains (`forkSession` takes eleven parameters before its deps
+ * object), and a twelfth that a third creator could forget is exactly the
+ * omission that would leave one kind of session unsealed. Unconfigured means
+ * no allocation, which is local mode, dogfood and every test.
+ */
+export function configureSessionUidLedger(db: Database.Database | null): void {
+  ledger = db;
+}
+
+/**
+ * Give a freshly-created session directory an identity and seal it.
+ *
+ * The single entry point for both paths that create one: the session-directory
+ * factory, and `forkSession`, which builds `<sessionsRoot>/<id>` itself rather
+ * than going through the factory. Having one function is the point — a fork that
+ * skipped this would get no identity and, worse, no 0700 seal, so requirement 1
+ * would silently not hold for forked sessions while holding for every other kind.
+ *
+ * No-op (returns null) when the non-root runtime is off or the ledger is
+ * unconfigured.
+ *
+ * **Call it before any orchestrator-side git runs in that tree with an explicit
+ * baseDir.** Such a git now drops to the identity this seal records, so running
+ * it first means dropping onto a tree that is still `root:root` — an EACCES on
+ * `.git/config` that fails session creation.
+ */
+export function allocateAndSealSessionDir(sessionDir: string): SessionIdentity | null {
+  const gid = sessionWorkerGid();
+  if (ledger === null || gid === null) return null;
+  const identity: SessionIdentity = { uid: allocateSessionUid(ledger), gid };
+  sealSessionDir(sessionDir, identity);
+  return identity;
+}
+
+function takeNextUid(db: Database.Database): number {
   const take = db.transaction((): number => {
     const row = db
       .prepare("SELECT next_uid FROM session_uid_allocation WHERE id = 1")
