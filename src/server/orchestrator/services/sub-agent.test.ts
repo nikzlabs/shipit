@@ -23,7 +23,7 @@ import { initGlobalGitConfig, setGitIdentity } from "../git-config.js";
 import { ChatHistoryManager } from "../chat-history.js";
 import { persistTurnInProgress } from "../chat-card-persistence.js";
 import type { SubAgentRunResult } from "../../shared/sub-agent-run.js";
-import type { SubAgentSpawnTarget } from "../../shared/types.js";
+import type { SubAgentConsultCard, SubAgentSpawnTarget } from "../../shared/types.js";
 import type * as InstalledHarnesses from "../../shared/installed-harnesses.js";
 import { SUB_AGENT_TRANSPORT_TIMEOUT_MS } from "../../shared/sub-agent-run.js";
 import { WorkerAbortedError, WorkerTimeoutError } from "../worker-http.js";
@@ -1207,7 +1207,7 @@ describe("getSubAgentResult (planning#247)", () => {
     createdAt: "2026-07-28T00:00:00Z",
   });
 
-  const reader = (cards: ReturnType<typeof card>[]) => ({
+  const reader = (cards: SubAgentConsultCard[]) => ({
     chatHistoryManager: { listSubAgentConsultCards: () => cards },
   });
 
@@ -1235,6 +1235,46 @@ describe("getSubAgentResult (planning#247)", () => {
   it("404s when the session has no runs, and when the id is unknown", () => {
     expect(() => getSubAgentResult(reader([]), "s1")).toThrow(/No sub-agent runs/);
     expect(() => getSubAgentResult(reader([card("aaa1", "x")]), "s1", "zzz")).toThrow(/No sub-agent run with id/);
+  });
+
+  /**
+   * planning#402 defect A, pinned on its own — no deletion involved. Two rows for
+   * one run existed in production (a live turn re-flushing its `recordedCards`
+   * beside an already-finalized copy), and taking the first match meant a stale
+   * `pending` row shadowed the terminal one for good: `shipit agent result`
+   * reported a finished 12-minute review as still running, with its output on
+   * the very next row. `replaceInProgress` now prevents new duplicates; this
+   * repairs the ones already stranded.
+   */
+  describe("duplicate rows for one run (planning#402)", () => {
+    const pendingCard = (spawnId: string) => ({ ...card(spawnId, ""), status: "pending" as const });
+
+    it("prefers the terminal copy over an earlier pending duplicate, by id", () => {
+      const found = getSubAgentResult(
+        reader([pendingCard("aaa1"), card("aaa1", "the review")]),
+        "s1",
+        "aaa1",
+      );
+      expect(found).toMatchObject({ status: "success", outputMarkdown: "the review" });
+    });
+
+    it("prefers it on the no-id and prefix paths too", () => {
+      const rows = [card("old0", "older run"), pendingCard("aaa1"), card("aaa1", "the review")];
+      expect(getSubAgentResult(reader(rows), "s1")).toMatchObject({ outputMarkdown: "the review" });
+      expect(getSubAgentResult(reader(rows), "s1", "aa")).toMatchObject({ outputMarkdown: "the review" });
+    });
+
+    it("still reports pending when that is all there is", () => {
+      expect(getSubAgentResult(reader([pendingCard("aaa1")]), "s1", "aaa1").status).toBe("pending");
+    });
+
+    it("counts distinct runs, not rows, when judging a prefix ambiguous", () => {
+      // Two rows for ONE run is a duplicate to resolve, not an ambiguous id.
+      expect(getSubAgentResult(reader([pendingCard("aaa1"), card("aaa1", "x")]), "s1", "aaa").spawnId)
+        .toBe("aaa1");
+      expect(() => getSubAgentResult(reader([card("aaa1", "x"), card("aaa2", "y")]), "s1", "aaa"))
+        .toThrow(ServiceError);
+    });
   });
 });
 
@@ -1389,10 +1429,18 @@ describe("a backgrounded consult that finishes AFTER its launching turn (plannin
    *    through the in-progress path the pending row is deleted by the next
    *    turn's `replaceInProgress`, and the terminal patch then has no row to
    *    find.
+   *  - `foreground` — planning#402. The agent did NOT background it, so its own
+   *    HTTP call is what holds the turn open: the turn is still in flight when
+   *    the consult finishes, the terminal card is written into that turn's
+   *    `in_progress=1` rows, and the turn is then preempted before it ever
+   *    finalizes (in production, by an auto-fix turn 330 ms later). The next
+   *    turn's first `replaceInProgress` deleted the success row, and `shipit
+   *    agent result` read `pending` for hours while 16,529 characters of review
+   *    sat nowhere.
    *
    * Either way the run must still be re-readable afterwards.
    */
-  function consultScenario(launch: "mid-turn" | "post-turn") {
+  function consultScenario(launch: "mid-turn" | "post-turn" | "foreground") {
     const dbManager = new DatabaseManager(":memory:");
     const chatHistoryManager = new ChatHistoryManager(dbManager);
     const finalizeTurnOne = () => {
@@ -1402,7 +1450,7 @@ describe("a backgrounded consult that finishes AFTER its launching turn (plannin
     };
     const runner = {
       subAgentSpawnsThisTurn: 0,
-      running: launch === "mid-turn",
+      running: launch !== "post-turn",
       emitMessage: vi.fn(),
       chatMessageGroups: [{ text: TURN_ONE_TEXT, toolUse: [] }],
       steeredMessages: [],
@@ -1447,7 +1495,7 @@ describe("a backgrounded consult that finishes AFTER its launching turn (plannin
     persistTurnInProgress(chatHistoryManager, runner as never, "s1");
   }
 
-  for (const launch of ["mid-turn", "post-turn"] as const) {
+  for (const launch of ["mid-turn", "post-turn", "foreground"] as const) {
     describe(`launched ${launch}`, () => {
       it("is still re-readable by `shipit agent result <id>` a turn later", async () => {
         const { dbManager, chatHistoryManager, runner, deps } = consultScenario(launch);

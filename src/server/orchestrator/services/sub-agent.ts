@@ -109,6 +109,13 @@ export interface ConsultCardPersister extends InProgressPersister {
     cardId: string,
     patch: Partial<SubAgentConsultCard>,
   ): boolean;
+  /**
+   * planning#402 — read back what the transition actually left on disk, so the
+   * completion log reports durability rather than intent. Optional so partial
+   * test stubs stay valid; a stub that omits it falls back to the write's own
+   * return value, which is what the log used to report.
+   */
+  listSubAgentConsultCards?(sessionId: string): SubAgentConsultCard[];
 }
 
 /**
@@ -557,24 +564,35 @@ export async function runSubAgent(
     // the fetch endpoint serves), and it must be on disk before the URL implying
     // it exists reaches a browser. Either branch of `persistCardTransition`
     // writes it synchronously, so returning from this call is enough.
-    let persisted = true;
-    persistCardTransition(
+    let patchedRow = true;
+    const inFlight = persistCardTransition(
       live,
       { chatHistoryManager: deps.chatHistoryManager, sessionId },
       (m) => m.subAgentConsult?.cardId === cardId,
       (m) => ({ ...m, subAgentConsult: card }),
-      () => { persisted = deps.chatHistoryManager.updateSubAgentConsultCard(sessionId, cardId, card); },
+      () => { patchedRow = deps.chatHistoryManager.updateSubAgentConsultCard(sessionId, cardId, card); },
     );
     live.emitMessage({
       type: "sub_agent_consult_card",
       sessionId,
       card: projectConsultCardForWire(card),
     });
+    // planning#402 — report what actually reached the DB, and by which route.
+    // The old `persisted` flag was initialised true and cleared only inside the
+    // `patchDb` callback, so the in-flight branch — the one a FOREGROUND
+    // `shipit agent run` always takes, because its own HTTP call is what holds
+    // the turn open — logged `persisted=true` unconditionally. That is why a
+    // card whose row was deleted 330 ms later read as healthy for four hours.
+    // Read the row back instead: this runs once per consult completion, so the
+    // scan costs nothing next to the run it is reporting on.
+    const durable = deps.chatHistoryManager.listSubAgentConsultCards?.(sessionId)
+      .some((c) => c.cardId === cardId && c.status === card.status) ?? patchedRow;
     console.log(
       `[sub-agent] finished session=${sessionId} spawn=${spawnId} card=${cardId} agent=${subAgentId} `
       + `status=${card.status} durationMs=${card.durationMs ?? 0} costUsd=${card.costUsd ?? 0} `
       + `outputChars=${card.outputMarkdown?.length ?? 0} truncated=${card.truncated === true} `
-      + `emitted=true persisted=${persisted} liveRunner=${live === runner ? "original" : "reresolved"}`,
+      + `emitted=true persisted=${durable} route=${inFlight ? "in-flight-turn" : "finalized-row"} `
+      + `liveRunner=${live === runner ? "original" : "reresolved"}`,
     );
   };
 
@@ -888,6 +906,15 @@ export interface GetSubAgentResultDeps {
  * returned as-is rather than skipped: "the consult you named is still running"
  * is the honest answer, and hiding it would resurrect the older, more confusing
  * failure where a live run looked like it had never existed.
+ *
+ * planning#402 — but a `pending` copy never outranks a terminal one for the same
+ * run. `listSubAgentConsultCards` reads every row carrying a card, in `id`
+ * order, and duplicate rows for one `cardId` have been possible (the storage
+ * chokepoint in `chat-history.ts` `replaceInProgress` now prevents new ones).
+ * Taking the first match let a stale `pending` copy shadow the terminal one
+ * permanently — `shipit agent result` reporting a finished consult as still
+ * running, with its output sitting unread on the very next row. Belt-and-braces
+ * that also repairs cards already stranded that way.
  */
 export function getSubAgentResult(
   deps: GetSubAgentResultDeps,
@@ -898,15 +925,29 @@ export function getSubAgentResult(
   if (cards.length === 0) {
     throw new ServiceError(404, "No sub-agent runs in this session yet.");
   }
-  if (!spawnId) return cards[cards.length - 1];
+  // Among rows for ONE run, the terminal copy is the answer; the newest of them
+  // if several are terminal. Rows for different runs never reach here together.
+  const preferTerminal = (matches: SubAgentConsultCard[]): SubAgentConsultCard => {
+    for (let i = matches.length - 1; i >= 0; i--) {
+      if (matches[i].status !== "pending") return matches[i];
+    }
+    return matches[matches.length - 1];
+  };
+  if (!spawnId) {
+    const latest = cards[cards.length - 1].spawnId;
+    return preferTerminal(cards.filter((c) => c.spawnId === latest));
+  }
   // Accept a unique prefix too: the id is printed as a short prefix in the run
   // footer, and re-typing a full UUID from a log line is a needless failure mode.
-  const exact = cards.find((c) => c.spawnId === spawnId);
-  if (exact) return exact;
+  const exact = cards.filter((c) => c.spawnId === spawnId);
+  if (exact.length > 0) return preferTerminal(exact);
   const prefixed = cards.filter((c) => c.spawnId.startsWith(spawnId));
-  if (prefixed.length === 1) return prefixed[0];
-  if (prefixed.length > 1) {
-    throw new ServiceError(400, `Ambiguous run id "${spawnId}" — it matches ${prefixed.length} runs.`);
+  // Distinct RUNS, not rows: two rows for one run is a duplicate to resolve, not
+  // an ambiguous id to reject.
+  const runs = new Set(prefixed.map((c) => c.spawnId));
+  if (runs.size === 1) return preferTerminal(prefixed);
+  if (runs.size > 1) {
+    throw new ServiceError(400, `Ambiguous run id "${spawnId}" — it matches ${runs.size} runs.`);
   }
   throw new ServiceError(404, `No sub-agent run with id "${spawnId}" in this session.`);
 }
