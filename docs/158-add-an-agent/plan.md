@@ -5,6 +5,13 @@ description: Step-by-step walkthrough for wiring a new agent (Cursor, Gemini, �
 
 # How to add a new agent backend
 
+> **Superseded by [docs/266-harness-integration-recipe](../266-harness-integration-recipe/plan.md)** (2026-08-15).
+> This walkthrough predates the docs/252 catalogue (`AGENT_DEFS` is now derived
+> from `HARNESSES`), `SHIPIT_HARNESSES` install selection,
+> `LoginIntegrationId`-keyed auth managers, provider accounts, and
+> roles/reviewers — its file list and counts are no longer accurate. Use
+> docs/266; this doc is kept for the historical rationale of the docs/155 seam.
+
 After [docs/155 Phase 5](../155-agent-abstraction-hairs/plan.md), every agent
 backend lives behind two per-agent folders — one in the session worker layer,
 one in the orchestrator layer — plus a handful of shared registry entries.
