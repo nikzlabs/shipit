@@ -2067,13 +2067,29 @@ describe("CodexAdapter", () => {
 // ---------------------------------------------------------------------------
 
 describe("CodexAdapter / dual-mode auth (feature 119)", () => {
+  // The HOME tests below drive `agentHome()` / `codexHome()`, both of which read
+  // process.env at call time — so the block owns those variables outright and
+  // puts the runner's own values back afterwards.
+  const HOME_VARS = ["HOME", "AGENT_HOME", "CODEX_HOME", "DEEPSEEK_API_KEY"] as const;
+  let savedEnv: Partial<Record<(typeof HOME_VARS)[number], string | undefined>> = {};
+
   beforeEach(() => {
     delete process.env.OPENAI_API_KEY;
+    savedEnv = {};
+    for (const name of HOME_VARS) {
+      savedEnv[name] = process.env[name];
+      Reflect.deleteProperty(process.env, name);
+    }
     lastSpawnEnv = undefined;
   });
 
   afterEach(() => {
     delete process.env.OPENAI_API_KEY;
+    for (const name of HOME_VARS) {
+      const value = savedEnv[name];
+      if (value === undefined) Reflect.deleteProperty(process.env, name);
+      else process.env[name] = value;
+    }
   });
 
   it("emits auth_required when neither file auth nor OPENAI_API_KEY is present", () => {
@@ -2098,20 +2114,62 @@ describe("CodexAdapter / dual-mode auth (feature 119)", () => {
     expect(lastSpawnEnv?.OPENAI_API_KEY).toBe("sk-platform-billing");
   });
 
-  // docs/150 — in local mode the CLI must read the account this session was
-  // routed to. The default (no resolver) is the containerized path and must
-  // leave HOME/CODEX_HOME exactly as inherited.
-  it("leaves HOME and CODEX_HOME untouched when no resolver is given", async () => {
+  // planning#390 — with no resolver the spawn still names its own HOME, from
+  // AGENT_HOME rather than from whatever the hosting process inherited. In a
+  // session container the two are the same value, so this is a no-op there; in
+  // local mode the ambient HOME is the dogfood image's root-owned /root and
+  // inheriting it killed the CLI before the turn started.
+  it("spawns with the AGENT_HOME-derived home when no resolver is given", async () => {
     process.env.OPENAI_API_KEY = "sk-platform-billing";
-    const inheritedHome = process.env.HOME;
+    process.env.AGENT_HOME = "/workspace/.inner-shipit/agent-home";
+    process.env.HOME = "/root";
 
     const adapter = new CodexAdapter(() => false);
     adapter.on("event", () => { /* drain */ });
     adapter.run({ prompt: "Hello", cwd: "/workspace" });
 
     await vi.waitFor(() => expect(lastSpawnEnv).toBeDefined());
-    expect(lastSpawnEnv?.HOME).toBe(inheritedHome);
-    expect(lastSpawnEnv?.CODEX_HOME).toBe(process.env.CODEX_HOME);
+    expect(lastSpawnEnv?.HOME).toBe("/workspace/.inner-shipit/agent-home");
+    expect(lastSpawnEnv?.CODEX_HOME).toBe("/workspace/.inner-shipit/agent-home/.codex");
+  });
+
+  // planning#390's actual failure shape: a redirected service resolves to a
+  // string/reserved route, for which `resolveLocalAgentHome` returns undefined.
+  // That branch must still carry a writable HOME/CODEX_HOME — it is the one the
+  // whole Codex×custom-URL surface runs on, and the one that used to inherit
+  // /root while a subscription turn (an account route) got an explicit home.
+  it("carries a writable HOME/CODEX_HOME for a redirected service whose resolver returns undefined", async () => {
+    process.env.AGENT_HOME = "/workspace/.inner-shipit/agent-home";
+    process.env.HOME = "/root";
+    process.env.DEEPSEEK_API_KEY = "sk-deepseek";
+
+    const adapter = new CodexAdapter(
+      () => false,
+      // A reserved/string route: pinned to no provider account, so the resolver
+      // answers `undefined` exactly as it does in the dogfood instance.
+      { resolveHome: () => undefined },
+    );
+    adapter.on("event", () => { /* drain */ });
+    adapter.run({
+      prompt: "Hello",
+      cwd: "/workspace",
+      serviceRouting: {
+        serviceId: "deepseek",
+        serviceName: "DeepSeek",
+        billingMode: "key",
+        style: "openai-responses",
+        baseUrl: "https://api.deepseek.com/v1",
+        credentialSourceEnv: "DEEPSEEK_API_KEY",
+        credentialTarget: { kind: "env", name: "OPENAI_API_KEY" },
+      },
+    });
+
+    await vi.waitFor(() => expect(lastSpawnEnv).toBeDefined());
+    expect(lastSpawnEnv?.HOME).toBe("/workspace/.inner-shipit/agent-home");
+    expect(lastSpawnEnv?.CODEX_HOME).toBe("/workspace/.inner-shipit/agent-home/.codex");
+    // The redirect itself is unchanged — the credential still lands in the
+    // harness's own variable, so this guard cannot pass on a spawn that lost it.
+    expect(lastSpawnEnv?.OPENAI_API_KEY).toBe("sk-deepseek");
   });
 
   it("spawns against the resolved account root, and probes that root's auth.json", async () => {
