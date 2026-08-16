@@ -258,5 +258,18 @@ events only at completion), which is worse. A warn-only 60s watchdog
 - Fast upstream churn (releases every few days): version bumps are routine
   deliberate edits; `OPENCODE_DISABLE_AUTOUPDATE` stays set so the pinned
   binary never self-replaces.
+- **OpenCode 2.0 is in beta** (checked 2026-08-16: `opencode.ai/v2/docs`).
+  It is NOT a routine bump on this integration's line: it ships as a
+  different npm package (`@opencode-ai/cli@beta`, currently version
+  `0.0.0-next-*` with multiple builds per day) installing a SEPARATE
+  `opencode2` binary that coexists with v1, and upstream states its APIs,
+  configuration and plugin surface may still change. Its declared breaking
+  changes (new plugin API, new server API/clients, TUI config move) do not
+  touch this adapter's `run`-mode surface, and the v1 stable line
+  (`opencode-ai`, `latest` = 1.18.x) remains the released product — so this
+  integration stays on v1. When 2.0 stabilizes: adopting it means a new
+  catalogue binary + installer package (a deliberate migration, not a
+  Renovate bump), and its new server API is the natural target for the
+  attach-to-server adapter shape docs/266 deferred as its own design task.
 - The post-error hang and stdout buffering (findings above) are upstream bugs
   worked around, not fixed; re-test on every version bump.
