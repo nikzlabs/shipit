@@ -18,7 +18,7 @@ import type { SessionManager } from "./sessions.js";
 import type { SessionInfo } from "../shared/types.js";
 import type { SessionRunnerRegistry } from "./session-runner.js";
 import type { ServiceManager } from "./service-manager.js";
-import type { GitManager } from "../shared/git.js";
+import type { GitManager, UnreadableWorkspace } from "../shared/git.js";
 import type { PersistedMessage } from "./chat-history.js";
 import type { SecretFinding } from "../shared/secret-scan.js";
 import { DEFAULT_DISK_LADDER, holdsActiveReservation, type DiskLadderThresholds } from "./sessions.js";
@@ -257,11 +257,17 @@ function describeBlock(r: {
   secretFindings: SecretFinding[];
   conflictedFiles: string[];
   rebaseInProgress: boolean;
+  unreadable?: UnreadableWorkspace | null;
 }): EvictBlockReason {
   if (r.secretFindings.length > 0) return { kind: "secret", findings: r.secretFindings };
   if (r.conflictedFiles.length > 0 || r.rebaseInProgress) {
     return { kind: "conflict", conflictedFiles: r.conflictedFiles, rebaseInProgress: r.rebaseInProgress };
   }
+  // docs/266 / planning#407 — ranked below the two refusals above and above
+  // `unknown`: a secret or a conflict is both more actionable and the reason
+  // NOTHING was committed, while an unreadable path can accompany a commit that
+  // otherwise succeeded.
+  if (r.unreadable) return { kind: "unreadable", unreadable: r.unreadable };
   return { kind: "unknown" };
 }
 
@@ -563,15 +569,39 @@ async function reclaimToEvicted(
       //    covers any future refusal path (or a commit hook that leaves the tree
       //    dirty behind a successful commit) by construction. The returned
       //    fields only explain the block.
-      if (!(await git.isClean())) {
-        const { secretFindings, conflictedFiles, rebaseInProgress } =
+      //    docs/266 / planning#407 — and the question is `inspectWorkingTree()`,
+      //    NOT `isClean()`. `isClean()` is TRUE for content git cannot read,
+      //    because git cannot see it. Root-side git read everything, so the
+      //    re-check was correct by accident; once orchestrator git runs as the
+      //    tree's own uid it is not, and the gap is a DATA-LOSS path the uid
+      //    drop created: a subtree the session uid cannot open answers "clean",
+      //    the commit is never even attempted, and the wipe below destroys work
+      //    that root-side git used to commit. An unreadable path is therefore a
+      //    block in its own right, before and after the commit.
+      const before = await git.inspectWorkingTree();
+      if (!before.clean) {
+        const { secretFindings, conflictedFiles, rebaseInProgress, unreadable } =
           await git.autoCommit("Auto-commit before disk eviction (docs/161)");
-        if (!(await git.isClean())) {
+        const after = await git.inspectWorkingTree();
+        if (!after.clean || after.unreadable || unreadable) {
           return await blockedEvict(
             session, deps, "blocked-by-dirty",
-            describeBlock({ secretFindings, conflictedFiles, rebaseInProgress }),
+            describeBlock({
+              secretFindings, conflictedFiles, rebaseInProgress,
+              unreadable: unreadable ?? after.unreadable,
+            }),
           );
         }
+      } else if (before.unreadable) {
+        // The sharp case, and the one no re-check could have caught: the
+        // unreadable subtree holds the ONLY uncommitted content, so git reports
+        // a clean tree and there is nothing for `autoCommit` to stage. Nothing
+        // will ever make this durable at this uid — block, and tell the user,
+        // exactly as for a workspace with no repository.
+        return await blockedEvict(
+          session, deps, "blocked-by-dirty",
+          { kind: "unreadable", unreadable: before.unreadable },
+        );
       }
 
       // 2. A clean tree is not a quiet repo. An interactive rebase stopped at an

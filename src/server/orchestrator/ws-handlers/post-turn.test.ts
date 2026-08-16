@@ -478,6 +478,26 @@ describe("postTurnCommit — unreadable workspace content", () => {
     expect(notices).toContain("short");
   });
 
+  /**
+   * `omitted` does NOT imply a commit. When the unreadable directory hides the
+   * turn's only changes, `autoCommit` takes its clean-tree return — null hash,
+   * `unreadable: omitted` — and the notice used to say "this commit is short…
+   * everything else was committed normally" about a commit that does not exist.
+   * That is req 15's outcome wearing req 14's words, which is precisely the
+   * collapse the two requirements were split to prevent.
+   */
+  it("does not call a commit short when the turn produced no commit at all", async () => {
+    const emit = vi.fn();
+    const { ctx } = makeCtx({ kind: "omitted", detail: "pgdata/" }, null);
+    await postTurnCommit(ctx, {
+      sessionDir: "/workspace", sessionId: "s1", emit, turnSummary: "a turn",
+    });
+    const notices = emit.mock.calls.map(([m]) => JSON.stringify(m)).join("\n");
+    expect(notices).toContain("pgdata/");
+    expect(notices).toContain("NO commit");
+    expect(notices).not.toContain("everything else was committed normally");
+  });
+
   it("tells the user NOTHING was committed when a file was unreadable", async () => {
     const emit = vi.fn();
     const { ctx } = makeCtx({ kind: "blocked", detail: "d/server.key" }, null);
@@ -505,5 +525,59 @@ describe("postTurnCommit — unreadable workspace content", () => {
       sessionDir: "/workspace", sessionId: "s1", emit: vi.fn(), turnSummary: "a turn",
     });
     expect(setSecretBlock).toHaveBeenCalledWith("s1", null);
+  });
+});
+
+/**
+ * docs/266 req 15 / planning#407 — a commit that failed for a reason ShipIt could
+ * not classify is still a turn that committed nothing, and requirement 15 says
+ * "a log line is not a report".
+ *
+ * This is the half the classifier does not cover, on purpose: `autoCommit`
+ * rethrows anything that is not the measured permission case (an EIO, a file
+ * deleted mid-add, a leftover `index.lock`), and the throw used to reach
+ * `postTurnStep`, which logs and continues. The user saw a finished turn and an
+ * empty branch.
+ */
+describe("postTurnCommit — an auto-commit that threw", () => {
+  function makeThrowingCtx(err: Error) {
+    const append = vi.fn();
+    const ctx = {
+      createGitManager: vi.fn(() => ({
+        autoCommit: vi.fn(() => Promise.reject(err)),
+        getHeadHash: vi.fn(async () => "head"),
+      })),
+      chatHistoryManager: { updateLastMessage: vi.fn(() => null), indexOfMessageId: vi.fn(() => -1), append },
+      sessionManager: {
+        get: vi.fn(() => ({ id: "s1" } as SessionInfo)),
+        getSecretBlock: vi.fn(() => undefined),
+        setSecretBlock: vi.fn(),
+      },
+      scheduleAutoPush: vi.fn(),
+    } as unknown as Parameters<typeof postTurnCommit>[0];
+    return { ctx, append };
+  }
+
+  it("reports the failure to the user and still rethrows", async () => {
+    const emit = vi.fn();
+    const { ctx, append } = makeThrowingCtx(new Error("fatal: Unable to create '/w/.git/index.lock': File exists."));
+
+    await expect(postTurnCommit(ctx, {
+      sessionDir: "/workspace", sessionId: "s1", emit, turnSummary: "a turn",
+    })).rejects.toThrow("index.lock");
+
+    // Persisted, not just emitted: the user must still find it after a reload.
+    expect(append).toHaveBeenCalled();
+    const notices = emit.mock.calls.map(([m]) => JSON.stringify(m)).join("\n");
+    expect(notices).toContain("NOT committed");
+    expect(notices).toContain("index.lock");
+  });
+
+  it("rethrows unchanged when there is no session to report into", async () => {
+    const { ctx, append } = makeThrowingCtx(new Error("boom"));
+    await expect(postTurnCommit(ctx, {
+      sessionDir: "/workspace", sessionId: undefined, emit: vi.fn(), turnSummary: "a turn",
+    })).rejects.toThrow("boom");
+    expect(append).not.toHaveBeenCalled();
   });
 });

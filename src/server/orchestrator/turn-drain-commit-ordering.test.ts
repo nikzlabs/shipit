@@ -235,7 +235,7 @@ describe("queue drain vs. post-turn commit ordering (planning#264)", () => {
       autoCommit: async () => {
         order.push("commit");
         // A real edit would produce a hash; return one so the PR flow is reached.
-        return { commitHash: "abc1234", parentHash: "def5678", conflictedFiles: [], rebaseInProgress: false, secretFindings: [] };
+        return { commitHash: "abc1234", parentHash: "def5678", conflictedFiles: [], rebaseInProgress: false, secretFindings: [], unreadable: null };
       },
       scheduleAutoPush: vi.fn(),
       // Stands in for the GitHub round-trip — and never resolves. If the drain

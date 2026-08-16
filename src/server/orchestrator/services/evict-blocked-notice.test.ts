@@ -52,6 +52,29 @@ describe("formatEvictBlockedNotice", () => {
     expect(text).not.toContain("next turn");
   });
 
+  // docs/266 / planning#407 — the eviction would have DELETED content ShipIt's
+  // own git cannot read, so the notice has to name the path and must not
+  // promise that the next turn commits it.
+  it("names the unreadable path and does not promise a next-turn commit", () => {
+    const text = formatEvictBlockedNotice({
+      kind: "unreadable",
+      unreadable: { kind: "omitted", detail: "pgdata/" },
+    });
+    expect(text).toContain("pgdata/");
+    expect(text).toContain("could not read");
+    expect(text).toContain("docker-compose.yml");
+    expect(text).not.toContain("next turn will commit and push normally");
+  });
+
+  it("says nothing at all was committed for the blocked kind", () => {
+    const text = formatEvictBlockedNotice({
+      kind: "unreadable",
+      unreadable: { kind: "blocked", detail: "d/server.key" },
+    });
+    expect(text).toContain("d/server.key");
+    expect(text).toContain("stages nothing at all");
+  });
+
   it("still produces a message for an unattributed refusal", () => {
     const text = formatEvictBlockedNotice({ kind: "unknown" });
     expect(text).toContain("Disk cleanup paused");
@@ -63,6 +86,7 @@ describe("formatEvictBlockedNotice", () => {
       { kind: "secret", findings: [finding] },
       { kind: "conflict", conflictedFiles: [], rebaseInProgress: false },
       { kind: "no-repository" },
+      { kind: "unreadable", unreadable: { kind: "omitted", detail: "pgdata/" } },
       { kind: "unknown" },
     ];
     for (const reason of reasons) {

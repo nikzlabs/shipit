@@ -1,4 +1,5 @@
 import type { SecretFinding } from "../../shared/secret-scan.js";
+import type { UnreadableWorkspace } from "../../shared/git.js";
 
 /**
  * planning#296 — why the disk ladder refused to reclaim a session, as far as the
@@ -13,6 +14,13 @@ export type EvictBlockReason =
   | { kind: "secret"; findings: SecretFinding[] }
   | { kind: "conflict"; conflictedFiles: string[]; rebaseInProgress: boolean }
   | { kind: "no-repository" }
+  /**
+   * docs/266 / planning#407 — ShipIt's own git could not READ part of the
+   * workspace, so a commit could never contain it. Like `no-repository` this is
+   * the ladder's own refusal rather than one of `autoCommit`'s: the wipe is
+   * what would destroy the content, and the block is what stops it.
+   */
+  | { kind: "unreadable"; unreadable: UnreadableWorkspace }
   | { kind: "unknown" };
 
 /**
@@ -69,6 +77,36 @@ export function formatEvictBlockedNotice(reason: EvictBlockReason): string {
       + "disk. Cached dependencies are not held back, so opening the session may reinstall them."
       + "\n\nOpen the session to copy out anything you still need, then archive it to free the "
       + "space."
+    );
+  }
+
+  // docs/266 / planning#407 — like `no-repository`, this does NOT use the shared
+  // `preserved` paragraph: that one promises the next turn will commit and push
+  // the work, and nothing will until a person changes the path's permissions or
+  // gitignores it. The eviction is what would have deleted the content, so the
+  // notice says plainly that it is uncommitted and only here.
+  if (reason.kind === "unreadable") {
+    const missed = reason.unreadable.kind === "omitted"
+      ? "so its contents are left out of every commit ShipIt makes"
+      : "and `git add` stages nothing at all when that happens, so none of this session's "
+        + "uncommitted work can be committed";
+    return (
+      `⚠️ Disk cleanup paused for this session — ShipIt could not read \`${reason.unreadable.detail}\` `
+      + `in your workspace, ${missed}.\n\n`
+      // Deliberately NOT "they exist only here". This block also fires for the
+      // postgres archetype — a directory that IS committed and pushed, whose
+      // mode a service tightened to 0700 at boot — and git cannot compare a
+      // subtree it cannot open. Claiming the content is unique would be a
+      // warning that is simply false for that user (review finding). ShipIt
+      // refuses the wipe because it cannot tell, and says so.
+      + "Those files are still on disk and were not touched. ShipIt cannot check whether they "
+      + "exist anywhere else, so it will not delete this checkout — which means the session keeps "
+      + "using disk until the path is readable. Cached dependencies are not held back, so opening "
+      + "the session may reinstall them.\n\n"
+      + "A service in your `docker-compose.yml` running as its own `user:` is the usual cause. "
+      + "Fix that path's permissions — or gitignore it, if it is throwaway data like a database "
+      + "volume — and a later cleanup pass will reclaim the space on its own. If you no longer "
+      + "need this session, archiving it frees the space now."
     );
   }
 

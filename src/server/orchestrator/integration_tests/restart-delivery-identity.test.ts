@@ -190,7 +190,7 @@ describe("Integration: durable delivery identity across a restart (planning#266)
     const deps: SystemTurnDeps = {
       agentFactory: (agentId) => runner.createAgent(agentId),
       autoCommit: async () => ({
-        commitHash: null, parentHash: null, conflictedFiles: [], rebaseInProgress: false, secretFindings: [],
+        commitHash: null, parentHash: null, conflictedFiles: [], rebaseInProgress: false, secretFindings: [], unreadable: null,
       }),
       scheduleAutoPush: () => {},
       buildRunParams: async (_sessionId, _agentId, prompt) => ({ prompt, cwd: "/workspace" }),

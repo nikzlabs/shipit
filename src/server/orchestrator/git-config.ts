@@ -149,6 +149,53 @@ export function initGlobalGitConfig(credentialsDir: string): void {
   if (!process.env.GIT_EDITOR) {
     process.env.GIT_EDITOR = "true";
   }
+
+  pinGitMessageLocale();
+}
+
+/**
+ * docs/266 / planning#407 — pin git's message LANGUAGE for this process and
+ * everything it spawns.
+ *
+ * `shared/git.ts` classifies the two unreadable-workspace states by matching
+ * git's stderr text, because simple-git's `GitError` carries no exit code
+ * (`errorDetectionPlugin` never puts one on it). Git translates those messages
+ * under a non-C locale, so a deployment that sets `LANG` — or a base image that
+ * starts shipping one — would silently switch the detection off and return a
+ * turn to committing short in silence, which is the outcome requirement 14
+ * exists to prevent. Today's images set no locale at all, so this pins what is
+ * currently true by accident.
+ *
+ * Set on `process.env` rather than through simple-git, because simple-git
+ * cannot carry it: `env(object)` ASSIGNS the executor environment (so any
+ * caller chaining `.env()` discards it — the trap that killed the
+ * `GIT_CONFIG_GLOBAL` override), and forwarding `process.env` to make it stick
+ * is worse still, since `blockUnsafeOperationsPlugin` inspects the env it is
+ * handed and would refuse every command over `GIT_CONFIG_GLOBAL`. The process
+ * environment is what the default (`env: null`) spawn inherits, what both
+ * `.env({ ...process.env })` callers spread, and what the raw
+ * `execFileSync`/`spawn` git sites inherit — one place, all of them.
+ *
+ * `C` and not `C.UTF-8`: the latter does not exist on every host this can run
+ * on (local mode, macOS), where the invalid value makes git warn on stderr —
+ * into the very capture the classifier reads.
+ *
+ * **Separate from {@link initGlobalGitConfig}, and called separately.** That
+ * function is skipped entirely when `GIT_CONFIG_GLOBAL` is already set
+ * (`app-di.ts`) — so folding the pin into it left it un-pinned on exactly the
+ * deployments most likely to have a locale of their own (review finding).
+ * Overriding is deliberate rather than deferential — determinism is the whole
+ * point — but an operator's value is never dropped silently: it is logged.
+ */
+export function pinGitMessageLocale(): void {
+  const previous = process.env.LC_ALL;
+  if (previous !== undefined && previous !== "C") {
+    console.log(
+      `[git-config] overriding LC_ALL=${previous} with C — ShipIt matches git's English `
+      + "stderr to detect workspace content it cannot read (docs/266 reqs 14, 15)",
+    );
+  }
+  process.env.LC_ALL = "C";
 }
 
 /**

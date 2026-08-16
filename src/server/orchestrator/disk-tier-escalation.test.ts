@@ -758,9 +758,10 @@ describe("escalateDiskTiers", () => {
     // a blanket "null hash ⇒ blocked" guard would make this un-evictable.
     let cleanCalls = 0;
     const stubGit = {
-      isClean: () => Promise.resolve(cleanCalls++ > 0),
+      isClean: () => Promise.resolve(cleanCalls > 0),
+      inspectWorkingTree: () => Promise.resolve({ clean: cleanCalls++ > 0, unreadable: null }),
       autoCommit: () => Promise.resolve({
-        commitHash: null, conflictedFiles: [], rebaseInProgress: false, secretFindings: [],
+        commitHash: null, conflictedFiles: [], rebaseInProgress: false, secretFindings: [], unreadable: null,
       }),
       isRebaseInProgress: () => Promise.resolve(false),
       isMergeOrSequencerInProgress: () => Promise.resolve(false),
@@ -785,6 +786,104 @@ describe("escalateDiskTiers", () => {
     expect(sm.get("race-light")?.diskTier).toBe("evicted");
     expect(fs.existsSync(wsDir)).toBe(false);
     expect(appended).toHaveLength(0);
+  });
+
+  /**
+   * docs/266 / planning#407 — the data-loss path the uid drop created.
+   *
+   * `isClean()` is TRUE for content git cannot read, so the pre-eviction
+   * commit's own re-check waved the wipe through and the checkout — the only
+   * copy of that content — was deleted. Root-side git read everything, so this
+   * was unreachable until orchestrator git started running as the tree's owner.
+   *
+   * Produced with mode bits on a self-owned directory: a session container has
+   * no root and `unshare -r` is refused, so genuine foreign ownership cannot be
+   * reproduced here. The kernel check is the same one a foreign-owned directory
+   * fails; the ownership dimension itself is not exercised.
+   */
+  it("planning#407: an unreadable directory hiding the ONLY changes blocks the wipe", async () => {
+    setup();
+    const sm = new SessionManager(dbManager!);
+    const wsDir = path.join(tmpDir, "ws-unreadable");
+    await initRepo(wsDir);
+    const dataDir = path.join(wsDir, "pgdata");
+    fs.mkdirSync(dataDir);
+    fs.writeFileSync(path.join(dataDir, "PG_VERSION"), "14\n");
+    const g = simpleGit(wsDir);
+    await g.add(".");
+    await g.commit("data");
+    await g.push("origin", "main");
+    // The uncommitted work, and then the state that hides it from git.
+    fs.writeFileSync(path.join(dataDir, "PG_VERSION"), "15\n");
+    fs.chmodSync(dataDir, 0o000);
+    insertSession({
+      id: "unreadable-light",
+      lastUsedAt: daysAgo(DEFAULT_DISK_LADDER.evictUnmergedAfterMs / 86_400_000 + 1),
+      diskTier: "light",
+      workspaceDir: wsDir,
+      branch: "main",
+    });
+
+    try {
+      const { registry } = fakeRegistry();
+      const { appended, chatHistory } = fakeChatHistory();
+      const result = await escalateDiskTiers({
+        ...baseDeps(sm, registry),
+        createGitManager: (dir) => new GitManager(dir),
+        chatHistory,
+        notifiedEvictBlocked: new Set<string>(),
+      });
+
+      expect(result.toEvicted).toBe(0);
+      expect(result.evictBlockedByDirty).toBe(1);
+      expect(sm.get("unreadable-light")?.diskTier).toBe("light");
+      expect(fs.existsSync(dataDir)).toBe(true);
+      expect(appended[0]!.text).toContain("pgdata/");
+    } finally {
+      fs.chmodSync(dataDir, 0o755);
+    }
+  });
+
+  it("planning#407: blocks even when the readable half of the tree committed fine", async () => {
+    // The commit is not the question the wipe turns on. Here `autoCommit`
+    // succeeds and leaves a clean tree — and the unreadable subtree is STILL
+    // only on disk, so the eviction must refuse anyway.
+    setup();
+    const sm = new SessionManager(dbManager!);
+    const wsDir = path.join(tmpDir, "ws-unreadable-mixed");
+    await initRepo(wsDir);
+    const dataDir = path.join(wsDir, "pgdata");
+    fs.mkdirSync(dataDir);
+    fs.writeFileSync(path.join(dataDir, "PG_VERSION"), "14\n");
+    fs.chmodSync(dataDir, 0o000);
+    fs.writeFileSync(path.join(wsDir, "a.txt"), "agent edit");
+    insertSession({
+      id: "mixed-light",
+      lastUsedAt: daysAgo(DEFAULT_DISK_LADDER.evictUnmergedAfterMs / 86_400_000 + 1),
+      diskTier: "light",
+      workspaceDir: wsDir,
+      branch: "main",
+    });
+
+    try {
+      const { registry } = fakeRegistry();
+      const { appended, chatHistory } = fakeChatHistory();
+      const result = await escalateDiskTiers({
+        ...baseDeps(sm, registry),
+        createGitManager: (dir) => new GitManager(dir),
+        chatHistory,
+        notifiedEvictBlocked: new Set<string>(),
+      });
+
+      expect(result.evictBlockedByDirty).toBe(1);
+      expect(fs.existsSync(wsDir)).toBe(true);
+      // The readable edit DID commit — blocking the wipe costs nothing that
+      // could have been made durable.
+      expect(await new GitManager(wsDir).isClean()).toBe(true);
+      expect(appended[0]!.text).toContain("pgdata/");
+    } finally {
+      fs.chmodSync(dataDir, 0o755);
+    }
   });
 
   // The clean-tree question is not the durability question. A commit this pass

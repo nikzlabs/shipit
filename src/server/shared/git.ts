@@ -235,9 +235,52 @@ export type UnreadableWorkspace =
  * error — verified by running it — so `err.exitCode` is `undefined` by
  * construction. A detector keyed on the exit code would look correct in review
  * and never fire.
+ *
+ * ## Matching English is a dependency, and it is bounded on purpose
+ *
+ * Message text is translated when git runs under a non-C locale, so the
+ * orchestrator pins `LC_ALL=C` on the process every orchestrator-side git
+ * inherits (`git-config.ts`, which explains why simple-git's own options cannot
+ * carry it). That makes the wording git's *source* wording rather than a
+ * property of the deployment's locale.
+ *
+ * What still drifts is git's own wording across versions, and the two states
+ * pay differently for it:
+ *
+ *   - **`blocked` does not depend on this regex to be reported.** `add -A`
+ *     REJECTS, and the rejection alone proves the turn committed nothing —
+ *     `autoCommit` rethrows what it cannot classify and `post-turn.ts` reports
+ *     every uncommitted turn from the throw itself (req 15). The regex only
+ *     buys the tailored "fix that path's permissions" advice and the path.
+ *   - **`omitted` does.** git exits 0 and the warning on stderr is the only
+ *     trace there is, so a wording change here means silence again. That is the
+ *     residual, recorded rather than papered over; `git-unreadable.test.ts`
+ *     fails on it for the git binary the tests run against.
+ *
+ * The file regex is deliberately keyed on the PERMISSION cause and not on
+ * `unable to index file`, which git also emits for an EIO or a file deleted
+ * between `status` and `add`. Matching that cause-agnostically told the user to
+ * "fix that path's permissions" for failures that had nothing to do with
+ * permissions (review finding, planning#407).
  */
 const UNREADABLE_DIR_RE = /could not open directory\s+'([^']+)'/;
-const UNREADABLE_FILE_RE = /unable to index file\s+'([^']+)'|open\("([^"]+)"\): Permission denied/;
+const UNREADABLE_FILE_RE = /open\("([^"]+)"\): Permission denied/;
+
+/**
+ * Is a rejected `git add -A` the measured unreadable-FILE case, and for which
+ * path? `null` for every other cause.
+ *
+ * Exported for its test. A real-git test proves the LIVE message still matches
+ * this; only a unit test can prove the messages that must NOT match — an EIO, a
+ * file deleted between `status` and `add` — since neither can be staged on
+ * demand in a container. Both halves are needed: the first fails when git's
+ * wording drifts, the second fails if the match ever widens back to
+ * `unable to index file` (planning#407).
+ */
+export function classifyUnreadableAddFailure(message: string): UnreadableWorkspace | null {
+  const blocked = UNREADABLE_FILE_RE.exec(message);
+  return blocked ? { kind: "blocked", detail: blocked[1] } : null;
+}
 
 export class GitManager {
   private git: SimpleGit;
@@ -400,11 +443,15 @@ export class GitManager {
       await this.git.add("-A");
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      const blocked = UNREADABLE_FILE_RE.exec(message);
+      const blocked = classifyUnreadableAddFailure(message);
+      // Anything else — an EIO, a file deleted between `status` and `add`, a
+      // full disk — is NOT the measured permission case and must not be dressed
+      // up as one. It is still a turn that committed nothing, so it is still
+      // req 15's subject: the caller reports it from the throw (`post-turn.ts`
+      // catches, tells the user the turn was not committed, and rethrows).
       if (!blocked) throw err;
-      const blockedPath = blocked[1] ?? blocked[2] ?? "(unknown path)";
       console.error(
-        `[git] autoCommit staged NOTHING — cannot read ${blockedPath}. `
+        `[git] autoCommit staged NOTHING — cannot read ${blocked.detail}. `
         + "The whole turn is uncommitted and still in the working tree.",
       );
       return {
@@ -412,7 +459,7 @@ export class GitManager {
         conflictedFiles: [],
         rebaseInProgress: false,
         secretFindings: [],
-        unreadable: { kind: "blocked", detail: blockedPath },
+        unreadable: blocked,
       };
     }
 
@@ -1066,6 +1113,36 @@ export class GitManager {
   async isClean(): Promise<boolean> {
     const status = await this.git.status();
     return status.isClean();
+  }
+
+  /**
+   * docs/266 / planning#407 — {@link isClean}, plus the question `isClean` cannot
+   * answer: **could git read the whole tree?**
+   *
+   * `isClean()` is `true` for content git cannot see, because git cannot see
+   * it. Before the uid drop that was a distinction without a difference — root
+   * read everything — so every caller that gates a DESTRUCTIVE action on a
+   * clean tree was correct by accident. It no longer is: `tier-escalation`'s
+   * pre-eviction commit asks "is the work still only in the working tree?" and
+   * gets "no" for a subtree the session uid cannot open, then wipes the
+   * checkout. That is uncommitted work with no reflog entry and no recovery —
+   * the exact loss `CLAUDE.md` invariant 2 names, newly reachable because of
+   * the drop. So a caller whose next step destroys the tree must ask THIS
+   * question, not `isClean()`.
+   *
+   * Only the unreadable-DIRECTORY state can hide here. An unreadable FILE is
+   * listed by `status` as modified (measured — see {@link AutoCommitResult}),
+   * so it already answers `clean: false`; it is `add -A` that then fails, which
+   * is `autoCommit`'s half of the same problem.
+   */
+  async inspectWorkingTree(): Promise<{ clean: boolean; unreadable: UnreadableWorkspace | null }> {
+    this.resetStderr();
+    const status = await this.git.status();
+    const match = UNREADABLE_DIR_RE.exec(this.stderrTail);
+    return {
+      clean: status.isClean(),
+      unreadable: match ? { kind: "omitted", detail: match[1] } : null,
+    };
   }
 
   /**

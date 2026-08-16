@@ -227,7 +227,7 @@ async function runFlow(
 ): ReturnType<typeof runRebaseFlow> {
   deps.runner.setSystemTurnDeps({
     agentFactory: deps.agentFactory!,
-    autoCommit: async () => ({ commitHash: null, parentHash: null, conflictedFiles: [], rebaseInProgress: false, secretFindings: [] }),
+    autoCommit: async () => ({ commitHash: null, parentHash: null, conflictedFiles: [], rebaseInProgress: false, secretFindings: [], unreadable: null }),
     scheduleAutoPush: () => { /* postTurn: "none" skips this for rebase turns */ },
     listenerDeps: {
       sessionManager: deps.sessionManager,
@@ -1717,7 +1717,7 @@ describe("rebase-driver: planning#338 displacement + queue hold", () => {
     const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });
     runner.setSystemTurnDeps({
       agentFactory: () => new FakeRebaseAgent(() => "ok") as unknown as AgentProcess,
-      autoCommit: async () => ({ commitHash: null, parentHash: null, conflictedFiles: [], rebaseInProgress: false, secretFindings: [] }),
+      autoCommit: async () => ({ commitHash: null, parentHash: null, conflictedFiles: [], rebaseInProgress: false, secretFindings: [], unreadable: null }),
       scheduleAutoPush: () => {},
       listenerDeps: {
         sessionManager: makeStubSessionManager(),

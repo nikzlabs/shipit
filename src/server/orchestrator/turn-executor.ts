@@ -79,6 +79,7 @@ import { resetRunnerTurnState } from "./session-runner.js";
 import type { SessionRunnerInterface, SystemTurnDeps } from "./session-runner.js";
 import { formatUnresolvedConflictNotice } from "./services/conflict-marker-notice.js";
 import { formatSecretScanNotice } from "./services/secret-scan-notice.js";
+import { formatUnreadableWorkspaceNotice } from "./services/unreadable-workspace-notice.js";
 import { sessionAutoCommitAllowed } from "./services/auto-commit-gate.js";
 import { emitChatCard, emitNoticeInTurn, emitNoticePostTurn } from "./chat-card-persistence.js";
 import { TURN_COMPLETED, turnErrored, turnInterrupted, turnNoResult, type TurnOutcome } from "./turn-settlement.js";
@@ -1270,6 +1271,19 @@ export async function executeAgentTurn(
       // `runner-registry-factory.ts`) — one check instead of two.
       if (!sessionAutoCommitAllowed(deps.listenerDeps.sessionManager, sessionId)) return null;
       const result = await deps.autoCommit(runner.sessionDir, summary);
+      // docs/266 reqs 14 + 15 / planning#407 — same two states, same words as the
+      // `postTurnCommit` path. This path exists for setups that wire
+      // `autoCommit` without `commitTurn`, and requirement 15 is about the
+      // turn's outcome, not about which helper produced it.
+      if (result.unreadable) {
+        emitNoticePostTurn(
+          emit,
+          deps.listenerDeps.chatHistoryManager,
+          sessionId,
+          formatUnreadableWorkspaceNotice(result.unreadable, { committed: result.commitHash !== null }),
+          "warn",
+        );
+      }
       if (result.secretFindings.length > 0) {
         emitNoticePostTurn(
           emit,

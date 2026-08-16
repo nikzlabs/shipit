@@ -21,7 +21,8 @@ import { getErrorMessage } from "../validation.js";
 import type { GitHubStatus } from "./types.js";
 import { formatUnresolvedConflictNotice } from "./conflict-marker-notice.js";
 import { formatSecretScanNotice } from "./secret-scan-notice.js";
-import { emitNoticePostTurn } from "../chat-card-persistence.js";
+import { formatUnreadableWorkspaceNotice } from "./unreadable-workspace-notice.js";
+import { emitNoticePostTurn, persistNoticeUnattached } from "../chat-card-persistence.js";
 import type { GenerateText } from "../non-turn-model.js";
 
 /**
@@ -733,7 +734,7 @@ export async function flushPendingTurnCommit(
      */
     summary?: string;
   },
-): Promise<{ commitHash: string | null; secretBlocked: boolean }> {
+): Promise<{ commitHash: string | null; secretBlocked: boolean; unreadableBlocked: boolean }> {
   const runner = deps.sessionId && deps.runnerRegistry
     ? deps.runnerRegistry.get(deps.sessionId)
     : null;
@@ -743,8 +744,36 @@ export async function flushPendingTurnCommit(
     || runner?.turnSummary?.split("\n")[0]?.slice(0, 120)
     || "Agent turn";
   const parentHash = await git.getHeadHash();
-  const { commitHash, conflictedFiles, rebaseInProgress, secretFindings } = await git.autoCommit(summary);
+  const { commitHash, conflictedFiles, rebaseInProgress, secretFindings, unreadable } =
+    await git.autoCommit(summary);
   const secretBlocked = secretFindings.length > 0;
+  // docs/266 reqs 14 + 15 / planning#407 — this flush is the turn's commit for the
+  // work it carries (a mid-turn `gh pr create`, a consult landing after its
+  // parent turn), so the same two states get the same words here as on the
+  // post-turn path. Ignoring the field was the bug: a `blocked` add returns a
+  // null hash exactly like "nothing to commit", and the caller then pushes and
+  // opens a PR that does not contain the work the flush existed to include.
+  if (unreadable) {
+    const message = formatUnreadableWorkspaceNotice(unreadable, {
+      committed: commitHash !== null,
+      what: "This work",
+    });
+    // Deliberately NOT gated on `runner`, unlike the two notices below. A
+    // runner is the live TRANSPORT, not the record: a consult landing after its
+    // parent turn can find none, and "the work is not on the branch" is exactly
+    // the fact that must survive to the transcript the user comes back to
+    // (review finding). Persisted whenever there is a session and a history to
+    // persist into; the emit is the half that has no destination.
+    if (deps.chatHistory && deps.sessionId) {
+      if (runner) {
+        emitNoticePostTurn((m) => runner.emitMessage(m), deps.chatHistory, deps.sessionId, message, "warn");
+      } else {
+        persistNoticeUnattached(deps.chatHistory, deps.sessionId, message, "warn");
+      }
+    } else {
+      runner?.emitMessage({ type: "system_notice", sessionId: runner.sessionId, level: "warn", message });
+    }
+  }
   if (secretBlocked && runner) {
     const message = formatSecretScanNotice(secretFindings);
     if (deps.chatHistory) {
@@ -761,13 +790,20 @@ export async function flushPendingTurnCommit(
       runner.emitMessage({ type: "system_notice", sessionId: runner.sessionId, level: "warn", message });
     }
   }
-  if (!commitHash) return { commitHash: null, secretBlocked };
+  // docs/266 req 15 / planning#407 — `blocked` means `git add -A` exited 128 and
+  // staged NOTHING, so the edits this flush exists to include are not on the
+  // branch. That is reported to the CALLER, not just to the transcript, and it
+  // is deliberately NOT "commitHash is null": a null hash is the ordinary
+  // "nothing to commit" answer, and conflating the two would abort every PR
+  // opened on an already-clean tree.
+  const unreadableBlocked = unreadable?.kind === "blocked";
+  if (!commitHash) return { commitHash: null, secretBlocked, unreadableBlocked };
 
   if (runner && parentHash) {
     runner.pendingCommitLink = { commitHash, parentCommitHash: parentHash };
   }
   runner?.emitMessage({ type: "git_committed", hash: commitHash, message: summary });
-  return { commitHash, secretBlocked: false };
+  return { commitHash, secretBlocked: false, unreadableBlocked: false };
 }
 
 /**
@@ -855,6 +891,22 @@ export async function agentCreatePr(
       422,
       "Refused to create the PR: a likely secret was found in the staged changes, so they were not committed. " +
         "Remove the secret (use an env var / ShipIt secret) — or add a `gitleaks:allow` comment to the line if it's a false positive — then try again.",
+    );
+  }
+  // docs/266 req 15 / planning#407 — the same abort, for the same reason, one
+  // cause along. An unreadable FILE makes `git add -A` stage nothing at all, so
+  // the agent's edits are not on the branch either; pushing now publishes the
+  // prior state and hands the agent a PR URL that contradicts the notice the
+  // flush just posted. The secret branch above already names this failure mode
+  // as the thing to prevent — it was only ever wired for one of its two causes
+  // (review finding).
+  if (flush.unreadableBlocked) {
+    throw new ServiceError(
+      422,
+      "Refused to create the PR: ShipIt could not read part of the workspace, so `git add` staged "
+        + "nothing and this turn's changes are not committed. Fix that path's permissions (or "
+        + "gitignore it — a compose service running as its own `user:` is the usual cause), then "
+        + "try again. The chat transcript names the exact path.",
     );
   }
 

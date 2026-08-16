@@ -35,6 +35,8 @@ import { sessionAutoCommitAllowed } from "./services/auto-commit-gate.js";
 import type { MarketplaceStore } from "./marketplace-store.js";
 import { getErrorMessage } from "./validation.js";
 import { pushToOrigin } from "./git-utils.js";
+import { emitNoticePostTurn, persistNoticeUnattached } from "./chat-card-persistence.js";
+import { formatUnreadableWorkspaceNotice } from "./services/unreadable-workspace-notice.js";
 
 /**
  * Commit a manual file edit so it lands as its own commit instead of being
@@ -57,8 +59,8 @@ async function commitManualEdit(
   dir: string,
   filePath: string,
 ): Promise<void> {
-  const runner = deps.runnerRegistry.get(sessionId) as { running?: boolean } | undefined;
-  if (runner?.running) return;
+  const runner = deps.runnerRegistry.get(sessionId);
+  if ((runner as { running?: boolean } | undefined)?.running) return;
   // docs/128 / docs/211 — ShipIt does not auto-commit an ops or sandbox session
   // (`services/auto-commit-gate.ts`). A UI file edit is still ShipIt committing
   // on its own: the agent asked for nothing, and for a sandbox `/workspace` is
@@ -67,9 +69,29 @@ async function commitManualEdit(
   if (!sessionAutoCommitAllowed(deps.sessionManager, sessionId)) return;
   try {
     const git = deps.createGitManager(dir);
-    const { commitHash } = await withWorkspaceLock(dir, () =>
+    const { commitHash, unreadable } = await withWorkspaceLock(dir, () =>
       git.autoCommit(`Edit ${path.basename(filePath)}`),
     );
+    // docs/266 reqs 14 + 15 / planning#407 — the save itself succeeded (the file is
+    // on disk), but the user was told nothing about the commit either way, and
+    // a `blocked` add commits NOTHING while returning the same null hash as
+    // "nothing to commit". Persisted, because the point is that the edit the
+    // user just made is not on the branch and will not be until the path is
+    // readable.
+    if (unreadable) {
+      const message = formatUnreadableWorkspaceNotice(unreadable, {
+        committed: commitHash !== null,
+        what: "This file edit",
+      });
+      if (runner) {
+        emitNoticePostTurn((m) => runner.emitMessage(m), deps.chatHistoryManager, sessionId, message, "warn");
+      } else {
+        // A UI save reaches a session with no runner (the container was
+        // reclaimed while the file tree stayed open), and the notice still
+        // belongs in the transcript the user comes back to.
+        persistNoticeUnattached(deps.chatHistoryManager, sessionId, message, "warn");
+      }
+    }
     // Push so the change reaches the PR without waiting for the next turn,
     // matching ShipIt's inline-PR model. Fire-and-forget: push latency must
     // not block the save response, and auth failures surface on the next
