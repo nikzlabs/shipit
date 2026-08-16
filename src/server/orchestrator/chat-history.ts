@@ -511,7 +511,7 @@ export class ChatHistoryManager {
   private stmtLoadInProgressConsultRows;
   private stmtLoadFinalizedConsultRows;
   private stmtFinalizeRowById;
-  private stmtPatchConsultById;
+  private stmtDeleteRowById;
   private stmtDeleteExpiredSnapshots;
 
   constructor(dbManager: DatabaseManager) {
@@ -572,7 +572,7 @@ export class ChatHistoryManager {
       "SELECT id, sub_agent_consult FROM messages WHERE session_id = ? AND in_progress = 0 AND sub_agent_consult IS NOT NULL ORDER BY id",
     );
     this.stmtFinalizeRowById = this.db.prepare("UPDATE messages SET in_progress = 0 WHERE id = ?");
-    this.stmtPatchConsultById = this.db.prepare("UPDATE messages SET sub_agent_consult = ? WHERE id = ?");
+    this.stmtDeleteRowById = this.db.prepare("DELETE FROM messages WHERE id = ?");
     this.stmtDeleteExpiredSnapshots = this.db.prepare("DELETE FROM rewind_snapshots WHERE expires_at_ms <= ?");
   }
 
@@ -909,7 +909,19 @@ export class ChatHistoryManager {
     // a wait, and a full-row scan of a long session's transcript per poll is
     // real work to repeat thousands of times.
     const rows = this.stmtLoadSubAgentCards.all(sessionId) as { sub_agent_consult: string }[];
-    return rows.map((r) => JSON.parse(r.sub_agent_consult) as SubAgentConsultCard);
+    const out: SubAgentConsultCard[] = [];
+    for (const row of rows) {
+      try {
+        out.push(JSON.parse(row.sub_agent_consult) as SubAgentConsultCard);
+      } catch {
+        // Skip an unreadable card rather than throwing, exactly as the boot
+        // sweep's query does. This backs `shipit agent result` and its `--wait`
+        // poll: one corrupt row must not make every other run in the session
+        // unreadable, and it must not turn a completed consult's delivery into
+        // an error (planning#402).
+      }
+    }
+    return out;
   }
 
   /**
@@ -952,15 +964,19 @@ export class ChatHistoryManager {
    * `recordedCards`, that helper patches the recorded copy instead so the turn's
    * own finalize can't clobber the transition. Returns true if a card matched.
    *
-   * `opts.finalize` additionally clears the row's `in_progress` flag. Only the
-   * planning#309 boot reconcile passes it, and it needs it: a consult spawned by a
-   * FOREGROUND `shipit agent run` is still inside its originating turn when the
-   * orchestrator dies, so its row is `in_progress=1`. docs/240 then adopts that
-   * turn in the new process, and the adopted turn's `agent_result` calls
-   * `replaceInProgress`, which deletes every `in_progress=1` row in the session
-   * and rebuilds from the fresh runner's (empty) `recordedCards` — taking the
-   * card with it. A patch alone would be undone by a delete; finalizing the row
-   * is what makes the reconciled card outlive the adoption.
+   * `opts.finalize` additionally clears the row's `in_progress` flag, so the
+   * reconciled card is already in its resting state rather than riding an
+   * adopted turn's in-progress set. Only the planning#309 boot reconcile passes it.
+   *
+   * It used to be load-bearing for DURABILITY: a consult spawned by a FOREGROUND
+   * `shipit agent run` is still inside its originating turn when the orchestrator
+   * dies, so its row is `in_progress=1`; docs/240 adopts that turn, and the
+   * adopted turn's `replaceInProgress` deleted every such row. planning#402 moved
+   * that guarantee into `replaceInProgress` itself, which now finalizes an
+   * orphaned consult row instead of deleting it — so a patch WITHOUT `finalize`
+   * survives the adoption too. `finalize` is still the right thing for the
+   * reconcile to pass; it is no longer the only thing standing between a card
+   * and the next turn's delete.
    */
   updateSubAgentConsultCard(
     sessionId: string,
@@ -1189,10 +1205,13 @@ export class ChatHistoryManager {
    *
    * The insert side mirrors the notice guard for the same reason it exists: once
    * a card is on a finalized row, re-inserting it from a still-live
-   * `recordedCards` would make a duplicate, and `getSubAgentResult` takes the
-   * first match — a stale `pending` copy would permanently shadow the terminal
-   * one. Skip it instead, upgrading the surviving row when the batch copy is the
-   * terminal one and the row's is not.
+   * `recordedCards` would make a duplicate, and a stale `pending` copy sitting
+   * on the earlier row shadows the terminal one on every read that takes the
+   * first match. So a batch copy that is at least as current REPLACES the
+   * surviving row — deleted, then re-inserted at its anchor, which keeps the
+   * position that patching in place would have frozen. A batch copy that is
+   * stale (pending against a terminal row) is dropped instead: preserving a
+   * result outranks preserving a position.
    */
   replaceInProgress(sessionId: string, messages: PersistedMessage[]): void {
     this.db.transaction(() => {
@@ -1222,10 +1241,24 @@ export class ChatHistoryManager {
           finalizedConsults ??= this.loadFinalizedConsultRows(sessionId);
           const existing = finalizedConsults.get(msg.subAgentConsult.cardId);
           if (existing) {
-            if (existing.card.status === "pending" && msg.subAgentConsult.status !== "pending") {
-              this.stmtPatchConsultById.run(JSON.stringify(msg.subAgentConsult), existing.id);
+            if (existing.card.status !== "pending" && msg.subAgentConsult.status === "pending") {
+              // The batch copy is the STALE one — a live turn re-flushing a
+              // `recordedCards` snapshot taken before the transition. Keep the
+              // surviving row; a rebuild must never walk a result back to
+              // `pending`, which is the shape the incident reported for hours.
+              continue;
             }
-            continue;
+            // The batch copy is at least as current, so drop the surviving row
+            // and let the insert below place it at its `afterGroupIndex` anchor.
+            // Patching the old row in place would keep the card durable but
+            // freeze its id while the assistant rows around it are reborn with
+            // higher ones — the same float-to-the-top regression the preserve
+            // step above is conditional to avoid, reached by the other branch.
+            // Re-inserting is not a durability step backwards: the row rejoins
+            // this turn's in-progress set, and the preserve step catches it
+            // again the moment a foreign rebuild would otherwise delete it.
+            this.stmtDeleteRowById.run(existing.id);
+            finalizedConsults.delete(msg.subAgentConsult.cardId);
           }
         }
         this.stmtInsert.run(this.toRow(sessionId, msg));

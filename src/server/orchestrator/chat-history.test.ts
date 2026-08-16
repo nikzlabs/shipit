@@ -653,16 +653,21 @@ describe("ChatHistoryManager", () => {
     });
 
     it("never leaves two rows for one card, and lets the terminal copy win", () => {
-      // Defect A on its own — no deletion involved. A live turn keeps the card
-      // in `recordedCards`, so every rebuild re-offers it; if a rebuild inserted
-      // it beside the finalized copy, `listSubAgentConsultCards` would return
-      // the stale `pending` row first and shadow the result permanently.
+      // Defect A on its own — no deletion involved, so this has to manufacture
+      // the finalized twin by a route that exists WITHOUT the fix: an
+      // out-of-band `finalizeInProgress` (docs/240's turn adoption, the auth
+      // handler, the crash paths). A live turn keeps the card in
+      // `recordedCards`, so its next rebuild re-offers it; inserting it beside
+      // the finalized copy leaves the stale row first, and every read that takes
+      // a first match then reports `pending` for a finished run.
       const mgr = new ChatHistoryManager(dbManager);
-      mgr.replaceInProgress("sess-1", turnRows(card("spawn-a")));
-      // A foreign rebuild finalizes the pending row in place…
-      mgr.replaceInProgress("sess-1", turnRows({ role: "assistant", text: "elsewhere" }));
-      // …and the original turn, still alive, flushes its recorded card again —
-      // now carrying the terminal status.
+      mgr.replaceInProgress("sess-1", turnRows(
+        { role: "assistant", text: "running the review" },
+        card("spawn-a"),
+      ));
+      mgr.finalizeInProgress("sess-1");
+      // The turn is still alive and flushes its recorded card again — now
+      // carrying the terminal status.
       mgr.replaceInProgress("sess-1", turnRows(
         { role: "assistant", text: "running the review" },
         card("spawn-a", { status: "success", outputMarkdown: "## Findings" }),
@@ -676,12 +681,41 @@ describe("ChatHistoryManager", () => {
     it("a stale rebuild cannot downgrade a terminal card back to pending", () => {
       const mgr = new ChatHistoryManager(dbManager);
       mgr.replaceInProgress("sess-1", turnRows(card("spawn-a", { status: "success", outputMarkdown: "## Findings" })));
-      mgr.replaceInProgress("sess-1", turnRows({ role: "assistant", text: "elsewhere" }));
+      mgr.finalizeInProgress("sess-1");
       mgr.replaceInProgress("sess-1", turnRows(card("spawn-a")));
 
       const cards = new ChatHistoryManager(dbManager).listSubAgentConsultCards("sess-1");
       expect(cards).toHaveLength(1);
       expect(cards[0]).toMatchObject({ status: "success", outputMarkdown: "## Findings" });
+    });
+
+    it("re-anchors a replaced card instead of freezing it above its own turn", () => {
+      // The other half of finding 2: when a finalized twin exists and the batch
+      // copy is at least as current, the surviving row is dropped and the card
+      // re-inserted at its anchor. Patching the twin in place would keep the
+      // data and lose the position — the card floating above the groups that
+      // preceded it, which is the regression the preserve step is conditional
+      // to avoid.
+      const mgr = new ChatHistoryManager(dbManager);
+      const rows = (status: "pending" | "success") => turnRows(
+        { role: "assistant", text: "before the consult" },
+        card("spawn-a", { status }),
+        { role: "assistant", text: "after the consult" },
+      );
+      mgr.replaceInProgress("sess-1", rows("pending"));
+      // A foreign rebuild orphans the card, so the preserve step finalizes THAT
+      // ROW ALONE — the state the twin branch actually sees in production.
+      mgr.replaceInProgress("sess-1", turnRows({ role: "assistant", text: "a preempting turn" }));
+      // The original turn is alive after all and flushes its recorded card.
+      mgr.replaceInProgress("sess-1", rows("success"));
+
+      const all = new ChatHistoryManager(dbManager).load("sess-1");
+      expect(all.map((m) => (m.subAgentConsult ? "<card>" : m.text))).toEqual([
+        "before the consult",
+        "<card>",
+        "after the consult",
+      ]);
+      expect(all[1].subAgentConsult).toMatchObject({ status: "success" });
     });
 
     it("leaves the card at its anchor while its own turn is still rebuilding", () => {

@@ -585,8 +585,22 @@ export async function runSubAgent(
     // card whose row was deleted 330 ms later read as healthy for four hours.
     // Read the row back instead: this runs once per consult completion, so the
     // scan costs nothing next to the run it is reporting on.
-    const durable = deps.chatHistoryManager.listSubAgentConsultCards?.(sessionId)
-      .some((c) => c.cardId === cardId && c.status === card.status) ?? patchedRow;
+    //
+    // `persisted` means "a row of this session carries this card at this
+    // status". It deliberately says nothing about the row's `in_progress` bit,
+    // because that bit no longer decides survival: `replaceInProgress` finalizes
+    // an orphaned consult row rather than deleting it, so reaching the DB IS
+    // durability. Wrapped because this is diagnostic and must never be the thing
+    // that loses the result — the card is already written by the time we get
+    // here, and one unreadable consult row elsewhere in the session would
+    // otherwise throw past the return that hands the output back.
+    let durable = patchedRow;
+    try {
+      const rows = deps.chatHistoryManager.listSubAgentConsultCards?.(sessionId);
+      if (rows) durable = rows.some((c) => c.cardId === cardId && c.status === card.status);
+    } catch (err) {
+      console.warn(`[sub-agent] durability read-back failed session=${sessionId} card=${cardId}:`, err);
+    }
     console.log(
       `[sub-agent] finished session=${sessionId} spawn=${spawnId} card=${cardId} agent=${subAgentId} `
       + `status=${card.status} durationMs=${card.durationMs ?? 0} costUsd=${card.costUsd ?? 0} `

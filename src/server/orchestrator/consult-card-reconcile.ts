@@ -94,11 +94,17 @@ export interface ReconcileOrphanedConsultsResult {
  *
  * Call once at boot, and BEFORE `reattachInFlightTurns` (docs/240): a consult
  * spawned by a foreground `shipit agent run` is still inside its originating
- * turn, so its row is `in_progress=1`, and the adopted turn's `replaceInProgress`
- * deletes every such row in the session. Finalizing the row here — which is what
- * the `finalize` option does — is what keeps the card from being deleted instead
- * of merely being left pending. Running after the adoption would be a race
- * against that delete.
+ * turn, so its row is `in_progress=1`, and the adopted turn rebuilds that set
+ * from its own (empty) `recordedCards`. `finalize` puts the reconciled card in
+ * its resting state ahead of that rebuild.
+ *
+ * planning#402 narrowed what that ordering is protecting against. It used to be a
+ * DELETE: `replaceInProgress` dropped every `in_progress=1` row, card included.
+ * It no longer does — an orphaned consult row is finalized in place rather than
+ * deleted — so the card now survives the adoption whether or not this ran first.
+ * Keep the ordering anyway (a reconciled card should not spend a turn's worth of
+ * rebuilds looking pending), but do not describe it as the thing standing
+ * between the card and deletion.
  *
  * Never throws: a boot sweep that fails must not take the orchestrator with it.
  */

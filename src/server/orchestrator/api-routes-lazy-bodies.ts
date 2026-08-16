@@ -19,6 +19,7 @@
 import type { FastifyInstance } from "fastify";
 import type { ApiDeps } from "./api-routes.js";
 import type { PersistedMessage } from "./chat-history.js";
+import type { SubAgentConsultCard } from "../shared/types.js";
 import { imageHash, substituteResultImages } from "./transcript-projection.js";
 import type { ToolResultEntry } from "./session-runner.js";
 
@@ -160,9 +161,16 @@ export function registerLazyBodyRoutes(app: FastifyInstance, deps: ApiDeps): voi
         reply.code(404).send({ error: "Session not found" });
         return;
       }
-      const card = deps.chatHistoryManager
+      // planning#402 — prefer a terminal copy, the same rule `getSubAgentResult`
+      // applies. Duplicate rows for one `cardId` are prevented going forward,
+      // but sessions damaged before that fix still carry them, and taking the
+      // first match served the stale `pending` copy's empty output for a run
+      // whose review sat on the very next row.
+      const copies = deps.chatHistoryManager
         .listSubAgentConsultCards(request.params.id)
-        .find((c) => c.cardId === request.params.cardId);
+        .filter((c: SubAgentConsultCard) => c.cardId === request.params.cardId);
+      let card = copies[0];
+      for (const copy of copies) if (copy.status !== "pending") card = copy;
       if (!card) {
         reply.code(404).send({ error: "Sub-agent consult not found" });
         return;
