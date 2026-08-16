@@ -243,8 +243,11 @@ INTERACTIVE path. So the turn most likely to need it never got it. docs/221 had
 listed the dispatched drain as a deliberate non-goal on the reasoning that
 "nothing is lost — the user's next interactive turn still delivers it", which is
 true of the database row and false of the guarantee: that queued message IS the
-user's next turn, and it runs dispatched. `dispatched-turn.ts` now drains it too.
-The doc's non-goal is struck through with the correction.
+user's next turn, and it runs dispatched. `dispatched-turn.ts` now drains it too,
+and re-parks it if that turn dies before the agent sees the prompt — read-and-clear
+is what makes delivery exactly-once and what would otherwise let a spawn failure
+burn the only warning that the tree was rewritten. The doc's non-goal is struck
+through with the correction.
 
 **Where a failed restore is reported.** The rebase path has an SSE toast. The
 pre-turn reset has no toast in scope, so a restore that leaves stubs appends a

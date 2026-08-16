@@ -75,3 +75,5 @@
 - [x] Fix the docs/221 notice drop this uncovered: a message queued during a sync
       is released onto the DISPATCHED path, which never consumed the "your tree
       was rewritten" notice — so the turn most likely to need it never got it
+- [x] Re-park that notice when the dispatched turn dies before the agent sees the
+      prompt — read-and-clear would otherwise let a spawn failure burn it for good

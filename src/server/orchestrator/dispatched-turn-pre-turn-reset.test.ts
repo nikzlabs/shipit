@@ -267,6 +267,44 @@ describe("dispatched turn — the parked sync notice (docs/221, nikzlabs/shipit#
     expect(promptSeen).toBe("resolve the conflicts");
   });
 
+  it("puts the notice BACK when the turn dies before the agent sees it", async () => {
+    // The consume is read-and-clear, so without this a spawn failure burns the
+    // only warning that the tree was rewritten: the branch stays rewritten and
+    // nothing ever says so again. Same hazard docs/218 solved for its card with
+    // `ensureRecorded`.
+    const agents: FakeAgent[] = [];
+    const { deps } = makeDispatchTurnDeps(agents, []);
+    deps.consumePendingAgentNotice = () => NOTICE;
+    const reparked: { sessionId: string; notice: string }[] = [];
+    deps.restorePendingAgentNotice = (sessionId, notice) => { reparked.push({ sessionId, notice }); };
+    deps.agentFactory = () => { throw new Error("container unreachable"); };
+
+    runner = makeRunner();
+    runner.setSystemTurnDeps(deps);
+    const outcome = await runner.dispatch(testDispatch({ text: "carry on" })).settled;
+
+    expect(outcome.status).toBe("errored");
+    expect(reparked).toEqual([{ sessionId: "s1", notice: NOTICE }]);
+  });
+
+  it("does NOT put it back once the agent has the prompt", async () => {
+    // A turn that failed AFTER being handed the notice was told; re-parking there
+    // would re-deliver a sync the agent already heard about, which is exactly
+    // what read-and-clear exists to prevent.
+    const agents: FakeAgent[] = [];
+    const { deps } = makeDispatchTurnDeps(agents, []);
+    deps.consumePendingAgentNotice = () => NOTICE;
+    const reparked: string[] = [];
+    deps.restorePendingAgentNotice = (sessionId) => { reparked.push(sessionId); };
+
+    runner = makeRunner();
+    runner.setSystemTurnDeps(deps);
+    runner.dispatch(testDispatch({ text: "carry on" }));
+    await flushTurn();
+
+    expect(reparked).toEqual([]);
+  });
+
   it("is a no-op when the runtime wires no consumer (minimal setups)", async () => {
     const agents: FakeAgent[] = [];
     const { deps } = makeDispatchTurnDeps(agents, []);

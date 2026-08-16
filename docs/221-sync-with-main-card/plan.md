@@ -173,8 +173,13 @@ to. The notice stays pending and the user's next real turn gets it.
   typed while watching the sync finish, was the one guaranteed not to get it, and
   "the user's next interactive turn" may simply never come: that message IS the
   turn, and it runs dispatched. `dispatched-turn.ts` now consumes it too, with
-  the same `postTurn: "none"` exclusion the reset uses. Found because #2349's LFS
-  restore widened the settling window enough to make the drop deterministic.
+  the same `postTurn: "none"` exclusion the reset uses — and **re-parks it** when
+  that turn dies before the agent ever sees the prompt. The consume is
+  read-and-clear, which is what makes delivery exactly-once and what makes a
+  spawn failure burn the notice permanently: the branch stays rewritten and
+  nothing ever says so again. Same hazard docs/218 solved for its card with
+  `ensureRecorded`, same shape of answer. Found because #2349's LFS restore
+  widened the settling window enough to make the drop deterministic.
 
 ## Follow-up — merged PR cards
 

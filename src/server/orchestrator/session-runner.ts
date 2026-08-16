@@ -804,6 +804,18 @@ export interface SystemTurnDeps {
    */
   consumePendingAgentNotice?: (sessionId: string) => string | undefined;
   /**
+   * Put a consumed notice BACK when the turn that took it died before the agent
+   * ever saw the prompt (nikzlabs/shipit#2349).
+   *
+   * The consume is read-and-clear, which is what makes delivery exactly-once —
+   * and what makes a turn that dies during setup burn the notice permanently:
+   * the branch stays rewritten and nothing ever says so again. docs/218 solved
+   * the same hazard for its transcript card with `ensureRecorded`; this is the
+   * same answer for the sentence. Paired in `runDispatchedTurn`'s `finally` and
+   * latched, so it can neither double-park nor undo a delivered notice.
+   */
+  restorePendingAgentNotice?: (sessionId: string, notice: string) => void;
+  /**
    * docs/149 — write a CLI-rotated OAuth token back to the orchestrator source
    * after a system turn. Optional; production wires it to
    * `finalizeSessionAgentEnvironment` so the agent-spawned and CI-auto-fix

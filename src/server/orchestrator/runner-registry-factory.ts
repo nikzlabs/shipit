@@ -639,6 +639,9 @@ export function createRunnerRegistry(
         // settles is released onto `dispatch`, so the interactive-only consume
         // dropped it for exactly the turn most likely to need it.
         consumePendingAgentNotice: (sessionId) => sessionManager.consumePendingAgentNotice(sessionId),
+        // ...and put it back if that turn never reached the agent, so a spawn
+        // failure can't burn the only warning that the tree was rewritten.
+        restorePendingAgentNotice: (sessionId, notice) => sessionManager.setPendingAgentNotice(sessionId, notice),
         // docs/149 — emit the PR lifecycle card after a system-turn commit.
         // Lazy poller resolution because the poller is constructed AFTER the
         // runner registry; the closure fires post-turn, by which time it's set.

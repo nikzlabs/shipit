@@ -215,6 +215,23 @@ export async function runDispatchedTurn(
   const pendingNotice = opts.postTurn !== "none"
     ? deps.consumePendingAgentNotice?.(runner.sessionId) ?? ""
     : "";
+  // The consume is read-and-CLEAR, so a turn that dies before the agent ever
+  // sees the prompt would burn the notice permanently — the branch stays
+  // rewritten and nothing ever says so again. Same hazard docs/218 solved for
+  // its card with `ensureRecorded`, and the same answer: re-park it in the
+  // `finally` unless the agent actually got it. Latched, so the re-park cannot
+  // fire twice, and a no-result RETRY re-runs the agent with the prompt already
+  // built — `promptDelivered` is set once the run is handed over.
+  let promptDelivered = false;
+  const reparkNoticeIfUndelivered = () => {
+    if (!pendingNotice || promptDelivered) return;
+    promptDelivered = true; // latch: never re-park more than once
+    try {
+      deps.restorePendingAgentNotice?.(runner.sessionId, pendingNotice);
+    } catch (err) {
+      console.error("[dispatch] re-parking the pending agent notice failed:", err);
+    }
+  };
 
   // The `[System] …` prefix rides in FRONT of the assembled prompt, exactly as
   // the interactive path places it: the branch moved (or conspicuously did not)
@@ -397,6 +414,10 @@ export async function runDispatchedTurn(
     // WS path's `existingAgent.removeAllListeners()`).
     if (reuse) agent.removeAllListeners();
 
+    // The agent is about to be handed the assembled prompt, notice included, so
+    // the re-park is off from here: a failure after this point is a failure of a
+    // turn that WAS told, not a lost notice.
+    promptDelivered = true;
     await executeAgentTurn(runner, deps, agent, {
       agentId,
       sessionId: runner.sessionId,
@@ -543,5 +564,6 @@ export async function runDispatchedTurn(
     await runOnce(0);
   } finally {
     reset?.ensureRecorded?.(runner.sessionId);
+    reparkNoticeIfUndelivered();
   }
 }
