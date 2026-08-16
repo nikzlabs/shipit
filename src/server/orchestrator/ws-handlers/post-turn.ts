@@ -156,7 +156,32 @@ export async function postTurnCommit(
     const git = ctx.createGitManager(opts.sessionDir);
     const parentHash = await git.getHeadHash();
     const firstLine = opts.turnSummary.split("\n")[0]?.slice(0, 120) || "Agent turn";
-    const { commitHash, conflictedFiles, rebaseInProgress, secretFindings } = await git.autoCommit(firstLine);
+    const { commitHash, conflictedFiles, rebaseInProgress, secretFindings, unreadable } = await git.autoCommit(firstLine);
+    // docs/266 reqs 14 + 15 — orchestrator git now runs as the session's uid, so
+    // for the first time it can hit workspace content it cannot read (a compose
+    // service running at its own explicit `user:`). The two outcomes need
+    // different words, which is why they are two requirements and not one: an
+    // unreadable DIRECTORY leaves a commit that exists and is short, an
+    // unreadable FILE leaves no commit at all. Persisted, not logged — the whole
+    // point is that git's exit codes report success in the first case and
+    // `postTurnStep` would swallow the second into a log line nobody reads.
+    if (unreadable && opts.sessionId) {
+      emitNoticePostTurn(
+        opts.emit,
+        ctx.chatHistoryManager,
+        opts.sessionId,
+        unreadable.kind === "omitted"
+          ? `This commit is short. ShipIt could not read \`${unreadable.detail}\` in your workspace, `
+            + "so its contents were left out of the commit — everything else was committed normally. "
+            + "A service in your `docker-compose.yml` running as its own `user:` is the usual cause; "
+            + "gitignoring that path removes the problem entirely."
+          : `This turn was NOT committed. ShipIt could not read \`${unreadable.detail}\`, and \`git add\` `
+            + "stages nothing at all when that happens — so the rest of the turn's work is still in the "
+            + "working tree, uncommitted. Fix that path's permissions (or gitignore it) and the next turn "
+            + "will commit everything.",
+        "warn",
+      );
+    }
     if (secretFindings.length > 0 && opts.sessionId) {
       // docs/213 / planning#317 — the commit was refused because the staged diff
       // carried a likely secret. `recordSecretBlock` owns all three responses:

@@ -7,6 +7,9 @@ import { safeSimpleGit, gitArgsWithHooksDisabled } from "./git-hooks-guard.js";
 
 const DEFAULT_WORKSPACE_DIR = "/workspace";
 
+/** Bound on {@link GitManager}'s stderr capture — enough for git's warnings, not a leak. */
+const STDERR_TAIL_LIMIT = 8192;
+
 /**
  * docs/198 — keep pnpm's relocated store out of git WITHOUT mutating any tracked
  * file. pnpm 11 ignores `npm_config_store_dir`/`store-dir` config and relocates
@@ -193,11 +196,63 @@ export interface AutoCommitResult {
    * refusal above.
    */
   secretFindings: SecretFinding[];
+  /**
+   * docs/266 reqs 14 + 15 — the workspace held content this git could not read.
+   *
+   * Only reachable once orchestrator git runs as the session's uid rather than
+   * as root (`git-tree-uid.ts`): root reads everything, so before that change
+   * neither state could occur. Both were measured against git 2.39.5; the table
+   * is in `docs/266-orchestrator-git-trust-boundary/plan.md` §2.
+   *
+   *   - `omitted` — an unreadable **directory**. `status` and `add -A` both exit
+   *     **0**, emitting only `warning: could not open directory` on stderr,
+   *     and the subtree is silently missing from the commit. The commit still
+   *     lands. This is the one the exit codes cannot tell apart from a turn that
+   *     genuinely changed nothing, which is why it is detected from stderr.
+   *   - `blocked` — an unreadable **file**. `add -A` exits **128** and stages
+   *     NOTHING, including every unrelated file the turn changed, so the whole
+   *     turn stays uncommitted.
+   *
+   * `null` on every ordinary commit. The caller MUST surface both, and must say
+   * different things about them: `omitted` is "this commit is short", `blocked`
+   * is "this commit did not happen".
+   */
+  unreadable: UnreadableWorkspace | null;
 }
+
+/** See {@link AutoCommitResult.unreadable}. */
+export type UnreadableWorkspace =
+  | { kind: "omitted"; detail: string }
+  | { kind: "blocked"; detail: string };
+
+/**
+ * git's own words for the two states, matched on MESSAGE TEXT and never on an
+ * exit code.
+ *
+ * That is not a stylistic choice. `errorDetectionPlugin`
+ * (`simple-git/dist/cjs/index.js:1364-1374`) receives `exitCode` in its context
+ * and builds `new GitError(void 0, stderr)` without carrying it onto the thrown
+ * error — verified by running it — so `err.exitCode` is `undefined` by
+ * construction. A detector keyed on the exit code would look correct in review
+ * and never fire.
+ */
+const UNREADABLE_DIR_RE = /could not open directory\s+'([^']+)'/;
+const UNREADABLE_FILE_RE = /unable to index file\s+'([^']+)'|open\("([^"]+)"\): Permission denied/;
 
 export class GitManager {
   private git: SimpleGit;
   private workspaceDir: string;
+  /**
+   * Rolling capture of the last git invocation's stderr, for docs/266's
+   * `omitted` detection.
+   *
+   * simple-git resolves a zero-exit task as success and does NOT surface
+   * stderr, so `warning: could not open directory` reaches nobody by default —
+   * a turn commits short and every exit code says it went fine. An
+   * `outputHandler` is the only hook that sees that stream on the success path.
+   * Bounded: only the tail matters, and a runaway git must not grow the heap.
+   */
+  private stderrTail = "";
 
   /**
    * @param workspaceDir - Git working directory. Defaults to `/workspace`.
@@ -209,7 +264,18 @@ export class GitManager {
     // commit/merge/rebase/checkout/push against a tree that untrusted plugin
     // code can write `.git/hooks/*` into, from a process that is root in the
     // orchestrator container. See `git-hooks-guard.ts`.
-    this.git = safeSimpleGit(this.workspaceDir);
+    this.git = safeSimpleGit(this.workspaceDir).outputHandler(
+      (_command, _stdout, stderr) => {
+        stderr.on("data", (chunk: Buffer | string) => {
+          this.stderrTail = (this.stderrTail + String(chunk)).slice(-STDERR_TAIL_LIMIT);
+        });
+      },
+    );
+  }
+
+  /** Start a fresh stderr capture window around a group of git calls. */
+  private resetStderr(): void {
+    this.stderrTail = "";
   }
 
   /**
@@ -279,6 +345,10 @@ export class GitManager {
     // non-clone workspace — heal here on their next turn, so the store can never
     // leak into a commit. Idempotent + best-effort, so it never blocks the commit.
     ensurePnpmStoreGitExcluded(this.workspaceDir);
+    // docs/266 — capture window for the two permission states. Opened before the
+    // first git call so `status`'s own warning is caught: `status` is where the
+    // unreadable-directory warning first appears, and it exits 0.
+    this.resetStderr();
     const status = await this.git.status();
     const rebaseInProgress = await this.isRebaseInProgress();
     const conflictedFiles = [...status.conflicted];
@@ -289,14 +359,54 @@ export class GitManager {
         rebaseInProgress ? "rebase in progress;" : "",
         conflictedFiles.length > 0 ? `unmerged paths: ${conflictedFiles.join(", ")}` : "",
       );
-      return { commitHash: null, conflictedFiles, rebaseInProgress, secretFindings: [] };
+      return { commitHash: null, conflictedFiles, rebaseInProgress, secretFindings: [], unreadable: null };
     }
 
     if (status.isClean()) {
-      return { commitHash: null, conflictedFiles: [], rebaseInProgress: false, secretFindings: [] };
+      return { commitHash: null, conflictedFiles: [], rebaseInProgress: false, secretFindings: [], unreadable: null };
     }
 
-    await this.git.add("-A");
+    // docs/266 req 15 — an unreadable FILE makes `add -A` exit 128 and stage
+    // NOTHING, including every unrelated file this turn changed. simple-git
+    // rejects with a GitError carrying git's stderr (verified by running it);
+    // `err.exitCode` is undefined by construction, so classify on the message.
+    // Caught rather than thrown on: a throw here reaches `postTurnStep`, which
+    // logs and continues — correct for a step that was not the commit, and this
+    // IS the commit. Returning lets the caller tell the user their turn produced
+    // nothing, which a log line does not.
+    try {
+      await this.git.add("-A");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const blocked = UNREADABLE_FILE_RE.exec(message);
+      if (!blocked) throw err;
+      const blockedPath = blocked[1] ?? blocked[2] ?? "(unknown path)";
+      console.error(
+        `[git] autoCommit staged NOTHING — cannot read ${blockedPath}. `
+        + "The whole turn is uncommitted and still in the working tree.",
+      );
+      return {
+        commitHash: null,
+        conflictedFiles: [],
+        rebaseInProgress: false,
+        secretFindings: [],
+        unreadable: { kind: "blocked", detail: blockedPath },
+      };
+    }
+
+    // docs/266 req 14 — an unreadable DIRECTORY is the silent one: `status` and
+    // `add -A` both exit 0 and the subtree is simply missing from the commit.
+    // Nothing but stderr distinguishes it from a turn that changed nothing.
+    const omittedMatch = UNREADABLE_DIR_RE.exec(this.stderrTail);
+    const unreadable: UnreadableWorkspace | null = omittedMatch
+      ? { kind: "omitted", detail: omittedMatch[1] }
+      : null;
+    if (unreadable) {
+      console.warn(
+        `[git] autoCommit could not read ${unreadable.detail} — its contents are `
+        + "omitted from this commit. The commit itself still lands.",
+      );
+    }
 
     // docs/213 — secret-scan guard. Scan the STAGED diff (which now includes
     // new untracked files, since we just `git add -A`'d) for high-signal
@@ -318,7 +428,7 @@ export class GitManager {
       } catch {
         // no HEAD / nothing staged — safe to ignore.
       }
-      return { commitHash: null, conflictedFiles: [], rebaseInProgress: false, secretFindings };
+      return { commitHash: null, conflictedFiles: [], rebaseInProgress: false, secretFindings, unreadable };
     }
 
     // docs/213 — the commit MESSAGE is derived from agent-authored turn text,
@@ -329,7 +439,7 @@ export class GitManager {
     const result = await this.git.commit(message);
     const hash = result.commit || "";
     console.log("[git] Committed:", hash, message, "on branch:", status.current ?? "(detached)");
-    return { commitHash: hash, conflictedFiles: [], rebaseInProgress: false, secretFindings: [] };
+    return { commitHash: hash, conflictedFiles: [], rebaseInProgress: false, secretFindings: [], unreadable };
   }
 
   /**

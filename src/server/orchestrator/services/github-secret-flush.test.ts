@@ -38,6 +38,7 @@ describe("flushPendingTurnCommit — secret refusal", () => {
       secretFindings: [
         { rule: "github-pat", description: "GitHub PAT", file: "x.ts", redacted: "ghp_…[redacted, 40 chars]" },
       ],
+  unreadable: null,
     });
 
     const res = await flushPendingTurnCommit(git, { sessionId: "s1", runnerRegistry: registryFor(runner) });
@@ -51,7 +52,7 @@ describe("flushPendingTurnCommit — secret refusal", () => {
 
   it("returns secretBlocked=false on a normal commit", async () => {
     const runner = fakeRunner();
-    const git = fakeGit({ commitHash: "abc123", conflictedFiles: [], rebaseInProgress: false, secretFindings: [] });
+    const git = fakeGit({ commitHash: "abc123", conflictedFiles: [], rebaseInProgress: false, secretFindings: [], unreadable: null });
 
     const res = await flushPendingTurnCommit(git, { sessionId: "s1", runnerRegistry: registryFor(runner) });
 

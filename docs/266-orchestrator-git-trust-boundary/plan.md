@@ -9,10 +9,23 @@ description: Five options for closing the .git route, their costs, the recommend
 Implements [requirements.md](./requirements.md). Requirements are cited as
 `(req N)`.
 
-**Status: design complete, implementation not started.** All four open questions
-were answered on 2026-08-16 (`requirements.md` → Resolved questions), including
-Q2, the load-bearing one. No implementation code has been written in this doc's
-PR — this remains a docs-only change, and the build sequence is §5.
+**Status: E1 + E5-detect shipped; E2, E3, E4 and the per-session-uid follow-up
+outstanding.** All four open questions were answered on 2026-08-16
+(`requirements.md` → Resolved questions). See [checklist.md](./checklist.md) for
+exactly what landed and why each remaining piece was split out —
+planning#403 (E2), planning#404 (E3), planning#405 (per-session uids).
+
+**planning#384 is not closed by that work**, and the checklist says so in those
+words. The drop removes root, the Docker socket and the credential store as a
+whole from the payload's reach; it does not remove `/credentials`, it is not yet
+fail-closed, and cross-session workspace access remains.
+
+One correction to §5 from building it: the sequence says "convert the five raw
+sites". There are **13** raw `safeSimpleGit(workspaceDir)` sites across 8 files,
+plus the raw process spawns. That count is why the implementation decides by
+**tree ownership inside `safeSimpleGit`** rather than threading a uid through
+call sites — a hand-kept list is stale at the fourteenth, and the failure is
+silent.
 
 ## 1. The shape of the problem
 
