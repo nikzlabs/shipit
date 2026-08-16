@@ -9,11 +9,17 @@ description: Five options for closing the .git route, their costs, the recommend
 Implements [requirements.md](./requirements.md). Requirements are cited as
 `(req N)`.
 
-**Status: E1 + E5-detect shipped; E2, E3, E4 and the per-session-uid follow-up
-outstanding.** All four open questions were answered on 2026-08-16
-(`requirements.md` → Resolved questions). See [checklist.md](./checklist.md) for
-exactly what landed and why each remaining piece was split out —
-planning#403 (E2), planning#404 (E3), planning#405 (per-session uids).
+**Status: E1 + E5-detect shipped; E2 built but not armed; E3, E4 and the
+per-session-uid follow-up outstanding.** All four open questions were answered on
+2026-08-16 (`requirements.md` → Resolved questions). See
+[checklist.md](./checklist.md) for exactly what landed and why each remaining
+piece was split out — planning#403 (E2), planning#404 (E3), planning#405
+(per-session uids).
+
+"Built but not armed" is E2's whole shape: the CI-side guard is on, and removing
+`safe.directory=*` is behind `SHIPIT_GIT_STRICT_OWNERSHIP=1`, off by default.
+Arming it is an operator decision to be taken against a running deployment after
+E1 has been observed there — not something a merge should do. §2 (E2) says why.
 
 **planning#384 is not closed by that work**, and the checklist says so in those
 words. The drop removes root, the Docker socket and the credential store as a
@@ -78,10 +84,21 @@ CVE-2022-24765's ownership check refuses every such operation.
 That check is exactly the control this feature wants. It is enumeration-free
 (req 3) and fail-closed (req 7): git refuses *before* reading the repository's
 config, so a call site nobody converted throws "detected dubious ownership"
-rather than silently executing. The same comment records the property the design
-leans on — `safe.directory` is honoured **only** from system/global config,
-never from a repo-local one and never from `-c`, so the untrusted side cannot
-grant itself trust.
+rather than silently executing. The property the design leans on is that a
+**repo-local** `safe.directory` is not honoured, so the untrusted side cannot
+grant itself trust — measured while building E2, and it holds.
+
+**Correction (2026-08-16, while building E2).** Earlier revisions of this
+document, `requirements.md`, and `git-config.ts`'s own comment all added "and
+never from `-c`". That is **wrong** for git 2.39.5: git's *protected
+configuration* scope is system + global + **command line**, so both
+`git -c safe.directory=*` and the `GIT_CONFIG_COUNT` environment protocol are
+honoured. Measured with `GIT_TEST_ASSUME_DIFFERENT_OWNER=1` — see §4. The design
+is unaffected, because a `-c` and an env var come from ShipIt's own argv, not
+from the repository; what changes is the maintenance rule: a future call site
+must not be allowed to silence a refusal with `-c safe.directory`, and the
+`GIT_CONFIG_COUNT` route is one more reason to keep simple-git's
+`blockUnsafeOperationsPlugin` refusal of that variable in place.
 
 The `*` was the right call for the problem it solved (docs/150 §7 activation).
 It is the wrong shape now.
@@ -156,6 +173,60 @@ every missed call site into a loud refusal instead of a silent execution
 (req 7). This is the half that makes E robust against code nobody has written
 yet. It is enumeration-free (req 3): the guard is "is this tree mine", not "is
 this key dangerous".
+
+*Built 2026-08-16 (planning#403), in two pieces with different risk.*
+
+**E2a — the CI-side guard, on by default.**
+`git-hooks-guard-coverage.test.ts` already failed the build when a raw git
+spawn omitted `gitArgsWithHooksDisabled`; it now also fails when a raw git
+spawn that names a working directory omits `gitSpawnOverridesForTree`. Two
+carriers count as naming one — a `cwd` option and a `-C <dir>` argument — and an
+options object the scanner cannot read counts as naming one too, so the
+unreadable case fails closed rather than passing quietly. This is what makes the
+`safeSimpleGit` choke point complete: the choke point covers simple-git, and a
+raw spawn bypasses it entirely.
+
+**E2b — removing the `*`, behind `SHIPIT_GIT_STRICT_OWNERSHIP=1`, off by
+default.** The switch exists because of *when* the failure lands, not whether it
+is correct. Arming it converts every missed site into a hard failure at once, on
+the post-turn commit path, where uncommitted agent work has no reflog entry
+(invariant 2) — and E1 is inert unless the process is root, so nothing outside a
+production orchestrator can exercise it. A switch makes the decision an operator
+one, taken against a running deployment and reversible by unsetting it, instead
+of a merge that needs a revert and a redeploy to undo. Arming is not a no-op
+write: the gitconfig lives in the persistent credentials volume, so it actively
+`--unset-all`s the entry an earlier boot wrote. The intended end state is still
+deletion — of both the switch and the write — once it has run armed in
+production.
+
+**What the audit found before arming it** (2026-08-16, planning#403). Three
+orchestrator-side git paths could reach a session workspace without dropping,
+and all three are fixed in the same change:
+
+| Site | Shape | What armed E2 would have done |
+|---|---|---|
+| `git-lfs.ts` `runGit` | raw `spawn`, `cwd` = the workspace | `repoDeclaresLfs`'s `git grep` and `materializeLfsContent`'s `git lfs pull` refuse → **LFS provisioning breaks**, and until then both ran as root in an untrusted tree |
+| `git.ts` `getFileBufferAtCommit` | raw `execFile`, `cwd` = the workspace | `git show <rev>:<path>` refuses → binary file-at-commit reads break |
+| `session-fork-merge.ts:54` | `safeSimpleGit()` with **no `baseDir`**, `clone --local <session workspace>` | the clone refuses on the SOURCE repo → **fork breaks** (planning#407, first bullet) |
+
+The fork site is the one the ownership predicate structurally could not see —
+there is no `baseDir` to stat — and the reason it stayed unconverted is real:
+dropping alone would leave the clone unable to create its root-owned destination
+under `sessionsRoot`. The fix is to create the destination first, hand it to the
+worker uid, and then clone with the drop resolved from the source tree.
+
+Everything else is either root-owned (`/opt/shipit` in `build-id.ts`,
+`services/updates.ts`, `services/shipit-source.ts`; the bare caches in
+`repo-git.ts`, `plugin-generations.ts`) or has no local tree at all
+(`marketplace.ts` clones from a URL). Those carry the drop call anyway, where
+they name a directory, so the answer comes from the filesystem rather than from
+an assumption that ages.
+
+One residual, not fixed: `mergeSession`'s fallback adds a *sibling session's*
+workspace as a local remote and fetches from it. Git refuses a foreign source on
+a local fetch (measured), so this works only while every session shares one
+worker uid. Per-session uids (planning#405) must handle it; it is recorded here
+rather than in that issue's absence.
 
 **E3. The credential the unprivileged git can reach must be no broader than
 what the session container already holds.** This is not optional garnish, and
@@ -497,6 +568,31 @@ inherited guarantee at the source").
 - **Reproduced, not inherited:** the `filter.clean` / `core.fsmonitor` /
   `alias` executions in §1, and simple-git's `spawnOptions: {uid, gid}` support.
   Both were run/read here.
+- **E2's refusals ARE measured — through git's own test hook, not through real
+  ownership** (2026-08-16, planning#403). `GIT_TEST_ASSUME_DIFFERENT_OWNER=1`
+  makes git 2.39.5 treat every repository as foreign, which is the same code
+  path a real foreign uid takes and the closest a rootless session container can
+  get to it. What was run:
+
+  | Command | Result |
+  |---|---|
+  | `git -C <foreign> status` / `rev-parse` / `grep` / `show` | `fatal: detected dubious ownership in repository at '<dir>'`, exit 128 |
+  | `git clone --local <foreign> dest` | refuses on the **source**: `… at '<src>/.git'` |
+  | `git -C <trusted> fetch <foreign-path>` | refuses on the source, exit 128 |
+  | repo-local `safe.directory=*` | **not** honoured — the refusal stands |
+  | `-c safe.directory=*`, and `GIT_CONFIG_COUNT`+`GIT_CONFIG_KEY_0` | **honoured** — corrects the claim in §1 |
+  | global `safe.directory` naming only the worktree path | accepted; the gitdir does not need its own entry |
+
+  What this does **not** show: that the refusal fires on the exact
+  worktree-owned-but-gitdir-not combination, since the hook forces every path to
+  look foreign at once. `chownWorktreeRecursive` chowns the workspace root
+  itself and `chownGitMetadataRecursive` covers `.git`, so the two should not
+  diverge — read, not observed.
+- **Not verified: that the drop actually engages in production.** Everything in
+  E1 hangs on the workspace root being owned by the worker uid at the moment
+  `resolveGitTreeUid` stats it — a root-owned root means no drop, silently and
+  with no error anywhere. That is exactly what "observe E1 in production" has to
+  establish before E2b is armed, and it cannot be established from here.
 - **Route 2 and route 3 were read, not exercised.** I read
   `install-controller.ts:521-540` (`spawn(command, { shell: true })`),
   `service-manager-setup.ts:1112-1127` (the unconditional re-run on an
@@ -516,6 +612,9 @@ Sequence:
    brokering helper (E3), and tighten `/credentials` to 0700 / `.gitconfig` to
    0600.
 3. Remove `safe.directory=*`; replace with nothing. Any survivor fails loudly.
+   *Built as `SHIPIT_GIT_STRICT_OWNERSHIP=1`, off by default — see §2 (E2b) for
+   why the removal is a switch an operator arms rather than something a merge
+   does, and for the three sites the pre-arming audit found and fixed.*
 4. Drop the `core.hooksPath` override on the session-workspace path only, and
    add the bounded-hook-then-`--no-verify` fallback with its persisted notice
    (E4, reqs 9 and 10). Last, because it is the only step that adds a way for
@@ -524,7 +623,11 @@ Sequence:
    when a `git` process is spawned without `gitArgsWithHooksDisabled` — to also
    fail when a session-workspace git spawn carries no uid. Note that step 4
    narrows what that test asserts rather than removing it: the override must
-   still be present on every root-side git spawn.
+   still be present on every root-side git spawn. *Done (E2a). The rule is
+   "names a working directory", not "targets a session workspace": the scanner
+   cannot tell whose tree a runtime path is, and `gitSpawnOverridesForTree`
+   resolves to `{}` on a root-owned one, so demanding it everywhere costs
+   nothing and removes the judgement call.*
 6. **E5-detect (reqs 14 and 15) — not optional, and not a compose-time check.**
    Capture stderr from the auto-commit's `status` and `add -A` and match **two**
    patterns on message text (not exit code): `could not open directory` → *"this

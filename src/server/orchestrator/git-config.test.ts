@@ -11,6 +11,7 @@ import {
   writeContainerGitConfig,
   CONTAINER_CREDENTIAL_HELPER,
   FALLBACK_CONTAINER_GIT_IDENTITY,
+  gitStrictOwnership,
 } from "./git-config.js";
 
 describe("git-config: initGlobalGitConfig", () => {
@@ -387,6 +388,61 @@ describe("git-config: safe.directory gating (planning#33)", () => {
     initGlobalGitConfig(tmpDir);
     initGlobalGitConfig(tmpDir);
     expect(readSafeDirs().filter((d) => d === "*")).toHaveLength(1);
+  });
+
+  // docs/266 E2 (planning#403) — the fail-closed half. With the switch armed the
+  // `*` is gone, so a call site that failed to drop to the tree's owner is
+  // refused by git instead of running as root against a tree untrusted code can
+  // write (req 7).
+  describe("SHIPIT_GIT_STRICT_OWNERSHIP", () => {
+    let origStrict: string | undefined;
+
+    beforeEach(() => {
+      origStrict = process.env.SHIPIT_GIT_STRICT_OWNERSHIP;
+    });
+
+    afterEach(() => {
+      if (origStrict !== undefined) process.env.SHIPIT_GIT_STRICT_OWNERSHIP = origStrict;
+      else delete process.env.SHIPIT_GIT_STRICT_OWNERSHIP;
+    });
+
+    it("writes no safe.directory when armed, even with a worker uid set", () => {
+      process.env.SHIPIT_SESSION_WORKER_UID = "1000";
+      process.env.SHIPIT_GIT_STRICT_OWNERSHIP = "1";
+      initGlobalGitConfig(tmpDir);
+      expect(readSafeDirs()).toEqual([]);
+    });
+
+    // The config file lives in the persistent credentials volume, so arming the
+    // switch on a deployment that has been running is the ONLY case that
+    // matters in production — and it is the one a plain "stop writing it" would
+    // silently get wrong.
+    it("removes an entry an earlier boot wrote", () => {
+      process.env.SHIPIT_SESSION_WORKER_UID = "1000";
+      initGlobalGitConfig(tmpDir);
+      expect(readSafeDirs()).toContain("*");
+
+      process.env.SHIPIT_GIT_STRICT_OWNERSHIP = "1";
+      initGlobalGitConfig(tmpDir);
+      expect(readSafeDirs()).toEqual([]);
+    });
+
+    it("restores the entry when the switch is turned back off", () => {
+      process.env.SHIPIT_SESSION_WORKER_UID = "1000";
+      process.env.SHIPIT_GIT_STRICT_OWNERSHIP = "1";
+      initGlobalGitConfig(tmpDir);
+      delete process.env.SHIPIT_GIT_STRICT_OWNERSHIP;
+      initGlobalGitConfig(tmpDir);
+      expect(readSafeDirs()).toContain("*");
+    });
+
+    it("is off unless the value is exactly 1", () => {
+      for (const value of ["", "0", "true", "yes"]) {
+        expect(gitStrictOwnership({ SHIPIT_GIT_STRICT_OWNERSHIP: value })).toBe(false);
+      }
+      expect(gitStrictOwnership({})).toBe(false);
+      expect(gitStrictOwnership({ SHIPIT_GIT_STRICT_OWNERSHIP: "1" })).toBe(true);
+    });
   });
 });
 

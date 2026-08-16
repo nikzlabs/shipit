@@ -1,18 +1,33 @@
 /**
- * planning#384 — the guard has to hold for git spawns nobody has written yet.
+ * planning#384 — the guards have to hold for git spawns nobody has written yet.
  *
- * `git-hooks-guard.test.ts` proves the mechanism works. This proves it is
- * *applied everywhere*, by scanning the orchestrator's own source for processes
- * named `git` and failing when one is spawned without
- * `gitArgsWithHooksDisabled`.
+ * `git-hooks-guard.test.ts` and `git-tree-uid.test.ts` prove the two mechanisms
+ * work. This proves they are *applied everywhere*, by scanning the
+ * orchestrator's own source for processes named `git` and failing when one
+ * omits either of them:
  *
- * It exists because the obvious way to cover future call sites — installing
+ *   1. **Hooks** — every raw git spawn goes through `gitArgsWithHooksDisabled`.
+ *   2. **Uid** (docs/266 E2) — every raw git spawn that names a working
+ *      directory also carries `gitSpawnOverridesForTree`, so it runs as the uid
+ *      that OWNS that tree rather than as root.
+ *
+ * Rule 1 exists because the obvious way to cover future call sites — installing
  * git's `GIT_CONFIG_COUNT` env protocol once on the orchestrator process — was
  * tried and rejected: simple-git's `blockUnsafeOperationsPlugin` inspects the
  * environment and refuses to spawn at all when it sees `GIT_CONFIG_COUNT`, and
  * suppressing that would switch off its protection against inherited config
  * injection generally (see `git-hooks-guard.ts`). A source scan buys the same
  * property and fails at CI instead of at runtime.
+ *
+ * Rule 2 exists for a sharper reason. `safeSimpleGit` applies the uid drop at
+ * one choke point, so the ~189 `createGitManager` sites are covered by
+ * construction — but a raw `spawn`/`execFile` bypasses that choke point
+ * entirely, and the two sites this rule caught when it was written
+ * (`git-lfs.ts`'s `runGit`, `git.ts`'s `getFileBufferAtCommit`) were both
+ * running as root inside a session workspace. Once docs/266 E2 removes
+ * `safe.directory=*` such a site does not merely run as root: git refuses it
+ * outright, on paths as load-bearing as session provisioning. Catching it at CI
+ * is the whole point.
  *
  * The simple-git half of the same problem is covered by ESLint
  * (`no-restricted-imports` on the `simple-git` default export), which is why
@@ -22,7 +37,8 @@
  * Session-container code is excluded: git inside the session container runs the
  * project's hooks on purpose — the agent is already inside the trust boundary,
  * and a repo's own `pre-commit` formatter firing when the agent commits is what
- * a user expects.
+ * a user expects. `gitSpawnOverridesForTree` is inert there anyway (it returns
+ * `{}` unless the process is root).
  */
 
 import { describe, it, expect } from "vitest";
@@ -32,14 +48,14 @@ import { fileURLToPath } from "node:url";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOTS = [path.join(HERE, "..", "orchestrator"), HERE];
+const REPO_SRC = path.join(HERE, "..", "..");
 
 /**
  * A `git` process being started: `spawn("git", …)`, `execFile("git", …)`,
  * `execFileSync("git", …)`, `execFileAsync("git", …)`, and the same with the
- * argument list on the following line. Captures whatever follows the comma so
- * the assertion can look for the wrapper.
+ * argument list on the following line.
  */
-const GIT_SPAWN = /\b(?:spawn|execFile|execFileSync|execFileAsync)\s*\(\s*\n?\s*"git"\s*,\s*\n?\s*([^\n]*)/g;
+const GIT_SPAWN = /\b(?:spawn|execFile|execFileSync|execFileAsync)\s*\(\s*\n?\s*"git"\s*,/g;
 
 /**
  * Drop comment lines before scanning. Docstrings in this very feature quote the
@@ -72,25 +88,150 @@ function sourceFiles(dir: string): string[] {
   return out;
 }
 
-describe("git hooks guard: coverage of raw git spawns", () => {
-  it("every orchestrator-side `git` process spawn goes through gitArgsWithHooksDisabled", () => {
-    const unguarded: string[] = [];
-    let checked = 0;
-
-    for (const file of ROOTS.flatMap(sourceFiles)) {
-      const src = stripComments(fs.readFileSync(file, "utf-8"));
-      for (const match of src.matchAll(GIT_SPAWN)) {
-        checked++;
-        if (match[1].includes("gitArgsWithHooksDisabled")) continue;
-        const line = src.slice(0, match.index).split("\n").length;
-        unguarded.push(`${path.relative(path.join(HERE, "..", ".."), file)}:${line} — ${match[0].trim()}`);
-      }
+/**
+ * The text of a balanced bracketed span starting at `open` (which must index a
+ * `(` or `{`), including both brackets. String and template literals are
+ * skipped so a bracket inside one cannot unbalance the walk.
+ */
+function balancedSpan(src: string, open: number): string {
+  const close: Record<string, string> = { "(": ")", "{": "}", "[": "]" };
+  let depth = 0;
+  for (let i = open; i < src.length; i++) {
+    const c = src[i];
+    if (c === '"' || c === "'" || c === "`") {
+      i = skipString(src, i);
+      continue;
     }
+    if (c in close) depth++;
+    else if (c === ")" || c === "}" || c === "]") {
+      depth--;
+      if (depth === 0) return src.slice(open, i + 1);
+    }
+  }
+  return src.slice(open);
+}
+
+/** Index of the closing quote of the literal opening at `i`. */
+function skipString(src: string, i: number): number {
+  const quote = src[i];
+  for (let j = i + 1; j < src.length; j++) {
+    if (src[j] === "\\") {
+      j++;
+      continue;
+    }
+    if (src[j] === quote) return j;
+  }
+  return src.length;
+}
+
+/** The comma-separated arguments of a call, split at bracket depth zero. */
+function callArguments(callSpan: string): string[] {
+  const inner = callSpan.slice(1, -1);
+  const args: string[] = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < inner.length; i++) {
+    const c = inner[i];
+    if (c === '"' || c === "'" || c === "`") {
+      i = skipString(inner, i);
+      continue;
+    }
+    if (c === "(" || c === "{" || c === "[") depth++;
+    else if (c === ")" || c === "}" || c === "]") depth--;
+    else if (c === "," && depth === 0) {
+      args.push(inner.slice(start, i).trim());
+      start = i + 1;
+    }
+  }
+  const last = inner.slice(start).trim();
+  if (last) args.push(last);
+  return args;
+}
+
+/** An arrow function or `function` expression passed as a callback argument. */
+function looksLikeCallback(arg: string): boolean {
+  return arg.startsWith("(") || arg.startsWith("function") || arg.includes("=>");
+}
+
+const IDENTIFIER = /^[A-Za-z_$][\w$]*$/;
+
+/**
+ * The options object a git spawn was given, as source text — resolved through
+ * one level of in-file `const NAME = { … }` indirection (which is how
+ * `services/updates.ts` threads one `gitOpts` through ten call sites).
+ *
+ * Returns `null` when the argument is an identifier this file does not declare.
+ * That is deliberately reported as "cannot prove it has no cwd" rather than
+ * waved through: the scanner's job is to fail closed on a shape it cannot read.
+ */
+function resolveOptions(arg: string | undefined, fileSrc: string): string | null | undefined {
+  if (arg === undefined || looksLikeCallback(arg)) return undefined;
+  if (arg.startsWith("{")) return arg;
+  if (!IDENTIFIER.test(arg)) return null;
+  const decl = new RegExp(`\\bconst\\s+${arg}\\s*=\\s*\\{`).exec(fileSrc);
+  if (!decl) return null;
+  return balancedSpan(fileSrc, fileSrc.indexOf("{", decl.index));
+}
+
+interface GitSpawnSite {
+  file: string;
+  line: number;
+  /** Whole call text, as written. */
+  source: string;
+  /** The same, collapsed and clipped for the failure message. */
+  text: string;
+  /** The argv argument (`gitArgsWithHooksDisabled([…])` or a variable). */
+  argv: string;
+  /** Options source text, `null` when unreadable, `undefined` when absent. */
+  options: string | null | undefined;
+}
+
+function gitSpawnSites(): GitSpawnSite[] {
+  const sites: GitSpawnSite[] = [];
+  for (const file of ROOTS.flatMap(sourceFiles)) {
+    const src = stripComments(fs.readFileSync(file, "utf-8"));
+    for (const match of src.matchAll(GIT_SPAWN)) {
+      const span = balancedSpan(src, src.indexOf("(", match.index));
+      const args = callArguments(span);
+      sites.push({
+        file: path.relative(REPO_SRC, file),
+        line: src.slice(0, match.index).split("\n").length,
+        source: span,
+        text: span.replace(/\s+/g, " ").slice(0, 140),
+        argv: args[1] ?? "",
+        options: resolveOptions(args[2], src),
+      });
+    }
+  }
+  return sites;
+}
+
+/**
+ * Does this spawn name a working directory — i.e. can it be pointed at a tree
+ * ShipIt does not own?
+ *
+ * Two carriers, because a `cwd`-only reading would miss the second:
+ * a `cwd` option, and a `-C <dir>` argument (`services/shipit-source.ts`).
+ * An options argument the scanner could not read counts too — an unreadable
+ * shape is treated as carrying one, never as proof it does not.
+ */
+function namesAWorkingDirectory(site: GitSpawnSite): boolean {
+  if (site.options === null) return true;
+  if (site.argv.includes('"-C"')) return true;
+  return site.options !== undefined && /\bcwd\b/.test(site.options);
+}
+
+describe("git spawn coverage: hooks guard", () => {
+  it("every orchestrator-side `git` process spawn goes through gitArgsWithHooksDisabled", () => {
+    const sites = gitSpawnSites();
+    const unguarded = sites
+      .filter((s) => !s.argv.includes("gitArgsWithHooksDisabled"))
+      .map((s) => `${s.file}:${s.line} — ${s.text}`);
 
     // If this drops to zero the regex has stopped matching anything and the
     // test would pass vacuously — the failure mode that makes a guard test
     // worthless. Fail instead.
-    expect(checked).toBeGreaterThan(5);
+    expect(sites.length).toBeGreaterThan(5);
 
     expect(unguarded, [
       "These spawn a `git` process without disabling repository hooks.",
@@ -98,5 +239,55 @@ describe("git hooks guard: coverage of raw git spawns", () => {
       "and a session workspace is writable by untrusted plugin containers (planning#384).",
       "Wrap the argument list: execFileSync(\"git\", gitArgsWithHooksDisabled([...])).",
     ].join("\n")).toEqual([]);
+  });
+});
+
+describe("git spawn coverage: tree-uid drop (docs/266 E2)", () => {
+  it("every orchestrator-side `git` spawn with a working directory carries gitSpawnOverridesForTree", () => {
+    const sites = gitSpawnSites();
+    const withCwd = sites.filter(namesAWorkingDirectory);
+    const undropped = withCwd
+      // `source`, never the clipped `text` — a rule that stops matching past
+      // column 140 is a rule that passes for the longest call sites.
+      .filter((s) => !s.source.includes("gitSpawnOverridesForTree")
+        && !(s.options ?? "").includes("gitSpawnOverridesForTree"))
+      .map((s) => `${s.file}:${s.line} — ${s.text}`);
+
+    // Same vacuity guard as above, one level deeper: the hooks test would still
+    // pass if `namesAWorkingDirectory` stopped recognizing any shape, and this
+    // one would then assert nothing at all.
+    expect(withCwd.length).toBeGreaterThan(3);
+
+    expect(undropped, [
+      "These start `git` in a directory without deciding which uid it runs as.",
+      "A session workspace is writable by untrusted code, and git executes what",
+      "that repository's own config names (filter.*.clean, core.fsmonitor, alias) —",
+      "so as root, in the orchestrator, that is arbitrary code beside the Docker",
+      "socket and the credential store (docs/266 req 1).",
+      "Spread the overrides into the options: { cwd, ...gitSpawnOverridesForTree(cwd) }.",
+      "It resolves to {} for a root-owned tree, so it is correct to add unconditionally.",
+    ].join("\n")).toEqual([]);
+  });
+
+  it("recognizes both working-directory carriers and an unreadable options argument", () => {
+    // The scanner's own predicate, exercised directly: a rule that silently
+    // stopped seeing `-C` or an opaque options variable would leave the suite
+    // green while covering less, which is the failure this pins.
+    const site = (argv: string, options: string | null | undefined): GitSpawnSite =>
+      ({ file: "x.ts", line: 1, source: "", text: "", argv, options });
+
+    expect(namesAWorkingDirectory(site('["status"]', "{ encoding: \"utf8\" }"))).toBe(false);
+    expect(namesAWorkingDirectory(site('["status"]', undefined))).toBe(false);
+    expect(namesAWorkingDirectory(site('["status"]', "{ cwd: dir }"))).toBe(true);
+    expect(namesAWorkingDirectory(site('["-C", dir, "status"]', undefined))).toBe(true);
+    expect(namesAWorkingDirectory(site('["status"]', null))).toBe(true);
+  });
+
+  it("reads a cwd through one level of in-file `const opts = {…}` indirection", () => {
+    const src = 'const gitOpts = { cwd: HOST_REPO_DIR, timeout: 5 };\nexecFileSync("git", a, gitOpts);';
+    expect(resolveOptions("gitOpts", src)).toContain("cwd");
+    // Not declared in this file — unreadable, so the caller must treat it as
+    // carrying a working directory rather than assume it does not.
+    expect(resolveOptions("somethingElse", src)).toBeNull();
   });
 });

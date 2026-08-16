@@ -24,6 +24,7 @@ import type { ReleaseChannel } from "../release-channel.js";
 import { resolveVersion } from "../build-id.js";
 import { parseGitHubRemote } from "../git-utils.js";
 import { gitArgsWithHooksDisabled } from "../../shared/git-hooks-guard.js";
+import { gitSpawnOverridesForTree } from "../../shared/git-tree-uid.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -217,7 +218,16 @@ async function resolveLatestStableTag(
  * Requires /opt/shipit to be bind-mounted into the container.
  */
 export async function checkForUpdates(): Promise<UpdateStatus> {
-  const gitOpts = { cwd: HOST_REPO_DIR, timeout: GIT_TIMEOUT_MS };
+  // Built once and threaded through every helper below, so the docs/266 uid
+  // decision is made in one place too. `/opt/shipit` is ShipIt's own checkout
+  // and root-owned, so this resolves to no drop — read from the filesystem
+  // rather than assumed, which is also what `git-hooks-guard-coverage.test.ts`
+  // reads to see that this `cwd` was considered.
+  const gitOpts = {
+    cwd: HOST_REPO_DIR,
+    timeout: GIT_TIMEOUT_MS,
+    ...gitSpawnOverridesForTree(HOST_REPO_DIR),
+  };
 
   // Verify the host repo is mounted
   try {

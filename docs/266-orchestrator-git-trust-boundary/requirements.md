@@ -173,11 +173,22 @@ called out rather than folded in.
   everything outside `.git/objects/` to the session-worker uid — its own
   docstring says so — and that includes `config` and `info/`.
 - **Git's own mitigation exists and ShipIt disabled it.**
-  `git-config.ts:60-66` sets `safe.directory=*` globally, with the rationale in
+  `git-config.ts` sets `safe.directory=*` globally, with the rationale in
   the comment: without it, root-orchestrator git on a worker-owned tree fails
-  CVE-2022-24765's ownership check. The same comment records the property the
-  design depends on — `safe.directory` is honoured **only** from system/global
-  config, never from a repo-local one and never from `-c`.
+  CVE-2022-24765's ownership check. The property the design depends on is that
+  a **repo-local** `safe.directory` is not honoured, so the untrusted side
+  cannot grant itself trust. Measured against git 2.39.5 with
+  `GIT_TEST_ASSUME_DIFFERENT_OWNER=1` (2026-08-16, while building E2): it holds.
+
+  **Corrected in the same measurement.** This document previously added "and
+  never from `-c`", inherited from `git-config.ts`'s comment and docs/150. That
+  half is **wrong**: git's *protected configuration* scope is system + global +
+  **command line**, so `git -c safe.directory=*` and the `GIT_CONFIG_COUNT`
+  environment protocol are both honoured. It changes no requirement — a `-c`
+  comes from ShipIt's own argv, not from the repository — but it is recorded
+  here because the design cites the claim, and the maintenance rule it implies
+  is the opposite of the one the wrong version implies: a refusal must not be
+  silenceable with `-c safe.directory` by a future call site.
 - **An unreadable workspace FILE costs the whole turn's commit.** Measured here
   against git 2.39.5, and independently by the requester. With one tracked file
   at mode 000 in an otherwise readable directory: `git status` exits **0** and

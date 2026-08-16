@@ -3,6 +3,7 @@ import { HOST_REPO_DIR } from "./release-channel.js";
 import type { ReleaseChannel } from "./release-channel.js";
 import type { VersionInfo } from "../shared/types.js";
 import { gitArgsWithHooksDisabled } from "../shared/git-hooks-guard.js";
+import { gitSpawnOverridesForTree } from "../shared/git-tree-uid.js";
 
 export function resolveBuildId(env: NodeJS.ProcessEnv = process.env): string | undefined {
   const explicit = normalizeBuildId(env.SHIPIT_BUILD_ID);
@@ -23,12 +24,17 @@ export function normalizeBuildId(buildId: string | undefined): string | undefine
   return trimmed ? trimmed : undefined;
 }
 
+// `/opt/shipit` is ShipIt's own checkout and root-owned, so the docs/266 drop
+// resolves to no-op here. Spelled out anyway: it is what says "this cwd was
+// considered", and the day the source dir is re-pointed the answer follows the
+// filesystem instead of a stale assumption.
 function gitInHostRepo(args: string[]): string | undefined {
   try {
     return execFileSync("git", gitArgsWithHooksDisabled(args), {
       cwd: HOST_REPO_DIR,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
+      ...gitSpawnOverridesForTree(HOST_REPO_DIR),
     }).trim() || undefined;
   } catch {
     return undefined;
