@@ -179,8 +179,25 @@ Build sequence from [plan.md](./plan.md) §5. Requirements are cited as `(req N)
       system/global config, so ShipIt's own code could silence the refusal E2
       arms. `git-hooks-guard-coverage.test.ts` fails the build when any
       orchestrator-side source outside `git-config.ts` passes the key to git or
-      sets `GIT_CONFIG_COUNT`. **planning#409** owns that rule and any widening
-      of it; what landed here is the narrow version E2 needed.
+      sets either `GIT_CONFIG_*` environment protocol. **planning#409** owns that
+      rule and any widening of it; what landed here is the narrow version E2
+      needed.
+- [x] **Three defects in the above, found by independent review, all fixed.**
+      Two were the scanner failing **open** on its likeliest future shapes — a
+      `-C` carried in an argv variable, and a spread of an options object
+      declared in another module — while the docs claimed unreadable input
+      failed closed. The third: `GIT_CONFIG_PARAMETERS` re-grants exactly like
+      `-c` (measured), simple-git guards only `GIT_CONFIG_COUNT`, and the lint's
+      own pinning test had asserted a line naming `PARAMETERS` was *not* flagged
+      — pinning the gap open. Each fix is verified by injecting the shape and
+      watching the build go red, not by reading the regex.
+- [x] **The fork handover keys on the same predicate as the drop.** It chowned
+      to the *configured* worker uid while the drop resolves from the *tree's
+      owner* — not the same question. A root orchestrator with the flag unset and
+      a non-root-owned source, or a worker-uid migration, would drop and then
+      EACCES on a root-owned destination. Also narrowed from the fork's session
+      dir to its workspace dir, so the session uid cannot unlink the `uploads/`
+      and `logs/` siblings.
 
 ## Known gaps, still open
 

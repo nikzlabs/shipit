@@ -146,13 +146,26 @@ export function resolveGitTreeUid(
  * local variable: the scanner reads the call, and a name it cannot follow reads
  * to it exactly like a site that forgot.
  *
- * The scanner cannot see everything, and the two blind spots are worth knowing.
- * A working directory reached some other way (`GIT_DIR` in the environment, a
- * `--git-dir` argument) is not recognized. And an options object built
- * elsewhere is followed through exactly one level of in-file
- * `const NAME = { … }`; an options argument it cannot resolve is treated as
- * carrying a working directory, so the fail-closed direction is to demand the
- * call rather than to assume it is not needed.
+ * Both the argv and the options object are followed through one level of
+ * in-file `const NAME = …`, including an object literal's own spreads, because
+ * a working directory can travel in a variable either way. Anything the scanner
+ * cannot resolve is treated as carrying one — the fail-closed direction is to
+ * demand the call, never to assume it is unnecessary.
+ *
+ * What it still does NOT see, stated because an overstated guarantee is worse
+ * than a named gap:
+ *
+ *   - A working directory reached through the environment (`GIT_DIR`,
+ *     `GIT_WORK_TREE`) or a `--git-dir` argument.
+ *   - The **inherited process cwd**. A spawn with no `cwd` and no `-C` passes,
+ *     and runs wherever the orchestrator started. `build-id.ts`'s
+ *     `resolveBuildId` is a live instance; it is harmless because the
+ *     orchestrator's cwd holds no repository in production, which is a property
+ *     of the deployment rather than something this rule checks.
+ *   - Indirection deeper than one level, or through anything other than an
+ *     in-file `const`.
+ *   - A spawn whose binary is not a quoted `git` literal — `const GIT = "git"`
+ *     makes the call invisible to all three rules here.
  */
 export function gitSpawnOverridesForTree(
   dir: string | undefined,

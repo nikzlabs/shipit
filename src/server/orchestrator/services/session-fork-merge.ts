@@ -17,6 +17,7 @@ import { graduateSession, type GraduateSessionDeps } from "./graduate-session.js
 import { ServiceError } from "./types.js";
 import { chownTreeToSessionWorker, handWorkspaceBackToWorker } from "../session-worker-uid.js";
 import { stripRemoteUrlCredentials } from "../git-utils.js";
+import { resolveGitTreeUid } from "../../shared/git-tree-uid.js";
 
 /** Fork a session into a new clone with its own branch. */
 export async function forkSession(
@@ -66,21 +67,31 @@ export async function forkSession(
   // '<src>/.git'` — so once docs/266 E2 removes `safe.directory=*`, the old
   // shape does not merely run as root, it stops working.
   //
-  // Hand over `newWorkspaceDir` and NOT its parent `newSessionDir`, which is
-  // the narrowest thing that works and matters: removing or renaming a
-  // directory ENTRY is governed by the parent directory's permissions, so
-  // chowning `newSessionDir` would let the session's uid unlink or substitute
-  // the `uploads/` and `logs/` siblings ShipIt keeps beside the workspace. The
-  // clone needs only to write *inside* an existing empty destination it owns —
-  // verified against git 2.39.5 that `clone --local` accepts one rather than
-  // insisting on creating it. Widening ownership inside the change whose whole
-  // purpose is to narrow it would be the wrong trade.
+  // Hand over `newWorkspaceDir` and NOT its parent `newSessionDir`: removing or
+  // renaming a directory ENTRY is governed by the parent directory's
+  // permissions, so chowning `newSessionDir` would let the session's uid unlink
+  // or substitute the `uploads/` and `logs/` siblings ShipIt keeps beside the
+  // workspace. The clone needs only to write *inside* an existing empty
+  // destination it owns — verified against git 2.39.5 that `clone --local`
+  // accepts one rather than insisting on creating it.
   //
-  // Both calls are no-ops when `SHIPIT_SESSION_WORKER_UID` is unset (dev,
-  // local mode, tests): the chown returns early and the drop resolves to null,
-  // leaving root cloning into a root-created directory exactly as before.
+  // The handover reads the SAME predicate the drop does, rather than
+  // `chownTreeToSessionWorker`'s configured worker uid. Those two answers are
+  // not the same question, and review caught the gap: `resolveGitTreeUid` keys
+  // on "are we root, and who owns this tree", NOT on `SHIPIT_SESSION_WORKER_UID`
+  // — so a root orchestrator with the flag unset and a non-root-owned source
+  // (a host-bind dev setup) would drop to the tree's owner while the chown
+  // returned early, and the clone would EACCES on a root-owned destination.
+  // A worker-uid migration, where an adopted old tree's owner is not the
+  // configured uid, produces the same mismatch. One predicate, both halves, no
+  // window in which they disagree.
+  //
+  // When it resolves to null nothing happens at all — no chown, no drop, root
+  // cloning into a root-owned directory exactly as before. That is every test,
+  // local mode, and any deployment whose session trees are root-owned.
   await fs.mkdir(newWorkspaceDir, { recursive: true });
-  chownTreeToSessionWorker(newWorkspaceDir);
+  const cloneUid = resolveGitTreeUid(activeSessionDir);
+  if (cloneUid !== null) await fs.chown(newWorkspaceDir, cloneUid.uid, cloneUid.gid);
   await safeSimpleGit(activeSessionDir).raw(["clone", "--local", activeSessionDir, newWorkspaceDir]);
   const newGit = safeSimpleGit(newWorkspaceDir);
   // Disable auto-gc so hardlinks aren't broken in either clone.

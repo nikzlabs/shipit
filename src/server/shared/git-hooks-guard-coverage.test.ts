@@ -55,7 +55,7 @@ const REPO_SRC = path.join(HERE, "..", "..");
  * `execFileSync("git", …)`, `execFileAsync("git", …)`, and the same with the
  * argument list on the following line.
  */
-const GIT_SPAWN = /\b(?:spawn|execFile|execFileSync|execFileAsync)\s*\(\s*\n?\s*"git"\s*,/g;
+const GIT_SPAWN = /\b(?:spawn|execFile|execFileSync|execFileAsync)\s*\(\s*\n?\s*["'`]git["'`]\s*,/g;
 
 /**
  * Drop comment lines before scanning. Docstrings in this very feature quote the
@@ -166,11 +166,50 @@ const IDENTIFIER = /^[A-Za-z_$][\w$]*$/;
  */
 function resolveOptions(arg: string | undefined, fileSrc: string): string | null | undefined {
   if (arg === undefined || looksLikeCallback(arg)) return undefined;
-  if (arg.startsWith("{")) return arg;
+  if (arg.startsWith("{")) return resolveSpreads(arg, fileSrc);
   if (!IDENTIFIER.test(arg)) return null;
   const decl = new RegExp(`\\bconst\\s+${arg}\\s*=\\s*\\{`).exec(fileSrc);
   if (!decl) return null;
-  return balancedSpan(fileSrc, fileSrc.indexOf("{", decl.index));
+  return resolveSpreads(balancedSpan(fileSrc, fileSrc.indexOf("{", decl.index)), fileSrc);
+}
+
+/**
+ * An object literal is only as readable as what it spreads.
+ *
+ * `execFile("git", args, { ...sharedGitOpts })` starts with `{`, so a naive
+ * reading returns the span, finds no `cwd` in it, and concludes there is no
+ * working directory — **fail-open**, and review caught it as the shape most
+ * likely to appear next. So each `...name` is resolved through the same in-file
+ * `const name = { … }` lookup and appended; a spread this file does not declare
+ * makes the whole literal unreadable (`null`), which is the fail-closed branch.
+ *
+ * `...gitSpawnOverridesForTree(dir)` is a call, not an identifier, and is the
+ * thing being demanded — it never makes a literal unreadable.
+ */
+function resolveSpreads(literal: string, fileSrc: string): string | null {
+  let out = literal;
+  for (const [, name] of literal.matchAll(/\.\.\.\s*([A-Za-z_$][\w$]*)\s*(?=[,}])/g)) {
+    const decl = new RegExp(`\\bconst\\s+${name}\\s*=\\s*\\{`).exec(fileSrc);
+    if (!decl) return null;
+    out += balancedSpan(fileSrc, fileSrc.indexOf("{", decl.index));
+  }
+  return out;
+}
+
+/**
+ * The argv argument, resolved the same way — because `-C` can travel in a
+ * variable too.
+ *
+ * `const args = gitArgsWithHooksDisabled(["-C", ws, "status"]);
+ * execFileSync("git", args)` carries a working directory that an inline-only
+ * reading cannot see. Review named this as the most plausible future shape. An
+ * argv the scanner cannot read is treated as carrying one.
+ */
+function resolveArgv(arg: string | undefined, fileSrc: string): string | null {
+  if (arg === undefined) return null;
+  if (!IDENTIFIER.test(arg)) return arg;
+  const decl = new RegExp(`\\bconst\\s+${arg}\\s*=\\s*([^;\\n]*)`).exec(fileSrc);
+  return decl ? decl[1] : null;
 }
 
 interface GitSpawnSite {
@@ -180,8 +219,10 @@ interface GitSpawnSite {
   source: string;
   /** The same, collapsed and clipped for the failure message. */
   text: string;
-  /** The argv argument (`gitArgsWithHooksDisabled([…])` or a variable). */
+  /** The argv argument as written — what the hooks rule reads. */
   argv: string;
+  /** The same, resolved through an in-file `const`; `null` when unreadable. */
+  resolvedArgv: string | null;
   /** Options source text, `null` when unreadable, `undefined` when absent. */
   options: string | null | undefined;
 }
@@ -199,6 +240,7 @@ function gitSpawnSites(): GitSpawnSite[] {
         source: span,
         text: span.replace(/\s+/g, " ").slice(0, 140),
         argv: args[1] ?? "",
+        resolvedArgv: resolveArgv(args[1], src),
         options: resolveOptions(args[2], src),
       });
     }
@@ -210,14 +252,18 @@ function gitSpawnSites(): GitSpawnSite[] {
  * Does this spawn name a working directory — i.e. can it be pointed at a tree
  * ShipIt does not own?
  *
- * Two carriers, because a `cwd`-only reading would miss the second:
- * a `cwd` option, and a `-C <dir>` argument (`services/shipit-source.ts`).
- * An options argument the scanner could not read counts too — an unreadable
- * shape is treated as carrying one, never as proof it does not.
+ * Two carriers, because a `cwd`-only reading would miss the second: a `cwd`
+ * option, and a `-C <dir>` argument (`services/shipit-source.ts`). Both are read
+ * through one level of in-file `const` indirection, including an object literal's
+ * own spreads, since either can travel in a variable.
+ *
+ * Anything the scanner could not read counts as carrying one. That direction is
+ * the whole point: an unreadable shape is never treated as proof there is no
+ * working directory.
  */
 function namesAWorkingDirectory(site: GitSpawnSite): boolean {
-  if (site.options === null) return true;
-  if (site.argv.includes('"-C"')) return true;
+  if (site.options === null || site.resolvedArgv === null) return true;
+  if (/["'`]-C["'`]/.test(site.resolvedArgv)) return true;
   return site.options !== undefined && /\bcwd\b/.test(site.options);
 }
 
@@ -274,13 +320,41 @@ describe("git spawn coverage: tree-uid drop (docs/266 E2)", () => {
     // stopped seeing `-C` or an opaque options variable would leave the suite
     // green while covering less, which is the failure this pins.
     const site = (argv: string, options: string | null | undefined): GitSpawnSite =>
-      ({ file: "x.ts", line: 1, source: "", text: "", argv, options });
+      ({ file: "x.ts", line: 1, source: "", text: "", argv, resolvedArgv: argv, options });
 
     expect(namesAWorkingDirectory(site('["status"]', "{ encoding: \"utf8\" }"))).toBe(false);
     expect(namesAWorkingDirectory(site('["status"]', undefined))).toBe(false);
     expect(namesAWorkingDirectory(site('["status"]', "{ cwd: dir }"))).toBe(true);
     expect(namesAWorkingDirectory(site('["-C", dir, "status"]', undefined))).toBe(true);
     expect(namesAWorkingDirectory(site('["status"]', null))).toBe(true);
+
+    // Quoting must not be a bypass — review found the rule read only `"-C"`.
+    expect(namesAWorkingDirectory(site("['-C', dir, 'status']", undefined))).toBe(true);
+    expect(namesAWorkingDirectory(site("[`-C`, dir]", undefined))).toBe(true);
+
+    // An argv the scanner could not resolve is treated as carrying one.
+    expect(namesAWorkingDirectory(
+      { file: "x.ts", line: 1, source: "", text: "", argv: "args", resolvedArgv: null, options: undefined },
+    )).toBe(true);
+  });
+
+  it("resolves a `-C` that travels in a variable", () => {
+    // Review's most-plausible future shape: the working directory is in the
+    // argv, and the argv is in a const. An inline-only reading passes it.
+    const src = 'const args = gitArgsWithHooksDisabled(["-C", ws, "status"]);\nexecFileSync("git", args);';
+    expect(resolveArgv("args", src)).toContain("-C");
+    expect(resolveArgv("elsewhere", src)).toBeNull();
+    expect(resolveArgv('["status"]', src)).toBe('["status"]');
+  });
+
+  it("follows an options literal's spreads, and fails closed on one it cannot read", () => {
+    // `{ ...sharedGitOpts }` starts with `{`, so the naive reading returned the
+    // span, found no `cwd`, and called it cwd-free — fail-OPEN. Review caught it.
+    const declared = 'const shared = { cwd: dir, timeout: 5 };\nexecFile("git", a, { ...shared });';
+    expect(resolveOptions("{ ...shared }", declared)).toContain("cwd");
+    expect(resolveOptions("{ ...fromAnotherModule }", declared)).toBeNull();
+    // The call being demanded is a call, not an identifier — never unreadable.
+    expect(resolveOptions("{ cwd, ...gitSpawnOverridesForTree(cwd) }", declared)).toContain("cwd");
   });
 
   it("reads a cwd through one level of in-file `const opts = {…}` indirection", () => {
@@ -311,10 +385,19 @@ describe("git spawn coverage: tree-uid drop (docs/266 E2)", () => {
  * suddenly refuses this path" bug the fastest way rather than the right way.
  * That is a lint, not a sentence in a doc.
  *
- * The env half is covered elsewhere and only partly: simple-git's
- * `blockUnsafeOperationsPlugin` refuses to spawn when it sees
- * `GIT_CONFIG_COUNT`, and `RepoGit.sanitizeGitEnv` strips it. Neither reaches a
- * raw `spawn` that sets it deliberately, so this scans for that shape too.
+ * The env half is covered elsewhere and only partly, and the gap is bigger than
+ * the first version of this rule assumed. Git has **two** environment protocols
+ * with protected-configuration weight, and simple-git guards only one:
+ * `vulnerabilityCheck` flags `GIT_CONFIG_COUNT` and returns nothing for
+ * `GIT_CONFIG_PARAMETERS` (verified by calling it directly). Measured on git
+ * 2.39.5: `GIT_CONFIG_PARAMETERS="'safe.directory=*'"` re-grants exactly like
+ * `-c`. `RepoGit.sanitizeGitEnv` strips both, but only on RepoGit's own call
+ * chains — a raw `spawn` forwarding `process.env` (`git-lfs.ts`,
+ * `git-lfs-blob.ts`) does not.
+ *
+ * The first version of this rule not only missed `GIT_CONFIG_PARAMETERS`, its
+ * pinning test asserted a line naming it was NOT flagged — pinning the gap open.
+ * Found by independent review; both protocols are covered now.
  */
 describe("git spawn coverage: nobody re-grants safe.directory (docs/266 E2)", () => {
   /** The one module that owns the policy — {@link applySafeDirectoryPolicy}. */
@@ -326,7 +409,7 @@ describe("git spawn coverage: nobody re-grants safe.directory (docs/266 E2)", ()
    * variables in `sanitizeGitEnv`'s strip list, which is the opposite of the
    * hazard and must not be flagged.
    */
-  const CONFIG_ENV_SET = /\bGIT_CONFIG_(?:COUNT|KEY_\d+|VALUE_\d+)"?\s*[:=][^=]/;
+  const CONFIG_ENV_SET = /\bGIT_CONFIG_(?:COUNT|PARAMETERS|KEY_\d+|VALUE_\d+)["'`]?\s*[:=][^=]/;
 
   /**
    * The key being **passed to git** — quoted as a config key, or written in
@@ -406,6 +489,14 @@ describe("git spawn coverage: nobody re-grants safe.directory (docs/266 E2)", ()
     expect(CONFIG_ENV_SET.test('GIT_CONFIG_COUNT: "1",')).toBe(true);
     expect(CONFIG_ENV_SET.test("env.GIT_CONFIG_KEY_0 = key;")).toBe(true);
     expect(CONFIG_ENV_SET.test('  "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS",')).toBe(false);
+
+    // BOTH protocols, not just the one simple-git happens to guard. Measured on
+    // git 2.39.5: GIT_CONFIG_PARAMETERS="'safe.directory=*'" re-grants exactly
+    // like `-c`, and simple-git's vulnerabilityCheck returns nothing for it.
+    // The first version of this rule missed it — and this very assertion, in its
+    // original form, pinned the gap open by only naming COUNT.
+    expect(CONFIG_ENV_SET.test('GIT_CONFIG_PARAMETERS: "\'safe.directory=*\'",')).toBe(true);
+    expect(CONFIG_ENV_SET.test("env.GIT_CONFIG_PARAMETERS = injected;")).toBe(true);
 
     // The argv form is caught; a prose mention of the key is not. Both matter:
     // the first is the hazard, and the second is what made a bare name match

@@ -106,11 +106,20 @@ refusal E2 arms, one `-c safe.directory=*` at a time — most plausibly by someo
 debugging "git suddenly refuses this path" the fastest way rather than the right
 way. That is worth a lint rather than a sentence, so
 `git-hooks-guard-coverage.test.ts` now fails the build when any orchestrator-side
-source outside `git-config.ts` passes the key to git or sets `GIT_CONFIG_COUNT`.
-**planning#409** owns that rule and any widening of it; the version here is the
-narrow one E2 needed. The `GIT_CONFIG_COUNT` route is also one more reason to
-keep simple-git's `blockUnsafeOperationsPlugin` refusal of that variable in
-place.
+source outside `git-config.ts` passes the key to git or sets either
+`GIT_CONFIG_*` environment protocol. **planning#409** owns that rule and any
+widening of it; the version here is the narrow one E2 needed.
+
+**Git has TWO such environment protocols, and ShipIt's existing guard covers only
+one.** Measured on git 2.39.5: `GIT_CONFIG_PARAMETERS="'safe.directory=*'"`
+re-grants exactly like `-c`. simple-git's `blockUnsafeOperationsPlugin` does
+**not** refuse it — `vulnerabilityCheck` flags `GIT_CONFIG_COUNT` and returns
+nothing for `GIT_CONFIG_PARAMETERS`, verified by calling it directly.
+`RepoGit.sanitizeGitEnv` strips both, but only on its own call chains; a raw
+`spawn` forwarding `process.env` does not. Found by independent review, which
+also noted that the first version of the lint's pinning test asserted a line
+naming `GIT_CONFIG_PARAMETERS` was *not* flagged — pinning the gap open. Both
+protocols are covered now.
 
 The `*` was the right call for the problem it solved (docs/150 §7 activation).
 It is the wrong shape now.
@@ -192,11 +201,24 @@ this key dangerous".
 `git-hooks-guard-coverage.test.ts` already failed the build when a raw git
 spawn omitted `gitArgsWithHooksDisabled`; it now also fails when a raw git
 spawn that names a working directory omits `gitSpawnOverridesForTree`. Two
-carriers count as naming one — a `cwd` option and a `-C <dir>` argument — and an
-options object the scanner cannot read counts as naming one too, so the
+carriers count as naming one — a `cwd` option and a `-C <dir>` argument — each
+read through one level of in-file `const` indirection, including an object
+literal's own spreads. Anything unresolvable counts as naming one, so the
 unreadable case fails closed rather than passing quietly. This is what makes the
-`safeSimpleGit` choke point complete: the choke point covers simple-git, and a
-raw spawn bypasses it entirely.
+`safeSimpleGit` choke point complete: **the choke point covers every simple-git
+caller, and a raw `spawn`/`execFile` bypasses it entirely** — which is how two
+live sites survived E1.
+
+*Hardened after independent review, which found the first version fail-**open**
+in its two most likely future shapes: a `-C` carried in an argv variable, and a
+spread of an options object declared in another module. Both were classified as
+"no working directory" while the docs claimed unreadable input failed closed —
+true then only for the identifier branch. Both are now resolved and both are
+verified by injecting the shape and watching the build go red. The blind spots
+that remain are named in `git-tree-uid.ts` rather than implied away: the
+environment (`GIT_DIR`, `GIT_WORK_TREE`), the inherited process cwd, indirection
+deeper than one in-file `const`, and a binary that is not a quoted `git`
+literal.*
 
 **E2b — removing the `*`, behind `SHIPIT_GIT_STRICT_OWNERSHIP=1`, off by
 default.** The switch exists because of *when* the failure lands, not whether it
@@ -600,6 +622,18 @@ inherited guarantee at the source").
   look foreign at once. `chownWorktreeRecursive` chowns the workspace root
   itself and `chownGitMetadataRecursive` covers `.git`, so the two should not
   diverge — read, not observed.
+- **`GIT_CONFIG_PARAMETERS` measured, and simple-git's blind spot with it**
+  (2026-08-16, planning#403, found by review). `GIT_CONFIG_PARAMETERS="'safe.directory=*'"`
+  re-grants like `-c` on git 2.39.5, and `@simple-git/argv-parser`'s
+  `vulnerabilityCheck` returns `['allowUnsafeConfigEnvCount']` for
+  `GIT_CONFIG_COUNT` and `[]` for `GIT_CONFIG_PARAMETERS` — called directly, not
+  inferred from its docs.
+- **Not verified: the sibling-workspace local fetch, as a real foreign fetch.**
+  `mergeSession`'s fallback is reasoned from two measurements (a local
+  `clone --local` from a foreign source is refused; a local fetch reads the
+  source through `git-upload-pack`, which runs the same check) plus the
+  `GIT_TEST_ASSUME_DIFFERENT_OWNER` fetch result. Nobody could produce a
+  genuinely foreign-owned source here, so the composition is read, not observed.
 - **Not verified: that the drop actually engages in production.** Everything in
   E1 hangs on the workspace root being owned by the worker uid at the moment
   `resolveGitTreeUid` stats it — a root-owned root means no drop, silently and
