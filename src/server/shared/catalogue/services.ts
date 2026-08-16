@@ -372,6 +372,8 @@ export const SERVICES = [
           // The price is GLM-5.2's and is NOT a claim about GLM-5.3's rate, which
           // Z.ai has not published.
           { id: "glm-5.3[1m]", label: "GLM-5.3", ...MODEL_IDENTITIES.glm53probe, styles: [A_MSG], contextWindow: ONE_M, price: GLM_PRICES.glm52 },
+          // TEMPORARY NEGATIVE CONTROL — see the identity comment.
+          { id: "glm-9.9-nonexistent[1m]", label: "GLM-9.9 (control)", ...MODEL_IDENTITIES.glm99probe, styles: [A_MSG], contextWindow: ONE_M, price: GLM_PRICES.glm52 },
         ],
       },
       {
