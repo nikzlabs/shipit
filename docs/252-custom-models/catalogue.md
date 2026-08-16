@@ -931,7 +931,17 @@ Every 🔍, but these change the *shape* rather than the contents:
 5. **Which DeepSeek models serve the Responses API, and do OpenRouter or Vercel speak it?**
    **DeepSeek: answered 2026-08-13** — both `deepseek-v4-flash` and `deepseek-v4-pro` serve
    it natively at `https://api.deepseek.com` (OpenAI SDK path `/v1/responses`), verified
-   through codex-cli 0.146.0. Vercel documents a Responses surface; OpenRouter's is still
-   unverified, so its row declares no `openai-responses`.
+   through codex-cli 0.146.0. Vercel documents a Responses surface. **OpenRouter: answered
+   2026-08-15** (planning#391) — it serves Responses at `https://openrouter.ai/api/v1`, an
+   authenticated POST returning a genuine `"object":"response"` body where a bogus sibling
+   route on the same base 404s, and a real `codex exec` turn completed over it with
+   `wire_api = "responses"`, on `deepseek/deepseek-v4-flash`. **`deepseek/deepseek-v4-pro`
+   measured separately 2026-08-16** — HTTP 200, `"object":"response"`, `"status":"completed"`,
+   output text `PAIR_OK`, same bogus-route control — so both ids carrying the style have been
+   seen to work and neither rides on the other. The style is declared on the row's **DeepSeek
+   models only**: one model answering does not establish that the gateway translates for an
+   upstream serving no Responses API of its own — which Anthropic does not, and which Z.ai was
+   measured in the 08-15 run not to do either. Adding a further row is a measurement, not a
+   deduction.
 6. **What does GLM's coding plan offer, and how does its auth work?** Phase 2 owns the
    integration and req 15 is unmet until it lands.

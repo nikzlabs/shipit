@@ -575,13 +575,21 @@ describe("the harness\u00d7service join", () => {
     // ONLY the Responses API (a provider declaring `wire_api = "chat"` is
     // rejected outright — phase 3 measured this). So DeepSeek now reaches both
     // harnesses. Vercel documents a Responses surface, so it reaches Codex too;
-    // OpenRouter's Responses surface is unverified, so its models do not.
+    // OpenRouter's was verified 2026-08-15 (planning#391) and reaches Codex for
+    // the rows that declare the style.
     expect(catalogueModelIdsForHarness("claude")).toContain("deepseek-v4-flash");
     expect(catalogueModelIdsForHarness("codex")).toContain("deepseek-v4-flash");
     expect(catalogueModelIdsForHarness("codex")).toContain("deepseek-v4-pro");
     expect(catalogueModelIdsForHarness("codex")).toContain("openai/gpt-5.6-sol");
     expect(catalogueModelIdsForHarness("claude")).toContain("anthropic/claude-opus-5");
+    // The style is declared per ROW, not per service: OpenRouter's verified
+    // Responses run was a DeepSeek model, and Anthropic serves no Responses API
+    // for the gateway to pass through, so the `anthropic/*` rows stay off it.
+    // A blanket-add to the service would break exactly this assertion.
+    expect(catalogueModelIdsForHarness("codex")).toContain("deepseek/deepseek-v4-flash");
+    expect(catalogueModelIdsForHarness("codex")).toContain("deepseek/deepseek-v4-pro");
     expect(catalogueModelIdsForHarness("codex")).not.toContain("anthropic/claude-opus-5");
+    expect(catalogueModelIdsForHarness("codex")).not.toContain("z-ai/glm-5.2");
   });
 });
 
@@ -627,12 +635,15 @@ describe("eligibility (req 8)", () => {
 
 describe("support before a credential exists (the add-service table)", () => {
   it("answers per service what the join and the credential shapes allow", () => {
-    // GLM and OpenRouter serve Anthropic Messages only, so Codex — which speaks
-    // Responses and nothing else — cannot reach them however they are paid for.
+    // GLM serves Anthropic Messages only, so Codex — which speaks Responses and
+    // nothing else — cannot reach it however it is paid for. OpenRouter used to
+    // be in the same position and no longer is: its Responses surface was
+    // verified 2026-08-15 (planning#391), and one row declaring the style is
+    // enough for the service to be supported.
     expect(harnessSupportsService("claude", "zai")).toBe(true);
     expect(harnessSupportsService("codex", "zai")).toBe(false);
     expect(harnessSupportsService("claude", "openrouter")).toBe(true);
-    expect(harnessSupportsService("codex", "openrouter")).toBe(false);
+    expect(harnessSupportsService("codex", "openrouter")).toBe(true);
     // …and the mirror image: OpenAI is Responses only.
     expect(harnessSupportsService("codex", "openai")).toBe(true);
     expect(harnessSupportsService("claude", "openai")).toBe(false);
@@ -765,6 +776,34 @@ describe("spawn shaping", () => {
       sourceEnv: "DEEPSEEK_API_KEY",
       target: { kind: "env", name: "OPENAI_API_KEY" },
     });
+  });
+
+  it("points Codex at OpenRouter's Responses base, which is NOT its Anthropic one", () => {
+    // 2026-08-15 (planning#391). The literal URL is pinned because the row
+    // carries two different base URLs for one host on purpose — `/api/v1` for
+    // Responses (Codex appends `/responses`) and `/api` for Anthropic Messages
+    // (Claude Code appends `/v1/messages`). A `/v1` dropped from either would
+    // still satisfy the generic "every joined entry has an endpoint" guard and
+    // fail only at turn time, against the real gateway.
+    const codex = resolveSpawnShaping("codex", {
+      serviceId: "openrouter",
+      billingMode: "key",
+      modelId: "deepseek/deepseek-v4-flash",
+    });
+    expect(codex?.style).toBe("openai-responses");
+    expect(codex?.endpoint.url).toBe("https://openrouter.ai/api/v1");
+    expect(codex?.credential).toEqual({
+      sourceEnv: "OPENROUTER_API_KEY",
+      target: { kind: "env", name: "OPENAI_API_KEY" },
+    });
+
+    const claude = resolveSpawnShaping("claude", {
+      serviceId: "openrouter",
+      billingMode: "key",
+      modelId: "deepseek/deepseek-v4-flash",
+    });
+    expect(claude?.style).toBe("anthropic-messages");
+    expect(claude?.endpoint.url).toBe("https://openrouter.ai/api");
   });
 
   it("honours a mode's targetOverride — GLM's plan is a bearer token, not an x-api-key", () => {

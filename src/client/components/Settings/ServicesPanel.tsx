@@ -915,11 +915,18 @@ const HARNESS_COLUMN = "w-[5.5rem] shrink-0 text-center";
  * user has configured anything.
  *
  * The cell is a fact about the pairing, not about the install's credentials:
- * GLM and OpenRouter speak Anthropic Messages and reach only Claude Code, OpenAI
- * speaks Responses and reaches only Codex, and picking a service the one
- * installed harness cannot drive is a dead end the user could otherwise only
- * discover after pasting a key. `harnessSupportsService` is the picker's own
- * eligibility rule asked about a credential that does not exist yet.
+ * GLM speaks Anthropic Messages and reaches only Claude Code, OpenAI speaks
+ * Responses and reaches only Codex, and picking a service the one installed
+ * harness cannot drive is a dead end the user could otherwise only discover
+ * after pasting a key. `harnessSupportsService` is the picker's own eligibility
+ * rule asked about a credential that does not exist yet.
+ *
+ * The answer is EXISTENTIAL, over the service's models: a tick means at least
+ * one model on that service speaks a style the harness speaks, never that all
+ * of them do. Both gateways read that way — Vercel's Codex tick has always been
+ * carried by its GPT rows alone, and OpenRouter's (added 2026-08-15, once its
+ * Responses surface was verified — planning#391) by its DeepSeek rows. Do not
+ * restate the per-service answer here; ask the catalogue.
  *
  * The tick is deliberately not a control — every row is still selectable. A
  * harness can be added to an image later, and refusing the choice would make

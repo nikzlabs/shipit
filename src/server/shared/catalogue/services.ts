@@ -324,6 +324,10 @@ export const SERVICES = [
         kind: "key",
         endpoints: {
           [O_CC]: "https://openrouter.ai/api/v1",
+          // The Responses base carries its own `/v1` because Codex appends
+          // `/responses` to it — the same convention the OpenAI and DeepSeek
+          // rows use, and deliberately NOT the same string as `A_MSG` below.
+          [O_RESP]: "https://openrouter.ai/api/v1",
           // OpenRouter's Anthropic-Messages compatible surface (its "Anthropic
           // Skin"), which Claude Code speaks natively. Base URL excludes the
           // `/v1` the Anthropic path appends.
@@ -331,15 +335,41 @@ export const SERVICES = [
         },
         credentials: [{ via: "string", storageEnv: "OPENROUTER_API_KEY" }],
         retired: [],
-        // 🔍 Whether OpenRouter serves the Responses API is not established, so
-        // no model here declares `openai-responses` — which means this row
-        // reaches Claude Code and not Codex today. If the Responses surface is
-        // confirmed, adding the style to these rows is the whole change.
+        // ✅ 2026-08-15 — OpenRouter DOES serve the Responses API at
+        // `https://openrouter.ai/api/v1/responses` (authenticated POST → 200
+        // with a genuine `"object":"response"` body; a bogus sibling route on
+        // the same base 404s with Vercel's HTML page, so the 200 is routing and
+        // not a catch-all). Not just the HTTP surface: a real `codex exec` turn
+        // completed over it with `wire_api = "responses"`, on
+        // `deepseek/deepseek-v4-flash`. That is what lets this row reach Codex
+        // at all, and it settles the 🔍 that used to sit here (planning#391).
+        //
+        // ✅ 2026-08-16 — `deepseek/deepseek-v4-pro` measured the same way and
+        // separately: HTTP 200, `"object":"response"`, `"status":"completed"`,
+        // `"model":"deepseek/deepseek-v4-pro"`, output text `PAIR_OK`, against
+        // the same bogus-route control. So BOTH ids carrying the style below
+        // have been seen to work; neither rides on the other.
+        //
+        // The style is declared per row rather than across the list, because a
+        // gateway model answering does not say the gateway TRANSLATES for an
+        // upstream that has no Responses API of its own. Anthropic publishes
+        // none, and Z.ai was measured in the 08-15 run NOT to serve one — so
+        // those three rows would be asserting a translation layer nobody has
+        // seen work, and they keep `A_MSG` (their real path to Claude Code)
+        // instead. Adding one is a measurement, not a deduction: the two
+        // dated lines above are the standard to meet.
+        //
+        // Caveat that applies to EVERY gateway row reaching Codex, Vercel's
+        // included: a namespaced id is outside Codex's own metadata table, so
+        // it warns `Model metadata for '<id>' not found. Defaulting to fallback
+        // metadata; this can degrade performance and cause issues.` Non-fatal —
+        // the verification turn completed correctly — and not something the
+        // catalogue can fix from here.
         models: [
           { id: "anthropic/claude-opus-5", label: "Opus 5", ...MODEL_IDENTITIES.opus5, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: ANTHROPIC_PRICES.opus5 },
           { id: "anthropic/claude-sonnet-5", label: "Sonnet 5", ...MODEL_IDENTITIES.sonnet5, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: ANTHROPIC_PRICES.sonnet5 },
-          { id: "deepseek/deepseek-v4-flash", label: "DeepSeek V4 Flash", ...MODEL_IDENTITIES.deepseekV4Flash, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: DEEPSEEK_PRICES.v4flash },
-          { id: "deepseek/deepseek-v4-pro", label: "DeepSeek V4 Pro", ...MODEL_IDENTITIES.deepseekV4Pro, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: DEEPSEEK_PRICES.v4pro },
+          { id: "deepseek/deepseek-v4-flash", label: "DeepSeek V4 Flash", ...MODEL_IDENTITIES.deepseekV4Flash, styles: [A_MSG, O_CC, O_RESP], contextWindow: ONE_M, price: DEEPSEEK_PRICES.v4flash },
+          { id: "deepseek/deepseek-v4-pro", label: "DeepSeek V4 Pro", ...MODEL_IDENTITIES.deepseekV4Pro, styles: [A_MSG, O_CC, O_RESP], contextWindow: ONE_M, price: DEEPSEEK_PRICES.v4pro },
           { id: "z-ai/glm-5.2", label: "GLM-5.2", ...MODEL_IDENTITIES.glm52, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: GLM_PRICES.glm52 },
         ],
       },
@@ -370,7 +400,10 @@ export const SERVICES = [
           { id: "anthropic/claude-opus-5", label: "Opus 5", ...MODEL_IDENTITIES.opus5, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: ANTHROPIC_PRICES.opus5 },
           { id: "anthropic/claude-sonnet-5", label: "Sonnet 5", ...MODEL_IDENTITIES.sonnet5, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: ANTHROPIC_PRICES.sonnet5 },
           // Vercel documents a Responses-compatible surface, so these reach
-          // Codex as well as any OpenAI-chat-completions consumer.
+          // Codex as well as any OpenAI-chat-completions consumer. They also
+          // carry the namespaced-id caveat written out on the OpenRouter row
+          // above: Codex has no metadata for `openai/gpt-…` and warns before
+          // falling back. Non-fatal, and not fixable from the catalogue.
           { id: "openai/gpt-5.6-sol", label: "GPT-5.6 Sol", ...MODEL_IDENTITIES.gpt56sol, styles: [O_RESP, O_CC], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.sol },
           { id: "openai/gpt-5.6-terra", label: "GPT-5.6 Terra", ...MODEL_IDENTITIES.gpt56terra, styles: [O_RESP, O_CC], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.terra },
           { id: "deepseek/deepseek-v4-flash", label: "DeepSeek V4 Flash", ...MODEL_IDENTITIES.deepseekV4Flash, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: DEEPSEEK_PRICES.v4flash },

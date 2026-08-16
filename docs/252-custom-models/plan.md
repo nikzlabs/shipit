@@ -305,11 +305,14 @@ anticipate, recorded here because three of them change what a later phase has to
   was the temporary narrowing and **phase 3 deleted it**: `catalogueModelIdsForHarness` is the
   whole join (what the harness *could* speak to), and the credential-filtered subset is
   `eligibleEntriesForHarness`, computed per install.
-- **OpenRouter reaches Claude Code and not Codex.** Its Anthropic-Messages surface is
-  documented; nothing establishes that it serves the Responses API, so no OpenRouter row
-  declares `openai-responses`. Vercel documents both, so its rows reach both harnesses.
-  Confirming OpenRouter's Responses surface is a one-line row edit, not a design change —
-  which is the service abstraction working.
+- **OpenRouter reaches both harnesses, and the second one arrived as a row edit.** Its
+  Anthropic-Messages surface was documented from the start; whether it served the Responses
+  API was open, so for a time no OpenRouter row declared `openai-responses` and the service
+  reached Claude Code only. Verified 2026-08-15 (planning#391): it does serve Responses, and
+  turning that into reach was adding an endpoint and a style to two model rows — no design
+  change, which is the service abstraction working. The style sits on the **DeepSeek rows
+  only**; the per-row reasoning is in `catalogue/services.ts` above the model list. Vercel
+  documents both styles, so its rows reach both harnesses.
 - **Appending a migration broke an unrelated migration test**, because that test rewound
   `user_version` by counting back from the tip. `COLOR_BACKFILL_MIGRATION` is now exported
   and the test addresses its step by index; the new migration guards its `ADD COLUMN`s so
@@ -2012,6 +2015,15 @@ about a vendor, not about this repository, so it is an item on
 The more striking illustration, Anthropic models under **Codex**, additionally needs
 OpenRouter to speak the Responses API, which nothing here establishes.
 
+**Both halves were later measured, and they did not answer the same way.** OpenRouter's
+Anthropic-Messages surface is real and its rows carry it; OpenRouter also serves the
+Responses API (2026-08-15, planning#391), so the crossing is no longer hypothetical — but it
+is a *DeepSeek* model that crosses, both of them, each measured against the live endpoint.
+Anthropic publishes no Responses API for the gateway to pass through, and no run has
+exercised an Anthropic id over it, so the striking illustration remains undeclared for want
+of evidence rather than for want of a mechanism. The design point is unchanged either way: what forbids the crossing is a missing
+style on a row, never a special case in the eligibility check.
+
 **User-supplied endpoints are deferred, not designed away** (req 15). Nothing here should
 foreclose them: a service row is already `(endpoints, styles, declared models)`, which is
 the same shape a user-supplied one would need, so the later feature is a new *source* for
@@ -3473,7 +3485,11 @@ are examples, since the list of work ShipIt does outside a turn is not closed.
 **2026-08-13.** Step 1 of *Add a service* listed six services and the billing modes each takes,
 and said nothing about the pairing that decides whether the credential will be usable at all.
 GLM and OpenRouter serve Anthropic Messages and reach only Claude Code; OpenAI serves Responses
-and reaches only Codex. On an install with one harness, a third of the list was a dead end the
+and reaches only Codex. (The OpenRouter half stopped being true on **2026-08-15**, when its
+Responses surface was verified and its DeepSeek rows gained the style — planning#391. Left as
+written because it is what made the case for this change; the cell was always derived, so it
+answered differently the moment the row did.) On an install with one harness, a third of the
+list was a dead end the
 user could only discover **after** buying a key and pasting it — a ShipIt-imposed failure of
 exactly the kind req 1 exists to prevent.
 
