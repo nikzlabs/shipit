@@ -449,12 +449,25 @@ the first of these. All six are fixed.
       chips per model lost to aligned tick columns. Columns are every harness
       ShipIt integrates, the ones this deployment lacks marked *not installed*;
       clicking a column head narrows every service to that harness.
-- [ ] **Build req 23's dialog.** One `SupportedModelsDialog`, opened from the
+- [x] **Built req 23's dialog** (`SupportedModelsDialog.tsx`), opened from the
       panel's header control and from a card's `N models`; rows are
-      `(label, id, context, price, harness ticks)` per service and mode, and the
+      `(label, id, context, price, harness ticks)` per service and mode. The
       per-model harness answer is `eligibleEntriesForHarness` asked about a
-      hypothetical credential — never a second style join.
-- [ ] **Retire the card's hover list of model ids.** `ModelsControl`'s tooltip
-      becomes the dialog opener; the count stays.
-- [ ] **Req 24's narrowing**, with a visible statement of what is being shown and
-      the same control clearing it.
+      hypothetical credential of each shape the mode accepts — the same shape as
+      `harnessSupportsMode` one level up, and never a second style join. Columns
+      are every harness the catalogue declares, with the ones this deployment did
+      not install marked and their ticks weakened.
+- [x] **Retired the card's hover list of model ids.** `ModelsControl` opens the
+      dialog at its service; the count stays, and the tooltip says what pressing
+      it does instead of carrying a shorter copy of the answer.
+- [x] **Req 24's narrowing**, from the harness column head, with a banner naming
+      the harness and the row count and the same head clearing it. A service that
+      keeps nothing says so in place; the nav fades it rather than dropping it.
+- [x] **The landing scroll, found broken by driving the real app.** Measuring from
+      the SECTION's ref callback ran while `paneRef.current` was still null —
+      React attaches child refs before the parent's — so the dialog opened at the
+      top of the catalogue however it was opened. It measures from the pane's own
+      callback now, once, guarded so narrowing does not yank the pane back. The
+      first test could not fail on it (every section exists in the DOM whatever
+      `initialServiceId` says); the replacement stubs the geometry and was
+      mutation-checked by breaking the component.

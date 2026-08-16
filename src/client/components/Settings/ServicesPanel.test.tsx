@@ -1663,14 +1663,16 @@ describe("the compact service card (docs/252 req 19)", () => {
     ]);
     render(<ServicesPanel />);
     const control = screen.getByTestId("service-models-service-card-deepseek:key");
-    // The count is what earns a glance; the names are worth a hover. The chip
-    // row was the one element on the card that grew with ShipIt's catalogue
-    // rather than with the user's setup.
+    // The count is what earns a glance. The chip row was the one element on the
+    // card that grew with ShipIt's catalogue rather than with the user's setup.
     expect(control).toHaveTextContent(/^\d+ models?$/);
 
-    await userEvent.hover(control);
-    // Radix renders the content twice — visible plus a hidden aria copy.
-    expect(await screen.findAllByText("deepseek-v4-pro")).not.toHaveLength(0);
+    // req 23 — and the names are no longer a hover either: the control opens the
+    // one dialog, at this service. A tooltip of raw ids said less than it looked
+    // like (no window, no price, no harness) and only for a configured service.
+    await userEvent.click(control);
+    expect(await screen.findByTestId("supported-models-dialog")).toBeInTheDocument();
+    expect(screen.getByTestId("supported-models-service-deepseek")).toBeInTheDocument();
   });
 });
 
