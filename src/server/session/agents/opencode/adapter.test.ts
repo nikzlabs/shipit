@@ -42,8 +42,8 @@ class FakeChild extends EventEmitter {
     this.stdout.emit("data", Buffer.from(`${lines.join("\n")}\n`));
   }
 
-  close(code: number): void {
-    this.emit("close", code);
+  close(code: number | null, signal: string | null = null): void {
+    this.emit("close", code, signal);
   }
 }
 
@@ -208,6 +208,51 @@ describe("OpencodeAdapter", () => {
     child.emitStdout([CAPTURED[3]]);
     vi.advanceTimersByTime(6_000);
     expect(child.kill).not.toHaveBeenCalled();
+  });
+
+  it("a signal death mid-turn emits NO result, so the orchestrator settles it as interrupted", () => {
+    const { adapter, child, events } = makeAdapter();
+    adapter.run(RUN_PARAMS);
+    // Half a turn, then the user's interrupt kills the process: Node reports
+    // close(null, "SIGTERM"). Synthesizing a success here would record every
+    // user stop as a completed turn (review finding 1).
+    child.emitStdout(CAPTURED.slice(0, 3));
+    adapter.interrupt();
+    child.close(null, "SIGTERM");
+    expect(events.some((e) => e.type === "agent_result")).toBe(false);
+  });
+
+  it("but a signal death AFTER the final step_finish is the adapter's own stop-kill — still success", () => {
+    const { adapter, child, events } = makeAdapter();
+    adapter.run(RUN_PARAMS);
+    child.emitStdout(CAPTURED);
+    vi.advanceTimersByTime(6_000);
+    child.close(null, "SIGTERM");
+    const result = events.at(-1);
+    expect(result?.type).toBe("agent_result");
+    if (result?.type === "agent_result") expect(result.status).toBe("success");
+  });
+
+  it("a stale interrupt escalation never kills the NEXT turn's process", () => {
+    const child1 = new FakeChild();
+    const child2 = new FakeChild();
+    const children = [child1, child2];
+    const adapter = new OpencodeAdapter({ spawnFn: () => children.shift() as unknown as ChildProcess });
+    adapter.run(RUN_PARAMS);
+    adapter.interrupt();
+    // The first turn dies on the SIGINT; a new turn starts inside the 5s
+    // escalation window.
+    child1.close(null, "SIGINT");
+    adapter.run(RUN_PARAMS);
+    vi.advanceTimersByTime(6_000);
+    expect(child2.kill).not.toHaveBeenCalled();
+  });
+
+  it("exit 0 with no events at all emits NO result (silent zero-output turn)", () => {
+    const { adapter, child, events } = makeAdapter();
+    adapter.run(RUN_PARAMS);
+    child.close(0);
+    expect(events.some((e) => e.type === "agent_result")).toBe(false);
   });
 
   it("emits done after the synthesized result so the drain sees a committed turn", () => {

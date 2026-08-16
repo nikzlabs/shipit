@@ -178,6 +178,26 @@ describe("ServicesPanel", () => {
       expect(screen.getByTestId("add-service-support-openrouter-codex")).toHaveAttribute("data-supported", "yes");
     });
 
+    it("renders the tri-state cell for a harness that runs only part of a service's modes (docs/268)", async () => {
+      const opencodeAgent = { ...codexAgent, id: "opencode", name: "OpenCode" };
+      render(<ServicesPanel agentList={[claudeAgent, codexAgent, opencodeAgent]} />);
+      await userEvent.click(screen.getByTestId("services-add-empty"));
+
+      // OpenCode reaches Anthropic's key mode but never its subscription
+      // (no account target; the env-OAuth token is carrier-restricted), so
+      // the cell must say "some" — a flat tick would promise a pairing step 2
+      // then refuses, the collapse catalogue.test.ts forbids.
+      const partial = screen.getByTestId("add-service-support-anthropic-opencode");
+      expect(partial).toHaveAttribute("data-support", "some");
+      expect(partial).toHaveAttribute("data-supported", "yes");
+      // And the spoken answer names the modes that DO work.
+      expect(partial).toHaveTextContent(/API key only/);
+      // Full and none keep their plain answers.
+      expect(screen.getByTestId("add-service-support-deepseek-opencode")).toHaveAttribute("data-support", "all");
+      expect(screen.getByTestId("add-service-support-anthropic-claude")).toHaveAttribute("data-support", "all");
+      expect(screen.getByTestId("add-service-support-anthropic-codex")).toHaveAttribute("data-support", "none");
+    });
+
     it("says the answer in words, naming both sides", async () => {
       // `data-supported` alone would keep passing if the tick and the spoken
       // answer both vanished. Each cell names the harness AND the service

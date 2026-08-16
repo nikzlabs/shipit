@@ -51,8 +51,10 @@ function npmPackageForStyle(style: ServiceRouting["style"]): string | undefined 
 
 /**
  * The style-appropriate variant payload for one reasoning level, mirroring the
- * shape models.dev's own entries use per family (`reasoningEffort` on
- * chat-completions, `effort` on anthropic-messages).
+ * shape models.dev's own entries use per family. BOTH wire-verified at a local
+ * recorder (docs/268): `reasoningEffort` becomes `reasoning_effort` in a
+ * chat-completions body, and `effort` becomes `output_config: {effort}` in a
+ * Messages body.
  */
 function variantPayload(style: ServiceRouting["style"], level: string): Record<string, unknown> {
   return style === "anthropic-messages" ? { effort: level } : { reasoningEffort: level };

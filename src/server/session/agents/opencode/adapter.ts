@@ -67,7 +67,8 @@ export class OpencodeAdapter
 
   readonly capabilities: AgentCapabilities = {
     supportsResume: true,
-    supportsImages: true,
+    // Mirrors the catalogue row (docs/268): unobserved, so declared false.
+    supportsImages: false,
     supportsSystemPrompt: true,
     supportsPermissionModes: false,
     supportedPermissionModes: [],
@@ -97,6 +98,9 @@ export class OpencodeAdapter
   private systemPromptPath: string | null = null;
   private errorKillTimer: NodeJS.Timeout | null = null;
   private stopKillTimer: NodeJS.Timeout | null = null;
+  private interruptKillTimer: NodeJS.Timeout | null = null;
+  private watchdog: NodeJS.Timeout | null = null;
+  private stdinFailure: NodeJS.ErrnoException | null = null;
   /** Resolved user MCP servers, captured by writeMcpConfig for run() to merge. */
   private pendingMcpServers: Record<string, unknown> = {};
   private _isStreaming = false;
@@ -250,13 +254,17 @@ export class OpencodeAdapter
 
     this.buffer = "";
     this.stderrBuffer = "";
+    this.stdinFailure = null;
+    this.armWatchdog();
 
     this.proc.stdout?.on("data", (chunk: Buffer) => {
+      this.armWatchdog();
       this.buffer += chunk.toString("utf-8");
       this.drainLines();
     });
 
     this.proc.stderr?.on("data", (chunk: Buffer) => {
+      this.armWatchdog();
       this.stderrBuffer += chunk.toString("utf-8");
       this.drainStderrLines();
     });
@@ -266,16 +274,27 @@ export class OpencodeAdapter
     });
 
     this.proc.stdin?.on("error", (err: NodeJS.ErrnoException) => {
+      // Held, not emitted (Claude's contract): the CLI may still produce a
+      // stream that explains itself; only a turn that produced NOTHING gets
+      // torn down with this as the reason at close.
       console.warn(`[opencode] stdin error (${err.code ?? "unknown"}): the prompt did not reach the CLI`);
+      this.stdinFailure = err;
     });
 
-    this.proc.on("close", (exitCode) => {
+    this.proc.on("close", (exitCode, signal) => {
       this.clearErrorKillTimer();
       // Flush whatever the block-buffered stdout managed to deliver.
       this.drainLines(true);
       this.drainStderrLines(true);
       this.cleanupTurnFiles();
-      this.emitSynthesizedResult(exitCode ?? 0);
+      if (this.stdinFailure && !this.sawAnyEvent()) {
+        // The prompt provably never landed and the CLI said nothing — the one
+        // case that must not read as an empty success (Claude's rule).
+        this.emit("error", this.stdinFailure);
+      } else {
+        this.emitSynthesizedResult(exitCode, signal);
+      }
+      this.stdinFailure = null;
       this.emit("done", exitCode ?? 0);
       this.proc = null;
     });
@@ -287,14 +306,49 @@ export class OpencodeAdapter
     this.proc.stdin?.end();
   }
 
-  /** The synthesized terminal result (req 4) — the ONLY producer of agent_result. */
-  private emitSynthesizedResult(exitCode: number): void {
+  /**
+   * Warn-only inactivity watchdog (Claude parity — `claude/process.ts`). It
+   * deliberately does NOT kill: OpenCode emits tool events only at completion,
+   * so a long-running bash tool call is legitimately silent for minutes. The
+   * residual risk it narrates — a dropped final `step_finish` while MCP
+   * children hold the process open — is terminated by the user's interrupt,
+   * which (signal-aware synthesis above) settles as interrupted.
+   */
+  private armWatchdog(): void {
+    if (this.watchdog) clearTimeout(this.watchdog);
+    this.watchdog = setTimeout(() => {
+      this.watchdog = null;
+      console.warn("[opencode] no output for 60s — the CLI may be stuck (retry loop, or a lost final event with MCP servers holding it open)");
+      this.emit("log", "server", "Warning: no output from the OpenCode CLI for 60 seconds. It may be stuck; interrupting the turn is safe.");
+    }, 60_000);
+  }
+
+  /** Whether the stream produced anything at all this turn. */
+  private sawAnyEvent(): boolean {
     const acc = this.accumulator;
-    // A completed turn (final step_finish seen, no error event) is a success
-    // even under a nonzero exit code: the adapter itself SIGTERMs the CLI when
-    // MCP children keep it alive past the turn, and that kill's exit status
-    // must not fail a turn that finished.
-    const errored = acc.errorMessage !== undefined || (exitCode !== 0 && !acc.sawFinalStop);
+    return acc.sessionId !== undefined || acc.sawStepFinish || acc.finalText.length > 0;
+  }
+
+  /**
+   * The synthesized terminal result (req 4) — the ONLY producer of
+   * agent_result. Signal-aware: a SIGNAL death without a completed turn emits
+   * NO result at all, matching the Claude one-shot contract, so a user
+   * interrupt settles as *interrupted* (`runner.wasInterrupted`) rather than
+   * as a completed empty turn. The two deliberate self-kills — the post-error
+   * kill (errorMessage set) and the post-final-step stop-kill (sawFinalStop) —
+   * still resolve, as error and success respectively.
+   */
+  private emitSynthesizedResult(exitCode: number | null, signal: NodeJS.Signals | null): void {
+    const acc = this.accumulator;
+    if (signal !== null && signal !== undefined && !acc.sawFinalStop && acc.errorMessage === undefined) return;
+    if (exitCode === 0 && !this.sawAnyEvent()) {
+      // Exit 0 having said nothing: not a success, and not obviously an error
+      // either — no result, like Claude's silent zero-output turn; the
+      // orchestrator's abnormal-exit path owns it.
+      console.warn("[opencode] process exited 0 with no stream events — no result to synthesize");
+      return;
+    }
+    const errored = acc.errorMessage !== undefined || (exitCode !== null && exitCode !== 0 && !acc.sawFinalStop);
     const tokens =
       acc.input > 0 || acc.output > 0
         ? {
@@ -315,7 +369,7 @@ export class OpencodeAdapter
         ? {
             error:
               acc.errorMessage ??
-              `OpenCode exited with code ${exitCode}${acc.sawStepFinish ? "" : " before finishing a step"}`,
+              `OpenCode exited with code ${String(exitCode)}${acc.sawStepFinish ? "" : " before finishing a step"}`,
           }
         : {}),
     });
@@ -458,11 +512,18 @@ export class OpencodeAdapter
   }
 
   interrupt(): void {
-    if (!this.proc) return;
-    killChild(this.proc, "SIGINT");
+    // Capture at entry (CLAUDE.md: never read `this.proc` inside an async
+    // callback) — this adapter instance is reused across turns, so a stale
+    // escalation would otherwise SIGTERM the NEXT turn's process.
+    const proc = this.proc;
+    if (!proc) return;
+    killChild(proc, "SIGINT");
     // The CLI is known to survive SIGINT while stuck in a retry loop; escalate.
-    setTimeout(() => {
-      if (this.proc) killChild(this.proc, "SIGTERM");
+    // Held on the adapter and cleared at close so it dies with the turn.
+    if (this.interruptKillTimer) clearTimeout(this.interruptKillTimer);
+    this.interruptKillTimer = setTimeout(() => {
+      this.interruptKillTimer = null;
+      if (this.proc === proc) killChild(proc, "SIGTERM");
     }, 5_000);
   }
 
@@ -480,6 +541,14 @@ export class OpencodeAdapter
     if (this.stopKillTimer) {
       clearTimeout(this.stopKillTimer);
       this.stopKillTimer = null;
+    }
+    if (this.interruptKillTimer) {
+      clearTimeout(this.interruptKillTimer);
+      this.interruptKillTimer = null;
+    }
+    if (this.watchdog) {
+      clearTimeout(this.watchdog);
+      this.watchdog = null;
     }
   }
 

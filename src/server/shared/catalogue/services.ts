@@ -279,6 +279,12 @@ export const SERVICES = [
             // ANTHROPIC_API_KEY — a bearer token rather than an `x-api-key`
             // header. This is the override the field exists for.
             targetOverride: { claude: { kind: "env", name: "ANTHROPIC_AUTH_TOKEN" } },
+            // And `carriers` is its consequence (docs/268 review finding):
+            // OpenCode's anthropic-messages path sends `x-api-key`, exactly the
+            // header this plan does not accept — offering the pairing would
+            // 401 every turn. Claude Code stays the one carrier until a
+            // bearer-delivery path for OpenCode is verified at the wire.
+            carriers: ["claude"],
           },
         ],
         retired: [],

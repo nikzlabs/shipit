@@ -191,9 +191,11 @@ export const HARNESSES = [
       // `-s <sessionID>` verified live (docs/268 Phase 0): recall across
       // processes.
       supportsResume: true,
-      // `opencode run -f <file>` attaches files, images included; per-model
-      // image ability is service-side data.
-      supportsImages: true,
+      // Honest per docs/268 req 6: `-f` exists but an image turn was never
+      // OBSERVED (no vision model reachable in the verification container),
+      // and a wrong true surfaces as broken attachments at runtime. Flip after
+      // a live probe.
+      supportsImages: false,
       // Config `instructions` array — the adapter points it at the rendered
       // system-prompt file.
       supportsSystemPrompt: true,

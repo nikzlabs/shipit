@@ -723,6 +723,13 @@ describe("support before a credential exists (the add-service table)", () => {
     expect(harnessServiceSupport("opencode", "openai")).toBe("some");
     expect(harnessSupportsMode("opencode", "anthropic", "sub")).toBe(false);
     expect(harnessSupportsMode("opencode", "anthropic", "key")).toBe(true);
+    // GLM's coding plan delivers a BEARER token (ANTHROPIC_AUTH_TOKEN);
+    // OpenCode's anthropic-messages path sends x-api-key, so the sub mode is
+    // carrier-restricted to Claude Code (docs/268 review finding) while the
+    // ordinary key mode still joins.
+    expect(harnessSupportsMode("opencode", "zai", "sub")).toBe(false);
+    expect(harnessSupportsMode("opencode", "zai", "key")).toBe(true);
+    expect(harnessServiceSupport("opencode", "zai")).toBe("some");
     // Claude Code keeps its full ticks — the tri-state changed nothing for it.
     expect(harnessServiceSupport("claude", "anthropic")).toBe("all");
   });

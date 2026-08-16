@@ -236,8 +236,13 @@ async function callAgentCli(prompt: string, target: SessionNamingTarget): Promis
       // OPENCODE_CONFIG, `-m shipit/<model>`, `--format json` events on
       // stdout. The prompt rides argv — naming prompts are far below the argv
       // ceiling that pushes the turn path onto stdin.
-      const args = ["run", "--format", "json"];
+      // `--auto` matches the turn adapter: a naming run that somehow reaches a
+      // tool call must not block on an interactive permission gate with no TTY.
+      const args = ["run", "--format", "json", "--auto"];
       const extraEnv: Record<string, string> = {
+        // The CLI resolves its project dir from $PWD over the real cwd (the
+        // adapter's docs/268 finding); pin it to callCli's actual cwd.
+        PWD: "/tmp",
         OPENCODE_DISABLE_AUTOUPDATE: "1",
         OPENCODE_DISABLE_MODELS_FETCH: "1",
         OPENCODE_DISABLE_LSP_DOWNLOAD: "1",

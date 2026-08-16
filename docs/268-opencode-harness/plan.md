@@ -111,8 +111,9 @@ redirected endpoint. Nothing is recalled from docs.
   `shipit/<modelId>`, see below). `spawn.endpoint`: config-file — the adapter
   writes a provider block; there is no env override.
 - Capabilities (each empirically grounded above): `supportsResume: true`,
-  `supportsImages: true` (`-f` attach), `supportsSystemPrompt: true`
-  (config `instructions`; Phase 10 verifies), `supportsPermissionModes:
+  `supportsImages: false` (the `-f` flag exists but an image turn was never
+  observed — honest false until probed; review finding), `supportsSystemPrompt:
+  true` (config `instructions`; verified live), `supportsPermissionModes:
   false` + `[]` (headless runs `--auto`), `reasoning` as found above,
   `supportsReview: false`, `supportsSteering: false` (one-shot argv prompt),
   `startsOwnTurns: false` (process exits at turn end), `supportsCompaction:
@@ -209,11 +210,42 @@ Also verified live through the adapter: provider-block routing + billing route
 (the `OPENCODE_PROVIDER_API_KEY` delivery), `--variant high`, system-prompt
 injection via config `instructions` (marker echoed back), session resume,
 MCP end-to-end (a real stdio server's tool called and answered, config in
-OpenCode's `{type:"local", command:[...], environment}` shape), and the
-synthesized-result paths. Deferred to the dogfood pass, stated rather than
-skipped silently: a `shipit agent run` cross-agent spawn in a real install,
-GLM's Bearer-vs-x-api-key header question, and an image-attachment turn
-(DeepSeek has no vision model to probe with).
+OpenCode's `{type:"local", command:[...], environment}` shape), the
+synthesized-result paths, and BOTH styles' reasoning payloads at the recorder
+(`reasoning_effort` on chat-completions; `output_config: {effort}` on
+Messages). Deferred to the dogfood pass, stated rather than skipped silently:
+a `shipit agent run` cross-agent spawn in a real install and an
+image-attachment turn (`supportsImages` stays false until observed).
+
+## Independent review outcomes (docs/268, same-day)
+
+The reviewer (ShipIt's configured reviewer role) confirmed the requirements
+met and surfaced five substantive defects, all fixed and test-locked:
+
+1. A signal-killed turn synthesized as *success* — the close handler ignored
+   the `signal` argument, so a user interrupt settled as a completed empty
+   turn instead of interrupted. Now: signal death without a completed turn
+   emits NO result (Claude's contract); the adapter's own deliberate kills
+   (post-error, post-final-step) still resolve as error/success.
+2. The interrupt escalation timer read `this.proc` inside its callback and
+   survived `close`, so it could SIGTERM the NEXT turn's process. Now
+   captured-at-entry, held, and cleared with the turn.
+3. GLM's coding plan (sub-via-string, bearer token) was still offered on
+   OpenCode — same class as the Anthropic env-OAuth hole; `carriers:
+   ["claude"]` closes it, with the zai×opencode tri-state pinned.
+4. The session-namer ran `opencode` without `--auto` (a tool call would hit
+   an interactive gate with no TTY) and without the `$PWD` pin. Both added.
+5. Exit-0-with-no-events read as a clean empty success, and a held stdin
+   failure was only logged. Both now follow Claude's contract (no result /
+   fail the run).
+
+One residual it named is accepted and documented rather than fixed: a
+DROPPED final `step_finish` combined with the MCP keep-alive means no
+stop-kill is armed and the turn runs until the user interrupts (which now
+settles correctly as interrupted). The alternative — killing on stream
+silence — would kill legitimate long silent tool calls (OpenCode emits tool
+events only at completion), which is worse. A warn-only 60s watchdog
+(Claude parity) narrates the state.
 
 ## Known risks / review checklist
 
