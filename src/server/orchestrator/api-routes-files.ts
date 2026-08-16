@@ -4,7 +4,7 @@
  */
 
 import fs from "node:fs/promises";
-import { createHash } from "node:crypto";
+import { etagFor, matchesIfNoneMatch } from "./http-etag.js";
 import path from "node:path";
 import { createReadStream } from "node:fs";
 import type { FastifyInstance } from "fastify";
@@ -131,8 +131,10 @@ export async function registerFileRoutes(
     const dir = resolveSessionDir(sessionManager, request.params.id, reply);
     if (!dir) return;
     const body = JSON.stringify({ tree: await getFileTree(dir) });
-    const etag = `"${createHash("sha1").update(body).digest("base64url")}"`;
-    if (request.headers["if-none-match"] === etag) {
+    const etag = etagFor(body);
+    // Weak comparison, per RFC 9110 — Cloudflare re-compresses and hands the
+    // browser `W/"…"`, which is what comes back. See `http-etag.ts`.
+    if (matchesIfNoneMatch(request.headers["if-none-match"], etag)) {
       reply.code(304).send();
       return;
     }

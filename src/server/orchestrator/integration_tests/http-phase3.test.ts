@@ -147,6 +147,17 @@ describe("Integration: Phase 3 HTTP endpoints", () => {
       });
       expect(revalidated.statusCode).toBe(304);
       expect(revalidated.body).toBe("");
+
+      // The form that actually arrives in production. Cloudflare re-compresses
+      // (zstd) and hands the browser `W/"…"`, which is what the browser echoes
+      // back — so an exact-match comparison meant the 304 never once fired
+      // through the CDN, and every attach re-downloaded the transcript.
+      const viaCdn = await app.inject({
+        method: "GET",
+        url: "/api/sessions/etag-s/history",
+        headers: { "if-none-match": `W/${etag}` },
+      });
+      expect(viaCdn.statusCode).toBe(304);
     });
 
     it("issues a fresh tag once the transcript changes", async () => {
@@ -180,6 +191,13 @@ describe("Integration: Phase 3 HTTP endpoints", () => {
         headers: { "if-none-match": etag },
       });
       expect(again.statusCode).toBe(304);
+
+      const viaCdn = await app.inject({
+        method: "GET",
+        url: "/api/sessions/tree-s/files",
+        headers: { "if-none-match": `W/${etag}` },
+      });
+      expect(viaCdn.statusCode).toBe(304);
     });
 
     it("returns 404 for non-existent session", async () => {
