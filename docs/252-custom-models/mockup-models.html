@@ -27,7 +27,12 @@
   /* ---- where the trigger lives ---- */
   .panel { border: 1px solid var(--border); border-radius: 12px; background: var(--bg-modal);
     padding: 14px 16px; max-width: 520px; }
-  .panel-head { display: flex; align-items: center; gap: 8px; }
+  /* The control aligns with the HEADING, not with the block. Centred against a
+     two-line header it floated between the title and the caption, pointing at
+     neither; `flex-start` plus the button's own vertical padding removed from the
+     offset puts its text on the "Services" line. */
+  .panel-head { display: flex; align-items: flex-start; gap: 8px; }
+  .panel-head .link-btn { margin-top: -2px; }
   .panel-head h3 { font-size: 13px; font-weight: 600; margin: 0; }
   .panel-sub { font-size: 11.5px; color: var(--text-tertiary); margin: 3px 0 0; }
   .link-btn { display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px;
