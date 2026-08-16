@@ -190,6 +190,12 @@ describe("runShim — help and version", () => {
     ["service", "list", "/shipit-docs/compose.md"],
     ["release", "plan", "/shipit-docs/release.md"],
     ["branch", "reset-to-base", "/shipit-docs/sessions.md"],
+    // `shipit plugin` keeps its own HELP rather than routing through
+    // COMMAND_DOCS, so the pointer is asserted here for the same reason: help
+    // that names no page leaves the agent to guess which of the two plugin
+    // docs it wants.
+    ["plugin", "refresh", "/shipit-docs/plugins.md"],
+    ["plugin", "status", "/shipit-docs/plugins.md"],
   ])("supports --help for shipit %s %s", async (domain, sub, docsPath) => {
     const { run } = makeRunner();
     const out = await run([domain, sub, "--help"]);

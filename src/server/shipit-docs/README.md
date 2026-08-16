@@ -19,7 +19,8 @@ platform capabilities.
 | [agent.md](agent.md) | One-shot sub-agents — `shipit agent run --role NAME`, relaying an override the user asked for, and the two reads that say what exists here (`shipit agent roles` / `shipit agent params`) |
 | [issues.md](issues.md) | Tracker-neutral issue access — `shipit issue view/list/comment/edit/status/assign` (GitHub + Linear), do-then-surface writes with Undo |
 | [skills.md](skills.md) | Skill directory layout — hand-written vs ShipIt-installed, install markers, auto-commit |
-| [plugins.md](plugins.md) | Plugin repositories — declaring another repo's tools, the read-only `/plugins/<name>` checkout, plugin env and install |
+| [plugins.md](plugins.md) | **Using** a plugin repository — declaring another repo's tools, the read-only `/plugins/<name>` checkout, plugin env and install, `shipit plugin refresh/status` |
+| [plugin-authoring.md](plugin-authoring.md) | **Writing** a plugin repository — testing exports with `repo: self`, and what a consuming project does differently (read-only tree, ports, install, failure messages) |
 | [design-docs.md](design-docs.md) | Feature docs — frontmatter format, status values, structure |
 | [present.md](present.md) | `present` tool — show throwaway, non-git artifacts (HTML/SVG/markdown/images) in the Present tab without committing them to the workspace |
 | [chat-links.md](chat-links.md) | Clickable pointers in chat — `shipit-preview://<service>/<path>` and `shipit-present:<file>#<fragment>` open a specific place in the user's app or a presented artifact |

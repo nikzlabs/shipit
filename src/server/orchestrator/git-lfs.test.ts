@@ -397,20 +397,37 @@ describe("restoreLfsAfterTreeRewrite (nikzlabs/shipit#2349)", () => {
 
   it("does not serialize across different workspaces", async () => {
     // The chain is per directory: one asset-heavy session must not delay another.
+    //
+    // The property is OVERLAP, not an order. Which call reaches its probe first
+    // is a genuine race — each awaits `repoDeclaresLfs` on its own directory
+    // before probing — so asserting `["start:A", "start:B"]` pinned a coin flip
+    // and flaked in CI. Both probes therefore park on one barrier that only the
+    // second arrival opens: with a per-directory chain both arrive and it opens,
+    // and a cross-directory chain leaves the first waiting alone, which the
+    // in-flight count reports as 1 rather than as a timeout with no diagnosis.
     const origin = makeLfsOrigin();
     const first = makeSkipSmudgeClone(origin);
     const second = makeSkipSmudgeClone(origin);
-    const order: string[] = [];
-    const probe = (tag: string) => async () => {
-      order.push(`start:${tag}`);
-      await new Promise((r) => setTimeout(r, 10));
+    let inFlight = 0;
+    let maxInFlight = 0;
+    let openBarrier = () => {};
+    const bothArrived = new Promise<void>((resolve) => { openBarrier = resolve; });
+    const probe = () => async () => {
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      if (inFlight === 2) openBarrier();
+      // Bounded, so a regression fails on the assertion below rather than by
+      // hanging until vitest's own timeout.
+      await Promise.race([bothArrived, new Promise((r) => setTimeout(r, 2000))]);
+      inFlight -= 1;
       return true;
     };
-    await Promise.all([
-      restoreLfsAfterTreeRewrite(first, "A", () => {}, { isAvailable: probe("A") }),
-      restoreLfsAfterTreeRewrite(second, "B", () => {}, { isAvailable: probe("B") }),
+    const [a, b] = await Promise.all([
+      restoreLfsAfterTreeRewrite(first, "A", () => {}, { isAvailable: probe() }),
+      restoreLfsAfterTreeRewrite(second, "B", () => {}, { isAvailable: probe() }),
     ]);
-    expect(order).toEqual(["start:A", "start:B"]);
+    expect(maxInFlight).toBe(2);
+    expect([a.status, b.status]).toEqual(["materialized", "materialized"]);
   });
 
   it("costs one grep and says nothing on a repo that doesn't use LFS", async () => {

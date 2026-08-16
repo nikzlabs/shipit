@@ -165,7 +165,7 @@ means.
 | `orchestrator/service-manager.ts` | one-pass `resolvePreviewTarget`; `publishedPort` gone; collision refusal |
 | `orchestrator/plugin-ports.ts` | deleted |
 | `orchestrator/container-session-runner.ts`, `compose-attach-replay.ts` | wire sites stop projecting |
-| `shipit-docs/plugins.md` | the author contract, and the collision note retired |
+| `shipit-docs/plugin-authoring.md` | the author contract, and the collision note retired (this content lived in `plugins.md` until the usage/authoring split) |
 | `docs/262-plugins/plan.md` | records what this deleted |
 
 ## Not doing
