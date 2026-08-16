@@ -219,6 +219,30 @@ Build sequence from [plan.md](./plan.md) §5. Requirements are cited as `(req N)
       would need a revert and a redeploy. Arming actively `--unset-all`s the
       entry an earlier boot wrote — the gitconfig is in the persistent
       credentials volume, so "stop writing it" would have been a no-op there.
+- [x] **The precondition for arming: an exhaustive call-site audit and an
+      operator runbook.** planning#410. [arming-runbook.md](./arming-runbook.md)
+      — every orchestrator git executor with a verdict per site, the residual
+      blind spots each with a reason, and the ordered arm/watch/rollback
+      procedure with the real log strings per surface (post-turn commit,
+      auto-push, LFS provisioning, fork, plugin activation). The audit is by
+      *executor*, not by call site: `safeSimpleGit(dir)` is one verdict covering
+      ~189 `createGitManager` callers, and the raw spawns are enumerated
+      individually.
+- [x] **The gap that audit found, fixed.** `plugin-generations.ts`'s
+      `checkoutCommit` — the **inverse** of the shape the first audit hunted:
+      not root git on a session tree but dropped git on a tree ShipIt itself
+      left `root:root`. A bare `safeSimpleGit()` clone (root, no ownership
+      predicate) into `<sessionDir>/state/plugins/…`, then
+      `safeSimpleGit(targetDir)`, which drops to the session's uid. It fails
+      today (`.git/config.lock` EACCESes) and would fail one step earlier once
+      armed. Fixed the way `cloneFromCache` was: the object-aware
+      `handWorkspaceBackToWorker` between the two calls.
+- [x] **A CI census for the shape, so the next one is not found by a human
+      audit two cycles later.** Every bare `safeSimpleGit()` — the one
+      orchestrator git shape with no ownership predicate at all — is listed in
+      `git-hooks-guard-coverage.test.ts` with what owns its destination. Neither
+      known instance of this bug was visible at runtime: the drop is inert below
+      root, so the suite and the dogfood instance pass either way.
 - [ ] **Arm it in production, then delete both the switch and the write.**
       **planning#410.** This is the go/no-go planning#403 reserves for a human,
       and it must not happen before E1 has been *seen* working in production —

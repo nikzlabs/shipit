@@ -275,6 +275,30 @@ Everything else is either root-owned (`/opt/shipit` in `build-id.ts`,
 they name a directory, so the answer comes from the filesystem rather than from
 an assumption that ages.
 
+**A second audit, before arming** (2026-08-16, planning#410). The table above was
+the precondition for shipping the switch; this one is the precondition for
+*arming* it, and it is exhaustive by executor rather than by call site — see
+[arming-runbook.md](./arming-runbook.md) Part 1 for the full tables, the
+residual blind spots, and a verdict per site. It found **one** more, and of the
+shape the first audit was not looking for: not "root git on a session tree" but
+its inverse — **dropped git on a tree ShipIt itself left root-owned**.
+
+`plugin-generations.ts`'s `checkoutCommit` clones a plugin generation with a
+bare `safeSimpleGit()` (root, no ownership predicate) into
+`<sessionDir>/state/plugins/…`, then runs `safeSimpleGit(targetDir)` against it —
+and that path is inside a session, so docs/270's resolver drops to the session's
+uid on a `root:root` tree. It fails *today* (`.git/config.lock` EACCESes) and
+would fail one step earlier once armed. The first audit classified this file as
+"the bare cache, root-owned", which is true of its *other* tree. Fixed the way
+`cloneFromCache` was, with the object-aware handback between the two calls.
+
+That shape now has a CI census rather than a periodic human audit: every bare
+`safeSimpleGit()` is listed with what owns its destination
+(`git-hooks-guard-coverage.test.ts`), so adding one is a decision someone writes
+down. Both known instances of this bug had exactly that shape, and neither was
+visible at runtime — the drop is inert below root, so the suite and the dogfood
+instance pass either way.
+
 One residual, not fixed: `mergeSession`'s fallback adds a *sibling session's*
 workspace as a local remote and fetches from it. Git refuses a foreign source on
 a local fetch (measured), so this works only while every session shares one

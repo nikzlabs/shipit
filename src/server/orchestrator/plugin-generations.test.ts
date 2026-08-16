@@ -22,6 +22,24 @@ import {
   type StagedGeneration,
 } from "./plugin-generations.js";
 import type { DeclaredPluginRepo } from "../shared/plugin-repos.js";
+import type * as SessionWorkerUidModule from "./session-worker-uid.js";
+
+/**
+ * docs/266 E2 / planning#410 — the ownership handback `checkoutCommit` performs
+ * between the root clone and the dropped git that follows it.
+ *
+ * Spied rather than exercised because the state it protects cannot be produced
+ * here: the real helper is inert unless the process is root AND the session
+ * identity roots are configured, which is neither this suite nor the dogfood
+ * instance — which is exactly why the missing call survived review. The spy
+ * records what the tree looked like at the moment it was called, so the test
+ * pins the POSITION and not merely the presence.
+ */
+const handBackSpy = vi.hoisted(() => vi.fn());
+vi.mock("./session-worker-uid.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof SessionWorkerUidModule>()),
+  handWorkspaceBackToWorker: handBackSpy,
+}));
 
 let tmp: string;
 let originDir: string;
@@ -92,6 +110,45 @@ beforeEach(async () => {
 
 afterEach(() => {
   fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+describe("staged checkout ownership (docs/266 E2, planning#410)", () => {
+  /**
+   * The clone runs as root (a bare `safeSimpleGit()` has no tree to stat), and
+   * every git call after it resolves the staging dir — which lives under
+   * `<sessionDir>/state/` — to the SESSION's uid and drops to it. So the tree
+   * has to change hands in between, or the dropped git meets a `root:root`
+   * repository: `.git/config.lock` EACCESes today, and once
+   * `SHIPIT_GIT_STRICT_OWNERSHIP` is armed git refuses the repository outright
+   * with `detected dubious ownership`.
+   *
+   * Asserting the position and not just the call is the point. The handback is
+   * useless after `checkout --detach`, and a later reader moving it there would
+   * leave a green suite.
+   */
+  it("hands the staged checkout over between the root clone and the dropped git", async () => {
+    const treeWhenCalled: { dir: string; hasGitDir: boolean; worktreeEntries: string[] }[] = [];
+    handBackSpy.mockImplementation((dir: string) => {
+      treeWhenCalled.push({
+        dir,
+        hasGitDir: fs.existsSync(path.join(dir, ".git")),
+        worktreeEntries: fs.readdirSync(dir).filter((e) => e !== ".git"),
+      });
+    });
+
+    const outcome = await activateGeneration(repo({ branch: "main" }), deps());
+    expect(outcome.status).toBe("activated");
+
+    expect(treeWhenCalled).toHaveLength(1);
+    // After the clone: `.git` exists.
+    expect(treeWhenCalled[0].hasGitDir).toBe(true);
+    // Before `checkout --detach`: the `--no-checkout` clone has no worktree yet.
+    expect(treeWhenCalled[0].worktreeEntries).toEqual([]);
+    // The staging tree, never the shared bare cache — chowning that would hand
+    // one session ownership of every other generation's objects.
+    expect(treeWhenCalled[0].dir).not.toBe(bareCacheDir);
+    expect(treeWhenCalled[0].dir.startsWith(stateDir)).toBe(true);
+  });
 });
 
 describe("activateGeneration — staging and publish", () => {

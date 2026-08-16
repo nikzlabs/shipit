@@ -376,6 +376,106 @@ describe("git spawn coverage: tree-uid drop (docs/266 E2)", () => {
 });
 
 /**
+ * docs/266 E2 / planning#410 — a bare `safeSimpleGit()` has no tree to stat, so
+ * it is the ONE orchestrator git shape with no ownership predicate at all.
+ *
+ * `safeSimpleGit(dir)` is self-correcting: the drop is resolved from `dir`, so a
+ * call site nobody has written yet is covered by construction. `safeSimpleGit()`
+ * is the hole in that argument. It runs as root, and its whole purpose is
+ * `clone`, whose *destination* it then leaves `root:root` — after which any
+ * later `safeSimpleGit(<destination>)` drops to the destination's session uid
+ * and meets a tree it does not own.
+ *
+ * That is not hypothetical; it is the shape of both defects found in this class.
+ * `repo-git.ts`'s `cloneFromCache` was fixed by docs/270, and
+ * `plugin-generations.ts`'s `checkoutCommit` had exactly the same bug found by
+ * planning#410's audit — a **human** audit, two feature cycles after E1, which
+ * is the process this rule replaces. Neither was visible at runtime anywhere it
+ * gets exercised: the drop is inert unless the process is root, so every test
+ * and the dogfood instance pass either way.
+ *
+ * So the rule is a census, not a ban. There are legitimate bare sites (a clone
+ * whose source is root-owned, a clone from a URL with no local tree at all), and
+ * the rule's job is to make ADDING one a decision someone writes down rather
+ * than a line that slips through. A new one — in a listed file or a new file —
+ * fails the build with the question it has to answer: what owns the destination
+ * when the next git call resolves it?
+ */
+describe("git spawn coverage: bare safeSimpleGit() is a census (docs/266 E2)", () => {
+  /** `safeSimpleGit()` — no `baseDir`, therefore no ownership predicate. */
+  const BARE_SIMPLE_GIT = /\bsafeSimpleGit\s*\(\s*\)/g;
+
+  /**
+   * Every bare site that exists on purpose, with what owns the tree its git
+   * touches. Keyed by file and COUNT, not by line, so ordinary edits above a
+   * site don't churn the list while a new site still fails.
+   */
+  const ALLOWED: Record<string, { count: number; why: string }> = {
+    "server/orchestrator/repo-git.ts": {
+      count: 1,
+      why: "cloneFromCache: source is the root-owned shared bare cache. The destination is "
+        + "handed to the session uid (handWorkspaceBackToWorker) before the next git call.",
+    },
+    "server/orchestrator/plugin-generations.ts": {
+      count: 1,
+      why: "checkoutCommit: source is the root-owned plugin bare cache. Same handback before "
+        + "the dropped git that follows (planning#410).",
+    },
+    "server/orchestrator/services/marketplace.ts": {
+      count: 1,
+      why: "clone from a URL into a fresh cache dir — no local source tree to own, and the "
+        + "cache is ShipIt's own rather than a session's.",
+    },
+  };
+
+  it("every bare safeSimpleGit() is a listed site with a stated owner", () => {
+    const found = new Map<string, number>();
+    for (const file of ROOTS.flatMap(sourceFiles)) {
+      const src = stripComments(fs.readFileSync(file, "utf-8"));
+      const count = [...src.matchAll(BARE_SIMPLE_GIT)].length;
+      if (count > 0) found.set(path.relative(REPO_SRC, file).split(path.sep).join("/"), count);
+    }
+
+    const expected = Object.fromEntries(
+      Object.entries(ALLOWED).map(([file, { count }]) => [file, count]),
+    );
+
+    // Vacuity guard, same as the rules above: if the pattern stops matching, the
+    // census is empty and asserts nothing.
+    expect([...found.values()].reduce((a, b) => a + b, 0)).toBeGreaterThan(0);
+
+    expect(Object.fromEntries([...found].sort()), [
+      "A bare `safeSimpleGit()` runs as ROOT and has no tree to resolve a uid from —",
+      "it is the only orchestrator git shape with no ownership predicate.",
+      "Its destination is left root-owned, and the next `safeSimpleGit(<destination>)`",
+      "drops to that path's session uid and meets a tree it does not own: EACCES today,",
+      "`fatal: detected dubious ownership` once SHIPIT_GIT_STRICT_OWNERSHIP is armed.",
+      "Both known instances of this bug had exactly that shape (repo-git.ts's",
+      "cloneFromCache, plugin-generations.ts's checkoutCommit) and neither was visible",
+      "at runtime: the drop is inert unless the process is root, so tests pass either way.",
+      "",
+      "If you added one: hand the destination over (handWorkspaceBackToWorker — the",
+      "object-aware one, because `clone --local` hardlinks the source's objects) before",
+      "the next git call, then add the site here with what owns the tree.",
+    ].join("\n")).toEqual(expected);
+  });
+
+  it("the bare-site pattern reads the argument list, not the name", () => {
+    // Safe because of the SHAPE: a call WITH a directory carries the predicate —
+    // `resolveGitTreeUid(baseDir)` decides the uid — so it is not this rule's
+    // subject at all. True of any argument, not of the ones written today.
+    expect(BARE_SIMPLE_GIT.test("safeSimpleGit(workspaceDir)")).toBe(false);
+    BARE_SIMPLE_GIT.lastIndex = 0;
+    expect(BARE_SIMPLE_GIT.test("safeSimpleGit(dir, opts)")).toBe(false);
+    BARE_SIMPLE_GIT.lastIndex = 0;
+    expect(BARE_SIMPLE_GIT.test("await safeSimpleGit().raw([...])")).toBe(true);
+    BARE_SIMPLE_GIT.lastIndex = 0;
+    expect(BARE_SIMPLE_GIT.test("const git = safeSimpleGit( );")).toBe(true);
+    BARE_SIMPLE_GIT.lastIndex = 0;
+  });
+});
+
+/**
  * docs/266 E2 — nobody may hand git a `safe.directory` except the one place that
  * owns the policy.
  *
