@@ -47,7 +47,11 @@ Build sequence from [plan.md](./plan.md) §5. Requirements are cited as `(req N)
       credential, the same short-lived single-repo installation token the
       session container's own broker would hand the agent
       (`getRepoScopedGitCredential`), falling back to the PAT exactly where that
-      function already does.
+      function already does. A **GitHub SSH-form origin** resolves through the
+      same `url.insteadOf` rewrite `git-config.ts` installs (docs/200), because
+      git connects over HTTPS for those and reading the configured URL
+      literally would decline a credential the operation then needs — an
+      availability regression against E1 that the reviewer caught.
 - [x] The mechanism survives a caller chaining `.env()`, which is what killed
       E1's first attempt: the **shape** rides `-c` (a `credential.helper=` reset
       plus a URL-scoped replacement — argv, so nothing downstream can remove
@@ -68,11 +72,17 @@ Build sequence from [plan.md](./plan.md) §5. Requirements are cited as `(req N)
       exceeds its 5s deadline all fall back to the git that would have run
       anyway, and `getRepoScopedGitCredential` already falls back to the PAT.
       The **commit** path never resolves a credential at all — pinned by a test.
-- [x] The raw dropped-uid remote sites carry the same credential, or they would
-      silently degrade to an anonymous fetch on every private repo:
-      `fetchAndResolveDefaultBranch` (claim + warm pool) and `mergeSession`'s
-      `origin` fetch. `session-fork-merge`'s post-clone fetch needs nothing —
-      it runs before `chownTreeToSessionWorker`, on a still-root-owned tree.
+- [x] The raw dropped-uid **network** sites carry the same credential, or they
+      would silently degrade to anonymous on every private repo:
+      `fetchAndResolveDefaultBranch` (claim + warm pool), `mergeSession`'s
+      `origin` fetch, and — found by sweeping for network ops rather than for
+      pushes — **`git lfs smudge`** (`git-lfs-blob.ts`), which authenticates its
+      transfer through `git credential fill` exactly as a push does, and whose
+      failure mode is an LFS asset rendering as pointer text in the diff viewer.
+      Two sites need nothing: `session-fork-merge`'s post-clone fetch runs
+      *before* `chownTreeToSessionWorker`, on a still-root-owned tree, and
+      `git lfs pull` (`git-lfs.ts` `runGit`) does not drop at all — it is a raw
+      spawn E1 never converted, so it still reads the root config.
 - [x] Tests: `git-remote-credential.test.ts` (the `-c` bundle against **real
       git**, including that the empty reset really does clear an inherited
       helper — the property the whole design rests on),
@@ -241,6 +251,29 @@ Build sequence from [plan.md](./plan.md) §5. Requirements are cited as `(req N)
 
 ## Known gaps, still open
 
+- **`git lfs pull` now drops uid, but the workspace is still handed back to the
+  worker uid AFTER it runs.** E2's audit converted `git-lfs.ts`'s `runGit`
+  (`:120`), which is right. The ordering that conversion depends on did not move
+  with it: at all three call sites — `claim-session.ts:239→247`, `:440→448`,
+  `warm-pool-manager.ts:180→188` — root re-materializes the worktree
+  immediately before (`rollback` is a `git reset --hard`; `checkout -b` writes
+  every tracked file), so `git lfs checkout` runs as uid 1000 against
+  **root-owned** pointer files and should EACCES. The drop *does* apply there:
+  `cloneFromCache` chowns the tree (`repo-git.ts:311`), so the ownership
+  predicate says worker.
+
+  Consequence if it holds: every claim of an LFS repo returns `pull-failed`
+  instead of `materialized` — **loudly**, since `materializeLfsContent` is
+  best-effort and surfaces the warning, so this is docs/231 / #1729 coming back
+  in visible form rather than silently. The fix is to hand the workspace back
+  *before* the pull rather than after.
+
+  **Read, not executed.** Four source reads chain to this conclusion (the
+  conversion, the three orderings, the root re-materialization, the chown); the
+  uid drop itself needs `getuid() === 0` and cannot be exercised from a session
+  container. Raised from the E3 branch, which predicted this shape before the
+  conversion landed and is recording that the prediction now applies to shipped
+  code rather than to a proposal.
 - `mergeSession`'s fallback adds a **sibling session's** workspace as a local
   remote and fetches from it. Git refuses a foreign source on a local fetch, so
   it works only while every session shares one worker uid — a constraint

@@ -183,6 +183,25 @@ export function gitCredentialConfig(credential: GitRemoteCredential): string[] {
   return ["credential.helper=", `credential.${origin}.helper=${helper}`];
 }
 
+/**
+ * {@link gitCredentialConfig} + {@link gitCredentialEnv} shaped for a raw
+ * `spawn("git", …)` — the sites that cannot use a simple-git instance.
+ *
+ * `args` goes in front of the subcommand (git parses its own options first, so
+ * it is safe ahead of `lfs smudge` or `-C <dir> …`); `env` is merged into the
+ * child's environment. Both are empty when there is no credential, so a call
+ * site can spread them unconditionally and read the same either way.
+ */
+export function gitCredentialSpawnOverrides(
+  credential: GitRemoteCredential | null,
+): { args: string[]; env: Record<string, string> } {
+  if (!credential) return { args: [], env: {} };
+  return {
+    args: gitCredentialConfig(credential).flatMap((entry) => ["-c", entry]),
+    env: gitCredentialEnv(credential),
+  };
+}
+
 /** The environment that helper reads the credential out of. */
 export function gitCredentialEnv(credential: GitRemoteCredential): Record<string, string> {
   if (!credential.token) return {};
@@ -190,6 +209,23 @@ export function gitCredentialEnv(credential: GitRemoteCredential): Record<string
     [CREDENTIAL_ENV_USERNAME]: credential.token.username,
     [CREDENTIAL_ENV_PASSWORD]: credential.token.password,
   };
+}
+
+/**
+ * The `url.<base>.insteadOf` rewrites `initGlobalGitConfig` installs, as
+ * `[from, to]` pairs. Kept in sync by hand with `git-config.ts` — see
+ * {@link parseRemoteOrigin} for why reading the raw URL without them is a bug.
+ */
+const GITHUB_SSH_REWRITES: readonly (readonly [string, string])[] = [
+  ["git@github.com:", "https://github.com/"],
+  ["ssh://git@github.com/", "https://github.com/"],
+];
+
+function applyGithubSshRewrite(url: string): string {
+  for (const [from, to] of GITHUB_SSH_REWRITES) {
+    if (url.startsWith(from)) return to + url.slice(from.length);
+  }
+  return url;
 }
 
 /** What {@link parseRemoteOrigin} could work out about a remote's URL. */
@@ -212,9 +248,21 @@ export interface RemoteOrigin {
  * until it is re-pointed, `session-fork-merge` adds another session's
  * *directory* as a remote, and tests use `file://`-less local paths throughout.
  * None of those authenticate, and offering a credential to them would be the
- * host-confusion bug docs/172 Gap 2 fixed. SSH remotes are `null` too: the
- * orchestrator rewrites GitHub SSH URLs to HTTPS globally (docs/200) and ships
- * no SSH key, so an SSH remote that survives that has no credential we hold.
+ * host-confusion bug docs/172 Gap 2 fixed.
+ *
+ * **A GitHub SSH remote is the one exception, and it is not optional.** The
+ * orchestrator installs a global `url.https://github.com/.insteadOf` for
+ * exactly `git@github.com:` and `ssh://git@github.com/` (docs/200,
+ * `git-config.ts`), so a git op on such a remote does not speak SSH at all — it
+ * connects over HTTPS and asks for an HTTPS credential. The configured URL git
+ * reports through `getRemotes` is the **pre-rewrite** spelling, so reading it
+ * literally would decline a credential for an operation that then goes on to
+ * need one, and the push would fail with "could not read Username" where it
+ * used to succeed. `setGitRemote` accepts SSH spellings and a fork inherits
+ * them, so this is a reachable state and not a curiosity. Any OTHER ssh remote
+ * stays `null`: the image ships no key, so ShipIt holds nothing for it.
+ * {@link GITHUB_SSH_REWRITES} mirrors the rewrite `git-config.ts` writes — the
+ * two are a pair and must move together.
  *
  * The `owner`/`repo` split is deliberately generic rather than GitHub-specific
  * — the resolver decides whether it recognises the host. Only the first two
@@ -224,7 +272,7 @@ export function parseRemoteOrigin(url: string | undefined): RemoteOrigin | null 
   if (!url) return null;
   let parsed: URL;
   try {
-    parsed = new URL(url.trim());
+    parsed = new URL(applyGithubSshRewrite(url.trim()));
   } catch {
     return null;
   }
@@ -262,6 +310,11 @@ export type GitRemoteCredentialResolver = (
  * credential would be churn with a blast radius. The predicate is
  * {@link resolveGitTreeUid} — the SAME fact `safeSimpleGit` drops on — so the
  * two can never disagree about which invocations need their own credential.
+ * Read here rather than remembered from whenever the caller's instance was
+ * built, which is the safe side of the one case where the two can differ: a
+ * workspace chowned to the worker uid *after* a `GitManager` was made for it
+ * gets a credential, where a cached "no drop" would leave the op unable to
+ * authenticate.
  *
  * Never throws. Every failure below resolves to `null`, which means the caller
  * runs the git it would have run anyway: docs/266 req 6 and `CLAUDE.md`

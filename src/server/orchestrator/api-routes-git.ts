@@ -246,7 +246,7 @@ export async function registerGitRoutes(
       }
       try {
         const git = createGitManager(dir);
-        return await getTurnDiff(git, from, to);
+        return await getTurnDiff(git, from, to, gitRemoteCredentialResolver(deps.githubAuthManager));
       } catch (err) {
         reply.code(500).send({ error: `Failed to get diff: ${getErrorMessage(err)}` });
       }
@@ -265,7 +265,7 @@ export async function registerGitRoutes(
         || repoDefaultBranch(deps.repoStore, sessionManager.get(request.params.id)?.remoteUrl);
       try {
         const git = createGitManager(dir);
-        return await getDiffVsBranch(git, baseBranch);
+        return await getDiffVsBranch(git, baseBranch, gitRemoteCredentialResolver(deps.githubAuthManager));
       } catch (err) {
         if (err instanceof ServiceError) {
           reply.code(err.statusCode).send({ error: err.message });

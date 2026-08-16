@@ -177,6 +177,45 @@ describe("git-config: setGlobalCredentialHelper / clearGlobalCredentialHelper", 
     expect(fs.statSync(credPath).mode & 0o777).toBe(0o600);
   });
 
+  it("repairs the shared config to 0644 — readable by the worker, writable by root alone", () => {
+    // The config is READ by the dropped-uid git (identity, `url.insteadOf`) and
+    // by root-side git on the bare cache and `/opt/shipit`. E1 handed it to the
+    // worker uid at 0600 because it carried the PAT; with the secret gone that
+    // ownership is the sharper problem — owning a file is permission to WRITE
+    // it, and a `credential.helper = !<attacker>` written here executes as ROOT
+    // on the next bare-cache fetch. (Review finding on PR #2341.)
+    //
+    // The sharing path is gated on `SHIPIT_SESSION_WORKER_UID`, so the variable
+    // has to be set or this test proves nothing but the runner's umask — and
+    // the file is put into E1's 0600 shape first, so the assertion is on the
+    // REPAIR rather than on a mode that happened to be right already.
+    const prevUid = process.env.SHIPIT_SESSION_WORKER_UID;
+    process.env.SHIPIT_SESSION_WORKER_UID = "1000";
+    try {
+      const configPath = process.env.GIT_CONFIG_GLOBAL!;
+      setGitIdentity("Test", "test@test.com");
+      fs.chmodSync(configPath, 0o600);
+      setGlobalCredentialHelper("ghp_some_token_value");
+      expect(fs.statSync(configPath).mode & 0o777).toBe(0o644);
+    } finally {
+      if (prevUid === undefined) delete process.env.SHIPIT_SESSION_WORKER_UID;
+      else process.env.SHIPIT_SESSION_WORKER_UID = prevUid;
+    }
+  });
+
+  it("says so, loudly, when the credential file is missing rather than degrading silently", () => {
+    // Unreadable is the DESIGNED state for a dropped-uid git and stays silent.
+    // Missing is a real fault on the root path — a wiped volume, a failed first
+    // write — and would otherwise surface only as "could not read Username".
+    setGlobalCredentialHelper("some-token");
+    fs.rmSync(path.join(tmpDir, GLOBAL_CREDENTIAL_FILENAME));
+    const out = execSync(
+      "printf 'protocol=https\\nhost=github.com\\n\\n' | git credential fill 2>&1 || true",
+      { encoding: "utf-8", shell: "/bin/sh", env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } },
+    );
+    expect(out).toContain("git credential file missing");
+  });
+
   it("a helper whose credential file is unreadable answers nothing rather than failing git", () => {
     // The dropped-uid case, approximated with a mode the current uid cannot
     // read either: the helper must go quiet, not break the git invocation. An

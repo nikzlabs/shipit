@@ -328,6 +328,25 @@ of the trap E1 hit. Key files: `shared/git-remote-credential.ts`,
 `GitManager.remoteGit`, `services/github.ts`'s
 `resolveOrchestratorGitRemoteCredential`.
 
+The independent review of that PR changed two more things, both worth keeping
+as findings rather than as quiet edits:
+
+- **The shared `.gitconfig` is now root-owned 0644, not worker-owned 0600.** E1
+  handed it to the worker uid because it carried the inline PAT. With the secret
+  gone, that ownership was the sharper half of the same problem: owning a file
+  is permission to *write* it, and root-side git reads this one — so a payload
+  could have written `credential.helper = !<attacker>` and had it execute **as
+  root** on the next bare-cache fetch, which is requirement 1's exact worst case
+  through requirement 3's exact key class. Neither that nor the `insteadOf`
+  variant needs the file to be readable, so tightening the mode would not have
+  helped; the writability was the whole bug.
+- **A GitHub SSH-form origin follows the `insteadOf` rewrite.** `git-config.ts`
+  rewrites `git@github.com:` and `ssh://git@github.com/` to HTTPS globally
+  (docs/200), so git never speaks SSH for those and does ask for an HTTPS
+  credential — but `getRemotes` reports the *pre-rewrite* spelling, so reading
+  it literally declined a credential the operation then needed. That was a real
+  availability regression against E1, and the only one the review found.
+
 Two consequences worth stating, because they are the reason this is not a
 downgrade and not an availability risk:
 
