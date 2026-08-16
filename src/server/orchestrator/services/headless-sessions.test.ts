@@ -281,7 +281,9 @@ describe("createHeadlessSession", () => {
       {
         repoUrl: "https://github.com/acme/app.git",
         prompt: "  Fix the failing tests  ",
-        branch: "quick-tests",
+        // A `title` pin (not a branch — there is no branch option since
+        // planning#413) is what makes graduation synchronous here.
+        title: "Fix the failing tests",
         agent: "codex",
         model: "gpt-5.4",
       },
@@ -293,11 +295,12 @@ describe("createHeadlessSession", () => {
     );
 
     expect(result.sessionId).toBe("quick-1");
-    expect(result.branch).toBe("quick-tests");
+    // The branch is always generated: `shipit/<6 base64url chars>`.
+    expect(result.branch).toMatch(/^shipit\/[a-z0-9_-]{1,6}$/);
     expect(result.session).toMatchObject({
       id: "quick-1",
       title: "Fix the failing tests",
-      branch: "quick-tests",
+      branch: result.branch,
       branchRenamed: true,
       model: "gpt-5.4",
     });
@@ -316,7 +319,7 @@ describe("createHeadlessSession", () => {
     expect(execSync("git branch --show-current", {
       cwd: path.join(tmpDir, "quick-1", "workspace"),
       encoding: "utf8",
-    }).trim()).toBe("quick-tests");
+    }).trim()).toBe(result.branch);
   });
 
   // docs/252 phase 9 (req 14) — Quick Capture is the one turn-dispatching path

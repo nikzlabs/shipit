@@ -269,10 +269,25 @@ chat history (`issue_ref` on the message row), the seed prompt, and the PR body'
 graduation path tests for idempotence, since a name containing fresh randomness
 can never equal a branch already on disk.
 
-Uniqueness is a property of the **derived** branch only. `createHeadlessSession`
-still lets an explicit `branch` option beat the seed, so a caller that supplies
-one owns its own collisions — including docs/156's planned `-2`/`-3` suffix
-scheme for webhook re-triggers, which this supersedes if that path ever lands.
+**The caller-supplied `branch` option is gone with it.** `POST /api/sessions/headless`
+took a `branch` field and `createHeadlessSession` used it verbatim, ahead of the
+seed — so uniqueness would have held only for derived names, and any caller
+sending one name twice reproduced exactly the collision above. Nothing in ShipIt
+sent one (the client's typed wrapper declared the field; no component filled it),
+and `services/child-sessions.ts` had already dropped the same option from
+agent-driven spawns for a second reason: supplied names drifted outside the
+`shipit/` namespace and broke branch conventions. The branch is now always
+derived — from the issue pointer, or generated — on every creation path.
+
+This also supersedes docs/156's planned `-2`/`-3` suffix scheme for webhook
+re-triggers: that path routes through `createHeadlessSession`, so it inherits the
+random suffix and needs no counter of its own.
+
+The route's `assertValidBranchName` check went with the option. It existed to
+police a name arriving from outside; the two remaining sources are valid refs by
+construction (`issueBranchBase` keeps only `[a-z0-9]` and single interior dashes,
+`generateBranchPrefix` is base64url), so nothing validates the result any more.
+A caller that still sends `branch` is ignored, not rejected.
 
 ## Key files
 

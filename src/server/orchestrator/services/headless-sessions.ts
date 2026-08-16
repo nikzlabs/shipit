@@ -25,12 +25,6 @@ import type { ClaimSessionService } from "./claim-session.js";
 import { prepareDispatch } from "../prepared-dispatch.js";
 import { buildIssueSeedPrompt } from "../../shared/issue-ref.js";
 
-function assertValidBranchName(name: string): void {
-  if (/[\s~^:?*[\\]/.test(name) || name.includes("..")) {
-    throw new ServiceError(400, "Invalid branch name");
-  }
-}
-
 export interface HeadlessUploadInput {
   filename: string;
   data: Buffer;
@@ -38,8 +32,14 @@ export interface HeadlessUploadInput {
 
 /**
  * The stable, issue-derived half of an issue-seeded branch name: the pointer,
- * lowercased and kebabbed so it stays a valid git ref (`assertValidBranchName`
- * rejects spaces and specials). `""` when the pointer slugifies to nothing.
+ * lowercased and kebabbed. `""` when the pointer slugifies to nothing.
+ *
+ * This function is also what makes the result a valid git ref: it keeps only
+ * `[a-z0-9]` and single interior dashes, so no space, `~^:?*[\`, or `..` can
+ * survive an identifier however a tracker spells it. That is now the ONLY
+ * source of a derived branch name besides `generateBranchPrefix`, which is why
+ * the route's old `assertValidBranchName` check went away with the
+ * caller-supplied `branch` option it existed to police (planning#413).
  *
  * docs/248 req 22 — the issue title is deliberately NOT in the branch name. A
  * branch gets pushed to a public remote, so a title from a private planning
@@ -121,12 +121,16 @@ export interface CreateHeadlessSessionOptions {
   prompt?: string;
   /**
    * docs/170 — when present, the branch, title, and (absent an explicit
-   * `prompt`) the first agent prompt are derived from the issue. Explicit
-   * `prompt`/`branch`/`title` still win so callers can override.
+   * `prompt`) the first agent prompt are derived from the issue. An explicit
+   * `prompt`/`title` still wins so callers can override.
+   *
+   * There is deliberately NO `branch` override (planning#413): a supplied name
+   * is used verbatim, so two calls carrying one name collide on a single remote
+   * branch — the failure the issue seed's uniqueness suffix exists to prevent.
+   * The branch is always derived here, from the pointer or generated.
    */
   issueRef?: IssueRef;
   title?: string;
-  branch?: string;
   agent?: AgentId;
   model?: string;
   /** docs/252 — the rest of the selection triple, when the caller knows it. */
@@ -191,7 +195,7 @@ export async function createHeadlessSession(
   if (!repoUrl) throw new ServiceError(400, "Add a repo first.");
 
   // docs/170 — derive branch/title/prompt from a tracker issue when supplied.
-  // Explicit options still win (a caller may pre-fill the prompt or branch).
+  // An explicit prompt/title still wins; the branch is never caller-supplied.
   const seed = opts.issueRef ? seedFromIssueRef(opts.issueRef) : undefined;
 
   const trimmedPrompt = (opts.prompt?.trim() || seed?.prompt)?.trim();
@@ -200,10 +204,12 @@ export async function createHeadlessSession(
     throw new ServiceError(400, "prompt exceeds 50,000 characters");
   }
 
-  const explicitBranch = opts.branch?.trim() || seed?.branch;
+  // Both branch sources are unique by construction (planning#413) and both are
+  // valid refs by construction, which is why nothing validates the result: the
+  // seed is `issueBranchBase` + a random slug, the fallback is generated.
+  const explicitBranch = seed?.branch;
   const explicitTitle = opts.title?.trim() || seed?.title;
   const branchName = explicitBranch || generateBranchPrefix();
-  assertValidBranchName(branchName);
 
   // Defense-in-depth: the model is the single source of truth (docs/142,
   // Problem C). When a recognized model is supplied, derive the agent from it

@@ -181,7 +181,6 @@ export function fullResetAllStores() {
 export async function createHeadlessSession(opts: {
   repoUrl: string;
   initialPrompt: string;
-  branch?: string;
   agent?: AgentId;
   model?: string;
   /**
@@ -217,7 +216,7 @@ export async function createHeadlessSession(opts: {
   if (files && files.length > 0) {
     const form = new FormData();
     // All current jsonBody fields are strings (or undefined). The multipart
-    // route reads each part's `value` as a string and parses agent/branch/etc.
+    // route reads each part's `value` as a string and parses agent/model/etc.
     // itself, so we just pass values through without coercion.
     for (const [k, v] of Object.entries(jsonBody)) {
       if (v === undefined) continue;

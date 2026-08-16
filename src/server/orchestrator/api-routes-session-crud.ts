@@ -405,14 +405,21 @@ export async function registerSessionCrudRoutes(
   //
   // Accepts either JSON (no attachments) or multipart/form-data when the
   // overlay attached files. Multipart shape: `repoUrl`, `initialPrompt`,
-  // `branch?`, `agent?`, `model?` as form fields plus one or more `file`
-  // parts. Files are saved into the new session's uploads dir before the
-  // first turn fires so the agent sees them. See docs/145.
+  // `agent?`, `model?` as form fields plus one or more `file` parts. Files are
+  // saved into the new session's uploads dir before the first turn fires so the
+  // agent sees them. See docs/145.
+  //
+  // There is deliberately no `branch` field (planning#413). A caller-supplied
+  // name is used verbatim, so two calls carrying one name land on a single
+  // remote branch — the collision this route's issue seed was just fixed to
+  // make impossible. Nothing in ShipIt sent one, and `child-sessions.ts` had
+  // already dropped the same option from agent-driven spawns for a second
+  // reason: supplied names drifted outside the `shipit/` namespace. The branch
+  // is now always derived here — from the issue pointer, or generated.
   app.post<{
     Body: {
       repoUrl?: string;
       initialPrompt?: string;
-      branch?: string;
       agent?: AgentId;
       model?: string;
       /**
@@ -453,7 +460,6 @@ export async function registerSessionCrudRoutes(
     async (request, reply) => {
       let repoUrl = "";
       let initialPrompt = "";
-      let branch: string | undefined;
       let agent: AgentId | undefined;
       let model: string | undefined;
       let serviceId: string | undefined;
@@ -479,9 +485,6 @@ export async function registerSessionCrudRoutes(
                 break;
               case "initialPrompt":
                 initialPrompt = value;
-                break;
-              case "branch":
-                branch = value;
                 break;
               case "agent":
                 agent = value as AgentId;
@@ -516,7 +519,6 @@ export async function registerSessionCrudRoutes(
         const body = request.body ?? {};
         repoUrl = body.repoUrl ?? "";
         initialPrompt = body.initialPrompt ?? "";
-        branch = body.branch;
         agent = body.agent;
         model = body.model;
         serviceId = body.serviceId;
@@ -544,7 +546,6 @@ export async function registerSessionCrudRoutes(
             repoUrl,
             prompt: initialPrompt,
             ...(issueRef !== undefined ? { issueRef } : {}),
-            ...(branch !== undefined ? { branch } : {}),
             ...(agent !== undefined ? { agent } : {}),
             ...(model !== undefined ? { model } : {}),
             ...(serviceId !== undefined ? { serviceId } : {}),
