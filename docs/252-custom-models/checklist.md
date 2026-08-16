@@ -471,3 +471,23 @@ the first of these. All six are fixed.
       first test could not fail on it (every section exists in the DOM whatever
       `initialServiceId` says); the replacement stubs the geometry and was
       mutation-checked by breaking the component.
+- [x] **Cross-backend review of reqs 23–24 — three findings taken.** The harness
+      column head announced "Codex, toggle button" and kept its purpose in a
+      `title` a screen reader skips, across up to 27 near-identical buttons: it
+      carries an `aria-label` naming the action, the harness and the service+mode
+      now, the legend says "choose" rather than "click" for a keyboard-operable
+      control, and the heading's icon is `aria-hidden` like every other decorative
+      one. The suite read harness answers off the FIRST matching row, so both
+      gateways were pinned by nothing and skipping a whole service in
+      `buildSupport` shipped green — answers are scoped to their `(service, mode)`
+      table now, every service has written-out expectations, and the mutation was
+      re-run to watch it fail. The price/context and banner-count assertions were
+      shape-only (`/\$/`, `/\d+ of \d+ rows/`) and now pin the figures and the
+      on-screen row count; the heading control had no test at all. **The "you have
+      a credential" dot is removed** rather than kept: reqs 23–24 do not ask for
+      it, and it made the one surface whose premise is readability *before* a
+      credential depend on which credentials exist. Declined: nothing — the
+      remaining note (no marks while the agent list is empty) is the documented
+      "say nothing rather than claim" case. Not exercised by any test, and said
+      here rather than left implied: the per-credential-shape union in
+      `buildSupport`, since no shipped mode disagrees between its shapes today.

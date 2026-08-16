@@ -356,7 +356,7 @@ export function ServicesPanel({ agentList = [] }: { agentList?: AgentOption[] })
           className="flex shrink-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-xs text-(--color-text-tertiary) hover:bg-(--color-bg-hover) hover:text-(--color-text-primary) focus:outline-none focus-visible:bg-(--color-bg-hover)"
           data-testid="services-supported-models"
         >
-          <InfoIcon size={ICON_SIZE.XS} /> Supported models
+          <InfoIcon aria-hidden size={ICON_SIZE.XS} /> Supported models
         </button>
       </div>
 
@@ -398,21 +398,12 @@ export function ServicesPanel({ agentList = [] }: { agentList?: AgentOption[] })
       {/*
         req 23 — mounted once, whichever control opened it. `modelsFor` holds the
         service to land on: `""` from the heading (start at the top), an id from a
-        card. The dot beside a service name is derived from the SAME two feeds the
-        card list is (`routes` for supplied credentials, `connectedAccounts` for
-        logins), because a service the user holds is a fact this screen already
-        knows and would otherwise be asserted twice from different sources.
+        card.
       */}
       {modelsFor !== null && (
         <SupportedModelsDialog
           agentList={agentList}
           {...(modelsFor ? { initialServiceId: modelsFor } : {})}
-          configuredServiceIds={
-            new Set([
-              ...routes.map((r) => r.serviceId),
-              ...connectedAccounts.map((a) => a.serviceId),
-            ])
-          }
           onClose={() => setModelsFor(null)}
         />
       )}

@@ -1674,6 +1674,19 @@ describe("the compact service card (docs/252 req 19)", () => {
     expect(await screen.findByTestId("supported-models-dialog")).toBeInTheDocument();
     expect(screen.getByTestId("supported-models-service-deepseek")).toBeInTheDocument();
   });
+
+  it("opens the same dialog from the heading, with no service configured", async () => {
+    // req 23 — the panel's own control, which had no test at all: only the card
+    // route was covered, so a broken heading button stayed green (found by
+    // cross-backend review). Asserted on an EMPTY panel, because the whole point
+    // of this entry point is that it works before any credential exists.
+    render(<ServicesPanel />);
+    expect(screen.getByTestId("services-empty")).toBeInTheDocument();
+    await userEvent.click(screen.getByTestId("services-supported-models"));
+    expect(await screen.findByTestId("supported-models-dialog")).toBeInTheDocument();
+    // Every service, on a panel listing none.
+    expect(screen.getByTestId("supported-models-service-openrouter")).toBeInTheDocument();
+  });
 });
 
 /**

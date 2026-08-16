@@ -38,13 +38,21 @@ function open(props: Partial<Parameters<typeof SupportedModelsDialog>[0]> = {}) 
   );
 }
 
-/** A row's harness cells, keyed by harness id. */
-function cellsFor(modelId: string) {
-  return {
-    claude: screen.getAllByTestId(`supported-models-cell-${modelId}-claude`),
-    codex: screen.getAllByTestId(`supported-models-cell-${modelId}-codex`),
-    opencode: screen.getAllByTestId(`supported-models-cell-${modelId}-opencode`),
-  };
+/**
+ * One row's harness answers, **scoped to the `(service, mode)` the row is in**.
+ *
+ * The first version took a bare model id and read `getAllByTestId(...)[0]`, which
+ * is how this suite came to pin nothing about the gateways: `deepseek-v4-flash`
+ * is a row of DeepSeek, OpenRouter AND Vercel, and only the first was ever
+ * inspected. Cross-backend review found that a `buildSupport` that skipped a
+ * whole service — every OpenRouter row answering "no harness runs this" — shipped
+ * green.
+ */
+function answers(modeKey: string, modelId: string): Record<string, string | null> {
+  const table = within(screen.getByTestId(`supported-models-mode-${modeKey}`));
+  const read = (harness: string) =>
+    table.getByTestId(`supported-models-cell-${modelId}-${harness}`).getAttribute("data-runs");
+  return { claude: read("claude"), codex: read("codex"), opencode: read("opencode") };
 }
 
 describe("SupportedModelsDialog", () => {
@@ -52,38 +60,95 @@ describe("SupportedModelsDialog", () => {
 
   it("lists every service in the catalogue, not only the configured ones", () => {
     // req 23's whole point: the question is asked BEFORE a credential exists, so
-    // a service the user has never touched must still be here.
-    open({ configuredServiceIds: new Set(["anthropic"]) });
+    // a service the user has never touched must still be here — and nothing on
+    // this screen marks which ones the user holds, because that is the panel
+    // behind it, and depending on it here would make a pre-credential surface
+    // credential-dependent.
+    open();
     for (const service of allServices()) {
       expect(screen.getByTestId(`supported-models-service-${service.id}`)).toBeInTheDocument();
     }
-    // The dot marks what the user holds, and only that.
-    expect(screen.getByTestId("supported-models-configured-anthropic")).toBeInTheDocument();
-    expect(screen.queryByTestId("supported-models-configured-openrouter")).toBeNull();
+    // Every mode of every service, too — a service whose second mode went
+    // missing would still pass the loop above.
+    for (const service of allServices()) {
+      for (const mode of service.modes) {
+        expect(
+          screen.getByTestId(`supported-models-mode-${service.id}:${mode.kind}`),
+        ).toBeInTheDocument();
+      }
+    }
   });
 
   it("states a model's support as a set, and a mode's answer per mode", () => {
     open();
     // DeepSeek speaks a style all three harnesses speak — the case a single
     // "runs on" name per model could not express.
-    const flash = cellsFor("deepseek-v4-flash");
-    expect(flash.claude[0]).toHaveAttribute("data-runs", "yes");
-    expect(flash.codex[0]).toHaveAttribute("data-runs", "yes");
-    expect(flash.opencode[0]).toHaveAttribute("data-runs", "yes");
+    expect(answers("deepseek:key", "deepseek-v4-flash")).toEqual({
+      claude: "yes",
+      codex: "yes",
+      opencode: "yes",
+    });
 
     // Anthropic's Opus appears in BOTH modes, and the answers differ: OpenCode
     // can carry an API key but never the subscription token (`carriers`). A
     // per-model answer that ignored the mode would state one of the two wrongly.
-    const sub = within(screen.getByTestId("supported-models-mode-anthropic:sub"));
-    const key = within(screen.getByTestId("supported-models-mode-anthropic:key"));
-    expect(sub.getByTestId("supported-models-cell-claude-opus-5-opencode")).toHaveAttribute(
-      "data-runs",
-      "no",
-    );
-    expect(key.getByTestId("supported-models-cell-claude-opus-5-opencode")).toHaveAttribute(
-      "data-runs",
-      "yes",
-    );
+    expect(answers("anthropic:sub", "claude-opus-5").opencode).toBe("no");
+    expect(answers("anthropic:key", "claude-opus-5").opencode).toBe("yes");
+  });
+
+  /**
+   * **Every service gets its own assertion, because a per-service hole is
+   * invisible otherwise.** Found by cross-backend review: with the answers read
+   * off the first matching row, the gateways were pinned by nothing at all, and
+   * `buildSupport` skipping a whole service passed the suite.
+   *
+   * The expected values are written out rather than derived — deriving them from
+   * the same catalogue call the component makes would assert only that the
+   * function equals itself.
+   */
+  it("answers per service, including both gateways", () => {
+    open();
+    // A gateway's answer follows the MODEL's style, not the gateway's: an
+    // Anthropic-style row on OpenRouter reaches Claude Code and OpenCode, a
+    // DeepSeek row reaches all three, and a GPT row reaches Codex and OpenCode.
+    expect(answers("openrouter:key", "anthropic/claude-opus-5")).toEqual({
+      claude: "yes",
+      codex: "no",
+      opencode: "yes",
+    });
+    expect(answers("openrouter:key", "deepseek/deepseek-v4-flash")).toEqual({
+      claude: "yes",
+      codex: "yes",
+      opencode: "yes",
+    });
+    expect(answers("vercel:key", "openai/gpt-5.6-sol")).toEqual({
+      claude: "no",
+      codex: "yes",
+      opencode: "yes",
+    });
+    expect(answers("vercel:key", "anthropic/claude-sonnet-5")).toEqual({
+      claude: "yes",
+      codex: "no",
+      opencode: "yes",
+    });
+    // OpenAI's subscription is account-only and Codex's alone; GLM's plan token
+    // is Claude Code's alone (`carriers`), while its API key also reaches
+    // OpenCode.
+    expect(answers("openai:sub", "gpt-5.6-sol")).toEqual({
+      claude: "no",
+      codex: "yes",
+      opencode: "no",
+    });
+    expect(answers("zai:sub", "glm-5.2[1m]")).toEqual({
+      claude: "yes",
+      codex: "no",
+      opencode: "no",
+    });
+    expect(answers("zai:key", "glm-5.2")).toEqual({
+      claude: "yes",
+      codex: "no",
+      opencode: "yes",
+    });
   });
 
   it("keeps the column of a harness this deployment did not install, and marks it", () => {
@@ -96,18 +161,18 @@ describe("SupportedModelsDialog", () => {
       screen.getAllByTestId("supported-models-narrow-anthropic:key-claude")[0],
     ).not.toHaveTextContent(/not installed/);
     // The row still carries OpenCode's real answer.
-    expect(cellsFor("deepseek-v4-flash").opencode[0]).toHaveAttribute("data-runs", "yes");
+    expect(answers("deepseek:key", "deepseek-v4-flash").opencode).toBe("yes");
   });
 
   it("says a harness runs a model but is absent, in words rather than by opacity alone", () => {
     open();
     // The answer is a glyph, so the same answer is sr-only TEXT — and it names
     // both sides, since the cell sits in a column away from the model name.
-    expect(
-      within(cellsFor("deepseek-v4-flash").opencode[0]).getByText(
-        /OpenCode runs .*, but OpenCode is not installed here/,
-      ),
-    ).toBeInTheDocument();
+    const cell = within(screen.getByTestId("supported-models-mode-deepseek:key")).getByTestId(
+      "supported-models-cell-deepseek-v4-flash-opencode",
+    );
+    expect(within(cell).getByText(/OpenCode runs .*, but OpenCode is not installed here/))
+      .toBeInTheDocument();
   });
 
   it("marks nothing when the agent list has not arrived yet", () => {
@@ -125,7 +190,15 @@ describe("SupportedModelsDialog", () => {
 
     const banner = screen.getByTestId("supported-models-narrowed");
     expect(banner).toHaveTextContent(/Showing only what\s*Codex\s*can run/);
-    expect(banner).toHaveTextContent(/\d+ of \d+ rows/);
+    // The count must agree with the rows the user can see. `/\d+ of \d+ rows/`
+    // passed any two numbers, including a total that ignored the narrowing.
+    const visible = screen.getAllByTestId(/^supported-models-row-/).length;
+    const total = allServices().reduce(
+      (n, s) => n + s.modes.reduce((m, mode) => m + mode.models.length, 0),
+      0,
+    );
+    expect(visible).toBeLessThan(total);
+    expect(banner).toHaveTextContent(`${visible} of ${total} rows`);
 
     // Codex cannot run Anthropic at all, so that service says so IN PLACE — a
     // section that vanished would read as a catalogue that had shrunk.
@@ -222,11 +295,19 @@ describe("SupportedModelsDialog", () => {
     }
   });
 
-  it("shows a price and a context window per row", () => {
+  it("shows the model's own window and rates, not merely a number and a dollar sign", () => {
+    // Written against the figures rather than the shape: `/\$/` and
+    // `/[0-9]+M|[0-9]+K/` passed a swapped input/output pair, a 1000x window
+    // error, and another model's rates entirely (cross-backend review).
     open();
     const row = screen.getByTestId("supported-models-row-deepseek:key-deepseek-v4-flash");
+    expect(row).toHaveTextContent("V4 Flash");
     expect(row).toHaveTextContent("deepseek-v4-flash");
-    expect(row).toHaveTextContent(/[0-9]+M|[0-9]+K/);
-    expect(row).toHaveTextContent(/\$/);
+    expect(row).toHaveTextContent("1M");
+    // Input first, output second — the order the column head states.
+    expect(row).toHaveTextContent("$0.14 / $0.28");
+
+    // A 200K window is said as 200K, not 0.2M — the sub-million branch.
+    expect(screen.getByTestId("supported-models-row-anthropic:sub-haiku")).toHaveTextContent("200K");
   });
 });

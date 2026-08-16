@@ -236,6 +236,22 @@ function ModeTable({
                     type="button"
                     onClick={() => onNarrow(harness.id)}
                     aria-pressed={narrowedTo === harness.id}
+                    /*
+                      **The name says what pressing it DOES, not just whose column
+                      it is.** The visible text is the harness name and
+                      `aria-pressed` carries the state, which together announce
+                      "Codex, toggle button, not pressed" — true, and no answer to
+                      "what happens if I press it". The purpose lived only in
+                      `title`, which a screen reader commonly skips on a control
+                      that already has text. It also names the SERVICE, because the
+                      head is repeated per mode table: without it the tab order
+                      holds up to 27 buttons reading "Codex".
+                    */
+                    aria-label={
+                      narrowedTo === harness.id
+                        ? "Show every model again"
+                        : `Show only the models ${harness.name} can run — ${service.name}, ${MODE_LABEL[billingMode]}`
+                    }
                     title={
                       narrowedTo === harness.id
                         ? "Show every model again"
@@ -305,13 +321,10 @@ export function SupportedModelsDialog({
    * header control names nothing and opens at the top.
    */
   initialServiceId,
-  /** Services the user holds a credential for, for the "you have this" dot. */
-  configuredServiceIds,
   onClose,
 }: {
   agentList?: AgentOption[];
   initialServiceId?: string;
-  configuredServiceIds?: ReadonlySet<string>;
   onClose: () => void;
 }) {
   const services = allServices();
@@ -510,14 +523,15 @@ export function SupportedModelsDialog({
                     <ServiceLogo service={service} />
                   </span>
                   {service.name}
-                  {configuredServiceIds?.has(service.id) && (
-                    <span
-                      aria-label="You have a credential for this service"
-                      title="You have a credential for this service"
-                      className="h-1.5 w-1.5 shrink-0 rounded-full bg-(--color-success)"
-                      data-testid={`supported-models-configured-${service.id}`}
-                    />
-                  )}
+                  {/*
+                    **No "you have this one" mark.** The prototype carried a dot
+                    per configured service and it is deliberately not here: reqs
+                    23–24 do not ask for it, and it makes the one surface whose
+                    whole premise is being readable BEFORE any credential exists
+                    depend on which credentials exist. The panel behind this dialog
+                    is the list of what the user configured — that is its entire
+                    job — so the fact was already on screen one layer out.
+                  */}
                 </h3>
                 {keepsSomething(service) ? (
                   service.modes.map((mode) => (
@@ -554,7 +568,9 @@ export function SupportedModelsDialog({
           legend exists for.
         */}
         <div className="shrink-0 flex flex-wrap items-center gap-x-4 gap-y-1.5 border-t border-(--color-border-secondary) px-4 py-2 text-[11px] text-(--color-text-tertiary)">
-          <span>Click a harness column to show only what it runs</span>
+          {/* Not "click": the column head is a button, so it is pressed by
+              keyboard too, and naming one input method excludes the other. */}
+          <span>Choose a harness column to show only what it runs</span>
           <span className="flex-1" />
           <span className="flex items-center gap-1">
             <CheckIcon aria-hidden size={ICON_SIZE.XS} weight="bold" className="text-(--color-success)" />
