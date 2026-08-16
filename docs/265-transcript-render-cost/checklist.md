@@ -81,8 +81,8 @@ Over the whole 21.8 s trace the main thread is busy 3,813 ms (17.5%), of which *
 1,669.8 ms — 44%**, at a mean of 0.65 ms across 2,569 events.
 
 **These are two separate problems sharing one trace.** The frames are caused by the interaction
-below, and fixing it removes them. What makes each frame cost 0.65 ms is the size of the
-composited layer tree — a separate problem, reproduced and quantified in correction 2.
+below, and fixing it removes them. What makes each frame cost 0.65 ms is a separate problem, still
+open: correction 2 has the calibration curve for it and states plainly what it cannot yet decide.
 
 The first reading blamed the infinite CSS animation that runs while a tool does —
 `.tool-spinner { animation: spin-slow 1s linear infinite }` (`src/client/index.css:387`), used
@@ -172,11 +172,12 @@ isolation of the observers alone. It slightly exceeding the `today` row is consi
 1. **The spinner already composites.** `transform: rotate()` on it runs entirely on the
    compositor — the fixture's first row is that measurement. "Make the spinner composited" is
    not an available fix, because there is nothing to fix.
-2. **The 0.65 ms per frame is real, and it is a second problem — not part of this one.** It is
-   caused by the size of the composited layer tree, which does reproduce (below) once you promote
-   enough on-screen layers. What did *not* reproduce is the slice **name**: up to 2,000
-   `content-visibility` rows, up to 1,502 promoted layers, and the real UI at three viewport sizes
-   all keep `Layerize` itself at **0.002–0.004 ms/call**.
+2. **The 0.65 ms per frame is real, and it is a second problem — not part of this one.** It
+   survived re-derivation against the original trace and is not a measurement error. What it is
+   *caused by* is still open. Composited layer count is the one thing that reproducibly moves
+   per-frame cost here, but nothing tried in this container makes the slice named `Layerize`
+   expensive: 2,000 `content-visibility` rows, 1,502 promoted layers and the real UI at three
+   viewport sizes all keep it at **0.002–0.004 ms/call**.
 
    That gap was checked against the original trace rather than assumed away, and it survives:
    `RunTask` on `CrRendererMain` is 100% depth-0 there, so nothing is double-counted (union-merging
@@ -186,52 +187,86 @@ isolation of the observers alone. It slightly exceeding the `today` row is consi
    the 5–20 s window, over half" came from a scratch script with faulty stack logic and should not
    be quoted.
 
-   The axis is the **composited layer tree, not the DOM**. Production runs **28.9 `UpdateLayer`
-   per frame** (74,135 over 2,569 frames). Every reproduction here runs **~0.03 per frame** — the
-   2,000-row sweep is several times production's 3,986 DOM nodes and still cheaper, so node count
-   is the wrong thing to compare on.
+   **DOM size is eliminated as the axis**: the 2,000-row sweep is several times production's 3,986
+   nodes and still far cheaper, so node count is the wrong thing to compare on. The leading
+   candidate is the composited layer tree — production runs **28.9 `UpdateLayer` per frame**
+   (74,135 over 2,569 frames) against ~0.03 here — but `UpdateLayer` only correlates with tree
+   size, and the count itself is still unmeasured in production. That is the gap below.
 
-   **Layer count is the axis, and it reproduces.** `?promote=N` puts `will-change: transform` on
-   N small on-screen boxes, so each is a real composited layer. Per-frame main-thread cost then
-   rises linearly with the tree:
+   **Layer count moves per-frame cost, and here is the calibration curve.** `?promote=N` puts
+   `will-change: transform` on N small on-screen boxes, so each is a real composited layer:
 
-   | visible layers | 2 | 52 | 202 | 602 | **1,502** |
+   | visible layers | 2 | 52 | 202 | 602 | 1,502 |
    |---|---|---|---|---|---|
-   | per-frame commit cost | 0.052 | 0.066 | 0.107 | 0.224 | **0.651 ms** |
-   | `Layerize` | 0.0023 | 0.0022 | 0.0025 | 0.0021 | **0.0022 ms** |
+   | per-frame commit cost | 0.052–0.058 | 0.066 | 0.107 | 0.224 | 0.635–0.891 ms |
+   | `Layerize` | 0.0023 | 0.0022 | 0.0025 | 0.0021 | 0.0022–0.0030 ms |
 
-   That is ~0.39 µs per layer per frame, and **1,502 layers costs 0.651 ms — production's 0.65 ms
-   to three digits.** So the "large composited layer tree" hypothesis is right, and the tree is of
-   order 1,500 layers. For scale, the dogfood UI reports **3**.
+   Linear in the layer count, at **roughly 0.4–0.55 µs per layer per frame over a ~0.055 ms
+   intercept**. It is a range and not a constant: the 1,502-layer point moved ±20% across five
+   runs with container load, so quote it to one significant figure. Invert it to read a layer
+   count off a per-frame time, or apply it forwards to a measured count:
 
-   One discrepancy to be explicit about: in *this* Chrome build the layer-count cost lands in
-   `Commit` (whose slice contains `LayerTreeHost::WaitForCommitCompletion`), and `Layerize` stays
-   flat at ~0.002 ms at every count up to 1,502 — it sits several levels down, under
-   `pushPaintArtifactToCompositor` → `Blink.CompositingCommit.UpdateTime`. Whether production's
-   build attributes the same work to the slice named `Layerize` is not something this container can
-   settle. It does not change the mechanism or the magnitude, only the label.
+       layers ≈ (per-frame ms − 0.055) / 0.0004   … to   / 0.00055
+
+   Two things make an inverted count an **upper bound** rather than an estimate. The intercept is
+   for a near-empty page, and a real DOM raises it. And layer count is not the only thing that
+   raises per-frame commit cost: 1,500 elements that each force a paint chunk *without* being
+   composited (`?chunk=1500&chunkmode=filter`) push it to 0.135 ms while `visibleLayers` stays at
+   **3**. For scale, the dogfood UI measures 3 layers.
+
+   **What is NOT established: which production slice to feed into that curve.** Production's
+   whole-trace per-call means on `CrRendererMain` (n = 2,569 frames) are `Layerize` 0.6500,
+   `Commit` 0.1113, `UpdateLayoutTree` 0.0950, `PrePaint` 0.0701. Two of those invert to answers
+   an order of magnitude apart:
+
+   | read production's… | implied layer tree (upper bound) |
+   |---|---|
+   | `Commit` (0.1113) | **~100–140 layers** |
+   | `Layerize` (0.6500) | **~1,100–1,500 layers** |
+
+   So either **(a)** the builds attribute this work to different slice names — production's
+   `Layerize` is this build's `Commit` — and ShipIt carries of order a thousand layers; or **(b)**
+   attribution matches, ShipIt carries ~100, and production's 0.65 ms `Layerize` has a different
+   cause altogether. **One trace cannot separate them, and neither reading should be quoted as
+   settled.** An earlier draft of this section leaned on the 1,502-layer point landing within
+   0.001 ms of production's 0.650; the run-to-run spread above is 20× that difference, so the
+   match was precision that was never there.
+
+   Two pieces of weak evidence, in opposite directions, recorded so nobody mistakes either for a
+   conclusion. **Against (a):** production's `Commit` is 0.1113 against this build's 0.052–0.058
+   at 2 layers, so if attribution matched, the tree would already be larger than a handful — though
+   not necessarily by much, since 1,500 *uncomposited* paint chunks reach 0.135 ms here with only
+   3 layers. **For (a):** nothing tried in this container makes `Layerize` itself expensive — not
+   2,000 `content-visibility` rows, not 1,502 composited layers, and not 1,500 paint chunks in any
+   of three flavours, all of which leave it at ~0.003 ms. If (b) were right, something ought to
+   have moved it.
 
    **Eliminated, so nobody re-opens them.** Viewport: the real UI at 3840×2160 gives the same 0.03
    `UpdateLayer`/frame and 0.0024 ms `Layerize` as at 1440×900. An embedded app: the trace has a
    single origin and no preview iframe in the renderer. **GPU rasterisation**: `RasterTask` fires
-   61 times for 4.6 ms across the whole 21.8 s production trace, i.e. essentially nothing is
-   rasterised — as expected when the only thing changing is a compositor-only transform. That is
+   61 times for 4.6 ms across the whole 21.8 s production trace — essentially nothing is
+   rasterised, as expected when the only thing changing is a compositor-only transform. That is
    also the mechanically coherent answer, since `Layerize` is `PaintArtifactCompositor::Update`,
-   main-thread layer-*list* construction from paint chunks; its cost tracks how many layers exist,
+   main-thread layer-*list* construction from paint chunks: its cost tracks how many layers exist,
    not how or by what they are later rasterised.
 
-   **What is left is one lookup in the trace that already exists**, no re-recording and no GPU:
-   read `visible_layers` off `draw_property_utils::ComputeDrawPropertiesOfVisibleLayers`, and the
-   whole-trace per-call `Commit`. If `visible_layers` is ~1,500, this is closed and the remaining
-   work is finding what promotes them. `trace-idle-frames.mjs` reports `visibleLayers` for the
-   comparison. Note the CDP `LayerTree` domain is *not* the route: `LayerTree.enable` succeeds in
-   headless and then never emits a single `layerTreeDidChange`, so the counts have to come off cc's
-   own trace events.
-3. **`content-visibility` causes the frames; layerization is what one of them costs.** The
+   **What settles it: a production `visible_layers` reading.** Two notes for whoever takes it.
+   First, look on the **renderer's Compositor thread, not `CrRendererMain`** —
+   `draw_property_utils::ComputeDrawPropertiesOfVisibleLayers` is emitted there, and a
+   main-thread-scoped search finds nothing while the event is present. Second, its category is
+   plain **`cc`**, not `disabled-by-default-cc.debug`, so an existing trace that already carries
+   `cc` events may not need re-recording at all. The CDP `LayerTree` domain is *not* an
+   alternative: `LayerTree.enable` succeeds in headless and then never emits a single
+   `layerTreeDidChange`. Once a number exists, read it against the curve above: of order 100 means
+   (b), and `Layerize`'s cost is still unexplained; of order 1,000 means (a), and the remaining
+   work is finding what promotes them.
+
+3. **`content-visibility` causes the frames; something else decides what each one costs.** The
    original section reads as a single phenomenon with the spinner at its root. It is two: the
-   observer/animation pairing decides *how many* main-thread frames happen, and the layer tree
-   decides *what each one costs*. They multiply, which is why the production number is so much
-   larger than anything reproduced here, and they are fixable independently.
+   observer/animation pairing decides *how many* main-thread frames happen, and whatever drives
+   correction 2 decides *what each one costs*. They multiply, which is why the production number is
+   so much larger than anything reproduced here, and they are fixable independently — the first is
+   understood today, the second is not.
 
 ### Decision: no code change, and what would justify one
 

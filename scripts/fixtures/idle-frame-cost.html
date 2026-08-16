@@ -19,11 +19,18 @@
   A third, independent knob for the layer-tree half of docs/265, since Layerize
   is layer-list construction and should track how many layers exist:
 
-    ?spin=1&io=1&promote=400   400 on-screen composited layers → Layerize cost
+    ?spin=1&io=1&promote=400   400 on-screen composited layers → per-frame commit cost
+    ?spin=1&io=1&chunk=1500    1500 paint chunks, NOT composited → no effect (negative result)
 
   `promote` puts `will-change: transform` on N small in-viewport boxes, so they
-  are really promoted and really visible. Watch `visibleLayers` and Layerize's
-  msPerCall together.
+  are really promoted and really visible. Watch `visibleLayers` against Commit's
+  msPerCall: ~0.399 us per layer per frame here.
+
+  `chunk` instead gives each box its own paint chunk WITHOUT compositing it
+  (`opacity` by default; `&chunkmode=filter|mixblend` for the other two). That is
+  the recorded negative: 1,500 of them leave both `visibleLayers` and Layerize
+  untouched, which is why "many paint chunks" is not the explanation for
+  production's expensive Layerize.
 -->
 <style>
   @keyframes spin-slow { to { transform: rotate(360deg); } }
@@ -68,6 +75,26 @@
         const box = document.createElement("i");
         box.style.left = `${(i % perRow) * (100 / perRow)}%`;
         box.style.top = `${Math.floor(i / perRow) * (100 / perRow)}%`;
+        holder.appendChild(box);
+      }
+      document.body.appendChild(holder);
+    }
+
+    // Paint chunks without compositing — the negative control for `promote`.
+    const chunk = Number(q.get("chunk") ?? 0);
+    if (chunk > 0) {
+      const mode = q.get("chunkmode") ?? "opacity";
+      const holder = document.createElement("div");
+      holder.id = "promoted";
+      const perRow = Math.ceil(Math.sqrt(chunk));
+      for (let i = 0; i < chunk; i++) {
+        const box = document.createElement("i");
+        box.style.left = `${(i % perRow) * (100 / perRow)}%`;
+        box.style.top = `${Math.floor(i / perRow) * (100 / perRow)}%`;
+        box.style.willChange = "auto";
+        if (mode === "filter") box.style.filter = "grayscale(0.01)";
+        else if (mode === "mixblend") box.style.mixBlendMode = "multiply";
+        else box.style.opacity = "0.99";
         holder.appendChild(box);
       }
       document.body.appendChild(holder);
