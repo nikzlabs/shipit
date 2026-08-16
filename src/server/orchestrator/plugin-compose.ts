@@ -71,6 +71,7 @@ import {
   PLUGIN_SETTINGS_ENV,
   PLUGIN_STATE_ENV,
   PLUGIN_PROJECT_ENV,
+  PLUGIN_PORT_ENV,
 } from "../shared/plugin-contract.js";
 import {
   pluginSettingsPath,
@@ -109,7 +110,11 @@ export interface PluginFragmentService {
   plugin: string;
   /** Effective startup: the fragment's `x-shipit-preview`, then the consumer's override (req 16). */
   preview: "auto" | "manual";
-  /** The port the service serves on, from the fragment's first `ports` entry. */
+  /**
+   * The port the service serves on — the consuming project's
+   * `overrides.services.<name>.port` and nothing else (docs/266 reqs 2, 9).
+   * Absent means the project named none, so the service is not previewable.
+   */
   port?: number;
   /**
    * The fragment's own definition, allowlisted and with ShipIt-owned keys
@@ -197,7 +202,9 @@ const SERVICE_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
  */
 export const ALLOWED_SERVICE_KEYS: ReadonlySet<string> = new Set([
   "image", "command", "entrypoint", "working_dir", "environment", "volumes",
-  "ports", "expose", "depends_on", "healthcheck", "init", "read_only", "tmpfs",
+  // No `ports`: the number is the consuming project's to write (docs/266 req 1),
+  // and a fragment that declares one is refused by name in `parseService`.
+  "expose", "depends_on", "healthcheck", "init", "read_only", "tmpfs",
   "user", "stop_grace_period", "stop_signal", "shm_size", "mem_limit",
   "mem_reservation", "cpus", "pids_limit", "ulimits",
   "x-shipit-preview",
@@ -248,6 +255,13 @@ export function collectPluginFragments(
   // consumer did not import and cannot be asked to rename.
   const claimed = new Map<string, string>();
   for (const name of opts.projectServiceNames) claimed.set(name.toLowerCase(), "this project");
+  // docs/266 req 7, the half that is settled here: every plugin service's port
+  // is written in `shipit.yaml`, so two imports claiming one number is knowable
+  // from the declaration alone. The project's OWN ports are deliberately NOT
+  // seeded — this module's separate read of the project compose file is the
+  // thing that disagreed with the running stack in #2325, so it must not be
+  // what refuses. `ServiceManager` decides that pair against the real parse.
+  const claimedPorts = new Map<number, string>();
 
   for (const use of opts.plugins.uses) {
     const snapshot = snapshots.get(use.from.toLowerCase());
@@ -285,17 +299,31 @@ export function collectPluginFragments(
       continue;
     }
 
+    // docs/266 req 7 — checked across the whole import before any of it is
+    // pushed, and against the imports already accepted, so both the two-imports
+    // case and the two-services-in-one-import case are caught. The import is
+    // refused whole, matching the all-or-nothing rule below.
+    const portIssue = findPortCollision(claimedHere, use, claimedPorts);
+    if (portIssue) {
+      addIssue(repoName, `\`${use.alias}\`: ${portIssue}`);
+      continue;
+    }
+
     const fragmentDir = path.posix.dirname(exported.compose);
     for (const { name, source } of claimedHere) {
       claimed.set(name.toLowerCase(), `the plugin \`${use.alias}\``);
+      const port = use.overrides.services[source.name]?.port;
+      if (port !== undefined) {
+        claimedPorts.set(port, `the plugin \`${use.alias}\`'s service \`${name}\``);
+      }
       services.push({
         name,
         sourceName: source.name,
         alias: use.alias,
         repo: repoName,
         plugin: exported.name,
-        preview: resolvePreview(source, use),
-        ...(source.port !== undefined ? { port: source.port } : {}),
+        preview: resolvePreview(source, use, port),
+        ...(port !== undefined ? { port } : {}),
         definition: source.definition,
         fragmentDir: fragmentDir === "." ? "" : fragmentDir,
         credentials: [...new Set(exported.credentials)],
@@ -322,15 +350,57 @@ export function collectPluginFragments(
 }
 
 /**
- * req 16 — the fragment declares whether a service starts automatically; the
- * consuming project overrides it per service. The fragment's own default follows
- * the vocabulary project services already use: an explicit `x-shipit-preview`,
- * otherwise `auto` when it declares a port.
+ * The first port two of this declaration's plugin services both claim, phrased
+ * for the consumer (docs/266 req 7). `undefined` when the import is clean.
+ *
+ * Both numbers are the consumer's own, in one file, so naming both services and
+ * refusing is something the reader can act on — which is the whole difference
+ * from #2325, where ShipIt silently served one of them.
  */
-function resolvePreview(source: ParsedFragmentService, use: PluginUse): "auto" | "manual" {
+function findPortCollision(
+  claimedHere: readonly { name: string; source: ParsedFragmentService }[],
+  use: PluginUse,
+  claimedPorts: ReadonlyMap<number, string>,
+): string | undefined {
+  const seenHere = new Map<number, string>();
+  for (const { name, source } of claimedHere) {
+    const port = use.overrides.services[source.name]?.port;
+    if (port === undefined) continue;
+    const prior = seenHere.get(port) ?? claimedPorts.get(port);
+    if (prior !== undefined) {
+      return `its service \`${name}\` is given port ${port}, which ${prior} already uses. `
+        + "Two services cannot preview on one port — give one of them a different "
+        + "`port:` in its `plugins.use` overrides.";
+    }
+    seenHere.set(port, `this import's service \`${name}\``);
+  }
+  return undefined;
+}
+
+/**
+ * req 16 — whether a service starts automatically, which is NOT the same
+ * question as whether it is previewable.
+ *
+ * docs/266 req 9 governs previewability, and it needs nothing from this field:
+ * a service the consuming project named no port for carries no port, and the
+ * pane's detected-ports list is built from ports (`buildDetectedPortsFromServices`),
+ * so it cannot reach the pane whatever this returns. Which is why a portless
+ * service can still be `auto`: a worker the consumer asked to start
+ * automatically starts, and simply has nothing to preview.
+ *
+ * What the port DOES decide is the default, in place of the fragment's own
+ * `ports:` — the consumer naming a port is what says "this one is a UI". The
+ * fragment's `x-shipit-preview` survives under that as the author's hint.
+ */
+function resolvePreview(
+  source: ParsedFragmentService,
+  use: PluginUse,
+  port: number | undefined,
+): "auto" | "manual" {
   const override = use.overrides.services[source.name]?.autostart;
   if (override !== undefined) return override ? "auto" : "manual";
-  return source.preview ?? (source.port !== undefined ? "auto" : "manual");
+  if (port === undefined) return "manual";
+  return source.preview ?? "auto";
 }
 
 /**
@@ -450,8 +520,8 @@ function snapshotRepo(
 
 interface ParsedFragmentService {
   name: string;
+  /** The author's start hint. It no longer decides previewability (docs/266 req 9). */
   preview?: "auto" | "manual";
-  port?: number;
   definition: Record<string, unknown>;
 }
 
@@ -566,6 +636,16 @@ function parseFragmentService(
       + "through the plugin's checkout, which a build context cannot be — declare an `image:` instead.",
     );
   }
+  // docs/266 reqs 1 + 6. Checked ahead of the allowlist loop so the reader gets
+  // the rule and the remedy rather than "not supported": this is the one refused
+  // key that used to be legal, and the line to delete is the whole message.
+  if (svc.ports !== undefined) {
+    throw new PluginFragmentError(
+      `its compose service \`${name}\` declares \`ports:\`. A plugin cannot know what a consuming `
+      + "project already runs, so the port is the consumer's to write — as `port:` on that service "
+      + "in its `plugins.use` overrides. Remove the `ports:` line.",
+    );
+  }
   for (const key of Object.keys(svc)) {
     if (ALLOWED_SERVICE_KEYS.has(key)) continue;
     throw new PluginFragmentError(
@@ -599,53 +679,19 @@ function parseFragmentService(
   validateFragmentVolumes(name, svc.volumes);
   validateFragmentEnvironment(name, svc.environment);
 
-  const ports = readPorts(name, svc.ports);
   const preview = svc["x-shipit-preview"];
 
   const definition: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(svc)) {
-    // `ports:` is read for the service's port and never emitted: ShipIt strips
-    // host publishing from every service it runs and reaches containers by IP on
-    // the session network (`generateComposeOverride`).
-    if (key === "ports" || SHIPIT_EXTENSION_KEYS.has(key)) continue;
+    if (SHIPIT_EXTENSION_KEYS.has(key)) continue;
     definition[key] = value;
   }
 
   return {
     name,
     ...(preview === "auto" || preview === "manual" ? { preview } : {}),
-    ...(ports !== undefined ? { port: ports } : {}),
     definition,
   };
-}
-
-/**
- * The container port the service serves on, from its first `ports` entry — the
- * same reading `ServiceManager` does for a project service.
- */
-function readPorts(name: string, raw: unknown): number | undefined {
-  if (raw === undefined) return undefined;
-  if (!Array.isArray(raw) || raw.length === 0) {
-    throw new PluginFragmentError(`its compose service \`${name}\`: \`ports\` must be a non-empty list.`);
-  }
-  const first: unknown = raw[0];
-  const target = first && typeof first === "object"
-    ? (first as { target?: unknown }).target
-    : undefined;
-  const text = typeof first === "string" || typeof first === "number"
-    ? String(first)
-    : typeof target === "string" || typeof target === "number"
-      ? String(target)
-      : undefined;
-  if (text === undefined) {
-    throw new PluginFragmentError(`its compose service \`${name}\`: \`ports[0]\` is not a port mapping.`);
-  }
-  const segments = text.split("/")[0].split(":");
-  const port = Number.parseInt(segments[segments.length - 1], 10);
-  if (!Number.isInteger(port) || port <= 0 || port > 65_535) {
-    throw new PluginFragmentError(`its compose service \`${name}\`: \`${text}\` is not a port mapping.`);
-  }
-  return port;
 }
 
 /**
@@ -739,10 +785,12 @@ export interface PluginComposeService {
   repo: string;
   plugin: string;
   preview: "auto" | "manual";
-  /** The port the container serves on — what the preview proxy connects to. */
+  /**
+   * The port the container serves on AND the preview origin it answers at — one
+   * number, the consuming project's (docs/266 reqs 2, 10), exactly as a project
+   * service's port already is.
+   */
   port?: number;
-  /** The routing key the preview origin carries, pinned per session (req 18). */
-  publishedPort?: number;
   /** The complete definition to emit, mounts and environment included. */
   definition: Record<string, unknown>;
   /**
@@ -818,8 +866,6 @@ export interface PluginMountOptions {
    * against a tree that is missing whatever `install` produced.
    */
   pluginVolumes: ReadonlyMap<string, string>;
-  /** Surfaced service name → published port (`plugin-ports.ts`). */
-  publishedPorts: ReadonlyMap<string, number>;
 }
 
 /**
@@ -935,9 +981,6 @@ export function buildPluginComposeServices(
       preview: fragment.preview,
       credentials: fragment.credentials,
       ...(fragment.port !== undefined ? { port: fragment.port } : {}),
-      ...(opts.publishedPorts.has(fragment.name)
-        ? { publishedPort: opts.publishedPorts.get(fragment.name) }
-        : {}),
       // Escaped LAST, over everything: Compose interpolates `${VAR}` and `$VAR`
       // from the environment of the process that runs it — the orchestrator's —
       // and this file is written by ShipIt, so nothing in it may interpolate.
@@ -1184,6 +1227,11 @@ function pluginEnvironment(
     env[PLUGIN_SETTINGS_ENV] = CONTAINER_PLUGIN_SETTINGS_FILE;
   }
   if (fragment.commit) env[PLUGIN_COMMIT_ENV] = fragment.commit;
+  // docs/266 reqs 3, 8 — the consuming project's number, told to the process
+  // that has to bind it. Only when there is one: a service the project named no
+  // port for is not previewable, and an unset variable is how it tells that
+  // apart from "serve here".
+  if (fragment.port !== undefined) env[PLUGIN_PORT_ENV] = String(fragment.port);
   return env;
 }
 

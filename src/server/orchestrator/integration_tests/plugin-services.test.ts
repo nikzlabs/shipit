@@ -95,8 +95,6 @@ services:
       PROBE_PORT: "4820"
     volumes:
       - .:/app:ro
-    ports:
-      - "4820:4820"
     x-shipit-preview: auto
   probe-worker:
     image: node:22-alpine
@@ -123,7 +121,10 @@ ${uses}
 `;
 }
 
-const PLAIN_USE = "    - plugin: probe\n      from: mine\n";
+// docs/266 req 2 — the consuming project names the port. Without one the
+// service runs but is not previewable, which most of these cases need it to be.
+const PLAIN_USE = "    - plugin: probe\n      from: mine\n"
+  + "      overrides:\n        services:\n          probe:\n            port: 4820\n";
 
 function writeFixture(opts: { uses?: string; fragment?: string; projectCompose?: string } = {}): void {
   fs.writeFileSync(path.join(workspaceDir, "shipit.yaml"), declaration(opts.uses ?? PLAIN_USE));
@@ -204,8 +205,8 @@ describe("plugin services in a session's stack (docs/262)", () => {
       image: "node:22-alpine",
       command: "node /app/service/server.mjs",
     });
-    // …its `ports:` does not: ShipIt publishes no host ports and reaches
-    // containers over the session network.
+    // …and a fragment declares no `ports:` at all (docs/266 req 1), so the
+    // generated service publishes none either.
     expect(override.probe.ports).toBeUndefined();
     // …and ShipIt's half of the in-session contract is added (plan §2), which
     // the fragment deliberately never declares.
@@ -213,6 +214,8 @@ describe("plugin services in a session's stack (docs/262)", () => {
       PROBE_PORT: "4820",
       SHIPIT_PROJECT_DIR: "/project",
       SHIPIT_PLUGIN_STATE: "/plugin-state",
+      // The consuming project's number, told to the process that binds it.
+      SHIPIT_PLUGIN_PORT: "4820",
     });
     const targets = (override.probe.volumes as { target: string }[]).map((m) => m.target).sort();
     expect(targets).toEqual(["/app", "/plugin", "/plugin-state", "/project"]);
@@ -326,10 +329,10 @@ describe("plugin services in a session's stack (docs/262)", () => {
     }[];
     expect(statuses.find((s) => s.name === "probe")?.origin)
       .toEqual({ kind: "plugin", repo: "mine", alias: "probe", plugin: "probe" });
-    // The port on the wire is the PUBLISHED one (req 18) — the routing key the
-    // preview origin is built from, not the container's own port.
+    // The port on the wire is the routing key the preview origin is built
+    // from — which is the service's one and only port now (docs/266 req 10).
     expect(statuses.find((s) => s.name === "probe")?.port)
-      .toBe(stack.mgr.getService("probe")?.publishedPort);
+      .toBe(stack.mgr.getService("probe")?.port);
 
     runner.setServiceManager(null);
     await stack.mgr.stop();
@@ -405,7 +408,7 @@ describe("plugin services in a session's stack (docs/262)", () => {
     expect((list?.services ?? []).map((s) => s.name).sort())
       .toEqual(["probe", "probe-worker", "web"]);
     expect(list?.services.find((s) => s.name === "probe")?.port)
-      .toBe(mgr.getService("probe")?.publishedPort);
+      .toBe(mgr.getService("probe")?.port);
 
     // …and the failure is still on screen after it. The client's `setServices`
     // clears the compose-error banner (a fresh list means the stack is talking

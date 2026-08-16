@@ -46,6 +46,17 @@ export interface PluginServiceOverride {
   autostart?: boolean;
   /** Service alias on collision. */
   as?: string;
+  /**
+   * The port this plugin service serves on — the consuming project's to write,
+   * always explicitly (docs/266 req 2). It is the container port AND the
+   * preview origin at once, exactly as a project service's port is, and naming
+   * it is what makes the service previewable (docs/266 req 9).
+   *
+   * A plugin author cannot know what a consuming project already runs, so the
+   * exported fragment no longer declares one at all (docs/266 req 1). Absent
+   * here means the service is not previewable, not "pick something".
+   */
+  port?: number;
 }
 
 /** Consumer overrides on one `use` entry — flat: the entry IS one plugin. */
@@ -277,7 +288,7 @@ const PLUGIN_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const KNOWN_REPO_KEYS = new Set(["repo", "name", "branch", "pin"]);
 const KNOWN_USE_KEYS = new Set(["plugin", "from", "alias", "overrides"]);
 const KNOWN_OVERRIDE_KEYS = new Set(["services", "commands", "settings"]);
-const KNOWN_SERVICE_OVERRIDE_KEYS = new Set(["autostart", "as"]);
+const KNOWN_SERVICE_OVERRIDE_KEYS = new Set(["autostart", "as", "port"]);
 const KNOWN_COMMAND_OVERRIDE_KEYS = new Set(["as"]);
 
 function isMapping(v: unknown): v is Record<string, unknown> {
@@ -622,6 +633,15 @@ function parseOverrides(
         const as = parseAlias(val.as);
         if (!as) return fail(`${field}.as`, "must be letters, digits, `.`, `_` or `-`");
         out.as = as;
+      }
+      if (val.port !== undefined && val.port !== null) {
+        // A quoted port is a different type with the same spelling — the same
+        // reason `autostart` refuses the string "false" rather than coercing
+        // it. Refusing here beats a service that silently never previews.
+        if (typeof val.port !== "number" || !Number.isInteger(val.port) || val.port < 1 || val.port > 65_535) {
+          return fail(`${field}.port`, "must be a whole number between 1 and 65535");
+        }
+        out.port = val.port;
       }
       services[svc] = out;
     }

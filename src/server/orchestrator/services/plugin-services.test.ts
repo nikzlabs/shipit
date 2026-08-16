@@ -20,7 +20,6 @@ import {
   generationHoldCount,
   releaseSessionGenerationHolds,
 } from "../plugin-leases.js";
-import { PLUGIN_PORT_BAND_START } from "../plugin-ports.js";
 import { SESSION_STATE_SUBDIR, SESSION_WORKSPACE_SUBDIR } from "../session-state-dir.js";
 
 let sessionDir: string;
@@ -39,8 +38,6 @@ services:
     image: node:22-alpine
     volumes:
       - .:/app:ro
-    ports:
-      - "4820:4820"
 `);
 });
 
@@ -113,21 +110,31 @@ plugins:
   use:
     - plugin: probe
       from: mine
+      overrides:
+        services:
+          probe:
+            port: 4820
 `;
 
 const resolve = (): Promise<Awaited<ReturnType<typeof resolveSessionPluginServices>>> =>
   resolveSessionPluginServices(SESSION_ID, workspaceDir, { containEgress: false });
 
 describe("resolveSessionPluginServices", () => {
-  it("surfaces a self-declared plugin's services with a published port", async () => {
+  it("surfaces a self-declared plugin's services on the port the project named", async () => {
     writeConfig(SELF_DECLARATION);
     const services = await resolve();
     expect(services).toHaveLength(1);
-    expect(services[0]).toMatchObject({ name: "probe", port: 4820, publishedPort: 4820 });
+    // One number (docs/266 req 10) — the consumer's, straight from `plugins.use`.
+    expect(services[0]).toMatchObject({ name: "probe", port: 4820 });
     expect(getPluginServiceFailures(SESSION_ID, "mine")).toEqual([]);
   });
 
-  it("gives a plugin a different published port when the project already serves on it", async () => {
+  it("does NOT move a plugin around the project's ports — that pair is refused, not allocated", async () => {
+    // docs/266 req 7. This resolver reads the project's compose file
+    // separately from the stack that actually runs, and those two readings
+    // disagreeing is what #2325 was. So it no longer decides anything about
+    // ports at all: the plugin keeps the number the consumer wrote, and
+    // `ServiceManager` — which has the authoritative parse — refuses the pair.
     writeConfig(`compose: docker-compose.yml\n${SELF_DECLARATION}`);
     fs.writeFileSync(path.join(workspaceDir, "docker-compose.yml"), `
 services:
@@ -138,7 +145,6 @@ services:
 `);
     const services = await resolve();
     expect(services[0].port).toBe(4820);
-    expect(services[0].publishedPort).toBe(PLUGIN_PORT_BAND_START);
   });
 
   /**
@@ -440,6 +446,5 @@ services:
 
     expect(project).toMatchObject({ names: ["web"], unknown: false });
     expect(project.failure).toBeUndefined();
-    expect([...project.ports]).toEqual([3000]);
   });
 });

@@ -26,6 +26,7 @@
 
 import { EventEmitter } from "node:events";
 import { spawn } from "node:child_process";
+import net from "node:net";
 import type { ChildProcess } from "node:child_process";
 import path from "node:path";
 import type { ComposeConfig } from "../shared/shipit-config.js";
@@ -47,6 +48,7 @@ import {
   type OverlayDepDirVolume,
 } from "./compose-generator.js";
 import { toComposeService, type PluginComposeService } from "./plugin-compose.js";
+import { PLUGIN_PORT_ENV } from "../shared/plugin-contract.js";
 import { COMPOSE_OVERRIDE_FILE, sessionStateDirForWorkspace } from "./session-state-dir.js";
 import {
   ServiceSecretsResolver,
@@ -90,29 +92,26 @@ export type ServiceStatus = "stopped" | "starting" | "running" | "error";
 
 export interface ManagedService {
   name: string;
-  port?: number;
   /**
-   * docs/262 req 18 — the port the PREVIEW ORIGIN carries
-   * (`{sessionId}--{publishedPort}.<host>`), which the proxy resolves back to
-   * {@link port} on this service's container.
+   * The container port the service serves on AND the preview origin it answers
+   * at (`{sessionId}--{port}.<host>`) — one number for every service, the
+   * project's own and a plugin's alike (docs/266 req 10).
    *
-   * For a project service the two are always the same number: its compose file
-   * is the user's, so a change to it is a change the user made. A plugin's
-   * fragment arrives with every tracked-branch commit, so its published port is
-   * pinned per session (`plugin-ports.ts`) and the container port follows the
-   * fragment — the origin stays put while the traffic follows the container.
+   * A plugin service used to carry a second, pinned number, because its
+   * fragment declared the port and a tracked-branch commit could move it behind
+   * the session's back. The port is now written in the consuming project's
+   * `plugins.use` entry (docs/266 req 2), so it moves only when the consumer
+   * moves it — the same guarantee a project service always had, by the same
+   * means — and the indirection is gone.
    *
-   * **It is NOT guaranteed unique across the session, and it needs to be** —
-   * it is the browser's routing key, and two services answering to one key is a
-   * preview pane that cannot address either (#2325). Two ways to get there
-   * today: a plugin allocated around a stale reading of the project's compose
-   * file, and the project simply declaring one container port on two of its own
-   * services. {@link warnOnAmbiguousPreviewPorts} makes the outcome legible
-   * rather than silent; the first case is fixed by making the port the
-   * consuming project's to declare (planning#395), which removes the collision
-   * instead of resolving it.
+   * Uniqueness is enforced where each pair can actually be judged: two plugin
+   * services are refused at declaration parse (`plugin-compose.ts`), and a
+   * plugin against one of the project's own is refused here, against the parse
+   * that really runs ({@link refusePluginPortCollisions}). Two of the project's
+   * OWN services sharing a port stays a warning — both definitions are the
+   * user's and ShipIt moves neither.
    */
-  publishedPort?: number;
+  port?: number;
   preview: "auto" | "manual";
   status: ServiceStatus;
   error?: string;
@@ -197,6 +196,41 @@ export const COMPOSE_LOG_PREFIX = "[compose] ";
  * `MAX_LOG_BUFFER`'s cap; well above any real progress line.
  */
 export const MAX_COMPOSE_LOG_LINE = 8_000;
+
+/**
+ * How long a plugin service gets, after its container reports `running`, before
+ * ShipIt checks that something is actually listening on the port the consuming
+ * project gave it (docs/266 req 8).
+ *
+ * Generous on purpose. A container is `running` the moment its entrypoint
+ * execs, which for a `sh -c "npm ci && node server.js"` service is a long way
+ * before anything binds — and a false "nothing is listening" on a plugin that
+ * is merely slow would be worse than the silence it replaces.
+ */
+export const PLUGIN_PORT_PROBE_DELAY_MS = 45_000;
+
+/** How long the probe waits for the connection itself. Same-host, so short. */
+export const PLUGIN_PORT_PROBE_TIMEOUT_MS = 2_000;
+
+/**
+ * Does anything accept a TCP connection at `host:port`?
+ *
+ * A connect-and-close, not a request: the question is only whether the plugin's
+ * server bound the port it was told to, and any protocol answers that.
+ */
+function tcpAccepts(host: string, port: number, timeoutMs: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = net.connect({ host, port });
+    const settle = (accepted: boolean): void => {
+      socket.destroy();
+      resolve(accepted);
+    };
+    socket.setTimeout(timeoutMs);
+    socket.once("connect", () => settle(true));
+    socket.once("timeout", () => settle(false));
+    socket.once("error", () => settle(false));
+  });
+}
 
 /**
  * How long {@link ServiceManager.joinSessionNetwork} may block before its
@@ -489,6 +523,12 @@ export class ServiceManager extends EventEmitter {
   private overlayDepDirs: OverlayDepDirVolume[];
   /** docs/262 — plugin services this session surfaces (set lazily; see setPluginServices). */
   private pluginServices: PluginComposeService[] = [];
+  /** Port refusals from this start, held until the log followers are up. */
+  private pendingPortRefusals: { service: string; message: string }[] = [];
+  /** Pending one-shot "is it actually listening?" probes (docs/266 req 8). */
+  private portProbeTimers = new Map<string, NodeJS.Timeout>();
+  /** Services already told about — the probe reports once, not every poll. */
+  private portProbeReported = new Set<string>();
   private readonly stackName?: string;
   private readonly opsSession: boolean;
   /**
@@ -780,10 +820,14 @@ export class ServiceManager extends EventEmitter {
         // service that flaps in and out of `running` while OOMing must
         // still hit the cap, otherwise we loop forever.
         this.retry.armOomStableResetIfNeeded(name);
+        // docs/266 req 8 — a plugin server that ignores the port ShipIt gave it
+        // is broken under this rule, so the break has to be legible.
+        this.armPluginPortProbe(name);
       },
       onLeftRunning: (name) => {
         this.retry.cancelOomStableTimer(name);
         this.retry.cancelPostGateStableTimer(name);
+        this.cancelPluginPortProbe(name);
       },
       onExitedCleanly: (name) => {
         this.retry.clearRetryState(name);
@@ -1142,36 +1186,21 @@ export class ServiceManager extends EventEmitter {
   /**
    * Resolve a preview subdomain's port to the container address behind it.
    *
-   * The two halves are the same number for a project service and may differ for
-   * a plugin one (docs/262 req 18): the subdomain carries the service's PINNED
-   * published port, which stays put for the session's life, while the container
-   * port follows whatever the plugin's current fragment declares. Returning both
-   * is what lets a tracked commit move the port without moving the origin — and
-   * without the proxy having to know anything about plugins.
+   * One pass over one number (docs/266 req 10). The subdomain's port IS the
+   * container port, for a project service and a plugin service alike, so there
+   * is nothing to map — the two-pass lookup this replaced existed only to carry
+   * a plugin's pinned origin onto a container port the fragment could move.
    *
-   * **First match wins, and nothing today guarantees there is only one.** Two
-   * services can claim one published port (see {@link ManagedService.publishedPort}),
-   * and then this answers for whichever was inserted first — project services
-   * before plugin ones — so the plugin's preview origin serves the project's app
-   * (#2325). {@link warnOnAmbiguousPreviewPorts} reports it on every start; the
-   * fix is planning#395, which makes the port the consuming project's to declare
-   * so a plugin cannot arrive holding one.
-   *
-   * Falls back to the container port when no service claims the number as its
-   * published one, so a service recorded before this field existed still routes.
+   * First match still wins, but the pair that made that dangerous is now
+   * refused before it can be registered: two plugin services at declaration
+   * parse, a plugin against the project's own in
+   * {@link refusePluginPortCollisions}. What can still reach here is two of the
+   * project's OWN services on one port, which {@link warnOnAmbiguousPreviewPorts}
+   * reports and ShipIt deliberately does not resolve.
    */
   resolvePreviewTarget(port: number): { containerIp: string; port: number } | undefined {
     for (const svc of this.services.values()) {
-      if (svc.publishedPort === port && svc.containerIp) {
-        return { containerIp: svc.containerIp, port: svc.port ?? port };
-      }
-    }
-    for (const svc of this.services.values()) {
-      // Only for a service that has no published port of its own. A plugin
-      // service always has one, and its container port must NOT become a second
-      // addressable origin — the whole point of the pin is that there is one
-      // origin, and origin-keyed browser storage can rely on it (req 18).
-      if (svc.publishedPort === undefined && svc.port === port && svc.containerIp) {
+      if (svc.port === port && svc.containerIp) {
         return { containerIp: svc.containerIp, port };
       }
     }
@@ -1275,30 +1304,142 @@ export class ServiceManager extends EventEmitter {
   private warnOnAmbiguousPreviewPorts(): void {
     const claimedBy = new Map<number, string>();
     for (const svc of this.services.values()) {
-      if (svc.publishedPort === undefined) continue;
-      const first = claimedBy.get(svc.publishedPort);
+      if (svc.port === undefined) continue;
+      const first = claimedBy.get(svc.port);
       if (first === undefined) {
-        claimedBy.set(svc.publishedPort, svc.name);
+        claimedBy.set(svc.port, svc.name);
         continue;
       }
-      // When either side is a plugin's, the port came from its compose fragment
-      // and the consuming project has no override for it — so "change your
-      // port" is advice the reader cannot take. Name the one thing they can do.
-      const remedy = svc.origin || this.services.get(first)?.origin
-        ? `${svc.name} comes from a plugin, so its port is not yours to change: `
-          + `move the project's service to another port, or stop importing the plugin.`
-        : `Give one of them a different port in the compose file.`;
-      const message = `${first} and ${svc.name} both preview on port ${svc.publishedPort}`
-        + ` — the preview pane can only reach ${first} there. ${remedy}`;
-      console.warn(`[compose:${this.sessionId}] ${message}`);
-      const line = `[shipit] ${message}\n`;
-      // Both halves, like the log follower's own `handleData`: the durable
-      // store is what a viewer who opens the panel later reads (the in-memory
-      // ring buffer is wiped whenever a follower re-attaches), and
-      // `bufferServiceLog` is what reaches the viewers already watching.
-      this.logStore?.append(this.sessionId, `service:${svc.name}`, line);
-      this.bufferServiceLog(svc.name, line);
+      const message = `${first} and ${svc.name} both preview on port ${svc.port}`
+        + ` — the preview pane can only reach ${first} there.`
+        + ` Give one of them a different port in the compose file.`;
+      this.reportPortConflict(svc.name, message);
     }
+  }
+
+  /**
+   * docs/266 req 7 — refuse a plugin service whose port one of the project's
+   * own services already serves, and say which two claim it.
+   *
+   * Refused rather than moved. Both numbers are the consuming project's now:
+   * one in its compose file, one in its `plugins.use` entry. That is what makes
+   * a refusal actionable, and it is the whole difference from #2325, where the
+   * port came from the plugin's fragment and the reader had nothing to change.
+   *
+   * The service is still REGISTERED, carrying the reason — dropping it silently
+   * would leave the Services list one row short with no explanation anywhere.
+   * It is registered `manual` so the auto-start sweep below does not flip it out
+   * of `error`, and it is kept out of the generated override, so nothing starts.
+   */
+  private refusePluginPortCollision(svc: PluginComposeService, projectService: string): void {
+    const message = `${svc.name} is given port ${svc.port}, which this project's own service `
+      + `${projectService} already serves on. Two services cannot preview on one port, so `
+      + `${svc.name} was not started. Change \`port:\` for \`${svc.sourceName}\` under the `
+      + `\`plugins.use\` entry whose alias is \`${svc.alias}\`, or move ${projectService} `
+      + `to another port.`;
+    // Queued, not reported here. This runs while the service map is being
+    // built, and `start()` clears the log ring buffers after that — a line
+    // written now would reach the live viewers and then vanish from the buffer
+    // a reader who opens the panel later reads. Drained in `reportPortRefusals`,
+    // at the one point that is safe (see its call site).
+    this.pendingPortRefusals.push({ service: svc.name, message });
+    this.services.set(svc.name, {
+      name: svc.name,
+      preview: "manual",
+      status: "error",
+      error: message,
+      dependsOnInstall: false,
+      origin: {
+        kind: "plugin",
+        repo: svc.repo,
+        alias: svc.alias,
+        plugin: svc.plugin,
+        sourceName: svc.sourceName,
+        self: svc.self,
+      },
+    });
+  }
+
+  /**
+   * docs/266 req 8 — check, once, that a plugin service is actually listening
+   * on the port the consuming project gave it, and say so when it is not.
+   *
+   * The rule that makes this necessary is docs/266 req 3: the port is the
+   * consumer's, delivered to the container as `SHIPIT_PLUGIN_PORT`, so a plugin
+   * whose server hardcodes its own number is broken. Broken silently, without
+   * this: the container is `running`, the service list shows it green, the
+   * preview pane is simply empty, and nothing anywhere names the cause. The
+   * consumer cannot fix the plugin's code, but they can only report it if they
+   * know — so this is the difference between a bug report and a shrug.
+   *
+   * **Delayed, and once.** A server binds some time after its container is
+   * `running` (an `npm install && node server.js` service is running a minute
+   * before it listens), so probing at the transition would report every healthy
+   * plugin. And it is a diagnosis, not a health check: the poller already owns
+   * liveness, and re-probing every poll would turn one line into a stream.
+   */
+  private armPluginPortProbe(name: string): void {
+    const svc = this.services.get(name);
+    // Plugin services only. A project service's port is the user's own compose
+    // file — if it does not listen there, that is their code and their line.
+    if (!svc?.origin || svc.port === undefined) return;
+    if (this.portProbeReported.has(name) || this.portProbeTimers.has(name)) return;
+    const timer = setTimeout(() => {
+      this.portProbeTimers.delete(name);
+      void this.probePluginPort(name);
+    }, PLUGIN_PORT_PROBE_DELAY_MS);
+    timer.unref();
+    this.portProbeTimers.set(name, timer);
+  }
+
+  private cancelPluginPortProbe(name: string): void {
+    const timer = this.portProbeTimers.get(name);
+    if (!timer) return;
+    clearTimeout(timer);
+    this.portProbeTimers.delete(name);
+  }
+
+  private async probePluginPort(name: string): Promise<void> {
+    const svc = this.services.get(name);
+    // Re-read rather than closing over the earlier snapshot: the service may
+    // have stopped, been refused, or lost its IP while the timer was pending.
+    if (!svc?.origin || svc.port === undefined || !svc.containerIp) return;
+    if (svc.status !== "running" || this.portProbeReported.has(name)) return;
+    if (await tcpAccepts(svc.containerIp, svc.port, PLUGIN_PORT_PROBE_TIMEOUT_MS)) return;
+    this.portProbeReported.add(name);
+    this.reportPortConflict(
+      name,
+      `${name} is running but nothing is listening on port ${svc.port}, so its preview will be `
+      + `empty. That port is this project's to choose and ShipIt passes it to the container as `
+      + `${PLUGIN_PORT_ENV}; a plugin whose server binds a port of its own instead will not be `
+      + `reachable. Report it to the \`${svc.origin.repo}\` plugin's authors.`,
+    );
+  }
+
+  /** Emit the refusals {@link refusePluginPortCollision} queued during this start. */
+  private reportPortRefusals(): void {
+    const pending = this.pendingPortRefusals;
+    this.pendingPortRefusals = [];
+    for (const { service, message } of pending) this.reportPortConflict(service, message);
+  }
+
+  /**
+   * Put a port conflict where the person who has to act on it will see it.
+   *
+   * **The user, not only operator stderr** (docs/262 review finding). The
+   * condition is one they have to fix, and a `console.warn` in the
+   * orchestrator's output is not somewhere they can read. It rides the affected
+   * service's own log channel, so it lands in the Logs panel beside that
+   * service — both halves, like the log follower's own `handleData`: the
+   * durable store is what a viewer who opens the panel later reads (the
+   * in-memory ring buffer is wiped whenever a follower re-attaches), and
+   * `bufferServiceLog` is what reaches the viewers already watching.
+   */
+  private reportPortConflict(service: string, message: string): void {
+    console.warn(`[compose:${this.sessionId}] ${message}`);
+    const line = `[shipit] ${message}\n`;
+    this.logStore?.append(this.sessionId, `service:${service}`, line);
+    this.bufferServiceLog(service, line);
   }
 
   /**
@@ -1347,14 +1488,30 @@ export class ServiceManager extends EventEmitter {
       this.services.set(svc.name, {
         name: svc.name,
         port,
-        // A project service's origin is its own compose file, so there is
-        // nothing to pin: its published port IS its container port.
-        ...(port !== undefined ? { publishedPort: port } : {}),
         preview,
         status: "stopped",
         dependsOnInstall: svc.dependsOnInstall ?? (preview === "auto"),
       });
     }
+
+    // docs/266 req 7 — a plugin service given a port one of the project's OWN
+    // services already serves is refused, and refused HERE: against
+    // `parsedServices`, the parse that actually runs. The plugin resolver's
+    // separate read of the same file is the thing that disagreed with the live
+    // stack in #2325, so it must not be what decides this. Both numbers are the
+    // consumer's own now — one in the compose file, one in `plugins.use` — so a
+    // refusal naming both is something the reader can act on, which re-routing
+    // silently was not.
+    const projectPorts = new Map<number, string>();
+    for (const svc of this.services.values()) {
+      if (svc.port !== undefined && !projectPorts.has(svc.port)) projectPorts.set(svc.port, svc.name);
+    }
+    const admittedPlugins = this.pluginServices.filter((svc) => {
+      const clash = svc.port !== undefined ? projectPorts.get(svc.port) : undefined;
+      if (clash === undefined) return true;
+      this.refusePluginPortCollision(svc, clash);
+      return false;
+    });
 
     // docs/262 reqs 3, 16 — plugin services join the same map, so every control,
     // status and log path treats them as the first-class services req 3 asks
@@ -1363,11 +1520,10 @@ export class ServiceManager extends EventEmitter {
     // cases differ): a tracked plugin ran its install before its generation was
     // published, while a `repo: self` plugin has no install of its own and runs
     // out of the tree `agent.install` writes.
-    for (const svc of this.pluginServices) {
+    for (const svc of admittedPlugins) {
       this.services.set(svc.name, {
         name: svc.name,
         ...(svc.port !== undefined ? { port: svc.port } : {}),
-        ...(svc.publishedPort !== undefined ? { publishedPort: svc.publishedPort } : {}),
         preview: svc.preview,
         status: "stopped",
         dependsOnInstall: svc.self,
@@ -1381,7 +1537,7 @@ export class ServiceManager extends EventEmitter {
         },
       });
     }
-    const overrideServices = [...parsedServices, ...this.pluginServices.map(toComposeService)];
+    const overrideServices = [...parsedServices, ...admittedPlugins.map(toComposeService)];
 
     // Resolve secrets BEFORE generating the override — the override references
     // per-service env files via `env_file:` and compose detects the file at
@@ -1390,7 +1546,7 @@ export class ServiceManager extends EventEmitter {
     // docs/262 req 23 — the plugin services go in too: their declared
     // credentials are delivered by the same pass, and the pass sweeps the files
     // of plugin services it is not told about.
-    await this.secrets.sync(parsedServices, this.pluginServices);
+    await this.secrets.sync(parsedServices, admittedPlugins);
 
     // Generate override
     const overrideContent = generateComposeOverride(overrideServices, this.buildOverrideOptions());
@@ -1486,6 +1642,7 @@ export class ServiceManager extends EventEmitter {
       // has content makes the follower spawn with `--tail 0` instead of
       // replaying the container's backlog. The followers above have made that
       // decision by the time we get here.
+      this.reportPortRefusals();
       this.warnOnAmbiguousPreviewPorts();
 
       this.emit("stack_ready");
@@ -1828,6 +1985,7 @@ export class ServiceManager extends EventEmitter {
     // against the OLD entry would fire against a service object that no longer
     // exists (or, worse, a same-named replacement it never watched).
     this.cancelStartingWatchdogs();
+    this.cancelPluginPortProbes();
     // Same generation argument for the in-flight set, which is an exemption
     // rather than a lock: a `compose up` from the previous definition that
     // never returned would otherwise exempt the SAME-NAMED new service from
@@ -1873,6 +2031,7 @@ export class ServiceManager extends EventEmitter {
     this.poller.stop();
     this.retry.cancelAll();
     this.cancelStartingWatchdogs();
+    this.cancelPluginPortProbes();
     this.postGateServices.clear();
     this._gatedTeardown = null;
 
@@ -2581,6 +2740,15 @@ export class ServiceManager extends EventEmitter {
     if (!timer) return;
     clearTimeout(timer);
     this.startingWatchdogs.delete(name);
+  }
+
+  /** Drop every pending port probe — teardown and reconcile (docs/266 req 8). */
+  private cancelPluginPortProbes(): void {
+    for (const timer of this.portProbeTimers.values()) clearTimeout(timer);
+    this.portProbeTimers.clear();
+    // `portProbeReported` is deliberately NOT cleared: a stack that reconciles
+    // repeatedly (a `shipit.yaml` edit, a plugin refresh) would otherwise
+    // re-report the same broken plugin on every round.
   }
 
   /** Drop every armed `starting` watchdog — teardown and reconcile. */

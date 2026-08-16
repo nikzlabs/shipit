@@ -884,56 +884,48 @@ instead of a repeat.
   is created by the daemon as an empty directory, which would leave a directory
   where the next validated write expects a file.
 
-  **And the port pin is implemented** (`plugin-ports.ts`), by adding the one
-  piece it needs to be more than a wish: an **indirection**. Pinning the number
-  alone would have moved the origin off the container the moment a fragment
-  changed its port. So a plugin service now carries two — the pinned
-  `publishedPort`, which is what the preview subdomain, the health probe and the
-  browser's service list all use, and the `port` the container actually serves
-  on, which follows the fragment. `ServiceManager.resolvePreviewTarget` maps one
-  to the other and the proxy asks it, so the origin holds while the traffic
-  follows the container. For a project service the two are always the same
-  number: its compose file is the user's, so a change to it is a change the user
-  made. Allocation prefers the service's own port, falls back to a band, and
-  treats the project's ports as reserved — of the two, only a plugin's origin is
-  ShipIt's own bookkeeping to move. The pin lives at
-  `<sessionDir>/plugin-ports.json`, outside the reclaimable state dir, for the
-  reason the state directory is: rebuilding it IS the origin change req 18
-  forbids.
+  **The port pin is GONE, and #2325 is why** (docs/266, planning#395). It once
+  existed here: a plugin service carried two numbers — a `publishedPort` pinned
+  per session and the `port` its container served on — because the fragment
+  declared the port and a tracked-branch commit could move it behind a consuming
+  session's back, which req 18 forbids moving the origin for.
 
-  **Seeding the pin from the fragment's own port was a mistake, and #2325 is
-  it.** A plugin service that declares 5173 gets 5173 as its published port
-  whenever that number "looks free" — and "looks free" was answered by the
-  plugin resolver's own, separate parse of the project compose file
-  (`readProjectServices`), which disagrees with the parse the stack actually
-  runs whenever a watcher fires mid-write, `shipit.yaml` re-points
-  `compose.file`, or a round resolves before the file is written. Two services
-  then claim one routing key, `resolvePreviewTarget` answers with the first, and
-  the plugin's preview origin serves the PROJECT's app. The consuming project
-  cannot fix it: the number comes from the plugin's fragment, and `overrides`
-  offer `autostart` and `as`, neither of which is a port. 5173 being the Vite
-  default makes this ordinary rather than exotic.
+  Seeding that pin from the fragment's own port was the mistake. A plugin
+  service declaring 5173 got 5173 as its published port whenever the number
+  "looked free" — and "looked free" was answered by the plugin resolver's own,
+  separate parse of the project compose file (`readProjectServices`), which
+  disagrees with the parse the stack actually runs whenever a watcher fires
+  mid-write, `shipit.yaml` re-points `compose.file`, or a round resolves before
+  the file is written. Two services then claimed one routing key,
+  `resolvePreviewTarget` answered with the first, and the plugin's preview
+  origin served the PROJECT's app. The consuming project could not fix it: the
+  number came from the plugin's fragment, and `overrides` offered `autostart`
+  and `as`, neither of which is a port. 5173 being the Vite default made this
+  ordinary rather than exotic.
 
-  **The correction is planning#395, and it is a deletion**: a plugin fragment
-  stops declaring `ports:` altogether, and the port becomes the consuming
-  project's — which is where it belonged, since only the consumer knows what its
-  own stack already uses. A plugin can then no longer *arrive* holding a number,
-  which is the collision this bug is. It does not by itself make every preview
-  address unique — a consumer can still assign one number twice, and what ShipIt
-  does about that is an open question on that doc, not something ownership
-  settles. It also puts the two-number scheme above in question: the pin exists
-  because a tracked commit can move the fragment's port behind the consumer's
-  back, and under planning#395 it cannot.
+  **docs/266 corrects it by deletion.** A plugin fragment declares no `ports:`
+  at all — it is refused, naming the line — and the port is written in the
+  consuming project's `plugins.use` entry, which is where it belonged, since
+  only the consumer knows what its own stack already runs. A plugin can then no
+  longer *arrive* holding a number, which is the collision this bug was.
 
-  Until then the ambiguity is real, and `warnOnAmbiguousPreviewPorts` reports it
-  on every start — for this case and for the one planning#395 does NOT address,
-  the project declaring one container port on two of its own services (legal
-  Compose; ShipIt moves neither, since a project service's port is its origin
-  *and* its container port and both definitions belong to the person who can
-  change them). The two surfaces do now count a mapping's ports through one
-  shared derivation (`declaredContainerPorts`), so they cannot at least disagree
-  about what a mapping *means* — every entry of a service, not just the first,
-  because a service listening on two answers on both.
+  With the consumer owning it, the pin had nothing left to protect against: the
+  number can only move when the consumer edits their own file, exactly as a
+  project service's always could. So `plugin-ports.ts`,
+  `<sessionDir>/plugin-ports.json`, `ManagedService.publishedPort` and the
+  two-pass indirection in `ServiceManager.resolvePreviewTarget` are all deleted,
+  and every service now carries one number that is its container port and its
+  preview origin at once. The container is told which port to serve on through
+  `SHIPIT_PLUGIN_PORT`, so a plugin server no longer picks one.
+
+  Ownership alone does not make every preview address unique — a consumer can
+  still write one number twice — so that is refused rather than resolved: two
+  plugin services at declaration parse (`plugin-compose.ts`), and a plugin
+  against one of the project's own in `ServiceManager`, against the parse that
+  really runs rather than the second read that caused this. The one case that
+  stays a warning is the project declaring one container port on two of its OWN
+  services (legal Compose; ShipIt moves neither, since both definitions belong
+  to the person who can change them) — `warnOnAmbiguousPreviewPorts`.
 
   **Implemented** (`plugin-state.ts`), as
   `<sessionDir>/plugin-data/<alias>/state/`. The container-side names both
@@ -2048,18 +2040,17 @@ coherent in one UI.
   attached. Pure apart from filesystem reads, which is what lets the snapshot GET
   report exactly what the service path would refuse. ✓
   `services/plugin-services.ts` is its lifecycle half — the runtime overlay
-  volume, the published ports, and the failures nothing can recompute — called
+  volume and the failures nothing can recompute — called
   before the first `start()` and again whenever an activation round settles,
   which is what makes `shipit plugin refresh` reach a running service.
-- ✓ `src/server/orchestrator/plugin-ports.ts` — the published-port pin (req 18),
-  at `<sessionDir>/plugin-ports.json`. Deliberately outside the state dir, which
-  eviction reclaims: rebuilding a pin is the origin change the requirement
-  forbids. `ServiceManager.resolvePreviewTarget` is the indirection that makes
-  the pin more than a wish, and `preview-proxy.ts` asks it on all three paths
-  (HTTP, the HMR upgrade, and the health probe). **Seeding the pin from the
-  fragment's declared port is what #2325 turned out to be**, and planning#395
-  removes it at the source by making the port the consuming project's to declare
-  — which may take most of this file with it.
+- ✗ `src/server/orchestrator/plugin-ports.ts` — **deleted** by docs/266
+  (planning#395), together with `<sessionDir>/plugin-ports.json` and
+  `ManagedService.publishedPort`. It held the published-port pin for req 18;
+  seeding that pin from the fragment's declared port is what #2325 turned out to
+  be. With the port written by the consuming project, nothing can move it behind
+  a session's back, so `ServiceManager.resolvePreviewTarget` is a one-pass
+  lookup on a single number and `preview-proxy.ts` asks it unchanged on all
+  three paths (HTTP, the HMR upgrade, the health probe).
 - ✓ `src/server/orchestrator/api-routes-plugin-repos.ts` — browser snapshot
   (the GET exists; refresh endpoints come with generation mechanics); tracker
   registration folds into the existing trackers registry

@@ -756,11 +756,10 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   private buildDetectedPortsFromServices(mgr: ServiceManager): number[] {
     return mgr.getServices()
       .filter(s => (s.preview === "auto" || s.preview === "manual") && s.status === "running" && s.port)
-      // docs/262 req 18 — the PUBLISHED port: this list becomes the preview
-      // origin, and a plugin service's origin is pinned for the session's life
-      // while its container port follows the plugin's fragment. The two are the
-      // same number for a project service.
-      .map(s => s.publishedPort ?? s.port!);
+      // docs/266 req 10 — one number per service: this list becomes the
+      // preview origin, and a plugin service's port is the consuming project's
+      // own, exactly as a project service's is.
+      .map(s => s.port!);
   }
 
   // --- Service Manager ---
@@ -786,8 +785,9 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
         sessionId: this.sessionId,
         name: svc.name,
         status: svc.status,
-        // The browser's routing key (docs/262 req 18) — see `WsServiceStatus.port`.
-        port: svc.publishedPort ?? svc.port,
+        // The browser's routing key — the container port and the preview
+        // origin at once, for every service (docs/266 req 10).
+        port: svc.port,
         preview: svc.preview,
         error: svc.error,
         ...(svc.origin ? { origin: originView(svc.origin) } : {}),
@@ -824,7 +824,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
         services: services.map(s => ({
           name: s.name,
           status: s.status,
-          port: s.publishedPort ?? s.port,
+          port: s.port,
           preview: s.preview,
           error: s.error,
           ...(s.origin ? { origin: originView(s.origin) } : {}),
