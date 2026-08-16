@@ -91,6 +91,15 @@ Two checks, in the two places that can actually answer:
   is what let #2325 through, so it must not be the thing that refuses. The
   plugin service is dropped and reported, naming both.
 
+**A known ordering artifact, shared with the name domain.** `claimedPorts` is
+filled as each import is accepted, but a repository's services are withheld as a
+*unit* at the end (`services.filter(s => !issuesByRepo.has(s.repo))`). So an
+import that claims a port and is later withheld — because a *different* import
+from the same repository failed — leaves its number claimed, and a third import
+that wanted it was already refused. `claimed`, the service-NAME domain, has had
+exactly this shape since docs/262, so ports match it rather than diverging;
+fixing it properly is a two-pass change to both and is not in scope here.
+
 `warnOnAmbiguousPreviewPorts` is the site: it already finds this pair and
 already reports into the losing service's own log channel. It becomes a refusal
 for the plugin/project pair and stays a warning for the case req 7 does not
