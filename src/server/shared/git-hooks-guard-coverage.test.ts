@@ -407,8 +407,24 @@ describe("git spawn coverage: tree-uid drop (docs/266 E2)", () => {
  * when the next git call resolves it?
  */
 describe("git spawn coverage: bare safeSimpleGit() is a census (docs/266 E2)", () => {
-  /** `safeSimpleGit()` — no `baseDir`, therefore no ownership predicate. */
-  const BARE_SIMPLE_GIT = /\bsafeSimpleGit\s*\(\s*\)/g;
+  /**
+   * `safeSimpleGit()` with no usable `baseDir`, therefore no ownership
+   * predicate — including the spellings that are semantically bare but are not
+   * an empty argument list.
+   *
+   * `baseDir` is `string | undefined`, so `safeSimpleGit(undefined)` and
+   * `safeSimpleGit("")` behave exactly like `safeSimpleGit()` and an
+   * `\(\s*\)`-only rule waved all three through. Caught by the independent
+   * review of PR #2366, which is the right way round: a tripwire nobody tries
+   * to get past is a tripwire nobody has measured.
+   *
+   * What it still cannot see, stated rather than implied: `safeSimpleGit(x)`
+   * where `x` is a variable that happens to be `undefined` at runtime. No regex
+   * reaches that, which is why the rule below is described as a census — a
+   * pinned list that makes the literal shape a written-down decision — and NOT
+   * as a fail-closed guarantee over the whole bug class.
+   */
+  const BARE_SIMPLE_GIT = /\bsafeSimpleGit\s*\(\s*(?:undefined\s*|""\s*|''\s*|``\s*)?\)/g;
 
   /**
    * Every bare site that exists on purpose, with what owns the tree its git
@@ -466,17 +482,32 @@ describe("git spawn coverage: bare safeSimpleGit() is a census (docs/266 E2)", (
   });
 
   it("the bare-site pattern reads the argument list, not the name", () => {
+    const bare = (src: string): boolean => {
+      BARE_SIMPLE_GIT.lastIndex = 0;
+      return BARE_SIMPLE_GIT.test(src);
+    };
+
     // Safe because of the SHAPE: a call WITH a directory carries the predicate —
     // `resolveGitTreeUid(baseDir)` decides the uid — so it is not this rule's
     // subject at all. True of any argument, not of the ones written today.
-    expect(BARE_SIMPLE_GIT.test("safeSimpleGit(workspaceDir)")).toBe(false);
-    BARE_SIMPLE_GIT.lastIndex = 0;
-    expect(BARE_SIMPLE_GIT.test("safeSimpleGit(dir, opts)")).toBe(false);
-    BARE_SIMPLE_GIT.lastIndex = 0;
-    expect(BARE_SIMPLE_GIT.test("await safeSimpleGit().raw([...])")).toBe(true);
-    BARE_SIMPLE_GIT.lastIndex = 0;
-    expect(BARE_SIMPLE_GIT.test("const git = safeSimpleGit( );")).toBe(true);
-    BARE_SIMPLE_GIT.lastIndex = 0;
+    expect(bare("safeSimpleGit(workspaceDir)")).toBe(false);
+    expect(bare("safeSimpleGit(dir, opts)")).toBe(false);
+
+    expect(bare("await safeSimpleGit().raw([...])")).toBe(true);
+    expect(bare("const git = safeSimpleGit( );")).toBe(true);
+
+    // The bypasses review found. `baseDir` is `string | undefined`, so each of
+    // these IS a bare call — same root, same absent predicate — and the
+    // original `\(\s*\)` rule passed all three.
+    expect(bare("safeSimpleGit(undefined)")).toBe(true);
+    expect(bare('safeSimpleGit("")')).toBe(true);
+    expect(bare("safeSimpleGit('')")).toBe(true);
+
+    // NOT caught, and the rule says so rather than pretending otherwise: a
+    // variable that is `undefined` at runtime is invisible to any regex. This
+    // assertion is the honest record of the rule's edge, not a claim that the
+    // shape is safe.
+    expect(bare("safeSimpleGit(maybeDir)")).toBe(false);
   });
 });
 

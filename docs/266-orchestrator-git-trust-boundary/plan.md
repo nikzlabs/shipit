@@ -306,10 +306,14 @@ seals and chowns the empty tree first) and `marketplace.ts` (its cache is a
 sibling of `sessions/`, not under it) all answer it correctly. Nothing else was
 wrong.
 
-That shape now has a CI census rather than a periodic human audit: every bare
-`safeSimpleGit()` is listed with what owns its destination
-(`git-hooks-guard-coverage.test.ts`), so adding one is a decision someone writes
-down. Both known instances of this bug had exactly that shape, and neither was
+That shape now has a CI census rather than a periodic human audit: every
+literally-bare `safeSimpleGit()` — including the `(undefined)` and `("")`
+spellings review found the first version waving through — is listed with what
+owns its destination (`git-hooks-guard-coverage.test.ts`), so adding one is a
+decision someone writes down. It is a **tripwire for the literal shape, not a
+fail-closed guarantee over the class**: `safeSimpleGit(x)` where `x` is
+`undefined` at runtime reaches no regex, and the rule says so in place rather
+than implying coverage it does not have. Both known instances of this bug had exactly that shape, and neither was
 visible at runtime — the drop is gated on `getuid() === 0`, so the suite, the
 dogfood instance and a developer's laptop pass either way. That invisibility is
 why this needed a source audit rather than a failing test, and why arming needs a

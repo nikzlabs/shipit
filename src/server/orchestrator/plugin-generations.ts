@@ -1098,6 +1098,17 @@ async function defaultBranch(bareCacheDir: string): Promise<string> {
  * plain recursive chown would hand this session ownership of object files every
  * sibling generation reads. The object-aware walk chowns the fanout directories
  * and never the data files. It is a no-op wherever the non-root runtime is off.
+ *
+ * **What that does NOT buy, said here because the opposite is easy to assume.**
+ * It is the right walk for these two git calls, and it does not leave the shared
+ * cache protected end-to-end: on the ordinary install path
+ * `plugin-install.ts:321` plain-`chownRecursive`s this same tree minutes later,
+ * data files included, so the cache's object inodes end up session-owned anyway.
+ * That is pre-existing, has its own constraint (overlayfs takes the merged
+ * mount's permissions from the lower dir), and is **planning#417**. Not an
+ * arming blocker: git's ownership check reads the repository root, not object
+ * files. Found by the independent review of PR #2366, which caught this
+ * docstring claiming the protection as settled.
  */
 async function checkoutCommit(bareCacheDir: string, targetDir: string, commit: string): Promise<void> {
   await safeSimpleGit().raw(["clone", "--local", "--no-checkout", bareCacheDir, targetDir]);

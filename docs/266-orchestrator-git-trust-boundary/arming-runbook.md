@@ -136,7 +136,7 @@ next `safeSimpleGit(<destination>)` drops to that path's session uid.
 |---|---|---|
 | `repo-git.ts:284` `cloneFromCache` | shared bare cache, root-owned | ✅ `handWorkspaceBackToWorker(sessionDir)` before the `config` writes — fixed by docs/270, which documents the exact reasoning |
 | `services/marketplace.ts:143` | a URL — no local source tree | ✅ n/a — the marketplace cache is ShipIt's own, not a session's |
-| `plugin-generations.ts:1103` `checkoutCommit` | plugin bare cache, root-owned | ❌ **was the gap — fixed in this change** |
+| `plugin-generations.ts:1114` `checkoutCommit` | plugin bare cache, root-owned | ❌ **was the gap — fixed in this change** |
 
 `services/session-fork-merge.ts` used to be a fourth. planning#407 converted it:
 it creates the destination, hands it to the source session's identity, and clones
@@ -212,7 +212,7 @@ question (is the tree owned by the uid we drop to, at this moment?) is per-site.
 | `git-utils.ts:317,385,461,463` (fetch, default-branch sync, cache-sync check) | session workspace | ✅ E3 mints a repo-scoped credential for the dropped fetch |
 | `overlay-session.ts:366,557` | session workspace | ✅ |
 | `services/rebase-driver.ts`, `services/github-ci-fix.ts` (via `GitManager`) | session workspace | ✅ |
-| `repo-git.ts:120,140` · `startup-tasks.ts:259` · `workflow-loader.ts:101` · `plugin-generations.ts:1009,1062` · `services/marketplace.ts:132` | bare caches / ShipIt's own dirs, root-owned | ✅ no drop, correctly |
+| `repo-git.ts:120,140` · `startup-tasks.ts:259` · `workflow-loader.ts:101` · `plugin-generations.ts:1010,1063` · `services/marketplace.ts:132` | bare caches / ShipIt's own dirs, root-owned | ✅ no drop, correctly |
 
 ## What arming does NOT touch
 
@@ -241,9 +241,9 @@ limit of the *scanner*, and each has a verdict.
 
 | Blind spot | Verdict |
 |---|---|
-| **Inherited process cwd** — a spawn with no `cwd` and no `-C`. Live instance: `build-id.ts:13`. | Harmless in production: the orchestrator's cwd holds no repository. That is a property of the deployment, not something any rule here checks. |
+| **Inherited process cwd** — a spawn with no `cwd` and no `-C`. Live instance: `build-id.ts:13`. | Harmless in production because `Dockerfile.prod` sets `WORKDIR /app`, which holds no repository. That is a property of the image, not something any rule here checks — so it is a verdict that a future `WORKDIR` change silently invalidates. |
 | **A working directory reached through `GIT_DIR` / `GIT_WORK_TREE` / `--git-dir`.** | Grepped: **no orchestrator or shared source sets or passes any of them.** |
-| **A spawn whose binary is not a quoted `git` literal** (`const GIT = "git"`). | Grepped for spawn-family calls with a variable binary in `orchestrator/` + `shared/`: **none.** |
+| **A spawn whose binary is not a quoted `git` literal** (`const GIT = "git"`). | **Three exist, none of them git**, and finding them took a second look: `session-namer.ts:549` and `services/redaction.ts:263` spawn the agent CLI (`binary` from `cliInvocation`), `templates.ts:159` spawns the package manager (`LOCK_ONLY_COMMAND` — npm/pnpm/yarn). An earlier version of this row said "none", because the grep behind it required the binary on the *same line* as the call and all three wrap it onto the next — the same shape the scanner's own regex handles with a `\n?` and a hand-written grep did not. Corrected by the independent review; the verdict for arming is unchanged, and it is a reminder that "grepped: none" is a claim about a regex until someone checks it. |
 | **`exec`/`execSync` with a shell string.** | Grepped: **none in production orchestrator code** (only `integration_tests/test-helpers.ts`). |
 | **Indirection deeper than one in-file `const`.** | The scanner treats anything it cannot resolve as carrying a working directory — fail-closed, so this narrows what is *reported*, never what is *demanded*. |
 | **A tree whose on-disk owner differs from the session record.** docs/270 reads identity from `<sessionsRoot>/<sessionId>`, deliberately not from the tree, so an Open session's root compose service that `chown`s its own workspace produces a real mismatch. | **Expected and correct to fail once armed.** That refusal is docs/270 req 2 working: the alternative is executing a `.git/config` payload at a uid the session chose. |
@@ -304,10 +304,12 @@ docker compose exec shipit git config --file /credentials/.gitconfig --get-all s
 **`--file`, not `--global`.** `GIT_CONFIG_GLOBAL` is set by the orchestrator on
 its **own process** at boot (`initGlobalGitConfig`, `git-config.ts:233`) and is
 not in the container's declared environment, so a `docker compose exec` shell
-does not inherit it — a `--global` read there would answer about
-`$HOME/.gitconfig`, a file nothing writes, and cheerfully report "no entry"
-whether or not the arming took. Naming the path is the only reading that
-answers the question asked.
+does not inherit it. A `--global` read there resolves to `$HOME/.gitconfig` —
+and the orchestrator's `HOME` is deliberately `/root` (`docker-compose.yml:44`,
+"Do NOT set HOME here") — a file nothing writes. It prints nothing and exits 1
+**whether or not the arming took**, which is worse than no check at all: it
+reads as confirmation. Naming the path is the only reading that answers the
+question asked.
 
 `initGlobalGitConfig` actively `--unset-all`s the entry an earlier boot wrote,
 because the config file lives in the persistent credentials volume. Both
@@ -333,7 +335,7 @@ Per surface:
 | Surface | Healthy | Failure |
 |---|---|---|
 | **Post-turn auto-commit** | `[git] Committed: <hash> <summary> on branch: shipit/<name>` | `[git] auto-commit failed for <sessionId>: fatal: detected dubious ownership …` — **and the user sees it**: `autoCommit` rethrows, and `post-turn.ts` emits a persisted transcript notice beginning *"This turn was NOT committed"* with git's own text quoted. The working tree is untouched; the next turn commits everything once the site is fixed. |
-| **Auto-push** | no log line — success is a client message, `Auto-pushed to origin/<branch>`, on the session's PR card | `[auto-push] <sessionId>: Auto-push failed: fatal: detected dubious ownership …`, and the same text in the session's log ring and transcript. The scheduler warns on **every** path that ends without a push (invariant 5), so a session that pushes nothing and logs nothing is itself worth checking. |
+| **Auto-push** | no log line — success is a client message, `Auto-pushed to origin/<branch>`, on the session's PR card | `[auto-push] <sessionId>: Auto-push failed: fatal: detected dubious ownership …`, plus the same text in the session's **log ring**. Watch the log ring and the server log, not the transcript: the transcript copy rides `emitMessage`, which is transport-only, so it is there for an attached viewer and gone after a reload. The scheduler warns on **every** path that ends without a push (invariant 5), so a session that pushes nothing and logs nothing is itself worth checking. |
 | **Session provisioning (LFS)** | `[git-lfs] Pulled LFS content for <workspaceDir> in <n>ms` | `[git-lfs] git lfs pull failed for <workspaceDir> — <reason>` |
 | **Fork** | the fork's first turn commits normally | the `clone --local` refuses on the **source**: `fatal: detected dubious ownership in repository at '<src>/.git'` — note this names the *gitdir*, not the worktree root the post-turn failures name. planning#407's measurement against git 2.39.5, inherited here rather than re-run, and it is why that site was converted. |
 | **Plugin activation** | the generation publishes and the `active` symlink resolves to it | a permission error, or the refusal naming the `.staging-*` directory under `<sessionDir>/state/plugins/`. **Exercise this deliberately** — it is where the gap was, it is the surface least likely to be hit by an ordinary turn, and on a build without planning#410's fix it fails whether or not you armed anything |

@@ -250,11 +250,30 @@ Build sequence from [plan.md](./plan.md) §5. Requirements are cited as `(req N)
 - [x] **A CI census for the shape, so the next one is not found by a human
       audit two cycles later.** Every bare `safeSimpleGit()` — the sharpest case
       of that blindness, no `baseDir` at all — is listed in
-      `git-hooks-guard-coverage.test.ts` with what owns its destination. Neither
+      `git-hooks-guard-coverage.test.ts` with what owns its destination. A
+      tripwire for the literal shape, NOT a fail-closed guarantee over the
+      class: review found the first version waved through `safeSimpleGit(undefined)`
+      and `safeSimpleGit("")` (now caught), and a variable that is `undefined`
+      at runtime reaches no regex at all (said in place, not papered over). Neither
       known instance of this bug was visible at runtime: the drop is gated on
       `getuid() === 0`, so the suite, the dogfood instance and a laptop pass
       either way. That is also why the runbook opens by telling an operator a
       green local run proves nothing about the armed path.
+- [x] **Six findings from the independent review of that work, all addressed.**
+      Three were the audit failing its own exhaustiveness claim: a raw spawn
+      missing from the table (`repo-git.ts:387`), `updates.ts` counted at half
+      its 10 sites, and a "grepped: none" for variable-binary spawns that was
+      simply wrong — there are three (none of them git), and the grep behind the
+      claim missed them because it required the binary on the *same line* as the
+      call. Two were overclaims: the census was bypassable by spelling
+      (`safeSimpleGit(undefined)`, `safeSimpleGit("")` — now caught, with the
+      variable case named as out of reach rather than papered over), and the
+      fix's docstring stated the shared-cache hardlink protection as settled
+      when `plugin-install.ts:321` plain-chowns the same tree minutes later
+      (**planning#417**, filed; not an arming blocker — git's ownership check
+      reads the repository root, not object files). One was an operator
+      correction: the auto-push failure's transcript copy is `emitMessage`,
+      transport-only, so the runbook now points at the durable log ring.
 - [ ] **Arm it in production, then delete both the switch and the write.**
       **planning#410.** This is the go/no-go planning#403 reserves for a human,
       and it must not happen before E1 has been *seen* working in production —
