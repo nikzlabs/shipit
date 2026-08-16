@@ -172,10 +172,14 @@ export function resolveGitTreeUid(
  *
  * Like the hooks wrapper, this IS enforced by
  * `git-hooks-guard-coverage.test.ts` (docs/266 E2): a raw git spawn that names a
- * working directory — as a `cwd` option or as a `-C <dir>` argument — and omits
- * this call fails the build. Spread it **inline at the call site**, not via a
- * local variable: the scanner reads the call, and a name it cannot follow reads
- * to it exactly like a site that forgot.
+ * working directory and omits this call fails the build. Five things count as
+ * naming one — a `cwd` option, a `-C <dir>` argument, `--git-dir`/`--work-tree`,
+ * `GIT_DIR`/`GIT_WORK_TREE` in the spawn's `env`, and a `clone`/`init`/`worktree`
+ * subcommand, which names the tree it CREATES as an ordinary argument rather
+ * than as a working directory (planning#410 found the simple-git form of that
+ * one cloning as root into a session's state directory). Spread it **inline at
+ * the call site**, not via a local variable: the scanner reads the call, and a
+ * name it cannot follow reads to it exactly like a site that forgot.
  *
  * Both the argv and the options object are followed through one level of
  * in-file `const NAME = …`, including an object literal's own spreads, because
@@ -183,20 +187,40 @@ export function resolveGitTreeUid(
  * cannot resolve is treated as carrying one — the fail-closed direction is to
  * demand the call, never to assume it is unnecessary.
  *
+ * Which git processes it finds is itself part of the guarantee, so the scanner
+ * reads the launcher names a file imported from `node:child_process` (aliases
+ * and `promisify` wrappers included) rather than a fixed list, and resolves the
+ * binary through one level of in-file `const` and through a leading path.
+ * `spawnSync("git", …)`, `execSync("git …")` and `const GIT = "git"` were all
+ * silent exemptions before planning#409; the first two are covered, and a binary
+ * the scanner cannot read now FAILS rather than passing.
+ *
  * What it still does NOT see, stated because an overstated guarantee is worse
  * than a named gap:
  *
- *   - A working directory reached through the environment (`GIT_DIR`,
- *     `GIT_WORK_TREE`) or a `--git-dir` argument.
- *   - The **inherited process cwd**. A spawn with no `cwd` and no `-C` passes,
- *     and runs wherever the orchestrator started. `build-id.ts`'s
- *     `resolveBuildId` is a live instance; it is harmless because the
- *     orchestrator's cwd holds no repository in production, which is a property
- *     of the deployment rather than something this rule checks.
+ *   - The **inherited process cwd**. A spawn with no `cwd`, no `-C` and no
+ *     `--git-dir` passes, and runs wherever the orchestrator started.
+ *     `build-id.ts`'s `resolveBuildId` is a live instance; it is harmless
+ *     because the orchestrator's cwd holds no repository in production, which is
+ *     a property of the deployment rather than something this rule checks.
  *   - Indirection deeper than one level, or through anything other than an
- *     in-file `const`.
- *   - A spawn whose binary is not a quoted `git` literal — `const GIT = "git"`
- *     makes the call invisible to all three rules here.
+ *     in-file `const`. A name declared twice is unreadable rather than resolved
+ *     to the first declaration, so shadowing fails closed.
+ *   - `exec`/`execSync` reached as a method on a receiver that is not a
+ *     `node:child_process` namespace binding, because `.exec(` is
+ *     `RegExp.prototype.exec` several hundred times over in this tree. `cp.exec(`
+ *     on a namespace import IS read; `db.exec(` is not.
+ *   - A launcher that is not `node:child_process` at all — an `execa` or
+ *     `cross-spawn` dependency would bypass every rule here. Neither is in
+ *     `package.json`; adding one means extending this scanner in the same PR.
+ *   - `GIT_DIR` inherited through `env: { ...process.env }` rather than written
+ *     literally. The spread makes the options object unreadable, so the uid rule
+ *     still demands the drop — but the hazard itself is the deployment's
+ *     environment, which no source scan can see.
+ *   - The `git-lfs` binary invoked directly. This repo reaches LFS as
+ *     `git lfs …`, which IS covered; a bare `git-lfs` spawn is excluded because
+ *     the fix these rules demand (`-c core.hooksPath=…`) is a git argument it
+ *     does not accept, so demanding it would be a remedy that fails.
  */
 export function gitSpawnOverridesForTree(
   dir: string | undefined,
