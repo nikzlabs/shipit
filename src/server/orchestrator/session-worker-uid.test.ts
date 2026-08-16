@@ -18,8 +18,10 @@ import {
   shareTreeWithAllSessions,
   sessionWorkerGid,
   identityForTarget,
+  resolveGitDirOwner,
 } from "./session-worker-uid.js";
 import { configureSessionIdentityRoots } from "../shared/session-identity.js";
+import type { GitTreeUidDeps } from "../shared/git-tree-uid.js";
 
 describe("session-worker-uid (docs/150 §7)", () => {
   const prev = process.env.SHIPIT_SESSION_WORKER_UID;
@@ -245,7 +247,13 @@ describe("session-worker-uid (docs/150 §7)", () => {
       }
     });
 
-    it("chownWorkspaceGitToSessionWorker is a no-op when the flag is unset", () => {
+    // docs/266 — NOT "a no-op when the flag is unset" any more, which is what
+    // this test used to claim. The flag alone no longer gates this helper: a
+    // ROOT process over a non-root-owned tree acts with the flag unset, because
+    // orchestrator git drops there and needs `.git` writable
+    // (`resolveGitDirOwner`). What survives is the narrower property below, and
+    // it holds here only because the suite runs unprivileged.
+    it("chownWorkspaceGitToSessionWorker is a no-op when not root and the flag is unset", () => {
       delete process.env.SHIPIT_SESSION_WORKER_UID;
       const gitDir = path.join(tmpDir, ".git");
       fs.mkdirSync(gitDir, { recursive: true });
@@ -483,6 +491,141 @@ describe("session-worker-uid (docs/150 §7)", () => {
         expect(chowned.has(pkgFile)).toBe(true);
         // node_modules itself is NOT chowned — only its children (bounded scan).
         expect(chowned.has(nm)).toBe(false);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+  });
+
+  /**
+   * docs/266 — `.git` must belong to the uid that will run git in it.
+   *
+   * The production failure this closes:
+   * `fatal: could not open '.git/COMMIT_EDITMSG': Permission denied` on the
+   * post-turn commit, because the handback answered "who does the container run
+   * as" (`SHIPIT_SESSION_WORKER_UID`) while `safeSimpleGit` answered "who owns
+   * this tree" (`resolveGitTreeUid`). Two questions, one directory.
+   *
+   * Tested through the same injection seam `git-tree-uid.test.ts` uses, because
+   * the interesting states need root and a foreign-owned tree — neither of which
+   * a session container can produce.
+   */
+  describe("resolveGitDirOwner() — one predicate for both halves", () => {
+    /** "We are root, and the tree belongs to `owner`." */
+    const asRoot = (owner: { uid: number; gid: number } | null): GitTreeUidDeps => ({
+      getuid: () => 0,
+      statOwner: () => owner,
+    });
+
+    it("follows the DROP, not the variable, when the variable is unset", () => {
+      // Disagreement case 1: a root orchestrator over a non-root-owned tree (a
+      // host-bind dev setup). `resolveGitTreeUid` never reads the variable, so
+      // git dropped while the old handback returned early — leaving any
+      // root-owned file inside `.git` unwritable forever, with nothing else in
+      // the system to repair it.
+      delete process.env.SHIPIT_SESSION_WORKER_UID;
+      expect(resolveGitDirOwner(tmpDir, asRoot({ uid: 1000, gid: 1000 })))
+        .toEqual({ uid: 1000, gid: 1000 });
+    });
+
+    it("follows the DROP when the configured uid disagrees with the tree's owner", () => {
+      // Disagreement case 2: a worker-uid migration. An adopted container keeps
+      // its old uid, so the tree's owner is not the configured one. The old
+      // handback chowned `.git` AWAY from the uid git runs as, on every turn, so
+      // the failure could never converge — this is the assertion that pins it.
+      process.env.SHIPIT_SESSION_WORKER_UID = "1500";
+      expect(resolveGitDirOwner(tmpDir, asRoot({ uid: 1000, gid: 1000 })))
+        .toEqual({ uid: 1000, gid: 1000 });
+    });
+
+    it("carries the tree's real gid rather than assuming gid = uid", () => {
+      process.env.SHIPIT_SESSION_WORKER_UID = "1000";
+      expect(resolveGitDirOwner(tmpDir, asRoot({ uid: 1000, gid: 100 })))
+        .toEqual({ uid: 1000, gid: 100 });
+    });
+
+    it("falls back to the configured uid for a ROOT-OWNED tree — the fresh-clone case", () => {
+      // The property that makes this change safe on the session-setup path
+      // rather than merely acceptable. `handWorkspaceBackToWorker` runs `.git`
+      // FIRST, while a just-cloned workspace is still root-owned; the drop
+      // declines there, so the fallback hands `.git` to the configured uid
+      // exactly as before and the worktree chown that follows matches it.
+      process.env.SHIPIT_SESSION_WORKER_UID = "1000";
+      expect(resolveGitDirOwner(tmpDir, asRoot({ uid: 0, gid: 0 })))
+        .toEqual({ uid: 1000, gid: 1000 });
+    });
+
+    it("falls back to the configured uid when the process is not root", () => {
+      // The session worker, local mode, and every test. Unchanged from before.
+      process.env.SHIPIT_SESSION_WORKER_UID = "1000";
+      const notRoot: GitTreeUidDeps = {
+        getuid: () => 1000,
+        statOwner: () => ({ uid: 1000, gid: 1000 }),
+      };
+      expect(resolveGitDirOwner(tmpDir, notRoot)).toEqual({ uid: 1000, gid: 1000 });
+    });
+
+    it("returns null — a total no-op — when neither half applies", () => {
+      delete process.env.SHIPIT_SESSION_WORKER_UID;
+      const notRoot: GitTreeUidDeps = {
+        getuid: () => 1000,
+        statOwner: () => ({ uid: 1000, gid: 1000 }),
+      };
+      expect(resolveGitDirOwner(tmpDir, notRoot)).toBeNull();
+    });
+
+    it("WIRING: chownWorkspaceGitToSessionWorker chowns to the tree's owner", () => {
+      // The predicate tests above would all pass against a
+      // `chownWorkspaceGitToSessionWorker` that still called `sessionWorkerUid()`
+      // — a correct decision nothing consults is exactly the shape of defect
+      // this whole fix is about. So assert the chown ITSELF lands on the tree's
+      // owner while the configured uid says something else.
+      process.env.SHIPIT_SESSION_WORKER_UID = "1500";
+      const gitDir = path.join(tmpDir, ".git");
+      fs.mkdirSync(gitDir);
+      fs.writeFileSync(path.join(gitDir, "COMMIT_EDITMSG"), "msg\n");
+
+      const spy = vi.spyOn(fs, "lchownSync").mockImplementation(() => undefined);
+      try {
+        chownWorkspaceGitToSessionWorker(tmpDir, {
+          getuid: () => 0,
+          statOwner: () => ({ uid: 1000, gid: 100 }),
+        });
+        const editMsg = spy.mock.calls.find(
+          (c) => c[0] === path.join(gitDir, "COMMIT_EDITMSG"),
+        );
+        // The file the production failure named, chowned to the tree's owner
+        // (1000:100) and NOT to the configured 1500.
+        expect(editMsg).toBeDefined();
+        expect(editMsg?.slice(1)).toEqual([1000, 100]);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it("WIRING: the gid reaches the object-store and LFS branches too", () => {
+      // `chownGitMetadataRecursive` has three exits — the ordinary node, the
+      // shallow `.git/objects` walk, and `chownDirsOnlyRecursive` for
+      // `.git/lfs/objects` — and each passes the gid on separately. Asserting it
+      // on one metadata file (above) would leave a `uid`-for-`gid` typo on either
+      // of the other two green. Threading the real gid is the new behaviour here,
+      // so it is checked where it can actually be dropped.
+      process.env.SHIPIT_SESSION_WORKER_UID = "1500";
+      const gitDir = path.join(tmpDir, ".git");
+      fs.mkdirSync(path.join(gitDir, "objects", "ab"), { recursive: true });
+      fs.mkdirSync(path.join(gitDir, "lfs", "objects", "ab", "cd"), { recursive: true });
+
+      const spy = vi.spyOn(fs, "lchownSync").mockImplementation(() => undefined);
+      try {
+        chownWorkspaceGitToSessionWorker(tmpDir, {
+          getuid: () => 0,
+          statOwner: () => ({ uid: 1000, gid: 100 }),
+        });
+        const at = (p: string) => spy.mock.calls.find((c) => c[0] === p)?.slice(1);
+        // The `.git/objects` fanout dir — the shallow-walk branch.
+        expect(at(path.join(gitDir, "objects", "ab"))).toEqual([1000, 100]);
+        // The LFS two-level fanout — the dirs-only branch.
+        expect(at(path.join(gitDir, "lfs", "objects", "ab", "cd"))).toEqual([1000, 100]);
       } finally {
         spy.mockRestore();
       }

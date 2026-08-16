@@ -210,3 +210,103 @@ describe("inspectWorkingTree — the question isClean() cannot answer (planning#
     expect(await new GitManager(repo).inspectWorkingTree()).toEqual({ clean: true, unreadable: null });
   });
 });
+
+/**
+ * docs/266 — an unwritable `.git` costs the whole turn, and none of the cases
+ * above can fail on it.
+ *
+ * Reported in production on 2026-08-16, hours after E1 made orchestrator-side
+ * git drop to the tree's owner. Every test in this file makes a **worktree**
+ * path unreadable, so the entire `.git` dimension was blind by construction —
+ * which is why a failure on the path that carries a turn's work shipped
+ * unnoticed.
+ *
+ * The distinction that matters, and the reason this needs its own block: the
+ * cases above fail during `git add`, where `classifyUnreadableAddFailure` gives
+ * the user a path to fix. This one fails at `commit`, **after** staging has
+ * already succeeded — a different message, a different classifier answer, and a
+ * worse state (work staged, nothing committed).
+ *
+ * Produced with a mode bit on a **self-owned** file rather than genuine foreign
+ * ownership, the same limit the header states: a session container has no root.
+ * The kernel check that fails is identical — `open(O_WRONLY)` on a `0444`
+ * regular file is refused for the owner exactly as it is for a stranger.
+ *
+ * What that substitution cannot reproduce is the RECOVERY. In production the
+ * file belongs to another uid and only root's chown can hand it over; here the
+ * test process owns it and simply chmods it back, which is why the third case
+ * below pins "nothing about the failure is sticky" and not "the chown works".
+ * Joining the two halves — root chowns a foreign-owned `.git` to the uid git
+ * then drops to — needs root, and remains unexercised (docs/266 plan §4).
+ */
+describe("autoCommit — unwritable .git/COMMIT_EDITMSG (the reported production failure)", () => {
+  it("fails the commit, strands the staged work, and does not move HEAD", async () => {
+    const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf-8" }).trim();
+    fs.writeFileSync(path.join(repo, "tracked.txt"), "agent edit\n");
+
+    // git rewrites this file on every commit, so a stale one left by a uid the
+    // current git is not is enough on its own — no unreadable worktree content
+    // anywhere, which is what makes this distinct from every case above.
+    const editMsg = path.join(repo, ".git", "COMMIT_EDITMSG");
+    fs.writeFileSync(editMsg, "previous\n");
+    fs.chmodSync(editMsg, 0o444);
+
+    await expect(new GitManager(repo).autoCommit("a turn")).rejects.toThrow(/COMMIT_EDITMSG/);
+
+    // Pin the exit code as well as the message: the notice path keys on text
+    // (`GitError.exitCode` is undefined by construction), but the measurement
+    // this test transcribes is "exit 128 at commit", and a future git that
+    // demoted this to a warning would still match the regex above.
+    let exitCode: number | null = null;
+    try {
+      execFileSync("git", ["commit", "-m", "second"], { cwd: repo, stdio: "pipe" });
+    } catch (err) {
+      exitCode = (err as { status: number }).status;
+    }
+    expect(exitCode).toBe(128);
+
+    // The damage, in two assertions. HEAD never moved…
+    expect(execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf-8" }).trim())
+      .toBe(head);
+    // …and the turn's work is STAGED, not merely dirty: `add -A` succeeded and
+    // only `commit` failed. That is the state `CLAUDE.md` invariant 2 calls
+    // unrecoverable — no reflog entry, and nothing but the working tree holding
+    // it — and it is why the repair must run BEFORE the commit and not only in
+    // the post-turn `finally`.
+    const staged = execFileSync("git", ["diff", "--cached", "--name-only"], {
+      cwd: repo, encoding: "utf-8",
+    });
+    expect(staged).toContain("tracked.txt");
+  });
+
+  it("is NOT classified as an add-time permission failure", async () => {
+    // Pins WHY the user saw the generic req-15 notice rather than the tailored
+    // one: git's wording here is `could not open '<path>': Permission denied`,
+    // which is not the `open(<path>): Permission denied` shape the add-time
+    // classifier keys on. Asserted so that a future widening of that regex is a
+    // deliberate change with a red test, not an accident.
+    const message = "fatal: could not open '.git/COMMIT_EDITMSG': Permission denied";
+    expect(classifyUnreadableAddFailure(message)).toBeNull();
+  });
+
+  it("commits normally once .git is writable again — the repair converges", async () => {
+    // The fix's observable effect. `chownWorkspaceGitToSessionWorker` cannot be
+    // exercised here (it needs root to chown), so this pins the property that
+    // makes it sufficient: nothing about the failure is sticky, so restoring
+    // write access is the whole remedy.
+    fs.writeFileSync(path.join(repo, "tracked.txt"), "agent edit\n");
+    const editMsg = path.join(repo, ".git", "COMMIT_EDITMSG");
+    fs.writeFileSync(editMsg, "previous\n");
+    fs.chmodSync(editMsg, 0o444);
+    await expect(new GitManager(repo).autoCommit("a turn")).rejects.toThrow(/COMMIT_EDITMSG/);
+
+    fs.chmodSync(editMsg, 0o644);
+
+    const result = await new GitManager(repo).autoCommit("a turn");
+    expect(result.commitHash).toBeTruthy();
+    const tree = execFileSync("git", ["show", "--name-only", "--format=", "HEAD"], {
+      cwd: repo, encoding: "utf-8",
+    });
+    expect(tree).toContain("tracked.txt");
+  });
+});

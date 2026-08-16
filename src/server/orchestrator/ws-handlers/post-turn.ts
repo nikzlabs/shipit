@@ -88,6 +88,29 @@ export async function postTurnCommit(
     return null;
   }
   return withWorkspaceLock(opts.sessionDir, async () => {
+    // docs/266 — reconcile `.git` BEFORE the commit, not only after it.
+    //
+    // The handback below has always run post-hoc, which was sufficient while
+    // orchestrator git was root and could write a `.git` in any state. Since E1
+    // it drops to the tree's owner, so it can arrive at a `.git` some earlier
+    // root-side write left unwritable and lose the whole turn:
+    // `fatal: could not open '.git/COMMIT_EDITMSG': Permission denied` — raised
+    // AFTER `git add -A` succeeds, so the work is staged and then stranded, which
+    // is `CLAUDE.md` invariant 2's unrecoverable case.
+    //
+    // Post-hoc repair alone converges only on the NEXT turn, and only if there is
+    // one. Running it here as well turns a lost turn into no turn lost. Inside
+    // the lock, so it cannot race a plugin-install `git add` on the same
+    // workspace.
+    //
+    // Cost, stated honestly rather than as the flattering half: this DOUBLES the
+    // per-turn `.git` walk, and there is no "already owned" short-circuit in
+    // `chownGitMetadataRecursive`. Only the object store is O(fanout) — outside
+    // `objects/` the walk is O(metadata nodes), so refs, reflogs and `worktrees/`
+    // all scale with it. Measured ~0.5 ms on this repo's own clone, which is why
+    // it is spent unconditionally; a refs-heavy repo is where to look first if
+    // that ever stops being true.
+    chownWorkspaceGitToSessionWorker(opts.sessionDir);
     try {
       return await commitInLock();
     } finally {
@@ -96,7 +119,7 @@ export async function postTurnCommit(
       // `.git/index`, and a commit writes objects/refs/reflogs. Left root:root,
       // they block the agent's next in-container `git` (which appends to the
       // root-owned reflog). Hand `.git` back here, on every path (commit, no-op,
-      // throw). No-op unless SHIPIT_SESSION_WORKER_UID is set.
+      // throw). No-op unless a uid resolves — see `resolveGitDirOwner`.
       chownWorkspaceGitToSessionWorker(opts.sessionDir);
     }
   });

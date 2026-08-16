@@ -16,7 +16,16 @@
 
 import { describe, it, expect, vi } from "vitest";
 import { postTurnCommit } from "./post-turn.js";
+import { chownWorkspaceGitToSessionWorker } from "../session-worker-uid.js";
 import type { SessionInfo } from "../../shared/types.js";
+
+// The real helper walks `.git` on the filesystem. Every case here passes
+// `sessionDir: "/workspace"`, so unmocked it would walk this repo's own
+// checkout twice per test for no assertion's benefit. Mocked, it also becomes
+// observable — which is what the ordering block at the bottom needs.
+vi.mock("../session-worker-uid.js", () => ({
+  chownWorkspaceGitToSessionWorker: vi.fn(),
+}));
 
 function makeCtx(kind?: SessionInfo["kind"]) {
   const autoCommit = vi.fn(async () => ({ commitHash: null, conflictedFiles: [], rebaseInProgress: false, secretFindings: [] }));
@@ -579,5 +588,89 @@ describe("postTurnCommit — an auto-commit that threw", () => {
       sessionDir: "/workspace", sessionId: undefined, emit: vi.fn(), turnSummary: "a turn",
     })).rejects.toThrow("boom");
     expect(append).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * docs/266 — `.git` is made writable BEFORE the commit, not only after it.
+ *
+ * This is the whole observable effect of the `.git/COMMIT_EDITMSG` fix, and
+ * nothing else in the suite can fail on it: the ownership tests in
+ * `session-worker-uid.test.ts` prove the helper targets the right uid, but they
+ * pass just as happily if this call site is deleted and only the post-turn
+ * `finally` remains. Ordering is the assertion, so ordering is what is asserted.
+ *
+ * Why it has to be *before*: git raises the permission failure at commit time,
+ * after `git add -A` has already staged the turn's work. Repairing only
+ * afterwards fixes the NEXT turn, and the stranded turn is `CLAUDE.md`
+ * invariant 2's unrecoverable case.
+ */
+describe("postTurnCommit — .git is reconciled before the commit, not only after", () => {
+  const chown = vi.mocked(chownWorkspaceGitToSessionWorker);
+
+  function makeCtxWithCommit(autoCommit: ReturnType<typeof vi.fn>) {
+    return {
+      createGitManager: vi.fn(() => ({ autoCommit, getHeadHash: vi.fn(async () => "head") })),
+      chatHistoryManager: { updateLastMessage: vi.fn(() => null), indexOfMessageId: vi.fn(() => -1), append: vi.fn() },
+      sessionManager: {
+        get: vi.fn(() => ({ id: "s1" } as SessionInfo)),
+        getSecretBlock: vi.fn(() => undefined),
+        setSecretBlock: vi.fn(),
+      },
+      scheduleAutoPush: vi.fn(),
+    } as unknown as Parameters<typeof postTurnCommit>[0];
+  }
+
+  it("chowns before autoCommit AND after it", async () => {
+    chown.mockClear();
+    const autoCommit = vi.fn(async () => ({
+      commitHash: "abc123", conflictedFiles: [], rebaseInProgress: false, secretFindings: [],
+    }));
+
+    await postTurnCommit(makeCtxWithCommit(autoCommit), {
+      sessionDir: "/workspace", sessionId: "s1", emit: vi.fn(), turnSummary: "a turn",
+    });
+
+    expect(chown).toHaveBeenCalledTimes(2);
+    expect(chown.mock.invocationCallOrder[0]).toBeLessThan(autoCommit.mock.invocationCallOrder[0]);
+    expect(chown.mock.invocationCallOrder[1]).toBeGreaterThan(autoCommit.mock.invocationCallOrder[0]);
+  });
+
+  it("still chowns first when the commit throws — the reported production path", async () => {
+    // The `.git/COMMIT_EDITMSG` case itself. The pre-commit repair is what gives
+    // this turn a chance to land at all; the `finally` repair is what stops the
+    // NEXT one failing the same way. Both must fire.
+    chown.mockClear();
+    const err = new Error("fatal: could not open '.git/COMMIT_EDITMSG': Permission denied");
+    const autoCommit = vi.fn(() => Promise.reject(err));
+
+    await expect(postTurnCommit(makeCtxWithCommit(autoCommit), {
+      sessionDir: "/workspace", sessionId: "s1", emit: vi.fn(), turnSummary: "a turn",
+    })).rejects.toThrow("COMMIT_EDITMSG");
+
+    expect(chown).toHaveBeenCalledTimes(2);
+    expect(chown.mock.invocationCallOrder[0]).toBeLessThan(autoCommit.mock.invocationCallOrder[0]);
+  });
+
+  it("does not touch .git at all for a kind that never commits", async () => {
+    // The auto-commit gate returns before the lock, so an ops/sandbox session
+    // gains no filesystem work from this change.
+    chown.mockClear();
+    const ctx = {
+      createGitManager: vi.fn(),
+      chatHistoryManager: { updateLastMessage: vi.fn(), indexOfMessageId: vi.fn() },
+      sessionManager: {
+        get: vi.fn(() => ({ id: "s1", kind: "ops" } as SessionInfo)),
+        getSecretBlock: vi.fn(() => undefined),
+        setSecretBlock: vi.fn(),
+      },
+      scheduleAutoPush: vi.fn(),
+    } as unknown as Parameters<typeof postTurnCommit>[0];
+
+    await postTurnCommit(ctx, {
+      sessionDir: "/workspace", sessionId: "s1", emit: vi.fn(), turnSummary: "a turn",
+    });
+
+    expect(chown).not.toHaveBeenCalled();
   });
 });
