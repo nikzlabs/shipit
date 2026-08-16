@@ -464,3 +464,27 @@ export function emitNoticePostTurn(
   emit(ws);
   chatHistory.append(sessionId, persisted);
 }
+
+/**
+ * docs/266 — persist a system notice for a session with NO live transport at
+ * all: no runner, so no viewers and no turn-event buffer.
+ *
+ * The case is a server-side event that concerns a session nobody is attached to
+ * — a pull request merging while the session is closed or its container has been
+ * reclaimed. The event happened whether or not anyone was watching, so the
+ * notice belongs in the transcript the user finds when they come back; the live
+ * emit is simply the half that has no destination.
+ *
+ * A separate function rather than {@link emitNoticePostTurn} with a no-op `emit`
+ * so the call site says what it means, and so "there is no transport here" can
+ * never be mistaken for a forgotten broadcast.
+ */
+export function persistNoticeUnattached(
+  chatHistory: { append(sessionId: string, message: PersistedMessage): unknown },
+  sessionId: string,
+  message: string,
+  level: "info" | "warn" = "info",
+): void {
+  const { persisted } = buildSystemNotice(sessionId, message, level);
+  chatHistory.append(sessionId, persisted);
+}

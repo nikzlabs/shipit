@@ -34,6 +34,14 @@
  * transcript notice + agent prompt prefix) instead of returning a bare
  * {@link NOT_MOVED}. Non-merged sessions still skip silently: there is nothing
  * to reset and nothing to say. See {@link skipped}.
+ *
+ * docs/266 — and it is now said at the moment it happens, not at the next turn.
+ * The planning#297 notice is built on the PRE-TURN path, so a refusal detected when
+ * the pull request MERGED reached the user only when they next sent a message —
+ * which may be much later, or never. {@link announceResetStateOnMerge} runs at
+ * merge detection and writes the same refusal into the transcript there;
+ * {@link skipped} then suppresses the repeat while the refusing clause is
+ * unchanged. See that function for the clause set and the episode rule.
  */
 
 import type { SessionInfo } from "../../shared/types.js";
@@ -41,6 +49,11 @@ import type { GitManager } from "../../shared/git.js";
 import type { PrStatusSummary } from "../../shared/types/github-types.js";
 import type { WsServerMessage } from "../../shared/types/ws-server-messages.js";
 import { handWorkspaceBackToWorker } from "../session-worker-uid.js";
+import {
+  emitNoticeInTurn,
+  persistNoticeUnattached,
+  type InProgressPersister,
+} from "../chat-card-persistence.js";
 
 export interface PreTurnResetDeps {
   getSession: (id: string) => SessionInfo | undefined;
@@ -101,8 +114,16 @@ export interface ResetSkip {
 }
 
 export interface ResetSkipInfo extends ResetSkip {
-  /** The persisted transcript notice the caller emits. */
-  notice: string;
+  /**
+   * The persisted transcript notice the caller emits.
+   *
+   * docs/266 — ABSENT when the user has already read this exact refusal, because
+   * {@link announceResetStateOnMerge} wrote it at merge detection and the
+   * refusing clause has not changed since. The skip itself is still reported
+   * (log line + {@link ResetOutcome.agentPrefix}); only the paragraph the user
+   * would be reading for the second time is dropped.
+   */
+  notice?: string;
   /**
    * `warn` for a safety clause the user has to act on, `info` for the two
    * deliberate opt-outs (global setting off, per-send untick) — those are the
@@ -115,6 +136,90 @@ const NOT_MOVED: ResetOutcome = { moved: false };
 
 /** How many uncommitted paths the `dirty-tree` detail names before it summarises the rest. */
 const DIRTY_PATH_LIMIT = 10;
+
+/**
+ * docs/266 — the sessions whose current refusal EPISODE has already produced a
+ * transcript notice, and which clause it was about.
+ *
+ * Two emitters now write the same paragraph: {@link announceResetStateOnMerge}
+ * at merge detection, and {@link skipped} at the start of the next turn. Without
+ * this the user reads it twice in a row for one unchanged fact — the shape
+ * `auto-push-scheduler.ts` already rejected for diverged pushes ("nine identical
+ * notices is noise that trains the reader to skip the tenth").
+ *
+ * Keyed on the CLAUSE, not a bare flag, so the episode ends the moment the
+ * refusal becomes a different one: a dirty tree the user commits away, followed
+ * by a `head-moved` refusal for those new commits, is a new fact and is said
+ * again. {@link clearResetSkipEpisode} ends it when the gate stops refusing at
+ * all.
+ *
+ * Same two bounded imprecisions the auto-push episode set states rather than
+ * engineers away. It holds one clause per session that was refused in this
+ * process's lifetime and is not pruned on teardown (the cost is a session id and
+ * a short string). And it does not survive an orchestrator restart, so a
+ * still-standing refusal is said once more after one — the safe direction: a
+ * repeated warning about a real problem, never a swallowed one.
+ */
+const notifiedSkipClause = new Map<string, string>();
+
+/**
+ * End the current refusal episode. Called on every outcome that means "the
+ * refusal the user was told about no longer holds" — a successful reset (either
+ * mode), a branch already at the base, a session the re-arm un-merged, an
+ * eligible gate at merge detection, and a delivery that failed after claiming.
+ * Exported for tests, which share module state.
+ *
+ * These clears are the fast path, not the guarantee. The guarantee is
+ * {@link episodeKey}: an entry belongs to ONE merged pull request, so a clear
+ * this function never reaches cannot suppress a later merge's notice.
+ */
+export function clearResetSkipEpisode(sessionId: string): void {
+  notifiedSkipClause.delete(sessionId);
+}
+
+/**
+ * The episode's identity: the merge it is about, plus the clause that refused.
+ *
+ * Keying on the clause alone made the entry outlive the merge it described, and
+ * "did we clear it on every path that resolves a refusal?" is not a question
+ * with a checkable answer — the resolving paths are the two reset modes, both
+ * re-arms, and any interval in which the gate simply became eligible. A stale
+ * entry there is not noise, it is SILENCE: a second pull request merging into
+ * the same dirty tree would match the first one's entry and say nothing, which
+ * is the whole defect this feature fixes.
+ *
+ * The merge anchor removes that class rather than chasing it. `mergedHeadSha` is
+ * the commit GitHub merged, so a different merge is a different key by
+ * construction; the `previousMergedPr` breadcrumb is the durable fallback for
+ * the window after a re-arm nulls the live fields (the same fallback the gate
+ * itself uses), and an empty anchor simply degrades to clause-only for a session
+ * that has neither — which cannot be a merged session at all.
+ */
+function episodeKey(clause: ResetSkipClause, session: SessionInfo | undefined): string {
+  const anchor =
+    session?.mergedHeadSha
+    ?? session?.previousMergedPr?.mergedHeadSha
+    ?? (session?.previousMergedPr?.number !== undefined ? `pr-${session.previousMergedPr.number}` : "");
+  return `${anchor}|${clause}`;
+}
+
+/**
+ * Should this refusal produce a user-facing notice? True unless the user has
+ * already read this exact refusal, for this merge, on this session. Records it
+ * as told when it returns true, so each emitter both asks and claims in one
+ * step; a caller whose delivery then fails calls {@link clearResetSkipEpisode}
+ * to give the claim back.
+ */
+function claimSkipNotice(
+  sessionId: string,
+  clause: ResetSkipClause,
+  session: SessionInfo | undefined,
+): boolean {
+  const key = episodeKey(clause, session);
+  if (notifiedSkipClause.get(sessionId) === key) return false;
+  notifiedSkipClause.set(sessionId, key);
+  return true;
+}
 
 /**
  * planning#341 — name the files that made the tree dirty, as a fragment appended to
@@ -395,6 +500,12 @@ export type ResetEligibleOrigin =
  * Transient + emit-only (recomputed on every activation), so a bare `emitMessage`
  * is the right transport — nothing to persist. Never throws:
  * {@link computeResetEligibility} is fail-safe, and the emit is a broadcast.
+ *
+ * Returns the whole {@link ResetEligibility} record rather than the bare
+ * boolean: no caller ever read the boolean, and the merge-detection path
+ * ({@link announceResetStateOnMerge}) needs the blocker this already computed —
+ * recomputing it there would run the gate's git work twice and let the emitted
+ * signal and the notice disagree about which clause refused.
  */
 export async function emitResetEligible(
   deps: ResetEligibleSignalDeps,
@@ -404,9 +515,10 @@ export async function emitResetEligible(
     origin: ResetEligibleOrigin;
     emit: (msg: WsServerMessage) => void;
   },
-): Promise<boolean> {
+): Promise<ResetEligibility> {
   const { sessionId, sessionDir, origin, emit } = args;
-  const { eligible, merged, blocker, error } = await computeResetEligibility(deps, sessionId, sessionDir);
+  const result = await computeResetEligibility(deps, sessionId, sessionDir);
+  const { eligible, merged, blocker, error } = result;
   if (merged) {
     const why = error
       ? `: computation failed (${error}) — failing closed`
@@ -414,28 +526,175 @@ export async function emitResetEligible(
     console.log(`[pre-turn-reset] reset_eligible=${eligible} for ${sessionId} (${origin})${why}`);
   }
   emit({ type: "reset_eligible", sessionId, eligible });
-  return eligible;
+  return result;
+}
+
+/** The runner surface {@link announceResetStateOnMerge} touches, when one is live. */
+export type MergeNoticeRunner = Parameters<typeof emitNoticeInTurn>[0];
+
+/**
+ * docs/266 — what a session is told when its pull request merges: the transient
+ * `reset_eligible` signal, and — when the safety gate REFUSES — a persisted
+ * transcript notice saying so, at the moment it happens.
+ *
+ * The whole point is the second half. docs/218's merge-detection hook
+ * (`onMergeDetectedCb`) recomputed eligibility, wrote one server console line,
+ * and emitted the transient signal that shows or hides the composer's "start
+ * from the latest base" control. When the gate refused, the control simply did
+ * not appear — and a hidden control is indistinguishable from one that was never
+ * there. planning#297's notice exists, but it is built on the PRE-TURN path
+ * ({@link autoResetMergedBranchOnContinue}), so it does not reach the user until
+ * their next message.
+ *
+ * In the incident this fixes (session 5203c910, PR #2327), the agent was mid-turn
+ * applying reviewer feedback when the PR merged; its edits were uncommitted,
+ * which is exactly why the reset was refused. The first readable thing arrived
+ * 4m45s later as the merged-push guard, by which point the commit was already
+ * stranded on a branch with no open pull request. Those 4m45s were the window in
+ * which it was still cheap to fix — commit, then `gh pr create`.
+ *
+ * ## Which refusals are said here
+ *
+ * Every clause {@link computeResetBlocker} can return on a merged session, which
+ * is its whole union minus `not-merged` (that one is gated out below — it is the
+ * ordinary state of nearly every session, not a failure). No sub-selection,
+ * deliberately: each remaining clause means "your branch was left on
+ * already-merged commits and ShipIt will not move it", which is the actionable
+ * fact regardless of which one it was, and a hand-picked subset would be a second
+ * list to drift from the gate. The two `info`-level clauses — the global setting
+ * being off and the per-send untick — cannot occur here at all: this is the
+ * safety-only gate, and both of those are consent, evaluated on the pre-turn path
+ * only.
+ *
+ * ## Where it is written
+ *
+ * The transcript, because that is the durable surface and the `reset_eligible`
+ * signal is not. So the notice is persisted even when NO runner is live (the user
+ * closed the session, or the container was reclaimed) — the merge happened
+ * whether or not anyone was watching, and this is what they find when they come
+ * back. With a live runner it also renders live, and `emitNoticeInTurn` picks the
+ * right persistence route for a turn that is running (the incident's own case).
+ *
+ * Fail-safe end to end: the eligibility computation swallows its own git errors,
+ * and a throw in the transcript work is logged rather than propagated — a missing
+ * notice is a regression, a notice that breaks post-merge bookkeeping is worse.
+ */
+export async function announceResetStateOnMerge(
+  deps: ResetEligibleSignalDeps & {
+    /**
+     * Durable chat history. A REQUIRED key with a possibly-undefined value: the
+     * poller's wiring makes it optional, and an optional dep is exactly how a
+     * transcript notice ships emit-only — so the caller has to pass it, and a
+     * missing one is reported loudly below rather than silently dropping the
+     * notice.
+     */
+    chatHistory: InProgressPersister | undefined;
+  },
+  args: {
+    sessionId: string;
+    sessionDir: string;
+    /** The session's live runner, when it has one. Null ⇒ persist only. */
+    runner?: MergeNoticeRunner | null;
+  },
+): Promise<void> {
+  const { sessionId, sessionDir, runner } = args;
+  // One try around EVERYTHING, because the caller is `onMergeDetectedCb` and the
+  // work that follows this call in it (the docs/145 bare-cache refresh) is not
+  // this feature's to lose. Two things in here can throw at the caller and only
+  // one of them is obvious: `emitMessage` is an EventEmitter broadcast, so a
+  // single broken viewer listener rejects the eligibility signal — the surface
+  // that existed before this change too, now contained.
+  try {
+    const { merged, blocker } = await emitResetEligible(deps, {
+      sessionId,
+      sessionDir,
+      origin: "merge-detected",
+      emit: (msg) => runner?.emitMessage(msg),
+    });
+
+    // Eligible (or nothing to reset): no refusal to report, and any episode the
+    // session was carrying is over.
+    if (!merged || !blocker || blocker.clause === "not-merged") {
+      clearResetSkipEpisode(sessionId);
+      return;
+    }
+
+    if (!deps.chatHistory) {
+      // Never silent, and never claimed: the whole defect being fixed is a
+      // refusal the user could not read, so a wiring gap that reproduces it has
+      // to be visible AND must leave the pre-turn notice free to fire.
+      console.error(
+        `[pre-turn-reset] merge-detected notice for ${sessionId} was DROPPED — no chat history `
+          + "manager is wired, so the refusal reaches no durable surface until the next turn.",
+      );
+      return;
+    }
+
+    const session = deps.getSession(sessionId);
+    if (!claimSkipNotice(sessionId, blocker.clause, session)) return;
+
+    const prStatus = deps.getPrStatus(sessionId);
+    const prNumber = prStatus?.prNumber ?? session?.previousMergedPr?.number;
+    const base = prStatus?.baseBranch ?? session?.previousMergedPr?.baseBranch;
+    const notice = buildMergeTimeSkipNotice(blocker, prNumber, base);
+
+    console.warn(
+      `[pre-turn-reset] merge-detected skip for ${sessionId} (${blocker.clause}): ${blocker.detail}. `
+        + `Branch stays on the merged tip${prNumber ? ` (PR #${prNumber})` : ""}.`,
+    );
+
+    try {
+      if (runner) {
+        emitNoticeInTurn(runner, sessionId, notice, deps.chatHistory, "warn");
+      } else {
+        persistNoticeUnattached(deps.chatHistory, sessionId, notice, "warn");
+      }
+    } catch (err) {
+      // Give the claim back: the durable write may not have happened, so the
+      // pre-turn notice is the only surface left and must not be suppressed by a
+      // delivery that failed. This can duplicate the notice in one narrow case —
+      // `emitChatCard` emits before it persists, so a throw from the persist can
+      // still leave a recorded card that the turn flushes later — and a visible
+      // duplicate is the right side of that trade: the failure this feature
+      // exists to end is silence.
+      clearResetSkipEpisode(sessionId);
+      console.error(`[pre-turn-reset] merge-detected notice failed for ${sessionId}:`, err);
+    }
+  } catch (err) {
+    console.error(`[pre-turn-reset] merge-detected announce failed for ${sessionId}:`, err);
+  }
 }
 
 /**
- * {@link emitResetEligible} against a runner's broadcast transport. Used by the
- * merge-detection path (`onMergeDetectedCb`): a PR that merges while the user is
- * sitting ON the session — never re-activating it — makes the session newly
- * reset-eligible, but neither the activation nor the post-turn recompute fires,
- * so the "start from latest base" composer control would stay hidden until they
- * switched away and back.
+ * docs/266 — the merge-time counterpart of {@link buildSkipNotice}.
+ *
+ * Same three facts, in an order that works where there is NO turn: the pull
+ * request merged just now, the branch was left where it is and why, and what
+ * that costs. The pre-turn wording ("this branch was not reset for this turn",
+ * "send another message") reads as nonsense at a moment the user did not
+ * initiate and may not be present for, which is why this is a second string
+ * rather than a shared one.
+ *
+ * The remedy names committing the work first, because `dirty-tree` is the clause
+ * this fires for in practice and discarding is not what the user wants there.
+ *
+ * Plain prose, no markdown emphasis — `MessageList` renders a `notice` message as
+ * pre-wrapped text, so `**bold**` would show up literally.
  */
-export async function emitResetEligibleSignal(
-  deps: ResetEligibleSignalDeps,
-  runner: { sessionDir: string; emitMessage: (msg: WsServerMessage) => void },
-  sessionId: string,
-): Promise<void> {
-  await emitResetEligible(deps, {
-    sessionId,
-    sessionDir: runner.sessionDir,
-    origin: "merge-detected",
-    emit: (msg) => runner.emitMessage(msg),
-  });
+function buildMergeTimeSkipNotice(skip: ResetSkip, prNumber?: number, base?: string): string {
+  const pr = prNumber ? `#${prNumber}` : "for this session";
+  const into = base ? ` into ${base}` : "";
+  const target = base ? `origin/${base}` : "the latest base";
+  return (
+    `Pull request ${pr} just merged${into}, and this branch was left where it is: it was not `
+    + `reset to ${target} because ${skip.detail}.\n\n`
+    + `Nothing was discarded. But the branch now sits on commits that are already merged and it `
+    + `has no open pull request, so anything committed here from now on will not be auto-pushed `
+    + `and belongs to no pull request.\n\n`
+    + `The reset is re-evaluated at the start of every turn: clear the reason above and send a `
+    + `message, and the branch moves to ${target} then. If there is work in the tree worth `
+    + `keeping, ask the agent to commit it and open a new pull request first.`
+  );
 }
 
 export async function autoResetMergedBranchOnContinue(
@@ -464,7 +723,13 @@ export async function autoResetMergedBranchOnContinue(
     // whether this is a merged session: a skip on a merged session is a reportable
     // event (the branch stays on dead, already-shipped commits), while a skip on
     // an ordinary session is just "nothing to do" and must stay silent.
-    if (!session?.mergedAt) return NOT_MOVED;
+    // docs/266 — a session that is not (or no longer) merged has no standing
+    // refusal, so any episode it carried is over: a docs/202 re-arm reaching
+    // here means the branch moved on, and the next refusal is a new fact.
+    if (!session?.mergedAt) {
+      clearResetSkipEpisode(sessionId);
+      return NOT_MOVED;
+    }
 
     // Gate on the global setting AND an explicit per-send opt-out. Both are
     // deliberate user choices rather than safety refusals, so they are reported
@@ -512,7 +777,10 @@ export async function autoResetMergedBranchOnContinue(
     // and the state this replaces (a `head-moved` skip) healed nothing either.
     const headNow = await git.getHeadHash();
     const baseTipNow = await git.getRefHash(`origin/${base}`);
-    if (headNow && baseTipNow && headNow === baseTipNow) return NOT_MOVED;
+    if (headNow && baseTipNow && headNow === baseTipNow) {
+      clearResetSkipEpisode(sessionId);
+      return NOT_MOVED;
+    }
 
     const { from, to } = await git.resetHardToRemoteBase(base);
 
@@ -548,6 +816,10 @@ export async function autoResetMergedBranchOnContinue(
     // uses for its card: the live snapshot is the better source when present.
     const prNumber = prStatus?.prNumber ?? session.previousMergedPr?.number;
     const prUrl = prStatus?.prUrl ?? session.previousMergedPr?.url;
+
+    // docs/266 — the refusal the user was told about is resolved: the branch
+    // moved. A later one starts a fresh episode and is said again.
+    clearResetSkipEpisode(sessionId);
 
     return {
       moved: true,
@@ -627,9 +899,23 @@ function skipped(
     `[pre-turn-reset] skipped for ${sessionId} (${skip.clause}): ${skip.detail}. `
       + `Branch stays on the merged tip${prNumber ? ` (PR #${prNumber})` : ""}.`,
   );
+  // docs/266 — the notice, and ONLY the notice, is dropped when the user has
+  // already read this exact clause in this episode (merge detection wrote it, or
+  // an earlier turn did). The log line above and the agent prefix below are not
+  // user-facing paragraphs and always fire: the agent is a fresh reader on every
+  // turn, and the ops line is what an investigation greps.
+  //
+  // The two `info` clauses are exempt, and do not touch the episode at all. They
+  // are not a standing condition being re-reported — they are a fact about THIS
+  // message ("you unticked it for this send"), so every send earns its own
+  // record. Claiming for them would also overwrite a standing safety episode and
+  // let the real refusal be said twice.
+  const notice = level === "info" || claimSkipNotice(sessionId, skip.clause, session)
+    ? { notice: buildSkipNotice(skip, prNumber, base) }
+    : {};
   return {
     moved: false,
-    skip: { ...skip, level, notice: buildSkipNotice(skip, prNumber, base) },
+    skip: { ...skip, level, ...notice },
     agentPrefix: buildSkipAgentPrefix(skip, prNumber, base),
   };
 }
@@ -1145,6 +1431,10 @@ export async function resetBranchToBaseExplicit(
         + "would be rejected as non-fast-forward, so stop here rather than continuing.",
       );
     }
+
+    // docs/266 — same as the automatic path: the refusal the user was told about
+    // is resolved, so the episode ends here too.
+    clearResetSkipEpisode(sessionId);
 
     return {
       outcome: "reset",

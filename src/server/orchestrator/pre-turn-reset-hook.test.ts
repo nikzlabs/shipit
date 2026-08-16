@@ -8,8 +8,9 @@
  * with no record in the transcript, is the failure mode planning#297 already had to
  * fix once for the skip case.
  */
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { applyPreTurnReset, type PreTurnResetHookDeps, type PreTurnResetRunner } from "./pre-turn-reset-hook.js";
+import { clearResetSkipEpisode } from "./services/pre-turn-reset.js";
 import type { GitManager } from "../shared/git.js";
 import type { SessionInfo, WsServerMessage } from "../shared/types.js";
 import type { PrStatusSummary } from "../shared/types/github-types.js";
@@ -19,6 +20,12 @@ vi.mock("./session-worker-uid.js", () => ({ handWorkspaceBackToWorker: vi.fn() }
 
 const MERGED_SHA = "a1f3c9d0000000000000000000000000000000aa";
 const BASE_TIP = "7e02b480000000000000000000000000000000bb";
+
+/**
+ * docs/266 — one notice per refusal episode, and the episode is module state
+ * keyed by session id. Every test here is "s1", so clear it between them.
+ */
+beforeEach(() => { clearResetSkipEpisode("s1"); });
 
 function makeSession(over: Partial<SessionInfo> = {}): SessionInfo {
   return {
@@ -276,6 +283,44 @@ describe("applyPreTurnReset — the branch did not move", () => {
     expect(notice?.noticeLevel).toBe("warn");
     // Nothing moved, so the composer control must stay as it was.
     expect(h.emitted.some((m) => m.type === "reset_eligible")).toBe(false);
+  });
+
+  /**
+   * docs/266 — the user has already read this exact paragraph (merge detection
+   * wrote it, or an earlier turn did), so the repeat is dropped. The turn still
+   * carries the agent prefix: the agent is a fresh reader every turn, and it is
+   * what stops the next commit-for-a-dead-PR.
+   */
+  it("drops the repeat of a refusal the user was already shown", async () => {
+    const dirty = { git: makeGit({ isClean: vi.fn().mockResolvedValue(false) }) };
+    await run(makeHarness(dirty));
+
+    const h = makeHarness(dirty);
+    const result = await run(h);
+    expect(result.agentPrefix).toContain("NOT reset");
+    result.afterUserMessagePersisted!("s1");
+    expect(h.appended.find((m) => m.notice === true)).toBeUndefined();
+  });
+
+  /**
+   * docs/266 — the notice claims the refusal episode when the outcome is built,
+   * so a write that never lands would silence every later turn under the same
+   * refusal. A failed LATE write gives the claim back.
+   */
+  it("gives the claim back when the late transcript write fails, so the next turn retries", async () => {
+    const err = vi.spyOn(console, "error").mockImplementation(() => {});
+    const dirty = { git: makeGit({ isClean: vi.fn().mockResolvedValue(false) }) };
+    const broken = makeHarness(dirty);
+    (broken.deps.chatHistoryManager as { append: unknown }).append = () => {
+      throw new Error("db closed");
+    };
+    (await run(broken)).ensureRecorded!("s1");
+
+    const h = makeHarness(dirty);
+    const result = await run(h);
+    result.afterUserMessagePersisted!("s1");
+    expect(h.appended.find((m) => m.notice === true)?.text).toContain("Branch not updated");
+    err.mockRestore();
   });
 
   it("reports a per-send untick at info level", async () => {
