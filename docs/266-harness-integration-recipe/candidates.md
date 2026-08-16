@@ -73,7 +73,8 @@ Phase 10 verification work, not desk research.
   a pin-capable distribution path from Cursor or an explicitly signed-off
   exception to the dependency policy. Subscription credential storage being
   undocumented is the second start-blocker (item 5) unless metered API-key
-  auth is accepted for launch.
+  auth is accepted for launch, and the unknown reasoning control (row 12)
+  is a third — it gates the reviewer wiring (plan.md Phase 0.12).
 
 ## Grok Build (xAI)
 
@@ -105,8 +106,9 @@ projects are unrelated.
   and `--allow`/`--deny` rules plus `--always-approve`.
 - **Verdict**: deliberately Claude-flag-compatible (Claude-shaped adapter),
   but the matrix shows four unknowns — stream schema, token telemetry,
-  reasoning control, API style — of which the stream schema is a
-  start-blocker (item 2) until captured and conformance-tested. Add the
+  reasoning control, API style — of which the stream schema (item 2, until
+  captured and conformance-tested) and reasoning control (row 12, gating
+  the reviewer wiring) are start-blockers. Add the
   third-party sourcing of most flag detail, beta subscription gating, and
   0.x churn: the fact sheet is promising but not yet integration-ready
   evidence.
@@ -121,8 +123,9 @@ projects are unrelated.
   --auto`; or **`opencode serve`** + `run --attach <url>` — a long-lived
   server with a full HTTP API and SDK, avoiding MCP cold-boot per turn.
   This rewards a third adapter shape (attach-to-server) that fits ShipIt's
-  HTTP-only orchestrator↔container pattern; a spawn-per-turn Claude-shaped
-  adapter also works.
+  HTTP-only orchestrator↔container pattern — but per plan.md, the *first*
+  integration takes the proven spawn-per-turn shape; attach-to-server is a
+  separate design task, not a recipe variant.
 - **Streaming**: JSONL — `step_start` → (`tool_use` | `text`)* →
   `step_finish` (+ `error`), `sessionID` on every event. Coarser than
   Claude/Cursor: **no tool-started events**, whole-block text (no deltas).
@@ -160,8 +163,10 @@ projects are unrelated.
 
 - Cursor and Grok imitate Claude Code's flag surface → Claude-shaped
   spawn-per-turn adapters. OpenCode is the outlier rewarding attach-to-server.
-- The two facts most likely to force design decisions: Cursor's
-  unpinnable auto-updating install, and Grok's undocumented stream schema.
+- The facts most likely to force design decisions: Cursor's unpinnable
+  auto-updating install, Grok's undocumented stream schema, and — for both
+  of those two — the unanswered reasoning-control row (12), which gates
+  the reviewer wiring.
 - Suggested order by integration risk (lowest first): OpenCode, then
   Cursor and Grok — each of which carries a start-blocker to clear first
   (Cursor: the pinning policy decision; Grok: stream-schema capture).

@@ -8,7 +8,8 @@ description: Copy this file into the new integration's docs/NNN-*/checklist.md; 
 The whole integration, one line per step. Copy into the integration's own
 `docs/NNN-<harness>/checklist.md` and check off there; the expansion of
 every line, with file pointers and gotchas, is in
-[plan.md](./plan.md). Deliberately *not* named `checklist.md` here — that
+[plan.md](../266-harness-integration-recipe/plan.md) (a path that still
+resolves after the copy). Deliberately *not* named `checklist.md` here — that
 name tracks docs/266's own branch work, and this template's boxes stay
 unchecked.
 
@@ -19,7 +20,8 @@ unchecked.
 
 **1 — Types**
 - [ ] Widen `AgentId` (+ `LoginIntegrationId`/`QuotaIntegrationId` if the
-      CLI has its own login/quota)
+      CLI has its own login/quota; + a per-harness permission-mode constant
+      if its mode set differs)
 - [ ] Widen the ESLint leak-guard regex + add the two folder exemptions
       (same commit)
 
@@ -65,10 +67,13 @@ unchecked.
 - [ ] Auth card (`ServicesPanel`) + `ProviderAccountRows` + misc UI tables
 
 **9 — Tests**
-- [ ] Extend the build-breaking parity tests; sibling auth/turn
-      integration tests; client fixtures
+- [ ] Extend the build-breaking parity tests (repick the installer test's
+      bogus-id fixture if it collides); sibling auth/turn integration
+      tests; client fixtures
 
 **10 — Verify empirically**
-- [ ] Skills-disclosure probe; stream-capture conformance test; one dogfood
+- [ ] Skills-disclosure probe; stream-capture conformance test (incl. a
+      synthesized terminal result if the stream is lossy); one dogfood
       turn per auth mode (billing route!); `shipit agent run` both
-      directions
+      directions; every declared capability flag confirmed against
+      observed behavior

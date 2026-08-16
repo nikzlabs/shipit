@@ -68,8 +68,12 @@ which CLI is running.
 | Event mapping | `switch` in `adapter.ts` (`mapEvent`) | separate `codex-event-handler.ts` module |
 
   Cursor CLI and Grok Build imitate Claude Code's flag surface and slot into
-  the Claude shape; OpenCode's `serve` HTTP API suggests a third,
-  attach-to-server shape (see candidates.md).
+  the Claude shape. OpenCode's `serve` HTTP API suggests a third,
+  attach-to-server shape — **deliberately out of scope for this recipe**:
+  the first OpenCode integration should take the proven spawn-per-turn
+  shape (`opencode run`), and attach-to-server is its own design task (new
+  process-lifecycle, permission, and event surfaces) with its own docs
+  folder if ever pursued (see candidates.md).
 - **What needs no changes:** `ProxyAgentProcess`
   (`orchestrator/proxy-agent-process.ts`) and the whole orchestrator↔worker
   HTTP/SSE plumbing are agent-agnostic. Never read its hardcoded
@@ -86,7 +90,11 @@ blocks integration outright; a "no" on 5 (no injectable auth path) or 6 (no
 pinnable install) blocks until an explicit design/policy decision is signed
 off — neither is improvisable; a "no" or "unknown" on 12 blocks the
 *reviewer* wiring specifically (see step 4); everything else is a capability
-flag honestly set to `false`.
+flag honestly set to `false`. An *unknown* on any blocker item is a "no"
+until researched, not a pass. On item 5, note that an API-key env var alone
+technically passes — but ShipIt is subscription-first, so a missing or
+undocumented subscription-injection path still needs the same explicit
+sign-off before integrating on metered-only auth.
 
 1. **Headless mode**: accepts a prompt non-interactively (no TTY) and runs a
    full agentic turn to completion in a Docker container.
@@ -273,7 +281,7 @@ String-literal validators that **drop or reject a new id**:
 - `token-sync-manager.ts:126,921,990,1017` — per-agent token freshness
   readers and stale-resume recovery; a new OAuth backend needs its own
   parser, and gets **no** stale-resume recovery until written.
-- `orchestrator/session-agent-env.ts:1164` — Codex-style first-run home
+- `orchestrator/session-agent-env.ts:828` — Codex-style first-run home
   init (`ensureCodexHomeInitialized`); copy the shape if the CLI needs a
   seeded config root.
 - MCP tool subsets are hardcoded **inside each adapter**
@@ -375,7 +383,13 @@ fake agent (`integration_tests/test-helpers.ts:722`) hardcodes
 
 - Run the docs/209 skill-disclosure probe against the real CLI.
 - Capture a real turn's event stream in a container and lock it with a
-  conformance test (mandatory when the schema is undocumented — Grok).
+  conformance test — mandatory both when the schema is undocumented (Grok)
+  and when it is documented but lossy (OpenCode: the adapter must
+  synthesize the terminal result from process exit when the final event
+  never arrives, and the test must cover that path).
+- Confirm every declared `AgentCapabilities` flag (Phase 0 item 13) against
+  observed behavior — a wrong flag surfaces as runtime misbehavior, not a
+  type error.
 - One dogfood turn per auth mode (subscription file-injection AND api-key
   env), verifying the billing route via the scrub/shaping path — a
   `HARNESS_CREDENTIAL_VARS` miss is invisible except on the bill.
