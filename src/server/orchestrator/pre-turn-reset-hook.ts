@@ -38,7 +38,7 @@
 
 import { randomUUID } from "node:crypto";
 import type { BranchAutoResetCard, WsServerMessage } from "../shared/types.js";
-import { autoResetMergedBranchOnContinue } from "./services/pre-turn-reset.js";
+import { autoResetMergedBranchOnContinue, clearResetSkipEpisode } from "./services/pre-turn-reset.js";
 import { detectAndReArmResetSession, type ReArmDeps } from "./services/pr-rearm.js";
 import {
   emitChatCard,
@@ -188,7 +188,12 @@ export async function applyPreTurnReset(args: {
     }
   }
 
-  const skipNotice = reset.skip;
+  // docs/266 — `skip.notice` is absent when merge detection (or an earlier turn
+  // in the same refusal episode) already showed the user this exact paragraph.
+  // The skip's agent prefix still rides the turn; only the repeat is dropped.
+  const skipNotice = reset.skip?.notice
+    ? { notice: reset.skip.notice, level: reset.skip.level }
+    : null;
 
   // One delivery, two triggers, one latch. `emitChatCard` persists in the same
   // call, so whichever fires first is the durable record and the other must not
@@ -252,6 +257,12 @@ export async function applyPreTurnReset(args: {
       }
       recorded = true;
     } catch (err) {
+      // docs/266 — the skip notice claimed the refusal episode when the outcome
+      // was built, so a write that never lands would silence every later turn
+      // under the same refusal as a duplicate. Give the claim back on the LATE
+      // route only: the anchored one still has this fallback to retry on, and
+      // releasing there would let both attempts write.
+      if (!anchored && skipNotice) clearResetSkipEpisode(sid);
       console.error(
         `[pre-turn-reset] pre-turn transcript record failed for ${sid}` +
           `${anchored ? " (will retry on the post-turn fallback)" : ""}:`,

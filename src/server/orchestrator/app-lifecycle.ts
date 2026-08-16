@@ -29,7 +29,7 @@ import { getErrorMessage } from "./validation.js";
 import type { LogStore } from "./log-store.js";
 import { fetchCIFailureLogs, buildCIFixPrompt } from "./services/github.js";
 import { markMergedAndPruneExcess } from "./services/session.js";
-import { emitResetEligibleSignal } from "./services/pre-turn-reset.js";
+import { announceResetStateOnMerge } from "./services/pre-turn-reset.js";
 import { runAutoResolveAttempt } from "./services/rebase-driver.js";
 import type { AutoResolveResult, RebaseAndResolveCb } from "./auto-conflict-resolve-manager.js";
 import { autoFixResultForOutcome, type AutoFixResult } from "./auto-fix-manager.js";
@@ -1291,18 +1291,27 @@ export function createPrStatusPoller(
         // and never re-activates it, neither the activation nor the post-turn
         // recompute fires, so the "start from latest base" composer control would
         // stay hidden until they switch away and back. Push the freshly-recomputed
-        // signal to the attached viewers now; skipped when no live runner (the
-        // activation path covers the reattach case).
+        // signal to the attached viewers now.
+        //
+        // docs/266 — and when the safety gate REFUSES, write the refusal into the
+        // transcript here rather than leaving it to the user's next message. A
+        // hidden composer control says nothing, so the refused case used to reach
+        // no user-readable surface at merge time at all. Runs whether or not a
+        // runner is live: the transcript is durable, the `reset_eligible` signal
+        // is not, so `sessionManager`'s workspace dir is the fallback source for
+        // the session dir. Never throws — the notice is best-effort inside this
+        // already-guarded block.
         const mergedRunner = runnerRegistry.get(sessionId);
-        if (mergedRunner) {
-          await emitResetEligibleSignal(
+        const mergedSessionDir = mergedRunner?.sessionDir ?? sessionManager.get(sessionId)?.workspaceDir;
+        if (mergedSessionDir) {
+          await announceResetStateOnMerge(
             {
               getSession: (id) => sessionManager.get(id),
               getPrStatus: (id) => sessionManager.getPrStatus(id),
               createGitManager,
+              chatHistory: chatHistoryManager,
             },
-            mergedRunner,
-            sessionId,
+            { sessionId, sessionDir: mergedSessionDir, runner: mergedRunner ?? null },
           );
         }
         // docs/145: a merge moved `main`, so the bare cache is now stale.

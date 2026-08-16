@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, afterEach } from "vitest";
-import { computeResetEligible, computeResetBlocker, autoResetMergedBranchOnContinue, isResetEligible, emitResetEligible, emitResetEligibleSignal, resetBranchToBaseExplicit, RESET_REFUSAL_GUIDANCE, type PreTurnResetDeps } from "./pre-turn-reset.js";
+import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
+import { computeResetEligible, computeResetBlocker, autoResetMergedBranchOnContinue, isResetEligible, emitResetEligible, announceResetStateOnMerge, clearResetSkipEpisode, resetBranchToBaseExplicit, RESET_REFUSAL_GUIDANCE, type PreTurnResetDeps, type MergeNoticeRunner } from "./pre-turn-reset.js";
 import { handWorkspaceBackToWorker } from "../session-worker-uid.js";
 
 vi.mock("../session-worker-uid.js", () => ({ handWorkspaceBackToWorker: vi.fn() }));
@@ -69,6 +69,13 @@ function makeGit(over: Partial<Record<keyof GitManager, unknown>> = {}): GitMana
     ...over,
   } as unknown as GitManager;
 }
+
+/**
+ * docs/266 — the notice-suppression episode is module state keyed by session id,
+ * and every test here uses "s1". Clear it between tests so one test's refusal
+ * cannot silence the next one's notice.
+ */
+beforeEach(() => { clearResetSkipEpisode("s1"); });
 
 describe("computeResetEligible (safety-only gate)", () => {
   it("is true for a merged, untouched, clean branch on its own ref", async () => {
@@ -630,7 +637,31 @@ describe("isResetEligible (composer-control signal)", () => {
   });
 });
 
-describe("emitResetEligibleSignal (merge-while-viewing push)", () => {
+/**
+ * docs/266 — the merge-time half. A merge that lands on a branch the safety gate
+ * will not reset used to tell the user nothing AT THE TIME: the composer control
+ * simply stayed hidden, and planning#297's notice waited for their next message. In
+ * the incident (session 5203c910, PR #2327) that was 4m45s of silence — exactly
+ * the window in which committing and opening a new PR was still cheap.
+ */
+describe("announceResetStateOnMerge (say it when the PR merges)", () => {
+  /** A live runner with the surface `emitNoticeInTurn` touches. */
+  function makeRunner(over: Record<string, unknown> = {}): MergeNoticeRunner {
+    return {
+      emitMessage: vi.fn(),
+      running: false,
+      chatMessageGroups: [],
+      recordedCards: [],
+      steeredMessages: [],
+      lastPersistedBufferIndex: 0,
+      ...over,
+    } as unknown as MergeNoticeRunner;
+  }
+
+  function makeHistory() {
+    return { append: vi.fn(), replaceInProgress: vi.fn() };
+  }
+
   function makeDeps(over: Partial<Omit<PreTurnResetDeps, "getAutoResetMergedBranch">> = {}) {
     return {
       getSession: () => makeSession(),
@@ -640,17 +671,275 @@ describe("emitResetEligibleSignal (merge-while-viewing push)", () => {
     };
   }
 
-  it("recomputes eligibility and emits reset_eligible to the runner's viewers", async () => {
-    const emitMessage = vi.fn();
-    await emitResetEligibleSignal(makeDeps(), { sessionDir: "/ws", emitMessage }, "s1");
-    expect(emitMessage).toHaveBeenCalledWith({ type: "reset_eligible", sessionId: "s1", eligible: true });
+  const dirtyGit = (paths: string[] = ["src/a.ts"]): GitManager =>
+    makeGit({
+      isClean: vi.fn().mockResolvedValue(false),
+      uncommittedPaths: vi.fn().mockResolvedValue(paths),
+    });
+
+  it("still pushes the reset_eligible signal to the runner's viewers", async () => {
+    const runner = makeRunner();
+    await announceResetStateOnMerge(
+      { ...makeDeps(), chatHistory: makeHistory() },
+      { sessionId: "s1", sessionDir: "/ws", runner },
+    );
+    expect(runner.emitMessage).toHaveBeenCalledWith({ type: "reset_eligible", sessionId: "s1", eligible: true });
   });
 
-  it("emits eligible:false when the branch already moved off the merged tip", async () => {
-    const emitMessage = vi.fn();
-    const git = makeGit({ getHeadHash: vi.fn().mockResolvedValue("deadbeef0000000000000000000000000000beef") });
-    await emitResetEligibleSignal(makeDeps({ createGitManager: () => git }), { sessionDir: "/ws", emitMessage }, "s1");
-    expect(emitMessage).toHaveBeenCalledWith({ type: "reset_eligible", sessionId: "s1", eligible: false });
+  it("says nothing when the gate is happy (the control appearing IS the message)", async () => {
+    const chatHistory = makeHistory();
+    await announceResetStateOnMerge(
+      { ...makeDeps(), chatHistory },
+      { sessionId: "s1", sessionDir: "/ws", runner: makeRunner() },
+    );
+    expect(chatHistory.append).not.toHaveBeenCalled();
+    expect(chatHistory.replaceInProgress).not.toHaveBeenCalled();
+  });
+
+  it("persists a warn notice naming the PR, the base and the refusal when the gate refuses", async () => {
+    const chatHistory = makeHistory();
+    const runner = makeRunner();
+    await announceResetStateOnMerge(
+      { ...makeDeps({ createGitManager: () => dirtyGit(["src/b.ts", "docs/a.md"]) }), chatHistory },
+      { sessionId: "s1", sessionDir: "/ws", runner },
+    );
+    expect(chatHistory.append).toHaveBeenCalledOnce();
+    const [sid, row] = chatHistory.append.mock.calls[0] as [string, { text: string; noticeLevel: string; notice: boolean }];
+    expect(sid).toBe("s1");
+    expect(row.notice).toBe(true);
+    expect(row.noticeLevel).toBe("warn");
+    // The three facts, at the moment they are still cheap to act on.
+    expect(row.text).toContain("#482");
+    expect(row.text).toContain("just merged into main");
+    expect(row.text).toContain("uncommitted paths: docs/a.md, src/b.ts");
+    expect(row.text).toContain("will not be auto-pushed");
+    // …and it renders live too, for the viewer who is sitting on the session.
+    expect(runner.emitMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ type: "system_notice", sessionId: "s1", level: "warn" }),
+    );
+  });
+
+  it("persists the notice even with NO live runner (the transcript is the durable surface)", async () => {
+    const chatHistory = makeHistory();
+    await announceResetStateOnMerge(
+      { ...makeDeps({ createGitManager: () => dirtyGit() }), chatHistory },
+      { sessionId: "s1", sessionDir: "/ws", runner: null },
+    );
+    expect(chatHistory.append).toHaveBeenCalledOnce();
+  });
+
+  it("takes the in-turn persistence route when a turn is running (the incident's own case)", async () => {
+    // The agent was mid-turn when the PR merged. `emitNoticeInTurn` must record
+    // the notice in-band rather than appending it above the running turn's rows.
+    const chatHistory = makeHistory();
+    const runner = makeRunner({ running: true });
+    await announceResetStateOnMerge(
+      { ...makeDeps({ createGitManager: () => dirtyGit() }), chatHistory },
+      { sessionId: "s1", sessionDir: "/ws", runner },
+    );
+    expect(chatHistory.replaceInProgress).toHaveBeenCalledOnce();
+    expect(chatHistory.append).not.toHaveBeenCalled();
+  });
+
+  /**
+   * Every clause the SAFETY gate can return on a merged session earns a notice —
+   * each one means "your branch was left on already-merged commits". The two
+   * consent clauses (`setting-off` / `opted-out`) cannot reach here at all: this
+   * gate does not evaluate them.
+   */
+  it.each([
+    ["dirty-tree", { isClean: vi.fn().mockResolvedValue(false) }],
+    ["detached-head", { currentBranchOrNull: vi.fn().mockResolvedValue(null) }],
+    ["wrong-branch", { currentBranchOrNull: vi.fn().mockResolvedValue("shipit/other") }],
+    ["rebase-in-progress", { isRebaseInProgress: vi.fn().mockResolvedValue(true) }],
+    ["sequencer-in-progress", { isMergeOrSequencerInProgress: vi.fn().mockResolvedValue(true) }],
+    ["head-moved", { getHeadHash: vi.fn().mockResolvedValue("deadbeef000000000000000000000000000beef1") }],
+  ] as const)("notifies for the %s clause", async (_clause, over) => {
+    const chatHistory = makeHistory();
+    await announceResetStateOnMerge(
+      { ...makeDeps({ createGitManager: () => makeGit(over) }), chatHistory },
+      { sessionId: "s1", sessionDir: "/ws", runner: null },
+    );
+    expect(chatHistory.append).toHaveBeenCalledOnce();
+  });
+
+  it("stays silent for a session with no merged pull request", async () => {
+    const chatHistory = makeHistory();
+    const session = makeSession();
+    delete session.mergedAt;
+    await announceResetStateOnMerge(
+      { ...makeDeps({ getSession: () => session, createGitManager: () => dirtyGit() }), chatHistory },
+      { sessionId: "s1", sessionDir: "/ws", runner: null },
+    );
+    expect(chatHistory.append).not.toHaveBeenCalled();
+  });
+
+  it("reports a dropped notice loudly when no chat history is wired", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    await announceResetStateOnMerge(
+      { ...makeDeps({ createGitManager: () => dirtyGit() }), chatHistory: undefined },
+      { sessionId: "s1", sessionDir: "/ws", runner: null },
+    );
+    expect(error).toHaveBeenCalledWith(expect.stringContaining("was DROPPED"));
+    error.mockRestore();
+  });
+
+  it("logs one greppable line per merge-time skip", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    await announceResetStateOnMerge(
+      { ...makeDeps({ createGitManager: () => dirtyGit() }), chatHistory: makeHistory() },
+      { sessionId: "s1", sessionDir: "/ws", runner: null },
+    );
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining("[pre-turn-reset] merge-detected skip for s1 (dirty-tree)"),
+    );
+    warn.mockRestore();
+  });
+
+  it("notifies for the clauses that need no git failure (no-base-branch, no-merged-head-sha)", async () => {
+    for (const over of [
+      { getPrStatus: () => null },
+      { getSession: (): SessionInfo => { const s = makeSession(); delete s.mergedHeadSha; return s; } },
+    ]) {
+      clearResetSkipEpisode("s1");
+      const chatHistory = makeHistory();
+      await announceResetStateOnMerge(
+        { ...makeDeps(over), chatHistory },
+        { sessionId: "s1", sessionDir: "/ws", runner: null },
+      );
+      expect(chatHistory.append).toHaveBeenCalledOnce();
+    }
+  });
+
+  /**
+   * `onMergeDetectedCb` does more after this call (the docs/145 bare-cache
+   * refresh). `emitMessage` is an EventEmitter broadcast, so one broken viewer
+   * listener must not take the rest of the post-merge work down with it.
+   */
+  it("swallows a throwing viewer transport instead of aborting post-merge work", async () => {
+    const error = vi.spyOn(console, "error").mockImplementation(() => {});
+    const runner = makeRunner({ emitMessage: vi.fn(() => { throw new Error("dead socket"); }) });
+    await expect(announceResetStateOnMerge(
+      { ...makeDeps({ createGitManager: () => dirtyGit() }), chatHistory: makeHistory() },
+      { sessionId: "s1", sessionDir: "/ws", runner },
+    )).resolves.toBeUndefined();
+    error.mockRestore();
+  });
+
+  it("is fail-safe: a git throw reports nothing rather than propagating", async () => {
+    const git = makeGit({ isClean: vi.fn().mockRejectedValue(new Error("git boom")) });
+    const chatHistory = makeHistory();
+    await expect(announceResetStateOnMerge(
+      { ...makeDeps({ createGitManager: () => git }), chatHistory },
+      { sessionId: "s1", sessionDir: "/ws", runner: null },
+    )).resolves.toBeUndefined();
+    expect(chatHistory.append).not.toHaveBeenCalled();
+  });
+
+  /**
+   * The suppression rule. One paragraph per refusal EPISODE — the shape
+   * `auto-push-scheduler.ts` uses for diverged pushes, because a user who reads
+   * the merge-time notice and then sends a message must not read it again.
+   */
+  describe("no double-notify", () => {
+    async function announceDirty(over: Partial<Record<keyof GitManager, unknown>> = {}): Promise<void> {
+      await announceResetStateOnMerge(
+        { ...makeDeps({ createGitManager: () => makeGit({ isClean: vi.fn().mockResolvedValue(false), ...over }) }), chatHistory: makeHistory() },
+        { sessionId: "s1", sessionDir: "/ws", runner: null },
+      );
+    }
+
+    function preTurnDeps(over: Partial<PreTurnResetDeps> = {}): PreTurnResetDeps {
+      return {
+        getSession: () => makeSession(),
+        getPrStatus: () => makePrStatus(),
+        createGitManager: () => makeGit({ isClean: vi.fn().mockResolvedValue(false) }),
+        getAutoResetMergedBranch: () => true,
+        ...over,
+      };
+    }
+
+    it("drops the pre-turn repeat of a clause merge detection already reported", async () => {
+      await announceDirty();
+      const out = await autoResetMergedBranchOnContinue(preTurnDeps(), "s1", "/ws");
+      expect(out.skip?.clause).toBe("dirty-tree");
+      expect(out.skip?.notice).toBeUndefined();
+      // The agent is a fresh reader every turn, so its prefix is NOT suppressed —
+      // this is what stops the next commit-for-a-dead-PR.
+      expect(out.agentPrefix).toContain("already merged");
+    });
+
+    it("says it again when the refusal becomes a DIFFERENT clause", async () => {
+      await announceDirty();
+      const out = await autoResetMergedBranchOnContinue(
+        preTurnDeps({
+          createGitManager: () => makeGit({ getHeadHash: vi.fn().mockResolvedValue("deadbeef000000000000000000000000000beef1") }),
+        }),
+        "s1",
+        "/ws",
+      );
+      expect(out.skip?.clause).toBe("head-moved");
+      expect(out.skip?.notice).toContain("not updated to the latest base");
+    });
+
+    it("starts a fresh episode once the branch actually moves", async () => {
+      await announceDirty();
+      // A clean tree: the reset runs, which ends the episode…
+      const moved = await autoResetMergedBranchOnContinue(preTurnDeps({ createGitManager: () => makeGit() }), "s1", "/ws");
+      expect(moved.moved).toBe(true);
+      // …so the same clause refusing later is news again.
+      const out = await autoResetMergedBranchOnContinue(preTurnDeps(), "s1", "/ws");
+      expect(out.skip?.notice).toContain("not updated to the latest base");
+    });
+
+    it("keeps reporting the per-send opt-out, which is a fact about THIS message", async () => {
+      await announceDirty();
+      for (const _ of [1, 2]) {
+        const out = await autoResetMergedBranchOnContinue(preTurnDeps(), "s1", "/ws", false);
+        expect(out.skip?.clause).toBe("opted-out");
+        expect(out.skip?.notice).toContain("not updated to the latest base");
+      }
+      // …and the standing safety episode it did NOT overwrite is still suppressed.
+      const out = await autoResetMergedBranchOnContinue(preTurnDeps(), "s1", "/ws");
+      expect(out.skip?.clause).toBe("dirty-tree");
+      expect(out.skip?.notice).toBeUndefined();
+    });
+
+    /**
+     * The episode belongs to ONE merge. A second pull request merging into the
+     * same unchanged refusal is a NEW fact, and an entry left behind by the
+     * first one must not silence it — the resolving paths (both reset modes,
+     * both re-arms, an interval that simply became eligible) are too many for
+     * "we cleared it everywhere" to be a checkable claim.
+     */
+    it("says it again for a LATER merge with the same clause and no clear in between", async () => {
+      await announceDirty();
+      const second = makeSession({ mergedHeadSha: "cafe000000000000000000000000000000000fed" });
+      const chatHistory = makeHistory();
+      await announceResetStateOnMerge(
+        {
+          ...makeDeps({
+            getSession: () => second,
+            createGitManager: () => makeGit({ isClean: vi.fn().mockResolvedValue(false) }),
+          }),
+          chatHistory,
+        },
+        { sessionId: "s1", sessionDir: "/ws", runner: null },
+      );
+      expect(chatHistory.append).toHaveBeenCalledOnce();
+    });
+
+    it("leaves the pre-turn notice free when the merge-time delivery failed", async () => {
+      const error = vi.spyOn(console, "error").mockImplementation(() => {});
+      const chatHistory = { append: vi.fn(() => { throw new Error("db closed"); }), replaceInProgress: vi.fn() };
+      await announceResetStateOnMerge(
+        { ...makeDeps({ createGitManager: () => makeGit({ isClean: vi.fn().mockResolvedValue(false) }) }), chatHistory },
+        { sessionId: "s1", sessionDir: "/ws", runner: null },
+      );
+      const out = await autoResetMergedBranchOnContinue(preTurnDeps(), "s1", "/ws");
+      expect(out.skip?.notice).toContain("not updated to the latest base");
+      error.mockRestore();
+    });
   });
 });
 
