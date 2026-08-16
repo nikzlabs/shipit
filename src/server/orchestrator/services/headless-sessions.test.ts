@@ -439,18 +439,23 @@ describe("createHeadlessSession", () => {
       expect(sessionManager.get("quick-1")).toMatchObject({ agentId: "codex", agentPinned: true });
     });
 
-    it("does not describe an unknown agent id as an API-style mismatch", async () => {
-      await createHeadlessSession(
+    it("refuses an agent id no harness has, rather than silently using the model's", async () => {
+      const service = claimService();
+
+      // Free text off the wire — the route casts it without checking. Falling
+      // through would resolve to the MODEL's harness, so a one-character typo
+      // created a session on Claude, pinned write-once, and billed its first
+      // turn: planning#389's defect one step out. The installed-harness gate
+      // below cannot catch it, because the id it is finally asked about is a
+      // real installed one.
+      await expect(createHeadlessSession(
         sessionManager,
         registry as unknown as SessionRunnerRegistry,
-        claimService(),
+        service,
         {
           repoUrl: "https://github.com/acme/app.git",
           prompt: "unknown harness",
-          // Free text off the wire — the route casts it without checking. The
-          // refusal speaks about API styles, which says nothing true about an id
-          // no harness has, so this keeps falling through to the model's harness.
-          agent: "gemini" as AgentId,
+          agent: "codexx" as AgentId,
           model: "claude-opus-5",
         },
         "claude",
@@ -458,9 +463,34 @@ describe("createHeadlessSession", () => {
         undefined,
         undefined,
         graduationDeps,
-      );
+      )).rejects.toMatchObject({
+        statusCode: 400,
+        message: "Unknown agent 'codexx'. Valid agents: claude, codex.",
+      });
 
-      expect(sessionManager.get("quick-1")).toMatchObject({ agentId: "claude" });
+      expect(service.claim).not.toHaveBeenCalled();
+      expect(sessionManager.list()).toEqual([]);
+    });
+
+    it("refuses an unknown agent id with no model too — one rule, not two", async () => {
+      // Without a model the old path fell back to the install default with a
+      // console warning, which is quieter than a 400 and says nothing to the
+      // caller. `spawnChildSession` refuses this id unconditionally; so does this.
+      await expect(createHeadlessSession(
+        sessionManager,
+        registry as unknown as SessionRunnerRegistry,
+        claimService(),
+        {
+          repoUrl: "https://github.com/acme/app.git",
+          prompt: "unknown harness, no model",
+          agent: "gemini" as AgentId,
+        },
+        "claude",
+        undefined,
+        undefined,
+        undefined,
+        graduationDeps,
+      )).rejects.toMatchObject({ statusCode: 400, message: /^Unknown agent 'gemini'\./ });
     });
   });
 

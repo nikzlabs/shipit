@@ -464,21 +464,27 @@ export function implementerFor(
  * rather than refusing everything, and the credential-route check downstream
  * stays the authority in that case.
  *
- * **The message names which of the two causes it is.** The eligible set is the
- * catalogue join narrowed by credential, so a miss can mean either "this harness
- * cannot speak that model's API style" or "it can, and nothing here holds a
- * credential for that row" — and those have different remedies (pick another
- * model vs. connect an account). A single credential-blaming sentence sent the
- * reader to Settings for a pair no credential could ever fix (planning#389).
- * Style is asked first because it is the unconditional fact: no credential makes
- * an incompatible pair runnable.
+ * **Blaming the credential is accurate here, and only because of what runs
+ * first.** The eligible set is the catalogue join narrowed by credential, so a
+ * miss could in principle mean either "this harness cannot speak that model's API
+ * style" or "it can, and nothing here holds a credential for that row" — two
+ * causes with different remedies (pick another model vs. connect an account), and
+ * naming the wrong one sends the reader to Settings for a pair no credential
+ * could ever fix. What keeps that from happening is that the style question is
+ * already answered, and refused, upstream: `runSubAgent` calls
+ * {@link resolveSpawnTarget} first (`sub-agent.ts`), which throws
+ * "…they share no API style" for an incompatible explicit target, and this
+ * function is called under the SAME `kind === "explicit"` gate. So every
+ * selection that reaches here shares a style, and a credential is the only thing
+ * left to be missing.
  *
- * Takes the harness ID rather than its display name precisely so it can ask that
- * question; the name is resolved from the catalogue, which is where the callers'
- * `AgentInfo.name` comes from anyway.
+ * Verified at `sub-agent.ts:runSubAgent` (resolve, then assert) against
+ * `resolveSpawnTarget`'s style check. **Move this call ahead of that one and the
+ * message starts misdirecting** — planning#389 is what that class of misdirection
+ * costs; the fix is to name the cause here, not to reorder the two.
  */
 export function assertHarnessCanRunSelection(
-  harnessId: AgentId,
+  harnessName: string,
   eligibleModels: readonly ModelSelection[] | undefined,
   selection: ModelSelection,
 ): void {
@@ -491,12 +497,7 @@ export function assertHarnessCanRunSelection(
       && m.modelId === selection.modelId,
   );
   if (match) return;
-  const model = getModel(selection);
-  const harnessName = getHarness(harnessId)?.name ?? harnessId;
-  const label = model?.label ?? selection.modelId;
-  if (model && resolveStyle(harnessId, model) === undefined) {
-    throw new ServiceError(400, `${harnessName} cannot run ${label} — they share no API style.`);
-  }
+  const label = getModel(selection)?.label ?? selection.modelId;
   throw new ServiceError(
     400,
     `${harnessName} cannot run ${label} on ${selection.serviceId}/${selection.billingMode} — `

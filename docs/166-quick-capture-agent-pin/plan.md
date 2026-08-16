@@ -279,21 +279,44 @@ its `console.warn`. It is a different question: that harness *could* run the
 model, this deployment simply does not ship it, and the user cannot re-aim a
 quick capture from where they are.
 
-Two smaller things went with it:
+An **agent id no harness has** is now refused too, whether or not a model came
+with it (`Unknown agent 'codexx'. Valid agents: claude, codex.`, the wording
+`spawnChildSession` already uses). `agent` reaches this path as free text — the
+route casts the JSON field and the multipart part without checking — and with a
+model present the fall-through resolved to the *model's* harness, so a
+one-character typo produced the same silent, billed, write-once substitution one
+step further out. The installed-harness gate cannot catch that: by the time it is
+asked, the id it sees is a real installed one. This is **not** the req 14 case
+below it, which is an id this deployment merely lacks — a real harness a stale
+picker could legitimately hold, so that one still falls back.
 
-- The whole harness/model resolution moved **above** the workspace claim. It was
-  always a pure question about the request, and a refusal should not cost a
-  claimed warm session or a branch rename (`spawnChildSession` orders it the same
-  way, for the same reason).
-- `assertHarnessCanRunSelection` blamed the credential (`… — no credential this
-  harness can use offers it`) for every miss, including ones no credential could
-  fix. It now asks the style question first and names whichever cause it is —
-  the two have different remedies (pick another model vs. connect an account).
+The resolution as a whole also moved **above** the workspace claim. It was always
+a pure question about the request, and a refusal should not cost a claimed warm
+session or a branch rename (`spawnChildSession` orders it the same way, for the
+same reason).
+
+### What did *not* need fixing
+
+planning#389 also reported that `assertHarnessCanRunSelection`'s refusal (`… — no
+credential this harness can use offers it`) blames the credential where the real
+cause is API-style incompatibility. On that path it does not, and the reason is an
+ordering rather than anything in the function: `runSubAgent` calls
+`resolveSpawnTarget` **first**, which refuses a style-incompatible explicit target
+with "…they share no API style", and `assertHarnessCanRunSelection` is called
+under the same `kind === "explicit"` gate. So a style-incompatible pair never
+reaches it, and a credential really is the only thing left to be missing.
+
+A first cut of this fix added the style branch there anyway. Independent review
+established it was unreachable — dead code, plus a test asserting behaviour no
+request can produce. It was removed; what stands in its place is the ordering,
+recorded in the function's docstring and in the test file, so that moving the call
+ahead of `resolveSpawnTarget` is visibly what would make the message start
+misdirecting.
 
 Tests: `headless-sessions.test.ts` (the refusal, that it precedes every side
-effect, and each of the three cases that must *not* refuse),
-`quick-capture-headless.test.ts` (the HTTP 400, and the surviving derivation),
-`sub-agent-target.test.ts` (each refusal message names its own cause).
+effect, the unknown-id refusal, and each of the three cases that must *not*
+refuse), `quick-capture-headless.test.ts` (the HTTP 400, and the surviving
+derivation).
 
 ## Related
 

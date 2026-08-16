@@ -13,6 +13,7 @@ import {
   agentIdForModel,
   getAgentCapabilities,
   getAgentDisplayName,
+  KNOWN_AGENT_IDS,
 } from "../../shared/agent-registry.js";
 import { isHarnessInstalled } from "../../shared/installed-harnesses.js";
 import { generateBranchPrefix } from "../git-utils.js";
@@ -193,10 +194,30 @@ export async function createHeadlessSession(
   // caller who named a model and NO harness, or one whose harness this build does
   // not know.
   const explicitAgent = opts.agent;
-  // `undefined` for an agent id this build does not know at all (a typo, a
-  // future harness). Such a caller keeps the old behaviour and is caught by the
-  // installed-harness gate below — a refusal about API styles would misdescribe it.
+  // An id no harness in this build has. `agent` reaches here as free text — the
+  // route casts the JSON field and the multipart part without checking either —
+  // so a typo lands here, and `spawnChildSession` names LLM-written harness ids as
+  // a known source of them.
+  //
+  // Refused rather than repaired, and refused whether or not a model came with it.
+  // The alternative is the same silent substitution planning#389 is about, one
+  // step further out: with a model present the fall-through below resolves to the
+  // MODEL's harness, so `agent: "codexx"` would create a session on Claude, pin it
+  // write-once and bill its first turn — and the installed-harness gate below
+  // cannot catch that, because the id it is finally asked about is a real
+  // installed one.
+  //
+  // This is NOT the req 14 case immediately below it: that one is an id this
+  // deployment merely lacks, which is a real harness a stale picker could
+  // legitimately be holding, so it still falls back. Nothing legitimately holds an
+  // id no build ever declared.
   const explicitCapabilities = explicitAgent ? getAgentCapabilities(explicitAgent) : undefined;
+  if (explicitAgent && !explicitCapabilities) {
+    throw new ServiceError(
+      400,
+      `Unknown agent '${explicitAgent}'. Valid agents: ${KNOWN_AGENT_IDS.join(", ")}.`,
+    );
+  }
   const explicitAgentRunsModel = Boolean(
     explicitCapabilities && opts.model && explicitCapabilities.models.includes(opts.model),
   );

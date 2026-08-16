@@ -623,38 +623,24 @@ describe("assertHarnessCanRunSelection", () => {
 
   it("accepts a selection in the harness's eligible set", async () => {
     const { assertHarnessCanRunSelection } = await import("./sub-agent-target.js");
-    expect(() => assertHarnessCanRunSelection("codex", [selection], selection)).not.toThrow();
+    expect(() => assertHarnessCanRunSelection("Codex", [selection], selection)).not.toThrow();
   });
 
   it("refuses a harness pointed at a model no credential of its own offers", async () => {
     const { assertHarnessCanRunSelection } = await import("./sub-agent-target.js");
     expect(() =>
-      assertHarnessCanRunSelection("claude", [selection], { ...selection, modelId: "gpt-5.6-luna" }),
+      assertHarnessCanRunSelection("Claude Code", [selection], { ...selection, modelId: "gpt-5.6-luna" }),
     ).toThrow(/cannot run/);
   });
 
-  // planning#389 — the two causes of a miss have different remedies, so the
-  // message must say which one it is. A style-incompatible pair sent the reader
-  // to Settings to connect a credential that could never make it runnable.
-  it("blames the API style, not the credential, when the harness cannot speak the model", async () => {
-    const { assertHarnessCanRunSelection } = await import("./sub-agent-target.js");
-    // Codex speaks openai-* styles; `claude-opus-5` declares anthropic-messages only.
-    expect(() =>
-      assertHarnessCanRunSelection("codex", [selection], {
-        serviceId: "anthropic",
-        billingMode: "sub",
-        modelId: "claude-opus-5",
-      }),
-    ).toThrow(/Codex cannot run Opus 5 — they share no API style\./);
-  });
-
-  it("still blames the credential when the pair is compatible but unfunded", async () => {
-    const { assertHarnessCanRunSelection } = await import("./sub-agent-target.js");
-    // Both rows are Codex-speakable; only the first is in the eligible set.
-    expect(() =>
-      assertHarnessCanRunSelection("codex", [selection], { ...selection, modelId: "gpt-5.6-luna" }),
-    ).toThrow(/no credential this harness can use offers it\./);
-  });
+  // planning#389 asked whether the credential blame in this message misdirects,
+  // the way the headless path's silent reroute did. It does not, and the reason
+  // is an ORDERING rather than anything in this function: "refuses a harness
+  // pointed at a model it shares no API style with" above covers the upstream
+  // check `runSubAgent` runs FIRST, under the same `kind === "explicit"` gate, so
+  // a style-incompatible pair never reaches here and a credential is the only
+  // thing left to be missing. Adding the style branch here too would have been
+  // dead code, and a dead branch is not a guard — the ordering is.
 
   // An EMPTY eligible set means no credential source is wired (a test registry,
   // a bare runtime), not "nothing is eligible" — refusing everything there would
