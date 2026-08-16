@@ -205,6 +205,33 @@ describe("plugin services in the compose stack", () => {
     }
   });
 
+  it("clears the refusal once the consumer moves the port (docs/266 req 7)", async () => {
+    // The refusal is a row carrying a reason, not a latch. A reconcile rebuilds
+    // the map from scratch, so fixing either number has to be enough — a stale
+    // `error` surviving it would tell the user their fix did not work.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const workspaceDir = setup("services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n");
+      const mgr = createManager(workspaceDir);
+      mgr.setPluginServices([pluginService({ port: 5173 })]);
+      await mgr.start();
+      expect(mgr.getService("probe")?.status).toBe("error");
+
+      // The consumer edits `plugins.use` and the resolver re-runs.
+      mgr.setPluginServices([pluginService({ port: 5174 })]);
+      await mgr.reconcile();
+
+      const fixed = mgr.getService("probe");
+      expect(fixed?.status).not.toBe("error");
+      expect(fixed?.error).toBeUndefined();
+      expect(fixed?.port).toBe(5174);
+      expect(fixed?.preview).toBe("auto");
+      await mgr.stop();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
   describe("a plugin that ignores the port it was given (docs/266 req 8)", () => {
     /** Reach the one-shot probe without waiting out its real 45s delay. */
     interface Probe { armPluginPortProbe(name: string): void }
