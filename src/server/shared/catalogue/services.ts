@@ -147,9 +147,13 @@ const GLM_PRICES = {
    * available: GLM-5.3 is a post-training-only release over the SAME base model,
    * on the SAME plan, rolled out to existing subscribers at no extra cost.
    *
-   * Replace with the published rate when Z.ai publishes one — and note that a
-   * `kind: "key"` row must NOT reuse this constant, because there the number IS
-   * what the user paid.
+   * The `kind: "key"` row reuses it too, which is the weaker of the two uses
+   * because there the number stands in for what the user actually paid. It ships
+   * on the same basis and one more: every figure ShipIt derives from these four
+   * rates is already surfaced as an *estimate* rather than a billed amount
+   * (catalogue.md, Pricing), so the gap between a published rate and this
+   * same-vendor, same-base-model carry-over sits inside an approximation the UI
+   * already labels. Replace both with the published rate when Z.ai publishes one.
    */
   glm53Provisional: { input: 1.4, output: 4.4, cacheRead: 0.26, cacheWrite: 1.4 },
 } as const;
@@ -413,11 +417,18 @@ export const SERVICES = [
         credentials: [{ via: "string", storageEnv: "ZAI_API_KEY" }],
         retired: [],
         models: [
-          // TEMPORARY key-mode PROBE — Z.ai's docs say the general GLM-5.3 API is
-          // "coming soon", so this row exists only to measure whether that is
-          // already false. It is removed unless a live turn passes; the price is
-          // deliberately a stand-in, and a metered row may NOT keep it.
-          { id: "glm-5.3", label: "GLM-5.3", ...MODEL_IDENTITIES.glm53, styles: [O_CC, A_MSG], contextWindow: ONE_M, price: GLM_PRICES.glm53Provisional },
+          // ✅ 2026-08-17 — GLM-5.3 on the metered key, MEASURED: three passing
+          // Claude Code turns across two runs, alongside a passing `glm-5.2`
+          // control on this same route. Worth stating because it contradicts the
+          // vendor: Z.ai's docs still say the general GLM-5.3 API is "coming
+          // soon", and it is in fact already serving on the Anthropic path.
+          //
+          // `A_MSG` ONLY, deliberately — unlike the GLM-5.2 row below, which
+          // inherited `O_CC` from an earlier pass. The chat-completions path is
+          // reachable only through OpenCode, and that harness did not return a
+          // usable verdict here (its turns hung, control included), so declaring
+          // `O_CC` would be an assumption. Add it when a turn is seen to work.
+          { id: "glm-5.3", label: "GLM-5.3", ...MODEL_IDENTITIES.glm53, styles: [A_MSG], contextWindow: ONE_M, price: GLM_PRICES.glm53Provisional },
           { id: "glm-5.2", label: "GLM-5.2", ...MODEL_IDENTITIES.glm52, styles: [O_CC, A_MSG], contextWindow: ONE_M, price: GLM_PRICES.glm52 },
         ],
       },

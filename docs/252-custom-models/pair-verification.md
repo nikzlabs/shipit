@@ -376,17 +376,9 @@ Z.ai's own docs still say *"The GLM-5.3 API is coming soon"* for general API acc
 noting it is live for **GLM Coding Plan** subscribers — which is exactly what ShipIt's
 `zai:sub` mode targets.
 
-### Result: reachable today, and the id is `glm-5.3[1m]`
-
-| Pair | Result |
-|---|---|
-| `claude` / `zai:sub` / `glm-5.2[1m]` — known-good control | pass |
-| `claude` / `zai:sub` / **`glm-5.3[1m]`** | **pass** (twice, separate runs) |
-| `claude` / `zai:sub` / `glm-9.9-nonexistent[1m]` — negative control | **fail**, as required |
-
-No catalogue change was needed to *reach* it beyond a temporary probe row: the existing
-`zai:sub` endpoint (`https://api.z.ai/api/anthropic`), its `ZAI_CODING_PLAN_KEY` credential
-and the `ANTHROPIC_AUTH_TOKEN` `targetOverride` all work unchanged.
+The existing `zai` rows needed no structural change to reach it: the endpoint
+(`https://api.z.ai/api/anthropic`), the `ZAI_CODING_PLAN_KEY` credential and the
+`ANTHROPIC_AUTH_TOKEN` `targetOverride` all work unchanged. Only the model rows are new.
 
 ### Why the negative control was the point
 
@@ -406,16 +398,50 @@ self-report is unreliable, and the second answer echoes the `[1m]` suffix that C
 documented to consume and strip. The negative control, not the self-report, is what carries
 the finding.
 
-### Why no row shipped
+### Result: both Z.ai modes ship, `anthropic-messages` only
 
-`ModelPrice` is required and its sentinel is rejected by `catalogue.test.ts`, and **Z.ai has
-published no per-token rate for GLM-5.3**. Third-party sources quoting $1.4 / $4.4 are
-repeating GLM-5.2's published rate. Writing that in would assert a vendor figure that does not
-exist — the same error class as the gateway pass-through pricing bug corrected on 2026-08-16,
-which was wrong by up to 2.7×. The `zai:sub` block carries a comment recording this so the
-question is not re-derived from scratch.
+| Pair | Result |
+|---|---|
+| `claude` / `zai:sub` / **`glm-5.3[1m]`** | **pass** ×3, separate runs |
+| `claude` / `zai:key` / **`glm-5.3`** | **pass** ×3, across two runs |
+| `claude` / `zai:sub` / `glm-5.2[1m]` — control | pass |
+| `claude` / `zai:key` / `glm-5.2` — control | pass |
+| `opencode` / `zai:key` / `glm-5.2` and `glm-5.3` | **no verdict** — see below |
 
-Adding the row is then a small, well-specified job: a `glm53` identity, a `glm-5.3[1m]` row
-under `zai:sub` (`[A_MSG]`), a `glm-5.3` row under `zai:key` **only if** the general API is
-live by then, and gateway rows if OpenRouter or Vercel have picked it up — each at that
-gateway's own published rate, never the upstream's.
+**The metered key already serves GLM-5.3, contradicting the vendor's own docs**, which still
+say the general API is "coming soon". Three passing Claude Code turns on `glm-5.3` against
+`https://api.z.ai/api/anthropic` say otherwise. Documentation is a claim; the turn is the
+contract.
+
+Both rows declare **`anthropic-messages` only**. `openai-chat-completions` is reachable only
+through OpenCode, and OpenCode returned no usable verdict: its turns hung (the harness was
+reported stuck with no output for 60s) and the inner instance fell over during them. Those
+runs are recorded as `INDETERMINATE` / `INSTANCE-DOWN` rather than as failures — the probe
+health-checks the instance either side of every turn precisely so a crash cannot be read as a
+style verdict. Note this makes the new `zai:key` row NARROWER than the `glm-5.2` row beside
+it, which carries an `O_CC` inherited from an earlier pass rather than measured.
+
+### The price is a labelled estimate, and that was a deliberate call
+
+Z.ai has published no per-token rate for GLM-5.3; the figures circulating third-hand are
+GLM-5.2's published rate. Both rows therefore carry `GLM_PRICES.glm53Provisional`, which is
+GLM-5.2's rate under a name that says what it is.
+
+Shipping on an estimate rather than withholding the capability was an explicit product
+decision, and the reasoning is worth keeping because it cuts against this document's usual
+bias:
+
+- Under **`sub`**, `ModelPrice` is only req 16's *"would have cost"* comparison and never a
+  charge, so the figure misprices a comparison at worst.
+- Under **`key`** the number does stand in for what the user paid — the weaker case. It ships
+  anyway because *every* figure derived from these four rates is already surfaced as an
+  **estimate** rather than a billed amount (`catalogue.md`, Pricing), so the gap between a
+  published rate and a same-vendor, same-base-model carry-over sits inside an approximation
+  the UI already labels.
+- The basis is the strongest a carry-over can have: GLM-5.3 is a **post-training-only**
+  release over the same base model, on the same plan, rolled out to existing subscribers at no
+  extra cost.
+
+The alternative — withholding a frontier coding model from users who have already paid for it,
+to avoid an imprecise comparison figure — is the worse trade. Replace both with the published
+rate when Z.ai publishes one.
