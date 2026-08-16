@@ -1613,7 +1613,7 @@ Read /shipit-docs/compose.md for full details on the compose model.`,
             return sendMessageHandlers.handleAnswerQuestion(ctx, msg);
           }
           case "submit_bug_report": return bugReportHandlers.handleSubmitBugReport(ctx, msg);
-          case "dismiss_bug_report": return bugReportHandlers.handleDismissBugReport(ctx, msg);
+          case "dismiss_bug_report": { bugReportHandlers.handleDismissBugReport(ctx, msg); return; }
           case "egress_decision": { egressHandlers.handleEgressDecision(ctx, msg); return; }
           case "resolve_permission": { permissionHandlers.handleResolvePermission(ctx, msg); return; }
           case "undo_issue_write": return issueWriteHandlers.handleUndoIssueWrite(ctx, msg);
