@@ -134,6 +134,24 @@ const DEEPSEEK_PRICES = {
 /** Z.ai list rates for GLM-5.2, per million tokens (2026-08-09). */
 const GLM_PRICES = {
   glm52: { input: 1.4, output: 4.4, cacheRead: 0.26, cacheWrite: 1.4 },
+  /**
+   * **PROVISIONAL — GLM-5.2's published rate, carried over (2026-08-17).** Z.ai
+   * has published no per-token rate for GLM-5.3; the figures circulating
+   * third-hand are this same GLM-5.2 row. So this is an ESTIMATE, and it is
+   * labelled one rather than dressed as a vendor figure.
+   *
+   * Shipping it anyway is a deliberate call, and the billing mode is why it is a
+   * safe one: GLM-5.3 is offered here under `kind: "sub"`, where {@link ModelPrice}
+   * is req 16's *"would have cost"* comparison and never a charge. A coding-plan
+   * turn costs the plan, not this number. The basis is also the strongest
+   * available: GLM-5.3 is a post-training-only release over the SAME base model,
+   * on the SAME plan, rolled out to existing subscribers at no extra cost.
+   *
+   * Replace with the published rate when Z.ai publishes one — and note that a
+   * `kind: "key"` row must NOT reuse this constant, because there the number IS
+   * what the user paid.
+   */
+  glm53Provisional: { input: 1.4, output: 4.4, cacheRead: 0.26, cacheWrite: 1.4 },
 } as const;
 
 /**
@@ -366,16 +384,24 @@ export const SERVICES = [
           // `id` and many `styles`. Rather than invent a per-style id map in a
           // phase that ships no behaviour, this mode declares only the
           // Anthropic style, which is the path ShipIt would actually drive.
+          // ✅ 2026-08-17 — GLM-5.3, Z.ai's current frontier coding model
+          // (released 08-14), MEASURED on this exact route: `glm-5.3[1m]`
+          // completes a Claude Code turn, twice across separate runs, with an
+          // impossible-id negative control failing `400 [1214][modelCode: does
+          // not exist]` on the same route — so the id is validated and served,
+          // not silently defaulted. Evidence: `pair-verification.md`.
+          //
+          // Listed FIRST because it is the plan's flagship and supersedes 5.2 for
+          // coding. That also makes it what `firstEligibleNonTurnSelection` picks
+          // for background work on a GLM-only install — deliberate and free,
+          // since this is an allowance mode.
+          //
+          // Its `price` is a labelled ESTIMATE, not a vendor figure — see
+          // `GLM_PRICES.glm53Provisional`. Under `sub` that number is only req
+          // 16's "would have cost" comparison, never a charge, which is what
+          // makes shipping the capability now the right trade.
+          { id: "glm-5.3[1m]", label: "GLM-5.3", ...MODEL_IDENTITIES.glm53, styles: [A_MSG], contextWindow: ONE_M, price: GLM_PRICES.glm53Provisional },
           { id: "glm-5.2[1m]", label: "GLM-5.2", ...MODEL_IDENTITIES.glm52, styles: [A_MSG], contextWindow: ONE_M, price: GLM_PRICES.glm52 },
-          // GLM-5.3 is NOT here on purpose, and this note is the record of why so
-          // nobody re-derives it. It was measured working on this exact route on
-          // 2026-08-17 (`pair-verification.md`) — `glm-5.3[1m]` is a real,
-          // validated id and a Claude Code turn completes on it. What is missing
-          // is a PRICE: Z.ai has published no per-token rate for it, and
-          // `ModelPrice` is required with a sentinel the tests reject. Carrying
-          // GLM-5.2's rate over would assert a vendor figure that does not exist —
-          // the same mistake the gateway rows already made once (see this file's
-          // pass-through correction). Add the row when Z.ai publishes a rate.
         ],
       },
       {
@@ -387,6 +413,11 @@ export const SERVICES = [
         credentials: [{ via: "string", storageEnv: "ZAI_API_KEY" }],
         retired: [],
         models: [
+          // TEMPORARY key-mode PROBE — Z.ai's docs say the general GLM-5.3 API is
+          // "coming soon", so this row exists only to measure whether that is
+          // already false. It is removed unless a live turn passes; the price is
+          // deliberately a stand-in, and a metered row may NOT keep it.
+          { id: "glm-5.3", label: "GLM-5.3", ...MODEL_IDENTITIES.glm53, styles: [O_CC, A_MSG], contextWindow: ONE_M, price: GLM_PRICES.glm53Provisional },
           { id: "glm-5.2", label: "GLM-5.2", ...MODEL_IDENTITIES.glm52, styles: [O_CC, A_MSG], contextWindow: ONE_M, price: GLM_PRICES.glm52 },
         ],
       },
