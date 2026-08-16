@@ -379,12 +379,17 @@ describe("git spawn coverage: tree-uid drop (docs/266 E2)", () => {
  * docs/266 E2 / planning#410 — a bare `safeSimpleGit()` has no tree to stat, so
  * it is the ONE orchestrator git shape with no ownership predicate at all.
  *
- * `safeSimpleGit(dir)` is self-correcting: the drop is resolved from `dir`, so a
- * call site nobody has written yet is covered by construction. `safeSimpleGit()`
- * is the hole in that argument. It runs as root, and its whole purpose is
- * `clone`, whose *destination* it then leaves `root:root` — after which any
- * later `safeSimpleGit(<destination>)` drops to the destination's session uid
- * and meets a tree it does not own.
+ * The general statement, because it is what tells the next reader which sites to
+ * distrust: **`safeSimpleGit` is complete for the tree a call site READS and
+ * blind to a tree it CREATES.** The drop is resolved from `baseDir`, and a
+ * `clone` names its destination as an *argument*, never as `baseDir` — so the
+ * choke point cannot see the tree about to come into existence, however careful
+ * a future call site is.
+ *
+ * A bare `safeSimpleGit()` is the sharpest case of that: no `baseDir` at all, so
+ * it runs as root and leaves its destination `root:root` — after which any later
+ * `safeSimpleGit(<destination>)` drops to the destination's session uid and meets
+ * a tree it does not own.
  *
  * That is not hypothetical; it is the shape of both defects found in this class.
  * `repo-git.ts`'s `cloneFromCache` was fixed by docs/270, and

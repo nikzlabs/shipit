@@ -237,12 +237,24 @@ Build sequence from [plan.md](./plan.md) §5. Requirements are cited as `(req N)
       today (`.git/config.lock` EACCESes) and would fail one step earlier once
       armed. Fixed the way `cloneFromCache` was: the object-aware
       `handWorkspaceBackToWorker` between the two calls.
+- [x] **The claim that hid it, corrected at the source.** `safeSimpleGit`'s own
+      comment said it "covers call sites nobody has written yet". It resolves the
+      drop from `baseDir`, so it is complete for the tree a call site **reads**
+      and blind to a tree it **creates** — a `clone` names its destination as an
+      *argument*, never as `baseDir`. That is the general statement, and it tells
+      the next reader which sites to distrust; "one missed site" does not. Every
+      tree-creating site was then re-checked under the second question ("what
+      owns the tree it writes into"), and the rest answer it correctly —
+      `session-fork-merge.ts`, `templates.ts` ×2, `marketplace.ts`,
+      `repo-git.ts`, `route-registry.ts`.
 - [x] **A CI census for the shape, so the next one is not found by a human
-      audit two cycles later.** Every bare `safeSimpleGit()` — the one
-      orchestrator git shape with no ownership predicate at all — is listed in
+      audit two cycles later.** Every bare `safeSimpleGit()` — the sharpest case
+      of that blindness, no `baseDir` at all — is listed in
       `git-hooks-guard-coverage.test.ts` with what owns its destination. Neither
-      known instance of this bug was visible at runtime: the drop is inert below
-      root, so the suite and the dogfood instance pass either way.
+      known instance of this bug was visible at runtime: the drop is gated on
+      `getuid() === 0`, so the suite, the dogfood instance and a laptop pass
+      either way. That is also why the runbook opens by telling an operator a
+      green local run proves nothing about the armed path.
 - [ ] **Arm it in production, then delete both the switch and the write.**
       **planning#410.** This is the go/no-go planning#403 reserves for a human,
       and it must not happen before E1 has been *seen* working in production —

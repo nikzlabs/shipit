@@ -71,17 +71,34 @@ completeness, not as gaps.
 
 | Executor | Sites | Drop | Enforced by |
 |---|---|---|---|
-| `safeSimpleGit(dir)` (`shared/git-hooks-guard.ts`) | every simple-git caller, including all `createGitManager` sites (~189) and `GitManager`'s own instance | Resolved from `dir` inside the factory — covered by construction | ESLint `no-restricted-imports` forbids importing `simple-git` directly, so there is no way around the factory |
+| `safeSimpleGit(dir)` (`shared/git-hooks-guard.ts`) | every simple-git caller, including all `createGitManager` sites (~189) and `GitManager`'s own instance | Resolved from `dir` inside the factory — covered by construction **for the tree it reads**; see the read/create note below | ESLint `no-restricted-imports` forbids importing `simple-git` directly, so there is no way around the factory |
 | Raw `spawn` / `execFile` / `execFileSync` / `execFileAsync` of `"git"` | **29** literal sites across 9 files, all of them below | Spelled out per site (`gitSpawnOverridesForTree`) | `git-hooks-guard-coverage.test.ts` fails the build for a spawn that names a working directory and omits the call |
 
-Two caveats on the choke point, both checked:
+### The choke point is complete for a tree a site READS, and blind to one it CREATES
 
-- **A caller's own `spawnOptions` wins** over the resolved drop
-  (`git-hooks-guard.ts:145`). Grepped: **no caller passes `spawnOptions`.** The
-  escape hatch is unused.
-- **A bare `safeSimpleGit()` — no `baseDir` — has no tree to stat**, so it runs
-  as root with no ownership predicate at all. That is its own table below, and
-  it is where the gap was.
+This is the sentence to take away, and it is sharper than "one site was missed".
+`safeSimpleGit`'s own comment used to claim it "covers call sites nobody has
+written yet" — corrected in this change, because the claim is true of exactly
+half the problem. The drop is resolved from `baseDir`. **A `clone` names its
+destination as an argument, never as `baseDir`**, so the factory cannot see the
+tree that is about to come into existence. Two consequences, both of which have
+been live bugs:
+
+- **A bare `safeSimpleGit()`** has no `baseDir` at all, so it runs as root and
+  leaves its destination `root:root`. The next `safeSimpleGit(<destination>)`
+  drops to that path's session uid and meets a tree it does not own.
+- **A `safeSimpleGit(<source>)` clone** drops to the *source's* uid, so the
+  destination is created owned by whoever owns the source — correct only if
+  someone then says so.
+
+So every site is asked **two** questions here, not one: *does it drop uid*, and
+*what owns the tree it writes into*. The first audit asked only the first, which
+is why its verdicts needed re-checking; the tree-creating sites are Table B and
+Table B2 below.
+
+One more caveat on the choke point, checked: **a caller's own `spawnOptions`
+wins** over the resolved drop (`git-hooks-guard.ts:145`). Grepped: **no caller
+passes `spawnOptions`.** The escape hatch is unused.
 
 ## Table A — raw git spawns (complete: all 29, by the scanner's own count)
 
@@ -119,16 +136,36 @@ next `safeSimpleGit(<destination>)` drops to that path's session uid.
 |---|---|---|
 | `repo-git.ts:284` `cloneFromCache` | shared bare cache, root-owned | ✅ `handWorkspaceBackToWorker(sessionDir)` before the `config` writes — fixed by docs/270, which documents the exact reasoning |
 | `services/marketplace.ts:143` | a URL — no local source tree | ✅ n/a — the marketplace cache is ShipIt's own, not a session's |
-| `plugin-generations.ts:1068` `checkoutCommit` | plugin bare cache, root-owned | ❌ **was the gap — fixed in this change** |
+| `plugin-generations.ts:1103` `checkoutCommit` | plugin bare cache, root-owned | ❌ **was the gap — fixed in this change** |
 
 `services/session-fork-merge.ts` used to be a fourth. planning#407 converted it:
 it creates the destination, hands it to the source session's identity, and clones
 with the drop resolved from the source tree. Its remaining `safeSimpleGit()`
 mention is prose in a comment.
 
+## Table B2 — every other site that CREATES a tree
+
+Re-checked under the second question after the gap was found, on the assumption
+that one wrong classification is rarely the only one. These are the `clone` and
+`init` sites that are **not** bare — a drop does resolve — so the narrower audit
+cleared them correctly, but the question that matters for them is who owns the
+directory at the moment git writes into it.
+
+| Site | What it creates | Owner at that moment |
+|---|---|---|
+| `services/session-fork-merge.ts:138` `clone --local` with `baseDir` = the source session | the fork's workspace | ✅ chowned to the **source** session's identity before the clone and re-sealed to the fork's after, both orderings argued in place |
+| `services/templates.ts:166` `createGitManager(sessionDir).init()` — a **standalone** session | `.git` in a fresh session workspace | ✅ `createSessionDirFactory` seals the session dir *and* `chownTreeToSessionWorker`s the empty tree before anything is written into it. Its comment names this exact failure — "a session whose RECORD says one uid and whose contents say another" |
+| `services/templates.ts:69` `scaffoldGit.init()` | a throwaway `mkdtemp` scaffold | ✅ root-owned and outside `sessionsRoot`, so no drop resolves. Stated in place |
+| `services/marketplace.ts:146` `clone <url> <cacheDir>` | the catalog cache | ✅ `<stateDir>/marketplace-cache`, a sibling of `sessions/` and not under it — root-owned throughout |
+| `repo-git.ts:148,160` `clone [--bare] <url> .` | the shared bare cache | ✅ `baseDir` is the cache dir itself, root-owned |
+| `route-registry.ts:429` `git.init()` | a test session's workspace | ✅ `isTestMode` only, and tests are non-root, so no drop resolves |
+
+No further gaps. The one that was wrong is the one already fixed.
+
 ## Table C — the gap, and what it would have done
 
-`plugin-generations.ts`'s `checkoutCommit` stages a plugin generation:
+`plugin-generations.ts`'s `checkoutCommit` stages a plugin generation. **As it
+was, before this change:**
 
 ```ts
 await safeSimpleGit().raw(["clone", "--local", "--no-checkout", bareCacheDir, targetDir]);
@@ -182,11 +219,15 @@ question (is the tree owned by the uid we drop to, at this moment?) is per-site.
 Named because each is a plausible 2am worry, and each is answered by the layout
 rather than by care:
 
-- **Git inside the session container.** It reads
-  `/credentials/.gitconfig` from the session's *own* credentials subtree, written
-  by `writeContainerGitConfig` — a different file that never had a
-  `safe.directory` entry. The workspace is owned by the uid the container runs
-  as, so git's check passes on its own merits.
+- **Git inside the session container.** `GIT_CONFIG_GLOBAL=/credentials/.gitconfig`
+  there resolves to a *different file*: the container mounts the per-session
+  subtree `sessions/<sessionId>`, not the credentials root (a volume `Subpath`
+  mount in production, a direct bind in dev — `container-lifecycle.ts:343-361`),
+  and that subtree's `.gitconfig` is `writeContainerGitConfig`'s sanitized
+  output, which never carried a `safe.directory` entry. The orchestrator's own
+  gitconfig sits at the volume root and is not visible from inside. The
+  workspace is owned by the uid the container runs as, so git's check passes
+  there on its own merits.
 - **Host scripts** (`deployment/vps/*.sh`, `update.sh`). They run on the host
   against `/opt/shipit`, with the host's own git config. `GIT_CONFIG_GLOBAL` is
   the orchestrator process's, not theirs.
@@ -211,14 +252,34 @@ limit of the *scanner*, and each has a verdict.
 
 # Part 2 — the runbook
 
+## Before anything else: a green local run proves nothing here
+
+This class of failure is **invisible below root**. The uid drop is gated on
+`process.getuid() === 0` (`git-tree-uid.ts`), so on any non-root process it
+resolves to "no drop" and every site behaves identically whether its ownership
+handling is right or wrong. That covers the entire test suite, the dogfood inner
+instance (`RUNTIME_MODE=local`), and a developer's laptop.
+
+It is not a theoretical caveat: it is *why* the `plugin-generations.ts` gap
+survived review and shipped, and why it took a source audit rather than a failing
+test to find. So an operator who ran the suite, drove the dogfood instance, and
+saw green has learned nothing about the armed path. **The evidence that matters
+is a production soak, and it is the reason this procedure has a soak step.**
+
 ## Preconditions
 
 1. E1 has been running in production and the uid drop has been **seen** working
    — sessions commit, push, and provision normally.
-2. Part 1's audit is current for the deployed build. If the build predates the
-   `plugin-generations.ts` fix in this change, **do not arm**: staging a plugin
-   generation fails either way, and arming changes only the error text.
-3. Pick a quiet window. Arming takes effect on the post-turn commit path.
+2. Part 1's audit is current for the deployed build. Run the census
+   (`npx vitest run src/server/shared/git-hooks-guard-coverage.test.ts`) against
+   the deployed commit rather than trusting the tables as written.
+3. **The build must include the `plugin-generations.ts` fix** (planning#410). If
+   it does not, do not arm: staging a plugin generation fails on that build
+   either way, and arming changes only the error text.
+4. **planning#412 is open** — `git lfs pull` and the workspace handback are
+   ordered wrongly on `main`. Check its state before arming; it touches the
+   provisioning surface this procedure watches.
+5. Pick a quiet window. Arming takes effect on the post-turn commit path.
 
 ## Arming
 
@@ -236,9 +297,17 @@ silent no-op — the same trap `OVERLAY_DEP_STORE` and `SHIPIT_GIT_LFS` carry.
 Confirm the entry is gone rather than assuming the redeploy took:
 
 ```bash
-docker compose exec shipit git config --global --get-all safe.directory
+docker compose exec shipit git config --file /credentials/.gitconfig --get-all safe.directory
 # expect: no output, exit 1
 ```
+
+**`--file`, not `--global`.** `GIT_CONFIG_GLOBAL` is set by the orchestrator on
+its **own process** at boot (`initGlobalGitConfig`, `git-config.ts:233`) and is
+not in the container's declared environment, so a `docker compose exec` shell
+does not inherit it — a `--global` read there would answer about
+`$HOME/.gitconfig`, a file nothing writes, and cheerfully report "no entry"
+whether or not the arming took. Naming the path is the only reading that
+answers the question asked.
 
 `initGlobalGitConfig` actively `--unset-all`s the entry an earlier boot wrote,
 because the config file lives in the persistent credentials volume. Both
@@ -267,11 +336,13 @@ Per surface:
 | **Auto-push** | no log line — success is a client message, `Auto-pushed to origin/<branch>`, on the session's PR card | `[auto-push] <sessionId>: Auto-push failed: fatal: detected dubious ownership …`, and the same text in the session's log ring and transcript. The scheduler warns on **every** path that ends without a push (invariant 5), so a session that pushes nothing and logs nothing is itself worth checking. |
 | **Session provisioning (LFS)** | `[git-lfs] Pulled LFS content for <workspaceDir> in <n>ms` | `[git-lfs] git lfs pull failed for <workspaceDir> — <reason>` |
 | **Fork** | the fork's first turn commits normally | the `clone --local` refuses on the **source**: `fatal: detected dubious ownership in repository at '<src>/.git'` — note this names the *gitdir*, not the worktree root the post-turn failures name. planning#407's measurement against git 2.39.5, inherited here rather than re-run, and it is why that site was converted. |
-| **Plugin activation** | the generation publishes and `active` resolves | a permission error or the refusal naming the `.staging-*` directory. Requires the fix in this change. |
+| **Plugin activation** | the generation publishes and the `active` symlink resolves to it | a permission error, or the refusal naming the `.staging-*` directory under `<sessionDir>/state/plugins/`. **Exercise this deliberately** — it is where the gap was, it is the surface least likely to be hit by an ordinary turn, and on a build without planning#410's fix it fails whether or not you armed anything |
 
 **Soak for at least one full session lifecycle** — create, turn, push, fork,
-archive — plus a session provisioning from a repo with LFS. The paths that only
-run at *creation* are the ones a short soak misses.
+archive — plus a session provisioned from a repo with **LFS**, plus one session
+that **activates a plugin**. The paths that only run at *creation* are the ones a
+short soak misses, and both of the known bugs in this class lived on exactly
+those paths.
 
 ## Rollback
 

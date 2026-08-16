@@ -292,12 +292,28 @@ would fail one step earlier once armed. The first audit classified this file as
 "the bare cache, root-owned", which is true of its *other* tree. Fixed the way
 `cloneFromCache` was, with the object-aware handback between the two calls.
 
+**The general statement, which is the useful one.** `safeSimpleGit` resolves the
+drop from `baseDir`, so the choke point is complete for the tree a call site
+**reads** and blind to a tree it **creates**: a `clone` names its destination as
+an *argument*, never as `baseDir`. That is the whole shape of this bug class, and
+it is why the module's own comment — which claimed it "covers call sites nobody
+has written yet" — is corrected in this change. Every site is therefore asked two
+questions, not one: *does it drop uid*, and *what owns the tree it writes into*.
+The second question was re-run over every site the first audit had cleared;
+`session-fork-merge.ts` (chowns the destination to the source's identity before
+cloning), `templates.ts`'s standalone-session `init` (`createSessionDirFactory`
+seals and chowns the empty tree first) and `marketplace.ts` (its cache is a
+sibling of `sessions/`, not under it) all answer it correctly. Nothing else was
+wrong.
+
 That shape now has a CI census rather than a periodic human audit: every bare
 `safeSimpleGit()` is listed with what owns its destination
 (`git-hooks-guard-coverage.test.ts`), so adding one is a decision someone writes
 down. Both known instances of this bug had exactly that shape, and neither was
-visible at runtime — the drop is inert below root, so the suite and the dogfood
-instance pass either way.
+visible at runtime — the drop is gated on `getuid() === 0`, so the suite, the
+dogfood instance and a developer's laptop pass either way. That invisibility is
+why this needed a source audit rather than a failing test, and why arming needs a
+production soak rather than a green local run.
 
 One residual, not fixed: `mergeSession`'s fallback adds a *sibling session's*
 workspace as a local remote and fetches from it. Git refuses a foreign source on

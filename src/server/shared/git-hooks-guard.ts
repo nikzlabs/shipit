@@ -138,10 +138,30 @@ export function safeSimpleGit(baseDir?: string, options?: Partial<SimpleGitOptio
   // docs/266 — drop to the uid that owns the tree, when there is one and we are
   // root. Applied HERE rather than at the ~200 call sites on purpose: this is
   // already the single choke point every orchestrator git goes through
-  // (`eslint.config.js` forbids importing `simple-git` directly), so a call site
-  // nobody has written yet is covered automatically, and there is no hand-kept
-  // list to go stale. A caller's own `spawnOptions` wins — a deliberate choice
-  // is never overridden.
+  // (`eslint.config.js` forbids importing `simple-git` directly), so there is no
+  // hand-kept list to go stale. A caller's own `spawnOptions` wins — a
+  // deliberate choice is never overridden.
+  //
+  // **What that covers automatically, and what it does NOT** (planning#410).
+  // This resolves the uid from `baseDir`, so it is complete for the tree a call
+  // site READS and blind to a tree it CREATES: a `clone` names its destination
+  // as an *argument*, never as `baseDir`, so the choke point cannot see it. Two
+  // consequences, and both have been live bugs:
+  //
+  //   - A bare `safeSimpleGit()` — no `baseDir` at all — runs as ROOT and leaves
+  //     its destination `root:root`. The next `safeSimpleGit(<destination>)`
+  //     then drops to that path's session uid and meets a tree it does not own:
+  //     EACCES today, `fatal: detected dubious ownership` once
+  //     `SHIPIT_GIT_STRICT_OWNERSHIP` is armed. `repo-git.ts`'s `cloneFromCache`
+  //     and `plugin-generations.ts`'s `checkoutCommit` were both exactly this.
+  //   - A `safeSimpleGit(<source>)` clone drops to the SOURCE's uid, so the
+  //     destination is created owned by whoever owns the source —
+  //     `session-fork-merge.ts` handles that deliberately.
+  //
+  // So: a site that creates a tree owes an explicit ownership handoff
+  // (`handWorkspaceBackToWorker` — the object-aware one, because `clone --local`
+  // hardlinks the source's objects). `git-hooks-guard-coverage.test.ts` keeps a
+  // census of the bare sites; nothing enforces the handoff itself.
   const treeUid = options?.spawnOptions ? null : resolveGitTreeUid(baseDir);
   const spawnOptions = options?.spawnOptions
     ?? (treeUid === null ? undefined : { uid: treeUid.uid, gid: treeUid.gid });
