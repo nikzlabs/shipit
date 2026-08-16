@@ -37,6 +37,10 @@ Still open:
       construction (every message still mounted), but that is an argument, not a check.
 - [ ] `buildVisualElements` still walks the whole transcript per update. Cheap next to
       what it replaced, but unmeasured against req 3's "must not grow".
+- [ ] Record one production trace **with the `cc` category enabled**, during a streaming turn on a
+      large session. It serves two open questions at once: the reqs 1–4 measurement above, and the
+      `visible_layers` reading that decides between the two readings in *Separate finding*
+      correction 2 below.
 
 ## Post-merge trace, 2026-08-16
 
@@ -208,11 +212,10 @@ isolation of the observers alone. It slightly exceeding the `today` row is consi
 
        layers ≈ (per-frame ms − 0.055) / 0.0004   … to   / 0.00055
 
-   Two things make an inverted count an **upper bound** rather than an estimate. The intercept is
-   for a near-empty page, and a real DOM raises it. And layer count is not the only thing that
-   raises per-frame commit cost: 1,500 elements that each force a paint chunk *without* being
-   composited (`?chunk=1500&chunkmode=filter`) push it to 0.135 ms while `visibleLayers` stays at
-   **3**. For scale, the dogfood UI measures 3 layers.
+   Two things make an inverted count an **upper bound** rather than an estimate: the intercept is
+   for a near-empty page and a real DOM raises it, and layer count is not the only thing that
+   raises per-frame commit cost (see the constraint below). For scale, the dogfood UI measures
+   **3** visible layers.
 
    **What is NOT established: which production slice to feed into that curve.** Production's
    whole-trace per-call means on `CrRendererMain` (n = 2,569 frames) are `Layerize` 0.6500,
@@ -232,14 +235,21 @@ isolation of the observers alone. It slightly exceeding the `today` row is consi
    0.001 ms of production's 0.650; the run-to-run spread above is 20× that difference, so the
    match was precision that was never there.
 
+   **A per-frame cost cannot be inverted into a layer count. This is a constraint on the method,
+   not a caveat on one number.** `?chunk=1500&chunkmode=filter` gives 1,500 elements that each
+   force their own paint chunk *without* being composited. Per-frame commit cost then runs
+   0.073–0.135 ms across runs while `visibleLayers` stays at **3** — against a 0.052–0.058 baseline
+   at 2 layers, and bracketing production's 0.1113, from essentially no layers at all. So both
+   readings above are upper bounds, and **no arithmetic on a per-frame time will decide between
+   them.** The layer count has to be measured directly.
+
    Two pieces of weak evidence, in opposite directions, recorded so nobody mistakes either for a
-   conclusion. **Against (a):** production's `Commit` is 0.1113 against this build's 0.052–0.058
-   at 2 layers, so if attribution matched, the tree would already be larger than a handful — though
-   not necessarily by much, since 1,500 *uncomposited* paint chunks reach 0.135 ms here with only
-   3 layers. **For (a):** nothing tried in this container makes `Layerize` itself expensive — not
-   2,000 `content-visibility` rows, not 1,502 composited layers, and not 1,500 paint chunks in any
-   of three flavours, all of which leave it at ~0.003 ms. If (b) were right, something ought to
-   have moved it.
+   conclusion. **Against (a):** production's `Commit` is 0.1113 against this build's 0.052–0.058 at
+   2 layers, so if attribution matched, the tree would already be larger than a handful — though
+   the constraint above means not necessarily by much. **For (a):** nothing tried in this container
+   makes `Layerize` itself expensive — not 2,000 `content-visibility` rows, not 1,502 composited
+   layers, and not 1,500 paint chunks in any of three flavours, all of which leave it at
+   ~0.003 ms. If (b) were right, something ought to have moved it.
 
    **Eliminated, so nobody re-opens them.** Viewport: the real UI at 3840×2160 gives the same 0.03
    `UpdateLayer`/frame and 0.0024 ms `Layerize` as at 1440×900. An embedded app: the trace has a
@@ -250,16 +260,28 @@ isolation of the observers alone. It slightly exceeding the `today` row is consi
    main-thread layer-*list* construction from paint chunks: its cost tracks how many layers exist,
    not how or by what they are later rasterised.
 
-   **What settles it: a production `visible_layers` reading.** Two notes for whoever takes it.
-   First, look on the **renderer's Compositor thread, not `CrRendererMain`** —
-   `draw_property_utils::ComputeDrawPropertiesOfVisibleLayers` is emitted there, and a
-   main-thread-scoped search finds nothing while the event is present. Second, its category is
-   plain **`cc`**, not `disabled-by-default-cc.debug`, so an existing trace that already carries
-   `cc` events may not need re-recording at all. The CDP `LayerTree` domain is *not* an
-   alternative: `LayerTree.enable` succeeds in headless and then never emits a single
-   `layerTreeDidChange`. Once a number exists, read it against the curve above: of order 100 means
-   (b), and `Layerize`'s cost is still unexplained; of order 1,000 means (a), and the remaining
-   work is finding what promotes them.
+   **What settles it: a production `visible_layers` reading, which needs a new recording.** The
+   existing trace was searched thread-scoped and case-insensitively for every spelling
+   (`drawprop`, `draw_prop`, `visible_layer`, `layer_count`, `num_layers`): zero matches on any
+   thread. Its single renderer Compositor thread carries 21 distinct event names, all
+   PipelineReporter-family plus the frame/commit/activation events — no draw-property event under
+   any name.
+
+   Two things to get right when recording it, both of which cost a wasted recording otherwise:
+
+   - **Enable `cc` explicitly.** `draw_property_utils::ComputeDrawPropertiesOfVisibleLayers` has
+     category exactly `cc`, and DevTools' Performance-panel defaults do not include it.
+   - **Do not infer that `cc` is on from seeing "cc" in an event's category string.** Chrome
+     records an event if *any* of its comma-separated categories is enabled, so an event tagged
+     `cc,benchmark,disabled-by-default-devtools.timeline.frame` proves only that one of those three
+     is on. The sound test is the reverse: if events whose category is *exactly* `cc` are absent,
+     `cc` is off. That is how the trace above was diagnosed after the naive reading said otherwise.
+
+   Then read the count on the **renderer's Compositor thread**, not `CrRendererMain`, and put it
+   through the curve above: of order 100 means (b), and `Layerize`'s cost is still unexplained; of
+   order 1,000 means (a), and the remaining work is finding what promotes those layers. The CDP
+   `LayerTree` domain is not an alternative — `LayerTree.enable` succeeds in headless and then
+   never emits a single `layerTreeDidChange`.
 
 3. **`content-visibility` causes the frames; something else decides what each one costs.** The
    original section reads as a single phenomenon with the spinner at its root. It is two: the
