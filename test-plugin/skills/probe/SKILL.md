@@ -19,7 +19,7 @@ nothing. Flags: `--bump` increments the shared counter before reporting;
 | `cwd` | CLI runs with cwd = the project workspace (req 21) |
 | `mode` / `env.SHIPIT_PLUGIN_COMMIT` | the self/consumer discriminator: a consumer generation carries its exact commit; `repo: self` runs the live tree, no commit (reqs 15, 27) |
 | `credential.set` | `PROBE_TOKEN` injected for this command only (req 23) |
-| `settings.greeting` | the validated settings file (req 26) |
+| `settings.greeting` | the validated settings file (req 26), and **which side wrote it**: the consuming project's `overrides.settings` is `hello from the consuming project`, the manifest's default is `hello from the probe`. Reading the default under this repo's own `shipit.yaml`, which sets the override, means the consumer half was ignored (nikzlabs/shipit#2298 finding 2) |
 | `project.readable` | the workspace handle (req 21) |
 | `state.counter` | shared state with the probe service — `probe --bump`, then reload its page: same number (reqs 17, 18) |
 | `checkout.writable` | this surface's own mount — not the self/consumer signal (read `mode`), but it does check the rule directly: the plugin's tree is writable exactly when it is the project, so a consumer generation reports `false` and `repo: self` reports `true` (reqs 7, 15, 27). On the service surface it measures this fragment's own `.:/app`, which ShipIt forces read-only for a tracked generation and leaves as declared under `repo: self` |

@@ -530,7 +530,18 @@ function parseUseList(
     }
     for (const key of Object.keys(entry)) {
       if (!KNOWN_USE_KEYS.has(key)) {
-        warnings.push(`Unknown key \`plugins.use[${i}].${key}\` in shipit.yaml.`);
+        // An override key written one level too high is the mistake a user
+        // actually made in the field (nikzlabs/shipit#2298 finding 2): they set
+        // `settings:` directly on the `use` entry, got the plugin's default,
+        // and concluded a consuming project could not set a setting at all. The
+        // key IS known — just not here — so say where it belongs rather than
+        // only that this is not it.
+        warnings.push(
+          KNOWN_OVERRIDE_KEYS.has(key)
+            ? `Unknown key \`plugins.use[${i}].${key}\` in shipit.yaml — a consuming project's `
+              + `\`${key}\` goes under \`overrides:\`, i.e. \`plugins.use[${i}].overrides.${key}\`.`
+            : `Unknown key \`plugins.use[${i}].${key}\` in shipit.yaml.`,
+        );
       }
     }
 

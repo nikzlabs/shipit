@@ -118,6 +118,13 @@ Open a session on the **consumer** project.
   An empty or missing one is the volume+Subpath defect: a bind was used where a
   volume subpath was required, which looks correct in dev and yields an empty
   root-owned directory here.
+- **PASS:** `settings.greeting` is the value the **consuming project** set, not
+  the manifest default — on the self fixture, `hello from the consuming
+  project`. Reading `hello from the probe` there means `overrides.settings` was
+  ignored, which is the whole of nikzlabs/shipit#2298 finding 2 and was
+  unobservable until this repo's `shipit.yaml` set a value. The consumer fixture
+  sets none, so the default is correct there and checks the other direction —
+  that an unset setting still gets its default.
 - **Do:** run `probe --bump`, then open the service page (step 4) and read the
   counter; then press **Increment** on the page and run `probe` again.
 - **PASS:** the counter is the same number on both surfaces and moves in both
@@ -131,9 +138,10 @@ Open a session on the **consumer** project.
 ## 4. The plugin service, and the preview
 
 - **Do:** open the preview for the `probe` service.
-- **PASS:** the page renders, shows the `greeting` setting's value, and the
-  report on it agrees with the CLI's. The published port is stable — note it, and
-  confirm at step 7 that it does not move.
+- **PASS:** the page renders, shows the `greeting` setting's value — the
+  consumer's, by the rule in step 3 — and the report on it agrees with the CLI's.
+  The published port is stable — note it, and confirm at step 7 that it does not
+  move.
 - **PASS:** the page's own report shows the service received `PROBE_TOKEN` once
   the project sets it (step 6), not merely that the card calls it satisfied.
 - **Failure modes:** a container that never starts is usually the fragment
@@ -460,3 +468,48 @@ is seeing the fix, **not a regression**.
   card was read once, in one state — `active`, two unmet needs, services
   accepted. planning#380 describes a state it has never been seen in, and so did
   planning#377 before it was fixed.
+
+---
+
+## Run 3 — 2026-08-16, self fixture, real deployment — the #2298 confirmation
+
+Narrow by design: the one run `#2302` could not do. That PR fixed
+nikzlabs/shipit#2298 finding 1 (self-use saw an empty `node_modules`) and shipped
+saying so — its own test plan records that neither surface could be exercised,
+because the session it was written in had no Docker socket and the dogfood
+instance runs `RUNTIME_MODE=local`. Step 10 was where the fix would be confirmed.
+This is that step, run from a session container on the real deployment against a
+build that carries the fix.
+
+Recorded fields, not verdicts:
+
+| Step | What the report said |
+|---|---|
+| 3 CLI | `mode: self-or-unprovided`, `SHIPIT_PLUGIN_COMMIT: null`, node `v24.15.0`, `cwd: /project`, `credential.set: true`, `project: {readable: true, entries: 44}`, `state: {provided: true, writable: true}` |
+| 10 dependency, CLI | `project: {resolved: true, used: true, entry: /project/node_modules/yaml/dist/index.js, version: 2.9.0}` and `plugin: {resolved: true, used: true, entry: /plugin/node_modules/yaml/dist/index.js, version: 2.9.0}`. **Both roots**, which is what finding 1 broke |
+| 10 dependency, service | `project` the same, `plugin: {root: /app, resolved: false, "Cannot find module 'yaml'"}` — the one expected `false`, and expected *only* there: that fragment mounts its own directory at `/app` |
+| 4 service | started on `:4820`, `/report.json` agrees with the CLI field for field |
+| 3 + 4 settings | `greeting: "hello from the consuming project"` on **both** surfaces — the consumer's `overrides.settings` value, not the manifest default |
+
+**What this run had to change before it could measure anything.** The settings row
+above did not exist as a check: every fixture read the manifest default, because
+no consumer in this repo had ever set an override, so a build that ignored
+`overrides.settings` entirely produced the exact value the doc expected. That is
+the same shape as the `dependency` blindness one finding earlier — the fixture
+reported a field it could not fail on — and it is why finding 2 was filed as "a
+consuming project cannot set a plugin setting" when the feature had worked all
+along. This repo's `shipit.yaml` now sets a value the manifest does not contain,
+and steps 3 and 4 assert the consumer's string on the self fixture.
+
+**Both halves of finding 2 are now covered from the session**, which is the
+surface the reporter had: the value arriving is checked by the probe, and the
+*misplacement* that produced the report — `settings:` written one level above
+`overrides:` — is a declaration warning that now names where the key belongs
+(`plugins.use[0].overrides.settings`), readable via `shipit plugin status` as
+well as the Plugins tab. It was already a warning; it said only that the key was
+unknown, which reads as "there is no such thing" to someone looking for the
+feature.
+
+**Not re-run here**, deliberately: steps 1, 2, 5–9 and the whole consumer
+fixture. Nothing in `#2302` or in this change touches them, and step 5's grant
+half cannot be undone from inside a session.

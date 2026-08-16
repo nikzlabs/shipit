@@ -51,6 +51,14 @@ plugins:
     - plugin: probe
       from: shipit-dev
       overrides:
+        # req 26's CONSUMER half. The manifest's default is "hello from the
+        # probe"; this value can only have come from here, so a build that
+        # ignored `overrides.settings` reports the default and the fixture sees
+        # it (nikzlabs/shipit#2298 finding 2 was reported precisely because
+        # nothing here ever set one). Note the nesting: `settings:` one level
+        # up, on the `use` entry, is not read.
+        settings:
+          greeting: hello from the consuming project
         services:
           probe:
             # The dev service is this repo's primary preview; the probe UI is
