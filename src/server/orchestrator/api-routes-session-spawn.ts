@@ -4,7 +4,8 @@
  * list-children, child view/wait, child message, child archive, notify-on-merge.
  */
 
-import { randomUUID, createHash } from "node:crypto";
+import { randomUUID } from "node:crypto";
+import { etagFor, matchesIfNoneMatch } from "./http-etag.js";
 import type { FastifyInstance } from "fastify";
 import type { ApiDeps } from "./api-routes.js";
 import { emitChatCard } from "./chat-card-persistence.js";
@@ -174,8 +175,10 @@ export async function registerSessionSpawnRoutes(
     // Hashing what is about to be sent cannot be wrong. It saves the transfer
     // and the client's parse, not the server-side build.
     const body = JSON.stringify(payload);
-    const etag = `"${createHash("sha1").update(body).digest("base64url")}"`;
-    if (request.headers["if-none-match"] === etag) {
+    const etag = etagFor(body);
+    // Weak comparison, per RFC 9110 — Cloudflare re-compresses and hands the
+    // browser `W/"…"`, which is what comes back. See `http-etag.ts`.
+    if (matchesIfNoneMatch(request.headers["if-none-match"], etag)) {
       reply.code(304).send();
       return;
     }
