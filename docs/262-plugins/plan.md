@@ -915,10 +915,25 @@ instead of a repeat.
   allocation against the services it has just parsed, honouring the resolver's
   assignment wherever it is free and moving only a genuine collision: the
   uniqueness `resolvePreviewTarget` and the browser's port-keyed service list
-  both rely on is established where both sets of services are actually known.
-  The two surfaces also count a mapping's ports through one shared derivation
-  (`declaredContainerPorts`), so they cannot disagree about what a mapping
-  means either.
+  both rely on is established where both sets of services are actually known. A
+  correction is remembered on the manager and offered back as the pin on every
+  later start, so a reconcile that runs without a resolver round (adoption, a
+  containment change) cannot undo it from the stale number. The two surfaces
+  also count a mapping's ports through one shared derivation
+  (`declaredContainerPorts`), so they cannot disagree about what a mapping means
+  either — and it counts EVERY entry of a service, not just the first: only the
+  first is the number ShipIt previews that service on, but a service listening
+  on two answers on both, and reserving the second costs nothing while
+  publishing a plugin there would survive only until the user reorders the list.
+
+  **What this does not resolve** is the project declaring one container port on
+  two of its OWN services. That is legal Compose, ShipIt moves neither (a
+  project service's port is its origin *and* its container port, and unlike a
+  plugin's fragment both definitions belong to the one person who can change
+  them), so `resolvePreviewTarget` answers with the first — and
+  `warnOnAmbiguousPreviewPorts` says so on every start, because "the pane shows
+  the wrong service" is not a symptom anyone traces back to a port they wrote
+  twice.
 
   **Implemented** (`plugin-state.ts`), as
   `<sessionDir>/plugin-data/<alias>/state/`. The container-side names both

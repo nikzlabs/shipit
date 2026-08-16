@@ -1,8 +1,10 @@
 import type { WsServiceStatus } from "../../../server/shared/types.js";
 import { usePreviewStore } from "../../stores/preview-store.js";
+import { isForeignSession } from "./session-scope.js";
 import type { Handler } from "./types.js";
 
 export const handleServiceStatus: Handler<WsServiceStatus> = (_ctx, data) => {
+  if (isForeignSession(data.sessionId)) return;
   const preview = usePreviewStore.getState();
   preview.updateService({
     name: data.name,

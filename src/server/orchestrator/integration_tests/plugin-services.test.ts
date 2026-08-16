@@ -171,6 +171,31 @@ async function startStack(stack: Stack): Promise<void> {
   await stack.mgr.start();
 }
 
+/**
+ * The same, with the two readings of the project's compose file DISAGREEING
+ * (#2325) — the resolver sees a file that does not parse, and by the time the
+ * stack starts the write has completed.
+ *
+ * This is the divergence itself, not a stand-in for it: a file watcher firing
+ * mid-write is the everyday way to reach it, and `shipit.yaml` re-pointing
+ * `compose.file` or a round resolving before the file exists are the others.
+ * Without it a test is answered entirely by the resolver's own reservation and
+ * cannot fail on the manager's pass at all.
+ */
+async function startStackWithStaleCollisionDomain(
+  stack: Stack,
+  projectCompose: string,
+): Promise<void> {
+  const composePath = path.join(workspaceDir, "docker-compose.yml");
+  fs.writeFileSync(composePath, "services:\n  web:\n    imag");
+  const services = await resolveSessionPluginServices(SESSION_ID, workspaceDir, {
+    containEgress: false,
+  });
+  fs.writeFileSync(composePath, projectCompose);
+  stack.mgr.setPluginServices(services);
+  await stack.mgr.start();
+}
+
 function readOverride(): Record<string, Record<string, unknown>> {
   return (parseYaml(fs.readFileSync(path.join(stateDir, COMPOSE_OVERRIDE_FILE), "utf-8")) as {
     services: Record<string, Record<string, unknown>>;
@@ -365,13 +390,16 @@ describe("plugin services in a session's stack (docs/262)", () => {
     // is ordinary rather than exotic — and the consuming project cannot fix it:
     // the container port comes from the plugin's fragment, and `overrides` offer
     // `autostart` and `as`, neither of which is a port.
-    writeFixture({
-      projectCompose: "services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n",
-      fragment: FRAGMENT.replace(/4820/g, "5173"),
-    });
+    //
+    // Started with the collision domain the resolver read STALE, which is the
+    // only way the two numbers ever collided: with both surfaces reading one
+    // good file, the resolver's own reservation already answered this and the
+    // manager's pass is never asked anything.
+    const projectCompose = "services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n";
+    writeFixture({ projectCompose, fragment: FRAGMENT.replace(/4820/g, "5173") });
     const stack = makeStack();
 
-    await startStack(stack);
+    await startStackWithStaleCollisionDomain(stack, projectCompose);
 
     const web = stack.mgr.getService("web")!;
     const probe = stack.mgr.getService("probe")!;
@@ -395,10 +423,8 @@ describe("plugin services in a session's stack (docs/262)", () => {
   it("keeps two same-port services apart on the wire the browser reads (#2325)", async () => {
     // The browser routes by the number on these messages: two services reporting
     // one port is a preview pane that cannot address either of them separately.
-    writeFixture({
-      projectCompose: "services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n",
-      fragment: FRAGMENT.replace(/4820/g, "5173"),
-    });
+    const projectCompose = "services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n";
+    writeFixture({ projectCompose, fragment: FRAGMENT.replace(/4820/g, "5173") });
     const stack = makeStack();
     const runner = new ContainerSessionRunner({
       sessionId: SESSION_ID,
@@ -410,7 +436,7 @@ describe("plugin services in a session's stack (docs/262)", () => {
     runner.on("message", (msg: WsServerMessage) => emitted.push(msg));
     runner.setServiceManager(stack.mgr);
 
-    await startStack(stack);
+    await startStackWithStaleCollisionDomain(stack, projectCompose);
 
     const list = emitted.find((m) => m.type === "service_list") as
       { services: { name: string; port?: number }[] } | undefined;
@@ -421,6 +447,57 @@ describe("plugin services in a session's stack (docs/262)", () => {
 
     runner.setServiceManager(null);
     await stack.mgr.stop();
+  });
+
+  it("still sends the service list when the stack fails to start (#2325)", async () => {
+    // A failed start rebuilt the map exactly as much as a successful one did —
+    // `reconcile()` cleared it and `start()` filled it in again. Without this,
+    // `stack_ready` never fires, so the browser keeps the PREVIOUS list: a
+    // service whose port has since moved is then selected at a number this
+    // manager now resolves to a different service. Same wrong-app-in-the-pane
+    // symptom, no port collision anywhere in it.
+    writeFixture();
+    const commands: string[][] = [];
+    const mgr = new ServiceManager({
+      sessionId: SESSION_ID,
+      workspaceDir,
+      serviceEnvDir: path.join(sessionDir, "service-env"),
+      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeRunner: (async (args: string[]) => {
+        commands.push(args);
+        if (args.includes("up")) throw new Error("compose up failed");
+      }) as ComposeRunner,
+      composeQuery: (async () => "") as ComposeQuery,
+      pollIntervalMs: 0,
+    });
+    const runner = new ContainerSessionRunner({
+      sessionId: SESSION_ID,
+      sessionDir,
+      defaultAgentId: "claude",
+      workerUrl: "http://0.0.0.0:0",
+    });
+    const emitted: WsServerMessage[] = [];
+    runner.on("message", (msg: WsServerMessage) => emitted.push(msg));
+    runner.setServiceManager(mgr);
+
+    const services = await resolveSessionPluginServices(SESSION_ID, workspaceDir, {
+      containEgress: false,
+    });
+    mgr.setPluginServices(services);
+    await expect(mgr.start()).rejects.toThrow("compose up failed");
+
+    const list = emitted.find((m) => m.type === "service_list") as
+      { services: { name: string; port?: number }[] } | undefined;
+    expect(list).toBeDefined();
+    // The map as it now IS — the plugin's service included, at the port this
+    // manager would route it on.
+    expect((list?.services ?? []).map((s) => s.name).sort())
+      .toEqual(["probe", "probe-worker", "web"]);
+    expect(list?.services.find((s) => s.name === "probe")?.port)
+      .toBe(mgr.getService("probe")?.publishedPort);
+
+    runner.setServiceManager(null);
+    await mgr.stop();
   });
 
   it("keeps the project's stack running when a plugin cannot be mounted (req 13)", async () => {

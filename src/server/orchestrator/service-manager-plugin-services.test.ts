@@ -186,10 +186,35 @@ describe("plugin services in the compose stack", () => {
     await mgr.stop();
   });
 
+  it("keeps a corrected origin when the project later frees the port (#2325)", async () => {
+    // The correction is durable, so a later start must not re-litigate it from
+    // the number the resolver assigned before the collision was visible. A
+    // reconcile can run without a resolver round at all (manager adoption, a
+    // containment change), and it would then read the stale value as the pin.
+    const workspaceDir = setup("services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n");
+    const mgr = createManager(workspaceDir);
+    mgr.setPluginServices([pluginService({ port: 5173, publishedPort: 5173 })]);
+    await mgr.start();
+    const corrected = mgr.getService("probe")!.publishedPort!;
+    expect(corrected).not.toBe(5173);
+
+    // The project drops its own service, so 5173 is free again — the plugin's
+    // origin still must not move (req 18).
+    fs.writeFileSync(
+      path.join(workspaceDir, "docker-compose.yml"),
+      "services:\n  web:\n    image: node:20\n",
+    );
+    await mgr.reconcile();
+    expect(mgr.getService("probe")?.publishedPort).toBe(corrected);
+    await mgr.stop();
+  });
+
   it("counts every declared port of a project service as taken (#2325)", async () => {
-    // Only the FIRST entry is the port ShipIt previews the project service on,
-    // but a service listening on two answers on both — so a plugin published on
-    // the second would still be reachable at an address that is not its own.
+    // Only the FIRST entry is the number ShipIt previews the project service on,
+    // so a plugin published on the second is not ambiguous *today* — this is
+    // deliberate conservatism, and it is what the plugin resolver has always
+    // done: the project service does answer on both ports, and the day the user
+    // reorders the list the second becomes its origin.
     const workspaceDir = setup(
       "services:\n  web:\n    image: node:20\n    ports: ['3000:3000', '5173:5173']\n",
     );

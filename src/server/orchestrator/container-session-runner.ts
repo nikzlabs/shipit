@@ -840,6 +840,23 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
       this.emitMessage(this.buildPreviewStatus());
     };
 
+    /**
+     * #2325 — a start that FAILED still rebuilt the service map, so the browser's
+     * copy is out of date exactly as much as after one that succeeded.
+     *
+     * `reconcile()` clears the map and `start()` builds it afresh; a throw
+     * anywhere after that (a `compose up` that exits non-zero, an image that will
+     * not pull) means `stack_ready` never fires. The per-service statuses the
+     * catch emits cover only the services it tried to start, so a service that
+     * was held — manual, or gated on install — keeps whatever port the browser
+     * last heard, and a service that is gone entirely stays in the list forever.
+     * Either one leaves the browser routing a number the manager now resolves to
+     * a DIFFERENT service, which is the wrong-app-in-the-pane symptom arriving
+     * without any port collision at all. The list is a fact about the map, not
+     * about the start succeeding.
+     */
+    const onStackError = () => onReady();
+
     const onSecretsStatus = (snapshot: SecretsStatusInternalSnapshot) => {
       this.emitMessage({
         type: "secrets_status",
@@ -863,12 +880,14 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     mgr.on("service_status", onStatus);
     mgr.on("service_log", onLog);
     mgr.on("stack_ready", onReady);
+    mgr.on("stack_error", onStackError);
     mgr.on("secrets_status", onSecretsStatus);
 
     this._serviceManagerListeners = [
       () => mgr.off("service_status", onStatus),
       () => mgr.off("service_log", onLog),
       () => mgr.off("stack_ready", onReady),
+      () => mgr.off("stack_error", onStackError),
       () => mgr.off("secrets_status", onSecretsStatus),
     ];
 
