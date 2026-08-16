@@ -258,7 +258,11 @@ events only at completion), which is worse. A warn-only 60s watchdog
 - Fast upstream churn (releases every few days): version bumps are routine
   deliberate edits; `OPENCODE_DISABLE_AUTOUPDATE` stays set so the pinned
   binary never self-replaces.
-- **OpenCode 2.0 is in beta** (checked 2026-08-16: `opencode.ai/v2/docs`).
+- **OpenCode 2.0 is in beta** — full fact sheet, the load-bearing run-mode
+  unknown, and the adoption shape now live in
+  [docs/269-opencode-v2](../269-opencode-v2/plan.md) (tracked as
+  planning#411); the summary below is kept for this doc's own review trail.
+  (Checked 2026-08-16: `opencode.ai/v2/docs`.)
   It is NOT a routine bump on this integration's line: it ships as a
   different npm package (`@opencode-ai/cli@beta`, currently version
   `0.0.0-next-*` with multiple builds per day) installing a SEPARATE
