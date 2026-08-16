@@ -11,6 +11,7 @@ import { cn } from "../../utils/cn.js";
 import { StatusDot } from "../ui/status-dot.js";
 import { DeviceSelector } from "../DeviceSelector.js";
 import { usePreviewStore } from "../../stores/preview-store.js";
+import { usePreviewToolbarCollapse } from "../../hooks/usePreviewToolbarCollapse.js";
 import { PreviewPath } from "./PreviewPath.js";
 
 /** One selectable port row in the port dropdown. */
@@ -127,18 +128,42 @@ export function PreviewToolbar({
   // is then the only location we know.
   const openUrl = previewFullUrl ?? activeSlotUrl;
 
+  // Changes whenever the bar's intrinsic width changes without the bar's own
+  // width changing — a ResizeObserver alone would not fire for any of these.
+  const collapseSignature = [
+    isRunning, showSelector, portLabel ?? "", hasErrors, errorPanelOpen, errorCount,
+    deviceFrameActive, deviceWidth, deviceHeight, autoFixEnabled, autoFixRetries,
+    previewPath ?? "",
+  ].join("|");
+  const collapseRef = usePreviewToolbarCollapse(collapseSignature);
+
   return (
-    <div className="flex items-center justify-between gap-2 px-3 py-1.5 bg-(--color-bg-secondary) border-b border-(--color-border-secondary) text-xs text-(--color-text-secondary)">
-      <span className="flex items-center gap-2">
+    // `group/ptb` + the data flags the collapse hook writes. Labels below hide
+    // off those flags; the groups stay `shrink-0` so the row genuinely
+    // overflows and the hook has something real to measure — giving the labels
+    // `truncate` instead would let them absorb the pressure silently and the
+    // address, which outranks them, would be squeezed in their place.
+    <div
+      ref={collapseRef}
+      data-hide-viewport="false"
+      data-hide-autofix="false"
+      data-hide-service="false"
+      className="group/ptb flex items-center justify-between gap-2 px-3 py-1.5 bg-(--color-bg-secondary) border-b border-(--color-border-secondary) text-xs text-(--color-text-secondary)"
+    >
+      <span className="flex items-center gap-2 shrink-0">
         {showSelector ? (
           <DropdownMenu open={portSelectorOpen} onOpenChange={setPortSelectorOpen}>
             <DropdownMenuTrigger asChild>
               <button
                 className="flex items-center gap-1.5 text-(--color-text-primary) hover:text-(--color-text-secondary) transition-colors cursor-pointer"
                 aria-label="Select preview port"
+                // Carries the service name once the collapse hides the label.
+                title={portLabel ? `Preview: ${portLabel}` : "Select preview port"}
               >
                 <StatusDot status={statusToDotVariant(activeStatus)} />
-                <span>{portLabel}</span>
+                {/* Last label to go: the only one that says WHICH service you
+                    are looking at. The dot and the tooltip carry it after. */}
+                <span className="group-data-[hide-service=true]/ptb:hidden">{portLabel}</span>
                 <CaretDownIcon size={ICON_SIZE.XS} />
               </button>
             </DropdownMenuTrigger>
@@ -171,7 +196,9 @@ export function PreviewToolbar({
         )}
         {isRunning && (
           <>
-            <span className="text-(--color-border-secondary)">|</span>
+            {/* Separates two LABELLED groups, so it goes when the label on its
+                left does — between bare icons it is noise, not structure. */}
+            <span className="text-(--color-border-secondary) group-data-[hide-service=true]/ptb:hidden">|</span>
             <DeviceSelector
               activePreset={devicePreset}
               isLandscape={isLandscape}
@@ -193,7 +220,7 @@ export function PreviewToolbar({
               }}
             />
             {deviceFrameActive && (
-              <span className="text-(--color-text-tertiary) tabular-nums">
+              <span className="text-(--color-text-tertiary) tabular-nums group-data-[hide-viewport=true]/ptb:hidden">
                 {deviceWidth}×{deviceHeight}
                 {deviceScale < 1 && (
                   <span className="ml-1 text-(--color-text-tertiary)">({deviceScalePercent}%)</span>
@@ -207,7 +234,7 @@ export function PreviewToolbar({
                 (no injected script) where Home's document-load fallback is
                 what the user needs. Rendered whenever the preview runs, so
                 the layout doesn't shift when a path arrives. */}
-            <span className="text-(--color-border-secondary)">|</span>
+            <span className="text-(--color-border-secondary) group-data-[hide-viewport=true]/ptb:hidden">|</span>
             {/* Sits to the right of the separator, adjacent to the address bar
                 (PreviewPath), where a browser puts its home button. */}
             <Button
@@ -250,7 +277,10 @@ export function PreviewToolbar({
           <span className={`relative w-7 h-4 rounded-full transition-colors ${autoFixEnabled ? "bg-(--color-autofix)" : "bg-(--color-border-secondary)"}`}>
             <span className={`absolute top-0.5 left-0.5 w-3 h-3 rounded-full bg-white transition-transform ${autoFixEnabled ? "translate-x-3" : ""}`} />
           </span>
-          <span className={autoFixEnabled ? "text-(--color-autofix)" : ""}>
+          {/* Goes before the service name: the switch's own colour already
+              reports whether auto-fix is on, so the word is the most
+              redundant label in the bar. */}
+          <span className={`group-data-[hide-autofix=true]/ptb:hidden ${autoFixEnabled ? "text-(--color-autofix)" : ""}`}>
             Auto-fix{autoFixEnabled && autoFixRetries > 0 ? ` (${autoFixRetries}/3)` : ""}
           </span>
         </label>
