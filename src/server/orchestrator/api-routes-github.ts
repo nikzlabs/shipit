@@ -1060,14 +1060,20 @@ export async function registerGitHubRoutes(
       const dir = resolveSessionDir(sessionManager, request.params.id, reply);
       if (!dir) return;
       try {
-        // Block merge while the agent is mid-turn. Auto-commit fires after
+        // Block merge while the agent is still working. Auto-commit fires after
         // the turn ends (see post-turn.ts), so merging now could ship a PR
         // whose later commits land on a branch with a closed PR — orphaned
         // work. The client also disables the button, but a stale tab or
         // race could still POST here, so enforce on the server too.
+        //
+        // docs/266 — `agentBusy`, widened from bare `running`. The window this
+        // guard exists to close does not end when `running` clears: the commit,
+        // the debounced auto-push it arms, and a backgrounded review consult all
+        // run past that point and all still produce commits to push. Same
+        // predicate the managed auto-merge loop now uses, for the same reason.
         const runner = deps.runnerRegistry.get(request.params.id);
-        if (runner?.running) {
-          reply.code(409).send({ error: "Agent turn in progress — wait for it to finish before merging" });
+        if (runner?.agentBusy) {
+          reply.code(409).send({ error: "Agent still working — wait for it to finish before merging" });
           return;
         }
 
@@ -1112,7 +1118,18 @@ export async function registerGitHubRoutes(
         }
 
         const git = createGitManager(dir);
-        const result = await mergePullRequest(git, deps.githubAuthManager, request.body?.method, session?.remoteUrl);
+        // docs/266 — this route can end in an ARMING rather than a merge (checks
+        // still running). A live session's arming stays on ShipIt's managed
+        // loop, where the busy gate holds it; GitHub native would merge the PR
+        // during a later turn with no idea one was running.
+        const preferManaged = poller?.hasLiveRunner(request.params.id) === true;
+        const result = await mergePullRequest(
+          git, deps.githubAuthManager, request.body?.method, session?.remoteUrl, { preferManaged },
+        );
+        if (result.managed && poller) {
+          poller.setAutoMergeEnabled(request.params.id, true);
+          poller.setAutoMergeManaged(request.params.id, true, { managedReason: "session-live" });
+        }
         if ((result.success || result.autoMergeEnabled) && poller && session?.remoteUrl) {
           if (result.success) {
             await poller.forceVerifySessionPrState(request.params.id);

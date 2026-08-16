@@ -42,8 +42,61 @@ function ToggleSwitch({
   );
 }
 
-/** Hover tooltip explaining ShipIt-managed auto-merge with a link to GitHub settings. */
-function ManagedMergeInfo({ settingsUrl, reason }: { settingsUrl?: string; reason?: string }) {
+/**
+ * Hover tooltip explaining ShipIt-managed auto-merge.
+ *
+ * Two very different states share the `managed` flag (docs/266). The GitHub-
+ * refused fallback names the missing repo precondition and links to settings.
+ * The live-session case is not an error at all — ShipIt is deliberately holding
+ * the merge until the session stops working — so it gets its own wording and no
+ * settings link, which would otherwise tell the user to go fix a repository
+ * that is configured perfectly well.
+ */
+function ManagedMergeInfo({
+  settingsUrl,
+  reason,
+  managedReason,
+}: {
+  settingsUrl?: string;
+  reason?: string;
+  managedReason?: "native-unavailable" | "session-live";
+}) {
+  if (managedReason === "session-live") {
+    return (
+      <TooltipProvider>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <button
+              type="button"
+              className="inline-flex h-5 w-5 items-center justify-center rounded text-(--color-text-secondary) hover:text-(--color-text-primary) focus:outline-none focus:ring-2 focus:ring-(--color-border-focus)"
+              aria-label="Auto-merge is waiting for this session"
+              onClick={(event) => event.preventDefault()}
+            >
+              <InfoIcon size={ICON_SIZE.XS} />
+            </button>
+          </TooltipTrigger>
+          <TooltipContent
+            side="bottom"
+            align="end"
+            collisionPadding={12}
+            className="z-[60] w-[min(calc(100vw-2rem),16rem)] whitespace-normal p-2.5 text-(--color-text-secondary)"
+          >
+            <div>
+              <span className="block font-medium text-(--color-text-primary)">
+                ShipIt will merge this PR itself.
+              </span>
+              <span className="block mt-0.5">
+                This session is still working, so the merge waits until it finishes and CI
+                passes — otherwise the agent&rsquo;s remaining changes would land after the
+                PR closed.
+              </span>
+            </div>
+          </TooltipContent>
+        </Tooltip>
+      </TooltipProvider>
+    );
+  }
+
   return (
     <TooltipProvider>
       <Tooltip>
@@ -142,7 +195,13 @@ export function AutoMergeToggle({
         title={enabled ? "Disable auto-merge" : "Enable auto-merge"}
         className={className}
       />
-      {autoMerge?.managed && <ManagedMergeInfo settingsUrl={autoMerge.settingsUrl} reason={autoMerge.reason} />}
+      {autoMerge?.managed && (
+        <ManagedMergeInfo
+          settingsUrl={autoMerge.settingsUrl}
+          reason={autoMerge.reason}
+          managedReason={autoMerge.managedReason}
+        />
+      )}
     </span>
   );
 }

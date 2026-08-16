@@ -70,8 +70,15 @@ export interface PrCardState {
   autoMerge?: {
     enabled: boolean;
     mergeMethod: "squash" | "merge" | "rebase";
-    /** True when ShipIt manages the merge (GitHub native unavailable). */
+    /** True when ShipIt, not GitHub, owns the merge. See `managedReason`. */
     managed?: boolean;
+    /**
+     * Why ShipIt owns it (docs/266). `native-unavailable` is a repo
+     * misconfiguration and gets the settings tooltip; `session-live` is a normal
+     * wait for the session to finish and must NOT read as an error. Absent is
+     * treated as `native-unavailable` (the only case before docs/266).
+     */
+    managedReason?: "native-unavailable" | "session-live";
     /** GitHub settings URL for configuring branch protection. */
     settingsUrl?: string;
     /** The real GitHub error that triggered the managed-merge fallback. */
@@ -940,7 +947,13 @@ export const usePrStore = create<PrState>((set, get) => ({
         revert();
         return;
       }
-      const data = await res.json() as { enabled: boolean; mergeMethod: "squash" | "merge" | "rebase"; managed?: boolean; reason?: string };
+      const data = await res.json() as {
+        enabled: boolean;
+        mergeMethod: "squash" | "merge" | "rebase";
+        managed?: boolean;
+        managedReason?: "native-unavailable" | "session-live";
+        reason?: string;
+      };
       set((state) => {
         const existing = state.cardBySession[sessionId];
         // This toggle was for a live PR that has since reached its terminal
@@ -968,6 +981,11 @@ export const usePrStore = create<PrState>((set, get) => ({
           enabled: data.enabled,
           mergeMethod: data.mergeMethod,
           managed: data.managed,
+          // Carried from the response, not left to the next poll broadcast: the
+          // tooltip renders immediately on toggle, and without this a
+          // managed-because-live arming would flash the repo-misconfiguration
+          // wording in the meantime. docs/266.
+          managedReason: data.managedReason,
           reason: data.reason,
           // The PR this toggle was made for — so the arming is retired with that
           // PR rather than read as a pre-arm for the next one.

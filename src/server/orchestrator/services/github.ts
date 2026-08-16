@@ -9,7 +9,7 @@ import type { GitHubAuthManager } from "../github-auth.js";
 import type { WorkflowRunSummary, WorkflowJobSummary, WorkflowSummary } from "../github-auth-actions.js";
 import type { PullRequestDetail, PrConversation } from "../github-auth-prs.js";
 import type { ChatHistoryManager, PersistedMessage } from "../chat-history.js";
-import type { PrAutoMergeError } from "../../shared/types/github-types.js";
+import type { AutoMergeManagedReason, PrAutoMergeError } from "../../shared/types/github-types.js";
 import type { PrStatusPoller } from "../pr-status-poller.js";
 import type { SessionRunnerRegistry } from "../session-runner.js";
 import type { SessionManager } from "../sessions.js";
@@ -299,13 +299,22 @@ export async function createPullRequest(
   return { success: result.success, url: result.url, number: result.number, message: result.message };
 }
 
-/** Merge a pull request. */
+/**
+ * Merge a pull request (the UI card's current-branch merge).
+ *
+ * `opts.preferManaged` (docs/266) is the same rule the toggle path applies: when
+ * the merge can't happen now and this would fall back to ARMING auto-merge, a
+ * session with a live runner keeps that arming on ShipIt's managed loop rather
+ * than handing it to GitHub. The caller records the managed state, since this
+ * function has no poller.
+ */
 export async function mergePullRequest(
   git: GitManager,
   githubAuthManager: GitHubAuthManager,
   method?: string,
   remoteUrl?: string,
-): Promise<{ success: boolean; message: string; autoMergeEnabled?: boolean }> {
+  opts: { preferManaged?: boolean } = {},
+): Promise<{ success: boolean; message: string; autoMergeEnabled?: boolean; managed?: boolean }> {
   if (!githubAuthManager.authenticated) throw new ServiceError(401, "Not authenticated with GitHub");
 
   const resolved = await resolveGitHubRemote(git, remoteUrl);
@@ -323,6 +332,14 @@ export async function mergePullRequest(
   // If merge failed because checks are pending, enable auto-merge
   const checks = await githubAuthManager.getCheckStatus(resolved.owner, resolved.repo, head);
   if (checks.state === "pending") {
+    if (opts.preferManaged) {
+      return {
+        success: true,
+        message: "Checks are still running — ShipIt will merge this PR once they pass and this session finishes.",
+        autoMergeEnabled: true,
+        managed: true,
+      };
+    }
     const graphqlMethod = mergeMethod === "merge" ? "MERGE" as const : mergeMethod === "squash" ? "SQUASH" as const : "REBASE" as const;
     const autoResult = await githubAuthManager.enableAutoMerge(resolved.owner, resolved.repo, pr.number, graphqlMethod);
     return { success: autoResult.success, message: autoResult.message, autoMergeEnabled: autoResult.success };
@@ -1703,6 +1720,16 @@ export async function activatePendingAutoMergeForPr(
   const resolved = parseRepoFromPrUrl(prUrl);
   if (!resolved) return;
 
+  // docs/266 — a live session keeps its merge on the ShipIt-managed loop, where
+  // the busy gate can hold it. This is the common case for an agent-opened PR:
+  // arming runs inside the post-turn flow, whose runner is still very much
+  // alive. Nothing is armed on GitHub, so no `enableAutoMerge` round-trip (and
+  // no terminal-window check — there is nothing to await).
+  if (prStatusPoller.hasLiveRunner(sessionId)) {
+    prStatusPoller.setAutoMergeManaged(sessionId, true, { managedReason: "session-live" });
+    return;
+  }
+
   const graphqlMethod = GRAPHQL_MERGE_METHOD[autoMergeState.mergeMethod];
   const result = await githubAuth.enableAutoMerge(resolved.owner, resolved.repo, prNumber, graphqlMethod);
 
@@ -1712,7 +1739,7 @@ export async function activatePendingAutoMergeForPr(
 
   if (!result.success) {
     const branchSettingsUrl = `https://github.com/${resolved.owner}/${resolved.repo}/settings/branches`;
-    prStatusPoller.setAutoMergeManaged(sessionId, true, branchSettingsUrl);
+    prStatusPoller.setAutoMergeManaged(sessionId, true, { settingsUrl: branchSettingsUrl });
     return;
   }
 
@@ -1726,7 +1753,14 @@ export async function toggleAutoMerge(
   prStatusPoller: PrStatusPoller,
   sessionId: string,
   enabled: boolean,
-): Promise<{ enabled: boolean; mergeMethod: "squash" | "merge" | "rebase"; managed?: boolean; reason?: string } | { error: PrAutoMergeError }> {
+): Promise<{
+  enabled: boolean;
+  mergeMethod: "squash" | "merge" | "rebase";
+  managed?: boolean;
+  /** Why it's managed — the client renders the two cases very differently. docs/266. */
+  managedReason?: AutoMergeManagedReason;
+  reason?: string;
+} | { error: PrAutoMergeError }> {
   if (!githubAuth.authenticated) throw new ServiceError(401, "Not authenticated with GitHub");
 
   const prStatus = prStatusPoller.getStatus(sessionId);
@@ -1736,6 +1770,7 @@ export async function toggleAutoMerge(
       enabled: state.enabled,
       mergeMethod: state.mergeMethod,
       managed: state.managed,
+      managedReason: state.managedReason,
     };
   }
 
@@ -1747,6 +1782,18 @@ export async function toggleAutoMerge(
   const mergeMethod = autoMergeState?.mergeMethod ?? "squash";
 
   if (enabled) {
+    // docs/266 — same rule as `activatePendingAutoMergeForPr`: while the session
+    // has a live runner, ShipIt keeps the merge on its own loop rather than
+    // handing the PR to GitHub, which cannot see a ShipIt turn and would merge
+    // over uncommitted work. Reported as managed with the honest reason, so the
+    // card says "merges when this session finishes" instead of showing the
+    // repo-misconfiguration tooltip.
+    if (prStatusPoller.hasLiveRunner(sessionId)) {
+      prStatusPoller.setAutoMergeEnabled(sessionId, true);
+      prStatusPoller.setAutoMergeManaged(sessionId, true, { managedReason: "session-live" });
+      return { enabled: true, mergeMethod, managed: true, managedReason: "session-live" };
+    }
+
     const graphqlMethod = GRAPHQL_MERGE_METHOD[mergeMethod];
     const result = await githubAuth.enableAutoMerge(owner, repo, prStatus.prNumber, graphqlMethod);
 
@@ -1769,8 +1816,14 @@ export async function toggleAutoMerge(
       const settingsUrl = `https://github.com/${owner}/${repo}/settings`;
 
       prStatusPoller.setAutoMergeEnabled(sessionId, true);
-      prStatusPoller.setAutoMergeManaged(sessionId, true, settingsUrl, result.message);
-      return { enabled: true, mergeMethod, managed: true, reason: result.message };
+      prStatusPoller.setAutoMergeManaged(sessionId, true, { settingsUrl, reason: result.message });
+      return {
+        enabled: true,
+        mergeMethod,
+        managed: true,
+        managedReason: "native-unavailable",
+        reason: result.message,
+      };
     }
 
     prStatusPoller.setAutoMergeEnabled(sessionId, true);
@@ -1800,6 +1853,12 @@ export async function updateMergeMethod(
   const autoMergeState = prStatusPoller.getAutoMergeState(sessionId);
   prStatusPoller.setMergeMethod(sessionId, method);
 
+  // docs/266 — a ShipIt-managed arming has nothing on GitHub to re-point: the
+  // method is read from our own state at merge time. Re-arming native here
+  // would hand a live session's PR straight back to GitHub *and* leave our
+  // state marked managed, so both loops would own the same PR.
+  if (autoMergeState?.enabled && autoMergeState.managed) return { mergeMethod: method };
+
   // If auto-merge is active, re-enable with the new method
   if (autoMergeState?.enabled) {
     const prStatus = prStatusPoller.getStatus(sessionId);
@@ -1807,6 +1866,15 @@ export async function updateMergeMethod(
       const urlMatch = /github\.com\/([^/]+)\/([^/]+)/.exec(prStatus.prUrl);
       if (urlMatch) {
         const [, owner, repo] = urlMatch;
+        // The arming is native but the session has since come alive (it was
+        // quiet when armed). Take ownership rather than re-arming GitHub: same
+        // rule as `toggleAutoMerge`, applied at the only other moment an arming
+        // is rewritten.
+        if (prStatusPoller.hasLiveRunner(sessionId)) {
+          await githubAuth.disableAutoMerge(owner, repo, prStatus.prNumber);
+          prStatusPoller.setAutoMergeManaged(sessionId, true, { managedReason: "session-live" });
+          return { mergeMethod: method };
+        }
         await githubAuth.disableAutoMerge(owner, repo, prStatus.prNumber);
         const graphqlMethod = method === "merge" ? "MERGE" as const : method === "squash" ? "SQUASH" as const : "REBASE" as const;
         await githubAuth.enableAutoMerge(owner, repo, prStatus.prNumber, graphqlMethod);
