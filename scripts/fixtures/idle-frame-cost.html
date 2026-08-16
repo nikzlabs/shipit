@@ -1,0 +1,50 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>idle frame cost</title>
+<!--
+  Two-ingredient reproduction for docs/265's idle-compositing finding. Drive it
+  with `node scripts/trace-idle-frames.mjs`; each query param toggles one
+  ingredient, and the interesting number is beginMainThreadFramesPerSecond.
+
+    ?spin=1              always-on animation, nothing else   → main frames ~0
+    ?spin=1&io=1         + one live IntersectionObserver     → main frames = display rate
+    ?spin=1&cv=1&n=300   + content-visibility:auto rows      → main frames = display rate
+    ?spin=0&cv=1&n=300   rows but no animation               → no frames at all
+
+  Neither ingredient costs anything alone. Together they run a full style /
+  layout / pre-paint / paint / commit pass every vsync.
+-->
+<style>
+  @keyframes spin-slow { to { transform: rotate(360deg); } }
+  .tool-spinner { animation: spin-slow 1s linear infinite; }
+  .sp { display: inline-block; width: 12px; height: 12px; border: 1px solid #39f;
+        border-top-color: transparent; border-radius: 9999px; }
+  body { font: 13px system-ui; margin: 0; padding: 8px; }
+  .row { padding: 6px 8px; border-bottom: 1px solid #eee; }
+  .cv > * { content-visibility: auto; contain-intrinsic-size: auto 5rem; }
+</style>
+<body>
+  <div><span id="spin" class="sp"></span> <span id="label"></span></div>
+  <div id="list"></div>
+  <script>
+    const q = new URLSearchParams(location.search);
+    const rows = Number(q.get("n") ?? 0);
+    const list = document.getElementById("list");
+
+    if (q.get("spin") === "1") document.getElementById("spin").classList.add("tool-spinner");
+    if (q.get("cv") === "1") list.className = "cv";
+
+    for (let i = 0; i < rows; i++) {
+      const row = document.createElement("div");
+      row.className = "row";
+      row.innerHTML = `<b>msg ${i}</b><p>${"lorem ipsum dolor sit amet ".repeat(6)}</p><pre>code line</pre>`;
+      list.appendChild(row);
+    }
+
+    // A single observer is enough; the cost is per frame, not per observer.
+    if (q.get("io") === "1") new IntersectionObserver(() => {}).observe(list);
+
+    document.getElementById("label").textContent =
+      `spin=${q.get("spin") ?? 0} cv=${q.get("cv") ?? 0} io=${q.get("io") ?? 0} rows=${rows}`;
+  </script>
+</body>

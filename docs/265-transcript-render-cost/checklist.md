@@ -75,16 +75,99 @@ Not the reported freeze, not a regression, and not caused by this work — but i
 largest steady cost, and the freeze was previously masking it.
 
 Between 2 s and 20 s the trace has no user input and almost no network, yet the page produces
-**~118 frames per second** and spends **~150 ms per second** on the main thread. Over half of
-that is `Layerize` (1,170 ms of 2,287 ms in the window, ~0.65 ms every frame); the rest is
-`Commit`, `UpdateLayoutTree`, `PrePaint` and `IntersectionObserver` work, each running ~1,800
-times in 15 s.
+**~118 frames per second** and spends **~150 ms per second** on the main thread, with `Commit`,
+`UpdateLayoutTree`, `PrePaint` and `IntersectionObserver` work each running ~1,800 times in 15 s.
+(That trace also attributed 1,170 ms of the window to `Layerize`. It has not reproduced — see
+*Three corrections* below.)
 
-The driver is an infinite CSS animation that never stops while a tool runs:
-`.tool-spinner { animation: spin-slow 1s linear infinite }` (`src/client/index.css:387`),
-used by `StreamingIndicator.tsx:28` and `TodoPanel.tsx:53`. 136 `animationiteration` events
-in the idle window imply several instances running at once. Any always-on animation forces a
-frame every vsync; what makes it cost this much is that each frame re-layerizes the page.
+The first reading blamed the infinite CSS animation that runs while a tool does —
+`.tool-spinner { animation: spin-slow 1s linear infinite }` (`src/client/index.css:387`), used
+by `StreamingIndicator.tsx:28` and `TodoPanel.tsx:53`. That attribution was inferred from one
+trace. It has since been measured, and it is **half right**: the spinner is what makes frames
+happen, and it is not what makes them cost anything.
 
-Worth investigating separately: whether the spinner can be composited (so frames cost the
-compositor rather than the main thread), and why `Layerize` is 0.65 ms on a 4,000-node page.
+### Measured attribution
+
+Reproduce with `node scripts/trace-idle-frames.mjs <url>` against
+`scripts/fixtures/idle-frame-cost.html`, which toggles one ingredient per query param. The
+number that matters is `beginMainThreadFramesPerSecond` — a composited animation drives the
+compositor at display rate while leaving the main thread asleep.
+
+| fixture | compositor frames/s | **main-thread frames/s** | main-thread busy |
+|---|---|---|---|
+| spinner alone | 49.6 | **0** | 1.5 ms/s |
+| spinner + one live `IntersectionObserver` | 49.6 | **49.6** | 18.5 ms/s |
+| spinner + 300 `content-visibility:auto` rows | 49.5 | **49.7** | 40.4 ms/s |
+| 300 `content-visibility:auto` rows, no spinner | 0 | **0** | 0.3 ms/s |
+
+So neither ingredient costs anything on its own, and the rule is:
+
+> **A live `IntersectionObserver` forces a full main-thread rendering lifecycle on every frame
+> the compositor produces.** An always-on animation makes the compositor produce a frame every
+> vsync. Either alone is free; together they run style, layout, pre-paint, paint and commit at
+> display rate.
+
+Chrome creates those observers internally for **every `content-visibility: auto` element**, which
+is why the transcript is implicated at all — `MessageList.tsx:360` puts it on every row. The cost
+is linear in the row count, so it grows with the conversation: measured at
+`1.6 + ~0.06·rows` ms/s (1.6 at 0 rows, 17.9 at 50, 33.2 at 300, 56.3 at 800, 121.4 at 2,000).
+
+### Both sources have to go, or neither is worth touching
+
+ShipIt has a **second** source of always-live observers: `@formkit/auto-animate`, used once at
+`SessionSidebar/SessionGroup.tsx:380`, keeps three of them alive for the life of the page. On the
+real UI (dogfood session, 21 `content-visibility` rows, 60 Hz, 10 s windows, two runs each):
+
+| condition | main-thread frames/s | main-thread busy |
+|---|---|---|
+| nothing animating | 4.5 / 4.9 | 5.4 / 5.7 ms/s |
+| **today** — animation + both observer sources | 59.9 / 59.9 | 58.4 / 58.2 ms/s |
+| animation, `IntersectionObserver` neutered from boot | 60.0 / 59.9 | 56.7 / 55.5 ms/s |
+| animation, `content-visibility` disabled | 59.9 / 59.9 | 58.9 / 57.0 ms/s |
+| animation, **both** removed | 9.1 / 9.1 | 14.4 / 15.1 ms/s |
+
+Removing either source alone buys **nothing measurable** — the other keeps the per-frame
+lifecycle running. Removing both is worth ~75% of the cost. Anyone who picks this up and drops
+`content-visibility: auto` expecting a win will measure no change and conclude the finding was
+wrong; it is the pairing that has to break.
+
+### Three corrections to the section above
+
+1. **The spinner already composites.** `transform: rotate()` on it runs entirely on the
+   compositor — the fixture's first row is that measurement. "Make the spinner composited" is
+   not an available fix, because there is nothing to fix.
+2. **`Layerize` did not reproduce.** In every configuration measured — up to 2,000
+   `content-visibility` rows, up to 300 `will-change` layers, and the real UI — `Layerize` runs at
+   **0.002–0.004 ms/call**, totalling ~1 ms across thousands of frames, and never exceeds ~3% of
+   `Commit`. The reported 0.65 ms/call is ~200× that. The per-frame cost is instead dominated by
+   `UpdateLayoutTree` (style recalc) and `computeIntersections`. The 1,170 ms figure is unexplained
+   and should be treated as an analysis artifact until someone re-derives it; the neighbouring
+   `UpdateLayer` count of 20,624 (≈11 per frame, against a handful per *trace* here) suggests the
+   script summed something nested or cross-thread.
+3. **`content-visibility` is a *cause*, not an aggravator.** The section above reads as though
+   layerization were expensive and `content-visibility` merely nearby. It is the other way round.
+
+### Decision: no code change, and what would justify one
+
+Not fixed here, deliberately. The cost is real — ~42 ms/s of main thread while any tool runs,
+which on the 118 Hz machine that produced the original trace scales to roughly the 150 ms/s it
+reported — but every available fix removes something load-bearing:
+
+- **Dropping `content-visibility: auto`** trades this measured idle cost against an *unmeasured*
+  benefit. It is there so a long transcript does not lay out and paint every off-screen row, and
+  `useMessageScroll` is written around the placeholder-then-grow behaviour it produces
+  (`useMessageScroll.ts:43,137`). Removing it without measuring the load and scroll cost it saves
+  would be trading a known quantity for an unknown one.
+- **Dropping `@formkit/auto-animate`** costs the sidebar its list animation and, on its own,
+  buys nothing (see the table).
+
+The honest position is that this is a **real but conditional** cost: it is paid only while
+something animates, i.e. while a tool runs, and it is proportional to transcript length. What
+would settle it is one experiment, which needs the long session reqs 1–4 are already waiting on:
+**measure what `content-visibility: auto` saves at load and on scroll for a transcript of a few
+thousand rows.** If the saving is small, remove it *and* `auto-animate` together and take the 75%.
+If it is large, this section is the record of why the cost is accepted.
+
+Caveat on the numbers: they were recorded in a container with no GPU, so rasterisation is
+software and absolute milliseconds are not a user's machine. Every comparison above is between
+conditions measured the same way, which is the claim being made.
