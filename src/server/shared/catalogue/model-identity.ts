@@ -125,13 +125,6 @@ export const MODEL_IDENTITIES = {
   // `glm-5.2` on Z.ai's own key, `z-ai/glm-5.2` at OpenRouter. This is the pair
   // that proves the field is not derivable from the id.
   glm52: identity("glm-5.2", "glm"),
-  // TEMPORARY PROBE IDENTITY — reverted before this branch ships. See the probe
-  // row in services.ts.
-  glm53probe: identity("glm-5.3", "glm"),
-  // TEMPORARY NEGATIVE CONTROL — a model id that cannot exist. If a turn on this
-  // id SUCCEEDS, the service is ignoring the requested model and falling back to
-  // a default, which would make the GLM-5.3 pass prove nothing about the id.
-  glm99probe: identity("glm-9.9-nonexistent", "glm"),
 
   // Gateway-only models (2026-08-16). ShipIt holds no direct credential for
   // Google, xAI, Moonshot or Alibaba, so each of these is reachable ONLY through

@@ -367,13 +367,15 @@ export const SERVICES = [
           // phase that ships no behaviour, this mode declares only the
           // Anthropic style, which is the path ShipIt would actually drive.
           { id: "glm-5.2[1m]", label: "GLM-5.2", ...MODEL_IDENTITIES.glm52, styles: [A_MSG], contextWindow: ONE_M, price: GLM_PRICES.glm52 },
-          // TEMPORARY PROBE ROW — reverted before this branch ships. Exists only
-          // so the harness×model join offers GLM-5.3 to a live measurement turn.
-          // The price is GLM-5.2's and is NOT a claim about GLM-5.3's rate, which
-          // Z.ai has not published.
-          { id: "glm-5.3[1m]", label: "GLM-5.3", ...MODEL_IDENTITIES.glm53probe, styles: [A_MSG], contextWindow: ONE_M, price: GLM_PRICES.glm52 },
-          // TEMPORARY NEGATIVE CONTROL — see the identity comment.
-          { id: "glm-9.9-nonexistent[1m]", label: "GLM-9.9 (control)", ...MODEL_IDENTITIES.glm99probe, styles: [A_MSG], contextWindow: ONE_M, price: GLM_PRICES.glm52 },
+          // GLM-5.3 is NOT here on purpose, and this note is the record of why so
+          // nobody re-derives it. It was measured working on this exact route on
+          // 2026-08-17 (`pair-verification.md`) — `glm-5.3[1m]` is a real,
+          // validated id and a Claude Code turn completes on it. What is missing
+          // is a PRICE: Z.ai has published no per-token rate for it, and
+          // `ModelPrice` is required with a sentinel the tests reject. Carrying
+          // GLM-5.2's rate over would assert a vendor figure that does not exist —
+          // the same mistake the gateway rows already made once (see this file's
+          // pass-through correction). Add the row when Z.ai publishes a rate.
         ],
       },
       {

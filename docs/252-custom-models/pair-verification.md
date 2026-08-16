@@ -361,3 +361,61 @@ Recorded because both produced confident, wrong results that looked fine:
   ids the catalogue declares were run.
 - Each verdict is one trivial turn. It establishes that the pairing *works*, not that the
   model is good at agentic coding through that harness.
+
+## GLM-5.3 on the Z.ai coding plan (2026-08-17)
+
+A single-question probe, run because GLM-5.3 shipped on **2026-08-14** and the obvious
+question — can ShipIt reach it? — was answerable but unanswered. Same method as the sweeps
+above: live turns against the dogfood inner instance, strictly serial, assistant-role text
+only, known-good control included.
+
+**Where GLM-5.3 is.** Not on either gateway: `openrouter.ai/api/v1/models` and
+`ai-gateway.vercel.sh/v1/models` were re-checked on 2026-08-17 and the newest GLM on both is
+still 5.2. That follows from Z.ai holding the weights back ~2 weeks for safety hardening.
+Z.ai's own docs still say *"The GLM-5.3 API is coming soon"* for general API access while
+noting it is live for **GLM Coding Plan** subscribers — which is exactly what ShipIt's
+`zai:sub` mode targets.
+
+### Result: reachable today, and the id is `glm-5.3[1m]`
+
+| Pair | Result |
+|---|---|
+| `claude` / `zai:sub` / `glm-5.2[1m]` — known-good control | pass |
+| `claude` / `zai:sub` / **`glm-5.3[1m]`** | **pass** (twice, separate runs) |
+| `claude` / `zai:sub` / `glm-9.9-nonexistent[1m]` — negative control | **fail**, as required |
+
+No catalogue change was needed to *reach* it beyond a temporary probe row: the existing
+`zai:sub` endpoint (`https://api.z.ai/api/anthropic`), its `ZAI_CODING_PLAN_KEY` credential
+and the `ANTHROPIC_AUTH_TOKEN` `targetOverride` all work unchanged.
+
+### Why the negative control was the point
+
+A passing turn on a new model id does NOT by itself show the id was honoured — a service that
+ignores an unknown model and answers with its default would look identical. So a deliberately
+impossible id was run on the same route first, and it failed with a specific upstream error:
+
+> `API Error: 400 [1214][modelCode: does not exist]`
+
+Z.ai validates model ids and rejects unknown ones. That is what makes the GLM-5.3 pass mean
+"this id exists and was served" rather than "something answered". Without this control the
+probe would have been the same shape as the pass check that could not fail, three sections up.
+
+Asked to self-identify, the 5.2 route answered `GLM-5.2 (Z.ai), context window 1M` and the 5.3
+route answered `Model: glm-5.3[1m].` — recorded as an observation, not evidence. Model
+self-report is unreliable, and the second answer echoes the `[1m]` suffix that Claude Code is
+documented to consume and strip. The negative control, not the self-report, is what carries
+the finding.
+
+### Why no row shipped
+
+`ModelPrice` is required and its sentinel is rejected by `catalogue.test.ts`, and **Z.ai has
+published no per-token rate for GLM-5.3**. Third-party sources quoting $1.4 / $4.4 are
+repeating GLM-5.2's published rate. Writing that in would assert a vendor figure that does not
+exist — the same error class as the gateway pass-through pricing bug corrected on 2026-08-16,
+which was wrong by up to 2.7×. The `zai:sub` block carries a comment recording this so the
+question is not re-derived from scratch.
+
+Adding the row is then a small, well-specified job: a `glm53` identity, a `glm-5.3[1m]` row
+under `zai:sub` (`[A_MSG]`), a `glm-5.3` row under `zai:key` **only if** the general API is
+live by then, and gateway rows if OpenRouter or Vercel have picked it up — each at that
+gateway's own published rate, never the upstream's.
