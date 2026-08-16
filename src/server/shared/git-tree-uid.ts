@@ -120,36 +120,6 @@ export function resolveGitTreeUid(
   return { uid: owner.uid, gid: owner.gid };
 }
 
-/**
- * Environment variable naming the separate gitconfig a dropped-uid git reads
- * instead of the orchestrator's own.
- *
- * It is NOT token-free — see `writeUnprivilegedGitConfig`. It has to carry a
- * credential helper, because a dropped-uid git that cannot authenticate cannot
- * push, and the post-turn auto-push is not optional. What it buys is that the
- * PAT stops being readable by *every* uid in the orchestrator container and
- * becomes readable by one; the end state docs/266 E3 wants is a repo-scoped,
- * short-lived token here instead.
- *
- * Set once at boot by `initGitConfig` (`orchestrator/git-config.ts`), which also
- * writes the file. An env var rather than an import because `shared/` may not
- * reach into `orchestrator/`, and it mirrors how the orchestrator already
- * publishes `GIT_CONFIG_GLOBAL` to its own git children.
- */
-export const UNPRIVILEGED_GITCONFIG_ENV = "SHIPIT_UNPRIVILEGED_GITCONFIG";
-
-/**
- * Path of that gitconfig, or `null` when the orchestrator has not
- * written one (local mode, tests, any process that is not the orchestrator).
- *
- * `null` means "do not override `GIT_CONFIG_GLOBAL`". That is the safe answer
- * for every non-dropping caller — and a dropping caller only ever reaches this
- * inside a production orchestrator, which has written the file at boot.
- */
-export function unprivilegedGitConfigPath(): string | null {
-  const raw = process.env[UNPRIVILEGED_GITCONFIG_ENV];
-  return raw?.trim() ? raw : null;
-}
 
 /**
  * The same drop, for the raw `spawn`/`execFile`/`execFileSync` git call sites
@@ -173,17 +143,8 @@ export function unprivilegedGitConfigPath(): string | null {
  */
 export function gitSpawnOverridesForTree(
   dir: string | undefined,
-  baseEnv: NodeJS.ProcessEnv = process.env,
-): { uid?: number; gid?: number; env?: NodeJS.ProcessEnv } {
+): { uid?: number; gid?: number } {
   const treeUid = resolveGitTreeUid(dir);
   if (treeUid === null) return {};
-  const config = unprivilegedGitConfigPath();
-  return {
-    uid: treeUid.uid,
-    gid: treeUid.gid,
-    // Same reasoning as `safeSimpleGit`: point the dropped-uid git at its own
-    // config rather than the orchestrator's. Unlike simple-git, a raw spawn has
-    // no plugin standing in the way, so this is a plain env override.
-    env: config === null ? baseEnv : { ...baseEnv, GIT_CONFIG_GLOBAL: config },
-  };
+  return { uid: treeUid.uid, gid: treeUid.gid };
 }

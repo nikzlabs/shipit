@@ -73,6 +73,31 @@ describe("autoCommit — unreadable DIRECTORY (req 14, the silent one)", () => {
     expect(tree).not.toContain("pgdata/PG_VERSION");
   });
 
+  it("reports the omission when the unreadable dir hides the ONLY changes", async () => {
+    // The case the first version of this feature was blind to, and the reason
+    // the classification moved off `add -A` and onto `status`.
+    //
+    // When every change is inside the unreadable directory, git reports
+    // "nothing to commit, working tree clean" and exits 0 — so `autoCommit`
+    // took the clean-tree early return, made no commit, and said NOTHING. A
+    // turn that produced work looked like a turn that produced none. Both of
+    // the original tests kept a readable edit in the tree, which hid this by
+    // construction: they could not fail on it.
+    fs.mkdirSync(path.join(repo, "pgdata"));
+    fs.writeFileSync(path.join(repo, "pgdata", "PG_VERSION"), "14\n");
+    git("add", "-A");
+    git("commit", "-qm", "add pgdata");
+    fs.writeFileSync(path.join(repo, "pgdata", "PG_VERSION"), "15\n");
+    fs.chmodSync(path.join(repo, "pgdata"), 0o000);
+
+    const result = await new GitManager(repo).autoCommit("a turn");
+
+    // git saw a clean tree, so there is no commit — but the user must still be
+    // told, because their change is real and is not on the branch.
+    expect(result.commitHash).toBeNull();
+    expect(result.unreadable).toEqual({ kind: "omitted", detail: "pgdata/" });
+  });
+
   it("reports nothing when every path is readable", async () => {
     fs.writeFileSync(path.join(repo, "tracked.txt"), "ordinary turn\n");
     const result = await new GitManager(repo).autoCommit("a turn");

@@ -350,6 +350,26 @@ export class GitManager {
     // unreadable-directory warning first appears, and it exits 0.
     this.resetStderr();
     const status = await this.git.status();
+    // docs/266 req 14 — classify the unreadable-DIRECTORY warning HERE, off
+    // `status`, not after the staging step.
+    //
+    // `status` is where git first emits it, and every return below this point
+    // is a path where the warning would otherwise be dropped. The clean-tree
+    // return is the one that matters: when the ONLY changes are inside the
+    // unreadable directory, git reports "nothing to commit, working tree clean"
+    // and exits 0 while warning on stderr — measured — so `autoCommit` would
+    // report a clean tree, make no commit, and say nothing, which is precisely
+    // the silent case req 14 exists for. Detecting after `add -A` missed it.
+    const omittedMatch = UNREADABLE_DIR_RE.exec(this.stderrTail);
+    const omitted: UnreadableWorkspace | null = omittedMatch
+      ? { kind: "omitted", detail: omittedMatch[1] }
+      : null;
+    if (omitted) {
+      console.warn(
+        `[git] autoCommit could not read ${omitted.detail} — its contents are `
+        + "omitted from this commit. The commit itself still lands.",
+      );
+    }
     const rebaseInProgress = await this.isRebaseInProgress();
     const conflictedFiles = [...status.conflicted];
 
@@ -359,11 +379,13 @@ export class GitManager {
         rebaseInProgress ? "rebase in progress;" : "",
         conflictedFiles.length > 0 ? `unmerged paths: ${conflictedFiles.join(", ")}` : "",
       );
-      return { commitHash: null, conflictedFiles, rebaseInProgress, secretFindings: [], unreadable: null };
+      return { commitHash: null, conflictedFiles, rebaseInProgress, secretFindings: [], unreadable: omitted };
     }
 
     if (status.isClean()) {
-      return { commitHash: null, conflictedFiles: [], rebaseInProgress: false, secretFindings: [], unreadable: null };
+      // Not necessarily clean — see the classification above. `omitted` here means
+      // git could not SEE the changes, not that there were none.
+      return { commitHash: null, conflictedFiles: [], rebaseInProgress: false, secretFindings: [], unreadable: omitted };
     }
 
     // docs/266 req 15 — an unreadable FILE makes `add -A` exit 128 and stage
@@ -394,19 +416,11 @@ export class GitManager {
       };
     }
 
-    // docs/266 req 14 — an unreadable DIRECTORY is the silent one: `status` and
-    // `add -A` both exit 0 and the subtree is simply missing from the commit.
-    // Nothing but stderr distinguishes it from a turn that changed nothing.
-    const omittedMatch = UNREADABLE_DIR_RE.exec(this.stderrTail);
-    const unreadable: UnreadableWorkspace | null = omittedMatch
-      ? { kind: "omitted", detail: omittedMatch[1] }
-      : null;
-    if (unreadable) {
-      console.warn(
-        `[git] autoCommit could not read ${unreadable.detail} — its contents are `
-        + "omitted from this commit. The commit itself still lands.",
-      );
-    }
+    // `add -A` can surface the same warning for a directory `status` already
+    // flagged; re-read so a path only visible at staging time is still caught.
+    const stagedOmitted = UNREADABLE_DIR_RE.exec(this.stderrTail);
+    const unreadable: UnreadableWorkspace | null = omitted
+      ?? (stagedOmitted ? { kind: "omitted", detail: stagedOmitted[1] } : null);
 
     // docs/213 — secret-scan guard. Scan the STAGED diff (which now includes
     // new untracked files, since we just `git add -A`'d) for high-signal

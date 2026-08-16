@@ -94,7 +94,7 @@
  */
 
 import simpleGit, { type SimpleGit, type SimpleGitOptions } from "simple-git";
-import { resolveGitTreeUid, unprivilegedGitConfigPath } from "./git-tree-uid.js";
+import { resolveGitTreeUid } from "./git-tree-uid.js";
 
 /**
  * A `core.hooksPath` value under which no hook can ever be found. `/dev/null` is
@@ -146,37 +146,24 @@ export function safeSimpleGit(baseDir?: string, options?: Partial<SimpleGitOptio
   const spawnOptions = options?.spawnOptions
     ?? (treeUid === null ? undefined : { uid: treeUid.uid, gid: treeUid.gid });
 
-  // Point the dropped-uid git at its own global config rather than the
-  // orchestrator's, which is 0600 root-owned and so unreadable to it anyway —
-  // and which it must not read regardless, since it holds more than this git
-  // needs. The replacement still carries identity and `commit.gpgsign=false`,
-  // without which `git commit` hard-fails with "Author identity unknown".
-  const unprivilegedConfig = treeUid === null ? null : unprivilegedGitConfigPath();
 
   // simple-git refuses `core.hooksPath` unless `allowUnsafeHooksPath` is on,
   // because the value is normally caller-supplied and a *writable* hooks
   // directory is arbitrary code execution. Ours is the frozen constant above and
   // points at a character device, so the flag's hazard doesn't apply — the
   // override can only ever take hooks away.
-  //
-  // `GIT_CONFIG_GLOBAL` in a child env trips the same plugin under
-  // `allowUnsafeConfigPaths` (`@simple-git/argv-parser`'s env map) — the very
-  // trap that killed the `GIT_CONFIG_COUNT` approach described above. Enabling
-  // it is the narrow version of that opt-in and is gated on actually having a
-  // config to point at: the value is a ShipIt-owned path this process just
-  // wrote, never something a caller or an inherited environment supplies. Same
-  // posture as the other `unsafe.*` opt-ins in `repo-git.ts` / `git-utils.ts`.
-  const unsafe = {
-    ...options?.unsafe,
-    allowUnsafeHooksPath: true,
-    ...(unprivilegedConfig === null ? {} : { allowUnsafeConfigPaths: true }),
-  };
+  const unsafe = { ...options?.unsafe, allowUnsafeHooksPath: true };
 
   const merged = { ...options, config, unsafe, spawnOptions };
   // simple-git rejects `baseDir: undefined` in the options-object form, so keep
   // the two-argument shape when we have a directory and the bare one when not.
-  const git = baseDir === undefined ? simpleGit(merged) : simpleGit(baseDir, merged);
-  return unprivilegedConfig === null
-    ? git
-    : git.env({ ...process.env, GIT_CONFIG_GLOBAL: unprivilegedConfig });
+  //
+  // Note there is deliberately NO environment override here. An earlier version
+  // pointed the dropped git at a second `GIT_CONFIG_GLOBAL` via `.env()`;
+  // simple-git's `env(object)` ASSIGNS the executor environment, so any caller
+  // chaining `.env()` afterwards (`git-utils.ts`, `repo-git.ts`) discarded it
+  // while the uid drop stayed in force — dropped uid, root's config, no warning.
+  // The global config is instead made readable by the worker uid directly
+  // (`git-config.ts`), which nothing downstream can undo.
+  return baseDir === undefined ? simpleGit(merged) : simpleGit(baseDir, merged);
 }

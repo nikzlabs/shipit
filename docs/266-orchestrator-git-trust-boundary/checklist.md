@@ -15,22 +15,34 @@ Build sequence from [plan.md](./plan.md) §5. Requirements are cited as `(req N)
       `git-lfs-blob.ts` (`git lfs smudge` resolves `filter.lfs.smudge` from the
       repo's own config) and `github-auth.ts` (writing `credential.helper` as
       root would also leave a root-owned file inside a worker-owned `.git`).
-- [x] **A separate global config for the dropped-uid git**, 0600 and
-      worker-owned, carrying identity and `commit.gpgsign=false` — without which
-      `git commit` hard-fails with "Author identity unknown".
-- [x] `/credentials` tightened to 0700 and its `.gitconfig` kept root-only. It
-      was 0755/0644 — the PAT was readable by every uid in the orchestrator
-      container. Harmless while nothing non-root ran there; not harmless once
-      git drops uid. Worth doing on its own merits, so not gated on the drop.
+- [x] **One global gitconfig, owned by the worker uid at 0600**, in a `/credentials`
+      tightened from 0755 to **0711** (traverse, not list). It was 0644 — the PAT
+      was readable by every uid in the orchestrator container.
+      An earlier version of this PR wrote a *second* "token-free" config and
+      pointed `GIT_CONFIG_GLOBAL` at it via the child environment. Review killed
+      it and it deserved to: the file sat in a 0700 root-owned directory so the
+      worker uid could not traverse to a file it owned (every dropped commit
+      would have failed "Author identity unknown"); simple-git's `env(object)`
+      *assigns* the executor env, so callers chaining `.env()` discarded the
+      override while the uid drop stayed in force; and it was hiding a token the
+      dropped git needs anyway in order to push. One config, no override,
+      nothing downstream can undo it.
 - [x] **E5-detect (reqs 14, 15)** — the two permission states classified and
       surfaced as persisted transcript notices, with different words each:
       "this commit is short" for an unreadable **directory**, "this turn was NOT
       committed" for an unreadable **file**. Matched on message text, never on
       an exit code (`GitError.exitCode` is `undefined` by construction).
-- [x] Tests: `git-tree-uid.test.ts` (the decision, via its injection seam) and
-      `git-unreadable.test.ts` (both permission states against **real git**, not
-      a mock — the design's original claim about this was wrong and only
-      measurement caught it).
+- [x] Tests: `git-tree-uid.test.ts` (the decision, via its injection seam),
+      `git-unreadable.test.ts` (both permission states against **real git**), and
+      post-turn tests for the two notices plus the secret-block interaction.
+- [x] **Two defects found after the first pass, both fixed:** the clean-tree
+      early return escaped detection entirely (when the unreadable directory
+      hid the *only* changes, git reports "nothing to commit" and exits 0 — the
+      exact silent case req 14 exists for, and both original tests were blind to
+      it by construction because they always kept a readable edit in the tree);
+      and a `blocked` result would have retired a standing secret block even
+      though nothing was staged and the scan never ran, clearing the banner on
+      the lie planning#317's condition exists to prevent.
 
 ## Not shipped — tracked, and the reason each was split out
 
@@ -53,6 +65,21 @@ Build sequence from [plan.md](./plan.md) §5. Requirements are cited as `(req N)
 - [ ] **Per-session uids** (req 13). **planning#405.** Until then a payload at
       the shared uid still reaches every session's workspace inside the
       orchestrator container.
+
+## Known gaps from review, not fixed here — planning#407
+
+- `session-fork-merge.ts:54` clones `--local` from a session workspace with **no
+  `baseDir`**, so it still runs as root against an untrusted tree. No executed
+  payload is known (`--local` does not run the source's config), but it
+  contradicts `plan.md` §4, and the obvious fix is wrong: dropping would leave
+  the clone unable to write its root-owned destination.
+- `unreadable` is destructured only in `post-turn.ts`. The other `autoCommit`
+  callers ignore it — and `tier-escalation`'s pre-eviction commit re-checks
+  `isClean()`, which is **true** for unreadable content, so eviction can destroy
+  content root-side git used to commit. That is a data-loss path the drop
+  created and is the priority item on that issue.
+- The stderr classifiers are pinned to git 2.39.5's English wording, and
+  `unable to index file` is matched cause-agnostically.
 
 ## Do not write up as closed
 

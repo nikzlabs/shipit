@@ -11,7 +11,6 @@ import fs from "node:fs";
 import path from "node:path";
 import { chownToSessionWorker, sessionWorkerUid } from "./session-worker-uid.js";
 import { gitArgsWithHooksDisabled } from "../shared/git-hooks-guard.js";
-import { UNPRIVILEGED_GITCONFIG_ENV } from "../shared/git-tree-uid.js";
 
 /**
  * Narrow a path's mode to at most {@link mode}, best-effort.
@@ -46,14 +45,25 @@ export interface GitIdentity {
  * credential store JSON if present.
  */
 export function initGlobalGitConfig(credentialsDir: string): void {
-  // docs/266 — 0700, not the default 0755. This directory holds the
-  // orchestrator's `.gitconfig`, into which `setGlobalCredentialHelper` writes
-  // the raw PAT inline. It was world-readable inside the orchestrator container
-  // for as long as it has existed; harmless while nothing non-root ran there,
-  // and load-bearing the moment orchestrator git drops uid. Tightening it is
-  // worth doing on its own merits, so it is not gated on the drop.
-  fs.mkdirSync(credentialsDir, { recursive: true, mode: 0o700 });
-  tightenMode(credentialsDir, 0o700);
+  // docs/266 — 0711, not the default 0755 and deliberately NOT 0700.
+  //
+  // This directory holds the orchestrator's `.gitconfig`, into which
+  // `setGlobalCredentialHelper` writes the raw PAT inline. At 0755 every uid in
+  // the orchestrator container could read it — harmless while nothing non-root
+  // ran there, and load-bearing the moment orchestrator git drops uid.
+  //
+  // 0700 was the first attempt and it is WRONG: it also denies *traversal*, and
+  // orchestrator git that has dropped to the session uid has to reach
+  // `.gitconfig` in here. uid 1000 would EACCES on the path before reaching the
+  // file, so every dropped commit would fail with "Author identity unknown" and
+  // every push would lose its credential helper — breaking the one path
+  // invariant 2 says cannot fail. Caught in review before it shipped.
+  //
+  // 0711 is the traverse-but-not-list mode: a uid that knows the exact filename
+  // can open it, nothing can enumerate the directory, and each file's own mode
+  // and owner still decide who reads it.
+  fs.mkdirSync(credentialsDir, { recursive: true, mode: 0o711 });
+  tightenMode(credentialsDir, 0o711);
   const configPath = path.join(credentialsDir, ".gitconfig");
   process.env.GIT_CONFIG_GLOBAL = configPath;
 
@@ -92,21 +102,6 @@ export function initGlobalGitConfig(credentialsDir: string): void {
       // git may not be installed yet (unlikely but safe)
     }
   }
-
-  // docs/266 — the config a DROPPED-UID git reads instead of the one above.
-  //
-  // A git running as the session's uid cannot read the orchestrator's own
-  // global config once that file is 0600 root-owned, and it still needs
-  // identity (`git commit` hard-fails without one) and `commit.gpgsign=false`
-  // (no signing key). So: a second file, 0600 and owned by the worker uid,
-  // published to `shared/` through an env var because `shared/` may not import
-  // from `orchestrator/`.
-  //
-  // Deliberately WITHOUT `safe.directory`: this config is read only by a git
-  // that is already running as the tree's owner, so the ownership check passes
-  // on its own. Adding the `*` here would hand the dropped git the same blanket
-  // trust the root path has, for no reason.
-  writeUnprivilegedGitConfig(credentialsDir);
 
   // docs/200 — make the orchestrator's git transport-agnostic for github.com.
   // An SSH origin (`git@github.com:owner/repo.git`) is unusable from inside the
@@ -148,6 +143,9 @@ export function initGlobalGitConfig(credentialsDir: string): void {
   // with "cannot run editor: No such file or directory" — the rebase is aborted
   // and the agent's resolution edits are discarded silently. `GIT_EDITOR=true`
   // makes the editor a no-op that succeeds, preserving the original commit message.
+  // docs/266 — last, so it covers every `git config --global` write above.
+  shareGlobalGitConfigWithWorker(credentialsDir);
+
   if (!process.env.GIT_EDITOR) {
     process.env.GIT_EDITOR = "true";
   }
@@ -196,66 +194,57 @@ export const FALLBACK_CONTAINER_GIT_IDENTITY: GitIdentity = {
  * The file is written fresh (0o600) on each call — cheap and idempotent — so
  * an identity rotation on the orchestrator propagates on the next provision.
  */
-/** Filename of the token-free config a dropped-uid orchestrator git reads. */
-export const UNPRIVILEGED_GITCONFIG_FILE = ".gitconfig-unprivileged";
-
 /**
- * Write the token-free gitconfig for orchestrator git that has dropped to a
- * session's uid (docs/266 E3), and publish its path via
- * {@link UNPRIVILEGED_GITCONFIG_ENV}.
+ * docs/266 — make the orchestrator's single global gitconfig readable by the
+ * session-worker uid, and by nobody else.
  *
- * Carries exactly what a commit needs and nothing that authenticates:
- * identity, `commit.gpgsign=false`, and the docs/200 `insteadOf` rewrites. No
- * `credential.helper` — see the caveat below — and no `safe.directory`, because
- * a git already running as the tree's owner passes the ownership check on its
- * own.
+ * ## Why there is only one config
  *
- * It DOES carry a `credential.helper`, and that is the one deliberate
- * compromise in docs/266's implementation — see
- * {@link setGlobalCredentialHelper}. A dropped-uid git that cannot authenticate
- * cannot `push`, and the post-turn auto-push is not optional, so the token has
- * to be reachable by that uid. The residual is stated plainly in the PR and
- * tracked: docs/266 E3 wants a repo-scoped, short-lived token here instead of
- * the PAT — no broader than what the session container can already obtain from
- * its own broker — which is per-session and per-repo and so cannot live in this
- * boot-time, repo-less writer. Until that lands, a payload executing during an
- * orchestrator git op can read the PAT out of this file. That is strictly
- * better than today, where it executes as root and can read everything, and it
- * is NOT the finished boundary.
+ * The first implementation wrote a *second*, "token-free" config for
+ * dropped-uid git and pointed `GIT_CONFIG_GLOBAL` at it through the child
+ * environment. Review killed it, and it deserved to:
+ *
+ *   - **It did not work.** The file lived in a 0700 root-owned `/credentials`,
+ *     so uid 1000 could not traverse to a file it owned. Every dropped commit
+ *     would have failed with "Author identity unknown".
+ *   - **The override was not durable.** simple-git's `env(object)` *assigns*
+ *     the executor environment, so any caller chaining `.env()` after
+ *     `safeSimpleGit` — `git-utils.ts` and `repo-git.ts` both do — silently
+ *     discarded it while the uid drop stayed in force. That combination is
+ *     worse than not trying: dropped uid, root's config.
+ *   - **It bought nothing.** Its whole purpose was keeping the PAT away from
+ *     the worker uid, but a dropped-uid git must `push`, so the token has to be
+ *     reachable by that uid anyway. Two files, an env override and an
+ *     `allowUnsafeConfigPaths` opt-in, all to hide a secret that had to be
+ *     visible.
+ *
+ * So: one config, owned by the worker uid at 0600. Root reads it because root
+ * ignores permissions; the worker reads it because it owns it; no other uid in
+ * the container can, which is the actual improvement over the 0644 it used to
+ * have. No environment override exists to be clobbered.
+ *
+ * A second config becomes the right shape again only when the dropped git stops
+ * needing the PAT — planning#404's repo-scoped, short-lived token. Until then
+ * this is the honest arrangement, and the residual is recorded there.
  */
-export function writeUnprivilegedGitConfig(credentialsDir: string): void {
-  const destPath = path.join(credentialsDir, UNPRIVILEGED_GITCONFIG_FILE);
+function reshareGlobalGitConfig(): void {
+  const configPath = process.env.GIT_CONFIG_GLOBAL;
+  if (!configPath) return;
+  shareGlobalGitConfigWithWorker(path.dirname(configPath));
+}
+
+function shareGlobalGitConfigWithWorker(credentialsDir: string): void {
+  if (sessionWorkerUid() === null) return;
+  const configPath = path.join(credentialsDir, ".gitconfig");
   try {
-    fs.writeFileSync(destPath, "", { mode: 0o600 });
-    const set = (key: string, value: string): void => {
-      execFileSync("git", gitArgsWithHooksDisabled(["config", "--file", destPath, key, value]));
-    };
-    const id = getGitIdentity() ?? FALLBACK_CONTAINER_GIT_IDENTITY;
-    set("user.name", id.name);
-    set("user.email", id.email);
-    set("commit.gpgsign", "false");
-    set("url.https://github.com/.insteadOf", "git@github.com:");
-    // Owned by the worker uid, because that uid is the only reader. Mode stays
-    // 0600 so no OTHER uid on the box can read it — which matters precisely
-    // because `setGlobalCredentialHelper` puts the token in here too.
-    chownToSessionWorker(destPath);
-    process.env[UNPRIVILEGED_GITCONFIG_ENV] = destPath;
-    // A token already installed (this runs at boot, but `initGitConfig` can be
-    // re-entered) must reach the new file, or the first dropped-uid push after a
-    // restart fails to authenticate.
-    const existing = getGlobalCredentialHelperValue();
-    if (existing !== null) set("credential.helper", existing);
-  } catch (err) {
-    // A dropped-uid git with no config falls back to git's defaults: no
-    // identity, so `commit` fails loudly rather than silently misattributing.
-    // Leave the env var unset so `safeSimpleGit` does not point at a file that
-    // is not there.
-    process.env[UNPRIVILEGED_GITCONFIG_ENV] = "";
-    console.error(
-      "[git-config] failed to write the unprivileged gitconfig:",
-      err instanceof Error ? err.message : String(err),
-    );
+    fs.writeFileSync(configPath, fs.readFileSync(configPath), { mode: 0o600 });
+  } catch {
+    // No config yet (no identity, no token) — nothing to share, and the next
+    // write goes through `git config`, which this function re-runs after.
+    return;
   }
+  tightenMode(configPath, 0o600);
+  chownToSessionWorker(configPath);
 }
 
 export function writeContainerGitConfig(destPath: string): void {
@@ -347,55 +336,12 @@ export function setGlobalCredentialHelper(token: string): void {
   // git invokes the value as a shell command when the leading char is `!`.
   const helper = `!f() { echo "password=${token}"; echo "username=x-access-token"; }; f`;
   execFileSync("git", gitArgsWithHooksDisabled(["config", "--global", "credential.helper", helper]));
-  // docs/266 — mirror it into the unprivileged config, because orchestrator git
-  // on a session workspace now runs as that workspace's uid and would otherwise
-  // be unable to authenticate a `push`. This is the deliberate compromise
-  // recorded on {@link writeUnprivilegedGitConfig}: the token becomes readable
-  // by the session's uid inside the orchestrator container. Strictly better than
-  // the status quo it replaces — where the same payload ran as root and could
-  // read the whole credential store, the Docker socket and every workspace —
-  // and strictly weaker than docs/266 E3's end state, which wants a repo-scoped
-  // short-lived token here instead.
-  writeUnprivilegedCredentialHelper(helper);
+  // `git config` rewrites the file through a lock+rename, so the new inode is
+  // root-owned again. Re-share it, or the dropped-uid git loses the credential
+  // it was just given — silently, on the next push.
+  reshareGlobalGitConfig();
 }
 
-/**
- * The current global `credential.helper` value, or `null` when none is set.
- *
- * Used to seed a freshly-written unprivileged config at boot: the token is
- * installed once, on login, and a later restart must not leave the dropped-uid
- * git unable to push until the next token change.
- */
-function getGlobalCredentialHelperValue(): string | null {
-  try {
-    const out = execFileSync(
-      "git",
-      gitArgsWithHooksDisabled(["config", "--global", "--get", "credential.helper"]),
-      { encoding: "utf-8" },
-    );
-    const value = out.trim();
-    return value ? value : null;
-  } catch {
-    // `--get` exits non-zero when the key is unset — not an error here.
-    return null;
-  }
-}
-
-/** Write (or clear) the credential helper in the unprivileged config. */
-function writeUnprivilegedCredentialHelper(helper: string | null): void {
-  const destPath = process.env[UNPRIVILEGED_GITCONFIG_ENV];
-  if (!destPath) return;
-  try {
-    execFileSync("git", gitArgsWithHooksDisabled(
-      helper === null
-        ? ["config", "--file", destPath, "--unset", "credential.helper"]
-        : ["config", "--file", destPath, "--replace-all", "credential.helper", helper],
-    ));
-  } catch {
-    // `--unset` exits non-zero when the key was already absent; a write failure
-    // costs authentication on the dropped path and is reported by git itself.
-  }
-}
 
 /**
  * Remove the global credential helper. Called on logout / token-invalidation
@@ -408,9 +354,7 @@ export function clearGlobalCredentialHelper(): void {
   } catch {
     // Already unset — `git config --unset` exits non-zero in that case.
   }
-  // docs/266 — the mirror must clear with it, or a revoked token keeps being
-  // echoed to every dropped-uid git op. Same reasoning as the global one.
-  writeUnprivilegedCredentialHelper(null);
+  reshareGlobalGitConfig();
 }
 
 /**

@@ -205,7 +205,20 @@ export async function postTurnCommit(
     // the tree would go unscanned and the banner would clear on a lie. Only "no
     // findings, and nothing stopped us from looking" retires the block — which
     // covers both a successful commit and a genuinely clean tree.
-    if (opts.sessionId && secretFindings.length === 0 && conflictedFiles.length === 0 && !rebaseInProgress) {
+    //
+    // docs/266 adds a THIRD such early return, and it belongs on the same side of
+    // this line: `unreadable.kind === "blocked"` means `git add -A` exited 128
+    // and staged nothing, so `stagedDiff` was never scanned either. Clearing the
+    // banner there would retire it on exactly the lie this condition exists to
+    // prevent. The `omitted` kind is different — staging and scanning both ran,
+    // they just saw less of the tree — so it does not block the clear.
+    if (
+      opts.sessionId
+      && secretFindings.length === 0
+      && conflictedFiles.length === 0
+      && !rebaseInProgress
+      && unreadable?.kind !== "blocked"
+    ) {
       clearSecretBlock({
         sessionId: opts.sessionId,
         sessionManager: ctx.sessionManager,

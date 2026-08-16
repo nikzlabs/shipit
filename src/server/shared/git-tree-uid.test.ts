@@ -9,12 +9,10 @@
  * is not.
  */
 
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect } from "vitest";
 import {
   resolveGitTreeUid,
   gitSpawnOverridesForTree,
-  unprivilegedGitConfigPath,
-  UNPRIVILEGED_GITCONFIG_ENV,
   type GitTreeUidDeps,
 } from "./git-tree-uid.js";
 
@@ -56,28 +54,6 @@ describe("resolveGitTreeUid", () => {
     // into group-owned directories fail in a way that looks like corruption.
     expect(resolveGitTreeUid("/workspace/s1", asRoot({ uid: 1000, gid: 2000 })))
       .toEqual({ uid: 1000, gid: 2000 });
-  });
-});
-
-describe("unprivilegedGitConfigPath", () => {
-  const original = process.env[UNPRIVILEGED_GITCONFIG_ENV];
-  afterEach(() => {
-    process.env[UNPRIVILEGED_GITCONFIG_ENV] = original ?? "";
-  });
-
-  it("is null when the orchestrator has not written one (unset or cleared)", () => {
-    process.env[UNPRIVILEGED_GITCONFIG_ENV] = "";
-    expect(unprivilegedGitConfigPath()).toBeNull();
-  });
-
-  it("treats a blank value as unset rather than as a path", () => {
-    process.env[UNPRIVILEGED_GITCONFIG_ENV] = "   ";
-    expect(unprivilegedGitConfigPath()).toBeNull();
-  });
-
-  it("returns the configured path", () => {
-    process.env[UNPRIVILEGED_GITCONFIG_ENV] = "/credentials/.gitconfig-unprivileged";
-    expect(unprivilegedGitConfigPath()).toBe("/credentials/.gitconfig-unprivileged");
   });
 });
 
