@@ -367,6 +367,11 @@ export const SERVICES = [
           // phase that ships no behaviour, this mode declares only the
           // Anthropic style, which is the path ShipIt would actually drive.
           { id: "glm-5.2[1m]", label: "GLM-5.2", ...MODEL_IDENTITIES.glm52, styles: [A_MSG], contextWindow: ONE_M, price: GLM_PRICES.glm52 },
+          // TEMPORARY PROBE ROW — reverted before this branch ships. Exists only
+          // so the harness×model join offers GLM-5.3 to a live measurement turn.
+          // The price is GLM-5.2's and is NOT a claim about GLM-5.3's rate, which
+          // Z.ai has not published.
+          { id: "glm-5.3[1m]", label: "GLM-5.3", ...MODEL_IDENTITIES.glm53probe, styles: [A_MSG], contextWindow: ONE_M, price: GLM_PRICES.glm52 },
         ],
       },
       {
