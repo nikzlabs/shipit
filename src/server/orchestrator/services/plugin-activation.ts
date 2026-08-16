@@ -409,6 +409,13 @@ export async function activateDeclaredPlugins(
   deps: PluginActivationDeps,
   consumerKey?: string,
   onlyRepo?: string,
+  /**
+   * docs/266 reqs 5, 6 — re-stage and re-install the version that is already
+   * live. Only ever set together with `onlyRepo`: `shipit plugin refresh
+   * --force` refuses without a repository name, and this signature keeps that
+   * pairing visible at the one call site that can set it.
+   */
+  force?: boolean,
 ): Promise<Map<string, ActivationOutcome>> {
   /**
    * THIS call's own outcome per repository.
@@ -539,6 +546,11 @@ export async function activateDeclaredPlugins(
           ...(deps.beginGenerationDeletion
             ? { beginGenerationDeletion: deps.beginGenerationDeletion }
             : {}),
+          // Guarded by `onlyRepo` as well as by the caller: a force that
+          // reached a round over every declared repository would discard each
+          // one's writable layer, and this is the last place that pairing can
+          // be enforced rather than trusted.
+          ...(force && onlyRepo ? { force: true } : {}),
         });
       } catch (err) {
         // `activateGeneration` is documented never to throw, but the counter

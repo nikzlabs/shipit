@@ -14,6 +14,9 @@ import path from "node:path";
 import simpleGit from "simple-git";
 import { refreshPluginRepos } from "./plugin-refresh.js";
 import { clearActivationState } from "./plugin-activation.js";
+import { writeInstallRecord } from "../plugin-install-record.js";
+import { pluginsRoot } from "../plugin-generations.js";
+import { sessionStateDirForWorkspace } from "../session-state-dir.js";
 
 let tmp: string;
 let sessionDir: string;
@@ -203,5 +206,120 @@ describe("refreshPluginRepos", () => {
     writeConfig("agent:\n  install: npm install\n");
     const result = await refreshPluginRepos("sess", workspaceDir, deps());
     expect(result).toEqual({ rows: [] });
+  });
+});
+
+/**
+ * docs/266 — what a consumer whose live version is broken can see and do.
+ *
+ * Both halves were missing at once, and that is what made the reported episode
+ * expensive: the round said `unchanged` and exited 0 while the plugin was
+ * unusable, and there was no way to try the same version again.
+ */
+describe("refreshPluginRepos — diagnosing and retrying a live version", () => {
+  it("reports the LIVE version's own degradation on a round that did nothing", async () => {
+    // A manifest that declares an install this runtime has no runner for: the
+    // generation goes live "active but not installed" (req 13 degrades visibly),
+    // and until now that sentence reached only the Plugins tab.
+    fs.writeFileSync(
+      path.join(originDir, "shipit.yaml"),
+      "exports:\n  plugins:\n    probe:\n      cli:\n        probe: bin/probe.mjs\n      install: npm ci\n",
+    );
+    const git = simpleGit(originDir);
+    await git.add(".");
+    await git.commit("declare an install");
+
+    writeConfig(`${DECLARATION}  use:\n    - plugin: probe\n      from: tools\n`);
+    const first = await refreshPluginRepos("sess", workspaceDir, deps());
+    expect(first.rows[0]!.status).toBe("activated");
+
+    const again = await refreshPluginRepos("sess", workspaceDir, deps());
+    expect(again.rows[0]!.status).toBe("unchanged");
+    expect(again.rows[0]!.degraded?.join(" ")).toContain("not installed");
+  });
+
+  it("says nothing extra when the live version is fine", async () => {
+    writeConfig(DECLARATION);
+    await refreshPluginRepos("sess", workspaceDir, deps());
+    const again = await refreshPluginRepos("sess", workspaceDir, deps());
+    expect(again.rows[0]!.degraded).toBeUndefined();
+  });
+
+  it("reports a FAILED install for the live version on a later plain refresh", async () => {
+    // The gap review found: `degraded` read only the generation's own warnings,
+    // and a failed install publishes NO generation — so the state this feature
+    // exists for (live version, install failed) was silent on every round after
+    // the one that failed. The durable record is the only carrier of it.
+    writeConfig(DECLARATION);
+    const first = await refreshPluginRepos("sess", workspaceDir, deps());
+    const live = first.rows[0]!.after!;
+
+    writeInstallRecord(pluginsRoot(sessionStateDirForWorkspace(workspaceDir)), "tools", {
+      commit: live,
+      at: "2026-08-16T12:00:00.000Z",
+      outcome: "failed",
+      detail: "install for `web` exited 1",
+    });
+
+    const again = await refreshPluginRepos("sess", workspaceDir, deps());
+    expect(again.rows[0]!.status).toBe("unchanged");
+    expect(again.rows[0]!.degraded?.join(" ")).toContain("FAILED");
+  });
+
+  it("does not report a failed attempt on a version that is not live", async () => {
+    // A failed refresh to B leaves A serving. Naming B's failure under A would
+    // be the fabricated diagnosis the same review finding names.
+    writeConfig(DECLARATION);
+    await refreshPluginRepos("sess", workspaceDir, deps());
+
+    writeInstallRecord(pluginsRoot(sessionStateDirForWorkspace(workspaceDir)), "tools", {
+      commit: "b".repeat(40),
+      at: "2026-08-16T12:00:00.000Z",
+      outcome: "failed",
+      detail: "install for `web` exited 1",
+    });
+
+    const again = await refreshPluginRepos("sess", workspaceDir, deps());
+    expect(again.rows[0]!.degraded).toBeUndefined();
+  });
+
+  it("refuses --force without a repository name, and runs nothing", async () => {
+    // It discards a live version's writable layer; a forgotten name must not
+    // apply that to every declared repository.
+    writeConfig(DECLARATION);
+    const before = await refreshPluginRepos("sess", workspaceDir, deps());
+    expect(before.rows[0]!.status).toBe("activated");
+
+    const forced = await refreshPluginRepos("sess", workspaceDir, deps(), undefined, true);
+    expect(forced.rows).toEqual([]);
+    expect(forced.error).toContain("needs the name of one plugin repository");
+  });
+
+  it("does not claim a re-install when --force ran a FIRST activation", async () => {
+    // Nothing was live, so the forced round is an ordinary activation. Saying
+    // `re-installed` there would describe work on a version that never existed.
+    writeConfig(DECLARATION);
+    const first = await refreshPluginRepos("sess", workspaceDir, deps(), "tools", true);
+
+    expect(first.rows[0]!.status).toBe("activated");
+    expect(first.rows[0]!.before).toBeNull();
+    expect(first.rows[0]!.reinstalled).toBeUndefined();
+  });
+
+  it("re-activates the commit already live, instead of reporting `unchanged`", async () => {
+    writeConfig(DECLARATION);
+    const first = await refreshPluginRepos("sess", workspaceDir, deps());
+    const live = first.rows[0]!.after;
+
+    // Without --force this is the terminal `unchanged` the issue reported: the
+    // consumer's only escape was the plugin's author publishing a new commit.
+    const plain = await refreshPluginRepos("sess", workspaceDir, deps(), "tools");
+    expect(plain.rows[0]!.status).toBe("unchanged");
+    expect(plain.rows[0]!.reinstalled).toBeUndefined();
+
+    const forced = await refreshPluginRepos("sess", workspaceDir, deps(), "tools", true);
+    expect(forced.rows[0]!.reinstalled).toBe(true);
+    // The same version — a retry, not an upgrade.
+    expect(forced.rows[0]!.after).toBe(live);
   });
 });

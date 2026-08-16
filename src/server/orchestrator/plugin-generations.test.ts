@@ -983,6 +983,104 @@ describe("consumer lease over a superseded generation (req 15)", () => {
     expect(fs.readdirSync(generationsDir()).filter((n) => n.includes(".staging-"))).toEqual([]);
   });
 
+  /**
+   * docs/266 reqs 5, 6 — the forced retry of a version that is already live.
+   *
+   * The short-circuit it skips was load-bearing: the comment on the deletion
+   * claim used to say a live commit "never reaches this line". These tests are
+   * the replacement guarantee — the claim itself, exercised on the one path
+   * that now depends on it.
+   *
+   * **What they cannot fail on** (review finding). `lease()` is a Set-based
+   * fake: the refusal test proves `activateOnce` aborts cleanly and touches
+   * nothing when the hook says no, NOT that the real
+   * `createGenerationDeletionLease` says no while a plugin container holds the
+   * volume. That half lives in `plugin-leases.test.ts`, and nothing ties the
+   * two together — a regression that stopped removing the overlay volume in the
+   * real lease, or stopped passing the lease down the force path, would pass
+   * here. They also cannot see the publish window itself: the rm-then-rename
+   * ordering that a forced round made dangerous is asserted only by the
+   * "leaves the version live when a forced re-install fails" case, which
+   * exercises the failure BEFORE publish.
+   */
+  it("re-stages and re-installs the commit already live when forced", async () => {
+    const installed: string[] = [];
+    const runInstall = async (job: { commit: string }): Promise<{ ok: true }> => {
+      installed.push(job.commit);
+      return { ok: true };
+    };
+    await activateGeneration(repo({ branch: "main" }), { ...deps(["probe"]), runInstall });
+    const live = readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)!.commit;
+    expect(installed).toEqual([live]);
+
+    // Without force this is the terminal `unchanged` that left a consumer with
+    // no recovery but the plugin author publishing a new commit.
+    const plain = await activateGeneration(repo({ branch: "main" }), { ...deps(["probe"]), runInstall });
+    expect(plain.status).toBe("unchanged");
+    expect(installed).toEqual([live]);
+
+    const forced = await activateGeneration(repo({ branch: "main" }), {
+      ...deps(["probe"]), runInstall, force: true,
+    });
+    expect(forced.status).toBe("activated");
+    expect(installed).toEqual([live, live]);
+    // A retry, not an upgrade: the same version is live afterwards.
+    expect(readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)?.commit).toBe(live);
+  });
+
+  it("refuses a forced re-install while a consumer still holds that version", async () => {
+    // This is what makes skipping the short-circuit safe. Clearing the layer
+    // under a running plugin container is the corruption docs/183 recorded:
+    // merged readdir goes empty while lookups still resolve.
+    const held = lease();
+    await activateGeneration(repo({ branch: "main" }), { ...deps(), beginGenerationDeletion: held.begin });
+    const live = readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)!.commit;
+    seedWorkLayer(live);
+    fs.writeFileSync(path.join(workDir(live), "upper", "installed.txt"), "from the running version");
+
+    const inUse = lease([live]);
+    const installed: string[] = [];
+    const outcome = await activateGeneration(repo({ branch: "main" }), {
+      ...deps(),
+      beginGenerationDeletion: inUse.begin,
+      runInstall: async (job) => {
+        installed.push(job.commit);
+        return { ok: true };
+      },
+      force: true,
+    });
+
+    expect(outcome.status).toBe("failed");
+    expect(outcome.status === "failed" && outcome.reason).toContain("still in use");
+    // Nothing was cleared, nothing was installed, and the version kept serving.
+    expect(installed).toEqual([]);
+    expect(fs.existsSync(path.join(workDir(live), "upper", "installed.txt"))).toBe(true);
+    expect(readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)?.commit).toBe(live);
+    expect(fs.readdirSync(generationsDir()).filter((n) => n.includes(".staging-"))).toEqual([]);
+  });
+
+  it("leaves the version live when a forced re-install fails", async () => {
+    // Half of the cost force carries, asserted rather than assumed: the version
+    // KEEPS SERVING and no staging tree is left behind. The other half — that
+    // the writable layer was already cleared before the install wrote — belongs
+    // to `prepareLayer` in the install runner and is not observable from here,
+    // so this test cannot fail on it. It is what the docs tell a consumer to
+    // weigh before forcing.
+    await activateGeneration(repo({ branch: "main" }), deps(["probe"]));
+    const live = readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)!.commit;
+
+    const outcome = await activateGeneration(repo({ branch: "main" }), {
+      ...deps(["probe"]),
+      runInstall: async () => ({ ok: false, reason: "install for `probe` exited 1" }),
+      force: true,
+    });
+
+    expect(outcome.status).toBe("failed");
+    expect(outcome.status === "failed" && outcome.reason).toContain("exited 1");
+    expect(readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)?.commit).toBe(live);
+    expect(fs.readdirSync(generationsDir()).filter((n) => n.includes(".staging-"))).toEqual([]);
+  });
+
   it("releases the lease on the ordinary path, so a later prune is never wedged", async () => {
     const clean = lease();
     await activateGeneration(repo({ branch: "main" }), { ...deps(), beginGenerationDeletion: clean.begin });

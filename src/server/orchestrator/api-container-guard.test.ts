@@ -459,6 +459,19 @@ const GOLDEN_CONTAINER_ROUTES = [
   // itself does NOT run in the calling container — this route builds an
   // invocation container that holds no ShipIt credential (plan §2).
   "POST /api/sessions/:id/plugin/exec",
+  // docs/266 reqs 1–4, 9 — `shipit plugin status`. Container-reachable for the
+  // same reason the two above are: this IS the agent's path, and the browser's
+  // `/api/plugin-repos` snapshot is not reachable from a container. It is a GET
+  // and that is load-bearing — it activates nothing, which is what makes it
+  // safe to run against a version you are trying to diagnose. It returns a SLIM
+  // projection of what the Plugins tab computes for THIS session — the live
+  // version, the install outcome and the issue strings — not the tab's full
+  // snapshot: the credential groups and host reach are computed server-side and
+  // discarded (review finding; an earlier version of this comment said "the same
+  // object", which overstated it). Nothing in it is a credential value in either
+  // case (req 23 carries names and whether each is satisfied, never the secret),
+  // and the guard's own session scoping bounds it to this session.
+  "GET /api/sessions/:id/plugin/status",
   "PATCH /api/sessions/:id/pr/:number",
   "GET /api/sessions/:id/pr/list",
   "GET /api/sessions/:id/pr/view",

@@ -45,6 +45,7 @@ import { collectPluginFragments } from "./plugin-compose.js";
 import { parseComposeFile } from "./compose-generator.js";
 import { sessionStateDirForWorkspace } from "./session-state-dir.js";
 import { getErrorMessage } from "./validation.js";
+import { buildPluginStatus } from "./services/plugin-status.js";
 
 export async function registerPluginRepoRoutes(
   app: FastifyInstance,
@@ -58,7 +59,7 @@ export async function registerPluginRepoRoutes(
   // snapshot above is deliberately not it (a GET must never activate anything).
   // The guard's own session scoping means a container can only ever refresh its
   // own session's plugins.
-  app.post<{ Params: { id: string }; Body: { repo?: string } }>(
+  app.post<{ Params: { id: string }; Body: { repo?: string; force?: boolean } }>(
     "/api/sessions/:id/plugin/refresh",
     { config: { containerAccessible: true } },
     async (request, reply) => {
@@ -75,10 +76,95 @@ export async function registerPluginRepoRoutes(
         request.params.id,
         session.workspaceDir,
         request.body?.repo?.trim() || undefined,
+        // docs/266 reqs 5, 6 — strictly `=== true`: the body is agent-supplied
+        // JSON, and a truthy string must not discard a live version's writable
+        // layer.
+        request.body?.force === true,
       );
       // A named repository that is not declared is the caller's mistake, not a
       // server failure — 400 so the shim can print the declared names instead
       // of a stack of rows it did not ask for.
+      if (result.error) {
+        reply.code(400).send({ error: result.error });
+        return;
+      }
+      return result;
+    },
+  );
+
+  // GET /api/sessions/:id/plugin/status — docs/266 reqs 1–4, 9, 10. The
+  // agent's `shipit plugin status [name]`.
+  //
+  // A GET, and `containerAccessible` for the same reason refresh is
+  // `containerAccessible`: orchestrator routes are default-denied to containers
+  // and the browser snapshot above is not reachable from one. The method is the
+  // contract — this route activates nothing (req 9), which is what makes it
+  // safe to run against a version you are trying to understand.
+  app.get<{ Params: { id: string }; Querystring: { repo?: string } }>(
+    "/api/sessions/:id/plugin/status",
+    { config: { containerAccessible: true } },
+    async (request, reply) => {
+      const session = deps.sessionManager.get(request.params.id);
+      if (!session?.workspaceDir) {
+        reply.code(404).send({ error: "Session not found" });
+        return;
+      }
+      // The tab's two pre-checks, and for the same reason it has them (review
+      // finding — this route had skipped both). "Not yet knowable" must not be
+      // answered as "declares nothing": an evicted or mid-restore checkout would
+      // otherwise tell an agent its project has no plugins, which is a worse
+      // answer than "ask again" for a verb whose whole job is diagnosis.
+      if (areDeclarationsPending(deps.sessionManager, request.params.id)) {
+        reply.code(503).send({
+          error: "This session's checkout is not available yet, so its plugin declarations "
+            + "cannot be read. Try again in a moment.",
+        });
+        return;
+      }
+      const configPath = path.join(session.workspaceDir, "shipit.yaml");
+      if (fs.existsSync(configPath)) {
+        try {
+          fs.accessSync(configPath, fs.constants.R_OK);
+        } catch (err) {
+          reply.code(400).send({
+            error: `shipit.yaml exists but could not be read, so no plugin declarations were loaded: ${getErrorMessage(err)}`,
+          });
+          return;
+        }
+      }
+      let snapshot: PluginReposSnapshot;
+      try {
+        snapshot = assemblePluginSnapshot(
+          request.params.id,
+          session.workspaceDir,
+          session.remoteUrl ?? null,
+          deps,
+        );
+      } catch (err) {
+        // The same distinction the tab draws: an unreadable declaration is a
+        // reportable state, not an empty one.
+        reply.code(400).send({
+          error: `shipit.yaml could not be parsed, so no plugin declarations were read: ${getErrorMessage(err)}`,
+        });
+        return;
+      }
+      const result = buildPluginStatus(
+        session.workspaceDir,
+        {
+          warnings: snapshot.warnings,
+          repos: snapshot.repos.map((r) => ({
+            name: r.name,
+            source: r.source,
+            ref: r.ref,
+            commit: r.commit,
+            status: r.status,
+            issues: r.issues,
+          })),
+        },
+        request.query.repo?.trim() || undefined,
+      );
+      // A named repository that is not declared is the caller's mistake, and the
+      // message names the ones that are — the refresh route's precedent.
       if (result.error) {
         reply.code(400).send({ error: result.error });
         return;
@@ -178,68 +264,11 @@ export async function registerPluginRepoRoutes(
       }
 
       try {
-        const config = resolveShipitConfig(session.workspaceDir);
-        // docs/262 resolve-once: ONE resolution of `active` per declared
-        // repository for this whole request. Five readers answer for the same
-        // card — the commit, the manifest behind the settings verdict, the one
-        // behind the command verdict, the credential names, and the compose
-        // fragment — and a refresh landing mid-request used to let each of them
-        // answer for a different generation.
-        const live = liveGenerationsFor(session.workspaceDir, config.plugins.repos);
-        // req 23 — what each activated plugin declares, resolved against THIS
-        // project's secret store. `consumerRepoUrl` is the same value the
-        // card's "Add key…" writes back to, so the gap the tab names and the
-        // store it opens can never disagree (plan §3's store trap).
-        const credentialGroups = resolvePluginCredentials(
-          pluginCredentialDeclarationsFor(config.plugins, config.pluginExports, live),
-          loadSatisfiedPluginCredentialNames(deps.secretStore, consumerRepoUrl),
-        );
-        // docs/262 req 20 — a fragment is validated against the rules THIS
-        // session applies, and a contained session applies more of them
-        // (docs/263). Reporting under the wrong rule set would show a card with
-        // no problem for a plugin the session will refuse to start. The same
-        // value answers req 24's question below: an Open session denies
-        // nothing, so no declared host is "not yet allowed" there.
-        const containEgress = request.query.sessionId
-          ? deps.containerManager?.isEgressContained(request.query.sessionId) ?? false
-          : false;
-        // req 24 — what each activated plugin declares it must reach, resolved
-        // against this session's OWN egress allowlist. The declaration is an
-        // input to the report and never to the allowance: showing a host must
-        // not widen reach, and granting one is a deliberate user act on the
-        // browser-only egress routes.
-        const hostGroups = resolvePluginHosts(
-          pluginHostDeclarationsFor(config.plugins, config.pluginExports, live),
-          egressHostReach({
-            contained: containEgress,
-            // planning#383 — the deployment axis. Without it the card offers a
-            // grant on an install where no grant can take effect.
-            dnsControlDeployed: deps.egressDnsControlDeployed,
-            // The same seam the resolver and SNI proxy are configured from, so
-            // the card cannot answer from a composition the session does not
-            // actually run on (a Network-off sandbox is the case that made this
-            // a correctness matter rather than a tidiness one).
-            ...(request.query.sessionId
-              ? { config: deps.containerManager?.resolveEgress(request.query.sessionId) }
-              : {}),
-            sessionId: request.query.sessionId,
-          }),
-        );
-        return buildPluginReposSnapshot(
-          config.plugins,
-          config.pluginExports,
+        return assemblePluginSnapshot(
+          request.query.sessionId,
+          session.workspaceDir,
           consumerRepoUrl,
-          config.warnings,
-          // Read-only: the live generation comes off disk, the last attempt's
-          // outcome from memory, and settings problems from a pure re-resolve
-          // of the declaration against the live manifests. A GET never
-          // activates anything — that runs on session activation and on a
-          // shipit.yaml edit.
-          readRuntimeState(request.query.sessionId, session.workspaceDir, config, live, {
-            containEgress,
-          }),
-          credentialGroups,
-          hostGroups,
+          deps,
         );
       } catch (err) {
         // A malformed *document* (bad YAML, a bad `release` block) must not
@@ -255,6 +284,84 @@ export async function registerPluginRepoRoutes(
         };
       }
     },
+  );
+}
+
+/**
+ * The whole snapshot for one session, as the Plugins tab renders it.
+ *
+ * **Extracted so `shipit plugin status` cannot answer differently from the card**
+ * (docs/266 req 10). The reasons a live version is unusable — a withheld
+ * command, a rejected service fragment, a settings mismatch, a manifest warning
+ * — are computed here, and a second implementation for the agent-facing verb
+ * would drift from this one exactly where it matters: the session is the side
+ * that cannot see the card to notice.
+ *
+ * Throws only what `resolveShipitConfig` throws (an unparseable document); both
+ * callers turn that into their own shape.
+ */
+export function assemblePluginSnapshot(
+  sessionId: string | undefined,
+  workspaceDir: string,
+  consumerRepoUrl: string | null,
+  deps: ApiDeps,
+): PluginReposSnapshot {
+  const config = resolveShipitConfig(workspaceDir);
+  // docs/262 resolve-once: ONE resolution of `active` per declared repository
+  // for this whole request. Five readers answer for the same card — the commit,
+  // the manifest behind the settings verdict, the one behind the command
+  // verdict, the credential names, and the compose fragment — and a refresh
+  // landing mid-request used to let each of them answer for a different
+  // generation.
+  const live = liveGenerationsFor(workspaceDir, config.plugins.repos);
+  // req 23 — what each activated plugin declares, resolved against THIS
+  // project's secret store. `consumerRepoUrl` is the same value the card's
+  // "Add key…" writes back to, so the gap the tab names and the store it opens
+  // can never disagree (plan §3's store trap).
+  const credentialGroups = resolvePluginCredentials(
+    pluginCredentialDeclarationsFor(config.plugins, config.pluginExports, live),
+    loadSatisfiedPluginCredentialNames(deps.secretStore, consumerRepoUrl),
+  );
+  // docs/262 req 20 — a fragment is validated against the rules THIS session
+  // applies, and a contained session applies more of them (docs/263). Reporting
+  // under the wrong rule set would show a card with no problem for a plugin the
+  // session will refuse to start. The same value answers req 24's question
+  // below: an Open session denies nothing, so no declared host is "not yet
+  // allowed" there.
+  const containEgress = sessionId
+    ? deps.containerManager?.isEgressContained(sessionId) ?? false
+    : false;
+  // req 24 — what each activated plugin declares it must reach, resolved
+  // against this session's OWN egress allowlist. The declaration is an input to
+  // the report and never to the allowance: showing a host must not widen reach,
+  // and granting one is a deliberate user act on the browser-only egress routes.
+  const hostGroups = resolvePluginHosts(
+    pluginHostDeclarationsFor(config.plugins, config.pluginExports, live),
+    egressHostReach({
+      contained: containEgress,
+      // planning#383 — the deployment axis. Without it the card offers a grant
+      // on an install where no grant can take effect.
+      dnsControlDeployed: deps.egressDnsControlDeployed,
+      // The same seam the resolver and SNI proxy are configured from, so the
+      // card cannot answer from a composition the session does not actually run
+      // on (a Network-off sandbox is the case that made this a correctness
+      // matter rather than a tidiness one).
+      ...(sessionId ? { config: deps.containerManager?.resolveEgress(sessionId) } : {}),
+      sessionId,
+    }),
+  );
+  return buildPluginReposSnapshot(
+    config.plugins,
+    config.pluginExports,
+    consumerRepoUrl,
+    config.warnings,
+    // Read-only: the live generation comes off disk, the last attempt's outcome
+    // from memory, and settings problems from a pure re-resolve of the
+    // declaration against the live manifests. Neither caller activates
+    // anything — that runs on session activation and on a shipit.yaml edit.
+    readRuntimeState(sessionId, workspaceDir, config, live, { containEgress }),
+    credentialGroups,
+    hostGroups,
   );
 }
 

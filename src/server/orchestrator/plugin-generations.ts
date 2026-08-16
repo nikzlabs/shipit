@@ -60,6 +60,7 @@ import { parse as parseYaml } from "yaml";
 import type { DeclaredPluginRepo, PluginExport } from "../shared/plugin-repos.js";
 import { parsePluginExports, destinationKey, declaredRefLabel } from "../shared/plugin-repos.js";
 import { resolveDurablePin } from "./plugin-pins.js";
+import { writeInstallRecord } from "./plugin-install-record.js";
 
 /** Subdirectory of the session state dir that holds every plugin checkout. */
 export const PLUGINS_SUBDIR = "plugins";
@@ -183,6 +184,13 @@ export interface PluginInstallJob {
    * holding the generation's volume, long after the session it served.
    */
   isCancelled?: () => boolean;
+  /**
+   * docs/266 reqs 5, 6 — this is a consumer's forced retry of a version that is
+   * already live, so the runner's two "already done" shortcuts (the install
+   * stamp and a shared-store hit) must not answer for it. Absent on every
+   * ordinary activation, where both shortcuts are correct.
+   */
+  force?: boolean;
 }
 
 /** What an install run reports back. */
@@ -288,6 +296,15 @@ export interface ActivateDeps {
   selectedExports: readonly string[];
   /** Ensure the bare cache exists and is current. Injected so tests stay offline. */
   ensureCache: (cacheDir: string, repoUrl: string) => Promise<void>;
+  /**
+   * docs/266 reqs 5, 6 — a consumer's forced retry of the version that is
+   * already live: re-stage it, run its install for real, and publish it again.
+   * Set only by `shipit plugin refresh <name> --force`, and only ever for ONE
+   * named repository (the shim refuses it without a name), because it discards
+   * a live version's writable layer and that is not something to do to every
+   * declared repository at once.
+   */
+  force?: boolean;
   /**
    * Whether the session this activation belongs to is gone (archived, reset,
    * disposed). Checked before each step that creates durable state, which
@@ -665,7 +682,21 @@ async function activateOnce(repo: DeclaredPluginRepo, deps: ActivateDeps): Promi
   // Already live. Nothing is re-staged and nothing in the live tree is
   // touched: repairing a published generation in place is exactly the
   // partial-state req 15 forbids (review finding).
-  if (previous?.commit === commit) {
+  //
+  // **docs/266 reqs 5, 6 — `deps.force` is the one caller that skips this**, and
+  // skipping it is the whole feature: without a way past this branch, the only
+  // recovery from a live-but-unusable version is the plugin author publishing a
+  // new commit, so every consumer's fix runs through a third party and a
+  // transient install failure is as unrecoverable as a real defect.
+  //
+  // It stays safe for the reason the comment further down relies on, restated
+  // because this branch is no longer the thing that guarantees it: the re-stage
+  // path takes the deletion claim (`plugin-leases.ts`) before it clears
+  // anything, and that claim REFUSES while any consumer holds this generation
+  // and blocks new holds while it works. So a forced round on a version a
+  // plugin service is running reports "still in use" and changes nothing,
+  // instead of clearing a tree under a live mount.
+  if (previous?.commit === commit && !deps.force) {
     const missing = missingSelectors(deps.selectedExports, previous.exports);
     if (missing.length > 0) {
       return { status: "failed", reason: selectorError(missing), missingSelectors: missing, previous, ...warningField };
@@ -747,9 +778,19 @@ async function activateOnce(repo: DeclaredPluginRepo, deps: ActivateDeps): Promi
     //
     // Refusing instead is an ordinary failed activation — the prior version
     // stays live (req 15) and the next round succeeds once the consumer is done.
-    // Nothing can take a NEW hold on this commit while the claim is held,
-    // because `active` does not name it: a commit that was already live returned
-    // `unchanged` far above and never reaches this line.
+    // Nothing can take a NEW hold on this commit while the claim is held: the
+    // claim itself blocks them (`holdGeneration` returns null for a generation
+    // being deleted), which is what a forced round relies on.
+    //
+    // For an ordinary round `active` also does not name this commit — one that
+    // was already live returned `unchanged` far above. **docs/266's `force` is
+    // the exception**, and it is the case this refusal was always the answer
+    // for: there the live version IS the one being re-staged, so a consumer
+    // holding it makes the round fail cleanly rather than corrupt a live mount.
+    // What force costs when the claim IS granted is stated in its own docs: the
+    // layer is cleared before the install writes, so a forced round that then
+    // fails leaves the version live without its install output — the state the
+    // consumer was already in, now recorded in the install record.
     const clearGeneration = deps.beginGenerationDeletion
       ? await deps.beginGenerationDeletion({ repoName: repo.name, commit }).catch(() => null)
       : noop;
@@ -798,6 +839,7 @@ async function activateOnce(repo: DeclaredPluginRepo, deps: ActivateDeps): Promi
           source,
           exports: selected,
           ...(deps.isCancelled ? { isCancelled: deps.isCancelled } : {}),
+          ...(deps.force ? { force: true } : {}),
         });
         if (!outcome.ok) {
           await fsp.rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
@@ -830,6 +872,18 @@ async function activateOnce(repo: DeclaredPluginRepo, deps: ActivateDeps): Promi
           + `which this runtime cannot run — ${one ? "the plugin is" : "the plugins are"} active but `
           + `${one ? "was" : "were"} not installed.`
         : undefined;
+      // docs/266 req 3 — the same sentence, in the durable place a session can
+      // read. This is the one way a generation goes live having installed
+      // nothing, so it is exactly the state that must not be silent from inside
+      // the session: the card says it, and now so does `shipit plugin status`.
+      if (notInstalled) {
+        writeInstallRecord(pluginsRoot(stateDir), repo.name, {
+          commit,
+          at: new Date().toISOString(),
+          outcome: "not-run",
+          detail: notInstalled,
+        });
+      }
 
       record = {
         repoName: repo.name,
@@ -862,8 +916,34 @@ async function activateOnce(repo: DeclaredPluginRepo, deps: ActivateDeps): Promi
         // staging directory that the cleanup below removes.
         if (deps.isCancelled?.()) return "the session went away before activation completed";
 
-        await fsp.rm(finalDir, { recursive: true, force: true });
-        await fsp.rename(stagingDir, finalDir);
+        // **Swap, then delete — never delete, then swap** (review finding).
+        // For an ordinary round `finalDir` is absent or a leftover, so the order
+        // did not matter. Under docs/266's `force` it IS the live generation:
+        // a recursive `rm` of a large checkout takes seconds, and for all of
+        // them `active` names a directory that is being emptied. A crash, an
+        // OOM or a failing rename in that window left the repository with
+        // NOTHING live — worse than the cost force documents, and not something
+        // the next round is guaranteed to reach.
+        //
+        // Two renames instead: the live tree steps aside under a name nothing
+        // resolves, the replacement takes its place, and the old one is removed
+        // afterwards. The gap where `finalDir` does not exist is now between two
+        // renames on one filesystem rather than around a recursive delete. A
+        // leftover `.replaced-*` is swept by the next prune.
+        const aside = fs.existsSync(finalDir)
+          ? `${finalDir}.replaced-${crypto.randomUUID().slice(0, 8)}`
+          : null;
+        if (aside) await fsp.rename(finalDir, aside);
+        try {
+          await fsp.rename(stagingDir, finalDir);
+        } catch (err) {
+          // Put the live version back rather than leaving the repository with
+          // nothing: the caller's contract is that a failed activation keeps the
+          // prior version serving (req 15).
+          if (aside) await fsp.rename(aside, finalDir).catch(() => undefined);
+          throw err;
+        }
+        if (aside) await fsp.rm(aside, { recursive: true, force: true }).catch(() => undefined);
         // Released BEFORE the link swap, so the moment `active` names this
         // commit a consumer can hold it. The other order leaves a window in
         // which the live generation refuses every hold. The outer `finally`

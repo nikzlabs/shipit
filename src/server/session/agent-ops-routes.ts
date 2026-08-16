@@ -308,8 +308,31 @@ export function registerAgentOpsRoutes(
   // [name]` re-activates a declared plugin repository and waits for the answer.
   // Unbounded: the round can fetch, check out, and run the plugin's install, so
   // a default deadline would abort a refresh that is still working.
-  app.post<{ Body: { repo?: string } }>("/agent-ops/plugin/refresh", async (request, reply) =>
-    relay("POST", "/plugin/refresh", { repo: request.body?.repo }, reply, { timeoutMs: 0 }));
+  app.post<{ Body: { repo?: string; force?: boolean } }>(
+    "/agent-ops/plugin/refresh",
+    async (request, reply) =>
+      relay("POST", "/plugin/refresh", {
+        repo: request.body?.repo,
+        // docs/266 reqs 5, 6 — forwarded as a strict boolean; the orchestrator
+        // re-checks it the same way. Discarding a live version's writable layer
+        // is not something a truthy string should be able to ask for.
+        force: request.body?.force === true,
+      }, reply, { timeoutMs: 0 }));
+
+  // GET /agent-ops/plugin/status — docs/266 reqs 1–4. `shipit plugin status
+  // [name]`: why the live version of a declared repository is (or is not)
+  // usable, including the last install's outcome.
+  //
+  // Bounded, unlike refresh, and that is the point: it reads state that is
+  // already on disk and in memory, and activates nothing (req 9). A diagnostic
+  // that could hang is one an agent stops running when it most needs it.
+  app.get<{ Querystring: { repo?: string } }>(
+    "/agent-ops/plugin/status",
+    async (request, reply) => {
+      const repo = request.query?.repo?.trim();
+      const qs = repo ? `?${new URLSearchParams({ repo }).toString()}` : "";
+      return relay("GET", `/plugin/status${qs}`, undefined, reply);
+    });
 
   // POST /agent-ops/plugin/exec — docs/262 req 17. The other end of a generated
   // companion-CLI wrapper: the command runs in an invocation container the

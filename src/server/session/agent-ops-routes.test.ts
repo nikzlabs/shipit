@@ -789,4 +789,42 @@ describe("agent-ops routes", () => {
     expect(res.statusCode).toBe(200);
     expect(client.calls[0].path).toBe("/agent/result");
   });
+
+  // docs/266 — the two relays a consumer needs when a plugin version is live
+  // and unusable. `status` is a GET because it activates nothing; `force` is
+  // normalized to a strict boolean because the body is agent-supplied JSON and
+  // it discards a live version's install output.
+  it("GET /agent-ops/plugin/status forwards the repository name", async () => {
+    client.setResponse("GET", "/plugin/status", {
+      ok: true, status: 200, body: { repos: [{ repo: "tools", usable: false }], warnings: [] },
+    });
+
+    const res = await app.inject({ method: "GET", url: "/agent-ops/plugin/status?repo=tools" });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({ repos: [{ usable: false }] });
+    expect(client.calls[0]).toMatchObject({ method: "GET", path: "/plugin/status?repo=tools" });
+  });
+
+  it("GET /agent-ops/plugin/status without a name asks about every repository", async () => {
+    const res = await app.inject({ method: "GET", url: "/agent-ops/plugin/status" });
+    expect(res.statusCode).toBe(200);
+    expect(client.calls[0].path).toBe("/plugin/status");
+  });
+
+  it("POST /agent-ops/plugin/refresh forwards force as a strict boolean", async () => {
+    await app.inject({
+      method: "POST",
+      url: "/agent-ops/plugin/refresh",
+      payload: { repo: "tools", force: "yes-please" },
+    });
+    expect(client.calls[0]).toMatchObject({ path: "/plugin/refresh", body: { repo: "tools", force: false } });
+
+    await app.inject({
+      method: "POST",
+      url: "/agent-ops/plugin/refresh",
+      payload: { repo: "tools", force: true },
+    });
+    expect(client.calls[1]).toMatchObject({ body: { repo: "tools", force: true } });
+  });
 });
