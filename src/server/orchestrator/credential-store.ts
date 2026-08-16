@@ -711,6 +711,26 @@ export class CredentialStore {
 
   setCredentialSecret(routeId: string, secret: string): void {
     this.data.credentialSecrets = { ...(this.data.credentialSecrets ?? {}), [routeId]: secret };
+    // planning#358 — a replaced secret is a new credential, so the previous
+    // one's `auth_failed` verdict no longer describes it. Clearing here (rather
+    // than only on a successful turn) is what makes "paste a fresh token" a
+    // complete remedy: the row returns to `ready` immediately, instead of
+    // keeping the warning until the user happens to run a turn. Re-saving an
+    // identical value also clears, which is the intended reading of "let me try
+    // this again" and self-corrects on the next failure.
+    //
+    // Written inline rather than via `upsertCredentialRoute` so one `save()`
+    // persists the secret and the status together — this is the only caller
+    // that needs that, since the Settings editor path calls
+    // `upsertCredentialRoute` itself immediately afterwards. It is also the only
+    // place in this store that hand-rolls the row update, so an invariant added
+    // to `upsertCredentialRoute` later must be mirrored here.
+    const route = this.getCredentialRoute(routeId);
+    if (route?.via === "string" && route.status === "auth_failed") {
+      this.data.credentialRoutes = (this.data.credentialRoutes ?? []).map((r) =>
+        r.id === routeId ? { ...r, status: "ready" as const, updatedAt: Date.now() } : r,
+      );
+    }
     this.save();
   }
 
@@ -803,6 +823,71 @@ export class CredentialStore {
     const route = this.getCredentialRoute(routeId);
     if (!route) return;
     this.upsertCredentialRoute({ ...route, lastUsedAt: Date.now() });
+  }
+
+  /**
+   * planning#358 — record that a turn on this **string-delivered** credential
+   * was refused for authentication, so the row stops reading `ready`.
+   *
+   * The string-delivered twin of `markProviderAccountUnauthenticated`, and the
+   * gap that issue names: an account reaches `auth_failed` because a sign-in
+   * flow reports one, and a supplied secret has no sign-in flow at all — so a
+   * token that is stale, revoked or simply wrong stayed `ready` forever while
+   * every turn on it died. `turn-executor` already classifies exactly this case
+   * (`capturedCredentialRoute` present and not an account ⇒ `healed = false`,
+   * "a bad API key or env token is not something the account refresher owns");
+   * this is that verdict written down instead of discarded.
+   *
+   * **Deliberately does NOT bench the route, and the asymmetry with the account
+   * twin is the point rather than an oversight.** `listConfiguredCredentials`
+   * excludes a non-`ready` **account** and reads `status` for nothing else, so a
+   * string row marked here stays selectable.
+   *
+   * That has to be true for the mark to be safe at all: this state's recovery is
+   * *proof by use*, so excluding the route would deadlock it — a credential the
+   * router will not select can never run the turn that clears it, and one
+   * transient provider 401 would strand a good credential permanently. The
+   * account twin can afford exclusion only because its recovery is a sign-in
+   * flow, which does not depend on being selected.
+   *
+   * The time-boxed bench on the set-aside path remains the mechanism for "stop
+   * using this for a while"; this is only the row telling the truth about
+   * itself.
+   *
+   * Accounts are ignored rather than handled here: they have their own
+   * mark/clear pair on `ProviderAccountManager`, and two writers for one row is
+   * how the two disagree.
+   *
+   * Returns true when it changed the row, so callers can skip a redundant
+   * broadcast.
+   */
+  markCredentialRouteAuthFailed(routeId: string): boolean {
+    const route = this.getCredentialRoute(routeId);
+    if (route?.via !== "string" || route.status === "auth_failed") return false;
+    this.upsertCredentialRoute({ ...route, status: "auth_failed" });
+    return true;
+  }
+
+  /**
+   * planning#358 — recovery counterpart to
+   * {@link markCredentialRouteAuthFailed}, and the reason that one is safe to
+   * write at all.
+   *
+   * `markProviderAccountReauthenticated`'s docstring records what happens
+   * without a clear path: a row marked once "stays stuck `auth_failed` forever"
+   * while the credential works again, so the panel keeps demanding attention
+   * nothing needs. A supplied secret has two ways back and both call this — a
+   * turn that authenticates on the route (proof by use), and a replaced secret
+   * (`setCredentialSecret`, a fresh value deserving a fresh verdict).
+   *
+   * Idempotent: a no-op unless the row is actually `auth_failed`, so the
+   * every-turn success path costs a read and no write.
+   */
+  clearCredentialRouteAuthFailed(routeId: string): boolean {
+    const route = this.getCredentialRoute(routeId);
+    if (route?.via !== "string" || route.status !== "auth_failed") return false;
+    this.upsertCredentialRoute({ ...route, status: "ready" });
+    return true;
   }
 
   // ---- Agent environment variables ----

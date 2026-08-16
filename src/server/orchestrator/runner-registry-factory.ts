@@ -223,6 +223,9 @@ export interface RunnerRegistryDeps {
    * system turn marks exhaustion exactly like a WS turn does.
    */
   markSessionAccountExhausted?: (sessionId: string, until: number, routeId?: string) => void;
+  /** planning#358 — see {@link AgentListenerDeps.markCredentialRouteAuthFailed}. */
+  markCredentialRouteAuthFailed?: (routeId: string) => void;
+  clearCredentialRouteAuthFailed?: (routeId: string) => void;
   /**
    * docs/153 — fire-and-forget nudge to the Claude OAuth refresher. Forwarded
    * into the listener so dispatched/system turns also heal a stale token via
@@ -314,6 +317,8 @@ export function createRunnerRegistry(
     credentialsDir, providerAccountManager, readSystemPrompt, generateText, getPrStatusPoller, rebindDelivery,
     usageManager, recordAgentRateLimits, getSubscriptionLimitsSnapshot,
     markSessionAccountExhausted,
+    markCredentialRouteAuthFailed,
+    clearCredentialRouteAuthFailed,
     nudgeClaudeOAuthRefresh, onAgentAuthRequired, ensureAgentTokenFresh, runParamsPreps,
     publishOverlayBases,
     activatePluginRepos,
@@ -408,6 +413,8 @@ export function createRunnerRegistry(
         ...(recordAgentRateLimits ? { recordAgentRateLimits } : {}),
         ...(getSubscriptionLimitsSnapshot ? { getSubscriptionLimitsSnapshot } : {}),
         ...(markSessionAccountExhausted ? { markSessionAccountExhausted } : {}),
+        ...(markCredentialRouteAuthFailed ? { markCredentialRouteAuthFailed } : {}),
+        ...(clearCredentialRouteAuthFailed ? { clearCredentialRouteAuthFailed } : {}),
         ...(nudgeClaudeOAuthRefresh ? { nudgeClaudeOAuthRefresh } : {}),
         ...(onAgentAuthRequired ? { onAgentAuthRequired } : {}),
         // docs/163 — derived voice-note delivery for system turns. Only when a

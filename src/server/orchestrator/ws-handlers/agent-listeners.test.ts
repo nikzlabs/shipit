@@ -187,6 +187,108 @@ describe("wireAgentListeners", () => {
   // docs/150 req 7 — a turn the provider killed for quota is the most reliable
   // exhaustion signal there is: the account itself refusing work, not telemetry
   // describing it. Stamping it is what makes the NEXT turn fail over.
+  describe("marking a supplied secret auth_failed on the surface path (planning#358)", () => {
+    function wireForAuthFailure(routeKind: "reserved" | "account") {
+      const agent = new FakeAgent();
+      const runner = new SessionRunner({
+        sessionId: "session-1",
+        sessionDir: "/tmp/session-1",
+        defaultAgentId: "claude",
+      });
+      const d = deps();
+      d.sessionManager.get = vi.fn(() => ({ agentId: "claude" })) as never;
+      const marked: string[] = [];
+      d.markCredentialRouteAuthFailed = (id) => { marked.push(id); };
+      wireAgentListeners(agent as unknown as AgentProcess, runner, d, {
+        capturedSessionId: "session-1",
+        getCapturedRouteId: () => "cred_a",
+        getCapturedRouteKind: () => routeKind,
+        isNewSession: false,
+        persistUserMessage: vi.fn(),
+      });
+      return { agent, runner, marked };
+    }
+
+    it("marks a metered key route, which `recoverAuth` can never reach", () => {
+      // The regression this pins: marking only in `turn-executor.recoverAuth`
+      // covered `{sub, vendor-owned}` and left every API-key row — the most
+      // literal supplied secret — reading `ready` forever, because
+      // `stopsOnFailure` makes `willRecover` false so `recoverAuth` never runs.
+      const { agent, runner, marked } = wireForAuthFailure("reserved");
+      agent.emit("auth_required");
+      expect(marked).toEqual(["cred_a"]);
+      runner.dispose({ force: true });
+    });
+
+    it("leaves an account route to its own sign-in flow", () => {
+      const { agent, runner, marked } = wireForAuthFailure("account");
+      agent.emit("auth_required");
+      expect(marked).toEqual([]);
+      runner.dispose({ force: true });
+    });
+  });
+
+  describe("clearing a credential's auth_failed on a real result (planning#358)", () => {
+    function wireForResult(routeId: string | undefined) {
+      const agent = new FakeAgent();
+      const runner = new SessionRunner({
+        sessionId: "session-1",
+        sessionDir: "/tmp/session-1",
+        defaultAgentId: "codex",
+      });
+      const d = deps();
+      d.sessionManager.get = vi.fn(() => ({})) as never;
+      const cleared: string[] = [];
+      d.clearCredentialRouteAuthFailed = (id) => { cleared.push(id); };
+      wireAgentListeners(agent as unknown as AgentProcess, runner, d, {
+        capturedSessionId: "session-1",
+        ...(routeId ? { getCapturedRouteId: () => routeId } : {}),
+        isNewSession: false,
+        persistUserMessage: vi.fn(),
+      });
+      return { agent, runner, cleared };
+    }
+
+    it("clears the route the turn authenticated with — proof by use", () => {
+      const { agent, runner, cleared } = wireForResult("cred_a");
+      agent.emit("event", { type: "agent_result" } as AgentEvent);
+      expect(cleared).toEqual(["cred_a"]);
+      runner.dispose({ force: true });
+    });
+
+    it("clears even when the result carries an error", () => {
+      // Auth failures never arrive as `agent_result` — they come through
+      // `auth_required`. So a result with a quota error still proves the
+      // credential authenticated, and gating on `!error` would leave a healthy
+      // credential marked broken whenever its first turn back hit a limit.
+      const { agent, runner, cleared } = wireForResult("cred_a");
+      agent.emit("event", { type: "agent_result", error: "API Error: 500" } as AgentEvent);
+      expect(cleared).toEqual(["cred_a"]);
+      runner.dispose({ force: true });
+    });
+
+    it("does not clear when the same turn already failed authentication", () => {
+      // Measured regression: against an invalid key the CLI raises
+      // `auth_required` AND then emits an `agent_result`, so an ungated clear
+      // undid the mark inside one failed turn and the row went back to `ready`
+      // on a credential that had just been refused.
+      const { agent, runner, cleared } = wireForResult("cred_a");
+      agent.emit("auth_required");
+      agent.emit("event", { type: "agent_result", error: "401" } as AgentEvent);
+      expect(cleared).toEqual([]);
+      runner.dispose({ force: true });
+    });
+
+    it("clears nothing when the turn captured no route", () => {
+      // A result that cannot name the credential it ran on must not clear a
+      // guess — the same rule the exhaustion stamp follows.
+      const { agent, runner, cleared } = wireForResult(undefined);
+      agent.emit("event", { type: "agent_result" } as AgentEvent);
+      expect(cleared).toEqual([]);
+      runner.dispose({ force: true });
+    });
+  });
+
   describe("hard-exhaustion detection on agent_result (docs/150 req 7)", () => {
     function wireForResult() {
       const agent = new FakeAgent();

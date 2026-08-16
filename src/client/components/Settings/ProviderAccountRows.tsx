@@ -626,6 +626,15 @@ function statusWordFor(
 ): { text: string; tone: "warning" | "error" } | undefined {
   if (account.status === "ready") return undefined;
   if (account.status === "authenticating") return { text: "signing in…", tone: "warning" };
+  // planning#358 — the remedy differs by how the credential was supplied, and
+  // the word has to name the one that exists. "Reconnect" is an account's
+  // remedy: there is a login to run again. A `via: "string"` row is a secret
+  // someone pasted or an env var the install was given — there is nothing to
+  // reconnect to, and the only fix is a new value. Before 358 a string row
+  // could not reach this state at all, so the account wording was the only
+  // wording needed; now that a refused supplied secret is recorded, telling its
+  // owner to "reconnect" would send them looking for a button that is not there.
+  if (account.via === "string") return { text: "credential rejected", tone: "error" };
   return { text: "reconnect needed", tone: "error" };
 }
 

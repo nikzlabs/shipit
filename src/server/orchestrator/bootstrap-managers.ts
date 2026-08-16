@@ -65,6 +65,7 @@ import type { VersionInfo } from "../shared/types.js";
 import type { GenerateText } from "./non-turn-model.js";
 import { makeNonTurnGenerateText } from "./services/non-turn-work.js";
 import { createAutoPushScheduler } from "./services/auto-push-scheduler.js";
+import { listCredentialRoutes as listCredentialRoutesForWire } from "./services/credential-routes.js";
 import { activateDeclaredPlugins, type PluginInstallHook } from "./services/plugin-activation.js";
 import { refreshPluginRepos, type PluginRefreshResult } from "./services/plugin-refresh.js";
 import { resolveSessionPluginServices } from "./services/plugin-services.js";
@@ -855,6 +856,34 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     }
   };
 
+  /**
+   * planning#358 — the two halves of "this supplied secret was refused for
+   * authentication", written to the credential row so Settings stops calling it
+   * `ready`.
+   *
+   * Both no-op for an account route: those carry their own status, written by
+   * their sign-in flow, and a second writer is how the two come to disagree.
+   * `markCredentialRouteAuthFailed` enforces that in the store, so the check is
+   * stated once rather than per caller — the same division `markSessionAccount-
+   * Exhausted` uses just above for the `key`-route refusal.
+   *
+   * Broadcast only when the row actually changed, which is why both store
+   * methods return a boolean: the clear runs on EVERY successful turn, and an
+   * unconditional `credential_routes` fan-out would put a Settings re-render on
+   * the hot path of normal operation.
+   */
+  const markCredentialRouteAuthFailed = (routeId: string): void => {
+    if (!credentialStore.markCredentialRouteAuthFailed(routeId)) return;
+    console.log(`[auth] credential ${routeId} refused a turn; marked auth_failed`);
+    sseBroadcast("credential_routes", { routes: listCredentialRoutesForWire(credentialStore) });
+  };
+
+  const clearCredentialRouteAuthFailed = (routeId: string): void => {
+    if (!credentialStore.clearCredentialRouteAuthFailed(routeId)) return;
+    console.log(`[auth] credential ${routeId} authenticated a turn; cleared auth_failed`);
+    sseBroadcast("credential_routes", { routes: listCredentialRoutesForWire(credentialStore) });
+  };
+
   const runnerRegistry = createRunnerRegistry({
     effectiveRunnerFactory, sessionManager, repoStore, createGitManager,
     githubAuthManager, agentFactory, chatHistoryManager,
@@ -863,6 +892,8 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     credentialStore, secretStore, runtimeMode, broadcastLog,
     usageManager, runParamsPreps,
     markSessionAccountExhausted,
+    markCredentialRouteAuthFailed,
+    clearCredentialRouteAuthFailed,
     nudgeClaudeOAuthRefresh,
     onAgentAuthRequired,
     ensureAgentTokenFresh,

@@ -35,12 +35,24 @@ export type CredentialVia = "account" | "string";
 /**
  * Whether this credential can authenticate a turn right now.
  *
- * The two middle states only ever apply to a `via: "account"` credential, which
- * is the only kind with a login flow behind it: a row exists from the moment
- * "Add account" is clicked (`unavailable`), goes `authenticating` while the
- * CLI's sign-in runs, and lands on `ready` or `auth_failed`. A supplied secret
- * is `ready` the moment it is stored — there is nothing to wait for and nothing
- * that can half-succeed.
+ * `authenticating` and `unavailable` only ever apply to a `via: "account"`
+ * credential, which is the only kind with a login flow behind it: a row exists
+ * from the moment "Add account" is clicked (`unavailable`), goes
+ * `authenticating` while the CLI's sign-in runs, and lands on `ready` or
+ * `auth_failed`.
+ *
+ * `auth_failed` is reachable by BOTH kinds, and planning#358 is why. A supplied
+ * secret is `ready` the moment it is stored — there is nothing to wait for and
+ * nothing that can half-succeed — but "stored" is not "accepted", and a token
+ * that is stale, revoked or simply wrong used to keep reading `ready` while
+ * every turn on it died. So the state is now also written when a turn is refused
+ * for authentication on a string row, and cleared when one succeeds or the
+ * secret is replaced. It says "the provider rejected this credential", never
+ * "a login flow failed".
+ *
+ * Note the two are surfaced differently on purpose: routing excludes a
+ * non-`ready` **account**, and deliberately does not exclude a string row (see
+ * `CredentialStore.markCredentialRouteAuthFailed`).
  */
 export type CredentialStatus = "ready" | "authenticating" | "auth_failed" | "unavailable";
 

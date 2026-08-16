@@ -506,6 +506,28 @@ export async function executeAgentTurn(
           : false;
       } else if (capturedCredentialRoute) {
         healed = false;
+        // planning#358 — this branch IS the verdict, so write it down.
+        //
+        // A reserved capture is a supplied secret (`claude-env-oauth`, an API
+        // key): recovery was attempted and there is nothing to recover, which
+        // makes the 401 terminal rather than transient. Until now that
+        // conclusion was reached here and discarded — the row went on reading
+        // `ready` while every turn on it died, which is the gap the issue names.
+        //
+        // Marked HERE rather than in the auth handler, and the difference is not
+        // cosmetic: measured against the real credential, `willRecoverAuth()`
+        // answers **true** for this route (a healer is wired and it is a first
+        // attempt), so a `!willRecover` gate in the handler never fires. Only
+        // after the heal has been asked for and refused is the failure known to
+        // be terminal — anywhere earlier is a guess that would also brand a
+        // credential whose stale token was about to be rotated back to health.
+        //
+        // The account branch above needs none of this: a healed account is
+        // `ready` again, and an unhealable one is marked `auth_failed` by the
+        // refresher's own revoked classification.
+        if (capturedCredentialRoute.providerRouteId) {
+          deps.listenerDeps.markCredentialRouteAuthFailed?.(capturedCredentialRoute.providerRouteId);
+        }
       } else {
         healed = deps.ensureAgentTokenFresh
           ? await deps.ensureAgentTokenFresh(agentId, undefined, { force: true })
