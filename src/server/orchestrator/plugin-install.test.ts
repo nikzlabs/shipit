@@ -99,6 +99,8 @@ function fakeDocker(opts: {
   onStart?: () => void;
 } = {}) {
   const containers: CreatedContainer[] = [];
+  /** Every `logs()` call's options — the line half of the bound lives here. */
+  const logCalls: Record<string, unknown>[] = [];
   const createdVolumes: { Name: string; DriverOpts?: Record<string, string> }[] = [];
   const removedVolumes: string[] = [];
   // A volume "exists" unless we removed it — so the workspace volume, which
@@ -169,7 +171,10 @@ function fakeDocker(opts: {
           record.killed = true;
           finish({ StatusCode: 137 });
         },
-        logs: async () => (Buffer.isBuffer(opts.logs) ? opts.logs : Buffer.from(opts.logs ?? "")),
+        logs: async (logOpts: Record<string, unknown>) => {
+          logCalls.push(logOpts);
+          return Buffer.isBuffer(opts.logs) ? opts.logs : Buffer.from(opts.logs ?? "");
+        },
         remove: async () => {
           record.removed = true;
         },
@@ -182,6 +187,7 @@ function fakeDocker(opts: {
     createdVolumes,
     removedVolumes,
     networksCreated,
+    logCalls,
   };
 }
 
@@ -851,6 +857,109 @@ describe("createPluginInstallRunner — forced retry and the install record", ()
     expect(record).toMatchObject({ outcome: "succeeded", commit: COMMIT });
   });
 
+  /**
+   * planning#416 — the half that had nowhere to live at all.
+   *
+   * A FAILED install's tail rides the failure reason (the test below), and that
+   * is the case where the reader already knows something is wrong. The case
+   * nikzlabs/shipit#2315 could not settle from a session is this one: the
+   * install succeeded, so nothing anywhere says what it wrote, and the two
+   * conclusions the reporter and their reviewer drew from the same documentation
+   * had no artifact to be checked against.
+   */
+  it("records what a SUCCESSFUL install printed", async () => {
+    const docker = fakeDocker({ logs: "added 41 packages\nbuilt dist/index.js" }).docker;
+    await run2(docker)(job([exportWith("probe", "npm ci && npm run build")]));
+
+    const record = readInstallRecord(pluginsDir(), "tools");
+    expect(record?.outcome).toBe("succeeded");
+    expect(record?.output).toContain("built dist/index.js");
+  });
+
+  it("asks the daemon for a bounded number of lines, not the whole log", async () => {
+    // The character clip alone would satisfy the size assertions below while
+    // pulling an entire multi-megabyte install log into this process first. The
+    // line bound is the one that keeps the read itself cheap, and nothing else
+    // here would notice it going missing (review finding).
+    const { docker, logCalls } = fakeDocker({ logs: "added 41 packages" });
+    await run2(docker)(job([exportWith("probe", "npm ci")]));
+
+    expect(logCalls).toHaveLength(1);
+    expect(logCalls[0]).toMatchObject({ tail: 40, stdout: true, stderr: true });
+  });
+
+  it("bounds a successful install's output exactly as a failure's is bounded", async () => {
+    // The constraint is the point, not the number: this text is repo-authored
+    // and lands in agent context and in the UI, so an install that SUCCEEDS may
+    // not be allowed to say more than one that fails.
+    const docker = fakeDocker({ logs: `${"x".repeat(9000)}\nTAIL-MARKER` }).docker;
+    await run2(docker)(job([exportWith("probe", "npm ci")]));
+
+    const output = readInstallRecord(pluginsDir(), "tools")?.output ?? "";
+    expect(output.length).toBeLessThanOrEqual(2001); // 2000 + the elision mark
+    // Clipped from the FRONT, so the end of the run — where a build says what it
+    // wrote — survives, and the mark says that something was dropped.
+    expect(output.startsWith("…")).toBe(true);
+    expect(output).toContain("TAIL-MARKER");
+  });
+
+  it("bounds the whole run, not each command, when several exports install", async () => {
+    const docker = fakeDocker({ logs: "y".repeat(1800) }).docker;
+    await run2(docker)(job([exportWith("a", "npm ci"), exportWith("b", "npm ci")]));
+
+    const output = readInstallRecord(pluginsDir(), "tools")?.output ?? "";
+    expect(output.length).toBeLessThanOrEqual(2001);
+    // Which export produced what still has to be readable, or a two-plugin
+    // repository's output is one undifferentiated wall.
+    expect(output).toContain("--- b");
+  });
+
+  it("does not erase the output when the same commit re-stages and skips", async () => {
+    // Review finding. The record is last-writer-wins, so a skip that recorded
+    // nothing would delete the artifact at the moment it matters: an install
+    // succeeds for C and records what it printed, the publish then fails, C
+    // re-stages, hits the stamp — and the version goes live with no output.
+    // The layer being reused is the one that install BUILT, so its output still
+    // describes what is live.
+    await run2(fakeDocker({ logs: "built dist/index.js" }).docker)(job([exportWith("probe", "npm ci")]));
+    await run2(fakeDocker({ logs: "ignored" }).docker)(job([exportWith("probe", "npm ci")]));
+
+    const record = readInstallRecord(pluginsDir(), "tools");
+    // Still a skip: "it ran" and "it did not run this time" have opposite fixes
+    // and must stay distinguishable, which is what docs/266 is for.
+    expect(record?.outcome).toBe("skipped-stamp");
+    expect(record?.output).toContain("built dist/index.js");
+    // And the second round's container never ran, so its logs are not it.
+    expect(record?.output).not.toContain("ignored");
+  });
+
+  it("does not carry an output forward onto a different commit", async () => {
+    // The layer is keyed by commit; a record for another commit describes a tree
+    // this one does not have. Carrying it would be the fabricated diagnosis
+    // `describesLive` exists to prevent, one level down.
+    await run2(fakeDocker({ logs: "built dist/index.js" }).docker)(job([exportWith("probe", "npm ci")]));
+    const other = { ...job([exportWith("probe", "npm ci")]), commit: "d".repeat(40) };
+    await run2(fakeDocker({ logs: "added 3 packages" }).docker)(other);
+
+    const record = readInstallRecord(pluginsDir(), "tools");
+    expect(record?.commit).toBe("d".repeat(40));
+    expect(record?.output).toContain("added 3 packages");
+    expect(record?.output).not.toContain("built dist/index.js");
+  });
+
+  it("keeps a hung install's partial output instead of losing it with the container", async () => {
+    // A build that prints and then hangs is the case where the partial output is
+    // the whole diagnostic. `waitForContainerExit` kills and reaps before
+    // returning, so there is a stopped container to read.
+    const { docker } = fakeDocker({ exit: "hang", logs: "compiling src/index.ts" });
+    const result = await createPluginInstallRunner({
+      docker, image: "worker:test", sessionId: "s1", stateDir, timeoutMs: 10,
+    })(job([exportWith("probe", "npm run build")]));
+
+    expect(result.ok).toBe(false);
+    expect(readInstallRecord(pluginsDir(), "tools")?.output).toContain("compiling src/index.ts");
+  });
+
   it("records a FAILED install with its output — the evidence that had nowhere to live", async () => {
     // A failed install publishes no generation, so before docs/266 this text
     // was returned to the round and then existed nowhere a session could read.
@@ -861,6 +970,10 @@ describe("createPluginInstallRunner — forced retry and the install record", ()
     const record = readInstallRecord(pluginsDir(), "tools");
     expect(record?.outcome).toBe("failed");
     expect(record?.detail).toContain("npm ERR! missing script: build");
+    // planning#416 — and in `output` as well, so one field answers "what did the
+    // install print" whatever the outcome. A reader that had to parse it back
+    // out of a prose reason is a reader that will get it wrong.
+    expect(record?.output).toContain("npm ERR! missing script: build");
   });
 
   it("records a skip as a skip, not as a success", async () => {

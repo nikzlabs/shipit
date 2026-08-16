@@ -22,6 +22,7 @@
 import { activateDeclaredPlugins, type PluginActivationDeps } from "./plugin-activation.js";
 import { readActiveGeneration, pluginsRoot } from "../plugin-generations.js";
 import { liveInstallProblem } from "./plugin-status.js";
+import { readInstallRecord, type PluginInstallRecord } from "../plugin-install-record.js";
 import { resolveShipitConfig } from "../../shared/shipit-config.js";
 import { destinationKey, declaredRefLabel } from "../../shared/plugin-repos.js";
 import { sessionStateDirForWorkspace } from "../session-state-dir.js";
@@ -54,6 +55,20 @@ export interface PluginRefreshRow {
    * would tell a consumer their retry did nothing.
    */
   reinstalled?: boolean;
+  /**
+   * planning#416 — what the last install for this repository did, INCLUDING the
+   * output of one that succeeded. Carried on the row rather than left to
+   * `shipit plugin status` because the question it answers ("the install ran, so
+   * what did it write?") is asked by a caller who is already here, and by one who
+   * does not yet suspect the install at all. The shim emits it under `--json`
+   * only: it is up to 40 lines of repo-authored text, which is a diagnostic on
+   * demand and would be noise on every refresh.
+   *
+   * Its `commit` is the attempt's, not necessarily the live one — the same
+   * caveat `status` carries, and the reason the field is the whole record rather
+   * than a bare string.
+   */
+  install?: PluginInstallRecord;
 }
 
 export interface PluginRefreshResult {
@@ -183,9 +198,13 @@ export async function refreshPluginRepos(
       // generation can carry, because the round that failed published none.
       // Reading only the first left a plain refresh silent after a failed forced
       // retry (review finding).
+      // planning#416 — read ONCE, after the round, and used for both halves: the
+      // row's own `install` field and the degraded line below. Two reads could
+      // straddle a write and describe two different attempts in one row.
+      const install = pluginsDir ? readInstallRecord(pluginsDir, target.name) : null;
       const degraded = [
         ...(live?.manifestWarnings ?? []),
-        ...(pluginsDir ? [liveInstallProblem(pluginsDir, target.name, after)] : []),
+        liveInstallProblem(install, after),
       ].filter((d): d is string => typeof d === "string" && d.length > 0);
       // A forced round that reached `activated` re-staged and re-installed the
       // same commit. The outcome is needed as well as the two commits: for a
@@ -207,6 +226,7 @@ export async function refreshPluginRepos(
         ...(detail ? { detail } : {}),
         ...(degraded.length > 0 ? { degraded } : {}),
         ...(reinstalled ? { reinstalled: true } : {}),
+        ...(install ? { install } : {}),
       };
     }),
   };

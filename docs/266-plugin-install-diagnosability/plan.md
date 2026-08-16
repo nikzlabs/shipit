@@ -83,6 +83,73 @@ It is **per repository, not per generation**, and last-writer-wins: the question
 is "what happened the last time ShipIt tried to install this repository", and a
 record keyed by a generation that was never published cannot answer it.
 
+### 2a. The successful install's output (req 11)
+
+The record gains one field, `output`: the tail of what the install **printed**,
+written on the success path as well as the failure one. `runInstallContainer`
+already read that tail — only after a non-zero exit — so this changes *when it
+is kept*, not how it is collected. The bounds are the existing ones and are not
+widened: `LOG_TAIL_LINES = 40` per command, `REASON_MAX_CHARS = 2000` per
+command **and once more over the whole run**, so a repository with several
+installing exports cannot retain N times what one may. The elision mark on a
+clipped tail is load-bearing: silently truncated output reads as complete
+output.
+
+Stated precisely, because the first draft of the docs rounded it off (review
+finding): the LINE half is per command, so a repository with three installing
+exports can retain three 40-line tails — the character half is what bounds the
+whole run, and it is the one that bounds what reaches agent context. The agent-
+facing docs say "a bounded tail, 40 lines per install command, clipped to 2000
+characters over the run" rather than "the last 40 lines".
+
+It is a field beside `detail` rather than an extension of it. The two answer
+different questions — `detail` is why the round failed and is absent when it did
+not; `output` is what the command said, whatever the outcome — so the failing
+command's tail appears in both. That overlap is the price of `output` meaning
+one thing: a machine reader that had to parse it back out of a prose reason is a
+reader that will get it wrong. Nothing is written for the outcomes where nothing
+ran (`skipped-*`, `not-run`), and that absence is part of the answer.
+
+The tail is read on **every** outcome that produced a container, including the
+timeout and the cancellation. `waitForContainerExit` kills and reaps before
+returning either, so there is a stopped container to read — and a build that
+prints half its work and then hangs is exactly the one whose partial output is
+the diagnostic.
+
+**One skip carries output forward, and it is the retention shape's own defect
+being closed** (review finding). The record is last-writer-wins, so on the
+re-stage path — install succeeds for C and records what it printed, the publish
+then fails, C re-stages and hits the install stamp — a `skipped-stamp` written
+with no output would erase the artifact at the moment that version goes live.
+The stamp branch therefore carries the previous record's `output` forward when
+it is for the **same commit**, and the outcome stays `skipped-stamp` so "it ran"
+and "it did not run this time" remain distinguishable. It is not applied to the
+store hit: a stamp hit reuses the exact tree the recorded output describes, while
+a store hit mounts a tree built somewhere else, which that output does not
+describe.
+
+**Retained, in the record that already exists.** Two other shapes were
+available. A file per generation is the one the issue named, and it costs a
+sweep: this subsystem's rule is to prune where the leak happens, and a bounded
+file that accumulates one per commit on a tracked branch is a leak with an
+owner. Returning the output only to the invocation that produced it is free and
+answers only inside the turn that ran the refresh — while the session that has
+to diagnose a broken plugin characteristically opens onto an already-installed
+version and runs no round of its own, which is the wall this whole feature
+exists to remove. One bounded field in one existing per-repository file buys the
+retention with no new file and no new sweep. What it does not buy is history;
+the record is the LAST install, and every reader compares its `commit` against
+the live one before drawing a verdict (`describesLive`).
+
+**It rides `--json` on `refresh` as well as on `status` (req 11).** §1 says
+`status` is a verb rather than a flag on `refresh` because a diagnostic must not
+be coupled to the action that fetches — that argument is about not making the
+reader *run* an activation to ask a question, and it does not apply to a field
+on an answer they are already reading. The reader who needs this does not yet
+suspect the install, so it has to be where they already are. It is JSON-only on
+both: a tail of repo-authored text is a diagnostic on demand, and printing it
+on every human-readable refresh would be noise that trains a reader to skim.
+
 ## 3. The refresh warning line (req 7)
 
 `services/plugin-refresh.ts` builds each row from this round's own outcome.
@@ -160,8 +227,8 @@ filesystem, and a failed second rename puts the live version back. A leftover
 | `session/agent-ops-routes.ts` | `/agent-ops/plugin/status`; `force` on the refresh relay |
 | `orchestrator/api-routes-plugin-repos.ts` | `GET /api/sessions/:id/plugin/status`; snapshot assembly extracted for reuse |
 | `orchestrator/services/plugin-status.ts` (new) | the agent-shaped projection: live version, last install, issues |
-| `orchestrator/plugin-install-record.ts` (new) | write/read `last-install.json` |
-| `orchestrator/plugin-install.ts` | write the record on every terminal path; honour `force` |
+| `orchestrator/plugin-install-record.ts` (new) | write/read `last-install.json`; the `output` field (req 11) |
+| `orchestrator/plugin-install.ts` | write the record on every terminal path; honour `force`; capture the output tail on success too, bounded once over the run (req 11) |
 | `orchestrator/plugin-generations.ts` | `force` skips the already-live short-circuit and reaches the install job |
-| `orchestrator/services/plugin-activation.ts`, `plugin-refresh.ts` | thread `force`; add the live-degradation field to each row |
+| `orchestrator/services/plugin-activation.ts`, `plugin-refresh.ts` | thread `force`; add the live-degradation field to each row; carry the last install record on each row (req 11) |
 | `shipit-docs/plugins.md` | the two verbs, what force costs, and what a consumer does with a broken version |

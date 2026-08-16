@@ -70,6 +70,11 @@ export interface PluginStatusResult {
 /**
  * The live version's install problem, in one line, or null when there is none.
  *
+ * Takes the record rather than reading it (planning#416): `plugin-refresh.ts`
+ * now needs the whole record for its `--json` row, and one read answering both
+ * questions is what keeps the row's `install` and its `degraded` line from
+ * describing two different attempts if one lands between them.
+ *
  * Shared with `plugin-refresh.ts` so the two surfaces cannot disagree about
  * whether the version that is live is usable. Refresh had read only the
  * generation's `manifestWarnings`, which carries the "active but not installed"
@@ -78,11 +83,9 @@ export interface PluginStatusResult {
  * finding), which is precisely the silence docs/266 req 7 exists to end.
  */
 export function liveInstallProblem(
-  pluginsDir: string,
-  repoName: string,
+  record: PluginInstallRecord | null,
   liveCommit: string | null,
 ): string | null {
-  const record = readInstallRecord(pluginsDir, repoName);
   if (!describesLive(record, liveCommit) || !record) return null;
   if (record.outcome !== "failed" && record.outcome !== "not-run") return null;
   return describeInstallRecord(record);

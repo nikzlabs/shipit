@@ -22,6 +22,18 @@
  * time", so a record keyed by a generation that was never published could not
  * answer it. It sits beside `generations/`, not inside one.
  *
+ * **That is also where a successful install's output is retained**
+ * (planning#416). The alternative shapes both lose: a file per generation grows
+ * with the clock and would need its own pruning, in a subsystem whose rule is to
+ * prune where the leak happens; and returning the output only to the invocation
+ * that produced it answers only inside the turn that ran the refresh, while the
+ * session that has to diagnose a broken plugin characteristically opens onto one
+ * and runs no round of its own. One bounded field in one existing file per
+ * repository buys the retention with no new file and no new sweep. What it does
+ * not buy is history — this is the LAST install, and every reader compares its
+ * `commit` with the live one before drawing a verdict (`describesLive` in
+ * `services/plugin-status.ts`).
+ *
  * Every write is best-effort: this is a diagnostic, and an install that
  * succeeded must never be reported as failed because a log file could not be
  * written.
@@ -55,6 +67,30 @@ export interface PluginInstallRecord {
    * one-line explanation for the skipped and not-run outcomes.
    */
   detail?: string;
+  /**
+   * planning#416 — the tail of what the install actually PRINTED, on success as
+   * well as on failure, bounded by `plugin-install.ts` to the same 40 lines and
+   * 2000 characters a failure reason gets.
+   *
+   * It is a separate field from `detail` rather than an extension of it because
+   * the two answer different questions: `detail` is why the round failed (and is
+   * absent when it did not), `output` is what the command said. The failing
+   * command's tail therefore appears in both, and that overlap is the price of
+   * `output` meaning one thing whatever the outcome — a reader that had to parse
+   * it out of a prose reason is a reader that will get it wrong.
+   *
+   * Absent when nothing ran and nothing before it did either — which is itself
+   * part of the answer: no output because no command, not because it was lost.
+   *
+   * **One exception, and it is the reason `outcome` and `output` must be read
+   * together**: a `skipped-stamp` carries forward the output of the install that
+   * BUILT the layer it is reusing, for the same commit. Without it the record
+   * would erase its own artifact on the re-stage path (a succeeded install whose
+   * publish failed, re-staged and skipped). It is never carried across commits,
+   * and never onto `skipped-store`, whose tree was built somewhere this output
+   * does not describe.
+   */
+  output?: string;
 }
 
 const RECORD_FILE = "last-install.json";
@@ -106,6 +142,7 @@ export function readInstallRecord(pluginsDir: string, repoName: string): PluginI
       at: obj.at,
       outcome: obj.outcome,
       ...(typeof obj.detail === "string" ? { detail: obj.detail } : {}),
+      ...(typeof obj.output === "string" ? { output: obj.output } : {}),
     };
   } catch {
     return null;
@@ -135,11 +172,21 @@ export function describeInstallRecord(record: PluginInstallRecord | null): strin
   const detail = record.detail ? ` — ${record.detail}` : "";
   switch (record.outcome) {
     case "succeeded":
-      return `install succeeded for ${commit} at ${record.at}`;
+      // planning#416 — a succeeded install is exactly the case where the reader
+      // still has a question, so the line says where the answer is rather than
+      // stopping at "succeeded". Only when there IS output: pointing at an empty
+      // field costs a call and answers nothing.
+      //
+      // "nothing was captured" and not "it printed nothing", because this module
+      // cannot tell those apart: `logTail` is best-effort and answers with the
+      // empty string when the daemon would not give it the logs at all.
+      return `install succeeded for ${commit} at ${record.at}${
+        record.output ? " — its output is in `--json`" : " (no output was captured)"}`;
     case "failed":
       return `install FAILED for ${commit} at ${record.at}${detail}`;
     case "skipped-stamp":
-      return `install skipped for ${commit} (this version's layer was already installed)${detail}`;
+      return `install skipped for ${commit} (this version's layer was already installed)${detail}${
+        record.output ? " — `--json` has what the install that built that layer printed" : ""}`;
     case "skipped-store":
       return `install skipped for ${commit} (shared dependency store hit — nothing was run)${detail}`;
     case "not-run":

@@ -75,7 +75,7 @@ import {
 } from "./plugin-egress.js";
 import { PLUGIN_CLI_LABEL, sessionPathMount, type MountSpec } from "./plugin-cli-run.js";
 import { DEP_CACHE_CONTAINER_PATH } from "../shared/fs-constants.js";
-import { writeInstallRecord, type PluginInstallOutcome } from "./plugin-install-record.js";
+import { readInstallRecord, writeInstallRecord, type PluginInstallOutcome } from "./plugin-install-record.js";
 
 /**
  * Where the merged checkout is mounted inside the install container. The
@@ -117,7 +117,13 @@ export const DEFAULT_PLUGIN_INSTALL_TIMEOUT_MS = 10 * 60_000;
 const INSTALL_MEMORY_BYTES = 2 * 1024 * 1024 * 1024;
 /** Fork bomb ceiling, matching the session container's order of magnitude. */
 const INSTALL_PIDS_LIMIT = 512;
-/** How much of a failed install's output travels back into the failure reason. */
+/**
+ * How much of an install's output travels back — into the failure reason, and
+ * (planning#416) into the durable record on the success path too. One pair of
+ * bounds for both, deliberately: the text is repo-authored and ends up in agent
+ * context and in the UI, so an install that succeeds may not be allowed to say
+ * more than one that fails.
+ */
 const LOG_TAIL_LINES = 40;
 const REASON_MAX_CHARS = 2000;
 
@@ -202,12 +208,13 @@ export function createPluginInstallRunner(
     // can return without leaving the answer somewhere a session can read
     // (`plugin-install-record.ts` explains why the generation record cannot
     // carry it).
-    const record = (outcome: PluginInstallOutcome, detail?: string): void =>
+    const record = (outcome: PluginInstallOutcome, detail?: string, output?: string): void =>
       writeInstallRecord(pluginsRoot(deps.stateDir), job.repoName, {
         commit: job.commit,
         at: new Date().toISOString(),
         outcome,
         ...(detail ? { detail } : {}),
+        ...(output ? { output } : {}),
       });
 
     const commands = installCommands(job.exports);
@@ -238,7 +245,7 @@ async function runInstallOnce(
   deps: PluginInstallDeps,
   job: PluginInstallJob,
   commands: readonly InstallCommand[],
-  record: (outcome: PluginInstallOutcome, detail?: string) => void,
+  record: (outcome: PluginInstallOutcome, detail?: string, output?: string) => void,
 ): Promise<PluginInstallResult> {
 
     const stampPath = installStampPath(deps.stateDir, job.repoName, job.commit);
@@ -262,7 +269,26 @@ async function runInstallOnce(
     const recorded = job.force ? null : readStamp(stampPath);
     if (recorded?.stamp === stamp && pinsResolve(deps.depStoreDir, recorded.basePins)) {
       console.log(`[plugins] ${job.repoName}: install already done for ${job.commit.slice(0, 9)}`);
-      record("skipped-stamp", "this version's writable layer was already installed for these inputs");
+      // planning#416 (review finding) — the output of the install that BUILT
+      // this layer is carried forward, and only here. The record is
+      // last-writer-wins, so without this the re-stage path erases the very
+      // artifact it exists to retain, at the moment the version goes live: an
+      // install succeeds for C and records what it printed, publish then fails,
+      // C re-stages, hits this stamp, and would record `skipped-stamp` with no
+      // output — over a layer that same install produced.
+      //
+      // Guarded on the commit, and NOT applied to the store hit below: a stamp
+      // hit reuses the exact tree the recorded output describes, while a store
+      // hit mounts a tree built somewhere else, which that output does not
+      // describe. The outcome stays `skipped-stamp` either way, so "it ran" and
+      // "it did not run this time" remain distinguishable.
+      const previous = readInstallRecord(pluginsRoot(deps.stateDir), job.repoName);
+      const carried = previous?.commit === job.commit ? previous.output : undefined;
+      record(
+        "skipped-stamp",
+        "this version's writable layer was already installed for these inputs",
+        carried,
+      );
       return { ok: true, ...(recorded.basePins.length > 0 ? { basePins: recorded.basePins } : {}) };
     }
 
@@ -332,6 +358,11 @@ async function runInstallOnce(
     const policy = deps.egress?.() ?? UNCONTAINED_PLUGIN_EGRESS;
     let outcome: { ok: boolean; reason?: string };
     let netns: PluginNetns | null = null;
+    // planning#416 — every command's own output, in order, whatever the run does
+    // with it. Collected here rather than at the failure site because the case
+    // that could not be diagnosed from a session is the one where NOTHING fails:
+    // an install that succeeded and left the wrong tree.
+    const outputs: string[] = [];
     try {
       // req 24 — the same egress the session's own code gets, and fail-closed
       // for the same reason the network above is. ONE namespace for the whole
@@ -352,13 +383,17 @@ async function runInstallOnce(
           outcome = { ok: false, reason: "the session went away during install" };
           break;
         }
-        const failure = await runInstallContainer(
+        const run = await runInstallContainer(
           deps, job, spec.volumeName, command, netns.networkMode,
         );
-        if (failure) {
+        // The plugin name and not the command: a manifest's `install` string has
+        // no length ShipIt controls, and the name is already the label every
+        // failure reason uses for the same run.
+        if (run.output) outputs.push(commands.length > 1 ? `--- ${plugin}\n${run.output}` : run.output);
+        if (run.failure) {
           outcome = {
             ok: false,
-            reason: `install for \`${plugin}\` ${failure}${blockedHostsClause(policy, job)}`,
+            reason: `install for \`${plugin}\` ${run.failure}${blockedHostsClause(policy, job)}`,
           };
           break;
         }
@@ -377,14 +412,19 @@ async function runInstallOnce(
     // upperdir — so publishing a generation whose install volume is still held
     // would produce a generation reported active whose runtime mount cannot be
     // built. A release failure is therefore an install failure, not a warning.
+    // planning#416 — bounded ONCE over the whole run, by the same constant that
+    // bounds a single failure's tail. A generation with several installing
+    // exports must not be able to retain N times what one may.
+    const installOutput = clip(outputs.join("\n\n"));
+
     const released = await removePluginOverlay(deps.docker, spec.volumeName);
     if (!released) {
       const reason = `the plugin's writable layer could not be released (volume ${spec.volumeName} is still held)`;
-      record("failed", reason);
+      record("failed", reason, installOutput);
       return { ok: false, reason };
     }
     if (!outcome.ok) {
-      record("failed", outcome.reason);
+      record("failed", outcome.reason, installOutput);
       return outcome;
     }
 
@@ -395,7 +435,7 @@ async function runInstallOnce(
     // where install left it and pins nothing — still a complete generation.
     if (!plan || !deps.depStoreDir) {
       await writeStamp(stampPath, stamp, []);
-      record("succeeded");
+      record("succeeded", undefined, installOutput);
       return { ok: true };
     }
 
@@ -421,12 +461,12 @@ async function runInstallOnce(
     const lost = promoted.filter((p) => p.lost).map((p) => p.depDir);
     if (lost.length > 0) {
       const reason = `the installed \`${lost.join("`, `")}\` could not be stored — install ran but its output was lost`;
-      record("failed", reason);
+      record("failed", reason, installOutput);
       return { ok: false, reason };
     }
 
     await writeStamp(stampPath, stamp, basePins);
-    record("succeeded");
+    record("succeeded", undefined, installOutput);
     return { ok: true, ...(basePins.length > 0 ? { basePins } : {}) };
 }
 
@@ -521,8 +561,14 @@ function pinsResolve(depStoreDir: string | undefined, pins: readonly string[]): 
 }
 
 /**
- * Run one install command to completion. Returns a failure clause on a
- * non-zero exit or a timeout, and `null` on success.
+ * Run one install command to completion.
+ *
+ * `failure` is the clause a non-zero exit or a timeout contributes to the
+ * round's reason, and `null` when the command exited 0. `output` is the tail of
+ * what it printed, on BOTH outcomes (planning#416) — the run that has to be
+ * diagnosed from a session is routinely one where nothing failed, so a
+ * success's output has to be captured here or it is captured nowhere: the
+ * container is removed in the `finally` below.
  */
 async function runInstallContainer(
   deps: PluginInstallDeps,
@@ -530,7 +576,7 @@ async function runInstallContainer(
   volumeName: string,
   command: string,
   networkMode: string,
-): Promise<string | null> {
+): Promise<{ failure: string | null; output: string }> {
   // docs/270 — a plugin container writes THIS session's workspace and overlay,
   // so it runs as this session's identity rather than the one global uid. A
   // session that predates per-session identities resolves to that global value,
@@ -608,10 +654,20 @@ async function runInstallContainer(
   try {
     await container.start();
     const code = await waitForContainerExit(container, timeoutMs, job.isCancelled);
-    if (code === "timeout") return `did not finish within ${Math.round(timeoutMs / 1000)}s`;
-    if (code === "cancelled") return "was stopped because the session went away";
-    if (code !== 0) return `exited ${code}${await logTail(container)}`;
-    return null;
+    // The tail is read on EVERY outcome, including the two that have no exit
+    // code: `waitForContainerExit` kills and reaps before returning either of
+    // them, so there is a stopped container to read, and an install that hung
+    // after printing half a build is exactly the one whose partial output is
+    // worth having. Read before the `finally` removes the container.
+    const output = await logTail(container);
+    if (code === "timeout") {
+      return { failure: `did not finish within ${Math.round(timeoutMs / 1000)}s`, output };
+    }
+    if (code === "cancelled") {
+      return { failure: "was stopped because the session went away", output };
+    }
+    if (code !== 0) return { failure: `exited ${code}${output ? `:\n${output}` : ""}`, output };
+    return { failure: null, output };
   } finally {
     await container.remove({ force: true }).catch(() => undefined);
   }
@@ -660,20 +716,31 @@ function resolveDepCacheMount(deps: PluginInstallDeps, job: PluginInstallJob): M
 }
 
 /**
- * The tail of a failed install's output, so the degraded card says what went
- * wrong instead of only that something did. Best-effort and bounded — this
- * text is repo-authored and ends up in the UI.
+ * The tail of an install command's output — so a degraded card says what went
+ * wrong instead of only that something did, and so a session can read what a
+ * SUCCESSFUL install printed (planning#416). Best-effort and bounded: this text
+ * is repo-authored and ends up in agent context and in the UI.
+ *
+ * Empty string on any failure to read, and the caller must be able to treat that
+ * as "nothing to show" — a diagnostic that could fail an install would be worse
+ * than no diagnostic.
  */
 async function logTail(container: Docker.Container): Promise<string> {
   try {
     const raw = await container.logs({ stdout: true, stderr: true, tail: LOG_TAIL_LINES });
-    const text = demultiplex(raw).trim();
-    if (!text) return "";
-    const clipped = text.length > REASON_MAX_CHARS ? `…${text.slice(-REASON_MAX_CHARS)}` : text;
-    return `:\n${clipped}`;
+    return clip(demultiplex(raw).trim());
   } catch {
     return "";
   }
+}
+
+/**
+ * The character half of the bound, applied per command AND once over the whole
+ * run. A leading `…` is the only signal that anything was dropped, so it is not
+ * optional: silently truncated output reads as complete output.
+ */
+function clip(text: string): string {
+  return text.length > REASON_MAX_CHARS ? `…${text.slice(-REASON_MAX_CHARS)}` : text;
 }
 
 /**

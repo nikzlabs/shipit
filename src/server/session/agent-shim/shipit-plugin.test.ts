@@ -418,3 +418,79 @@ describe("shipit plugin refresh — the live version's own degradation", () => {
     expect(res.stdout).not.toContain("shipit plugin status");
   });
 });
+
+/**
+ * planning#416 — the successful install's own output.
+ *
+ * The failed half already travelled back in the failure reason. This is the
+ * half that reached a browser panel and nothing else, and it is the artifact
+ * that would have settled nikzlabs/shipit#2315: whether a plugin's install
+ * wrote what it claims to have written is not answerable from any other surface
+ * a session can reach.
+ */
+const INSTALLED = {
+  status: 200,
+  body: {
+    rows: [{
+      repo: "tools", ref: "branch main",
+      before: "e".repeat(40), after: "e".repeat(40), status: "unchanged",
+      install: {
+        commit: "e".repeat(40),
+        at: "2026-08-16T12:00:00.000Z",
+        outcome: "succeeded",
+        output: "added 41 packages\nbuilt dist/index.js",
+      },
+    }],
+  },
+};
+
+describe("shipit plugin refresh — the last install's output", () => {
+  it("emits a successful install's output under --json", async () => {
+    const { run } = makeRunner();
+    const res = await run(["plugin", "refresh", "--json"], { [REFRESH]: INSTALLED });
+
+    const install = JSON.parse(res.stdout).rows[0].install;
+    expect(install.outcome).toBe("succeeded");
+    expect(install.output).toContain("built dist/index.js");
+    // The commit travels with it: the record is the last attempt for the
+    // repository, which is not always the version that is live.
+    expect(install.commit).toBe("e".repeat(40));
+  });
+
+  it("keeps it out of the human output, which is a status line and not a log", async () => {
+    const { run } = makeRunner();
+    const res = await run(["plugin", "refresh"], { [REFRESH]: INSTALLED });
+
+    expect(res.exitCode).toBe(0);
+    expect(res.stdout).toContain("already at eeeeeeeee");
+    expect(res.stdout).not.toContain("built dist/index.js");
+  });
+
+  it("drops a record with no commit rather than printing an invented one", async () => {
+    // This is evidence a consumer quotes into an issue on somebody else's
+    // repository. A half-formed record rendered with empty strings is worse
+    // than a missing field.
+    const { run } = makeRunner();
+    const res = await run(["plugin", "refresh", "--json"], {
+      [REFRESH]: {
+        status: 200,
+        body: {
+          rows: [{
+            repo: "tools", ref: "branch main", before: null, after: "e".repeat(40),
+            status: "activated",
+            install: { outcome: "succeeded", output: "added 41 packages" },
+          }],
+        },
+      },
+    });
+    expect(JSON.parse(res.stdout).rows[0].install).toBeUndefined();
+  });
+
+  it("tells the reader the flag exists", async () => {
+    // A field nobody knows to ask for is the gap this closes, one call later.
+    const { run } = makeRunner();
+    const res = await run(["plugin", "refresh", "-h"]);
+    expect(res.stdout).toContain("--json");
+    expect(res.stdout).toContain("PRINTED");
+  });
+});

@@ -89,6 +89,24 @@ describe("buildPluginStatus", () => {
     expect(result.repos[0]!.installSummary).toContain("different version");
   });
 
+  it("carries a successful install's OUTPUT through to the caller", async () => {
+    // planning#416. `--json` on this verb is a pass-through of the object this
+    // projection returns, so a future field filter here would silently take the
+    // output away from every reader with nothing failing (review finding).
+    writeInstallRecord(pluginsRoot(sessionStateDirForWorkspace(workspaceDir)), "tools", {
+      commit: "a".repeat(40),
+      at: "2026-08-16T10:00:00.000Z",
+      outcome: "succeeded",
+      output: "added 41 packages\nbuilt dist/index.js",
+    });
+    const repo = buildPluginStatus(workspaceDir, ACTIVE).repos[0]!;
+
+    expect(repo.install?.output).toContain("built dist/index.js");
+    // And the human line says the output exists, or a reader of the text form
+    // never learns there is anything to ask for.
+    expect(repo.installSummary).toContain("--json");
+  });
+
   it("says an absent record has two causes rather than reading as fine", async () => {
     // The projection has no manifest, so it cannot tell "declares no install"
     // from "the record was lost or predates this feature". `usable` stays true
