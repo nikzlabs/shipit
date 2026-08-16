@@ -226,6 +226,21 @@ export type ModeCredential =
        * special case in spawn code.
        */
       targetOverride?: Partial<Record<HarnessId, CredentialTarget>>;
+      /**
+       * The harnesses that can actually authenticate with this credential —
+       * absent means "any harness with a string target" (the common case: an
+       * ordinary API key works wherever the wire format does).
+       *
+       * Exists because a string-delivered credential is not always a neutral
+       * API key: `claude-env-oauth` is an Anthropic-subscription OAuth token,
+       * usable only by Claude Code (Bearer semantics + Anthropic's own policy;
+       * OpenCode removed Anthropic subscription support upstream for exactly
+       * that reason — docs/268). Before a second anthropic-messages harness
+       * existed the style join made this unreachable; with OpenCode it is the
+       * one thing keeping subscription tokens off harnesses that cannot use
+       * them.
+       */
+      carriers?: HarnessId[];
     };
 
 interface ModeCommon {

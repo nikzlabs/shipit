@@ -67,6 +67,9 @@ export function readProviderAccountIdentity(
 ): ProviderAccountIdentity | null {
   if (provider === "claude") return readClaudeAccountIdentity(credentialRoot);
   if (provider === "codex") return readCodexAccountIdentity(credentialRoot);
+  // OpenCode has no provider accounts at launch (docs/268 req 5 — key-mode
+  // services only), so there is no auth.json identity to extract yet. A future
+  // login integration adds a reader here.
   return null;
 }
 

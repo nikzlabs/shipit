@@ -11,7 +11,7 @@ import { MarkdownContent } from "../../message-markdown.js";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../../ui/dialog.js";
 
 /** Display names for the spawn chip / consult card. */
-const SUB_AGENT_DISPLAY_NAMES: Record<string, string> = { claude: "Claude", codex: "Codex" };
+const SUB_AGENT_DISPLAY_NAMES: Record<string, string> = { claude: "Claude", codex: "Codex", opencode: "OpenCode" };
 
 /**
  * docs/261 phase 4 (req 9) — what the consult ran on, as the card says it.

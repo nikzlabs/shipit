@@ -93,6 +93,9 @@ import {
 export const REVIEWER_DEFAULT_EFFORT: Record<AgentId, string> = {
   claude: "high",
   codex: "high",
+  // `high` exists on essentially every reasoning-capable model OpenCode
+  // routes (docs/268 Phase 0) and is in the harness's declared option list.
+  opencode: "high",
 };
 
 /** Where a slot's answer came from — req 8's visible state. */

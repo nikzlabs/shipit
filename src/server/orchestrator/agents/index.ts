@@ -23,6 +23,7 @@ import type { PrepareRunParamsFn } from "../agent-run-params-prep.js";
 import type { ProviderAccountManager } from "../provider-account-manager.js";
 import * as claude from "./claude/index.js";
 import * as codex from "./codex/index.js";
+import * as opencode from "./opencode/index.js";
 
 export interface BuildAgentRuntimeDeps {
   /** Already-constructed Claude OAuth manager from `app-di`. */
@@ -91,11 +92,15 @@ export function buildAgentRuntime(deps: BuildAgentRuntimeDeps): AgentRuntime {
   const runParamsPreps = new Map<AgentId, PrepareRunParamsFn>([
     ["claude", claude.prepareClaudeRunParams],
     ["codex", codex.prepareCodexRunParams],
+    ["opencode", opencode.prepareOpencodeRunParams],
   ]);
 
   const parallelSessionsSections = new Map<AgentId, string>([
     ["claude", claude.CLAUDE_PARALLEL_SESSIONS_SECTION],
     ["codex", codex.CODEX_PARALLEL_SESSIONS_SECTION],
+    // No authManagers / limitsProviders entry for OpenCode (docs/268 req 5):
+    // no login integration and no quota API ship at launch.
+    ["opencode", opencode.OPENCODE_PARALLEL_SESSIONS_SECTION],
   ]);
 
   return { authManagers, limitsProviders, runParamsPreps, parallelSessionsSections };

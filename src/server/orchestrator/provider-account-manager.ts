@@ -48,6 +48,7 @@ export const PROVIDER_ACCOUNTS_SUBDIR = "provider-accounts";
 const PROVIDER_LABEL: Record<AgentId, string> = {
   claude: "Claude",
   codex: "Codex",
+  opencode: "OpenCode",
 };
 
 /**
@@ -59,6 +60,9 @@ const PROVIDER_LABEL: Record<AgentId, string> = {
 const LEGACY_CREDENTIAL_PATHS: Record<AgentId, readonly LegacyCredentialPath[]> = {
   claude: [{ rel: ".claude", kind: "dir" }, { rel: ".claude.json", kind: "file" }],
   codex: [{ rel: ".codex", kind: "dir" }],
+  // OpenCode is new in docs/268 — no install ever held pre-account OpenCode
+  // credentials, so there is nothing to migrate and nothing to alias.
+  opencode: [],
 };
 
 interface LegacyCredentialPath {
@@ -88,6 +92,7 @@ const LEGACY_CREDENTIAL_MARKERS: Record<AgentId, readonly string[]> = {
     path.join(".claude", "auth.json"),
   ],
   codex: [path.join(".codex", "auth.json")],
+  opencode: [],
 };
 
 export interface ProviderRoute {

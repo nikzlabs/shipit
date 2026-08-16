@@ -700,9 +700,10 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
  * session context) ⇒ the process-global `agentHome()`, i.e. today's behavior.
  */
 async function buildLocalAgentFactory(): Promise<LocalAgentFactory> {
-  const [{ ClaudeAdapter }, { CodexAdapter }] = await Promise.all([
+  const [{ ClaudeAdapter }, { CodexAdapter }, { OpencodeAdapter }] = await Promise.all([
     import("../session/agents/claude/adapter.js"),
     import("../session/agents/codex/adapter.js"),
+    import("../session/agents/opencode/adapter.js"),
   ]);
   return (agentId: AgentId, resolveHome?: AgentHomeResolver): AgentProcess => {
     const opts = resolveHome ? { resolveHome } : undefined;
@@ -711,6 +712,8 @@ async function buildLocalAgentFactory(): Promise<LocalAgentFactory> {
         return new ClaudeAdapter(undefined, opts);
       case "codex":
         return new CodexAdapter(undefined, opts);
+      case "opencode":
+        return new OpencodeAdapter(opts);
       default: {
         const _exhaustive: never = agentId;
         throw new Error(`No local agent adapter for agentId: ${_exhaustive as string}`);

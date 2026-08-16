@@ -164,7 +164,7 @@ export function RoleEditor({
           ? { kind: "auto" }
           : {
               kind: "pinned",
-              harnessId: params.harnessId as "claude" | "codex",
+              harnessId: params.harnessId as "claude" | "codex" | "opencode",
               serviceId: params.serviceId,
               billingMode: params.billingMode,
               modelId: params.modelId,

@@ -33,7 +33,7 @@ INSTALL_REPORT="${SHIPIT_AGENTS_INSTALL_REPORT:-/opt/shipit/agents/installed.jso
 # src/server/shared/catalogue/harnesses.ts — guarded by
 # src/server/orchestrator/agent-cli-install.test.ts, which fails the build when a
 # harness is added to the catalogue without an install mapping here.
-KNOWN_HARNESSES="claude codex"
+KNOWN_HARNESSES="claude codex opencode"
 
 # The npm scope+name prefix each harness installs under. A prefix, not an exact
 # name: both CLIs ship platform-specific optional dependencies alongside the main
@@ -43,6 +43,10 @@ harness_pkg_prefix() {
   case "$1" in
     claude) echo "@anthropic-ai/claude-code" ;;
     codex) echo "@openai/codex" ;;
+    # opencode-ai's platform binaries install as sibling packages
+    # (opencode-linux-x64, …), so the prefix "opencode" covers the shim AND
+    # every platform payload for the prune (docs/268).
+    opencode) echo "opencode" ;;
     *) return 1 ;;
   esac
 }
@@ -52,6 +56,7 @@ harness_bin() {
   case "$1" in
     claude) echo "claude" ;;
     codex) echo "codex" ;;
+    opencode) echo "opencode" ;;
     *) return 1 ;;
   esac
 }
@@ -97,6 +102,14 @@ npm ci --ignore-scripts
 # when it was selected — otherwise the package is about to be removed.
 if contains claude $selected; then
   npm rebuild @anthropic-ai/claude-code
+fi
+
+# opencode-ai is the same shape: its postinstall copies the right
+# platform-specific binary (an optionalDependency) into bin/opencode.exe, and
+# without it the CLI errors at startup ("postinstall script was not run" —
+# verified, docs/268). Only when selected.
+if contains opencode $selected; then
+  npm rebuild opencode-ai
 fi
 
 # Prune the deselected harnesses, bins first so a failed rm can't leave a dangling

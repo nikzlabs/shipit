@@ -91,6 +91,7 @@ export function serviceNameForProvider(provider: AgentId): string {
 const harnessNames: Record<AgentId, string> = {
   claude: "Claude",
   codex: "Codex",
+  opencode: "OpenCode",
 };
 
 function NoticeLine({

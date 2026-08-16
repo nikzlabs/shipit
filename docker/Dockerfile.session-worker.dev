@@ -175,11 +175,13 @@ RUN chmod 0755 /etc/shipit/agent-hooks/stop-pr-check.sh /etc/shipit/agent-hooks/
 # .codex/ holds the ChatGPT subscription login written by `codex login`
 # (feature 119). Persisting it on the credentials volume lets the session
 # container pick up the user's subscription instead of the API key.
-RUN mkdir -p /workspace /credentials /home/shipit \
+RUN mkdir -p /workspace /credentials /home/shipit /home/shipit/.local/share \
  && ln -s /credentials/.claude /home/shipit/.claude \
  && ln -sf /credentials/.claude.json /home/shipit/.claude.json \
  && ln -s /credentials/.codex /home/shipit/.codex \
- && chown -h shipit:shipit /home/shipit/.claude /home/shipit/.claude.json /home/shipit/.codex
+ && ln -s /credentials/.local/share/opencode /home/shipit/.local/share/opencode \
+ && chown -h shipit:shipit /home/shipit/.claude /home/shipit/.claude.json /home/shipit/.codex /home/shipit/.local/share/opencode \
+ && chown shipit:shipit /home/shipit/.local /home/shipit/.local/share
 
 # docs/150 — runtime HOME / AGENT_HOME (single source of truth for agentHome()).
 # Placed after all root build steps so /root/.npm build caches are unaffected.

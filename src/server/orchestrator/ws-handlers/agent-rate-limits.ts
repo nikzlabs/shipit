@@ -13,6 +13,7 @@ import { nativeServiceForHarness } from "../../shared/catalogue/index.js";
 const AGENT_LIMIT_LABELS: Record<AgentId, string> = {
   claude: "Claude",
   codex: "Codex",
+  opencode: "OpenCode",
 };
 
 /**

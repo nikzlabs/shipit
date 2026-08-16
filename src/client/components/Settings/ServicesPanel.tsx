@@ -59,7 +59,7 @@
 // the event that starts its sign-in — see the call site.
 // eslint-disable-next-line no-restricted-imports -- mount-is-the-event, see above
 import { useEffect, useRef, useState } from "react";
-import { CheckIcon, MinusIcon, PlusIcon } from "@phosphor-icons/react";
+import { CheckIcon, CircleHalfIcon, MinusIcon, PlusIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../../design-tokens.js";
 import type { AgentOption } from "../../agent-types.js";
 import type {
@@ -72,7 +72,8 @@ import { credentialModeKey } from "../../../server/shared/types/domain-types/cre
 import {
   allServices,
   harnessForNativeService,
-  harnessSupportsService,
+  harnessServiceSupport,
+  harnessSupportsMode,
   modeAllowsMultipleCredentials,
   modeCredentialFor,
   modeReportsQuota,
@@ -938,8 +939,22 @@ function HarnessSupportCell({ harness, service }: { harness: AgentOption; servic
   // `AgentOption.id` is a bare string on the wire; the cast is this file's
   // existing idiom for the same bridge (see `ModelPicker`), and an id the
   // catalogue does not know reads as unsupported rather than throwing.
-  const supported = harnessSupportsService(harness.id as AgentId, service.id);
-  const answer = `${harness.name} ${supported ? "runs" : "cannot run"} ${service.name}`;
+  //
+  // Tri-state since docs/268: a service's modes can genuinely disagree per
+  // harness (OpenCode runs Anthropic with an API key but never its
+  // subscription), and a flat existential tick would promise a pairing step 2
+  // then refuses — the collapse `catalogue.test.ts` forbids. "some" names the
+  // modes that DO work, so the answer is readable before the mode is picked.
+  const support = harnessServiceSupport(harness.id as AgentId, service.id);
+  const supported = support !== "none";
+  const runnableModes = service.modes
+    .filter((mode) => harnessSupportsMode(harness.id as AgentId, service.id, mode.kind))
+    .map((mode) => (mode.kind === "sub" ? "subscription" : "API key"))
+    .join(", ");
+  const answer =
+    support === "some"
+      ? `${harness.name} runs ${service.name} (${runnableModes} only)`
+      : `${harness.name} ${supported ? "runs" : "cannot run"} ${service.name}`;
   return (
     <span
       // The row button's own box metrics — a transparent border, `py-2`,
@@ -950,6 +965,7 @@ function HarnessSupportCell({ harness, service }: { harness: AgentOption; servic
       title={answer}
       data-testid={`add-service-support-${service.id}-${harness.id}`}
       data-supported={supported ? "yes" : "no"}
+      data-support={support}
     >
       {/*
         The answer is a glyph and nothing else, so it is also said in words, as
@@ -963,12 +979,19 @@ function HarnessSupportCell({ harness, service }: { harness: AgentOption; servic
         wherever it is read.
       */}
       <span className="sr-only">{answer}</span>
-      {supported ? (
+      {support === "all" ? (
         <CheckIcon
           aria-hidden
           size={ICON_SIZE.SM}
           weight="bold"
           className="mx-auto text-(--color-success)"
+        />
+      ) : support === "some" ? (
+        <CircleHalfIcon
+          aria-hidden
+          size={ICON_SIZE.SM}
+          weight="bold"
+          className="mx-auto text-(--color-warning)"
         />
       ) : (
         <MinusIcon aria-hidden size={ICON_SIZE.SM} className="mx-auto text-(--color-text-tertiary)" />

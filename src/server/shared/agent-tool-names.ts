@@ -52,6 +52,21 @@ export const CLAUDE_TOOL_NAMES = [
   "Write",
 ] as const;
 
+// Verified against a live `opencode run` turn (CLI 1.18.15, 2026-08-16);
+// docs/268-opencode-harness/plan.md. OpenCode tool ids are lowercase.
+export const OPENCODE_TOOL_NAMES = [
+  "bash",
+  "edit",
+  "glob",
+  "grep",
+  "read",
+  "skill",
+  "task",
+  "todowrite",
+  "webfetch",
+  "write",
+] as const;
+
 export const CODEX_TOOL_NAMES = [
   "shell",
   "commandExecution",

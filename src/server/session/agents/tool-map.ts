@@ -10,6 +10,7 @@
 import type { AgentId } from "./agent-process.js";
 import { CLAUDE_TOOL_MAP } from "./claude/tool-map.js";
 import { CODEX_TOOL_MAP } from "./codex/tool-map.js";
+import { OPENCODE_TOOL_MAP } from "./opencode/tool-map.js";
 
 export type CanonicalTool =
   | "file_read"
@@ -42,6 +43,7 @@ export type CanonicalTool =
 const AGENT_TOOL_MAPS: Record<AgentId, Record<string, CanonicalTool>> = {
   claude: CLAUDE_TOOL_MAP,
   codex: CODEX_TOOL_MAP,
+  opencode: OPENCODE_TOOL_MAP,
 };
 
 /**

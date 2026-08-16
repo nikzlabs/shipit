@@ -1,0 +1,80 @@
+/* OpenCode Light theme — warm paper white with amber accent */
+.opencode-light {
+  /* Surfaces */
+  --color-bg-primary: #faf8f2;
+  --color-bg-secondary: #f1eee4;
+  --color-bg-tertiary: #e6e2d4;
+  --color-bg-elevated: #faf8f2;
+  --color-bg-overlay: rgba(0, 0, 0, 0.5);
+  --color-bg-hover: rgba(180, 110, 20, 0.06);
+  --color-bg-active: rgba(180, 110, 20, 0.1);
+
+  /* Text */
+  --color-text-primary: #262420;
+  --color-text-secondary: #56524a;
+  --color-text-tertiary: #8c867a;
+  --color-text-inverse: #faf8f2;
+  --color-text-link: #a6640f;
+
+  /* Borders */
+  --color-border-primary: #e2ddd0;
+  --color-border-secondary: #cec8b8;
+  --color-border-focus: #b46e14;
+
+  /* Accent */
+  --color-accent: #b46e14;
+  --color-accent-hover: #9a5c0c;
+  --color-accent-text: #ffffff;
+  --color-accent-subtle: rgba(180, 110, 20, 0.1);
+
+  /* Status */
+  --color-success: #2e7d32;
+  --color-success-subtle: rgba(46, 125, 50, 0.12);
+  --color-success-border: rgba(46, 125, 50, 0.3);
+  --color-error: #c0392b;
+  --color-error-subtle: rgba(192, 57, 43, 0.12);
+  --color-warning: #9a7b0a;
+  --color-warning-subtle: rgba(154, 123, 10, 0.12);
+  --color-info: #2c6f9c;
+  --color-info-subtle: rgba(44, 111, 156, 0.12);
+
+  /* Domain-specific */
+  --color-pr: #6d4fa0;
+  --color-pr-subtle: rgba(109, 79, 160, 0.12);
+  --color-pr-border: rgba(109, 79, 160, 0.3);
+  --color-folder: #8a7a2f;
+  --color-autofix: #a6720f;
+  --color-attention: #b45309;
+  --color-attention-text: #b45309;
+
+  /* Context meter */
+  --color-context-ok: #2e7d32;
+  --color-context-mid: #9a7b0a;
+  --color-context-high: #b45309;
+  --color-context-full: #c0392b;
+
+  /* Scrollbar */
+  --color-scrollbar-thumb: rgba(140, 134, 122, 0.4);
+  --color-scrollbar-thumb-hover: rgba(86, 82, 74, 0.5);
+
+  /* Syntax highlighting (warm ink on paper) */
+  --color-syntax-base: #33302a;
+  --color-syntax-bg: #f4f1e8;
+  --color-syntax-keyword: #a6640f;
+  --color-syntax-title: #2c6f9c;
+  --color-syntax-attr: #7a6a1e;
+  --color-syntax-string: #3e7042;
+  --color-syntax-string-regexp: #7a6a1e;
+  --color-syntax-builtin: #9a7b0a;
+  --color-syntax-comment: #8c867a;
+  --color-syntax-tag: #a6640f;
+  --color-syntax-section: #2c6f9c;
+  --color-syntax-bullet: #7a6a1e;
+  --color-syntax-addition: #2e7d32;
+  --color-syntax-addition-bg: #e8f2e6;
+  --color-syntax-deletion: #c0392b;
+  --color-syntax-deletion-bg: #f6e6e2;
+
+  /* Typography */
+  --font-size-code: 13px;
+}

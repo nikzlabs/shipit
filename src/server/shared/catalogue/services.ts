@@ -136,7 +136,10 @@ export const SERVICES = [
           // `claude-env-oauth`: a subscription delivered as an env-supplied
           // OAuth token — quota-bearing, and ranked above the metered key route.
           // It is why `via` (delivery) and `kind` (billing) are separate axes.
-          { via: "string", storageEnv: "ANTHROPIC_AUTH_TOKEN" },
+          // `carriers`: the token is a Claude-Code OAuth artifact (Bearer
+          // semantics; Anthropic prohibits third-party harnesses on
+          // subscription auth — docs/268), so no other harness may carry it.
+          { via: "string", storageEnv: "ANTHROPIC_AUTH_TOKEN", carriers: ["claude"] },
         ],
         retired: [],
         models: [

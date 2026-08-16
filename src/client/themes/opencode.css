@@ -1,0 +1,80 @@
+/* OpenCode theme — inspired by opencode.ai: near-black terminal, warm amber accent */
+.opencode {
+  /* Surfaces */
+  --color-bg-primary: #0d0d0c;
+  --color-bg-secondary: #161614;
+  --color-bg-tertiary: #21211e;
+  --color-bg-elevated: #21211e;
+  --color-bg-overlay: rgba(0, 0, 0, 0.7);
+  --color-bg-hover: rgba(240, 160, 60, 0.06);
+  --color-bg-active: rgba(240, 160, 60, 0.12);
+
+  /* Text */
+  --color-text-primary: #e2ded4;
+  --color-text-secondary: #a09a8c;
+  --color-text-tertiary: #6b665c;
+  --color-text-inverse: #0d0d0c;
+  --color-text-link: #f0a03c;
+
+  /* Borders */
+  --color-border-primary: #21211e;
+  --color-border-secondary: #34332e;
+  --color-border-focus: #e0902c;
+
+  /* Accent */
+  --color-accent: #e0902c;
+  --color-accent-hover: #c87e20;
+  --color-accent-text: #0d0d0c;
+  --color-accent-subtle: rgba(224, 144, 44, 0.12);
+
+  /* Status */
+  --color-success: #78c878;
+  --color-success-subtle: rgba(120, 200, 120, 0.15);
+  --color-success-border: rgba(120, 200, 120, 0.3);
+  --color-error: #e05a4e;
+  --color-error-subtle: rgba(224, 90, 78, 0.15);
+  --color-warning: #d8b028;
+  --color-warning-subtle: rgba(216, 176, 40, 0.15);
+  --color-info: #78aede;
+  --color-info-subtle: rgba(120, 174, 222, 0.15);
+
+  /* Domain-specific */
+  --color-pr: #b294dc;
+  --color-pr-subtle: rgba(178, 148, 220, 0.15);
+  --color-pr-border: rgba(178, 148, 220, 0.3);
+  --color-folder: #cbb85e;
+  --color-autofix: #e0a030;
+  --color-attention: #f59e0b;
+  --color-attention-text: #f59e0b;
+
+  /* Context meter */
+  --color-context-ok: #78c878;
+  --color-context-mid: #d8b028;
+  --color-context-high: #e08828;
+  --color-context-full: #e05a4e;
+
+  /* Scrollbar */
+  --color-scrollbar-thumb: rgba(120, 114, 100, 0.4);
+  --color-scrollbar-thumb-hover: rgba(160, 154, 140, 0.5);
+
+  /* Syntax highlighting (warm monochrome with amber keywords) */
+  --color-syntax-base: #d4d0c6;
+  --color-syntax-bg: #111110;
+  --color-syntax-keyword: #f0a03c;
+  --color-syntax-title: #9cc8e8;
+  --color-syntax-attr: #d0c078;
+  --color-syntax-string: #a8c890;
+  --color-syntax-string-regexp: #d0c078;
+  --color-syntax-builtin: #d8b028;
+  --color-syntax-comment: #6b665c;
+  --color-syntax-tag: #f0a03c;
+  --color-syntax-section: #9cc8e8;
+  --color-syntax-bullet: #d0c078;
+  --color-syntax-addition: #78c878;
+  --color-syntax-addition-bg: #10200f;
+  --color-syntax-deletion: #e05a4e;
+  --color-syntax-deletion-bg: #200f0c;
+
+  /* Typography */
+  --font-size-code: 13px;
+}

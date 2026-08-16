@@ -44,6 +44,14 @@ fi
 # :ro, so the writability probe below skips it anyway, and nothing in this
 # container may write a plugin checkout (req 7). /plugins is handled separately
 # just below — it is a plain directory on the container filesystem, not a mount.
+# docs/268 — OpenCode's credential home. The image symlinks
+# ~/.local/share/opencode at /credentials/.local/share/opencode, and unlike the
+# single-segment .claude/.codex targets, a recursive mkdir THROUGH that dangling
+# leaf fails (EEXIST on the link, ENOENT on the stat) — so the target directory
+# must exist before the CLI's first write. Created before the chown loop so the
+# ownership handoff below covers it.
+mkdir -p /credentials/.local/share/opencode
+
 for d in /workspace /uploads /persist /session-state /dep-cache /credentials /home/shipit; do
   case "$d" in
     # Skip the workspace chown when the orchestrator bind-mounted the host source
@@ -124,6 +132,8 @@ if [ "${SHIPIT_READONLY_HOME:-0}" = "1" ]; then
     ln -sfn /credentials/.claude      /home/shipit/.claude
     ln -sfn /credentials/.claude.json /home/shipit/.claude.json
     ln -sfn /credentials/.codex       /home/shipit/.codex
+    mkdir -p /home/shipit/.local/share
+    ln -sfn /credentials/.local/share/opencode /home/shipit/.local/share/opencode
     mkdir -p /home/shipit/.npm-global /home/shipit/.npm
   '
 fi

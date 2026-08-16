@@ -1,4 +1,6 @@
 import { execFile } from "node:child_process";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import type { AgentId, ServiceRouting } from "../shared/types.js";
 import { isHarnessInstalled } from "../shared/installed-harnesses.js";
@@ -9,6 +11,8 @@ import {
 } from "../shared/spawn-routing.js";
 import { disjointCodexTokens } from "../shared/codex-token-usage.js";
 import { ensureCodexHomeInitialized } from "./agents/codex/home-init.js";
+import { opencodeModelArg, opencodeProviderConfig } from "../shared/opencode-spawn-shaping.js";
+import { parseOpencodeLine, OpencodeTurnAccumulator } from "../shared/opencode-stream.js";
 
 export interface SessionName {
   slug: string;
@@ -226,7 +230,83 @@ async function callAgentCli(prompt: string, target: SessionNamingTarget): Promis
         ...failure,
       };
     }
+    case "opencode": {
+      // Same one-shot shape as the turn path (docs/268): routing goes through
+      // ShipIt's own provider block in a temp config delivered via
+      // OPENCODE_CONFIG, `-m shipit/<model>`, `--format json` events on
+      // stdout. The prompt rides argv — naming prompts are far below the argv
+      // ceiling that pushes the turn path onto stdin.
+      const args = ["run", "--format", "json"];
+      const extraEnv: Record<string, string> = {
+        OPENCODE_DISABLE_AUTOUPDATE: "1",
+        OPENCODE_DISABLE_MODELS_FETCH: "1",
+        OPENCODE_DISABLE_LSP_DOWNLOAD: "1",
+        OPENCODE_DISABLE_SHARE: "1",
+        OPENCODE_DISABLE_DEFAULT_PLUGINS: "1",
+      };
+      let cleanupConfig: (() => void) | undefined;
+      if (serviceRouting && model) {
+        const provider = opencodeProviderConfig(serviceRouting, model);
+        if (!provider) {
+          return {
+            text: null,
+            failure: `OpenCode cannot run ${serviceRouting.serviceId} over style ${serviceRouting.style}.`,
+          };
+        }
+        const configPath = path.join(os.tmpdir(), `opencode-naming-${Date.now()}.json`);
+        fs.writeFileSync(configPath, JSON.stringify({ $schema: "https://opencode.ai/config.json", provider }));
+        extraEnv.OPENCODE_CONFIG = configPath;
+        cleanupConfig = () => {
+          try { fs.unlinkSync(configPath); } catch { /* ignore */ }
+        };
+        args.push("--model", opencodeModelArg(model));
+      } else if (model) {
+        args.push("--model", model);
+      }
+      args.push(prompt);
+      try {
+        const raw = await callCli("opencode", args, target, extraEnv);
+        if (raw.text === null) return raw;
+        const parsed = parseOpencodeJsonl(raw.text);
+        if (!parsed.usage) return { ...raw, text: parsed.text };
+        // step_finish carries no duration; the wall clock stands.
+        return {
+          text: parsed.text,
+          usage: { ...parsed.usage, durationMs: raw.usage?.durationMs ?? 0 },
+        };
+      } finally {
+        cleanupConfig?.();
+      }
+    }
   }
+}
+
+/**
+ * Reduce an `opencode run --format json` JSONL stream to naming's two needs:
+ * the final text and the turn's usage. Reuses the adapter's accumulator so the
+ * token/cost semantics stay identical to a real turn's (docs/268). A stream
+ * with no text (event loss — the known upstream bug) returns null text, which
+ * the caller records as a failure like any other empty run.
+ */
+function parseOpencodeJsonl(stdout: string): { text: string | null; usage?: SessionNameUsage } {
+  const acc = new OpencodeTurnAccumulator();
+  for (const line of stdout.split("\n")) {
+    const event = parseOpencodeLine(line);
+    if (event) acc.observe(event);
+  }
+  const text = acc.finalText.length > 0 ? acc.finalText : null;
+  if (!acc.sawStepFinish) return { text };
+  return {
+    text,
+    usage: {
+      durationMs: 0,
+      ...(acc.costUsd > 0 ? { costUsd: acc.costUsd } : {}),
+      inputTokens: acc.input,
+      outputTokens: acc.output,
+      cacheReadTokens: acc.cacheRead,
+      cacheCreateTokens: acc.cacheWrite,
+    },
+  };
 }
 
 /**
@@ -418,6 +498,7 @@ function callCli(
   binary: string,
   args: string[],
   target: SessionNamingTarget,
+  extraEnv?: Record<string, string>,
 ): Promise<CliRun> {
   const { harnessId, serviceRouting, credentialSecret, credentialRoot } = target;
   return new Promise((resolve) => {
@@ -432,6 +513,7 @@ function callCli(
     const env: Record<string, string> = {};
     for (const [k, v] of Object.entries(process.env)) if (v !== undefined) env[k] = v;
     env.HOME = namingHome(target);
+    if (extraEnv) Object.assign(env, extraEnv);
     // docs/150 / docs/252 — a run scoped to a provider-account root must not
     // inherit the orchestrator's own environment credentials: both CLIs prefer
     // the variable over the login on disk, so a host that has one configured

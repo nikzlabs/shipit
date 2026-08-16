@@ -122,7 +122,7 @@ export function saveRightTab(tab: SavedRightTab): void {
 export function getSavedAgentId(): AgentId {
   try {
     const saved = localStorage.getItem(AGENT_PREFERENCE_KEY);
-    if (saved === "claude" || saved === "codex") return saved;
+    if (saved === "claude" || saved === "codex" || saved === "opencode") return saved;
   } catch {
     // localStorage may be unavailable
   }
@@ -179,7 +179,7 @@ export function getParkedHarness(): ParkedHarness | undefined {
       if (typeof parsed !== "object" || parsed === null) return undefined;
       const value = parsed as Partial<ParkedHarness>;
       // eslint-disable-next-line no-restricted-syntax -- runtime input validation: localStorage is user-writable and outlives a build, so a value that is not a known harness id must be rejected before it is handed back as one (same check as `getSavedAgentId`)
-      if (value.agentId !== "claude" && value.agentId !== "codex") return undefined;
+      if (value.agentId !== "claude" && value.agentId !== "codex" && value.agentId !== "opencode") return undefined;
       return { agentId: value.agentId, ...(value.model ? { model: value.model } : {}) };
     },
   );
