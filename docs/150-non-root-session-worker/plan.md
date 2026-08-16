@@ -432,7 +432,18 @@ Rationale for *where* and *what*:
 
 - **Global config, not `-c`.** Git honors `safe.directory` **only** from system
   or global config — never from a repo-local config or a `-c safe.directory=`
-  command-line override (its own anti-spoofing rule). So it must live in
+  command-line override (its own anti-spoofing rule).
+
+  **Correction (2026-08-16, docs/266 E2 / planning#403).** The repo-local half is
+  right and is what the docs/266 design rests on; the `-c` half is **wrong**.
+  Measured against git 2.39.5 with `GIT_TEST_ASSUME_DIFFERENT_OWNER=1`: git's
+  *protected configuration* scope is system + global + **command line**, so
+  `git -c safe.directory=*` and the `GIT_CONFIG_COUNT` environment protocol are
+  both honoured. It does not change this feature's fix — the entry still belongs
+  in `GIT_CONFIG_GLOBAL` for every reason below — but the claim was inherited
+  into docs/266 as a security property, so it is corrected at the source too.
+
+  So it must live in
   `GIT_CONFIG_GLOBAL`, which every orchestrator git invocation already inherits
   (`GitManager`/`simpleGit`, the `git-utils` helpers that forward `process.env`,
   and the `gh`/PR path which shells `git`). One write covers all of them.
