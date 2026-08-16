@@ -1374,6 +1374,17 @@ const MIGRATIONS: Migration[] = [
       );
     `);
   },
+  // nikzlabs/shipit#2350 — `consumeUnreportedBugOutcomes` runs on EVERY user turn to
+  // ask "did the user resolve a bug-report card since last time?", and for
+  // almost every turn of almost every session the answer is no. A partial index
+  // makes that answer O(1) instead of a scan over the session's whole message
+  // history, which grows without bound. Partial (`WHERE bug_report IS NOT NULL`)
+  // so it indexes only the handful of rows that are cards, not every message.
+  (db) => {
+    db.exec(
+      "CREATE INDEX IF NOT EXISTS idx_messages_bug_report ON messages(session_id) WHERE bug_report IS NOT NULL",
+    );
+  },
 ];
 
 /**

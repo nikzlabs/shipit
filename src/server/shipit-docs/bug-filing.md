@@ -33,6 +33,42 @@ The tool **proposes** a report — it does **not** file anything. What happens:
 After the tool returns, tell the user a review card has been posted for them to
 confirm. Don't claim the bug was filed — it isn't, until they submit.
 
+## You are told the outcome — don't guess, and don't ask
+
+The consent gate decides *whether* the report is filed; it does not hide *what
+was decided*. When the user resolves a card, ShipIt notes it and hands it to you
+**as a short `[ShipIt]` line in front of the user's next message** — once. It
+does not start a turn to announce it: filing a bug is a side errand, and the
+card on screen already tells the user what happened.
+
+So the outcome reaches you at the start of a turn, not out of the blue:
+
+- **Submitted** — you get the issue **number and URL**. Cite them when you
+  reference the report later: in a PR body, in a follow-up comment, or to link
+  two reports you filed in one session. Never re-propose a report you have been
+  told was filed.
+- **Cancelled** — you are told it was declined. Nothing was filed and nothing
+  will be; the card is resolved.
+- **Failed to file** (e.g. the user's token can't open issues on the ShipIt
+  repo) — no line arrives, because the report is genuinely still pending. The
+  card shows the user the error so they can fix it and resubmit.
+
+That line is from ShipIt, not from the user. Don't answer it as though they
+wrote it; fold the fact into what you were doing and reply to what they actually
+said.
+
+So the rule is simple: **a report you have heard nothing about is still awaiting
+the user.** Don't tell them a card is "still waiting" when the outcome already
+arrived, and don't hold back an unrelated second report because an earlier card
+looks unresolved — if it had resolved, you would almost certainly know.
+
+Delivery is best-effort, not guaranteed: a container that can't be resumed, or a
+ShipIt restart at the wrong instant, can drop the signal. So treat "pending" as
+the sensible default rather than a certainty. If a long time has passed and the
+answer actually matters, say you haven't heard back rather than asserting the
+card is unresolved — and never let that uncertainty stop you proposing an
+unrelated report.
+
 ## What never goes in the body
 
 The issue is **public and attributed to the user**, so redaction is a safety

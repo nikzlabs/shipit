@@ -52,6 +52,24 @@ describe("bug-report-store (docs/164 persistence)", () => {
     expect(useBugReportStore.getState().cards.c1?.phase).toBe("draft");
   });
 
+  it("(nikzlabs/shipit#2350) a dismissal is terminal and never overwrites a filed card", () => {
+    useBugReportStore.getState().upsertCard(draft("c1"));
+    useBugReportStore.getState().setDismissed("c1");
+    expect(useBugReportStore.getState().cards.c1?.phase).toBe("dismissed");
+
+    useBugReportStore.getState().seedCards([
+      {
+        ...draft("c2"),
+        phase: "filed",
+        issueNumber: 1234,
+        issueUrl: "https://github.com/nikzlabs/shipit/issues/1234",
+      },
+    ]);
+    // A replayed / stale dismissal must not undo a success.
+    useBugReportStore.getState().setDismissed("c2");
+    expect(useBugReportStore.getState().cards.c2?.phase).toBe("filed");
+  });
+
   it("(d) a failed submission drops the card back to an editable draft", () => {
     useBugReportStore.getState().upsertCard(draft("c1"));
     useBugReportStore.getState().setFailed("c1", "Reconnect GitHub.", true);

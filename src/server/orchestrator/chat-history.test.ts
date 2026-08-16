@@ -1523,4 +1523,71 @@ describe("ChatHistoryManager", () => {
     const mgr = new ChatHistoryManager(dbManager);
     expect(mgr.updateNonTurnFailureCard("sess-1", "missing", { dismissedAt: "x" })).toBe(false);
   });
+
+  describe("consumeUnreportedBugOutcomes (nikzlabs/shipit#2350)", () => {
+    const card = (over: Record<string, unknown>) => ({
+      cardId: "c1",
+      phase: "draft",
+      title: "Preview won't reload",
+      body: "b",
+      stage2Ran: true,
+      producer: "session",
+      ...over,
+    });
+
+    it("returns a resolved card once, then never again", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("s1", {
+        role: "assistant",
+        text: "",
+        bugReport: card({ phase: "filed", issueNumber: 7, issueUrl: "u" }) as never,
+      });
+
+      const first = mgr.consumeUnreportedBugOutcomes("s1");
+      expect(first).toHaveLength(1);
+      expect(first[0].issueNumber).toBe(7);
+      // The mark is durable, so a second turn — or a restart — gets nothing.
+      expect(mgr.consumeUnreportedBugOutcomes("s1")).toHaveLength(0);
+      expect(new ChatHistoryManager(dbManager).consumeUnreportedBugOutcomes("s1")).toHaveLength(0);
+    });
+
+    it("ignores cards that are not resolved", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("s1", { role: "assistant", text: "", bugReport: card({ phase: "draft" }) as never });
+      mgr.append("s1", {
+        role: "assistant",
+        text: "",
+        bugReport: card({ cardId: "c2", phase: "filing" }) as never,
+      });
+      expect(mgr.consumeUnreportedBugOutcomes("s1")).toHaveLength(0);
+    });
+
+    it("reports every card resolved since the last turn, not just the newest", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("s1", {
+        role: "assistant",
+        text: "",
+        bugReport: card({ phase: "filed", issueNumber: 1, issueUrl: "u1" }) as never,
+      });
+      mgr.append("s1", {
+        role: "assistant",
+        text: "",
+        bugReport: card({ cardId: "c2", phase: "dismissed" }) as never,
+      });
+      // The single last-write-wins `pendingAgentNotice` slot could not do this,
+      // which is why the flag lives on the card.
+      expect(mgr.consumeUnreportedBugOutcomes("s1").map((c) => c.cardId)).toEqual(["c1", "c2"]);
+    });
+
+    it("scopes to the session", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.append("s2", {
+        role: "assistant",
+        text: "",
+        bugReport: card({ phase: "filed", issueNumber: 9, issueUrl: "u" }) as never,
+      });
+      expect(mgr.consumeUnreportedBugOutcomes("s1")).toHaveLength(0);
+      expect(mgr.consumeUnreportedBugOutcomes("s2")).toHaveLength(1);
+    });
+  });
 });

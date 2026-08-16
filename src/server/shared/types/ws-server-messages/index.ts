@@ -104,6 +104,7 @@ import type {
   WsBugReportCard,
   WsBugReportFiled,
   WsBugReportFailed,
+  WsBugReportDismissed,
   WsEgressPromptCard,
   WsEgressPromptResolved,
   WsPermissionRequestCard,
@@ -161,6 +162,7 @@ export type WsServerMessage =
   | WsBugReportCard
   | WsBugReportFiled
   | WsBugReportFailed
+  | WsBugReportDismissed
   | WsEgressPromptCard
   | WsEgressPromptResolved
   | WsPermissionRequestCard

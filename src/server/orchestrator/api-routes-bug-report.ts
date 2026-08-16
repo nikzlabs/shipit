@@ -115,7 +115,7 @@ export async function registerBugReportRoutes(app: FastifyInstance, deps: ApiDep
           cardId: compiled.cardId,
           stage2Ran: compiled.stage2Ran,
           message:
-            "A redacted bug-report card has been posted in the chat. The user must review and confirm it before anything is sent — nothing has been filed yet.",
+            "A redacted bug-report card has been posted in the chat. The user must review and confirm it before anything is sent — nothing has been filed yet. Their decision will reach you as a short [ShipIt] line in front of their next message (the issue number and URL on confirm, or a decline on cancel), so don't ask them how the card was resolved.",
         };
       } catch (err) {
         reply.code(500).send({ error: `Failed to compile bug report: ${getErrorMessage(err)}` });

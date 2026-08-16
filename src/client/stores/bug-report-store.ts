@@ -10,7 +10,7 @@
 
 import { create } from "zustand";
 
-export type BugReportPhase = "draft" | "filing" | "filed" | "failed";
+export type BugReportPhase = "draft" | "filing" | "filed" | "failed" | "dismissed";
 
 export interface BugReportCardState {
   cardId: string;
@@ -52,6 +52,11 @@ interface BugReportStore {
   setFiled: (cardId: string, issueNumber: number, issueUrl: string) => void;
   /** Terminal failure (back to an editable draft so the user can retry). */
   setFailed: (cardId: string, message: string, scopeError?: boolean) => void;
+  /**
+   * Terminal decline (nikzlabs/shipit#2350). Never overwrites a `filed` card — a stale
+   * `bug_report_dismissed` replay must not undo a success.
+   */
+  setDismissed: (cardId: string) => void;
   reset: () => void;
 }
 
@@ -102,6 +107,12 @@ export const useBugReportStore = create<BugReportStore>((set) => ({
               },
             },
           }
+        : s,
+    ),
+  setDismissed: (cardId) =>
+    set((s) =>
+      s.cards[cardId] && s.cards[cardId].phase !== "filed"
+        ? { cards: { ...s.cards, [cardId]: { ...s.cards[cardId], phase: "dismissed" } } }
         : s,
     ),
   reset: () => set({ cards: {} }),

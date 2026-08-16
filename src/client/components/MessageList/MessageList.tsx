@@ -73,6 +73,7 @@ export function MessageList({
   onRequestRewindPreview,
   onRewindAtGap,
   onSubmitBugReport,
+  onDismissBugReport,
   onResolvePermission,
   onEgressDecision,
   onUndoIssueWrite,
@@ -94,6 +95,7 @@ export function MessageList({
   onRequestRewindPreview?: (gapPosition: number, action: RewindGapAction) => void;
   onRewindAtGap?: (gapPosition: number, action: RewindGapAction, sessionName?: string) => void;
   onSubmitBugReport?: (cardId: string, title: string, body: string) => void;
+  onDismissBugReport?: (cardId: string) => void;
   /** docs/193 — answer a permission request (approve/deny + remember). */
   onResolvePermission?: (requestId: string, behavior: "allow" | "deny", remember?: boolean) => void;
   /** docs/172 — resolve an egress allow-once card (allow-once / add / deny). */
@@ -315,6 +317,7 @@ export function MessageList({
     onAnswerQuestion,
     onSendFollowUp,
     onSubmitBugReport,
+    onDismissBugReport,
     onResolvePermission,
     onEgressDecision,
     onUndoIssueWrite,

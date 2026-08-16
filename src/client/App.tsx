@@ -2099,6 +2099,7 @@ export default function App() {
             onSubmitBugReport={(cardId, title, body) =>
               send({ type: "submit_bug_report", cardId, title, body })
             }
+            onDismissBugReport={(cardId) => send({ type: "dismiss_bug_report", cardId })}
             onResolvePermission={(requestId, behavior, remember) =>
               send({
                 type: "resolve_permission",

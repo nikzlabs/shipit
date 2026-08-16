@@ -69,6 +69,14 @@ import { markMessagesCommitted, type CommittedBodyIds } from "./transcript-proje
 export interface InProgressPersister {
   replaceInProgress(sessionId: string, messages: PersistedMessage[]): void;
   append(sessionId: string, message: PersistedMessage): unknown;
+  /**
+   * nikzlabs/shipit#2350 — whether a turn's rows are still open for this session.
+   * `persistCardTransition` needs the real answer, not `runner.running`'s
+   * approximation of it; see that function. Optional so partial test stubs and
+   * `emitChatCard`-only callers need not implement it — omitting it keeps the
+   * previous `running`-only behaviour rather than changing it.
+   */
+  hasInProgress?(sessionId: string): boolean;
 }
 
 /**
@@ -380,7 +388,41 @@ export function persistCardTransition(
   patchRecorded: (m: PersistedMessage) => PersistedMessage,
   patchDb: () => void,
 ): boolean {
-  const patchedInFlight = runner.running && updateRecordedCard(runner, matches, patchRecorded);
+  // `running` alone is NOT the right test, and this is the correction
+  // (nikzlabs/shipit#2350 review). Both send handlers set `running = true` BEFORE
+  // `runAgentWithMessage`, while `resetRunnerTurnState` — which clears
+  // `recordedCards` — runs later, inside `executeAgentTurn`, behind a real await
+  // (`applyPreTurnReset` does git work on the merged-session path). In that
+  // window `running` is true but `recordedCards` still holds the PREVIOUS,
+  // already-finalized turn's snapshot. Patching it there and calling
+  // `persistTurnInProgress` revives that finished turn as `in_progress=1` rows,
+  // which the new turn's first `replaceInProgress` then deletes wholesale — so
+  // the user's decision is silently lost: they saw the card resolve (optimistic
+  // collapse + WS echo), a reload shows an editable draft again, and nothing
+  // downstream is ever told.
+  //
+  // The honest test is whether a turn actually OWNS the in-progress set. A turn
+  // that recorded this card has already flushed `in_progress=1` rows containing
+  // it (`emitChatCard` records AND persists in one call), so rows-exist is
+  // exactly the condition — and in the startup window the previous turn was
+  // finalized, so there are none and we correctly take the DB branch.
+  // Defaults to TRUE when the persister cannot answer, which is deliberate and
+  // the safe direction: a caller without the probe keeps the previous
+  // `running`-only behaviour, so it is never made WORSE than before. Defaulting
+  // to false would send every such caller down the DB branch and throw away the
+  // in-flight clobber protection docs/164/172/177/193 all depend on — trading a
+  // narrow window for a wide one. The probe only ever NARROWS the in-flight
+  // branch, never widens it.
+  //
+  // In PRODUCTION the default never fires: optional-chaining tests the runtime
+  // value, not the declared type, and every real caller passes a
+  // `ChatHistoryManager`, which implements it — including the two that declare a
+  // narrowed persister interface (`NonTurnFailurePersister`,
+  // `ConsultCardPersister`). The optionality exists for partial test stubs.
+  const turnOwnsInProgressRows =
+    runner.running && (persist.chatHistoryManager.hasInProgress?.(persist.sessionId) ?? true);
+  const patchedInFlight =
+    turnOwnsInProgressRows && updateRecordedCard(runner, matches, patchRecorded);
   if (patchedInFlight) {
     persistTurnInProgress(persist.chatHistoryManager, runner, persist.sessionId);
     // Same replay-cursor advance `emitChatCard` performs, and for the same

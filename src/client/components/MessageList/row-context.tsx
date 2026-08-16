@@ -26,6 +26,7 @@ export interface RowHandlers {
   onAnswerQuestion?: AnswerQuestionFn;
   onSendFollowUp?: (text: string) => boolean;
   onSubmitBugReport?: (cardId: string, title: string, body: string) => void;
+  onDismissBugReport?: (cardId: string) => void;
   onResolvePermission?: (requestId: string, behavior: "allow" | "deny", remember?: boolean) => void;
   onEgressDecision?: (cardId: string, host: string, action: "allow-once" | "add" | "deny") => void;
   onUndoIssueWrite?: (cardId: string) => void;

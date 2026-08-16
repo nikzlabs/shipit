@@ -322,3 +322,91 @@ describe("dispatched turn — the parked sync notice (docs/221, nikzlabs/shipit#
     expect(promptSeen).toBe("keep going");
   });
 });
+
+describe("dispatched turn — a resolved bug-report card (nikzlabs/shipit#2350)", () => {
+  let runner: SessionRunner;
+  afterEach(() => { runner?.dispose({ force: true }); vi.restoreAllMocks(); });
+
+  const FILED = [{
+    cardId: "c1",
+    phase: "filed" as const,
+    title: "Preview won't reload",
+    body: "b",
+    stage2Ran: true,
+    producer: "session" as const,
+    issueNumber: 1234,
+    issueUrl: "https://github.com/nikzlabs/shipit/issues/1234",
+  }];
+
+  /**
+   * An SDK click and a `shipit session message` are the user speaking, so a
+   * session driven entirely programmatically must be told the outcome too —
+   * otherwise it sits pending forever, despite the tool description promising
+   * unconditionally that the agent will be told.
+   */
+  it("prefixes the prompt with the outcome and consumes it exactly once", async () => {
+    const agents: FakeAgent[] = [];
+    const { deps } = makeDispatchTurnDeps(agents, []);
+    let remaining = FILED;
+    const consumed: string[] = [];
+    deps.consumeBugOutcomes = (sessionId) => {
+      consumed.push(sessionId);
+      const value = remaining;
+      remaining = []; // read-and-mark, like the real transactional consume
+      return value;
+    };
+    let promptSeen = "";
+    deps.buildRunParams = vi.fn(async (_sid, _agentId, prompt) => {
+      promptSeen = prompt;
+      return { prompt, cwd: "/tmp/s1" } as never;
+    });
+
+    runner = makeRunner();
+    runner.setSystemTurnDeps(deps);
+    runner.dispatch(testDispatch({ text: "carry on" }));
+    await flushTurn();
+
+    expect(consumed).toEqual(["s1"]);
+    expect(promptSeen).toContain("FILED as issue #1234");
+    expect(promptSeen).toContain("carry on");
+  });
+
+  it("does NOT consume it for a system turn — that is ShipIt talking to itself", async () => {
+    const agents: FakeAgent[] = [];
+    const { deps } = makeDispatchTurnDeps(agents, []);
+    const consumed: string[] = [];
+    deps.consumeBugOutcomes = (sessionId) => { consumed.push(sessionId); return FILED; };
+    let promptSeen = "";
+    deps.buildRunParams = vi.fn(async (_sid, _agentId, prompt) => {
+      promptSeen = prompt;
+      return { prompt, cwd: "/tmp/s1" } as never;
+    });
+
+    runner = makeRunner();
+    runner.setSystemTurnDeps(deps);
+    // A CI fix / merge wake must neither be handed the status line nor burn the
+    // outcome the user's own next turn is owed.
+    runner.dispatch(testDispatch({ text: "fix CI", systemTurn: true }));
+    await flushTurn();
+
+    expect(consumed).toEqual([]);
+    expect(promptSeen).not.toContain("FILED as issue");
+  });
+
+  it("is a no-op when the runtime wires no consumer (minimal setups)", async () => {
+    const agents: FakeAgent[] = [];
+    const { deps } = makeDispatchTurnDeps(agents, []);
+    let promptSeen = "";
+    deps.buildRunParams = vi.fn(async (_sid, _agentId, prompt) => {
+      promptSeen = prompt;
+      return { prompt, cwd: "/tmp/s1" } as never;
+    });
+
+    runner = makeRunner();
+    runner.setSystemTurnDeps(deps);
+    runner.dispatch(testDispatch({ text: "keep going" }));
+    await flushTurn();
+
+    expect(promptSeen).toBe("keep going");
+  });
+});

@@ -106,6 +106,55 @@ export async function compileBugReport(args: {
   };
 }
 
+/**
+ * The consent gate swallowed its own result (nikzlabs/shipit#2350): the agent was told a
+ * card had been posted and then never told what the user decided, so for the
+ * rest of the session it described a filed report as pending and grew reluctant
+ * to propose a second one. Consent and reporting are separable — the user still
+ * decides, and the agent is still told what they decided.
+ *
+ * The outcome is delivered as a PREFIX on the user's next turn, not as a turn of
+ * its own. Filing a bug is a side errand; waking the session to announce it
+ * would interrupt whatever the user and the agent are actually doing, to say
+ * something the card on screen already says. So the fact waits, costs nothing,
+ * and arrives at the only moment it can matter — when the agent next speaks.
+ *
+ * The text must be SELF-DESCRIBING: an unresolved card can sit for days, so by
+ * delivery time the turn that proposed it may be long out of the agent's
+ * context. It also states plainly that it is a ShipIt-generated status line, not
+ * something the user typed, since it rides in front of the user's own words.
+ *
+ * Returns "" when there is nothing to report, so the caller can concatenate it
+ * unconditionally.
+ */
+export function buildBugOutcomeNotice(
+  outcomes: {
+    title: string;
+    // A union, not `string`: with a bare `string` every non-`"filed"` phase
+    // renders as DECLINED, which is only harmless as long as the caller happens
+    // to filter. Let the compiler carry that instead.
+    phase: "filed" | "dismissed";
+    issueNumber?: number | undefined;
+    issueUrl?: string | undefined;
+  }[],
+): string {
+  const lines = outcomes.map((o) => {
+    // The title is a single-line field in the card, but the WS message is not
+    // bound by the input element — flatten it so a multi-line title cannot
+    // forge extra lines inside a block the agent reads as ShipIt's own.
+    const title = o.title.replace(/\s+/g, " ").trim().slice(0, 200);
+    return o.phase === "filed"
+      ? `- "${title}" — FILED as issue #${o.issueNumber} (${o.issueUrl}). Cite that number/URL if you reference the report later; never re-propose it.`
+      : `- "${title}" — DECLINED by the user. Nothing was filed and nothing will be; do not re-propose it unless they ask.`;
+  });
+  if (lines.length === 0) return "";
+  return [
+    "[ShipIt] Since your last turn, the user resolved a bug-report card you proposed:",
+    ...lines,
+    "This is a status line from ShipIt, not part of the user's message. Those cards are resolved and block nothing — no acknowledgement is needed unless it changes what you were about to do.",
+  ].join("\n");
+}
+
 export interface FileBugReportResult {
   success: boolean;
   url?: string;
