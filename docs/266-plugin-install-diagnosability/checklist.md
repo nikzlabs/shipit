@@ -49,4 +49,18 @@
 - [x] `shipit-docs/plugins.md` — `--json` on both verbs, the `commit` caveat,
       and the plugin-author section corrected where it said the consumer cannot
       see a successful install's log at all
-- [ ] Independent review of requirement 11's slice
+- [x] Independent review of requirement 11's slice — run ab815522
+- [x] Review findings applied: a `skipped-stamp` for the SAME commit carries the
+      output forward instead of erasing it on the re-stage path (finding 1); the
+      tail is captured on the timeout and cancellation paths too, so a hung
+      install's partial output survives (finding 3); the docs stop saying "the
+      last 40 lines", which is per command and not per run (finding 2); guards
+      added for the line bound, for `status`'s projection carrying the output,
+      and for the carry-forward rules (finding 5).
+      **Finding 4 not acted on**: `readInstallRecord` type-checks `output` but
+      does not re-clip it, so the length bound is enforced where ShipIt writes
+      rather than where the text lands. Same is already true of `detail`; the
+      file is in the session state dir, which the agent container mounts
+      read-only, so there is no writer to defend against — and duplicating the
+      bound into a second module to defend a path nothing can reach costs more
+      than it buys.

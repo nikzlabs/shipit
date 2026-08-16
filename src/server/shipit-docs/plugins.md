@@ -234,9 +234,15 @@ shipit plugin refresh --json     # the same rows, plus the last install
 outcome, and **the tail of what the install printed — on a successful install as
 well as a failed one**. That is the answer to "it says it installed, so what did
 it actually write?", and no other surface a session can reach holds it. It is
-JSON-only because it is up to 40 lines of the plugin's own output: a diagnostic
-you ask for, not a thing printed at you on every refresh. `shipit plugin status
---json` carries the same object.
+JSON-only because it is the plugin's own output: a diagnostic you ask for, not a
+thing printed at you on every refresh. `shipit plugin status --json` carries the
+same object.
+
+**It is a tail, not a log.** The last 40 lines of each install command, clipped
+to 2000 characters over the whole run, with a leading `…` when anything was
+dropped. So read it for what the install *claimed* to do, and do not conclude
+from its absence that an install printed nothing — a skipped install ran no
+command at all, and one carried forward from a re-stage says so in its outcome.
 
 Read the `commit` on it before drawing a conclusion. It is the last install
 **for that repository**, which is not always the version that is live — a
@@ -588,7 +594,7 @@ the Plugins tab shows it, `shipit plugin refresh` reprints it, and
 `shipit plugin status` still names it long after the round that failed. The hard
 case is the one this recipe is for — an install that **succeeded** and left the
 wrong tree. Your consumer can read what it printed (`shipit plugin status
---json`), and that is the last 40 lines of a build that thought it worked: it
+--json`), and that is the tail of a build that thought it worked: it
 shows what the install *claimed*, not which precondition your code then found
 missing. Your runtime error message is still the diagnostic that names it:
 

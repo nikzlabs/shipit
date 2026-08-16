@@ -79,9 +79,16 @@ export interface PluginInstallRecord {
    * `output` meaning one thing whatever the outcome — a reader that had to parse
    * it out of a prose reason is a reader that will get it wrong.
    *
-   * Absent when nothing ran (`skipped-stamp`, `skipped-store`, `not-run`), which
-   * is itself part of the answer: no output because no command, not because it
-   * was lost.
+   * Absent when nothing ran and nothing before it did either — which is itself
+   * part of the answer: no output because no command, not because it was lost.
+   *
+   * **One exception, and it is the reason `outcome` and `output` must be read
+   * together**: a `skipped-stamp` carries forward the output of the install that
+   * BUILT the layer it is reusing, for the same commit. Without it the record
+   * would erase its own artifact on the re-stage path (a succeeded install whose
+   * publish failed, re-staged and skipped). It is never carried across commits,
+   * and never onto `skipped-store`, whose tree was built somewhere this output
+   * does not describe.
    */
   output?: string;
 }
@@ -178,7 +185,8 @@ export function describeInstallRecord(record: PluginInstallRecord | null): strin
     case "failed":
       return `install FAILED for ${commit} at ${record.at}${detail}`;
     case "skipped-stamp":
-      return `install skipped for ${commit} (this version's layer was already installed)${detail}`;
+      return `install skipped for ${commit} (this version's layer was already installed)${detail}${
+        record.output ? " — `--json` has what the install that built that layer printed" : ""}`;
     case "skipped-store":
       return `install skipped for ${commit} (shared dependency store hit — nothing was run)${detail}`;
     case "not-run":

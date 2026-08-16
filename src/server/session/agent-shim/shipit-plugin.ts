@@ -125,7 +125,8 @@ With no name, every declared repository is refreshed.
 --json adds what the last install for each repository did — its outcome and the
 tail of what it PRINTED, on a successful install as well as a failed one. That
 is the one thing about a plugin no other surface shows you, and the answer to
-"it says it installed, so what did it write?".
+"it says it installed, so what did it write?". It is a bounded tail, so read it
+for what the install claimed to do rather than as a complete log.
 
 --force re-runs the install for the version ALREADY live, for one named
 repository. Use it when a version is live but unusable: it discards what the

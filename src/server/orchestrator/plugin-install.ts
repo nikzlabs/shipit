@@ -75,7 +75,7 @@ import {
 } from "./plugin-egress.js";
 import { PLUGIN_CLI_LABEL, sessionPathMount, type MountSpec } from "./plugin-cli-run.js";
 import { DEP_CACHE_CONTAINER_PATH } from "../shared/fs-constants.js";
-import { writeInstallRecord, type PluginInstallOutcome } from "./plugin-install-record.js";
+import { readInstallRecord, writeInstallRecord, type PluginInstallOutcome } from "./plugin-install-record.js";
 
 /**
  * Where the merged checkout is mounted inside the install container. The
@@ -269,7 +269,26 @@ async function runInstallOnce(
     const recorded = job.force ? null : readStamp(stampPath);
     if (recorded?.stamp === stamp && pinsResolve(deps.depStoreDir, recorded.basePins)) {
       console.log(`[plugins] ${job.repoName}: install already done for ${job.commit.slice(0, 9)}`);
-      record("skipped-stamp", "this version's writable layer was already installed for these inputs");
+      // planning#416 (review finding) — the output of the install that BUILT
+      // this layer is carried forward, and only here. The record is
+      // last-writer-wins, so without this the re-stage path erases the very
+      // artifact it exists to retain, at the moment the version goes live: an
+      // install succeeds for C and records what it printed, publish then fails,
+      // C re-stages, hits this stamp, and would record `skipped-stamp` with no
+      // output — over a layer that same install produced.
+      //
+      // Guarded on the commit, and NOT applied to the store hit below: a stamp
+      // hit reuses the exact tree the recorded output describes, while a store
+      // hit mounts a tree built somewhere else, which that output does not
+      // describe. The outcome stays `skipped-stamp` either way, so "it ran" and
+      // "it did not run this time" remain distinguishable.
+      const previous = readInstallRecord(pluginsRoot(deps.stateDir), job.repoName);
+      const carried = previous?.commit === job.commit ? previous.output : undefined;
+      record(
+        "skipped-stamp",
+        "this version's writable layer was already installed for these inputs",
+        carried,
+      );
       return { ok: true, ...(recorded.basePins.length > 0 ? { basePins: recorded.basePins } : {}) };
     }
 
@@ -635,16 +654,18 @@ async function runInstallContainer(
   try {
     await container.start();
     const code = await waitForContainerExit(container, timeoutMs, job.isCancelled);
-    // Neither of these two has an exit code, and both may leave the container
-    // running — so there is no completed output to read, and the reason says
-    // what happened instead. Unchanged from before planning#416.
+    // The tail is read on EVERY outcome, including the two that have no exit
+    // code: `waitForContainerExit` kills and reaps before returning either of
+    // them, so there is a stopped container to read, and an install that hung
+    // after printing half a build is exactly the one whose partial output is
+    // worth having. Read before the `finally` removes the container.
+    const output = await logTail(container);
     if (code === "timeout") {
-      return { failure: `did not finish within ${Math.round(timeoutMs / 1000)}s`, output: "" };
+      return { failure: `did not finish within ${Math.round(timeoutMs / 1000)}s`, output };
     }
     if (code === "cancelled") {
-      return { failure: "was stopped because the session went away", output: "" };
+      return { failure: "was stopped because the session went away", output };
     }
-    const output = await logTail(container);
     if (code !== 0) return { failure: `exited ${code}${output ? `:\n${output}` : ""}`, output };
     return { failure: null, output };
   } finally {
