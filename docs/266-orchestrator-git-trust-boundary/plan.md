@@ -26,11 +26,19 @@ the payload's reach; it is not yet fail-closed (E2), a project's hooks still do
 not fire (E4), and cross-session workspace access remains (req 13).
 
 One correction to §5 from building it: the sequence says "convert the five raw
-sites". There are **13** raw `safeSimpleGit(workspaceDir)` sites across 8 files,
-plus the raw process spawns. That count is why the implementation decides by
-**tree ownership inside `safeSimpleGit`** rather than threading a uid through
-call sites — a hand-kept list is stale at the fourteenth, and the failure is
-silent.
+sites", and a count is the wrong unit. **Two shapes reach git.** The
+`safeSimpleGit` shape is a choke point — deciding by *tree ownership* inside it
+covers every call site including ones nobody has written yet, which is why the
+implementation went there rather than threading a uid through call sites. The
+raw `spawn` / `execFile` shape has no choke point at all, so each site is
+converted by hand and E2's scanner is what turns an omission into a red build
+instead of a silent root spawn.
+
+An earlier version of this paragraph gave a number ("13"). Every gap found
+since has been the shape that number did not count — `git-lfs.ts`'s
+`git lfs pull`, `getFileBufferAtCommit`, the fork clone — so the number was not
+merely stale, it pointed at the wrong set. Stated as a rule here, and enforced
+mechanically by the scanner rule in planning#403.
 
 ## 1. The shape of the problem
 

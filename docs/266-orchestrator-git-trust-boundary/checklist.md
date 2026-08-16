@@ -7,8 +7,11 @@ Build sequence from [plan.md](./plan.md) §5. Requirements are cited as `(req N)
 - [x] **E1 — orchestrator git on a session workspace runs as the tree's owner**
       (reqs 1, 2, 3, 11). `shared/git-tree-uid.ts` decides by **ownership**, the
       same fact git's own CVE-2022-24765 check tests, applied inside
-      `safeSimpleGit` so all ~189 `createGitManager` call sites and all 13 raw
-      `safeSimpleGit(workspaceDir)` sites are covered without a hand-kept list.
+      `safeSimpleGit` so every `createGitManager` call site and every raw
+      `safeSimpleGit(workspaceDir)` site is covered without a hand-kept list —
+      **that choke point is one of the two shapes that reach git**, and the
+      other (a raw `spawn`/`execFile` of the binary) has no choke point, so it
+      is converted site by site and held there by E2's scanner.
       Gated on `process.getuid() === 0`, so the session worker, local mode and
       every test are unchanged.
 - [x] The two raw git spawns that touch a session workspace converted —

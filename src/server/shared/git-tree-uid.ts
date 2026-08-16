@@ -28,10 +28,10 @@
  *
  * The obvious implementations are worse:
  *
- *   - **Thread a uid through every call site.** There are ~189 `createGitManager`
- *     calls plus 13 raw `safeSimpleGit(workspaceDir)` sites across 8 files. A
- *     hand-converted list is stale the moment someone adds the fourteenth, and
- *     the failure is silent.
+ *   - **Thread a uid through every call site.** `createGitManager` alone has
+ *     ~189 callers, with raw `safeSimpleGit(workspaceDir)` sites beside them. A
+ *     hand-converted list is stale the moment someone adds one more, and the
+ *     failure is silent.
  *   - **Match the path against the sessions root.** Needs configuration this
  *     module cannot see, and it re-answers a question the filesystem already
  *     answers.
