@@ -173,10 +173,22 @@ export function createWarmPool(
         // snapshot this clone was cut from (docs/194).
         await syncLocalDefaultBranchToOrigin(workspaceDir);
         // docs/231 — pull Git LFS content. Must come after the `checkout -b`
-        // above (which re-writes pointer stubs into the worktree) and before the
-        // chown below (the pull writes files as root). Warming happens off the
-        // user's critical path, so this is the cheapest place to absorb the
-        // transfer for asset-heavy repos.
+        // above, which re-writes pointer stubs into the worktree. Warming
+        // happens off the user's critical path, so this is the cheapest place to
+        // absorb the transfer for asset-heavy repos.
+        //
+        // planning#412 — this used to add "and before the chown below (the pull
+        // writes files as root)". That reason DIED with docs/266 E1 and the
+        // sentence outlived it. `cloneFromCache` hands the tree to the session
+        // uid before returning (`repo-git.ts:320`), so the `checkout -b` above
+        // — which goes through `safeSimpleGit` — already drops and writes
+        // worker-owned stubs, and the pull drops to the same identity. Nothing
+        // here is written as root any more.
+        //
+        // The stale half of that sentence was read as current fact by two
+        // sessions and nearly produced a reordering of all four LFS call sites,
+        // so it is worth being explicit: the ordering constraint that remains is
+        // "after the checkout", not "before the chown".
         await materializeLfsWithWarning(workspaceDir, repoUrl, (message) =>
           sseBroadcast("error", { message }),
         );

@@ -240,10 +240,21 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
       deps.sseBroadcast("error", { message }),
     );
     // docs/150 §7 addendum (planning#147): the fetch/rollback/branch-realign git ops
-    // above run as the root orchestrator against the (already-booted) warm
-    // clone. The `rollback` is a `git reset --hard`, which re-materializes the
-    // WORKTREE — not just `.git` — as root:root. Hand BOTH back before the
-    // worker uses them, or the non-root agent EACCESes editing tracked files.
+    // above re-materialize the WORKTREE — not just `.git` — so hand BOTH back
+    // before the worker uses them, or the non-root agent EACCESes editing
+    // tracked files.
+    //
+    // planning#412 — this used to say those ops "run as the root orchestrator"
+    // and leave the tree `root:root`. Since docs/266 E1 they do NOT: they go
+    // through `deps.createGitManager(sessionDir)` → `safeSimpleGit`, which drops
+    // to the session's own identity, so `rollback`'s `git reset --hard` writes
+    // worker-owned files. The handback is now belt-and-braces for the paths that
+    // still write as root (the clone itself), not the load-bearing step this
+    // comment described.
+    //
+    // Left standing rather than deleted because it is still correct about WHAT
+    // it does; only the stated reason was stale. That staleness was read as fact
+    // and nearly justified reordering the LFS pull below it.
     handWorkspaceBackToWorker(sessionDir);
     const headAfter = await sessionGit.getHeadHash();
     const headChanged = headBefore !== headAfter;
