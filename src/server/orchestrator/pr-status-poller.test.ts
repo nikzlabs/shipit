@@ -1528,6 +1528,58 @@ describe("PrStatusPoller", () => {
     );
   });
 
+  // docs/266 — the wiring guard. The gate lives in AutoMergeManager (unit-tested
+  // there); what can silently break is the poller handing it a way to see the
+  // runner. Without the registry callback the manager reads every session as
+  // idle and this test merges PR #42 four minutes into a live turn, exactly as
+  // production did.
+  describe("managed auto-merge and a busy session", () => {
+    async function pollGreenPr(opts: { busy: boolean }) {
+      const githubAuth = makeGitHubAuth({
+        data: { repository: { pullRequests: { nodes: [makeGraphQLPrNode()] } } },
+      });
+      const sessionManager = makeSessionManager([
+        { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo" },
+      ]);
+      const registry = makeFakeRegistry();
+      registry.setViewers("s1", 1);
+      // The incident's shape: the turn has ended, the reviewer feedback the
+      // agent applied is not committed yet. `running` false, busy true.
+      registry.setRunning("s1", false);
+      registry.setBusy("s1", opts.busy);
+      const poller = new PrStatusPoller({
+        githubAuth,
+        sessionManager,
+        sseBroadcast: vi.fn(),
+        runnerRegistry: registry,
+      });
+      poller.setAutoMergeEnabled("s1", true);
+      poller.setAutoMergeManaged("s1", true, { managedReason: "session-live" });
+      poller.trackSession("s1", "https://github.com/owner/repo");
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(0);
+      return { poller, registry, mergePullRequest: githubAuth.mergePullRequest as ReturnType<typeof vi.fn> };
+    }
+
+    it("does not merge while the session is busy, and merges once it is idle", async () => {
+      vi.useFakeTimers();
+      const { poller, registry, mergePullRequest } = await pollGreenPr({ busy: true });
+
+      expect(mergePullRequest).not.toHaveBeenCalled();
+      // No sticky error, still armed — it is a wait, not a failure.
+      expect(poller.getAutoMergeState("s1")?.enabled).toBe(true);
+      expect(poller.getAutoMergeState("s1")?.error).toBeUndefined();
+
+      registry.setBusy("s1", false);
+      await vi.advanceTimersByTimeAsync(PR_STATUS_SLOW_INTERVAL_MS);
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(mergePullRequest).toHaveBeenCalledTimes(1);
+      poller.destroy();
+      vi.useRealTimers();
+    });
+  });
+
   // Auto-merge is armed for ONE pull request, not for the session forever. When
   // the PR it was armed for goes terminal the state must be released, or (a) the
   // session's NEXT PR gets silently armed by `activatePendingAutoMergeForPr`
@@ -1548,7 +1600,10 @@ describe("PrStatusPoller", () => {
 
       // Arm auto-merge on the open PR, the way the toggle route does.
       poller.setAutoMergeEnabled("s1", true);
-      poller.setAutoMergeManaged("s1", true, "https://github.com/owner/repo/settings", "Allow auto-merge is off");
+      poller.setAutoMergeManaged("s1", true, {
+        settingsUrl: "https://github.com/owner/repo/settings",
+        reason: "Allow auto-merge is off",
+      });
       expect(poller.getAutoMergeState("s1")?.enabled).toBe(true);
 
       // The PR drops out of the OPEN bulk view → REST verify sees it terminal.

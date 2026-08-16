@@ -484,7 +484,12 @@ export async function registerRoutes(
     // Test-only: ensure a runner exists and force its `running` flag. Lets
     // tests assert guards that depend on agent-in-progress state (e.g. the
     // merge endpoint's 409) without driving a full WS turn.
-    app.post<{ Params: { sessionId: string }; Body: { running?: unknown } }>(
+    //
+    // `postTurnWork` drives the OTHER half of `agentBusy` (docs/266): the
+    // terminal sequence and the debounced auto-push it arms, which run once
+    // `running` is already false. A guard that must cover the whole window the
+    // agent can still produce commits in has to be assertable there too.
+    app.post<{ Params: { sessionId: string }; Body: { running?: unknown; postTurnWork?: unknown } }>(
       "/api/_test/runner/:sessionId/running",
       async (request, reply) => {
         const { sessionId } = request.params;
@@ -494,8 +499,20 @@ export async function registerRoutes(
           return { error: "Session not found or has no workspaceDir" };
         }
         const runner = runnerRegistry.getOrCreate(sessionId, session.workspaceDir, defaultAgentId);
-        runner.running = request.body?.running === true;
-        return { ok: true, running: runner.running };
+        if (request.body?.running !== undefined) runner.running = request.body.running === true;
+        if (request.body?.postTurnWork !== undefined) {
+          const want = request.body.postTurnWork === true;
+          if (want !== runner.postTurnWorkInFlight) {
+            if (want) runner.beginPostTurnWork();
+            else runner.endPostTurnWork();
+          }
+        }
+        return {
+          ok: true,
+          running: runner.running,
+          postTurnWorkInFlight: runner.postTurnWorkInFlight,
+          agentBusy: runner.agentBusy,
+        };
       },
     );
   }

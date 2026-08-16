@@ -21,7 +21,7 @@ import type { GitHubAuthManager } from "./github-auth.js";
 import type { SessionManager } from "./sessions.js";
 import type { SessionRunnerRegistry } from "./session-runner.js";
 import type { GitManager } from "../shared/git.js";
-import type { PrStatusSummary, AutoFixState, AutoMergeState, PrAutoMergeError } from "../shared/types/github-types.js";
+import type { PrStatusSummary, AutoFixState, AutoMergeManagedReason, AutoMergeState, PrAutoMergeError } from "../shared/types/github-types.js";
 import { parseGitHubRemote } from "./git-utils.js";
 import {
   buildPrStatusQuery,
@@ -236,7 +236,15 @@ export class PrStatusPoller {
       (sessionId) => !this.sessionManager.get(sessionId)?.autoFixCiPaused,
       opts.ensureRunner,
     );
-    this.autoMerge = new AutoMergeManager(this.githubAuth, onSessionChange);
+    // docs/266 — the managed merge loop needs the runner to answer "is this
+    // session still working?" before it merges. Same shape (and same degraded
+    // contract) as auto-fix above: no registry ⇒ the lookup returns undefined,
+    // which reads as "not busy" so the merge still happens.
+    this.autoMerge = new AutoMergeManager(
+      this.githubAuth,
+      onSessionChange,
+      (sessionId) => opts.runnerRegistry?.get(sessionId),
+    );
     this.graceTracker = new CiGraceTracker(opts.getSharedRepoDir);
     // docs/146 — the manager requires the runner registry for its pre-attempt
     // gate (needs to look up `runner.running` / call `verifyRunningState`).
@@ -626,12 +634,39 @@ export class PrStatusPoller {
     return this.autoMerge.setEnabled(sessionId, enabled);
   }
 
-  /** Mark auto-merge as ShipIt-managed (GitHub native unavailable). */
-  setAutoMergeManaged(sessionId: string, managed: boolean, settingsUrl?: string, reason?: string): void {
-    this.autoMerge.setManaged(sessionId, managed, settingsUrl, reason);
+  /**
+   * Mark auto-merge as ShipIt-managed. `opts.managedReason` distinguishes the
+   * GitHub-refused fallback from the docs/266 "session is live" case; it
+   * defaults to the former.
+   */
+  setAutoMergeManaged(
+    sessionId: string,
+    managed: boolean,
+    opts: { settingsUrl?: string; reason?: string; managedReason?: AutoMergeManagedReason } = {},
+  ): void {
+    this.autoMerge.setManaged(sessionId, managed, opts);
     // Managed auto-merge depends on the poller to detect CI-success → merge.
     // Open the gate so a closed tab doesn't strand the flow.
     if (managed) this.supervisor.ensure();
+  }
+
+  /**
+   * docs/266 — does this session have a live runner? Consulted at ARMING time:
+   * a PR whose session is live stays on the ShipIt-managed loop, where the busy
+   * gate is enforceable, instead of being handed to GitHub native auto-merge
+   * (which knows nothing about a ShipIt turn and merged PR #2327 mid-turn).
+   *
+   * Runner EXISTENCE, not `agentBusy`: the arming outlives the moment it is
+   * made, and an idle-but-live session is one user message away from a turn.
+   * With no hand-back to native (see the plan doc), arming on "busy right now"
+   * would leave exactly the incident's shape — a PR armed native while the
+   * session was quiet, merging mid-turn once review feedback started a turn.
+   *
+   * No registry wired (degraded setups, tests) ⇒ false ⇒ native arming, which
+   * is the pre-docs/266 behaviour.
+   */
+  hasLiveRunner(sessionId: string): boolean {
+    return this.runnerRegistry?.get(sessionId) !== undefined;
   }
 
   /** Set an auto-merge error (toggle reverts to OFF). */
@@ -705,6 +740,7 @@ export class PrStatusPoller {
           enabled: mergeState.enabled,
           mergeMethod: mergeState.mergeMethod,
           managed: mergeState.managed,
+          managedReason: mergeState.managedReason,
           settingsUrl: mergeState.settingsUrl,
           reason: mergeState.reason,
           error: mergeState.error,
@@ -1292,6 +1328,21 @@ export class PrStatusPoller {
     // still-ON toggle never merged anything. Dropping the state fixes both.
     // A re-arm (docs/202/216) therefore starts from OFF, and re-arming
     // auto-merge for the next task is a fresh, conscious toggle.
+    //
+    // docs/266 — before dropping it, record what was armed. This is the only
+    // place a NATIVE auto-merge is ever attributable from ShipIt's side (the
+    // merge itself happens inside GitHub), and the ops review of the PR #2327
+    // incident had nothing to go on: neither merge path logged anything. The
+    // managed loop logs its own merge at the REST call.
+    const armedAtTerminal = this.autoMerge.get(sessionId);
+    if (!alreadyTerminal && armedAtTerminal?.enabled) {
+      const mode = armedAtTerminal.managed
+        ? `managed (${armedAtTerminal.managedReason ?? "native-unavailable"})`
+        : "native";
+      console.log(
+        `[auto-merge] PR #${pr.number} for ${sessionId} reached ${prState} with auto-merge armed: ${mode}`,
+      );
+    }
     this.autoMerge.delete(sessionId);
     this.sseBroadcast("pr_status", { updates: [summary] });
 

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
-import { toggleAutoMerge, activatePendingAutoMergeForPr } from "./github.js";
+import { toggleAutoMerge, activatePendingAutoMergeForPr, mergePullRequest } from "./github.js";
+import type { GitManager } from "../../shared/git.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 import type { PrStatusPoller } from "../pr-status-poller.js";
 import type { AutoMergeState, PrStatusSummary } from "../../shared/types/github-types.js";
@@ -39,7 +40,12 @@ function summary(over: Partial<PrStatusSummary> = {}): PrStatusSummary {
  * A poller stub whose last-known summary can flip mid-call, standing in for the
  * merge landing while GitHub answers.
  */
-function makePoller(initial: PrStatusSummary, armed?: AutoMergeState) {
+function makePoller(
+  initial: PrStatusSummary,
+  armed?: AutoMergeState,
+  /** docs/266 — does the session have a live runner? Drives managed-vs-native arming. */
+  opts: { liveRunner?: boolean } = {},
+) {
   let status: PrStatusSummary | undefined = initial;
   let autoMerge: AutoMergeState | undefined = armed;
   const setAutoMergeEnabled = vi.fn((_sessionId: string, enabled: boolean) => {
@@ -53,6 +59,7 @@ function makePoller(initial: PrStatusSummary, armed?: AutoMergeState) {
       getAutoMergeState: () => autoMerge,
       setAutoMergeEnabled,
       setAutoMergeManaged,
+      hasLiveRunner: () => opts.liveRunner === true,
     } as unknown as PrStatusPoller,
     setAutoMergeEnabled,
     setAutoMergeManaged,
@@ -115,6 +122,94 @@ describe("toggleAutoMerge — PR merges during the GitHub round-trip", () => {
   });
 });
 
+/**
+ * docs/266 — GitHub native auto-merge merges inside GitHub, which cannot see a
+ * ShipIt turn: that is how PR #2327 merged while its agent was still applying
+ * reviewer feedback. So a PR whose session is live is never handed to native;
+ * it stays on the ShipIt-managed loop, where the busy gate is enforceable.
+ */
+describe("arming while the session is live", () => {
+  it("toggleAutoMerge keeps the merge managed instead of arming GitHub native", async () => {
+    const p = makePoller(summary(), undefined, { liveRunner: true });
+    const enableAutoMerge = vi.fn(async () => ({ success: true }));
+    const githubAuth = { authenticated: true, enableAutoMerge } as unknown as GitHubAuthManager;
+
+    const result = await toggleAutoMerge(githubAuth, p.poller, "s1", true);
+
+    expect(enableAutoMerge).not.toHaveBeenCalled();
+    expect(p.setAutoMergeEnabled).toHaveBeenCalledWith("s1", true);
+    expect(p.setAutoMergeManaged).toHaveBeenCalledWith("s1", true, { managedReason: "session-live" });
+    expect(result).toEqual({
+      enabled: true,
+      mergeMethod: "squash",
+      managed: true,
+      managedReason: "session-live",
+    });
+  });
+
+  // The false-error trap: `managed` used to mean exactly "GitHub refused", and
+  // it carries the settingsUrl/reason the card renders as a repo
+  // misconfiguration tooltip. A deliberate managed arming must carry neither.
+  it("does not report a live session as a repository misconfiguration", async () => {
+    const p = makePoller(summary(), undefined, { liveRunner: true });
+    const githubAuth = {
+      authenticated: true,
+      enableAutoMerge: vi.fn(async () => ({ success: true })),
+    } as unknown as GitHubAuthManager;
+
+    const result = await toggleAutoMerge(githubAuth, p.poller, "s1", true);
+
+    expect(result).not.toHaveProperty("reason");
+    const managedCall = p.setAutoMergeManaged.mock.calls.at(-1);
+    expect(managedCall?.[2]).toEqual({ managedReason: "session-live" });
+    expect(managedCall?.[2]).not.toHaveProperty("settingsUrl");
+  });
+
+  // The GitHub-refused fallback keeps its meaning — and now says so explicitly,
+  // so the client can tell the two managed states apart.
+  it("still reports native-unavailable when GitHub refuses on a quiet session", async () => {
+    const p = makePoller(summary());
+    const githubAuth = {
+      authenticated: true,
+      enableAutoMerge: vi.fn(async () => ({ success: false, message: "Allow auto-merge is turned off" })),
+    } as unknown as GitHubAuthManager;
+
+    const result = await toggleAutoMerge(githubAuth, p.poller, "s1", true);
+
+    expect(result).toEqual({
+      enabled: true,
+      mergeMethod: "squash",
+      managed: true,
+      managedReason: "native-unavailable",
+      reason: "Allow auto-merge is turned off",
+    });
+  });
+
+  it("activatePendingAutoMergeForPr arms managed for an agent-opened PR", async () => {
+    // The common case: activation runs in the post-turn flow, whose runner is
+    // still alive.
+    const p = makePoller(summary(), { enabled: true, mergeMethod: "squash" }, { liveRunner: true });
+    const enableAutoMerge = vi.fn(async () => ({ success: true }));
+    const githubAuth = { enableAutoMerge } as unknown as GitHubAuthManager;
+
+    await activatePendingAutoMergeForPr(githubAuth, p.poller, "s1", PR_URL, 42);
+
+    expect(enableAutoMerge).not.toHaveBeenCalled();
+    expect(p.setAutoMergeManaged).toHaveBeenCalledWith("s1", true, { managedReason: "session-live" });
+  });
+
+  it("arms GitHub native when the session has no live runner", async () => {
+    const p = makePoller(summary(), { enabled: true, mergeMethod: "squash" });
+    const enableAutoMerge = vi.fn(async () => ({ success: true }));
+    const githubAuth = { enableAutoMerge } as unknown as GitHubAuthManager;
+
+    await activatePendingAutoMergeForPr(githubAuth, p.poller, "s1", PR_URL, 42);
+
+    expect(enableAutoMerge).toHaveBeenCalledTimes(1);
+    expect(p.setAutoMergeManaged).toHaveBeenCalledWith("s1", false);
+  });
+});
+
 describe("activatePendingAutoMergeForPr — PR merges during the GitHub round-trip", () => {
   it("does not re-create the arming for a PR that merged mid-activation", async () => {
     const p = makePoller(summary(), { enabled: true, mergeMethod: "squash" });
@@ -148,5 +243,52 @@ describe("activatePendingAutoMergeForPr — PR merges during the GitHub round-tr
 
     expect(p.setAutoMergeEnabled).toHaveBeenCalledWith("s1", true);
     expect(p.setAutoMergeManaged).toHaveBeenCalledWith("s1", false);
+  });
+});
+
+/**
+ * docs/266 — the UI merge button's own arming path. "Merge" on a PR whose checks
+ * are still running does not merge; it falls back to ARMING auto-merge, and that
+ * fallback used to go straight to GitHub native. The session that clicked it is
+ * quiet right now (the route 409s otherwise) but is one message away from a
+ * turn, which is the state that merged PR #2327.
+ */
+describe("mergePullRequest — auto-merge fallback while checks are pending", () => {
+  function makeGitAndAuth() {
+    const git = {
+      getCurrentBranch: vi.fn(async () => "shipit/feature"),
+      getRemotes: vi.fn(async () => [{ name: "origin", url: "https://github.com/o/r.git" }]),
+    } as unknown as GitManager;
+    const enableAutoMerge = vi.fn(async () => ({ success: true, message: "armed" }));
+    const githubAuth = {
+      authenticated: true,
+      findPullRequest: vi.fn(async () => ({ number: 42, url: PR_URL })),
+      mergePullRequest: vi.fn(async () => ({ success: false, message: "checks pending" })),
+      getCheckStatus: vi.fn(async () => ({ state: "pending", total: 1, passed: 0, failed: 0, pending: 1 })),
+      enableAutoMerge,
+    } as unknown as GitHubAuthManager;
+    return { git, githubAuth, enableAutoMerge };
+  }
+
+  it("keeps the arming managed for a live session instead of arming GitHub", async () => {
+    const { git, githubAuth, enableAutoMerge } = makeGitAndAuth();
+
+    const result = await mergePullRequest(git, githubAuth, "squash", "https://github.com/o/r.git", {
+      preferManaged: true,
+    });
+
+    expect(enableAutoMerge).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ autoMergeEnabled: true, managed: true });
+    expect(result.message).toContain("this session finishes");
+  });
+
+  it("still arms GitHub native when no session runner is live", async () => {
+    const { git, githubAuth, enableAutoMerge } = makeGitAndAuth();
+
+    const result = await mergePullRequest(git, githubAuth, "squash", "https://github.com/o/r.git");
+
+    expect(enableAutoMerge).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ autoMergeEnabled: true });
+    expect(result.managed).toBeUndefined();
   });
 });
