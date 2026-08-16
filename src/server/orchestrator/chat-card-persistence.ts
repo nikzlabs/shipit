@@ -73,8 +73,8 @@ export interface InProgressPersister {
    * nikzlabs/shipit#2350 — whether a turn's rows are still open for this session.
    * `persistCardTransition` needs the real answer, not `runner.running`'s
    * approximation of it; see that function. Optional so partial test stubs and
-   * `emitChatCard`-only callers need not implement it — a stub that omits it
-   * simply takes the (safe) finalized-row branch.
+   * `emitChatCard`-only callers need not implement it — omitting it keeps the
+   * previous `running`-only behaviour rather than changing it.
    */
   hasInProgress?(sessionId: string): boolean;
 }
@@ -406,8 +406,21 @@ export function persistCardTransition(
   // it (`emitChatCard` records AND persists in one call), so rows-exist is
   // exactly the condition — and in the startup window the previous turn was
   // finalized, so there are none and we correctly take the DB branch.
+  // Defaults to TRUE when the persister cannot answer, which is deliberate and
+  // the safe direction: a caller without the probe keeps the previous
+  // `running`-only behaviour, so it is never made WORSE than before. Defaulting
+  // to false would send every such caller down the DB branch and throw away the
+  // in-flight clobber protection docs/164/172/177/193 all depend on — trading a
+  // narrow window for a wide one. The probe only ever NARROWS the in-flight
+  // branch, never widens it.
+  //
+  // In PRODUCTION the default never fires: optional-chaining tests the runtime
+  // value, not the declared type, and every real caller passes a
+  // `ChatHistoryManager`, which implements it — including the two that declare a
+  // narrowed persister interface (`NonTurnFailurePersister`,
+  // `ConsultCardPersister`). The optionality exists for partial test stubs.
   const turnOwnsInProgressRows =
-    runner.running && (persist.chatHistoryManager.hasInProgress?.(persist.sessionId) ?? false);
+    runner.running && (persist.chatHistoryManager.hasInProgress?.(persist.sessionId) ?? true);
   const patchedInFlight =
     turnOwnsInProgressRows && updateRecordedCard(runner, matches, patchRecorded);
   if (patchedInFlight) {

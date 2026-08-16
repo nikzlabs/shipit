@@ -346,6 +346,15 @@ is correctly taken. This equally fixes the pre-existing hole on the *submit* pat
 and in docs/172's egress card and docs/177's issue-write undo, which share the
 primitive.
 
+`hasInProgress` is **optional** on `InProgressPersister` and defaults to `true`
+(i.e. the old `running`-only behaviour) when absent, so a persister that cannot
+answer is never made worse than before — defaulting to `false` would push every
+such caller down the DB branch and discard the in-flight clobber protection all
+four features depend on, trading a narrow window for a wide one. The default
+never fires in production: optional-chaining tests the runtime value, so every
+real caller's `ChatHistoryManager` answers it, including the two that declare a
+narrowed persister interface. The optionality is for partial test stubs.
+
 **"Marked once, told at most once" — enforced by the store, not by a
 convention.** `consumeUnreportedBugOutcomes` selects the terminal-phase cards
 carrying no `agentNotified` flag, sets the flag, and returns them in a single
