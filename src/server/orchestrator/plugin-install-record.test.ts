@@ -86,7 +86,12 @@ describe("plugin install record", () => {
   it("renders each outcome as something a reader can act on", async () => {
     const at = "2026-08-16T10:00:00.000Z";
     const base = { commit: "b".repeat(40), at };
-    expect(describeInstallRecord(null)).toContain("no install has run");
+    // The absence names BOTH its causes: a repository that declares no install
+    // writes nothing here, and so does one whose record was lost or predates the
+    // feature. One of those is fine and the other is the reported bug, so this
+    // line must not read as reassurance (review finding).
+    expect(describeInstallRecord(null)).toContain("declares no install");
+    expect(describeInstallRecord(null)).toContain("none has run since");
     expect(describeInstallRecord({ ...base, outcome: "succeeded" })).toContain("succeeded");
     // The three that must never read as plain success.
     expect(describeInstallRecord({ ...base, outcome: "failed", detail: "exited 1" }))

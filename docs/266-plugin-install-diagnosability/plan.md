@@ -70,6 +70,15 @@ sees: an install skipped by the stamp and one skipped by a shared-store hit are
 both `ok: true`, and telling them apart from a real run is precisely the
 question the reporter could not answer.
 
+Two things it deliberately does NOT record, both named because "every terminal
+path writes a record" was an overclaim in the first draft (review finding).
+A repository whose exports declare no install writes nothing — the absence is
+the honest answer, and it is rendered as an absence with both of its causes
+named rather than as "fine". And the record is the last attempt **for the
+repository**, which is not necessarily the version that is live: a failed
+refresh to B leaves A serving, so every reader compares the record's commit
+against the live one before drawing a verdict from it (`describesLive`).
+
 It is **per repository, not per generation**, and last-writer-wins: the question
 is "what happened the last time ShipIt tried to install this repository", and a
 record keyed by a generation that was never published cannot answer it.
@@ -77,9 +86,13 @@ record keyed by a generation that was never published cannot answer it.
 ## 3. The refresh warning line (req 7)
 
 `services/plugin-refresh.ts` builds each row from this round's own outcome.
-A second field is added — the live generation's own degradation, read off the
-generation record's `manifestWarnings` — so a refresh that finds nothing to do
-still says the live version is not usable. The exit code is unchanged: a
+A second field is added — the live version's own degradation — so a refresh that
+finds nothing to do still says the live version is not usable. It has **two**
+sources, and needs both: the generation record's `manifestWarnings` carry
+"active but not installed", and the durable install record carries a FAILED
+install for the live commit, which no generation can carry because the round
+that failed published none. Reading only the first left a plain refresh silent
+after a failed forced retry (review finding). The exit code is unchanged: a
 round that did what it was asked exits 0 (user, 2026-08-16), and the shim
 already exits non-zero when a row's own status is `failed`.
 
@@ -119,12 +132,25 @@ exists to stop.
 
 **What force costs, stated because a consumer has to be able to weigh it.**
 `prepareLayer` clears the writable layer before the install writes, so a forced
-round that then fails leaves the version live with its install output gone.
-That is the state the consumer was already in (they are forcing because the
-version is unusable), it is recorded in the last-install record from §2, and the
-refresh row says it. It is not a silent downgrade, and `--force` is refused
-without an explicit repository name so it can never be a blanket retry across
-every declared repository.
+round that then fails leaves the version live with its install output gone —
+or, precisely, replaced by whatever the failed attempt wrote before it died
+(review finding; an earlier draft said only "without its install output"). That
+is the state the consumer was already in or slightly worse, they are forcing
+because the version is unusable, it is recorded in the last-install record from
+§2, and every later refresh row says it. It is not a silent downgrade, and
+`--force` is refused without an explicit repository name so it can never be a
+blanket retry across every declared repository.
+
+**The publish window had to change for this, and that is a real edit to a path
+every activation takes** (review finding). Publish was `rm(finalDir)` then
+`rename(staging, finalDir)`. For an ordinary round `finalDir` is absent or a
+leftover, so the order did not matter; under force it IS the live generation,
+and a recursive `rm` of a large checkout leaves `active` pointing at a
+directory being emptied for seconds. A crash there left the repository with
+NOTHING live — worse than the documented cost. It is now rename-aside,
+rename-into-place, then delete: the gap is between two renames on one
+filesystem, and a failed second rename puts the live version back. A leftover
+`.replaced-*` is not a SHA, so the existing prune sweeps it.
 
 ## Key files
 

@@ -916,8 +916,34 @@ async function activateOnce(repo: DeclaredPluginRepo, deps: ActivateDeps): Promi
         // staging directory that the cleanup below removes.
         if (deps.isCancelled?.()) return "the session went away before activation completed";
 
-        await fsp.rm(finalDir, { recursive: true, force: true });
-        await fsp.rename(stagingDir, finalDir);
+        // **Swap, then delete — never delete, then swap** (review finding).
+        // For an ordinary round `finalDir` is absent or a leftover, so the order
+        // did not matter. Under docs/266's `force` it IS the live generation:
+        // a recursive `rm` of a large checkout takes seconds, and for all of
+        // them `active` names a directory that is being emptied. A crash, an
+        // OOM or a failing rename in that window left the repository with
+        // NOTHING live — worse than the cost force documents, and not something
+        // the next round is guaranteed to reach.
+        //
+        // Two renames instead: the live tree steps aside under a name nothing
+        // resolves, the replacement takes its place, and the old one is removed
+        // afterwards. The gap where `finalDir` does not exist is now between two
+        // renames on one filesystem rather than around a recursive delete. A
+        // leftover `.replaced-*` is swept by the next prune.
+        const aside = fs.existsSync(finalDir)
+          ? `${finalDir}.replaced-${crypto.randomUUID().slice(0, 8)}`
+          : null;
+        if (aside) await fsp.rename(finalDir, aside);
+        try {
+          await fsp.rename(stagingDir, finalDir);
+        } catch (err) {
+          // Put the live version back rather than leaving the repository with
+          // nothing: the caller's contract is that a failed activation keeps the
+          // prior version serving (req 15).
+          if (aside) await fsp.rename(aside, finalDir).catch(() => undefined);
+          throw err;
+        }
+        if (aside) await fsp.rm(aside, { recursive: true, force: true }).catch(() => undefined);
         // Released BEFORE the link swap, so the moment `active` names this
         // commit a consumer can hold it. The other order leaves a window in
         // which the live generation refuses every hold. The outer `finally`

@@ -122,7 +122,15 @@ function isOutcome(value: unknown): value is PluginInstallOutcome {
 
 /** One line for a human reader, used by `shipit plugin status` and the card. */
 export function describeInstallRecord(record: PluginInstallRecord | null): string {
-  if (!record) return "no install has run for this repository in this session";
+  // Deliberately not reassuring (review finding): the absence has two causes and
+  // this module cannot tell them apart — a repository that declares no install
+  // writes nothing here, and so does one whose record was lost or predates the
+  // feature. Saying "no install has run" alone would read as "nothing to worry
+  // about" for the second.
+  if (!record) {
+    return "no install record in this session — either this repository declares no install, "
+      + "or none has run since ShipIt began recording";
+  }
   const commit = record.commit.slice(0, 9);
   const detail = record.detail ? ` — ${record.detail}` : "";
   switch (record.outcome) {

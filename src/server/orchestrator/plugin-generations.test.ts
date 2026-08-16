@@ -990,6 +990,18 @@ describe("consumer lease over a superseded generation (req 15)", () => {
    * claim used to say a live commit "never reaches this line". These tests are
    * the replacement guarantee — the claim itself, exercised on the one path
    * that now depends on it.
+   *
+   * **What they cannot fail on** (review finding). `lease()` is a Set-based
+   * fake: the refusal test proves `activateOnce` aborts cleanly and touches
+   * nothing when the hook says no, NOT that the real
+   * `createGenerationDeletionLease` says no while a plugin container holds the
+   * volume. That half lives in `plugin-leases.test.ts`, and nothing ties the
+   * two together — a regression that stopped removing the overlay volume in the
+   * real lease, or stopped passing the lease down the force path, would pass
+   * here. They also cannot see the publish window itself: the rm-then-rename
+   * ordering that a forced round made dangerous is asserted only by the
+   * "leaves the version live when a forced re-install fails" case, which
+   * exercises the failure BEFORE publish.
    */
   it("re-stages and re-installs the commit already live when forced", async () => {
     const installed: string[] = [];

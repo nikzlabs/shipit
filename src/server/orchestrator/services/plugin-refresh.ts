@@ -20,7 +20,8 @@
  */
 
 import { activateDeclaredPlugins, type PluginActivationDeps } from "./plugin-activation.js";
-import { readActiveGeneration } from "../plugin-generations.js";
+import { readActiveGeneration, pluginsRoot } from "../plugin-generations.js";
+import { liveInstallProblem } from "./plugin-status.js";
 import { resolveShipitConfig } from "../../shared/shipit-config.js";
 import { destinationKey, declaredRefLabel } from "../../shared/plugin-repos.js";
 import { sessionStateDirForWorkspace } from "../session-state-dir.js";
@@ -142,6 +143,14 @@ export async function refreshPluginRepos(
   const before = new Map(
     targets.map((r) => [r.name, readActiveGeneration(stateDir, r.name, r.source)?.commit ?? null]),
   );
+  // Resolved once, and tolerated as absent: a session layout with no resolvable
+  // state dir still gets its rows, minus the install half of the report.
+  let pluginsDir: string | null = null;
+  try {
+    pluginsDir = pluginsRoot(stateDir);
+  } catch {
+    pluginsDir = null;
+  }
 
   const outcomes = await activateDeclaredPlugins(
     sessionId, workspaceDir, deps, deps.consumerKey, repoName, force,
@@ -168,7 +177,16 @@ export async function refreshPluginRepos(
       // to do is the case this exists for: it exited 0 and said `unchanged`
       // while every surface of that plugin was failing, and a consumer had no
       // way to see the sentence the Plugins card was already showing.
-      const degraded = live?.manifestWarnings ?? [];
+      // Two sources, because they cover different failures: the generation's own
+      // warnings carry "active but not installed", and the durable install
+      // record carries a FAILED install for the version that is live — which no
+      // generation can carry, because the round that failed published none.
+      // Reading only the first left a plain refresh silent after a failed forced
+      // retry (review finding).
+      const degraded = [
+        ...(live?.manifestWarnings ?? []),
+        ...(pluginsDir ? [liveInstallProblem(pluginsDir, target.name, after)] : []),
+      ].filter((d): d is string => typeof d === "string" && d.length > 0);
       // A forced round that reached `activated` re-staged and re-installed the
       // same commit. The outcome is needed as well as the two commits: for a
       // re-install they are identical by construction, so `after !== was`

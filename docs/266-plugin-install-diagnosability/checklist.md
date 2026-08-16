@@ -21,5 +21,11 @@
 - [x] `shipit-docs/plugins.md` — both verbs, what force costs, and the stale
       "no `logs`" passage corrected
 - [x] `npm run lint:dev`, `npm run typecheck`, `npm run test:dev` clean
-- [ ] Independent review (`shipit agent run --role reviewer`) against every
-      numbered requirement
+- [x] Independent review (`shipit agent run --role reviewer`) against every
+      numbered requirement — run 9703d1fd
+- [x] Review findings applied: the record only speaks for the LIVE commit
+      (findings 1, 4); publish renames aside instead of deleting the live tree
+      (finding 2); an unexpected throw in the install runner still records
+      (finding 3); the absent-record line names both its causes (finding 5); the
+      status route runs the tab's pending and unreadable-config pre-checks
+      (finding 6); docs corrected where they overclaimed

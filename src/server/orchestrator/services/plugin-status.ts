@@ -67,6 +67,27 @@ export interface PluginStatusResult {
   error?: string;
 }
 
+/**
+ * The live version's install problem, in one line, or null when there is none.
+ *
+ * Shared with `plugin-refresh.ts` so the two surfaces cannot disagree about
+ * whether the version that is live is usable. Refresh had read only the
+ * generation's `manifestWarnings`, which carries the "active but not installed"
+ * sentence and nothing else — so after a FAILED install for the live commit the
+ * next plain refresh printed `already at <sha>` and said nothing (review
+ * finding), which is precisely the silence docs/266 req 7 exists to end.
+ */
+export function liveInstallProblem(
+  pluginsDir: string,
+  repoName: string,
+  liveCommit: string | null,
+): string | null {
+  const record = readInstallRecord(pluginsDir, repoName);
+  if (!describesLive(record, liveCommit) || !record) return null;
+  if (record.outcome !== "failed" && record.outcome !== "not-run") return null;
+  return describeInstallRecord(record);
+}
+
 /** The snapshot shape this projection needs, kept to what it reads. */
 export interface PluginStatusSnapshot {
   repos: {
@@ -135,11 +156,38 @@ export function buildPluginStatus(
         install,
         installSummary: repo.status === "self"
           ? "no install runs under `repo: self` — `agent.install` prepares the working tree"
-          : describeInstallRecord(install),
-        usable: isUsable(repo.status, install),
+          : summarize(install, repo.commit),
+        usable: isUsable(repo.status, install, repo.commit),
       };
     }),
   };
+}
+
+/**
+ * Does this record describe the version that is LIVE?
+ *
+ * The record is the last attempt for the repository, and the last attempt is
+ * routinely for a commit that never became live — a refresh to B fails, B is
+ * never published, and A keeps serving (req 15). Reading that record as a
+ * verdict on A produces a fabricated diagnosis: "running A / install FAILED for
+ * B", which is the exact class of error this feature exists to prevent (review
+ * finding). So the record answers for the live version only when it is about it.
+ */
+function describesLive(install: PluginInstallRecord | null, liveCommit: string | null): boolean {
+  return install !== null && liveCommit !== null && install.commit === liveCommit;
+}
+
+/**
+ * The install line, always honest about WHICH commit the attempt was for.
+ *
+ * A record for another commit is still worth printing — a consumer chasing a
+ * failed refresh wants to see it — but it is labelled as the last attempt
+ * rather than as a statement about what is running.
+ */
+function summarize(install: PluginInstallRecord | null, liveCommit: string | null): string {
+  const line = describeInstallRecord(install);
+  if (!install || describesLive(install, liveCommit)) return line;
+  return `${line} (the last attempt was for a different version than the one live)`;
 }
 
 /**
@@ -148,12 +196,29 @@ export function buildPluginStatus(
  * `self` and `active` are the two states that mean yes — and `active` is
  * qualified by the install, because the failure this feature exists for is
  * exactly an `active` card over a version whose install did not put anything
- * there. A skipped install is NOT a no: skipping is the normal, correct outcome
- * when the layer or the shared store already holds the tree.
+ * there. Two qualifications on that qualification:
+ *
+ * - the record must describe the LIVE commit ({@link describesLive}), or a
+ *   failed refresh to a version that never shipped would condemn the version
+ *   that is serving perfectly well;
+ * - a skipped install is NOT a no. Skipping is the normal, correct outcome when
+ *   the layer or the shared store already holds the tree, and reporting it as
+ *   broken would train a reader to ignore this field.
+ *
+ * **Known limit** (review finding): no record reads as usable. This projection
+ * has no manifest, so it cannot tell "declares no install" from "declared one,
+ * and the record predates this feature or its write failed" — a generation
+ * activated before docs/266 shipped is `active` with no record. The summary line
+ * says which of the two it is not, rather than reassuring; closing it properly
+ * needs the live manifest, which is a bigger read than this verdict is worth.
  */
-function isUsable(status: PluginRepoStatus, install: PluginInstallRecord | null): boolean {
+function isUsable(
+  status: PluginRepoStatus,
+  install: PluginInstallRecord | null,
+  liveCommit: string | null,
+): boolean {
   if (status === "self") return true;
   if (status !== "active") return false;
-  if (!install) return true; // nothing declares an install — nothing to have failed
+  if (!install || !describesLive(install, liveCommit)) return true;
   return install.outcome !== "failed" && install.outcome !== "not-run";
 }

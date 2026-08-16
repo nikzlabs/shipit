@@ -109,6 +109,29 @@ export async function registerPluginRepoRoutes(
         reply.code(404).send({ error: "Session not found" });
         return;
       }
+      // The tab's two pre-checks, and for the same reason it has them (review
+      // finding — this route had skipped both). "Not yet knowable" must not be
+      // answered as "declares nothing": an evicted or mid-restore checkout would
+      // otherwise tell an agent its project has no plugins, which is a worse
+      // answer than "ask again" for a verb whose whole job is diagnosis.
+      if (areDeclarationsPending(deps.sessionManager, request.params.id)) {
+        reply.code(503).send({
+          error: "This session's checkout is not available yet, so its plugin declarations "
+            + "cannot be read. Try again in a moment.",
+        });
+        return;
+      }
+      const configPath = path.join(session.workspaceDir, "shipit.yaml");
+      if (fs.existsSync(configPath)) {
+        try {
+          fs.accessSync(configPath, fs.constants.R_OK);
+        } catch (err) {
+          reply.code(400).send({
+            error: `shipit.yaml exists but could not be read, so no plugin declarations were loaded: ${getErrorMessage(err)}`,
+          });
+          return;
+        }
+      }
       let snapshot: PluginReposSnapshot;
       try {
         snapshot = assemblePluginSnapshot(

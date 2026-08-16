@@ -69,6 +69,34 @@ describe("buildPluginStatus", () => {
     expect(result.repos[0]!.install?.detail).toContain("npm ERR!");
   });
 
+  it("does not condemn the live version for a FAILED attempt on another commit", async () => {
+    // The routine case, and the one that would fabricate a diagnosis (review
+    // finding): A is live and fine, a refresh to B fails, B never publishes, and
+    // the record now describes B. Reading it as a verdict on A produces
+    // "running A / install FAILED for B" — the class of error this whole
+    // feature exists to stop.
+    writeInstallRecord(pluginsRoot(sessionStateDirForWorkspace(workspaceDir)), "tools", {
+      commit: "b".repeat(40),
+      at: "2026-08-16T11:00:00.000Z",
+      outcome: "failed",
+      detail: "install for `web` exited 1",
+    });
+    const result = buildPluginStatus(workspaceDir, ACTIVE);
+
+    expect(result.repos[0]!.usable).toBe(true);
+    // Still printed — a consumer chasing the failed refresh wants it — but
+    // labelled as being about something other than what is running.
+    expect(result.repos[0]!.installSummary).toContain("different version");
+  });
+
+  it("says an absent record has two causes rather than reading as fine", async () => {
+    // The projection has no manifest, so it cannot tell "declares no install"
+    // from "the record was lost or predates this feature". `usable` stays true
+    // because nothing proves otherwise; the text must not reassure.
+    const summary = buildPluginStatus(workspaceDir, ACTIVE).repos[0]!.installSummary;
+    expect(summary).toContain("either this repository declares no install");
+  });
+
   it("does NOT call a skipped install a failure", async () => {
     // Skipping is the normal, correct outcome when the layer or the shared
     // store already holds the tree; reporting it as broken would train a reader
@@ -78,9 +106,10 @@ describe("buildPluginStatus", () => {
   });
 
   it("treats an active repository that has never installed anything as usable", async () => {
+    // Nothing proves otherwise, so the verdict stays true; the wording that goes
+    // with it is asserted above, and is deliberately not reassuring.
     expect(buildPluginStatus(workspaceDir, ACTIVE).repos[0]!.usable).toBe(true);
-    expect(buildPluginStatus(workspaceDir, ACTIVE).repos[0]!.installSummary)
-      .toContain("no install has run");
+    expect(buildPluginStatus(workspaceDir, ACTIVE).repos[0]!.install).toBeNull();
   });
 
   it("carries every reason the card would show, unchanged (req 10)", async () => {

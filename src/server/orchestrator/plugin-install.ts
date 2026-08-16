@@ -206,7 +206,35 @@ export function createPluginInstallRunner(
       });
 
     const commands = installCommands(job.exports);
+    // Nothing declares an install, so nothing happened and nothing is recorded.
+    // The absence is the honest answer here, and `describeInstallRecord` renders
+    // it as an absence with both its causes named rather than as "fine".
     if (commands.length === 0) return { ok: true };
+
+    // **Every path out of the body below leaves a record, including the ones
+    // that THROW** (review finding). The documented contract is that this runner
+    // returns `{ok:false}` rather than throwing, and the daemon calls after the
+    // install — releasing the overlay volume, promoting to the shared store,
+    // dropping the netns — can each break it. An install that ran and then died
+    // in one of those used to leave a session reading "no install record", which
+    // is the wrong half of the one distinction this record exists to make. The
+    // error still propagates unchanged; only the diagnostic is added.
+    try {
+      return await runInstallOnce(deps, job, commands, record);
+    } catch (err) {
+      record("failed", `the install did not complete: ${message(err)}`);
+      throw err;
+    }
+  };
+}
+
+/** The body of {@link createPluginInstallRunner}, with the recording wrapper around it. */
+async function runInstallOnce(
+  deps: PluginInstallDeps,
+  job: PluginInstallJob,
+  commands: readonly InstallCommand[],
+  record: (outcome: PluginInstallOutcome, detail?: string) => void,
+): Promise<PluginInstallResult> {
 
     const stampPath = installStampPath(deps.stateDir, job.repoName, job.commit);
     const stamp = installStamp(job);
@@ -395,7 +423,6 @@ export function createPluginInstallRunner(
     await writeStamp(stampPath, stamp, basePins);
     record("succeeded");
     return { ok: true, ...(basePins.length > 0 ? { basePins } : {}) };
-  };
 }
 
 /**

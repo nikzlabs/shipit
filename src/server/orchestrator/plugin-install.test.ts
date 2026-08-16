@@ -868,6 +868,19 @@ describe("createPluginInstallRunner — forced retry and the install record", ()
     expect(readInstallRecord(pluginsDir(), "tools")?.outcome).toBe("skipped-stamp");
   });
 
+  /**
+   * **What this block cannot fail on** (review finding, stated rather than
+   * implied). `createPluginInstallRunner` now wraps its body so that an
+   * unexpected THROW — from the shared-store plan, the promotion, the stamp
+   * write, or the netns release, all of which sit outside every inner try —
+   * still records `failed` before propagating. That wrapper is not exercised
+   * here: every one of those code paths is itself defensive, so this fake
+   * daemon cannot make one throw (a store directory that is a plain file, a
+   * volume removal that rejects, and a daemon that answers 404 were each tried
+   * and each returned cleanly). The wrapper is defence in depth against a
+   * future path that is not defensive; the recorded outcomes below are what is
+   * actually pinned.
+   */
   it("writes nothing for a repository whose exports declare no install", async () => {
     // Nothing ran, and nothing pretends to have: `status` renders the absence
     // as "no install has run", which is the truth.

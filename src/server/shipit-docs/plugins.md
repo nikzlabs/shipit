@@ -258,13 +258,16 @@ last install left behind, and reports `re-installed <commit>` rather than
   because a name was omitted is not a mistake worth making reachable.
 - **It is refused while the version is in use.** If a plugin service container
   or a companion CLI still holds that version, the round fails with "still in
-  use — try again in a moment" and changes nothing. Stop the plugin's services
-  and retry.
-- **If the re-install fails, the version stays live without its install
-  output.** The layer is cleared before the install writes, so a failed retry
-  leaves the state you were already in — recorded, and visible in the next
-  `shipit plugin status`. Read the status first; force is for a version you have
-  already established is not working.
+  use — try again in a moment" and changes nothing. A plugin's services are
+  ordinary services in this session, so stop them with
+  `shipit service stop <name>` (their names are in `shipit service list`) and
+  retry.
+- **If the re-install fails, the version stays live but its install output does
+  not survive intact.** The writable layer is cleared before the install writes,
+  so a failed retry leaves the checkout plus whatever the failed attempt managed
+  to write — the state you were already in, or a little less. It is recorded,
+  and the next `shipit plugin status` and every later `refresh` say so. Read the
+  status first: force is for a version you have already established is broken.
 
 ## Working inside the plugin's own repository
 

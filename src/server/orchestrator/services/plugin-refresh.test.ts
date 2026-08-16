@@ -14,6 +14,9 @@ import path from "node:path";
 import simpleGit from "simple-git";
 import { refreshPluginRepos } from "./plugin-refresh.js";
 import { clearActivationState } from "./plugin-activation.js";
+import { writeInstallRecord } from "../plugin-install-record.js";
+import { pluginsRoot } from "../plugin-generations.js";
+import { sessionStateDirForWorkspace } from "../session-state-dir.js";
 
 let tmp: string;
 let sessionDir: string;
@@ -238,6 +241,44 @@ describe("refreshPluginRepos — diagnosing and retrying a live version", () => 
   it("says nothing extra when the live version is fine", async () => {
     writeConfig(DECLARATION);
     await refreshPluginRepos("sess", workspaceDir, deps());
+    const again = await refreshPluginRepos("sess", workspaceDir, deps());
+    expect(again.rows[0]!.degraded).toBeUndefined();
+  });
+
+  it("reports a FAILED install for the live version on a later plain refresh", async () => {
+    // The gap review found: `degraded` read only the generation's own warnings,
+    // and a failed install publishes NO generation — so the state this feature
+    // exists for (live version, install failed) was silent on every round after
+    // the one that failed. The durable record is the only carrier of it.
+    writeConfig(DECLARATION);
+    const first = await refreshPluginRepos("sess", workspaceDir, deps());
+    const live = first.rows[0]!.after!;
+
+    writeInstallRecord(pluginsRoot(sessionStateDirForWorkspace(workspaceDir)), "tools", {
+      commit: live,
+      at: "2026-08-16T12:00:00.000Z",
+      outcome: "failed",
+      detail: "install for `web` exited 1",
+    });
+
+    const again = await refreshPluginRepos("sess", workspaceDir, deps());
+    expect(again.rows[0]!.status).toBe("unchanged");
+    expect(again.rows[0]!.degraded?.join(" ")).toContain("FAILED");
+  });
+
+  it("does not report a failed attempt on a version that is not live", async () => {
+    // A failed refresh to B leaves A serving. Naming B's failure under A would
+    // be the fabricated diagnosis the same review finding names.
+    writeConfig(DECLARATION);
+    await refreshPluginRepos("sess", workspaceDir, deps());
+
+    writeInstallRecord(pluginsRoot(sessionStateDirForWorkspace(workspaceDir)), "tools", {
+      commit: "b".repeat(40),
+      at: "2026-08-16T12:00:00.000Z",
+      outcome: "failed",
+      detail: "install for `web` exited 1",
+    });
+
     const again = await refreshPluginRepos("sess", workspaceDir, deps());
     expect(again.rows[0]!.degraded).toBeUndefined();
   });
