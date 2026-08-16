@@ -33,6 +33,44 @@
  * (`no-restricted-imports` on the `simple-git` default export), which is why
  * this only looks at raw process spawns.
  *
+ * ## What counts as a git spawn (planning#409)
+ *
+ * The first version of these rules recognized a git process by one regex:
+ * `spawn|execFile|execFileSync|execFileAsync` followed by a quoted `git`
+ * literal. That is a rule about the shapes already in the tree, not about the
+ * seam — and the seam is what has to hold. `spawnSync("git", …)` and
+ * `execSync("git …")` were entirely invisible to it, as was any binary that
+ * travelled in a variable, which its own docstring named as a live blind spot.
+ * A guard that only sees the call shapes someone already wrote is the same
+ * defect as docs/266 E1's "covers call sites nobody has written yet", which was
+ * true of `safeSimpleGit`'s callers and false of two raw spawns.
+ *
+ * So a site is now discovered in two steps rather than matched in one:
+ *
+ *   1. **Which names in this file start a process** — read from the file's own
+ *      `node:child_process` import, `as` aliases and all, plus any
+ *      `const x = promisify(execFile)` alias. A file that imports nothing from
+ *      `node:child_process` is skipped, which is what keeps `RE.exec(line)` and
+ *      `db.exec("ALTER TABLE …")` out of a rule that has to name `exec`.
+ *   2. **Whether the binary is git** — the first argument, read as a string
+ *      literal (through one level of in-file `const`, and through a leading
+ *      `/usr/bin/` style path), or, for the shell-string launchers, the first
+ *      word of each `&&`/`;`/`|`-separated segment.
+ *
+ * Which way it fails is a decision, not an accident: **a binary this scanner
+ * cannot read fails the build** (third rule below), because the alternative is
+ * that `const GIT = "git"` silently exempts a call site from all three rules.
+ * The three call sites in the tree today whose binary is computed are listed
+ * there by name, so a fourth is a visible diff rather than a silent gap.
+ *
+ * "Cannot read" includes a *partly* readable one, which is where the second
+ * review pass found this rule still fail-open: `` spawn(`${GIT_BIN}`, …) ``
+ * yielded the prefix `""` and `` spawn(`/usr/bin/${tool}`, …) `` the basename
+ * `bin`, and both read as readable binaries that simply were not git. For an
+ * argv launcher the whole argument is the program, so ANY interpolation is
+ * unreadable; for a shell string only the first word is, so a prefix that
+ * already contains whitespace has settled the question.
+ *
  * Scope is deliberately the ORCHESTRATOR (plus the `shared/` code it runs).
  * Session-container code is excluded: git inside the session container runs the
  * project's hooks on purpose — the agent is already inside the trust boundary,
@@ -51,11 +89,72 @@ const ROOTS = [path.join(HERE, "..", "orchestrator"), HERE];
 const REPO_SRC = path.join(HERE, "..", "..");
 
 /**
- * A `git` process being started: `spawn("git", …)`, `execFile("git", …)`,
- * `execFileSync("git", …)`, `execFileAsync("git", …)`, and the same with the
- * argument list on the following line.
+ * `node:child_process` entry points that start a process, split by how they
+ * name the command.
+ *
+ * `fork` is absent on purpose, and for a reason about the shape: it runs a Node
+ * *module*, never an arbitrary binary, so it cannot start git at all.
  */
-const GIT_SPAWN = /\b(?:spawn|execFile|execFileSync|execFileAsync)\s*\(\s*\n?\s*["'`]git["'`]\s*,/g;
+const ARGV_LAUNCHERS = new Set(["spawn", "spawnSync", "execFile", "execFileSync"]);
+/** The shell-string launchers — one command string, no argv to wrap. */
+const SHELL_LAUNCHERS = new Set(["exec", "execSync"]);
+
+interface Launcher {
+  /** The name as called in this file — `nodeSpawn` for `spawn as nodeSpawn`. */
+  local: string;
+  /** The `node:child_process` export it came from. */
+  canonical: string;
+}
+
+/**
+ * The names that start a process in this file, read from its own imports.
+ *
+ * Scanning for a fixed list of names instead would have to include `exec`, and
+ * `exec` in this repo is overwhelmingly `RegExp.prototype.exec` and
+ * `Database.exec` — hundreds of them. Binding the rule to what the file
+ * actually imported from `node:child_process` is what makes naming `exec`
+ * affordable, and it picks up `spawn as nodeSpawn` and
+ * `const execFileAsync = promisify(execFile)` for free.
+ *
+ * `import type { … }` binds no value and is skipped: a type import cannot start
+ * anything.
+ */
+function childProcessLaunchers(src: string): Launcher[] {
+  const found = new Map<string, string>();
+  const IMPORT = /import\s+(type\s+)?\{([^}]*)\}\s*from\s*["']node:child_process["']/g;
+  for (const stmt of src.matchAll(IMPORT)) {
+    if (stmt[1]) continue;
+    for (const spec of (stmt[2] ?? "").split(",")) {
+      const parsed = /^\s*(?:(type)\s+)?([A-Za-z_$][\w$]*)(?:\s+as\s+([A-Za-z_$][\w$]*))?\s*$/.exec(spec);
+      if (!parsed || parsed[1]) continue;
+      const canonical = parsed[2] ?? "";
+      if (!ARGV_LAUNCHERS.has(canonical) && !SHELL_LAUNCHERS.has(canonical)) continue;
+      found.set(parsed[3] ?? canonical, canonical);
+    }
+  }
+  const PROMISIFIED = /\bconst\s+([A-Za-z_$][\w$]*)\s*=\s*promisify\(\s*([A-Za-z_$][\w$]*)\s*\)/g;
+  for (const [, alias, target] of src.matchAll(PROMISIFIED)) {
+    const canonical = found.get(target ?? "");
+    if (canonical && alias) found.set(alias, canonical);
+  }
+  // A namespace import reaches every launcher through one binding, so it would
+  // otherwise skip the file entirely — `import * as cp` then `cp.spawn("git", …)`
+  // is a silent exemption of exactly the kind planning#409 exists to remove.
+  // Nothing in the tree writes it (this repo imports named bindings throughout),
+  // which is the cheapest moment to close a shape rather than the most expensive.
+  if (childProcessNamespaces(src).length > 0) {
+    for (const canonical of [...ARGV_LAUNCHERS, ...SHELL_LAUNCHERS]) {
+      if (!found.has(canonical)) found.set(canonical, canonical);
+    }
+  }
+  return [...found].map(([local, canonical]) => ({ local, canonical }));
+}
+
+/** Local names bound to the whole `node:child_process` module. */
+function childProcessNamespaces(src: string): string[] {
+  const NAMESPACE = /import\s+(?:\*\s*as\s+)?([A-Za-z_$][\w$]*)\s*from\s*["']node:child_process["']/g;
+  return [...src.matchAll(NAMESPACE)].map((m) => m[1] ?? "").filter(Boolean);
+}
 
 /**
  * Drop comment lines before scanning. Docstrings in this very feature quote the
@@ -168,9 +267,24 @@ function resolveOptions(arg: string | undefined, fileSrc: string): string | null
   if (arg === undefined || looksLikeCallback(arg)) return undefined;
   if (arg.startsWith("{")) return resolveSpreads(arg, fileSrc);
   if (!IDENTIFIER.test(arg)) return null;
-  const decl = new RegExp(`\\bconst\\s+${arg}\\s*=\\s*\\{`).exec(fileSrc);
+  const decl = soleDeclaration(arg, fileSrc, "\\{");
   if (!decl) return null;
   return resolveSpreads(balancedSpan(fileSrc, fileSrc.indexOf("{", decl.index)), fileSrc);
+}
+
+/**
+ * The single in-file `const NAME = …` declaration of a name, or `null` when
+ * there is none — or **more than one**.
+ *
+ * Two declarations mean the name is shadowed, and this scanner has no scopes: it
+ * would resolve every call site to whichever came first in the file. Review
+ * demonstrated the fail-open half — a top-level `const args = ["status"]` plus a
+ * function-local `const args = ["-C", ws, "status"]` makes the second call read
+ * as carrying no working directory. Ambiguity is unreadability.
+ */
+function soleDeclaration(name: string, fileSrc: string, valuePattern: string): RegExpExecArray | null {
+  const all = [...fileSrc.matchAll(new RegExp(`\\bconst\\s+${name}\\s*=\\s*${valuePattern}`, "g"))];
+  return all.length === 1 ? (all[0] as RegExpExecArray) : null;
 }
 
 /**
@@ -183,13 +297,28 @@ function resolveOptions(arg: string | undefined, fileSrc: string): string | null
  * `const name = { … }` lookup and appended; a spread this file does not declare
  * makes the whole literal unreadable (`null`), which is the fail-closed branch.
  *
- * `...gitSpawnOverridesForTree(dir)` is a call, not an identifier, and is the
- * thing being demanded — it never makes a literal unreadable.
+ * The same fail-open trap sat one shape further out, and a second review found
+ * it: the first version matched only `...identifier`, so `{ ...makeOpts(dir) }`,
+ * `{ ...process.env }` and `{ ...base.opts }` matched NOTHING and were kept
+ * verbatim — a `cwd` inside any of them was invisible. Every spread is read now,
+ * and one that is not a bare in-file `const` makes the literal unreadable.
+ *
+ * The single exception is the call being DEMANDED,
+ * `...gitSpawnOverridesForTree(…)` (and its credential sibling): those return
+ * `{uid, gid}` / `{args, env}`, so they cannot be hiding a working directory,
+ * and treating them as unreadable would make every compliant site look
+ * unreadable. That is a statement about those two functions' return types, not
+ * about calls in general.
  */
+const DEMANDED_SPREADS = /^(?:gitSpawnOverridesForTree|gitCredentialSpawnOverrides)\s*\(/;
+
 function resolveSpreads(literal: string, fileSrc: string): string | null {
   let out = literal;
-  for (const [, name] of literal.matchAll(/\.\.\.\s*([A-Za-z_$][\w$]*)\s*(?=[,}])/g)) {
-    const decl = new RegExp(`\\bconst\\s+${name}\\s*=\\s*\\{`).exec(fileSrc);
+  for (const [, spread] of literal.matchAll(/\.\.\.\s*([^,}]+)/g)) {
+    const expr = (spread ?? "").trim();
+    if (DEMANDED_SPREADS.test(expr)) continue;
+    if (!IDENTIFIER.test(expr)) return null;
+    const decl = soleDeclaration(expr, fileSrc, "\\{");
     if (!decl) return null;
     out += balancedSpan(fileSrc, fileSrc.indexOf("{", decl.index));
   }
@@ -208,17 +337,139 @@ function resolveSpreads(literal: string, fileSrc: string): string | null {
 function resolveArgv(arg: string | undefined, fileSrc: string): string | null {
   if (arg === undefined) return null;
   if (!IDENTIFIER.test(arg)) return arg;
-  const decl = new RegExp(`\\bconst\\s+${arg}\\s*=\\s*([^;\\n]*)`).exec(fileSrc);
-  return decl ? decl[1] : null;
+  const decl = soleDeclaration(arg, fileSrc, "([^;\\n]*)");
+  return decl ? (decl[1] ?? null) : null;
 }
 
-interface GitSpawnSite {
+/**
+ * The literal text a string expression starts with, and whether that text is the
+ * WHOLE string. `null` when the expression is not a string literal at all.
+ *
+ * A template stops at its first `${`: `` `git clone ${url}` `` yields
+ * `"git clone "`, `complete: false`. The completeness flag is the whole point —
+ * the first version returned only the text, so `` `${GIT_BIN} status` `` yielded
+ * `""`, which read as a perfectly readable binary that simply was not git, and
+ * passed every rule in this file with no inventory entry. Review found it. A
+ * prefix is worth something only to a reader that knows how much of the string
+ * it is.
+ */
+interface LiteralPrefix { text: string; complete: boolean }
+
+function stringLiteralPrefix(text: string): LiteralPrefix | null {
+  const quote = text[0];
+  if (quote !== '"' && quote !== "'" && quote !== "`") return null;
+  let out = "";
+  for (let i = 1; i < text.length; i++) {
+    if (text[i] === "\\") {
+      out += text[i + 1] ?? "";
+      i++;
+      continue;
+    }
+    if (text[i] === quote) return { text: out, complete: true };
+    if (quote === "`" && text[i] === "$" && text[i + 1] === "{") return { text: out, complete: false };
+    out += text[i];
+  }
+  return { text: out, complete: false };
+}
+
+/** A binary argument the scanner could read, or the fact that it could not. */
+type Binary = { literal: string } | { unreadable: true };
+
+/**
+ * The command a launcher was given, resolved through one level of in-file
+ * `const NAME = "…"` — because `const GIT = "git"` was, until planning#409, a
+ * complete exemption from all three rules in this file.
+ *
+ * Anything else is `unreadable`, which is a *failure*, not a pass. See the
+ * third rule below for why that direction was chosen and what it costs.
+ *
+ * An interpolated template is unreadable **unless the interpolation cannot
+ * reach the program name**. For an argv launcher the whole argument IS the
+ * program, so any interpolation makes it unreadable — `` spawn(`/usr/bin/${t}`) ``
+ * included, whose prefix would otherwise resolve to the perfectly-innocent
+ * basename `bin`. For a shell launcher only the first word is the program, so a
+ * prefix that already contains whitespace has settled it: `` `git clone ${url}` ``
+ * runs git no matter what `url` is.
+ */
+function resolveBinary(arg: string | undefined, fileSrc: string, takesArgv: boolean): Binary {
+  const readPrefix = (text: string): Binary | null => {
+    const prefix = stringLiteralPrefix(text);
+    if (prefix === null) return null;
+    if (prefix.complete) return { literal: prefix.text };
+    const firstWordSettled = !takesArgv && /\S\s/.test(prefix.text);
+    return firstWordSettled ? { literal: prefix.text } : { unreadable: true };
+  };
+
+  if (arg === undefined) return { unreadable: true };
+  const inline = readPrefix(arg);
+  if (inline !== null) return inline;
+  if (!IDENTIFIER.test(arg)) return { unreadable: true };
+  const decl = soleDeclaration(arg, fileSrc, "([\"'`][^\\n]*)");
+  if (!decl) return { unreadable: true };
+  return readPrefix(decl[1] ?? "") ?? { unreadable: true };
+}
+
+/**
+ * Is this binary git?
+ *
+ * Matched on the BASENAME, so `/usr/bin/git` counts — an absolute path is the
+ * obvious next shape for someone hardening a spawn, and it runs exactly the
+ * same program.
+ *
+ * `git-lfs` deliberately does not count. Not because it is harmless — it reads
+ * the repository's config too — but because the remedy these rules demand
+ * (`gitArgsWithHooksDisabled`, which prepends `-c core.hooksPath=…`) is a *git*
+ * argument that `git-lfs` does not accept, so flagging it would demand a fix
+ * that does not work. This repo invokes LFS as `git lfs …`, which IS covered.
+ */
+function isGitBinary(binary: string): boolean {
+  return path.basename(binary.trim()) === "git";
+}
+
+/**
+ * Does this shell command string run git?
+ *
+ * Read per SEGMENT, not per string. `cd /srv/ws && git status` is the most
+ * natural way to give a shell command a working directory, and reading only the
+ * first word of the whole string called it `cd` and let it through — review
+ * found that, and it is the single most likely shape this ban exists to catch.
+ * So the string is split on shell operators (`&& || ; |`), on grouping, and on
+ * quote characters, and every segment's first word is read.
+ *
+ * Splitting on quotes is what reaches `sh -c "git status"`. It fails toward
+ * FALSE POSITIVES — `echo "git is fine"` is flagged — and that is the intended
+ * direction: the remedy for a flagged site is to stop using a shell string,
+ * which is the right answer either way.
+ *
+ * Leading `NAME=value` assignments are skipped per segment, since
+ * `GIT_TERMINAL_PROMPT=0 git status` runs git just as much as `git status` does.
+ */
+function shellCommandRunsGit(command: string): boolean {
+  for (const segment of command.split(/[;&|"'()]+/)) {
+    for (const token of segment.trim().split(/\s+/)) {
+      if (/^[A-Za-z_][\w]*=/.test(token)) continue;
+      if (isGitBinary(token)) return true;
+      break;
+    }
+  }
+  return false;
+}
+
+interface LauncherSite {
   file: string;
   line: number;
   /** Whole call text, as written. */
   source: string;
   /** The same, collapsed and clipped for the failure message. */
   text: string;
+  /** The local name that was called — `execFileAsync`, `nodeSpawn`, … */
+  launcher: string;
+  /** Whether it takes an argv array (vs a whole command string). */
+  takesArgv: boolean;
+  /** The command argument as written, for the failure message. */
+  binaryArg: string;
+  /** The same, resolved. */
+  binary: Binary;
   /** The argv argument as written — what the hooks rule reads. */
   argv: string;
   /** The same, resolved through an in-file `const`; `null` when unreadable. */
@@ -227,51 +478,112 @@ interface GitSpawnSite {
   options: string | null | undefined;
 }
 
-function gitSpawnSites(): GitSpawnSite[] {
-  const sites: GitSpawnSite[] = [];
+/**
+ * Every call to a `node:child_process` launcher in orchestrator-side source.
+ *
+ * A match preceded by a `.` is a member call (`this.deps.spawn(…)`, `pty.spawn(…)`,
+ * `cp.exec(…)`). Those are kept when the launcher takes an argv, or when the
+ * receiver is provably the `node:child_process` module itself; a `.exec(` on
+ * anything else is dropped. The reason is about the shape rather than about
+ * today's source: `.exec(` is the regular-expression and SQLite method of the
+ * same name, which nothing short of type information can tell from a process
+ * launch, while `.spawn(`/`.execFile(` on an injected dependency really are
+ * process launches and `cp.exec(` on a namespace binding provably is one.
+ */
+function launcherSites(): LauncherSite[] {
+  const sites: LauncherSite[] = [];
   for (const file of ROOTS.flatMap(sourceFiles)) {
     const src = stripComments(fs.readFileSync(file, "utf-8"));
-    for (const match of src.matchAll(GIT_SPAWN)) {
+    const launchers = childProcessLaunchers(src);
+    if (launchers.length === 0) continue;
+    const namespaces = new Set(childProcessNamespaces(src));
+    const byLocal = new Map(launchers.map((l) => [l.local, l]));
+    // Longest first: `execFile` must not win the alternation over `execFileSync`.
+    const names = [...byLocal.keys()].sort((a, b) => b.length - a.length);
+    const CALL = new RegExp(`(?<![\\w$])(${names.join("|")})\\s*\\(`, "g");
+    for (const match of src.matchAll(CALL)) {
+      const launcher = byLocal.get(match[1] ?? "");
+      if (!launcher) continue;
+      const takesArgv = ARGV_LAUNCHERS.has(launcher.canonical);
+      const before = src.slice(Math.max(0, match.index - 80), match.index).replace(/\s+$/, "");
+      const receiver = /([A-Za-z_$][\w$]*)\s*\.$/.exec(before)?.[1];
+      if (before.endsWith(".") && !takesArgv && !(receiver && namespaces.has(receiver))) continue;
       const span = balancedSpan(src, src.indexOf("(", match.index));
       const args = callArguments(span);
       sites.push({
         file: path.relative(REPO_SRC, file),
         line: src.slice(0, match.index).split("\n").length,
         source: span,
-        text: span.replace(/\s+/g, " ").slice(0, 140),
-        argv: args[1] ?? "",
-        resolvedArgv: resolveArgv(args[1], src),
-        options: resolveOptions(args[2], src),
+        text: `${launcher.local}${span}`.replace(/\s+/g, " ").slice(0, 140),
+        launcher: launcher.local,
+        takesArgv,
+        binaryArg: args[0] ?? "",
+        binary: resolveBinary(args[0], src, takesArgv),
+        argv: (takesArgv ? args[1] : undefined) ?? "",
+        resolvedArgv: takesArgv ? resolveArgv(args[1], src) : null,
+        options: resolveOptions(takesArgv ? args[2] : args[1], src),
       });
     }
   }
   return sites;
 }
 
+/** Launcher calls that start a `git` process with an argv the rules can demand. */
+function gitSpawnSites(): LauncherSite[] {
+  return launcherSites().filter(
+    (s) => s.takesArgv && "literal" in s.binary && isGitBinary(s.binary.literal),
+  );
+}
+
 /**
  * Does this spawn name a working directory — i.e. can it be pointed at a tree
  * ShipIt does not own?
  *
- * Two carriers, because a `cwd`-only reading would miss the second: a `cwd`
- * option, and a `-C <dir>` argument (`services/shipit-source.ts`). Both are read
- * through one level of in-file `const` indirection, including an object literal's
- * own spreads, since either can travel in a variable.
+ * Four carriers, because reading only `cwd` misses the other three: a `cwd`
+ * option, a `-C <dir>` argument (`services/shipit-source.ts`), a `--git-dir` /
+ * `--work-tree` argument, and `GIT_DIR` / `GIT_WORK_TREE` in the spawn's `env`.
+ * The last two were named as blind spots in `git-tree-uid.ts` and are checked
+ * now rather than described (planning#409); nothing in the tree uses them today,
+ * which is exactly when a rule is free to add.
+ *
+ * A fifth carrier is not a directory the invocation is *given* but one it
+ * **creates**: `clone`, `init` and `worktree add` name their destination as an
+ * ordinary argument, so a spawn can produce a whole tree while naming no working
+ * directory at all. planning#410 found the simple-git instance of exactly this —
+ * a bare `safeSimpleGit().raw(["clone", …, targetDir])` cloned as root into a
+ * session's state directory, because the choke point resolves the uid from
+ * `baseDir` and a clone's destination is not one. The choke point's own comment
+ * claimed it "covers a call site nobody has written yet"; that is true of the
+ * tree a call READS and false of the tree it WRITES. The raw-spawn form of that
+ * blind spot is closed here.
+ *
+ * Argv and options are read through one level of in-file `const` indirection,
+ * including an object literal's own spreads, since either can travel in a
+ * variable.
  *
  * Anything the scanner could not read counts as carrying one. That direction is
  * the whole point: an unreadable shape is never treated as proof there is no
  * working directory.
  */
-function namesAWorkingDirectory(site: GitSpawnSite): boolean {
+const CREATES_A_TREE = /["'`](?:clone|init|worktree)["'`]/;
+
+function namesAWorkingDirectory(site: LauncherSite): boolean {
   if (site.options === null || site.resolvedArgv === null) return true;
-  if (/["'`]-C["'`]/.test(site.resolvedArgv)) return true;
-  return site.options !== undefined && /\bcwd\b/.test(site.options);
+  if (/["'`]-C["'`]|["'`]--git-dir|["'`]--work-tree/.test(site.resolvedArgv)) return true;
+  if (CREATES_A_TREE.test(site.resolvedArgv)) return true;
+  return site.options !== undefined && /\bcwd\b|\bGIT_DIR\b|\bGIT_WORK_TREE\b/.test(site.options);
 }
 
 describe("git spawn coverage: hooks guard", () => {
   it("every orchestrator-side `git` process spawn goes through gitArgsWithHooksDisabled", () => {
     const sites = gitSpawnSites();
     const unguarded = sites
-      .filter((s) => !s.argv.includes("gitArgsWithHooksDisabled"))
+      // `resolvedArgv`, not the raw text: `const args = gitArgsWithHooksDisabled([…]);
+      // execFileSync("git", args)` is the shape this file's own resolveArgv
+      // docstring holds up as compliant, and reading the raw argument called it
+      // `"args"` and told the author to wrap an argv that was already wrapped.
+      // `null` (unreadable) stays unguarded — the fail-closed direction.
+      .filter((s) => !(s.resolvedArgv ?? "").includes("gitArgsWithHooksDisabled"))
       .map((s) => `${s.file}:${s.line} — ${s.text}`);
 
     // If this drops to zero the regex has stopped matching anything and the
@@ -315,12 +627,14 @@ describe("git spawn coverage: tree-uid drop (docs/266 E2)", () => {
     ].join("\n")).toEqual([]);
   });
 
-  it("recognizes both working-directory carriers and an unreadable options argument", () => {
+  it("recognizes every working-directory carrier and an unreadable options argument", () => {
     // The scanner's own predicate, exercised directly: a rule that silently
     // stopped seeing `-C` or an opaque options variable would leave the suite
     // green while covering less, which is the failure this pins.
-    const site = (argv: string, options: string | null | undefined): GitSpawnSite =>
-      ({ file: "x.ts", line: 1, source: "", text: "", argv, resolvedArgv: argv, options });
+    const site = (argv: string, options: string | null | undefined): LauncherSite => ({
+      file: "x.ts", line: 1, source: "", text: "", launcher: "spawn", takesArgv: true,
+      binaryArg: '"git"', binary: { literal: "git" }, argv, resolvedArgv: argv, options,
+    });
 
     // These two are NOT "safe" — they are the rule's scope boundary, and saying
     // so is the point (see the negative-assertion note further down). A spawn
@@ -341,10 +655,22 @@ describe("git spawn coverage: tree-uid drop (docs/266 E2)", () => {
     expect(namesAWorkingDirectory(site("['-C', dir, 'status']", undefined))).toBe(true);
     expect(namesAWorkingDirectory(site("[`-C`, dir]", undefined))).toBe(true);
 
+    // planning#409 — the three carriers `git-tree-uid.ts` used to merely NAME as
+    // blind spots. A `--git-dir`/`--work-tree` argument and a `GIT_DIR`/
+    // `GIT_WORK_TREE` environment entry each point git at a tree exactly the way
+    // `cwd` does, and nothing in the tree uses them, so recognizing them costs
+    // nothing today and closes the shape a future call site would reach for.
+    expect(namesAWorkingDirectory(site('["--git-dir", dir, "log"]', undefined))).toBe(true);
+    expect(namesAWorkingDirectory(site('["--work-tree=/srv/ws", "status"]', undefined))).toBe(true);
+    expect(namesAWorkingDirectory(site('["status"]', '{ env: { GIT_DIR: dir } }'))).toBe(true);
+    expect(namesAWorkingDirectory(site('["status"]', '{ env: { GIT_WORK_TREE: ws } }'))).toBe(true);
+
     // An argv the scanner could not resolve is treated as carrying one.
-    expect(namesAWorkingDirectory(
-      { file: "x.ts", line: 1, source: "", text: "", argv: "args", resolvedArgv: null, options: undefined },
-    )).toBe(true);
+    expect(namesAWorkingDirectory({
+      file: "x.ts", line: 1, source: "", text: "", launcher: "spawn", takesArgv: true,
+      binaryArg: '"git"', binary: { literal: "git" }, argv: "args", resolvedArgv: null,
+      options: undefined,
+    })).toBe(true);
   });
 
   it("resolves a `-C` that travels in a variable", () => {
@@ -508,6 +834,239 @@ describe("git spawn coverage: bare safeSimpleGit() is a census (docs/266 E2)", (
     // assertion is the honest record of the rule's edge, not a claim that the
     // shape is safe.
     expect(bare("safeSimpleGit(maybeDir)")).toBe(false);
+  });
+});
+
+/**
+ * planning#409 — the two rules above are only worth what their *discovery* is
+ * worth, and discovery used to be one regex over four launcher names and a
+ * quoted `git` literal.
+ *
+ * Everything below widens that, and each rule here is the enforced version of a
+ * sentence `git-tree-uid.ts` previously carried as a named gap.
+ */
+describe("git spawn coverage: what counts as a git spawn (planning#409)", () => {
+  /**
+   * Launcher calls whose binary this scanner cannot read, as
+   * `file — launcher(argument)`.
+   *
+   * These are the calls that are invisible to the hooks and uid rules, and this
+   * is the fail-closed direction being paid for: a computed binary FAILS unless
+   * it is listed, rather than passing silently. The cost is real — none of the
+   * three below can start git — and it is the cost that buys the property that
+   * `const GIT = "git"; spawn(GIT, …)` cannot exempt a call site from every rule
+   * in this file, which is what it did before.
+   *
+   * No line numbers: an inventory keyed on line churns on every edit above it,
+   * and a rule people renumber is a rule people stop reading.
+   */
+  const BINARY_NOT_READABLE = [
+    // `cliInvocation(agentId, …)` — an agent CLI, `claude` or `codex`.
+    "server/orchestrator/services/redaction.ts — execFile(binary)",
+    // The resolved agent harness binary, from the agent registry.
+    "server/orchestrator/session-namer.ts — execFile(binary)",
+    // `LOCK_ONLY_COMMAND[detectPackageManager(dir)]` — npm, pnpm or yarn.
+    "server/orchestrator/templates.ts — execFile(cmd)",
+  ];
+
+  it("no launcher call starts a binary this scanner cannot read", () => {
+    const unreadable = launcherSites()
+      .filter((s) => !("literal" in s.binary))
+      .map((s) => `${s.file} — ${s.launcher}(${s.binaryArg})`)
+      .sort();
+
+    // NOT de-duplicated. A `Set` here would let a SECOND `execFile(binary)` in
+    // `redaction.ts` — one that does start git — collapse onto the entry already
+    // approved for the first, with no diff to review. Review caught that; an
+    // inventory that absorbs new call sites silently is the trap this shape is
+    // most prone to.
+    expect(unreadable, [
+      "A `spawn`/`execFile` whose command is computed is invisible to every rule in",
+      "this file: the hooks wrapper, the tree-uid drop, and the safe.directory ban all",
+      "start by asking whether the binary is git, and this one cannot be asked.",
+      "`const GIT = \"git\"` used to be a complete, silent exemption.",
+      "",
+      "If the new call cannot start git, add it to BINARY_NOT_READABLE with the reason.",
+      "If it can, make the binary a literal so the other rules can see it.",
+    ].join("\n")).toEqual(BINARY_NOT_READABLE);
+  });
+
+  it("no orchestrator-side code runs git through a shell command string", () => {
+    const shellGit = launcherSites()
+      .filter((s) => !s.takesArgv && "literal" in s.binary && shellCommandRunsGit(s.binary.literal))
+      .map((s) => `${s.file}:${s.line} — ${s.text}`);
+
+    expect(shellGit, [
+      "`exec`/`execSync` take one command STRING, so there is no argument list for",
+      "`gitArgsWithHooksDisabled` to wrap — a git call in this shape cannot satisfy the",
+      "hooks rule at all, and it adds a shell that re-splits interpolated paths.",
+      "Use execFile/spawn with an argv: execFile(\"git\", gitArgsWithHooksDisabled([...])).",
+    ].join("\n")).toEqual([]);
+  });
+
+  it("reads the launchers a file actually imported, aliases included", () => {
+    const cp = (body: string): string[] =>
+      childProcessLaunchers(body).map((l) => `${l.local}:${l.canonical}`).sort();
+
+    expect(cp('import { spawn } from "node:child_process";')).toEqual(["spawn:spawn"]);
+    expect(cp('import { spawn as nodeSpawn } from "node:child_process";')).toEqual(["nodeSpawn:spawn"]);
+    expect(cp('import { execFile, execFileSync } from "node:child_process";'))
+      .toEqual(["execFile:execFile", "execFileSync:execFileSync"]);
+
+    // `spawnSync` and `execSync` — the two entry points the original regex could
+    // not see at all. A future `spawnSync("git", …)` was a silent exemption.
+    expect(cp('import { spawnSync, execSync } from "node:child_process";'))
+      .toEqual(["execSync:execSync", "spawnSync:spawnSync"]);
+
+    // The alias IS the call site: `services/updates.ts` calls `execFileAsync`.
+    expect(cp('import { execFile } from "node:child_process";\nconst execFileAsync = promisify(execFile);'))
+      .toEqual(["execFile:execFile", "execFileAsync:execFile"]);
+
+    // Safe because of the SHAPE, not because of the file: a `type` import binds
+    // no value, so nothing named by one can start a process — true of every type
+    // import. `service-manager.ts` and both oauth refreshers have exactly this
+    // line beside a real value import, and the real one is still found.
+    expect(cp('import type { ChildProcess } from "node:child_process";')).toEqual([]);
+    expect(cp('import { spawn } from "node:child_process";\nimport type { SpawnOptions } from "node:child_process";'))
+      .toEqual(["spawn:spawn"]);
+
+    // Safe because of the SHAPE: `exec` from anywhere other than
+    // `node:child_process` is a different function. This is what makes naming
+    // `exec` affordable at all — `RegExp.prototype.exec` and `Database.exec`
+    // appear hundreds of times in this tree, in files that import neither.
+    expect(cp('import { promisify } from "node:util";')).toEqual([]);
+    expect(cp('import { exec } from "./my-helpers.js";')).toEqual([]);
+
+    // A namespace import reaches every launcher through one binding, so binding
+    // the scan to named imports alone would skip such a file outright — the same
+    // silent-exemption shape as `const GIT = "git"`. Nothing writes it today,
+    // which is the cheapest moment to close it.
+    expect(cp('import * as cp from "node:child_process";'))
+      .toEqual(["exec:exec", "execFile:execFile", "execFileSync:execFileSync",
+        "execSync:execSync", "spawn:spawn", "spawnSync:spawnSync"]);
+    expect(childProcessNamespaces('import * as cp from "node:child_process";')).toEqual(["cp"]);
+    // Safe because of the SHAPE: a named-import clause binds the names inside
+    // the braces, never the module, so there is no receiver to call through.
+    expect(childProcessNamespaces('import { spawn } from "node:child_process";')).toEqual([]);
+  });
+
+  it("resolves a binary through a literal, a path, and one level of `const`", () => {
+    const src = 'const GIT = "git";\nconst DOCKER = "docker";\nspawn(GIT, args);';
+    expect(resolveBinary('"git"', src, true)).toEqual({ literal: "git" });
+    // The exemption this rule closes: the binary in a variable.
+    expect(resolveBinary("GIT", src, true)).toEqual({ literal: "git" });
+    expect(resolveBinary("DOCKER", src, true)).toEqual({ literal: "docker" });
+    // Computed — the fail-closed branch, inventoried above rather than waved through.
+    expect(resolveBinary("binary", src, true)).toEqual({ unreadable: true });
+    expect(resolveBinary(undefined, src, true)).toEqual({ unreadable: true });
+
+    // An absolute path runs the same program, so it is the same rule.
+    expect(isGitBinary("git")).toBe(true);
+    expect(isGitBinary("/usr/bin/git")).toBe(true);
+    // Safe because of the SHAPE: these are different programs, and demanding a
+    // git-only flag (`-c core.hooksPath=…`) of them would be a fix that fails.
+    // `git-lfs` is named here as a boundary, NOT as harmless — this repo reaches
+    // LFS as `git lfs …`, which the rules above do cover.
+    expect(isGitBinary("docker")).toBe(false);
+    expect(isGitBinary("git-lfs")).toBe(false);
+    expect(isGitBinary("/opt/gitless/bin/gitless")).toBe(false);
+  });
+
+  it("reads the binary out of a shell command string, past env assignments", () => {
+    expect(shellCommandRunsGit("git status")).toBe(true);
+    expect(shellCommandRunsGit("  /usr/bin/git fetch origin  ")).toBe(true);
+    // A leading assignment is the natural way to write this in a shell string,
+    // and it still runs git.
+    expect(shellCommandRunsGit("GIT_TERMINAL_PROMPT=0 git fetch")).toBe(true);
+
+    // Safe because of the SHAPE: the first word is the program, and these name
+    // other programs. A `git` appearing later is an argument — `npm run git` runs
+    // npm — so the rule reads the first word only.
+    expect(shellCommandRunsGit("docker ps")).toBe(false);
+    expect(shellCommandRunsGit("npm run git")).toBe(false);
+
+    // A template's prefix is enough for a SHELL command, because interpolation
+    // cannot change the first word of a string that already starts with one.
+    expect(stringLiteralPrefix(`\`git clone \${url}\``)).toEqual({ text: "git clone ", complete: false });
+    expect(stringLiteralPrefix(`\`\${bin} clone\``)).toEqual({ text: "", complete: false });
+    expect(stringLiteralPrefix('"git status"')).toEqual({ text: "git status", complete: true });
+    expect(stringLiteralPrefix("someVariable")).toBeNull();
+
+    // …and NOT enough for an argv launcher, where the whole argument is the
+    // program. This is the hole review found: the prefix used to be returned
+    // bare, so `${GIT_BIN}` read as the readable non-git binary "" and
+    // `/usr/bin/${tool}` as the readable non-git binary "bin" — both passing
+    // every rule in this file with no inventory entry.
+    expect(resolveBinary(`\`\${GIT_BIN}\``, "", true)).toEqual({ unreadable: true });
+    expect(resolveBinary(`\`/usr/bin/\${tool}\``, "", true)).toEqual({ unreadable: true });
+    expect(resolveBinary(`\`git clone \${url}\``, "", false)).toEqual({ literal: "git clone " });
+    expect(resolveBinary(`\`\${GIT_BIN} status\``, "", false)).toEqual({ unreadable: true });
+  });
+
+  it("splits a shell command into segments, so `cd X && git …` is not hidden by `cd`", () => {
+    // The shape the ban exists for, and the one reading only the first word of
+    // the whole string let straight through.
+    expect(shellCommandRunsGit("cd /srv/ws && git status")).toBe(true);
+    expect(shellCommandRunsGit("mkdir -p x; git init x")).toBe(true);
+    expect(shellCommandRunsGit('sh -c "git status"')).toBe(true);
+    expect(shellCommandRunsGit("ls | git hash-object --stdin")).toBe(true);
+
+    // Safe because of the SHAPE: no segment of either starts with git. `git` as
+    // a later word is an argument to another program, and an argument cannot
+    // start a process.
+    expect(shellCommandRunsGit("npm run git")).toBe(false);
+    expect(shellCommandRunsGit("docker ps && docker rm x")).toBe(false);
+  });
+
+  it("treats a shadowed name as unreadable rather than resolving it to the first declaration", () => {
+    // This scanner has no scopes. Review showed the fail-open half: a top-level
+    // `const args = ["status"]` makes a later, function-local
+    // `const args = ["-C", ws, …]` read as carrying no working directory.
+    const shadowed = 'const args = ["status"];\nfunction f() { const args = ["-C", ws, "status"]; }';
+    expect(resolveArgv("args", shadowed)).toBeNull();
+    expect(resolveArgv("args", 'const args = ["-C", ws];')).toContain("-C");
+
+    const twoOpts = "const opts = { timeout: 5 };\nfunction f() { const opts = { cwd: dir }; }";
+    expect(resolveOptions("opts", twoOpts)).toBeNull();
+  });
+
+  it("fails closed on a spread it cannot read, whatever shape the spread has", () => {
+    // The first version matched only `...identifier`, so a spread of a CALL or a
+    // member expression matched nothing at all and was kept verbatim — a `cwd`
+    // inside it invisible. Review found all three shapes.
+    const src = "const shared = { cwd: dir };";
+    expect(resolveOptions("{ ...makeOpts(dir) }", src)).toBeNull();
+    expect(resolveOptions("{ ...process.env }", src)).toBeNull();
+    expect(resolveOptions("{ ...base.opts }", src)).toBeNull();
+    expect(resolveOptions("{ ...shared }", src)).toContain("cwd");
+
+    // Safe because of what these two functions RETURN — `{uid, gid}` and
+    // `{args, env}` — not because they are calls. They cannot carry a working
+    // directory, and they are the very thing the uid rule demands, so treating
+    // them as unreadable would make every compliant call site look unreadable.
+    expect(resolveOptions("{ cwd, ...gitSpawnOverridesForTree(cwd) }", src)).toContain("cwd");
+    expect(resolveOptions("{ ...gitCredentialSpawnOverrides(cred) }", src)).not.toBeNull();
+  });
+
+  it("counts a tree a git spawn CREATES, not only one it is given (planning#410)", () => {
+    const site = (argv: string): LauncherSite => ({
+      file: "x.ts", line: 1, source: "", text: "", launcher: "spawn", takesArgv: true,
+      binaryArg: '"git"', binary: { literal: "git" }, argv, resolvedArgv: argv, options: undefined,
+    });
+
+    // `clone`/`init`/`worktree add` name their destination as an ordinary
+    // argument, so the invocation writes a whole tree while naming no working
+    // directory. planning#410 found the simple-git form of this cloning as root
+    // into a session's state directory.
+    expect(namesAWorkingDirectory(site('["clone", "--local", src, dest]'))).toBe(true);
+    expect(namesAWorkingDirectory(site('["init", dest]'))).toBe(true);
+    expect(namesAWorkingDirectory(site('["worktree", "add", dest]'))).toBe(true);
+
+    // Safe because of the SHAPE: these read an existing repository and create no
+    // tree, so the uid that should run them is the one that owns the tree they
+    // are pointed at — which is the `cwd`/`-C` question, already asked above.
+    expect(namesAWorkingDirectory(site('["merge-base", "--is-ancestor", a, b]'))).toBe(false);
+    expect(namesAWorkingDirectory(site('["rev-parse", "HEAD"]'))).toBe(false);
   });
 });
 

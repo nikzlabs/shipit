@@ -235,9 +235,37 @@ spread of an options object declared in another module. Both were classified as
 true then only for the identifier branch. Both are now resolved and both are
 verified by injecting the shape and watching the build go red. The blind spots
 that remain are named in `git-tree-uid.ts` rather than implied away: the
-environment (`GIT_DIR`, `GIT_WORK_TREE`), the inherited process cwd, indirection
-deeper than one in-file `const`, and a binary that is not a quoted `git`
-literal.*
+inherited process cwd, and indirection deeper than one in-file `const`.*
+
+*Widened again 2026-08-16 (planning#409), on the half nobody had checked: not
+what the rules demand, but **which calls they are asked about**. The original
+scanner matched one regex — four launcher names followed by a quoted `git`
+literal — so `spawnSync("git", …)`, `execSync("git …")` and
+`const GIT = "git"; spawn(GIT, …)` were silent exemptions from every rule in the
+file, and `GIT_DIR` / `--git-dir` were an unrecognized working-directory
+carrier. A site is now discovered by reading the launcher names each file
+imported from `node:child_process` (`as` aliases and `promisify` wrappers
+included) and resolving the binary through one level of in-file `const` and
+through a leading path. A binary the scanner **cannot** read now fails, escaped
+only by a three-entry inventory of the computed-binary calls in the tree, so a
+fourth is a visible diff; and a git call in `exec`/`execSync` shell-string form
+is refused outright, since a single command string has no argv for
+`gitArgsWithHooksDisabled` to wrap. A `clone`/`init`/`worktree` subcommand now
+counts as naming a working directory too — it names the tree it CREATES as an
+ordinary argument, the raw-spawn form of the blind spot planning#410 found in
+`safeSimpleGit`. The site set is unchanged by the widening — the same 29 git
+spawns, none lost — and each new rule was verified by injecting the shape and
+watching the build go red.*
+
+*Independent review then found the widening itself fail-**open** in four places,
+all fixed before merge and all pinned: an interpolated binary
+(`` spawn(`${GIT_BIN}`, …) `` read as the readable non-git binary `""`, and
+`` `/usr/bin/${tool}` `` as `bin`); a spread that is not a bare identifier
+(`{ ...makeOpts(dir) }` matched nothing and was kept verbatim, hiding its `cwd`);
+a shell string whose git is not the first word (`cd /srv/ws && git status`); and
+a shadowed `const`, which resolved to whichever declaration came first in the
+file. The recurring shape in all four: a partial read reported as a complete
+one.*
 
 **E2b — removing the `*`, behind `SHIPIT_GIT_STRICT_OWNERSHIP=1`, off by
 default.** The switch exists because of *when* the failure lands, not whether it

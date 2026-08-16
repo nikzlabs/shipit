@@ -201,8 +201,27 @@ Build sequence from [plan.md](./plan.md) §5. Requirements are cited as `(req N)
       options object the scanner cannot read counts as a third — an unreadable
       shape fails closed instead of passing quietly. `git-tree-uid.ts`'s
       docstring, which said this rule did not exist, now says what it enforces
-      and names its two blind spots (`GIT_DIR`/`--git-dir`; indirection deeper
-      than one in-file `const`).
+      and names its remaining blind spots.
+- [x] **E2a widened to the discovery half (planning#409).** The rules were only
+      ever asked about calls one regex could see: four launcher names plus a
+      quoted `git` literal. `spawnSync("git", …)`, `execSync("git …")` and
+      `const GIT = "git"; spawn(GIT, …)` were exempt from all of them.
+      Launchers now come from each file's own `node:child_process` import
+      (aliases and `promisify` wrappers included), the binary is resolved
+      through one `const` and through a leading path, an unreadable binary
+      fails against a named three-entry inventory, git in `exec`/`execSync`
+      shell form is refused outright, and `--git-dir`/`--work-tree`/`GIT_DIR`/
+      `GIT_WORK_TREE` plus a `clone`/`init`/`worktree` destination join `cwd`
+      and `-C` as working-directory carriers. Same 29 git spawn sites found
+      before and after; every new rule verified by injecting the shape and
+      watching the build go red.
+- [x] **Four fail-open holes in that widening, found by independent review and
+      fixed before merge**: an interpolated binary read as a complete one
+      (`` `${GIT_BIN}` `` → `""`, `` `/usr/bin/${tool}` `` → `bin`); a spread
+      that is not a bare identifier (`{ ...makeOpts(dir) }`) matching nothing
+      and hiding its `cwd`; a shell string whose git is not the first word
+      (`cd /srv/ws && git status`); and a shadowed `const` resolving to the
+      first declaration in the file. Each is now pinned by a unit assertion.
 - [x] **Three sites the audit found before arming anything**, all of which armed
       E2 would have broken and all of which ran as root in an untrusted tree
       until now: `git-lfs.ts`'s `runGit` (`git grep` + `git lfs pull`, the whole
