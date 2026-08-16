@@ -507,6 +507,11 @@ export class ChatHistoryManager {
   private stmtDeleteBySession;
   private stmtDeleteInProgress;
   private stmtFinalizeInProgress;
+  private stmtFinalizeConsultRows;
+  private stmtLoadInProgressConsultRows;
+  private stmtLoadFinalizedConsultRows;
+  private stmtFinalizeRowById;
+  private stmtDeleteRowById;
   private stmtDeleteExpiredSnapshots;
 
   constructor(dbManager: DatabaseManager) {
@@ -552,6 +557,22 @@ export class ChatHistoryManager {
     this.stmtDeleteBySession = this.db.prepare("DELETE FROM messages WHERE session_id = ?");
     this.stmtDeleteInProgress = this.db.prepare("DELETE FROM messages WHERE session_id = ? AND in_progress = 1");
     this.stmtFinalizeInProgress = this.db.prepare("UPDATE messages SET in_progress = 0 WHERE session_id = ? AND in_progress = 1");
+    // planning#402 — the consult-durability chokepoint. All five back
+    // `replaceInProgress` / `clearInProgress`; see `replaceInProgress` for the
+    // invariant they enforce (a terminal consult result is not turn scratch).
+    // Same `session_id`-indexed predicate as the delete they guard, so the
+    // added work is the same class as work already paid per boundary.
+    this.stmtFinalizeConsultRows = this.db.prepare(
+      "UPDATE messages SET in_progress = 0 WHERE session_id = ? AND in_progress = 1 AND sub_agent_consult IS NOT NULL",
+    );
+    this.stmtLoadInProgressConsultRows = this.db.prepare(
+      "SELECT id, sub_agent_consult FROM messages WHERE session_id = ? AND in_progress = 1 AND sub_agent_consult IS NOT NULL ORDER BY id",
+    );
+    this.stmtLoadFinalizedConsultRows = this.db.prepare(
+      "SELECT id, sub_agent_consult FROM messages WHERE session_id = ? AND in_progress = 0 AND sub_agent_consult IS NOT NULL ORDER BY id",
+    );
+    this.stmtFinalizeRowById = this.db.prepare("UPDATE messages SET in_progress = 0 WHERE id = ?");
+    this.stmtDeleteRowById = this.db.prepare("DELETE FROM messages WHERE id = ?");
     this.stmtDeleteExpiredSnapshots = this.db.prepare("DELETE FROM rewind_snapshots WHERE expires_at_ms <= ?");
   }
 
@@ -888,7 +909,19 @@ export class ChatHistoryManager {
     // a wait, and a full-row scan of a long session's transcript per poll is
     // real work to repeat thousands of times.
     const rows = this.stmtLoadSubAgentCards.all(sessionId) as { sub_agent_consult: string }[];
-    return rows.map((r) => JSON.parse(r.sub_agent_consult) as SubAgentConsultCard);
+    const out: SubAgentConsultCard[] = [];
+    for (const row of rows) {
+      try {
+        out.push(JSON.parse(row.sub_agent_consult) as SubAgentConsultCard);
+      } catch {
+        // Skip an unreadable card rather than throwing, exactly as the boot
+        // sweep's query does. This backs `shipit agent result` and its `--wait`
+        // poll: one corrupt row must not make every other run in the session
+        // unreadable, and it must not turn a completed consult's delivery into
+        // an error (planning#402).
+      }
+    }
+    return out;
   }
 
   /**
@@ -931,15 +964,19 @@ export class ChatHistoryManager {
    * `recordedCards`, that helper patches the recorded copy instead so the turn's
    * own finalize can't clobber the transition. Returns true if a card matched.
    *
-   * `opts.finalize` additionally clears the row's `in_progress` flag. Only the
-   * planning#309 boot reconcile passes it, and it needs it: a consult spawned by a
-   * FOREGROUND `shipit agent run` is still inside its originating turn when the
-   * orchestrator dies, so its row is `in_progress=1`. docs/240 then adopts that
-   * turn in the new process, and the adopted turn's `agent_result` calls
-   * `replaceInProgress`, which deletes every `in_progress=1` row in the session
-   * and rebuilds from the fresh runner's (empty) `recordedCards` — taking the
-   * card with it. A patch alone would be undone by a delete; finalizing the row
-   * is what makes the reconciled card outlive the adoption.
+   * `opts.finalize` additionally clears the row's `in_progress` flag, so the
+   * reconciled card is already in its resting state rather than riding an
+   * adopted turn's in-progress set. Only the planning#309 boot reconcile passes it.
+   *
+   * It used to be load-bearing for DURABILITY: a consult spawned by a FOREGROUND
+   * `shipit agent run` is still inside its originating turn when the orchestrator
+   * dies, so its row is `in_progress=1`; docs/240 adopts that turn, and the
+   * adopted turn's `replaceInProgress` deleted every such row. planning#402 moved
+   * that guarantee into `replaceInProgress` itself, which now finalizes an
+   * orphaned consult row instead of deleting it — so a patch WITHOUT `finalize`
+   * survives the adoption too. `finalize` is still the right thing for the
+   * reconcile to pass; it is no longer the only thing standing between a card
+   * and the next turn's delete.
    */
   updateSubAgentConsultCard(
     sessionId: string,
@@ -1142,11 +1179,51 @@ export class ChatHistoryManager {
    * the primary fix is the turn-epoch guard on stale teardowns). Every notice
    * carries a stable per-emit `noticeId`, so a batch entry whose id already
    * exists on a finalized row of this session is the same emit and is skipped.
+   *
+   * ## A sub-agent consult card is never turn scratch (planning#402)
+   *
+   * A consult card is created `pending` mid-turn, so it lives on an
+   * `in_progress=1` row for as long as the run takes — minutes to tens of
+   * minutes — and its pending → terminal patch lands on that same row. If the
+   * owning turn dies in that window (a preempting auto-fix turn, an adopted
+   * turn, a crash), the next turn's delete takes the row with it: `shipit agent
+   * result` then reads `pending` forever and the consult's entire output is
+   * gone. Observed in production with 16,529 characters of review lost while
+   * the completion log said `persisted=true`.
+   *
+   * So the delete is no longer allowed to touch a consult row. Before it runs,
+   * every `in_progress=1` row carrying a consult card that this batch does NOT
+   * carry is finalized in place — its turn is gone, so nothing will rebuild it,
+   * and `in_progress=0` is what makes it outlive every later rebuild.
+   *
+   * "…that this batch does NOT carry" is load-bearing, not an optimization.
+   * A card the batch still holds belongs to a LIVE turn, which re-inserts it at
+   * its `afterGroupIndex` anchor on every rebuild; finalizing that row instead
+   * would freeze its id while the surrounding assistant rows are reborn with
+   * higher ones, floating the card to the top of its own turn. Preserve only
+   * what the rebuild would otherwise destroy.
+   *
+   * The insert side mirrors the notice guard for the same reason it exists: once
+   * a card is on a finalized row, re-inserting it from a still-live
+   * `recordedCards` would make a duplicate, and a stale `pending` copy sitting
+   * on the earlier row shadows the terminal one on every read that takes the
+   * first match. So a batch copy that is at least as current REPLACES the
+   * surviving row — deleted, then re-inserted at its anchor, which keeps the
+   * position that patching in place would have frozen. A batch copy that is
+   * stale (pending against a terminal row) is dropped instead: preserving a
+   * result outranks preserving a position.
    */
   replaceInProgress(sessionId: string, messages: PersistedMessage[]): void {
     this.db.transaction(() => {
+      const batchCardIds = new Set<string>();
+      for (const msg of messages) {
+        if (msg.subAgentConsult) batchCardIds.add(msg.subAgentConsult.cardId);
+      }
+      this.preserveOrphanedConsultRows(sessionId, batchCardIds);
+
       this.stmtDeleteInProgress.run(sessionId);
       let finalizedNoticeIds: Set<string> | null = null;
+      let finalizedConsults: Map<string, { id: number; card: SubAgentConsultCard }> | null = null;
       for (const msg of messages) {
         if (msg.noticeId) {
           // Lazy: the query runs only for batches that carry a notice at all,
@@ -1159,9 +1236,85 @@ export class ChatHistoryManager {
           );
           if (finalizedNoticeIds.has(msg.noticeId)) continue;
         }
+        if (msg.subAgentConsult) {
+          // Same lazy shape, and after the delete for the same reason.
+          finalizedConsults ??= this.loadFinalizedConsultRows(sessionId);
+          const existing = finalizedConsults.get(msg.subAgentConsult.cardId);
+          if (existing) {
+            if (existing.card.status !== "pending" && msg.subAgentConsult.status === "pending") {
+              // The batch copy is the STALE one — a live turn re-flushing a
+              // `recordedCards` snapshot taken before the transition. Keep the
+              // surviving row; a rebuild must never walk a result back to
+              // `pending`, which is the shape the incident reported for hours.
+              continue;
+            }
+            // The batch copy is at least as current, so drop the surviving row
+            // and let the insert below place it at its `afterGroupIndex` anchor.
+            // Patching the old row in place would keep the card durable but
+            // freeze its id while the assistant rows around it are reborn with
+            // higher ones — the same float-to-the-top regression the preserve
+            // step above is conditional to avoid, reached by the other branch.
+            // Re-inserting is not a durability step backwards: the row rejoins
+            // this turn's in-progress set, and the preserve step catches it
+            // again the moment a foreign rebuild would otherwise delete it.
+            this.stmtDeleteRowById.run(existing.id);
+            finalizedConsults.delete(msg.subAgentConsult.cardId);
+          }
+        }
         this.stmtInsert.run(this.toRow(sessionId, msg));
       }
     })();
+  }
+
+  /**
+   * Finalize in place every `in_progress=1` row of this session that carries a
+   * consult card the incoming rebuild does not — see `replaceInProgress` for
+   * why. Runs before the delete, so those rows are already `in_progress=0` when
+   * it fires and it simply does not see them.
+   *
+   * The empty-batch case (every ordinary turn boundary — a batch carrying a
+   * consult card at all is rare) is one blanket `UPDATE` with the same
+   * `session_id`-indexed predicate as the `DELETE` that follows it, and parses
+   * no JSON. Only a batch that does carry a card pays the row scan.
+   */
+  private preserveOrphanedConsultRows(sessionId: string, batchCardIds: Set<string>): void {
+    if (batchCardIds.size === 0) {
+      this.stmtFinalizeConsultRows.run(sessionId);
+      return;
+    }
+    const rows = this.stmtLoadInProgressConsultRows.all(sessionId) as {
+      id: number;
+      sub_agent_consult: string;
+    }[];
+    for (const row of rows) {
+      let cardId: string | null = null;
+      try {
+        cardId = (JSON.parse(row.sub_agent_consult) as SubAgentConsultCard).cardId;
+      } catch {
+        // Unreadable card JSON — preserve the row rather than deleting it. A
+        // corrupt card is still evidence a consult happened.
+      }
+      if (cardId !== null && batchCardIds.has(cardId)) continue;
+      this.stmtFinalizeRowById.run(row.id);
+    }
+  }
+
+  /** Finalized consult rows of a session, by `cardId`. See `replaceInProgress`. */
+  private loadFinalizedConsultRows(sessionId: string): Map<string, { id: number; card: SubAgentConsultCard }> {
+    const rows = this.stmtLoadFinalizedConsultRows.all(sessionId) as {
+      id: number;
+      sub_agent_consult: string;
+    }[];
+    const out = new Map<string, { id: number; card: SubAgentConsultCard }>();
+    for (const row of rows) {
+      try {
+        const card = JSON.parse(row.sub_agent_consult) as SubAgentConsultCard;
+        out.set(card.cardId, { id: row.id, card });
+      } catch {
+        // Unreadable card JSON — it can't collide with anything by `cardId`.
+      }
+    }
+    return out;
   }
 
   /** Remove the inProgress flag from all messages. Called on agent_result. */
@@ -1169,9 +1322,20 @@ export class ChatHistoryManager {
     this.stmtFinalizeInProgress.run(sessionId);
   }
 
-  /** Remove all in-progress messages. Called on agent error/abort. */
+  /**
+   * Remove all in-progress messages. Called on agent error/abort.
+   *
+   * Consult rows are finalized rather than deleted, for the reason spelled out
+   * in `replaceInProgress`: a turn that aborts while a consult is in flight
+   * still has that consult running server-side, and deleting the row leaves its
+   * terminal patch nowhere to land. There is no rebuild here to preserve the
+   * card's anchor against, so every consult row is kept.
+   */
   clearInProgress(sessionId: string): void {
-    this.stmtDeleteInProgress.run(sessionId);
+    this.db.transaction(() => {
+      this.stmtFinalizeConsultRows.run(sessionId);
+      this.stmtDeleteInProgress.run(sessionId);
+    })();
   }
 
   /** Delete a session's chat history. */

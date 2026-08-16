@@ -541,13 +541,205 @@ describe("ChatHistoryManager", () => {
       expect(cards[0]).toMatchObject({ status: "cancelled", statusDetail: "ShipIt restarted" });
     });
 
-    it("without finalize, an in-progress card is still deleted by the next replaceInProgress", () => {
-      // Pins the reason `finalize` exists — remove it and this is what happens.
+    // planning#402 — `finalize` used to be the ONLY thing standing between a card
+    // and the next turn's delete, and only the boot reconcile passed it. The
+    // storage chokepoint in `replaceInProgress` now finalizes an orphaned
+    // consult row on its own, so a card patched WITHOUT `finalize` survives too.
+    // `finalize` is still correct and still what the reconcile wants — it just
+    // stopped being load-bearing for durability.
+    it("survives the next replaceInProgress even when the patch omits finalize", () => {
       const mgr = new ChatHistoryManager(dbManager);
       mgr.replaceInProgress("sess-1", [{ ...pending("spawn-a"), inProgress: true }]);
       expect(mgr.updateSubAgentConsultCard("sess-1", "card-spawn-a", { status: "cancelled" })).toBe(true);
       mgr.replaceInProgress("sess-1", [{ role: "assistant", text: "the adopted turn", inProgress: true }]);
-      expect(mgr.listSubAgentConsultCards("sess-1")).toEqual([]);
+      const cards = new ChatHistoryManager(dbManager).listSubAgentConsultCards("sess-1");
+      expect(cards).toHaveLength(1);
+      expect(cards[0]).toMatchObject({ cardId: "card-spawn-a", status: "cancelled" });
+    });
+  });
+
+  /**
+   * planning#402 — the incident: a foreground `shipit agent run` finished
+   * successfully, its 16,529-character review was written into the turn's
+   * `in_progress=1` rows, an auto-fix turn preempted that turn 330 ms later, and
+   * its first `replaceInProgress` deleted the row. `shipit agent result` read
+   * `pending` for hours and the output was unrecoverable.
+   *
+   * The invariant these pin: **no delete of turn scratch takes a row carrying a
+   * sub-agent consult card** — and preserving it must not disturb the card's
+   * position inside a turn that is still alive.
+   */
+  describe("consult cards are not turn scratch (planning#402)", () => {
+    const card = (
+      spawnId: string,
+      over: Partial<SubAgentConsultCard> = {},
+    ): PersistedMessage => ({
+      role: "assistant",
+      text: "",
+      subAgentConsult: {
+        cardId: `card-${spawnId}`,
+        spawnId,
+        subAgentId: "codex",
+        status: "pending",
+        createdAt: "2026-08-16T08:14:20.000Z",
+        ...over,
+      },
+    });
+
+    /** The turn's rows as `emitChatCard` / `persistTurnInProgress` build them. */
+    const turnRows = (...msgs: PersistedMessage[]): PersistedMessage[] =>
+      msgs.map((m) => ({ ...m, inProgress: true }));
+
+    it("keeps a terminal card whose turn is preempted before it finalizes", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      // Turn T: the agent blocks on its own foreground `shipit agent run`, so
+      // the pending card lands in T's in-progress rows and T stays open.
+      const spawned = turnRows(
+        { role: "assistant", text: "running the review" },
+        card("spawn-a"),
+      );
+      mgr.replaceInProgress("sess-1", spawned);
+
+      // 12 minutes later the consult returns. `persistCardTransition` takes the
+      // in-flight branch (T is still running), patching the recorded card and
+      // re-flushing the turn.
+      mgr.replaceInProgress("sess-1", turnRows(
+        { role: "assistant", text: "running the review" },
+        card("spawn-a", { status: "success", outputMarkdown: "## Findings", durationMs: 761_642 }),
+      ));
+
+      // 330 ms later an auto-fix turn preempts T and rebuilds from ITS OWN
+      // (empty) recorded cards. Before the fix this deleted the success row.
+      mgr.replaceInProgress("sess-1", turnRows({ role: "assistant", text: "fixing the failing test" }));
+
+      const cards = new ChatHistoryManager(dbManager).listSubAgentConsultCards("sess-1");
+      expect(cards).toHaveLength(1);
+      expect(cards[0]).toMatchObject({
+        cardId: "card-spawn-a",
+        status: "success",
+        outputMarkdown: "## Findings",
+      });
+    });
+
+    it("keeps a card that is still pending when its turn is preempted", () => {
+      // The same delete, one beat earlier: lose the pending row and the terminal
+      // patch that arrives minutes later has no row to land on at all.
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.replaceInProgress("sess-1", turnRows(card("spawn-a")));
+      mgr.replaceInProgress("sess-1", turnRows({ role: "assistant", text: "a different turn" }));
+
+      expect(mgr.updateSubAgentConsultCard("sess-1", "card-spawn-a", {
+        status: "success",
+        outputMarkdown: "## Findings",
+      })).toBe(true);
+      expect(new ChatHistoryManager(dbManager).listSubAgentConsultCards("sess-1")[0]).toMatchObject({
+        status: "success",
+        outputMarkdown: "## Findings",
+      });
+    });
+
+    it("keeps a consult row through clearInProgress", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.replaceInProgress("sess-1", turnRows(
+        { role: "assistant", text: "consulting" },
+        card("spawn-a", { status: "success" }),
+      ));
+      mgr.clearInProgress("sess-1");
+
+      const all = new ChatHistoryManager(dbManager).load("sess-1");
+      // The aborted turn's scratch is gone; the consult record is not.
+      expect(all.map((m) => m.text)).toEqual([""]);
+      expect(all[0].subAgentConsult).toMatchObject({ cardId: "card-spawn-a", status: "success" });
+    });
+
+    it("never leaves two rows for one card, and lets the terminal copy win", () => {
+      // Defect A on its own — no deletion involved, so this has to manufacture
+      // the finalized twin by a route that exists WITHOUT the fix: an
+      // out-of-band `finalizeInProgress` (docs/240's turn adoption, the auth
+      // handler, the crash paths). A live turn keeps the card in
+      // `recordedCards`, so its next rebuild re-offers it; inserting it beside
+      // the finalized copy leaves the stale row first, and every read that takes
+      // a first match then reports `pending` for a finished run.
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.replaceInProgress("sess-1", turnRows(
+        { role: "assistant", text: "running the review" },
+        card("spawn-a"),
+      ));
+      mgr.finalizeInProgress("sess-1");
+      // The turn is still alive and flushes its recorded card again — now
+      // carrying the terminal status.
+      mgr.replaceInProgress("sess-1", turnRows(
+        { role: "assistant", text: "running the review" },
+        card("spawn-a", { status: "success", outputMarkdown: "## Findings" }),
+      ));
+
+      const cards = new ChatHistoryManager(dbManager).listSubAgentConsultCards("sess-1");
+      expect(cards).toHaveLength(1);
+      expect(cards[0]).toMatchObject({ status: "success", outputMarkdown: "## Findings" });
+    });
+
+    it("a stale rebuild cannot downgrade a terminal card back to pending", () => {
+      const mgr = new ChatHistoryManager(dbManager);
+      mgr.replaceInProgress("sess-1", turnRows(card("spawn-a", { status: "success", outputMarkdown: "## Findings" })));
+      mgr.finalizeInProgress("sess-1");
+      mgr.replaceInProgress("sess-1", turnRows(card("spawn-a")));
+
+      const cards = new ChatHistoryManager(dbManager).listSubAgentConsultCards("sess-1");
+      expect(cards).toHaveLength(1);
+      expect(cards[0]).toMatchObject({ status: "success", outputMarkdown: "## Findings" });
+    });
+
+    it("re-anchors a replaced card instead of freezing it above its own turn", () => {
+      // The other half of finding 2: when a finalized twin exists and the batch
+      // copy is at least as current, the surviving row is dropped and the card
+      // re-inserted at its anchor. Patching the twin in place would keep the
+      // data and lose the position — the card floating above the groups that
+      // preceded it, which is the regression the preserve step is conditional
+      // to avoid.
+      const mgr = new ChatHistoryManager(dbManager);
+      const rows = (status: "pending" | "success") => turnRows(
+        { role: "assistant", text: "before the consult" },
+        card("spawn-a", { status }),
+        { role: "assistant", text: "after the consult" },
+      );
+      mgr.replaceInProgress("sess-1", rows("pending"));
+      // A foreign rebuild orphans the card, so the preserve step finalizes THAT
+      // ROW ALONE — the state the twin branch actually sees in production.
+      mgr.replaceInProgress("sess-1", turnRows({ role: "assistant", text: "a preempting turn" }));
+      // The original turn is alive after all and flushes its recorded card.
+      mgr.replaceInProgress("sess-1", rows("success"));
+
+      const all = new ChatHistoryManager(dbManager).load("sess-1");
+      expect(all.map((m) => (m.subAgentConsult ? "<card>" : m.text))).toEqual([
+        "before the consult",
+        "<card>",
+        "after the consult",
+      ]);
+      expect(all[1].subAgentConsult).toMatchObject({ status: "success" });
+    });
+
+    it("leaves the card at its anchor while its own turn is still rebuilding", () => {
+      // Why the preserve is conditional on the batch: finalize a row the LIVE
+      // turn still owns and its id freezes while the assistant rows around it
+      // are reborn with higher ones — the card floats to the top of its turn.
+      const mgr = new ChatHistoryManager(dbManager);
+      const rebuild = (tail: string[]) =>
+        mgr.replaceInProgress("sess-1", turnRows(
+          { role: "assistant", text: "before the consult" },
+          card("spawn-a", { status: "success" }),
+          ...tail.map((t) => ({ role: "assistant" as const, text: t })),
+        ));
+      rebuild([]);
+      rebuild(["after the consult"]);
+      rebuild(["after the consult", "and later still"]);
+
+      const all = new ChatHistoryManager(dbManager).load("sess-1");
+      expect(all.map((m) => (m.subAgentConsult ? "<card>" : m.text))).toEqual([
+        "before the consult",
+        "<card>",
+        "after the consult",
+        "and later still",
+      ]);
     });
   });
 
