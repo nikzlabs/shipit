@@ -171,31 +171,6 @@ async function startStack(stack: Stack): Promise<void> {
   await stack.mgr.start();
 }
 
-/**
- * The same, with the two readings of the project's compose file DISAGREEING
- * (#2325) — the resolver sees a file that does not parse, and by the time the
- * stack starts the write has completed.
- *
- * This is the divergence itself, not a stand-in for it: a file watcher firing
- * mid-write is the everyday way to reach it, and `shipit.yaml` re-pointing
- * `compose.file` or a round resolving before the file exists are the others.
- * Without it a test is answered entirely by the resolver's own reservation and
- * cannot fail on the manager's pass at all.
- */
-async function startStackWithStaleCollisionDomain(
-  stack: Stack,
-  projectCompose: string,
-): Promise<void> {
-  const composePath = path.join(workspaceDir, "docker-compose.yml");
-  fs.writeFileSync(composePath, "services:\n  web:\n    imag");
-  const services = await resolveSessionPluginServices(SESSION_ID, workspaceDir, {
-    containEgress: false,
-  });
-  fs.writeFileSync(composePath, projectCompose);
-  stack.mgr.setPluginServices(services);
-  await stack.mgr.start();
-}
-
 function readOverride(): Record<string, Record<string, unknown>> {
   return (parseYaml(fs.readFileSync(path.join(stateDir, COMPOSE_OVERRIDE_FILE), "utf-8")) as {
     services: Record<string, Record<string, unknown>>;
@@ -382,70 +357,6 @@ describe("plugin services in a session's stack (docs/262)", () => {
     expect(readOverride()["probe-worker"]).toBeUndefined();
     // The project's own stack comes up regardless (reqs 13, 14).
     expect(startedNames(stack.commands)).toContain("probe");
-    await stack.mgr.stop();
-  });
-
-  it("gives a plugin its own preview origin when it picks the project's port (#2325)", async () => {
-    // 5173 is the Vite default, so a plugin and its consuming project picking it
-    // is ordinary rather than exotic — and the consuming project cannot fix it:
-    // the container port comes from the plugin's fragment, and `overrides` offer
-    // `autostart` and `as`, neither of which is a port.
-    //
-    // Started with the collision domain the resolver read STALE, which is the
-    // only way the two numbers ever collided: with both surfaces reading one
-    // good file, the resolver's own reservation already answered this and the
-    // manager's pass is never asked anything.
-    const projectCompose = "services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n";
-    writeFixture({ projectCompose, fragment: FRAGMENT.replace(/4820/g, "5173") });
-    const stack = makeStack();
-
-    await startStackWithStaleCollisionDomain(stack, projectCompose);
-
-    const web = stack.mgr.getService("web")!;
-    const probe = stack.mgr.getService("probe")!;
-    // Both serve on 5173 inside their own containers, and neither number is the
-    // other's origin.
-    expect(web.port).toBe(5173);
-    expect(probe.port).toBe(5173);
-    expect(web.publishedPort).toBe(5173);
-    expect(probe.publishedPort).not.toBe(5173);
-
-    // The proxy asks by origin; each answer is that service's OWN container.
-    web.containerIp = "172.20.0.2";
-    probe.containerIp = "172.20.0.9";
-    expect(stack.mgr.resolvePreviewTarget(5173))
-      .toEqual({ containerIp: "172.20.0.2", port: 5173 });
-    expect(stack.mgr.resolvePreviewTarget(probe.publishedPort!))
-      .toEqual({ containerIp: "172.20.0.9", port: 5173 });
-    await stack.mgr.stop();
-  });
-
-  it("keeps two same-port services apart on the wire the browser reads (#2325)", async () => {
-    // The browser routes by the number on these messages: two services reporting
-    // one port is a preview pane that cannot address either of them separately.
-    const projectCompose = "services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n";
-    writeFixture({ projectCompose, fragment: FRAGMENT.replace(/4820/g, "5173") });
-    const stack = makeStack();
-    const runner = new ContainerSessionRunner({
-      sessionId: SESSION_ID,
-      sessionDir,
-      defaultAgentId: "claude",
-      workerUrl: "http://0.0.0.0:0",
-    });
-    const emitted: WsServerMessage[] = [];
-    runner.on("message", (msg: WsServerMessage) => emitted.push(msg));
-    runner.setServiceManager(stack.mgr);
-
-    await startStackWithStaleCollisionDomain(stack, projectCompose);
-
-    const list = emitted.find((m) => m.type === "service_list") as
-      { services: { name: string; port?: number }[] } | undefined;
-    const ports = (list?.services ?? []).filter((s) => s.port !== undefined);
-    expect(ports.length).toBe(2);
-    expect(new Set(ports.map((s) => s.port)).size).toBe(2);
-    expect(ports.find((s) => s.name === "web")?.port).toBe(5173);
-
-    runner.setServiceManager(null);
     await stack.mgr.stop();
   });
 

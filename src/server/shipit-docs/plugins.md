@@ -359,14 +359,18 @@ Run two servers over one codebase:
 One thing collides, and it is the name. A plugin service whose name matches one
 of the project's own service names withholds **every** service that plugin
 repository provides — the project's name wins — so the dev service needs a
-different one. Ports do not collide: ShipIt strips host bindings and reaches
-every service over the session network, so distinct ports are a convenience for
-you, not a requirement. Two services that both serve on, say, 5173 each keep
-that port inside their own container; where one of them is a plugin's, ShipIt
-gives it a different number to be *previewed* on, so the Preview pane can still
-address the two separately. That published number is what `port` reports on the
-services the browser lists, and `url` on `GET /api/sessions/:id/services` stays
-the direct `containerIp:<container port>` address you would curl.
+different one. Ports mostly do not collide: ShipIt strips host bindings and
+reaches every service over the session network, so two containers can both serve
+on 5173 and neither is in the other's way.
+
+**One case does collide, and it is worth avoiding today.** The Preview pane
+addresses a service by port number, so if a plugin service and one of the
+project's own services end up on the same one, the pane can only reach the first
+of them — selecting the other serves the wrong app. Pick a port for an exported
+service that a consuming project is unlikely to have taken (5173 and 3000 are
+the worst choices), and if you hit it, the session log names both services and
+the port. This is a ShipIt design mistake, not yours: the port ought to be the
+consuming project's to declare, and it is being changed to work that way.
 
 ```yaml
 # the plugin repository's own shipit.yaml

@@ -35,7 +35,6 @@ import { truncateTerminalBuffer } from "./terminal-buffer.js";
 import type { LogStore } from "./log-store.js";
 import {
   classifyComposeFailure,
-  declaredContainerPorts,
   extractContainerPort,
   parseComposeFile,
   parseUserNamedVolumes,
@@ -48,7 +47,6 @@ import {
   type OverlayDepDirVolume,
 } from "./compose-generator.js";
 import { toComposeService, type PluginComposeService } from "./plugin-compose.js";
-import { resolvePublishedPorts } from "./plugin-ports.js";
 import { COMPOSE_OVERRIDE_FILE, sessionStateDirForWorkspace } from "./session-state-dir.js";
 import {
   ServiceSecretsResolver,
@@ -104,16 +102,15 @@ export interface ManagedService {
    * pinned per session (`plugin-ports.ts`) and the container port follows the
    * fragment — the origin stays put while the traffic follows the container.
    *
-   * **A plugin's is unique against everything this stack claims** — every port
-   * the project's own services declare, and every other plugin service. It is
-   * the browser's routing key, and two services answering to one key is a
-   * preview pane that cannot address either (#2325). The manager decides it
-   * ({@link resolvePluginPublishedPorts}) rather than taking the resolver's word
-   * for it, because the manager is what parses the project file this stack runs.
-   *
-   * Two of the PROJECT's own services can still declare one container port —
-   * ShipIt moves neither, for the reasons in
-   * {@link warnOnAmbiguousPreviewPorts}, and warns instead.
+   * **It is NOT guaranteed unique across the session, and it needs to be** —
+   * it is the browser's routing key, and two services answering to one key is a
+   * preview pane that cannot address either (#2325). Two ways to get there
+   * today: a plugin allocated around a stale reading of the project's compose
+   * file, and the project simply declaring one container port on two of its own
+   * services. {@link warnOnAmbiguousPreviewPorts} makes the outcome legible
+   * rather than silent; the first case is fixed by making the port the
+   * consuming project's to declare (planning#395), which removes the collision
+   * instead of resolving it.
    */
   publishedPort?: number;
   preview: "auto" | "manual";
@@ -492,12 +489,6 @@ export class ServiceManager extends EventEmitter {
   private overlayDepDirs: OverlayDepDirVolume[];
   /** docs/262 — plugin services this session surfaces (set lazily; see setPluginServices). */
   private pluginServices: PluginComposeService[] = [];
-  /**
-   * #2325 — where each plugin service publishes, as THIS manager last decided
-   * it (`resolvePluginPublishedPorts`). Survives a reconcile so a correction is
-   * not re-litigated from the resolver's stale number on the next start.
-   */
-  private readonly pluginPublishedPorts = new Map<string, number>();
   private readonly stackName?: string;
   private readonly opsSession: boolean;
   /**
@@ -1158,17 +1149,13 @@ export class ServiceManager extends EventEmitter {
    * is what lets a tracked commit move the port without moving the origin — and
    * without the proxy having to know anything about plugins.
    *
-   * **No plugin service shares a number with anything else in the stack**,
-   * which is what makes the first match here the only match for it. That is
-   * established where the map is built ({@link resolvePluginPublishedPorts}) and
-   * cannot be established anywhere earlier: a round that allocated against its
-   * own, separate reading of the project's compose file could hand a plugin the
-   * number the project's own service publishes, and this loop would then answer
-   * for the project on the plugin's origin — a plugin service the pane could not
-   * reach at all, with nothing the consuming project could change (#2325). The
-   * ambiguity ShipIt does not resolve is two of the PROJECT's own services on
-   * one container port; there the first match really is arbitrary, and
-   * {@link warnOnAmbiguousPreviewPorts} says so rather than leaving it silent.
+   * **First match wins, and nothing today guarantees there is only one.** Two
+   * services can claim one published port (see {@link ManagedService.publishedPort}),
+   * and then this answers for whichever was inserted first — project services
+   * before plugin ones — so the plugin's preview origin serves the project's app
+   * (#2325). {@link warnOnAmbiguousPreviewPorts} reports it on every start; the
+   * fix is planning#395, which makes the port the consuming project's to declare
+   * so a plugin cannot arrive holding one.
    *
    * Falls back to the container port when no service claims the number as its
    * published one, so a service recorded before this field existed still routes.
@@ -1259,108 +1246,23 @@ export class ServiceManager extends EventEmitter {
   }
 
   /**
-   * The published port each plugin service is routed by, resolved against the
-   * project services THIS `start()` just parsed (#2325).
-   *
-   * The allocation itself is `plugin-ports.ts`'s — the same pinned, per-session
-   * store the plugin resolver uses, so the origin req 18 stabilizes is
-   * unchanged. What moves here is *when* the collision domain is read. The
-   * resolver seeds it from its own, earlier parse of the project's compose
-   * file (`readProjectServices`), and the two readings can disagree: the file
-   * is re-read by every round, a watcher can fire mid-write so it momentarily
-   * does not parse, and `shipit.yaml` can re-point `compose.file` between the
-   * two. When they disagreed, a plugin service was pinned to a number the
-   * project's own service also publishes — and since {@link
-   * resolvePreviewTarget} answers with the first service claiming a number, the
-   * plugin's preview origin served the PROJECT's app, with no way for the
-   * consuming project to move either port (#2325). Resolving against the map
-   * that is being built removes the second reading: a number is taken or free
-   * as of the definition the session is about to run.
-   *
-   * Only re-decides a COLLISION. With the two readings agreeing — the ordinary
-   * case — every pin is honoured exactly as the resolver assigned it, and the
-   * store is not touched.
-   *
-   * **A correction is remembered** in {@link pluginPublishedPorts} and offered
-   * back as `pinned` on every later start. Without that, the next start offers
-   * the resolver's stale number again — and one whose project file no longer
-   * reserves it would honour that stale number and undo the durable correction,
-   * moving an origin req 18 says must hold (review finding). It is deliberately
-   * NOT written onto {@link pluginServices}: that array is what
-   * `setPluginServices` compares a fresh resolver round against, and editing it
-   * would make every round differ from the resolver's answer — one stack
-   * reconcile per round, forever, whenever the two cannot converge (a store that
-   * cannot be written).
-   *
-   * Never throws: a session whose layout has no pin file (or one that cannot be
-   * written) still gets coherent ports for this round, which is the same
-   * degradation `resolvePublishedPorts` documents.
-   */
-  private resolvePluginPublishedPorts(
-    parsedServices: readonly ComposeService[],
-  ): Map<string, number> {
-    const requests = this.pluginServices
-      .filter((svc) => svc.port !== undefined)
-      .map((svc) => {
-        // A correction this manager already made wins over the resolver's
-        // answer — it is where the origin actually is. Otherwise the resolver's
-        // number IS the answer, which is the ordinary round: this pass exists
-        // for the case where the two readings of the project file disagree.
-        const pinned = this.pluginPublishedPorts.get(svc.name) ?? svc.publishedPort;
-        return {
-          service: svc.name,
-          containerPort: svc.port!,
-          ...(pinned !== undefined ? { pinned } : {}),
-        };
-      });
-    this.pluginPublishedPorts.clear();
-    if (requests.length === 0) return new Map();
-    // `overrideDir` is the session's state dir; the pin file is its sibling of
-    // `workspace/` (see `plugin-ports.ts` on why it is not IN the state dir).
-    const sessionDir = path.dirname(this.overrideDir);
-    const reserved = declaredContainerPorts(parsedServices);
-    const resolved = resolvePublishedPorts(sessionDir, requests, reserved);
-    for (const [name, port] of resolved) this.pluginPublishedPorts.set(name, port);
-    for (const svc of this.pluginServices) {
-      if (svc.port === undefined) continue;
-      const port = resolved.get(svc.name);
-      if (port === svc.publishedPort) continue;
-      if (port === undefined) {
-        // Unreachable short of ~23,000 published ports in one session — the band
-        // holds that many — and said out loud rather than assumed, because what
-        // it would otherwise take is silent. The map build drops such a
-        // service's port entirely: not previewable is the truth, where
-        // advertising its container port would offer an origin that may already
-        // belong to something else.
-        console.error(
-          `[compose:${this.sessionId}] plugin service ${svc.name}: no published port `
-          + "is available — it will not be previewable this session",
-        );
-        continue;
-      }
-      console.warn(
-        `[compose:${this.sessionId}] plugin service ${svc.name}: published port `
-        + `${svc.publishedPort ?? "none"} is taken by this stack — routing it on ${port}`,
-      );
-    }
-    return resolved;
-  }
-
-  /**
    * Say so when two services end up claiming one preview routing key (#2325).
    *
-   * {@link resolvePluginPublishedPorts} rules out the case a plugin can cause,
-   * and the one it cannot is the project's own file declaring the same container
+   * Two ways to get one. The project's own file can declare the same container
    * port on two of its services — legal Compose, since ShipIt strips host
-   * bindings and each container keeps its own port. ShipIt does not move either
-   * of those: a project service's port IS its origin *and* its container port
-   * (the number the user wrote is the number they get), and unlike a plugin's
-   * fragment both definitions belong to the one person who can change them.
+   * bindings and each container keeps its own port — and ShipIt moves neither,
+   * because a project service's port IS its origin *and* its container port (the
+   * number the user wrote is the number they get) and both definitions belong to
+   * the one person who can change them. Or a plugin service can arrive holding
+   * the project's number, which the user cannot fix at all: it comes from the
+   * plugin's fragment, and the consuming project has no override for it. That
+   * second one is a design mistake being corrected in planning#395 — the port
+   * becomes the consuming project's to declare — and until it is, this is the
+   * only thing that says the collision happened.
    *
-   * So the ambiguity stays, and {@link resolvePreviewTarget} answers with the
-   * first of the two — but it stops being silent, because "the pane shows the
-   * wrong service" is not a symptom anyone traces back to a port they wrote
-   * twice.
+   * Either way {@link resolvePreviewTarget} answers with the first of the two.
+   * "The pane shows the wrong service" is not a symptom anyone traces back to a
+   * port on their own, so the log line is what turns it into one.
    */
   private warnOnAmbiguousPreviewPorts(): void {
     const claimedBy = new Map<number, string>();
@@ -1434,11 +1336,6 @@ export class ServiceManager extends EventEmitter {
       });
     }
 
-    // #2325 — the published ports the ROUTING will use, resolved here against
-    // the project services this same `start()` just parsed. See
-    // {@link resolvePluginPublishedPorts}.
-    const publishedPorts = this.resolvePluginPublishedPorts(parsedServices);
-
     // docs/262 reqs 3, 16 — plugin services join the same map, so every control,
     // status and log path treats them as the first-class services req 3 asks
     // for. `dependsOnInstall` is the plugin's own answer and must agree with the
@@ -1447,17 +1344,10 @@ export class ServiceManager extends EventEmitter {
     // published, while a `repo: self` plugin has no install of its own and runs
     // out of the tree `agent.install` writes.
     for (const svc of this.pluginServices) {
-      const publishedPort = publishedPorts.get(svc.name);
-      // A port with no published port to reach it by is dropped rather than
-      // carried: every surface downstream advertises `publishedPort ?? port`, so
-      // keeping it would offer the container's own number as an origin — the one
-      // number that may already belong to another service. Only reachable if the
-      // band is exhausted, which `resolvePluginPublishedPorts` reports.
-      const port = publishedPort !== undefined ? svc.port : undefined;
       this.services.set(svc.name, {
         name: svc.name,
-        ...(port !== undefined ? { port } : {}),
-        ...(publishedPort !== undefined ? { publishedPort } : {}),
+        ...(svc.port !== undefined ? { port: svc.port } : {}),
+        ...(svc.publishedPort !== undefined ? { publishedPort: svc.publishedPort } : {}),
         preview: svc.preview,
         status: "stopped",
         dependsOnInstall: svc.self,

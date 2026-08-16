@@ -69,38 +69,6 @@ describe("resolvePublishedPorts", () => {
     expect(after.get("new")).toBe(80);
   });
 
-  it("prefers a live assignment over the stored pin (#2325)", () => {
-    // The caller is re-checking where the origin actually is, against a
-    // collision domain it can see and the earlier round could not.
-    resolvePublishedPorts(sessionDir, [{ service: "probe", containerPort: 4820 }]);
-    const after = resolvePublishedPorts(sessionDir, [
-      { service: "probe", containerPort: 4820, pinned: 4900 },
-    ]);
-    expect(after.get("probe")).toBe(4900);
-    const stored: unknown = JSON.parse(fs.readFileSync(pluginPortsPath(sessionDir), "utf-8"));
-    expect(stored).toEqual({ probe: 4900 });
-  });
-
-  it("moves a live assignment that lands on a reserved port (#2325)", () => {
-    const after = resolvePublishedPorts(
-      sessionDir,
-      [{ service: "probe", containerPort: 5173, pinned: 5173 }],
-      new Set([5173]),
-    );
-    expect(after.get("probe")).toBe(PLUGIN_PORT_BAND_START);
-  });
-
-  it("falls back to the stored pin when the live one is taken (#2325)", () => {
-    resolvePublishedPorts(sessionDir, [{ service: "probe", containerPort: 4820 }]);
-    const after = resolvePublishedPorts(
-      sessionDir,
-      [{ service: "probe", containerPort: 4820, pinned: 5173 }],
-      new Set([5173]),
-    );
-    // The origin it had is a better answer than a fresh band number.
-    expect(after.get("probe")).toBe(4820);
-  });
-
   it("keeps a dropped import's pin, so re-adding it finds the same origin", () => {
     resolvePublishedPorts(sessionDir, [{ service: "probe", containerPort: 4820 }]);
     resolvePublishedPorts(sessionDir, []);
