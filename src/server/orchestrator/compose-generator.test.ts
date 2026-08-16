@@ -4,6 +4,8 @@ import path from "node:path";
 import os from "node:os";
 import { parse as parseYaml } from "yaml";
 import {
+  declaredContainerPorts,
+  extractContainerPort,
   parseComposeFile,
   parseUserNamedVolumes,
   generateComposeOverride,
@@ -2269,5 +2271,31 @@ describe("validateDevices (docs/213 — only /dev/kvm)", () => {
   it("rejects even /dev/kvm when the operator kill-switch is off", () => {
     expect(() => validateDevices("emulator", { devices: ["/dev/kvm:/dev/kvm"] }, false))
       .toThrow("disabled on this deployment");
+  });
+});
+
+describe("container ports (#2325)", () => {
+  it("reads the container port out of every mapping form", () => {
+    expect(extractContainerPort("5173")).toBe(5173);
+    expect(extractContainerPort("5173:5173")).toBe(5173);
+    expect(extractContainerPort("8080:80")).toBe(80);
+    expect(extractContainerPort("5173:5173/tcp")).toBe(5173);
+    expect(extractContainerPort("127.0.0.1:8080:80")).toBe(80);
+    expect(extractContainerPort("")).toBeUndefined();
+    expect(extractContainerPort("nonsense")).toBeUndefined();
+  });
+
+  it("counts every entry of every service, and nothing a service does not declare", () => {
+    // The set is a plugin service's collision domain: a port the project can be
+    // reached on must not become a plugin's preview origin, even when it is not
+    // the entry ShipIt previews the project service on.
+    expect(
+      declaredContainerPorts([
+        { ports: ["3000:3000", "5173:5173"] },
+        { ports: ["127.0.0.1:9000:80/tcp"] },
+        {},
+      ]),
+    ).toEqual(new Set([3000, 5173, 80]));
+    expect(declaredContainerPorts([])).toEqual(new Set());
   });
 });

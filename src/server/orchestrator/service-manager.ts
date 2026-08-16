@@ -35,6 +35,8 @@ import { truncateTerminalBuffer } from "./terminal-buffer.js";
 import type { LogStore } from "./log-store.js";
 import {
   classifyComposeFailure,
+  declaredContainerPorts,
+  extractContainerPort,
   parseComposeFile,
   parseUserNamedVolumes,
   generateComposeOverride,
@@ -46,6 +48,7 @@ import {
   type OverlayDepDirVolume,
 } from "./compose-generator.js";
 import { toComposeService, type PluginComposeService } from "./plugin-compose.js";
+import { resolvePublishedPorts } from "./plugin-ports.js";
 import { COMPOSE_OVERRIDE_FILE, sessionStateDirForWorkspace } from "./session-state-dir.js";
 import {
   ServiceSecretsResolver,
@@ -100,6 +103,12 @@ export interface ManagedService {
    * fragment arrives with every tracked-branch commit, so its published port is
    * pinned per session (`plugin-ports.ts`) and the container port follows the
    * fragment — the origin stays put while the traffic follows the container.
+   *
+   * **Unique across this session's services**, project and plugin alike: it is
+   * the browser's routing key, and two services answering to one key is a
+   * preview pane that cannot address either (#2325). The manager decides it
+   * ({@link resolvePluginPublishedPorts}) rather than taking the resolver's word
+   * for it, because the manager is what parses the project file this stack runs.
    */
   publishedPort?: number;
   preview: "auto" | "manual";
@@ -1138,6 +1147,15 @@ export class ServiceManager extends EventEmitter {
    * is what lets a tracked commit move the port without moving the origin — and
    * without the proxy having to know anything about plugins.
    *
+   * **A number is claimed by at most one service**, which is what makes the
+   * first match here the only match. That invariant is established where the map
+   * is built ({@link resolvePluginPublishedPorts}) and cannot be established
+   * anywhere earlier: a round that allocated against its own, separate reading
+   * of the project's compose file could hand a plugin the number the project's
+   * own service publishes, and this loop would then answer for the project on
+   * the plugin's origin — a plugin service the pane could not reach at all,
+   * with nothing the consuming project could change (#2325).
+   *
    * Falls back to the container port when no service claims the number as its
    * published one, so a service recorded before this field existed still routes.
    */
@@ -1227,6 +1245,62 @@ export class ServiceManager extends EventEmitter {
   }
 
   /**
+   * The published port each plugin service is routed by, resolved against the
+   * project services THIS `start()` just parsed (#2325).
+   *
+   * The allocation itself is `plugin-ports.ts`'s — the same pinned, per-session
+   * store the plugin resolver uses, so the origin req 18 stabilizes is
+   * unchanged. What moves here is *when* the collision domain is read. The
+   * resolver seeds it from its own, earlier parse of the project's compose
+   * file (`readProjectServices`), and the two readings can disagree: the file
+   * is re-read by every round, a watcher can fire mid-write so it momentarily
+   * does not parse, and `shipit.yaml` can re-point `compose.file` between the
+   * two. When they disagreed, a plugin service was pinned to a number the
+   * project's own service also publishes — and since {@link
+   * resolvePreviewTarget} answers with the first service claiming a number, the
+   * plugin's preview origin served the PROJECT's app, with no way for the
+   * consuming project to move either port (#2325). Resolving against the map
+   * that is being built removes the second reading: a number is taken or free
+   * as of the definition the session is about to run.
+   *
+   * Only re-decides a COLLISION. With the two readings agreeing — the ordinary
+   * case — every pin is honoured exactly as the resolver assigned it, and the
+   * store is not touched.
+   *
+   * Never throws: a session whose layout has no pin file (or one that cannot be
+   * written) still gets coherent ports for this round, which is the same
+   * degradation `resolvePublishedPorts` documents.
+   */
+  private resolvePluginPublishedPorts(
+    parsedServices: readonly ComposeService[],
+  ): Map<string, number> {
+    const requests = this.pluginServices
+      .filter((svc) => svc.port !== undefined)
+      .map((svc) => ({
+        service: svc.name,
+        containerPort: svc.port!,
+        // What the resolver assigned this round IS the answer wherever the two
+        // readings agree — this pass exists to catch the case where they do not.
+        ...(svc.publishedPort !== undefined ? { pinned: svc.publishedPort } : {}),
+      }));
+    if (requests.length === 0) return new Map();
+    // `overrideDir` is the session's state dir; the pin file is its sibling of
+    // `workspace/` (see `plugin-ports.ts` on why it is not IN the state dir).
+    const sessionDir = path.dirname(this.overrideDir);
+    const reserved = declaredContainerPorts(parsedServices);
+    const resolved = resolvePublishedPorts(sessionDir, requests, reserved);
+    for (const svc of this.pluginServices) {
+      const port = resolved.get(svc.name);
+      if (port === undefined || port === svc.publishedPort) continue;
+      console.warn(
+        `[compose:${this.sessionId}] plugin service ${svc.name}: published port `
+        + `${svc.publishedPort ?? "none"} is taken by this stack — routing it on ${port}`,
+      );
+    }
+    return resolved;
+  }
+
+  /**
    * Initialize the compose stack:
    * 1. Parse and validate the compose file
    * 2. Generate the override file
@@ -1281,6 +1355,11 @@ export class ServiceManager extends EventEmitter {
       });
     }
 
+    // #2325 — the published ports the ROUTING will use, resolved here against
+    // the project services this same `start()` just parsed. See
+    // {@link resolvePluginPublishedPorts}.
+    const publishedPorts = this.resolvePluginPublishedPorts(parsedServices);
+
     // docs/262 reqs 3, 16 — plugin services join the same map, so every control,
     // status and log path treats them as the first-class services req 3 asks
     // for. `dependsOnInstall` is the plugin's own answer and must agree with the
@@ -1289,10 +1368,11 @@ export class ServiceManager extends EventEmitter {
     // published, while a `repo: self` plugin has no install of its own and runs
     // out of the tree `agent.install` writes.
     for (const svc of this.pluginServices) {
+      const publishedPort = publishedPorts.get(svc.name);
       this.services.set(svc.name, {
         name: svc.name,
         ...(svc.port !== undefined ? { port: svc.port } : {}),
-        ...(svc.publishedPort !== undefined ? { publishedPort: svc.publishedPort } : {}),
+        ...(publishedPort !== undefined ? { publishedPort } : {}),
         preview: svc.preview,
         status: "stopped",
         dependsOnInstall: svc.self,
@@ -2639,30 +2719,3 @@ function describeExit(exitCode: number, oomKilled?: boolean): string {
   return "Exited with code 137 (likely OOMKilled)";
 }
 
-/**
- * Extract the host port from a port mapping string.
- * Extracts the container (target) port — the port the service actually listens
- * on inside the container. The preview proxy routes to this port directly on
- * the session network (host port bindings are stripped by the override).
- *
- * Supports common Docker Compose forms:
- * - "5173" → 5173
- * - "5173:5173" → 5173
- * - "8080:80" → 80
- * - "5173:5173/tcp" → 5173
- * - "127.0.0.1:8080:80" → 80
- */
-function extractContainerPort(portMapping: string): number | undefined {
-  if (!portMapping) return undefined;
-
-  // Strip optional protocol suffix ("/tcp", "/udp")
-  const withoutProtocol = portMapping.split("/")[0].trim();
-  if (!withoutProtocol) return undefined;
-
-  const parts = withoutProtocol.split(":");
-  // Container port is always the last segment
-  const portStr = parts[parts.length - 1];
-
-  const port = parseInt(portStr, 10);
-  return Number.isFinite(port) && port > 0 ? port : undefined;
-}

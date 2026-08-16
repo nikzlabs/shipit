@@ -154,6 +154,91 @@ describe("plugin services in the compose stack", () => {
     await mgr.stop();
   });
 
+  it("moves a plugin service off a published port the project already answers on (#2325)", async () => {
+    // The two readings of "which ports are taken" disagreed: the resolver
+    // assigned 5173 (its parse of the project file saw no ports — mid-write, a
+    // file it could not read, a `compose.file` that has since been re-pointed),
+    // and the file this stack actually runs declares it. Both services then
+    // carried the same routing key, and the preview origin the plugin advertises
+    // served the PROJECT's app — with nothing the consuming project could change,
+    // since the container port comes from the plugin's fragment.
+    const workspaceDir = setup("services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n");
+    const mgr = createManager(workspaceDir);
+    mgr.setPluginServices([pluginService({ port: 5173, publishedPort: 5173 })]);
+    await mgr.start();
+
+    const probePublished = mgr.getService("probe")!.publishedPort!;
+    expect(probePublished).not.toBe(5173);
+    expect(mgr.getService("web")?.publishedPort).toBe(5173);
+    // Each origin reaches its OWN container, on that container's own port.
+    mgr.getService("web")!.containerIp = "172.20.0.2";
+    mgr.getService("probe")!.containerIp = "172.20.0.9";
+    expect(mgr.resolvePreviewTarget(5173)).toEqual({ containerIp: "172.20.0.2", port: 5173 });
+    expect(mgr.resolvePreviewTarget(probePublished))
+      .toEqual({ containerIp: "172.20.0.9", port: 5173 });
+
+    // …and the move is RECORDED, so the next resolver round starts from where
+    // the origin actually is rather than proposing the collision again (req 18).
+    const pins = JSON.parse(
+      fs.readFileSync(path.join(workspaceDir, "..", "plugin-ports.json"), "utf-8"),
+    ) as Record<string, number>;
+    expect(pins.probe).toBe(probePublished);
+    await mgr.stop();
+  });
+
+  it("counts every declared port of a project service as taken (#2325)", async () => {
+    // Only the FIRST entry is the port ShipIt previews the project service on,
+    // but a service listening on two answers on both — so a plugin published on
+    // the second would still be reachable at an address that is not its own.
+    const workspaceDir = setup(
+      "services:\n  web:\n    image: node:20\n    ports: ['3000:3000', '5173:5173']\n",
+    );
+    const mgr = createManager(workspaceDir);
+    mgr.setPluginServices([pluginService({ port: 5173, publishedPort: 5173 })]);
+    await mgr.start();
+
+    expect(mgr.getService("probe")?.publishedPort).not.toBe(5173);
+    await mgr.stop();
+  });
+
+  it("leaves a published port that collides with nothing exactly where it is", async () => {
+    // The ordinary round: the two readings agree, so this pass decides nothing
+    // and the pin the resolver assigned is the one the session routes by.
+    const workspaceDir = setup("services:\n  web:\n    image: node:20\n    ports: ['3000:3000']\n");
+    const mgr = createManager(workspaceDir);
+    mgr.setPluginServices([pluginService({ port: 5000, publishedPort: 4820 })]);
+    await mgr.start();
+
+    // Unchanged, INCLUDING that it is not the container port: a fragment that
+    // moved its port must not drag the origin with it (req 18).
+    expect(mgr.getService("probe")?.publishedPort).toBe(4820);
+    // The record agrees with the live assignment rather than contradicting it.
+    // (In a real round the resolver wrote this same number first, so this pass
+    // writes nothing at all; here nothing had recorded it yet.)
+    const pins = JSON.parse(
+      fs.readFileSync(path.join(workspaceDir, "..", "plugin-ports.json"), "utf-8"),
+    ) as Record<string, number>;
+    expect(pins.probe).toBe(4820);
+    await mgr.stop();
+  });
+
+  it("gives two plugin services that both published one port distinct origins (#2325)", async () => {
+    const workspaceDir = setup("services:\n  web:\n    image: node:20\n");
+    const mgr = createManager(workspaceDir);
+    mgr.setPluginServices([
+      pluginService({ name: "probe", port: 5173, publishedPort: 5173 }),
+      pluginService({ name: "other", port: 5173, publishedPort: 5173 }),
+    ]);
+    await mgr.start();
+
+    const first = mgr.getService("probe")?.publishedPort;
+    const second = mgr.getService("other")?.publishedPort;
+    expect(first).toBeDefined();
+    expect(second).toBeDefined();
+    expect(first).not.toBe(second);
+    await mgr.stop();
+  });
+
   it("routes a project service by its own port, unchanged", async () => {
     const workspaceDir = setup("services:\n  web:\n    image: node:20\n    ports: ['3000:3000']\n");
     const mgr = createManager(workspaceDir);

@@ -403,6 +403,62 @@ export function parseUserNamedVolumes(composePath: string): UserNamedVolume[] {
 }
 
 /**
+ * The container (target) port a compose `ports:` entry names — the port the
+ * service actually listens on inside the container. ShipIt strips host
+ * bindings from every service it runs and reaches containers by IP on the
+ * session network, so this is the only number in a mapping that means anything
+ * to the preview proxy.
+ *
+ * Supports the common Compose forms:
+ * - "5173" → 5173
+ * - "5173:5173" → 5173
+ * - "8080:80" → 80
+ * - "5173:5173/tcp" → 5173
+ * - "127.0.0.1:8080:80" → 80
+ */
+export function extractContainerPort(portMapping: string): number | undefined {
+  if (!portMapping) return undefined;
+
+  // Strip optional protocol suffix ("/tcp", "/udp")
+  const withoutProtocol = portMapping.split("/")[0].trim();
+  if (!withoutProtocol) return undefined;
+
+  const parts = withoutProtocol.split(":");
+  // Container port is always the last segment
+  const portStr = parts[parts.length - 1];
+
+  const port = parseInt(portStr, 10);
+  return Number.isFinite(port) && port > 0 ? port : undefined;
+}
+
+/**
+ * Every container port a parsed compose stack claims — one derivation, shared
+ * by the two surfaces that must agree about it (#2325).
+ *
+ * A plugin service's published port is allocated around the ports the PROJECT
+ * already claims, and the routing key it becomes must be unique across the
+ * whole session. Two independent readings of "which numbers are taken" is how
+ * that uniqueness was lost: the plugin resolver counted a service's ports one
+ * way and the ServiceManager another, and a plugin then published a number the
+ * project's own service was already reachable on. Both now count them here.
+ *
+ * Every entry of every service, not just the first: a service listening on two
+ * ports occupies both, even though only the first is the one ShipIt previews.
+ */
+export function declaredContainerPorts(
+  services: readonly Pick<ComposeService, "ports">[],
+): Set<number> {
+  const ports = new Set<number>();
+  for (const svc of services) {
+    for (const mapping of svc.ports ?? []) {
+      const port = extractContainerPort(mapping);
+      if (port !== undefined) ports.add(port);
+    }
+  }
+  return ports;
+}
+
+/**
  * Parse a docker-compose.yml file and extract service definitions.
  * Validates security constraints and returns parsed service info.
  */

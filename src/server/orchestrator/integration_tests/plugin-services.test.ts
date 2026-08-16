@@ -360,6 +360,69 @@ describe("plugin services in a session's stack (docs/262)", () => {
     await stack.mgr.stop();
   });
 
+  it("gives a plugin its own preview origin when it picks the project's port (#2325)", async () => {
+    // 5173 is the Vite default, so a plugin and its consuming project picking it
+    // is ordinary rather than exotic — and the consuming project cannot fix it:
+    // the container port comes from the plugin's fragment, and `overrides` offer
+    // `autostart` and `as`, neither of which is a port.
+    writeFixture({
+      projectCompose: "services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n",
+      fragment: FRAGMENT.replace(/4820/g, "5173"),
+    });
+    const stack = makeStack();
+
+    await startStack(stack);
+
+    const web = stack.mgr.getService("web")!;
+    const probe = stack.mgr.getService("probe")!;
+    // Both serve on 5173 inside their own containers, and neither number is the
+    // other's origin.
+    expect(web.port).toBe(5173);
+    expect(probe.port).toBe(5173);
+    expect(web.publishedPort).toBe(5173);
+    expect(probe.publishedPort).not.toBe(5173);
+
+    // The proxy asks by origin; each answer is that service's OWN container.
+    web.containerIp = "172.20.0.2";
+    probe.containerIp = "172.20.0.9";
+    expect(stack.mgr.resolvePreviewTarget(5173))
+      .toEqual({ containerIp: "172.20.0.2", port: 5173 });
+    expect(stack.mgr.resolvePreviewTarget(probe.publishedPort!))
+      .toEqual({ containerIp: "172.20.0.9", port: 5173 });
+    await stack.mgr.stop();
+  });
+
+  it("keeps two same-port services apart on the wire the browser reads (#2325)", async () => {
+    // The browser routes by the number on these messages: two services reporting
+    // one port is a preview pane that cannot address either of them separately.
+    writeFixture({
+      projectCompose: "services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n",
+      fragment: FRAGMENT.replace(/4820/g, "5173"),
+    });
+    const stack = makeStack();
+    const runner = new ContainerSessionRunner({
+      sessionId: SESSION_ID,
+      sessionDir,
+      defaultAgentId: "claude",
+      workerUrl: "http://0.0.0.0:0",
+    });
+    const emitted: WsServerMessage[] = [];
+    runner.on("message", (msg: WsServerMessage) => emitted.push(msg));
+    runner.setServiceManager(stack.mgr);
+
+    await startStack(stack);
+
+    const list = emitted.find((m) => m.type === "service_list") as
+      { services: { name: string; port?: number }[] } | undefined;
+    const ports = (list?.services ?? []).filter((s) => s.port !== undefined);
+    expect(ports.length).toBe(2);
+    expect(new Set(ports.map((s) => s.port)).size).toBe(2);
+    expect(ports.find((s) => s.name === "web")?.port).toBe(5173);
+
+    runner.setServiceManager(null);
+    await stack.mgr.stop();
+  });
+
   it("keeps the project's stack running when a plugin cannot be mounted (req 13)", async () => {
     // The Docker-dependent half: a workspace volume whose root does not contain
     // this session has no correct mount, and a bind of the orchestrator's path

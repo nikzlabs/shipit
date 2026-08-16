@@ -901,6 +901,25 @@ instead of a repeat.
   reason the state directory is: rebuilding it IS the origin change req 18
   forbids.
 
+  **The allocation is re-checked where the service map is built** (#2325).
+  "The project's ports are reserved" was answered by the plugin resolver's own,
+  separate parse of the project compose file (`readProjectServices`) — and two
+  readings of one file disagree: a watcher fires mid-write so it momentarily
+  does not parse, `shipit.yaml` re-points `compose.file`, a round resolves
+  before the file is written. When they disagreed a plugin was published on the
+  number the project's own service publishes, and since `resolvePreviewTarget`
+  answers with the first service claiming a number, the plugin's origin served
+  the PROJECT's app — a plugin service the pane could not reach, with nothing
+  the consuming project could change (its `overrides` are `autostart` and `as`,
+  neither of which is a port). So `ServiceManager.start()` re-runs the same
+  allocation against the services it has just parsed, honouring the resolver's
+  assignment wherever it is free and moving only a genuine collision: the
+  uniqueness `resolvePreviewTarget` and the browser's port-keyed service list
+  both rely on is established where both sets of services are actually known.
+  The two surfaces also count a mapping's ports through one shared derivation
+  (`declaredContainerPorts`), so they cannot disagree about what a mapping
+  means either.
+
   **Implemented** (`plugin-state.ts`), as
   `<sessionDir>/plugin-data/<alias>/state/`. The container-side names both
   consumers will use — the mount point and the two env vars — are fixed once in
@@ -2022,7 +2041,12 @@ coherent in one UI.
   eviction reclaims: rebuilding a pin is the origin change the requirement
   forbids. `ServiceManager.resolvePreviewTarget` is the indirection that makes
   the pin more than a wish, and `preview-proxy.ts` asks it on all three paths
-  (HTTP, the HMR upgrade, and the health probe).
+  (HTTP, the HMR upgrade, and the health probe). The allocation runs twice by
+  design (#2325): once in the resolver, and again in
+  `ServiceManager.resolvePluginPublishedPorts` against the project services that
+  same `start()` parsed — the second pass is what guarantees the number is
+  unique across the session, which is the whole basis of `resolvePreviewTarget`
+  answering with the first match.
 - ✓ `src/server/orchestrator/api-routes-plugin-repos.ts` — browser snapshot
   (the GET exists; refresh endpoints come with generation mechanics); tracker
   registration folds into the existing trackers registry

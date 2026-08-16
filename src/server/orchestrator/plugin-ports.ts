@@ -59,6 +59,16 @@ export interface PublishedPortRequest {
    * advertise an origin with nothing behind it.
    */
   containerPort: number;
+  /**
+   * The published port this service ALREADY has, when the caller is re-checking
+   * an assignment rather than making one (#2325).
+   *
+   * Honoured ahead of the stored pin, and for the same reason a stored pin is
+   * honoured at all: it is this session's current origin. It loses only to
+   * {@link resolvePublishedPorts}'s `reserved` — the one case where a pin does
+   * not hold — which is precisely what makes re-checking worth doing.
+   */
+  pinned?: number;
 }
 
 export function pluginPortsPath(sessionDir: string): string {
@@ -90,12 +100,16 @@ export function resolvePublishedPorts(
   const taken = new Set<number>(reserved);
 
   // Pass 1: honor every pin that is still usable. Done before any allocation so
-  // a new service can never take a port an existing one is pinned to.
-  for (const { service } of requests) {
-    const pinned = store[service];
-    if (typeof pinned !== "number" || !isUsablePort(pinned) || taken.has(pinned)) continue;
-    assigned.set(service, pinned);
-    taken.add(pinned);
+  // a new service can never take a port an existing one is pinned to. A caller
+  // re-checking a live assignment offers it as `pinned`, which is preferred over
+  // the stored one — it is where the session's origin actually is right now.
+  for (const { service, pinned: live } of requests) {
+    for (const candidate of [live, store[service]]) {
+      if (typeof candidate !== "number" || !isUsablePort(candidate) || taken.has(candidate)) continue;
+      assigned.set(service, candidate);
+      taken.add(candidate);
+      break;
+    }
   }
 
   // Pass 2: allocate for the rest — the service's own declared port when it is

@@ -361,7 +361,12 @@ of the project's own service names withholds **every** service that plugin
 repository provides — the project's name wins — so the dev service needs a
 different one. Ports do not collide: ShipIt strips host bindings and reaches
 every service over the session network, so distinct ports are a convenience for
-you, not a requirement.
+you, not a requirement. Two services that both serve on, say, 5173 each keep
+that port inside their own container; where one of them is a plugin's, ShipIt
+gives it a different number to be *previewed* on, so the Preview pane can still
+address the two separately. That published number is what `port` reports on the
+services the browser lists, and `url` on `GET /api/sessions/:id/services` stays
+the direct `containerIp:<container port>` address you would curl.
 
 ```yaml
 # the plugin repository's own shipit.yaml
