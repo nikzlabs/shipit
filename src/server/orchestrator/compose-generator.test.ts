@@ -4,6 +4,8 @@ import path from "node:path";
 import os from "node:os";
 import { parse as parseYaml } from "yaml";
 import {
+  declaredContainerPorts,
+  extractContainerPort,
   parseComposeFile,
   parseUserNamedVolumes,
   generateComposeOverride,
@@ -2269,5 +2271,52 @@ describe("validateDevices (docs/213 — only /dev/kvm)", () => {
   it("rejects even /dev/kvm when the operator kill-switch is off", () => {
     expect(() => validateDevices("emulator", { devices: ["/dev/kvm:/dev/kvm"] }, false))
       .toThrow("disabled on this deployment");
+  });
+});
+
+describe("container ports (#2325)", () => {
+  it("reads the container port out of every mapping form", () => {
+    expect(extractContainerPort("5173")).toBe(5173);
+    expect(extractContainerPort("5173:5173")).toBe(5173);
+    expect(extractContainerPort("8080:80")).toBe(80);
+    expect(extractContainerPort("5173:5173/tcp")).toBe(5173);
+    expect(extractContainerPort("127.0.0.1:8080:80")).toBe(80);
+    expect(extractContainerPort("")).toBeUndefined();
+    expect(extractContainerPort("nonsense")).toBeUndefined();
+  });
+
+  it("counts a long-syntax port through the real parser", () => {
+    // The helper is string-only, so calling it directly cannot fail on YAML
+    // normalization breaking — and the normalization is where a `{published,
+    // target}` entry becomes a string at all. Go through `parseComposeFile`
+    // (review finding).
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "compose-ports-"));
+    try {
+      const file = path.join(dir, "docker-compose.yml");
+      fs.writeFileSync(
+        file,
+        "services:\n  web:\n    image: node:20\n    ports:\n      - published: 8080\n        target: 5173\n",
+      );
+      // The CONTAINER port is what the preview reaches, so the target is the
+      // number that must come out — not the published one beside it.
+      expect(declaredContainerPorts(parseComposeFile(file, { dockerSocket: false })))
+        .toEqual(new Set([5173]));
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("counts every entry of every service, and nothing a service does not declare", () => {
+    // The set is a plugin service's collision domain: a port the project can be
+    // reached on must not become a plugin's preview origin, even when it is not
+    // the entry ShipIt previews the project service on.
+    expect(
+      declaredContainerPorts([
+        { ports: ["3000:3000", "5173:5173"] },
+        { ports: ["127.0.0.1:9000:80/tcp"] },
+        {},
+      ]),
+    ).toEqual(new Set([3000, 5173, 80]));
+    expect(declaredContainerPorts([])).toEqual(new Set());
   });
 });

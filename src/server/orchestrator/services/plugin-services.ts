@@ -28,6 +28,7 @@ import path from "node:path";
 import type Docker from "dockerode";
 import {
   classifyComposeFailure,
+  declaredContainerPorts,
   parseComposeFile,
   type ComposeFailure,
 } from "../compose-generator.js";
@@ -295,15 +296,14 @@ export function readProjectServices(
       dockerSocket: config.compose.dockerSocket,
       containEgress,
     });
-    const ports = new Set<number>();
-    for (const svc of parsed) {
-      for (const mapping of svc.ports ?? []) {
-        const segments = mapping.split("/")[0].split(":");
-        const port = Number.parseInt(segments[segments.length - 1], 10);
-        if (Number.isInteger(port)) ports.add(port);
-      }
-    }
-    return { names: parsed.map((s) => s.name), ports, unknown: false };
+    return {
+      names: parsed.map((s) => s.name),
+      // The SAME derivation the ServiceManager applies to the same file
+      // (#2325) — two readings of "which ports are taken" is how a plugin came
+      // to publish a number the project's own service already answered on.
+      ports: declaredContainerPorts(parsed),
+      unknown: false,
+    };
   } catch (err) {
     // planning#377 — the reason is CARRIED, not discarded. A caller that must
     // fail closed still fails closed on `unknown`; what it gains is the ability

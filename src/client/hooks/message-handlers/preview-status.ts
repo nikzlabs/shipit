@@ -1,6 +1,6 @@
 import type { WsPreviewStatus } from "../../../server/shared/types.js";
 import { usePreviewStore } from "../../stores/preview-store.js";
-import { useSessionStore } from "../../stores/session-store.js";
+import { isForeignSession } from "./session-scope.js";
 import type { Handler } from "./types.js";
 
 export const handlePreviewStatus: Handler<WsPreviewStatus> = (_ctx, data) => {
@@ -8,10 +8,10 @@ export const handlePreviewStatus: Handler<WsPreviewStatus> = (_ctx, data) => {
   // Discard stale preview_status from a previous session's WS connection.
   // During session switching, React may batch a setLastMessage() from the
   // closing WS and process it after stores have been reset for the new session.
-  const currentSessionId = useSessionStore.getState().sessionId;
-  if (data.sessionId && currentSessionId && data.sessionId !== currentSessionId) {
-    return;
-  }
+  // Shared with the service messages, which carry the same routing keys — and
+  // strict about the no-active-session window, which is where a claim leaves
+  // the store (see `isForeignSession`).
+  if (isForeignSession(data.sessionId)) return;
   preview.setStatus({
     running: data.running,
     port: data.port,
@@ -36,7 +36,10 @@ export const handlePreviewStatus: Handler<WsPreviewStatus> = (_ctx, data) => {
     const devStep = steps.find((s) => s.stepId === "dev_server");
     if (devStep && devStep.status !== "complete") {
       preview.setStartupStep({ stepId: "dev_server", status: "complete" });
+      // Re-checked on fire, like the `service_status` twin: a switch inside the
+      // 800ms would otherwise clear the INCOMING session's overlay.
       setTimeout(() => {
+        if (isForeignSession(data.sessionId)) return;
         usePreviewStore.getState().clearStartupSteps();
       }, 800);
     }

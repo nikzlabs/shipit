@@ -127,7 +127,7 @@ describe("adoptExistingServiceManager (docs/127)", () => {
     runner.dispose({ force: true });
   });
 
-  it("attaches exactly one stack_error listener", () => {
+  it("attaches one stack_error listener per concern, and no duplicates", () => {
     const runner = makeRunner("s1");
     const mgr = makeStubServiceManager();
     const cm = buildContainerManager();
@@ -139,7 +139,13 @@ describe("adoptExistingServiceManager (docs/127)", () => {
       installPromise: null,
     });
 
-    expect(mgr._stackErrorListenerCount).toBe(1);
+    // Two, and each is a different job on the same event: the adoption path's
+    // own listener reports the failure (banner + Logs), and the runner's
+    // `setServiceManager` re-sends the service list, because a start that failed
+    // rebuilt the map just as much as one that succeeded (#2325). What this
+    // guards is that adoption does not STACK them — a third would mean the same
+    // failure reported twice, which is the docs/127 regression.
+    expect(mgr._stackErrorListenerCount).toBe(2);
 
     runner.dispose({ force: true });
   });

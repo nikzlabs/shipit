@@ -7,7 +7,7 @@
  * must survive a fragment that moves.
  */
 
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -152,6 +152,39 @@ describe("plugin services in the compose stack", () => {
     // The moved container port is NOT an origin — only the pin is addressable.
     expect(mgr.resolvePreviewTarget(5000)).toBeUndefined();
     await mgr.stop();
+  });
+
+  it("tells the USER when two services claim one preview port (#2325)", async () => {
+    // The routing key is not unique today, and `resolvePreviewTarget` answers
+    // with whichever service was inserted first — so the pane serves one of the
+    // two and silently cannot reach the other. Until the port becomes the
+    // consuming project's to declare (planning#395), this is the only thing
+    // connecting that symptom to its cause, which is why it has to reach the
+    // session's own logs and not just the orchestrator's stderr: the person who
+    // has to act on it cannot read the latter.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const workspaceDir = setup("services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n");
+      const mgr = createManager(workspaceDir);
+      const logs: { name: string; text: string }[] = [];
+      mgr.on("service_log", (name: string, text: string) => logs.push({ name, text }));
+      mgr.setPluginServices([pluginService({ port: 5173, publishedPort: 5173 })]);
+      await mgr.start();
+
+      // On the unreachable service's own channel, so it lands beside it in the
+      // Logs panel.
+      const line = logs.find((l) => l.text.includes("both preview on port 5173"));
+      expect(line?.name).toBe("probe");
+      // "Change your port" is advice the reader cannot take when the port came
+      // from a plugin's fragment, so the plugin case says what they CAN do.
+      expect(line?.text).toContain("not yours to change");
+      expect(mgr.getLogBuffer("probe")).toContain("both preview on port 5173");
+      expect(warn.mock.calls.map((args) => String(args[0]))
+        .some((l) => l.includes("both preview on port 5173"))).toBe(true);
+      await mgr.stop();
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it("routes a project service by its own port, unchanged", async () => {

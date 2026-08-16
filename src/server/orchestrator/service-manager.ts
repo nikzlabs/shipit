@@ -35,6 +35,7 @@ import { truncateTerminalBuffer } from "./terminal-buffer.js";
 import type { LogStore } from "./log-store.js";
 import {
   classifyComposeFailure,
+  extractContainerPort,
   parseComposeFile,
   parseUserNamedVolumes,
   generateComposeOverride,
@@ -100,6 +101,16 @@ export interface ManagedService {
    * fragment arrives with every tracked-branch commit, so its published port is
    * pinned per session (`plugin-ports.ts`) and the container port follows the
    * fragment — the origin stays put while the traffic follows the container.
+   *
+   * **It is NOT guaranteed unique across the session, and it needs to be** —
+   * it is the browser's routing key, and two services answering to one key is a
+   * preview pane that cannot address either (#2325). Two ways to get there
+   * today: a plugin allocated around a stale reading of the project's compose
+   * file, and the project simply declaring one container port on two of its own
+   * services. {@link warnOnAmbiguousPreviewPorts} makes the outcome legible
+   * rather than silent; the first case is fixed by making the port the
+   * consuming project's to declare (planning#395), which removes the collision
+   * instead of resolving it.
    */
   publishedPort?: number;
   preview: "auto" | "manual";
@@ -1138,6 +1149,14 @@ export class ServiceManager extends EventEmitter {
    * is what lets a tracked commit move the port without moving the origin — and
    * without the proxy having to know anything about plugins.
    *
+   * **First match wins, and nothing today guarantees there is only one.** Two
+   * services can claim one published port (see {@link ManagedService.publishedPort}),
+   * and then this answers for whichever was inserted first — project services
+   * before plugin ones — so the plugin's preview origin serves the project's app
+   * (#2325). {@link warnOnAmbiguousPreviewPorts} reports it on every start; the
+   * fix is planning#395, which makes the port the consuming project's to declare
+   * so a plugin cannot arrive holding one.
+   *
    * Falls back to the container port when no service claims the number as its
    * published one, so a service recorded before this field existed still routes.
    */
@@ -1224,6 +1243,62 @@ export class ServiceManager extends EventEmitter {
         finish(this.getLogBuffer(name));
       }
     });
+  }
+
+  /**
+   * Say so when two services end up claiming one preview routing key (#2325).
+   *
+   * Two ways to get one. The project's own file can declare the same container
+   * port on two of its services — legal Compose, since ShipIt strips host
+   * bindings and each container keeps its own port — and ShipIt moves neither,
+   * because a project service's port IS its origin *and* its container port (the
+   * number the user wrote is the number they get) and both definitions belong to
+   * the one person who can change them. Or a plugin service can arrive holding
+   * the project's number, which the user cannot fix at all: it comes from the
+   * plugin's fragment, and the consuming project has no override for it. That
+   * second one is a design mistake being corrected in planning#395 — the port
+   * becomes the consuming project's to declare — and until it is, this is the
+   * only thing that says the collision happened.
+   *
+   * Either way {@link resolvePreviewTarget} answers with the first of the two.
+   * "The pane shows the wrong service" is not a symptom anyone traces back to a
+   * port on their own, so this is what turns it into one.
+   *
+   * **It goes to the user, not only to operator stderr** (review finding). The
+   * condition is one the user has to act on — change a port, or stop importing
+   * the plugin — and a `console.warn` in the orchestrator's own output is not
+   * somewhere they can see, which would leave the pane silently serving the
+   * wrong app with the explanation on a machine they do not have. It rides the
+   * unreachable service's own log channel, so it lands in the Logs panel beside
+   * that service, and is logged for the operator too.
+   */
+  private warnOnAmbiguousPreviewPorts(): void {
+    const claimedBy = new Map<number, string>();
+    for (const svc of this.services.values()) {
+      if (svc.publishedPort === undefined) continue;
+      const first = claimedBy.get(svc.publishedPort);
+      if (first === undefined) {
+        claimedBy.set(svc.publishedPort, svc.name);
+        continue;
+      }
+      // When either side is a plugin's, the port came from its compose fragment
+      // and the consuming project has no override for it — so "change your
+      // port" is advice the reader cannot take. Name the one thing they can do.
+      const remedy = svc.origin || this.services.get(first)?.origin
+        ? `${svc.name} comes from a plugin, so its port is not yours to change: `
+          + `move the project's service to another port, or stop importing the plugin.`
+        : `Give one of them a different port in the compose file.`;
+      const message = `${first} and ${svc.name} both preview on port ${svc.publishedPort}`
+        + ` — the preview pane can only reach ${first} there. ${remedy}`;
+      console.warn(`[compose:${this.sessionId}] ${message}`);
+      const line = `[shipit] ${message}\n`;
+      // Both halves, like the log follower's own `handleData`: the durable
+      // store is what a viewer who opens the panel later reads (the in-memory
+      // ring buffer is wiped whenever a follower re-attaches), and
+      // `bufferServiceLog` is what reaches the viewers already watching.
+      this.logStore?.append(this.sessionId, `service:${svc.name}`, line);
+      this.bufferServiceLog(svc.name, line);
+    }
   }
 
   /**
@@ -1405,6 +1480,13 @@ export class ServiceManager extends EventEmitter {
       for (const svc of this.services.values()) {
         this.ensureLogFollower(svc.name);
       }
+
+      // AFTER the followers, which is the one ordering constraint on it: this
+      // writes to a service's durable log channel, and a channel that already
+      // has content makes the follower spawn with `--tail 0` instead of
+      // replaying the container's backlog. The followers above have made that
+      // decision by the time we get here.
+      this.warnOnAmbiguousPreviewPorts();
 
       this.emit("stack_ready");
     } catch (err) {
@@ -2637,32 +2719,4 @@ function describeExit(exitCode: number, oomKilled?: boolean): string {
   if (oomKilled === true) return "Exited with code 137 (OOMKilled)";
   if (oomKilled === false) return "Exited with code 137 (SIGKILL — not an OOM kill)";
   return "Exited with code 137 (likely OOMKilled)";
-}
-
-/**
- * Extract the host port from a port mapping string.
- * Extracts the container (target) port — the port the service actually listens
- * on inside the container. The preview proxy routes to this port directly on
- * the session network (host port bindings are stripped by the override).
- *
- * Supports common Docker Compose forms:
- * - "5173" → 5173
- * - "5173:5173" → 5173
- * - "8080:80" → 80
- * - "5173:5173/tcp" → 5173
- * - "127.0.0.1:8080:80" → 80
- */
-function extractContainerPort(portMapping: string): number | undefined {
-  if (!portMapping) return undefined;
-
-  // Strip optional protocol suffix ("/tcp", "/udp")
-  const withoutProtocol = portMapping.split("/")[0].trim();
-  if (!withoutProtocol) return undefined;
-
-  const parts = withoutProtocol.split(":");
-  // Container port is always the last segment
-  const portStr = parts[parts.length - 1];
-
-  const port = parseInt(portStr, 10);
-  return Number.isFinite(port) && port > 0 ? port : undefined;
 }

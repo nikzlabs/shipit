@@ -360,6 +360,66 @@ describe("plugin services in a session's stack (docs/262)", () => {
     await stack.mgr.stop();
   });
 
+  it("still sends the service list when the stack fails to start (#2325)", async () => {
+    // A failed start rebuilt the map exactly as much as a successful one did —
+    // `reconcile()` cleared it and `start()` filled it in again. Without this,
+    // `stack_ready` never fires, so the browser keeps the PREVIOUS list: a
+    // service whose port has since moved is then selected at a number this
+    // manager now resolves to a different service. Same wrong-app-in-the-pane
+    // symptom, no port collision anywhere in it.
+    writeFixture();
+    const commands: string[][] = [];
+    const mgr = new ServiceManager({
+      sessionId: SESSION_ID,
+      workspaceDir,
+      serviceEnvDir: path.join(sessionDir, "service-env"),
+      composeConfig: { file: "docker-compose.yml", dockerSocket: false },
+      composeRunner: (async (args: string[]) => {
+        commands.push(args);
+        if (args.includes("up")) throw new Error("compose up failed");
+      }) as ComposeRunner,
+      composeQuery: (async () => "") as ComposeQuery,
+      pollIntervalMs: 0,
+    });
+    const runner = new ContainerSessionRunner({
+      sessionId: SESSION_ID,
+      sessionDir,
+      defaultAgentId: "claude",
+      workerUrl: "http://0.0.0.0:0",
+    });
+    const emitted: WsServerMessage[] = [];
+    runner.on("message", (msg: WsServerMessage) => emitted.push(msg));
+    runner.setServiceManager(mgr);
+
+    const services = await resolveSessionPluginServices(SESSION_ID, workspaceDir, {
+      containEgress: false,
+    });
+    mgr.setPluginServices(services);
+    await expect(mgr.start()).rejects.toThrow("compose up failed");
+
+    const list = emitted.find((m) => m.type === "service_list") as
+      { services: { name: string; port?: number }[] } | undefined;
+    expect(list).toBeDefined();
+    // The map as it now IS — the plugin's service included, at the port this
+    // manager would route it on.
+    expect((list?.services ?? []).map((s) => s.name).sort())
+      .toEqual(["probe", "probe-worker", "web"]);
+    expect(list?.services.find((s) => s.name === "probe")?.port)
+      .toBe(mgr.getService("probe")?.publishedPort);
+
+    // …and the failure is still on screen after it. The client's `setServices`
+    // clears the compose-error banner (a fresh list means the stack is talking
+    // again), so a list sent on a failure has to carry the failure with it or it
+    // silently wipes the one thing explaining what went wrong.
+    const order = emitted.map((m) => m.type);
+    expect(order.indexOf("compose_error")).toBeGreaterThan(order.indexOf("service_list"));
+    expect((emitted.find((m) => m.type === "compose_error") as { message: string }).message)
+      .toContain("compose up failed");
+
+    runner.setServiceManager(null);
+    await mgr.stop();
+  });
+
   it("keeps the project's stack running when a plugin cannot be mounted (req 13)", async () => {
     // The Docker-dependent half: a workspace volume whose root does not contain
     // this session has no correct mount, and a bind of the orchestrator's path

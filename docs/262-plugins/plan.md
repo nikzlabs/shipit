@@ -901,6 +901,40 @@ instead of a repeat.
   reason the state directory is: rebuilding it IS the origin change req 18
   forbids.
 
+  **Seeding the pin from the fragment's own port was a mistake, and #2325 is
+  it.** A plugin service that declares 5173 gets 5173 as its published port
+  whenever that number "looks free" — and "looks free" was answered by the
+  plugin resolver's own, separate parse of the project compose file
+  (`readProjectServices`), which disagrees with the parse the stack actually
+  runs whenever a watcher fires mid-write, `shipit.yaml` re-points
+  `compose.file`, or a round resolves before the file is written. Two services
+  then claim one routing key, `resolvePreviewTarget` answers with the first, and
+  the plugin's preview origin serves the PROJECT's app. The consuming project
+  cannot fix it: the number comes from the plugin's fragment, and `overrides`
+  offer `autostart` and `as`, neither of which is a port. 5173 being the Vite
+  default makes this ordinary rather than exotic.
+
+  **The correction is planning#395, and it is a deletion**: a plugin fragment
+  stops declaring `ports:` altogether, and the port becomes the consuming
+  project's — which is where it belonged, since only the consumer knows what its
+  own stack already uses. A plugin can then no longer *arrive* holding a number,
+  which is the collision this bug is. It does not by itself make every preview
+  address unique — a consumer can still assign one number twice, and what ShipIt
+  does about that is an open question on that doc, not something ownership
+  settles. It also puts the two-number scheme above in question: the pin exists
+  because a tracked commit can move the fragment's port behind the consumer's
+  back, and under planning#395 it cannot.
+
+  Until then the ambiguity is real, and `warnOnAmbiguousPreviewPorts` reports it
+  on every start — for this case and for the one planning#395 does NOT address,
+  the project declaring one container port on two of its own services (legal
+  Compose; ShipIt moves neither, since a project service's port is its origin
+  *and* its container port and both definitions belong to the person who can
+  change them). The two surfaces do now count a mapping's ports through one
+  shared derivation (`declaredContainerPorts`), so they cannot at least disagree
+  about what a mapping *means* — every entry of a service, not just the first,
+  because a service listening on two answers on both.
+
   **Implemented** (`plugin-state.ts`), as
   `<sessionDir>/plugin-data/<alias>/state/`. The container-side names both
   consumers will use — the mount point and the two env vars — are fixed once in
@@ -2022,7 +2056,10 @@ coherent in one UI.
   eviction reclaims: rebuilding a pin is the origin change the requirement
   forbids. `ServiceManager.resolvePreviewTarget` is the indirection that makes
   the pin more than a wish, and `preview-proxy.ts` asks it on all three paths
-  (HTTP, the HMR upgrade, and the health probe).
+  (HTTP, the HMR upgrade, and the health probe). **Seeding the pin from the
+  fragment's declared port is what #2325 turned out to be**, and planning#395
+  removes it at the source by making the port the consuming project's to declare
+  — which may take most of this file with it.
 - ✓ `src/server/orchestrator/api-routes-plugin-repos.ts` — browser snapshot
   (the GET exists; refresh endpoints come with generation mechanics); tracker
   registration folds into the existing trackers registry
