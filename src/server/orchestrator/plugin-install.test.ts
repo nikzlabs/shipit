@@ -263,7 +263,10 @@ describe("createPluginInstallRunner", () => {
     // The worker entrypoint is bypassed: it prepares session mounts this
     // container deliberately does not have.
     expect(opts.Entrypoint).toEqual(["/bin/sh", "-c"]);
-    expect(opts.Cmd).toEqual(["npm ci"]);
+    // docs/270 — `umask 002` so everything the install writes into the SHARED
+    // dep cache and the promoted dep base is group-writable; the session
+    // entrypoint that normally sets it is bypassed for this container.
+    expect(opts.Cmd).toEqual(["umask 002; npm ci"]);
     expect(opts.WorkingDir).toBe(PLUGIN_INSTALL_DIR);
   });
 

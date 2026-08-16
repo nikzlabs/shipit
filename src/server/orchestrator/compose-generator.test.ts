@@ -604,6 +604,49 @@ services:
     })).toThrow("reserved UID");
   });
 
+  // docs/270 req 4a — a session identity comes from a reserved high range, and a
+  // project may not declare a `user:` inside it. Without this a project could
+  // run a service as another session's identity.
+  it("rejects a user: inside ShipIt's per-session UID range", () => {
+    const dir = setup();
+    const p = writeCompose(dir, `
+services:
+  web:
+    image: node:20
+    user: "2000001"
+`);
+    expect(() => parseComposeFile(p, { dockerSocket: false })).toThrow("reserves for per-session");
+  });
+
+  it("rejects it on an OPEN session too, not only a contained one", () => {
+    // The hazard is running as another session's identity, which has nothing to
+    // do with egress — so the check cannot live with the contained-service rule.
+    const dir = setup();
+    const p = writeCompose(dir, `
+services:
+  web:
+    image: node:20
+    user: "2999999:1000"
+`);
+    expect(() => parseComposeFile(p, { dockerSocket: false, containEgress: false }))
+      .toThrow("reserves for per-session");
+  });
+
+  it("still accepts the UIDs real images and projects actually use", () => {
+    // req 4: an explicit numeric `user:` must keep working. The range is chosen
+    // so that every one of these is far below it.
+    const dir = setup();
+    for (const user of ["33", "101", "999", "1000", "1001:1001", "65534"]) {
+      const p = writeCompose(dir, `
+services:
+  web:
+    image: node:20
+    user: "${user}"
+`);
+      expect(() => parseComposeFile(p, { dockerSocket: false })).not.toThrow();
+    }
+  });
+
   it("rejects absolute bind mount paths", () => {
     const dir = setup();
     const p = writeCompose(dir, `

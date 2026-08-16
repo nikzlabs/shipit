@@ -74,7 +74,7 @@ import {
   type OverlayScope,
 } from "./overlay-base.js";
 import { isOverlayEnabled, overlayRuntimeKey } from "./overlay-session.js";
-import { chownToSessionWorker } from "./session-worker-uid.js";
+import { shareTreeWithAllSessions, shareWithAllSessions } from "./session-worker-uid.js";
 import { sessionStateDirForWorkspace } from "./session-state-dir.js";
 import { pluginsRoot, readGenerationRecordAt } from "./plugin-generations.js";
 
@@ -375,11 +375,17 @@ export async function promotePluginDepDirs(args: {
         isAncestor: async () => false,
         materialize: (snapshotDir, scopeHash, generation) =>
           moveIntoBase(args.depStoreDir, snapshotDir, scopeHash, generation, dir.depDir),
-        // The default is a RECURSIVE chown, which over a freshly-installed
-        // `node_modules` is tens of thousands of syscalls for nothing: the tree
-        // was written by the install container as the worker uid already. Only
-        // the generation directory itself is ours.
-        chownBaseDir: chownToSessionWorker,
+        // docs/270 — this override used to skip the recursive walk, on the
+        // grounds that "the tree was written by the install container as the
+        // worker uid already". That premise died with the single worker uid:
+        // the install container now runs as ONE session's own uid, and this
+        // generation is a SHARED base that other sessions mount as an overlay
+        // lowerdir. overlayfs copy-up preserves the lower file's owner AND mode,
+        // and the install container writes `0644`/`0755` — so without the walk a
+        // second session copies up a file it can read and cannot write, and
+        // EACCESes on its first edit. Take the module default (a group share,
+        // not a chown): it costs one walk per PUBLISH, not per session.
+        chownBaseDir: shareTreeWithAllSessions,
       });
 
       const pointer = result.pointer;
@@ -535,8 +541,13 @@ async function moveIntoBase(
     await fsp.rm(tmp, { recursive: true, force: true }).catch(() => undefined);
     throw err;
   }
-  chownToSessionWorker(scopeDir);
-  chownToSessionWorker(genDir);
+  // docs/270 — the dep store is SHARED between sessions, so these container
+  // dirs are group-shared rather than chowned to one uid. Non-recursive by
+  // design: the generation's CONTENTS get the recursive share from
+  // `chownBaseDir` at publish. The setgid bit is what lets a later session
+  // publish a sibling generation into the same scope.
+  shareWithAllSessions(scopeDir);
+  shareWithAllSessions(genDir);
   return genDir;
 }
 

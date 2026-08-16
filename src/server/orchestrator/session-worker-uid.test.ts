@@ -13,7 +13,13 @@ import {
   chownWorktreeToSessionWorker,
   handWorkspaceBackToWorker,
   reconcileDepDirCacheOwnership,
+  sealSessionDir,
+  sealLegacySessionDirs,
+  shareTreeWithAllSessions,
+  sessionWorkerGid,
+  identityForTarget,
 } from "./session-worker-uid.js";
+import { configureSessionIdentityRoots } from "../shared/session-identity.js";
 
 describe("session-worker-uid (docs/150 §7)", () => {
   const prev = process.env.SHIPIT_SESSION_WORKER_UID;
@@ -480,6 +486,156 @@ describe("session-worker-uid (docs/150 §7)", () => {
       } finally {
         spy.mockRestore();
       }
+    });
+  });
+});
+
+
+/**
+ * docs/270 — per-session identities.
+ *
+ * A real uid drop cannot be exercised here (no root, `unshare -r` refused), so
+ * these assert what the code SETS and what it RESOLVES, never that another uid
+ * was denied. The self-owned cases below are chosen so they run identically
+ * privileged or not: chowning to your own uid/gid always succeeds.
+ */
+describe("per-session identities (docs/270)", () => {
+  const prevUid = process.env.SHIPIT_SESSION_WORKER_UID;
+  let root: string;
+  const selfUid = process.getuid?.() ?? 0;
+  const selfGid = process.getgid?.() ?? 0;
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "swuid268-"));
+  });
+
+  afterEach(() => {
+    if (prevUid === undefined) delete process.env.SHIPIT_SESSION_WORKER_UID;
+    else process.env.SHIPIT_SESSION_WORKER_UID = prevUid;
+    configureSessionIdentityRoots(null);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  describe("sealSessionDir", () => {
+    it("sets 0700, which is the whole cross-session boundary", () => {
+      // Nothing inside a session needs a restrictive mode of its own: 0700 here
+      // denies traversal to every other uid, so no writer downstream has to
+      // remember one (req 1).
+      const dir = path.join(root, "s1");
+      fs.mkdirSync(dir, { mode: 0o755 });
+
+      expect(sealSessionDir(dir, { uid: selfUid, gid: selfGid })).toBe(true);
+
+      expect(fs.statSync(dir).mode & 0o777).toBe(0o700);
+    });
+
+    it("reports failure rather than throwing on a path it cannot seal", () => {
+      expect(sealSessionDir(path.join(root, "gone"), { uid: selfUid, gid: selfGid }))
+        .toBe(false);
+    });
+  });
+
+  describe("sealLegacySessionDirs", () => {
+    it("does nothing at all when the non-root runtime is off", () => {
+      // Local mode and dogfood. A seal here would chown a developer's checkout.
+      delete process.env.SHIPIT_SESSION_WORKER_UID;
+      fs.mkdirSync(path.join(root, "s1"), { mode: 0o755 });
+
+      expect(sealLegacySessionDirs(root)).toBe(0);
+      expect(fs.statSync(path.join(root, "s1")).mode & 0o777).toBe(0o755);
+    });
+
+    it("skips a session directory that already carries a record", () => {
+      // Re-sealing would be a no-op, and skipping is what keeps the boot pass
+      // O(sessions) stats in the steady state. A dir owned by this test's uid
+      // stands in for one an earlier boot sealed, or one with an allocated uid.
+      process.env.SHIPIT_SESSION_WORKER_UID = String(selfUid);
+      const dir = path.join(root, "s1");
+      fs.mkdirSync(dir, { mode: 0o755 });
+      if (selfUid === 0) return; // running as root: every dir IS root-owned
+      expect(sealLegacySessionDirs(root)).toBe(0);
+      expect(fs.statSync(dir).mode & 0o777).toBe(0o755);
+    });
+
+    it("tolerates a sessions root that does not exist yet", () => {
+      process.env.SHIPIT_SESSION_WORKER_UID = String(selfUid);
+      expect(sealLegacySessionDirs(path.join(root, "nope"))).toBe(0);
+    });
+
+    it("ignores non-directory entries", () => {
+      process.env.SHIPIT_SESSION_WORKER_UID = String(selfUid);
+      fs.writeFileSync(path.join(root, "stray.txt"), "");
+      expect(sealLegacySessionDirs(root)).toBe(0);
+    });
+  });
+
+  describe("shareTreeWithAllSessions", () => {
+    it("adds group read/write to files and group access plus setgid to dirs", () => {
+      // The overlay base is the case that makes the MODE load-bearing rather
+      // than cosmetic: overlayfs copy-up preserves the lower file's owner AND
+      // mode, so a base file at 0644 copies up group-readable and still not
+      // editable by the session that copied it.
+      process.env.SHIPIT_SESSION_WORKER_UID = String(selfGid);
+      const dir = path.join(root, "base");
+      fs.mkdirSync(dir, { mode: 0o755 });
+      const file = path.join(dir, "dep.js");
+      fs.writeFileSync(file, "", { mode: 0o644 });
+
+      shareTreeWithAllSessions(dir);
+
+      expect(fs.statSync(file).mode & 0o777).toBe(0o664);
+      expect(fs.statSync(dir).mode & 0o7777).toBe(0o2775);
+    });
+
+    it("does nothing when the non-root runtime is off", () => {
+      delete process.env.SHIPIT_SESSION_WORKER_UID;
+      const dir = path.join(root, "base");
+      fs.mkdirSync(dir, { mode: 0o755 });
+
+      shareTreeWithAllSessions(dir);
+
+      expect(fs.statSync(dir).mode & 0o7777).toBe(0o755);
+    });
+
+    it("does not follow a symlink out of the tree", () => {
+      process.env.SHIPIT_SESSION_WORKER_UID = String(selfGid);
+      const outside = path.join(root, "outside.txt");
+      fs.writeFileSync(outside, "", { mode: 0o600 });
+      const dir = path.join(root, "base");
+      fs.mkdirSync(dir);
+      fs.symlinkSync(outside, path.join(dir, "link"));
+
+      shareTreeWithAllSessions(dir);
+
+      // The target keeps its mode — only the link itself was regrouped.
+      expect(fs.statSync(outside).mode & 0o777).toBe(0o600);
+    });
+  });
+
+  describe("sessionWorkerGid / identityForTarget", () => {
+    it("falls back to the global value for a path that belongs to no session", () => {
+      // The dep cache, the bare cache. Every pre-docs/270 caller keeps working
+      // without a signature change because of exactly this.
+      process.env.SHIPIT_SESSION_WORKER_UID = "1000";
+      configureSessionIdentityRoots({ sessionsRoot: root });
+      expect(identityForTarget("/somewhere/else")).toEqual({ uid: 1000, gid: 1000 });
+      expect(sessionWorkerGid()).toBe(1000);
+    });
+
+    it("prefers the session's own identity for a path inside it", () => {
+      process.env.SHIPIT_SESSION_WORKER_UID = "1000";
+      configureSessionIdentityRoots({ sessionsRoot: root });
+      const dir = path.join(root, "s1");
+      fs.mkdirSync(path.join(dir, "workspace"), { recursive: true });
+      if (selfUid === 0) return; // a root-owned dir reads as "no record"
+      expect(identityForTarget(path.join(dir, "workspace")))
+        .toEqual({ uid: selfUid, gid: selfGid });
+    });
+
+    it("is null everywhere when the non-root runtime is off", () => {
+      delete process.env.SHIPIT_SESSION_WORKER_UID;
+      expect(identityForTarget("/anything")).toBeNull();
+      expect(sessionWorkerGid()).toBeNull();
     });
   });
 });

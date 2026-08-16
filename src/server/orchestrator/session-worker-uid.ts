@@ -27,6 +27,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { resolveShipitConfig, DEFAULT_DEP_DIRS } from "../shared/shipit-config.js";
+import { identityForPath, sessionDirFor, type SessionIdentity } from "../shared/session-identity.js";
 import { EGRESS_RESOLVER_UID } from "./egress-dns.js";
 import { EGRESS_PROXY_UID } from "./egress-proxy-install.js";
 
@@ -120,6 +121,325 @@ export function assertWorkerUidNotReserved(): void {
 }
 
 /**
+ * docs/270 — the group EVERY session shares, still parsed from
+ * `SHIPIT_SESSION_WORKER_UID`. Only the **uid** became per-session.
+ *
+ * The shared group is what keeps the three cross-session surfaces working once
+ * uids differ: the per-repo dep cache, the pnpm store, and the overlay
+ * dependency base (whose copy-up preserves the lower file's owner AND mode).
+ * All three become group-owned and group-writable, which is the only way a
+ * session that is *not* their creator can still use them (req 9).
+ *
+ * The orchestrator's global gitconfig is deliberately NOT in that list, though
+ * an earlier draft of this comment said it was. docs/266 E3 made it root-owned
+ * `0644` in a `0711` directory precisely so the worker can read it and cannot
+ * write it, and `restoreRootOwnership` exists to keep it that way. Group-writing
+ * it would hand every session the ability to rewrite the config that names the
+ * credential helper — do not "restore" it to this list.
+ *
+ * It does not weaken the isolation the per-session uid buys, because the
+ * isolation is the **0700 session directory**, not the group: a file inside
+ * another session's tree is unreachable regardless of its group bits, since the
+ * directory above it denies traversal.
+ *
+ * It must be the PRIMARY gid rather than a supplementary one. Node's
+ * `spawn({uid, gid})` maps to libuv's `setgid`/`setuid` with no
+ * `setgroups`/`initgroups`, so a dropped orchestrator-side git carries whatever
+ * supplementary set the root parent had — never one we chose. A design that
+ * reached the shared surfaces through a supplementary group would work inside
+ * the container and fail silently in the orchestrator.
+ */
+export function sessionWorkerGid(): number | null {
+  return sessionWorkerUid();
+}
+
+/**
+ * The uid/gid a per-session path should be owned by: the owning session's own
+ * identity when the path is inside a session, and the shared global value
+ * otherwise (the dep cache, the bare cache, anything unconfigured).
+ *
+ * Returning the global value for a non-session path is what keeps every existing
+ * caller correct without a signature change: a helper that used to chown to the
+ * one worker uid still does, unless the path it was given belongs to a session
+ * that has an identity of its own.
+ */
+/**
+ * The identity of a session named by id rather than by a path — for the callers
+ * that have a session id and no filesystem path into it (compose generation,
+ * plugin container launch). Falls back to the shared global value exactly like
+ * {@link identityForTarget}, so a session that predates docs/270 resolves to
+ * what it has always been.
+ */
+export function identityForSession(sessionId: string): SessionIdentity | null {
+  const dir = sessionDirFor(sessionId);
+  return dir === null ? identityForTarget("") : identityForTarget(dir);
+}
+
+export function identityForTarget(targetPath: string): SessionIdentity | null {
+  const owner = identityForPath(targetPath);
+  if (owner !== null) return owner;
+  const uid = sessionWorkerUid();
+  return uid === null ? null : { uid, gid: uid };
+}
+
+/**
+ * Own and SEAL a session directory: the identity's own uid, the shared gid, and
+ * mode 0700.
+ *
+ * The mode is the whole cross-session boundary (req 1). 0700 denies traversal to
+ * every other uid, so nothing inside the session — workspace, `.git`, state dir,
+ * scratch, uploads — needs a restrictive mode of its own, and none of the many
+ * writers that create files in there has to remember one. `sessionsRoot` itself
+ * stays root-owned 0755 so each session can still traverse to its own directory.
+ *
+ * Used for both populations: a new session (its allocated uid) and, at boot, a
+ * session that predates docs/270 (the shared global uid). The second is req 8b —
+ * NOT a migration, which req 8a rules out, but the permission change without
+ * which "new sessions only" would leave every new session readable by every old
+ * one, and every old one readable by the new.
+ */
+export function sealSessionDir(sessionDir: string, identity: SessionIdentity): boolean {
+  try {
+    fs.chownSync(sessionDir, identity.uid, identity.gid);
+    fs.chmodSync(sessionDir, 0o700);
+    return true;
+  } catch (err) {
+    console.warn(`[session-worker-uid] could not seal session dir ${sessionDir}:`, err);
+    return false;
+  }
+}
+
+/**
+ * The mode half of {@link sealSessionDir}, for a per-session directory whose
+ * OWNER some other helper has already set — currently the per-session
+ * credentials subtree, which `chownSessionCredentialsTree` hands over by path.
+ *
+ * No-op when the non-root runtime is off. Best-effort: a directory we cannot
+ * chmod must not stop a credential sync, which is the thing that keeps a session
+ * able to authenticate.
+ */
+export function sealDirMode(dir: string): void {
+  if (sessionWorkerGid() === null) return;
+  try {
+    fs.chmodSync(dir, 0o700);
+  } catch (err) {
+    console.warn(`[session-worker-uid] could not seal mode on ${dir}:`, err);
+  }
+}
+
+/**
+ * docs/270 req 9 — make a surface that is SHARED between sessions usable by all
+ * of them, now that they no longer share a uid.
+ *
+ * The three surfaces this exists for are the per-repo dependency cache, the
+ * shared pnpm store, and the overlay dependency base. Each is written by
+ * whichever session gets there first and read — and written — by every other,
+ * which "chown it to the worker uid" expressed perfectly while there was one
+ * worker uid and cannot express at all now.
+ *
+ * So: leave the owner alone, set the shared GROUP, and add group write. On
+ * directories the setgid bit goes on too, so an entry a later session creates
+ * inherits the group instead of that session's own. For the overlay base the
+ * group write is not a convenience — overlayfs copy-up preserves the LOWER
+ * file's owner and mode, so a base file without it copies up unwritable and the
+ * agent EACCESes on its first edit of a dependency, which is the bug docs/183's
+ * chown was added to fix.
+ *
+ * `X` (capital) in the chmod sense: execute is added only where it is already
+ * set on some class, or on a directory. Files do not become executable.
+ *
+ * No-op when the non-root runtime is off. Best-effort per node, like every other
+ * helper here: the walk must not throw on a path that vanished mid-flight.
+ */
+export function shareTreeWithAllSessions(targetPath: string): void {
+  const gid = sessionWorkerGid();
+  if (gid === null) return;
+  shareRecursive(targetPath, gid);
+}
+
+/**
+ * {@link shareTreeWithAllSessions}, but ONCE per tree per gid — for a shared
+ * surface that already has contents from before this deployment carried a shared
+ * group, and is far too large to re-walk on a hot path.
+ *
+ * This exists because the two biggest shared surfaces are populated by the
+ * *previous* build and never touched again by the code that shares them:
+ *
+ *   - The **pnpm store**'s handoff is non-recursive, and its docstring justified
+ *     that by saying the entrypoint's `chown -R /workspace` walks the nested
+ *     store and repairs the contents. Under docs/270 that stopped being true in
+ *     this very branch: `chown_workspace()` now `-prune`s `.pnpm-store`, because
+ *     walking a multi-gigabyte content-addressed store on every boot is exactly
+ *     the cost the prune avoids. Nothing was left repairing the contents.
+ *   - The **overlay base**'s share runs in `finalize`, i.e. only when a NEW
+ *     generation is published. A generation published before the upgrade keeps
+ *     `1000:1000` with `0644` files, and overlayfs copy-up preserves the lower
+ *     file's owner AND mode — so a session at an allocated uid EACCESes on its
+ *     first write to any inherited dependency.
+ *
+ * Both failures are silent, land on an upgraded deployment rather than a fresh
+ * one, and cannot happen in any test that never populated the surface under the
+ * old identity. The marker is what makes the repair affordable: the walk runs on
+ * the first container create after the gid changes and is a single `existsSync`
+ * on every one after it. It is named for the gid, so a later gid change rotates
+ * it exactly like the entrypoint's uid sentinel.
+ *
+ * Deliberately NOT gated on the top directory's own group: `shareRecursive`
+ * marks the root before it descends, so an interrupted walk would leave the root
+ * looking done with its contents unshared. The marker is written only after the
+ * walk returns.
+ *
+ * `beside` puts that bookkeeping file NEXT TO the tree rather than inside it,
+ * for a tree whose contents are USER-VISIBLE. An overlay base generation is
+ * mounted as the lower layer of `/workspace/<depDir>`, so a marker inside it
+ * would surface as a mystery dotfile in the user's `node_modules` and ride into
+ * every copy-up. The gid stays out of the caller's hands either way — it is this
+ * module's business, and a caller that spelled the name itself could rotate on a
+ * different value than the walk used.
+ */
+export function shareTreeOnce(targetPath: string, opts: { beside?: boolean } = {}): void {
+  const gid = sessionWorkerGid();
+  if (gid === null) return;
+  const marker = opts.beside
+    ? `${targetPath}${SHARED_GID_MARKER_PREFIX}${gid}`
+    : path.join(targetPath, `${SHARED_GID_MARKER_PREFIX}${gid}`);
+  try {
+    if (fs.existsSync(marker)) return;
+  } catch {
+    return; // unreadable target — nothing safe to do
+  }
+  shareRecursive(targetPath, gid);
+  try {
+    fs.writeFileSync(marker, "");
+    fs.chmodSync(marker, 0o664);
+    fs.lchownSync(marker, fs.lstatSync(marker).uid, gid);
+  } catch (err) {
+    // A missing marker only costs a repeated walk next time; never fail the
+    // caller over bookkeeping.
+    console.warn(`[session-worker-uid] shared-gid marker write failed for ${targetPath}:`, err);
+  }
+}
+
+/** Prefix of the {@link shareTreeOnce} bookkeeping file. Suffixed with the gid. */
+export const SHARED_GID_MARKER_PREFIX = ".shipit-shared-gid-";
+
+/**
+ * {@link shareTreeWithAllSessions} for a single node — no walk.
+ *
+ * For a shared CONTAINER directory whose contents are shared by something else:
+ * a dep-store scope dir (its generations are shared as they are published) or a
+ * generation dir about to get the recursive treatment from `chownBaseDir`. The
+ * setgid bit is the point — an entry a later session creates inherits the shared
+ * group instead of that session's own.
+ *
+ * An earlier version of this justified its non-recursiveness by claiming the
+ * entrypoint repaired the contents. Do NOT reintroduce that reasoning: the
+ * entrypoint prunes the shared mounts precisely so it does not walk them. If a
+ * tree's CONTENTS need the group, they need {@link shareTreeWithAllSessions} or
+ * {@link shareTreeOnce}, and there is no third party that will do it for you.
+ */
+export function shareWithAllSessions(targetPath: string): void {
+  const gid = sessionWorkerGid();
+  if (gid === null) return;
+  shareOne(targetPath, gid);
+}
+
+/** Group + mode for one node. Returns its stat so the walker can descend. */
+function shareOne(p: string, gid: number): fs.Stats | null {
+  let stat: fs.Stats;
+  try {
+    stat = fs.lstatSync(p);
+  } catch {
+    return null; // gone
+  }
+  // A symlink's own mode is meaningless on Linux and chmod would follow it out
+  // of the tree, so it is regrouped in place and never descended.
+  try {
+    fs.lchownSync(p, stat.uid, gid);
+  } catch (err) {
+    console.warn(`[session-worker-uid] group share failed for ${p}:`, err);
+  }
+  if (stat.isSymbolicLink()) return stat;
+  const mode = stat.mode & 0o7777;
+  // g+rw always; g+x and setgid only for directories, matching `chmod -R g+rwX`
+  // plus `find -type d -exec chmod g+s`.
+  const next = stat.isDirectory() ? mode | 0o2070 : mode | 0o060;
+  if (next !== mode) {
+    try {
+      fs.chmodSync(p, next);
+    } catch (err) {
+      console.warn(`[session-worker-uid] group share chmod failed for ${p}:`, err);
+    }
+  }
+  return stat;
+}
+
+function shareRecursive(p: string, gid: number): void {
+  const stat = shareOne(p, gid);
+  if (!stat?.isDirectory()) return;
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(p);
+  } catch {
+    return;
+  }
+  for (const entry of entries) shareRecursive(path.join(p, entry), gid);
+}
+
+/**
+ * docs/270 req 8b — seal the session directories that predate per-session uids.
+ *
+ * Requirement 8a says existing sessions are NOT migrated: they keep the shared
+ * identity. That answer only means what it says once their directories are also
+ * closed, because "a different owner" is not isolation on its own — a directory
+ * created `root:root` under the default umask is world-traversable and its
+ * contents world-readable, so without this a new session's payload would read
+ * every old session's workspace and every old session's payload would read the
+ * new one's.
+ *
+ * So: one non-recursive `chown` + `chmod 0700` per session directory that is
+ * still root-owned. No tree walk, no first-boot cost, and no identity change —
+ * this is a permission change, which is why it is compatible with req 8a rather
+ * than a re-litigation of it.
+ *
+ * Reads the directory rather than the session table on purpose: a session
+ * directory whose row has gone (a half-finished delete, a restored volume) is
+ * exactly as readable as one whose row is present, so it needs sealing exactly
+ * as much. Best-effort per entry — one unsealable directory must not stop the
+ * boot, and it is reported so it is diagnosable rather than silently open.
+ */
+export function sealLegacySessionDirs(sessionsRoot: string): number {
+  const gid = sessionWorkerGid();
+  if (gid === null) return 0; // legacy root runtime — nothing to seal to
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(sessionsRoot, { withFileTypes: true });
+  } catch {
+    return 0; // no sessions yet
+  }
+  let sealed = 0;
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    const dir = path.join(sessionsRoot, entry.name);
+    let stat: fs.Stats;
+    try {
+      stat = fs.statSync(dir);
+    } catch {
+      continue; // vanished mid-scan
+    }
+    // A non-root owner is already a record: either an allocated identity or a
+    // directory this pass sealed on an earlier boot. Re-sealing would be a
+    // no-op; skipping keeps the pass O(sessions) stats in the steady state.
+    if (stat.uid !== 0) continue;
+    if (sealSessionDir(dir, { uid: gid, gid })) sealed += 1;
+  }
+  if (sealed > 0) {
+    console.log(`[session-worker-uid] docs/270: sealed ${sealed} pre-existing session director${sealed === 1 ? "y" : "ies"} at the shared uid ${gid}`);
+  }
+  return sealed;
+}
+
+/**
  * Chown a single file/dir (non-recursive) to the session worker UID/GID. No-op
  * when `SHIPIT_SESSION_WORKER_UID` is unset. Best-effort: a chown failure (e.g.
  * the path vanished mid-flight) is logged, never thrown — the caller's write
@@ -134,10 +454,10 @@ export function assertWorkerUidNotReserved(): void {
  * refuses the boot before any of these run.
  */
 export function chownToSessionWorker(targetPath: string): void {
-  const uid = sessionWorkerUid();
-  if (uid === null) return;
+  const owner = identityForTarget(targetPath);
+  if (owner === null) return;
   try {
-    fs.lchownSync(targetPath, uid, uid);
+    fs.lchownSync(targetPath, owner.uid, owner.gid);
   } catch (err) {
     console.warn(`[session-worker-uid] chown failed for ${targetPath}:`, err);
   }
@@ -153,9 +473,9 @@ export function chownToSessionWorker(targetPath: string): void {
  * may have been torn down concurrently).
  */
 export function chownTreeToSessionWorker(targetPath: string): void {
-  const uid = sessionWorkerUid();
-  if (uid === null) return;
-  chownRecursive(targetPath, uid);
+  const owner = identityForTarget(targetPath);
+  if (owner === null) return;
+  chownRecursive(targetPath, owner);
 }
 
 /**
@@ -186,10 +506,10 @@ export function chownTreeToSessionWorker(targetPath: string): void {
  * (index, reflogs, refs, packed-refs, HEAD) live.
  */
 export function chownWorkspaceGitToSessionWorker(workspaceDir: string): void {
-  const uid = sessionWorkerUid();
-  if (uid === null) return;
+  const owner = identityForTarget(workspaceDir);
+  if (owner === null) return;
   const gitDir = path.join(workspaceDir, ".git");
-  chownGitMetadataRecursive(gitDir, uid, path.join(gitDir, "objects"), path.join(gitDir, "lfs", "objects"));
+  chownGitMetadataRecursive(gitDir, owner, path.join(gitDir, "objects"), path.join(gitDir, "lfs", "objects"));
 }
 
 /**
@@ -213,10 +533,10 @@ export function chownWorkspaceGitToSessionWorker(workspaceDir: string): void {
  * gitignored). Symlinks are chowned in place (`lchown`) and never followed.
  */
 export function chownWorktreeToSessionWorker(workspaceDir: string, excludeRelDirs: string[] = []): void {
-  const uid = sessionWorkerUid();
-  if (uid === null) return;
+  const owner = identityForTarget(workspaceDir);
+  if (owner === null) return;
   const exclude = new Set<string>([".git", ...excludeRelDirs.map((d) => path.normalize(d))]);
-  chownWorktreeRecursive(workspaceDir, uid, workspaceDir, exclude);
+  chownWorktreeRecursive(workspaceDir, owner, workspaceDir, exclude);
 }
 
 /**
@@ -242,7 +562,7 @@ export function chownWorktreeToSessionWorker(workspaceDir: string, excludeRelDir
  * overlay mount.
  */
 export function handWorkspaceBackToWorker(workspaceDir: string): void {
-  if (sessionWorkerUid() === null) return;
+  if (identityForTarget(workspaceDir) === null) return;
   chownWorkspaceGitToSessionWorker(workspaceDir);
   let depDirs: string[];
   try {
@@ -285,8 +605,8 @@ export function handWorkspaceBackToWorker(workspaceDir: string): void {
  * Tolerant: a missing `depDirPath` (no install yet) is a no-op.
  */
 export function reconcileDepDirCacheOwnership(depDirPath: string): void {
-  const uid = sessionWorkerUid();
-  if (uid === null) return;
+  const owner = identityForTarget(depDirPath);
+  if (owner === null) return;
   let entries: string[];
   try {
     entries = fs.readdirSync(depDirPath);
@@ -301,9 +621,9 @@ export function reconcileDepDirCacheOwnership(depDirPath: string): void {
     } catch {
       continue; // vanished mid-scan
     }
-    if (stat.uid !== uid || stat.gid !== uid) {
+    if (stat.uid !== owner.uid || stat.gid !== owner.gid) {
       // Leaked tree (root-owned cache a root process wrote here) — chown it whole.
-      chownRecursive(child, uid);
+      chownRecursive(child, owner);
     }
   }
 }
@@ -315,7 +635,7 @@ export function reconcileDepDirCacheOwnership(depDirPath: string): void {
  * descend real directories only (a symlink lstats as a non-directory, so it's
  * chowned in place and never followed out of the tree).
  */
-function chownWorktreeRecursive(p: string, uid: number, root: string, exclude: Set<string>): void {
+function chownWorktreeRecursive(p: string, owner: SessionIdentity, root: string, exclude: Set<string>): void {
   const rel = path.relative(root, p);
   if (rel !== "" && exclude.has(rel)) return; // skip .git + declared dep dirs
   let stat: fs.Stats;
@@ -324,7 +644,7 @@ function chownWorktreeRecursive(p: string, uid: number, root: string, exclude: S
   } catch {
     return; // gone — nothing to own
   }
-  lchownLogged(p, uid);
+  lchownLogged(p, owner);
   if (stat.isDirectory()) {
     let entries: string[];
     try {
@@ -333,14 +653,14 @@ function chownWorktreeRecursive(p: string, uid: number, root: string, exclude: S
       return;
     }
     for (const entry of entries) {
-      chownWorktreeRecursive(path.join(p, entry), uid, root, exclude);
+      chownWorktreeRecursive(path.join(p, entry), owner, root, exclude);
     }
   }
 }
 
-function lchownLogged(p: string, uid: number): void {
+function lchownLogged(p: string, owner: SessionIdentity): void {
   try {
-    fs.lchownSync(p, uid, uid);
+    fs.lchownSync(p, owner.uid, owner.gid);
   } catch (err) {
     console.warn(`[session-worker-uid] chown failed for ${p}:`, err);
   }
@@ -360,7 +680,7 @@ function lchownLogged(p: string, uid: number): void {
  * {@link chownWorkspaceGitToSessionWorker} for why skipping the data files is
  * safe.
  */
-function chownGitMetadataRecursive(p: string, uid: number, objectsDir: string, lfsObjectsDir: string): void {
+function chownGitMetadataRecursive(p: string, owner: SessionIdentity, objectsDir: string, lfsObjectsDir: string): void {
   let stat: fs.Stats;
   try {
     stat = fs.lstatSync(p);
@@ -381,12 +701,12 @@ function chownGitMetadataRecursive(p: string, uid: number, objectsDir: string, l
   // `unlink` (what `git lfs prune` needs) is governed by the *directory's*
   // permissions, which are worker-owned.
   if (p === lfsObjectsDir && stat.isDirectory()) {
-    chownDirsOnlyRecursive(p, uid);
+    chownDirsOnlyRecursive(p, owner);
     return;
   }
 
   if (p === objectsDir && stat.isDirectory()) {
-    lchownLogged(p, uid);
+    lchownLogged(p, owner);
     let entries: string[];
     try {
       entries = fs.readdirSync(p);
@@ -399,7 +719,7 @@ function chownGitMetadataRecursive(p: string, uid: number, objectsDir: string, l
     for (const entry of entries) {
       const child = path.join(p, entry);
       try {
-        if (fs.lstatSync(child).isDirectory()) lchownLogged(child, uid);
+        if (fs.lstatSync(child).isDirectory()) lchownLogged(child, owner);
       } catch {
         // entry vanished mid-walk — skip
       }
@@ -407,7 +727,7 @@ function chownGitMetadataRecursive(p: string, uid: number, objectsDir: string, l
     return;
   }
 
-  lchownLogged(p, uid);
+  lchownLogged(p, owner);
   if (stat.isDirectory()) {
     let entries: string[];
     try {
@@ -416,7 +736,7 @@ function chownGitMetadataRecursive(p: string, uid: number, objectsDir: string, l
       return;
     }
     for (const entry of entries) {
-      chownGitMetadataRecursive(path.join(p, entry), uid, objectsDir, lfsObjectsDir);
+      chownGitMetadataRecursive(path.join(p, entry), owner, objectsDir, lfsObjectsDir);
     }
   }
 }
@@ -432,8 +752,8 @@ function chownGitMetadataRecursive(p: string, uid: number, objectsDir: string, l
  * shares that prefix. The walk is therefore O(fanout dirs), not O(1) — but it
  * still never touches the (large, numerous) object files themselves.
  */
-function chownDirsOnlyRecursive(p: string, uid: number): void {
-  lchownLogged(p, uid);
+function chownDirsOnlyRecursive(p: string, owner: SessionIdentity): void {
+  lchownLogged(p, owner);
   let entries: fs.Dirent[];
   try {
     entries = fs.readdirSync(p, { withFileTypes: true });
@@ -442,11 +762,11 @@ function chownDirsOnlyRecursive(p: string, uid: number): void {
   }
   for (const entry of entries) {
     // `isDirectory()` on a Dirent is false for a symlink, so we never follow one.
-    if (entry.isDirectory()) chownDirsOnlyRecursive(path.join(p, entry.name), uid);
+    if (entry.isDirectory()) chownDirsOnlyRecursive(path.join(p, entry.name), owner);
   }
 }
 
-function chownRecursive(p: string, uid: number): void {
+function chownRecursive(p: string, owner: SessionIdentity): void {
   let stat: fs.Stats;
   try {
     stat = fs.lstatSync(p);
@@ -454,7 +774,7 @@ function chownRecursive(p: string, uid: number): void {
     return; // gone — nothing to own
   }
   try {
-    fs.lchownSync(p, uid, uid);
+    fs.lchownSync(p, owner.uid, owner.gid);
   } catch (err) {
     console.warn(`[session-worker-uid] chown failed for ${p}:`, err);
   }
@@ -468,7 +788,7 @@ function chownRecursive(p: string, uid: number): void {
       return;
     }
     for (const entry of entries) {
-      chownRecursive(path.join(p, entry), uid);
+      chownRecursive(path.join(p, entry), owner);
     }
   }
 }

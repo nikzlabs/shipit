@@ -622,7 +622,15 @@ describe("overlay-base: hardlink-dedup materialize (docs/183 generation dedup)",
     const g2 = await copySnapshotToBase(stateDir, s2, scopeHash, 2, g1);
 
     expect(ino(path.join(g2, "node_modules/run.sh"))).not.toBe(ino(path.join(g1, "node_modules/run.sh")));
-    expect(fs.lstatSync(path.join(g2, "node_modules/run.sh")).mode & 0o777).toBe(0o644);
+    // The EXECUTE bit is what this test is about, and it is still not copied
+    // from the superseded generation. The group-write bit is docs/270's shared
+    // handoff (a base file must be group-writable, or copy-up produces an
+    // unwritable upper for every session that is not its owner), and it is
+    // applied uniformly to both generations — which is exactly why it does not
+    // make two differing modes compare equal.
+    const mode = fs.lstatSync(path.join(g2, "node_modules/run.sh")).mode & 0o777;
+    expect(mode & 0o111).toBe(0);
+    expect(mode).toBe(process.env.SHIPIT_SESSION_WORKER_UID ? 0o664 : 0o644);
   });
 
   it("falls back to a plain copy when the link base is missing", async () => {

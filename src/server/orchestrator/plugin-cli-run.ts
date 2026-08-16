@@ -111,7 +111,7 @@ import {
 import { loadSatisfiedPluginCredentialNames } from "./plugin-credentials.js";
 import type { SecretStore } from "./secret-store.js";
 import { sessionStateDirForWorkspace } from "./session-state-dir.js";
-import { chownToSessionWorker, sessionWorkerUid } from "./session-worker-uid.js";
+import { chownToSessionWorker, identityForSession } from "./session-worker-uid.js";
 
 /**
  * Dedicated network for CLI invocation containers — separate from install's,
@@ -781,7 +781,11 @@ interface ExecuteSpec {
 
 /** Create, attach, run, and collect. */
 async function execute(deps: PluginCliDeps, spec: ExecuteSpec): Promise<PluginCliResult> {
-  const uid = sessionWorkerUid();
+  // docs/270 — a plugin container writes THIS session's workspace and overlay,
+  // so it runs as this session's identity rather than the one global uid. A
+  // session that predates per-session identities resolves to that global value,
+  // so its plugin containers are unchanged.
+  const identity = identityForSession(deps.sessionId);
   const container = await deps.docker.createContainer({
     Image: deps.image,
     Labels: { [PLUGIN_CLI_LABEL]: deps.sessionId },
@@ -792,7 +796,7 @@ async function execute(deps: PluginCliDeps, spec: ExecuteSpec): Promise<PluginCl
     Cmd: spec.args,
     WorkingDir: spec.workingDir,
     Env: spec.env,
-    ...(uid !== null ? { User: `${uid}:${uid}` } : {}),
+    ...(identity !== null ? { User: `${identity.uid}:${identity.gid}` } : {}),
     AttachStdin: true,
     AttachStdout: true,
     AttachStderr: true,

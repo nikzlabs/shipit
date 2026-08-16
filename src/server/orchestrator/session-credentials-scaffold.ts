@@ -30,7 +30,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { AgentId } from "../shared/types/agent-types.js";
 import { writeContainerGitConfig } from "./git-config.js";
-import { chownTreeToSessionWorker } from "./session-worker-uid.js";
+import { chownTreeToSessionWorker, sealDirMode } from "./session-worker-uid.js";
 
 /** Subdirectory under the credentials root that holds per-session subtrees. */
 export const SESSION_CREDENTIALS_SUBDIR = "sessions";
@@ -48,7 +48,7 @@ export const AGENT_CREDENTIAL_PATHS: Record<AgentId, readonly string[]> = {
   claude: [".claude", ".claude.json"],
   codex: [".codex"],
   // OpenCode's XDG data root: auth.json + the opencode.db session store live
-  // under ~/.local/share/opencode (docs/268). The nested path means any
+  // under ~/.local/share/opencode (docs/270). The nested path means any
   // symlinking step must create `~/.local/share` first.
   opencode: [".local/share/opencode"],
 };
@@ -83,6 +83,16 @@ export function perSessionCredentialsDir(credentialsRoot: string, sessionId: str
 }
 
 /**
+ * The directory the per-session credential subtrees live IN — `<sessionId>`
+ * children. docs/270 gives this to `shared/session-identity.ts` as its second
+ * root, so a chown of a per-session credential file resolves to the SAME
+ * identity a chown inside that session's workspace does.
+ */
+export function perSessionCredentialsRoot(credentialsRoot: string): string {
+  return path.join(credentialsRoot, SESSION_CREDENTIALS_SUBDIR);
+}
+
+/**
  * Hand the per-session credentials subtree to the unprivileged session-worker
  * user (docs/150 §7). No-op unless `SHIPIT_SESSION_WORKER_UID` is set. Every
  * orchestrator-side writer into the subtree (scaffold, provision, per-turn token
@@ -93,7 +103,19 @@ export function perSessionCredentialsDir(credentialsRoot: string, sessionId: str
  * this too; the entrypoint chown only runs at container start.
  */
 export function chownSessionCredentialsTree(credentialsRoot: string, sessionId: string): void {
-  chownTreeToSessionWorker(perSessionCredentialsDir(credentialsRoot, sessionId));
+  const dir = perSessionCredentialsDir(credentialsRoot, sessionId);
+  chownTreeToSessionWorker(dir);
+  // docs/270 — seal it, for the same reason and by the same means as the session
+  // directory: once sessions hold different uids, a subtree left at the default
+  // 0755 is one another session's payload can walk into. This one holds the
+  // agent's provider credentials, so it is if anything the worse of the two to
+  // leave open. `chownTreeToSessionWorker` above has already resolved this path
+  // to the owning session, so the mode is all that is missing.
+  //
+  // Directory-level, exactly like the session dir: 0700 denies traversal, so no
+  // credential file inside needs a mode of its own and no writer has to remember
+  // one — which matters here, where several unrelated writers create files.
+  sealDirMode(dir);
 }
 
 /**
@@ -139,7 +161,7 @@ export function perSessionCredentialsSubpath(sessionId: string): string {
  *     repair documents).
  *   - Only the FINAL path component is materialized. Every entry in
  *     {@link SHARED_CREDENTIAL_PATHS} is single-segment; OpenCode's
- *     `.local/share/opencode` (docs/268) is the one multi-segment rel in
+ *     `.local/share/opencode` (docs/270) is the one multi-segment rel in
  *     {@link AGENT_CREDENTIAL_PATHS}, and its parents are ordinary
  *     directories everywhere ShipIt creates them (`cpSync` materializes them
  *     as real dirs; the image symlink sits at the LEAF). A symlink smuggled
