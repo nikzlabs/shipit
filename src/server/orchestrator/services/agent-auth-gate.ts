@@ -5,6 +5,7 @@ import type { AgentId } from "../../shared/types.js";
 const AUTH_ERROR: Record<AgentId, string> = {
   claude: "Claude is not authenticated. Sign in to Claude or add ANTHROPIC_API_KEY in Settings → Agents.",
   codex: "Codex is not authenticated. Sign in to Codex or add OPENAI_API_KEY in Settings → Agents.",
+  opencode: "OpenCode has no usable credential. Add an API key for a service OpenCode can run in Settings → Agents.",
 };
 
 export function agentAuthenticationError(agentId: AgentId): string {

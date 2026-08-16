@@ -428,10 +428,14 @@ describe("runSubAgent — --role reviewer", () => {
     await runSubAgent(deps, "s1", { target: { kind: "role", role: "reviewer", overrides: {} }, prompt: "review", depth: 0 });
     const arg = (runner.spawnSubAgent as unknown as { mock: { calls: Record<string, unknown>[][] } })
       .mock.calls[0][0];
-    // A Claude session's work goes to the GPT reviewer on the other harness —
-    // req 4's ideal, reached with nothing configured (req 8).
-    expect(arg.agentId).toBe("codex");
-    expect(arg.model).toBe("gpt-5.6-sol");
+    // The session has NO model selection, so the ranking collapses onto the
+    // harness axis (tierBasis "harness-only") — and since docs/268 BOTH derived
+    // slots reach a different-harness candidate (the anthropic key resolves
+    // onto OpenCode), so the equal-tier tie keeps the earlier slot. A session
+    // with a known model still ranks by family (the reviewer-model tests pin
+    // that); the unknown-model heuristic is tracked as follow-up.
+    expect(arg.agentId).toBe("opencode");
+    expect(arg.model).toBe("claude-opus-5");
     // req 5 — the level is part of the reviewer, never the harness's own default.
     expect(arg.reasoningEffort).toBeTruthy();
     // The captured route travels with it: a key-delivered credential is shaped,
@@ -467,7 +471,9 @@ describe("runSubAgent — --role reviewer", () => {
     for (const card of cards) {
       expect(card.subAgentId).toBe(arg.agentId);
       expect(card.runOn).toEqual({
-        serviceId: "openai",
+        // Same resolution as the spawn test above (docs/268: harness-only
+        // collapse keeps the earlier, anthropic slot).
+        serviceId: "anthropic",
         billingMode: "key",
         modelId: arg.model,
         reasoningEffort: arg.reasoningEffort,

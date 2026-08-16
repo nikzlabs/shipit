@@ -28,6 +28,21 @@ const ANTHROPIC_CREDENTIAL_VARS = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"] 
 const HARNESS_CREDENTIAL_VARS: Record<AgentId, readonly string[]> = {
   claude: ANTHROPIC_CREDENTIAL_VARS,
   codex: ["OPENAI_API_KEY"],
+  // OpenCode auto-detects every well-known provider key env var (verified in
+  // docs/268: a bare DEEPSEEK_API_KEY was picked up with no config), plus its
+  // own gateway/auth vars and ShipIt's provider-block delivery variable — all
+  // of which would out-prefer on-disk credentials and silently re-route
+  // billing.
+  opencode: [
+    "OPENCODE_PROVIDER_API_KEY",
+    "OPENCODE_API_KEY",
+    "OPENCODE_AUTH_CONTENT",
+    "ANTHROPIC_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "OPENAI_API_KEY",
+    "DEEPSEEK_API_KEY",
+    "OPENROUTER_API_KEY",
+  ],
 };
 
 /**

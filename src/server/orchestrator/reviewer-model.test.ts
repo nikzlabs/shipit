@@ -439,8 +439,8 @@ describe("reviewer harness derivation", () => {
     const { harnessesPreferring } = await import("./non-turn-model.js");
     const all = harnessesPreferring().map((h) => h.id);
 
-    expect(harnessesPreferring("claude").map((h) => h.id)).toEqual(["codex", "claude"]);
-    expect(harnessesPreferring("codex").map((h) => h.id)).toEqual(["claude", "codex"]);
+    expect(harnessesPreferring("claude").map((h) => h.id)).toEqual(["codex", "opencode", "claude"]);
+    expect(harnessesPreferring("codex").map((h) => h.id)).toEqual(["claude", "opencode", "codex"]);
     // A preference, never a filter: nothing is dropped, so a model only the
     // avoided harness can run is still reachable.
     expect(harnessesPreferring("claude").map((h) => h.id).sort()).toEqual([...all].sort());
@@ -452,12 +452,17 @@ describe("reviewer harness derivation", () => {
       readInstalledHarnesses: () => ["claude", "codex"],
     }));
     const { harnessesForSelection } = await import("./non-turn-model.js");
+    // The subscription mode, not the key mode: since docs/268 an Anthropic
+    // KEY model runs on OpenCode too, so it no longer isolates "only the
+    // implementer's own harness". The sub mode still does — its account
+    // credential needs an account target and its env-token credential is
+    // carrier-restricted to Claude Code.
     const credentials = [
-      { serviceId: "anthropic", billingMode: "key" as const, via: "string" as const },
+      { serviceId: "anthropic", billingMode: "sub" as const, via: "account" as const },
     ];
     const selection = {
       serviceId: "anthropic",
-      billingMode: "key" as const,
+      billingMode: "sub" as const,
       modelId: "claude-opus-5",
     };
 
@@ -528,7 +533,11 @@ describe("selecting the reviewer furthest from the implementer (req 4)", () => {
     if (!result.ok) return;
     expect(result.target.slot).toBe("second");
     expect(result.target.selection.modelId).toBe("claude-sonnet-5");
-    expect(result.tier).toBe(4);
+    // Tier 3 since docs/268, not 4: the anthropic-key pin now also runs on
+    // OpenCode, so the harness derivation bends away from the implementer and
+    // adds the different-harness axis to the different-model one.
+    expect(result.tier).toBe(3);
+    expect(result.target.harnessId).toBe("opencode");
   });
 
   it("prefers a different family over a different service of the same one", async () => {
@@ -640,7 +649,12 @@ describe("selecting the reviewer furthest from the implementer (req 4)", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.tierBasis).toBe("harness-only");
-    expect(result.target.harnessId).toBe("codex");
+    // "opencode" since docs/268: with the model axes undecidable, BOTH slots
+    // reach a different-harness candidate (slot 1's anthropic key now resolves
+    // onto OpenCode), and an equal tier keeps the earlier slot. Before the
+    // third harness, slot 1 could only resolve onto the implementer's own
+    // Claude Code, so slot 2's Codex won.
+    expect(result.target.harnessId).toBe("opencode");
   });
 
   it("marks the ranking as model-and-harness when the implementer's model is known", async () => {

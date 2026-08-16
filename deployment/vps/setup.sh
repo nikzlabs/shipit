@@ -291,7 +291,7 @@ fi
 # Skipped without a prompt when SHIPIT_HARNESSES is already set (a scripted
 # install: `SHIPIT_HARNESSES=codex bash setup.sh`) or when stdin is not a TTY, so
 # the curl|bash path stays non-interactive.
-SUPPORTED_HARNESSES="claude codex"
+SUPPORTED_HARNESSES="claude codex opencode"
 
 persist_shipit_env() {
   local key="$1" value="$2"

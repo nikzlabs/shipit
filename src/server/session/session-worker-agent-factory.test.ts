@@ -17,4 +17,9 @@ describe("createWorkerAgent", () => {
     const agent = createWorkerAgent("claude");
     expect(agent.agentId).toBe("claude");
   });
+
+  it("builds an OpenCode adapter for agentId 'opencode'", () => {
+    const agent = createWorkerAgent("opencode");
+    expect(agent.agentId).toBe("opencode");
+  });
 });

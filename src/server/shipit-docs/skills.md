@@ -8,6 +8,9 @@ ShipIt surfaces two kinds of skill directories under the workspace:
 - `<workspace>/.codex/skills/<name>/SKILL.md` — Codex agent skills the
   user-or-you authored. Picked up by the composer's `$`-autocomplete and
   resolvable as `$<name>` in chat.
+- `<workspace>/.opencode/skills/<name>/SKILL.md` — OpenCode agent skills,
+  `/`-invoked like Claude's. OpenCode also natively reads `.claude/skills/`,
+  so on an OpenCode session both directories' skills are disclosed.
 - `<workspace>/<agent-dir>/skills/<plugin>__<skill>/SKILL.md` — skills the user
   installed from a marketplace via **Settings → Skills → Discover**
   (docs/149). These have a sentinel `.shipit-installed.json` file next to the

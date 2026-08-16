@@ -287,9 +287,10 @@ export async function registerFileRoutes(
       const dir = resolveSessionDir(sessionManager, request.params.id, reply);
       if (!dir) return;
       const session = sessionManager.get(request.params.id);
-      const queryAgent = request.query.agent === "codex" || request.query.agent === "claude"
-        ? request.query.agent
-        : undefined;
+      const queryAgent =
+        request.query.agent === "codex" || request.query.agent === "claude" || request.query.agent === "opencode"
+          ? request.query.agent
+          : undefined;
       const agentId = session?.agentId ?? queryAgent ?? defaultAgentId;
 
       const skillsDirName = agentRegistry.get(agentId)?.capabilities.skillsDirName ?? ".claude";

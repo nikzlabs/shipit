@@ -7,7 +7,7 @@ import type { McpServerConfig, McpServerStatus } from "./mcp-types.js";
 
 // ---- Agent identity ----
 
-export type AgentId = "claude" | "codex";
+export type AgentId = "claude" | "codex" | "opencode";
 
 /**
  * The permission modes the Claude Code adapter supports (docs/138). Single

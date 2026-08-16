@@ -28,7 +28,7 @@ const execFileAsync = promisify(execFile);
 // docs/252 phase 1 — tool names moved to their own module so the harness
 // catalogue can carry them without closing an import cycle with this file.
 // Re-exported here so existing import sites are unchanged.
-export { CLAUDE_TOOL_NAMES, CODEX_TOOL_NAMES } from "./agent-tool-names.js";
+export { CLAUDE_TOOL_NAMES, CODEX_TOOL_NAMES, OPENCODE_TOOL_NAMES } from "./agent-tool-names.js";
 
 /**
  * docs/252 — the model lists are DERIVED from the service catalogue.
@@ -225,6 +225,10 @@ export function getAgentDisplayName(id: AgentId): string {
  */
 const AUTH_ENV_KEYS: Partial<Record<AgentId, string>> = {
   codex: "OPENAI_API_KEY",
+  // opencode is deliberately absent: it has no single canonical key variable —
+  // every credential is per-service, delivered through the adapter's provider
+  // block (docs/268) — so there is no one env var whose absence means
+  // "not configured".
 };
 
 /**
@@ -530,6 +534,9 @@ export class AgentRegistry extends EventEmitter<AgentRegistryEvents> {
       // bill via Platform API. See docs/119-codex-subscription-auth/plan.md.
       if (this.checkCodexAuth()) return true;
     }
+    // opencode: no legacy probe and no canonical env key (see AUTH_ENV_KEYS),
+    // so the no-credential-source fallback answers false. Real installs answer
+    // through the credential join above (docs/268).
     const envKey = getAuthEnvKey(id);
     if (!envKey) return false;
     const val = process.env[envKey];

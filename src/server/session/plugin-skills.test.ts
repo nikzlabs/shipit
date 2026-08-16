@@ -433,6 +433,7 @@ describe("pluginSkillExcludeEntries", () => {
     const entries = pluginSkillExcludeEntries(["plugins--tools--probe-abc123"]);
     expect(entries).toContain("/.claude/skills/plugins--tools--probe-abc123/");
     expect(entries).toContain("/.codex/skills/plugins--tools--probe-abc123/");
+    expect(entries).toContain("/.opencode/skills/plugins--tools--probe-abc123/");
     // No wildcard among the PUBLISHED names.
     for (const entry of entries.filter((e) => e.includes("probe"))) {
       expect(entry).not.toContain("*");
@@ -445,6 +446,7 @@ describe("pluginSkillExcludeEntries", () => {
     expect(pluginSkillExcludeEntries([])).toEqual([
       "/.claude/skills/.plugins--*.staging-*/",
       "/.codex/skills/.plugins--*.staging-*/",
+      "/.opencode/skills/.plugins--*.staging-*/",
     ]);
   });
 });

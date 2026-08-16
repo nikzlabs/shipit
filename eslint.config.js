@@ -43,11 +43,11 @@ const RESTRICTED_USEEFFECT = {
 // `eslint-disable-next-line` with a one-line rationale.
 const RESTRICTED_AGENT_ID_LEAK = [
   {
-    selector: "BinaryExpression[operator=/^[!=]==$/][left.type='Identifier'][left.name=/[Aa]gentId$/][right.type='Literal'][right.value=/^(claude|codex)$/]",
+    selector: "BinaryExpression[operator=/^[!=]==$/][left.type='Identifier'][left.name=/[Aa]gentId$/][right.type='Literal'][right.value=/^(claude|codex|opencode)$/]",
     message: "Avoid `agentId === \"claude\" | \"codex\"` comparisons outside `agents/<id>/` folders — they break the agent abstraction (docs/155). Use a capability flag (`AgentCapabilities`), an `AgentRegistry` method, or a `Map<AgentId, …>` runtime table instead. If the branch is a genuine per-CLI-shape exception (marketplace v1 gate, Claude-only `--resume` recovery, runtime input validation), add `eslint-disable-next-line no-restricted-syntax` with a one-line rationale.",
   },
   {
-    selector: "BinaryExpression[operator=/^[!=]==$/][left.type='MemberExpression'][left.property.type='Identifier'][left.property.name=/[Aa]gentId$/][right.type='Literal'][right.value=/^(claude|codex)$/]",
+    selector: "BinaryExpression[operator=/^[!=]==$/][left.type='MemberExpression'][left.property.type='Identifier'][left.property.name=/[Aa]gentId$/][right.type='Literal'][right.value=/^(claude|codex|opencode)$/]",
     message: "Avoid `.agentId === \"claude\" | \"codex\"` comparisons outside `agents/<id>/` folders — they break the agent abstraction (docs/155). Use a capability flag (`AgentCapabilities`), an `AgentRegistry` method, or a `Map<AgentId, …>` runtime table instead. If the branch is a genuine per-CLI-shape exception (marketplace v1 gate, Claude-only `--resume` recovery, runtime input validation), add `eslint-disable-next-line no-restricted-syntax` with a one-line rationale.",
   },
 ];
@@ -275,8 +275,10 @@ export default tseslint.config(
     files: [
       "src/server/session/agents/claude/**",
       "src/server/session/agents/codex/**",
+      "src/server/session/agents/opencode/**",
       "src/server/orchestrator/agents/claude/**",
       "src/server/orchestrator/agents/codex/**",
+      "src/server/orchestrator/agents/opencode/**",
     ],
     rules: {
       "no-restricted-syntax": [

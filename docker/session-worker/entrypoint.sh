@@ -96,6 +96,19 @@ if ! (mkdir -p /plugins && chown "${UID_GID}:${UID_GID}" /plugins) 2>/dev/null; 
   echo "[shipit] warning: could not prepare /plugins for UID ${UID_GID}; plugin checkouts will not be linked" >&2
 fi
 
+# docs/268 — OpenCode's credential home. The image symlinks
+# ~/.local/share/opencode at /credentials/.local/share/opencode, and unlike the
+# single-segment .claude/.codex targets, a recursive mkdir THROUGH that dangling
+# leaf fails (EEXIST on the link, ENOENT on the stat) — so the target directory
+# must exist before the CLI's first write. Same best-effort shape as /plugins
+# above (and recognized by the entrypoint test harness's prep-block anchor): a
+# boot must never die over an optional credential surface, and /credentials was
+# just handed off by the loop, so this mkdir+chown succeeds there and warns
+# anywhere it cannot.
+if ! (mkdir -p /credentials/.local/share/opencode && chown "${UID_GID}:${UID_GID}" /credentials/.local/share/opencode) 2>/dev/null; then
+  echo "[shipit] warning: could not prepare /credentials/.local/share/opencode for UID ${UID_GID}; OpenCode credential writes will fail" >&2
+fi
+
 # docs/262 req 17 — /plugin-bin holds the generated companion-CLI wrappers the
 # worker writes AFTER dropping to UID_GID, so it needs the same handoff /plugins
 # does and for the same reason (`/` is root-owned). Nothing plugin-authored ever
@@ -124,6 +137,8 @@ if [ "${SHIPIT_READONLY_HOME:-0}" = "1" ]; then
     ln -sfn /credentials/.claude      /home/shipit/.claude
     ln -sfn /credentials/.claude.json /home/shipit/.claude.json
     ln -sfn /credentials/.codex       /home/shipit/.codex
+    mkdir -p /home/shipit/.local/share
+    ln -sfn /credentials/.local/share/opencode /home/shipit/.local/share/opencode
     mkdir -p /home/shipit/.npm-global /home/shipit/.npm
   '
 fi

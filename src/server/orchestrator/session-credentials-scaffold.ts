@@ -47,6 +47,10 @@ export const SESSION_CREDENTIALS_SUBDIR = "sessions";
 export const AGENT_CREDENTIAL_PATHS: Record<AgentId, readonly string[]> = {
   claude: [".claude", ".claude.json"],
   codex: [".codex"],
+  // OpenCode's XDG data root: auth.json + the opencode.db session store live
+  // under ~/.local/share/opencode (docs/268). The nested path means any
+  // symlinking step must create `~/.local/share` first.
+  opencode: [".local/share/opencode"],
 };
 
 /**
@@ -133,10 +137,14 @@ export function perSessionCredentialsSubpath(sessionId: string): string {
  *   - `recursive: true` is required for the symlink-to-directory case: Node.js
  *     24.13.0 throws ERR_FS_EISDIR without it (the same constraint the leak
  *     repair documents).
- *   - Only the FINAL path component is materialized, which covers every entry
- *     in {@link AGENT_CREDENTIAL_PATHS} and {@link SHARED_CREDENTIAL_PATHS} —
- *     all single-segment. A future multi-segment `rel` would need its parents
- *     checked too.
+ *   - Only the FINAL path component is materialized. Every entry in
+ *     {@link SHARED_CREDENTIAL_PATHS} is single-segment; OpenCode's
+ *     `.local/share/opencode` (docs/268) is the one multi-segment rel in
+ *     {@link AGENT_CREDENTIAL_PATHS}, and its parents are ordinary
+ *     directories everywhere ShipIt creates them (`cpSync` materializes them
+ *     as real dirs; the image symlink sits at the LEAF). A symlink smuggled
+ *     into a PARENT component would still be followed — keep leaf-level
+ *     symlinking the rule for any future entry.
  */
 function materializeCredentialDestination(dest: string): void {
   const stat = fs.lstatSync(dest, { throwIfNoEntry: false });

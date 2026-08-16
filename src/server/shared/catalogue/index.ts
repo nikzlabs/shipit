@@ -510,7 +510,36 @@ export function harnessCanCarry(harnessId: AgentId, credential: ConfiguredCreden
   // catalogue no longer declares (a row edited under a live install) is not a
   // usable credential, and inventing a destination for it is how a secret ends
   // up delivered under a name nothing reads.
-  return modeCredentialFor(credential.serviceId, credential.billingMode, credential.via) !== undefined;
+  const declared = modeCredentialFor(credential.serviceId, credential.billingMode, credential.via);
+  if (!declared) return false;
+  // A string credential may be restricted to the harnesses that can actually
+  // authenticate with it (`carriers` — see the type's docstring). Without this
+  // check, an Anthropic-subscription OAuth token would make subscription
+  // models eligible on OpenCode, and every such turn would 401 (docs/268).
+  if (declared.via === "string" && declared.carriers && !declared.carriers.includes(harnessId)) {
+    return false;
+  }
+  return true;
+}
+
+/**
+ * The *Add a service* table's per-cell answer, now that one service's modes can
+ * genuinely disagree per harness (docs/268 — OpenCode runs Anthropic/OpenAI in
+ * key mode but never their subscription modes): **"all"** when every mode of
+ * the service would run on this harness, **"some"** when only part of them
+ * would, **"none"** when nothing would. The old boolean cell collapsed this to
+ * an existential tick, which promised subscription pairings the picker then
+ * refused — the exact promise `catalogue.test.ts` forbids.
+ */
+export function harnessServiceSupport(
+  harnessId: AgentId,
+  serviceId: string,
+): "all" | "some" | "none" {
+  const service = getService(serviceId);
+  if (!service) return "none";
+  const answers = service.modes.map((mode) => harnessSupportsMode(harnessId, serviceId, mode.kind));
+  if (answers.every(Boolean)) return "all";
+  return answers.some(Boolean) ? "some" : "none";
 }
 
 /** The `(service, mode)` keys `harnessId` can authenticate with, given these routes. */

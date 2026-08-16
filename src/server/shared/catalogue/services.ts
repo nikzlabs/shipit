@@ -136,7 +136,10 @@ export const SERVICES = [
           // `claude-env-oauth`: a subscription delivered as an env-supplied
           // OAuth token — quota-bearing, and ranked above the metered key route.
           // It is why `via` (delivery) and `kind` (billing) are separate axes.
-          { via: "string", storageEnv: "ANTHROPIC_AUTH_TOKEN" },
+          // `carriers`: the token is a Claude-Code OAuth artifact (Bearer
+          // semantics; Anthropic prohibits third-party harnesses on
+          // subscription auth — docs/268), so no other harness may carry it.
+          { via: "string", storageEnv: "ANTHROPIC_AUTH_TOKEN", carriers: ["claude"] },
         ],
         retired: [],
         models: [
@@ -276,6 +279,12 @@ export const SERVICES = [
             // ANTHROPIC_API_KEY — a bearer token rather than an `x-api-key`
             // header. This is the override the field exists for.
             targetOverride: { claude: { kind: "env", name: "ANTHROPIC_AUTH_TOKEN" } },
+            // And `carriers` is its consequence (docs/268 review finding):
+            // OpenCode's anthropic-messages path sends `x-api-key`, exactly the
+            // header this plan does not accept — offering the pairing would
+            // 401 every turn. Claude Code stays the one carrier until a
+            // bearer-delivery path for OpenCode is verified at the wire.
+            carriers: ["claude"],
           },
         ],
         retired: [],

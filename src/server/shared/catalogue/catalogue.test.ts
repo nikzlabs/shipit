@@ -34,6 +34,7 @@ import {
   eligibleEntriesForHarness,
   harnessCanCarry,
   harnessCredentialTarget,
+  harnessServiceSupport,
   harnessSupportsMode,
   harnessSupportsService,
   isSelectionEligible,
@@ -672,19 +673,20 @@ describe("support before a credential exists (the add-service table)", () => {
     }
   });
 
-  it("is not hiding a per-mode or per-shape difference behind one cell", () => {
-    // The cell is per SERVICE and existential: it is a tick when SOME mode and
-    // SOME accepted credential shape would work. The user then picks one mode
-    // and supplies one shape — so a service whose answer differed between them
-    // would be ticked and then offer nothing, which is the promise the table
-    // must not make. No shipped row does, and this fails the moment one does:
-    // that is when the cell has to become per-mode rather than per-service.
-    // Found by cross-backend review, which is also where the reasoning is
-    // recorded (plan.md, req 22).
+  it("is not hiding a per-shape difference behind one mode cell", () => {
+    // Since docs/268 the per-SERVICE cell is tri-state (`harnessServiceSupport`
+    // — OpenCode runs Anthropic's key mode and never its subscription, so the
+    // service-level collapse is honestly "some" rather than a flat tick). The
+    // collapse that must still be safe is per MODE: `harnessSupportsMode` is a
+    // tick when SOME accepted credential shape would work, the user supplies
+    // ONE shape — so a mode whose answer differed between its shapes would be
+    // ticked and then offer nothing. This fails the moment a shipped row does
+    // that; the fix then is a per-shape cell, not a lie. (Originally found by
+    // cross-backend review — plan.md, req 22.)
     for (const service of allServices()) {
       for (const harness of allHarnesses()) {
-        const answers = new Set<boolean>();
         for (const mode of service.modes) {
+          const answers = new Set<boolean>();
           for (const credential of mode.credentials) {
             answers.add(
               eligibleEntriesForHarness(harness.id, [
@@ -692,14 +694,44 @@ describe("support before a credential exists (the add-service table)", () => {
               ]).length > 0,
             );
           }
+          expect({ service: service.id, harness: harness.id, mode: mode.kind, answers: answers.size }).toEqual({
+            service: service.id,
+            harness: harness.id,
+            mode: mode.kind,
+            answers: 1,
+          });
         }
-        expect({ service: service.id, harness: harness.id, answers: answers.size }).toEqual({
-          service: service.id,
-          harness: harness.id,
-          answers: 1,
-        });
       }
     }
+  });
+
+  it("the tri-state service cell matches the per-mode truth, and disagreement is real (docs/268)", () => {
+    for (const service of allServices()) {
+      for (const harness of allHarnesses()) {
+        const answers = service.modes.map((mode) =>
+          harnessSupportsMode(harness.id, service.id, mode.kind),
+        );
+        const expected = answers.every(Boolean) ? "all" : answers.some(Boolean) ? "some" : "none";
+        expect({ service: service.id, harness: harness.id, support: harnessServiceSupport(harness.id, service.id) })
+          .toEqual({ service: service.id, harness: harness.id, support: expected });
+      }
+    }
+    // Pin the rows that motivated the tri-state: OpenCode reaches the key mode
+    // of Anthropic and OpenAI but neither subscription (no account target, and
+    // the env-OAuth token is carrier-restricted to Claude Code — docs/268 req 5).
+    expect(harnessServiceSupport("opencode", "anthropic")).toBe("some");
+    expect(harnessServiceSupport("opencode", "openai")).toBe("some");
+    expect(harnessSupportsMode("opencode", "anthropic", "sub")).toBe(false);
+    expect(harnessSupportsMode("opencode", "anthropic", "key")).toBe(true);
+    // GLM's coding plan delivers a BEARER token (ANTHROPIC_AUTH_TOKEN);
+    // OpenCode's anthropic-messages path sends x-api-key, so the sub mode is
+    // carrier-restricted to Claude Code (docs/268 review finding) while the
+    // ordinary key mode still joins.
+    expect(harnessSupportsMode("opencode", "zai", "sub")).toBe(false);
+    expect(harnessSupportsMode("opencode", "zai", "key")).toBe(true);
+    expect(harnessServiceSupport("opencode", "zai")).toBe("some");
+    // Claude Code keeps its full ticks — the tri-state changed nothing for it.
+    expect(harnessServiceSupport("claude", "anthropic")).toBe("all");
   });
 
   it("a harness that cannot override its endpoint joins only its own vendor", () => {

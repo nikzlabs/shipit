@@ -1239,9 +1239,11 @@ function requireSubscriptionModeKey(key: string): { serviceId: string; billingMo
  * and a harness id passed there compiles and silently matches nothing.
  */
 function requireAccountService(provider: AgentId): string {
-  if (provider !== "claude" && provider !== "codex") {
+  if (provider !== "claude" && provider !== "codex" && provider !== "opencode") {
     throw new ServiceError(400, "Unknown provider");
   }
+  // OpenCode carries no nativeService (docs/268 — key-mode only, no account
+  // rows), so it falls to the same 400 below rather than a special case here.
   const serviceId = nativeServiceForHarness(provider);
   if (!serviceId) throw new ServiceError(400, "Unknown provider");
   return serviceId;

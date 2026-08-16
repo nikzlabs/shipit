@@ -34,6 +34,7 @@ import type {
 const PROVIDER_LABEL: Record<AgentId, string> = {
   claude: "Claude",
   codex: "Codex",
+  opencode: "OpenCode",
 };
 
 /**
