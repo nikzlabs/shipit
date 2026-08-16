@@ -338,21 +338,26 @@ export const SERVICES = [
         // ✅ 2026-08-15 — OpenRouter DOES serve the Responses API at
         // `https://openrouter.ai/api/v1/responses` (authenticated POST → 200
         // with a genuine `"object":"response"` body; a bogus sibling route on
-        // the same base 404s, so the 200 is routing and not a catch-all). Not
-        // just the HTTP surface: a real `codex exec` turn completed over it
-        // with `wire_api = "responses"`. That is what lets this row reach Codex
+        // the same base 404s with Vercel's HTML page, so the 200 is routing and
+        // not a catch-all). Not just the HTTP surface: a real `codex exec` turn
+        // completed over it with `wire_api = "responses"`, on
+        // `deepseek/deepseek-v4-flash`. That is what lets this row reach Codex
         // at all, and it settles the 🔍 that used to sit here (planning#391).
         //
-        // The style is declared per row rather than across the list, because
-        // the run exercised `deepseek/deepseek-v4-flash` and one gateway model
-        // answering does not say the gateway TRANSLATES for an upstream that
-        // has no Responses API of its own. Anthropic publishes none, and Z.ai
-        // was measured in the same run NOT to serve one — so those three rows
-        // would be asserting a translation layer nobody has seen work, and
-        // they keep `A_MSG` (their real path to Claude Code) instead. The
-        // DeepSeek pair is the defensible case: DeepSeek serves Responses
-        // natively (verified 2026-08-13, see its own row), so both models
-        // stand whether OpenRouter passes through or translates.
+        // ✅ 2026-08-16 — `deepseek/deepseek-v4-pro` measured the same way and
+        // separately: HTTP 200, `"object":"response"`, `"status":"completed"`,
+        // `"model":"deepseek/deepseek-v4-pro"`, output text `PAIR_OK`, against
+        // the same bogus-route control. So BOTH ids carrying the style below
+        // have been seen to work; neither rides on the other.
+        //
+        // The style is declared per row rather than across the list, because a
+        // gateway model answering does not say the gateway TRANSLATES for an
+        // upstream that has no Responses API of its own. Anthropic publishes
+        // none, and Z.ai was measured in the 08-15 run NOT to serve one — so
+        // those three rows would be asserting a translation layer nobody has
+        // seen work, and they keep `A_MSG` (their real path to Claude Code)
+        // instead. Adding one is a measurement, not a deduction: the two
+        // dated lines above are the standard to meet.
         //
         // Caveat that applies to EVERY gateway row reaching Codex, Vercel's
         // included: a namespaced id is outside Codex's own metadata table, so

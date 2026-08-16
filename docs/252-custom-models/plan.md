@@ -2018,10 +2018,10 @@ OpenRouter to speak the Responses API, which nothing here establishes.
 **Both halves were later measured, and they did not answer the same way.** OpenRouter's
 Anthropic-Messages surface is real and its rows carry it; OpenRouter also serves the
 Responses API (2026-08-15, planning#391), so the crossing is no longer hypothetical — but it
-is a *DeepSeek* model that crosses. Anthropic publishes no Responses API for the gateway to
-pass through, and the run that settled the question exercised no Anthropic id, so the
-striking illustration remains undeclared for want of evidence rather than for want of a
-mechanism. The design point is unchanged either way: what forbids the crossing is a missing
+is a *DeepSeek* model that crosses, both of them, each measured against the live endpoint.
+Anthropic publishes no Responses API for the gateway to pass through, and no run has
+exercised an Anthropic id over it, so the striking illustration remains undeclared for want
+of evidence rather than for want of a mechanism. The design point is unchanged either way: what forbids the crossing is a missing
 style on a row, never a special case in the eligibility check.
 
 **User-supplied endpoints are deferred, not designed away** (req 15). Nothing here should

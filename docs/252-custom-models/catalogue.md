@@ -935,11 +935,13 @@ Every 🔍, but these change the *shape* rather than the contents:
    2026-08-15** (planning#391) — it serves Responses at `https://openrouter.ai/api/v1`, an
    authenticated POST returning a genuine `"object":"response"` body where a bogus sibling
    route on the same base 404s, and a real `codex exec` turn completed over it with
-   `wire_api = "responses"`. The style is declared on the row's **DeepSeek models only**: the
-   run exercised `deepseek/deepseek-v4-flash` and that id alone, so `deepseek/deepseek-v4-pro`
-   rides on DeepSeek's own verified Responses support rather than on this run. One model
-   answering does not establish that the gateway
-   translates for an upstream serving no Responses API of its own — which Anthropic does not,
-   and which Z.ai was measured in the same run not to do either.
+   `wire_api = "responses"`, on `deepseek/deepseek-v4-flash`. **`deepseek/deepseek-v4-pro`
+   measured separately 2026-08-16** — HTTP 200, `"object":"response"`, `"status":"completed"`,
+   output text `PAIR_OK`, same bogus-route control — so both ids carrying the style have been
+   seen to work and neither rides on the other. The style is declared on the row's **DeepSeek
+   models only**: one model answering does not establish that the gateway translates for an
+   upstream serving no Responses API of its own — which Anthropic does not, and which Z.ai was
+   measured in the 08-15 run not to do either. Adding a further row is a measurement, not a
+   deduction.
 6. **What does GLM's coding plan offer, and how does its auth work?** Phase 2 owns the
    integration and req 15 is unmet until it lands.
