@@ -209,6 +209,19 @@ export interface WsSubmitBugReport {
 }
 
 /**
+ * Client → Server: decline a bug report (docs/164 / nikzlabs/shipit#2350). Sent when the
+ * user clicks "Cancel" on the inline consent card. Nothing is filed — the
+ * round-trip exists so the decision is durable (the card stays collapsed across
+ * a reload instead of returning as an editable draft) and so the session's
+ * agent is told the report was declined rather than left thinking it is still
+ * awaiting the user.
+ */
+export interface WsDismissBugReport {
+  type: "dismiss_bug_report";
+  cardId: string;
+}
+
+/**
  * Client → Server: undo a previously-recorded issue write (docs/177). Sent
  * when the user clicks "Undo" on the provenance card. The server recovers the
  * tracker + undo snapshot from the persisted card (keyed by `cardId`) and
@@ -252,6 +265,7 @@ export interface WsEgressDecision {
 export type WsClientMessage =
   | WsSendMessage
   | WsSubmitBugReport
+  | WsDismissBugReport
   | WsUndoIssueWrite
   | WsResolvePermission
   | WsEgressDecision

@@ -25,7 +25,12 @@ export type RewindSnapshotAction = "chat" | "code" | "both" | "fork";
  */
 export interface PersistedBugReport {
   cardId: string;
-  phase: "draft" | "filing" | "filed" | "failed";
+  /**
+   * `dismissed` (nikzlabs/shipit#2350) is the persisted form of the user clicking
+   * Cancel. It was previously local component state, so a reload resurrected a
+   * declined card as an editable draft.
+   */
+  phase: "draft" | "filing" | "filed" | "failed" | "dismissed";
   title: string;
   body: string;
   /** False → the deep semantic redaction pass didn't run; the card warns. */
@@ -771,6 +776,23 @@ export class ChatHistoryManager {
       }
       return false;
     })();
+  }
+
+  /**
+   * nikzlabs/shipit#2350 — read a persisted bug-report card by `cardId`. The dismiss
+   * handler needs the card's own title for the wake-turn it sends the agent,
+   * and the client only names the card. Returns undefined when the card lives
+   * only in the proposing turn's still-unflushed `recordedCards` — callers
+   * check there first.
+   */
+  getBugReportCard(sessionId: string, cardId: string): PersistedBugReport | undefined {
+    const rows = this.stmtLoadAll.all(sessionId) as MessageRow[];
+    for (const row of rows) {
+      if (!row.bug_report) continue;
+      const card = JSON.parse(row.bug_report) as PersistedBugReport;
+      if (card.cardId === cardId) return card;
+    }
+    return undefined;
   }
 
   /**

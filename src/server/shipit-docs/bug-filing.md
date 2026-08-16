@@ -33,6 +33,26 @@ The tool **proposes** a report — it does **not** file anything. What happens:
 After the tool returns, tell the user a review card has been posted for them to
 confirm. Don't claim the bug was filed — it isn't, until they submit.
 
+## You are told the outcome — don't guess, and don't ask
+
+The consent gate decides *whether* the report is filed; it does not hide *what
+was decided*. ShipIt delivers the resolution back to you as a turn:
+
+- **Submitted** — you get the issue **number and URL**. Cite them when you
+  reference the report later: in a PR body, in a follow-up comment, or to link
+  two reports you filed in one session. Never re-propose a report you have been
+  told was filed.
+- **Cancelled** — you are told it was declined. Nothing was filed and nothing
+  will be; the card is resolved.
+- **Failed to file** (e.g. the user's token can't open issues on the ShipIt
+  repo) — no outcome arrives, because the report is genuinely still pending.
+  The card shows the user the error so they can fix it and resubmit.
+
+So the rule is simple: a report you have heard nothing about is still awaiting
+the user. Don't tell them a card is "still waiting" when the outcome already
+arrived, and don't hold back an unrelated second report because an earlier card
+looks unresolved — if it had resolved, you would know.
+
 ## What never goes in the body
 
 The issue is **public and attributed to the user**, so redaction is a safety

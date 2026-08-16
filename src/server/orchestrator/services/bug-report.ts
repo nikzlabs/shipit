@@ -106,6 +106,42 @@ export async function compileBugReport(args: {
   };
 }
 
+/**
+ * The consent gate swallowed its own result (nikzlabs/shipit#2350): the agent was told a
+ * card had been posted and then never told what the user decided, so for the
+ * rest of the session it described a filed report as pending and grew reluctant
+ * to propose a second one. Consent and reporting are separable — the user still
+ * decides, and the agent is still told what they decided.
+ *
+ * The outcome is delivered as a system wake-turn (`wakeSessionWithTurn`), the
+ * same primitive docs/196's merge card and docs/233's cohort report use: it
+ * enqueues behind a running turn and starts one when the session is idle, so
+ * the signal lands whether or not the proposing turn is still in flight.
+ *
+ * These prompts must be SELF-DESCRIBING — a wake can run much later, after the
+ * turn that proposed the card has scrolled out of the agent's context.
+ */
+export function buildBugReportFiledWakePrompt(args: {
+  title: string;
+  number: number;
+  url: string;
+}): string {
+  return [
+    `The user confirmed the ShipIt bug report you proposed ("${args.title}"). It has been FILED as issue #${args.number} — ${args.url}.`,
+    "Treat it as done: do not re-propose it, and cite that number/URL if you reference the report later (a PR body, a follow-up comment, or linking it to another report from this session).",
+    "Acknowledge briefly and carry on with whatever you were doing; nothing else is required.",
+  ].join("\n");
+}
+
+/** Counterpart for the Cancel button — the report was declined, not filed. */
+export function buildBugReportDismissedWakePrompt(title: string): string {
+  return [
+    `The user DECLINED the ShipIt bug report you proposed ("${title}"). Nothing was filed and nothing will be.`,
+    "The card is resolved, so it is not blocking anything — you may propose an unrelated report if one is warranted. Do not re-propose this one unless the user asks.",
+    "Acknowledge briefly and carry on with whatever you were doing; nothing else is required.",
+  ].join("\n");
+}
+
 export interface FileBugReportResult {
   success: boolean;
   url?: string;

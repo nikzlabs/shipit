@@ -42,6 +42,16 @@
 - [x] `shipit-docs/bug-filing.md` agent-facing doc + README index entry
 - [x] Update `docs/023` (redaction engine now exists) cross-ref
 
+## Outcome signal back to the agent (nikzlabs/shipit#2350)
+- [x] `submit_bug_report` success wakes the session with a self-describing system turn carrying the title, issue **number and URL** (`wakeSessionWithTurn`, the docs/196 / docs/233 primitive — enqueues behind a running turn, starts one when idle)
+- [x] Filing **failure** deliberately sends no signal: the report is still pending, which is the state the agent already believes; silence is therefore meaningful
+- [x] Cancel is a server round-trip (`dismiss_bug_report`), not local component state — persists terminal `phase: "dismissed"` via `persistCardTransition` (clobber-free while the proposing turn is in flight) and echoes `bug_report_dismissed` to every viewer
+- [x] Declined card wakes the agent with "declined; nothing filed", and states the card is resolved so an unrelated second report isn't held back
+- [x] A Cancel arriving after a successful filing is ignored, never rewriting a terminal success
+- [x] `ChatHistoryManager.getBugReportCard` — read-side lookup so the dismiss handler can name the card in the wake prompt; checks `runner.recordedCards` first for a card whose turn hasn't finalized
+- [x] Agent-facing copy updated so silence is learnable: `prompts/skeleton.md`, `shipit-docs/bug-filing.md`, the `report_shipit_bug` tool description, and the relay's return message
+- [x] Tests: filed signal carries #N + URL, decline persists + signals, failure signals nothing, post-filing Cancel ignored (`user-bug-filing.test.ts`); store terminal-dismissed guard; card reports Cancel to the server and stays collapsed after a reload
+
 ## Follow-ups (not blockers for the in-product flow)
 - [ ] Maintainer-side GitHub Action on `nikzlabs/shipit` to apply real `user-reported` / `source:*` labels from the `<!-- shipit-report … -->` body marker (lives in the upstream repo, not this codebase)
 - [ ] docs/023 full session export consumes the shared Stage-1 redactor (un-pause that doc when picked up)

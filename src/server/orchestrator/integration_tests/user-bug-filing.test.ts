@@ -43,12 +43,20 @@ describe("Integration: user bug filing", () => {
   let sessionManager: SessionManager;
   let githubAuthManager: StubGitHubAuthManager;
   let sessionId: string;
+  /**
+   * nikzlabs/shipit#2350 — every agent the app spawned, so a test can read the prompt the
+   * outcome wake-turn actually delivered. The signal is only real if it reaches
+   * the AGENT; asserting on the WS card alone would pass while the agent stayed
+   * uninformed, which is the whole defect.
+   */
+  let agents: FakeClaudeProcess[];
 
   beforeEach(async () => {
     dbManager = createTestDatabaseManager();
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "user-bug-filing-"));
     sessionManager = new SessionManager(dbManager);
     credentialStore = createTestCredentialStore(tmpDir);
+    agents = [];
     githubAuthManager = new StubGitHubAuthManager();
     await githubAuthManager.setToken("test-token"); // authenticate as test-user
 
@@ -57,7 +65,11 @@ describe("Integration: user bug filing", () => {
       sessionManager,
       authManager: new StubAuthManager() as unknown as AuthManager,
       githubAuthManager: githubAuthManager as unknown as GitHubAuthManager,
-      agentFactory: () => new FakeClaudeProcess() as unknown as never,
+      agentFactory: () => {
+        const agent = new FakeClaudeProcess();
+        agents.push(agent);
+        return agent as unknown as never;
+      },
       credentialStore,
       databaseManager: dbManager,
       workspaceDir: tmpDir,
@@ -279,6 +291,119 @@ describe("Integration: user bug filing", () => {
     client.close();
   });
 
+  /**
+   * nikzlabs/shipit#2350 — the consent gate used to swallow its own result. The user still
+   * decides; the agent is now told what they decided, so it can stop describing
+   * a filed report as pending and can cite the issue it produced.
+   */
+  it("tells the agent the report was filed, with the issue number and URL", async () => {
+    const client = await TestClient.connect(port, sessionId);
+    await client.receive(); // preview_status
+
+    await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/bug-report`,
+      payload: { title: "Preview won't reload", body: "Something is broken in the editor." },
+    });
+    const card = (await client.receiveType("bug_report_card")) as WsBugReportCard;
+
+    client.send({ type: "submit_bug_report", cardId: card.cardId, title: card.title, body: card.body });
+    await client.receiveType("bug_report_filed");
+
+    const woken = await waitForWakePrompt(() => agents, /FILED as issue #1234/);
+    expect(woken).toContain("nikzlabs/shipit/issues/1234");
+    expect(woken).toContain("Preview won't reload");
+
+    client.close();
+  });
+
+  it("does not signal an outcome when filing failed — the report really is still pending", async () => {
+    githubAuthManager.setCreateIssueResult({
+      success: false,
+      scopeError: true,
+      message: "Your GitHub token can't file issues on the ShipIt repo.",
+    });
+
+    const client = await TestClient.connect(port, sessionId);
+    await client.receive(); // preview_status
+
+    await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/bug-report`,
+      payload: { title: "Preview won't reload", body: "Something is broken in the editor." },
+    });
+    const card = (await client.receiveType("bug_report_card")) as WsBugReportCard;
+
+    client.send({ type: "submit_bug_report", cardId: card.cardId, title: card.title, body: card.body });
+    await client.receiveType("bug_report_failed");
+    await new Promise((r) => setTimeout(r, 150));
+
+    expect(agents.some((a) => /FILED as issue|DECLINED/.test(a.lastPrompt))).toBe(false);
+
+    client.close();
+  });
+
+  it("persists a dismissal and tells the agent the report was declined", async () => {
+    const histMgr = (app as unknown as { chatHistoryManager: ChatHistoryManager }).chatHistoryManager;
+
+    const client = await TestClient.connect(port, sessionId);
+    await client.receive(); // preview_status
+
+    await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/bug-report`,
+      payload: { title: "Preview won't reload", body: "Something is broken in the editor." },
+    });
+    const card = (await client.receiveType("bug_report_card")) as WsBugReportCard;
+    histMgr.finalizeInProgress(sessionId);
+
+    client.send({ type: "dismiss_bug_report", cardId: card.cardId });
+    const dismissed = await client.receiveType("bug_report_dismissed");
+    expect((dismissed as { cardId: string }).cardId).toBe(card.cardId);
+
+    // Nothing was filed — Cancel is not a quiet submit.
+    expect(githubAuthManager.createIssueCalls).toHaveLength(0);
+
+    // The decision is durable: a reload must not resurrect an editable draft.
+    const historyAfter = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/history` });
+    const cardsAfter = (historyAfter.json() as { messages: { bugReport?: PersistedBugReport }[] }).messages
+      .map((m) => m.bugReport)
+      .filter(Boolean);
+    expect(cardsAfter).toHaveLength(1);
+    expect(cardsAfter[0]?.phase).toBe("dismissed");
+
+    const woken = await waitForWakePrompt(() => agents, /DECLINED the ShipIt bug report/);
+    expect(woken).toContain("Preview won't reload");
+
+    client.close();
+  });
+
+  it("ignores a Cancel that arrives after the report was already filed", async () => {
+    const client = await TestClient.connect(port, sessionId);
+    await client.receive(); // preview_status
+
+    await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/bug-report`,
+      payload: { title: "Preview won't reload", body: "Something is broken in the editor." },
+    });
+    const card = (await client.receiveType("bug_report_card")) as WsBugReportCard;
+
+    client.send({ type: "submit_bug_report", cardId: card.cardId, title: card.title, body: card.body });
+    await client.receiveType("bug_report_filed");
+
+    client.send({ type: "dismiss_bug_report", cardId: card.cardId });
+    await new Promise((r) => setTimeout(r, 150));
+
+    const historyAfter = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/history` });
+    const cardsAfter = (historyAfter.json() as { messages: { bugReport?: PersistedBugReport }[] }).messages
+      .map((m) => m.bugReport)
+      .filter(Boolean);
+    expect(cardsAfter[0]?.phase).toBe("filed");
+
+    client.close();
+  });
+
   it("rejects a draft with an empty body", async () => {
     const res = await app.inject({
       method: "POST",
@@ -288,3 +413,25 @@ describe("Integration: user bug filing", () => {
     expect(res.statusCode).toBe(400);
   });
 });
+
+/**
+ * Poll the spawned agents for a wake-turn prompt matching `pattern`. The wake is
+ * dispatched asynchronously after the card transition, so a bare read races it.
+ */
+async function waitForWakePrompt(
+  getAgents: () => FakeClaudeProcess[],
+  pattern: RegExp,
+  timeoutMs = 3000,
+): Promise<string> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const hit = getAgents().find((a) => pattern.test(a.lastPrompt));
+    if (hit) return hit.lastPrompt;
+    if (Date.now() > deadline) {
+      throw new Error(
+        `no wake-turn prompt matched ${pattern}; saw: ${JSON.stringify(getAgents().map((a) => a.lastPrompt))}`,
+      );
+    }
+    await new Promise((r) => setTimeout(r, 25));
+  }
+}

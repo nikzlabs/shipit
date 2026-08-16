@@ -241,7 +241,67 @@ agent → report_shipit_bug (draft)
 user  → submit_bug_report (edited title/body + confirm)
       → server: GitHubAuthManager.createIssue(UPSTREAM_REPO, report)  [user's own token]
               → emit bug_report_filed (issue ref) | bug_report_failed (error)
+              → filed ONLY: wakeSessionWithTurn(agent, "#N + url")   [nikzlabs/shipit#2350]
+user  → dismiss_bug_report (Cancel)
+      → server: persist phase=dismissed, emit bug_report_dismissed
+              → wakeSessionWithTurn(agent, "declined")               [nikzlabs/shipit#2350]
 ```
+
+### The consent gate must not swallow its own result (nikzlabs/shipit#2350)
+
+Consent decides **whether** the report is filed. It does not get to hide **what
+was decided**. Those are separable, and v1 conflated them: the agent proposed a
+card, was told "nothing filed yet," and then was never told anything again.
+
+The cost was not merely inaccuracy. For the rest of the session the agent
+described an already-filed report as "still waiting on your confirmation," and
+when a second, unrelated bug came up it *declined to file it* and asked
+permission instead — reasoning that it should not stack a card while one was
+still unresolved. The card it was protecting had been submitted long before. A
+missing signal made the agent both wrong and more hesitant than the user wanted.
+
+The asymmetry was the giveaway: `shipit issue create` is do-then-surface, so the
+agent always knows the outcome and can quote the URL. Only the consent-gated
+path was write-only.
+
+**The outcome is delivered as a system wake-turn** (`wakeSessionWithTurn`) — the
+same primitive docs/196's merge card and docs/233's cohort report use, chosen
+because it is the one channel that reaches the *agent* rather than the browser,
+and because `dispatch` already answers the hard question: it ENQUEUES behind a
+running turn (a user who confirms mid-turn never preempts it) and starts a turn
+when the session is idle. Both wake prompts are self-describing, since the card
+may be resolved long after the proposing turn scrolled out of context.
+
+| User action | Persisted phase | Signal to the agent |
+|---|---|---|
+| **Submit** → issue created | `filed` (+ number, url) | Woken with the title, **issue number and URL**, so it can cite the report in a PR body or link it to another report from the same session. |
+| **Cancel** | `dismissed` (new) | Woken with "declined; nothing was filed and nothing will be" — and told the card is resolved, so it may propose an unrelated report. |
+| **Submit** → GitHub 403 / error | back to `draft` + error | **Nothing.** The report genuinely *is* still pending, which is the state the agent already believes. Waking would add noise and no information. |
+
+That last row is what makes the rule learnable, and it is stated in
+`shipit-docs/bug-filing.md` and the tool description: **a report you have heard
+nothing about is still awaiting the user.** Silence is now meaningful, so the
+agent never has to ask the user how a card was resolved.
+
+**Cancel became a server round-trip.** It was local component state, so a
+declined card came back as an editable draft on reload and the decision existed
+nowhere the server could see. It now sends `dismiss_bug_report`, persists the
+terminal `dismissed` phase through the same `persistCardTransition` primitive as
+`filed`/`failed` (so it is clobber-free while the proposing turn is in flight),
+and echoes `bug_report_dismissed` to every attached viewer. A Cancel arriving
+*after* a successful filing is ignored rather than rewriting a success.
+
+**Rejected: a pull command (`shipit bug status`).** The issue offered it as a
+lesser alternative, and it is: it only helps if the agent thinks to check, which
+is precisely what an agent confident in a stale belief does not do. The push
+covers idle and running sessions alike, needs no new CLI surface, no new route,
+and no polling. Revisit only if a wake proves undeliverable in practice.
+
+**Rejected: blocking `report_shipit_bug` until the card resolves.** It would
+hand the agent its outcome as a plain tool result with no new mechanism at all,
+but it pins a turn open for however long the user takes — possibly days, across
+a reload or a session switch — and the agent is explicitly meant to keep working
+after proposing a report.
 
 ### Anti-spam — GitHub's, not ours
 
@@ -388,10 +448,15 @@ agent-event stream), so it follows the **voice-note precedent** (`docs/163`):
   `createIssue(repo, { title, body })` method against the fixed upstream repo,
   using the user's existing token; no scope pre-check — surfaces the GitHub
   403/scope error as a reconnect prompt.
-- `src/server/orchestrator/ws-handlers/` — `report_shipit_bug` (draft) and
-  `submit_bug_report` (confirm) handlers.
+- `src/server/orchestrator/ws-handlers/bug-report-handlers.ts` —
+  `submit_bug_report` (confirm) and `dismiss_bug_report` (decline) handlers,
+  plus `notifyAgentOfOutcome`, the wake-turn that closes the loop with the
+  agent (nikzlabs/shipit#2350). The draft arrives over HTTP, not WS.
+- `src/server/orchestrator/wake-session.ts` — the delivery primitive for the
+  outcome signal (shared with docs/196 and docs/233).
 - `src/server/shared/types/ws-server-messages.ts` / `ws-client-messages.ts` —
-  `bug_report_card`, `bug_report_filed`, `bug_report_failed`, `submit_bug_report`.
+  `bug_report_card`, `bug_report_filed`, `bug_report_failed`,
+  `bug_report_dismissed`, `submit_bug_report`, `dismiss_bug_report`.
 - `src/server/orchestrator/agent-instructions.ts` — bug-filing capability prompt.
 - `src/client/components/BugReportCard.tsx` (new) — the inline review card.
 - `src/server/orchestrator/integration_tests/user-bug-filing.test.ts` (new) —

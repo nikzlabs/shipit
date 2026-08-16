@@ -64,6 +64,19 @@ export interface WsBugReportFiled {
   url: string;
 }
 
+/**
+ * docs/164 / nikzlabs/shipit#2350 — terminal *declined* state for a bug-report card.
+ * Cancel used to be a purely local collapse, so the card came back as an
+ * editable draft on reload and the agent was never told the user had said no.
+ * The click now round-trips, persists `phase: "dismissed"`, and echoes here so
+ * every attached viewer collapses the same card.
+ */
+export interface WsBugReportDismissed {
+  type: "bug_report_dismissed";
+  sessionId: string;
+  cardId: string;
+}
+
 /** docs/164 — terminal failure state for a bug-report card. */
 export interface WsBugReportFailed {
   type: "bug_report_failed";

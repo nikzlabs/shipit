@@ -34,6 +34,7 @@ export interface MessageCardCallbacks {
   /** Opens a spawned/fork child session. */
   onResumeSession?: (sessionId: string) => void;
   onSubmitBugReport?: (cardId: string, title: string, body: string) => void;
+  onDismissBugReport?: (cardId: string) => void;
   /** docs/172 — resolve an egress allow-once card (allow-once / add / deny). */
   onEgressDecision?: (cardId: string, host: string, action: "allow-once" | "add" | "deny") => void;
   /** docs/193 — answer a permission request (approve/deny + remember). */
@@ -243,7 +244,11 @@ export function renderMessageCard(msg: ChatMessage, cb: MessageCardCallbacks): R
     return (
       <div className="flex justify-start">
         <div className="max-w-2xl w-full">
-          <BugReportCard cardId={msg.bugReport.cardId} onSubmit={cb.onSubmitBugReport} />
+          <BugReportCard
+            cardId={msg.bugReport.cardId}
+            onSubmit={cb.onSubmitBugReport}
+            onDismiss={cb.onDismissBugReport}
+          />
         </div>
       </div>
     );

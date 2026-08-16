@@ -101,6 +101,36 @@ describe("BugReportCard", () => {
     expect(screen.queryByLabelText("Bug report title")).not.toBeInTheDocument();
   });
 
+  /**
+   * nikzlabs/shipit#2350 — Cancel used to be local component state, so the decision reached
+   * neither the server nor the agent. It now round-trips, and the collapsed
+   * state comes from the STORE phase, which is what a reload rehydrates.
+   */
+  it("reports the Cancel to the server and records a terminal dismissed phase", () => {
+    const onDismiss = vi.fn();
+    render(<BugReportCard cardId={CARD_ID} onDismiss={onDismiss} />);
+    fireEvent.click(screen.getByRole("button", { name: /cancel/i }));
+    expect(onDismiss).toHaveBeenCalledWith(CARD_ID);
+    expect(useBugReportStore.getState().cards[CARD_ID].phase).toBe("dismissed");
+  });
+
+  it("stays collapsed after a reload rehydrates a dismissed card", () => {
+    useBugReportStore.getState().reset();
+    useBugReportStore.getState().seedCards([
+      {
+        cardId: CARD_ID,
+        phase: "dismissed",
+        title: "Preview won't reload",
+        body: "It broke.",
+        stage2Ran: true,
+        producer: "session",
+      },
+    ]);
+    render(<BugReportCard cardId={CARD_ID} />);
+    expect(screen.getByText(/nothing was sent/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /submit report/i })).not.toBeInTheDocument();
+  });
+
   it("renders nothing when the card is unknown (e.g. after a reload)", () => {
     const { container } = render(<BugReportCard cardId="missing" />);
     expect(container).toBeEmptyDOMElement();

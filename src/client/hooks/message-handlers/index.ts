@@ -16,6 +16,7 @@ import { handleBackgroundTasks } from "./background-tasks.js";
 import { handleBugReportCard } from "./bug-report-card.js";
 import { handleBugReportFailed } from "./bug-report-failed.js";
 import { handleBugReportFiled } from "./bug-report-filed.js";
+import { handleBugReportDismissed } from "./bug-report-dismissed.js";
 import { handleEgressPromptCard, handleEgressPromptResolved } from "./egress-card.js";
 import { handlePermissionRequestCard } from "./permission-request-card.js";
 import { handlePermissionResolved } from "./permission-resolved.js";
@@ -137,6 +138,7 @@ export const messageHandlers: MessageHandlerMap = {
   bug_report_card: handleBugReportCard,
   bug_report_failed: handleBugReportFailed,
   bug_report_filed: handleBugReportFiled,
+  bug_report_dismissed: handleBugReportDismissed,
   egress_prompt_card: handleEgressPromptCard,
   egress_prompt_resolved: handleEgressPromptResolved,
   permission_request_card: handlePermissionRequestCard,
@@ -248,6 +250,7 @@ const TRANSCRIPT_SCOPED_MESSAGES: ReadonlySet<WsMessageType> = new Set<WsMessage
   "bug_report_card",
   "bug_report_failed",
   "bug_report_filed",
+  "bug_report_dismissed",
   "child_merged_card",
   "compaction_card",
   "compaction_status",
