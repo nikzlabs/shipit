@@ -340,6 +340,14 @@ describe("Integration: user bug filing", () => {
 
     expect(agents.some((a) => /FILED as issue|DECLINED/.test(a.lastPrompt))).toBe(false);
 
+    // Liveness: the negative above must not be able to pass because the wake
+    // path is broken outright. The user fixes their token and resubmits — the
+    // very same harness now does deliver a signal.
+    githubAuthManager.setCreateIssueResult(null);
+    client.send({ type: "submit_bug_report", cardId: card.cardId, title: card.title, body: card.body });
+    await client.receiveType("bug_report_filed");
+    await waitForWakePrompt(() => agents, /FILED as issue #1234/);
+
     client.close();
   });
 
