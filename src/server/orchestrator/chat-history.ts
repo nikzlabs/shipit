@@ -57,6 +57,14 @@ export interface PersistedBugReport {
 }
 
 /**
+ * A bug-report card the user has actually resolved. Narrowing `phase` at the
+ * boundary is what lets `buildBugOutcomeNotice` take a two-value union instead
+ * of a bare string — otherwise a `draft` card reaching it would silently render
+ * as "DECLINED".
+ */
+export type ResolvedBugReport = PersistedBugReport & { phase: "filed" | "dismissed" };
+
+/**
  * docs/172 / planning#92 — the persisted state of an inline egress allow-once card.
  * The Tier C SNI proxy denies a non-allowlisted host and the orchestrator's
  * decision endpoint emits this card off the agent-event stream, so it's recorded
@@ -522,6 +530,7 @@ export class ChatHistoryManager {
   private stmtLoadLast;
   private stmtDeleteBySession;
   private stmtDeleteInProgress;
+  private stmtHasInProgress;
   private stmtFinalizeInProgress;
   private stmtFinalizeConsultRows;
   private stmtLoadInProgressConsultRows;
@@ -582,6 +591,13 @@ export class ChatHistoryManager {
     this.stmtLoadLast = this.db.prepare("SELECT * FROM messages WHERE session_id = ? AND in_progress = 0 ORDER BY id DESC LIMIT 1");
     this.stmtDeleteBySession = this.db.prepare("DELETE FROM messages WHERE session_id = ?");
     this.stmtDeleteInProgress = this.db.prepare("DELETE FROM messages WHERE session_id = ? AND in_progress = 1");
+    // nikzlabs/shipit#2350 — does this session have a turn whose rows are still open?
+    // `persistCardTransition` needs this to tell a genuinely in-flight turn from
+    // the window where the NEXT turn has set `running` but has not yet reset the
+    // accumulators. See its docstring.
+    this.stmtHasInProgress = this.db.prepare(
+      "SELECT 1 FROM messages WHERE session_id = ? AND in_progress = 1 LIMIT 1",
+    );
     this.stmtFinalizeInProgress = this.db.prepare("UPDATE messages SET in_progress = 0 WHERE session_id = ? AND in_progress = 1");
     // planning#402 — the consult-durability chokepoint. All five back
     // `replaceInProgress` / `clearInProgress`; see `replaceInProgress` for the
@@ -800,6 +816,15 @@ export class ChatHistoryManager {
   }
 
   /**
+   * nikzlabs/shipit#2350 — true when this session has an unfinalized turn's rows on
+   * disk. `persistCardTransition` uses it as the real test of "a turn owns the
+   * in-progress set", which `runner.running` only approximates.
+   */
+  hasInProgress(sessionId: string): boolean {
+    return this.stmtHasInProgress.get(sessionId) !== undefined;
+  }
+
+  /**
    * nikzlabs/shipit#2350 — read a persisted bug-report card by `cardId`. The dismiss
    * handler needs the card's own title to describe the outcome to the agent,
    * and the client only names the card. Returns undefined when the card lives
@@ -820,31 +845,48 @@ export class ChatHistoryManager {
    */
   private bugReportRows(sessionId: string): { id: number; card: PersistedBugReport }[] {
     const rows = this.stmtLoadBugReportRows.all(sessionId) as { id: number; bug_report: string }[];
-    return rows.map((r) => ({ id: r.id, card: JSON.parse(r.bug_report) as PersistedBugReport }));
+    const out: { id: number; card: PersistedBugReport }[] = [];
+    for (const r of rows) {
+      // One corrupt row must not throw on a hot path — `consumeUnreportedBugOutcomes`
+      // runs on every user turn, so an unparseable card would break the whole
+      // session's turns rather than just its own card.
+      try {
+        out.push({ id: r.id, card: JSON.parse(r.bug_report) as PersistedBugReport });
+      } catch {
+        console.error(`[chat-history] skipping unparseable bug_report on message ${r.id}`);
+      }
+    }
+    return out;
   }
 
   /**
    * nikzlabs/shipit#2350 — read-and-mark every bug-report outcome the agent has not
    * been told about yet, so the next user turn can carry them as a prefix.
    *
-   * Read-and-mark in one transaction, exactly like `consumePendingAgentNotice`:
-   * that is what makes "told once" true rather than aspirational. Only terminal
-   * phases qualify — a `failed` card is back to `draft`, which means the report
-   * really is still pending and there is nothing to report.
+   * Read-and-mark in one transaction, exactly like `consumePendingAgentNotice`.
+   * Precisely: the mark happens exactly once, so the outcome is delivered AT
+   * MOST once. The mark is committed before the prompt is assembled, so a spawn
+   * or env-prep failure in between loses it. That direction is deliberate and
+   * matches `consumePendingAgentNotice` — a repeated "your report was filed" is
+   * worse than a missed one, and the agent-facing copy makes silence the safe
+   * fallback ("pending" is the default, not a certainty).
+   *
+   * Only terminal phases qualify — a `failed` card is back to `draft`, which
+   * means the report really is still pending and there is nothing to report.
    */
-  consumeUnreportedBugOutcomes(sessionId: string): PersistedBugReport[] {
+  consumeUnreportedBugOutcomes(sessionId: string): ResolvedBugReport[] {
     // Cheap probe first: no cards (the overwhelmingly common case) means no
     // transaction and no full-row read at all.
     const pending = this.bugReportRows(sessionId).filter(
-      ({ card }) =>
-        !card.agentNotified && (card.phase === "filed" || card.phase === "dismissed"),
+      (r): r is { id: number; card: ResolvedBugReport } =>
+        !r.card.agentNotified && (r.card.phase === "filed" || r.card.phase === "dismissed"),
     );
     if (pending.length === 0) return [];
 
     return this.db.transaction(() => {
-      const out: PersistedBugReport[] = [];
+      const out: ResolvedBugReport[] = [];
       for (const { id, card } of pending) {
-        const marked: PersistedBugReport = { ...card, agentNotified: true };
+        const marked: ResolvedBugReport = { ...card, agentNotified: true };
         // Re-read the full row only for the handful of cards being marked: the
         // update statement rewrites every column, so it needs the whole message.
         const row = this.stmtLoadById.get(id) as MessageRow | undefined;

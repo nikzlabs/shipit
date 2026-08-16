@@ -488,6 +488,143 @@ describe("Integration: user bug filing", () => {
     client.close();
   });
 
+  /**
+   * The recorded-patch path: the card is resolved WHILE its proposing turn is
+   * still running, so `persistCardTransition` patches `recordedCards` rather
+   * than the DB row. The outcome must still reach the next turn — this is the
+   * interaction the clobber concern is about, and it was previously untested.
+   */
+  it("delivers an outcome that was resolved mid-turn, after that turn finalizes", async () => {
+    const histMgr = (app as unknown as { chatHistoryManager: ChatHistoryManager }).chatHistoryManager;
+    const client = await TestClient.connect(port, sessionId);
+    await client.receive(); // preview_status
+
+    const runner = (app as unknown as {
+      runnerRegistry: { get(id: string): SessionRunnerInterface | undefined };
+    }).runnerRegistry.get(sessionId)!;
+
+    runner.running = true;
+    await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/bug-report`,
+      payload: { title: "Preview won't reload", body: "Something is broken in the editor." },
+    });
+    const card = (await client.receiveType("bug_report_card")) as WsBugReportCard;
+
+    // Confirmed mid-turn → the recorded snapshot is patched, not the DB row.
+    client.send({ type: "submit_bug_report", cardId: card.cardId, title: card.title, body: card.body });
+    await client.receiveType("bug_report_filed");
+    expect(
+      runner.recordedCards.find((c) => c.message.bugReport?.cardId === card.cardId)?.message.bugReport
+        ?.phase,
+    ).toBe("filed");
+
+    // The proposing turn finalizes from that patched snapshot.
+    runner.running = false;
+    histMgr.replaceInProgress(
+      sessionId,
+      buildTurnMessages(runner.chatMessageGroups, runner.steeredMessages, runner.recordedCards, {
+        inProgress: false,
+      }),
+    );
+    histMgr.finalizeInProgress(sessionId);
+
+    const prompt = await sendUserTurn(client, () => agents, "Now what?");
+    expect(prompt).toContain("FILED as issue #1234");
+
+    client.close();
+  });
+
+  it("holds the outcome back on /compact, so the next real turn still gets it", async () => {
+    const client = await TestClient.connect(port, sessionId);
+    await client.receive(); // preview_status
+
+    await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/bug-report`,
+      payload: { title: "Preview won't reload", body: "Something is broken in the editor." },
+    });
+    const card = (await client.receiveType("bug_report_card")) as WsBugReportCard;
+    client.send({ type: "submit_bug_report", cardId: card.cardId, title: card.title, body: card.body });
+    await client.receiveType("bug_report_filed");
+
+    // A maintenance command must not be handed a status line to react to —
+    // and skipping the consume (rather than consuming and dropping) is what
+    // keeps the outcome available afterwards.
+    const compact = await sendUserTurn(client, () => agents, "/compact");
+    expect(compact).not.toContain("FILED as issue");
+
+    const real = await sendUserTurn(client, () => agents, "Carry on");
+    expect(real).toContain("FILED as issue #1234");
+
+    client.close();
+  });
+
+  /**
+   * Terminal in both directions. A second tab that never saw the dismissal must
+   * not be able to file a report the user declined — the issue is public and
+   * filed under their name, and the agent has already been told it never would
+   * be.
+   */
+  it("refuses a Submit for a card the user already declined", async () => {
+    const histMgr = (app as unknown as { chatHistoryManager: ChatHistoryManager }).chatHistoryManager;
+    const client = await TestClient.connect(port, sessionId);
+    await client.receive(); // preview_status
+
+    await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/bug-report`,
+      payload: { title: "Preview won't reload", body: "Something is broken in the editor." },
+    });
+    const card = (await client.receiveType("bug_report_card")) as WsBugReportCard;
+    histMgr.finalizeInProgress(sessionId);
+
+    client.send({ type: "dismiss_bug_report", cardId: card.cardId });
+    await client.receiveType("bug_report_dismissed");
+
+    // The stale tab submits anyway.
+    client.send({ type: "submit_bug_report", cardId: card.cardId, title: card.title, body: card.body });
+    await client.receiveType("bug_report_dismissed"); // re-asserted, not filed
+    expect(githubAuthManager.createIssueCalls).toHaveLength(0);
+
+    const historyAfter = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/history` });
+    const cardsAfter = (historyAfter.json() as { messages: { bugReport?: PersistedBugReport }[] }).messages
+      .map((m) => m.bugReport)
+      .filter(Boolean);
+    expect(cardsAfter[0]?.phase).toBe("dismissed");
+
+    const prompt = await sendUserTurn(client, () => agents, "Status?");
+    expect(prompt).toContain("DECLINED by the user");
+    expect(prompt).not.toContain("FILED as issue");
+
+    client.close();
+  });
+
+  it("does not file twice when a stale tab re-submits an already-filed card", async () => {
+    const histMgr = (app as unknown as { chatHistoryManager: ChatHistoryManager }).chatHistoryManager;
+    const client = await TestClient.connect(port, sessionId);
+    await client.receive(); // preview_status
+
+    await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/bug-report`,
+      payload: { title: "Preview won't reload", body: "Something is broken in the editor." },
+    });
+    const card = (await client.receiveType("bug_report_card")) as WsBugReportCard;
+    histMgr.finalizeInProgress(sessionId);
+
+    client.send({ type: "submit_bug_report", cardId: card.cardId, title: card.title, body: card.body });
+    await client.receiveType("bug_report_filed");
+
+    client.send({ type: "submit_bug_report", cardId: card.cardId, title: card.title, body: card.body });
+    // The stale client is re-told the state it missed, and no second issue exists.
+    const second = (await client.receiveType("bug_report_filed")) as { number: number };
+    expect(second.number).toBe(1234);
+    expect(githubAuthManager.createIssueCalls).toHaveLength(1);
+
+    client.close();
+  });
+
   it("refuses a dismissal naming an unknown card", async () => {
     const client = await TestClient.connect(port, sessionId);
     await client.receive(); // preview_status

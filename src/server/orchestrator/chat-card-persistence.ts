@@ -69,6 +69,14 @@ import { markMessagesCommitted, type CommittedBodyIds } from "./transcript-proje
 export interface InProgressPersister {
   replaceInProgress(sessionId: string, messages: PersistedMessage[]): void;
   append(sessionId: string, message: PersistedMessage): unknown;
+  /**
+   * nikzlabs/shipit#2350 — whether a turn's rows are still open for this session.
+   * `persistCardTransition` needs the real answer, not `runner.running`'s
+   * approximation of it; see that function. Optional so partial test stubs and
+   * `emitChatCard`-only callers need not implement it — a stub that omits it
+   * simply takes the (safe) finalized-row branch.
+   */
+  hasInProgress?(sessionId: string): boolean;
 }
 
 /**
@@ -380,7 +388,28 @@ export function persistCardTransition(
   patchRecorded: (m: PersistedMessage) => PersistedMessage,
   patchDb: () => void,
 ): boolean {
-  const patchedInFlight = runner.running && updateRecordedCard(runner, matches, patchRecorded);
+  // `running` alone is NOT the right test, and this is the correction
+  // (nikzlabs/shipit#2350 review). Both send handlers set `running = true` BEFORE
+  // `runAgentWithMessage`, while `resetRunnerTurnState` — which clears
+  // `recordedCards` — runs later, inside `executeAgentTurn`, behind a real await
+  // (`applyPreTurnReset` does git work on the merged-session path). In that
+  // window `running` is true but `recordedCards` still holds the PREVIOUS,
+  // already-finalized turn's snapshot. Patching it there and calling
+  // `persistTurnInProgress` revives that finished turn as `in_progress=1` rows,
+  // which the new turn's first `replaceInProgress` then deletes wholesale — so
+  // the user's decision is silently lost: they saw the card resolve (optimistic
+  // collapse + WS echo), a reload shows an editable draft again, and nothing
+  // downstream is ever told.
+  //
+  // The honest test is whether a turn actually OWNS the in-progress set. A turn
+  // that recorded this card has already flushed `in_progress=1` rows containing
+  // it (`emitChatCard` records AND persists in one call), so rows-exist is
+  // exactly the condition — and in the startup window the previous turn was
+  // finalized, so there are none and we correctly take the DB branch.
+  const turnOwnsInProgressRows =
+    runner.running && (persist.chatHistoryManager.hasInProgress?.(persist.sessionId) ?? false);
+  const patchedInFlight =
+    turnOwnsInProgressRows && updateRecordedCard(runner, matches, patchRecorded);
   if (patchedInFlight) {
     persistTurnInProgress(persist.chatHistoryManager, runner, persist.sessionId);
     // Same replay-cursor advance `emitChatCard` performs, and for the same

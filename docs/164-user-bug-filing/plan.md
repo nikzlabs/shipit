@@ -244,7 +244,7 @@ user  → submit_bug_report (edited title/body + confirm)
 user  → dismiss_bug_report (Cancel)
       → server: persist phase=dismissed, emit bug_report_dismissed
                                           [nikzlabs/shipit#2350 — no wake, no turn]
-user's NEXT turn
+user's NEXT turn (typed OR dispatched — SDK / `shipit session message`)
       → consumeUnreportedBugOutcomes() reads-and-marks the terminal cards
       → buildBugOutcomeNotice() prefixes "#N + url" / "declined" onto the prompt
 ```
@@ -313,27 +313,58 @@ recorded set would therefore read `draft` for a card the DB already records as
 dropping the issue URL and telling the agent a filed report was declined. So
 `findBugCard` uses `runner.running` to pick the authoritative source — the same
 discriminator `persistCardTransition` uses to decide where to *write* — and
-treats the card as terminal if **either** source says so, which keeps the guard
-right even if that discriminator is ever wrong. A dismissal naming an unknown
-card is refused rather than collapsing a phantom card and reporting it to the
-agent. Regression: `user-bug-filing.test.ts` "ignores a Cancel after filing even
-when the proposing turn left a stale recorded draft".
+treats the card as terminal if **either** source says so. The either-source rule
+is what carries the weight, because `running` is only an approximation (below);
+the guard stays right even where the discriminator is wrong. A dismissal naming
+an unknown card is refused rather than collapsing a phantom card and reporting it
+to the agent. Regression: `user-bug-filing.test.ts` "ignores a Cancel after
+filing even when the proposing turn left a stale recorded draft".
 
-**"Told once" is enforced by the store, not by a convention.**
-`consumeUnreportedBugOutcomes` selects the terminal-phase cards carrying no
-`agentNotified` flag, sets the flag, and returns them in a single transaction —
-the same read-and-mark shape as `consumePendingAgentNotice`. The flag lives on
-the card rather than in the session's `pendingAgentNotice` slot for two reasons:
-that slot is deliberately last-write-wins (all its writers describe the same
-thing, where the branch points), so a branch notice and a bug outcome would
-clobber each other; and two reports resolved between turns must both be
-reported, which one slot cannot do.
+**The terminal guard is symmetric.** Submit re-checks the phase for the same
+reason Cancel does: without it a second tab that never saw a dismissal could file
+a report the user *declined* — public, under their name, after the agent was told
+it never would be — and a double-click could file the same report twice, leaving
+the card holding only the last issue number. The optimistic `filing` phase does
+not close that window: it is per-tab store state and is never broadcast. A stale
+click now re-asserts the state that client is missing instead of acting on it.
 
-Delivery is still best-effort in one direction — a card resolved in a session
-the user never returns to is simply never reported — so the prompt and
-`shipit-docs/bug-filing.md` tell the agent to treat "pending" as a sensible
-default rather than a certainty, and to say it has not heard back rather than
-assert a card is unresolved.
+**`running` alone is genuinely wrong across the turn-startup window** — a defect
+this feature inherited rather than introduced, fixed here in the shared
+primitive. Both send handlers set `running = true` *before* `runAgentWithMessage`,
+while `resetRunnerTurnState` (which clears `recordedCards`) runs later inside
+`executeAgentTurn`, behind a real await — `applyPreTurnReset` does git work on
+the merged-session path. In that window `running` is true but `recordedCards`
+still holds the **previous, already-finalized** turn's snapshot. Patching it
+there and flushing revives that finished turn as `in_progress=1` rows, which the
+new turn's first `replaceInProgress` deletes wholesale: the user watched the card
+resolve, a reload shows an editable draft again, and nothing downstream is ever
+told. So `persistCardTransition` now asks the store whether a turn actually
+**owns** open rows (`hasInProgress`) instead of trusting `running`. A turn that
+recorded a card has already flushed rows containing it, so rows-exist is exactly
+the right condition — and in the startup window there are none, so the DB branch
+is correctly taken. This equally fixes the pre-existing hole on the *submit* path
+and in docs/172's egress card and docs/177's issue-write undo, which share the
+primitive.
+
+**"Marked once, told at most once" — enforced by the store, not by a
+convention.** `consumeUnreportedBugOutcomes` selects the terminal-phase cards
+carrying no `agentNotified` flag, sets the flag, and returns them in a single
+transaction — the same read-and-mark shape as `consumePendingAgentNotice`. The
+flag lives on the card rather than in the session's `pendingAgentNotice` slot
+for two reasons: that slot is deliberately last-write-wins (all its writers
+describe the same thing, where the branch points), so a branch notice and a bug
+outcome would clobber each other; and two reports resolved between turns must
+both be reported, which one slot cannot do.
+
+The mark commits *before* the prompt is assembled, so the chosen failure
+direction is **at-most-once**: a spawn or env-prep failure between the two loses
+that outcome, even though the user did come back and send a turn. That is
+deliberate, and matches `consumePendingAgentNotice` — a repeated "your report
+was filed" is worse than a missed one. Combined with the other loss (a card
+resolved in a session the user never returns to), delivery is best-effort, which
+is why the prompt and `shipit-docs/bug-filing.md` tell the agent to treat
+"pending" as a sensible default rather than a certainty, and to say it has not
+heard back rather than assert a card is unresolved.
 
 **Rejected: a pull command (`shipit bug status`).** The issue offered it as a
 lesser alternative, and it is: it only helps if the agent thinks to check, which
@@ -508,6 +539,14 @@ agent-event stream), so it follows the **voice-note precedent** (`docs/163`):
 - `src/server/orchestrator/ws-handlers/agent-execution.ts` — consumes the
   outcomes at turn start and prefixes them onto the prompt, beside docs/221's
   `pendingAgentNotice`.
+- `src/server/orchestrator/dispatched-turn.ts` — the same consume for a
+  NON-system dispatched turn. An SDK click and a `shipit session message` are
+  the user speaking too, so a programmatically-driven session is told as well;
+  system turns (CI fix, merge wake, rebase step) are excluded, being ShipIt
+  talking to itself.
+- `src/server/orchestrator/chat-card-persistence.ts` — `persistCardTransition`
+  now gates its in-flight branch on `hasInProgress`, closing the turn-startup
+  window described above for every card that shares the primitive.
 - `src/server/shared/types/ws-server-messages.ts` / `ws-client-messages.ts` —
   `bug_report_card`, `bug_report_filed`, `bug_report_failed`,
   `bug_report_dismissed`, `submit_bug_report`, `dismiss_bug_report`.

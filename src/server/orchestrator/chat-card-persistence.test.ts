@@ -20,6 +20,9 @@ function fakeRunner(groups: { text: string; toolUse: unknown[] }[] = []): {
   chatHistoryManager: {
     replaceInProgress(sessionId: string, messages: PersistedMessage[]): void;
     append(sessionId: string, message: PersistedMessage): void;
+    hasInProgress(sessionId: string): boolean;
+    /** Test knob: model the DB having (or not having) open rows for the session. */
+    inProgressRows: boolean;
   };
 } {
   const emitted: WsServerMessage[] = [];
@@ -29,6 +32,11 @@ function fakeRunner(groups: { text: string; toolUse: unknown[] }[] = []): {
     replaceInProgress: (sessionId: string, messages: PersistedMessage[]) =>
       persisted.push({ sessionId, messages }),
     append: (sessionId: string, message: PersistedMessage) => appended.push({ sessionId, message }),
+    // nikzlabs/shipit#2350 — `persistCardTransition` asks the STORE whether a turn owns
+    // open rows, rather than trusting `runner.running`. Default true: the fake
+    // models one turn in flight, which is what the mid-turn cases exercise.
+    inProgressRows: true,
+    hasInProgress(): boolean { return this.inProgressRows; },
   };
   // Model the turn-event replay buffer: `emitMessage` buffers (as the real
   // runner does), so a test can assert `emitChatCard` advances the persisted
@@ -289,6 +297,39 @@ describe("chat-card-persistence", () => {
       // carries "filed" — the clobber the fix prevents.
       persistTurnInProgress(chatHistoryManager, runner, "s1");
       expect(findCard(persisted[persisted.length - 1].messages)?.bugReport?.phase).toBe("filed");
+    });
+
+    /**
+     * The turn-startup window (found in the nikzlabs/shipit#2350 review). Both send
+     * handlers set `running = true` BEFORE `runAgentWithMessage`, while
+     * `resetRunnerTurnState` — which clears `recordedCards` — runs later inside
+     * `executeAgentTurn`, behind a real await. In between, `running` is true and
+     * `recordedCards` still holds the PREVIOUS, already-finalized turn's
+     * snapshot. Patching it there revives that finished turn as in-progress
+     * rows, which the new turn's first `replaceInProgress` deletes wholesale —
+     * losing the user's decision silently.
+     */
+    it("uses the DB-row fallback when `running` is true but no turn owns the in-progress rows", () => {
+      const { runner, chatHistoryManager } = fakeRunner([{ text: "a finished turn", toolUse: [{}] }]);
+      runner.running = true;
+      recordDraft(runner, chatHistoryManager);
+      // The proposing turn finalized; the successor set `running` but has not
+      // reset yet, so the stale snapshot is still on the runner.
+      chatHistoryManager.inProgressRows = false;
+
+      let dbPatched = false;
+      persistCardTransition(
+        runner,
+        { chatHistoryManager, sessionId: "s1" },
+        (m) => (m as BugMsg).bugReport?.cardId === "c1",
+        toFiled,
+        () => { dbPatched = true; },
+      );
+
+      // The durable DB row is patched, and the stale snapshot is left alone so
+      // nothing revives the finished turn.
+      expect(dbPatched).toBe(true);
+      expect(findCard([runner.recordedCards[0].message])?.bugReport?.phase).toBe("draft");
     });
 
     it("uses the DB-row fallback once the proposing turn has finalized (running=false)", () => {

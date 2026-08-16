@@ -130,16 +130,23 @@ export async function compileBugReport(args: {
 export function buildBugOutcomeNotice(
   outcomes: {
     title: string;
-    phase: string;
+    // A union, not `string`: with a bare `string` every non-`"filed"` phase
+    // renders as DECLINED, which is only harmless as long as the caller happens
+    // to filter. Let the compiler carry that instead.
+    phase: "filed" | "dismissed";
     issueNumber?: number | undefined;
     issueUrl?: string | undefined;
   }[],
 ): string {
-  const lines = outcomes.map((o) =>
-    o.phase === "filed"
-      ? `- "${o.title}" — FILED as issue #${o.issueNumber} (${o.issueUrl}). Cite that number/URL if you reference the report later; never re-propose it.`
-      : `- "${o.title}" — DECLINED by the user. Nothing was filed and nothing will be; do not re-propose it unless they ask.`,
-  );
+  const lines = outcomes.map((o) => {
+    // The title is a single-line field in the card, but the WS message is not
+    // bound by the input element — flatten it so a multi-line title cannot
+    // forge extra lines inside a block the agent reads as ShipIt's own.
+    const title = o.title.replace(/\s+/g, " ").trim().slice(0, 200);
+    return o.phase === "filed"
+      ? `- "${title}" — FILED as issue #${o.issueNumber} (${o.issueUrl}). Cite that number/URL if you reference the report later; never re-propose it.`
+      : `- "${title}" — DECLINED by the user. Nothing was filed and nothing will be; do not re-propose it unless they ask.`;
+  });
   if (lines.length === 0) return "";
   return [
     "[ShipIt] Since your last turn, the user resolved a bug-report card you proposed:",

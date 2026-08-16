@@ -29,6 +29,7 @@ import { desiredSpawnIdentity } from "./service-routing.js";
 import { buildTurnMessages, emitNoticePostTurn } from "./chat-card-persistence.js";
 import { resolveFileAttachments, resolveUploadRefs, formatFileContext } from "./validation.js";
 import { saveImagesToUploadsDir, assembleAgentPrompt } from "./prompt-assembly.js";
+import { buildBugOutcomeNotice } from "./services/bug-report.js";
 import type {
   SessionRunnerInterface,
   SystemTurnDeps,
@@ -233,12 +234,35 @@ export async function runDispatchedTurn(
     }
   };
 
+  // nikzlabs/shipit#2350 — a dispatched turn that is NOT a system turn is still the
+  // user speaking: an Agent Interface SDK click, a `shipit session message`. The
+  // promise made in the tool description and `skeleton.md` is unconditional, so
+  // a session driven entirely programmatically must get the outcome too —
+  // otherwise it sits pending forever and the agent is never told. System turns
+  // (CI fix, merge wake, rebase step) are correctly excluded: they are ShipIt
+  // talking to itself, not a turn the user asked for.
+  //
+  // Unlike the sync notice above this is NOT re-parked when the turn dies before
+  // delivery: `consumeUnreportedBugOutcomes` is deliberately at-most-once, since
+  // a repeated "your report was filed" is worse than a missed one, and the
+  // agent-facing copy makes silence the safe fallback. The two notices differ
+  // because their stakes do — a branch that was rewritten in silence is a
+  // correctness hazard, a missed report status is not.
+  const bugOutcomeNotice = opts.systemTurn
+    ? ""
+    : buildBugOutcomeNotice(
+        deps.listenerDeps.chatHistoryManager.consumeUnreportedBugOutcomes(runner.sessionId),
+      );
+
   // The `[System] …` prefix rides in FRONT of the assembled prompt, exactly as
   // the interactive path places it: the branch moved (or conspicuously did not)
   // moments ago, so the agent has to read that before the message it is acting
   // on. Chronological order matches the interactive path — the out-of-band sync
-  // happened before this turn, the reset happened moments ago.
-  const agentPrefix = [pendingNotice, reset?.agentPrefix].filter(Boolean).join("\n\n");
+  // happened before this turn, the bug-report card was resolved somewhere in
+  // between, and the reset happened moments ago.
+  const agentPrefix = [pendingNotice, bugOutcomeNotice, reset?.agentPrefix]
+    .filter(Boolean)
+    .join("\n\n");
   const prompt =
     (agentPrefix ? `${agentPrefix}\n\n` : "") +
     assembleAgentPrompt({
