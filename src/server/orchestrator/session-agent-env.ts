@@ -53,7 +53,7 @@ import {
   linkAgentHomeToCredentials,
 } from "./local-agent-credentials.js";
 import { repoUrlToHash } from "./git-utils.js";
-import { agentHome } from "../shared/agent-home.js";
+import { agentHome, codexHome } from "../shared/agent-home.js";
 import type { ProviderAccountManager, ProviderRoute } from "./provider-account-manager.js";
 import { accountServiceForHarness, providerAccountCredentialRoot } from "./provider-account-manager.js";
 import { routeFromSelection } from "./provider-route-preflight.js";
@@ -823,10 +823,25 @@ export async function prepareSessionAgentEnvironment(
     // directory read once the root is warm; the naming call awaits the same
     // single-flight promise, so only one process ever does the initializing.
     //
+    // planning#390 — gated on the ROUTE'S root, not on `accountId`. This used to
+    // read `agentId === "codex" && accountId`, on the premise that an account
+    // route is the only way two spawners land on one root. That was true only
+    // because the unscoped route's turn never reached the CLI: it inherited an
+    // ambient `HOME` the adapter had not set and died on `/root`. With the
+    // adapter naming its own home, an unscoped turn and the naming shell-out
+    // both resolve `codexHome()` — the SAME root, cold on a first message, and
+    // neither one gated. That is exactly the race this gate exists to prevent,
+    // newly reachable on the whole redirected surface. The expression mirrors
+    // the `ensureLocalWorkspaceTrust` call below and the adapter's
+    // `codexConfigDir()`; all three have to name one root or the warm-up warms a
+    // directory the turn will not read.
+    //
     // eslint-disable-next-line no-restricted-syntax -- genuine per-CLI-shape exception (docs/155): the non-atomic first-run init of a `.codex` state directory is a property of the Codex CLI, not a capability any agent could declare.
-    if (agentId === "codex" && accountId) {
+    if (agentId === "codex") {
       await ensureCodexHomeInitialized(
-        path.join(providerAccountCredentialRoot(deps.credentialsDir, agentId, accountId), ".codex"),
+        accountId
+          ? path.join(providerAccountCredentialRoot(deps.credentialsDir, agentId, accountId), ".codex")
+          : codexHome(),
       );
     }
 

@@ -139,9 +139,11 @@ services:
       # `user: "1000:1000"` above, and /root is `drwx------ root root`), so
       # everything in here that keys off `$HOME` rather than `$AGENT_HOME` kept
       # landing on an unwritable directory. Codex is the one that dies loudest —
-      # it reads `$HOME/.codex/config.toml` before doing any work — but the
-      # orchestrator's own naming shell-out (`session-namer.ts`, which falls back
-      # to `process.env.HOME`), npm and git all read it too.
+      # it reads `$HOME/.codex/config.toml` before doing any work — and the
+      # concrete second reader is the orchestrator's own naming shell-out
+      # (`session-namer.ts`, which falls back to `process.env.HOME`), whose
+      # dogfood Codex runs failed the same config read and returned `name: null`.
+      # (git is NOT one: `git-config.ts` pins `GIT_CONFIG_GLOBAL`.)
       #
       # This is the ambient half of the fix and NOT the whole of it: the Codex
       # adapter now names its own HOME from `agentHome()` at spawn time

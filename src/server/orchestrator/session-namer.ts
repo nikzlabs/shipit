@@ -190,9 +190,14 @@ async function callAgentCli(prompt: string, target: SessionNamingTarget): Promis
       // Awaited BEFORE the spawn, not around it: the point is to be the only
       // process in the root while it is cold, not to serialize naming against
       // turns generally.
-      if (target.credentialRoot) {
-        await ensureCodexHomeInitialized(path.join(target.credentialRoot, ".codex"));
-      }
+      // planning#390 — the gate follows `namingHome`, not `credentialRoot`. An
+      // unscoped run keeps the process-global home, and once the Codex adapter
+      // stopped depending on an ambient one, that home is the very root the
+      // turn's own CLI now spawns against. Gating on `credentialRoot` left both
+      // processes racing a cold root on every redirected first message — the
+      // account route was never the only way to share one, only the only way
+      // that used to survive long enough to collide.
+      await ensureCodexHomeInitialized(path.join(namingHome(target), ".codex"));
       // We run from /tmp (a one-shot prompt unrelated to any repo). Codex >=0.130
       // refuses `exec` outside a trusted git repo unless this flag is passed.
       //
@@ -376,13 +381,32 @@ export function parseCodexJsonl(stdout: string): {
 }
 
 /**
+ * The HOME this naming run spawns with: a provider-account root when the caller
+ * resolved one (docs/150 — the account layout mirrors `$HOME`, which is the same
+ * trick the scoped auth flows use), else the orchestrator's own home, falling
+ * back to `/root` for the singleton mount.
+ *
+ * Deliberately `process.env.HOME` and NOT `agentHome()`, which would be right in
+ * dogfood and wrong in production: this runs in the orchestrator container, and
+ * `Dockerfile.prod` pins neither `HOME` nor `AGENT_HOME` and has no `shipit`
+ * user, so `agentHome()`'s `/home/shipit` default names a directory that does
+ * not exist there. Dogfood gets the writable home from the compose
+ * `environment:` block instead (planning#390).
+ *
+ * Extracted so the cold-root gate in {@link callAgentCli} and the spawn below
+ * cannot name different roots — the gate serializing a directory the CLI then
+ * does not use would look exactly like a gate that works.
+ */
+function namingHome(target: SessionNamingTarget): string {
+  return target.credentialRoot ?? process.env.HOME ?? "/root";
+}
+
+/**
  * Invoke the locally installed provider CLI in non-interactive mode.
  *
- * HOME selects the credentials: a provider-account root when the caller
- * resolved one (docs/150 — the account layout mirrors `$HOME`, which is the
- * same trick the scoped auth flows use), else `/root` for the singleton mount.
- * We do not pass resume/thread flags; this is a one-shot prompt unrelated to
- * the coding conversation.
+ * HOME selects the credentials — see {@link namingHome}. We do not pass
+ * resume/thread flags; this is a one-shot prompt unrelated to the coding
+ * conversation.
  *
  * docs/252 phase 7 — a string-delivered credential is materialized into the
  * harness's own variable here, through the SAME `applyServiceRouting` a turn's
@@ -407,7 +431,7 @@ function callCli(
 
     const env: Record<string, string> = {};
     for (const [k, v] of Object.entries(process.env)) if (v !== undefined) env[k] = v;
-    env.HOME = credentialRoot ?? process.env.HOME ?? "/root";
+    env.HOME = namingHome(target);
     // docs/150 / docs/252 — a run scoped to a provider-account root must not
     // inherit the orchestrator's own environment credentials: both CLIs prefer
     // the variable over the login on disk, so a host that has one configured

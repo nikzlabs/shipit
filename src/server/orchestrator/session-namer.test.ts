@@ -229,6 +229,47 @@ describe("generateSessionName", () => {
     vi.doUnmock("./agents/codex/home-init.js");
   });
 
+  // planning#390 — the gate follows the home the spawn actually uses, so an
+  // UNSCOPED run (a redirected service, which resolves no account root) is
+  // covered too. It used to be skipped entirely on the premise that only an
+  // account route can put two processes in one root; once the Codex adapter
+  // stopped inheriting an ambient HOME, an unscoped turn spawns against this
+  // very root and the two race it cold.
+  it("initializes the process-global Codex root when naming resolves no account", async () => {
+    const savedHome = process.env.HOME;
+    process.env.HOME = "/workspace/.inner-shipit/agent-home";
+    const order: string[] = [];
+    vi.doMock("./agents/codex/home-init.js", () => ({
+      ensureCodexHomeInitialized: (home: string) => {
+        order.push(`gate:${home}`);
+        return Promise.resolve();
+      },
+    }));
+    vi.doMock("node:child_process", () => ({
+      execFile: (
+        file: string,
+        _args: string[],
+        _opts: unknown,
+        cb: (err: Error | null, stdout: string, stderr: string) => void,
+      ) => {
+        order.push(`spawn:${file}`);
+        setImmediate(() => cb(null, '{"slug": "s", "title": "T"}\n', ""));
+        return { on: () => {}, stdin: { end: () => {} } } as unknown;
+      },
+    }));
+
+    const mod = await import("./session-namer.js");
+    await mod.generateSessionName("hi", { harnessId: "codex" });
+
+    expect(order).toEqual([
+      "gate:/workspace/.inner-shipit/agent-home/.codex",
+      "spawn:codex",
+    ]);
+    vi.doUnmock("./agents/codex/home-init.js");
+    if (savedHome === undefined) Reflect.deleteProperty(process.env, "HOME");
+    else process.env.HOME = savedHome;
+  });
+
   it("does not gate Claude naming on the Codex root", async () => {
     const gated: string[] = [];
     vi.doMock("./agents/codex/home-init.js", () => ({

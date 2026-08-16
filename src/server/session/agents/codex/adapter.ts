@@ -271,9 +271,16 @@ export class CodexAdapter
     // — a no-op there — and in local mode is the writable home compose pins.
     // `codexConfigDir()` likewise falls back to `codexHome()`, which still
     // honors an inherited `CODEX_HOME` when one is set. Same HOME/CODEX_HOME
-    // pairing as the warm-up spawn in
-    // `orchestrator/agents/codex/home-init.ts`; the two paths have to agree
-    // about the root or the warm-up initializes a directory the turn won't read.
+    // pairing as the warm-up spawn in `orchestrator/agents/codex/home-init.ts`.
+    //
+    // That warm-up is the other half of this change and was NOT already covering
+    // this spawn: its two gates keyed on the account root, so the root an
+    // unscoped turn now lands on had no cold-start serialization at all — and
+    // this fix is what makes that root reachable, since the turn previously died
+    // before it could race the naming CLI for it. `session-agent-env.ts` and
+    // `session-namer.ts` now gate on the same expression this line resolves.
+    // All three have to name one root, or the warm-up initializes a directory
+    // the turn will not read.
     const scopedHome = this.resolveHome?.();
     env.HOME = resolveAgentHome(scopedHome);
     env.CODEX_HOME = this.codexConfigDir();
