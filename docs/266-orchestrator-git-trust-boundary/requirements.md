@@ -184,11 +184,14 @@ called out rather than folded in.
   never from `-c`", inherited from `git-config.ts`'s comment and docs/150. That
   half is **wrong**: git's *protected configuration* scope is system + global +
   **command line**, so `git -c safe.directory=*` and the `GIT_CONFIG_COUNT`
-  environment protocol are both honoured. It changes no requirement — a `-c`
-  comes from ShipIt's own argv, not from the repository — but it is recorded
-  here because the design cites the claim, and the maintenance rule it implies
-  is the opposite of the one the wrong version implies: a refusal must not be
-  silenceable with `-c safe.directory` by a future call site.
+  environment protocol are both honoured. It changes no requirement and opens no
+  hole — a `-c` and an env var come from ShipIt's own argv and environment, never
+  from the repository, so the untrusted side still cannot grant itself trust. It
+  is recorded here because the design cites the claim, and because the
+  maintenance rule it implies is the opposite of the one the wrong version
+  implies: a refusal must not be silenceable with `-c safe.directory` by a future
+  ShipIt call site. Enforced as a lint rather than left as prose
+  (`git-hooks-guard-coverage.test.ts`; planning#409 owns the rule).
 - **An unreadable workspace FILE costs the whole turn's commit.** Measured here
   against git 2.39.5, and independently by the requester. With one tracked file
   at mode 000 in an otherwise readable directory: `git status` exits **0** and

@@ -93,12 +93,24 @@ document, `requirements.md`, and `git-config.ts`'s own comment all added "and
 never from `-c`". That is **wrong** for git 2.39.5: git's *protected
 configuration* scope is system + global + **command line**, so both
 `git -c safe.directory=*` and the `GIT_CONFIG_COUNT` environment protocol are
-honoured. Measured with `GIT_TEST_ASSUME_DIFFERENT_OWNER=1` — see §4. The design
-is unaffected, because a `-c` and an env var come from ShipIt's own argv, not
-from the repository; what changes is the maintenance rule: a future call site
-must not be allowed to silence a refusal with `-c safe.directory`, and the
-`GIT_CONFIG_COUNT` route is one more reason to keep simple-git's
-`blockUnsafeOperationsPlugin` refusal of that variable in place.
+honoured. Measured with `GIT_TEST_ASSUME_DIFFERENT_OWNER=1` — see §4.
+
+**It is not a hole, and the next reader should not read it as one.** The
+boundary rests on the repo-local half, which holds: the untrusted side owns
+`.git/config` and still cannot grant itself trust. A `-c` and an environment
+variable come from **ShipIt's own argv and environment**, which the repository
+never supplies.
+
+What it inverts is a *maintenance* rule. ShipIt's own code could silence the
+refusal E2 arms, one `-c safe.directory=*` at a time — most plausibly by someone
+debugging "git suddenly refuses this path" the fastest way rather than the right
+way. That is worth a lint rather than a sentence, so
+`git-hooks-guard-coverage.test.ts` now fails the build when any orchestrator-side
+source outside `git-config.ts` passes the key to git or sets `GIT_CONFIG_COUNT`.
+**planning#409** owns that rule and any widening of it; the version here is the
+narrow one E2 needed. The `GIT_CONFIG_COUNT` route is also one more reason to
+keep simple-git's `blockUnsafeOperationsPlugin` refusal of that variable in
+place.
 
 The `*` was the right call for the problem it solved (docs/150 §7 activation).
 It is the wrong shape now.

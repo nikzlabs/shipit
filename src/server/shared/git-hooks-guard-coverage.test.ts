@@ -291,3 +291,127 @@ describe("git spawn coverage: tree-uid drop (docs/266 E2)", () => {
     expect(resolveOptions("somethingElse", src)).toBeNull();
   });
 });
+
+/**
+ * docs/266 E2 — nobody may hand git a `safe.directory` except the one place that
+ * owns the policy.
+ *
+ * This is the rule the correction earned. `safe.directory` is honoured from
+ * git's **protected configuration** scope, which is system + global + **command
+ * line** — measured against git 2.39.5 with `GIT_TEST_ASSUME_DIFFERENT_OWNER=1`,
+ * correcting a claim this repo carried in four places that `-c` was never
+ * honoured. A repo-local `safe.directory` is genuinely NOT honoured, which is
+ * the half the boundary rests on: the untrusted side owns `.git/config` and
+ * still cannot grant itself trust.
+ *
+ * So this is not a hole — a `-c` and the `GIT_CONFIG_*` env protocol come from
+ * ShipIt's own argv and environment, never from the repository. It is a
+ * maintenance rule: the fail-closed refusal E2 arms can be silenced by ShipIt's
+ * OWN code, one `-c safe.directory=*` at a time, by someone fixing a "git
+ * suddenly refuses this path" bug the fastest way rather than the right way.
+ * That is a lint, not a sentence in a doc.
+ *
+ * The env half is covered elsewhere and only partly: simple-git's
+ * `blockUnsafeOperationsPlugin` refuses to spawn when it sees
+ * `GIT_CONFIG_COUNT`, and `RepoGit.sanitizeGitEnv` strips it. Neither reaches a
+ * raw `spawn` that sets it deliberately, so this scans for that shape too.
+ */
+describe("git spawn coverage: nobody re-grants safe.directory (docs/266 E2)", () => {
+  /** The one module that owns the policy — {@link applySafeDirectoryPolicy}. */
+  const POLICY_OWNER = path.join("orchestrator", "git-config.ts");
+
+  /**
+   * `GIT_CONFIG_COUNT` / `GIT_CONFIG_KEY_0` being **set** — as an object key or
+   * an assignment. Deliberately not a bare name match: `repo-git.ts` lists these
+   * variables in `sanitizeGitEnv`'s strip list, which is the opposite of the
+   * hazard and must not be flagged.
+   */
+  const CONFIG_ENV_SET = /\bGIT_CONFIG_(?:COUNT|KEY_\d+|VALUE_\d+)"?\s*[:=][^=]/;
+
+  /**
+   * The key being **passed to git** — quoted as a config key, or written in
+   * `key=value` form — rather than merely mentioned.
+   *
+   * `stripComments` blanks whole comment lines but not a trailing `//` (widening
+   * it would eat the `//` in every URL literal), so a bare name match flags
+   * `github-ci-fix.ts`'s `// GHA safe.directory` annotation on a CI-log noise
+   * pattern. The shapes that matter are all quoted or `=`-joined:
+   * `["-c", "safe.directory=*"]`, `["config", "--global", "safe.directory"]`.
+   * A name assembled from fragments at runtime would slip through; nothing in
+   * this repo does that, and it is not the mistake this rule guards against.
+   */
+  const PASSES_SAFE_DIRECTORY = /["'`]safe\.directory|safe\.directory\s*=/;
+
+  it("only git-config.ts names safe.directory, and nothing passes it on a command line", () => {
+    const offenders: string[] = [];
+    let scanned = 0;
+
+    for (const file of ROOTS.flatMap(sourceFiles)) {
+      const rel = path.relative(REPO_SRC, file);
+      const src = stripComments(fs.readFileSync(file, "utf-8"));
+      scanned++;
+      if (rel.endsWith(POLICY_OWNER)) {
+        // Even here, only the `git config --global` form is allowed: the point
+        // of the policy living in the global config is that it is the scope the
+        // untrusted side cannot reach, and a `-c` would defeat its own purpose.
+        for (const line of src.split("\n")) {
+          if (PASSES_SAFE_DIRECTORY.test(line) && !line.includes('"config", "--global"')) {
+            offenders.push(`${rel} — safe.directory outside the \`config --global\` write: ${line.trim()}`);
+          }
+        }
+        continue;
+      }
+      if (PASSES_SAFE_DIRECTORY.test(src)) {
+        offenders.push(`${rel} — passes safe.directory to git outside ${POLICY_OWNER}`);
+      }
+    }
+
+    // Vacuity guard: if the walker stops finding files, this asserts nothing.
+    expect(scanned).toBeGreaterThan(50);
+
+    expect(offenders, [
+      "`safe.directory` is honoured from git's protected configuration scope —",
+      "system, global AND the command line (measured, git 2.39.5). So a `-c",
+      "safe.directory=...` anywhere in ShipIt's own code silences exactly the",
+      "`detected dubious ownership` refusal docs/266 E2 exists to arm (req 7).",
+      "The refusal is the signal that a git call site failed to drop to the tree's",
+      "owner. Fix the call site with gitSpawnOverridesForTree — never the refusal.",
+      `Only ${POLICY_OWNER}'s \`git config --global\` write may name the key.`,
+    ].join("\n")).toEqual([]);
+  });
+
+  it("nothing sets git's GIT_CONFIG_* environment protocol", () => {
+    const offenders: string[] = [];
+    for (const file of ROOTS.flatMap(sourceFiles)) {
+      const src = stripComments(fs.readFileSync(file, "utf-8"));
+      for (const [i, line] of src.split("\n").entries()) {
+        if (CONFIG_ENV_SET.test(line)) {
+          offenders.push(`${path.relative(REPO_SRC, file)}:${i + 1} — ${line.trim()}`);
+        }
+      }
+    }
+
+    expect(offenders, [
+      "Git's GIT_CONFIG_COUNT/GIT_CONFIG_KEY_n protocol carries the same",
+      "protected-configuration weight as `-c`, so it can re-grant safe.directory",
+      "the same way. simple-git refuses to spawn when it sees GIT_CONFIG_COUNT and",
+      "RepoGit.sanitizeGitEnv strips it, but neither reaches a raw spawn that sets",
+      "it on purpose — which is what this catches.",
+    ].join("\n")).toEqual([]);
+  });
+
+  it("the safe.directory rule reads the key, not the whole line", () => {
+    // Pins the predicate itself: an argv form must be caught, and the strip
+    // list in `sanitizeGitEnv` must not be.
+    expect(CONFIG_ENV_SET.test('GIT_CONFIG_COUNT: "1",')).toBe(true);
+    expect(CONFIG_ENV_SET.test("env.GIT_CONFIG_KEY_0 = key;")).toBe(true);
+    expect(CONFIG_ENV_SET.test('  "GIT_CONFIG_COUNT", "GIT_CONFIG_PARAMETERS",')).toBe(false);
+
+    // The argv form is caught; a prose mention of the key is not. Both matter:
+    // the first is the hazard, and the second is what made a bare name match
+    // fail on a CI-log noise pattern annotated `// GHA safe.directory`.
+    expect(PASSES_SAFE_DIRECTORY.test('["-c", "safe.directory=*", "status"]')).toBe(true);
+    expect(PASSES_SAFE_DIRECTORY.test('["config", "--global", "safe.directory", "*"]')).toBe(true);
+    expect(PASSES_SAFE_DIRECTORY.test("/^Adding repository/,  // GHA safe.directory")).toBe(false);
+  });
+});

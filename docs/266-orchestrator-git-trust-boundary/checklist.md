@@ -168,10 +168,19 @@ Build sequence from [plan.md](./plan.md) §5. Requirements are cited as `(req N)
       would need a revert and a redeploy. Arming actively `--unset-all`s the
       entry an earlier boot wrote — the gitconfig is in the persistent
       credentials volume, so "stop writing it" would have been a no-op there.
-- [ ] **Arm it in production, then delete both the switch and the write.** This
-      is the go/no-go the issue reserves for a human, and it must not happen
-      before E1 has been *seen* working in production — which, as
-      `plan.md` §4 now records, has not been established from here.
+- [ ] **Arm it in production, then delete both the switch and the write.**
+      **planning#410.** This is the go/no-go planning#403 reserves for a human,
+      and it must not happen before E1 has been *seen* working in production —
+      which, as `plan.md` §4 now records, has not been established from here.
+      Filed as its own issue because a flag with no expiry becomes permanent, and
+      a permanent one is a supported way to turn the boundary back off.
+- [x] **A lint, not a sentence, for the corrected `-c` claim.**
+      `safe.directory` is honoured from the command line as well as from
+      system/global config, so ShipIt's own code could silence the refusal E2
+      arms. `git-hooks-guard-coverage.test.ts` fails the build when any
+      orchestrator-side source outside `git-config.ts` passes the key to git or
+      sets `GIT_CONFIG_COUNT`. **planning#409** owns that rule and any widening
+      of it; what landed here is the narrow version E2 needed.
 
 ## Known gaps, still open
 

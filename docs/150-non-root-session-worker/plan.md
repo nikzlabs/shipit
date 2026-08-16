@@ -440,8 +440,13 @@ Rationale for *where* and *what*:
   *protected configuration* scope is system + global + **command line**, so
   `git -c safe.directory=*` and the `GIT_CONFIG_COUNT` environment protocol are
   both honoured. It does not change this feature's fix — the entry still belongs
-  in `GIT_CONFIG_GLOBAL` for every reason below — but the claim was inherited
-  into docs/266 as a security property, so it is corrected at the source too.
+  in `GIT_CONFIG_GLOBAL` for every reason below — and it is **not a hole**: a
+  `-c` and an env var come from ShipIt's own argv and environment, never from the
+  repository, so the untrusted side still cannot grant itself trust. What it
+  changes is a maintenance rule, now enforced as a lint rather than a sentence
+  (`git-hooks-guard-coverage.test.ts`; planning#409). Corrected here as well as
+  in docs/266, because this is where the claim originated and fixing only the
+  copies is how it reached three places.
 
   So it must live in
   `GIT_CONFIG_GLOBAL`, which every orchestrator git invocation already inherits

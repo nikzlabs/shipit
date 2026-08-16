@@ -84,9 +84,17 @@ export function gitStrictOwnership(env: NodeJS.ProcessEnv = process.env): boolea
  *     `GIT_CONFIG_COUNT` environment protocol, ARE honoured — git's "protected
  *     configuration" scope is system + global + command-line. Earlier ShipIt
  *     docs stated the opposite; the correction is recorded in docs/266's
- *     `requirements.md`. It does not weaken the guard (both come from ShipIt's
- *     own argv/env, not from the repository), but a future call site must not
- *     pass either as a way to make a refusal go away.
+ *     `requirements.md`.
+ *
+ *     **This is not a hole in the boundary.** A `-c` and an environment
+ *     variable come from ShipIt's OWN argv and environment; the untrusted side
+ *     supplies neither. What it is, is a maintenance rule — ShipIt's own code
+ *     could silence the refusal one `-c safe.directory=*` at a time, most
+ *     plausibly by someone debugging "git suddenly refuses this path" the
+ *     fastest way rather than the right way. So it is enforced as a rule rather
+ *     than written down as advice: `git-hooks-guard-coverage.test.ts` fails the
+ *     build if any orchestrator-side source outside this module passes the key
+ *     to git, or sets `GIT_CONFIG_COUNT`.
  *
  * ## Why this is a switch and not a deletion
  *
@@ -103,6 +111,12 @@ export function gitStrictOwnership(env: NodeJS.ProcessEnv = process.env): boolea
  * the config file lives in the persistent credentials volume, so arming must
  * actively `--unset-all` an entry an earlier boot wrote, and disarming rewrites
  * it.
+ *
+ * **This switch has an expiry: planning#410.** A flag with no owner becomes
+ * permanent, and a permanent one is a supported way to turn the boundary back
+ * off. The end state is deleting BOTH halves — this function's branch and the
+ * `safe.directory=*` write — once it has run armed in production, leaving
+ * fail-closed as simply how ShipIt works.
  */
 function applySafeDirectoryPolicy(): void {
   if (gitStrictOwnership()) {
