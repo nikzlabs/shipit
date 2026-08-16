@@ -27,10 +27,17 @@ plugins:
         settings:
           root: docs/specs     # a value for a setting the manifest declares
         services:
-          api: { autostart: false, as: reqs-api }
+          api: { port: 4300, autostart: false, as: reqs-api }
         commands:
           reqs: { as: requirements }
 ```
+
+**A plugin service's `port:` is required if you want to preview it.** The port
+is the consuming project's to choose — a plugin author cannot know what your
+stack already runs — so an exported fragment declares none, and naming one here
+is what makes the service reachable in the Preview pane. A plugin service you
+name no port for still runs; it just is not previewable. Two services given one
+port is refused, naming both: change one of them.
 
 **`overrides` is the consumer's whole say**, and it is one level deeper than it
 looks like it should be. `settings`, `services` and `commands` go **under
@@ -347,6 +354,39 @@ for its author and fails on the first project that declares it.
 
 Everything below follows from those three rows.
 
+### Your service does not choose its port
+
+An exported compose fragment **must not declare `ports:`**. A fragment that does
+is refused, and the plugin repository's card names the line to delete — there is
+no migration window in which the old behaviour still runs.
+
+The reason is that you cannot know what a consuming project already runs. When a
+plugin picked its own port, a plugin serving on 5173 and a project serving on
+5173 collapsed onto one preview address, and the consumer could not fix it: the
+number came from your fragment, and their `overrides` had no key for it. 5173 is
+the Vite default, so that was ordinary rather than exotic.
+
+So the consumer writes the number, in their `plugins.use` entry, and **ShipIt
+tells your container which port to serve on** through `SHIPIT_PLUGIN_PORT`:
+
+```js
+const port = Number(process.env.SHIPIT_PLUGIN_PORT ?? 8080)
+server.listen(port, "0.0.0.0")
+```
+
+Two rules follow:
+
+- **Read the variable; do not hardcode a port.** A server that binds its own
+  number is unreachable. ShipIt notices — a service that is running with nothing
+  listening on the port it was given gets a line in its own log saying so — but
+  the consumer cannot fix your code, so they will be filing an issue.
+- **Bind `0.0.0.0`, not `127.0.0.1`.** ShipIt reaches your container by IP on the
+  session network, so a loopback-only bind answers nobody.
+
+The variable is **absent** when the consuming project named no port. That is not
+an error: it means nothing is previewing this service, so a worker or a database
+can simply ignore it.
+
 ### Build in `install`, and declare where the build lands — on both sides
 
 A consumer's `/plugin` is the checkout plus whatever `install` left behind, so
@@ -420,20 +460,10 @@ Run two servers over one codebase:
 One thing collides, and it is the name. A plugin service whose name matches one
 of the project's own service names withholds **every** service that plugin
 repository provides — the project's name wins — so the dev service needs a
-different one. Ports mostly do not collide: ShipIt strips host bindings and
-reaches every service over the session network, so two containers can both serve
-on 5173 and neither is in the other's way.
+different one.
 
-**One case does collide, and it is worth avoiding today.** The Preview pane
-addresses a service by port number, so if a plugin service and one of the
-project's own services end up on the same one, the pane can only reach the first
-of them — selecting the other serves the wrong app. Pick a port for an exported
-service that a consuming project is unlikely to have taken (5173 and 3000 are
-the worst choices). When it does happen, ShipIt writes a line naming both
-services and the port into the unreachable service's own log, so it shows up in
-that service's Logs panel and in `shipit service logs <name>`. This is a ShipIt
-design mistake, not yours: the port ought to be the consuming project's to
-declare, and it is being changed to work that way.
+Ports do not collide, because **an exported fragment does not declare one**. See
+[Your service does not choose its port](#your-service-does-not-choose-its-port).
 
 ```yaml
 # the plugin repository's own shipit.yaml
@@ -472,10 +502,10 @@ services:
     image: node:22-alpine
     user: "1000:1000"
     working_dir: /app
-    command: node /app/serve.mjs     # serves /app/dist; no watcher
+    command: node /app/serve.mjs     # reads SHIPIT_PLUGIN_PORT; no watcher
     volumes: [".:/app:ro"]           # `.` is THIS FILE'S directory: plugins/web
-    ports: ["4300:4300"]
-    x-shipit-preview: auto
+    # no `ports:` — the consuming project names it, and the server reads
+    # SHIPIT_PLUGIN_PORT. Declaring one here is refused.
 ```
 
 **A fragment's `.` is the fragment's own directory, not the repository root** —
@@ -576,6 +606,8 @@ not for how a specific tool reacts.
 - Nothing the fragment runs writes into the tree — verified by the read-only
   copy above, not by reasoning about it.
 - No watcher, no polling, no dev server in the exported fragment.
+- No `ports:` in the exported fragment, and every server in it binds
+  `SHIPIT_PLUGIN_PORT` on `0.0.0.0` rather than a port of its own.
 - Every failure message names its precondition and is actionable by someone with
   no access to your repository.
 - The exported service's name cannot collide with a consumer's own service names

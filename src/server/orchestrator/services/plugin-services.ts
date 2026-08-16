@@ -12,7 +12,6 @@
  *    (`plugin-overlay.ts`). Install created one over the STAGING checkout and
  *    removed it before publish; this creates the runtime one, over the published
  *    generation and the same upper layer.
- *  - **Published ports** (`plugin-ports.ts`, req 18), which are per-session state.
  *  - **Remembering what could not be recomputed.** The snapshot route re-derives
  *    fragment problems itself from the same pure function, so only the failures
  *    that depend on Docker are kept here — the same split `plugin-state.ts` makes
@@ -28,7 +27,6 @@ import path from "node:path";
 import type Docker from "dockerode";
 import {
   classifyComposeFailure,
-  declaredContainerPorts,
   parseComposeFile,
   type ComposeFailure,
 } from "../compose-generator.js";
@@ -41,7 +39,6 @@ import {
 import { ensurePluginRuntimeOverlay, resolvePluginOverlayRoots } from "../plugin-overlay.js";
 import { holdGenerationsForOwner, pluginServiceOwner } from "../plugin-leases.js";
 import { resolveLiveGenerations } from "../plugin-generations.js";
-import { resolvePublishedPorts } from "../plugin-ports.js";
 import { sessionRootForWorkspace, volumeSubpathFor } from "../plugin-state.js";
 import { sessionStateDirForWorkspace } from "../session-state-dir.js";
 import { resolveShipitConfig, type ShipitConfig } from "../../shared/shipit-config.js";
@@ -162,22 +159,11 @@ export async function resolveSessionPluginServices(
     : {};
   const pluginVolumes = await ensurePluginVolumes(sessionId, stateDir, tracked, held, deps, roots);
 
-  // req 18 — pinned per (session, service). Project ports are reserved: theirs
-  // is both an origin and a real container port, so of the two only a plugin's
-  // is ShipIt's to move.
-  //
-  // Only services that DECLARE a port ask for one. A worker with no `ports:` is
-  // not previewable, and handing it a band number would make the client — which
-  // treats any running service with a port as previewable — offer an origin
-  // that resolves to nothing (review finding).
-  const publishedPorts = resolvePublishedPorts(
-    sessionDir,
-    fragments
-      .filter((f) => f.port !== undefined)
-      .map((f) => ({ service: f.name, containerPort: f.port! })),
-    project.ports,
-  );
-
+  // docs/266 req 10 — there is no allocation step any more. A plugin service's
+  // port is the consuming project's own `plugins.use` entry, so it is both the
+  // container port and the preview origin, and nothing here can move it. The
+  // pin (`plugin-ports.ts`) existed only because a tracked commit could change
+  // the fragment's port behind this session's back; it cannot now.
   const sessionSubpath = volumeSubpath(sessionDir, deps);
   const workspaceSubpath = volumeSubpath(workspaceDir, deps);
   const built = buildPluginComposeServices(fragments, {
@@ -187,7 +173,6 @@ export async function resolveSessionPluginServices(
     ...(deps.workspaceVolume ? { workspaceVolume: deps.workspaceVolume } : {}),
     ...(workspaceSubpath ? { workspaceSubpath } : {}),
     pluginVolumes,
-    publishedPorts,
   });
   recordPluginServiceFailures(sessionId, built.issuesByRepo);
   return built.services;
@@ -226,7 +211,6 @@ function volumeSubpath(dir: string, deps: PluginServiceDeps): string | undefined
 /** The project's own half of req 20's name domain, and whether it is knowable. */
 export interface ProjectServices {
   names: string[];
-  ports: Set<number>;
   /**
    * The project DECLARES a compose file that could not be read or parsed, so
    * these names are not "none" but "unknown".
@@ -265,7 +249,7 @@ export interface ProjectServices {
 export type ProjectComposeFailure = ComposeFailure;
 
 /**
- * The project's own service names and ports, best-effort.
+ * The project's own service names, best-effort.
  *
  * Best-effort because for THIS round it is a *collision domain*, not a gate: a
  * project whose compose file is mid-edit (or absent — a project may declare
@@ -284,13 +268,13 @@ export function readProjectServices(
   // No `compose:` block is not a failure to read one: the project has no stack,
   // and keying it on whether a conventional filename happens to exist would
   // start a stack the project never declared (plan §1b).
-  if (!config.compose) return { names: [], ports: new Set(), unknown: false };
+  if (!config.compose) return { names: [], unknown: false };
   const file = path.join(workspaceDir, config.compose.file);
   // A declared file that is not there yet is a DEFINITE answer, not an unknown
   // one: a stack that does not exist claims no names, and a project may
   // legitimately declare `compose:` before writing it. Only a file that exists
   // and cannot be read or parsed leaves the name domain unknowable.
-  if (!fs.existsSync(file)) return { names: [], ports: new Set(), unknown: false };
+  if (!fs.existsSync(file)) return { names: [], unknown: false };
   try {
     const parsed = parseComposeFile(file, {
       dockerSocket: config.compose.dockerSocket,
@@ -298,10 +282,6 @@ export function readProjectServices(
     });
     return {
       names: parsed.map((s) => s.name),
-      // The SAME derivation the ServiceManager applies to the same file
-      // (#2325) — two readings of "which ports are taken" is how a plugin came
-      // to publish a number the project's own service already answered on.
-      ports: declaredContainerPorts(parsed),
       unknown: false,
     };
   } catch (err) {
@@ -311,7 +291,6 @@ export function readProjectServices(
     // `classifyComposeFailure`'s, shared with the service list (planning#382).
     return {
       names: [],
-      ports: new Set(),
       unknown: true,
       failure: classifyComposeFailure(err),
     };

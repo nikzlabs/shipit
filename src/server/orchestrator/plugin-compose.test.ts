@@ -35,8 +35,6 @@ services:
       PROBE_PORT: "4820"
     volumes:
       - .:/app:ro
-    ports:
-      - "4820:4820"
     x-shipit-preview: auto
 `;
 
@@ -83,6 +81,10 @@ repos:
 use:
   - plugin: probe
     from: mine
+    overrides:
+      services:
+        probe:
+          port: 4820
 `;
 
 function collect(consumer: string, manifest = defaultManifest(), opts: {
@@ -110,7 +112,6 @@ function build(fragments: PluginFragmentService[], overrides: {
     workspaceDir,
     ...overrides,
     pluginVolumes: new Map(),
-    publishedPorts: new Map(fragments.map((f) => [f.name, f.port ?? 40_000])),
   });
 }
 
@@ -124,7 +125,6 @@ function trackedVolumes(fragment: PluginFragmentService): Record<string, unknown
     sessionDir,
     workspaceDir,
     pluginVolumes: new Map([["mine", "shipit-x_plugin-mine"]]),
-    publishedPorts: new Map(),
   });
   return built.services[0].definition.volumes as Record<string, unknown>[];
 }
@@ -145,9 +145,199 @@ describe("collectPluginFragments", () => {
       fragmentDir: "tools/probe",
       self: true,
     });
-    // `ports:` is read, never re-emitted — ShipIt publishes no host ports.
+    // A fragment declares no `ports:` at all now (req 1), so nothing to re-emit.
     expect(services[0].definition.ports).toBeUndefined();
     expect(services[0].definition["x-shipit-preview"]).toBeUndefined();
+  });
+
+  it("refuses a fragment that still declares `ports:` (docs/266 reqs 1, 6)", () => {
+    writeFragment(`
+services:
+  probe:
+    image: node:22-alpine
+    ports:
+      - "4820:4820"
+`);
+    const { services, issuesByRepo } = collect(SELF_USE);
+    expect(services).toHaveLength(0);
+    const issues = issuesByRepo.get("mine") ?? [];
+    expect(issues).toHaveLength(1);
+    // The line to delete IS the message — there is no migration window in which
+    // this still runs, so the reader needs to know what to remove.
+    expect(issues[0]).toContain("`ports:`");
+    expect(issues[0]).toContain("Remove the `ports:` line.");
+    // And where the number goes instead.
+    expect(issues[0]).toContain("`plugins.use`");
+  });
+
+  it("is not previewable when the consuming project names no port (docs/266 req 9)", () => {
+    // The fragment says `x-shipit-preview: auto`, which used to make it
+    // previewable on its own. Previewability now rides the PORT: the service
+    // carries none, so it cannot enter the pane's list whatever `preview` says.
+    // `preview` keeps answering the other question — does it start (req 16).
+    const { services } = collect(`
+repos:
+  - repo: self
+    name: mine
+use:
+  - plugin: probe
+    from: mine
+`);
+    expect(services).toHaveLength(1);
+    expect(services[0].port).toBeUndefined();
+  });
+
+  it("defaults a portless service to manual when the fragment says nothing", () => {
+    writeFragment("services:\n  probe:\n    image: node:22-alpine\n");
+    const { services } = collect(`
+repos:
+  - repo: self
+    name: mine
+use:
+  - plugin: probe
+    from: mine
+`);
+    expect(services[0].preview).toBe("manual");
+  });
+
+  it("still starts a portless service the consumer asked to autostart (req 16)", () => {
+    // Previewable and autostart are different questions. A worker has nothing
+    // to preview and every reason to start — carrying no port is what keeps it
+    // out of the pane, not being held back from starting.
+    const { services } = collect(`
+repos:
+  - repo: self
+    name: mine
+use:
+  - plugin: probe
+    from: mine
+    overrides:
+      services:
+        probe:
+          autostart: true
+`);
+    expect(services[0].port).toBeUndefined();
+    expect(services[0].preview).toBe("auto");
+  });
+
+  it("refuses two plugin services given one port, naming both (docs/266 req 7)", () => {
+    writeFragment(`
+services:
+  probe:
+    image: node:22-alpine
+  worker:
+    image: node:22-alpine
+`);
+    const { services, issuesByRepo } = collect(`
+repos:
+  - repo: self
+    name: mine
+use:
+  - plugin: probe
+    from: mine
+    overrides:
+      services:
+        probe:
+          port: 4300
+        worker:
+          port: 4300
+`);
+    expect(services).toHaveLength(0);
+    const issues = issuesByRepo.get("mine") ?? [];
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toContain("4300");
+    // Both services named — that is the whole point of refusing rather than
+    // silently serving one of them (#2325).
+    expect(issues[0]).toContain("probe");
+    expect(issues[0]).toContain("worker");
+  });
+
+  it("refuses one port claimed across TWO imports, naming both (docs/266 req 7)", () => {
+    fs.mkdirSync(path.join(workspaceDir, "tools", "other"), { recursive: true });
+    fs.writeFileSync(path.join(workspaceDir, "tools", "other", "docker-compose.yml"),
+      "services:\n  other:\n    image: node:22-alpine\n");
+    const manifest = `
+plugins:
+  probe:
+    compose: tools/probe/docker-compose.yml
+  other:
+    compose: tools/other/docker-compose.yml
+`;
+    const { services, issuesByRepo } = collect(`
+repos:
+  - repo: self
+    name: mine
+use:
+  - plugin: probe
+    from: mine
+    overrides:
+      services:
+        probe:
+          port: 4300
+  - plugin: other
+    from: mine
+    alias: other
+    overrides:
+      services:
+        other:
+          port: 4300
+`, manifest);
+    // Both imports are from one repository, and a repository's services
+    // activate as a unit — so the first import goes with the second.
+    expect(services).toHaveLength(0);
+    const issues = issuesByRepo.get("mine") ?? [];
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toContain("4300");
+    expect(issues[0]).toContain("other");
+    expect(issues[0]).toContain("probe");
+  });
+
+  it("withholds the REST of an import whose port collides — never half a plugin", () => {
+    writeFragment(`
+services:
+  probe:
+    image: node:22-alpine
+  worker:
+    image: node:22-alpine
+`);
+    const { services } = collect(`
+repos:
+  - repo: self
+    name: mine
+use:
+  - plugin: probe
+    from: mine
+    overrides:
+      services:
+        probe:
+          port: 4300
+        worker:
+          port: 4300
+`);
+    // `worker` is the one that collides; `probe` is clean and still withheld.
+    expect(services.map((s) => s.name)).toEqual([]);
+  });
+
+  it("keeps an explicit `x-shipit-preview` on a portless service (no silent drop)", () => {
+    // The fragment's key is the author's answer to req 16 and survives the
+    // port rule: dropping it would stop a portless worker starting, with
+    // nothing anywhere saying why (review finding).
+    writeFragment(`
+services:
+  probe:
+    image: node:22-alpine
+    x-shipit-preview: auto
+`);
+    const { services } = collect(`
+repos:
+  - repo: self
+    name: mine
+use:
+  - plugin: probe
+    from: mine
+`);
+    expect(services[0].port).toBeUndefined();
+    expect(services[0].preview).toBe("auto");
   });
 
   it("applies the consumer's autostart override (req 16)", () => {
@@ -161,6 +351,7 @@ use:
     overrides:
       services:
         probe:
+          port: 4820
           autostart: false
 `);
     expect(services[0].preview).toBe("manual");
@@ -610,8 +801,7 @@ describe("buildPluginComposeServices", () => {
       workspaceVolume: "shipit_workspace",
       workspaceSubpath: "sessions/abc/workspace",
       pluginVolumes: new Map(),
-      publishedPorts: new Map(),
-    });
+      });
     const volumes = built.services[0].definition.volumes as Record<string, unknown>[];
     expect(volumes).toContainEqual({
       type: "volume",
@@ -712,8 +902,7 @@ describe("buildPluginComposeServices", () => {
       sessionDir,
       workspaceDir,
       pluginVolumes: new Map([["mine", "shipit-x_plugin-mine"]]),
-      publishedPorts: new Map(),
-    });
+      });
     expect(toComposeService(tracked.services[0]).dependsOnInstall).toBe(false);
   });
 
@@ -724,8 +913,26 @@ describe("buildPluginComposeServices", () => {
       PROBE_PORT: "4820",
       SHIPIT_PROJECT_DIR: "/project",
       SHIPIT_PLUGIN_STATE: "/plugin-state",
+      // docs/266 reqs 3, 8 — the consuming project's number, told to the
+      // process that has to bind it. A plugin cannot know it any other way.
+      SHIPIT_PLUGIN_PORT: "4820",
     });
     expect(env.SHIPIT_PLUGIN_COMMIT).toBeUndefined();
+  });
+
+  it("sets no port variable for a service the project named no port for (docs/266 req 9)", () => {
+    const { services } = collect(`
+repos:
+  - repo: self
+    name: mine
+use:
+  - plugin: probe
+    from: mine
+`);
+    const env = build(services).services[0].definition.environment as Record<string, string>;
+    // An unset variable is how a plugin tells "serve here" from "you are not
+    // being previewed" — so it must be absent, not empty.
+    expect(env.SHIPIT_PLUGIN_PORT).toBeUndefined();
   });
 
   it("carries the commit for a tracked import (req 15)", () => {
@@ -735,8 +942,7 @@ describe("buildPluginComposeServices", () => {
       sessionDir,
       workspaceDir,
       pluginVolumes: new Map([["mine", "shipit-x_plugin-mine"]]),
-      publishedPorts: new Map(),
-    });
+      });
     const env = built.services[0].definition.environment as Record<string, string>;
     expect(env.SHIPIT_PLUGIN_COMMIT).toBe("abc123");
     const volumes = built.services[0].definition.volumes as Record<string, unknown>[];
@@ -757,8 +963,7 @@ describe("buildPluginComposeServices", () => {
       sessionDir,
       workspaceDir,
       pluginVolumes: new Map(),
-      publishedPorts: new Map(),
-    });
+      });
     expect(built.services).toHaveLength(0);
     expect(built.issuesByRepo.get("mine")?.[0]).toContain("writable layer is not available");
   });
@@ -850,8 +1055,7 @@ describe("override emission", () => {
       sessionDir,
       workspaceDir,
       pluginVolumes: new Map([["mine", "shipit-x_plugin-mine"]]),
-      publishedPorts: new Map(),
-    });
+      });
     const yaml = generateComposeOverride([toComposeService(built.services[0])], {
       sessionId: "session-1",
       composeConfig: { file: "docker-compose.yml", dockerSocket: false },

@@ -60,6 +60,15 @@ describe("parsePluginRepos — grammar", () => {
     expect(config.uses[1].alias).toBe("remote-probe");
   });
 
+  it("keeps a service `port` the consuming project wrote (docs/266 req 2)", () => {
+    const { config, warnings } = repos({
+      repos: [{ repo: "self", name: "mine" }],
+      use: [{ plugin: "probe", from: "mine", overrides: { services: { probe: { port: 4300 } } } }],
+    });
+    expect(warnings).toEqual([]);
+    expect(config.uses[0].overrides.services.probe).toEqual({ port: 4300 });
+  });
+
   it("drops an entry missing repo or name, keeps the rest", () => {
     const { config, warnings } = repos({
       repos: [{ name: "no-repo" }, { repo: "a/b" }, { repo: "c/d", name: "ok" }],
@@ -90,6 +99,12 @@ describe("parsePluginRepos — grammar", () => {
   // degrade into different executable semantics (review finding).
   it.each([
     ["a non-boolean autostart", { services: { svc: { autostart: "false" } } }, "autostart"],
+    // docs/266 req 2 — a quoted port is a different type with the same
+    // spelling, and a silently dropped one is a service that never previews.
+    ["a quoted port", { services: { svc: { port: "4300" } } }, "port"],
+    ["a fractional port", { services: { svc: { port: 43.5 } } }, "port"],
+    ["a port out of range", { services: { svc: { port: 70000 } } }, "port"],
+    ["a zero port", { services: { svc: { port: 0 } } }, "port"],
     ["an invalid service alias", { services: { svc: { as: "bad name" } } }, "as"],
     ["an invalid command alias", { commands: { cmd: { as: "bad/name" } } }, "as"],
     ["a non-scalar setting value", { settings: { root: { nested: true } } }, "settings.root"],

@@ -68,8 +68,6 @@ services:
     command: node /app/server.mjs
     volumes:
       - .:/app:ro
-    ports:
-      - "4820:4820"
 `;
 
 beforeEach(() => {

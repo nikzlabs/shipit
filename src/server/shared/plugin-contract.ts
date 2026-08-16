@@ -71,6 +71,22 @@ export const PLUGIN_PROJECT_ENV = "SHIPIT_PROJECT_DIR";
 export const PLUGIN_COMMIT_ENV = "SHIPIT_PLUGIN_COMMIT";
 
 /**
+ * Env var naming the port this plugin service must serve on (docs/266 reqs 3,
+ * 8). The number is the consuming project's, written in its `plugins.use`
+ * entry, and the plugin author cannot know it ahead of time — so a plugin
+ * server reads this instead of picking one.
+ *
+ * A plugin that hardcodes a port is broken under this rule. That is deliberate,
+ * and it is reported rather than left silent: a service that is running but not
+ * listening on this port says so on its own log channel.
+ *
+ * Set only on a service the consuming project named a port for. A plugin
+ * service with no port is not previewable (req 9) and gets no variable, which
+ * is how a plugin tells "serve here" from "you are not being previewed".
+ */
+export const PLUGIN_PORT_ENV = "SHIPIT_PLUGIN_PORT";
+
+/**
  * The environment names ShipIt itself sets in every container that runs plugin
  * code — the in-session usage contract, as a set.
  *
@@ -91,6 +107,7 @@ export const PLUGIN_CONTRACT_ENV_NAMES: ReadonlySet<string> = new Set([
   PLUGIN_SETTINGS_ENV,
   PLUGIN_PROJECT_ENV,
   PLUGIN_COMMIT_ENV,
+  PLUGIN_PORT_ENV,
 ]);
 
 /**

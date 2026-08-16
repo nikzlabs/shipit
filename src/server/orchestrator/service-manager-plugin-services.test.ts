@@ -3,16 +3,24 @@
  *
  * The service path, exercised with the integration fakes rather than real Docker
  * (plan §5): a plugin service must be indistinguishable from the project's own
- * everywhere a session controls, lists, or previews one, and its published port
- * must survive a fragment that moves.
+ * everywhere a session controls, lists, or previews one. Its port is the
+ * consuming project's single number now (docs/266), so the cases that matter
+ * are collisions and a plugin that ignores what it was given.
  */
 
 import { describe, it, expect, afterEach, vi } from "vitest";
 import fs from "node:fs";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
-import { ServiceManager, type ComposeQuery, type ComposeRunner } from "./service-manager.js";
+import {
+  PLUGIN_PORT_PROBE_ATTEMPTS,
+  PLUGIN_PORT_PROBE_DELAY_MS,
+  ServiceManager,
+  type ComposeQuery,
+  type ComposeRunner,
+} from "./service-manager.js";
 import type { PluginComposeService } from "./plugin-compose.js";
 import { COMPOSE_OVERRIDE_FILE, SESSION_STATE_SUBDIR, SESSION_WORKSPACE_SUBDIR } from "./session-state-dir.js";
 
@@ -43,7 +51,6 @@ function pluginService(overrides: Partial<PluginComposeService> = {}): PluginCom
     plugin: "probe",
     preview: "auto",
     port: 4820,
-    publishedPort: 4820,
     definition: { image: "node:22-alpine", command: "node server.mjs" },
     credentials: [],
     externalVolumes: [],
@@ -96,7 +103,6 @@ describe("plugin services in the compose stack", () => {
     expect(mgr.getService("probe")).toMatchObject({
       preview: "auto",
       port: 4820,
-      publishedPort: 4820,
       // A plugin's dependencies are its own — the consuming project's
       // `agent.install` has nothing it reads.
       dependsOnInstall: false,
@@ -128,7 +134,7 @@ describe("plugin services in the compose stack", () => {
     });
     mgr.setPluginServices([
       pluginService({ name: "auto-one" }),
-      pluginService({ name: "manual-one", preview: "manual", publishedPort: 4821 }),
+      pluginService({ name: "manual-one", preview: "manual", port: 4821 }),
     ]);
     await mgr.start();
 
@@ -139,52 +145,258 @@ describe("plugin services in the compose stack", () => {
     await mgr.stop();
   });
 
-  it("keeps the preview origin's port while the fragment's port moves (req 18)", async () => {
+  it("routes a plugin service by its one port — origin and container alike (docs/266 req 10)", async () => {
     const workspaceDir = setup("services:\n  web:\n    image: node:20\n");
     const mgr = createManager(workspaceDir);
-    // The pin says 4820; a tracked commit has since moved the container to 5000.
-    mgr.setPluginServices([pluginService({ port: 5000, publishedPort: 4820 })]);
+    mgr.setPluginServices([pluginService({ port: 5000 })]);
     await mgr.start();
 
     // The poller normally fills this in; the mapping is what is under test.
     mgr.getService("probe")!.containerIp = "172.20.0.9";
-    expect(mgr.resolvePreviewTarget(4820)).toEqual({ containerIp: "172.20.0.9", port: 5000 });
-    // The moved container port is NOT an origin — only the pin is addressable.
-    expect(mgr.resolvePreviewTarget(5000)).toBeUndefined();
+    expect(mgr.resolvePreviewTarget(5000)).toEqual({ containerIp: "172.20.0.9", port: 5000 });
+    // There is no second, pinned number to address it by any more.
+    expect(mgr.resolvePreviewTarget(4820)).toBeUndefined();
     await mgr.stop();
   });
 
-  it("tells the USER when two services claim one preview port (#2325)", async () => {
-    // The routing key is not unique today, and `resolvePreviewTarget` answers
-    // with whichever service was inserted first — so the pane serves one of the
-    // two and silently cannot reach the other. Until the port becomes the
-    // consuming project's to declare (planning#395), this is the only thing
-    // connecting that symptom to its cause, which is why it has to reach the
-    // session's own logs and not just the orchestrator's stderr: the person who
-    // has to act on it cannot read the latter.
+  it("refuses a plugin service on one of the project's own ports, naming both (docs/266 req 7)", async () => {
+    // #2325 was this pair resolving silently to the project's service. Both
+    // numbers are the consumer's now — one in the compose file, one in
+    // `plugins.use` — so it is refused and said out loud instead. It has to
+    // reach the session's own logs and not just the orchestrator's stderr: the
+    // person who has to act on it cannot read the latter.
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     try {
       const workspaceDir = setup("services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n");
-      const mgr = createManager(workspaceDir);
+      const upCalls: string[][] = [];
+      const mgr = createManager(workspaceDir, {
+        composeRunner: async (args) => {
+          if (args.includes("up")) upCalls.push(args.filter((a) => !a.startsWith("-") && a !== "compose"));
+        },
+      });
       const logs: { name: string; text: string }[] = [];
       mgr.on("service_log", (name: string, text: string) => logs.push({ name, text }));
-      mgr.setPluginServices([pluginService({ port: 5173, publishedPort: 5173 })]);
+      mgr.setPluginServices([pluginService({ port: 5173 })]);
       await mgr.start();
 
-      // On the unreachable service's own channel, so it lands beside it in the
-      // Logs panel.
-      const line = logs.find((l) => l.text.includes("both preview on port 5173"));
+      // Refused: it is not started, and it carries the reason rather than
+      // vanishing from the list with no explanation anywhere.
+      expect(upCalls.flat()).not.toContain("probe");
+      // Absent from the override itself, not merely left out of the `up` args —
+      // a service still emitted as `manual` would pass the assertion above and
+      // still be one `docker compose up` away from running (review finding).
+      expect(readOverride(workspaceDir).services.probe).toBeUndefined();
+      expect(readOverride(workspaceDir).services.web).toBeDefined();
+      const refused = mgr.getService("probe");
+      expect(refused?.status).toBe("error");
+      expect(refused?.error).toContain("web");
+      expect(refused?.error).toContain("5173");
+      // The message names the key the fix goes under, in the consumer's file.
+      expect(refused?.error).toContain("`plugins.use`");
+
+      // On the refused service's own channel, so it lands beside it in the
+      // Logs panel, and on operator stderr too.
+      const line = logs.find((l) => l.text.includes("5173"));
       expect(line?.name).toBe("probe");
-      // "Change your port" is advice the reader cannot take when the port came
-      // from a plugin's fragment, so the plugin case says what they CAN do.
-      expect(line?.text).toContain("not yours to change");
-      expect(mgr.getLogBuffer("probe")).toContain("both preview on port 5173");
+      expect(mgr.getLogBuffer("probe")).toContain("5173");
       expect(warn.mock.calls.map((args) => String(args[0]))
-        .some((l) => l.includes("both preview on port 5173"))).toBe(true);
+        .some((l) => l.includes("5173"))).toBe(true);
+
+      // The project's own service is untouched and still routes.
+      mgr.getService("web")!.containerIp = "172.20.0.2";
+      expect(mgr.resolvePreviewTarget(5173)).toEqual({ containerIp: "172.20.0.2", port: 5173 });
       await mgr.stop();
     } finally {
       warn.mockRestore();
     }
+  });
+
+  it("refuses a user's Start of a refused service, keeping the actionable reason", async () => {
+    // The row is `error`, and the client puts a Start button on every `error`
+    // row. Without a guard the click reaches `docker compose up <name>` for a
+    // service that is not in the override, and the catch replaces the
+    // "change `port:`…" text with a raw "no such service" (review finding).
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const workspaceDir = setup("services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n");
+      const upCalls: string[][] = [];
+      const mgr = createManager(workspaceDir, {
+        composeRunner: async (args) => {
+          if (args.includes("up")) upCalls.push(args.filter((a) => !a.startsWith("-") && a !== "compose"));
+        },
+      });
+      mgr.setPluginServices([pluginService({ port: 5173 })]);
+      await mgr.start();
+      const before = mgr.getService("probe")?.error;
+      upCalls.length = 0;
+
+      await expect(mgr.startService("probe")).rejects.toThrow(/5173/);
+      await expect(mgr.restartService("probe")).rejects.toThrow(/plugins\.use/);
+
+      // No compose call was made, and the reason on the row is untouched.
+      expect(upCalls).toEqual([]);
+      expect(mgr.getService("probe")?.error).toBe(before);
+      await mgr.stop();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it("clears the refusal once the consumer moves the port (docs/266 req 7)", async () => {
+    // The refusal is a row carrying a reason, not a latch. A reconcile rebuilds
+    // the map from scratch, so fixing either number has to be enough — a stale
+    // `error` surviving it would tell the user their fix did not work.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const workspaceDir = setup("services:\n  web:\n    image: node:20\n    ports: ['5173:5173']\n");
+      const mgr = createManager(workspaceDir);
+      mgr.setPluginServices([pluginService({ port: 5173 })]);
+      await mgr.start();
+      expect(mgr.getService("probe")?.status).toBe("error");
+
+      // The consumer edits `plugins.use` and the resolver re-runs.
+      mgr.setPluginServices([pluginService({ port: 5174 })]);
+      await mgr.reconcile();
+
+      const fixed = mgr.getService("probe");
+      expect(fixed?.status).not.toBe("error");
+      expect(fixed?.error).toBeUndefined();
+      expect(fixed?.port).toBe(5174);
+      expect(fixed?.preview).toBe("auto");
+      await mgr.stop();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  describe("a plugin that ignores the port it was given (docs/266 req 8)", () => {
+    /** Reach the one-shot probe without waiting out its real delays. */
+    interface Probe { armPluginPortProbe(name: string, attempt?: number): void }
+
+    /** A port nothing is listening on: bind one, learn its number, release it. */
+    async function freePort(): Promise<number> {
+      const srv = net.createServer();
+      await new Promise<void>((r) => srv.listen(0, "127.0.0.1", r));
+      const port = (srv.address() as net.AddressInfo).port;
+      await new Promise<void>((r) => srv.close(() => r()));
+      return port;
+    }
+
+    /**
+     * Arm the probe and run the clock through `rounds` of its retry schedule.
+     * `onRound` runs between rounds, which is how the slow-start case binds its
+     * port part-way through.
+     */
+    async function runProbe(
+      port: number,
+      opts: { rounds?: number; onRound?: (round: number) => Promise<void> } = {},
+    ): Promise<{ name: string; text: string }[]> {
+      const workspaceDir = setup("services:\n  web:\n    image: node:20\n");
+      const mgr = createManager(workspaceDir);
+      const logs: { name: string; text: string }[] = [];
+      mgr.on("service_log", (name: string, text: string) => logs.push({ name, text }));
+      mgr.setPluginServices([pluginService({ port })]);
+      await mgr.start();
+
+      // What the poller would have established before `onRunning` fires.
+      const svc = mgr.getService("probe")!;
+      svc.containerIp = "127.0.0.1";
+      svc.status = "running";
+
+      const rounds = opts.rounds ?? PLUGIN_PORT_PROBE_ATTEMPTS;
+      vi.useFakeTimers();
+      try {
+        (mgr as unknown as Probe).armPluginPortProbe("probe");
+        for (let round = 1; round <= rounds; round++) {
+          await vi.advanceTimersByTimeAsync(PLUGIN_PORT_PROBE_DELAY_MS + 1_000);
+          await opts.onRound?.(round);
+        }
+      } finally {
+        vi.useRealTimers();
+      }
+      await mgr.stop();
+      return logs;
+    }
+
+    it("says so, naming the variable the plugin should have read", async () => {
+      const logs = await runProbe(await freePort());
+      const line = logs.find((l) => l.text.includes("nothing is listening"));
+      // On the service's own channel, beside it in the Logs panel.
+      expect(line?.name).toBe("probe");
+      // The consumer cannot fix the plugin's code — but they can only report it
+      // if the message says what the plugin got wrong.
+      expect(line?.text).toContain("SHIPIT_PLUGIN_PORT");
+      expect(line?.text).toContain("tools");
+    });
+
+    it("says nothing when the plugin did bind the port it was given", async () => {
+      const srv = net.createServer();
+      await new Promise<void>((r) => srv.listen(0, "127.0.0.1", r));
+      const port = (srv.address() as net.AddressInfo).port;
+      try {
+        const logs = await runProbe(port);
+        expect(logs.find((l) => l.text.includes("nothing is listening"))).toBeUndefined();
+      } finally {
+        await new Promise<void>((r) => srv.close(() => r()));
+      }
+    });
+
+    it("says nothing about a plugin that is merely slow to bind (review finding)", async () => {
+      // The case the probe delay exists for, and the one a single check at a
+      // fixed deadline got WRONG: `npm ci` outruns the first check, the server
+      // binds afterwards, and the preview is fine. A report here would be a
+      // permanent, wrong diagnosis in the Logs panel.
+      const port = await freePort();
+      const srv = net.createServer();
+      try {
+        const logs = await runProbe(port, {
+          onRound: async (round) => {
+            // Two checks have already been refused by the time it binds.
+            if (round !== 2) return;
+            await new Promise<void>((r) => srv.listen(port, "127.0.0.1", r));
+          },
+        });
+        expect(logs.find((l) => l.text.includes("nothing is listening"))).toBeUndefined();
+      } finally {
+        await new Promise<void>((r) => srv.close(() => r()));
+      }
+    });
+
+    it("stops probing a service that answered, however many polls arrive", async () => {
+      // `onRunning` fires on EVERY running poll, not just the transition, so a
+      // settled service must refuse to re-arm or the steady state is a TCP
+      // connect every poll for the session's life.
+      const srv = net.createServer();
+      await new Promise<void>((r) => srv.listen(0, "127.0.0.1", r));
+      const port = (srv.address() as net.AddressInfo).port;
+      try {
+        const workspaceDir = setup("services:\n  web:\n    image: node:20\n");
+        const mgr = createManager(workspaceDir);
+        mgr.setPluginServices([pluginService({ port })]);
+        await mgr.start();
+        const svc = mgr.getService("probe")!;
+        svc.containerIp = "127.0.0.1";
+        svc.status = "running";
+
+        vi.useFakeTimers();
+        try {
+          (mgr as unknown as Probe).armPluginPortProbe("probe");
+          await vi.advanceTimersByTimeAsync(PLUGIN_PORT_PROBE_DELAY_MS + 1_000);
+          // Settled. Every later poll must be a no-op.
+          for (let poll = 0; poll < 5; poll++) {
+            (mgr as unknown as Probe).armPluginPortProbe("probe");
+          }
+          expect(
+            (mgr as unknown as { portProbeTimers: Map<string, unknown> }).portProbeTimers.size,
+          ).toBe(0);
+        } finally {
+          vi.useRealTimers();
+        }
+        await mgr.stop();
+      } finally {
+        await new Promise<void>((r) => srv.close(() => r()));
+      }
+    });
   });
 
   it("routes a project service by its own port, unchanged", async () => {

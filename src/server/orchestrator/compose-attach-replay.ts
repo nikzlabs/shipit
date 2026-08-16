@@ -56,10 +56,9 @@ export function buildComposeAttachReplay(
       services: services.map((s) => ({
         name: s.name,
         status: s.status,
-        // The browser's routing key (docs/262 req 18) — the same number the
-        // live path sends, or a reattaching viewer would rebuild a different
-        // preview origin from the same service.
-        port: s.publishedPort ?? s.port,
+        // The same number the live path sends, or a reattaching viewer would
+        // rebuild a different preview origin from the same service.
+        port: s.port,
         preview: s.preview,
         error: s.error,
         ...(s.origin ? { origin: originView(s.origin) } : {}),

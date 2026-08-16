@@ -205,8 +205,6 @@ services:
       PROBE_PORT: "4820"
     volumes:
       - .:/app:ro
-    ports:
-      - "4820:4820"
     x-shipit-preview: auto
 `;
 
@@ -733,7 +731,7 @@ describe("plugin services — the fetch-authority boundary (req 19)", () => {
     expect([...ALLOWED_SERVICE_KEYS].sort()).toEqual([
       "command", "cpus", "depends_on", "entrypoint", "environment", "expose",
       "healthcheck", "image", "init", "mem_limit", "mem_reservation",
-      "pids_limit", "ports", "read_only", "shm_size", "stop_grace_period",
+      "pids_limit", "read_only", "shm_size", "stop_grace_period",
       "stop_signal", "tmpfs", "ulimits", "user", "volumes", "working_dir",
       "x-shipit-preview",
     ]);
