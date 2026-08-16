@@ -247,7 +247,13 @@ describe("session-worker-uid (docs/150 §7)", () => {
       }
     });
 
-    it("chownWorkspaceGitToSessionWorker is a no-op when the flag is unset", () => {
+    // docs/266 — NOT "a no-op when the flag is unset" any more, which is what
+    // this test used to claim. The flag alone no longer gates this helper: a
+    // ROOT process over a non-root-owned tree acts with the flag unset, because
+    // orchestrator git drops there and needs `.git` writable
+    // (`resolveGitDirOwner`). What survives is the narrower property below, and
+    // it holds here only because the suite runs unprivileged.
+    it("chownWorkspaceGitToSessionWorker is a no-op when not root and the flag is unset", () => {
       delete process.env.SHIPIT_SESSION_WORKER_UID;
       const gitDir = path.join(tmpDir, ".git");
       fs.mkdirSync(gitDir, { recursive: true });
@@ -592,6 +598,34 @@ describe("session-worker-uid (docs/150 §7)", () => {
         // (1000:100) and NOT to the configured 1500.
         expect(editMsg).toBeDefined();
         expect(editMsg?.slice(1)).toEqual([1000, 100]);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it("WIRING: the gid reaches the object-store and LFS branches too", () => {
+      // `chownGitMetadataRecursive` has three exits — the ordinary node, the
+      // shallow `.git/objects` walk, and `chownDirsOnlyRecursive` for
+      // `.git/lfs/objects` — and each passes the gid on separately. Asserting it
+      // on one metadata file (above) would leave a `uid`-for-`gid` typo on either
+      // of the other two green. Threading the real gid is the new behaviour here,
+      // so it is checked where it can actually be dropped.
+      process.env.SHIPIT_SESSION_WORKER_UID = "1500";
+      const gitDir = path.join(tmpDir, ".git");
+      fs.mkdirSync(path.join(gitDir, "objects", "ab"), { recursive: true });
+      fs.mkdirSync(path.join(gitDir, "lfs", "objects", "ab", "cd"), { recursive: true });
+
+      const spy = vi.spyOn(fs, "lchownSync").mockImplementation(() => undefined);
+      try {
+        chownWorkspaceGitToSessionWorker(tmpDir, {
+          getuid: () => 0,
+          statOwner: () => ({ uid: 1000, gid: 100 }),
+        });
+        const at = (p: string) => spy.mock.calls.find((c) => c[0] === p)?.slice(1);
+        // The `.git/objects` fanout dir — the shallow-walk branch.
+        expect(at(path.join(gitDir, "objects", "ab"))).toEqual([1000, 100]);
+        // The LFS two-level fanout — the dirs-only branch.
+        expect(at(path.join(gitDir, "lfs", "objects", "ab", "cd"))).toEqual([1000, 100]);
       } finally {
         spy.mockRestore();
       }

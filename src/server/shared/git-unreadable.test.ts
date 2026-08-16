@@ -227,11 +227,17 @@ describe("inspectWorkingTree — the question isClean() cannot answer (planning#
  * already succeeded — a different message, a different classifier answer, and a
  * worse state (work staged, nothing committed).
  *
- * Produced with a mode bit on a self-owned file rather than genuine foreign
+ * Produced with a mode bit on a **self-owned** file rather than genuine foreign
  * ownership, the same limit the header states: a session container has no root.
- * The kernel check is identical — the owner of a `0444` regular file is refused
- * write just as a foreign uid is, and cannot chmod its way out when the file
- * belongs to someone else.
+ * The kernel check that fails is identical — `open(O_WRONLY)` on a `0444`
+ * regular file is refused for the owner exactly as it is for a stranger.
+ *
+ * What that substitution cannot reproduce is the RECOVERY. In production the
+ * file belongs to another uid and only root's chown can hand it over; here the
+ * test process owns it and simply chmods it back, which is why the third case
+ * below pins "nothing about the failure is sticky" and not "the chown works".
+ * Joining the two halves — root chowns a foreign-owned `.git` to the uid git
+ * then drops to — needs root, and remains unexercised (docs/266 plan §4).
  */
 describe("autoCommit — unwritable .git/COMMIT_EDITMSG (the reported production failure)", () => {
   it("fails the commit, strands the staged work, and does not move HEAD", async () => {
@@ -246,6 +252,18 @@ describe("autoCommit — unwritable .git/COMMIT_EDITMSG (the reported production
     fs.chmodSync(editMsg, 0o444);
 
     await expect(new GitManager(repo).autoCommit("a turn")).rejects.toThrow(/COMMIT_EDITMSG/);
+
+    // Pin the exit code as well as the message: the notice path keys on text
+    // (`GitError.exitCode` is undefined by construction), but the measurement
+    // this test transcribes is "exit 128 at commit", and a future git that
+    // demoted this to a warning would still match the regex above.
+    let exitCode: number | null = null;
+    try {
+      execFileSync("git", ["commit", "-m", "second"], { cwd: repo, stdio: "pipe" });
+    } catch (err) {
+      exitCode = (err as { status: number }).status;
+    }
+    expect(exitCode).toBe(128);
 
     // The damage, in two assertions. HEAD never moved…
     expect(execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf-8" }).trim())

@@ -666,8 +666,26 @@ export function chownWorktreeToSessionWorker(workspaceDir: string, excludeRelDir
 /**
  * Hand a session workspace back to the worker uid in full after the root
  * orchestrator ran git operations that rewrote BOTH the `.git` metadata AND the
- * worktree files — `clone`/`checkout -b`/`reset --hard`/`rebase`/`merge`. No-op
- * when `SHIPIT_SESSION_WORKER_UID` is unset.
+ * worktree files — `clone`/`checkout -b`/`reset --hard`/`rebase`/`merge`.
+ *
+ * **The two halves are gated differently, on purpose, and each gates itself.**
+ * The `.git` half runs whenever {@link resolveGitDirOwner} resolves an identity
+ * — including where nothing is recorded, because a root orchestrator over a
+ * non-root-owned tree still drops and so still needs `.git` writable. The
+ * worktree half stays on {@link identityForTarget}, because "who should own the
+ * worktree" is genuinely a different question from "who will run git in `.git`":
+ * the worktree's target is the identity the *container* runs as, and where there
+ * is none the entrypoint leaves the agent as root, so there is no handover to
+ * make.
+ *
+ * An earlier version early-returned for BOTH on one predicate at this level,
+ * which meant the composite skipped the `.git` repair on exactly the paths
+ * (rebase, pre-turn reset, claim, fork-merge, container re-create) where the
+ * post-turn path had just been fixed to do it — the same two-questions mismatch
+ * this feature keeps re-making, one level up. The lesson taken is not "pick the
+ * better predicate here" but "do not ask at this level at all": each half
+ * already knows its own answer, and a composite that re-asks is a third place
+ * for the two to drift apart.
  *
  * This is the composite of the two narrower handbacks: {@link
  * chownWorkspaceGitToSessionWorker} (object-aware `.git`) +
@@ -686,7 +704,11 @@ export function chownWorktreeToSessionWorker(workspaceDir: string, excludeRelDir
  * overlay mount.
  */
 export function handWorkspaceBackToWorker(workspaceDir: string): void {
-  if (identityForTarget(workspaceDir) === null) return;
+  // No composite-level gate: each half owns its own, per the docstring above.
+  // `chownWorktreeToSessionWorker` self-gates on the same `identityForTarget`
+  // this used to ask here, so the only thing a gate at this level can still buy
+  // is skipping the `resolveShipitConfig` read below — not worth a third place
+  // for the predicate to go stale.
   chownWorkspaceGitToSessionWorker(workspaceDir);
   let depDirs: string[];
   try {

@@ -99,10 +99,17 @@ export async function postTurnCommit(
     // is `CLAUDE.md` invariant 2's unrecoverable case.
     //
     // Post-hoc repair alone converges only on the NEXT turn, and only if there is
-    // one. Running it here as well costs a second bounded walk (~0.5 ms on this
-    // repo's own 7k-object clone — O(fanout), see the helper's docstring) and
-    // turns a lost turn into no turn lost. Inside the lock, so it cannot race a
-    // plugin-install `git add` on the same workspace.
+    // one. Running it here as well turns a lost turn into no turn lost. Inside
+    // the lock, so it cannot race a plugin-install `git add` on the same
+    // workspace.
+    //
+    // Cost, stated honestly rather than as the flattering half: this DOUBLES the
+    // per-turn `.git` walk, and there is no "already owned" short-circuit in
+    // `chownGitMetadataRecursive`. Only the object store is O(fanout) — outside
+    // `objects/` the walk is O(metadata nodes), so refs, reflogs and `worktrees/`
+    // all scale with it. Measured ~0.5 ms on this repo's own clone, which is why
+    // it is spent unconditionally; a refs-heavy repo is where to look first if
+    // that ever stops being true.
     chownWorkspaceGitToSessionWorker(opts.sessionDir);
     try {
       return await commitInLock();

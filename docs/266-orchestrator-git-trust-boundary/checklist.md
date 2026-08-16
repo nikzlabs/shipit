@@ -295,11 +295,40 @@ Build sequence from [plan.md](./plan.md) §5. Requirements are cited as `(req N)
       `chownWorkspaceGitToSessionWorker` that still called `sessionWorkerUid()`,
       which is precisely the defect being fixed. Verified red without the fix
       (`[1500,1500]` where `[1000,100]` is required), not merely green with it.
+- [x] **Five things the independent review caught, all fixed.** (1) The
+      docstring's safety argument for session setup was **false at the source** —
+      it claimed a fresh clone is still root-owned at handback time, when
+      `repo-git.ts:312` chowns the whole clone before any handback runs. The
+      conclusion held for a different reason, which is the worse kind of wrong:
+      it is the reasoning a future edit leans on. Restated as the invariant (at
+      every handback site the tree's owner is either the configured uid or root,
+      and both answers are unchanged) with the false version called out rather
+      than quietly deleted. (2) **The fix's whole observable effect was
+      untested** — delete the pre-commit call and every new test still passed,
+      because the ownership tests pin the *decision* and not the *ordering*.
+      `post-turn.test.ts` now pins it in both directions, including the throwing
+      path, and was verified red without the call. (3) `handWorkspaceBackToWorker`
+      still early-returned on the configured uid, so the `.git` repair was
+      skipped on rebase / pre-turn-reset / claim / fork-merge / container
+      re-create in exactly the case the post-turn path had just been fixed for —
+      the same two-predicate mismatch, one level up. The two halves are now gated
+      separately, with the reason stated. (4) The real gid was asserted on one
+      metadata file only, leaving a `uid`-for-`gid` typo on the object-store and
+      LFS branches green. (5) A pre-existing test named "no-op when the flag is
+      unset" now describes a contract that no longer exists and passes only
+      because the suite runs unprivileged.
 - **Not verified, same limit as the rest of E1:** the setuid spawn and genuine
   foreign ownership. The states are produced with mode bits on self-owned files,
   because a session container has no root and `unshare -r` is refused. What is
   measured is the failure mechanism and the decision; what is inferred is that
   the chown reaches it in production.
+
+  Named precisely, because the review sharpened it: the substitution reproduces
+  the **failure** faithfully (`open(O_WRONLY)` on a `0444` file is refused for
+  its owner exactly as for a stranger) but not the **recovery** — the test chmods
+  where production must chown. So the two halves of the remedy are each tested
+  and their *combination* is not. That gap needs root to close and is the same
+  one `plan.md` §4 already owns.
 
 ## Known gaps, still open
 
