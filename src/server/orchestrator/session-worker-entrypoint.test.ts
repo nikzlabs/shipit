@@ -781,6 +781,24 @@ describe("host journal readability (#1917)", () => {
     expect(chowned).toContain(join(tree, "keep.txt"));
   });
 
+  it("drops to a group-writable umask, so a shared cache stays shared", () => {
+    // req 9. The boot handoff gives /dep-cache and the pnpm store the shared
+    // GROUP and setgid, so entries inherit the group — but group WRITE comes
+    // from the umask. At the default 022 every entry a session creates lands
+    // 0644, and the next session (same group, different uid) can read it and
+    // not modify it. npm's cacache APPENDS to its index-v5 entries, so that is
+    // an EACCES on the second session's install, not a theoretical loss.
+    //
+    // Asserted on the script because a umask is process state the chown log
+    // cannot show: the stubs record arguments, and `umask` takes none.
+    const source = readFileSync(ENTRYPOINT, "utf8");
+    const umask = source.indexOf("\numask 002");
+    const drop = source.lastIndexOf("exec gosu");
+    expect(umask).toBeGreaterThan(-1);
+    // Before the drop, so the exec'd worker inherits it.
+    expect(umask).toBeLessThan(drop);
+  });
+
   it("leaves the legacy root runtime untouched", () => {
     // Flag off (docs/150): no chown, no group work, no drop at all.
     const result = runEntrypoint([tempDir()], "", {

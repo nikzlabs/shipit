@@ -313,6 +313,27 @@ done
 # unreadable journal.
 # A non-empty field 4 also proves the passwd entry itself exists, so this is the
 # only lookup the drop needs.
+# docs/270 req 9 — create files group-writable, so a SHARED cache stays shared.
+#
+# The dep cache and the pnpm store are written by whichever session gets there
+# first and used by every other. The boot-time handoff above sets their group and
+# turns on setgid, so entries a session creates inherit the shared GROUP — but
+# not group WRITE, which comes from the umask. At the default 022 every entry
+# lands 0644 owned by its creator, and the next session (same group, different
+# uid) can read it and not modify it.
+#
+# That is not hypothetical for npm: cacache appends to its `index-v5` entries
+# rather than writing each once, so the second session's `npm install` fails
+# EACCES on an index file the first session created. Content-addressed blobs
+# would have survived; the index is what breaks.
+#
+# 002 rather than a chmod pass because the hazard is every file written from now
+# on, not the ones that exist at boot. Safe inside a session: its directory is
+# 0700, so group-writable files in the workspace are unreachable to every uid
+# that is not this session anyway — the group bit only ever matters on the shared
+# mounts, which is exactly where it is needed.
+umask 002
+
 worker_gid=$(getent passwd "$UID_GID" 2>/dev/null | cut -d: -f4 || true)
 if [ -n "$worker_gid" ] && [ "$worker_gid" = "$WORKER_GID" ]; then
   exec gosu "$UID_GID" "$@"

@@ -33,13 +33,17 @@ Build sequence from [plan.md](./plan.md) §2. Requirements are cited as `(req N)
       per-session. It must be the PRIMARY gid: Node's `spawn({uid, gid})` sets no
       supplementary groups, so a design reaching the shared surfaces through one
       would work in the container and fail silently in the orchestrator.
-- [x] **The four shared surfaces converted to group ownership** (req 9) — the
+- [x] **Three shared surfaces converted to group ownership** (req 9) — the
       dep cache (entrypoint, gid-stamped sentinel so it is walked once per
       *cache* rather than once per *session*), the pnpm store
       (`ensurePnpmStoreDir`, now verifying the gid), the overlay dependency base
       (`shareTreeWithAllSessions`, which sets a **mode** as well as a group
-      because copy-up preserves the lower file's mode too), and
-      `/credentials/.gitconfig` at `0640 root:<sharedGid>`.
+      because copy-up preserves the lower file's mode too).
+      A fourth — `/credentials/.gitconfig` — was designed for and then **not
+      needed**: docs/266 E3 merged first and left it root-owned 0644 with the PAT
+      moved to a root-only sidecar, which already serves every session uid. The
+      change was dropped rather than kept as a redundant second mechanism, and
+      this feature touches `git-config.ts` not at all.
 - [x] **The entrypoint stops re-owning hardlinked git objects** (req 1) —
       measured first: a bare repo and two `--local` clones report the same inode
       for the same object file, so a plain `chown -R` handed one session chmod
@@ -76,10 +80,14 @@ Build sequence from [plan.md](./plan.md) §2. Requirements are cited as `(req N)
       is available now) and this feature neither widens nor narrows it. Outside
       req 1's scope, the largest remaining cross-session channel, and filed as
       **planning#414** rather than left as a sentence.
-- [ ] **planning#384 / docs/266 is NOT closed.** `safe.directory` is still `*`
-      (planning#403), the dropped git still reaches the PAT (planning#404), and a
-      project's own hooks still do not fire on ShipIt's auto-commit (docs/266
-      E4).
+- [ ] **planning#384 / docs/266 is NOT closed.** Two pieces landed while this was
+      being built, and are described as they now stand: **E3 (planning#404)**
+      shipped, so the dropped git no longer reaches the PAT — it is in a
+      root-only sidecar; **E2 (planning#403)** shipped as a *switch*,
+      `SHIPIT_GIT_STRICT_OWNERSHIP=1`, built but deliberately not armed, so
+      `safe.directory=*` is still in force by default and a missed call site
+      still fails silently. **E4** (a project's own hooks on ShipIt's
+      auto-commit) is outstanding.
 
 ## Could not be verified here
 
@@ -112,6 +120,16 @@ most were found by a test rather than by reading:
   "do not drop", which stopped being true when the record moved off the tree.
   **Found by tracing the call path, not by a test**; guarded now by a source
   ordering check, since no test here can exercise a real drop.
+- **A shared cache stayed group-READABLE but not group-WRITABLE.** The boot
+  handoff sets the shared group and setgid on `/dep-cache` and the pnpm store, so
+  entries inherit the group — but group write comes from the umask, and at the
+  default 022 every entry a session creates lands 0644. npm's cacache *appends*
+  to its `index-v5` entries rather than writing each once, so the second
+  session's `npm install` would have failed EACCES on an index file the first
+  session created: requirement 9, missed by a mechanism that looked complete.
+  Fixed with `umask 002` before the privilege drop. **Found by the independent
+  review**, which is the one class of defect neither the tests nor a reading of
+  the handoff would have surfaced — the handoff itself is correct.
 - **Four orchestrator paths used the object-blind recursive chown on a
   workspace**, re-owning the `.git/objects` inodes `git clone --local` hardlinked
   from the shared bare cache — the same cross-session write channel as the

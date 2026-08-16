@@ -22,10 +22,16 @@ and none of them fails until something real runs:
 | `/dep-cache` (per-repo npm cache) | every session writes it as 1000 | session B cannot write what session A created |
 | `/workspace/.pnpm-store` (per-runtime store) | same | same, and `pnpm install` dead-ends with no in-session recovery |
 | overlay dependency base (docs/183) | base chowned to 1000; overlayfs copy-up **preserves the lower file's owner**, so the copy is writable | a base owned by anyone else copies up unwritable — the exact bug docs/183's chown exists to fix |
-| `/credentials/.gitconfig` | 0600, owned by 1000 — the identity and push credential for dropped-uid git | readable by one session; every other session's git loses its identity and its credential |
+| ~~`/credentials/.gitconfig`~~ | *was* 0600 owned by 1000 — the identity and push credential for dropped-uid git | **solved upstream instead.** docs/266 E3 merged first and moved the PAT into a root-only sidecar, leaving the config root-owned **0644** — readable by every session uid, writable by none. This feature changes nothing there; the row records a surface that *would* have needed the treatment |
 
 A design that changes only the uid passes every test in the suite and then
 breaks `npm install` in production. Requirement 9 exists for this.
+
+Only the first three are this feature's work. The fourth is kept in the table
+rather than deleted because the design was written against a `.gitconfig` that
+was 0600 and worker-owned, and planned to convert it by group like the others —
+docs/266 E3 landed first with a better answer, so the conversion was dropped
+rather than kept as a redundant second mechanism.
 
 There is also a fifth thing, which is not a *shared surface* but a shared
 **inode**, and it is the one that would have made the whole feature decorative.
@@ -156,9 +162,9 @@ Every session keeps **gid = the global `SHIPIT_SESSION_WORKER_UID` value**
 (1000 in the deployment files) as its primary group. Only the uid is per-session.
 That is what keeps all four shared surfaces of §1 working: they become
 `root:<sharedGid>` with the group bit set (`2775` on directories, so new entries
-inherit the group), and `/credentials/.gitconfig` becomes `0640 root:<sharedGid>`
-— reachable by every session's git for its identity and its push credential,
-which is the same reach it has today and no wider.
+inherit the group). `/credentials/.gitconfig` needs nothing from this feature:
+E3 already leaves it root-owned 0644, which every session's git can read for its
+identity and its credential helper.
 
 The obvious objection is that a shared group re-opens what the uid just closed.
 It does not, because **the isolation is the 0700 session directory, not the
@@ -285,6 +291,6 @@ source"), separating what was read, what was measured, and what is inferred.
   drop (§2E).
 - `src/server/orchestrator/compose-generator.ts:1338,1728` — the `user:` refusal
   and the fill-in.
-- `src/server/orchestrator/git-config.ts:236` — the global gitconfig's mode and
-  owner.
+- `src/server/orchestrator/git-config.ts` — the global gitconfig, **unchanged by
+  this feature**; docs/266 E3 owns its mode and owner.
 - `src/server/orchestrator/container-lifecycle.ts:573` — the env forward.
