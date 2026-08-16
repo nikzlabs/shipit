@@ -54,7 +54,16 @@
  * vendor's models, so `openrouter` and `anthropic` are two services offering one
  * family.
  */
-export const MODEL_FAMILY_IDS = ["claude", "gpt", "deepseek", "glm"] as const;
+export const MODEL_FAMILY_IDS = [
+  "claude",
+  "gpt",
+  "deepseek",
+  "glm",
+  "gemini",
+  "grok",
+  "kimi",
+  "qwen",
+] as const;
 
 export type ModelFamily = (typeof MODEL_FAMILY_IDS)[number];
 
@@ -116,6 +125,19 @@ export const MODEL_IDENTITIES = {
   // `glm-5.2` on Z.ai's own key, `z-ai/glm-5.2` at OpenRouter. This is the pair
   // that proves the field is not derivable from the id.
   glm52: identity("glm-5.2", "glm"),
+
+  // Gateway-only models (2026-08-16). ShipIt holds no direct credential for
+  // Google, xAI, Moonshot or Alibaba, so each of these is reachable ONLY through
+  // OpenRouter and Vercel — which is exactly the case `canonicalModelKey` was
+  // built for, because the two gateways namespace the same model differently
+  // (`x-ai/grok-4.6` vs `xai/grok-4.6`, `qwen/qwen3.8-max` vs
+  // `alibaba/qwen3.8-max`). The prefix is dropped by
+  // `normalizeModelIdForIdentity`, so both spellings reduce to the key below and
+  // ShipIt knows a review by one is not a second opinion on the other.
+  gemini37flash: identity("gemini-3.7-flash", "gemini"),
+  grok46: identity("grok-4.6", "grok"),
+  kimiK3: identity("kimi-k3", "kimi"),
+  qwen38max: identity("qwen3.8-max", "qwen"),
 } as const;
 
 /**

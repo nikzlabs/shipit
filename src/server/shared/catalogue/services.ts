@@ -41,7 +41,30 @@
  * | OpenAI     | `developers.openai.com/api/docs/models/<id>` per model, one page each; cache-write rule from `developers.openai.com/api/docs/guides/prompt-caching` |
  * | DeepSeek   | `deepseek.ai/pricing` (corroborated against OpenRouter's model pages) |
  * | GLM (Z.ai) | `z.ai/model-api` + `docs.z.ai/devpack/quick-start` (coding plan endpoint and auth) |
- * | Gateways   | Both publish **pass-through** pricing at the upstream provider's list rate, so each gateway row carries the same rates as its upstream row. Vercel documents zero markup explicitly; OpenRouter's credit-purchase fee is a platform charge, not a per-token rate, and is deliberately not modelled here. |
+ * | Gateways   | Each gateway's OWN published rate, read from its public model endpoint — see the correction below. |
+ *
+ * **CORRECTION (2026-08-16): a gateway is not a pass-through.** This block used
+ * to assert that both gateways bill at the upstream provider's list rate, and
+ * that each gateway row could therefore reuse its upstream's price constant.
+ * `GET https://openrouter.ai/api/v1/models` and
+ * `GET https://ai-gateway.vercel.sh/v1/models` — both public and unauthenticated
+ * — disagree, in both directions and by large multiples:
+ *
+ * | Model            | Vendor direct | OpenRouter    | Vercel      |
+ * |------------------|---------------|---------------|-------------|
+ * | DeepSeek V4 Flash| 0.14 / 0.28   | 0.061 / 0.123 | 0.20 / 0.40 |
+ * | DeepSeek V4 Pro  | 0.435 / 0.87  | 1.168 / 2.336 | 1.74 / 3.48 |
+ * | GLM-5.2          | 1.40 / 4.40   | 0.308 / 0.968 | 1.10 / 3.851|
+ * | GPT-5.6 Terra    | 2.00 / 12.00  | 1.00 / 6.00   | 2.00 / 12.00|
+ *
+ * So each gateway now carries its own constants (`OPENROUTER_PRICES`,
+ * `VERCEL_PRICES`) and reuses an upstream constant ONLY where the two figures
+ * were checked and found equal — which is the whole Anthropic line, plus GPT-5.6
+ * Sol, and nothing else. Sharing a constant is now a statement that the rates
+ * were compared, not an assumption that they must match.
+ *
+ * OpenRouter's credit-purchase fee is a platform charge rather than a per-token
+ * rate and is still deliberately not modelled here.
  *
  * **Cache rates are derived, not separately published, for two vendors:**
  * - *Anthropic* publishes multipliers rather than rates — a cache **read** costs
@@ -114,6 +137,48 @@ const GLM_PRICES = {
 } as const;
 
 /**
+ * OpenRouter's OWN list rates, per million tokens, read from
+ * `GET https://openrouter.ai/api/v1/models` on **2026-08-16**. Present only for
+ * models where OpenRouter's figure differs from the upstream vendor's — a row
+ * whose rates were checked and found equal keeps the upstream constant.
+ *
+ * `cacheWrite === input` wherever OpenRouter publishes no `input_cache_write`:
+ * that is the same convention DeepSeek and GLM use above (a cache miss is billed
+ * at the ordinary input rate), and it is a real answer rather than a missing one.
+ */
+const OPENROUTER_PRICES = {
+  // Google publishes cache STORAGE per hour rather than a per-token write, so
+  // OpenRouter's `input_cache_write` is below its `input_cache_read`. Unusual,
+  // and copied verbatim rather than "corrected" upward.
+  gemini37flash: { input: 0.375, output: 1.875, cacheRead: 0.0375, cacheWrite: 0.020833 },
+  grok46: { input: 2, output: 6, cacheRead: 0.5, cacheWrite: 2 },
+  kimiK3: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3 },
+  qwen38max: { input: 2, output: 6, cacheRead: 0.25, cacheWrite: 2.5 },
+  // Half OpenAI's own rate for the same model. Not a typo — see the correction
+  // in this file's header.
+  gpt56terra: { input: 1, output: 6, cacheRead: 0.1, cacheWrite: 1.25 },
+  v4flash: { input: 0.06146, output: 0.12292, cacheRead: 0.012292, cacheWrite: 0.06146 },
+  v4pro: { input: 1.168, output: 2.336, cacheRead: 0.09855, cacheWrite: 1.168 },
+  glm52: { input: 0.308, output: 0.968, cacheRead: 0.0572, cacheWrite: 0.308 },
+} as const;
+
+/**
+ * Vercel AI Gateway's OWN list rates, per million tokens, read from
+ * `GET https://ai-gateway.vercel.sh/v1/models` on **2026-08-16**. Same rule as
+ * {@link OPENROUTER_PRICES}: only the models whose rates differ from upstream.
+ */
+const VERCEL_PRICES = {
+  // Twice OpenRouter's rate for the same Google model.
+  gemini37flash: { input: 0.75, output: 3.75, cacheRead: 0.075, cacheWrite: 0.75 },
+  grok46: { input: 2, output: 6, cacheRead: 0.5, cacheWrite: 2 },
+  kimiK3: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3 },
+  qwen38max: { input: 2, output: 6, cacheRead: 0.25, cacheWrite: 2.5 },
+  v4flash: { input: 0.2, output: 0.4, cacheRead: 0.04, cacheWrite: 0.2 },
+  v4pro: { input: 1.74, output: 3.48, cacheRead: 0.14, cacheWrite: 1.74 },
+  glm52: { input: 1.1, output: 3.851, cacheRead: 0.275, cacheWrite: 1.1 },
+} as const;
+
+/**
  * What Codex's app-server assigns the GPT-5 family, which is what ShipIt
  * reports and therefore what the dial must show on the first frame. OpenAI
  * advertises larger maxima (400K for GPT-5.2/5.3-codex/5.4-mini, 1.05M for the
@@ -121,6 +186,8 @@ const GLM_PRICES = {
  */
 const CODEX_WINDOW = { default: 272_000 } as const;
 const ONE_M = { default: 1_000_000 } as const;
+/** Grok 4.6's window — the only current model that is neither 200K, 272K nor ~1M. */
+const HALF_M = { default: 500_000 } as const;
 
 export const SERVICES = [
   {
@@ -374,12 +441,55 @@ export const SERVICES = [
         // metadata; this can degrade performance and cause issues.` Non-fatal —
         // the verification turn completed correctly — and not something the
         // catalogue can fix from here.
+        //
+        // 2026-08-16 — the four `O_CC`-only rows at the bottom are the models
+        // this pass added, and their single style is deliberate. Anthropic's and
+        // DeepSeek's upstreams publish an Anthropic-Messages API of their own, so
+        // `A_MSG` on those rows asserts only that OpenRouter forwards a format
+        // the upstream already speaks. Google, xAI, Moonshot and Alibaba publish
+        // no such surface, so `A_MSG` (or `O_RESP`) on a Gemini/Grok/Kimi/Qwen
+        // row would assert a gateway TRANSLATION layer nobody here has seen
+        // work — the same claim the dated ✅ notes above exist to avoid making.
+        // `O_CC` needs no such claim: it is OpenRouter's own native API.
+        //
+        // The cost of that honesty, stated plainly: `openai-chat-completions` is
+        // spoken by OpenCode alone, and the default install is
+        // `SHIPIT_HARNESSES=claude,codex`. So these four reach a default install
+        // through NO harness until someone measures the wider styles. Doing so is
+        // cheap — one OpenRouter key, one Claude Code turn against
+        // `https://openrouter.ai/api` and one `codex exec` against
+        // `https://openrouter.ai/api/v1` — and it is the single highest-value
+        // follow-up on this file.
+        //
+        // Deliberately NOT added: `openai/gpt-5.6-sol` and `openai/gpt-5.6-terra`.
+        // OpenRouter serves both, but ShipIt already reaches them under two
+        // services (OpenAI direct, both modes; Vercel with a measured `O_RESP`),
+        // and a third `O_CC`-only path would add a picker row that no default
+        // install can run AND force a second context-window convention: every
+        // GPT row here carries Codex's assigned 272K, which is the wrong number
+        // for a row Codex cannot reach. Add them WITH `O_RESP`, once measured.
         models: [
           { id: "anthropic/claude-opus-5", label: "Opus 5", ...MODEL_IDENTITIES.opus5, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: ANTHROPIC_PRICES.opus5 },
           { id: "anthropic/claude-sonnet-5", label: "Sonnet 5", ...MODEL_IDENTITIES.sonnet5, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: ANTHROPIC_PRICES.sonnet5 },
-          { id: "deepseek/deepseek-v4-flash", label: "DeepSeek V4 Flash", ...MODEL_IDENTITIES.deepseekV4Flash, styles: [A_MSG, O_CC, O_RESP], contextWindow: ONE_M, price: DEEPSEEK_PRICES.v4flash },
-          { id: "deepseek/deepseek-v4-pro", label: "DeepSeek V4 Pro", ...MODEL_IDENTITIES.deepseekV4Pro, styles: [A_MSG, O_CC, O_RESP], contextWindow: ONE_M, price: DEEPSEEK_PRICES.v4pro },
-          { id: "z-ai/glm-5.2", label: "GLM-5.2", ...MODEL_IDENTITIES.glm52, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: GLM_PRICES.glm52 },
+          // Fable 5 leads SWE-bench Pro (80.3%) and sits second on the public
+          // intelligence ranking behind Opus 5, so a curated coding list that
+          // omits it is missing a top-two model. `A_MSG` is the same claim its
+          // two siblings above already make, and OpenRouter's rate matches
+          // Anthropic's own.
+          { id: "anthropic/claude-fable-5", label: "Fable 5", ...MODEL_IDENTITIES.fable5, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: ANTHROPIC_PRICES.fable5 },
+          { id: "deepseek/deepseek-v4-flash", label: "DeepSeek V4 Flash", ...MODEL_IDENTITIES.deepseekV4Flash, styles: [A_MSG, O_CC, O_RESP], contextWindow: ONE_M, price: OPENROUTER_PRICES.v4flash },
+          { id: "deepseek/deepseek-v4-pro", label: "DeepSeek V4 Pro", ...MODEL_IDENTITIES.deepseekV4Pro, styles: [A_MSG, O_CC, O_RESP], contextWindow: ONE_M, price: OPENROUTER_PRICES.v4pro },
+          { id: "z-ai/glm-5.2", label: "GLM-5.2", ...MODEL_IDENTITIES.glm52, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: OPENROUTER_PRICES.glm52 },
+          // Grok 4.6 (2026-08-12) scores an agentic-work Elo behind only Opus 5,
+          // and is statistically level with Fable 5 and Qwen3.8 Max.
+          { id: "x-ai/grok-4.6", label: "Grok 4.6", ...MODEL_IDENTITIES.grok46, styles: [O_CC], contextWindow: HALF_M, price: OPENROUTER_PRICES.grok46 },
+          // Gemini 3.7 Flash (2026-08-13) is the cheapest frontier-adjacent agent
+          // model on either gateway — an order of magnitude under Grok and Kimi.
+          { id: "google/gemini-3.7-flash", label: "Gemini 3.7 Flash", ...MODEL_IDENTITIES.gemini37flash, styles: [O_CC], contextWindow: ONE_M, price: OPENROUTER_PRICES.gemini37flash },
+          // Kimi K3 leads Terminal-Bench 2.1 (88.3%) and is the strongest
+          // open-weight all-rounder.
+          { id: "moonshotai/kimi-k3", label: "Kimi K3", ...MODEL_IDENTITIES.kimiK3, styles: [O_CC], contextWindow: ONE_M, price: OPENROUTER_PRICES.kimiK3 },
+          { id: "qwen/qwen3.8-max", label: "Qwen3.8 Max", ...MODEL_IDENTITIES.qwen38max, styles: [O_CC], contextWindow: ONE_M, price: OPENROUTER_PRICES.qwen38max },
         ],
       },
     ],
@@ -405,9 +515,20 @@ export const SERVICES = [
         // *harness's* variable at spawn, so nothing downstream reads this one.
         credentials: [{ via: "string", storageEnv: "VERCEL_AI_GATEWAY_API_KEY" }],
         retired: [],
+        // The style rule this row follows is the one written out on the
+        // OpenRouter row above, and for the same reason: `A_MSG` is declared only
+        // where the UPSTREAM publishes an Anthropic-Messages API of its own, so
+        // the four vendors added on 2026-08-16 carry Vercel's native `O_CC` and
+        // nothing else until someone measures wider. Note that `A_MSG` here is
+        // also the one style Vercel does not document as covering its whole
+        // catalogue, which is why the Z.ai row below is `O_CC`-only even though
+        // Z.ai does publish an Anthropic surface upstream — OpenRouter's z-ai
+        // pairing was measured, this gateway's was not, and a measurement at one
+        // gateway says nothing about the other.
         models: [
           { id: "anthropic/claude-opus-5", label: "Opus 5", ...MODEL_IDENTITIES.opus5, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: ANTHROPIC_PRICES.opus5 },
           { id: "anthropic/claude-sonnet-5", label: "Sonnet 5", ...MODEL_IDENTITIES.sonnet5, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: ANTHROPIC_PRICES.sonnet5 },
+          { id: "anthropic/claude-fable-5", label: "Fable 5", ...MODEL_IDENTITIES.fable5, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: ANTHROPIC_PRICES.fable5 },
           // Vercel documents a Responses-compatible surface, so these reach
           // Codex as well as any OpenAI-chat-completions consumer. They also
           // carry the namespaced-id caveat written out on the OpenRouter row
@@ -415,7 +536,16 @@ export const SERVICES = [
           // falling back. Non-fatal, and not fixable from the catalogue.
           { id: "openai/gpt-5.6-sol", label: "GPT-5.6 Sol", ...MODEL_IDENTITIES.gpt56sol, styles: [O_RESP, O_CC], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.sol },
           { id: "openai/gpt-5.6-terra", label: "GPT-5.6 Terra", ...MODEL_IDENTITIES.gpt56terra, styles: [O_RESP, O_CC], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.terra },
-          { id: "deepseek/deepseek-v4-flash", label: "DeepSeek V4 Flash", ...MODEL_IDENTITIES.deepseekV4Flash, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: DEEPSEEK_PRICES.v4flash },
+          { id: "deepseek/deepseek-v4-flash", label: "DeepSeek V4 Flash", ...MODEL_IDENTITIES.deepseekV4Flash, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: VERCEL_PRICES.v4flash },
+          // V4 Pro holds the SWE-bench Verified record (80.6%) under an MIT
+          // licence; only V4 Flash was listed here before. `A_MSG` is the claim
+          // the Flash row beside it already makes — same gateway, same upstream.
+          { id: "deepseek/deepseek-v4-pro", label: "DeepSeek V4 Pro", ...MODEL_IDENTITIES.deepseekV4Pro, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: VERCEL_PRICES.v4pro },
+          { id: "zai/glm-5.2", label: "GLM-5.2", ...MODEL_IDENTITIES.glm52, styles: [O_CC], contextWindow: ONE_M, price: VERCEL_PRICES.glm52 },
+          { id: "xai/grok-4.6", label: "Grok 4.6", ...MODEL_IDENTITIES.grok46, styles: [O_CC], contextWindow: HALF_M, price: VERCEL_PRICES.grok46 },
+          { id: "google/gemini-3.7-flash", label: "Gemini 3.7 Flash", ...MODEL_IDENTITIES.gemini37flash, styles: [O_CC], contextWindow: ONE_M, price: VERCEL_PRICES.gemini37flash },
+          { id: "moonshotai/kimi-k3", label: "Kimi K3", ...MODEL_IDENTITIES.kimiK3, styles: [O_CC], contextWindow: ONE_M, price: VERCEL_PRICES.kimiK3 },
+          { id: "alibaba/qwen3.8-max", label: "Qwen3.8 Max", ...MODEL_IDENTITIES.qwen38max, styles: [O_CC], contextWindow: ONE_M, price: VERCEL_PRICES.qwen38max },
         ],
       },
     ],
