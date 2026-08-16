@@ -1282,7 +1282,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
 
   // ---- Session directory creation ----
   const createSessionDir = createSessionDirFactory({
-    sessionsRoot, sessionManager,
+    sessionsRoot, sessionManager, db: databaseManager.db,
   });
 
   // ---- Warm session pool ----

@@ -83,6 +83,16 @@ export function perSessionCredentialsDir(credentialsRoot: string, sessionId: str
 }
 
 /**
+ * The directory the per-session credential subtrees live IN — `<sessionId>`
+ * children. docs/268 gives this to `shared/session-identity.ts` as its second
+ * root, so a chown of a per-session credential file resolves to the SAME
+ * identity a chown inside that session's workspace does.
+ */
+export function perSessionCredentialsRoot(credentialsRoot: string): string {
+  return path.join(credentialsRoot, SESSION_CREDENTIALS_SUBDIR);
+}
+
+/**
  * Hand the per-session credentials subtree to the unprivileged session-worker
  * user (docs/150 §7). No-op unless `SHIPIT_SESSION_WORKER_UID` is set. Every
  * orchestrator-side writer into the subtree (scaffold, provision, per-turn token

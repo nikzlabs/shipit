@@ -41,6 +41,18 @@
  * satisfied; where we fail to drop, git *would* refuse with "detected dubious
  * ownership" rather than execute the payload (docs/266 req 7).
  *
+ * ## docs/268: WHICH tree's ownership
+ *
+ * Once uids differ per session, "the owner of the directory git runs in" stops
+ * being a safe predicate, because that directory is bind-mounted read-write into
+ * compose services and an Open session's service may run as root — so a session
+ * can `chown` its own workspace and thereby *name* the uid ShipIt's git will
+ * hold, and therefore the uid a `.git/config` payload executes at. The answer is
+ * not to abandon ownership but to read it off the one directory in the chain no
+ * session can write: `<sessionsRoot>/<sessionId>`, which is mounted into
+ * nothing. `shared/session-identity.ts` owns that lookup; the fallback below is
+ * for paths that belong to no session.
+ *
  * **That fail-closed half is built but not armed.** `git-config.ts` still
  * writes `safe.directory=*` by default, which is precisely what suppresses that
  * refusal, so a call site that fails to drop silently runs as root exactly as
@@ -68,6 +80,7 @@
  */
 
 import fs from "node:fs";
+import { identityForPath, sessionIdForPath } from "./session-identity.js";
 
 /** The uid/gid an orchestrator-side git should drop to, or `null` for "stay put". */
 export interface GitTreeUid {
@@ -116,6 +129,21 @@ export function resolveGitTreeUid(
   // this is the no-op branch, which is what keeps this change inert outside a
   // containerized production orchestrator.
   if (deps.getuid() !== 0) return null;
+  // docs/268 req 2 — when the path belongs to a session, the identity comes from
+  // that session's DIRECTORY, which is mounted into nothing and so cannot be
+  // re-owned from inside the session. Stat'ing the tree instead would let an
+  // Open session's root compose service `chown` its own workspace and thereby
+  // choose the uid ShipIt's git — and any `.git/config` payload it executes —
+  // runs as. Falls through to the tree only for paths that belong to no session
+  // (the shared bare cache, `/opt/shipit`) and when the roots are unconfigured,
+  // which is local mode and every test.
+  //
+  // Note the `sessionIdForPath` gate rather than a null check on the identity:
+  // for a path inside a session the session's record is the ONLY answer, and
+  // "no record" resolves to the deployment's configured value or to no drop at
+  // all. Falling through to the tree there would hand the decision straight back
+  // to the party the gate exists to keep out of it.
+  if (sessionIdForPath(dir) !== null) return identityForPath(dir);
   const owner = deps.statOwner(dir);
   if (owner === null) return null;
   // A root-owned tree is ShipIt's own (bare cache, /opt/shipit). Dropping there

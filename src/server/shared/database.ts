@@ -1356,6 +1356,24 @@ const MIGRATIONS: Migration[] = [
   (db) => {
     addSessionColumnIfMissing(db, "origin_role_name");
   },
+  // docs/268 — the per-session uid allocation ledger.
+  //
+  // One row, holding only the NEXT uid to hand out. It is deliberately not a
+  // column on `sessions`: the record of a session's identity is the OWNER of its
+  // session directory (`shared/session-identity.ts` explains why that has to be
+  // somewhere the session cannot write), and a second copy on the row would be a
+  // thing that can drift from it. This table's only job is to never hand out the
+  // same number twice, including across the deletion of the session that held it
+  // — which a `MAX(uid) + 1` over `sessions` could not promise, because deleting
+  // the highest row would lower the maximum and re-issue its uid.
+  (db) => {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS session_uid_allocation (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        next_uid INTEGER NOT NULL
+      );
+    `);
+  },
 ];
 
 /**

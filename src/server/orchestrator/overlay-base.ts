@@ -61,7 +61,7 @@ import fsSync from "node:fs";
 import path from "node:path";
 
 import { overlayBaseGenDir, overlayScopeHash } from "./overlay-volume.js";
-import { chownTreeToSessionWorker } from "./session-worker-uid.js";
+import { shareTreeWithAllSessions } from "./session-worker-uid.js";
 
 // ---------------------------------------------------------------------------
 // Scope + pointer types
@@ -424,6 +424,23 @@ export async function copySnapshotToBase(
   const scopeDir = path.dirname(genDir);
   await fs.mkdir(scopeDir, { recursive: true });
 
+  // docs/268 — normalize the SNAPSHOT to the group and mode the published base
+  // will carry, before it is compared against the previous generation.
+  //
+  // The handoff below adds the shared group plus `g+rw` (a base file must be
+  // group-writable, because overlayfs copy-up preserves the lower file's mode
+  // and a 0644 lower copies up unwritable for every session that is not its
+  // owner — and under per-session uids none of them is). `canHardlink` compares
+  // MODE. So without this, every freshly-extracted snapshot differs from its
+  // predecessor by exactly the bits the handoff adds, the dedup never fires, and
+  // each generation silently becomes a full ~0.5 GB copy again — a disk
+  // regression with no error anywhere. Caught by docs/183's own end-to-end
+  // dedup test, which is the only thing that would have.
+  //
+  // Cheap and safe: the snapshot is a throwaway extract this call is about to
+  // consume, and a no-op when the non-root runtime is off.
+  shareTreeWithAllSessions(snapshotDir);
+
   const rand = crypto.randomBytes(4).toString("hex");
   const tmp = path.join(scopeDir, `.tmp-g${generation}-${rand}`);
   try {
@@ -487,15 +504,22 @@ export interface PublishBaseArgs {
   /** Override the default snapshot copy (tests / future reflink path). */
   materialize?: MaterializeFn;
   /**
-   * Hand the freshly-materialized base generation to the session worker uid
-   * (docs/183 × docs/150, planning#147). Defaults to `chownTreeToSessionWorker`, a
-   * no-op unless `SHIPIT_SESSION_WORKER_UID` is set. The base is materialized by
-   * the **root** orchestrator (tar extract + copy), so its files are root-owned;
-   * overlayfs copy-up preserves the *lower* file's ownership, so a root-owned
-   * base dep copied up stays root-owned and the non-root agent EACCESes when it
-   * tries to modify that dep. Chowning the generation to the worker uid makes
-   * copy-up produce worker-owned (writable) upper files. Injectable so tests can
-   * assert the handoff without privileges. */
+   * Hand the freshly-materialized base generation to the session workers
+   * (docs/183 × docs/150, planning#147). Defaults to `shareTreeWithAllSessions`,
+   * a no-op unless `SHIPIT_SESSION_WORKER_UID` is set. The base is materialized
+   * by the **root** orchestrator (tar extract + copy), so its files are
+   * root-owned; overlayfs copy-up preserves the *lower* file's ownership AND
+   * mode, so a root-owned base dep copied up stays root-owned and the non-root
+   * agent EACCESes when it tries to modify that dep.
+   *
+   * docs/268 — a base generation is shared by every session in its scope, so the
+   * handoff is by GROUP rather than by owner: chowning it to one session's uid
+   * would reproduce exactly that EACCES for every other session. The shared
+   * group plus group-write is what makes the copied-up file writable, and it is
+   * why `shareTreeWithAllSessions` sets a mode as well as a group — a base file
+   * at 0644 would copy up group-readable and still not be editable.
+   *
+   * Injectable so tests can assert the handoff without privileges. */
   chownBaseDir?: (dir: string) => void;
 }
 
@@ -513,7 +537,7 @@ export async function publishBase(args: PublishBaseArgs): Promise<PublishResult>
     args.materialize ??
     ((snapshotDir, hash, generation, linkDedupBaseDir) =>
       copySnapshotToBase(stateDir, snapshotDir, hash, generation, linkDedupBaseDir));
-  const chownBaseDir = args.chownBaseDir ?? chownTreeToSessionWorker;
+  const chownBaseDir = args.chownBaseDir ?? shareTreeWithAllSessions;
 
   if (
     candidate.exitCode !== 0 ||

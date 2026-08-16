@@ -47,6 +47,12 @@ during session A's git operation can still read and write session B's workspace.
    of it. *(docs/266 requirement 12, stated by the requester on 2026-08-16 and
    explicitly inherited by this follow-up.)*
 
+   4a. Session identities MUST come from a range ShipIt reserves for itself, and
+   a compose `user:` inside that range MUST be refused during validation with a
+   message that says why and what to use instead. No session identity may ever
+   equal a `user:` a project could reasonably declare. *(Decided by the
+   requester on 2026-08-16 — see Resolved questions, Q1.)*
+
 5. A session's identity MUST be stable for the whole life of the session —
    across container restart, container recreation after idle disposal,
    orchestrator restart, and host reboot. The files a session left on disk still
@@ -60,6 +66,19 @@ during session A's git operation can still read and write session B's workspace.
 8. Sessions that already exist when this ships MUST keep working. Upgrading MUST
    NOT lose a session's work, make its workspace unreadable to its own agent, or
    require the user to do anything.
+
+   8a. Sessions that already exist MUST NOT be migrated to a distinct identity.
+   They keep the shared one, and keep reaching each other, until they are
+   archived. *(Decided by the requester on 2026-08-16 — see Resolved questions,
+   Q2.)*
+
+   8b. A session that keeps the shared identity MUST still be sealed against
+   sessions that hold a distinct one, in both directions: a new session's
+   payload MUST NOT be able to read an old session's workspace, and an old
+   session's payload MUST NOT be able to read a new one's. *(Supplied — see
+   Provenance. Without it, answering Q2 with "new sessions only" would leave
+   requirement 1 unmet for every new session too, because a workspace that is
+   merely differently-owned is still world-readable.)*
 
 9. Sessions MUST keep sharing the caches they share today — the per-repo
    dependency cache, the pnpm store, and the overlay dependency base. A session
@@ -91,10 +110,13 @@ Separating what was handed to this feature from what it supplied, per `CLAUDE.md
 | 2 | — | supplied; see the note on the requirement and §"What is already true" |
 | 3 | ✅ planning#405, with the source cited | — |
 | 4 | ✅ docs/266 req 12 (requester, 2026-08-16), inherited by name | — |
+| 4a | ✅ decided 2026-08-16 (Q1 → a) | — |
 | 5 | — | supplied; a per-session identity that did not survive a restart would orphan the session's own files |
 | 6 | — | supplied; it is what "per-session" means, stated so it can be tested |
 | 7 | — | supplied; reuse is the obvious way to bound the identity space, and it is the obvious way to re-open req 1 |
 | 8 | — | supplied; every session in the fleet already has files owned by the shared uid |
+| 8a | ✅ decided 2026-08-16 (Q2 → b) | — |
+| 8b | — | supplied; the consequence of Q2 → b that the answer itself does not state |
 | 9 | — | supplied, from reading the three shared surfaces (see below). This is the requirement most likely to be missed, because nothing fails until an install runs |
 | 10 | — | supplied, from the entrypoint's own journal-group block |
 | 11 | — | supplied |
@@ -186,58 +208,52 @@ a doc's word.
 
 ## Open questions
 
-Two, batched. Implementation is blocked until both are answered; requirements
-and design work continue.
-
-- **Q1 — What happens when an allocated session identity collides with a
-  numeric `user:` a project's compose file already declares?** (Named as the
-  open question in planning#405.) Requirement 4 says the declared `user:` keeps
-  working; it does not say what "keeps working" means when the number is also
-  some session's identity.
-
-  - **(a) Allocate from a high reserved range, and refuse a compose `user:`
-    inside that range.** *(Recommended.)* Every realistic explicit `user:` — 33,
-    101, 999, 1000, 1001, an image's own account — is far below it and is
-    untouched, so requirement 4 is satisfied for every project that exists
-    today. A collision becomes impossible by construction rather than unlikely,
-    and the refusal reuses the reserved-UID validation ShipIt already has
-    (`compose-generator.ts:1338-1353`), including its explain-why error. Cost: a
-    project that deliberately picks a uid in ShipIt's range gets a validation
-    error it would not get today.
-  - **(b) Allocate from the ordinary range and let collisions happen.** A
-    compose service reaches only its own session's mounts, so a service that
-    happens to run as another session's uid gains nothing across sessions — the
-    cost is confined to that one session, and is the same foreign-uid breakage
-    docs/266 §2 (E5) already documents and detects. Nothing new to build. Cost:
-    "your session broke because we picked the number your compose file uses" is
-    a support problem nobody can diagnose from the outside.
-  - **(c) Avoid per session** — read the project's compose file when allocating
-    and pick a uid it does not name. Rejected in the write-up as fragile: the
-    compose file changes after allocation and an identity cannot.
-
-- **Q2 — Do sessions that already exist get migrated to their own identity?**
-  Requirement 8 says they must keep working; requirement 12 says the write-up
-  must be honest about who still carries the residual. Both are satisfiable
-  either way.
-
-  - **(a) Migrate every existing session on its next container create.**
-    *(Recommended.)* The mechanism already exists and is one-time per session:
-    the entrypoint's chown sentinel is uid-stamped, so a changed uid rotates it
-    and the boot re-runs the handoff exactly once. The residual is then closed
-    for the whole fleet. Cost: the first boot after the upgrade is slower for a
-    session with a large dependency tree, and every session pays it once.
-  - **(b) New sessions only.** No migration, no first-boot cost, no chance of a
-    half-migrated tree. Existing sessions keep the shared identity — and keep
-    reaching each other — until they are archived. Requirement 12 then obliges
-    the write-up to say "closed for sessions created after `<version>`; open for
-    the rest", which is an honest but long-lived caveat.
-  - **(c) Migrate on demand**, as an explicit per-session action. Rejected in
-    the write-up: it makes a security property a thing the user has to opt into
-    per session, and the user has no way to judge when to.
+*(none — Q1 and Q2 are both answered; see below. Implementation is unblocked,
+subject to the independent review this repo's requirements discipline
+requires.)*
 
 ## Resolved questions
 
-*(none yet — Q1 and Q2 are open.)*
+**2026-08-16 — Q1: what happens when an allocated session identity collides
+with a numeric `user:` a project's compose file already declares? → (a), a
+reserved range plus a validation refusal.** Recorded as **requirement 4a**.
+
+The alternatives were (b) allocate from the ordinary range and accept
+collisions — contained inside the one session, since a compose service reaches
+only its own session's mounts, but undiagnosable from the outside — and (c) read
+the project's compose file at allocation time and avoid the uids it names,
+rejected as fragile because the compose file changes after allocation and an
+identity cannot.
+
+The consequence the answer creates, and which is **not** referred back as a new
+question: a project that deliberately declares a `user:` inside ShipIt's range
+now gets a validation error it would not get today. Requirement 4 says a
+declared `user:` must keep working, and this is the one class of declaration
+that stops working — but the range is chosen so that no `user:` a real image or
+project uses can fall inside it, so the requirement is satisfied for every
+project the constraint was raised about. If a project legitimately needs a uid
+in that range, that is a change to requirement 4a.
+
+**2026-08-16 — Q2: do sessions that already exist get migrated to their own
+identity? → (b), new sessions only.** Recorded as **requirement 8a**.
+
+The alternatives were (a) migrate every existing session on its next container
+create, using the entrypoint's uid-stamped chown sentinel — one slower boot per
+session, and the residual closed fleet-wide — and (c) an explicit per-session
+user action, rejected because it makes a security property something the user
+has to opt into with no basis for judging when.
+
+One consequence the answer creates, **derived rather than asked**, and recorded
+as **requirement 8b**: "new sessions only" does not by itself give a new session
+requirement 1. A workspace whose files merely have a *different* owner is still
+readable by any other uid, because directories are created world-traversable and
+files world-readable by default. So a new session's payload would still read
+every old session's workspace, and every old session's payload would still read
+the new one's. Both directions have to be sealed for the answer to mean what it
+says. That is a permission change, not an identity migration, so it is
+compatible with the answer rather than a re-litigation of it. Requirement 12 is
+what obliges the write-up to state that pre-existing sessions still reach **each
+other**, which this feature deliberately does not fix.
 
 ## Not closed by this work
 

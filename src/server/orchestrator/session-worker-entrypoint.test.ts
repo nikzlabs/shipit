@@ -126,9 +126,24 @@ interface RunOpts {
    * Pass {@link UNCREATABLE_PLUGIN_DIR} to exercise the best-effort failure.
    */
   pluginDir?: string;
+  /**
+   * docs/268 — the SHARED gid, forwarded as `SHIPIT_SESSION_WORKER_GID`. Left
+   * unset by default so every pre-docs/268 assertion still describes an
+   * orchestrator that forwards only the UID, which the entrypoint must keep
+   * booting unchanged.
+   */
+  workerGid?: string;
+  /**
+   * Make the stubbed `usermod` fail, standing in for a read-only `/etc`
+   * (`SESSION_READONLY_ROOTFS=1`). That is the one boot where the entrypoint
+   * genuinely cannot give an allocated uid a passwd entry, so it must fall back
+   * to the supplementary-group-clearing drop and say so.
+   */
+  usermodFails?: boolean;
 }
 
 function runEntrypoint(dirs: string[], workerUid: string, opts: RunOpts = {}): RunResult {
+  const workerGid = opts.workerGid ?? workerUid;
   const root = mkdtempSync(join(tmpdir(), "shipit-entrypoint-"));
   const bin = join(root, "bin");
   mkdirSync(bin);
@@ -172,20 +187,48 @@ function runEntrypoint(dirs: string[], workerUid: string, opts: RunOpts = {}): R
   // passwd entry.
   const groupLog = join(root, "group.log");
   writeFileSync(groupLog, "");
-  for (const cmd of ["groupadd", "usermod"]) {
-    writeFileSync(
-      join(bin, cmd),
-      `#!/bin/sh\nprintf "${cmd} %s\\n" "$*" >> "$GROUP_LOG"\n`,
-      { mode: 0o755 },
-    );
-  }
+  writeFileSync(join(root, "usermod.marker"), "");
+  writeFileSync(
+    join(bin, "groupadd"),
+    '#!/bin/sh\nprintf "groupadd %s\\n" "$*" >> "$GROUP_LOG"\n',
+    { mode: 0o755 },
+  );
+  // docs/268 — `usermod -u` must MODEL its effect, not just record the call.
+  // The entrypoint runs it so that the passwd lookups AFTER it succeed; a stub
+  // that only logs leaves `getent` answering "NONE" forever, so a test could
+  // not tell a correctly-ordered `usermod` from one placed after the block that
+  // needs it. Dropping a marker that the `getent` stub reads makes the ordering
+  // observable — which is the property that actually broke in review.
+  writeFileSync(
+    join(bin, "usermod"),
+    [
+      "#!/bin/sh",
+      'printf "usermod %s\\n" "$*" >> "$GROUP_LOG"',
+      // `usermod -u <uid> shipit` — record the uid it moved the account to.
+      '[ "$USERMOD_FAILS" = "1" ] && exit 1',
+      'case "$1" in -u) printf "%s" "$2" > "$USERMOD_MARKER" ;; esac',
+      "",
+    ].join("\n"),
+    { mode: 0o755 },
+  );
   writeFileSync(
     join(bin, "stat"),
     [
       "#!/bin/sh",
-      // Only the `%g` probe is faked; the sentinel's `%u` probe must stay real.
+      // Only the `%g` probe ON A JOURNAL DIR is faked. docs/268 gave the mount
+      // loop `%g` probes of its own (the shared-mount sentinel), and a blanket
+      // `*%g*` fake answered those from the journal fixture too — which would
+      // make a sentinel test pass or fail depending on whether the run happened
+      // to set FAKE_JOURNAL_GID. The sentinel's own `%u`/`%g` probes must stay
+      // real, so match on the path, not just the format.
+      'last=""; for a in "$@"; do last=$a; done',
       'case "$*" in',
-      '  *%g*) if [ -n "$FAKE_JOURNAL_GID" ]; then echo "$FAKE_JOURNAL_GID"; exit 0; fi ;;',
+      '  *%g*)',
+      '    for j in $SHIPIT_JOURNAL_DIRS; do',
+      '      if [ "$j" = "$last" ] && [ -n "$FAKE_JOURNAL_GID" ]; then',
+      '        echo "$FAKE_JOURNAL_GID"; exit 0',
+      "      fi",
+      "    done ;;",
       "esac",
       'exec /usr/bin/stat "$@"',
       "",
@@ -201,6 +244,12 @@ function runEntrypoint(dirs: string[], workerUid: string, opts: RunOpts = {}): R
       // depend on who the CI runner happens to be.
       'case "$1" in',
       "  passwd)",
+      // A passwd entry the stubbed `usermod` created — the account moved onto
+      // the allocated uid, keeping the image's primary gid.
+      '    if [ -s "$USERMOD_MARKER" ] && [ "$2" = "$(cat "$USERMOD_MARKER")" ]; then',
+      // eslint-disable-next-line no-template-curly-in-string -- shell expansion, not a JS template
+      '      echo "shipit:x:$2:${FAKE_MOVED_GID}::/home/shipit:/bin/sh"; exit 0',
+      "    fi",
       '    if [ "$FAKE_PASSWD_LINE" = "NONE" ]; then exit 2; fi',
       '    echo "$FAKE_PASSWD_LINE"; exit 0 ;;',
       "  group)",
@@ -241,6 +290,9 @@ function runEntrypoint(dirs: string[], workerUid: string, opts: RunOpts = {}): R
       CHOWN_LOG: chownLog,
       GOSU_LOG: gosuLog,
       GROUP_LOG: groupLog,
+      USERMOD_MARKER: join(root, "usermod.marker"),
+      USERMOD_FAILS: opts.usermodFails ? "1" : "0",
+      FAKE_MOVED_GID: workerGid,
       SHIPIT_SESSION_WORKER_UID: workerUid,
       // Default to a path that does not exist, so a test that isn't about the
       // journal is unaffected by whether the HOST running the suite happens to
@@ -249,7 +301,8 @@ function runEntrypoint(dirs: string[], workerUid: string, opts: RunOpts = {}): R
       FAKE_JOURNAL_GID: opts.journalGid ?? "",
       // Synthetic by default so `usermod`'s target user is `shipit` on every
       // machine, and so the drop takes the user form (passwd GID == worker UID).
-      FAKE_PASSWD_LINE: opts.passwdLine ?? `shipit:x:${workerUid}:${workerUid}::/home/shipit:/bin/sh`,
+      ...(opts.workerGid ? { SHIPIT_SESSION_WORKER_GID: opts.workerGid } : {}),
+      FAKE_PASSWD_LINE: opts.passwdLine ?? `shipit:x:${workerUid}:${workerGid}::/home/shipit:/bin/sh`,
       FAKE_GROUP_LINE: opts.groupLine ?? "",
     },
     encoding: "utf8",
@@ -265,7 +318,7 @@ function runEntrypoint(dirs: string[], workerUid: string, opts: RunOpts = {}): R
     pluginDir: redirected.get("/plugins")!,
     prepChowns: prepared
       .filter((d) => d !== "/plugins" || !opts.pluginDir)
-      .map((d) => `${workerUid}:${workerUid} ${redirected.get(d)!}`),
+      .map((d) => `${workerUid}:${workerGid} ${redirected.get(d)!}`),
   };
 }
 
@@ -343,7 +396,7 @@ describe("session worker ownership sentinel", () => {
     const dir = tempDir();
     // Stand in for the restored, root-owned sentinel: the marker exists but its
     // owner (this test's uid) differs from the configured worker UID.
-    mkdirSync(join(dir, ".shipit-uid-4242"));
+    mkdirSync(join(dir, ".shipit-uid-4242-4242"));
 
     const result = runEntrypoint([dir], "4242");
 
@@ -354,7 +407,7 @@ describe("session worker ownership sentinel", () => {
   it("skips the recursive walk when the sentinel is already worker-owned", () => {
     const dir = tempDir();
     const uid = String(process.getuid?.() ?? 0);
-    mkdirSync(join(dir, `.shipit-uid-${uid}`));
+    mkdirSync(join(dir, `.shipit-uid-${uid}-${uid}`));
 
     const result = runEntrypoint([dir], uid);
 
@@ -478,13 +531,33 @@ describe("host journal readability (#1917)", () => {
     expect(result.gosu.some((c) => c.includes("1000:1000"))).toBe(false);
   });
 
-  it("still boots, loudly, when the worker UID has no passwd entry", () => {
-    // The user form would take the primary GID from passwd, so with no entry we
-    // must keep the old explicit form rather than guess.
+  it("gives a UID with no passwd entry one, rather than dropping lossily", () => {
+    // Before docs/268 this case took the explicit `uid:gid` form, which calls
+    // setgroups() with an empty list. That was right when "no passwd entry"
+    // meant a custom UID nobody had prepared; it is wrong now, when it is the
+    // ordinary state of every allocated per-session uid. `usermod` moves the
+    // image's own account onto it, so the user form applies and the
+    // supplementary groups survive (req 10).
     const result = runEntrypoint([tempDir()], "1000", { passwdLine: "NONE" });
 
     expect(result.status).toBe(0);
+    expect(result.groupOps).toContain("usermod -u 1000 shipit");
+    expect(result.gosu).toEqual(["1000 true"]);
+    expect(result.stderr).not.toContain("without supplementary groups");
+  });
+
+  it("still boots, loudly, when the account cannot be moved at all", () => {
+    // Read-only /etc. There is genuinely no passwd entry to be had, so the drop
+    // keeps the old explicit form rather than guessing a primary GID — running
+    // under the wrong one is a worse failure than an unreadable journal.
+    const result = runEntrypoint([tempDir()], "1000", {
+      passwdLine: "NONE",
+      usermodFails: true,
+    });
+
+    expect(result.status).toBe(0);
     expect(result.gosu).toEqual(["1000:1000 true"]);
+    expect(result.stderr).toContain("could not move the shipit account");
     expect(result.stderr).toContain("without supplementary groups");
   });
 
@@ -497,6 +570,215 @@ describe("host journal readability (#1917)", () => {
 
     expect(result.gosu).toEqual(["1000:1000 true"]);
     expect(result.stderr).toContain("without supplementary groups");
+  });
+
+  // ---- docs/268: per-session uids, one shared gid ----
+
+  it("chowns a per-session mount to the allocated uid and the SHARED gid", () => {
+    const dir = tempDir();
+
+    const result = runEntrypoint([dir], "2000001", { workerGid: "1000" });
+
+    expect(result.status).toBe(0);
+    // Not `2000001:2000001`. The gid is shared on purpose — it is what keeps the
+    // dep cache, the pnpm store and the overlay base usable by a session that
+    // did not create them (req 9).
+    expect(result.chowns).toEqual([`-R 2000001:1000 ${dir}`, ...result.prepChowns]);
+  });
+
+  it("rotates the sentinel when only the GID changes", () => {
+    const dir = tempDir();
+    const uid = String(process.getuid?.() ?? 0);
+    // A sentinel from a boot at the same uid but a different gid. Stamping the
+    // uid alone would read this as "already handed off" and skip the walk,
+    // leaving every file group-owned by a gid nothing uses any more.
+    mkdirSync(join(dir, `.shipit-uid-${uid}-4242`));
+
+    const result = runEntrypoint([dir], uid, { workerGid: "1000" });
+
+    expect(result.status).toBe(0);
+    expect(result.chowns).toEqual([`-R ${uid}:1000 ${dir}`, ...result.prepChowns]);
+  });
+
+  it("hands a SHARED mount over by group, never by owner", () => {
+    // The name matters: the branch is suffix-matched so this reaches it.
+    const shared = join(tempDir(), "dep-cache");
+    mkdirSync(shared);
+
+    const result = runEntrypoint([shared], "2000001", { workerGid: "1000" });
+
+    expect(result.status).toBe(0);
+    // `:1000` — the owner is deliberately untouched. `-R 2000001:1000` here
+    // would take the shared cache away from every other session, which is the
+    // EACCES-with-no-recovery this mount's own docstring warns about, arriving
+    // by a new route.
+    expect(result.chowns).toEqual([`-R :1000 ${shared}`, ...result.prepChowns]);
+  });
+
+  it("does not re-walk a shared mount whose group is already the shared gid", () => {
+    const shared = join(tempDir(), "dep-cache");
+    mkdirSync(shared);
+    // Stand in for a cache another session already handed over: the sentinel
+    // exists and carries the shared gid. Without the gid-stamped sentinel this
+    // walk would run once per SESSION over a multi-gigabyte cache.
+    const gid = String(process.getgid?.() ?? 0);
+    mkdirSync(join(shared, `.shipit-gid-${gid}`));
+
+    const result = runEntrypoint([shared], "2000001", { workerGid: gid });
+
+    expect(result.status).toBe(0);
+    expect(result.chowns).toEqual(result.prepChowns);
+  });
+
+  it("moves the image account onto an allocated uid so the drop keeps its groups", () => {
+    // An allocated uid has no passwd entry in the image, so without this the
+    // drop takes the setgroups-clearing form on EVERY session and ops sessions
+    // silently lose the host journal (req 10).
+    const result = runEntrypoint([tempDir()], "2000001", {
+      workerGid: "1000",
+      passwdLine: "NONE",
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.groupOps).toContain("usermod -u 2000001 shipit");
+  });
+
+  it("does not touch the image account when the uid already resolves", () => {
+    // The pre-docs/268 case: uid 1000 IS the image's `shipit`. Running usermod
+    // there would be a pointless mutation of /etc on every boot.
+    const result = runEntrypoint([tempDir()], "1000");
+
+    expect(result.status).toBe(0);
+    expect(result.groupOps.some((c) => c.startsWith("usermod -u"))).toBe(false);
+    expect(result.gosu).toEqual(["1000 true"]);
+  });
+
+  it("aligns the journal group for an allocated uid, which needs usermod FIRST", () => {
+    // The ordering defect this catches: the journal block resolves the worker's
+    // account with `getent passwd "$UID_GID"` and `break`s when there is none.
+    // With `usermod` placed next to the drop it enables — after this block —
+    // an allocated uid is moved onto an account the journal group was never
+    // added to, the drop still succeeds, and the journal is silently
+    // unreadable. Indistinguishable from having no `usermod` at all, which is
+    // why asserting that `usermod` merely RAN is not enough.
+    const journal = journalDir();
+
+    const result = runEntrypoint([tempDir()], "2000001", {
+      workerGid: "1000",
+      passwdLine: "NONE",
+      journalDirs: [journal],
+      journalGid: "143",
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.groupOps).toEqual([
+      "usermod -u 2000001 shipit",
+      "groupadd -g 143 shipit-journal-143",
+      "usermod -aG shipit-journal-143 shipit",
+    ]);
+  });
+
+  it("takes the supplementary-group-preserving drop for an allocated uid", () => {
+    // What `usermod` buys: a passwd entry for the allocated uid whose primary
+    // gid is the shared one, so `gosu <uid>` (the user form) applies.
+    const result = runEntrypoint([tempDir()], "2000001", {
+      workerGid: "1000",
+      passwdLine: "shipit:x:2000001:1000::/home/shipit:/bin/sh",
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.gosu).toEqual(["2000001 true"]);
+    expect(result.stderr).not.toContain("without supplementary groups");
+  });
+
+  // ---- docs/268: the workspace walk must not re-own hardlinked git objects ----
+
+  /**
+   * Run the entrypoint's own `chown_workspace` against a fixture tree.
+   *
+   * Extracted and EXECUTED rather than asserted against as source. The branch
+   * cannot be reached through {@link runEntrypoint} without putting a real
+   * `/workspace` in the mount list, and the thing under test is a `find`
+   * expression whose prune/`-o` precedence no amount of reading proves. The
+   * anchor is the function's own definition line, so a rename or a reshape fails
+   * here loudly instead of silently testing nothing.
+   */
+  function runChownWorkspace(tree: string): string[] {
+    const source = readFileSync(ENTRYPOINT, "utf8");
+    const start = source.indexOf("chown_workspace() {");
+    expect(start).toBeGreaterThan(-1);
+    const end = source.indexOf("\n}\n", start);
+    expect(end).toBeGreaterThan(start);
+    const fn = source.slice(start, end + 3);
+
+    const root = mkdtempSync(join(tmpdir(), "shipit-chownws-"));
+    const bin = join(root, "bin");
+    mkdirSync(bin);
+    const log = join(root, "chown.log");
+    writeFileSync(log, "");
+    writeFileSync(
+      join(bin, "chown"),
+      '#!/bin/sh\nshift 2\nfor a in "$@"; do printf "%s\\n" "$a" >> "$CHOWN_LOG"; done\n',
+      { mode: 0o755 },
+    );
+    const script = join(root, "fragment.sh");
+    writeFileSync(script, `set -eu\nUID_GID=2000001\nWORKER_GID=1000\n${fn}\nchown_workspace "$1"\n`);
+    const run = spawnSync("sh", [script, tree], {
+      env: { PATH: `${bin}:${process.env.PATH ?? ""}`, CHOWN_LOG: log },
+      encoding: "utf8",
+    });
+    expect(run.status).toBe(0);
+    return readFileSync(log, "utf8").split("\n").filter(Boolean).sort();
+  }
+
+  it("chowns object DIRECTORIES but never the hardlinked object FILES", () => {
+    // `git clone --local` hardlinks `.git/objects` from the shared bare cache
+    // into every session clone — measured: bare and two clones report the same
+    // inode. An inode has one owner across all its links, so chowning an object
+    // file here would hand THIS session ownership (chmod and rewrite rights) of
+    // content every sibling session and the cache read. Under one shared uid
+    // that was invisible; under per-session uids it is the cross-session write
+    // docs/268 exists to close.
+    const tree = tempDir();
+    mkdirSync(join(tree, ".git/objects/4d"), { recursive: true });
+    mkdirSync(join(tree, ".git/objects/pack"), { recursive: true });
+    mkdirSync(join(tree, ".git/lfs/objects/ab/cd"), { recursive: true });
+    mkdirSync(join(tree, ".pnpm-store/v3"), { recursive: true });
+    mkdirSync(join(tree, "src"), { recursive: true });
+    for (const f of [
+      ".git/config", ".git/objects/4d/deadbeef", ".git/objects/pack/p.pack",
+      ".git/lfs/objects/ab/cd/oid", ".pnpm-store/v3/blob", "src/a.ts",
+    ]) writeFileSync(join(tree, f), "");
+
+    const chowned = runChownWorkspace(tree);
+
+    // The object FILES are absent…
+    expect(chowned).not.toContain(join(tree, ".git/objects/4d/deadbeef"));
+    expect(chowned).not.toContain(join(tree, ".git/objects/pack/p.pack"));
+    expect(chowned).not.toContain(join(tree, ".git/lfs/objects/ab/cd/oid"));
+    // …but the object DIRECTORIES are there, or the worker could not create a
+    // new object inside a fanout directory.
+    expect(chowned).toContain(join(tree, ".git/objects/4d"));
+    expect(chowned).toContain(join(tree, ".git/objects/pack"));
+    expect(chowned).toContain(join(tree, ".git/lfs/objects/ab/cd"));
+    // Ordinary content is untouched by the exclusion — the walk is not a no-op.
+    expect(chowned).toContain(join(tree, "src/a.ts"));
+    expect(chowned).toContain(join(tree, ".git/config"));
+  });
+
+  it("does not descend into the shared pnpm store", () => {
+    // Mounted NESTED under /workspace and shared per runtime, so it gets the
+    // group treatment from the orchestrator instead. A `chown -R` here would
+    // take it from every other session.
+    const tree = tempDir();
+    mkdirSync(join(tree, ".pnpm-store/v3"), { recursive: true });
+    writeFileSync(join(tree, ".pnpm-store/v3/blob"), "");
+    writeFileSync(join(tree, "keep.txt"), "");
+
+    const chowned = runChownWorkspace(tree);
+
+    expect(chowned.some((p) => p.includes(".pnpm-store"))).toBe(false);
+    expect(chowned).toContain(join(tree, "keep.txt"));
   });
 
   it("leaves the legacy root runtime untouched", () => {

@@ -68,7 +68,7 @@ import {
   type LiveGenerations,
   type VerifiedGeneration,
 } from "./plugin-generations.js";
-import { chownToSessionWorker, sessionWorkerUid } from "./session-worker-uid.js";
+import { chownToSessionWorker, identityForTarget } from "./session-worker-uid.js";
 import { sessionStateDirForWorkspace } from "./session-state-dir.js";
 
 /** Durable per-session root holding one directory per imported plugin. */
@@ -436,8 +436,11 @@ export function preparePluginState(opts: PreparePluginStateOptions): PluginState
       // means the one writable surface a plugin has is not writable — which
       // would surface as an inscrutable EACCES inside third-party code rather
       // than as a problem with the session (review finding).
-      const owner = sessionWorkerUid();
-      if (owner !== null && fs.statSync(stateDir).uid !== owner) {
+      // docs/268 — ask the SAME resolver the chown just used. Comparing against
+      // the one global uid would now fail for every session that has an
+      // identity of its own, turning a successful handoff into a plugin failure.
+      const owner = identityForTarget(stateDir);
+      if (owner !== null && fs.statSync(stateDir).uid !== owner.uid) {
         entry.failure = `\`${use.alias}\`: its shared state directory could not be handed to the session user.`;
         continue;
       }

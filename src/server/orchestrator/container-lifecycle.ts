@@ -43,7 +43,9 @@ import {
   chownToSessionWorker,
   handWorkspaceBackToWorker,
   reconcileDepDirCacheOwnership,
-  sessionWorkerUid,
+  sessionWorkerGid,
+  shareWithAllSessions,
+  identityForTarget,
 } from "./session-worker-uid.js";
 import { buildTierAEgressInputs, installEgressFirewall } from "./egress-firewall-install.js";
 import {
@@ -283,11 +285,16 @@ export function ensurePnpmStoreDir(storeDir: string): boolean {
     console.warn(`[containers] pnpm store mkdir failed for ${storeDir}:`, err);
     return false;
   }
-  const uid = sessionWorkerUid();
-  if (uid === null) return true; // legacy root runtime — the worker owns everything
-  chownToSessionWorker(storeDir);
+  const gid = sessionWorkerGid();
+  if (gid === null) return true; // legacy root runtime — the worker owns everything
+  // docs/268 — the store is shared per runtime across sessions, so it is handed
+  // over by GROUP, not by owner. Chowning it to one session's uid would take it
+  // from every other session, which is the failure this dir's own docstring
+  // describes (an EACCES with no in-session recovery) arriving by a new route.
+  // The verification below follows: the property that matters is now the group.
+  shareWithAllSessions(storeDir);
   try {
-    return fs.lstatSync(storeDir).uid === uid;
+    return fs.lstatSync(storeDir).gid === gid;
   } catch (err) {
     console.warn(`[containers] pnpm store ownership check failed for ${storeDir}:`, err);
     return false;
@@ -571,7 +578,17 @@ export function buildEnv(
   // own default (1000) still applies in-image, and orchestrator-side chowns are
   // no-ops, preserving today's behavior.
   if (procEnv.SHIPIT_SESSION_WORKER_UID) {
-    env.push(`SHIPIT_SESSION_WORKER_UID=${procEnv.SHIPIT_SESSION_WORKER_UID}`);
+    // docs/268 — the UID is now per-session and the GID is the shared one. The
+    // identity is read from the session's own directory (the record the session
+    // cannot write), so a session created before docs/268 resolves to the shared
+    // value and its container boots exactly as it did. Both are forwarded: the
+    // entrypoint needs the pair, because `gosu <uid>:<gid>` and the chown loop
+    // can no longer assume they are equal.
+    const identity = identityForTarget(config.workspaceDir);
+    const uid = identity?.uid ?? procEnv.SHIPIT_SESSION_WORKER_UID;
+    const gid = identity?.gid ?? procEnv.SHIPIT_SESSION_WORKER_UID;
+    env.push(`SHIPIT_SESSION_WORKER_UID=${uid}`);
+    env.push(`SHIPIT_SESSION_WORKER_GID=${gid}`);
   }
 
   // docs/183 — forward the session-worker image id so the worker's

@@ -13,7 +13,7 @@ import {
 } from "../shared/git-remote-credential.js";
 import { ensurePnpmStoreGitExcluded } from "../shared/git.js";
 import { hasUrlCredentials, stripRemoteUrlCredentials } from "./git-utils.js";
-import { chownTreeToSessionWorker } from "./session-worker-uid.js";
+import { handWorkspaceBackToWorker } from "./session-worker-uid.js";
 import { linkLfsObjectsIntoClone } from "./git-lfs-store.js";
 
 /**
@@ -288,6 +288,36 @@ export class RepoGit {
     // Best-effort and flag-gated (off by default): anything not seeded here is
     // still fetched by the provisioning `git lfs pull`.
     linkLfsObjectsIntoClone(this.repoDir, sessionDir);
+    // docs/198 — keep pnpm's relocated `/workspace/.pnpm-store` (a mountpoint at the
+    // workspace root for pnpm repos) out of git via `.git/info/exclude`, so the
+    // post-turn auto-commit never stages the store's internals. Non-tracked, so the
+    // committed tree is unchanged; idempotent + best-effort.
+    ensurePnpmStoreGitExcluded(sessionDir);
+    // docs/150 §7 addendum: `git clone --local` and the root-side writes above
+    // leave the whole fresh tree (worktree + `.git`) `root:root`. On a cold
+    // session the entrypoint chowns the mount at boot, but a post-boot reclone
+    // (warm-pool warming, cache recovery) runs after that one-shot, so without
+    // this the tree is unwritable to the worker uid.
+    //
+    // docs/268 — this MUST come before the `git config` writes below, and it
+    // MUST be the object-aware handback rather than a plain recursive chown.
+    // Both halves were wrong before per-session uids made them visible:
+    //
+    //   - **Ordering.** Those writes go through `safeSimpleGit(sessionDir)`,
+    //     which now drops to the session's own uid. Run against a tree that is
+    //     still `root:root` they EACCES on `.git/config`, and session creation
+    //     fails. It worked until now only because a root-owned tree meant "do
+    //     not drop", which stopped being true the moment the session directory
+    //     became the record instead of the tree.
+    //   - **Object awareness.** `git clone --local` HARDLINKS `.git/objects`
+    //     from the shared bare cache — measured: the cache and two clones report
+    //     the same inode — and an inode has one owner across every link. A plain
+    //     recursive chown therefore hands THIS session ownership, and so chmod
+    //     and rewrite rights, over object files the cache and every sibling
+    //     clone read. `handWorkspaceBackToWorker` composes the object-aware
+    //     `.git` walk (which chowns object directories but never object files)
+    //     with the worktree walk, which is exactly the split this needs.
+    handWorkspaceBackToWorker(sessionDir);
     // Disable auto-gc in the session clone to prevent hardlink breakage
     const sessionGit = safeSimpleGit(sessionDir);
     await sessionGit.raw(["config", "gc.auto", "0"]);
@@ -298,18 +328,6 @@ export class RepoGit {
     if (remoteUrl) {
       await sessionGit.raw(["remote", "set-url", "origin", credentialFreeRemote(remoteUrl, "cloneFromCache")]);
     }
-    // docs/198 — keep pnpm's relocated `/workspace/.pnpm-store` (a mountpoint at the
-    // workspace root for pnpm repos) out of git via `.git/info/exclude`, so the
-    // post-turn auto-commit never stages the store's internals. Non-tracked, so the
-    // committed tree is unchanged; idempotent + best-effort.
-    ensurePnpmStoreGitExcluded(sessionDir);
-    // docs/150 §7 addendum: `git clone --local` + the gc/remote config writes
-    // above all run as the root orchestrator. On a cold session the entrypoint
-    // chowns the mount at boot, but a post-boot reclone (warm-pool warming,
-    // cache recovery) runs after that one-shot — so the whole fresh tree
-    // (worktree + `.git`) would stay root:root and be unwritable to the worker
-    // uid. Chown it here. No-op unless SHIPIT_SESSION_WORKER_UID is set.
-    chownTreeToSessionWorker(sessionDir);
     console.log("[git] Cloned from cache:", this.repoDir, "→", sessionDir);
   }
 

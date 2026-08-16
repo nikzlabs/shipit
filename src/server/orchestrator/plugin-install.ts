@@ -58,7 +58,7 @@ import {
   resolvePluginOverlayRoots,
   PLUGIN_OVERLAY_LABEL,
 } from "./plugin-overlay.js";
-import { chownToSessionWorker, chownTreeToSessionWorker, sessionWorkerUid } from "./session-worker-uid.js";
+import { chownToSessionWorker, chownTreeToSessionWorker, identityForSession } from "./session-worker-uid.js";
 import { ensureUntrustedPluginNetwork, waitForContainerExit } from "./plugin-container.js";
 import {
   preparePluginNetns,
@@ -526,7 +526,11 @@ async function runInstallContainer(
   command: string,
   networkMode: string,
 ): Promise<string | null> {
-  const uid = sessionWorkerUid();
+  // docs/268 — a plugin container writes THIS session's workspace and overlay,
+  // so it runs as this session's identity rather than the one global uid. A
+  // session that predates per-session identities resolves to that global value,
+  // so its plugin containers are unchanged.
+  const identity = identityForSession(deps.sessionId);
   const depCache = resolveDepCacheMount(deps, job);
   const container = await deps.docker.createContainer({
     Image: deps.image,
@@ -536,7 +540,7 @@ async function runInstallContainer(
     Entrypoint: ["/bin/sh", "-c"],
     Cmd: [command],
     WorkingDir: PLUGIN_INSTALL_DIR,
-    ...(uid !== null ? { User: `${uid}:${uid}` } : {}),
+    ...(identity !== null ? { User: `${identity.uid}:${identity.gid}` } : {}),
     // The generation's env and nothing else. Notably absent: everything in this
     // process's environment, the worker URL, and any credential.
     Env: [

@@ -78,6 +78,12 @@ You don't need to configure anything for this. **Avoid setting `user:` (especial
 `user:` is honored as-is, which can re-introduce root-owned caches the terminal
 user can't delete or rebuild.
 
+One range is not yours to use: **UIDs 2000000–2999999 are reserved by ShipIt**
+for per-session identities, and a `user:` inside it is rejected during
+validation. Nothing real falls in that range — system accounts stop at 999, the
+account your image ships is almost always in the low thousands, and `nobody` is
+65534 — so this only ever affects a number picked arbitrarily. Pick a lower one.
+
 ## Hot reload (HMR) needs polling
 
 Dev servers in a preview service run in their **own container**, watching the
@@ -591,7 +597,9 @@ session for the same reason — the effective model would be the root file plus
 files ShipIt never validated.
 ShipIt replaces `dns:` and removes `SETUID` and `SETGID` for contained services.
 Each service must declare a numeric, non-root `user:` other than the reserved
-UIDs 911 and 912. The image must run directly as that user. Use an Open session
+UIDs 911 and 912, and outside ShipIt's per-session range 2000000–2999999 (which
+is refused for every service, contained or not). The image must run directly as
+that user. Use an Open session
 for images that require root initialization or an entrypoint privilege drop.
 
 A contained service first starts on an internal network with no public route.

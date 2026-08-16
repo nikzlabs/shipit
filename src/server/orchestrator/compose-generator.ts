@@ -15,7 +15,8 @@ import path from "node:path";
 import { isScalar, parse as parseYaml, parseDocument, stringify as stringifyYaml, visit } from "yaml";
 import type { ComposeConfig } from "../shared/shipit-config.js";
 import type { SecretRequirement } from "../shared/types/domain-types.js";
-import { sessionWorkerUid } from "./session-worker-uid.js";
+import { identityForSession, sessionWorkerUid } from "./session-worker-uid.js";
+import { isSessionUid, SESSION_UID_MIN, SESSION_UID_MAX } from "./session-uid-allocator.js";
 import { COMPOSE_OVERRIDE_FILE } from "./session-state-dir.js";
 import { EGRESS_RESOLVER_UID } from "./egress-dns.js";
 import { EGRESS_PROXY_UID } from "./egress-proxy-install.js";
@@ -1309,6 +1310,30 @@ export function validateServiceSecurity(
       }
     }
   }
+  // docs/268 req 4a — a project may not declare a `user:` inside the range
+  // ShipIt allocates session identities from.
+  //
+  // Checked for EVERY service, contained or not, and before the contained-service
+  // rule below: the hazard is not egress, it is a service running as some other
+  // session's identity. The range is chosen so nothing real falls in it — distro
+  // system accounts stop at 999, every image account a project names is in the
+  // low thousands, `nobody` is 65534, and the `subuid` convention tops out around
+  // 165536 — so this refusal exists to make a collision impossible rather than
+  // merely unlikely, and no project that exists today trips it.
+  const declaredUser = typeof svc.user === "string" || typeof svc.user === "number"
+    ? String(svc.user).trim()
+    : "";
+  const declaredUid = /^\d+(?::\d+)?$/.test(declaredUser)
+    ? Number(declaredUser.split(":", 1)[0])
+    : NaN;
+  if (isSessionUid(declaredUid)) {
+    throw new ComposeValidationError(
+      `Service \`${name}\`: \`user: ${declaredUser}\` is inside ${SESSION_UID_MIN}-${SESSION_UID_MAX}, `
+      + "the UID range ShipIt reserves for per-session identities. A service running as another "
+      + "session's UID is not something ShipIt can allow. Pick a UID below "
+      + `${SESSION_UID_MIN} — the account your image already uses is almost certainly one.`,
+    );
+  }
   if (containEgress && !trustedProxyShape) {
     const containedUser = typeof svc.user === "string" || typeof svc.user === "number"
       ? String(svc.user).trim()
@@ -1699,7 +1724,12 @@ export function generateComposeOverride(
     //   - set (e.g. 1000) → both sides share the UID; one deploy flips both.
     // An explicit `user:` in the user's compose file is honored — we never
     // override a deliberate choice.
-    const workerUid = sessionWorkerUid();
+    // docs/268 — the session's OWN uid, with the shared gid. Falls back to the
+    // single global value for a session that predates per-session identities, so
+    // its services keep running as exactly what they ran as before.
+    const identity = identityForSession(opts.sessionId);
+    const workerUid = identity?.uid ?? sessionWorkerUid();
+    const workerGid = identity?.gid ?? workerUid;
     // docs/128 — the ops docker-socket-proxy image must start as its image
     // default user so its entrypoint can generate
     // /usr/local/etc/haproxy/haproxy.cfg before haproxy drops privileges. The
@@ -1709,7 +1739,7 @@ export function generateComposeOverride(
     const preservesImageStartupUser = svc.trustedOpsProxy === true
       || (!opts.containEgress && svc.name === "docker-socket-proxy");
     if (workerUid !== null && svc.user === undefined && !preservesImageStartupUser) {
-      entry.user = `${workerUid}:${workerUid}`;
+      entry.user = `${workerUid}:${workerGid}`;
     }
 
     // Strip host port bindings — compose services are accessed through
