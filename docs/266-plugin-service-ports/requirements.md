@@ -42,28 +42,18 @@ comes from the plugin's fragment, and the per-service `overrides` are
 8. The port the project defined is available to the plugin's own process, so
    its server can bind that port. A service that does not listen on it is
    reported as such, rather than left silently unreachable.
+9. A plugin service is previewable exactly when the consuming project names a
+   port for it. A plugin service the project names no port for does not appear
+   in the Preview pane, and the project writes nothing for it.
+10. A plugin service's preview address does not change for the life of a
+    session, unless the consuming project changes the port it wrote.
 
 ## Open questions
 
 Each needs a human answer before design. Nothing here is settled by writing it
 down, and none of it may be resolved by inference.
 
-- **How is a plugin service known to be previewable** once no port is declared?
-  Today a fragment's `ports:` is what makes a service default to
-  `x-shipit-preview: auto`. Does the fragment then have to say `auto`
-  explicitly, or does the consuming project naming a port say it?
-- **Does the published-vs-container port split survive?** docs/262 gives a
-  plugin service two numbers — a pinned routing port and the container port it
-  actually serves on — because a tracked-branch commit can move the fragment's
-  port behind a consuming session's back, and the preview origin must not move
-  with it (docs/262 req 18). If the consumer owns the port, it cannot move
-  behind their back. Does `plugin-ports.json`, the pin, and the indirection in
-  `ServiceManager.resolvePreviewTarget` collapse to one number, and is losing
-  the pin acceptable for req 18?
-- **Does a plugin service ever legitimately need a fixed port** — a protocol
-  that hardcodes one, a client that cannot be told where to connect? If so, this
-  rule needs an exception with a name, and the exception is where collisions
-  come back.
+*(none open — all eight were answered on 2026-08-16; see below)*
 
 ## Resolved questions
 
@@ -92,6 +82,26 @@ down, and none of it may be resolved by inference.
   ShipIt reports a service that does not listen on the defined port, rather
   than leaving the consumer to work out why the preview is empty. Recorded in
   requirement 8.
+- **2026-08-16 — How is a plugin service known to be previewable once no port
+  is declared?** Nik: the consuming project naming a port is what says it. One
+  declaration, in the place that now owns the decision, and a plugin service
+  the project names no port for — a database, a worker — needs nothing written
+  at all. The exported fragment does not say `x-shipit-preview: auto` either.
+  Recorded in requirement 9.
+- **2026-08-16 — Does the published-vs-container port split survive?** Nik:
+  collapse it to one number. `plugin-ports.ts`, `<sessionDir>/plugin-ports.json`
+  and the indirection in `ServiceManager.resolvePreviewTarget` go, and a plugin
+  service's port becomes its preview origin AND its container port, exactly as
+  a project service's already is. This does not lose docs/262 req 18: the pin
+  existed because a tracked commit could move the fragment's port behind a
+  consuming session's back, and under requirement 2 the number is the
+  consumer's own, so it can only move when the consumer moves it. Recorded as
+  requirement 10, which states that guarantee in the consumer's terms.
+- **2026-08-16 — Does a plugin service ever legitimately need a fixed port?**
+  Nik: no exception. A protocol that demands a particular number is served by
+  the consuming project writing that number, which requirement 2 already lets
+  it do. Naming an exception is where the collision comes back, so there is
+  none. No requirement changed.
 
 ## Not in scope
 
