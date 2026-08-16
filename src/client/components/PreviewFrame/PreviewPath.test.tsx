@@ -31,6 +31,33 @@ describe("PreviewPath", () => {
     expect(screen.getByText("?tab=open")).toBeInTheDocument();
   });
 
+  it("reserves width for the copy button so it cannot be clipped away", () => {
+    // The icon has always been shrink-0, which is not enough on its own: it
+    // sits inside a region that was free to collapse to zero, so it was cut
+    // away along with the text — losing the only route back to the absolute
+    // URL exactly when the path had got too short to read. The region floor is
+    // what keeps it, so assert the floor rather than the icon's own class.
+    const { container } = render(<PreviewPath path="/orders" fullUrl="http://a--5173.localhost/orders" />);
+    const region = container.firstElementChild as HTMLElement;
+    expect(region.className).toContain("min-w-7");
+    expect(region.className).not.toContain("min-w-0");
+  });
+
+  it("exposes the address text as the element the toolbar measures", () => {
+    // usePreviewToolbarCollapse drops labels to keep THIS element above its
+    // minimum. If the marker moves or disappears the hook silently reads null
+    // and stops protecting the address, so pin it here.
+    const { container } = render(<PreviewPath path="/orders?tab=open" fullUrl="http://a--5173.localhost/orders?tab=open" />);
+    const measured = container.querySelector("[data-preview-address]");
+    expect(measured).toBeInTheDocument();
+    expect(measured).toHaveTextContent("/orders");
+    expect(measured).toHaveTextContent("?tab=open");
+    // Content-sized and shrinkable, never hidden: that is what stops a
+    // truncated address leaving unused space beside the copy button.
+    expect(measured?.className).toContain("min-w-0");
+    expect(measured?.className).toContain("overflow-hidden");
+  });
+
   it("never shows the host or port", () => {
     render(<PreviewPath path="/settings" fullUrl="http://a3f9c2--5173.localhost/settings" />);
     const button = screen.getByRole("button");
