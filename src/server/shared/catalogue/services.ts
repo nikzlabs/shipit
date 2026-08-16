@@ -477,9 +477,11 @@ export const SERVICES = [
           { id: "anthropic/claude-sonnet-5", label: "Sonnet 5", ...MODEL_IDENTITIES.sonnet5, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: ANTHROPIC_PRICES.sonnet5 },
           // Fable 5 leads SWE-bench Pro (80.3%) and sits second on the public
           // intelligence ranking behind Opus 5, so a curated coding list that
-          // omits it is missing a top-two model. `A_MSG` is the same claim its
-          // two siblings above already make, and OpenRouter's rate matches
-          // Anthropic's own.
+          // omits it is missing a top-two model. OpenRouter's rate matches
+          // Anthropic's own. `A_MSG` is measured here, not inherited from the two
+          // siblings above — and the distinction earned its keep: the identical
+          // inheritance argument for this model at VERCEL predicted a pass on
+          // Codex that the sweep refuted.
           { id: "anthropic/claude-fable-5", label: "Fable 5", ...MODEL_IDENTITIES.fable5, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: ANTHROPIC_PRICES.fable5 },
           { id: "deepseek/deepseek-v4-flash", label: "DeepSeek V4 Flash", ...MODEL_IDENTITIES.deepseekV4Flash, styles: [A_MSG, O_CC, O_RESP], contextWindow: ONE_M, price: OPENROUTER_PRICES.v4flash },
           { id: "deepseek/deepseek-v4-pro", label: "DeepSeek V4 Pro", ...MODEL_IDENTITIES.deepseekV4Pro, styles: [A_MSG, O_CC, O_RESP], contextWindow: ONE_M, price: OPENROUTER_PRICES.v4pro },
@@ -556,8 +558,8 @@ export const SERVICES = [
           { id: "openai/gpt-5.6-terra", label: "GPT-5.6 Terra", ...MODEL_IDENTITIES.gpt56terra, styles: [O_RESP, O_CC], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.terra },
           { id: "deepseek/deepseek-v4-flash", label: "DeepSeek V4 Flash", ...MODEL_IDENTITIES.deepseekV4Flash, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: VERCEL_PRICES.v4flash },
           // V4 Pro holds the SWE-bench Verified record (80.6%) under an MIT
-          // licence; only V4 Flash was listed here before. `A_MSG` is the claim
-          // the Flash row beside it already makes — same gateway, same upstream.
+          // licence; only V4 Flash was listed here before. Both of its styles are
+          // measured rather than carried over from the Flash row beside it.
           { id: "deepseek/deepseek-v4-pro", label: "DeepSeek V4 Pro", ...MODEL_IDENTITIES.deepseekV4Pro, styles: [A_MSG, O_CC, O_RESP], contextWindow: ONE_M, price: VERCEL_PRICES.v4pro },
           { id: "zai/glm-5.2", label: "GLM-5.2", ...MODEL_IDENTITIES.glm52, styles: [A_MSG, O_CC, O_RESP], contextWindow: ONE_M, price: VERCEL_PRICES.glm52 },
           { id: "xai/grok-4.6", label: "Grok 4.6", ...MODEL_IDENTITIES.grok46, styles: [A_MSG, O_CC, O_RESP], contextWindow: HALF_M, price: VERCEL_PRICES.grok46 },

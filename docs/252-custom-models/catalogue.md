@@ -973,6 +973,22 @@ Every 🔍, but these change the *shape* rather than the contents:
    so declaring only `A_MSG`/`O_CC` there is correct. Adding a further row is a measurement,
    not a deduction. Evidence and controls for the 08-15 sweep:
    [`pair-verification.md`](./pair-verification.md).
+7. **Do the gateways translate `A_MSG` / `O_RESP` for an upstream that publishes neither?**
+   **Open, and now the highest-value measurement on this feature.** The 2026-08-16 curation
+   pass added the four frontier coding models both gateways serve that ShipIt held no direct
+   credential for — Grok 4.6, Gemini 3.7 Flash, Kimi K3, Qwen3.8 Max — and could declare only
+   `O_CC`, each gateway's own native API, because none of Google, xAI, Moonshot or Alibaba
+   publishes an Anthropic-Messages or Responses surface upstream. Question 5's rule applies
+   unchanged: one model answering does not establish a translation layer.
+
+   The cost of that is concrete rather than theoretical. `openai-chat-completions` is spoken
+   by **OpenCode alone**, and the default install is `SHIPIT_HARNESSES=claude,codex` — so all
+   four rows reach a default install through no harness at all. Measuring is cheap and is the
+   same shape as the 08-15 sweep: one Claude Code turn per model against
+   `https://openrouter.ai/api` and `https://ai-gateway.vercel.sh`, one `codex exec` per model
+   against each gateway's `/v1`. The blocker is not method but credentials — neither gateway
+   key is present in a session container, so this needs either a key or the dogfood inner
+   instance's already-adopted `openrouter:key` / `vercel:key` routes.
 6. **What does GLM's coding plan offer, and how does its auth work?** Phase 2 owns the
    integration and req 15 is unmet until it lands.
 7. **Do the gateways translate `A_MSG` / `O_RESP` for an upstream that publishes neither?**
