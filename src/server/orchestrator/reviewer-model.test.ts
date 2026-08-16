@@ -11,12 +11,13 @@ import { HARNESSES } from "../shared/catalogue/index.js";
  * that catalogue's order and about which models actually reach which harness, so
  * a fixture would let them pass here and disagree with what ShipIt does.
  *
- * The ranking itself is exercised as a pure function, because the shipped
- * catalogue cannot reach every rung: Claude's family speaks only
- * Anthropic-Messages and GPT's only Responses, so no family currently spans both
- * harnesses and tiers 3 and 5 are unreachable end to end today. They are not
- * hypothetical — one gateway row gaining a style makes them reachable — so they
- * are pinned where they can be.
+ * The ranking itself is also exercised as a pure function, one rung at a time.
+ * When this file was written no family spanned both harnesses and tiers 3 and 5
+ * were unreachable end to end; docs/268's third harness changed that (an
+ * anthropic-key model now bends onto OpenCode — tier 3 is asserted end to end
+ * in the selection suite below, and tier 5 is reachable the same way through a
+ * gateway row). The unit rungs stay because they pin each predicate in
+ * isolation, not because the catalogue cannot reach them.
  */
 
 function route(
@@ -649,12 +650,144 @@ describe("selecting the reviewer furthest from the implementer (req 4)", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.tierBasis).toBe("harness-only");
-    // "opencode" since docs/268: with the model axes undecidable, BOTH slots
-    // reach a different-harness candidate (slot 1's anthropic key now resolves
-    // onto OpenCode), and an equal tier keeps the earlier slot. Before the
-    // third harness, slot 1 could only resolve onto the implementer's own
-    // Claude Code, so slot 2's Codex won.
+    // Since docs/268 BOTH slots reach a different-harness candidate (slot 1's
+    // anthropic key resolves onto OpenCode) and tie at the same rung — and the
+    // harness-only tie-break (planning#408) then prefers the GPT slot: its
+    // family provably differs from Claude Code's native (Anthropic) family,
+    // while slot 1's claude-opus-5 is most likely what the session itself runs.
+    expect(result.target.harnessId).toBe("codex");
+    expect(result.target.selection.serviceId).toBe("openai");
+  });
+
+  /**
+   * planning#408 — the harness-only tie-break is a weak PRIOR, and these are its
+   * fences: it must never override a known-identity comparison, and it must
+   * never outrank a real tier difference.
+   */
+  it("does not apply the harness-only tie-break when the implementer's model is known", async () => {
+    installAll();
+    const { selectReviewer } = await import("./reviewer-model.js");
+    // A GLM session on Claude Code: the harness's native family (claude) is
+    // WRONG for this session, and the identity comparison already knows it.
+    // Both pins land on tier 1 (different family, different harness), so a
+    // tie-break that ignored the known identity would flip to the GPT slot.
+    const result = selectReviewer(
+      {
+        harnessId: "claude",
+        selection: { serviceId: "zai", billingMode: "sub", modelId: "glm-5.2[1m]" },
+      },
+      {
+        credentialStore: storeWith([ANTHROPIC_KEY, OPENAI_KEY], {
+          first: {
+            serviceId: "anthropic",
+            billingMode: "key",
+            modelId: "claude-sonnet-5",
+            reasoningEffort: "high",
+          },
+          second: {
+            serviceId: "openai",
+            billingMode: "key",
+            modelId: "gpt-5.4",
+            reasoningEffort: "high",
+          },
+        }),
+        env: {},
+      },
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.tierBasis).toBe("model-and-harness");
+    expect(result.tier).toBe(1);
+    // The ordinary tie rule holds: equal tier keeps the FIRST slot, even though
+    // its family matches the harness's native one.
+    expect(result.target.slot).toBe("first");
+    expect(result.target.selection.modelId).toBe("claude-sonnet-5");
+  });
+
+  /**
+   * The comparator's fences, pinned as a unit — every rung × prior combination
+   * in one place, including combinations the end-to-end test below reaches only
+   * one of.
+   */
+  it("the tie-break prior decides ties only — never a real tier difference", async () => {
+    const { beatsIncumbentReviewer } = await import("./reviewer-model.js");
+    // A worse tier loses even when it avoids the likely family…
+    expect(
+      beatsIncumbentReviewer(
+        { tier: 2, avoidsLikelyFamily: true },
+        { tier: 1, avoidsLikelyFamily: false },
+      ),
+    ).toBe(false);
+    // …and a better tier wins even when it matches it.
+    expect(
+      beatsIncumbentReviewer(
+        { tier: 1, avoidsLikelyFamily: false },
+        { tier: 2, avoidsLikelyFamily: true },
+      ),
+    ).toBe(true);
+    // On a tie, avoiding the likely family displaces the earlier slot…
+    expect(
+      beatsIncumbentReviewer(
+        { tier: 1, avoidsLikelyFamily: true },
+        { tier: 1, avoidsLikelyFamily: false },
+      ),
+    ).toBe(true);
+    // …but with no prior in play (a known implementer identity computes none,
+    // so both sides read false) the earlier slot keeps the tie.
+    expect(
+      beatsIncumbentReviewer(
+        { tier: 1, avoidsLikelyFamily: false },
+        { tier: 1, avoidsLikelyFamily: false },
+      ),
+    ).toBe(false);
+    // A candidate already avoiding it is not displaced by another that does.
+    expect(
+      beatsIncumbentReviewer(
+        { tier: 1, avoidsLikelyFamily: true },
+        { tier: 1, avoidsLikelyFamily: true },
+      ),
+    ).toBe(false);
+  });
+
+  /**
+   * The tier-dominance fence end to end, through the one shipped row that can
+   * reach it: the Z.ai coding plan's GLM is carrier-restricted to Claude Code
+   * (`carriers: ["claude"]`), so it CANNOT bend away from a Claude implementer
+   * — it lands prior-avoiding (glm ≠ the native claude family) on the
+   * implementer's own harness at tier 2, against a prior-matching claude-opus-5
+   * that reaches OpenCode at tier 1. The tier must win.
+   */
+  it("keeps a further prior-matching reviewer over a nearer prior-avoiding one", async () => {
+    installAll();
+    const { selectReviewer } = await import("./reviewer-model.js");
+    const result = selectReviewer(
+      { harnessId: "claude" },
+      {
+        credentialStore: storeWith([ANTHROPIC_KEY, route({ serviceId: "zai", billingMode: "sub" })], {
+          first: {
+            serviceId: "anthropic",
+            billingMode: "key",
+            modelId: "claude-opus-5",
+            reasoningEffort: "high",
+          },
+          second: {
+            serviceId: "zai",
+            billingMode: "sub",
+            modelId: "glm-5.2[1m]",
+            reasoningEffort: "high",
+          },
+        }),
+        env: {},
+      },
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.tierBasis).toBe("harness-only");
+    expect(result.target.slot).toBe("first");
     expect(result.target.harnessId).toBe("opencode");
+    expect(result.tier).toBe(1);
   });
 
   it("marks the ranking as model-and-harness when the implementer's model is known", async () => {

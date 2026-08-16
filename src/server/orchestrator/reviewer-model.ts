@@ -51,6 +51,26 @@
  * so two services offering one model are not distant; family and canonical model
  * say everything service was standing in for. Service still decides the
  * credential and the price.
+ *
+ * ## The harness-only tie-break (planning#408)
+ *
+ * When the implementer's model cannot be identified, the ranking collapses onto
+ * the harness axis — and with three harnesses, BOTH derived slots can land on a
+ * different-harness candidate and tie at the same rung. Keeping the earlier slot
+ * there sent an unknown-model Claude session's work to claude-opus-5 on OpenCode
+ * while a configured GPT reviewer sat unused. So on an equal tier, and ONLY when
+ * the ranking is harness-only, {@link selectReviewer} prefers the candidate
+ * whose family provably differs from the family of the implementer *harness's
+ * native service* — a Claude Code session most likely runs a Claude-family
+ * model, whatever its unresolved selection would have said.
+ *
+ * That is a **weak prior, not an identity claim**: it deliberately softens
+ * "never claims a sameness it cannot prove" one notch, and three fences keep it
+ * weak. It orders equal tiers only, so it can never outrank a real distance
+ * difference; it never runs when the implementer's identity is known, so a real
+ * comparison always wins; and it prefers only a candidate whose family is
+ * *provably* different — an unidentifiable candidate, or a harness with no
+ * native service (OpenCode), leaves the ordinary first-slot tie rule in charge.
  */
 
 import type { AgentId, ReviewerPin, ReviewerSlot, ServiceRouting } from "../shared/types.js";
@@ -62,9 +82,11 @@ import {
   getHarness,
   getService,
   modelIdentityFor,
+  nativeServiceForHarness,
   sameCanonicalModel,
   sameModelFamily,
   type ConfiguredCredential,
+  type ModelFamily,
   type ModelIdentity,
   type ModelSelection,
 } from "../shared/catalogue/index.js";
@@ -273,22 +295,30 @@ export function selectReviewer(
   const implementerIdentity = implementer.selection
     ? modelIdentityFor(implementer.selection)
     : undefined;
+  // The weak prior of the header's harness-only tie-break section. Computed
+  // ONLY when the implementer's identity is unknown, so a known identity can
+  // never be second-guessed by a guess about the harness.
+  const likelyFamily = implementerIdentity
+    ? undefined
+    : soleFamilyOfService(nativeServiceForHarness(implementer.harnessId));
 
-  let best: { target: ReviewerTarget; tier: ReviewerTier } | undefined;
+  let best: { target: ReviewerTarget; tier: ReviewerTier; avoidsLikelyFamily: boolean } | undefined;
   for (const plan of slotPlans(credentials, deps)) {
     const resolved = resolveSlotPlan(plan, credentials, deps, implementer.harnessId);
     if (!resolved.target) continue;
+    const candidateIdentity = modelIdentityFor(resolved.target.selection);
     const tier = reviewerDistanceTier(
       { harnessId: implementer.harnessId, identity: implementerIdentity },
-      {
-        harnessId: resolved.target.harnessId,
-        identity: modelIdentityFor(resolved.target.selection),
-      },
+      { harnessId: resolved.target.harnessId, identity: candidateIdentity },
     );
-    // Strictly lower, so an equal tier keeps the EARLIER slot — which is the
-    // ranking's sixth rung ("otherwise the first configured reviewer") applied
-    // at every rung rather than only the last.
-    if (!best || tier < best.tier) best = { target: resolved.target, tier };
+    // A PROVABLE difference only: an unidentifiable candidate gets no credit.
+    const avoidsLikelyFamily =
+      likelyFamily !== undefined
+      && candidateIdentity !== undefined
+      && candidateIdentity.family !== likelyFamily;
+    if (beatsIncumbentReviewer({ tier, avoidsLikelyFamily }, best)) {
+      best = { target: resolved.target, tier, avoidsLikelyFamily };
+    }
   }
   if (!best) return { ok: false, reason: "no_reviewer_available" };
   return {
@@ -299,7 +329,50 @@ export function selectReviewer(
   };
 }
 
+/**
+ * Whether a candidate displaces the best reviewer seen so far (req 4 +
+ * planning#408). Strictly lower tier wins; an equal tier keeps the EARLIER slot
+ * — the ranking's sixth rung ("otherwise the first configured reviewer")
+ * applied at every rung rather than only the last — EXCEPT that on a tie the
+ * harness-only weak prior speaks first: a candidate whose family provably
+ * differs from the implementer harness's native family beats slot order.
+ *
+ * `avoidsLikelyFamily` is false for every candidate whenever the implementer's
+ * identity is known (no prior is computed at all), so the prior can never
+ * override a real identity comparison; and because it decides ties only, it can
+ * never outrank a real tier difference. Exported for the guard tests, which pin
+ * both fences — the tier-dominance one at the unit level and also end to end,
+ * via the one shipped row that CAN land a prior-avoiding candidate on the
+ * implementer's own harness at a worse tier: the Z.ai coding plan's GLM, whose
+ * credential is carrier-restricted to Claude Code and so cannot bend away.
+ */
+export function beatsIncumbentReviewer(
+  candidate: { tier: ReviewerTier; avoidsLikelyFamily: boolean },
+  incumbent: { tier: ReviewerTier; avoidsLikelyFamily: boolean } | undefined,
+): boolean {
+  if (!incumbent) return true;
+  if (candidate.tier !== incumbent.tier) return candidate.tier < incumbent.tier;
+  return candidate.avoidsLikelyFamily && !incumbent.avoidsLikelyFamily;
+}
+
 // ---- Internals -------------------------------------------------------------
+
+/**
+ * The one family a service offers, or `undefined` when it offers several or
+ * does not exist — the harness-only tie-break's prior (planning#408).
+ *
+ * Read from the catalogue rather than authored per harness, so a native service
+ * that ever gains a second family stops producing a prior instead of producing
+ * a wrong one: a mixed-family service says nothing about what a session on its
+ * harness is likely running, and `undefined` is how this says nothing.
+ */
+function soleFamilyOfService(serviceId: string | undefined): ModelFamily | undefined {
+  const service = serviceId ? getService(serviceId) : undefined;
+  if (!service) return undefined;
+  const families = new Set(service.modes.flatMap((mode) => mode.models.map((m) => m.family)));
+  const [only] = families;
+  return families.size === 1 ? only : undefined;
+}
 
 /**
  * What a slot points at, before a harness or a route is chosen: the user's pin,
