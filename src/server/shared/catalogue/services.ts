@@ -482,14 +482,14 @@ export const SERVICES = [
           { id: "z-ai/glm-5.2", label: "GLM-5.2", ...MODEL_IDENTITIES.glm52, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: OPENROUTER_PRICES.glm52 },
           // Grok 4.6 (2026-08-12) scores an agentic-work Elo behind only Opus 5,
           // and is statistically level with Fable 5 and Qwen3.8 Max.
-          { id: "x-ai/grok-4.6", label: "Grok 4.6", ...MODEL_IDENTITIES.grok46, styles: [O_CC], contextWindow: HALF_M, price: OPENROUTER_PRICES.grok46 },
+          { id: "x-ai/grok-4.6", label: "Grok 4.6", ...MODEL_IDENTITIES.grok46, styles: [A_MSG, O_CC, O_RESP], contextWindow: HALF_M, price: OPENROUTER_PRICES.grok46 },
           // Gemini 3.7 Flash (2026-08-13) is the cheapest frontier-adjacent agent
           // model on either gateway — an order of magnitude under Grok and Kimi.
-          { id: "google/gemini-3.7-flash", label: "Gemini 3.7 Flash", ...MODEL_IDENTITIES.gemini37flash, styles: [O_CC], contextWindow: ONE_M, price: OPENROUTER_PRICES.gemini37flash },
+          { id: "google/gemini-3.7-flash", label: "Gemini 3.7 Flash", ...MODEL_IDENTITIES.gemini37flash, styles: [A_MSG, O_CC, O_RESP], contextWindow: ONE_M, price: OPENROUTER_PRICES.gemini37flash },
           // Kimi K3 leads Terminal-Bench 2.1 (88.3%) and is the strongest
           // open-weight all-rounder.
-          { id: "moonshotai/kimi-k3", label: "Kimi K3", ...MODEL_IDENTITIES.kimiK3, styles: [O_CC], contextWindow: ONE_M, price: OPENROUTER_PRICES.kimiK3 },
-          { id: "qwen/qwen3.8-max", label: "Qwen3.8 Max", ...MODEL_IDENTITIES.qwen38max, styles: [O_CC], contextWindow: ONE_M, price: OPENROUTER_PRICES.qwen38max },
+          { id: "moonshotai/kimi-k3", label: "Kimi K3", ...MODEL_IDENTITIES.kimiK3, styles: [A_MSG, O_CC, O_RESP], contextWindow: ONE_M, price: OPENROUTER_PRICES.kimiK3 },
+          { id: "qwen/qwen3.8-max", label: "Qwen3.8 Max", ...MODEL_IDENTITIES.qwen38max, styles: [A_MSG, O_CC, O_RESP], contextWindow: ONE_M, price: OPENROUTER_PRICES.qwen38max },
         ],
       },
     ],
@@ -541,11 +541,11 @@ export const SERVICES = [
           // licence; only V4 Flash was listed here before. `A_MSG` is the claim
           // the Flash row beside it already makes — same gateway, same upstream.
           { id: "deepseek/deepseek-v4-pro", label: "DeepSeek V4 Pro", ...MODEL_IDENTITIES.deepseekV4Pro, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: VERCEL_PRICES.v4pro },
-          { id: "zai/glm-5.2", label: "GLM-5.2", ...MODEL_IDENTITIES.glm52, styles: [O_CC], contextWindow: ONE_M, price: VERCEL_PRICES.glm52 },
-          { id: "xai/grok-4.6", label: "Grok 4.6", ...MODEL_IDENTITIES.grok46, styles: [O_CC], contextWindow: HALF_M, price: VERCEL_PRICES.grok46 },
-          { id: "google/gemini-3.7-flash", label: "Gemini 3.7 Flash", ...MODEL_IDENTITIES.gemini37flash, styles: [O_CC], contextWindow: ONE_M, price: VERCEL_PRICES.gemini37flash },
-          { id: "moonshotai/kimi-k3", label: "Kimi K3", ...MODEL_IDENTITIES.kimiK3, styles: [O_CC], contextWindow: ONE_M, price: VERCEL_PRICES.kimiK3 },
-          { id: "alibaba/qwen3.8-max", label: "Qwen3.8 Max", ...MODEL_IDENTITIES.qwen38max, styles: [O_CC], contextWindow: ONE_M, price: VERCEL_PRICES.qwen38max },
+          { id: "zai/glm-5.2", label: "GLM-5.2", ...MODEL_IDENTITIES.glm52, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: VERCEL_PRICES.glm52 },
+          { id: "xai/grok-4.6", label: "Grok 4.6", ...MODEL_IDENTITIES.grok46, styles: [A_MSG, O_CC, O_RESP], contextWindow: HALF_M, price: VERCEL_PRICES.grok46 },
+          { id: "google/gemini-3.7-flash", label: "Gemini 3.7 Flash", ...MODEL_IDENTITIES.gemini37flash, styles: [A_MSG, O_CC, O_RESP], contextWindow: ONE_M, price: VERCEL_PRICES.gemini37flash },
+          { id: "moonshotai/kimi-k3", label: "Kimi K3", ...MODEL_IDENTITIES.kimiK3, styles: [A_MSG, O_CC, O_RESP], contextWindow: ONE_M, price: VERCEL_PRICES.kimiK3 },
+          { id: "alibaba/qwen3.8-max", label: "Qwen3.8 Max", ...MODEL_IDENTITIES.qwen38max, styles: [A_MSG, O_CC, O_RESP], contextWindow: ONE_M, price: VERCEL_PRICES.qwen38max },
         ],
       },
     ],
