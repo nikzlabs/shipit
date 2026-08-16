@@ -1,7 +1,7 @@
 ---
 issue: planning#321
 title: Custom models — live pair verification sweep
-description: A live turn per viable (harness, service, billing mode, model) pair, run 2026-08-15 against the dogfood inner instance — what the catalogue got right, and the three defects the sweep exposed.
+description: A live turn per viable (harness, service, billing mode, model) pair against the dogfood inner instance — what the catalogue got right, the three defects the sweep exposed, and the post-fix re-verification.
 ---
 
 # 252 — Live pair verification sweep
@@ -34,6 +34,12 @@ Credentials present in the instance (all six adopted and `ready`): `anthropic:su
 and no OpenAI credential, so those rows are **untested** rather than passing or failing.
 
 That yields **16 viable pairs** — 12 on Claude, 4 on Codex.
+
+## Status: all three defects fixed and re-verified
+
+The sweep below is the **2026-08-15 pre-fix** run — kept as the record of what was measured
+and how the defects were found. All three landed and were re-verified against the merged code
+on **2026-08-16**; see [after the fixes](#after-the-fixes-2026-08-16) for the post-fix matrix.
 
 ## Results
 
@@ -208,17 +214,73 @@ OpenAI-compatible base only, not some other Z.ai base path.
   completed correctly — but it is a real gap in the CLI's own table, and it will show up
   again for any gateway row that reaches Codex.
 
+## After the fixes (2026-08-16)
+
+planning#389, planning#390 and planning#391 all merged, and the affected pairs were re-run
+against the merged code in the same instance. **15 of 15 behaved as the fixes intend.**
+
+### planning#390 — every Codex pair now runs through ShipIt
+
+The four rows that were CLI-verified only are now end-to-end verified:
+
+| Service | Mode | Model | Pre-fix | Post-fix |
+|---|---|---|---|---|
+| deepseek | key | `deepseek-v4-flash` | fail | **pass** |
+| deepseek | key | `deepseek-v4-pro` | fail | **pass** |
+| vercel | key | `openai/gpt-5.6-sol` | fail | **pass** |
+| vercel | key | `openai/gpt-5.6-terra` | fail | **pass** |
+
+### planning#391 — two newly viable pairs, and they work
+
+OpenRouter's two **DeepSeek** rows now declare `openai-responses`, so the viable set grows
+from 16 to 18. Both new pairs pass:
+
+| Service | Mode | Model | Result |
+|---|---|---|---|
+| openrouter | key | `deepseek/deepseek-v4-flash` | **pass** |
+| openrouter | key | `deepseek/deepseek-v4-pro` | **pass** |
+
+Its Anthropic and GLM rows deliberately do **not** carry the style — one model answering does
+not establish that the gateway translates for an upstream serving no Responses API of its
+own. So `codex × openrouter:key × anthropic/claude-opus-5` is now correctly *refused* rather
+than silently downgraded, which is the two fixes composing.
+
+### planning#389 — refused, with a message that names the real cause
+
+All five style-incompatible requests now return **HTTP 400** instead of running on the
+substituted harness and billing:
+
+```
+Codex cannot run GLM-5.2 — they share no API style.
+Choose a model Codex can run, or run GLM-5.2 on Claude Code.
+```
+
+That also settles the wording complaint this doc raised: the old text blamed the credential
+("no credential this harness can use offers it") for what is an API-style incompatibility.
+The new message names the actual cause and offers both remedies.
+
+### No regression on the Claude side
+
+Spot-checked across four services — `deepseek:key`, `openrouter:key`, `vercel:key`,
+`zai:sub` — all still pass. The `HOME`/`CODEX_HOME` change is Codex-only and did not disturb
+the Anthropic path, as expected: a redirected Claude turn never needed a writable config root,
+which is why it was unaffected by the bug in the first place.
+
+### Still outstanding
+
+**planning#358 is unrelated and still open** — `anthropic:sub` remains the one failing Claude
+route, and none of these three fixes touch it.
+
 ## Coverage this sweep does not have
 
 Stated plainly so nobody reads the matrix as broader than it is:
 
 - **`anthropic:key` and every OpenAI row** (`sub` and `key`, 8 models each) are untested — no
   credential was present. Nothing here says whether they work.
-- **No Codex row has been exercised *through ShipIt*** anywhere in this instance. The Codex
-  cells above verify the catalogue's endpoints, styles and model ids at the CLI; they do not
-  verify ShipIt's local-mode spawn path, which is broken (planning#390). Once that lands,
-  those four pairs are worth re-running through the product — the fix is what converts them
-  from CLI-verified to end-to-end verified.
+- **No Codex row was exercised *through ShipIt*** in the pre-fix run — those cells verified
+  the catalogue's endpoints, styles and model ids at the CLI only. **Resolved by
+  planning#390**: all six Codex pairs are now end-to-end verified, see
+  [after the fixes](#after-the-fixes-2026-08-16).
 - The sweep ran **serially by design** — local mode applies `SHIPIT_CREDENTIAL_*` to
   `process.env` around each spawn, so concurrent turns would race on process-global state and
   produce results that mean nothing.
