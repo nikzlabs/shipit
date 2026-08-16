@@ -86,6 +86,62 @@ describe("flushPendingTurnCommit — unreadable workspace content", () => {
     expect(notices).toContain("NOT committed");
   });
 
+  it("reports `unreadableBlocked` so the PR path can abort, like the secret one", async () => {
+    // The caller-facing half. `commitHash: null` alone cannot carry this: it is
+    // also the ordinary "nothing to commit" answer, and aborting on that would
+    // refuse every PR opened on an already-clean tree.
+    const runner = fakeRunner();
+    const blocked = await flushPendingTurnCommit(
+      fakeGit({
+        commitHash: null,
+        conflictedFiles: [],
+        rebaseInProgress: false,
+        secretFindings: [],
+        unreadable: { kind: "blocked", detail: "d/server.key" },
+      }),
+      { sessionId: "s1", runnerRegistry: registryFor(runner) },
+    );
+    expect(blocked.unreadableBlocked).toBe(true);
+
+    const nothingToCommit = await flushPendingTurnCommit(
+      fakeGit({
+        commitHash: null, conflictedFiles: [], rebaseInProgress: false, secretFindings: [], unreadable: null,
+      }),
+      { sessionId: "s1", runnerRegistry: registryFor(runner) },
+    );
+    expect(nothingToCommit.unreadableBlocked).toBe(false);
+  });
+
+  it("persists the notice when there is no runner to emit through", async () => {
+    // A consult landing after its parent turn can find no runner. The runner is
+    // the live transport, not the record — and "your work is not on the branch"
+    // is exactly the fact that has to survive to the transcript.
+    const appended: { sessionId: string; text: unknown }[] = [];
+    const chatHistory = {
+      append: (sessionId: string, message: { text?: string }) => {
+        appended.push({ sessionId, text: message.text });
+      },
+    };
+
+    await flushPendingTurnCommit(
+      fakeGit({
+        commitHash: null,
+        conflictedFiles: [],
+        rebaseInProgress: false,
+        secretFindings: [],
+        unreadable: { kind: "blocked", detail: "d/server.key" },
+      }),
+      {
+        sessionId: "s1",
+        runnerRegistry: { get: () => undefined } as unknown as SessionRunnerRegistry,
+        chatHistory: chatHistory as never,
+      },
+    );
+
+    expect(appended).toHaveLength(1);
+    expect(String(appended[0]!.text)).toContain("server.key");
+  });
+
   it("warns that the commit is short when a directory could not be read", async () => {
     const runner = fakeRunner();
     const git = fakeGit({

@@ -79,7 +79,10 @@ async function commitManualEdit(
     // user just made is not on the branch and will not be until the path is
     // readable.
     if (unreadable) {
-      const message = formatUnreadableWorkspaceNotice(unreadable, "This file edit");
+      const message = formatUnreadableWorkspaceNotice(unreadable, {
+        committed: commitHash !== null,
+        what: "This file edit",
+      });
       if (runner) {
         emitNoticePostTurn((m) => runner.emitMessage(m), deps.chatHistoryManager, sessionId, message, "warn");
       } else {

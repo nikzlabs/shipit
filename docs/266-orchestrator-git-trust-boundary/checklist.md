@@ -89,6 +89,20 @@ Build sequence from [plan.md](./plan.md) §5. Requirements are cited as `(req N)
       Requirement 15 also now covers the commits that fail for a cause ShipIt
       canNOT classify: `post-turn.ts` reports the failure and rethrows, instead
       of letting `postTurnStep` turn it into a log line.
+- [x] **Three things the independent review caught in the above.** (1) An
+      `omitted` result does not imply a commit — when the unreadable directory
+      hides the only changes, `autoCommit` returns a null hash, and the notice
+      said "this commit is short… everything else was committed normally" about
+      a commit that did not exist. That is req 15's outcome in req 14's words,
+      the exact collapse the two requirements were split to prevent; the
+      formatter now takes `committed` and every caller passes its own hash.
+      (2) `agentCreatePr` aborted on a secret-blocked flush but not on a
+      `blocked` one, so it opened a PR without the work the flush existed to
+      include — the failure mode its own comment names, wired for one of its two
+      causes. (3) The eviction notice asserted the content "exists only here",
+      which is false for the postgres archetype (committed, pushed, and made
+      unreadable at boot); it now says ShipIt cannot check, and names archiving
+      as the way to free the disk now.
 - [x] **The stderr classifiers.** The file regex is keyed on the permission
       cause (`open(...): Permission denied`) instead of matching
       `unable to index file` cause-agnostically, so an EIO or a file deleted
@@ -100,7 +114,21 @@ Build sequence from [plan.md](./plan.md) §5. Requirements are cited as `(req N)
       `GIT_CONFIG_GLOBAL`). Residual, recorded: the **directory** case still
       depends on git's wording, because there git exits 0 and the warning is the
       only trace. The **file** case no longer does — the rejection itself proves
-      the turn committed nothing.
+      the turn committed nothing. The pin lives in its own
+      `pinGitMessageLocale()` called *outside* `app-di.ts`'s
+      `if (!process.env.GIT_CONFIG_GLOBAL)` gate: folded into
+      `initGlobalGitConfig` it was skipped on exactly the deployments that
+      already have a locale of their own (review finding). An operator's
+      existing `LC_ALL` is overridden — determinism is the point — but logged,
+      never dropped silently.
+
+      Two residuals recorded rather than fixed: a pre-eviction commit that
+      throws for an *unclassifiable* reason still ends at `warnStuck` and
+      `"skipped"`, so the session is pinned with a throttled log line and no
+      card (not req 15 — no turn — but the same shape the notices exist to
+      remove); and a gitignored unreadable subtree is still wiped, which is
+      unchanged from the root-side behaviour since git never committed ignored
+      content either.
 - [ ] **The fork clone that runs as root over an untrusted tree**
       (`session-fork-merge.ts`, no `baseDir`) is NOT fixed here. It is being
       fixed alongside E2 by the planning#403 work, which touches the same file —

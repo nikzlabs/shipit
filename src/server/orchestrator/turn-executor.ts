@@ -1280,7 +1280,7 @@ export async function executeAgentTurn(
           emit,
           deps.listenerDeps.chatHistoryManager,
           sessionId,
-          formatUnreadableWorkspaceNotice(result.unreadable),
+          formatUnreadableWorkspaceNotice(result.unreadable, { committed: result.commitHash !== null }),
           "warn",
         );
       }

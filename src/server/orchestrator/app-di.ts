@@ -23,7 +23,7 @@ import { CredentialStore } from "./credential-store.js";
 import { adoptEnvCredentials } from "./adopt-env-credentials.js";
 import { resolveSecretCipher, type SecretCipher } from "./secret-cipher.js";
 import { ProviderAccountManager } from "./provider-account-manager.js";
-import { initGlobalGitConfig } from "./git-config.js";
+import { initGlobalGitConfig, pinGitMessageLocale } from "./git-config.js";
 import { SessionContainerManager } from "./session-container.js";
 import type { SessionRunnerFactory } from "./session-runner.js";
 import { PrStatusPoller } from "./pr-status-poller.js";
@@ -536,6 +536,12 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
   if (!process.env.GIT_CONFIG_GLOBAL) {
     initGlobalGitConfig(credentialsDir);
   }
+  // docs/266 / planning#407 — OUTSIDE that gate on purpose. The locale pin is what
+  // keeps `shared/git.ts`'s stderr classifiers matchable, and it is unrelated to
+  // whether an identity config already exists; leaving it inside meant a
+  // deployment that pre-sets `GIT_CONFIG_GLOBAL` got no pin at all (review
+  // finding). Idempotent.
+  pinGitMessageLocale();
 
   // Load persisted agent env vars into process.env before agent detection.
   //

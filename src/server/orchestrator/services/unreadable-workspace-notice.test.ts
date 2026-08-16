@@ -15,7 +15,7 @@ import {
 
 describe("formatUnreadableWorkspaceNotice", () => {
   it("says a commit is SHORT for an unreadable directory, and names the path", () => {
-    const text = formatUnreadableWorkspaceNotice({ kind: "omitted", detail: "pgdata/" });
+    const text = formatUnreadableWorkspaceNotice({ kind: "omitted", detail: "pgdata/" }, { committed: true });
     expect(text).toContain("pgdata/");
     expect(text).toContain("short");
     // The commit exists — the notice must not claim the work was lost.
@@ -23,15 +23,33 @@ describe("formatUnreadableWorkspaceNotice", () => {
     expect(text).not.toContain("NOT committed");
   });
 
+  /**
+   * An `omitted` result does not imply a commit: when the unreadable directory
+   * hides the only changes git can see, `autoCommit` returns a null hash from
+   * its clean-tree branch — and so do the conflict and secret refusals.
+   * Reporting "this commit is short… everything else was committed normally"
+   * there is req 15's outcome wearing req 14's words (review finding).
+   */
+  it("does NOT claim a short commit when there was no commit at all", () => {
+    const text = formatUnreadableWorkspaceNotice({ kind: "omitted", detail: "pgdata/" }, { committed: false });
+    expect(text).toContain("pgdata/");
+    expect(text).toContain("NO commit");
+    expect(text).not.toContain("everything else was committed normally");
+    expect(text).not.toContain("This commit is short");
+  });
+
   it("says NOTHING was committed for an unreadable file, and names the path", () => {
-    const text = formatUnreadableWorkspaceNotice({ kind: "blocked", detail: "d/server.key" });
+    const text = formatUnreadableWorkspaceNotice({ kind: "blocked", detail: "d/server.key" }, { committed: false });
     expect(text).toContain("d/server.key");
     expect(text).toContain("NOT committed");
     expect(text).not.toContain("committed normally");
   });
 
   it("names the caller's unit of work, so a file save does not read as a turn", () => {
-    const text = formatUnreadableWorkspaceNotice({ kind: "blocked", detail: "x" }, "This file edit");
+    const text = formatUnreadableWorkspaceNotice(
+      { kind: "blocked", detail: "x" },
+      { committed: false, what: "This file edit" },
+    );
     expect(text).toContain("This file edit was NOT committed");
   });
 });

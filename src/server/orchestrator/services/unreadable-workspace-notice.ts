@@ -20,17 +20,36 @@ import { redactSecretsInText } from "../../shared/secret-scan.js";
  * `what` names the piece of work that is short or missing, so the same facts
  * read correctly whether the caller is a turn ("This turn"), a mid-turn flush
  * or a UI file save.
+ *
+ * `committed` is not cosmetic and every caller must pass it honestly. An
+ * `omitted` result does NOT imply a commit: when the unreadable directory hides
+ * the only changes git can see, `autoCommit` takes its clean-tree return with a
+ * null hash — and so do the conflict and secret refusals. Assuming a commit
+ * there told the user "this commit is short… everything else was committed
+ * normally" when nothing had been committed at all, which is the *other*
+ * requirement's outcome wearing this one's words (review finding). Callers all
+ * have the hash in hand, so this is `commitHash !== null`, never a default.
  */
 export function formatUnreadableWorkspaceNotice(
   unreadable: UnreadableWorkspace,
-  what = "This turn",
+  opts: { committed: boolean; what?: string },
 ): string {
-  if (unreadable.kind === "omitted") {
+  const what = opts.what ?? "This turn";
+  const cause =
+    "A service in your `docker-compose.yml` running as its own `user:` is the usual cause; "
+    + "gitignoring that path removes the problem entirely.";
+
+  if (unreadable.kind === "omitted" && opts.committed) {
     return (
       `This commit is short. ShipIt could not read \`${unreadable.detail}\` in your workspace, `
-      + "so its contents were left out of the commit — everything else was committed normally. "
-      + "A service in your `docker-compose.yml` running as its own `user:` is the usual cause; "
-      + "gitignoring that path removes the problem entirely."
+      + `so its contents were left out of the commit — everything else was committed normally. ${cause}`
+    );
+  }
+  if (unreadable.kind === "omitted") {
+    return (
+      `${what} produced NO commit. ShipIt could not read \`${unreadable.detail}\` in your `
+      + "workspace, so anything inside it is invisible to git and is not on the branch — and "
+      + `nothing was committed this time round. ${cause}`
     );
   }
   return (

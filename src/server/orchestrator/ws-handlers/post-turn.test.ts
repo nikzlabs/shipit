@@ -478,6 +478,26 @@ describe("postTurnCommit — unreadable workspace content", () => {
     expect(notices).toContain("short");
   });
 
+  /**
+   * `omitted` does NOT imply a commit. When the unreadable directory hides the
+   * turn's only changes, `autoCommit` takes its clean-tree return — null hash,
+   * `unreadable: omitted` — and the notice used to say "this commit is short…
+   * everything else was committed normally" about a commit that does not exist.
+   * That is req 15's outcome wearing req 14's words, which is precisely the
+   * collapse the two requirements were split to prevent.
+   */
+  it("does not call a commit short when the turn produced no commit at all", async () => {
+    const emit = vi.fn();
+    const { ctx } = makeCtx({ kind: "omitted", detail: "pgdata/" }, null);
+    await postTurnCommit(ctx, {
+      sessionDir: "/workspace", sessionId: "s1", emit, turnSummary: "a turn",
+    });
+    const notices = emit.mock.calls.map(([m]) => JSON.stringify(m)).join("\n");
+    expect(notices).toContain("pgdata/");
+    expect(notices).toContain("NO commit");
+    expect(notices).not.toContain("everything else was committed normally");
+  });
+
   it("tells the user NOTHING was committed when a file was unreadable", async () => {
     const emit = vi.fn();
     const { ctx } = makeCtx({ kind: "blocked", detail: "d/server.key" }, null);

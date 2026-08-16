@@ -218,7 +218,7 @@ export async function postTurnCommit(
         opts.emit,
         ctx.chatHistoryManager,
         opts.sessionId,
-        formatUnreadableWorkspaceNotice(unreadable),
+        formatUnreadableWorkspaceNotice(unreadable, { committed: commitHash !== null }),
         "warn",
       );
     }

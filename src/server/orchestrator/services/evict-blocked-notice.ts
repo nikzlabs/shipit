@@ -93,12 +93,20 @@ export function formatEvictBlockedNotice(reason: EvictBlockReason): string {
     return (
       `⚠️ Disk cleanup paused for this session — ShipIt could not read \`${reason.unreadable.detail}\` `
       + `in your workspace, ${missed}.\n\n`
-      + "Those files are still on disk and were not touched, but they exist only here: cleanup "
-      + "would delete this checkout, so it is being skipped and the session keeps using disk. "
-      + "Cached dependencies are not held back, so opening the session may reinstall them.\n\n"
+      // Deliberately NOT "they exist only here". This block also fires for the
+      // postgres archetype — a directory that IS committed and pushed, whose
+      // mode a service tightened to 0700 at boot — and git cannot compare a
+      // subtree it cannot open. Claiming the content is unique would be a
+      // warning that is simply false for that user (review finding). ShipIt
+      // refuses the wipe because it cannot tell, and says so.
+      + "Those files are still on disk and were not touched. ShipIt cannot check whether they "
+      + "exist anywhere else, so it will not delete this checkout — which means the session keeps "
+      + "using disk until the path is readable. Cached dependencies are not held back, so opening "
+      + "the session may reinstall them.\n\n"
       + "A service in your `docker-compose.yml` running as its own `user:` is the usual cause. "
       + "Fix that path's permissions — or gitignore it, if it is throwaway data like a database "
-      + "volume — and the next turn will commit and clean up normally."
+      + "volume — and a later cleanup pass will reclaim the space on its own. If you no longer "
+      + "need this session, archiving it frees the space now."
     );
   }
 
