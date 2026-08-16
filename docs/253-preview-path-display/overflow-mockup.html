@@ -1,0 +1,781 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Preview toolbar overflow — options</title>
+<style>
+:root {
+  --color-bg-primary: #faf5ef;
+  --color-bg-secondary: #f0e8de;
+  --color-bg-tertiary: #e6dcd0;
+  --color-bg-elevated: #faf5ef;
+  --color-bg-hover: rgba(180, 100, 60, 0.06);
+  --color-bg-active: rgba(180, 100, 60, 0.1);
+  --color-text-primary: #2a2018;
+  --color-text-secondary: #5c5040;
+  --color-text-tertiary: #9a8c78;
+  --color-border-primary: #e4d8c8;
+  --color-border-secondary: #d0c0ac;
+  --color-accent: #d97757;
+  --color-success: #3a8a50;
+  --color-autofix: #d07030;
+  --color-error: #c43838;
+  --color-error-subtle: rgba(196, 56, 56, 0.1);
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding: 32px 24px 96px;
+  background: var(--color-bg-primary);
+  color: var(--color-text-primary);
+  font: 14px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+.wrap { max-width: 1120px; margin: 0 auto; }
+
+h1 { font-size: 22px; margin: 0 0 6px; letter-spacing: -0.01em; }
+h2 { font-size: 15px; margin: 0; letter-spacing: -0.005em; }
+p  { margin: 0 0 10px; color: var(--color-text-secondary); }
+code {
+  font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: var(--color-bg-tertiary);
+  padding: 1px 5px; border-radius: 4px;
+  color: var(--color-text-primary);
+}
+
+.lede { max-width: 74ch; margin-bottom: 22px; }
+
+/* ---------- width control ---------- */
+.control {
+  position: sticky; top: 0; z-index: 20;
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  padding: 12px 16px; margin: 0 0 28px;
+  background: var(--color-bg-secondary);
+  border: 1px solid var(--color-border-primary);
+  border-radius: 10px;
+  box-shadow: 0 2px 10px rgba(42, 32, 24, 0.06);
+}
+.control label { font-weight: 600; font-size: 13px; white-space: nowrap; }
+.control input[type=range] { flex: 1; min-width: 220px; accent-color: var(--color-accent); }
+.readout {
+  font: 600 13px/1 ui-monospace, monospace;
+  background: var(--color-bg-tertiary);
+  border: 1px solid var(--color-border-secondary);
+  border-radius: 6px; padding: 6px 9px; min-width: 74px; text-align: center;
+}
+.presets { display: flex; gap: 6px; }
+.presets button {
+  font: 12px/1 inherit; padding: 6px 10px; cursor: pointer;
+  background: var(--color-bg-primary);
+  border: 1px solid var(--color-border-secondary);
+  border-radius: 6px; color: var(--color-text-secondary);
+}
+.presets button:hover { background: var(--color-bg-hover); color: var(--color-text-primary); }
+
+/* ---------- option cards ---------- */
+.card {
+  border: 1px solid var(--color-border-primary);
+  border-radius: 12px;
+  background: var(--color-bg-elevated);
+  margin-bottom: 22px;
+  overflow: hidden;
+}
+.card > header {
+  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+  padding: 14px 18px 12px;
+  border-bottom: 1px solid var(--color-border-primary);
+}
+.tag {
+  font: 600 11px/1 ui-monospace, monospace;
+  padding: 4px 7px; border-radius: 5px;
+  background: var(--color-bg-tertiary); color: var(--color-text-secondary);
+}
+.tag.bad  { background: var(--color-error-subtle); color: var(--color-error); }
+.tag.rec  { background: rgba(217,119,87,.14); color: #a8462a; }
+.sub { font-size: 12.5px; color: var(--color-text-tertiary); margin-left: auto; }
+
+.body { padding: 18px; display: grid; grid-template-columns: minmax(0,1fr) 300px; gap: 22px; align-items: start; }
+@media (max-width: 860px) { .body { grid-template-columns: minmax(0,1fr); } }
+
+.notes p { font-size: 13px; margin: 0 0 8px; }
+.notes .kv { display: grid; grid-template-columns: 52px 1fr; gap: 4px 10px; font-size: 12.5px; margin-top: 10px; }
+.notes .kv dt { font-weight: 600; color: var(--color-text-primary); }
+.notes .kv dd { margin: 0; color: var(--color-text-secondary); }
+.notes .kv dt.cost { color: var(--color-error); }
+
+/* ---------- the simulated panel ---------- */
+.stage { display: flex; justify-content: flex-start; }
+.panel {
+  width: 390px;
+  border: 1px solid var(--color-border-secondary);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--color-bg-primary);
+  box-shadow: 0 1px 3px rgba(42,32,24,.07);
+  transition: width .12s ease;
+}
+.panel .page { background: #16130f; color: #e8e0d4; padding: 12px 14px 16px; }
+.panel .page h3 { margin: 0 0 4px; font-size: 15px; }
+.panel .page span { font-size: 12px; color: #8f877c; }
+
+/* tab strip (context, baseline only) */
+.tabs {
+  display: flex; align-items: center; gap: 4px;
+  padding: 6px 8px 0; background: var(--color-bg-secondary);
+  border-bottom: 1px solid var(--color-border-secondary);
+}
+.tabs .t { padding: 6px 8px 8px; color: var(--color-text-secondary); border-bottom: 2px solid transparent; }
+.tabs .t.on { color: var(--color-text-primary); border-bottom-color: var(--color-accent); }
+.tabs .spacer { flex: 1; }
+
+/* THE TOOLBAR — mirrors PreviewToolbar.tsx */
+.tb {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 6px 12px;
+  background: var(--color-bg-secondary);
+  border-bottom: 1px solid var(--color-border-secondary);
+  font-size: 12px; color: var(--color-text-secondary);
+  overflow: hidden;                 /* the clip you see on the phone */
+}
+.tb .grp { display: flex; align-items: center; gap: 8px; flex: 0 0 auto; }
+.tb .sep { color: var(--color-border-secondary); }
+.tb .trig {
+  display: flex; align-items: center; gap: 6px;
+  color: var(--color-text-primary); background: none; border: 0;
+  font: inherit; cursor: pointer; padding: 0; white-space: nowrap;
+}
+.tb .iconbtn {
+  height: 28px; width: 28px; flex: 0 0 auto;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 0; background: none; border-radius: 5px; cursor: pointer;
+  color: var(--color-text-secondary);
+}
+.tb .iconbtn:hover { background: var(--color-bg-hover); color: var(--color-text-primary); }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--color-success); flex: 0 0 auto; }
+
+/* path region — flex-1 min-w-0, collapses first (today's behaviour) */
+.path { flex: 1 1 auto; min-width: 0; overflow: hidden; display: flex; align-items: center; }
+.path .chip {
+  flex: 1 1 auto; min-width: 0;
+  display: flex; align-items: baseline; gap: 0;
+  font: 11px/1.5 ui-monospace, monospace;
+  padding: 2px 6px; border: 1px solid transparent; border-radius: 5px;
+  color: var(--color-text-secondary); background: none; cursor: pointer;
+}
+.path .chip:hover { background: var(--color-bg-tertiary); border-color: var(--color-border-secondary); }
+
+/* route + query + copy, as PreviewPath.tsx actually builds it */
+.addr { display: flex; align-items: baseline; min-width: 0; overflow: hidden; }
+.route {
+  min-width: 0; flex: 0 1 auto;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  color: var(--color-text-primary);
+}
+.query {
+  min-width: 0; flex: 0 999 auto;      /* shrink-[999] — the query goes first */
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  color: var(--color-text-tertiary);
+}
+/* shrink-0 self-center: the copy icon is never the thing that gives way */
+.cp { flex: 0 0 auto; align-self: center; margin-left: 6px; color: var(--color-text-tertiary); }
+.chip:hover .cp { color: var(--color-text-secondary); }
+.chip.copied .cp { color: var(--color-success); }
+
+/* the fixed options give the path a legibility floor, so collapse fires when
+   the address would be crushed rather than after it has already vanished */
+.tb.floor .path { min-width: 84px; }
+
+/* A — the address outranks the labels. The chip is content-sized and shrinks
+   (flex 0 1 auto), so it always renders as much of the URL as the region holds:
+   there is never leftover space beside a truncated address. The region floor is
+   one copy icon, so the text can shrink to nothing but copy never can. */
+.tb.addrfill .path { min-width: 30px; }
+.tb.addrfill .chip { flex: 0 1 auto; }
+.tb.addrfill .addr { min-width: 0; }
+
+/* auto-fix switch */
+.switch { display: flex; align-items: center; gap: 6px; cursor: pointer; white-space: nowrap; user-select: none; }
+.switch .track {
+  position: relative; width: 28px; height: 16px; border-radius: 999px;
+  background: var(--color-border-secondary); flex: 0 0 auto; transition: background .15s;
+}
+.switch .track::after {
+  content: ""; position: absolute; top: 2px; left: 2px;
+  width: 12px; height: 12px; border-radius: 50%; background: #fff; transition: transform .15s;
+}
+.switch.on .track { background: var(--color-autofix); }
+.switch.on .track::after { transform: translateX(12px); }
+.switch.on .lbl { color: var(--color-autofix); }
+
+svg { display: block; flex: 0 0 auto; }
+
+/* overflow arrow marker on the baseline */
+.clipmark {
+  position: relative;
+}
+.clipmark::after {
+  content: "";
+  position: absolute; top: 0; right: 0; bottom: 0; width: 34px;
+  background: linear-gradient(to right, rgba(240,232,222,0), var(--color-bg-secondary));
+  pointer-events: none;
+}
+
+/* ---------- per-option collapse states ---------- */
+/* staged collapse — everything at or below the current stage is dropped */
+[data-stage="1"] .s1, [data-stage="2"] .s1, [data-stage="3"] .s1, [data-stage="4"] .s1,
+[data-stage="2"] .s2, [data-stage="3"] .s2, [data-stage="4"] .s2,
+[data-stage="3"] .s3, [data-stage="4"] .s3,
+[data-stage="4"] .s4 { display: none; }
+
+/* C / F: hidden until needed */
+.only-collapsed { display: none; }
+[data-stage="1"] .only-collapsed, [data-stage="2"] .only-collapsed, [data-stage="3"] .only-collapsed { display: inline-flex; }
+
+/* D: wrap to two rows */
+.tb.wrap-rows { flex-wrap: wrap; row-gap: 6px; overflow: visible; }
+.tb.wrap-rows .path { flex-basis: 100%; order: 9; }
+
+/* E: horizontal scroll */
+.tb.scroller { overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
+.tb.scroller::-webkit-scrollbar { display: none; }
+.tb.scroller .path { flex: 0 0 auto; min-width: 90px; }
+
+/* popovers */
+.pop-host { position: relative; }
+.pop {
+  position: absolute; top: calc(100% + 6px); right: 0; z-index: 10;
+  min-width: 196px; padding: 6px;
+  background: var(--color-bg-elevated);
+  border: 1px solid var(--color-border-secondary);
+  border-radius: 8px; box-shadow: 0 8px 24px rgba(42,32,24,.16);
+  display: none;
+}
+.pop.open { display: block; }
+.pop .row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 7px 8px; border-radius: 5px; font-size: 12.5px;
+  color: var(--color-text-primary); white-space: nowrap; cursor: pointer;
+}
+.pop .row:hover { background: var(--color-bg-hover); }
+.pop .row .right { margin-left: auto; color: var(--color-text-tertiary); font-size: 11.5px; }
+.pop .div { height: 1px; background: var(--color-border-primary); margin: 5px 2px; }
+.pop .hd { font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--color-text-tertiary); padding: 5px 8px 3px; }
+
+.badge-live {
+  font: 600 10px/1 ui-monospace, monospace; padding: 3px 6px; border-radius: 4px;
+  background: rgba(58,138,80,.12); color: var(--color-success); white-space: nowrap;
+}
+
+.rec-box {
+  border: 1px solid var(--color-accent);
+  background: rgba(217,119,87,.06);
+  border-radius: 12px; padding: 18px 20px; margin-top: 6px;
+}
+.rec-box h2 { margin-bottom: 8px; }
+.rec-box ol { margin: 10px 0 0; padding-left: 20px; font-size: 13.5px; color: var(--color-text-secondary); }
+.rec-box li { margin-bottom: 7px; }
+.rec-box li b { color: var(--color-text-primary); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Preview toolbar overflow on narrow panels</h1>
+<p class="lede">
+  <code>PreviewToolbar.tsx</code> is one non-wrapping flex row with no breakpoints. The right group is
+  <code>shrink-0</code>, the left group has no <code>min-w-0</code>, so when space runs out the path
+  collapses to zero and then the row simply clips. Below are five ways to fix it, each live at the width
+  you set. <b>Drag the slider</b> — the measured options re-collapse as you go.
+</p>
+<p class="lede">
+  Measured in this mockup: the bar needs <b>≈520 px</b> to lay out without clipping. That is wider than
+  every phone, so mobile always breaks — but it is also wider than a desktop split pane dragged past
+  halfway, which is why this is not only a mobile bug.
+</p>
+
+<div class="control">
+  <label for="w">Panel width</label>
+  <input id="w" type="range" min="240" max="760" value="390" step="1">
+  <div class="readout" id="wr">390 px</div>
+  <div class="presets">
+    <button data-w="320">320 · small phone</button>
+    <button data-w="390">390 · iPhone</button>
+    <button data-w="480">480 · split pane</button>
+    <button data-w="760">760 · desktop</button>
+  </div>
+  <div style="flex-basis:100%;height:0"></div>
+  <label for="t">Address minimum</label>
+  <input id="t" type="range" min="0" max="240" value="130" step="2">
+  <div class="readout" id="tr">130 px</div>
+  <span style="font-size:12px;color:var(--color-text-tertiary)">
+    how much address Option A protects before it starts dropping labels
+  </span>
+</div>
+
+<!-- ══════════════ BASELINE ══════════════ -->
+<section class="card">
+  <header>
+    <span class="tag bad">Today</span>
+    <h2>What ships now — the row clips</h2>
+    <span class="sub">PreviewToolbar.tsx:131</span>
+  </header>
+  <div class="body">
+    <div class="stage">
+      <div class="panel">
+        <div class="tabs">
+          <span class="t on">👁</span><span class="t">📖</span><span class="t">☑</span>
+          <span class="t">🗎</span><span class="t">▢</span><span class="t">🕘</span>
+          <span class="spacer"></span><span class="t">⑂</span>
+        </div>
+        <div class="tb clipmark">
+          <span class="grp">
+            <button class="trig"><span class="dot"></span><span>requirements</span><i data-i="caret"></i></button>
+            <span class="sep">|</span>
+            <button class="trig"><i data-i="mobile"></i><span>Responsive</span><i data-i="caret"></i></button>
+            <span class="sep">|</span>
+            <button class="iconbtn"><i data-i="house"></i></button>
+          </span>
+          <span class="path"><button class="chip" title="Copy preview URL"><span class="addr"><span class="route">/requirements</span><span class="query">?focus=7</span></span><span class="cp"><i data-i="copy"></i></span></button></span>
+          <span class="grp">
+            <label class="switch on"><span class="track"></span><span class="lbl">Auto-fix</span></label>
+            <button class="iconbtn"><i data-i="left"></i></button>
+            <button class="iconbtn"><i data-i="refresh"></i></button>
+            <button class="iconbtn"><i data-i="external"></i></button>
+          </span>
+        </div>
+        <div class="page"><h3>Requirements</h3><span>81 requirements · 44 approved · 12 terms</span></div>
+      </div>
+    </div>
+    <div class="notes">
+      <p>The path region gives up its width first, then the two rigid groups overrun the container.
+      Refresh and open-in-new-tab fall off the right edge entirely — they are not reachable at all
+      on a phone.</p>
+      <dl class="kv">
+        <dt class="cost">Cost</dt><dd>Controls silently become unreachable. No scroll, no hint that anything is missing.</dd>
+        <dt class="cost">Cost</dt><dd>Same break on a narrow desktop split pane, not just on mobile.</dd>
+      </dl>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════ OPTION A ══════════════ -->
+<section class="card">
+  <header>
+    <span class="tag rec">Option A</span>
+    <h2>Labels collapse to icons first — then the address shrinks into whatever is left</h2>
+    <span class="sub">measured, address has priority</span>
+  </header>
+  <div class="body">
+    <div class="stage">
+      <div class="panel">
+        <div class="tb addrfill" id="tbA">
+          <span class="grp">
+            <button class="trig" title="requirements"><span class="dot"></span><span class="s3">requirements</span><i data-i="caret"></i></button>
+            <span class="sep s3">|</span>
+            <button class="trig" title="Responsive"><i data-i="mobile"></i><span class="s1">Responsive</span><i data-i="caret"></i></button>
+            <span class="sep s1">|</span>
+            <button class="iconbtn"><i data-i="house"></i></button>
+          </span>
+          <span class="path">
+            <button class="chip" title="Copy preview URL">
+              <span class="addr"><span class="route">/requirements</span><span class="query">?focus=7</span></span>
+              <span class="cp"><i data-i="copy"></i></span>
+            </button>
+          </span>
+          <span class="grp">
+            <label class="switch on" title="Auto-fix"><span class="track"></span><span class="lbl s2">Auto-fix</span></label>
+            <button class="iconbtn"><i data-i="left"></i></button>
+            <button class="iconbtn"><i data-i="refresh"></i></button>
+            <button class="iconbtn"><i data-i="external"></i></button>
+          </span>
+        </div>
+        <div class="page"><h3>Requirements</h3><span>81 requirements · 44 approved</span></div>
+      </div>
+    </div>
+    <div class="notes">
+      <p>The address outranks every label. Labels drop one at a time <b>while the address is still below its
+      minimum</b> — <b>Responsive</b>, then <b>Auto-fix</b>, then <b>requirements</b>. Each one that goes hands
+      its width straight to the address.</p>
+      <p>Once every label is an icon and it <i>still</i> does not fit, the address gives way — but it
+      <b>shrinks</b>, it is never hidden. It always shows as much as the remaining space holds, down to a
+      single character, and the copy icon is a hard floor beneath it. There is never empty space next to a
+      truncated address.</p>
+      <p>The second slider sets the address minimum, which is the one real tuning knob here: raise it and
+      labels give up sooner, lower it and they survive longer.</p>
+      <dl class="kv">
+        <dt>Keeps</dt><dd>Every control on screen and one tap away. One row, no menus, no reordering.</dd>
+        <dt>Keeps</dt><dd>The address is the last thing to degrade and the only thing that degrades <i>gradually</i>.</dd>
+        <dt>Keeps</dt><dd>Reuses <code>useTabLabelCollapse.ts</code>; the query already shrinks before the route.</dd>
+        <dt>Keeps</dt><dd>Fits to <b>≈312 px</b>, so every phone works. Verified across 780→220 px: copy never disappears and a truncated address never leaves a gap.</dd>
+        <dt class="cost">Cost</dt><dd>A bare dot does not say <i>which</i> service is selected — that lands on the tooltip.</dd>
+        <dt class="cost">Cost</dt><dd>Labels start going while the panel is still wide — the first at ≈676 px — because the address claims its minimum first. That is the trade the minimum buys.</dd>
+        <dt class="cost">Cost</dt><dd>Between ≈480 and ≈312 px the bar is all icons <i>and</i> a shortening address, so two things degrade at once.</dd>
+      </dl>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════ OPTION B ══════════════ -->
+<section class="card">
+  <header>
+    <span class="tag">Option B</span>
+    <h2>Priority overflow — low-frequency controls fold into a kebab</h2>
+    <span class="sub">reuses ui/overflow-menu.tsx</span>
+  </header>
+  <div class="body">
+    <div class="stage">
+      <div class="panel">
+        <div class="tb floor" id="tbB">
+          <span class="grp">
+            <button class="trig" title="requirements"><span class="dot"></span><span class="s3">requirements</span><i data-i="caret"></i></button>
+            <span class="sep s1">|</span>
+            <button class="trig s1"><i data-i="mobile"></i><span>Responsive</span><i data-i="caret"></i></button>
+          </span>
+          <span class="path"><button class="chip" title="Copy preview URL"><span class="addr"><span class="route">/requirements</span><span class="query">?focus=7</span></span><span class="cp"><i data-i="copy"></i></span></button></span>
+          <span class="grp">
+            <label class="switch on s2"><span class="track"></span><span class="lbl">Auto-fix</span></label>
+            <button class="iconbtn"><i data-i="left"></i></button>
+            <button class="iconbtn"><i data-i="refresh"></i></button>
+            <button class="iconbtn s1"><i data-i="external"></i></button>
+            <span class="pop-host only-collapsed">
+              <button class="iconbtn" data-pop="popB"><i data-i="kebab"></i></button>
+              <div class="pop" id="popB">
+                <div class="hd">Viewport</div>
+                <div class="row"><i data-i="mobile"></i> Responsive <span class="right">auto</span></div>
+                <div class="div"></div>
+                <div class="row"><span class="track" style="background:var(--color-autofix)"></span> Auto-fix <span class="right">on</span></div>
+                <div class="row"><i data-i="house"></i> Go to preview root</div>
+                <div class="row"><i data-i="external"></i> Open in new tab</div>
+              </div>
+            </span>
+          </span>
+        </div>
+        <div class="page"><h3>Requirements</h3><span>81 requirements · 44 approved</span></div>
+      </div>
+    </div>
+    <div class="notes">
+      <p>Rank the controls and demote from the bottom as width runs out: home → viewport → open-external →
+      Auto-fix. Back, refresh, the service picker and the path never move. <b>Tap the kebab</b> to see
+      what got demoted.</p>
+      <dl class="kv">
+        <dt>Keeps</dt><dd>Nothing becomes unreachable. Fits down to <b>≈252 px</b> — the only option with headroom to spare on every phone.</dd>
+        <dt>Keeps</dt><dd><code>OverflowMenu</code> already exists and its trigger is already <code>h-7 w-7</code>.</dd>
+        <dt class="cost">Cost</dt><dd>Auto-fix state stops being glanceable once it is inside the menu.</dd>
+        <dt class="cost">Cost</dt><dd>Controls move between bar and menu as width changes — muscle memory suffers.</dd>
+      </dl>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════ OPTION C ══════════════ -->
+<section class="card">
+  <header>
+    <span class="tag">Option C</span>
+    <h2>Two rows — chrome on top, address below</h2>
+    <span class="sub">flex-wrap, container query</span>
+  </header>
+  <div class="body">
+    <div class="stage">
+      <div class="panel">
+        <div class="tb wrap-rows floor" id="tbC">
+          <span class="grp">
+            <button class="trig"><span class="dot"></span><span>requirements</span><i data-i="caret"></i></button>
+            <span class="sep">|</span>
+            <button class="trig"><i data-i="mobile"></i><span>Responsive</span><i data-i="caret"></i></button>
+          </span>
+          <span class="grp">
+            <button class="iconbtn"><i data-i="left"></i></button>
+            <button class="iconbtn"><i data-i="refresh"></i></button>
+            <button class="iconbtn"><i data-i="external"></i></button>
+          </span>
+          <span class="path" style="gap:8px">
+            <button class="iconbtn"><i data-i="house"></i></button>
+            <button class="chip" title="Copy preview URL"><span class="addr"><span class="route">/requirements</span><span class="query">?focus=7</span></span><span class="cp"><i data-i="copy"></i></span></button>
+            <label class="switch on"><span class="track"></span><span class="lbl">Auto-fix</span></label>
+          </span>
+        </div>
+        <div class="page"><h3>Requirements</h3><span>81 requirements · 44 approved</span></div>
+      </div>
+    </div>
+    <div class="notes">
+      <p>Let the row wrap. Config on line one, navigation plus the address chip on line two — which is also
+      the layout every mobile browser uses, so it needs no explanation.</p>
+      <dl class="kv">
+        <dt>Keeps</dt><dd>Full labels everywhere. Nothing hidden, nothing to discover.</dd>
+        <dt>Keeps</dt><dd>The address chip finally gets real width instead of being squeezed to nothing.</dd>
+        <dt class="cost">Cost</dt><dd>~28 px of preview height on the device where height is scarcest.</dd>
+        <dt class="cost">Cost</dt><dd>Two rows of chrome above a page that may itself have a header.</dd>
+      </dl>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════ OPTION D ══════════════ -->
+<section class="card">
+  <header>
+    <span class="tag">Option D</span>
+    <h2>Horizontal scroll — swipe the bar</h2>
+    <span class="sub">overflow-x-auto, no-scrollbar</span>
+  </header>
+  <div class="body">
+    <div class="stage">
+      <div class="panel">
+        <div class="tb scroller" id="tbD">
+          <span class="grp">
+            <button class="trig"><span class="dot"></span><span>requirements</span><i data-i="caret"></i></button>
+            <span class="sep">|</span>
+            <button class="trig"><i data-i="mobile"></i><span>Responsive</span><i data-i="caret"></i></button>
+            <span class="sep">|</span>
+            <button class="iconbtn"><i data-i="house"></i></button>
+          </span>
+          <span class="path"><button class="chip" title="Copy preview URL"><span class="addr"><span class="route">/requirements</span><span class="query">?focus=7</span></span><span class="cp"><i data-i="copy"></i></span></button></span>
+          <span class="grp">
+            <label class="switch on"><span class="track"></span><span class="lbl">Auto-fix</span></label>
+            <button class="iconbtn"><i data-i="left"></i></button>
+            <button class="iconbtn"><i data-i="refresh"></i></button>
+            <button class="iconbtn"><i data-i="external"></i></button>
+          </span>
+        </div>
+        <div class="page"><h3>Requirements</h3><span>← swipe the bar above</span></div>
+      </div>
+    </div>
+    <div class="notes">
+      <p>One CSS line. The bar becomes a scroll container and the user swipes to reach what is off-screen —
+      the same treatment <code>IssuesFilterBar.tsx</code> gives its mobile row.</p>
+      <dl class="kv">
+        <dt>Keeps</dt><dd>Smallest possible diff. No measurement, no new component, no reordering.</dd>
+        <dt class="cost">Cost</dt><dd>Hidden controls give no hint they exist — with the scrollbar suppressed, the bar looks complete.</dd>
+        <dt class="cost">Cost</dt><dd>A horizontal swipe over a preview iframe competes with the page's own gestures.</dd>
+        <dt class="cost">Cost</dt><dd>Refresh and back keep moving, so they are never in a predictable place.</dd>
+      </dl>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════════ OPTION E ══════════════ -->
+<section class="card">
+  <header>
+    <span class="tag">Option E</span>
+    <h2>Split by job — navigation stays, settings move behind one control</h2>
+    <span class="sub">structural</span>
+  </header>
+  <div class="body">
+    <div class="stage">
+      <div class="panel">
+        <div class="tb floor" id="tbE">
+          <span class="grp">
+            <button class="iconbtn"><i data-i="left"></i></button>
+            <button class="iconbtn"><i data-i="refresh"></i></button>
+            <button class="iconbtn"><i data-i="house"></i></button>
+          </span>
+          <span class="path"><button class="chip" title="Copy preview URL"><span class="addr"><span class="route">/requirements</span><span class="query">?focus=7</span></span><span class="cp"><i data-i="copy"></i></span></button></span>
+          <span class="grp">
+            <button class="iconbtn"><i data-i="external"></i></button>
+            <span class="pop-host">
+              <button class="iconbtn" data-pop="popE" style="color:var(--color-autofix)"><i data-i="sliders"></i></button>
+              <div class="pop" id="popE">
+                <div class="hd">Service</div>
+                <div class="row"><span class="dot"></span> requirements <span class="right">:5173</span></div>
+                <div class="row"><span class="dot" style="background:var(--color-text-tertiary)"></span> api <span class="right">stopped</span></div>
+                <div class="div"></div>
+                <div class="hd">Viewport</div>
+                <div class="row"><i data-i="mobile"></i> Responsive <span class="right">390×844</span></div>
+                <div class="div"></div>
+                <div class="row"><span class="track" style="background:var(--color-autofix)"></span> Auto-fix <span class="right">on</span></div>
+              </div>
+            </span>
+          </span>
+        </div>
+        <div class="page"><h3>Requirements</h3><span>81 requirements · 44 approved</span></div>
+      </div>
+    </div>
+    <div class="notes">
+      <p>Two different jobs share this bar. <b>Navigation</b> (back, refresh, home, the URL, open) is used
+      constantly and stays. <b>Configuration</b> (which service, which viewport, auto-fix) is set once a
+      session and moves behind one <b>sliders</b> button — tinted while auto-fix is on, so the state is
+      still glanceable. <b>Tap it.</b></p>
+      <dl class="kv">
+        <dt>Keeps</dt><dd>Needs only ≈290 px, so it fits every phone with nothing collapsed — the layout is identical at 320 and at 760.</dd>
+        <dt>Keeps</dt><dd>Frequency-ordered, so the common taps are the ones that stayed.</dd>
+        <dt class="cost">Cost</dt><dd>Two taps to switch service — the thing most likely to be wanted after a restart.</dd>
+        <dt class="cost">Cost</dt><dd>Which service is previewing is no longer visible at rest. A worthwhile amendment: keep the dot in the bar.</dd>
+        <dt class="cost">Cost</dt><dd>Biggest diff of the five; changes desktop too unless it is width-gated.</dd>
+      </dl>
+    </div>
+  </div>
+</section>
+
+<div class="rec-box">
+  <h2>What I would build: A, then B underneath it, driven by a container query</h2>
+  <p style="margin-top:8px">
+    <b>The address outranks every label, and it degrades by shrinking rather than by disappearing.</b> Labels
+    are a fixed cost that buys nothing once you know where you are; the address is the only thing in this bar
+    that changes as you use the preview. So labels convert to icons first — each one handing its width
+    straight to the address — and only when they are all gone does the address start truncating.
+  </p>
+  <p>
+    A and B are then stages of one mechanism, not rivals: drop labels, shrink the address, and only demote
+    controls into the kebab if it <i>still</i> does not fit. Nothing ever becomes unreachable at any width.
+  </p>
+  <ol>
+    <li><b>Never leave slack beside a truncated address.</b> If the address is cut short, every remaining
+    pixel in its region belongs to it. That falls out of making the chip content-sized and shrinkable
+    (<code>flex 0 1 auto</code>, <code>min-w-0</code>) instead of hiding it at a breakpoint — a hidden
+    address leaves a visible gap, which is the tell that the layout gave up early.</li>
+    <li><b>The copy icon is a hard floor, not a <code>shrink-0</code>.</b> Today it is already
+    <code>shrink-0</code> (<code>PreviewPath.tsx:77</code>) and that is not enough — it lives inside a
+    <code>flex-1 min-w-0</code> region that collapses to zero, so it is clipped away with the text it
+    belongs to. The region needs a <code>min-w</code> of one icon button. In every option above, copy
+    survives down to 220 px.</li>
+    <li><b>Measure the panel, not the viewport.</b> The preview is a split pane on desktop, so it overflows
+    at desktop widths too. <code>useIsMobile()</code> would miss that; a <code>ResizeObserver</code> or
+    <code>@container</code> on the toolbar catches both. <code>IssuesViewer.tsx</code> already uses
+    container queries for the same reason.</li>
+    <li><b>Fix the flex bug regardless.</b> The left group needs <code>min-w-0</code> and the service label
+    needs <code>truncate</code>. That alone converts a clip into a graceful squeeze, and it is a two-class
+    change worth landing whichever option wins.</li>
+    <li><b>Reuse, don't invent.</b> <code>useTabLabelCollapse.ts</code> is the measuring stage and
+    <code>ui/overflow-menu.tsx</code> is the demotion stage — both already shipped and tested. The query
+    already shrinks before the route (<code>shrink-[999]</code>), so the last step of A is free.</li>
+    <li><b>The address minimum is the one number to agree on.</b> It is the whole tuning surface: it decides
+    how early labels start going. The second slider above is there to settle it by eye rather than by
+    argument — at a 130 px minimum the first label goes at ≈676 px, which is roughly a half-width split pane.</li>
+  </ol>
+  <p style="margin:12px 0 0;font-size:13px">
+    E is the better product if the toolbar is going to keep growing; at ≈288 px it fits every phone with
+    nothing collapsed, and it is the only option whose layout is stable across widths. It is worth doing on
+    its own terms, not as an overflow fix.
+    D I would not ship — suppressing the scrollbar makes a clipped bar look like a complete one, which is
+    the bug we are fixing.
+  </p>
+</div>
+
+</div>
+
+<script>
+/* ---- phosphor regular paths (256 viewBox) ---- */
+const P = {
+  house:"M219.31,108.68l-80-80a16,16,0,0,0-22.62,0l-80,80A15.87,15.87,0,0,0,32,120v96a8,8,0,0,0,8,8h64a8,8,0,0,0,8-8V160h32v56a8,8,0,0,0,8,8h64a8,8,0,0,0,8-8V120A15.87,15.87,0,0,0,219.31,108.68ZM208,208H160V152a8,8,0,0,0-8-8H104a8,8,0,0,0-8,8v56H48V120l80-80,80,80Z",
+  mobile:"M176,16H80A24,24,0,0,0,56,40V216a24,24,0,0,0,24,24h96a24,24,0,0,0,24-24V40A24,24,0,0,0,176,16ZM72,64H184V192H72Zm8-32h96a8,8,0,0,1,8,8v8H72V40A8,8,0,0,1,80,32Zm96,192H80a8,8,0,0,1-8-8v-8H184v8A8,8,0,0,1,176,224Z",
+  left:"M224,128a8,8,0,0,1-8,8H59.31l58.35,58.34a8,8,0,0,1-11.32,11.32l-72-72a8,8,0,0,1,0-11.32l72-72a8,8,0,0,1,11.32,11.32L59.31,120H216A8,8,0,0,1,224,128Z",
+  refresh:"M240,56v48a8,8,0,0,1-8,8H184a8,8,0,0,1,0-16H211.4L184.81,71.64l-.25-.24a80,80,0,1,0-1.67,114.78,8,8,0,0,1,11,11.63A95.44,95.44,0,0,1,128,224h-1.32A96,96,0,1,1,195.75,60L224,85.8V56a8,8,0,1,1,16,0Z",
+  external:"M224,104a8,8,0,0,1-16,0V59.32l-66.33,66.34a8,8,0,0,1-11.32-11.32L196.68,48H152a8,8,0,0,1,0-16h64a8,8,0,0,1,8,8Zm-40,24a8,8,0,0,0-8,8v72H48V80h72a8,8,0,0,0,0-16H48A16,16,0,0,0,32,80V208a16,16,0,0,0,16,16H176a16,16,0,0,0,16-16V136A8,8,0,0,0,184,128Z",
+  caret:"M213.66,101.66l-80,80a8,8,0,0,1-11.32,0l-80-80A8,8,0,0,1,53.66,90.34L128,164.69l74.34-74.35a8,8,0,0,1,11.32,11.32Z",
+  kebab:"M140,128a12,12,0,1,1-12-12A12,12,0,0,1,140,128ZM128,72a12,12,0,1,0-12-12A12,12,0,0,0,128,72Zm0,112a12,12,0,1,0,12,12A12,12,0,0,0,128,184Z",
+  copy:"M216,32H88a8,8,0,0,0-8,8V80H40a8,8,0,0,0-8,8V216a8,8,0,0,0,8,8H168a8,8,0,0,0,8-8V176h40a8,8,0,0,0,8-8V40A8,8,0,0,0,216,32ZM160,208H48V96H160Zm48-48H176V88a8,8,0,0,0-8-8H96V48H208Z",
+  check:"M229.66,77.66l-128,128a8,8,0,0,1-11.32,0l-56-56a8,8,0,0,1,11.32-11.32L96,188.69,218.34,66.34a8,8,0,0,1,11.32,11.32Z",
+  sliders:"M40,88H73a32,32,0,0,0,62,0h81a8,8,0,0,0,0-16H135a32,32,0,0,0-62,0H40a8,8,0,0,0,0,16Zm64-24A16,16,0,1,1,88,80,16,16,0,0,1,104,64ZM216,168H199a32,32,0,0,0-62,0H40a8,8,0,0,0,0,16h97a32,32,0,0,0,62,0h17a8,8,0,0,0,0-16Zm-48,24a16,16,0,1,1,16-16A16,16,0,0,1,168,192Z",
+};
+const SIZE = { caret: 12, copy: 12, check: 12 };
+document.querySelectorAll("i[data-i]").forEach((el) => {
+  const k = el.dataset.i, s = SIZE[k] || 16;
+  const cls = el.className ? ` class="${el.className}"` : "";
+  el.outerHTML = `<svg${cls} width="${s}" height="${s}" viewBox="0 0 256 256" fill="currentColor"><path d="${P[k]}"/></svg>`;
+});
+
+/* ---- width slider ---- */
+const slider = document.getElementById("w"), readout = document.getElementById("wr");
+const panels = [...document.querySelectorAll(".panel")];
+function setWidth(px) {
+  slider.value = px;
+  readout.textContent = px + " px";
+  panels.forEach((p) => (p.style.width = px + "px"));
+  requestAnimationFrame(recalcAll);
+}
+slider.addEventListener("input", () => setWidth(+slider.value));
+document.querySelectorAll(".presets button").forEach((b) =>
+  b.addEventListener("click", () => setWidth(+b.dataset.w))
+);
+
+/* ---- the measured collapse: same idea as useTabLabelCollapse ---- */
+const targetSlider = document.getElementById("t"), targetReadout = document.getElementById("tr");
+let ADDR_MIN = +targetSlider.value;
+
+const measured = [
+  { el: document.getElementById("tbA"), max: 3, addrFirst: true },
+  { el: document.getElementById("tbB"), max: 3 },
+];
+
+/**
+ * Two reasons to give up a stage, and the address-priority one comes first:
+ *   1. the address is below its minimum  → drop a label to hand it that width
+ *   2. the row overflows outright        → drop a label because nothing else fits
+ * Reading getBoundingClientRect between stages forces the reflow, so each pass
+ * sees the width the previous stage actually freed. When the stages run out the
+ * address simply keeps shrinking — it is never switched off, so it always fills
+ * whatever space is left rather than leaving a gap beside it.
+ */
+function fit(bar, max, addrFirst) {
+  let stage = 0;
+  bar.dataset.stage = "0";
+  const addr = addrFirst ? bar.querySelector(".addr") : null;
+  while (stage < max) {
+    const overflows = bar.scrollWidth > bar.clientWidth + 1;
+    const starved = addr ? addr.getBoundingClientRect().width < ADDR_MIN - 0.5 : false;
+    if (!overflows && !starved) break;
+    stage += 1;
+    bar.dataset.stage = String(stage);
+  }
+}
+function recalcAll() { measured.forEach(({ el, max, addrFirst }) => fit(el, max, addrFirst)); }
+
+targetSlider.addEventListener("input", () => {
+  ADDR_MIN = +targetSlider.value;
+  targetReadout.textContent = ADDR_MIN + " px";
+  recalcAll();
+});
+
+// Observe the PANELS, not document.body: the body never changes width when the
+// slider moves, so a body observer fires only on a real window resize and the
+// bars end up measured against a stale (mid-transition) width. Watching the
+// panels re-fits on every frame of the width transition. Panel width is driven
+// from outside, and fit() only toggles labels inside the bar, so this cannot
+// feed back into a resize loop.
+const ro = new ResizeObserver(recalcAll);
+panels.forEach((p) => ro.observe(p));
+
+/* ---- popovers ---- */
+document.querySelectorAll("[data-pop]").forEach((btn) => {
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const target = document.getElementById(btn.dataset.pop);
+    const wasOpen = target.classList.contains("open");
+    document.querySelectorAll(".pop").forEach((p) => p.classList.remove("open"));
+    if (!wasOpen) target.classList.add("open");
+  });
+});
+document.addEventListener("click", () =>
+  document.querySelectorAll(".pop").forEach((p) => p.classList.remove("open"))
+);
+
+/* ---- copy chips confirm with a check, as PreviewPath.tsx does (1200ms) ---- */
+const COPY_SVG = document.querySelector(".cp").innerHTML;
+const CHECK_SVG = `<svg width="12" height="12" viewBox="0 0 256 256" fill="currentColor"><path d="${P.check}"/></svg>`;
+document.querySelectorAll(".path .chip").forEach((chip) => {
+  const cp = chip.querySelector(".cp");
+  if (!cp) return;
+  let t = null;
+  chip.addEventListener("click", (e) => {
+    e.stopPropagation();
+    chip.classList.add("copied");
+    cp.innerHTML = CHECK_SVG;
+    if (t) clearTimeout(t);
+    t = setTimeout(() => {
+      chip.classList.remove("copied");
+      cp.innerHTML = COPY_SVG;
+    }, 1200);
+  });
+});
+
+/* ---- auto-fix toggles are live, so you can see the tinted-state argument ---- */
+document.querySelectorAll(".switch").forEach((s) =>
+  s.addEventListener("click", (e) => { e.stopPropagation(); s.classList.toggle("on"); recalcAll(); })
+);
+
+setWidth(390);
+</script>
+</body>
+</html>

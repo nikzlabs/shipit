@@ -134,6 +134,13 @@ export function PreviewToolbar({
     isRunning, showSelector, portLabel ?? "", hasErrors, errorPanelOpen, errorCount,
     deviceFrameActive, deviceWidth, deviceHeight, autoFixEnabled, autoFixRetries,
     previewPath ?? "",
+    // The DeviceSelector's own trigger text: a custom preset can share another
+    // preset's dimensions while having a wider label, so deviceWidth/Height do
+    // not stand in for it. isLandscape changes which trailing control shows.
+    devicePreset?.label ?? "", isLandscape,
+    // The scale readout appears and disappears with the preview's HEIGHT, so
+    // the toolbar's own width never changes and its observer never fires.
+    deviceScale, deviceScalePercent,
   ].join("|");
   const collapseRef = usePreviewToolbarCollapse(collapseSignature);
 
@@ -191,7 +198,15 @@ export function PreviewToolbar({
         ) : (
           <>
             <StatusDot status={isRunning || portLabel ? "success" : "info"} />
-            {portLabel ? portLabel : <span className="text-(--color-text-tertiary)">Preview</span>}
+            {/* Wrapped, not bare: a raw text node cannot carry the hide class,
+                so this label sat outside the collapse ladder and a long service
+                name could still clip the row after every stage was spent. */}
+            <span
+              className={`group-data-[hide-service=true]/ptb:hidden${portLabel ? "" : " text-(--color-text-tertiary)"}`}
+              title={portLabel ?? undefined}
+            >
+              {portLabel ?? "Preview"}
+            </span>
           </>
         )}
         {isRunning && (
@@ -264,7 +279,12 @@ export function PreviewToolbar({
             <span className="inline-flex items-center justify-center min-w-[1.1rem] h-[1.1rem] px-1 text-[10px] font-semibold rounded-full bg-(--color-error) text-(--color-accent-text)">
               {errorCount > 99 ? "99+" : errorCount}
             </span>
-            <span>{errorPanelOpen ? "Hide" : "Errors"}</span>
+            {/* Rides the same stage as Auto-fix, and for the same reason: the
+                count pill beside it is red and already says "errors". The pill
+                itself never collapses. */}
+            <span className="group-data-[hide-autofix=true]/ptb:hidden">
+              {errorPanelOpen ? "Hide" : "Errors"}
+            </span>
           </button>
         )}
         <label className="flex items-center gap-1 cursor-pointer select-none" title="Auto-fix: automatically send errors to the agent for fixing">
@@ -272,6 +292,11 @@ export function PreviewToolbar({
             type="checkbox"
             checked={autoFixEnabled}
             onChange={onToggleAutoFix}
+            // Explicit, because this checkbox otherwise takes its accessible
+            // name from the visible "Auto-fix" text beside it — which the
+            // collapse sets to display:none, dropping it out of name
+            // computation and leaving an unnamed checkbox.
+            aria-label="Auto-fix"
             className="sr-only peer"
           />
           <span className={`relative w-7 h-4 rounded-full transition-colors ${autoFixEnabled ? "bg-(--color-autofix)" : "bg-(--color-border-secondary)"}`}>

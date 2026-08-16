@@ -30,6 +30,16 @@ export interface CollapseProbe {
   overflows: boolean;
   /** Current width of the address text, or null when no address is shown. */
   addressWidth: number | null;
+  /**
+   * Whether the address is cut short — it wants more width than it has.
+   *
+   * Width alone cannot answer "is the address being squeezed", because the
+   * measured element is content-sized: `/` measures a few pixels in a 1200px
+   * toolbar exactly as it does in a 320px one. Testing width alone therefore
+   * read every short URL as starved and collapsed the whole bar at any width,
+   * which is the common case rather than an edge one.
+   */
+  addressTruncated: boolean;
 }
 
 /**
@@ -58,10 +68,15 @@ export function resolveCollapseStage(
   let stage = 0;
   apply(stage);
   while (stage < maxStage) {
-    const { overflows, addressWidth } = probe();
-    // A half-pixel of slack: sub-pixel layout means an address sitting exactly
-    // on its minimum would otherwise spend a stage it does not need.
-    const starved = addressWidth !== null && addressWidth < addressMin - 0.5;
+    const { overflows, addressWidth, addressTruncated } = probe();
+    // Starved means "cut short AND still under its minimum" — both halves are
+    // load-bearing. Truncation alone is not starvation: a genuinely long URL
+    // stays truncated no matter how much room it gets, and would spend every
+    // stage for nothing. Width alone is not starvation either, because a short
+    // path is narrow by nature rather than by pressure. The half-pixel of slack
+    // keeps sub-pixel layout from spending a stage that buys nothing.
+    const starved =
+      addressTruncated && addressWidth !== null && addressWidth < addressMin - 0.5;
     if (!overflows && !starved) break;
     stage += 1;
     apply(stage);
@@ -118,6 +133,15 @@ export function usePreviewToolbarCollapse(
         return {
           overflows,
           addressWidth: address ? address.getBoundingClientRect().width : null,
+          // The route and query each carry `truncate`, so a clipped one reports
+          // scrollWidth past its clientWidth. Asking the children rather than
+          // the wrapper matters: the wrapper's own overflow is hidden and its
+          // children shrink to fit inside it, so the wrapper always looks full.
+          addressTruncated: address
+            ? Array.from(address.children).some(
+                (child) => child.scrollWidth > child.clientWidth + 1,
+              )
+            : false,
         };
       },
     );
