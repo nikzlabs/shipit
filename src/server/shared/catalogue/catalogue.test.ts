@@ -575,13 +575,21 @@ describe("the harness\u00d7service join", () => {
     // ONLY the Responses API (a provider declaring `wire_api = "chat"` is
     // rejected outright — phase 3 measured this). So DeepSeek now reaches both
     // harnesses. Vercel documents a Responses surface, so it reaches Codex too;
-    // OpenRouter's Responses surface is unverified, so its models do not.
+    // OpenRouter's was verified 2026-08-15 (planning#391) and reaches Codex for
+    // the rows that declare the style.
     expect(catalogueModelIdsForHarness("claude")).toContain("deepseek-v4-flash");
     expect(catalogueModelIdsForHarness("codex")).toContain("deepseek-v4-flash");
     expect(catalogueModelIdsForHarness("codex")).toContain("deepseek-v4-pro");
     expect(catalogueModelIdsForHarness("codex")).toContain("openai/gpt-5.6-sol");
     expect(catalogueModelIdsForHarness("claude")).toContain("anthropic/claude-opus-5");
+    // The style is declared per ROW, not per service: OpenRouter's verified
+    // Responses run was a DeepSeek model, and Anthropic serves no Responses API
+    // for the gateway to pass through, so the `anthropic/*` rows stay off it.
+    // A blanket-add to the service would break exactly this assertion.
+    expect(catalogueModelIdsForHarness("codex")).toContain("deepseek/deepseek-v4-flash");
+    expect(catalogueModelIdsForHarness("codex")).toContain("deepseek/deepseek-v4-pro");
     expect(catalogueModelIdsForHarness("codex")).not.toContain("anthropic/claude-opus-5");
+    expect(catalogueModelIdsForHarness("codex")).not.toContain("z-ai/glm-5.2");
   });
 });
 
@@ -627,12 +635,15 @@ describe("eligibility (req 8)", () => {
 
 describe("support before a credential exists (the add-service table)", () => {
   it("answers per service what the join and the credential shapes allow", () => {
-    // GLM and OpenRouter serve Anthropic Messages only, so Codex — which speaks
-    // Responses and nothing else — cannot reach them however they are paid for.
+    // GLM serves Anthropic Messages only, so Codex — which speaks Responses and
+    // nothing else — cannot reach it however it is paid for. OpenRouter used to
+    // be in the same position and no longer is: its Responses surface was
+    // verified 2026-08-15 (planning#391), and one row declaring the style is
+    // enough for the service to be supported.
     expect(harnessSupportsService("claude", "zai")).toBe(true);
     expect(harnessSupportsService("codex", "zai")).toBe(false);
     expect(harnessSupportsService("claude", "openrouter")).toBe(true);
-    expect(harnessSupportsService("codex", "openrouter")).toBe(false);
+    expect(harnessSupportsService("codex", "openrouter")).toBe(true);
     // …and the mirror image: OpenAI is Responses only.
     expect(harnessSupportsService("codex", "openai")).toBe(true);
     expect(harnessSupportsService("claude", "openai")).toBe(false);

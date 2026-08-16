@@ -324,6 +324,10 @@ export const SERVICES = [
         kind: "key",
         endpoints: {
           [O_CC]: "https://openrouter.ai/api/v1",
+          // The Responses base carries its own `/v1` because Codex appends
+          // `/responses` to it — the same convention the OpenAI and DeepSeek
+          // rows use, and deliberately NOT the same string as `A_MSG` below.
+          [O_RESP]: "https://openrouter.ai/api/v1",
           // OpenRouter's Anthropic-Messages compatible surface (its "Anthropic
           // Skin"), which Claude Code speaks natively. Base URL excludes the
           // `/v1` the Anthropic path appends.
@@ -331,15 +335,36 @@ export const SERVICES = [
         },
         credentials: [{ via: "string", storageEnv: "OPENROUTER_API_KEY" }],
         retired: [],
-        // 🔍 Whether OpenRouter serves the Responses API is not established, so
-        // no model here declares `openai-responses` — which means this row
-        // reaches Claude Code and not Codex today. If the Responses surface is
-        // confirmed, adding the style to these rows is the whole change.
+        // ✅ 2026-08-15 — OpenRouter DOES serve the Responses API at
+        // `https://openrouter.ai/api/v1/responses` (authenticated POST → 200
+        // with a genuine `"object":"response"` body; a bogus sibling route on
+        // the same base 404s, so the 200 is routing and not a catch-all). Not
+        // just the HTTP surface: a real `codex exec` turn completed over it
+        // with `wire_api = "responses"`. That is what lets this row reach Codex
+        // at all, and it settles the 🔍 that used to sit here (planning#391).
+        //
+        // The style is declared per row rather than across the list, because
+        // the run exercised `deepseek/deepseek-v4-flash` and one gateway model
+        // answering does not say the gateway TRANSLATES for an upstream that
+        // has no Responses API of its own. Anthropic publishes none, and Z.ai
+        // was measured in the same run NOT to serve one — so those three rows
+        // would be asserting a translation layer nobody has seen work, and
+        // they keep `A_MSG` (their real path to Claude Code) instead. The
+        // DeepSeek pair is the defensible case: DeepSeek serves Responses
+        // natively (verified 2026-08-13, see its own row), so both models
+        // stand whether OpenRouter passes through or translates.
+        //
+        // Caveat that applies to EVERY gateway row reaching Codex, Vercel's
+        // included: a namespaced id is outside Codex's own metadata table, so
+        // it warns `Model metadata for '<id>' not found. Defaulting to fallback
+        // metadata; this can degrade performance and cause issues.` Non-fatal —
+        // the verification turn completed correctly — and not something the
+        // catalogue can fix from here.
         models: [
           { id: "anthropic/claude-opus-5", label: "Opus 5", ...MODEL_IDENTITIES.opus5, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: ANTHROPIC_PRICES.opus5 },
           { id: "anthropic/claude-sonnet-5", label: "Sonnet 5", ...MODEL_IDENTITIES.sonnet5, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: ANTHROPIC_PRICES.sonnet5 },
-          { id: "deepseek/deepseek-v4-flash", label: "DeepSeek V4 Flash", ...MODEL_IDENTITIES.deepseekV4Flash, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: DEEPSEEK_PRICES.v4flash },
-          { id: "deepseek/deepseek-v4-pro", label: "DeepSeek V4 Pro", ...MODEL_IDENTITIES.deepseekV4Pro, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: DEEPSEEK_PRICES.v4pro },
+          { id: "deepseek/deepseek-v4-flash", label: "DeepSeek V4 Flash", ...MODEL_IDENTITIES.deepseekV4Flash, styles: [A_MSG, O_CC, O_RESP], contextWindow: ONE_M, price: DEEPSEEK_PRICES.v4flash },
+          { id: "deepseek/deepseek-v4-pro", label: "DeepSeek V4 Pro", ...MODEL_IDENTITIES.deepseekV4Pro, styles: [A_MSG, O_CC, O_RESP], contextWindow: ONE_M, price: DEEPSEEK_PRICES.v4pro },
           { id: "z-ai/glm-5.2", label: "GLM-5.2", ...MODEL_IDENTITIES.glm52, styles: [A_MSG, O_CC], contextWindow: ONE_M, price: GLM_PRICES.glm52 },
         ],
       },
