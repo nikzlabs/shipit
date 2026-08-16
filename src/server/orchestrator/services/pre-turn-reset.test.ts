@@ -3,6 +3,17 @@ import { computeResetEligible, computeResetBlocker, autoResetMergedBranchOnConti
 import { handWorkspaceBackToWorker } from "../session-worker-uid.js";
 
 vi.mock("../session-worker-uid.js", () => ({ handWorkspaceBackToWorker: vi.fn() }));
+// nikzlabs/shipit#2349: `reset --hard` re-materializes the worktree through the
+// ORCHESTRATOR's git, whose LFS smudge filter is disabled by design, so every
+// LFS-tracked path it touched becomes ~130-byte pointer text in a tree that
+// reports clean. What the restore actually does is proven end-to-end against a
+// real git-lfs in `git-lfs.test.ts`; here we assert both reset paths call it.
+vi.mock("../git-lfs.js", () => ({
+  restoreLfsAfterTreeRewrite: vi.fn(() =>
+    Promise.resolve({ status: "not-an-lfs-repo" as const, usesLfs: false }),
+  ),
+}));
+import { restoreLfsAfterTreeRewrite } from "../git-lfs.js";
 import { DatabaseManager } from "../../shared/database.js";
 import { SessionManager } from "../sessions.js";
 import { PrStatusPoller } from "../pr-status-poller.js";
@@ -264,6 +275,25 @@ describe("autoResetMergedBranchOnContinue", () => {
     expect(out.agentPrefix).toContain("#482");
     expect(out.agentPrefix).toContain("origin/main");
     expect(out.agentPrefix).toContain("do not re-apply");
+  });
+
+  it("nikzlabs/shipit#2349: restores LFS content the reset rewrote as pointer text", async () => {
+    vi.mocked(restoreLfsAfterTreeRewrite).mockClear();
+    const git = makeGit();
+    await autoResetMergedBranchOnContinue(makeDeps({ createGitManager: () => git }), "s1", "/ws");
+    // The turn this reset exists to enable is about to read those files.
+    expect(restoreLfsAfterTreeRewrite).toHaveBeenCalledWith(
+      "/ws",
+      expect.stringContaining("main"),
+      expect.any(Function),
+    );
+  });
+
+  it("nikzlabs/shipit#2349: does not restore when the gate refused — nothing was rewritten", async () => {
+    vi.mocked(restoreLfsAfterTreeRewrite).mockClear();
+    const git = makeGit({ isClean: vi.fn().mockResolvedValue(false) });
+    await autoResetMergedBranchOnContinue(makeDeps({ createGitManager: () => git }), "s1", "/ws");
+    expect(restoreLfsAfterTreeRewrite).not.toHaveBeenCalled();
   });
 
   it("does not reset when the gate fails (dirty tree)", async () => {
@@ -1058,6 +1088,14 @@ describe("resetBranchToBaseExplicit (docs/239)", () => {
     expect(result.toSha).toBe(BASE_TIP);
     expect(git.resetHardToRemoteBase).toHaveBeenCalledWith("main");
     expect(git.forcePush).toHaveBeenCalled();
+    // nikzlabs/shipit#2349 — same duty as the automatic path: the reset rewrote the
+    // worktree through a smudge-disabled git, so LFS content has to be restored
+    // before the agent's next turn reads it.
+    expect(restoreLfsAfterTreeRewrite).toHaveBeenCalledWith(
+      "/ws",
+      expect.stringContaining("main"),
+      expect.any(Function),
+    );
   });
 
   it("is idempotent: a second invocation reports already-at-base, not a refusal", async () => {

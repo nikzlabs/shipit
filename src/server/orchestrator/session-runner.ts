@@ -785,6 +785,37 @@ export interface SystemTurnDeps {
     sessionDir: string,
   ) => Promise<PreTurnResetHookResult>;
   /**
+   * docs/221 — read-and-clear the out-of-band "your working tree was rewritten"
+   * notice a manual sync parked on the session, so a DISPATCHED turn delivers it
+   * too (nikzlabs/shipit#2349).
+   *
+   * docs/221 wired the consume into `agent-execution.ts` alone and its comment
+   * says the notice is "drained by the next interactive turn". That is not the
+   * only next turn. A message sent while the sync is still settling is QUEUED
+   * (the flow holds `systemTurnInProgress` through its own teardown), and
+   * `releaseQueuedTurn` releases every queued entry — interactive ones
+   * included — onto `runner.dispatch`. So the message most likely to need the
+   * notice, the one the user typed while watching the sync finish, was the one
+   * guaranteed not to get it: the agent resumed against a tree rewritten
+   * underneath it with nothing said.
+   *
+   * Optional so minimal test setups can omit it. Consume-and-clear is
+   * transactional, so wiring it on both paths cannot double-deliver.
+   */
+  consumePendingAgentNotice?: (sessionId: string) => string | undefined;
+  /**
+   * Put a consumed notice BACK when the turn that took it died before the agent
+   * ever saw the prompt (nikzlabs/shipit#2349).
+   *
+   * The consume is read-and-clear, which is what makes delivery exactly-once —
+   * and what makes a turn that dies during setup burn the notice permanently:
+   * the branch stays rewritten and nothing ever says so again. docs/218 solved
+   * the same hazard for its transcript card with `ensureRecorded`; this is the
+   * same answer for the sentence. Paired in `runDispatchedTurn`'s `finally` and
+   * latched, so it can neither double-park nor undo a delivered notice.
+   */
+  restorePendingAgentNotice?: (sessionId: string, notice: string) => void;
+  /**
    * docs/149 — write a CLI-rotated OAuth token back to the orchestrator source
    * after a system turn. Optional; production wires it to
    * `finalizeSessionAgentEnvironment` so the agent-spawned and CI-auto-fix

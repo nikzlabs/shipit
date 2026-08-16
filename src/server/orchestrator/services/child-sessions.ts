@@ -32,6 +32,7 @@ import { graduateSession, type GraduateSessionDeps } from "./graduate-session.js
 import { ServiceError } from "./types.js";
 import type { ClaimSessionService } from "./claim-session.js";
 import { handWorkspaceBackToWorker } from "../session-worker-uid.js";
+import { restoreLfsAfterTreeRewrite } from "../git-lfs.js";
 import { prepareDispatch } from "../prepared-dispatch.js";
 import { isResolvedForGrouping } from "../../shared/session-resolution.js";
 
@@ -604,6 +605,13 @@ export async function spawnChildSession(
     } catch (err) {
       throw new ServiceError(400, `Failed to reset to base '${opts.base}': ${String(err)}`);
     }
+    // nikzlabs/shipit#2349: that same re-materialization ran through a git whose LFS
+    // smudge filter is disabled, so it wrote pointer text over the content the
+    // claim's `git lfs pull` had just materialized at `origin/HEAD`. Restore it
+    // for the pinned base before the child's first turn reads any of it.
+    await restoreLfsAfterTreeRewrite(newWorkspaceDir, `Pin to ${opts.base}`, (message) =>
+      console.warn(`[spawn] ${message}`),
+    );
     // docs/150 §7 addendum (planning#147): the `reset --hard` ran as the root
     // orchestrator. It re-materializes the WORKTREE (not just `.git/index`/refs)
     // as root:root, so hand the whole workspace back — `.git` alone would leave

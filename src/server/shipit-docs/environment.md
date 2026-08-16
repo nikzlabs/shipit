@@ -150,6 +150,17 @@ content and committing a new tracked binary stores a pointer. ShipIt runs
 `git lfs pull` when it provisions the workspace, so LFS-tracked files should
 already hold their real bytes when your session starts.
 
+It runs the same restore after anything ShipIt does that rewrites your working
+tree from **outside** the session — a sync/rebase onto the base, a reset of a
+merged branch, a rewind, a pull, a merge from another session, a release prepare.
+Those run a git with the LFS smudge filter turned off, so without the restore
+they would write pointer text over your assets.
+
+The restore is best-effort. When it fails, ShipIt says so — a toast for a sync, a
+note appended to the system message for a merged-branch reset — and then your
+assets ARE stubs. Treat that message as a job: run `git lfs pull` before reading,
+building with, or rendering any LFS-tracked file.
+
 **When they don't, you will see pointer stubs, not an error.** An LFS pointer is
 a ~130-byte text file starting with `version https://git-lfs.github.com/spec/v1`.
 That failure mode is easy to misdiagnose — images render broken, audio fails with
@@ -166,6 +177,11 @@ If it is a stub, fetch the content rather than debugging the renderer:
 ```bash
 git lfs pull
 ```
+
+Two things make this hard to spot on your own, so check deliberately rather than
+waiting to notice: the pointer in the index never changes, so `git status`
+reports the tree **clean**, and only the paths a rewrite touched go stale while
+every other LFS file keeps its real content.
 
 A deployment can disable automatic LFS downloads (`SHIPIT_GIT_LFS=off`) to avoid
 the bandwidth cost on asset-heavy repos; a manual `git lfs pull` still works.

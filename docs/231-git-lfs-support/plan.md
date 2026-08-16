@@ -27,7 +27,9 @@ content. Anyone debugging a preview in an LFS repo loses the same time.
 ## The design
 
 Three moving parts: install the binary, configure it differently per image role,
-and materialize content explicitly at the end of provisioning.
+and materialize content explicitly at the end of provisioning — plus, since
+nikzlabs/shipit#2349, re-materialize it after every *later* orchestrator-side
+rewrite of a live session's worktree (§6).
 
 ### 1. `git-lfs` in every image
 
@@ -131,6 +133,139 @@ needed for `git lfs pull` *and* `git lfs push` — a Network-off sandbox with th
 never received. Added as an **exact** host, never `.amazonaws.com`: the bare
 suffix would open every S3 bucket on the internet as an exfil target.
 
+### 6. Later tree rewrites, not just provisioning
+
+Provisioning is not the only place the orchestrator writes a session's worktree,
+and the original design covered only that half. Reported in
+nikzlabs/shipit#2349: a session was rebased onto its base while idle, and the one
+LFS-tracked image the rebase touched came back as 130 bytes of pointer text.
+
+The reporter's evidence is what makes it a *rewrite-path* bug rather than a repo
+or environment one, and each half is worth keeping:
+
+- **Only the paths the rewrite touched went stale.** Four other LFS-tracked
+  images elsewhere in the repo still held their real content.
+- The repo's LFS config was correct and complete, and no `GIT_LFS_SKIP_SMUDGE`
+  was set anywhere in the session.
+- Nothing was lost — the object was in `.git/lfs/objects` *and* on the remote.
+  Only the working copy was wrong.
+
+That is exactly what §2's smudge asymmetry predicts. The rewrite runs the
+**orchestrator's** git, which has smudge disabled by design, so it re-materializes
+every path it touched from the object database — which for a tracked asset holds
+the pointer, not the bytes.
+
+What makes it worse than a missing file is that nothing *anywhere* says so. The
+pointer in the index never changed, so `git status` reports the tree **clean**;
+the agent then hands 130 bytes of text to an image, font, texture, or model
+decoder, and the failure surfaces as corrupted rendering some distance from the
+cause. The reporter found it only because a tool that digests its own outputs
+compared the file against a recorded digest and reported it as hand-edited.
+
+**The fix** is `restoreLfsAfterTreeRewrite(dir, operation, warn?)` in
+`git-lfs.ts` — a thin, named wrapper over `materializeLfsWithWarning` that gives
+the duty one place to be documented and one symbol to grep for. Every
+orchestrator-side path that rewrites an existing session's worktree calls it:
+
+| Path | File | Rewrite |
+|---|---|---|
+| Sync / rebase / auto-conflict-resolve | `services/rebase-driver.ts` | `git rebase`, `--continue`, `--abort` |
+| Merged-branch auto-reset (pre-turn) | `services/pre-turn-reset.ts` | `reset --hard origin/<base>` |
+| `shipit branch reset-to-base` | `services/pre-turn-reset.ts` | same |
+| Fork-merge into the active session | `services/session-fork-merge.ts` | `git merge` (and its abort) |
+| Child spawn pinned to an explicit base | `services/child-sessions.ts` | `reset --hard <base>` |
+| Chat **rewind** and its undo | `ws-handlers/rollback-handlers.ts` | `rollback` = `reset --hard` |
+| `POST /git/rollback`, `POST /git/pull`, `POST /git/rebase/abort` | `api-routes-git.ts` | `reset --hard`, merge, abort |
+| `shipit release prepare` | `services/release-prepare.ts` | `checkout -B`, `cherry-pick`, merge-override |
+
+**That table is enumerated by a test, not by hand.**
+`git-lfs-rewrite-coverage.test.ts` scans the orchestrator for the worktree-
+rewriting `GitManager` calls and raw argv forms, and fails naming any file that
+rewrites without restoring — with an allowlist that must carry a reason and may
+not go stale. The rule it encodes is the one `git-tree-uid.ts` states for its own
+problem: *a hand-converted list is stale the moment someone adds one more, and
+the failure is silent.* Not hypothetical — the first cut of this fix enumerated
+the first five rows by hand, and an independent review found the last three plus
+the fork gap below. Every one was the reported bug verbatim.
+
+**Adjacent gap closed at the same time:** `forkSession` never materialized LFS at
+all, so forking an LFS repo produced a workspace where *every* asset was a stub —
+the original docs/231 bug in full. Two causes, both in that function:
+`git clone --local` does not carry `.git/lfs` (docs/232), and the `checkout -b`
+runs through the smudge-disabled git. It now makes the same
+`materializeLfsWithWarning` call every other provisioning path does.
+
+Three properties of those call sites are load-bearing, and each is pinned by a
+test:
+
+1. **They restore on the FAILURE paths too.** `git rebase --abort` and the merge
+   abort check the pre-rewrite tree back out through the same filter-less git, so
+   a sync that failed leaves stubs just as a sync that succeeded does. That's why
+   the rebase driver restores in its `finally` (guarded by a flag set just before
+   the first worktree-writing op) rather than on its two success paths.
+2. **They never restore mid-conflict.** A conflicted LFS path is pointer *text*
+   carrying conflict markers; smudging it would destroy the very conflict the
+   agent is being asked to resolve. The restore waits for a settled tree.
+3. **They restore before the queue drains and before the handback.** A turn
+   queued during a sync must not start against the stubs — that is the reported
+   failure — and the ownership chown still has to have the last write. The
+   auto-resolve **timeout** path needs its own restore to get this: its teardown
+   aborts the rebase and then drains immediately, while the flow is still waiting
+   for the killed resolution turn to settle, so the flow's `finally` alone lands
+   *after* the queued turn has started. A test drives the timeout and asserts the
+   order.
+
+The restore is **serialized per workspace** (`git-lfs.ts`) and runs under the
+CLAUDE.md invariant-5 **post-turn hold** on the rebase path. Both follow from
+where it sits: the timeout path deliberately restores twice against one clone,
+and `git lfs checkout` writes the working file *in place* (measured against
+git-lfs 3.3.0 — same inode before and after, mode preserved), so two writers
+interleave inside one asset rather than one simply losing; and the restore runs
+with `running` already false on a path that fires precisely on idle, viewerless
+sessions, which is exactly when the idle enforcer would otherwise destroy the
+container mid-pull.
+
+That in-place write is also why an ownership argument reasoned from `git checkout`
+does not transfer. `git checkout` unlinks and recreates, so the *directory's*
+permission governs; git-lfs needs the *file*, and gets away with a read-only one
+by chmod'ing around the write — which only its owner may do. A same-owner `0444`
+file therefore succeeds and proves nothing about a root-owned file under a
+dropped uid, which is EACCES. In the shipped configuration the question doesn't
+arise: docs/266 makes the rewrite drop to the tree's owner, so the files are
+worker-owned and `runGit` drops to the same uid.
+
+**A neighbouring guarantee this broke, and then fixed.** The restore's few
+milliseconds widened the window in which the sync flow still holds the session,
+and that turned an intermittent hole deterministic: a message sent while the sync
+settles is QUEUED, `releaseQueuedTurn` releases it onto `runner.dispatch`, and the
+docs/221 "your working tree was rewritten" notice was consumed only on the
+INTERACTIVE path. So the turn most likely to need it never got it. docs/221 had
+listed the dispatched drain as a deliberate non-goal on the reasoning that
+"nothing is lost — the user's next interactive turn still delivers it", which is
+true of the database row and false of the guarantee: that queued message IS the
+user's next turn, and it runs dispatched. `dispatched-turn.ts` now drains it too,
+and re-parks it if that turn dies before the agent sees the prompt — read-and-clear
+is what makes delivery exactly-once and what would otherwise let a spawn failure
+burn the only warning that the tree was rewritten. The doc's non-goal is struck
+through with the correction.
+
+**Where a failed restore is reported.** The rebase path has an SSE toast. The
+pre-turn reset has no toast in scope, so a restore that leaves stubs appends a
+sentence to the reset's **agent prefix** — the issue's own fallback ask, aimed at
+the one party about to read those files. The remaining sites log.
+
+It runs `git lfs pull`, not `git lfs checkout`. A checkout would have been enough
+for the reported case (the object was already local), but a sync onto a moved
+base can introduce assets this clone has never seen, and `git lfs checkout`
+leaves those as stubs while exiting 0. When every object is already local the
+pull makes no network call, so the common case stays cheap; a repo that doesn't
+use LFS costs one `git grep`.
+
+The auto-resolve **timeout** teardown is the one deliberate omission: killing the
+agent makes the resolution turn reject, so `runRebaseFlow`'s own `finally`
+aborts and restores against the same clone. A second pull there would race that
+one for no added coverage.
+
 ## Configuration
 
 | Env var | Default | Effect |
@@ -189,10 +324,11 @@ binary is present.
   both orchestrator and agent host, so it inherits `--skip-smudge` and a manual
   `git checkout` there writes stubs. Provisioning-time materialization still runs;
   a manual `git lfs pull` covers the rest. Real session containers are unaffected.
-- **Orchestrator-side worktree mutations outside provisioning** (e.g. the
+- ~~**Orchestrator-side worktree mutations outside provisioning** (e.g. the
   conflict-resolution and pre-turn-reset paths) can re-write stubs without a
-  follow-up pull. The provisioning paths are covered; these would each need a
-  `materializeLfsContent` call if they turn out to matter in practice.
+  follow-up pull.~~ It mattered in practice — reported as
+  nikzlabs/shipit#2349 and closed by
+  [§6 below](#6-later-tree-rewrites-not-just-provisioning).
 
 ## Key files
 
@@ -201,7 +337,10 @@ binary is present.
 - `src/server/orchestrator/git-lfs-dockerfiles.test.ts` — guards the per-role
   smudge asymmetry, which can't be verified by a build in-session
 - `src/server/orchestrator/warm-pool-manager.ts`, `services/claim-session.ts`,
-  `services/session.ts` — call sites
+  `services/session.ts` — provisioning call sites
+- `services/rebase-driver.ts`, `services/pre-turn-reset.ts`,
+  `services/session-fork-merge.ts`, `services/child-sessions.ts` — the §6
+  tree-rewrite call sites, each with a wiring guard in its own `.test.ts`
 - `src/server/orchestrator/egress-allowlist.ts` — LFS transfer host
 - `docker/Dockerfile{.prod,.dev,.dogfood,.session-worker.prod,.session-worker.dev}`
 - `src/server/shipit-docs/environment.md` — agent-facing "it's a stub, not a

@@ -34,6 +34,7 @@ import { releaseQueuedTurn } from "../queue-drain.js";
 import { isNonFastForwardError } from "./git.js";
 import { getErrorMessage } from "../validation.js";
 import { handWorkspaceBackToWorker } from "../session-worker-uid.js";
+import { restoreLfsAfterTreeRewrite } from "../git-lfs.js";
 import type { AutoResolveResult } from "../auto-conflict-resolve-manager.js";
 import { prepareDispatch } from "../prepared-dispatch.js";
 
@@ -304,6 +305,30 @@ function reevaluateSessionConfig(runner: SessionRunnerInterface): void {
 }
 
 /**
+ * nikzlabs/shipit#2349 — restore the LFS content this flow's worktree rewrite turned
+ * back into pointer text, holding the runner while it runs.
+ *
+ * The hold is the CLAUDE.md invariant-5 rule, and this call needs it for exactly
+ * the reason that invariant exists. The restore runs with `running` already
+ * false, and `systemTurnInProgress` is not consulted by `agentBusy` or by
+ * `dispose()` — so without a lease the idle enforcer sees an idle runner and may
+ * destroy the container mid-restore. That is not a corner case here: the
+ * auto-resolve path runs *precisely* on idle, viewerless sessions, and a pull on
+ * an asset-heavy repo is the longest window in the flow.
+ */
+async function restoreLfsForSync(deps: RebaseDriverDeps, baseBranch: string): Promise<void> {
+  const { runner } = deps;
+  runner.beginPostTurnWork();
+  try {
+    await restoreLfsAfterTreeRewrite(runner.sessionDir, `Sync with ${baseBranch}`, (message) =>
+      deps.sseBroadcast("error", { message }),
+    );
+  } finally {
+    runner.endPostTurnWork();
+  }
+}
+
+/**
  * Run the full rebase flow. Emits WS events through the runner so the client
  * can update its UI as the flow progresses.
  *
@@ -317,6 +342,12 @@ export async function runRebaseFlow(
 ): Promise<RebaseFlowOutcome> {
   const { git, runner } = deps;
   const recordSync = deps.recordSyncCard ?? false;
+  // nikzlabs/shipit#2349 — flipped the moment the flow can have re-materialized
+  // worktree files, so the `finally` knows whether it owes an LFS restore. Set
+  // before `git.rebase`, which is the first op here that writes the worktree:
+  // the fetch and the local-base-ref move touch only `.git`, and the up-to-date
+  // short-circuit returns without rewriting anything.
+  let worktreeRewritten = false;
 
   if (runner.running) {
     throw new ServiceError(409, "Cannot rebase while an agent turn is in progress");
@@ -387,6 +418,7 @@ export async function runRebaseFlow(
     // Errors propagate to the route's `flowPromise.catch`, which emits a single
     // `rebase_aborted` carrying the error message. Don't emit here too — before
     // this dedupe the user got two aborts for one failure.
+    worktreeRewritten = true;
     let result = await git.rebase(baseRef);
 
     // 5. Clean rebase — go straight to force push.
@@ -502,6 +534,22 @@ export async function runRebaseFlow(
     runner.emitMessage({ type: "rebase_complete", sessionId: runner.sessionId, forcePushed });
     return { status: "conflicts_resolved", iterations: iter, forcePushed };
   } finally {
+    // nikzlabs/shipit#2349 — the rebase re-materialized worktree files through the
+    // ORCHESTRATOR's git, whose LFS smudge filter is disabled by design, so every
+    // LFS-tracked path it touched is now ~130 bytes of pointer text while the
+    // tree reads CLEAN. Restore the content before anyone looks at it.
+    //
+    // In the `finally` rather than on the two success paths because an ABORT
+    // rewrites the worktree too — it checks the pre-rebase tree back out through
+    // the same filter-less git, so a failed sync leaves stubs where a successful
+    // one would have. By the time this runs the tree is settled (every path that
+    // leaves the loop mid-rebase aborts first), which is the precondition
+    // `restoreLfsAfterTreeRewrite` documents.
+    //
+    // Ahead of the queue release, not after it: a turn queued during the sync
+    // would otherwise start against the stubs, which is the exact failure this
+    // closes. Non-LFS repos pay one `git grep` for that ordering.
+    if (worktreeRewritten) await restoreLfsForSync(deps, baseBranch);
     // planning#146 / docs/150 §7: every orchestrator git op above (fetch, rebase,
     // rebaseContinue, stageAll, forcePush, rebaseAbort) runs as root and leaves
     // BOTH `.git` and the rewritten worktree files root-owned. Unlike a normal
@@ -956,6 +1004,15 @@ export async function runAutoResolveAttempt(
   // the whole workspace back here too — redundant but harmless on the normal
   // path. No-op when the flag is unset.
   handWorkspaceBackToWorker(runner.sessionDir);
+  // nikzlabs/shipit#2349 — and restore LFS content here too, even though
+  // `runRebaseFlow`'s own finally will restore as it unwinds. On the TIMEOUT path
+  // that finally is not enough: the teardown's `git.rebaseAbort()` rewrites the
+  // worktree, then this function drains the queue IMMEDIATELY, while the flow is
+  // still waiting for the killed resolution turn to settle. Without this the
+  // queued turn starts against the stubs — the exact failure #2349 reports — and
+  // the flow's restore lands underneath an already-running turn. The two calls
+  // cannot collide: `restoreLfsAfterTreeRewrite` serializes per workspace.
+  await restoreLfsForSync(deps, baseBranch);
   try {
     await deps.drainQueue?.();
   } catch (err) {

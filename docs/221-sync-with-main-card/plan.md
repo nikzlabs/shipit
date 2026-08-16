@@ -83,13 +83,14 @@ The docs/218 post-merge reset does not have this problem because it runs *inside
 the turn it describes, so it prepends its `[System] …` prefix directly. A manual
 sync has no turn to prepend to: `runRebaseFlow` refuses to start while one is
 running, and it is driven from an HTTP route. So the sentence is **parked** and
-the next interactive turn delivers it:
+the next turn delivers it — on either transport (see the reversed non-goal below;
+it was interactive-only until nikzlabs/shipit#2349):
 
 | | |
 |---|---|
 | Write | `sessions.pending_agent_notice` — one nullable column, set by `SessionManager.setPendingAgentNotice` |
 | Read | `SessionManager.consumePendingAgentNotice` — read-and-clear in one transaction, so a notice is delivered exactly once |
-| Drain | `runAgentWithMessage` (`agent-execution.ts`), prepended ahead of the docs/218 reset prefix (chronological: the sync happened first) |
+| Drain | `runAgentWithMessage` (`agent-execution.ts`) **and `runDispatchedTurn` (`dispatched-turn.ts`)** — a message queued during the sync is released onto the dispatched path, so the interactive-only drain missed it (nikzlabs/shipit#2349). Prepended ahead of the docs/218 reset prefix on both (chronological: the sync happened first) |
 
 Persisted rather than held on the runner for the `secretBlock` reason: the runner
 dies when the session goes idle, but the rewritten branch does not, and "synced,
@@ -160,10 +161,25 @@ to. The notice stays pending and the user's next real turn gets it.
 - Surfacing the card on the automatic conflict-resolve-on-idle path (kept to its
   existing `auto_resolve_result` envelopes).
 - Moving local base for non-rebase flows (only the sync/rebase entry point).
-- Draining the pending agent notice on **dispatched** turns (CI auto-fix,
+- ~~Draining the pending agent notice on **dispatched** turns (CI auto-fix,
   `shipit session message`). Same scope boundary docs/218 drew: a human resuming
   is the signal. Nothing is lost — the notice is not consumed, so the user's next
-  interactive turn still delivers it.
+  interactive turn still delivers it.~~ **Reversed (nikzlabs/shipit#2349).** The
+  reasoning held for the turns it named and missed the one that matters. A
+  message sent while the sync is still settling is QUEUED — the flow holds
+  `systemTurnInProgress` through its own teardown — and `releaseQueuedTurn`
+  releases *every* queued entry, interactive ones included, onto
+  `runner.dispatch`. So the turn most likely to need the notice, the one the user
+  typed while watching the sync finish, was the one guaranteed not to get it, and
+  "the user's next interactive turn" may simply never come: that message IS the
+  turn, and it runs dispatched. `dispatched-turn.ts` now consumes it too, with
+  the same `postTurn: "none"` exclusion the reset uses — and **re-parks it** when
+  that turn dies before the agent ever sees the prompt. The consume is
+  read-and-clear, which is what makes delivery exactly-once and what makes a
+  spawn failure burn the notice permanently: the branch stays rewritten and
+  nothing ever says so again. Same hazard docs/218 solved for its card with
+  `ensureRecorded`, same shape of answer. Found because #2349's LFS restore
+  widened the settling window enough to make the drop deterministic.
 
 ## Follow-up — merged PR cards
 

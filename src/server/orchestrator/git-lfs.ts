@@ -50,6 +50,16 @@ import { gitSpawnOverridesForTree } from "../shared/git-tree-uid.js";
  *  - **after** `configureGitCredentials` (private repos need the helper), and
  *  - **before** `handWorkspaceBackToWorker` (the pull writes files as root, so
  *    the chown has to come last or the agent can't edit them).
+ *
+ * ## Provisioning is not the only path that has to do this
+ *
+ * The same skip-smudge asymmetry applies to every LATER orchestrator-side
+ * rewrite of a live session's worktree — the rebase driver, the merged-branch
+ * `reset --hard`, the fork-merge. Those run the identical orchestrator git with
+ * the identical disabled smudge filter, so they re-write every LFS-tracked path
+ * they touch as pointer text, and until nikzlabs/shipit#2349 none of them
+ * restored it. {@link restoreLfsAfterTreeRewrite} is the one duty every such
+ * path owes; see its docstring.
  */
 
 /** Set `SHIPIT_GIT_LFS=off` to detect-and-warn instead of downloading content. */
@@ -303,3 +313,103 @@ export async function materializeLfsWithWarning(
   if (result.warning) warn(`${repoLabel}: ${result.warning}`);
   return result;
 }
+
+/**
+ * Re-materialize LFS content after the ORCHESTRATOR rewrote an existing
+ * session's worktree — a rebase, a `reset --hard`, a merge (nikzlabs/shipit#2349).
+ *
+ * ## Why every such path needs this
+ *
+ * Those rewrites run the orchestrator's git, which is installed
+ * `--skip-smudge` (see the module docstring — enabling smudge there would break
+ * `clone --local` outright). So git re-materializes every file the rewrite
+ * touched, and for an LFS-tracked path that means writing back the ~130-byte
+ * **pointer stub** the object database holds, not the asset.
+ *
+ * The reported symptom is exactly what that predicts and is nastier than a
+ * missing file: only the paths the rewrite touched go stale, LFS files it did
+ * not touch keep their real bytes, git reports the tree **clean** (the pointer
+ * in the index never changed), and nothing announces any of it. A dev server
+ * then hands 130 bytes of text to an image/font/model decoder, and the failure
+ * surfaces as corrupted rendering some distance from the cause.
+ *
+ * ## What it runs, and why a pull rather than a checkout
+ *
+ * `git lfs pull` (via {@link materializeLfsContent}), not `git lfs checkout`.
+ * A checkout is enough for the reported case — the object was already in
+ * `.git/lfs/objects` — but a sync onto a moved base can bring in assets this
+ * clone has never seen, and a checkout leaves those as stubs while exiting 0.
+ * When every object is already local the pull makes no network call, so the
+ * cheap case stays cheap. A repo that doesn't use LFS costs one `git grep`.
+ *
+ * ## Ordering
+ *
+ * Call it at a SETTLED tree — after the rebase finishes or is aborted, never
+ * between conflict iterations: mid-rebase, a conflicted LFS path is pointer
+ * text carrying conflict markers, and smudging it would destroy the very
+ * conflict the agent is being asked to resolve. Like the provisioning paths,
+ * call it **before** `handWorkspaceBackToWorker` so the chown has the last
+ * write.
+ *
+ * Best-effort, like everything else here: a session whose assets didn't restore
+ * is degraded, not broken, so the failure is reported and never thrown.
+ * `operation` labels the warning with what rewrote the tree, since the reader
+ * gets it as a bare toast or log line.
+ *
+ * "Never thrown" is stricter here than in {@link materializeLfsWithWarning},
+ * which swallows the materialization but still lets the `warn` SINK throw. Call
+ * sites put this in a `finally` alongside a rewrite that has ALREADY happened,
+ * where a throw would replace the flow's real error with this one — or, on the
+ * pre-turn reset, make a completed reset report itself as not-moved. So the sink
+ * is guarded too.
+ *
+ * ## Serialized per workspace
+ *
+ * Two restores of one clone must never overlap. The rebase driver reaches that
+ * state on its auto-resolve timeout — the teardown restores before draining the
+ * queue, while the killed flow's own `finally` restores as it unwinds — and
+ * `git lfs checkout` writes the working file **in place** (measured against
+ * git-lfs 3.3.0: same inode before and after, mode preserved), so two writers
+ * can interleave inside one asset rather than one simply losing. Calls for the
+ * same directory queue instead; each still sees the tree as it stands when its
+ * turn comes, which is why they chain rather than share one result.
+ *
+ * (That in-place write is also why the ownership ordering matters and a
+ * `git checkout` measurement doesn't transfer: `git checkout` unlinks and
+ * recreates, so the DIRECTORY's permission governs, while git-lfs needs the
+ * FILE. It gets away with a read-only file by chmod'ing around the write, which
+ * only its owner may do — so a root-owned file plus a dropped uid is EACCES,
+ * and the same-owner `0444` case that succeeds proves nothing about it.)
+ */
+export async function restoreLfsAfterTreeRewrite(
+  workspaceDir: string,
+  operation: string,
+  warn: (message: string) => void = (message) => console.warn(`[git-lfs] ${message}`),
+  opts?: { isAvailable?: () => Promise<boolean> },
+): Promise<LfsResult> {
+  const run = async (): Promise<LfsResult> => {
+    try {
+      return await materializeLfsWithWarning(workspaceDir, operation, warn, opts);
+    } catch (err) {
+      console.warn(`[git-lfs] restore after ${operation} threw for ${workspaceDir}:`, String(err));
+      return { status: "failed", usesLfs: true };
+    }
+  };
+  // eslint-disable-next-line no-restricted-syntax -- chaining IS the mechanism: `await` here would let a second caller in before the tail is published
+  const chained = (restoreChains.get(workspaceDir) ?? Promise.resolve()).then(run);
+  // The chain link must never reject — `run` already can't, but a rejected tail
+  // would poison every later call for this directory.
+  // eslint-disable-next-line no-restricted-syntax -- Promise two-arg form, to swallow both settlements into a plain marker
+  const tail = chained.then(() => undefined, () => undefined);
+  restoreChains.set(workspaceDir, tail);
+  try {
+    return await chained;
+  } finally {
+    // Drop the entry only when nothing queued behind us, so the map doesn't grow
+    // one permanent promise per session workspace for the process's lifetime.
+    if (restoreChains.get(workspaceDir) === tail) restoreChains.delete(workspaceDir);
+  }
+}
+
+/** Tail of the in-flight {@link restoreLfsAfterTreeRewrite} chain, per workspace. */
+const restoreChains = new Map<string, Promise<void>>();

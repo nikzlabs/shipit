@@ -49,6 +49,7 @@ import type { GitManager } from "../../shared/git.js";
 import type { PrStatusSummary } from "../../shared/types/github-types.js";
 import type { WsServerMessage } from "../../shared/types/ws-server-messages.js";
 import { handWorkspaceBackToWorker } from "../session-worker-uid.js";
+import { restoreLfsAfterTreeRewrite } from "../git-lfs.js";
 import {
   emitNoticeInTurn,
   persistNoticeUnattached,
@@ -784,6 +785,20 @@ export async function autoResetMergedBranchOnContinue(
 
     const { from, to } = await git.resetHardToRemoteBase(base);
 
+    // nikzlabs/shipit#2349 — that `reset --hard` re-materialized the worktree through
+    // the ORCHESTRATOR's git, whose LFS smudge filter is disabled by design, so
+    // every LFS-tracked path it touched now holds ~130 bytes of pointer text in a
+    // tree that reads clean. Restore it here, before the turn this reset exists
+    // to enable runs against those files. Non-LFS repos exit on one `git grep`.
+    const lfs = await restoreLfsAfterTreeRewrite(sessionDir, `Reset onto ${base}`, (message) =>
+      console.warn(`[pre-turn-reset] ${message}`),
+    );
+    // A restore that FAILED recreates the reported state exactly — pointer text
+    // on disk, `git status` clean, nothing said — and this path has no toast in
+    // scope. So the prefix tells the one party about to read those files.
+    // `usesLfs` scopes it: a repo that doesn't use LFS says nothing.
+    const lfsWarning = lfs.usesLfs && lfs.status !== "materialized" ? buildLfsStubWarning() : "";
+
     // Heal the remote branch so later plain auto-pushes fast-forward. The reset
     // moved only the LOCAL branch to origin/<base>; the session's own remote
     // branch (origin/<session-branch>) still points at the old merged commits —
@@ -828,7 +843,7 @@ export async function autoResetMergedBranchOnContinue(
       ...(prUrl !== undefined ? { prUrl } : {}),
       fromSha: from,
       toSha: to,
-      agentPrefix: buildAgentPrefix(prNumber, base),
+      agentPrefix: buildAgentPrefix(prNumber, base) + lfsWarning,
     };
   } catch (err) {
     console.error(`[pre-turn-reset] auto-reset failed for ${sessionId} (running turn on the un-moved branch):`, err);
@@ -975,6 +990,27 @@ function buildSkipAgentPrefix(skip: ResetSkip, prNumber?: number, base?: string)
  * The agent-facing context prefix. The last sentence is load-bearing: it stops
  * the agent from recreating already-shipped work on the fresh base.
  */
+/**
+ * nikzlabs/shipit#2349 — the sentence appended to the reset's agent prefix when the
+ * LFS restore did NOT put real content back.
+ *
+ * This is the issue's own fallback ask: *"if the sync deliberately skips smudge,
+ * then the session should at least be told, so the agent can restore before
+ * doing anything with those files."* A failed restore recreates the reported
+ * state exactly — pointer text on disk, `git status` clean, nothing said — and
+ * the pre-turn path has no toast in scope, so the prefix is the surface that
+ * reaches the one party about to read those files.
+ */
+export function buildLfsStubWarning(): string {
+  return (
+    ` NOTE: this repository uses Git LFS and restoring the tracked assets after the `
+    + `reset FAILED, so some of them are ~130-byte pointer stubs rather than real `
+    + `content — and \`git status\` will still say the tree is clean. Run `
+    + `\`git lfs pull\` before reading, building with, or rendering any LFS-tracked `
+    + `file, and don't conclude an asset is corrupt until you have.`
+  );
+}
+
 function buildAgentPrefix(prNumber: number | undefined, base: string): string {
   return (
     `[System] Your previous pull request${prNumber ? ` (#${prNumber})` : ""} was merged into ${base}. ` +
@@ -1414,6 +1450,13 @@ export async function resetBranchToBaseExplicit(
     }
 
     const { from, to } = await git.resetHardToRemoteBase(base);
+
+    // nikzlabs/shipit#2349 — same restore the automatic path above owes, for the same
+    // reason: the reset rewrote the worktree through a git with the LFS smudge
+    // filter disabled, leaving pointer text behind in a clean-looking tree.
+    await restoreLfsAfterTreeRewrite(sessionDir, `Reset onto ${base}`, (message) =>
+      console.warn(`[branch-reset] ${message}`),
+    );
 
     // Heal the remote so later plain auto-pushes fast-forward. STRICT, unlike
     // docs/218's best-effort heal: the reset moved only the local branch, so the

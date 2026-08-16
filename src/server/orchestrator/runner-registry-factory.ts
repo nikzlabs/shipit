@@ -634,6 +634,14 @@ export function createRunnerRegistry(
             sessionDir,
           });
         },
+        // docs/221 / nikzlabs/shipit#2349 — deliver the parked "your tree was
+        // rewritten" notice on this transport too. A message queued while a sync
+        // settles is released onto `dispatch`, so the interactive-only consume
+        // dropped it for exactly the turn most likely to need it.
+        consumePendingAgentNotice: (sessionId) => sessionManager.consumePendingAgentNotice(sessionId),
+        // ...and put it back if that turn never reached the agent, so a spawn
+        // failure can't burn the only warning that the tree was rewritten.
+        restorePendingAgentNotice: (sessionId, notice) => sessionManager.setPendingAgentNotice(sessionId, notice),
         // docs/149 — emit the PR lifecycle card after a system-turn commit.
         // Lazy poller resolution because the poller is constructed AFTER the
         // runner registry; the closure fires post-turn, by which time it's set.
