@@ -3114,6 +3114,30 @@ rather than `...process.env` — was not adopted: the CLI inherits PATH, proxy
 config, `PLAYWRIGHT_BROWSERS_PATH` and the ShipIt gates from the parent, and
 enumerating that allowlist is a much larger change than the leak it would close.
 
+**`undefined` from the resolver means "no ACCOUNT-scoped home" — never "leave
+HOME alone" (planning#390).** Both adapters read the same resolver, and they
+read it differently: `claude/process.ts` always sets `HOME:
+resolveAgentHome(scopedHome)`, so `undefined` falls through to `agentHome()`,
+while `codex/adapter.ts` set `HOME`/`CODEX_HOME` inside an `if (scopedHome)` and
+otherwise set neither. That reading was wrong, and docs/252 made it load-bearing:
+a redirected service resolves to a reserved/string route, for which
+`resolveLocalAgentHome` answers `undefined` by design — so *every* Codex turn on
+a custom-URL service inherited whatever ambient `HOME` the host process had. In
+the dogfood container that is the image's `ENV HOME=/root`, mode 700 and
+root-owned against a uid-1000 process, and Codex reads its config root from
+`$HOME`: the turn died with `Failed to read config file
+/root/.codex/config.toml: Permission denied` before the model was reached. A
+subscription turn (an `account` route, so a scoped home) worked, and that
+asymmetry is what took the diagnosis a day. Claude was untouched because a
+redirected Claude turn authenticates purely through environment variables and
+never needs a writable config root. The adapter now sets both variables on every
+spawn, which is a no-op in a session container (`HOME == AGENT_HOME ==
+/home/shipit`) and the writable state-dir home in local mode. **The rule this
+leaves behind: a spawn must not depend on an ambient `HOME` it did not set** —
+`orchestrator/agents/codex/home-init.ts` already followed it for its warm-up
+handshake, and the two paths have to agree about the root or the warm-up
+initializes a directory the turn will not read.
+
 **Two local-mode-only consequences, accepted and recorded:**
 
 - Sessions sharing an account share its `.claude` tree. Conversation state is

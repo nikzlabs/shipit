@@ -133,6 +133,28 @@ services:
       # Dockerfile.dogfood's ENV on purpose — the image can't know the mount
       # path, so compose is the only place that can be right.
       AGENT_HOME: /workspace/.inner-shipit/agent-home
+      # planning#390 — and `HOME` alongside it, at the same path, because
+      # planning#284 moved only half of the problem. Dockerfile.dogfood still
+      # sets `ENV HOME=/root` (correct for a root container, wrong for this one:
+      # `user: "1000:1000"` above, and /root is `drwx------ root root`), so
+      # everything in here that keys off `$HOME` rather than `$AGENT_HOME` kept
+      # landing on an unwritable directory. Codex is the one that dies loudest —
+      # it reads `$HOME/.codex/config.toml` before doing any work — but the
+      # orchestrator's own naming shell-out (`session-namer.ts`, which falls back
+      # to `process.env.HOME`), npm and git all read it too.
+      #
+      # This is the ambient half of the fix and NOT the whole of it: the Codex
+      # adapter now names its own HOME from `agentHome()` at spawn time
+      # (planning#390), so a redirected turn works even where nothing set HOME
+      # correctly. Both, deliberately — the adapter so no deployment can
+      # reintroduce the bug, this so the rest of the container is honest.
+      #
+      # Safe to point here: the `command:` above already `mkdir -p`s it, and the
+      # image bakes nothing under /root that the runtime reads (the agent CLIs
+      # live in /opt/agent-cli, the Playwright browsers in
+      # /opt/playwright-browsers, both deliberately off $HOME for this same
+      # non-root reason).
+      HOME: /workspace/.inner-shipit/agent-home
       # Note: the orchestrator's PORT (4000) and Vite's port (3000) are set
       # inline in the `command:` above, not here, because we run two
       # processes with different ports inside this single service.
@@ -316,6 +338,10 @@ services:
       # therefore a separate ShipIt install, which is the whole mechanism here.
       SHIPIT_STATE_DIR: /workspace/.inner-shipit/onboarding
       AGENT_HOME: /workspace/.inner-shipit/onboarding/agent-home
+      # Same pairing as `dev`, same reason (planning#390) — read the long note
+      # there. The image's `ENV HOME=/root` is unwritable for `user: "1000:1000"`,
+      # and anything keying off `$HOME` instead of `$AGENT_HOME` needs this.
+      HOME: /workspace/.inner-shipit/onboarding/agent-home
       # NOT shared with `dev`: two Vite dev servers committing an optimizer run
       # into one cache dir race on the same directory renames.
       VITE_CACHE_DIR: /workspace/.inner-shipit/onboarding/vite-cache

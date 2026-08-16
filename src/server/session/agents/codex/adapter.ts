@@ -44,7 +44,7 @@ import {
 import { CODEX_MODELS, CODEX_TOOL_NAMES } from "../../../shared/agent-registry.js";
 import { codexProviderArgs } from "./spawn-shaping.js";
 import type { AgentHomeResolver } from "../../../shared/agent-home.js";
-import { codexHome } from "../../../shared/agent-home.js";
+import { codexHome, resolveAgentHome } from "../../../shared/agent-home.js";
 import { CodexRateLimits } from "./codex-rate-limits.js";
 import { CodexEventHandler } from "./codex-event-handler.js";
 
@@ -251,11 +251,32 @@ export class CodexAdapter
     // CODEX_HOME are both set so an inherited CODEX_HOME can't win over the
     // scoped HOME (the CLI prefers CODEX_HOME), and so the child agrees with
     // `codexConfigDir()`, which is where `writeMcpConfig` wrote config.toml.
+    //
+    // planning#390 — set on EVERY spawn, not only when a scoped home applies.
+    // `resolveLocalAgentHome` returns a scoped home only for an `account` route
+    // and deliberately `undefined` for a reserved/string route, which is what
+    // every redirected service resolves to (docs/252). Under the old
+    // `if (scopedHome)` those spawns set neither variable and the child
+    // inherited whatever ambient `HOME` the hosting process had — in the
+    // dogfood inner orchestrator, the image's `HOME=/root`: mode 700 and
+    // root-owned, with the process running as uid 1000. Codex keys its config
+    // root off `$HOME`, so every redirected Codex turn died before starting
+    // with `Failed to read config file /root/.codex/config.toml: Permission
+    // denied (os error 13)` while a subscription turn (an `account` route, so a
+    // scoped home) worked — that asymmetry was the whole bug.
+    //
+    // So the spawn no longer depends on an ambient `HOME` it did not set.
+    // `resolveAgentHome` falls back to `agentHome()` (i.e. `AGENT_HOME`), which
+    // in a session container is the `/home/shipit` the child already inherited
+    // — a no-op there — and in local mode is the writable home compose pins.
+    // `codexConfigDir()` likewise falls back to `codexHome()`, which still
+    // honors an inherited `CODEX_HOME` when one is set. Same HOME/CODEX_HOME
+    // pairing as the warm-up spawn in
+    // `orchestrator/agents/codex/home-init.ts`; the two paths have to agree
+    // about the root or the warm-up initializes a directory the turn won't read.
     const scopedHome = this.resolveHome?.();
-    if (scopedHome) {
-      env.HOME = scopedHome;
-      env.CODEX_HOME = this.codexConfigDir();
-    }
+    env.HOME = resolveAgentHome(scopedHome);
+    env.CODEX_HOME = this.codexConfigDir();
 
     // docs/252 phase 3 — a SHAPED turn runs against the selected model's
     // service, so neither auth path below applies to it: `auth.json`

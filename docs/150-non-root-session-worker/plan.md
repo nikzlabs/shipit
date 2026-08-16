@@ -953,6 +953,22 @@ behavior with the new UID, then remove add-backs one by one with targeted tests.
 - Dogfood/local mode (`RUNTIME_MODE=local`) still resolves agent credentials
   with the orchestrator container running as root (no `shipit` user, HOME =
   `/root`).
+  **Superseded — the dogfood container is not root.** With
+  `SHIPIT_SESSION_WORKER_UID` set on the deployment, the compose generator forces
+  `user: <uid>:<uid>` onto every service without an explicit one, so the `dev`
+  and `onboarding` services run as uid 1000 against a `/root` they cannot write.
+  planning#284 moved `AGENT_HOME` to the bind-mounted state dir for that reason;
+  planning#390 moved `HOME` alongside it, because the half of the container that
+  keys off `$HOME` rather than `$AGENT_HOME` — Codex's config root above all —
+  was still landing on `/root`. Do not read this criterion as license to
+  hardcode `/root` anywhere new. The *production* orchestrator container is a
+  separate question and is still root, which is what the "Out of scope" list
+  above is about — but check that list against the tree before relying on it:
+  of the four files it names only `session-namer.ts` still exists, and its
+  `process.env.HOME ?? "/root"` fallback is therefore the one place where the
+  two runtimes' answers still differ (`agentHome()` would be right in dogfood
+  and wrong in the prod orchestrator, which pins neither `HOME` nor
+  `AGENT_HOME`). Untouched by planning#390 for exactly that reason.
 - `src/server/shipit-docs/environment.md` documents the non-root runtime home.
 
 ## Implementation note — what is actually flag-gated (planning#33)
