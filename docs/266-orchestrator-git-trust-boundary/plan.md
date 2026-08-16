@@ -198,46 +198,101 @@ there says so outright ("we never override a deliberate choice"). Compose
 services share the workspace. So a workspace can legitimately hold files, and
 directories, owned by a uid that is neither root nor the session's.
 
-Today root-side git ignores that entirely — root overwrites and unlinks
-regardless of ownership. Unprivileged git will not: it can still *read* such
-files (0644 under the usual umask, so `status` / `add -A` / `commit` are fine),
-but a `checkout`, `reset --hard`, `rebase`, `merge` or `clean` that has to remove
-or replace a file inside a **directory** owned by that other uid gets EACCES.
+Today root-side git ignores that entirely — root overwrites, unlinks and reads
+regardless of ownership. Unprivileged git will not. **How it fails was measured,
+not argued** — see the split below, which corrects an earlier draft of this
+section.
 
-**The handling is to surface it, not to restore root.** Three reasons, and no
-new question, because req 12 and invariant 2 between them already decide it:
+### The measured behaviour (git 2.39.5)
+
+Three cases, run here against throwaway repos. The parent session measured the
+first two independently and got the same result; case A is the addition.
+
+| Case | Setup | Outcome |
+|---|---|---|
+| **A** — tracked content under an unreadable dir | `pgdata/PG_VERSION` committed, then `pgdata` unreadable | `status` exit **0**, `add -A` exit **0**, commit says *"nothing to commit, working tree clean"*, exit 1. **HEAD keeps `pgdata/PG_VERSION`** — no spurious deletion is staged. |
+| **B** — a real turn plus an unreadable NEW dir | `tracked.txt` edited (the turn's work), `pgdata/` new and unreadable | `status` exit **0**, `add -A` exit **0**, **commit exit 0**, `1 file changed`. `pgdata/` is simply **absent from HEAD**. The only signal is `warning: could not open directory 'pgdata/': Permission denied` on stderr. |
+| **C** — tracked file in a non-writable dir | `locked/` mode 555, `locked/f.txt` tracked | `checkout` → `error: unable to unlink old 'locked/f.txt': Permission denied`, exit **255**. `reset --hard` → `fatal: Could not reset index file`, exit **128**. |
+
+So the failure splits in two, and only one half is loud:
+
+- **Worktree-mutating ops (checkout, reset, merge, rebase, clean) fail loudly.**
+  Non-zero exit, clear message. Case C.
+- **The status/add path fails SILENTLY.** Case B. Exit 0 throughout, the subtree
+  omitted from the index, and the turn commits and reports success. This is the
+  path `autoCommit` runs **every turn** — `status()` at `shared/git.ts:282`, then
+  `add("-A")`. Nothing in the exit codes distinguishes it from a turn that
+  genuinely changed nothing.
+
+Case A bounds the severity in the one direction that matters: git does **not**
+stage a deletion for tracked content it cannot read, so this can never destroy
+already-committed work. What it loses is *new or changed* content under the
+unreadable directory. Bad, but recoverable-by-retry once the permission is
+fixed, rather than a rewrite of history.
+
+### The archetype — why this is not exotic
+
+The collision needs a directory that is foreign-owned **and** not
+group/other-readable **and** not gitignored. Those three sound unlikely together
+until you name the case: **a bind-mounted database data directory.** PostgreSQL
+*requires* mode `0700` on its data dir and refuses to start otherwise; MySQL and
+Redis are similar. A service declaring `user: 999` with
+`./pgdata:/var/lib/postgresql/data`, in a project that forgot to gitignore
+`pgdata/`, produces it exactly.
+
+Note the asymmetry, because it is what makes this tractable: if the directory
+**is** gitignored, git never descends into it and there is no collision at all.
+The whole risk is "foreign-uid unreadable directory that is **not** gitignored"
+— narrower and far more checkable than "foreign-uid content".
+
+### The handling: surface it, do not restore root
+
+Three reasons, and no new question, because req 12 and `CLAUDE.md` invariant 2
+between them already decide it:
 
 1. **It is a pre-existing limit, not a new one.** The agent runs as the session's
-   uid too. A compose service writing *tracked* files as a foreign uid has
-   already broken the agent's ability to edit them — today ShipIt's root-side git
-   papers over that at commit time, which hides the breakage rather than fixing
-   it. E1 makes ShipIt's git exactly as capable as the agent, which is the
-   correct relationship between the two.
-2. **The realistic collision surface is small.** What a compose service writes
-   into a shared workspace is overwhelmingly build output and caches — `dist/`,
-   `.next/`, `node_modules/.vite` — which are gitignored, and git does not touch
-   ignored paths during checkout, reset or merge. The exposure is a service that
-   writes *committed* files (generated stubs, migrations) while running at a
-   foreign uid.
-3. **The alternative re-opens the boundary.** "Chown the worktree to the session
-   uid before each op" both overrides the user's deliberate `user:` choice — the
-   thing req 12 forbids — and needs a root pass over the tree on the hot path.
-   "Keep worktree-mutating ops as root" is worse: every git op reads
-   `.git/config`, so a root `checkout` is the original bug.
+   uid too. A compose service writing content the agent cannot read or replace
+   has already broken the agent — today ShipIt's root-side git papers over that
+   at commit time, which hides the breakage rather than fixing it. E1 makes
+   ShipIt's git exactly as capable as the agent, which is the correct
+   relationship between the two.
+2. **The realistic collision surface is narrow**, per the asymmetry above:
+   gitignored service output — `dist/`, `.next/`, `node_modules/.vite`, and a
+   correctly-ignored `pgdata/` — is invisible to git entirely.
+3. **Both alternatives are worse.** "Chown the worktree to the session uid
+   before each op" overrides the deliberate `user:` req 12 protects, and needs a
+   root pass over the tree on the hot path. "Keep worktree-mutating ops as root"
+   is the original bug, since every git op reads `.git/config`.
 
-So: requirement 12 is satisfied by *not changing anything about compose* — the
-session starts, the services run, and the explicit `user:` is still honoured.
-What changes is that an ownership collision now fails visibly instead of being
-silently absorbed by root. Concretely, that means the EACCES must carry a
-message naming the path, its owner, and the service that most likely wrote it —
-not a bare errno. And per requirement 10's principle, an auto-commit must still
-land: an EACCES while staging one path must not throw away the rest of the turn.
+So requirement 12 is satisfied by changing **nothing** about compose: the session
+starts, the services run, the explicit `user:` is still honoured.
 
-*Recommended, not required: warn at compose-validation time when a service
-declares a `user:` that differs from the session worker uid and mounts the
-workspace.* That turns a later confusing EACCES into an up-front sentence. It is
-a small addition and it is not needed for req 12 to hold, so it is called out
-here rather than promoted into a requirement.
+### E5-detect — required, and it belongs on the git side (req 14)
+
+**This is not optional and it is not a compose-validation warning.** Two things
+follow from the measurement:
+
+- **`git status` / `git add` writing `could not open directory` MUST become a
+  loud condition on the auto-commit path.** simple-git resolves a zero exit as
+  success and does not surface stderr, so the warning is dropped today. The
+  auto-commit must capture stderr from the status and add invocations, detect
+  that warning, and treat it as a first-class outcome: a log line at minimum,
+  and a strong candidate for a persisted transcript card naming the
+  directory — the user needs to know the turn committed *less* than it appears
+  to have. This is the same shape as the existing secret-scan and merged-push
+  notices, which is the pattern to copy.
+- **Compose-time validation cannot cover this, and offering it would be the
+  obvious wrong answer.** The `0700` is set by the **running service at
+  runtime** — postgres chmods its own data directory at initdb — not declared
+  anywhere in the compose file. A static check of `user:` versus the worker uid
+  would miss the archetype case entirely while looking like it had handled it. A
+  compose-time warning may still be worth having as a hint, but it must never be
+  counted as the mitigation.
+
+The loud half still needs its own polish: the EACCES from case C should name the
+path, its owner, and the service that most likely wrote it, not a bare errno.
+And per requirement 10's principle, an auto-commit must still land — an EACCES
+on one path must not throw away the rest of the turn.
 
 **Costs and breakage, stated plainly:**
 
@@ -290,6 +345,13 @@ each by name:
    and the bounded-attempt-then-`--no-verify` fallback in E4 is what satisfies
    it. E4 is the only part of this design that *adds* a way for the commit to
    fail, which is why it carries its own requirement rather than riding along.
+
+   **This invariant is the one E5 lands on hardest.** Invariant 3 exists because
+   a commit that silently does less than it appears to is undetectable after the
+   fact, and the measured status/add behaviour is exactly that: exit 0, a
+   `warning:` on stderr that simple-git drops, and a subtree missing from the
+   commit. E5-detect (req 14) is not a nicety attached to the compose story — it
+   is what keeps this design compliant with invariant 3.
 4. **A branch whose work shipped under a different SHA returns to base via
    `shipit branch reset-to-base --force`, never a rebase.** Unaffected. Same git,
    same commands, different uid.
@@ -325,15 +387,26 @@ inherited guarantee at the source").
 - **Not checked: whether any orchestrator HTTP endpoint authorizes on "came from
   loopback".** The residual in §2 depends on this. I did not audit
   `agent-ops-routes.ts` or the credential-broker route's auth.
-- **E5 is reasoned, not measured.** I verified the two `compose-generator.ts`
-  facts it rests on (contained services must declare a `user:`; an explicit one
-  is never overridden) and the POSIX rule that unlink/replace is governed by the
-  *directory's* permissions, not the file's. I did **not** survey real projects
-  for a compose service that writes **committed** files at a foreign uid, so
-  "the collision surface is small" is an argument from what services normally
-  write, not a measurement. If that assumption is wrong, E5 is the part of this
-  design that gets more expensive, and the compose-validation warning stops
-  being optional.
+- **E5 is now measured, and the measurement corrected it.** An earlier draft of
+  this section asserted that the collision "fails visibly". That was reasoning,
+  not measurement, and it was **wrong for the path that matters most** — the
+  status/add path fails silently. The three cases in §2 were run here and
+  independently by the parent session; the two we both ran agree. This is the
+  clearest example in this document of why an unverified claim that a failure is
+  *visible* is worse than no claim at all: it is precisely the claim that stops
+  anyone from building detection.
+- **Still not exercised: a genuinely foreign-OWNED directory.** Both
+  measurements used mode bits on a self-owned directory (`chmod 000` / `555`),
+  because neither session could create a foreign-owned one — no root, and
+  `unshare -r` is refused in the session container ("Operation not permitted").
+  The kernel check is the same one (a `0700` directory denies the "other" class,
+  which is what a differently-owned git process falls into), so the outcome
+  should be identical — but the ownership dimension itself is inferred, not
+  observed.
+- **Not surveyed: how common the archetype actually is.** The postgres-style
+  `0700` data directory makes the case concrete, but no scan was done of real
+  projects for a non-gitignored, foreign-uid, unreadable directory. That governs
+  how *often* req 14's detection fires, not whether it is needed.
 - **Not checked: git's behaviour on `receive-pack`/`upload-pack` config when a
   local path is used as a remote.** Irrelevant under E (no root-side git touches
   the untrusted tree at all), but it would matter for any variant that keeps a
@@ -369,8 +442,14 @@ Sequence:
    fail when a session-workspace git spawn carries no uid. Note that step 4
    narrows what that test asserts rather than removing it: the override must
    still be present on every root-side git spawn.
-6. Make the ownership-collision EACCES legible (E5, req 12): name the path, its
-   owner, and the likely service. Optionally add the compose-validation warning.
+6. **E5-detect (req 14) — not optional, and not a compose-time check.** Capture
+   stderr from the auto-commit's `status` and `add -A`, detect `could not open
+   directory`, and surface it: a log line at minimum, a persisted transcript
+   card as the target, naming the directory. Then make the loud half legible
+   too — the case-C EACCES should name the path, its owner and the likely
+   service rather than a bare errno. Sequence this **with** step 1, not after
+   it: step 1 is what introduces the silent path, so shipping them apart leaves
+   a window where a turn can commit short with no trace.
 7. File the per-session-uid follow-up (req 13). The route-2 issue is already
    filed as planning#400.
 

@@ -97,6 +97,21 @@ root and mounts `credentials:/credentials`, `/var/run/docker.sock`,
     recorded residual — it MUST NOT be described as closed. *(Decided by the
     requester on 2026-08-16 — see Resolved questions, Q3.)*
 
+14. A turn whose commit omits workspace content MUST NOT report success
+    silently. If ShipIt's own git could not read part of the workspace, the user
+    MUST be told which part, and MUST NOT be left with a turn that looks
+    complete.
+
+    *Not a duplicate — checked against the three requirements that come closest,
+    and none covers it.* Requirement 6 governs a new runtime **dependency**, not
+    an incomplete result. Requirement 10 is scoped to **hooks**. Requirement 12
+    forbids ShipIt's git **failing** on a foreign-uid workspace — and the
+    measured silent path does not fail: `status`, `add -A` and `commit` all
+    return success while omitting the unreadable subtree, so requirement 12 is
+    satisfied at the same moment the outcome is wrong. That gap is what this
+    requirement closes. It is also the shape `CLAUDE.md` invariant 3 exists to
+    prevent, and the shape that shipped PR #1890 one commit short.
+
 ## Requirement provenance
 
 Separating what was asked for from what the design supplied, per `CLAUDE.md`
@@ -118,6 +133,7 @@ into one").
 | 11 | ✅ decided 2026-08-16 (Q2 → a, "agree") | — |
 | 12 | ✅ "we need to make sure that explicit UIDs in Docker Compose services would not be broken" | the two verified facts under it, which show it is a mandatory path rather than an edge case |
 | 13 | ✅ decided 2026-08-16 (Q3 → a, "Let's do that") | — |
+| 14 | ✅ requested 2026-08-16, after the requester **measured** the silent-omission behaviour this document had asserted was visible | — |
 
 Requirements 6, 7 and 10 are the three places this document went beyond what it
 was handed. All three are load-bearing — 6 rules out the container option, 7
@@ -146,6 +162,16 @@ called out rather than folded in.
   CVE-2022-24765's ownership check. The same comment records the property the
   design depends on — `safe.directory` is honoured **only** from system/global
   config, never from a repo-local one and never from `-c`.
+- **An unreadable workspace directory makes a turn commit silently short.**
+  Measured here against git 2.39.5, and independently by the requester. With a
+  new, non-gitignored directory the git uid cannot open, `git status` and
+  `git add -A` both exit 0, `git commit` exits 0 and reports the *other* changes,
+  and the subtree is absent from HEAD — the only trace is a `warning: could not
+  open directory` line on stderr, which simple-git discards on a zero exit. When
+  the unreadable directory holds **tracked** content, git stages no deletion and
+  HEAD is preserved, so this can omit new work but never destroy committed work.
+  Worktree-mutating ops behave oppositely and fail loudly (`checkout` exit 255,
+  `reset --hard` exit 128). Full table in `plan.md` §2 (E5).
 - **Every orchestrator-side git op on a session workspace flows through one
   factory.** `app-di.ts:437` — `createGitManager = (dir) => new GitManager(dir)`,
   used at 189 call sites across 42 files. There are a small number of raw
@@ -184,6 +210,17 @@ the short version is that this is the *pre-existing* limit the agent already
 lives under, and the design surfaces it rather than restoring root to paper over
 it. No new question was raised, because requirement 12 plus `CLAUDE.md` invariant
 2 already decide it.
+
+**Correction, same day.** E5's original justification claimed the collision "now
+fails visibly instead of silently". The requester **measured** that and it is
+only half true: worktree-mutating ops fail loudly, but the `status` / `add -A`
+path — the one `autoCommit` runs every turn — fails **silently**, committing
+with exit 0 and omitting the unreadable subtree. The decision stands; the
+justification was wrong and is corrected in `plan.md` §2 with the measurement
+cited. Two consequences: **requirement 14** now covers the silent case, which no
+existing requirement did, and the detection is promoted from an optional
+compose-time warning to a required check on the git side — compose-time
+validation cannot see a mode the running service sets at runtime.
 
 **2026-08-16 — Q1: should a project's own git hooks ever run on ShipIt's
 auto-commit? → (c), run them wherever the orchestrator's git runs, once that is
