@@ -45,6 +45,15 @@ export interface PersistedBugReport {
   /** Set when a failed attempt dropped the card back to an editable draft. */
   errorMessage?: string;
   scopeError?: boolean;
+  /**
+   * nikzlabs/shipit#2350 — true once the outcome has been prefixed onto a user turn,
+   * so the agent is told exactly once. Lives on the card rather than in the
+   * session's single `pendingAgentNotice` slot because that slot is
+   * last-write-wins by design (its writers all describe the same thing, where
+   * the branch points); a bug outcome and a branch notice would clobber each
+   * other, and two reports resolved between turns must both be reported.
+   */
+  agentNotified?: boolean;
 }
 
 /**
@@ -780,19 +789,52 @@ export class ChatHistoryManager {
 
   /**
    * nikzlabs/shipit#2350 — read a persisted bug-report card by `cardId`. The dismiss
-   * handler needs the card's own title for the wake-turn it sends the agent,
+   * handler needs the card's own title to describe the outcome to the agent,
    * and the client only names the card. Returns undefined when the card lives
    * only in the proposing turn's still-unflushed `recordedCards` — callers
    * check there first.
    */
   getBugReportCard(sessionId: string, cardId: string): PersistedBugReport | undefined {
-    const rows = this.stmtLoadAll.all(sessionId) as MessageRow[];
-    for (const row of rows) {
-      if (!row.bug_report) continue;
-      const card = JSON.parse(row.bug_report) as PersistedBugReport;
+    for (const { card } of this.bugReportRows(sessionId)) {
       if (card.cardId === cardId) return card;
     }
     return undefined;
+  }
+
+  /** Every persisted bug-report card in a session, with its owning row id. */
+  private bugReportRows(sessionId: string): { row: MessageRow; card: PersistedBugReport }[] {
+    const rows = this.stmtLoadAll.all(sessionId) as MessageRow[];
+    const out: { row: MessageRow; card: PersistedBugReport }[] = [];
+    for (const row of rows) {
+      if (!row.bug_report) continue;
+      out.push({ row, card: JSON.parse(row.bug_report) as PersistedBugReport });
+    }
+    return out;
+  }
+
+  /**
+   * nikzlabs/shipit#2350 — read-and-mark every bug-report outcome the agent has not
+   * been told about yet, so the next user turn can carry them as a prefix.
+   *
+   * Read-and-mark in one transaction, exactly like `consumePendingAgentNotice`:
+   * that is what makes "told once" true rather than aspirational. Only terminal
+   * phases qualify — a `failed` card is back to `draft`, which means the report
+   * really is still pending and there is nothing to report.
+   */
+  consumeUnreportedBugOutcomes(sessionId: string): PersistedBugReport[] {
+    return this.db.transaction(() => {
+      const out: PersistedBugReport[] = [];
+      for (const { row, card } of this.bugReportRows(sessionId)) {
+        if (card.agentNotified) continue;
+        if (card.phase !== "filed" && card.phase !== "dismissed") continue;
+        const marked: PersistedBugReport = { ...card, agentNotified: true };
+        const msg = this.fromRow(row);
+        msg.bugReport = marked;
+        this.stmtUpdate.run({ ...this.toRow(sessionId, msg), id: row.id });
+        out.push(marked);
+      }
+      return out;
+    })();
   }
 
   /**

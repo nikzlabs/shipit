@@ -241,10 +241,12 @@ agent → report_shipit_bug (draft)
 user  → submit_bug_report (edited title/body + confirm)
       → server: GitHubAuthManager.createIssue(UPSTREAM_REPO, report)  [user's own token]
               → emit bug_report_filed (issue ref) | bug_report_failed (error)
-              → filed ONLY: wakeSessionWithTurn(agent, "#N + url")   [nikzlabs/shipit#2350]
 user  → dismiss_bug_report (Cancel)
       → server: persist phase=dismissed, emit bug_report_dismissed
-              → wakeSessionWithTurn(agent, "declined")               [nikzlabs/shipit#2350]
+                                          [nikzlabs/shipit#2350 — no wake, no turn]
+user's NEXT turn
+      → consumeUnreportedBugOutcomes() reads-and-marks the terminal cards
+      → buildBugOutcomeNotice() prefixes "#N + url" / "declined" onto the prompt
 ```
 
 ### The consent gate must not swallow its own result (nikzlabs/shipit#2350)
@@ -264,19 +266,27 @@ The asymmetry was the giveaway: `shipit issue create` is do-then-surface, so the
 agent always knows the outcome and can quote the URL. Only the consent-gated
 path was write-only.
 
-**The outcome is delivered as a system wake-turn** (`wakeSessionWithTurn`) — the
-same primitive docs/196's merge card and docs/233's cohort report use, chosen
-because it is the one channel that reaches the *agent* rather than the browser,
-and because `dispatch` already answers the hard question: it ENQUEUES behind a
-running turn (a user who confirms mid-turn never preempts it) and starts a turn
-when the session is idle. Both wake prompts are self-describing, since the card
-may be resolved long after the proposing turn scrolled out of context.
+**The outcome rides as a prefix on the user's next turn — nothing wakes the
+session.** A wake-turn was the obvious mechanism (docs/196's merge card and
+docs/233's cohort report both use `wakeSessionWithTurn`) and it is the wrong one
+here: those wake for something *actionable*, whereas a filed bug report is a side
+errand, and interrupting the user and the agent to announce what the card on
+screen already says is the distraction, not the fix. Instead the resolution is
+recorded on the card and delivered as a short `[ShipIt]` line in front of the
+user's next message — the exact shape docs/221's `pendingAgentNotice` already
+uses for a fact that happens outside any turn. It costs no turn, reaches the
+agent at the only moment it can matter, and reads as a status line rather than
+as something the user typed (the text says so, since it sits in front of their
+words).
+
+The text is self-describing: an unresolved card can sit for days, so by delivery
+time the turn that proposed it may be long out of the agent's context.
 
 | User action | Persisted phase | Signal to the agent |
 |---|---|---|
-| **Submit** → issue created | `filed` (+ number, url) | Woken with the title, **issue number and URL**, so it can cite the report in a PR body or link it to another report from the same session. |
-| **Cancel** | `dismissed` (new) | Woken with "declined; nothing was filed and nothing will be" — and told the card is resolved, so it may propose an unrelated report. |
-| **Submit** → GitHub 403 / error | back to `draft` + error | **Nothing.** The report genuinely *is* still pending, which is the state the agent already believes. Waking would add noise and no information. |
+| **Submit** → issue created | `filed` (+ number, url) | Next turn carries the title, **issue number and URL**, so it can cite the report in a PR body or link it to another report from the same session. |
+| **Cancel** | `dismissed` (new) | Next turn says "declined; nothing was filed and nothing will be" — and that the card is resolved, so it may propose an unrelated report. |
+| **Submit** → GitHub 403 / error | back to `draft` + error | **Nothing.** The report genuinely *is* still pending, which is the state the agent already believes. |
 
 That last row is what makes the rule learnable, and it is stated in
 `shipit-docs/bug-filing.md` and the tool description: **a report you have heard
@@ -305,25 +315,38 @@ dropping the issue URL and telling the agent a filed report was declined. So
 discriminator `persistCardTransition` uses to decide where to *write* — and
 treats the card as terminal if **either** source says so, which keeps the guard
 right even if that discriminator is ever wrong. A dismissal naming an unknown
-card is refused rather than collapsing a phantom card and waking the agent about
-it. Regression: `user-bug-filing.test.ts` "ignores a Cancel after filing even
+card is refused rather than collapsing a phantom card and reporting it to the
+agent. Regression: `user-bug-filing.test.ts` "ignores a Cancel after filing even
 when the proposing turn left a stale recorded draft".
 
-**Delivery is best-effort, and the agent-facing copy says so.** The wake can
-fail (a container that can't be resumed, a restart between `createIssue` and the
-dispatch); it is logged and never allowed to undo the filing that already
-happened. Merge-watch closes this class of hole with `deliveryId`/`onSettled`
-plus a retry supervisor, which is real machinery for a rare loss — so the
-prompt and `shipit-docs/bug-filing.md` instead tell the agent to treat "pending"
-as a sensible default rather than a certainty, and to say it has not heard back
-rather than assert a card is unresolved. Add the durable delivery only if field
-reports show losses.
+**"Told once" is enforced by the store, not by a convention.**
+`consumeUnreportedBugOutcomes` selects the terminal-phase cards carrying no
+`agentNotified` flag, sets the flag, and returns them in a single transaction —
+the same read-and-mark shape as `consumePendingAgentNotice`. The flag lives on
+the card rather than in the session's `pendingAgentNotice` slot for two reasons:
+that slot is deliberately last-write-wins (all its writers describe the same
+thing, where the branch points), so a branch notice and a bug outcome would
+clobber each other; and two reports resolved between turns must both be
+reported, which one slot cannot do.
+
+Delivery is still best-effort in one direction — a card resolved in a session
+the user never returns to is simply never reported — so the prompt and
+`shipit-docs/bug-filing.md` tell the agent to treat "pending" as a sensible
+default rather than a certainty, and to say it has not heard back rather than
+assert a card is unresolved.
 
 **Rejected: a pull command (`shipit bug status`).** The issue offered it as a
 lesser alternative, and it is: it only helps if the agent thinks to check, which
 is precisely what an agent confident in a stale belief does not do. The push
 covers idle and running sessions alike, needs no new CLI surface, no new route,
 and no polling. Revisit only if a wake proves undeliverable in practice.
+
+**Rejected: waking the session on resolution.** It delivers sooner, and that is
+the whole of its advantage. The cost is a turn the user did not ask for, in the
+middle of whatever they were doing, restating what the card already shows — for
+a fact that only becomes useful the next time the agent speaks anyway. (First
+implemented as a wake; changed on the user's direct instruction that submitting
+a bug report is not the main thing and must not distract them.)
 
 **Rejected: blocking `report_shipit_bug` until the card resolves.** It would
 hand the agent its outcome as a plain tool result with no new mechanism at all,
@@ -477,11 +500,14 @@ agent-event stream), so it follows the **voice-note precedent** (`docs/163`):
   using the user's existing token; no scope pre-check — surfaces the GitHub
   403/scope error as a reconnect prompt.
 - `src/server/orchestrator/ws-handlers/bug-report-handlers.ts` —
-  `submit_bug_report` (confirm) and `dismiss_bug_report` (decline) handlers,
-  plus `notifyAgentOfOutcome`, the wake-turn that closes the loop with the
-  agent (nikzlabs/shipit#2350). The draft arrives over HTTP, not WS.
-- `src/server/orchestrator/wake-session.ts` — the delivery primitive for the
-  outcome signal (shared with docs/196 and docs/233).
+  `submit_bug_report` (confirm) and `dismiss_bug_report` (decline) handlers.
+  They record the outcome; they deliberately do not deliver it. The draft
+  arrives over HTTP, not WS.
+- `src/server/orchestrator/chat-history.ts` — `consumeUnreportedBugOutcomes`
+  (transactional read-and-mark) and `getBugReportCard`.
+- `src/server/orchestrator/ws-handlers/agent-execution.ts` — consumes the
+  outcomes at turn start and prefixes them onto the prompt, beside docs/221's
+  `pendingAgentNotice`.
 - `src/server/shared/types/ws-server-messages.ts` / `ws-client-messages.ts` —
   `bug_report_card`, `bug_report_filed`, `bug_report_failed`,
   `bug_report_dismissed`, `submit_bug_report`, `dismiss_bug_report`.

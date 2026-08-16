@@ -113,32 +113,38 @@ export async function compileBugReport(args: {
  * to propose a second one. Consent and reporting are separable — the user still
  * decides, and the agent is still told what they decided.
  *
- * The outcome is delivered as a system wake-turn (`wakeSessionWithTurn`), the
- * same primitive docs/196's merge card and docs/233's cohort report use: it
- * enqueues behind a running turn and starts one when the session is idle, so
- * the signal lands whether or not the proposing turn is still in flight.
+ * The outcome is delivered as a PREFIX on the user's next turn, not as a turn of
+ * its own. Filing a bug is a side errand; waking the session to announce it
+ * would interrupt whatever the user and the agent are actually doing, to say
+ * something the card on screen already says. So the fact waits, costs nothing,
+ * and arrives at the only moment it can matter — when the agent next speaks.
  *
- * These prompts must be SELF-DESCRIBING — a wake can run much later, after the
- * turn that proposed the card has scrolled out of the agent's context.
+ * The text must be SELF-DESCRIBING: an unresolved card can sit for days, so by
+ * delivery time the turn that proposed it may be long out of the agent's
+ * context. It also states plainly that it is a ShipIt-generated status line, not
+ * something the user typed, since it rides in front of the user's own words.
+ *
+ * Returns "" when there is nothing to report, so the caller can concatenate it
+ * unconditionally.
  */
-export function buildBugReportFiledWakePrompt(args: {
-  title: string;
-  number: number;
-  url: string;
-}): string {
+export function buildBugOutcomeNotice(
+  outcomes: {
+    title: string;
+    phase: string;
+    issueNumber?: number | undefined;
+    issueUrl?: string | undefined;
+  }[],
+): string {
+  const lines = outcomes.map((o) =>
+    o.phase === "filed"
+      ? `- "${o.title}" — FILED as issue #${o.issueNumber} (${o.issueUrl}). Cite that number/URL if you reference the report later; never re-propose it.`
+      : `- "${o.title}" — DECLINED by the user. Nothing was filed and nothing will be; do not re-propose it unless they ask.`,
+  );
+  if (lines.length === 0) return "";
   return [
-    `The user confirmed the ShipIt bug report you proposed ("${args.title}"). It has been FILED as issue #${args.number} — ${args.url}.`,
-    "Treat it as done: do not re-propose it, and cite that number/URL if you reference the report later (a PR body, a follow-up comment, or linking it to another report from this session).",
-    "Acknowledge briefly and carry on with whatever you were doing; nothing else is required.",
-  ].join("\n");
-}
-
-/** Counterpart for the Cancel button — the report was declined, not filed. */
-export function buildBugReportDismissedWakePrompt(title: string): string {
-  return [
-    `The user DECLINED the ShipIt bug report you proposed ("${title}"). Nothing was filed and nothing will be.`,
-    "The card is resolved, so it is not blocking anything — you may propose an unrelated report if one is warranted. Do not re-propose this one unless the user asks.",
-    "Acknowledge briefly and carry on with whatever you were doing; nothing else is required.",
+    "[ShipIt] Since your last turn, the user resolved a bug-report card you proposed:",
+    ...lines,
+    "This is a status line from ShipIt, not part of the user's message. Those cards are resolved and block nothing — no acknowledgement is needed unless it changes what you were about to do.",
   ].join("\n");
 }
 

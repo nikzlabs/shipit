@@ -7,6 +7,7 @@ import { billingModeForRoute } from "../sessions.js";
 import { resolveRunner } from "./resolve-runner.js";
 import { emitResetEligible } from "../services/pre-turn-reset.js";
 import { applyPreTurnReset, type PreTurnResetHookResult } from "../pre-turn-reset-hook.js";
+import { buildBugOutcomeNotice } from "../services/bug-report.js";
 import { routeVoiceNote } from "../voice/voice-note-router.js";
 import type { SessionRunnerInterface, SystemTurnDeps, QueuedMessage } from "../session-runner.js";
 import { startQueuedMessage } from "../queue-drain.js";
@@ -430,6 +431,19 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
       ? ctx.sessionManager.consumePendingAgentNotice(capturedSessionId) ?? ""
       : "";
 
+  // nikzlabs/shipit#2350 — how the user resolved a bug-report consent card. Same shape
+  // and the same reason as the notice above: the resolution happens outside any
+  // turn (a click on a card), and nothing wakes the session for it, because
+  // filing a bug is a side errand and interrupting the pair of them to announce
+  // what the card on screen already says would be the distraction. So it waits
+  // here and rides the next turn. Read-and-mark is transactional, so the agent
+  // is told exactly once; skipped for `/compact` for the same reason as above,
+  // which leaves the outcome pending for the next real turn.
+  const bugOutcomeNotice =
+    capturedSessionId && !opts.compact
+      ? buildBugOutcomeNotice(ctx.chatHistoryManager.consumeUnreportedBugOutcomes(capturedSessionId))
+      : "";
+
   // Assemble the prompt from user text plus optional file/image context. Images
   // are saved to the host uploads dir and referenced by path (avoids large
   // base64 payloads over HTTP to the worker). The notices ride in front so the
@@ -440,7 +454,9 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
   const fileContext = validatedFiles.length > 0 ? formatFileContext(validatedFiles) : "";
   const imageContext =
     images && images.length > 0 && activeDir ? saveImagesToUploadsDir(images, activeDir) : "";
-  const agentPrefix = [pendingAgentNotice, resetAgentPrefix].filter(Boolean).join("\n\n");
+  const agentPrefix = [pendingAgentNotice, bugOutcomeNotice, resetAgentPrefix]
+    .filter(Boolean)
+    .join("\n\n");
   const prompt =
     (agentPrefix ? `${agentPrefix}\n\n` : "") +
     assembleAgentPrompt({ userText, fileContext, imageContext, dictated: opts.dictated });

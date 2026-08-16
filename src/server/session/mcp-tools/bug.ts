@@ -19,10 +19,11 @@ const TOOL_DESCRIPTION = [
   "project's repo URL or name, secrets, tokens, or workspace file contents — only",
   "the redacted interaction with ShipIt matters, and the issue is PUBLIC and filed",
   "under the user's own GitHub identity. After this returns, tell the user a review",
-  "card has been posted for them to confirm. You WILL be told what they decide —",
-  "a confirmation delivers the issue number and URL back to you, a cancellation",
-  "tells you it was declined — so never ask the user how a card was resolved, and",
-  "treat a report you have heard nothing about as genuinely still pending.",
+  "card has been posted for them to confirm. You WILL be told what they decide: a",
+  "short [ShipIt] line rides in front of their next message, once, carrying the",
+  "issue number and URL on a confirmation or a decline on a cancellation. So never",
+  "ask the user how a card was resolved, and treat a report you have heard nothing",
+  "about as genuinely still pending.",
 ].join(" ");
 
 const inputSchema = {
@@ -68,7 +69,7 @@ export const bugTool: ToolDescriptor = {
       }
       const message =
         body.message ??
-        "A redacted bug-report card has been posted in the chat for the user to review and confirm. Nothing has been filed yet. You will be told the outcome — the issue number and URL if they confirm, or that it was declined if they cancel.";
+        "A redacted bug-report card has been posted in the chat for the user to review and confirm. Nothing has been filed yet. You will be told the outcome at the start of the user's next message — the issue number and URL if they confirm, or that it was declined if they cancel — so don't ask them how it was resolved.";
       return { content: [{ type: "text", text: message }] };
     } catch (err) {
       const reason = err instanceof Error ? err.message : String(err);

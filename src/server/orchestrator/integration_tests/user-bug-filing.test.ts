@@ -295,8 +295,12 @@ describe("Integration: user bug filing", () => {
    * nikzlabs/shipit#2350 — the consent gate used to swallow its own result. The user still
    * decides; the agent is now told what they decided, so it can stop describing
    * a filed report as pending and can cite the issue it produced.
+   *
+   * Delivery is a PREFIX on the user's next turn, never a turn of its own:
+   * filing a bug is a side errand, and waking the session to announce what the
+   * card on screen already says would interrupt both of them for nothing.
    */
-  it("tells the agent the report was filed, with the issue number and URL", async () => {
+  it("tells the agent the report was filed, with the issue number and URL, on the next user turn", async () => {
     const client = await TestClient.connect(port, sessionId);
     await client.receive(); // preview_status
 
@@ -309,15 +313,48 @@ describe("Integration: user bug filing", () => {
 
     client.send({ type: "submit_bug_report", cardId: card.cardId, title: card.title, body: card.body });
     await client.receiveType("bug_report_filed");
+    await settle();
 
-    const woken = await waitForWakePrompt(() => agents, /FILED as issue #1234/);
-    expect(woken).toContain("nikzlabs/shipit/issues/1234");
-    expect(woken).toContain("Preview won't reload");
+    // Resolving the card must not start a turn of its own. In this harness a
+    // turn of any kind has to spawn an agent, so an empty list is the strongest
+    // possible statement that nothing woke the session.
+    expect(agents).toHaveLength(0);
+
+    // The user speaks next; the outcome rides in front of their words.
+    const prompt = await sendUserTurn(client, () => agents, "What is left to do?");
+    expect(prompt).toContain("FILED as issue #1234");
+    expect(prompt).toContain("nikzlabs/shipit/issues/1234");
+    expect(prompt).toContain("Preview won't reload");
+    // The user's own message is still there, and still last.
+    expect(prompt.endsWith("What is left to do?")).toBe(true);
 
     client.close();
   });
 
-  it("does not signal an outcome when filing failed — the report really is still pending", async () => {
+  it("delivers the outcome exactly once — the turn after that is clean", async () => {
+    const client = await TestClient.connect(port, sessionId);
+    await client.receive(); // preview_status
+
+    await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/bug-report`,
+      payload: { title: "Preview won't reload", body: "Something is broken in the editor." },
+    });
+    const card = (await client.receiveType("bug_report_card")) as WsBugReportCard;
+    client.send({ type: "submit_bug_report", cardId: card.cardId, title: card.title, body: card.body });
+    await client.receiveType("bug_report_filed");
+
+    const first = await sendUserTurn(client, () => agents, "First");
+    expect(first).toContain("FILED as issue #1234");
+
+    const second = await sendUserTurn(client, () => agents, "Second");
+    expect(second).not.toContain("FILED as issue");
+    expect(second).toBe("Second");
+
+    client.close();
+  });
+
+  it("says nothing when filing failed — the report really is still pending", async () => {
     githubAuthManager.setCreateIssueResult({
       success: false,
       scopeError: true,
@@ -336,20 +373,20 @@ describe("Integration: user bug filing", () => {
 
     client.send({ type: "submit_bug_report", cardId: card.cardId, title: card.title, body: card.body });
     await client.receiveType("bug_report_failed");
-    await new Promise((r) => setTimeout(r, 150));
 
-    // Assert on the ABSENCE OF A TURN, not on the wording: a wake of any text
-    // would have had to spawn an agent in this harness, so a failure-path wake
-    // that said something else could not slip past this.
-    expect(agents).toHaveLength(0);
+    // A failed filing leaves the card back at `draft`, so there is no outcome
+    // to report — the next turn carries the user's words and nothing else.
+    const afterFailure = await sendUserTurn(client, () => agents, "Carry on");
+    expect(afterFailure).toBe("Carry on");
 
-    // Liveness: the negative above must not be able to pass because the wake
-    // path is broken outright. The user fixes their token and resubmits — the
-    // very same harness now does deliver a signal.
+    // Liveness: the negative above must not be able to pass merely because the
+    // notice path is broken. The user fixes their token and resubmits, and the
+    // very same harness does deliver.
     githubAuthManager.setCreateIssueResult(null);
     client.send({ type: "submit_bug_report", cardId: card.cardId, title: card.title, body: card.body });
     await client.receiveType("bug_report_filed");
-    await waitForWakePrompt(() => agents, /FILED as issue #1234/);
+    const afterSuccess = await sendUserTurn(client, () => agents, "And now?");
+    expect(afterSuccess).toContain("FILED as issue #1234");
 
     client.close();
   });
@@ -383,8 +420,12 @@ describe("Integration: user bug filing", () => {
     expect(cardsAfter).toHaveLength(1);
     expect(cardsAfter[0]?.phase).toBe("dismissed");
 
-    const woken = await waitForWakePrompt(() => agents, /DECLINED the ShipIt bug report/);
-    expect(woken).toContain("Preview won't reload");
+    await settle();
+    expect(agents).toHaveLength(0); // a decline wakes nobody either
+
+    const prompt = await sendUserTurn(client, () => agents, "Anything else?");
+    expect(prompt).toContain("DECLINED by the user");
+    expect(prompt).toContain("Preview won't reload");
 
     client.close();
   });
@@ -424,9 +465,8 @@ describe("Integration: user bug filing", () => {
     client.send({ type: "submit_bug_report", cardId: card.cardId, title: card.title, body: card.body });
     await client.receiveType("bug_report_filed");
 
-    // Reinstate that stale snapshot. In production it simply never went away;
-    // here the outcome wake-turn's own start cleared it, so we restore it to
-    // model the window before that turn runs (or when it never does).
+    // Reinstate that stale snapshot — a real proposing turn simply leaves it
+    // behind, and only the NEXT turn's start clears it.
     runner.recordedCards = [staleEntry];
     expect(runner.recordedCards[0].message.bugReport?.phase).toBe("draft");
 
@@ -440,8 +480,10 @@ describe("Integration: user bug filing", () => {
     // The success stands: not rewritten to a decline, issue link not dropped.
     expect(cardsAfter[0]?.phase).toBe("filed");
     expect(cardsAfter[0]?.issueUrl).toContain("nikzlabs/shipit/issues/1234");
-    // And the agent was never told a filed report had been declined.
-    expect(agents.some((a) => a.lastPrompt.includes("DECLINED"))).toBe(false);
+    // And the agent is never told a filed report was declined.
+    const prompt = await sendUserTurn(client, () => agents, "Status?");
+    expect(prompt).not.toContain("DECLINED");
+    expect(prompt).toContain("FILED as issue #1234");
 
     client.close();
   });
@@ -453,8 +495,10 @@ describe("Integration: user bug filing", () => {
     client.send({ type: "dismiss_bug_report", cardId: "bug-card-does-not-exist" });
     const err = (await client.receiveType("error")) as { message: string };
     expect(err.message).toMatch(/unknown bug report card/i);
-    // No phantom collapse, and no wake about a card nobody proposed.
-    expect(agents.some((a) => a.lastPrompt.includes("DECLINED"))).toBe(false);
+    // No phantom collapse, and nothing to tell the agent about a card nobody
+    // proposed.
+    const prompt = await sendUserTurn(client, () => agents, "Carry on");
+    expect(prompt).toBe("Carry on");
 
     client.close();
   });
@@ -495,23 +539,36 @@ describe("Integration: user bug filing", () => {
   });
 });
 
+/** Let any dispatch that was going to happen happen, so an empty list means something. */
+async function settle(ms = 200): Promise<void> {
+  await new Promise((r) => setTimeout(r, ms));
+}
+
 /**
- * Poll the spawned agents for a wake-turn prompt matching `pattern`. The wake is
- * dispatched asynchronously after the card transition, so a bare read races it.
+ * Send a user message and return the prompt the agent actually received —
+ * which is where the outcome notice has to appear, since the point of the
+ * feature is that the AGENT is told, not that a card changed on screen.
  */
-async function waitForWakePrompt(
+async function sendUserTurn(
+  client: TestClient,
   getAgents: () => FakeClaudeProcess[],
-  pattern: RegExp,
-  timeoutMs = 3000,
+  text: string,
+  timeoutMs = 5000,
 ): Promise<string> {
+  const before = getAgents().length;
+  client.send({ type: "send_message", text });
   const deadline = Date.now() + timeoutMs;
   for (;;) {
-    const hit = getAgents().find((a) => pattern.test(a.lastPrompt));
-    if (hit) return hit.lastPrompt;
+    const spawned = getAgents()[before];
+    if (spawned?.runCalled) {
+      // End the turn so a following `sendUserTurn` starts a fresh agent instead
+      // of queueing behind this one.
+      spawned.emit("done", 0);
+      await new Promise((r) => setTimeout(r, 50));
+      return spawned.lastPrompt;
+    }
     if (Date.now() > deadline) {
-      throw new Error(
-        `no wake-turn prompt matched ${pattern}; saw: ${JSON.stringify(getAgents().map((a) => a.lastPrompt))}`,
-      );
+      throw new Error(`no agent spawned for user turn ${JSON.stringify(text)}`);
     }
     await new Promise((r) => setTimeout(r, 25));
   }

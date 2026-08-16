@@ -36,7 +36,12 @@ confirm. Don't claim the bug was filed — it isn't, until they submit.
 ## You are told the outcome — don't guess, and don't ask
 
 The consent gate decides *whether* the report is filed; it does not hide *what
-was decided*. ShipIt delivers the resolution back to you as a turn:
+was decided*. When the user resolves a card, ShipIt notes it and hands it to you
+**as a short `[ShipIt]` line in front of the user's next message** — once. It
+does not start a turn to announce it: filing a bug is a side errand, and the
+card on screen already tells the user what happened.
+
+So the outcome reaches you at the start of a turn, not out of the blue:
 
 - **Submitted** — you get the issue **number and URL**. Cite them when you
   reference the report later: in a PR body, in a follow-up comment, or to link
@@ -45,8 +50,12 @@ was decided*. ShipIt delivers the resolution back to you as a turn:
 - **Cancelled** — you are told it was declined. Nothing was filed and nothing
   will be; the card is resolved.
 - **Failed to file** (e.g. the user's token can't open issues on the ShipIt
-  repo) — no outcome arrives, because the report is genuinely still pending.
-  The card shows the user the error so they can fix it and resubmit.
+  repo) — no line arrives, because the report is genuinely still pending. The
+  card shows the user the error so they can fix it and resubmit.
+
+That line is from ShipIt, not from the user. Don't answer it as though they
+wrote it; fold the fact into what you were doing and reply to what they actually
+said.
 
 So the rule is simple: **a report you have heard nothing about is still awaiting
 the user.** Don't tell them a card is "still waiting" when the outcome already
