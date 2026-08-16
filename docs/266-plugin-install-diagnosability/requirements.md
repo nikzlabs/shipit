@@ -1,4 +1,5 @@
 ---
+issue: planning#393
 title: A live plugin version that is broken must be diagnosable and retryable from a session
 description: A consuming session can read why the live plugin version is unusable, and can force a re-install of that same version without waiting for the plugin author.
 ---
@@ -67,9 +68,16 @@ writable.
    install did not complete. The docs already promise that a *failed* refresh is
    distinguishable from a working one specifically so "nothing is broken, but
    you are not running what you think" is visible; a live-but-unusable version
-   gets the same courtesy.
+   gets the same courtesy. It says so **in its output**; its exit code keeps
+   meaning "this round did what it was asked" (user, 2026-08-16).
 8. Nothing in this feature changes `dep-dirs` behaviour, and nothing in it makes
    a plugin's checkout or containers writable.
+9. The answer to requirements 1–4 is a **read** — asking why the live version is
+   degraded never fetches, re-activates, or changes what is live (user,
+   2026-08-16).
+10. It reports **every** reason the live version is degraded, not only the
+    install: a withheld command, a rejected service fragment and a settings
+    mismatch are equally invisible from a session today (user, 2026-08-16).
 
 ## What is already true (verified, not requirements)
 
@@ -94,23 +102,26 @@ parts and does not inherit a guarantee that is not there:
 
 ## Open questions
 
-- **What surface answers requirements 1–4?** The issue offers two shapes:
-  `shipit plugin logs [name]`, or the last install's exit status and output on
-  `shipit plugin refresh --json`. A third fits what was actually verified above
-  — a read verb (`shipit plugin status [name]`) that reports the live version
-  and why it is degraded, since the failure the reporter hit is durable state
-  rather than the outcome of any round they could run. Which surface does ShipIt
-  want to own, and should it be one verb or two?
-- **What should `refresh` exit when the live version is degraded but this
-  round did nothing?** Non-zero (matching req 7 literally, and matching the
-  existing "you are not running what you think" precedent) changes the exit code
-  of a command that today succeeds, for a condition that is not new. A line of
-  output with exit 0 is weaker but breaks nothing. Which?
-- **Is "usable" broader than the install?** A version can also be live with a
-  withheld command, a rejected service fragment, or a settings mismatch — all
-  already on the card, all equally unreadable from a session. Does this feature
-  cover every reason a live version is degraded, or only the install?
+_None._
 
 ## Resolved questions
 
-_None yet._
+- **2026-08-16 — the read surface is `shipit plugin status [name]`, with
+  `--json`.** Asked which of three shapes ShipIt should own: a `status` read
+  verb, the issue's own `shipit plugin logs [name]`, or fields on
+  `refresh --json`. The user chose `status`, described as reporting the live
+  version, its install outcome, and **every** reason it is degraded — including
+  the warnings the Plugins card already holds. Reqs 9 and 10 are that answer;
+  `logs` is not being added, and the diagnostic is deliberately not coupled to
+  the action that fetches.
+- **2026-08-16 — a live-but-degraded version is reported in refresh's output,
+  and refresh still exits 0.** Asked how far requirement 7 goes: a warning line
+  at exit 0, a non-zero exit matching the existing "you are not running what you
+  think" precedent, or non-zero only when nothing is usable. The user chose the
+  warning line, so the exit code keeps meaning "this round did what it was asked"
+  and nothing that reads it today changes. Recorded in req 7.
+- **2026-08-16 — both asks ship together, in this session.** Asked whether the
+  retry (`--force`) and the diagnostics should be built now or whether this
+  session should stop at the requirements. The user chose requirements, then
+  `plan.md`, then implementation of both, with an independent review before it
+  is called done.

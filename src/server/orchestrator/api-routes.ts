@@ -135,7 +135,11 @@ export interface ApiDeps {
     sessionId: string,
     workspaceDir: string,
     repoName?: string,
-    onSettled?: (id: string) => void,
+    /**
+     * docs/266 reqs 5, 6 — re-stage and re-install the version already live.
+     * Refused by the service without `repoName`.
+     */
+    force?: boolean,
   ) => Promise<PluginRefreshResult>) | undefined;
   /**
    * docs/262 req 17 — run one imported plugin's companion CLI in an invocation

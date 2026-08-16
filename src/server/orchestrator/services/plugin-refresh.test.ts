@@ -205,3 +205,69 @@ describe("refreshPluginRepos", () => {
     expect(result).toEqual({ rows: [] });
   });
 });
+
+/**
+ * docs/266 — what a consumer whose live version is broken can see and do.
+ *
+ * Both halves were missing at once, and that is what made the reported episode
+ * expensive: the round said `unchanged` and exited 0 while the plugin was
+ * unusable, and there was no way to try the same version again.
+ */
+describe("refreshPluginRepos — diagnosing and retrying a live version", () => {
+  it("reports the LIVE version's own degradation on a round that did nothing", async () => {
+    // A manifest that declares an install this runtime has no runner for: the
+    // generation goes live "active but not installed" (req 13 degrades visibly),
+    // and until now that sentence reached only the Plugins tab.
+    fs.writeFileSync(
+      path.join(originDir, "shipit.yaml"),
+      "exports:\n  plugins:\n    probe:\n      cli:\n        probe: bin/probe.mjs\n      install: npm ci\n",
+    );
+    const git = simpleGit(originDir);
+    await git.add(".");
+    await git.commit("declare an install");
+
+    writeConfig(`${DECLARATION}  use:\n    - plugin: probe\n      from: tools\n`);
+    const first = await refreshPluginRepos("sess", workspaceDir, deps());
+    expect(first.rows[0]!.status).toBe("activated");
+
+    const again = await refreshPluginRepos("sess", workspaceDir, deps());
+    expect(again.rows[0]!.status).toBe("unchanged");
+    expect(again.rows[0]!.degraded?.join(" ")).toContain("not installed");
+  });
+
+  it("says nothing extra when the live version is fine", async () => {
+    writeConfig(DECLARATION);
+    await refreshPluginRepos("sess", workspaceDir, deps());
+    const again = await refreshPluginRepos("sess", workspaceDir, deps());
+    expect(again.rows[0]!.degraded).toBeUndefined();
+  });
+
+  it("refuses --force without a repository name, and runs nothing", async () => {
+    // It discards a live version's writable layer; a forgotten name must not
+    // apply that to every declared repository.
+    writeConfig(DECLARATION);
+    const before = await refreshPluginRepos("sess", workspaceDir, deps());
+    expect(before.rows[0]!.status).toBe("activated");
+
+    const forced = await refreshPluginRepos("sess", workspaceDir, deps(), undefined, true);
+    expect(forced.rows).toEqual([]);
+    expect(forced.error).toContain("needs the name of one plugin repository");
+  });
+
+  it("re-activates the commit already live, instead of reporting `unchanged`", async () => {
+    writeConfig(DECLARATION);
+    const first = await refreshPluginRepos("sess", workspaceDir, deps());
+    const live = first.rows[0]!.after;
+
+    // Without --force this is the terminal `unchanged` the issue reported: the
+    // consumer's only escape was the plugin's author publishing a new commit.
+    const plain = await refreshPluginRepos("sess", workspaceDir, deps(), "tools");
+    expect(plain.rows[0]!.status).toBe("unchanged");
+    expect(plain.rows[0]!.reinstalled).toBeUndefined();
+
+    const forced = await refreshPluginRepos("sess", workspaceDir, deps(), "tools", true);
+    expect(forced.rows[0]!.reinstalled).toBe(true);
+    // The same version — a retry, not an upgrade.
+    expect(forced.rows[0]!.after).toBe(live);
+  });
+});

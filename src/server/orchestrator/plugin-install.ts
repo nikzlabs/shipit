@@ -42,6 +42,7 @@ import type Docker from "dockerode";
 import { CONTAINER_PLUGIN_DIR, PLUGIN_COMMIT_ENV } from "../shared/plugin-contract.js";
 import type { PluginExport } from "../shared/plugin-repos.js";
 import type { PluginInstallJob, PluginInstallResult } from "./plugin-generations.js";
+import { pluginsRoot } from "./plugin-generations.js";
 import {
   adoptPluginDepBases,
   planPluginDepStore,
@@ -69,6 +70,7 @@ import {
 } from "./plugin-egress.js";
 import { PLUGIN_CLI_LABEL, sessionPathMount, type MountSpec } from "./plugin-cli-run.js";
 import { DEP_CACHE_CONTAINER_PATH } from "../shared/fs-constants.js";
+import { writeInstallRecord, type PluginInstallOutcome } from "./plugin-install-record.js";
 
 /**
  * Where the merged checkout is mounted inside the install container. The
@@ -191,6 +193,18 @@ export function createPluginInstallRunner(
   deps: PluginInstallDeps,
 ): (job: PluginInstallJob) => Promise<PluginInstallResult> {
   return async (job) => {
+    // docs/266 — one place to record what this attempt did, so no terminal path
+    // can return without leaving the answer somewhere a session can read
+    // (`plugin-install-record.ts` explains why the generation record cannot
+    // carry it).
+    const record = (outcome: PluginInstallOutcome, detail?: string): void =>
+      writeInstallRecord(pluginsRoot(deps.stateDir), job.repoName, {
+        commit: job.commit,
+        at: new Date().toISOString(),
+        outcome,
+        ...(detail ? { detail } : {}),
+      });
+
     const commands = installCommands(job.exports);
     if (commands.length === 0) return { ok: true };
 
@@ -205,9 +219,17 @@ export function createPluginInstallRunner(
     // succeeded-then-failed-to-publish re-stage. Checked BEFORE the store,
     // because it is the one case where the upper layer holds output no store hit
     // would reproduce (a build artifact outside any declared dep dir).
-    const recorded = readStamp(stampPath);
+    //
+    // docs/266 reqs 5, 6 — `--force` skips it, and skips the store hit below.
+    // Both are correct for an ordinary activation and both would make a forced
+    // re-install a no-op that reports success, which is the exact failure the
+    // retry exists to break out of: a consumer whose live version is unusable
+    // has no way to tell a defect from a bad install, and "run it again" must
+    // therefore actually run it again.
+    const recorded = job.force ? null : readStamp(stampPath);
     if (recorded?.stamp === stamp && pinsResolve(deps.depStoreDir, recorded.basePins)) {
       console.log(`[plugins] ${job.repoName}: install already done for ${job.commit.slice(0, 9)}`);
+      record("skipped-stamp", "this version's writable layer was already installed for these inputs");
       return { ok: true, ...(recorded.basePins.length > 0 ? { basePins: recorded.basePins } : {}) };
     }
 
@@ -221,7 +243,7 @@ export function createPluginInstallRunner(
     const plan = deps.depStoreDir
       ? planPluginDepStore({ source: job.source, exports: job.exports, checkoutDir: job.stagingDir })
       : null;
-    if (plan && deps.depStoreDir) {
+    if (plan && deps.depStoreDir && !job.force) {
       const pins = adoptPluginDepBases(deps.depStoreDir, plan);
       if (pins) {
         // The layer is cleared for the same reason install clears it: nothing
@@ -232,6 +254,11 @@ export function createPluginInstallRunner(
         await writeStamp(stampPath, stamp, pins);
         console.log(
           `[plugins] ${job.repoName}: ${job.commit.slice(0, 9)} reuses shared dependencies — install skipped`,
+        );
+        record(
+          "skipped-store",
+          "these dependency inputs were already in the shared store, so no install command ran; "
+          + "anything the install would ALSO have built is not in that store",
         );
         return { ok: true, basePins: pins };
       }
@@ -261,7 +288,9 @@ export function createPluginInstallRunner(
       chownTreeToSessionWorker(job.stagingDir);
       await createPluginOverlay(deps.docker, spec);
     } catch (err) {
-      return { ok: false, reason: `could not prepare the plugin's writable layer: ${message(err)}` };
+      const reason = `could not prepare the plugin's writable layer: ${message(err)}`;
+      record("failed", reason);
+      return { ok: false, reason };
     }
 
     // req 24 — resolved ONCE, outside the try, and reused by both the namespace
@@ -317,12 +346,14 @@ export function createPluginInstallRunner(
     // built. A release failure is therefore an install failure, not a warning.
     const released = await removePluginOverlay(deps.docker, spec.volumeName);
     if (!released) {
-      return {
-        ok: false,
-        reason: `the plugin's writable layer could not be released (volume ${spec.volumeName} is still held)`,
-      };
+      const reason = `the plugin's writable layer could not be released (volume ${spec.volumeName} is still held)`;
+      record("failed", reason);
+      return { ok: false, reason };
     }
-    if (!outcome.ok) return outcome;
+    if (!outcome.ok) {
+      record("failed", outcome.reason);
+      return outcome;
+    }
 
     // req 28 — hand what was just installed to the store, so the next commit,
     // and every other session, mounts it instead of installing it again. Runs
@@ -331,6 +362,7 @@ export function createPluginInstallRunner(
     // where install left it and pins nothing — still a complete generation.
     if (!plan || !deps.depStoreDir) {
       await writeStamp(stampPath, stamp, []);
+      record("succeeded");
       return { ok: true };
     }
 
@@ -355,13 +387,13 @@ export function createPluginInstallRunner(
     // failed install, which degrades to the prior version (req 15).
     const lost = promoted.filter((p) => p.lost).map((p) => p.depDir);
     if (lost.length > 0) {
-      return {
-        ok: false,
-        reason: `the installed \`${lost.join("`, `")}\` could not be stored — install ran but its output was lost`,
-      };
+      const reason = `the installed \`${lost.join("`, `")}\` could not be stored — install ran but its output was lost`;
+      record("failed", reason);
+      return { ok: false, reason };
     }
 
     await writeStamp(stampPath, stamp, basePins);
+    record("succeeded");
     return { ok: true, ...(basePins.length > 0 ? { basePins } : {}) };
   };
 }

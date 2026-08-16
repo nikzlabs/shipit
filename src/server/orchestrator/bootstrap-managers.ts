@@ -662,6 +662,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     sessionId: string,
     workspaceDir: string,
     repoName?: string,
+    force?: boolean,
   ): Promise<PluginRefreshResult> => {
     const remoteUrl = sessionManager.get(sessionId)?.remoteUrl;
     if (remoteUrl && !repoStore.isTrusted(remoteUrl)) {
@@ -683,6 +684,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
       workspaceDir,
       pluginActivationDeps(sessionId, workspaceDir, onSettled),
       repoName,
+      force,
     );
   };
 

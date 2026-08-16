@@ -211,6 +211,61 @@ A failed refresh exits non-zero and leaves the previous version live — so the
 session keeps working, on the OLD version. That distinction is the point of the
 non-zero exit: nothing is broken, but you are not running what you think.
 
+A refresh also prints anything wrong with the version that is live **now**, even
+on a round that found nothing to do. That is a different fact from the round's
+own result: a repository can be at the commit it should be at and still be
+unusable, and the exit code stays 0 because the round did what it was asked.
+
+## When a plugin is live but nothing works
+
+`shipit plugin status` answers the question a failing plugin actually poses —
+not "what is live" (the Plugins tab and `SHIPIT_PLUGIN_COMMIT` already say
+that), but **is what is live usable, and if not, why**:
+
+```
+shipit plugin status             # every declared repository
+shipit plugin status tools       # just this one
+shipit plugin status --json      # the same thing for a machine reader
+```
+
+Per repository it prints the commit being executed, every problem the Plugins
+tab would show for it, and what the **last install** did: succeeded, failed
+(with the output), skipped because the layer or the shared dependency store
+already held the tree, or never ran at all. That last distinction is the one
+worth knowing about — "the install succeeded" and "the install never ran" look
+identical from outside and have opposite fixes.
+
+It reads. It fetches nothing, activates nothing, and changes nothing that is
+live, so it is the safe first step, and it exits 0 even when the news is bad:
+you asked a question and got an answer.
+
+### Retrying the version you already have
+
+A version that is live and broken used to have no local recovery — the only
+escape was the plugin's author publishing a new commit, so a transient install
+failure and a real defect were equally stuck. They are not now:
+
+```
+shipit plugin refresh tools --force
+```
+
+That re-runs the install for the version **already live**, discarding what the
+last install left behind, and reports `re-installed <commit>` rather than
+`already at <commit>`. Three things to know before you use it:
+
+- **It needs a repository name.** ShipIt refuses `--force` without one; it
+  throws away installed state, and doing that to every declared repository
+  because a name was omitted is not a mistake worth making reachable.
+- **It is refused while the version is in use.** If a plugin service container
+  or a companion CLI still holds that version, the round fails with "still in
+  use — try again in a moment" and changes nothing. Stop the plugin's services
+  and retry.
+- **If the re-install fails, the version stays live without its install
+  output.** The layer is cleared before the install writes, so a failed retry
+  leaves the state you were already in — recorded, and visible in the next
+  `shipit plugin status`. Read the status first; force is for a version you have
+  already established is not working.
+
 ## Working inside the plugin's own repository
 
 A plugin repository can consume **itself**, so you can test its exports in a
@@ -456,18 +511,20 @@ it. Port the boundaries along with the routes:
 ### Write the failure message for someone who cannot see your install log
 
 A *failed* install is the easy case: its output tail rides the failure detail, so
-the Plugins tab shows it and `shipit plugin refresh` reprints it for the agent.
-The hard case is the one this recipe is for — an install that **succeeded** and
-left the wrong tree. Nothing failed, nothing is logged, and `shipit plugin` has
-`refresh` and `exec` and no `logs`, so your runtime error message is the whole
-diagnostic that reader gets:
+the Plugins tab shows it, `shipit plugin refresh` reprints it, and
+`shipit plugin status` still names it long after the round that failed. The hard
+case is the one this recipe is for — an install that **succeeded** and left the
+wrong tree. Nothing failed, so `status` reports an install that succeeded and a
+version that is live, and your runtime error message is the whole diagnostic
+that reader gets:
 
 - **Name the precondition that failed, specifically.** "Dependencies or build
   missing" is not actionable; "the build (`dist/`) is missing" is, and it tells a
   failed install apart from a dropped one.
-- **Give the two actions they can take**: `shipit plugin refresh <name>`, and
-  filing an issue on your repository with `shipit issue create --tracker <name>`
-  quoting that line.
+- **Give them the sequence that works**: `shipit plugin status <name>` to see
+  what the install did, `shipit plugin refresh <name> --force` to run it again
+  for the same version, and an issue on your repository
+  (`shipit issue create --tracker <name>`) quoting that line if it survives both.
 - **Say when their project cannot be the cause** — true of a missing build
   artifact, and not of a failure that depends on a setting, a credential, an
   egress rule or project data, which are theirs. Either way never point them at

@@ -7,9 +7,17 @@
  * repository had no way to pull it — which is the whole point of tracking a
  * branch.
  *
- * A separate `list`/`status` command was reviewed out of the design: the
- * Plugins tab and `SHIPIT_PLUGIN_COMMIT` already answer "what is live", and a
- * refresh prints before/after anyway.
+ * **`status` was once reviewed out of this design, and docs/266 put it back.**
+ * The original reasoning — the Plugins tab and `SHIPIT_PLUGIN_COMMIT` already
+ * answer "what is live" — was right about the question it asked and missed the
+ * one that mattered: a session agent cannot read that tab, and "what is live"
+ * is not "is what is live usable". nikzlabs/shipit#2323 is the cost. A consuming
+ * project ran a version whose install had left nothing behind; refresh exited 0
+ * and said `unchanged`, the card said `active`, every surface failed, and the
+ * plugin's author could not tell a failed install from a successful one that
+ * produced the wrong tree. They guessed, shipped the wrong fix, and had it
+ * confirmed by a coincidence. `status` reports the same reasons the card shows,
+ * plus the one no card holds: what the last install actually did.
  *
  * **Transport** (plan §2): through the worker's `/agent-ops` surface, like
  * `shipit issue` and the `gh` shim — not the browser's `/api/plugin-repos`,
@@ -34,6 +42,10 @@ interface RefreshRow {
   after: string | null;
   status: string;
   detail?: string;
+  /** docs/266 req 7 — why the version live NOW is unusable, if it is. */
+  degraded: string[];
+  /** docs/266 reqs 5, 6 — `--force` re-installed the version already live. */
+  reinstalled: boolean;
 }
 
 function toRow(value: unknown): RefreshRow {
@@ -45,15 +57,33 @@ function toRow(value: unknown): RefreshRow {
     after: typeof obj.after === "string" ? obj.after : null,
     status: asString(obj.status) || "unknown",
     detail: asString(obj.detail) || undefined,
+    degraded: Array.isArray(obj.degraded)
+      ? obj.degraded.filter((d): d is string => typeof d === "string")
+      : [],
+    reinstalled: obj.reinstalled === true,
   };
 }
 
-const HELP = `Usage: shipit plugin refresh [repo-name] [--json]
+const HELP = `Usage: shipit plugin refresh [repo-name] [--json] [--force]
 
 Bring a declared plugin repository to its declared version now — the same
 activation a shipit.yaml edit runs, awaited, with before/after commits.
 
 With no name, every declared repository is refreshed.
+
+--force re-runs the install for the version ALREADY live, for one named
+repository. Use it when a version is live but unusable: it discards what the
+last install left and installs again, instead of waiting for the plugin's
+author to publish a new commit. It is refused while a plugin container is still
+using that version, and if the re-install fails the version stays live without
+its install output — run \`shipit plugin status\` first.
+
+  shipit plugin status [repo-name] [--json]
+
+Why the live version of each declared plugin repository is (or is not) usable:
+the commit being executed, every problem the Plugins tab would show, and what
+the last install did. Reads only — it fetches nothing and activates nothing, so
+it is the safe first step when a plugin's surfaces are failing.
 
   shipit plugin exec --alias <alias> --command <name> [-- args...]
 
@@ -69,6 +99,10 @@ export async function runPlugin(args: string[], deps: RunDeps): Promise<void> {
   }
   if (action === "exec") {
     await exec(rest, deps);
+    return;
+  }
+  if (action === "status") {
+    await status(rest, deps);
     return;
   }
   if (action !== "refresh") {
@@ -180,7 +214,9 @@ async function refresh(args: string[], deps: RunDeps): Promise<void> {
     success(deps.io, HELP);
     return;
   }
-  const { positional, booleans, unsupported } = parseFlags(args, { booleans: { "--json": "json" } });
+  const { positional, booleans, unsupported } = parseFlags(args, {
+    booleans: { "--json": "json", "--force": "force" },
+  });
   // A typo must not silently refresh EVERY repository — the agent asked for
   // something specific and would be told it worked (review finding). Every
   // other shim command rejects these; this one had simply ignored the field.
@@ -191,11 +227,22 @@ async function refresh(args: string[], deps: RunDeps): Promise<void> {
     fail(deps.io, `Expected at most one repository name, got ${positional.length}.\n\n${HELP}`);
   }
   const repo = positional[0];
+  const force = booleans.has("force");
+  // docs/266 — refused here as well as in the service, because this is where the
+  // agent can be told what to type instead. `--force` discards a live version's
+  // install output; applying that to every declared repository because a name
+  // was left off is not a mistake to make reachable.
+  if (force && !repo) {
+    fail(
+      deps.io,
+      `\`--force\` needs the name of one plugin repository: \`shipit plugin refresh <name> --force\`.\n\n${HELP}`,
+    );
+  }
 
   const res = await deps.call(
     "POST",
     "/agent-ops/plugin/refresh",
-    repo ? { repo } : {},
+    { ...(repo ? { repo } : {}), ...(force ? { force: true } : {}) },
     deps.env,
     0,
   );
@@ -221,14 +268,116 @@ async function refresh(args: string[], deps: RunDeps): Promise<void> {
 function describe(row: RefreshRow): string {
   const short = (commit: string | null): string => (commit ? commit.slice(0, 9) : "none");
   const head = `${row.repo} (${row.ref})`;
+  // docs/266 req 7 — what is wrong with the version that is live NOW, appended
+  // to every status. A round that found nothing to do is exactly the case this
+  // is for: it said `already at <sha>` and exited 0 while the plugin was
+  // unusable, and the reason was sitting on a card the session cannot read.
+  const degraded = row.degraded.length > 0
+    ? `\n${row.degraded.map((d) => `  ! ${d}`).join("\n")}`
+      + "\n  ! run `shipit plugin status` for the whole picture"
+    : "";
   if (row.status === "failed") {
     // Naming the still-live commit matters more than naming the failure: it is
     // what the session is actually running.
     const live = row.after ? ` — still on ${short(row.after)}` : "";
-    return `${head}: refresh failed${live}\n  ${row.detail ?? "no reason reported"}`;
+    return `${head}: refresh failed${live}\n  ${row.detail ?? "no reason reported"}${degraded}`;
+  }
+  // docs/266 — a forced re-install lands on the SAME commit, so "already at"
+  // would tell a consumer their retry did nothing.
+  if (row.reinstalled) {
+    return `${head}: re-installed ${short(row.after)}${row.detail ? `\n  ${row.detail}` : ""}${degraded}`;
   }
   if (row.status === "unchanged") {
-    return `${head}: already at ${short(row.after)}${row.detail ? `\n  ${row.detail}` : ""}`;
+    return `${head}: already at ${short(row.after)}${row.detail ? `\n  ${row.detail}` : ""}${degraded}`;
   }
-  return `${head}: ${short(row.before)} → ${short(row.after)}${row.detail ? `\n  ${row.detail}` : ""}`;
+  return `${head}: ${short(row.before)} → ${short(row.after)}`
+    + `${row.detail ? `\n  ${row.detail}` : ""}${degraded}`;
+}
+
+/**
+ * `shipit plugin status [name]` — docs/266 reqs 1–4, 9, 10.
+ *
+ * Exit code is about the QUESTION, not the answer: asking succeeds even when
+ * every repository is broken. An agent diagnosing a failure must be able to run
+ * this without its own tooling treating the diagnosis as a new failure — and
+ * "unusable" is already in the text and in `--json`'s `usable: false`.
+ */
+async function status(args: string[], deps: RunDeps): Promise<void> {
+  if (args.includes("--help") || args.includes("-h")) {
+    success(deps.io, HELP);
+    return;
+  }
+  const { positional, booleans, unsupported } = parseFlags(args, { booleans: { "--json": "json" } });
+  if (unsupported.length > 0) {
+    fail(deps.io, `Unsupported flag for \`shipit plugin status\`: ${unsupported[0]}\n\n${HELP}`);
+  }
+  if (positional.length > 1) {
+    fail(deps.io, `Expected at most one repository name, got ${positional.length}.\n\n${HELP}`);
+  }
+  const repo = positional[0];
+
+  const res = await deps.call(
+    "GET",
+    `/agent-ops/plugin/status${repo ? `?repo=${encodeURIComponent(repo)}` : ""}`,
+    undefined,
+    deps.env,
+  );
+  if (res.status < 200 || res.status >= 300) {
+    fail(deps.io, formatError(res, "Could not read the plugin repositories' status."));
+  }
+
+  if (booleans.has("json")) {
+    success(deps.io, JSON.stringify(res.body, null, 2));
+    return;
+  }
+  const repos = Array.isArray(res.body.repos) ? res.body.repos.map(toStatusRepo) : [];
+  const warnings = Array.isArray(res.body.warnings)
+    ? res.body.warnings.filter((w): w is string => typeof w === "string")
+    : [];
+  const blocks = repos.map(describeStatus);
+  const text = [
+    ...(repos.length === 0 ? ["This project declares no plugin repositories."] : blocks),
+    ...warnings.map((w) => `! ${w}`),
+  ].join("\n\n");
+  success(deps.io, text);
+}
+
+/** One repository's status, as the orchestrator reports it. */
+interface StatusRepo {
+  repo: string;
+  source: string;
+  ref: string | null;
+  commit: string | null;
+  status: string;
+  issues: string[];
+  installSummary: string;
+  usable: boolean;
+}
+
+function toStatusRepo(value: unknown): StatusRepo {
+  const obj = (value && typeof value === "object" ? value : {}) as Record<string, unknown>;
+  return {
+    repo: asString(obj.repo),
+    source: asString(obj.source),
+    ref: typeof obj.ref === "string" ? obj.ref : null,
+    commit: typeof obj.commit === "string" ? obj.commit : null,
+    status: asString(obj.status) || "unknown",
+    issues: Array.isArray(obj.issues) ? obj.issues.filter((i): i is string => typeof i === "string") : [],
+    installSummary: asString(obj.installSummary),
+    // Absent means "the orchestrator did not say", and the honest rendering of
+    // that is the pessimistic one: a reader who cannot tell must not be told
+    // everything is fine.
+    usable: obj.usable === true,
+  };
+}
+
+function describeStatus(repo: StatusRepo): string {
+  const where = repo.commit ? `${repo.ref ?? "?"} @ ${repo.commit.slice(0, 9)}` : (repo.ref ?? "nothing live");
+  const verdict = repo.usable ? "usable" : "NOT USABLE";
+  return [
+    `${repo.repo} (${repo.source}) — ${repo.status}, ${verdict}`,
+    `  running: ${where}`,
+    `  install: ${repo.installSummary}`,
+    ...repo.issues.map((issue) => `  ! ${issue}`),
+  ].join("\n");
 }

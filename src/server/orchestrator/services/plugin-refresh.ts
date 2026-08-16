@@ -38,6 +38,21 @@ export interface PluginRefreshRow {
   status: "activated" | "unchanged" | "failed";
   /** Why it failed, or an advisory (a moved tag a durable pin overrode). */
   detail?: string;
+  /**
+   * docs/266 req 7 — why the version that is now live is not usable, when it is
+   * not. Separate from `detail`, which is about THIS round: the condition this
+   * carries is durable state that the round may have had nothing to do with,
+   * and a refresh that correctly found nothing to do must still say it.
+   */
+  degraded?: string[];
+  /**
+   * docs/266 reqs 5, 6 — this round re-installed the version that was already
+   * live (`--force`). It needs its own field because `status` answers "did the
+   * live commit change", and for a forced re-install the honest answer to that
+   * is no: before and after are the same commit, and reporting `unchanged`
+   * would tell a consumer their retry did nothing.
+   */
+  reinstalled?: boolean;
 }
 
 export interface PluginRefreshResult {
@@ -63,7 +78,23 @@ export async function refreshPluginRepos(
   workspaceDir: string,
   deps: PluginRefreshDeps,
   repoName?: string,
+  /**
+   * docs/266 reqs 5, 6 — re-stage and re-install the version already live.
+   * Refused without `repoName`, here rather than only in the shim: this is the
+   * boundary every caller crosses, and discarding a live version's writable
+   * layer for every declared repository at once is not something to make
+   * reachable by omitting an argument.
+   */
+  force?: boolean,
 ): Promise<PluginRefreshResult> {
+  if (force && !repoName) {
+    return {
+      rows: [],
+      error: "`--force` needs the name of one plugin repository. It re-runs that repository's "
+        + "install over the version already live, discarding what the last install left, so it is "
+        + "never applied to every declared repository at once.",
+    };
+  }
   // `source` rides along because a generation is only THIS declaration's when it
   // was built from the repository the declaration currently names — the name
   // alone is re-pointable (`plugin-generations.ts`).
@@ -113,12 +144,13 @@ export async function refreshPluginRepos(
   );
 
   const outcomes = await activateDeclaredPlugins(
-    sessionId, workspaceDir, deps, deps.consumerKey, repoName,
+    sessionId, workspaceDir, deps, deps.consumerKey, repoName, force,
   );
 
   return {
     rows: targets.map((target) => {
-      const after = readActiveGeneration(stateDir, target.name, target.source)?.commit ?? null;
+      const live = readActiveGeneration(stateDir, target.name, target.source);
+      const after = live?.commit ?? null;
       const was = before.get(target.name) ?? null;
       // THIS round's own outcome, not the shared "latest attempt" state. That
       // map is the UI's, and whichever round finishes last owns it — so with a
@@ -131,6 +163,16 @@ export async function refreshPluginRepos(
         ? "failed"
         : after !== was ? "activated" : "unchanged";
       const detail = outcome?.status === "failed" ? outcome.reason : outcome?.warning;
+      // docs/266 req 7 — the live version's OWN problems, read off the record
+      // that is live now rather than off this round. A round that found nothing
+      // to do is the case this exists for: it exited 0 and said `unchanged`
+      // while every surface of that plugin was failing, and a consumer had no
+      // way to see the sentence the Plugins card was already showing.
+      const degraded = live?.manifestWarnings ?? [];
+      // A forced round that reached `activated` re-staged and re-installed the
+      // same commit. Taken from the round's own outcome, because the two
+      // commits — the only other evidence — are identical by construction.
+      const reinstalled = force === true && outcome?.status === "activated";
       return {
         repo: target.name,
         ref: target.ref,
@@ -138,6 +180,8 @@ export async function refreshPluginRepos(
         after,
         status,
         ...(detail ? { detail } : {}),
+        ...(degraded.length > 0 ? { degraded } : {}),
+        ...(reinstalled ? { reinstalled: true } : {}),
       };
     }),
   };

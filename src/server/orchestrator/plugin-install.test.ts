@@ -27,6 +27,7 @@ import {
   PLUGIN_INSTALL_NETWORK,
 } from "./plugin-install.js";
 import { clearUntrustedContainerNetworks, isUntrustedContainerIp } from "./api-container-guard.js";
+import { readInstallRecord } from "./plugin-install-record.js";
 import { pluginWorkDir } from "./plugin-overlay.js";
 import type { PluginInstallJob } from "./plugin-generations.js";
 import type { PluginExport } from "../shared/plugin-repos.js";
@@ -677,6 +678,32 @@ describe("createPluginInstallRunner and the shared dependency store", () => {
     expect(warm.basePins).toEqual(cold.basePins);
   });
 
+  it("docs/266 — a forced retry installs even when the shared store has a hit", async () => {
+    // The store hit is the second shortcut that would make `--force` a no-op
+    // reporting success: it mounts a tree some other session produced and runs
+    // nothing. For an ordinary activation that is req 28 working; for a
+    // consumer retrying a version that is live and broken it is the failure
+    // itself, dressed as a fix.
+    const runner = { image: "worker:test", sessionId: "s1", stateDir, depStoreDir: stateDir };
+    const first = fakeDocker({ onStart: installs() });
+    await createPluginInstallRunner({ ...runner, docker: first.docker })(job([npmExport()]));
+
+    const nextCommit = "e".repeat(40);
+    const warm = fakeDocker({ onStart: installs(nextCommit) });
+    await createPluginInstallRunner({ ...runner, docker: warm.docker })({
+      ...job([npmExport()]), commit: nextCommit,
+    });
+    expect(warm.containers).toHaveLength(0);
+
+    const forced = fakeDocker({ onStart: installs(nextCommit) });
+    const result = await createPluginInstallRunner({ ...runner, docker: forced.docker })({
+      ...job([npmExport()]), commit: nextCommit, force: true,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(forced.containers).toHaveLength(1);
+  });
+
   it("installs cold when the dependency inputs move, and shares the new tree", async () => {
     const runner = { image: "worker:test", sessionId: "s1", stateDir, depStoreDir: stateDir };
     const first = fakeDocker({ onStart: installs() });
@@ -784,5 +811,67 @@ describe("createPluginInstallRunner and the shared dependency store", () => {
     expect(containers).toHaveLength(1);
     expect(result).toEqual({ ok: true });
     expect(fs.existsSync(path.join(upper(), "node_modules"))).toBe(true);
+  });
+});
+
+/**
+ * docs/266 — the retry (`--force`) and the record that says what happened.
+ *
+ * Both exist because of one measured episode: a live version whose install had
+ * left nothing behind, no way to see that from the session, and no way to run
+ * the install again without the plugin's author publishing a new commit.
+ */
+describe("createPluginInstallRunner — forced retry and the install record", () => {
+  const pluginsDir = (): string => path.join(stateDir, "plugins");
+
+  it("runs the install again for a generation the stamp calls done", async () => {
+    const first = fakeDocker();
+    await run2(first.docker)(job([exportWith("probe", "npm ci")]));
+    expect(fs.existsSync(installStampPath(stateDir, "tools", COMMIT))).toBe(true);
+
+    // Without force this is the no-op the ordinary path wants...
+    const skipped = fakeDocker();
+    await run2(skipped.docker)(job([exportWith("probe", "npm ci")]));
+    expect(skipped.containers).toHaveLength(0);
+
+    // ...and a retry that reported success without running anything would be
+    // exactly the failure this feature exists to break out of.
+    const forced = fakeDocker();
+    const result = await run2(forced.docker)({ ...job([exportWith("probe", "npm ci")]), force: true });
+    expect(result.ok).toBe(true);
+    expect(forced.containers).toHaveLength(1);
+  });
+
+  it("records a successful install, and the commit it was for", async () => {
+    await run2(fakeDocker().docker)(job([exportWith("probe", "npm ci")]));
+    const record = readInstallRecord(pluginsDir(), "tools");
+    expect(record).toMatchObject({ outcome: "succeeded", commit: COMMIT });
+  });
+
+  it("records a FAILED install with its output — the evidence that had nowhere to live", async () => {
+    // A failed install publishes no generation, so before docs/266 this text
+    // was returned to the round and then existed nowhere a session could read.
+    const failing = fakeDocker({ exit: 1, logs: "npm ERR! missing script: build" });
+    const result = await run2(failing.docker)(job([exportWith("probe", "npm run build")]));
+
+    expect(result.ok).toBe(false);
+    const record = readInstallRecord(pluginsDir(), "tools");
+    expect(record?.outcome).toBe("failed");
+    expect(record?.detail).toContain("npm ERR! missing script: build");
+  });
+
+  it("records a skip as a skip, not as a success", async () => {
+    // "The install succeeded" and "the install never ran" point at opposite
+    // fixes; a record that flattened them would have settled nothing.
+    await run2(fakeDocker().docker)(job([exportWith("probe", "npm ci")]));
+    await run2(fakeDocker().docker)(job([exportWith("probe", "npm ci")]));
+    expect(readInstallRecord(pluginsDir(), "tools")?.outcome).toBe("skipped-stamp");
+  });
+
+  it("writes nothing for a repository whose exports declare no install", async () => {
+    // Nothing ran, and nothing pretends to have: `status` renders the absence
+    // as "no install has run", which is the truth.
+    await run2(fakeDocker().docker)(job([exportWith("probe")]));
+    expect(readInstallRecord(pluginsDir(), "tools")).toBeNull();
   });
 });
