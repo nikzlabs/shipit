@@ -284,3 +284,80 @@ Stated plainly so nobody reads the matrix as broader than it is:
 - The sweep ran **serially by design** — local mode applies `SHIPIT_CREDENTIAL_*` to
   `process.env` around each spawn, so concurrent turns would race on process-global state and
   produce results that mean nothing.
+
+## The gateway-translation sweep (2026-08-16)
+
+A second run, same method, answering the question the first one left open (`catalogue.md`
+question 7): **do the gateways translate `anthropic-messages` and `openai-responses` for an
+upstream that publishes neither?** The 2026-08-16 curation pass added four models — Grok 4.6,
+Gemini 3.7 Flash, Kimi K3, Qwen3.8 Max — whose vendors ShipIt holds no direct credential for
+and who publish only their own APIs. Nothing but a live turn could settle it.
+
+**40 pairs**, three harnesses × two gateways × the added models, plus four known-good
+controls (`claude`/`openrouter`/Opus 5, `claude`/`vercel`/Opus 5,
+`codex`/`openrouter`/V4 Flash, `codex`/`vercel`/GPT-5.6 Sol). All four controls passed, so no
+verdict below is an instance-wide breakage in disguise. Every failure was re-run twice more;
+the two that changed answer are called out rather than averaged away.
+
+### Result: the two gateways translate in OPPOSITE directions
+
+| Model | OpenRouter `A_MSG` | OpenRouter `O_RESP` | Vercel `A_MSG` | Vercel `O_RESP` | `O_CC` (both) |
+|---|---|---|---|---|---|
+| Grok 4.6 | pass | **fail** | pass | pass | pass |
+| Gemini 3.7 Flash | pass | **fail** | **fail** | pass | pass |
+| Kimi K3 | pass | pass | pass | pass | pass |
+| Qwen3.8 Max | pass | **fail** | pass | pass | pass |
+| Fable 5 | pass | **fail** | pass | **fail** | pass |
+| GLM-5.2 | *(declared)* | — | pass | pass | pass |
+| DeepSeek V4 Pro | *(declared)* | *(declared)* | pass | pass | pass |
+
+- **OpenRouter's Anthropic skin translates for every upstream tested**, including four that
+  publish no Anthropic API. **Its Responses surface carries almost nothing** — Kimi K3 alone.
+- **Vercel is the mirror image**: Responses carries everything tested but Fable 5, while its
+  Anthropic skin fails on exactly one model.
+- So the "declare it only where the upstream publishes it" heuristic the catalogue reasoned
+  from **was wrong in both directions** — it would have denied eight working pairs and
+  asserted six broken ones. This is why the rule is measurement.
+- Every added model reaches a default `claude,codex` install through at least one harness.
+  `O_CC` passed on all 12 pairs via OpenCode and is declared everywhere.
+
+### The one informative error
+
+`claude` → Vercel → Gemini 3.7 Flash fails identically on all three runs:
+
+> `API Error: 400 'system messages are only supported at the beginning of the conversation' functionality not supported.`
+
+Claude Code's system-prompt shape is what Vercel's Anthropic translation cannot carry to
+Gemini. That is a property of the pairing, not of the model — the same model passes on
+Vercel's Responses surface and on OpenRouter's Anthropic skin.
+
+### Two verdicts that flipped on re-run, and why single observations are not enough
+
+- `claude` → Vercel → **Grok 4.6** failed its first serial run and then passed **five**
+  consecutive re-runs. Recorded as a pass; the single failure was a flake.
+- `codex` → Vercel → **Fable 5** went fail, pass, fail, fail, fail. Recorded as a fail on the
+  majority, and the row omits `O_RESP` — but it is genuinely flaky rather than cleanly broken,
+  which is worth knowing before anyone "fixes" it.
+
+### Two methodology errors in this sweep, corrected mid-run
+
+Recorded because both produced confident, wrong results that looked fine:
+
+1. **The pass check could not fail.** It searched every message for the fixed token, and the
+   *prompt* contains that token — so a turn that produced no assistant output at all scored a
+   pass. Every Codex verdict in the first run was a false positive. Fixed to read assistant
+   text only; the corrected run immediately produced a mix.
+2. **The first two runs were concurrent**, against this document's own explicit warning three
+   sections up. They disagree with the serial run in *both* directions — Vercel/Fable failed
+   concurrently and passes serially; Vercel/Grok passed concurrently and needed five re-runs
+   serially. Both runs were discarded. The warning was right and is repeated here because it
+   was read, understood, and then not applied.
+
+### Still not covered
+
+- `openai-chat-completions` was measured **through OpenCode only** — the one harness that
+  speaks it. It is not installed by default (`SHIPIT_HARNESSES=claude,codex`).
+- The `:free`, `-fast`, `-pro` and dated variants both gateways list are untested; only the
+  ids the catalogue declares were run.
+- Each verdict is one trivial turn. It establishes that the pairing *works*, not that the
+  model is good at agentic coding through that harness.

@@ -117,6 +117,34 @@ describe("no shipped row still carries a sentinel", () => {
       expect(model.price.cacheWrite, where).toBeGreaterThanOrEqual(0);
     }
   });
+
+  // Pins the 2026-08-16 correction recorded in `services.ts`. A gateway is NOT a
+  // pass-through: it marks the same model up or down, in both directions and by
+  // large multiples. The old code reused the upstream vendor's price constant on
+  // every gateway row, so the figure a user saw for a DeepSeek turn through
+  // OpenRouter was wrong by ~2.3× in one direction and ~2.7× in the other. An
+  // "each row has A price" check cannot see that; only naming the pairs can.
+  it("a gateway prices a model independently of the vendor that makes it", () => {
+    const direct = (modelId: string) =>
+      getModel({ serviceId: "deepseek", billingMode: "key", modelId });
+    const or = (modelId: string) => getModel({ serviceId: "openrouter", billingMode: "key", modelId });
+    const vercel = (modelId: string) => getModel({ serviceId: "vercel", billingMode: "key", modelId });
+
+    // OpenRouter undercuts DeepSeek's own rate for Flash and marks Pro up.
+    expect(or("deepseek/deepseek-v4-flash")?.price.input).toBeLessThan(
+      direct("deepseek-v4-flash")!.price.input,
+    );
+    expect(or("deepseek/deepseek-v4-pro")?.price.input).toBeGreaterThan(
+      direct("deepseek-v4-pro")!.price.input,
+    );
+    // And the two gateways do not agree with each other either.
+    expect(or("deepseek/deepseek-v4-flash")?.price.input).not.toBe(
+      vercel("deepseek/deepseek-v4-flash")?.price.input,
+    );
+    expect(or("google/gemini-3.7-flash")?.price.input).not.toBe(
+      vercel("google/gemini-3.7-flash")?.price.input,
+    );
+  });
 });
 
 describe("a model's declared styles are reachable", () => {
@@ -268,6 +296,33 @@ describe("model identity and lineage (docs/261 req 4)", () => {
     const sonnet = getModel({ serviceId: "anthropic", billingMode: "sub", modelId: "claude-sonnet-5" });
     expect(opus?.family).toBe(sonnet?.family);
     expect(opus?.canonicalModelKey).not.toBe(sonnet?.canonicalModelKey);
+  });
+
+  // The gateway-only models (2026-08-16) are the case the alias table warns
+  // about in reverse: nobody serves them directly, and the two gateways spell
+  // the SAME model with different namespaces. If a future edit lets the two
+  // spellings drift apart, ShipIt would call a Grok-reviews-Grok pass an
+  // independent second opinion.
+  it("one model under two gateway namespaces stays one model", () => {
+    const pairs = [
+      { or: "x-ai/grok-4.6", vercel: "xai/grok-4.6", key: "grok-4.6", family: "grok" },
+      {
+        or: "qwen/qwen3.8-max",
+        vercel: "alibaba/qwen3.8-max",
+        key: "qwen3.8-max",
+        family: "qwen",
+      },
+    ] as const;
+    for (const pair of pairs) {
+      const or = getModel({ serviceId: "openrouter", billingMode: "key", modelId: pair.or });
+      const vercel = getModel({ serviceId: "vercel", billingMode: "key", modelId: pair.vercel });
+      expect(or?.canonicalModelKey, `${pair.or} is missing or misidentified`).toBe(pair.key);
+      expect(vercel?.canonicalModelKey, `${pair.vercel} is missing or misidentified`).toBe(pair.key);
+      expect(or?.family).toBe(pair.family);
+      expect(vercel?.family).toBe(pair.family);
+      // Different ids, so the equality above is not vacuous.
+      expect(or?.id).not.toBe(vercel?.id);
+    }
   });
 
   it("declares no identity no row uses", () => {

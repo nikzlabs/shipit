@@ -889,6 +889,26 @@ boundary** (`codex-event-handler.ts`) — subtracting the cached count from the 
 the event leaves the harness — so the pricing code can assume disjointness rather than each
 reader re-deriving it. Whoever adds a harness owns the same obligation for it.
 
+**A gateway is not a pass-through, and the rows used to assume it was (found 2026-08-16).**
+`services.ts` asserted that OpenRouter and Vercel both bill at the upstream vendor's list
+rate, and every gateway row therefore reused its upstream's price constant. Both gateways
+publish their catalogue with prices at a public unauthenticated endpoint
+(`openrouter.ai/api/v1/models`, `ai-gateway.vercel.sh/v1/models`), and they disagree with
+the upstream **and with each other**, in both directions:
+
+| Model | Vendor direct | OpenRouter | Vercel |
+|---|---|---|---|
+| DeepSeek V4 Flash | 0.14 / 0.28 | 0.061 / 0.123 | 0.20 / 0.40 |
+| DeepSeek V4 Pro | 0.435 / 0.87 | 1.168 / 2.336 | 1.74 / 3.48 |
+| GLM-5.2 | 1.40 / 4.40 | 0.308 / 0.968 | 1.10 / 3.851 |
+| GPT-5.6 Terra | 2.00 / 12.00 | 1.00 / 6.00 | 2.00 / 12.00 |
+
+So req 16's estimate was wrong by ~2.3× in one direction and ~2.7× in the other for the same
+DeepSeek turn depending only on which gateway carried it. Each gateway now carries its own
+constants and shares an upstream one only where the two figures were **compared** and found
+equal — the Anthropic line, plus GPT-5.6 Sol. `catalogue.test.ts` pins the correction by
+naming the pairs; a generic "every row has a price" check could not see it.
+
 **The four rates are an approximation, and that is a deliberate reading of req 16.** Real
 published pricing is richer: Anthropic prices 5-minute and 1-hour cache writes differently and
 tiers by context length; OpenRouter publishes per-request, image, web-search and reasoning
@@ -955,3 +975,35 @@ Every 🔍, but these change the *shape* rather than the contents:
    [`pair-verification.md`](./pair-verification.md).
 6. **What does GLM's coding plan offer, and how does its auth work?** Phase 2 owns the
    integration and req 15 is unmet until it lands.
+7. **Do the gateways translate `A_MSG` / `O_RESP` for an upstream that publishes neither?**
+   **ANSWERED 2026-08-16 — yes, both do, and in opposite directions.** A 40-pair serial sweep
+   with four passing controls ([`pair-verification.md`](./pair-verification.md)) settled every
+   cell: OpenRouter's Anthropic skin carries all four new upstreams while its Responses
+   surface carries only Kimi K3; Vercel's Responses surface carries everything but Fable 5
+   while its Anthropic skin fails only on Gemini 3.7 Flash (a repeatable
+   `400 'system messages are only supported at the beginning of the conversation'`).
+
+   **The heuristic this question was framed around was wrong in both directions.** Declaring a
+   style only where the upstream publishes it would have denied eight working pairs and
+   asserted six broken ones — so "one model answering does not establish translation" (question
+   5) holds, but so does its converse: *one upstream lacking an API does not establish that the
+   gateway cannot translate it*. Neither direction is deducible; both are measurements.
+
+   Every added model now reaches a default `claude,codex` install through at least one harness.
+   The original text of this question, kept as the record of what was open and why:
+
+   > The 2026-08-16 curation pass added the four frontier coding models both gateways serve that ShipIt held no direct
+   > credential for — Grok 4.6, Gemini 3.7 Flash, Kimi K3, Qwen3.8 Max — and could declare only
+   > `O_CC`, each gateway's own native API, because none of Google, xAI, Moonshot or Alibaba
+   > publishes an Anthropic-Messages or Responses surface upstream. Question 5's rule applies
+   > unchanged: one model answering does not establish a translation layer.
+   >
+   > The cost of that is concrete rather than theoretical. `openai-chat-completions` is spoken
+   > by **OpenCode alone**, and the default install is `SHIPIT_HARNESSES=claude,codex` — so all
+   > four rows reach a default install through no harness at all. Measuring is cheap and is the
+   > same shape as the 08-15 sweep: one Claude Code turn per model against
+   > `https://openrouter.ai/api` and `https://ai-gateway.vercel.sh`, one `codex exec` per model
+   > against each gateway's `/v1`. The blocker is not method but credentials — neither gateway
+   > key is present in a session container, so this needs either a key or the dogfood inner
+   > instance's already-adopted `openrouter:key` / `vercel:key` routes.
+   >
