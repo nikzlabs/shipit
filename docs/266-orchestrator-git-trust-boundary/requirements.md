@@ -112,6 +112,21 @@ root and mounts `credentials:/credentials`, `/var/run/docker.sock`,
     requirement closes. It is also the shape `CLAUDE.md` invariant 3 exists to
     prevent, and the shape that shipped PR #1890 one commit short.
 
+15. A turn whose work was **not committed at all** MUST be reported to the user
+    as a failure, naming what blocked it. A log line is not a report. The user
+    MUST NOT be left with a turn that visibly did work and a branch that has
+    none of it.
+
+    *Added rather than folded into requirement 14, because 14 does not reach
+    this case and stretching it would hide the difference.* Requirement 14 is
+    about a commit that **exists and is short**; this is about a commit that
+    **does not exist**. They also want opposite words to the user — "this commit
+    is missing some paths" versus "this commit did not happen" — so one
+    requirement covering both would license a single vague notice that serves
+    neither. Measured trigger: an unreadable **file** (not directory) makes
+    `git add -A` exit 128 with nothing staged, including every unrelated file
+    the turn changed.
+
 ## Requirement provenance
 
 Separating what was asked for from what the design supplied, per `CLAUDE.md`
@@ -134,6 +149,7 @@ into one").
 | 12 | ✅ "we need to make sure that explicit UIDs in Docker Compose services would not be broken" | the two verified facts under it, which show it is a mandatory path rather than an edge case |
 | 13 | ✅ decided 2026-08-16 (Q3 → a, "Let's do that") | — |
 | 14 | ✅ requested 2026-08-16, after the requester **measured** the silent-omission behaviour this document had asserted was visible | — |
+| 15 | ✅ requested 2026-08-16, after the requester measured the unreadable-**file** case and asked whether req 14 covered it | the finding that it does **not**, so this is a new requirement rather than a widened one |
 
 Requirements 6, 7 and 10 are the three places this document went beyond what it
 was handed. All three are load-bearing — 6 rules out the container option, 7
@@ -162,6 +178,18 @@ called out rather than folded in.
   CVE-2022-24765's ownership check. The same comment records the property the
   design depends on — `safe.directory` is honoured **only** from system/global
   config, never from a repo-local one and never from `-c`.
+- **An unreadable workspace FILE costs the whole turn's commit.** Measured here
+  against git 2.39.5, and independently by the requester. With one tracked file
+  at mode 000 in an otherwise readable directory: `git status` exits **0** and
+  lists *both* that file and the turn's unrelated edits as modified — so every
+  `autoCommit` refusal check passes — and then `git add -A` exits **128**
+  (`error: open(...): Permission denied` / `unable to index file` / `fatal:
+  updating files failed`) with **nothing staged at all**, including the
+  unrelated work. Exercised through this repo's own `simple-git`: `status()`
+  resolves, `add("-A")` **rejects** with a `GitError` built by
+  `errorDetectionPlugin` (`simple-git/dist/cjs/index.js:1364-1374`), and
+  `err.exitCode` is `undefined` — so any detector must match message text, not
+  an exit code.
 - **An unreadable workspace directory makes a turn commit silently short.**
   Measured here against git 2.39.5, and independently by the requester. With a
   new, non-gitignored directory the git uid cannot open, `git status` and

@@ -210,40 +210,83 @@ first two independently and got the same result; case A is the addition.
 
 | Case | Setup | Outcome |
 |---|---|---|
-| **A** — tracked content under an unreadable dir | `pgdata/PG_VERSION` committed, then `pgdata` unreadable | `status` exit **0**, `add -A` exit **0**, commit says *"nothing to commit, working tree clean"*, exit 1. **HEAD keeps `pgdata/PG_VERSION`** — no spurious deletion is staged. |
-| **B** — a real turn plus an unreadable NEW dir | `tracked.txt` edited (the turn's work), `pgdata/` new and unreadable | `status` exit **0**, `add -A` exit **0**, **commit exit 0**, `1 file changed`. `pgdata/` is simply **absent from HEAD**. The only signal is `warning: could not open directory 'pgdata/': Permission denied` on stderr. |
+| **A** — tracked content under an unreadable **dir** | `pgdata/PG_VERSION` committed, then `pgdata` unreadable | `status` exit **0**, `add -A` exit **0**, commit says *"nothing to commit, working tree clean"*, exit 1. **HEAD keeps `pgdata/PG_VERSION`** — no spurious deletion is staged. |
+| **B** — a real turn plus an unreadable NEW **dir** | `tracked.txt` edited (the turn's work), `pgdata/` new and unreadable | `status` exit **0**, `add -A` exit **0**, **commit exit 0**, `1 file changed`. `pgdata/` is simply **absent from HEAD**. The only signal is `warning: could not open directory 'pgdata/': Permission denied` on stderr. |
 | **C** — tracked file in a non-writable dir | `locked/` mode 555, `locked/f.txt` tracked | `checkout` → `error: unable to unlink old 'locked/f.txt': Permission denied`, exit **255**. `reset --hard` → `fatal: Could not reset index file`, exit **128**. |
+| **D** — unreadable **FILE** in a readable dir | `d/f.txt` mode 000, `other.txt` also edited by the turn | `status` exit **0**, listing **both** files modified — so every `autoCommit` refusal check passes. Then `add -A` → `error: open("d/f.txt"): Permission denied` / `error: unable to index file 'd/f.txt'` / `fatal: updating files failed`, exit **128**, and **nothing is staged at all — including `other.txt`**. |
 
-So the failure splits in two, and only one half is loud:
+Case D is the one a reader will not predict from the other rows, so it is worth
+stating twice: **one unreadable file anywhere in the tree costs the entire
+turn's commit**, not just its own path. `git add -A` is all-or-nothing here.
 
-- **Worktree-mutating ops (checkout, reset, merge, rebase, clean) fail loudly.**
-  Non-zero exit, clear message. Case C.
-- **The status/add path fails SILENTLY.** Case B. Exit 0 throughout, the subtree
-  omitted from the index, and the turn commits and reports success. This is the
-  path `autoCommit` runs **every turn** — `status()` at `shared/git.ts:282`, then
-  `add("-A")`. Nothing in the exit codes distinguishes it from a turn that
-  genuinely changed nothing.
+**What happens to that failure in ShipIt — exercised, not inferred.**
+`autoCommit` calls `await this.git.add("-A")` at `shared/git.ts:299` with no
+`try`/`catch`. Running the real `simple-git` from this repo's `node_modules`
+against a case-D tree:
 
-Case A bounds the severity in the one direction that matters: git does **not**
-stage a deletion for tracked content it cannot read, so this can never destroy
-already-committed work. What it loses is *new or changed* content under the
-unreadable directory. Bad, but recoverable-by-retry once the permission is
-fixed, rather than a rewrite of history.
+- `status()` **resolves**, `isClean()` is `false`, and `.modified` lists both
+  files — confirming the refusal checks upstream of the `add` all pass.
+- `add("-A")` **rejects** with a `GitError` carrying the three git error lines.
+  The mechanism is `errorDetectionPlugin` (`simple-git/dist/cjs/index.js:1364-1374`),
+  which turns a non-zero task exit into `new GitError(void 0, stderr)`.
+- **`err.exitCode` is `undefined` on that object, by construction rather than by
+  accident.** `errorDetectionPlugin` *receives* `exitCode` in its context and
+  then builds `new GitError(void 0, error.toString("utf-8"))` — the code is
+  available to the plugin and is simply not carried onto the thrown error. So a
+  detector must match on the message text; one keyed on an exit code can never
+  fire, and would look correct in review.
+
+So D throws out of `autoCommit`, lands on the `postTurnStep` path, and is logged
+and continued per invariant 3. Not silent — but its outcome is **total**: the
+whole turn stays uncommitted in the working tree with only a log line, which is
+the worst user-visible outcome of the four.
+
+So the failure does not split in two. It splits in **three**, and the split is
+by *what the user loses*, not by how loud git is:
+
+- **"This commit is short."** Case B — an unreadable **directory**. Exit 0
+  throughout, subtree omitted, the turn commits and reports success. Silent.
+- **"This commit did not happen."** Case D — an unreadable **file**. `add`
+  exits 128, nothing is staged including unrelated work, and the turn's entire
+  diff stays in the working tree. Not silent, but total.
+- **"This operation refused."** Case C — a worktree-mutating op against a
+  non-writable directory. Already loud, already non-zero, and it fails *before*
+  doing half the job.
+
+Case A bounds the first of those in the one direction that matters: git does
+**not** stage a deletion for tracked content it cannot read, so this can never
+destroy already-committed work. What it loses is *new or changed* content under
+the unreadable directory. Bad, but recoverable by retry once the permission is
+fixed, rather than a rewrite of history. The same bound applies to D — nothing
+was staged, so nothing was lost from history either; the turn's work is still on
+disk.
 
 ### The archetype — why this is not exotic
 
-The collision needs a directory that is foreign-owned **and** not
-group/other-readable **and** not gitignored. Those three sound unlikely together
-until you name the case: **a bind-mounted database data directory.** PostgreSQL
-*requires* mode `0700` on its data dir and refuses to start otherwise; MySQL and
-Redis are similar. A service declaring `user: 999` with
+There are two archetypes, one per failure class, and neither is exotic.
+
+**For case B (unreadable directory): a bind-mounted database data directory.**
+PostgreSQL *requires* mode `0700` on its data dir and refuses to start
+otherwise; MySQL and Redis are similar. A service declaring `user: 999` with
 `./pgdata:/var/lib/postgresql/data`, in a project that forgot to gitignore
 `pgdata/`, produces it exactly.
 
-Note the asymmetry, because it is what makes this tractable: if the directory
-**is** gitignored, git never descends into it and there is no collision at all.
-The whole risk is "foreign-uid unreadable directory that is **not** gitignored"
-— narrower and far more checkable than "foreign-uid content".
+**For case D (unreadable file): a secret-like file at a restrictive mode inside
+an ordinary directory.** `./certs/server.key` at `0600` owned by `user: 999`, a
+generated keypair, a socket's credential file. The directory is unremarkable and
+readable; one file inside it is not.
+
+The two behave differently under the habit that usually saves people. For B,
+gitignoring the directory removes the collision entirely — git never descends
+into an ignored directory, so there is nothing to fail on. For D that habit does
+**not** help: ignoring `certs/` only helps if the ignore actually covers the one
+restrictive file, and the common pattern is to ignore a directory whose *other*
+contents are committed.
+
+So the checkable statement is narrower than "foreign-uid content", but it is two
+statements rather than one: a foreign-uid unreadable **directory** that is not
+gitignored, or a foreign-uid unreadable **file** that is not gitignored. The
+second is the one that costs a whole turn.
 
 ### The handling: surface it, do not restore root
 
@@ -267,32 +310,44 @@ between them already decide it:
 So requirement 12 is satisfied by changing **nothing** about compose: the session
 starts, the services run, the explicit `user:` is still honoured.
 
-### E5-detect — required, and it belongs on the git side (req 14)
+### E5-detect — required, on the git side, and it must CLASSIFY (reqs 14, 15)
 
-**This is not optional and it is not a compose-validation warning.** Two things
-follow from the measurement:
+**This is not optional and it is not a compose-validation warning.** Three
+things follow from the measurement.
 
-- **`git status` / `git add` writing `could not open directory` MUST become a
-  loud condition on the auto-commit path.** simple-git resolves a zero exit as
-  success and does not surface stderr, so the warning is dropped today. The
-  auto-commit must capture stderr from the status and add invocations, detect
-  that warning, and treat it as a first-class outcome: a log line at minimum,
-  and a strong candidate for a persisted transcript card naming the
-  directory — the user needs to know the turn committed *less* than it appears
-  to have. This is the same shape as the existing secret-scan and merged-push
-  notices, which is the pattern to copy.
-- **Compose-time validation cannot cover this, and offering it would be the
-  obvious wrong answer.** The `0700` is set by the **running service at
-  runtime** — postgres chmods its own data directory at initdb — not declared
-  anywhere in the compose file. A static check of `user:` versus the worker uid
-  would miss the archetype case entirely while looking like it had handled it. A
-  compose-time warning may still be worth having as a hint, but it must never be
-  counted as the mitigation.
+**1. Detection must match two patterns, not one.** A detector keyed only on
+`could not open directory` catches case B and misses case D completely — and D
+is the one where the user loses the whole turn's commit. It must also match the
+`add` failure: `unable to index file` / `open(...): Permission denied`. Note
+from the exercised run that `GitError.exitCode` is `undefined`, so the match is
+on message text; keying on an exit code produces a check that never fires.
+
+**2. It must classify, not merely warn.** The two cases call for different words
+and different urgency, and collapsing them into one "permission problem" notice
+would be a worse outcome than either:
+
+| | Trigger | git behaviour | What the user is told |
+|---|---|---|---|
+| **B** | unreadable **directory** | exit 0, stderr warning, subtree omitted | *"This commit is short."* The commit landed; these paths are missing from it. |
+| **D** | unreadable **file** | `add` exit 128, **nothing staged** | *"This commit did not happen."* The turn's work — all of it — is still uncommitted in the working tree. |
+| **C** | non-writable dir, worktree-mutating op | exit 255 / 128 | Already loud; needs the message improved, not detection. |
+
+B is a persisted notice on a commit that exists. D is an error about a commit
+that does not, and it must name the blocking path — otherwise the user is left
+with a turn that visibly did work and a branch that has none of it. Both follow
+the shape of the existing secret-scan and merged-push notices, which is the
+pattern to copy.
+
+**3. Compose-time validation cannot cover either, and offering it would be the
+obvious wrong answer.** The restrictive mode is set by the **running service at
+runtime** — postgres chmods its own data directory at initdb, a keygen step
+writes `0600` — and is declared nowhere in the compose file. A static check of
+`user:` versus the worker uid would miss both archetypes while looking like it
+had handled them. A compose-time hint may still be worth having, but it must
+never be counted as the mitigation.
 
 The loud half still needs its own polish: the EACCES from case C should name the
 path, its owner, and the service that most likely wrote it, not a bare errno.
-And per requirement 10's principle, an auto-commit must still land — an EACCES
-on one path must not throw away the rest of the turn.
 
 **Costs and breakage, stated plainly:**
 
@@ -350,8 +405,16 @@ each by name:
    a commit that silently does less than it appears to is undetectable after the
    fact, and the measured status/add behaviour is exactly that: exit 0, a
    `warning:` on stderr that simple-git drops, and a subtree missing from the
-   commit. E5-detect (req 14) is not a nicety attached to the compose story — it
-   is what keeps this design compliant with invariant 3.
+   commit. E5-detect (reqs 14 and 15) is not a nicety attached to the compose
+   story — it is what keeps this design compliant with invariant 3.
+
+   The unreadable-**file** case (D) is invariant 3's other half. It *throws*
+   rather than lying, so `postTurnStep` logs it and continues exactly as
+   designed — but "logged and continued" is the correct handling for a step that
+   was not the commit, and here it IS the commit. Invariant 3 keeps the process
+   healthy; it does not tell the user their turn produced nothing. That is why
+   req 15 exists as a requirement rather than as trust in the existing
+   machinery.
 4. **A branch whose work shipped under a different SHA returns to base via
    `shipit branch reset-to-base --force`, never a rebase.** Unaffected. Same git,
    same commands, different uid.
@@ -387,6 +450,13 @@ inherited guarantee at the source").
 - **Not checked: whether any orchestrator HTTP endpoint authorizes on "came from
   loopback".** The residual in §2 depends on this. I did not audit
   `agent-ops-routes.ts` or the credential-broker route's auth.
+- **The simple-git rejection is exercised, not inferred.** The parent session
+  flagged its own claim here as an inference from "no try/catch plus documented
+  behaviour". It was run: `add("-A")` against a case-D tree rejects with a
+  `GitError` (`simple-git/dist/cjs/index.js:1364-1374`), and `status()` resolves
+  first. The one detail neither of us predicted is that `err.exitCode` is
+  `undefined` on that error, which is what a detector would most naturally key
+  on.
 - **E5 is now measured, and the measurement corrected it.** An earlier draft of
   this section asserted that the collision "fails visibly". That was reasoning,
   not measurement, and it was **wrong for the path that matters most** — the
@@ -442,14 +512,16 @@ Sequence:
    fail when a session-workspace git spawn carries no uid. Note that step 4
    narrows what that test asserts rather than removing it: the override must
    still be present on every root-side git spawn.
-6. **E5-detect (req 14) — not optional, and not a compose-time check.** Capture
-   stderr from the auto-commit's `status` and `add -A`, detect `could not open
-   directory`, and surface it: a log line at minimum, a persisted transcript
-   card as the target, naming the directory. Then make the loud half legible
+6. **E5-detect (reqs 14 and 15) — not optional, and not a compose-time check.**
+   Capture stderr from the auto-commit's `status` and `add -A` and match **two**
+   patterns on message text (not exit code): `could not open directory` → *"this
+   commit is short"*, a persisted notice naming the paths; `unable to index
+   file` / `open(...): Permission denied` → *"this commit did not happen"*, a
+   reported failure naming the blocking path. Then make the loud half legible
    too — the case-C EACCES should name the path, its owner and the likely
    service rather than a bare errno. Sequence this **with** step 1, not after
-   it: step 1 is what introduces the silent path, so shipping them apart leaves
-   a window where a turn can commit short with no trace.
+   it: step 1 is what introduces both paths, so shipping them apart leaves a
+   window where a turn commits short, or does not commit at all, with no trace.
 7. File the per-session-uid follow-up (req 13). The route-2 issue is already
    filed as planning#400.
 
