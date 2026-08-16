@@ -66,11 +66,21 @@ export async function forkSession(
   // '<src>/.git'` — so once docs/266 E2 removes `safe.directory=*`, the old
   // shape does not merely run as root, it stops working.
   //
-  // Both new calls are no-ops when `SHIPIT_SESSION_WORKER_UID` is unset (dev,
+  // Hand over `newWorkspaceDir` and NOT its parent `newSessionDir`, which is
+  // the narrowest thing that works and matters: removing or renaming a
+  // directory ENTRY is governed by the parent directory's permissions, so
+  // chowning `newSessionDir` would let the session's uid unlink or substitute
+  // the `uploads/` and `logs/` siblings ShipIt keeps beside the workspace. The
+  // clone needs only to write *inside* an existing empty destination it owns —
+  // verified against git 2.39.5 that `clone --local` accepts one rather than
+  // insisting on creating it. Widening ownership inside the change whose whole
+  // purpose is to narrow it would be the wrong trade.
+  //
+  // Both calls are no-ops when `SHIPIT_SESSION_WORKER_UID` is unset (dev,
   // local mode, tests): the chown returns early and the drop resolves to null,
   // leaving root cloning into a root-created directory exactly as before.
   await fs.mkdir(newWorkspaceDir, { recursive: true });
-  chownTreeToSessionWorker(newSessionDir);
+  chownTreeToSessionWorker(newWorkspaceDir);
   await safeSimpleGit(activeSessionDir).raw(["clone", "--local", activeSessionDir, newWorkspaceDir]);
   const newGit = safeSimpleGit(newWorkspaceDir);
   // Disable auto-gc so hardlinks aren't broken in either clone.
