@@ -11,8 +11,10 @@
     ?spin=1&cv=1&n=300   + content-visibility:auto rows      → main frames = display rate
     ?spin=0&cv=1&n=300   rows but no animation               → no frames at all
 
-  Neither ingredient costs anything alone. Together they run a full style /
-  layout / pre-paint / paint / commit pass every vsync.
+  Neither ingredient costs anything alone. Together they run style recalc,
+  pre-paint, the intersection pass and commit every vsync. (Layout and paint do
+  NOT run per frame here — nothing is changing size or pixels on the main
+  thread; the animation's transform is the compositor's business.)
 -->
 <style>
   @keyframes spin-slow { to { transform: rotate(360deg); } }

@@ -77,8 +77,12 @@ largest steady cost, and the freeze was previously masking it.
 Between 2 s and 20 s the trace has no user input and almost no network, yet the page produces
 **~118 frames per second** and spends **~150 ms per second** on the main thread, with `Commit`,
 `UpdateLayoutTree`, `PrePaint` and `IntersectionObserver` work each running ~1,800 times in 15 s.
-(That trace also attributed 1,170 ms of the window to `Layerize`. It has not reproduced — see
-*Three corrections* below.)
+Over the whole 21.8 s trace the main thread is busy 3,813 ms (17.5%), of which **`Layerize` is
+1,669.8 ms — 44%**, at a mean of 0.65 ms across 2,569 events.
+
+**These are two separate problems sharing one trace.** The frames are caused by the interaction
+below, and fixing it removes them. What makes each frame cost 0.65 ms of layerization is
+unexplained and did not reproduce anywhere — see correction 2.
 
 The first reading blamed the infinite CSS animation that runs while a tool does —
 `.tool-spinner { animation: spin-slow 1s linear infinite }` (`src/client/index.css:387`), used
@@ -93,65 +97,127 @@ Reproduce with `node scripts/trace-idle-frames.mjs <url>` against
 number that matters is `beginMainThreadFramesPerSecond` — a composited animation drives the
 compositor at display rate while leaving the main thread asleep.
 
+Two runs per condition, 8 s windows (the display ran at ~50 Hz here):
+
 | fixture | compositor frames/s | **main-thread frames/s** | main-thread busy |
 |---|---|---|---|
-| spinner alone | 49.6 | **0** | 1.5 ms/s |
-| spinner + one live `IntersectionObserver` | 49.6 | **49.6** | 18.5 ms/s |
-| spinner + 300 `content-visibility:auto` rows | 49.5 | **49.7** | 40.4 ms/s |
-| 300 `content-visibility:auto` rows, no spinner | 0 | **0** | 0.3 ms/s |
+| spinner alone | 51.3 / 49.2 | **0 / 0** | 1.6 / 1.6 ms/s |
+| spinner + one live `IntersectionObserver` | 50.3 / 38.1 | **50.4 / 38.2** | 21.0 / 18.2 ms/s |
+| spinner + 300 `content-visibility:auto` rows | 49.2 / 49.2 | **49.2 / 49.2** | 43.6 / 43.8 ms/s |
+| 300 `content-visibility:auto` rows, no spinner | 0 / 0 | **0 / 0** | 3.8 / 0.2 ms/s |
 
 So neither ingredient costs anything on its own, and the rule is:
 
-> **A live `IntersectionObserver` forces a full main-thread rendering lifecycle on every frame
-> the compositor produces.** An always-on animation makes the compositor produce a frame every
-> vsync. Either alone is free; together they run style, layout, pre-paint, paint and commit at
-> display rate.
+> **A live `IntersectionObserver` makes every scheduled frame need main-thread work.** An
+> always-on animation makes the browser schedule a frame every vsync. Either alone is free;
+> together they run style recalc, pre-paint, the intersection pass and commit at display rate.
+
+Two precisions on that wording, both measured rather than assumed. **Layout and paint do not
+run** — no `Layout` or `Paint` events appear in these traces at all, because nothing changes size
+or pixels on the main thread; the animation's transform is the compositor's business. And the
+trigger is the *scheduled* frame, not the drawn one: an animating element scrolled out of view
+still drives ~48 main-thread frames/s while the compositor draws **zero**. That is worth knowing
+because it is also a trap for whoever measures this next — an accidentally-offscreen probe looks
+idle by draw rate while costing full price.
 
 Chrome creates those observers internally for **every `content-visibility: auto` element**, which
-is why the transcript is implicated at all — `MessageList.tsx:360` puts it on every row. The cost
-is linear in the row count, so it grows with the conversation: measured at
-`1.6 + ~0.06·rows` ms/s (1.6 at 0 rows, 17.9 at 50, 33.2 at 300, 56.3 at 800, 121.4 at 2,000).
+is why the transcript is implicated at all — `MessageList.tsx:360` puts it on every row. Sweeping
+the row count (`?spin=1&cv=1&n=…`, same protocol) gives main-thread busy of 1.6 ms/s at 0 rows,
+then 24.1 / 32.1 / 44.7 / 76.3 / 171.8 ms/s at 50 / 150 / 300 / 800 / 2,000.
+
+Two things in that shape matter more than the slope. The **step** is at the *first* row: 0 rows
+means no main-thread frames at all, and one row means all of them — after which the points fit
+`≈20 + 0.076·rows` ms/s to within about 6%. And the slope means the cost **grows with the
+conversation**, so the long sessions reqs 1–4 are about are also the ones paying most here.
 
 ### Both sources have to go, or neither is worth touching
 
-ShipIt has a **second** source of always-live observers: `@formkit/auto-animate`, used once at
-`SessionSidebar/SessionGroup.tsx:380`, keeps three of them alive for the life of the page. On the
-real UI (dogfood session, 21 `content-visibility` rows, 60 Hz, 10 s windows, two runs each):
+ShipIt has a **second** source of live observers: `@formkit/auto-animate`, used once at
+`SessionSidebar/SessionGroup.tsx:380`. Three of its observers were live when this session was
+sampled. That count is a *measurement, not a property of the library* — 0.9.0 creates one per
+offscreen element and disconnects it once the element scrolls in, so the number tracks how much
+of the sidebar is out of view. (It also holds a document `ResizeObserver`, a per-parent
+`MutationObserver`, a scroll listener and a 2 s per-element interval; only the intersection
+observers matter here.)
+
+On the real UI — dogfood session, 21 `content-visibility` rows, 60 Hz, 10 s windows, two runs
+each. Reproduce with `scripts/fixtures/inject-probe-animation.js` as `--eval` (`#no-cv` and
+`#no-anim` in the URL fragment select conditions) and
+`scripts/fixtures/neuter-intersection-observer.js` as `--init`:
 
 | condition | main-thread frames/s | main-thread busy |
 |---|---|---|
-| nothing animating | 4.5 / 4.9 | 5.4 / 5.7 ms/s |
-| **today** — animation + both observer sources | 59.9 / 59.9 | 58.4 / 58.2 ms/s |
-| animation, `IntersectionObserver` neutered from boot | 60.0 / 59.9 | 56.7 / 55.5 ms/s |
-| animation, `content-visibility` disabled | 59.9 / 59.9 | 58.9 / 57.0 ms/s |
-| animation, **both** removed | 9.1 / 9.1 | 14.4 / 15.1 ms/s |
+| nothing animating | 4.4 / 4.9 | 4.6 / 4.6 ms/s |
+| **today** — animation + both observer sources | 59.9 / 60.0 | 35.7 / 37.8 ms/s |
+| animation, `IntersectionObserver` neutered from boot | 59.9 / 60.0 | 34.5 / 36.4 ms/s |
+| animation, `content-visibility` disabled | 60.0 / 59.9 | 37.6 / 40.8 ms/s |
+| animation, **both** removed | 8.6 / 8.5 | 9.2 / 9.0 ms/s |
 
-Removing either source alone buys **nothing measurable** — the other keeps the per-frame
-lifecycle running. Removing both is worth ~75% of the cost. Anyone who picks this up and drops
-`content-visibility: auto` expecting a win will measure no change and conclude the finding was
-wrong; it is the pairing that has to break.
+The frame rate is the deterministic part: it stays pinned at display rate whenever *either* source
+survives, and collapses only when both go. Busy-time differences between the three top rows are
+within the run-to-run spread and n=2 cannot resolve them — the honest statement is **no material
+change**, not zero. What two runs can exclude is anything close to the both-removed effect: that
+is a ~75% saving, roughly twenty times larger than any single-source difference here, and it
+reproduces across every run.
+
+So the practical warning stands: whoever drops `content-visibility: auto` on its own will measure
+no change and conclude the finding was wrong. It is the pairing that has to break.
+
+One caveat on the `content-visibility disabled` row: forcing `content-visibility: visible` removes
+Chrome's internal observers *and* makes off-screen rows render for real, so that row is not a clean
+isolation of the observers alone. It slightly exceeding the `today` row is consistent with that.
 
 ### Three corrections to the section above
 
 1. **The spinner already composites.** `transform: rotate()` on it runs entirely on the
    compositor — the fixture's first row is that measurement. "Make the spinner composited" is
    not an available fix, because there is nothing to fix.
-2. **`Layerize` did not reproduce.** In every configuration measured — up to 2,000
-   `content-visibility` rows, up to 300 `will-change` layers, and the real UI — `Layerize` runs at
-   **0.002–0.004 ms/call**, totalling ~1 ms across thousands of frames, and never exceeds ~3% of
-   `Commit`. The reported 0.65 ms/call is ~200× that. The per-frame cost is instead dominated by
-   `UpdateLayoutTree` (style recalc) and `computeIntersections`. The 1,170 ms figure is unexplained
-   and should be treated as an analysis artifact until someone re-derives it; the neighbouring
-   `UpdateLayer` count of 20,624 (≈11 per frame, against a handful per *trace* here) suggests the
-   script summed something nested or cross-thread.
-3. **`content-visibility` is a *cause*, not an aggravator.** The section above reads as though
-   layerization were expensive and `content-visibility` merely nearby. It is the other way round.
+2. **`Layerize` is real, and it is a second problem — not part of this one.** It did not reproduce
+   in anything measured here: up to 2,000 `content-visibility` rows, up to 300 `will-change`
+   layers, and the real UI at three viewport sizes all put `Layerize` at **0.002–0.004 ms/call**,
+   ~1 ms across thousands of frames. Production is **0.65 ms/call**, ~200× that.
+
+   That gap was checked against the original trace rather than assumed away, and it survives:
+   `RunTask` on `CrRendererMain` is 100% depth-0 there, so nothing is double-counted (union-merging
+   the intervals and naively summing both give 3,813 ms, identical to the millisecond); all 2,569
+   `Layerize` events are on one thread, totalling 1,669.8 ms for a straight mean of 0.65 ms. It is
+   **44% of main-thread busy time over the 21.8 s trace** — the earlier "1,170 ms of 2,287 ms in
+   the 5–20 s window, over half" came from a scratch script with faulty stack logic and should not
+   be quoted.
+
+   The axis is the **composited layer tree, not the DOM**. Production runs **28.9 `UpdateLayer`
+   per frame** (74,135 over 2,569 frames). Every reproduction here runs **~0.03 per frame** — the
+   2,000-row sweep is several times production's 3,986 DOM nodes and still cheaper, so node count
+   is the wrong thing to compare on.
+
+   **Open question, and what has been eliminated.** Viewport is not it: the real UI at
+   3840×2160 shows the same 0.03 `UpdateLayer`/frame and 0.0024 ms `Layerize` as at 1440×900. The
+   trace has a single origin and no preview iframe in the renderer, so an embedded app is not it
+   either. Two candidates remain — the production instance's UI state (sessions, cards and panels
+   this dogfood instance does not have), and **GPU rasterisation**, which tiles layers where this
+   container's software compositing does not, and which cannot be tested here at all. Whoever
+   picks this up should start by counting layers, not nodes; `trace-idle-frames.mjs` reports
+   `updateLayerPerFrame` for exactly that.
+3. **`content-visibility` causes the frames; layerization is what one of them costs.** The
+   original section reads as a single phenomenon with the spinner at its root. It is two: the
+   observer/animation pairing decides *how many* main-thread frames happen, and the layer tree
+   decides *what each one costs*. They multiply, which is why the production number is so much
+   larger than anything reproduced here, and they are fixable independently.
 
 ### Decision: no code change, and what would justify one
 
-Not fixed here, deliberately. The cost is real — ~42 ms/s of main thread while any tool runs,
-which on the 118 Hz machine that produced the original trace scales to roughly the 150 ms/s it
-reported — but every available fix removes something load-bearing:
+Not fixed here, deliberately. The cost is real: **~28 ms/s of main thread** on this 21-row
+session while any tool runs (36.8 today against 9.1 with both sources removed), and it grows with
+the transcript. That is deliberately not compared against the original trace's ~150 ms/s: 44% of
+that is layerization this reproduction never saw, so the two numbers count different things.
+What transfers is the mechanism and the shape, not the milliseconds.
+
+Removing the pairing is still worth doing on the production trace's own terms, and more so there
+than here — it removes ~110 of the ~118 frames per second, and each frame it removes takes its
+0.65 ms of `Layerize` with it. That is the reason the two problems are worth separating rather
+than merging: fixing the cheap one pays the expensive one back at 118× per second.
+
+Every available fix removes something load-bearing:
 
 - **Dropping `content-visibility: auto`** trades this measured idle cost against an *unmeasured*
   benefit. It is there so a long transcript does not lay out and paint every off-screen row, and
@@ -159,14 +225,25 @@ reported — but every available fix removes something load-bearing:
   (`useMessageScroll.ts:43,137`). Removing it without measuring the load and scroll cost it saves
   would be trading a known quantity for an unknown one.
 - **Dropping `@formkit/auto-animate`** costs the sidebar its list animation and, on its own,
-  buys nothing (see the table).
+  changes nothing material (see the table) — the frame rate stays pinned at display rate.
 
 The honest position is that this is a **real but conditional** cost: it is paid only while
-something animates, i.e. while a tool runs, and it is proportional to transcript length. What
-would settle it is one experiment, which needs the long session reqs 1–4 are already waiting on:
-**measure what `content-visibility: auto` saves at load and on scroll for a transcript of a few
-thousand rows.** If the saving is small, remove it *and* `auto-animate` together and take the 75%.
-If it is large, this section is the record of why the cost is accepted.
+something animates, i.e. while a tool runs, and it grows with transcript length.
+
+**The experiment that would settle it** — and unlike reqs 1–4 it needs no real long session,
+because synthetic rows are enough to measure layout and paint work:
+
+1. Fixture: `scripts/fixtures/idle-frame-cost.html` at `n=2000`, `spin=0`, with `cv=1` and `cv=0`
+   as the two conditions. Give the rows message-shaped content (headings, prose, a code block)
+   rather than the current filler, since paint cost tracks what is actually drawn.
+2. Metrics, all main-thread: time to first contentful paint, total `RunTask` from navigation to
+   the first idle frame, and `Layout` + `Paint` + `UpdateLayoutTree` totals during a scripted
+   scroll from top to bottom. Tracing has to start **before** navigation, which
+   `trace-idle-frames.mjs` does not do — it starts after load, by design, so this needs a variant.
+3. Decision rule: if `cv=1` saves less than the ~28 ms/s (and rising) that this section measures it
+   costing, remove `content-visibility: auto` **and** `@formkit/auto-animate` together — one
+   without the other buys nothing — and re-run the table above to confirm the 75%. If it saves
+   more, this section is the record of why the cost is accepted.
 
 Caveat on the numbers: they were recorded in a container with no GPU, so rasterisation is
 software and absolute milliseconds are not a user's machine. Every comparison above is between

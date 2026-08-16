@@ -2,11 +2,13 @@
 /**
  * Measure what a page costs the renderer main thread while it is idle.
  *
- * Written for docs/265's "continuous idle compositing" finding: a page with an
- * always-on CSS animation produces a compositor frame every vsync, and *if the
- * document has any live IntersectionObserver* every one of those frames also
- * drags a full main-thread rendering lifecycle behind it. This script is how
- * that was attributed, and it is the tool for the follow-up left open in
+ * Written for docs/265's "continuous idle compositing" finding: an always-on CSS
+ * animation makes the browser schedule a frame every vsync, and *if the document
+ * has any live IntersectionObserver* every one of those frames also drags a
+ * main-thread rendering pass behind it. This script is how that was attributed.
+ * It measures the cost side only — the saving that `content-visibility: auto`
+ * buys at load and on scroll needs different instrumentation, so this is not the
+ * tool for the follow-up left open in
  * `docs/265-transcript-render-cost/checklist.md`.
  *
  * It launches the Playwright chromium over CDP, records a DevTools trace for a
@@ -18,7 +20,11 @@
  *   beginMainThreadFramesPerSecond — frames that also ran the main-thread lifecycle
  *
  * A composited animation shows a high draw rate and a near-zero main-frame
- * rate. Anything else means something is forcing the main thread awake.
+ * rate. Anything else means something is forcing the main thread awake. The two
+ * are independent: an animating element scrolled out of view drives main frames
+ * at display rate while the compositor draws nothing at all, so read the
+ * main-frame rate as the cost and the draw rate only as evidence of what is
+ * visible.
  *
  * Usage:
  *   node scripts/trace-idle-frames.mjs <url> [seconds] [options]
@@ -30,11 +36,24 @@
  *   --init=<file>    run this script before ANY page script (CDP
  *                    addScriptToEvaluateOnNewDocument) — the only way to
  *                    intercept observers the app creates during boot
+ *   --window=<w,h>   browser window size (default 1440,900)
  *   --json=<file>    dump the report plus every raw trace event
+ *
+ * `updateLayerPerFrame` is reported because it is the axis docs/265's remaining
+ * open question turns on: production ShipIt shows ~29 composited layer updates
+ * per frame and a 0.65 ms `Layerize`, where every reproduction here — including
+ * the real UI at 4K — shows ~0.03 and ~0.0025 ms.
  *
  * Note on numbers: a container with no GPU rasterises in software, so absolute
  * milliseconds are not a user's machine. Ratios between conditions are the
  * point — always measure A and B the same way, in the same run.
+ *
+ * Two reporting details, so nobody re-derives them from surprise. `windowSeconds`
+ * is measured from event timestamps and so runs a second or so longer than the
+ * window asked for (trace stop and flush latency); the per-second rates divide by
+ * it and stay right. And `mainThreadBusyPerSecondMs` is total `RunTask` time,
+ * which exceeds the sum of the named events below it — the breakdown lists the
+ * rendering lifecycle, not everything the thread did.
  */
 
 import { spawn } from "node:child_process";
@@ -56,6 +75,9 @@ const settleMs = Number(flag("settle", 3000));
 const jsonOut = flag("json", null);
 const evalFile = flag("eval", null);
 const initFile = flag("init", null);
+// Viewport is a real axis for layer-tree cost, not a cosmetic setting: more
+// visible content means more composited layers to update per frame.
+const windowSize = flag("window", "1440,900");
 
 if (!url || !Number.isFinite(seconds)) {
   console.error("usage: trace-idle-frames.mjs <url> [seconds] [--settle=ms] [--eval=f] [--init=f] [--json=f]");
@@ -75,7 +97,7 @@ const chrome = spawn(CHROME, [
   "--no-sandbox",
   "--disable-dev-shm-usage",
   "--hide-scrollbars",
-  "--window-size=1440,900",
+  `--window-size=${windowSize}`,
   // Frame production has to stay realistic, or an idle page measures as idle
   // for the wrong reason.
   "--disable-background-timer-throttling",
@@ -193,6 +215,11 @@ await Promise.race([tracingComplete, sleep(60000)]);
 // Pick the renderer main thread by NAME. Picking "the busiest thread" selects
 // the browser process on a genuinely idle page, which is how an idle page first
 // measured as costing nothing.
+//
+// Among threads named CrRendererMain, take the one running the most lifecycle
+// events, falling back to the first. That is a heuristic for "the renderer whose
+// page we navigated", and with several renderer processes in the trace (an
+// iframe on its own site, say) the fallback picks arbitrarily.
 const threadNames = new Map();
 for (const e of events) {
   if (e.ph === "M" && e.name === "thread_name") threadNames.set(`${e.pid}:${e.tid}`, e.args?.name);
@@ -258,11 +285,16 @@ for (const e of events) {
   totals.set(e.name, t);
 }
 
+// Both frame counts are scoped to the renderer process, so the two rates are
+// directly comparable. `DrawFrame` comes off that renderer's Compositor thread
+// and `BeginMainThreadFrame` off its CrRendererMain — counting one globally and
+// the other per-process would silently mix in the browser process's frames.
 let drawFrames = 0;
 let mainFrames = 0;
 for (const e of events) {
+  if (e.pid !== mainPid) continue;
   if (e.name === "DrawFrame") drawFrames++;
-  else if (e.name === "BeginMainThreadFrame" && e.pid === mainPid) mainFrames++;
+  else if (e.name === "BeginMainThreadFrame") mainFrames++;
 }
 
 const report = {
@@ -272,6 +304,9 @@ const report = {
   beginMainThreadFramesPerSecond: +(mainFrames / windowSeconds).toFixed(1),
   mainThreadBusyMs: +(mainBusyUs / 1000).toFixed(1),
   mainThreadBusyPerSecondMs: +(mainBusyUs / 1000 / windowSeconds).toFixed(1),
+  updateLayerPerFrame: mainFrames
+    ? +((totals.get("UpdateLayer")?.n ?? 0) / mainFrames).toFixed(2)
+    : null,
   events: Object.fromEntries(
     [...totals.entries()]
       .sort((a, b) => b[1].ms - a[1].ms)
