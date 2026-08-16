@@ -316,12 +316,12 @@ async function status(args: string[], deps: RunDeps): Promise<void> {
   }
   const repo = positional[0];
 
-  const res = await deps.call(
-    "GET",
-    `/agent-ops/plugin/status${repo ? `?repo=${encodeURIComponent(repo)}` : ""}`,
-    undefined,
-    deps.env,
-  );
+  // The querystring is built first so the call site carries ONE interpolation
+  // at the end of the path. `local-agent-ops.test.ts` reads these literals out
+  // of this file to prove local mode admits every verb this shim can emit, and
+  // a nested template would leave it staring at half a path.
+  const query = repo ? `?repo=${encodeURIComponent(repo)}` : "";
+  const res = await deps.call("GET", `/agent-ops/plugin/status${query}`, undefined, deps.env);
   if (res.status < 200 || res.status >= 300) {
     fail(deps.io, formatError(res, "Could not read the plugin repositories' status."));
   }

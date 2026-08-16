@@ -127,11 +127,17 @@ describe("mapAgentOpsPath", () => {
     // Known limit, stated rather than implied (review finding): this captures a
     // LITERAL method and a LITERAL path. A path held in a variable, or built by
     // a helper, is invisible to it — and the count check below would still
-    // pass. Both of today's calls are literals, so the guard is real now; a
+    // pass. All of today's calls are literals, so the guard is real now; a
     // future verb that is not would need this widened, not trusted.
+    //
+    // docs/266 widened it once, as that comment anticipated: `status` appends a
+    // querystring, so a trailing `${...}` is dropped and everything from `?` on
+    // is cut — which is exactly what the relay does before mapping
+    // (`request.url.split("?")[0]`). The PATH is what this asserts; the query
+    // never reaches the allowlist.
     const raw = [...source.matchAll(/deps\.call\(\s*"[A-Z]+",\s*([`"])([^`"]*)\1/g)]
-      .map((m) => m[2]);
-    expect(raw.length).toBeGreaterThan(1); // sanity: refresh + exec at least
+      .map((m) => m[2].replace(/\$\{[^}]*\}/g, "").split("?")[0]);
+    expect(raw.length).toBeGreaterThan(2); // sanity: refresh + exec + status
     expect(raw.every((p) => p.startsWith("/agent-ops/plugin/"))).toBe(true);
 
     const denied = raw.filter((p) => mapAgentOpsPath(p) === null);
