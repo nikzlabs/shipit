@@ -291,6 +291,34 @@ terminal `dismissed` phase through the same `persistCardTransition` primitive as
 and echoes `bug_report_dismissed` to every attached viewer. A Cancel arriving
 *after* a successful filing is ignored rather than rewriting a success.
 
+**Two states, two sources — and only one of them is ever authoritative.** A
+Cancel must not overwrite a report that was already filed, so the dismiss
+handler checks the card's phase first. Finding that phase is the subtle part:
+`emitChatCard` records the card on the runner, and `recordedCards` is cleared
+only at the NEXT turn start, never at turn end. Once the proposing turn
+finalizes, that snapshot is *inert and stale* — `persistCardTransition`
+deliberately writes only the DB row from then on. A lookup that trusted the
+recorded set would therefore read `draft` for a card the DB already records as
+`filed`, and a late Cancel would overwrite a real success with a decline,
+dropping the issue URL and telling the agent a filed report was declined. So
+`findBugCard` uses `runner.running` to pick the authoritative source — the same
+discriminator `persistCardTransition` uses to decide where to *write* — and
+treats the card as terminal if **either** source says so, which keeps the guard
+right even if that discriminator is ever wrong. A dismissal naming an unknown
+card is refused rather than collapsing a phantom card and waking the agent about
+it. Regression: `user-bug-filing.test.ts` "ignores a Cancel after filing even
+when the proposing turn left a stale recorded draft".
+
+**Delivery is best-effort, and the agent-facing copy says so.** The wake can
+fail (a container that can't be resumed, a restart between `createIssue` and the
+dispatch); it is logged and never allowed to undo the filing that already
+happened. Merge-watch closes this class of hole with `deliveryId`/`onSettled`
+plus a retry supervisor, which is real machinery for a rare loss — so the
+prompt and `shipit-docs/bug-filing.md` instead tell the agent to treat "pending"
+as a sensible default rather than a certainty, and to say it has not heard back
+rather than assert a card is unresolved. Add the durable delivery only if field
+reports show losses.
+
 **Rejected: a pull command (`shipit bug status`).** The issue offered it as a
 lesser alternative, and it is: it only helps if the agent thinks to check, which
 is precisely what an agent confident in a stale belief does not do. The push

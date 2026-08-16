@@ -48,7 +48,10 @@
 - [x] Cancel is a server round-trip (`dismiss_bug_report`), not local component state — persists terminal `phase: "dismissed"` via `persistCardTransition` (clobber-free while the proposing turn is in flight) and echoes `bug_report_dismissed` to every viewer
 - [x] Declined card wakes the agent with "declined; nothing filed", and states the card is resolved so an unrelated second report isn't held back
 - [x] A Cancel arriving after a successful filing is ignored, never rewriting a terminal success
-- [x] `ChatHistoryManager.getBugReportCard` — read-side lookup so the dismiss handler can name the card in the wake prompt; checks `runner.recordedCards` first for a card whose turn hasn't finalized
+- [x] `ChatHistoryManager.getBugReportCard` — read-side lookup so the dismiss handler can name the card in the wake prompt
+- [x] `findBugCard` picks the authoritative source by `runner.running` (matching `persistCardTransition`'s write discriminator) and treats the card as terminal if **either** source says so — a post-turn `recordedCards` snapshot is inert and stale, so reading it first let a late Cancel overwrite a `filed` card, drop the issue URL, and tell the agent a filed report was declined
+- [x] A dismissal naming an unknown card is refused, not silently collapsed
+- [x] Agent-facing copy states delivery is best-effort: "pending" is the sensible default, not a certainty
 - [x] Agent-facing copy updated so silence is learnable: `prompts/skeleton.md`, `shipit-docs/bug-filing.md`, the `report_shipit_bug` tool description, and the relay's return message
 - [x] Tests: filed signal carries #N + URL, decline persists + signals, failure signals nothing, post-filing Cancel ignored (`user-bug-filing.test.ts`); store terminal-dismissed guard; card reports Cancel to the server and stays collapsed after a reload
 

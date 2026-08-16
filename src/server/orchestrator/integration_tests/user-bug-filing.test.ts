@@ -338,7 +338,10 @@ describe("Integration: user bug filing", () => {
     await client.receiveType("bug_report_failed");
     await new Promise((r) => setTimeout(r, 150));
 
-    expect(agents.some((a) => /FILED as issue|DECLINED/.test(a.lastPrompt))).toBe(false);
+    // Assert on the ABSENCE OF A TURN, not on the wording: a wake of any text
+    // would have had to spawn an agent in this harness, so a failure-path wake
+    // that said something else could not slip past this.
+    expect(agents).toHaveLength(0);
 
     // Liveness: the negative above must not be able to pass because the wake
     // path is broken outright. The user fixes their token and resubmits — the
@@ -382,6 +385,76 @@ describe("Integration: user bug filing", () => {
 
     const woken = await waitForWakePrompt(() => agents, /DECLINED the ShipIt bug report/);
     expect(woken).toContain("Preview won't reload");
+
+    client.close();
+  });
+
+  /**
+   * The stale-`recordedCards` path, which the plain post-turn test cannot reach:
+   * a card proposed MID-TURN is recorded on the runner, and that snapshot is
+   * cleared only at the next turn start — so once the proposing turn finalizes,
+   * the recorded copy still says `draft` while the DB says `filed`. A Cancel
+   * that trusted the recorded copy would overwrite a real success with a
+   * decline and tell the agent a filed report was declined.
+   */
+  it("ignores a Cancel after filing even when the proposing turn left a stale recorded draft", async () => {
+    const client = await TestClient.connect(port, sessionId);
+    await client.receive(); // preview_status
+
+    const runner = (app as unknown as {
+      runnerRegistry: { get(id: string): SessionRunnerInterface | undefined };
+    }).runnerRegistry.get(sessionId)!;
+
+    // Propose while a turn is running → the product code records the card on
+    // the runner. Capture that real entry; it is the snapshot the bug hinges on.
+    runner.running = true;
+    await app.inject({
+      method: "POST",
+      url: `/api/sessions/${sessionId}/bug-report`,
+      payload: { title: "Preview won't reload", body: "Something is broken in the editor." },
+    });
+    const card = (await client.receiveType("bug_report_card")) as WsBugReportCard;
+    const draftSnapshot = runner.recordedCards.find((c) => c.message.bugReport?.cardId === card.cardId);
+    expect(draftSnapshot?.message.bugReport?.phase).toBe("draft");
+    const staleEntry = structuredClone(draftSnapshot!);
+
+    // The proposing turn ends. `recordedCards` is cleared only at the NEXT turn
+    // start, so the draft snapshot outlives the turn and goes stale.
+    runner.running = false;
+    client.send({ type: "submit_bug_report", cardId: card.cardId, title: card.title, body: card.body });
+    await client.receiveType("bug_report_filed");
+
+    // Reinstate that stale snapshot. In production it simply never went away;
+    // here the outcome wake-turn's own start cleared it, so we restore it to
+    // model the window before that turn runs (or when it never does).
+    runner.recordedCards = [staleEntry];
+    expect(runner.recordedCards[0].message.bugReport?.phase).toBe("draft");
+
+    client.send({ type: "dismiss_bug_report", cardId: card.cardId });
+    await new Promise((r) => setTimeout(r, 200));
+
+    const historyAfter = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/history` });
+    const cardsAfter = (historyAfter.json() as { messages: { bugReport?: PersistedBugReport }[] }).messages
+      .map((m) => m.bugReport)
+      .filter(Boolean);
+    // The success stands: not rewritten to a decline, issue link not dropped.
+    expect(cardsAfter[0]?.phase).toBe("filed");
+    expect(cardsAfter[0]?.issueUrl).toContain("nikzlabs/shipit/issues/1234");
+    // And the agent was never told a filed report had been declined.
+    expect(agents.some((a) => a.lastPrompt.includes("DECLINED"))).toBe(false);
+
+    client.close();
+  });
+
+  it("refuses a dismissal naming an unknown card", async () => {
+    const client = await TestClient.connect(port, sessionId);
+    await client.receive(); // preview_status
+
+    client.send({ type: "dismiss_bug_report", cardId: "bug-card-does-not-exist" });
+    const err = (await client.receiveType("error")) as { message: string };
+    expect(err.message).toMatch(/unknown bug report card/i);
+    // No phantom collapse, and no wake about a card nobody proposed.
+    expect(agents.some((a) => a.lastPrompt.includes("DECLINED"))).toBe(false);
 
     client.close();
   });

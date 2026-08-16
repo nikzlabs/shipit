@@ -48,10 +48,17 @@ was decided*. ShipIt delivers the resolution back to you as a turn:
   repo) — no outcome arrives, because the report is genuinely still pending.
   The card shows the user the error so they can fix it and resubmit.
 
-So the rule is simple: a report you have heard nothing about is still awaiting
-the user. Don't tell them a card is "still waiting" when the outcome already
+So the rule is simple: **a report you have heard nothing about is still awaiting
+the user.** Don't tell them a card is "still waiting" when the outcome already
 arrived, and don't hold back an unrelated second report because an earlier card
-looks unresolved — if it had resolved, you would know.
+looks unresolved — if it had resolved, you would almost certainly know.
+
+Delivery is best-effort, not guaranteed: a container that can't be resumed, or a
+ShipIt restart at the wrong instant, can drop the signal. So treat "pending" as
+the sensible default rather than a certainty. If a long time has passed and the
+answer actually matters, say you haven't heard back rather than asserting the
+card is unresolved — and never let that uncertainty stop you proposing an
+unrelated report.
 
 ## What never goes in the body
 

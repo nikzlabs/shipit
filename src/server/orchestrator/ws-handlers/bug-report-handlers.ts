@@ -187,21 +187,46 @@ export async function handleSubmitBugReport(
   // error for the user, who can fix their token and resubmit.
 }
 
+/** A phase no later click may overwrite. */
+function isTerminal(card: PersistedBugReport | undefined): boolean {
+  return card?.phase === "filed" || card?.phase === "dismissed";
+}
+
 /**
- * Look the card up wherever it currently lives. While the proposing turn is
- * still in flight the card sits in `runner.recordedCards` and has not reached a
- * finalized DB row yet, so the history lookup alone would miss it.
+ * Look the card up in BOTH places it can live, because neither alone is
+ * trustworthy on its own.
+ *
+ * While the proposing turn is in flight the card sits in `runner.recordedCards`
+ * and has no finalized DB row, so the history lookup misses it. But
+ * `recordedCards` is cleared only at the NEXT turn start — never at turn end —
+ * so once that turn finalizes, the snapshot is *inert and stale*:
+ * `persistCardTransition` deliberately patches only the DB row from then on.
+ * Reading the recorded set first would therefore see a `draft` for a card the
+ * DB already records as `filed`, and a late Cancel would overwrite a real
+ * success with a decline (dropping the issue URL) and tell the agent a filed
+ * report was declined.
+ *
+ * So: `running` picks which source is authoritative — the same discriminator
+ * `persistCardTransition` uses to decide where to write — and `terminal` is
+ * true if EITHER source says so, which keeps the guard correct even if that
+ * discriminator is ever wrong.
  */
 function findBugCard(
   ctx: BugReportCtx,
   runner: SessionRunnerInterface,
   sessionId: string,
   cardId: string,
-): PersistedBugReport | undefined {
-  for (const recorded of runner.recordedCards) {
-    if (recorded.message.bugReport?.cardId === cardId) return recorded.message.bugReport;
+): { card: PersistedBugReport | undefined; terminal: boolean } {
+  let recorded: PersistedBugReport | undefined;
+  for (const entry of runner.recordedCards) {
+    if (entry.message.bugReport?.cardId === cardId) {
+      recorded = entry.message.bugReport;
+      break;
+    }
   }
-  return ctx.chatHistoryManager.getBugReportCard(sessionId, cardId);
+  const stored = ctx.chatHistoryManager.getBugReportCard(sessionId, cardId);
+  const card = runner.running ? (recorded ?? stored) : (stored ?? recorded);
+  return { card, terminal: isTerminal(recorded) || isTerminal(stored) };
 }
 
 /**
@@ -225,10 +250,17 @@ export async function handleDismissBugReport(
     return;
   }
 
-  const card = findBugCard(ctx, runner, sessionId, msg.cardId);
-  // A filed report cannot be un-filed; ignore a stale Cancel rather than
-  // rewriting a terminal success into a decline.
-  if (card?.phase === "filed" || card?.phase === "dismissed") return;
+  const { card, terminal } = findBugCard(ctx, runner, sessionId, msg.cardId);
+  // A filed report cannot be un-filed, and a second Cancel has nothing to do;
+  // ignore a stale click rather than rewriting a terminal state and re-waking
+  // the agent.
+  if (terminal) return;
+  // An unknown card id names nothing to decline. Refuse rather than collapsing
+  // a card nobody has and waking the agent about "the bug report".
+  if (!card) {
+    ctx.send({ type: "error", message: "Unknown bug report card" });
+    return;
+  }
 
   runner.emitMessage({ type: "bug_report_dismissed", sessionId, cardId: msg.cardId });
   persistBugCardTransition(ctx, runner, sessionId, msg.cardId, {
@@ -240,7 +272,7 @@ export async function handleDismissBugReport(
   await notifyAgentOfOutcome(
     ctx,
     sessionId,
-    buildBugReportDismissedWakePrompt(card?.title ?? "the bug report"),
+    buildBugReportDismissedWakePrompt(card.title),
     "Noting the declined bug report…",
   );
 }
