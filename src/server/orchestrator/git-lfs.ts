@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { killChild } from "../shared/kill-child.js";
 import { gitArgsWithHooksDisabled } from "../shared/git-hooks-guard.js";
+import { gitSpawnOverridesForTree } from "../shared/git-tree-uid.js";
 
 /**
  * Git LFS support for session provisioning (docs/231).
@@ -100,6 +101,13 @@ export interface RunResult {
  * error — a throwing wrapper (simple-git's `raw`) would conflate it with a real
  * failure. `GIT_TERMINAL_PROMPT=0` keeps a missing credential from blocking
  * session provisioning on an invisible prompt.
+ *
+ * docs/266 E2 — drops to the tree's owner like every other orchestrator-side
+ * git. `cwd` here is a session workspace on both live paths (`repoDeclaresLfs`
+ * runs `git grep` in it, `materializeLfsContent` runs `git lfs pull`), so this
+ * ran as root against a tree untrusted code can write. It is a no-op on the
+ * root-owned trees this is also called with — the bare cache, and
+ * `process.cwd()` for the `git lfs version` probe.
  */
 export function runGit(args: string[], cwd: string, timeoutMs: number): Promise<RunResult> {
   return new Promise((resolve) => {
@@ -109,6 +117,7 @@ export function runGit(args: string[], cwd: string, timeoutMs: number): Promise<
         cwd,
         env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
         stdio: ["ignore", "pipe", "pipe"],
+        ...gitSpawnOverridesForTree(cwd),
       });
     } catch (err) {
       resolve({ code: null, stdout: "", stderr: String(err), timedOut: false });

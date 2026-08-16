@@ -4,6 +4,7 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import { type SimpleGit } from "simple-git";
 import { safeSimpleGit, gitArgsWithHooksDisabled } from "../shared/git-hooks-guard.js";
+import { gitSpawnOverridesForTree } from "../shared/git-tree-uid.js";
 import { ensurePnpmStoreGitExcluded } from "../shared/git.js";
 import { hasUrlCredentials, stripRemoteUrlCredentials } from "./git-utils.js";
 import { chownTreeToSessionWorker } from "./session-worker-uid.js";
@@ -469,7 +470,9 @@ export class RepoGit {
         const proc = spawn(
           "git",
           gitArgsWithHooksDisabled(["merge-base", "--is-ancestor", ancestor, descendant]),
-          { cwd: this.repoDir, stdio: "ignore" },
+          // The bare cache is ShipIt's own and root-owned, so the docs/266 drop
+          // is a no-op — but it is resolved from the filesystem, not assumed.
+          { cwd: this.repoDir, stdio: "ignore", ...gitSpawnOverridesForTree(this.repoDir) },
         );
         proc.on("error", () => resolve(false));
         proc.on("close", (code) => resolve(code === 0));

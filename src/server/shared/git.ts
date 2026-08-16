@@ -4,6 +4,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { scanDiffForSecrets, redactSecretsInText, type SecretFinding } from "./secret-scan.js";
 import { safeSimpleGit, gitArgsWithHooksDisabled } from "./git-hooks-guard.js";
+import { gitSpawnOverridesForTree } from "./git-tree-uid.js";
 
 const DEFAULT_WORKSPACE_DIR = "/workspace";
 
@@ -986,6 +987,10 @@ export class GitManager {
    *
    * Uses `git show` over `execFile` with a Buffer encoding because simple-git's
    * `.show()`/`.raw()` always decode stdout to a string.
+   *
+   * docs/266 E2 — the uid drop has to be spelled out here because this is a raw
+   * `execFile`, not the `safeSimpleGit` instance the rest of the class uses.
+   * Without it this one method kept running as root in a session workspace.
    */
   async getFileBufferAtCommit(
     commitHash: string,
@@ -996,7 +1001,12 @@ export class GitManager {
       execFile(
         "git",
         gitArgsWithHooksDisabled(["show", `${commitHash}:${filePath}`]),
-        { cwd: this.workspaceDir, encoding: "buffer", maxBuffer: maxBytes },
+        {
+          cwd: this.workspaceDir,
+          encoding: "buffer",
+          maxBuffer: maxBytes,
+          ...gitSpawnOverridesForTree(this.workspaceDir),
+        },
         (err, stdout) => {
           if (err || !stdout || stdout.length === 0) resolve(null);
           else resolve(stdout);

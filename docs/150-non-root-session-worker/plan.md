@@ -432,7 +432,25 @@ Rationale for *where* and *what*:
 
 - **Global config, not `-c`.** Git honors `safe.directory` **only** from system
   or global config — never from a repo-local config or a `-c safe.directory=`
-  command-line override (its own anti-spoofing rule). So it must live in
+  command-line override (its own anti-spoofing rule).
+
+  **Correction (2026-08-16, docs/266 E2 / planning#403).** The repo-local half is
+  right and is what the docs/266 design rests on; the `-c` half is **wrong**.
+  Measured against git 2.39.5 with `GIT_TEST_ASSUME_DIFFERENT_OWNER=1`. The rule,
+  rather than a list that keeps being falsified: git honours `safe.directory`
+  from its *protected configuration* — the system and global files, the command
+  line, **and the config environment protocols** — so anything ShipIt puts in a
+  git process's argv or environment can re-grant trust, and only the
+  repository's own config cannot. It does not change this feature's fix — the entry still belongs
+  in `GIT_CONFIG_GLOBAL` for every reason below — and it is **not a hole**: a
+  `-c` and an env var come from ShipIt's own argv and environment, never from the
+  repository, so the untrusted side still cannot grant itself trust. What it
+  changes is a maintenance rule, now enforced as a lint rather than a sentence
+  (`git-hooks-guard-coverage.test.ts`; planning#409). Corrected here as well as
+  in docs/266, because this is where the claim originated and fixing only the
+  copies is how it reached three places.
+
+  So it must live in
   `GIT_CONFIG_GLOBAL`, which every orchestrator git invocation already inherits
   (`GitManager`/`simpleGit`, the `git-utils` helpers that forward `process.env`,
   and the `gh`/PR path which shells `git`). One write covers all of them.

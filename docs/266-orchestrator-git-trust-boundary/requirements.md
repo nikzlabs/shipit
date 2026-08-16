@@ -173,11 +173,33 @@ called out rather than folded in.
   everything outside `.git/objects/` to the session-worker uid — its own
   docstring says so — and that includes `config` and `info/`.
 - **Git's own mitigation exists and ShipIt disabled it.**
-  `git-config.ts:60-66` sets `safe.directory=*` globally, with the rationale in
+  `git-config.ts` sets `safe.directory=*` globally, with the rationale in
   the comment: without it, root-orchestrator git on a worker-owned tree fails
-  CVE-2022-24765's ownership check. The same comment records the property the
-  design depends on — `safe.directory` is honoured **only** from system/global
-  config, never from a repo-local one and never from `-c`.
+  CVE-2022-24765's ownership check. The property the design depends on is that
+  a **repo-local** `safe.directory` is not honoured, so the untrusted side
+  cannot grant itself trust. Measured against git 2.39.5 with
+  `GIT_TEST_ASSUME_DIFFERENT_OWNER=1` (2026-08-16, while building E2): it holds.
+
+  **Corrected in the same measurement.** This document previously added "and
+  never from `-c`", inherited from `git-config.ts`'s comment and docs/150. That
+  half is **wrong**. The rule, stated as a rule rather than as a list: git
+  honours `safe.directory` from its **protected configuration** — the system and
+  global files, the command line, **and the config environment protocols** — so
+  *anything ShipIt itself puts in a git process's argv or environment can
+  re-grant trust; only the repository's own config cannot.*
+
+  It changes no requirement and opens no hole: argv and environment come from
+  ShipIt, never from the repository, so the untrusted side still cannot grant
+  itself trust. It is recorded here because the design cites the claim, and
+  because the maintenance rule it implies is the opposite of the one the wrong
+  version implies — a refusal must not be silenceable by a future ShipIt call
+  site. Enforced as a lint rather than left as prose
+  (`git-hooks-guard-coverage.test.ts`; planning#409 owns the rule).
+
+  **Written as a rule on purpose**, per requirement 3's "without ShipIt
+  enumerating the set". The enumeration here has been falsified twice — first
+  `-c`, then `GIT_CONFIG_PARAMETERS` beside the `GIT_CONFIG_COUNT` that the
+  first correction named — and a third vector will not announce itself either.
 - **An unreadable workspace FILE costs the whole turn's commit.** Measured here
   against git 2.39.5, and independently by the requester. With one tracked file
   at mode 000 in an otherwise readable directory: `git status` exits **0** and

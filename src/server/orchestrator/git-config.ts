@@ -38,6 +38,117 @@ export interface GitIdentity {
 }
 
 /**
+ * docs/266 E2 (planning#403) — is git's own ownership check armed for
+ * orchestrator-side git?
+ *
+ * Off by default, which is today's behaviour exactly. Turning it on is a
+ * deliberate operator decision, described in {@link applySafeDirectoryPolicy}.
+ */
+export function gitStrictOwnership(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.SHIPIT_GIT_STRICT_OWNERSHIP === "1";
+}
+
+/**
+ * Decide whether the orchestrator's global gitconfig grants `safe.directory=*`.
+ *
+ * ## What the `*` does, and why it was right
+ *
+ * docs/150 §7 addendum (planning#33 activation blocker). When the session worker
+ * runs as an unprivileged uid (`SHIPIT_SESSION_WORKER_UID` set), each session's
+ * workspace under `/workspace` is owned by that uid (e.g. 1000), while the
+ * orchestrator ran git as **root**. Git's CVE-2022-24765 ownership check then
+ * refuses every orchestrator-side git op on those trees with "detected dubious
+ * ownership" — auto-commit, auto-push, branch graduation, the bare-cache fetch.
+ * The `*` suppressed that refusal, and one entry covered the bare cache, every
+ * per-session worktree, and any future path without an enumerate-on-create
+ * dance.
+ *
+ * ## Why it is now the wrong shape (docs/266 req 7)
+ *
+ * E1 made orchestrator-side git run as the uid that OWNS the tree, so the
+ * refusal it suppresses no longer fires on a *correct* call site. What it still
+ * suppresses is the refusal on an **incorrect** one — a call site that failed to
+ * drop keeps running as root against a tree untrusted code can write, silently,
+ * exactly as before. Remove the `*` and that becomes a loud
+ * `fatal: detected dubious ownership`. That is the property that makes the
+ * guard hold for code nobody has written yet, and it is enumeration-free: the
+ * question is "is this tree mine", never "is this config key dangerous".
+ *
+ * Two facts about `safe.directory`, both **measured here** against git 2.39.5
+ * using `GIT_TEST_ASSUME_DIFFERENT_OWNER=1`:
+ *
+ *   - A **repo-local** `safe.directory` is NOT honoured. This is the half the
+ *     design rests on: the untrusted side owns `.git/config` and cannot use it
+ *     to grant itself trust.
+ *   - Everything ShipIt itself hands the git process CAN re-grant trust. Git
+ *     honours `safe.directory` from its "protected configuration" — the system
+ *     and global files, the command line, and the config environment protocols
+ *     — so a `-c safe.directory=*` and the `GIT_CONFIG_*` env protocols are
+ *     honoured just as this global file is. Earlier ShipIt docs said `-c` never
+ *     was; the correction is recorded in docs/266's `requirements.md`.
+ *
+ *     Stated as a rule rather than as a list of vectors on purpose. The list
+ *     has been falsified twice — first `-c`, then `GIT_CONFIG_PARAMETERS`
+ *     beside the `GIT_CONFIG_COUNT` the first correction named — and a third
+ *     will not announce itself. The rule that survives both: only the
+ *     repository's own config cannot grant it.
+ *
+ *     **This is not a hole in the boundary.** A `-c` and an environment
+ *     variable come from ShipIt's OWN argv and environment; the untrusted side
+ *     supplies neither. What it is, is a maintenance rule — ShipIt's own code
+ *     could silence the refusal one `-c safe.directory=*` at a time, most
+ *     plausibly by someone debugging "git suddenly refuses this path" the
+ *     fastest way rather than the right way. So it is enforced as a rule rather
+ *     than written down as advice: `git-hooks-guard-coverage.test.ts` fails the
+ *     build if any orchestrator-side source outside this module passes the key
+ *     to git, or sets `GIT_CONFIG_COUNT`.
+ *
+ * ## Why this is a switch and not a deletion
+ *
+ * Removing the `*` turns every missed call site into a hard failure **at once**,
+ * and the failure lands on the post-turn commit path, where uncommitted agent
+ * work has no reflog entry and no recovery (`CLAUDE.md` invariant 2). E1 is
+ * inert unless the process is root, so it cannot be exercised for real anywhere
+ * but a production orchestrator. The sequence the issue sets out is: land E1,
+ * observe it in production, then arm this.
+ *
+ * `SHIPIT_GIT_STRICT_OWNERSHIP=1` is that "then" — an operator decision, made
+ * against a running deployment, reversible by unsetting it and restarting rather
+ * than by shipping a revert. Both directions are idempotent and self-repairing:
+ * the config file lives in the persistent credentials volume, so arming must
+ * actively `--unset-all` an entry an earlier boot wrote, and disarming rewrites
+ * it.
+ *
+ * **This switch has an expiry: planning#410.** A flag with no owner becomes
+ * permanent, and a permanent one is a supported way to turn the boundary back
+ * off. The end state is deleting BOTH halves — this function's branch and the
+ * `safe.directory=*` write — once it has run armed in production, leaving
+ * fail-closed as simply how ShipIt works.
+ */
+function applySafeDirectoryPolicy(): void {
+  if (gitStrictOwnership()) {
+    try {
+      // Exits 5 when there is nothing to unset — the normal first-boot case.
+      execFileSync("git", gitArgsWithHooksDisabled(["config", "--global", "--unset-all", "safe.directory"]), {
+        stdio: "ignore",
+      });
+    } catch {
+      // Nothing to remove, or git is not installed yet.
+    }
+    return;
+  }
+  // Gated: with `SHIPIT_SESSION_WORKER_UID` unset (root worker) nothing is
+  // written and behaviour is byte-for-byte unchanged. `--replace-all` keeps it
+  // idempotent across repeated init calls (tests).
+  if (sessionWorkerUid() === null) return;
+  try {
+    execFileSync("git", gitArgsWithHooksDisabled(["config", "--global", "--replace-all", "safe.directory", "*"]));
+  } catch {
+    // git may not be installed yet (unlikely but safe)
+  }
+}
+
+/**
  * Set GIT_CONFIG_GLOBAL to a file in the credentials directory so all git
  * operations (in any repo) inherit identity and settings from a single place.
  *
@@ -77,31 +188,7 @@ export function initGlobalGitConfig(credentialsDir: string): void {
     // git may not be installed yet (unlikely but safe)
   }
 
-  // docs/150 §7 addendum (planning#33 activation blocker). When the session worker
-  // runs as an unprivileged uid (SHIPIT_SESSION_WORKER_UID set), each session's
-  // workspace under /workspace is owned by that uid (e.g. 1000), but THIS
-  // orchestrator process keeps running git as root. Git's CVE-2022-24765
-  // ownership check then refuses every orchestrator-side git op on those trees
-  // with "detected dubious ownership" — breaking auto-commit, auto-push, branch
-  // graduation, the bare-cache fetch, and the `gh pr` branch lookup (all of
-  // which run git via GIT_CONFIG_GLOBAL).
-  //
-  // `safe.directory` is honored ONLY from system/global config — never from a
-  // repo-local config or a `-c safe.directory=` command-line override (git's
-  // own anti-spoofing rule). So it must live here, in GIT_CONFIG_GLOBAL. This
-  // file is written by the root orchestrator into its own credentials dir, so
-  // it is root-owned and git-as-root trusts it. A single `*` entry covers the
-  // bare cache, every per-session worktree, and any future path without an
-  // enumerate-on-create dance. Gated: with the flag unset (today's default,
-  // root worker) nothing is written and behavior is byte-for-byte unchanged.
-  // `--replace-all` keeps it idempotent across repeated init calls (tests).
-  if (sessionWorkerUid() !== null) {
-    try {
-      execFileSync("git", gitArgsWithHooksDisabled(["config", "--global", "--replace-all", "safe.directory", "*"]));
-    } catch {
-      // git may not be installed yet (unlikely but safe)
-    }
-  }
+  applySafeDirectoryPolicy();
 
   // docs/200 — make the orchestrator's git transport-agnostic for github.com.
   // An SSH origin (`git@github.com:owner/repo.git`) is unusable from inside the

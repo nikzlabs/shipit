@@ -6,6 +6,7 @@
  * clones) from the simpler per-session mutations.
  */
 
+import fs from "node:fs/promises";
 import path from "node:path";
 import { safeSimpleGit } from "../../shared/git-hooks-guard.js";
 import type { SessionManager } from "../sessions.js";
@@ -16,6 +17,7 @@ import { graduateSession, type GraduateSessionDeps } from "./graduate-session.js
 import { ServiceError } from "./types.js";
 import { chownTreeToSessionWorker, handWorkspaceBackToWorker } from "../session-worker-uid.js";
 import { stripRemoteUrlCredentials } from "../git-utils.js";
+import { resolveGitTreeUid } from "../../shared/git-tree-uid.js";
 
 /** Fork a session into a new clone with its own branch. */
 export async function forkSession(
@@ -51,7 +53,46 @@ export async function forkSession(
   // (commit not yet auto-pushed, or pruned after the PR branch was deleted).
   // --local hardlinks objects on the same filesystem, so disk cost matches
   // the old cache-clone path.
-  await safeSimpleGit().raw(["clone", "--local", activeSessionDir, newWorkspaceDir]);
+  //
+  // docs/266 E2 / planning#407 — this clone READS a session workspace, which is
+  // a tree untrusted code can write, so it must run at that tree's uid like
+  // every other orchestrator-side git. It was the one path that could not, and
+  // the reason is the destination: a bare `safeSimpleGit()` has no `baseDir`, so
+  // there is nothing for the ownership predicate to stat, and dropping anyway
+  // would leave the clone unable to create its root-owned destination under
+  // `sessionsRoot`. So create the destination first and hand it to the worker
+  // uid, then clone with the drop resolved from the SOURCE tree. Measured
+  // against git 2.39.5 with the ownership check armed: `git clone --local` on a
+  // foreign source fails `detected dubious ownership in repository at
+  // '<src>/.git'` — so once docs/266 E2 removes `safe.directory=*`, the old
+  // shape does not merely run as root, it stops working.
+  //
+  // Hand over `newWorkspaceDir` and NOT its parent `newSessionDir`: removing or
+  // renaming a directory ENTRY is governed by the parent directory's
+  // permissions, so chowning `newSessionDir` would let the session's uid unlink
+  // or substitute the `uploads/` and `logs/` siblings ShipIt keeps beside the
+  // workspace. The clone needs only to write *inside* an existing empty
+  // destination it owns — verified against git 2.39.5 that `clone --local`
+  // accepts one rather than insisting on creating it.
+  //
+  // The handover reads the SAME predicate the drop does, rather than
+  // `chownTreeToSessionWorker`'s configured worker uid. Those two answers are
+  // not the same question, and review caught the gap: `resolveGitTreeUid` keys
+  // on "are we root, and who owns this tree", NOT on `SHIPIT_SESSION_WORKER_UID`
+  // — so a root orchestrator with the flag unset and a non-root-owned source
+  // (a host-bind dev setup) would drop to the tree's owner while the chown
+  // returned early, and the clone would EACCES on a root-owned destination.
+  // A worker-uid migration, where an adopted old tree's owner is not the
+  // configured uid, produces the same mismatch. One predicate, both halves, no
+  // window in which they disagree.
+  //
+  // When it resolves to null nothing happens at all — no chown, no drop, root
+  // cloning into a root-owned directory exactly as before. That is every test,
+  // local mode, and any deployment whose session trees are root-owned.
+  await fs.mkdir(newWorkspaceDir, { recursive: true });
+  const cloneUid = resolveGitTreeUid(activeSessionDir);
+  if (cloneUid !== null) await fs.chown(newWorkspaceDir, cloneUid.uid, cloneUid.gid);
+  await safeSimpleGit(activeSessionDir).raw(["clone", "--local", activeSessionDir, newWorkspaceDir]);
   const newGit = safeSimpleGit(newWorkspaceDir);
   // Disable auto-gc so hardlinks aren't broken in either clone.
   await newGit.raw(["config", "gc.auto", "0"]);

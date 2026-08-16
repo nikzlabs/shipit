@@ -41,13 +41,17 @@
  * satisfied; where we fail to drop, git *would* refuse with "detected dubious
  * ownership" rather than execute the payload (docs/266 req 7).
  *
- * **That fail-closed half is NOT yet in force.** `git-config.ts` still sets
- * `safe.directory=*` globally, which is precisely what suppresses that refusal,
- * so today a call site that fails to drop silently runs as root exactly as
- * before. Narrowing it is docs/266 E2 and is deliberately a separate change:
- * removing the `*` turns every missed site into a hard failure at once, and it
- * should land only after this drop has been observed working in production.
- * Until then the coverage this module gives is real but not self-enforcing.
+ * **That fail-closed half is built but not armed.** `git-config.ts` still
+ * writes `safe.directory=*` by default, which is precisely what suppresses that
+ * refusal, so a call site that fails to drop silently runs as root exactly as
+ * before. `SHIPIT_GIT_STRICT_OWNERSHIP=1` removes the `*` and turns that into a
+ * loud `fatal: detected dubious ownership` (docs/266 E2, planning#403). It is a
+ * switch rather than a deletion because arming it turns every missed site into
+ * a hard failure at once, on the post-turn commit path, and this module is
+ * inert unless the process is root — so it cannot be exercised for real
+ * anywhere but a production orchestrator. Sequence: land the drop, observe it
+ * in production, then arm this. Until it is armed the coverage here is real,
+ * and enforced at CI (below), but not enforced by git at runtime.
  *
  * ## When this returns null (i.e. no drop)
  *
@@ -135,11 +139,33 @@ export function resolveGitTreeUid(
  * });
  * ```
  *
- * Unlike the hooks wrapper, this is NOT yet enforced by
- * `git-hooks-guard-coverage.test.ts`: a raw git spawn that forgets it runs as
- * root against the tree. The two raw sites that touch a session workspace
- * (`git-lfs-blob.ts`, `github-auth.ts`) are converted; a scanner rule to keep
- * that true belongs with docs/266 E2, where the fail-closed half lands.
+ * Like the hooks wrapper, this IS enforced by
+ * `git-hooks-guard-coverage.test.ts` (docs/266 E2): a raw git spawn that names a
+ * working directory — as a `cwd` option or as a `-C <dir>` argument — and omits
+ * this call fails the build. Spread it **inline at the call site**, not via a
+ * local variable: the scanner reads the call, and a name it cannot follow reads
+ * to it exactly like a site that forgot.
+ *
+ * Both the argv and the options object are followed through one level of
+ * in-file `const NAME = …`, including an object literal's own spreads, because
+ * a working directory can travel in a variable either way. Anything the scanner
+ * cannot resolve is treated as carrying one — the fail-closed direction is to
+ * demand the call, never to assume it is unnecessary.
+ *
+ * What it still does NOT see, stated because an overstated guarantee is worse
+ * than a named gap:
+ *
+ *   - A working directory reached through the environment (`GIT_DIR`,
+ *     `GIT_WORK_TREE`) or a `--git-dir` argument.
+ *   - The **inherited process cwd**. A spawn with no `cwd` and no `-C` passes,
+ *     and runs wherever the orchestrator started. `build-id.ts`'s
+ *     `resolveBuildId` is a live instance; it is harmless because the
+ *     orchestrator's cwd holds no repository in production, which is a property
+ *     of the deployment rather than something this rule checks.
+ *   - Indirection deeper than one level, or through anything other than an
+ *     in-file `const`.
+ *   - A spawn whose binary is not a quoted `git` literal — `const GIT = "git"`
+ *     makes the call invisible to all three rules here.
  */
 export function gitSpawnOverridesForTree(
   dir: string | undefined,
