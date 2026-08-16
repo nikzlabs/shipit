@@ -71,6 +71,40 @@
  * unreadable; for a shell string only the first word is, so a prefix that
  * already contains whitespace has settled the question.
  *
+ * ## Where these rules stop
+ *
+ * Written here, in the test, rather than left for the next reader to infer. A
+ * guard whose limits are written down is a guard; one whose limits are inferred
+ * is a false sense of coverage, and this repo has shipped several of the latter.
+ * The standard is planning#410's: it caught `safeSimpleGit(undefined)` and
+ * `safeSimpleGit("")` as written shapes and said plainly that
+ * `safeSimpleGit(x)`, where `x` is undefined at RUNTIME, reaches no regex at
+ * all. The same boundary applies here, and it is the boundary of the method,
+ * not of this implementation:
+ *
+ *   - **This reads source text, so it sees shapes, never values.**
+ *     `spawn(bin, …)` where `bin` is computed is caught only as *unreadable*
+ *     (the inventory rule); `spawn("git", args, { cwd })` where `cwd` turns out
+ *     to be a session workspace at runtime is indistinguishable from one where
+ *     it is the bare cache. That is why the uid rule demands
+ *     `gitSpawnOverridesForTree(cwd)` — which resolves the tree at runtime —
+ *     rather than trying to decide ownership here.
+ *   - **A `cwd` inherited from the process** is invisible: a spawn with no
+ *     `cwd`, no `-C`, no `--git-dir` and no `clone` passes and runs wherever the
+ *     orchestrator started. `build-id.ts`'s `resolveBuildId` is a live instance.
+ *   - **Indirection past one in-file `const`** is unreadable, and a name
+ *     declared twice is unreadable rather than resolved to the first — but a
+ *     value that crosses a module boundary is simply not followed.
+ *   - **A launcher that is not `node:child_process`** — an `execa` or
+ *     `cross-spawn` dependency — bypasses everything here. Neither is in
+ *     `package.json`; adding one means extending this file in the same PR.
+ *
+ * What is NOT a limit, because it was checked: a wrapped call. `balancedSpan`
+ * and `callArguments` read an argument list across lines, and `declarationValue`
+ * reads a `const` initializer across lines. planning#410's review found their
+ * grep required the binary on the call's own line; the equivalent hole existed
+ * here inside `resolveArgv` and is fixed and pinned below.
+ *
  * Scope is deliberately the ORCHESTRATOR (plus the `shared/` code it runs).
  * Session-container code is excluded: git inside the session container runs the
  * project's hooks on purpose — the agent is already inside the trust boundary,
@@ -288,6 +322,41 @@ function soleDeclaration(name: string, fileSrc: string, valuePattern: string): R
 }
 
 /**
+ * The initializer text of a `const`, from {@link start} to the `;` or line end
+ * that closes it **at bracket depth zero**.
+ *
+ * A line-bounded slice was the shape planning#410's review named as a
+ * scanner-design lesson: their grep required the binary on the same line as the
+ * call, so every wrapped site read as "none found". This file had the same hole
+ * one level in — `resolveArgv` read `[^;\n]*`, so
+ *
+ * ```ts
+ * const args = gitArgsWithHooksDisabled([
+ *   "-C", ws, "status",
+ * ]);
+ * ```
+ *
+ * resolved to `gitArgsWithHooksDisabled([` and the `-C` on the next line was
+ * invisible. Verified fail-open before this existed, and verified red after.
+ * Depth-aware scanning is the fix; strings are skipped so a bracket inside one
+ * cannot unbalance it.
+ */
+function declarationValue(fileSrc: string, start: number): string {
+  let depth = 0;
+  for (let i = start; i < fileSrc.length; i++) {
+    const c = fileSrc[i];
+    if (c === '"' || c === "'" || c === "`") {
+      i = skipString(fileSrc, i);
+      continue;
+    }
+    if (c === "(" || c === "{" || c === "[") depth++;
+    else if (c === ")" || c === "}" || c === "]") depth--;
+    else if (depth === 0 && (c === ";" || c === "\n")) return fileSrc.slice(start, i);
+  }
+  return fileSrc.slice(start);
+}
+
+/**
  * An object literal is only as readable as what it spreads.
  *
  * `execFile("git", args, { ...sharedGitOpts })` starts with `{`, so a naive
@@ -337,8 +406,8 @@ function resolveSpreads(literal: string, fileSrc: string): string | null {
 function resolveArgv(arg: string | undefined, fileSrc: string): string | null {
   if (arg === undefined) return null;
   if (!IDENTIFIER.test(arg)) return arg;
-  const decl = soleDeclaration(arg, fileSrc, "([^;\\n]*)");
-  return decl ? (decl[1] ?? null) : null;
+  const decl = soleDeclaration(arg, fileSrc, "");
+  return decl ? declarationValue(fileSrc, decl.index + decl[0].length) : null;
 }
 
 /**
@@ -404,9 +473,9 @@ function resolveBinary(arg: string | undefined, fileSrc: string, takesArgv: bool
   const inline = readPrefix(arg);
   if (inline !== null) return inline;
   if (!IDENTIFIER.test(arg)) return { unreadable: true };
-  const decl = soleDeclaration(arg, fileSrc, "([\"'`][^\\n]*)");
+  const decl = soleDeclaration(arg, fileSrc, "");
   if (!decl) return { unreadable: true };
-  return readPrefix(decl[1] ?? "") ?? { unreadable: true };
+  return readPrefix(declarationValue(fileSrc, decl.index + decl[0].length)) ?? { unreadable: true };
 }
 
 /**
@@ -1028,6 +1097,24 @@ describe("git spawn coverage: what counts as a git spawn (planning#409)", () => 
 
     const twoOpts = "const opts = { timeout: 5 };\nfunction f() { const opts = { cwd: dir }; }";
     expect(resolveOptions("opts", twoOpts)).toBeNull();
+  });
+
+  it("reads a `const` initializer that wraps across lines", () => {
+    // planning#410's review named this as a scanner-design lesson: their grep
+    // required the binary on the same line as the call, so every wrapped site
+    // read as "none found". This file had the identical hole one level in —
+    // `resolveArgv` read `[^;\n]*`, so the `-C` below sat on a line the resolver
+    // never reached and the uid rule passed a site that carries one. Verified
+    // fail-open before the depth-aware reader existed.
+    const wrapped = 'const args = gitArgsWithHooksDisabled([\n  "-C",\n  ws,\n  "status",\n]);';
+    expect(resolveArgv("args", wrapped)).toContain("-C");
+    expect(resolveArgv("args", wrapped)).toContain("gitArgsWithHooksDisabled");
+
+    // The call itself was never line-bound — `balancedSpan` reads the argument
+    // list across lines — so a wrapped CALL was always seen. It is the resolver
+    // that was, and this pins both halves.
+    const wrappedBinary = 'const GIT =\n  "git";';
+    expect(resolveBinary("GIT", wrappedBinary, true)).toEqual({ literal: "git" });
   });
 
   it("fails closed on a spread it cannot read, whatever shape the spread has", () => {

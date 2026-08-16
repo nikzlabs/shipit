@@ -215,13 +215,22 @@ Build sequence from [plan.md](./plan.md) §5. Requirements are cited as `(req N)
       and `-C` as working-directory carriers. Same 29 git spawn sites found
       before and after; every new rule verified by injecting the shape and
       watching the build go red.
-- [x] **Four fail-open holes in that widening, found by independent review and
-      fixed before merge**: an interpolated binary read as a complete one
+- [x] **Five fail-open holes in that widening, found by review and fixed before
+      merge**: an interpolated binary read as a complete one
       (`` `${GIT_BIN}` `` → `""`, `` `/usr/bin/${tool}` `` → `bin`); a spread
       that is not a bare identifier (`{ ...makeOpts(dir) }`) matching nothing
       and hiding its `cwd`; a shell string whose git is not the first word
-      (`cd /srv/ws && git status`); and a shadowed `const` resolving to the
-      first declaration in the file. Each is now pinned by a unit assertion.
+      (`cd /srv/ws && git status`); a shadowed `const` resolving to the first
+      declaration in the file; and a `const` initializer wrapped across lines,
+      where `resolveArgv`'s line-bounded read hid a `-C` on the next line —
+      planning#410's review named that last shape as a scanner-design lesson
+      after their own grep required the binary on the call's own line. Each is
+      now pinned by a unit assertion.
+- [x] **The rules' limits stated in the test file itself**, to planning#410's
+      standard: a source scan sees shapes, never runtime values; an inherited
+      process cwd is invisible; indirection past one in-file `const` is not
+      followed; a non-`node:child_process` launcher bypasses everything. A
+      wrapped call is explicitly *not* a limit — checked, not assumed.
 - [x] **Three sites the audit found before arming anything**, all of which armed
       E2 would have broken and all of which ran as root in an untrusted tree
       until now: `git-lfs.ts`'s `runGit` (`git grep` + `git lfs pull`, the whole

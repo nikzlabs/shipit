@@ -264,8 +264,13 @@ all fixed before merge and all pinned: an interpolated binary
 (`{ ...makeOpts(dir) }` matched nothing and was kept verbatim, hiding its `cwd`);
 a shell string whose git is not the first word (`cd /srv/ws && git status`); and
 a shadowed `const`, which resolved to whichever declaration came first in the
-file. The recurring shape in all four: a partial read reported as a complete
-one.*
+file. A fifth came from planning#410's review as a scanner-design lesson rather
+than a finding about this branch — their grep required the spawn binary on the
+call's own line, so every wrapped site read as "none found". The call matcher
+here was never line-bound, but `resolveArgv` was: a `const args =
+gitArgsWithHooksDisabled([⏎ "-C", ws, …])` resolved to the first line only and
+the `-C` was invisible. The recurring shape in all five: a partial read reported
+as a complete one.*
 
 **E2b — removing the `*`, behind `SHIPIT_GIT_STRICT_OWNERSHIP=1`, off by
 default.** The switch exists because of *when* the failure lands, not whether it
