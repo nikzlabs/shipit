@@ -25,6 +25,7 @@ import type { CreateIssueResult } from "./github-auth-issues.js";
 import { addReviewThreadReply as addReviewThreadReplyImpl, resolveReviewThread as resolveReviewThreadImpl, unresolveReviewThread as unresolveReviewThreadImpl, submitPullRequestReview as submitPullRequestReviewImpl } from "./github-auth-review-threads.js";
 import type { PullRequestReviewThreadDraft } from "./github-auth-review-threads.js";
 import { gitArgsWithHooksDisabled } from "../shared/git-hooks-guard.js";
+import { gitSpawnOverridesForTree } from "../shared/git-tree-uid.js";
 
 export interface GitHubAuthStatus {
   authenticated: boolean;
@@ -388,10 +389,14 @@ export class GitHubAuthManager extends EventEmitter {
     // (path: 'git') that looks like git is missing. Skip cleanly instead.
     if (!existsSync(cwd)) return;
     try {
+      // docs/266 — as root this would both execute the tree's own config and
+      // leave `.git/config` owned by root inside a worker-owned `.git`, which
+      // breaks the agent's in-container `git config` on the next turn. Drop to
+      // the tree's owner: the file we are writing is one that user owns anyway.
       execFileSync(
         "git",
         gitArgsWithHooksDisabled(["config", "--replace-all", "credential.helper", CONTAINER_CREDENTIAL_HELPER]),
-        { cwd, stdio: "pipe" },
+        { cwd, stdio: "pipe", ...gitSpawnOverridesForTree(cwd) },
       );
       // User identity is inherited from global git config (set by setToken/loadUserInfo).
     } catch (err) {

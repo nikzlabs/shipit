@@ -49,18 +49,19 @@ const SECRET_COMMIT: AutoCommitResult = {
   secretFindings: [
     { rule: "github-pat", description: "GitHub PAT", file: "x.ts", redacted: "ghp_…[redacted]" },
   ],
+  unreadable: null,
 };
 const CLEAN_COMMIT: AutoCommitResult = {
   commitHash: "abc123",
   conflictedFiles: [],
   rebaseInProgress: false,
-  secretFindings: [],
+  secretFindings: [], unreadable: null,
 };
 const NO_COMMIT: AutoCommitResult = {
   commitHash: null,
   conflictedFiles: [],
   rebaseInProgress: false,
-  secretFindings: [],
+  secretFindings: [], unreadable: null,
 };
 
 describe("flushPendingTurnCommit — does not touch the push debounce", () => {

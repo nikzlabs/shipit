@@ -436,3 +436,74 @@ describe("postTurnCommit — a secret-blocked commit is sticky and announced", (
     expect(setSecretBlock).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * docs/266 reqs 14 + 15 — the two permission states reach the user, and the
+ * `blocked` one does NOT retire a standing secret block.
+ *
+ * That last part is the subtle one. `blocked` means `git add -A` exited 128 and
+ * staged nothing, so the secret scan never ran — retiring the banner there would
+ * clear it on exactly the lie planning#317's condition exists to prevent. It is
+ * the same reasoning as the conflict/rebase early return, and it is easy to
+ * regress because the happy path looks identical.
+ */
+describe("postTurnCommit — unreadable workspace content", () => {
+  function makeCtx(unreadable: { kind: "omitted" | "blocked"; detail: string } | null, commitHash: string | null) {
+    const autoCommit = vi.fn(async () => ({
+      commitHash, conflictedFiles: [], rebaseInProgress: false, secretFindings: [], unreadable,
+    }));
+    const getHeadHash = vi.fn(async () => "head");
+    const setSecretBlock = vi.fn();
+    const ctx = {
+      createGitManager: vi.fn(() => ({ autoCommit, getHeadHash })),
+      chatHistoryManager: { updateLastMessage: vi.fn(() => null), indexOfMessageId: vi.fn(() => -1), append: vi.fn() },
+      sessionManager: {
+        get: vi.fn(() => ({ id: "s1" } as SessionInfo)),
+        getSecretBlock: vi.fn(() => ({ findings: [], at: 1 })),
+        setSecretBlock,
+      },
+      scheduleAutoPush: vi.fn(),
+    } as unknown as Parameters<typeof postTurnCommit>[0];
+    return { ctx, setSecretBlock };
+  }
+
+  it("tells the user a commit is SHORT when a directory was unreadable", async () => {
+    const emit = vi.fn();
+    const { ctx } = makeCtx({ kind: "omitted", detail: "pgdata/" }, "abc1234");
+    await postTurnCommit(ctx, {
+      sessionDir: "/workspace", sessionId: "s1", emit, turnSummary: "a turn",
+    });
+    const notices = emit.mock.calls.map(([m]) => JSON.stringify(m)).join("\n");
+    expect(notices).toContain("pgdata/");
+    expect(notices).toContain("short");
+  });
+
+  it("tells the user NOTHING was committed when a file was unreadable", async () => {
+    const emit = vi.fn();
+    const { ctx } = makeCtx({ kind: "blocked", detail: "d/server.key" }, null);
+    await postTurnCommit(ctx, {
+      sessionDir: "/workspace", sessionId: "s1", emit, turnSummary: "a turn",
+    });
+    const notices = emit.mock.calls.map(([m]) => JSON.stringify(m)).join("\n");
+    expect(notices).toContain("server.key");
+    expect(notices).toContain("NOT committed");
+  });
+
+  it("does not retire a standing secret block when nothing was staged", async () => {
+    // `blocked` returns before staging and before the scan. Clearing here would
+    // tell the user a secret is gone when nothing looked for it.
+    const { ctx, setSecretBlock } = makeCtx({ kind: "blocked", detail: "d/server.key" }, null);
+    await postTurnCommit(ctx, {
+      sessionDir: "/workspace", sessionId: "s1", emit: vi.fn(), turnSummary: "a turn",
+    });
+    expect(setSecretBlock).not.toHaveBeenCalledWith("s1", null);
+  });
+
+  it("still retires the block on an `omitted` commit, which DID stage and scan", async () => {
+    const { ctx, setSecretBlock } = makeCtx({ kind: "omitted", detail: "pgdata/" }, "abc1234");
+    await postTurnCommit(ctx, {
+      sessionDir: "/workspace", sessionId: "s1", emit: vi.fn(), turnSummary: "a turn",
+    });
+    expect(setSecretBlock).toHaveBeenCalledWith("s1", null);
+  });
+});

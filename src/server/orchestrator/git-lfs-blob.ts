@@ -4,6 +4,7 @@ import path from "node:path";
 import { isGitLfsAvailable } from "./git-lfs.js";
 import { killChild } from "../shared/kill-child.js";
 import { gitArgsWithHooksDisabled } from "../shared/git-hooks-guard.js";
+import { gitSpawnOverridesForTree } from "../shared/git-tree-uid.js";
 
 /**
  * Resolve a Git LFS pointer blob to the bytes it stands for, for *rendering*
@@ -148,10 +149,16 @@ function smudgeLfsObject(workspaceDir: string, pointerText: string, filePath: st
   return new Promise((resolve) => {
     let proc;
     try {
+      // docs/266 — `git lfs smudge` resolves `filter.lfs.smudge` from the
+      // repository's own config, which is the executable-config route this
+      // feature exists to close, and this tree is one untrusted code can write.
+      // Drop to the tree's owner so the filter runs at its author's authority.
+      const treeOverrides = gitSpawnOverridesForTree(workspaceDir);
       proc = spawn("git", gitArgsWithHooksDisabled(["lfs", "smudge", "--", filePath]), {
         cwd: workspaceDir,
         env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
         stdio: ["pipe", "pipe", "ignore"],
+        ...treeOverrides,
       });
     } catch {
       resolve(null);

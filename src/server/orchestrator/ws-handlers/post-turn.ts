@@ -156,7 +156,32 @@ export async function postTurnCommit(
     const git = ctx.createGitManager(opts.sessionDir);
     const parentHash = await git.getHeadHash();
     const firstLine = opts.turnSummary.split("\n")[0]?.slice(0, 120) || "Agent turn";
-    const { commitHash, conflictedFiles, rebaseInProgress, secretFindings } = await git.autoCommit(firstLine);
+    const { commitHash, conflictedFiles, rebaseInProgress, secretFindings, unreadable } = await git.autoCommit(firstLine);
+    // docs/266 reqs 14 + 15 — orchestrator git now runs as the session's uid, so
+    // for the first time it can hit workspace content it cannot read (a compose
+    // service running at its own explicit `user:`). The two outcomes need
+    // different words, which is why they are two requirements and not one: an
+    // unreadable DIRECTORY leaves a commit that exists and is short, an
+    // unreadable FILE leaves no commit at all. Persisted, not logged — the whole
+    // point is that git's exit codes report success in the first case and
+    // `postTurnStep` would swallow the second into a log line nobody reads.
+    if (unreadable && opts.sessionId) {
+      emitNoticePostTurn(
+        opts.emit,
+        ctx.chatHistoryManager,
+        opts.sessionId,
+        unreadable.kind === "omitted"
+          ? `This commit is short. ShipIt could not read \`${unreadable.detail}\` in your workspace, `
+            + "so its contents were left out of the commit — everything else was committed normally. "
+            + "A service in your `docker-compose.yml` running as its own `user:` is the usual cause; "
+            + "gitignoring that path removes the problem entirely."
+          : `This turn was NOT committed. ShipIt could not read \`${unreadable.detail}\`, and \`git add\` `
+            + "stages nothing at all when that happens — so the rest of the turn's work is still in the "
+            + "working tree, uncommitted. Fix that path's permissions (or gitignore it) and the next turn "
+            + "will commit everything.",
+        "warn",
+      );
+    }
     if (secretFindings.length > 0 && opts.sessionId) {
       // docs/213 / planning#317 — the commit was refused because the staged diff
       // carried a likely secret. `recordSecretBlock` owns all three responses:
@@ -180,7 +205,20 @@ export async function postTurnCommit(
     // the tree would go unscanned and the banner would clear on a lie. Only "no
     // findings, and nothing stopped us from looking" retires the block — which
     // covers both a successful commit and a genuinely clean tree.
-    if (opts.sessionId && secretFindings.length === 0 && conflictedFiles.length === 0 && !rebaseInProgress) {
+    //
+    // docs/266 adds a THIRD such early return, and it belongs on the same side of
+    // this line: `unreadable.kind === "blocked"` means `git add -A` exited 128
+    // and staged nothing, so `stagedDiff` was never scanned either. Clearing the
+    // banner there would retire it on exactly the lie this condition exists to
+    // prevent. The `omitted` kind is different — staging and scanning both ran,
+    // they just saw less of the tree — so it does not block the clear.
+    if (
+      opts.sessionId
+      && secretFindings.length === 0
+      && conflictedFiles.length === 0
+      && !rebaseInProgress
+      && unreadable?.kind !== "blocked"
+    ) {
       clearSecretBlock({
         sessionId: opts.sessionId,
         sessionManager: ctx.sessionManager,
