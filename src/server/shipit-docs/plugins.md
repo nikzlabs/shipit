@@ -34,8 +34,11 @@ plugins:
 
 **`overrides` is the consumer's whole say**, and it is one level deeper than it
 looks like it should be. `settings`, `services` and `commands` go **under
-`overrides:`** — writing `settings:` directly on the `use` entry sets nothing,
-and ShipIt reports it on the Plugins card as an unknown key rather than failing.
+`overrides:`** — writing `settings:` directly on the `use` entry sets nothing.
+ShipIt does not fail over it; it reports the key, and names where it belongs, on
+the Plugins card and in `shipit plugin status`. The plugin meanwhile receives the
+manifest's default, which is indistinguishable from a value that was applied — so
+read the warning rather than the plugin's behaviour.
 
 A setting's value is type-checked against the plugin's declared default, so a
 string setting cannot be given a number. A setting the consumer does not set

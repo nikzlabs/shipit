@@ -64,6 +64,36 @@ It is loaded with `createRequire`, not a static `import`, deliberately: a
 missing dependency has to arrive as a **changed field in a report**, not as an
 `ERR_MODULE_NOT_FOUND` traceback from a process that never printed one.
 
+## The settings check — the same blindness, on the consumer's side
+
+`settings.greeting` was reported from the first run, and it still could not
+distinguish the two things that write it. Every fixture read the **manifest
+default** (`hello from the probe`), because no consumer here had ever set an
+`overrides.settings` value — so a build that ignored the consumer half outright
+would have produced exactly the field the doc expected. That is how
+nikzlabs/shipit#2298 finding 2 came to be reported as "a consuming project
+cannot set a plugin setting": the feature worked, and nothing the project ran
+could show it working.
+
+This repo's own `shipit.yaml` now sets it, to a string the manifest does not
+contain:
+
+| Where | Value |
+|---|---|
+| `exports.plugins.probe.settings.greeting.default` (the plugin) | `hello from the probe` |
+| `plugins.use[].overrides.settings.greeting` (this consumer) | `hello from the consuming project` |
+
+So on the **self fixture** both surfaces must report `hello from the consuming
+project`. The default arriving there means `overrides.settings` was dropped.
+The **consumer fixture** (the inner dogfood project) sets no override, so the
+default is the right answer there — which is also the check that the merge
+still applies a default rather than emitting nothing.
+
+Note the nesting the report cannot see: `settings:` written directly on a
+`plugins.use` entry, one level above `overrides:`, sets nothing. ShipIt warns
+about that key and names where it belongs (`shipit plugin status`, and the
+Plugins tab), but the plugin just receives the default.
+
 Layout:
 
 - `docker-compose.yml` — the compose fragment (service `probe`, port 4820)

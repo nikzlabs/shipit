@@ -116,6 +116,35 @@ describe("parsePluginRepos — grammar", () => {
     expect(warnings).toContainEqual(expect.stringContaining("`plugins.use[0].what`"));
     expect(warnings).toContainEqual(expect.stringContaining("overrides.nope"));
   });
+
+  // nikzlabs/shipit#2298 finding 2 — a user wrote `settings:` on the `use`
+  // entry, got the manifest default, and reported that a consuming project
+  // cannot set a plugin setting at all. The key is known, one level down, so
+  // the warning has to name where it belongs; "unknown key" alone reads as
+  // "there is no such thing".
+  it.each(["settings", "services", "commands"])(
+    "an override key written one level too high names where it belongs (%s)",
+    (key) => {
+      const { config, warnings } = repos({
+        repos: [{ repo: "a/b", name: "tools" }],
+        use: [{ plugin: "p", from: "tools", [key]: {} }],
+      });
+      // A misplaced key is still only a warning: the import itself is valid,
+      // and dropping it would withhold a working plugin over a typo.
+      expect(config.uses).toHaveLength(1);
+      expect(warnings).toContainEqual(
+        expect.stringContaining(`\`plugins.use[0].overrides.${key}\``),
+      );
+    },
+  );
+
+  it("an unknown key that is NOT an override key gets no misleading hint", () => {
+    const { warnings } = repos({
+      repos: [{ repo: "a/b", name: "tools" }],
+      use: [{ plugin: "p", from: "tools", with: {} }],
+    });
+    expect(warnings).toContainEqual("Unknown key `plugins.use[0].with` in shipit.yaml.");
+  });
 });
 
 describe("parsePluginRepos — reservation domains (plan §1a phase 1)", () => {
