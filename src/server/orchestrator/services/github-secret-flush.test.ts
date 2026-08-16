@@ -60,3 +60,48 @@ describe("flushPendingTurnCommit — secret refusal", () => {
     expect(res.commitHash).toBe("abc123");
   });
 });
+
+/**
+ * docs/266 reqs 14 + 15 / planning#407 — this flush ignored the `unreadable`
+ * field entirely, so a `blocked` add returned the same null hash as "nothing to
+ * commit" and the caller went on to push and open a PR without the work the
+ * flush existed to include. Silently.
+ */
+describe("flushPendingTurnCommit — unreadable workspace content", () => {
+  it("warns that nothing was committed when a file could not be read", async () => {
+    const runner = fakeRunner();
+    const git = fakeGit({
+      commitHash: null,
+      conflictedFiles: [],
+      rebaseInProgress: false,
+      secretFindings: [],
+      unreadable: { kind: "blocked", detail: "d/server.key" },
+    });
+
+    const res = await flushPendingTurnCommit(git, { sessionId: "s1", runnerRegistry: registryFor(runner) });
+
+    expect(res.commitHash).toBeNull();
+    const notices = runner.emitMessage.mock.calls.map(([m]) => JSON.stringify(m)).join("\n");
+    expect(notices).toContain("server.key");
+    expect(notices).toContain("NOT committed");
+  });
+
+  it("warns that the commit is short when a directory could not be read", async () => {
+    const runner = fakeRunner();
+    const git = fakeGit({
+      commitHash: "abc123",
+      conflictedFiles: [],
+      rebaseInProgress: false,
+      secretFindings: [],
+      unreadable: { kind: "omitted", detail: "pgdata/" },
+    });
+
+    const res = await flushPendingTurnCommit(git, { sessionId: "s1", runnerRegistry: registryFor(runner) });
+
+    // The commit still lands — the notice is about what is missing FROM it.
+    expect(res.commitHash).toBe("abc123");
+    const notices = runner.emitMessage.mock.calls.map(([m]) => JSON.stringify(m)).join("\n");
+    expect(notices).toContain("pgdata/");
+    expect(notices).toContain("short");
+  });
+});

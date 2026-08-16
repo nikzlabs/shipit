@@ -21,7 +21,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { GitManager } from "./git.js";
+import { GitManager, classifyUnreadableAddFailure } from "./git.js";
 
 let repo: string;
 
@@ -138,5 +138,75 @@ describe("autoCommit — unreadable FILE (req 15, the total one)", () => {
     fs.writeFileSync(path.join(repo, "tracked.txt"), "edit\n");
     fs.rmSync(path.join(repo, ".git"), { recursive: true, force: true });
     await expect(mgr.autoCommit("a turn")).rejects.toThrow();
+  });
+});
+
+describe("classifyUnreadableAddFailure — the cause, not just the symptom (planning#407)", () => {
+  /**
+   * What the real-git tests above CANNOT fail on: a failure that says
+   * `unable to index file` for a reason other than permissions. An EIO needs a
+   * failing disk and a mid-add deletion needs a race, so neither can be staged
+   * in a container — and the old regex matched that line cause-agnostically, so
+   * both were reported to the user as "fix that path's permissions" and
+   * suppressed the commit as if they were the measured case.
+   *
+   * The messages here are git 2.39.5's own, transcribed from the measurement in
+   * `docs/266-orchestrator-git-trust-boundary/requirements.md`. This test pins
+   * the DISCRIMINATION; the real-git test above pins that the live wording still
+   * matches at all.
+   */
+  it("classifies the permission case, naming the path from the open() line", () => {
+    const message = [
+      "error: open(\"d/server.key\"): Permission denied",
+      "error: unable to index file 'd/server.key'",
+      "fatal: updating files failed",
+    ].join("\n");
+    expect(classifyUnreadableAddFailure(message)).toEqual({ kind: "blocked", detail: "d/server.key" });
+  });
+
+  it("does NOT classify an index failure with no permission cause", () => {
+    // Shape of an EIO or a file deleted between `status` and `add`: git names
+    // the file it could not index and says nothing about permissions.
+    const message = [
+      "error: unable to index file 'data/blob.bin'",
+      "fatal: updating files failed",
+    ].join("\n");
+    expect(classifyUnreadableAddFailure(message)).toBeNull();
+  });
+
+  it("does NOT classify an unrelated add failure", () => {
+    const message = "fatal: Unable to create '/w/.git/index.lock': File exists.";
+    expect(classifyUnreadableAddFailure(message)).toBeNull();
+  });
+});
+
+describe("inspectWorkingTree — the question isClean() cannot answer (planning#407)", () => {
+  it("reports the unreadable directory on a tree git calls CLEAN", async () => {
+    // The data-loss path in one assertion. `tier-escalation` gates its wipe on
+    // "is the work still only in the working tree?" — and git answers "no"
+    // here, because it cannot see the work at all. Before the uid drop root
+    // read everything and the answer was right by accident.
+    fs.mkdirSync(path.join(repo, "pgdata"));
+    fs.writeFileSync(path.join(repo, "pgdata", "PG_VERSION"), "14\n");
+    git("add", "-A");
+    git("commit", "-qm", "add pgdata");
+    fs.writeFileSync(path.join(repo, "pgdata", "PG_VERSION"), "15\n");
+    fs.chmodSync(path.join(repo, "pgdata"), 0o000);
+
+    const mgr = new GitManager(repo);
+    expect(await mgr.isClean()).toBe(true); // the trap
+    expect(await mgr.inspectWorkingTree()).toEqual({
+      clean: true,
+      unreadable: { kind: "omitted", detail: "pgdata/" },
+    });
+  });
+
+  it("reports an ordinary dirty tree with nothing unreadable", async () => {
+    fs.writeFileSync(path.join(repo, "tracked.txt"), "edit\n");
+    expect(await new GitManager(repo).inspectWorkingTree()).toEqual({ clean: false, unreadable: null });
+  });
+
+  it("reports a clean, fully readable tree", async () => {
+    expect(await new GitManager(repo).inspectWorkingTree()).toEqual({ clean: true, unreadable: null });
   });
 });

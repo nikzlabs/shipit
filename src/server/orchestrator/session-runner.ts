@@ -16,6 +16,7 @@ import type { ServiceManager } from "./service-manager.js";
 import type { AgentListenerDeps } from "./ws-handlers/agent-listeners.js";
 import type { PersistedMessage } from "./chat-history.js";
 import type { SecretFinding } from "../shared/secret-scan.js";
+import type { UnreadableWorkspace } from "../shared/git.js";
 import type { SubAgentSpawnRequest, SubAgentRunResult, SubAgentRunHandle } from "../shared/sub-agent-run.js";
 import { runAgentToCompletion, buildSubAgentRunParams } from "../shared/sub-agent-run.js";
 import type { AgentInterfaceProvenance } from "../shared/agent-interface-sdk/protocol.js";
@@ -670,6 +671,14 @@ export interface SystemTurnDeps {
     rebaseInProgress: boolean;
     /** docs/213 — likely secrets in the staged diff; non-empty ⇒ commit refused. */
     secretFindings: SecretFinding[];
+    /**
+     * docs/266 reqs 14 + 15 — workspace content ShipIt's own git could not read.
+     * Carried through this dep, not just returned by `GitManager.autoCommit`,
+     * because the fallback commit path in `turn-executor.ts` is the one place a
+     * turn commits WITHOUT `postTurnCommit` — and requirement 15 does not care
+     * which path the turn took (review finding, planning#407).
+     */
+    unreadable: UnreadableWorkspace | null;
   }>;
   /**
    * Schedule a debounced auto-push after a commit. `sessionId` keys the pending

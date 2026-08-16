@@ -17,11 +17,13 @@ describe("git-config: initGlobalGitConfig", () => {
   let tmpDir: string;
   let origGitConfigGlobal: string | undefined;
   let origGitEditor: string | undefined;
+  let origLcAll: string | undefined;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "vibe-git-config-"));
     origGitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
     origGitEditor = process.env.GIT_EDITOR;
+    origLcAll = process.env.LC_ALL;
     delete process.env.GIT_EDITOR;
   });
 
@@ -30,7 +32,40 @@ describe("git-config: initGlobalGitConfig", () => {
     else delete process.env.GIT_CONFIG_GLOBAL;
     if (origGitEditor !== undefined) process.env.GIT_EDITOR = origGitEditor;
     else delete process.env.GIT_EDITOR;
+    if (origLcAll !== undefined) process.env.LC_ALL = origLcAll;
+    else delete process.env.LC_ALL;
     fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  /**
+   * docs/266 / planning#407 — `shared/git.ts` classifies the two
+   * unreadable-workspace states by matching git's ENGLISH stderr, because
+   * simple-git's `GitError` carries no exit code. Under a translated locale
+   * those matches stop firing and a turn commits short in silence again.
+   *
+   * The process environment is the only place that reaches every
+   * orchestrator-side git: simple-git's `env()` ASSIGNS (so a caller chaining
+   * it discards an override) and forwarding `process.env` to make it stick trips
+   * `blockUnsafeOperationsPlugin` on the `GIT_CONFIG_GLOBAL` set here.
+   *
+   * What this test canNOT fail on: whether git's translations are installed in
+   * this image at all. It pins the intent — the language is chosen, not
+   * inherited — not a reproduction of a translated failure.
+   */
+  it("pins LC_ALL=C so git's messages stay matchable", () => {
+    process.env.LC_ALL = "fr_FR.UTF-8";
+    initGlobalGitConfig(tmpDir);
+    expect(process.env.LC_ALL).toBe("C");
+  });
+
+  it("reaches a child spawned with no explicit env — the way git is spawned", () => {
+    // The mechanism, not the translation: simple-git's default executor passes
+    // `env: null`, so the child inherits this process's environment. A test that
+    // asserted English output would pass on an image with no translations
+    // installed whether or not anything was pinned.
+    process.env.LC_ALL = "fr_FR.UTF-8";
+    initGlobalGitConfig(tmpDir);
+    expect(execSync("printenv LC_ALL", { encoding: "utf-8" }).trim()).toBe("C");
   });
 
   it("sets GIT_EDITOR=true so git rebase --continue does not try to open an editor", () => {

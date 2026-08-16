@@ -154,7 +154,7 @@ describe("Integration: adopting a turn that outlived the orchestrator (docs/240)
     const deps: SystemTurnDeps = {
       agentFactory: (agentId) => runner.createAgent(agentId),
       autoCommit: async () => ({
-        commitHash: null, parentHash: null, conflictedFiles: [], rebaseInProgress: false, secretFindings: [],
+        commitHash: null, parentHash: null, conflictedFiles: [], rebaseInProgress: false, secretFindings: [], unreadable: null,
       }),
       scheduleAutoPush: (dir) => { pushes.push(dir); },
       commitTurn: async ({ summary, sessionDir }) => {

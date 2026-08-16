@@ -264,6 +264,38 @@ describe("Integration: File content viewer", () => {
     });
   }
 
+  /**
+   * docs/266 reqs 14 + 15 / planning#407 — this call site destructured only
+   * `commitHash`, so a workspace ShipIt's own git cannot fully read produced a
+   * save that looked committed and was not. The notice is PERSISTED because the
+   * user must still find it after a reload — and there may be no runner at all
+   * on this path.
+   *
+   * The unreadable state is produced with mode bits on a self-owned directory:
+   * a session container has no root and `unshare -r` is refused, so genuine
+   * foreign ownership cannot be reproduced. The kernel check is the same.
+   */
+  it("warns in the transcript when a manual edit's commit came up short", async () => {
+    fs.writeFileSync(path.join(sessionDir, "hello.ts"), "const x = 1;\n");
+    const dataDir = path.join(sessionDir, "pgdata");
+    fs.mkdirSync(dataDir);
+    fs.writeFileSync(path.join(dataDir, "PG_VERSION"), "14\n");
+    fs.chmodSync(dataDir, 0o000);
+    try {
+      const res = await app.inject({
+        method: "PUT",
+        url: `/api/sessions/${sessionId}/files/hello.ts`,
+        payload: { content: "const x = 3;\n" },
+      });
+      expect(res.statusCode).toBe(200);
+
+      const history = await app.inject({ method: "GET", url: `/api/sessions/${sessionId}/history` });
+      expect(history.body).toContain("pgdata/");
+    } finally {
+      fs.chmodSync(dataDir, 0o755);
+    }
+  });
+
   it("rejects edits on a warm (not-yet-graduated) session", async () => {
     fs.writeFileSync(path.join(sessionDir, "hello.ts"), "old");
     // Let the one-shot startup sweep (startup-tasks.ts) run while this session

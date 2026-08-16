@@ -66,20 +66,48 @@ Build sequence from [plan.md](./plan.md) §5. Requirements are cited as `(req N)
       the shared uid still reaches every session's workspace inside the
       orchestrator container.
 
-## Known gaps from review, not fixed here — planning#407
+## Review follow-ups — planning#407
 
-- `session-fork-merge.ts:54` clones `--local` from a session workspace with **no
-  `baseDir`**, so it still runs as root against an untrusted tree. No executed
-  payload is known (`--local` does not run the source's config), but it
-  contradicts `plan.md` §4, and the obvious fix is wrong: dropping would leave
-  the clone unable to write its root-owned destination.
-- `unreadable` is destructured only in `post-turn.ts`. The other `autoCommit`
-  callers ignore it — and `tier-escalation`'s pre-eviction commit re-checks
-  `isClean()`, which is **true** for unreadable content, so eviction can destroy
-  content root-side git used to commit. That is a data-loss path the drop
-  created and is the priority item on that issue.
-- The stderr classifiers are pinned to git 2.39.5's English wording, and
-  `unable to index file` is matched cause-agnostically.
+- [x] **The eviction data-loss path (the priority item).** `tier-escalation`'s
+      pre-eviction commit gated the wipe on `isClean()`, which is **true** for
+      content git cannot read — so a subtree the session uid could not open
+      answered "nothing uncommitted here" and the checkout, its only copy, was
+      deleted. Root read everything, so the gate was correct by accident until
+      the uid drop. It now asks `GitManager.inspectWorkingTree()` — clean AND
+      fully readable — before and after the commit, and an unreadable path is a
+      block in its own right (`kind: "unreadable"`, with its own notice naming
+      the path). Guarded by two real-git tests in `disk-tier-escalation.test.ts`,
+      both of which fail without the change.
+- [x] **`unreadable` reaching every `autoCommit` caller** (reqs 14, 15). The
+      words moved into `services/unreadable-workspace-notice.ts` and are now
+      used by the post-turn commit, the `gh pr create` / late-consult flush
+      (`services/github.ts`), the UI file save (`api-routes-files.ts`) and the
+      fallback turn commit (`turn-executor.ts`, via a new `SystemTurnDeps`
+      field). The two `templates.ts` sites are the deliberate exceptions, with
+      the reason stated at each: a root-owned `mkdtemp` and a workspace that is
+      being created, neither of which has a transcript or a foreign uid.
+      Requirement 15 also now covers the commits that fail for a cause ShipIt
+      canNOT classify: `post-turn.ts` reports the failure and rethrows, instead
+      of letting `postTurnStep` turn it into a log line.
+- [x] **The stderr classifiers.** The file regex is keyed on the permission
+      cause (`open(...): Permission denied`) instead of matching
+      `unable to index file` cause-agnostically, so an EIO or a file deleted
+      mid-add is no longer reported as "fix that path's permissions". The
+      orchestrator pins `LC_ALL=C` (`git-config.ts`) so the wording is git's
+      own rather than the deployment's locale — set on the process environment
+      because simple-git can carry neither an env override (`env()` assigns) nor
+      a forwarded `process.env` (the unsafe-env plugin refuses it over
+      `GIT_CONFIG_GLOBAL`). Residual, recorded: the **directory** case still
+      depends on git's wording, because there git exits 0 and the warning is the
+      only trace. The **file** case no longer does — the rejection itself proves
+      the turn committed nothing.
+- [ ] **The fork clone that runs as root over an untrusted tree**
+      (`session-fork-merge.ts`, no `baseDir`) is NOT fixed here. It is being
+      fixed alongside E2 by the planning#403 work, which touches the same file —
+      creating the destination, handing it to the worker uid, then cloning at
+      the source tree's uid. Left to that change rather than made twice.
+      `plan.md` §4's "no root-side git touches the untrusted tree at all" is
+      still wrong until it lands.
 
 ## Do not write up as closed
 

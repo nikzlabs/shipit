@@ -7,6 +7,10 @@ import { recordSecretBlock, clearSecretBlock } from "../services/secret-block.js
 import { evaluateMergedBranchPush, formatMergedPushNotice } from "../services/merged-push-guard.js";
 import { scanDiffForSecrets } from "../../shared/secret-scan.js";
 import { emitNoticePostTurn } from "../chat-card-persistence.js";
+import {
+  formatUnreadableWorkspaceNotice,
+  formatUncommittedTurnNotice,
+} from "../services/unreadable-workspace-notice.js";
 import { sessionAutoCommitAllowed } from "../services/auto-commit-gate.js";
 import { chownWorkspaceGitToSessionWorker } from "../session-worker-uid.js";
 
@@ -152,11 +156,55 @@ export async function postTurnCommit(
     }
   }
 
+  /**
+   * docs/266 req 15 / planning#407 — `git.autoCommit`, with the guarantee that a
+   * turn which committed NOTHING says so in the transcript.
+   *
+   * `autoCommit` returns the two states it can classify (`unreadable`, and the
+   * secret/conflict refusals). Everything else it cannot classify it rethrows —
+   * and a throw here lands in `postTurnStep`, which logs and continues. That is
+   * right for the steps around the commit and wrong for the commit itself:
+   * requirement 15 says a turn whose work was not committed at all must be
+   * REPORTED, and "a log line is not a report".
+   *
+   * Reports, then rethrows unchanged. The throw is what stops the push and the
+   * PR card, and nothing about that control flow should change — the only thing
+   * added is that the user finds out. The notice is best-effort for the same
+   * reason the merged-push one is: losing the notice is bad, replacing git's
+   * error with a chat-history error is worse.
+   */
+  async function autoCommitReportingFailure(
+    git: ReturnType<AppCtx["createGitManager"]>,
+    summary: string,
+  ): Promise<Awaited<ReturnType<typeof git.autoCommit>>> {
+    try {
+      return await git.autoCommit(summary);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      console.error(`[git] auto-commit failed for ${opts.sessionId ?? "(no session)"}:`, reason);
+      if (opts.sessionId) {
+        try {
+          emitNoticePostTurn(
+            opts.emit,
+            ctx.chatHistoryManager,
+            opts.sessionId,
+            formatUncommittedTurnNotice(reason),
+            "warn",
+          );
+        } catch (noticeErr) {
+          console.error(`[git] uncommitted-turn notice failed for ${opts.sessionId}:`, noticeErr);
+        }
+      }
+      throw err;
+    }
+  }
+
   async function commitInLock(): Promise<string | null> {
     const git = ctx.createGitManager(opts.sessionDir);
     const parentHash = await git.getHeadHash();
     const firstLine = opts.turnSummary.split("\n")[0]?.slice(0, 120) || "Agent turn";
-    const { commitHash, conflictedFiles, rebaseInProgress, secretFindings, unreadable } = await git.autoCommit(firstLine);
+    const { commitHash, conflictedFiles, rebaseInProgress, secretFindings, unreadable } =
+      await autoCommitReportingFailure(git, firstLine);
     // docs/266 reqs 14 + 15 — orchestrator git now runs as the session's uid, so
     // for the first time it can hit workspace content it cannot read (a compose
     // service running at its own explicit `user:`). The two outcomes need
@@ -170,15 +218,7 @@ export async function postTurnCommit(
         opts.emit,
         ctx.chatHistoryManager,
         opts.sessionId,
-        unreadable.kind === "omitted"
-          ? `This commit is short. ShipIt could not read \`${unreadable.detail}\` in your workspace, `
-            + "so its contents were left out of the commit — everything else was committed normally. "
-            + "A service in your `docker-compose.yml` running as its own `user:` is the usual cause; "
-            + "gitignoring that path removes the problem entirely."
-          : `This turn was NOT committed. ShipIt could not read \`${unreadable.detail}\`, and \`git add\` `
-            + "stages nothing at all when that happens — so the rest of the turn's work is still in the "
-            + "working tree, uncommitted. Fix that path's permissions (or gitignore it) and the next turn "
-            + "will commit everything.",
+        formatUnreadableWorkspaceNotice(unreadable),
         "warn",
       );
     }

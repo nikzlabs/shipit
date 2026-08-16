@@ -149,6 +149,33 @@ export function initGlobalGitConfig(credentialsDir: string): void {
   if (!process.env.GIT_EDITOR) {
     process.env.GIT_EDITOR = "true";
   }
+
+  // docs/266 / planning#407 — pin git's message LANGUAGE for this process and
+  // everything it spawns.
+  //
+  // `shared/git.ts` classifies the two unreadable-workspace states by matching
+  // git's stderr text, because simple-git's `GitError` carries no exit code
+  // (`errorDetectionPlugin` never puts one on it). Git translates those messages
+  // under a non-C locale, so a deployment that sets `LANG` — or a base image
+  // that starts shipping one — would silently switch the detection off and
+  // return a turn to committing short in silence, which is the outcome
+  // requirement 14 exists to prevent. Today's images set no locale at all, so
+  // this pins what is currently true by accident.
+  //
+  // Set on `process.env` rather than through simple-git, because simple-git
+  // cannot carry it: `env(object)` ASSIGNS the executor environment (so any
+  // caller chaining `.env()` discards it — the trap that killed the
+  // `GIT_CONFIG_GLOBAL` override), and forwarding `process.env` to make it
+  // stick is worse still, since `blockUnsafeOperationsPlugin` inspects the env
+  // it is handed and would refuse every command over the `GIT_CONFIG_GLOBAL`
+  // set above. The process environment is what the default (`env: null`) spawn
+  // inherits, what both `.env({ ...process.env })` callers spread, and what the
+  // raw `execFileSync`/`spawn` git sites inherit — one place, all of them.
+  //
+  // `C` and not `C.UTF-8`: the latter does not exist on every host this can run
+  // on (local mode, macOS), where the invalid value makes git warn on stderr —
+  // into the very capture the classifier reads.
+  process.env.LC_ALL = "C";
 }
 
 /**

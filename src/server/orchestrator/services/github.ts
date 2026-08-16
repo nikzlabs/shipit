@@ -21,6 +21,7 @@ import { getErrorMessage } from "../validation.js";
 import type { GitHubStatus } from "./types.js";
 import { formatUnresolvedConflictNotice } from "./conflict-marker-notice.js";
 import { formatSecretScanNotice } from "./secret-scan-notice.js";
+import { formatUnreadableWorkspaceNotice } from "./unreadable-workspace-notice.js";
 import { emitNoticePostTurn } from "../chat-card-persistence.js";
 import type { GenerateText } from "../non-turn-model.js";
 
@@ -743,8 +744,23 @@ export async function flushPendingTurnCommit(
     || runner?.turnSummary?.split("\n")[0]?.slice(0, 120)
     || "Agent turn";
   const parentHash = await git.getHeadHash();
-  const { commitHash, conflictedFiles, rebaseInProgress, secretFindings } = await git.autoCommit(summary);
+  const { commitHash, conflictedFiles, rebaseInProgress, secretFindings, unreadable } =
+    await git.autoCommit(summary);
   const secretBlocked = secretFindings.length > 0;
+  // docs/266 reqs 14 + 15 / planning#407 — this flush is the turn's commit for the
+  // work it carries (a mid-turn `gh pr create`, a consult landing after its
+  // parent turn), so the same two states get the same words here as on the
+  // post-turn path. Ignoring the field was the bug: a `blocked` add returns a
+  // null hash exactly like "nothing to commit", and the caller then pushes and
+  // opens a PR that does not contain the work the flush existed to include.
+  if (unreadable && runner) {
+    const message = formatUnreadableWorkspaceNotice(unreadable, "This work");
+    if (deps.chatHistory) {
+      emitNoticePostTurn((m) => runner.emitMessage(m), deps.chatHistory, runner.sessionId, message, "warn");
+    } else {
+      runner.emitMessage({ type: "system_notice", sessionId: runner.sessionId, level: "warn", message });
+    }
+  }
   if (secretBlocked && runner) {
     const message = formatSecretScanNotice(secretFindings);
     if (deps.chatHistory) {
