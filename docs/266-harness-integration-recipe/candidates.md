@@ -115,6 +115,16 @@ projects are unrelated.
 
 ## OpenCode
 
+> **Shipped** — integrated as ShipIt's third harness via this recipe; see
+> [docs/268-opencode-harness](../268-opencode-harness/plan.md) for the
+> live-verified findings that supersede this desk research. All matrix
+> unknowns resolved there: reasoning control exists (`--variant`, `high` as
+> the reviewer default — row 12 never blocked), token figures are disjoint
+> (no normalizer needed), both API styles wire-verified, and the stream's
+> real failure mode is *error-then-hang* plus buffered-stdout loss — the
+> synthesized-terminal-result criterion held, with an added rule that the
+> adapter kills the process on a fatal `error` event.
+
 - **Binary / install**: `opencode`; **npm `opencode-ai`**, exact-pinnable —
   the best fit with the existing npm-lockfile install pipeline. Open source
   (repo now `anomalyco/opencode`). Extremely fast release cadence

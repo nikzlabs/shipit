@@ -187,8 +187,9 @@ are **silent**: no compile error and no existing test fails if you miss them.
   (`/usr/local/bin`) with a survival check, and the `installed.json`
   report all iterate the harness lists. One exception: the blanket
   `--ignore-scripts` means a CLI whose package needs its install script
-  (native binary — Claude Code today) needs its own targeted
-  `npm rebuild <pkg>` line, gated on being selected.
+  (a native binary or a platform-shim postinstall — Claude Code and
+  OpenCode today) needs its own targeted `npm rebuild <pkg>` line, gated on
+  being selected.
 - `docker/agent-cli/package.json` + lockfile: the pinned npm package
   (exact version, ≥7 days old). A non-npm CLI (Cursor) breaks this pipeline —
   that's a design decision to surface, not to improvise. Note the trap:
@@ -402,7 +403,8 @@ fake agent (`integration_tests/test-helpers.ts:722`) hardcodes
 - `services/reviewer-settings.ts:28` derives a reviewer pin's harness via
   `harnessesForSelection(...)[0]`; `roles.ts`'s header flags that a
   reasoning level validated against one harness can be carried onto another
-  — more reachable with three harnesses.
+  — more reachable with three harnesses. Became observable with the third
+  harness, as predicted; tracked as planning#408.
 - `services/child-sessions.ts:367` `agentIdForModel` picks the *first*
   harness offering a shared model id — adding a harness can silently change
   which one wins for gateway/shared models (DeepSeek, GLM).
