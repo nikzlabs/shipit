@@ -400,11 +400,14 @@ fake agent (`integration_tests/test-helpers.ts:722`) hardcodes
 
 ## Known pre-existing defects a third harness worsens
 
-- `services/reviewer-settings.ts:28` derives a reviewer pin's harness via
-  `harnessesForSelection(...)[0]`; `roles.ts`'s header flags that a
-  reasoning level validated against one harness can be carried onto another
-  — more reachable with three harnesses. Became observable with the third
-  harness, as predicted; tracked as planning#408.
+- `services/reviewer-settings.ts:112` (`resolveReviewerPinPatch`) derives a
+  reviewer pin's harness via `harnessesForSelection(...)[0]`; `roles.ts`'s
+  header still flags this as live: a reasoning level validated against one
+  harness can be carried onto another — more reachable with each added
+  harness. The *selection*-side half of the same prediction — a harness-only
+  tie letting the implementer's own likely family review it — did become
+  observable with the third harness and is fixed (planning#408,
+  `reviewer-model.ts` tie-break).
 - `services/child-sessions.ts:367` `agentIdForModel` picks the *first*
   harness offering a shared model id — adding a harness can silently change
   which one wins for gateway/shared models (DeepSeek, GLM).
