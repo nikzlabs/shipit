@@ -1561,6 +1561,38 @@ describe("PrStatusPoller", () => {
       return { poller, registry, mergePullRequest: githubAuth.mergePullRequest as ReturnType<typeof vi.fn> };
     }
 
+    // An archived session is filtered out of `SessionManager.list()`, which the
+    // poll loop iterates — so before docs/266 an armed managed PR on an archived
+    // session was never merged by anything, while the polling gate stayed open
+    // for it forever. Under native arming GitHub merged it with no help from us,
+    // so redirecting live sessions to managed made this reachable.
+    it("still merges an armed PR after its session is archived", async () => {
+      vi.useFakeTimers();
+      const githubAuth = makeGitHubAuth({
+        data: { repository: { pullRequests: { nodes: [makeGraphQLPrNode()] } } },
+      });
+      const sessionManager = makeSessionManager([
+        { id: "s1", branch: "shipit/abc-feature", remoteUrl: "https://github.com/owner/repo", archived: true },
+      ]);
+      const registry = makeFakeRegistry();
+      registry.setViewers("s1", 1);
+      const poller = new PrStatusPoller({
+        githubAuth,
+        sessionManager,
+        sseBroadcast: vi.fn(),
+        runnerRegistry: registry,
+      });
+      poller.setAutoMergeEnabled("s1", true);
+      poller.setAutoMergeManaged("s1", true, { managedReason: "session-live" });
+      poller.trackSession("s1", "https://github.com/owner/repo");
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(githubAuth.mergePullRequest).toHaveBeenCalledTimes(1);
+      poller.destroy();
+      vi.useRealTimers();
+    });
+
     it("does not merge while the session is busy, and merges once it is idle", async () => {
       vi.useFakeTimers();
       const { poller, registry, mergePullRequest } = await pollGreenPr({ busy: true });

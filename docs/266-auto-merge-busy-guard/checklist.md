@@ -14,4 +14,6 @@
 - [x] Registry test fake reports `agentBusy` (was blind to the post-turn window)
 - [x] `npm run test:dev`, `npm run lint:dev`, `npm run typecheck`
 - [x] Independent review against the numbered requirements
+- [x] Review findings applied: archived-session polling, `updateMergeMethod`, system-turn term, lifecycle-card wording, native attribution fallback, hold-log latch
+- [x] Follow-up filed for restart persistence (planning#398)
 - [x] Rebase onto `origin/main` and open the PR

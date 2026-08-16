@@ -200,6 +200,10 @@ export async function emitPrLifecycleAfterCommit(args: {
                 enabled: autoMerge.enabled,
                 mergeMethod: autoMerge.mergeMethod,
                 managed: autoMerge.managed,
+                // docs/266 — without the reason the client falls back to the
+                // repo-misconfiguration tooltip, so an agent-opened PR would
+                // show a false error until the next poll corrected it.
+                managedReason: autoMerge.managedReason,
                 settingsUrl: autoMerge.settingsUrl,
                 reason: autoMerge.reason,
                 error: autoMerge.error,
@@ -247,6 +251,7 @@ export async function emitPrLifecycleAfterCommit(args: {
             enabled: autoMerge.enabled,
             mergeMethod: autoMerge.mergeMethod,
             managed: autoMerge.managed,
+            managedReason: autoMerge.managedReason,
             settingsUrl: autoMerge.settingsUrl,
             reason: autoMerge.reason,
             error: autoMerge.error,

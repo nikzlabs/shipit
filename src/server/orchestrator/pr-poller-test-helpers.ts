@@ -137,12 +137,18 @@ export const CONVERSATION_OVERRIDES = {
   },
 };
 
+/**
+ * `archived: true` models `SessionManager.list()`'s `userArchived` filter: the
+ * session disappears from `list()` but `get()` still returns it. Anything that
+ * iterates `list()` (the poller's per-session loop) stops seeing it, which is
+ * how an armed managed auto-merge could be left with nothing to merge it.
+ */
 export function makeSessionManager(
-  sessions: { id: string; branch?: string; remoteUrl?: string; workspaceDir?: string }[],
+  sessions: { id: string; branch?: string; remoteUrl?: string; workspaceDir?: string; archived?: boolean }[],
   opts: { pendingMergeWatches?: string[] } = {},
 ): SessionManager {
   return {
-    list: () => sessions.map((s) => ({
+    list: () => sessions.filter((s) => !s.archived).map((s) => ({
       id: s.id,
       title: "Test",
       createdAt: new Date().toISOString(),

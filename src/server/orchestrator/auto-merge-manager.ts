@@ -60,6 +60,10 @@ export class AutoMergeManager {
       this.states.set(sessionId, state);
     } else {
       state.enabled = enabled;
+      // A toggle ends the current wait, whatever it was: drop the "already told
+      // you it is holding" latch so a re-enable that hits the gate again says so
+      // rather than staying silent.
+      this.busyLogged.delete(sessionId);
       // A deliberate user toggle resets the managed-merge lifecycle, so clear
       // the `completed` short-circuit either way (a re-enable must be able to
       // merge again; a disable shouldn't leave stale bookkeeping behind).
@@ -217,8 +221,13 @@ export class AutoMergeManager {
     // Like the review gate (docs/174) and the conflict branch, bail WITHOUT a
     // sticky error and re-evaluate on the next poll tick: being busy is a normal
     // transient wait, not a misconfiguration.
+    // `systemTurnInProgress` rides alongside `agentBusy` rather than inside it:
+    // a system flow runs with `running` false and is deliberately excluded from
+    // the runner's own busy getter, but the rebase driver holds it while it
+    // rebases, commits and FORCE-PUSHES the branch (`services/rebase-driver.ts`)
+    // — merging a branch mid-rewrite is exactly what this gate exists to stop.
     const runner = this.getRunner?.(sessionId);
-    if (runner?.agentBusy) {
+    if (runner?.agentBusy || runner?.systemTurnInProgress) {
       if (!this.busyLogged.has(sessionId)) {
         this.busyLogged.add(sessionId);
         console.log(
@@ -255,6 +264,17 @@ export class AutoMergeManager {
         `[auto-merge] Merged PR #${summary.prNumber} (${owner}/${repo}) for ${sessionId}`
         + ` via managed merge (${mergeState.mergeMethod}, reason=${mergeState.managedReason ?? "native-unavailable"})`,
       );
+      // The gate is read before an awaited round-trip, so a turn can start
+      // inside it. That is a sub-second window instead of the incident's four
+      // minutes, and nothing here can close it without a turn-admission lock —
+      // but when it does happen the next push is refused by
+      // `merged-push-guard`, and this line is what explains why.
+      if (this.getRunner?.(sessionId)?.agentBusy) {
+        console.warn(
+          `[auto-merge] PR #${summary.prNumber} for ${sessionId} merged as a turn began`
+          + " — later commits will be refused by merged-push-guard",
+        );
+      }
       this.onChange(sessionId);
     } else {
       // Merge failed — surface error, stays enabled for retry next poll

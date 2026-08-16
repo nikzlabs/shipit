@@ -1770,6 +1770,7 @@ export async function toggleAutoMerge(
       enabled: state.enabled,
       mergeMethod: state.mergeMethod,
       managed: state.managed,
+      managedReason: state.managedReason,
     };
   }
 
@@ -1852,6 +1853,12 @@ export async function updateMergeMethod(
   const autoMergeState = prStatusPoller.getAutoMergeState(sessionId);
   prStatusPoller.setMergeMethod(sessionId, method);
 
+  // docs/266 — a ShipIt-managed arming has nothing on GitHub to re-point: the
+  // method is read from our own state at merge time. Re-arming native here
+  // would hand a live session's PR straight back to GitHub *and* leave our
+  // state marked managed, so both loops would own the same PR.
+  if (autoMergeState?.enabled && autoMergeState.managed) return { mergeMethod: method };
+
   // If auto-merge is active, re-enable with the new method
   if (autoMergeState?.enabled) {
     const prStatus = prStatusPoller.getStatus(sessionId);
@@ -1859,6 +1866,15 @@ export async function updateMergeMethod(
       const urlMatch = /github\.com\/([^/]+)\/([^/]+)/.exec(prStatus.prUrl);
       if (urlMatch) {
         const [, owner, repo] = urlMatch;
+        // The arming is native but the session has since come alive (it was
+        // quiet when armed). Take ownership rather than re-arming GitHub: same
+        // rule as `toggleAutoMerge`, applied at the only other moment an arming
+        // is rewritten.
+        if (prStatusPoller.hasLiveRunner(sessionId)) {
+          await githubAuth.disableAutoMerge(owner, repo, prStatus.prNumber);
+          prStatusPoller.setAutoMergeManaged(sessionId, true, { managedReason: "session-live" });
+          return { mergeMethod: method };
+        }
         await githubAuth.disableAutoMerge(owner, repo, prStatus.prNumber);
         const graphqlMethod = method === "merge" ? "MERGE" as const : method === "squash" ? "SQUASH" as const : "REBASE" as const;
         await githubAuth.enableAutoMerge(owner, repo, prStatus.prNumber, graphqlMethod);

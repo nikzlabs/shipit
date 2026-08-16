@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { toggleAutoMerge, activatePendingAutoMergeForPr, mergePullRequest } from "./github.js";
+import { toggleAutoMerge, activatePendingAutoMergeForPr, mergePullRequest, updateMergeMethod } from "./github.js";
 import type { GitManager } from "../../shared/git.js";
 import type { GitHubAuthManager } from "../github-auth.js";
 import type { PrStatusPoller } from "../pr-status-poller.js";
@@ -59,6 +59,9 @@ function makePoller(
       getAutoMergeState: () => autoMerge,
       setAutoMergeEnabled,
       setAutoMergeManaged,
+      setMergeMethod: vi.fn((_sessionId: string, method: "squash" | "merge" | "rebase") => {
+        if (autoMerge) autoMerge = { ...autoMerge, mergeMethod: method };
+      }),
       hasLiveRunner: () => opts.liveRunner === true,
     } as unknown as PrStatusPoller,
     setAutoMergeEnabled,
@@ -290,5 +293,58 @@ describe("mergePullRequest — auto-merge fallback while checks are pending", ()
     expect(enableAutoMerge).toHaveBeenCalledTimes(1);
     expect(result).toMatchObject({ autoMergeEnabled: true });
     expect(result.managed).toBeUndefined();
+  });
+});
+
+/**
+ * docs/266 — changing the merge method rewrites an arming, and the old code
+ * rewrote it straight onto GitHub: `disableAutoMerge` + `enableAutoMerge`
+ * whenever local state said enabled. For a managed arming there is nothing on
+ * GitHub to re-point (the method is read from our state at merge time), and
+ * arming native there would leave BOTH loops owning the same PR.
+ */
+describe("updateMergeMethod — does not hand a managed PR to GitHub", () => {
+  function authStub() {
+    return {
+      disableAutoMerge: vi.fn(async () => ({ success: true })),
+      enableAutoMerge: vi.fn(async () => ({ success: true })),
+    } as unknown as GitHubAuthManager & {
+      disableAutoMerge: ReturnType<typeof vi.fn>;
+      enableAutoMerge: ReturnType<typeof vi.fn>;
+    };
+  }
+
+  it("touches GitHub not at all for a ShipIt-managed arming", async () => {
+    const p = makePoller(summary(), { enabled: true, mergeMethod: "squash", managed: true, managedReason: "session-live" }, { liveRunner: true });
+    const githubAuth = authStub();
+
+    const result = await updateMergeMethod(githubAuth, p.poller, "s1", "rebase");
+
+    expect(githubAuth.enableAutoMerge).not.toHaveBeenCalled();
+    expect(githubAuth.disableAutoMerge).not.toHaveBeenCalled();
+    expect(result).toEqual({ mergeMethod: "rebase" });
+  });
+
+  // Armed native while the session was quiet, then the session came alive.
+  // Re-arming native is exactly the hand-off req 4 forbids.
+  it("takes ownership instead of re-arming native when the session is now live", async () => {
+    const p = makePoller(summary(), { enabled: true, mergeMethod: "squash" }, { liveRunner: true });
+    const githubAuth = authStub();
+
+    await updateMergeMethod(githubAuth, p.poller, "s1", "rebase");
+
+    expect(githubAuth.disableAutoMerge).toHaveBeenCalledTimes(1);
+    expect(githubAuth.enableAutoMerge).not.toHaveBeenCalled();
+    expect(p.setAutoMergeManaged).toHaveBeenCalledWith("s1", true, { managedReason: "session-live" });
+  });
+
+  it("still re-points GitHub native for a quiet session", async () => {
+    const p = makePoller(summary(), { enabled: true, mergeMethod: "squash" });
+    const githubAuth = authStub();
+
+    await updateMergeMethod(githubAuth, p.poller, "s1", "rebase");
+
+    expect(githubAuth.disableAutoMerge).toHaveBeenCalledTimes(1);
+    expect(githubAuth.enableAutoMerge).toHaveBeenCalledTimes(1);
   });
 });

@@ -929,6 +929,21 @@ export class PrStatusPoller {
     // Match PRs to sessions by branch name
     const updates: PrStatusSummary[] = [];
     const sessions = this.sessionManager.list();
+    // docs/266 — `list()` filters out archived sessions (`sessions.ts`, the
+    // `userArchived` clause), so an archived session never reaches
+    // `handleManaged`. That was harmless while a live session's PR was armed on
+    // GitHub — native merged it with no help from us — but ShipIt now owns
+    // those merges, and the polling gate stays OPEN for an armed managed state
+    // (`polling-global-gate.ts`), so the result would be a supervisor spinning
+    // forever over a PR nothing ever merges. Re-admit exactly the armed ones.
+    for (const sessionId of this.tracker.sessionRepos.keys()) {
+      if (this.tracker.sessionRepos.get(sessionId) !== repoKey) continue;
+      const armed = this.autoMerge.get(sessionId);
+      if (!armed?.enabled || !armed.managed) continue;
+      if (sessions.some((s) => s.id === sessionId)) continue;
+      const archived = this.sessionManager.get(sessionId);
+      if (archived) sessions.push(archived);
+    }
 
     // Ensure workflows are parsed for this repo before we make grace
     // decisions below. The first call kicks off the load; subsequent calls
@@ -1264,6 +1279,11 @@ export class PrStatusPoller {
     // A merge first observed only after a mid-merge restart still fires once:
     // its persisted state was "open" at the last pre-restart poll.
     const prevState = this.tracker.lastKnown.get(sessionId)?.prState;
+    // docs/266 — captured HERE, before `lastKnown` is overwritten with the
+    // terminal summary below (which hard-codes `autoMergeEnabled: false`).
+    // GitHub's own flag is the only record of a native arming ShipIt never
+    // stored, e.g. the merge button's pending-checks fallback.
+    const nativeArmedOnGitHub = this.tracker.lastKnown.get(sessionId)?.autoMergeEnabled === true;
     const alreadyTerminal =
       this.tracker.mergedSessions.has(sessionId)
       || prevState === "merged"
@@ -1334,9 +1354,11 @@ export class PrStatusPoller {
     // merge itself happens inside GitHub), and the ops review of the PR #2327
     // incident had nothing to go on: neither merge path logged anything. The
     // managed loop logs its own merge at the REST call.
+    // ShipIt's own state is not the only way a PR gets armed — see
+    // `nativeArmedOnGitHub` above.
     const armedAtTerminal = this.autoMerge.get(sessionId);
-    if (!alreadyTerminal && armedAtTerminal?.enabled) {
-      const mode = armedAtTerminal.managed
+    if (!alreadyTerminal && (armedAtTerminal?.enabled || nativeArmedOnGitHub)) {
+      const mode = armedAtTerminal?.enabled && armedAtTerminal.managed
         ? `managed (${armedAtTerminal.managedReason ?? "native-unavailable"})`
         : "native";
       console.log(

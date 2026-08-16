@@ -51,7 +51,9 @@ function makeManager(mergeResult = { success: true, message: "merged" }) {
  * A manager wired to a runner whose busy state the test controls, standing in
  * for the runner registry the poller passes in production.
  */
-function makeManagerWithRunner(runner: { running?: boolean; agentBusy: boolean } | undefined) {
+function makeManagerWithRunner(
+  runner: { running?: boolean; agentBusy: boolean; systemTurnInProgress?: boolean } | undefined,
+) {
   const mergePullRequest = vi.fn().mockResolvedValue({ success: true, message: "merged" });
   const githubAuth = { mergePullRequest } as unknown as GitHubAuthManager;
   const onChange = vi.fn();
@@ -273,6 +275,24 @@ describe("AutoMergeManager.handleManaged", () => {
       expect(mergePullRequest).toHaveBeenCalledTimes(1);
     });
 
+    // A system flow (the rebase driver) runs with `running` false and is
+    // excluded from the runner's own `agentBusy`, yet it rebases, commits and
+    // FORCE-PUSHES the branch. Merging a branch mid-rewrite is the same class of
+    // damage the gate exists to stop.
+    it("holds the merge during a system turn (rebase / force-push)", async () => {
+      const { manager, mergePullRequest } = makeManagerWithRunner({
+        running: false,
+        agentBusy: false,
+        systemTurnInProgress: true,
+      });
+      manager.setEnabled("s1", true);
+      manager.setManaged("s1", true);
+
+      await manager.handleManaged("s1", makeSummary("success", "mergeable"), "o", "r");
+
+      expect(mergePullRequest).not.toHaveBeenCalled();
+    });
+
     it("merges when the session has no runner (container reclaimed, session gone)", async () => {
       const { manager, mergePullRequest } = makeManagerWithRunner(undefined);
       manager.setEnabled("s1", true);
@@ -282,6 +302,34 @@ describe("AutoMergeManager.handleManaged", () => {
 
       expect(mergePullRequest).toHaveBeenCalledTimes(1);
     });
+  });
+
+  // The hold is logged once per wait, and a toggle ends the wait — otherwise a
+  // disable → re-enable → busy sequence holds the merge with no record of it.
+  it("logs the hold again after auto-merge is toggled off and back on", async () => {
+    const log = vi.spyOn(console, "log").mockImplementation(() => { /* silence */ });
+    try {
+      const { manager } = makeManagerWithRunner({ running: true, agentBusy: true });
+      manager.setEnabled("s1", true);
+      manager.setManaged("s1", true);
+
+      await manager.handleManaged("s1", makeSummary("success", "mergeable"), "o", "r");
+      const holds = () => log.mock.calls.filter((c) => String(c[0]).includes("Holding merge")).length;
+      expect(holds()).toBe(1);
+
+      // Same wait, same session: still one record.
+      await manager.handleManaged("s1", makeSummary("success", "mergeable"), "o", "r");
+      expect(holds()).toBe(1);
+
+      manager.setEnabled("s1", false);
+      manager.setEnabled("s1", true);
+      manager.setManaged("s1", true);
+      await manager.handleManaged("s1", makeSummary("success", "mergeable"), "o", "r");
+
+      expect(holds()).toBe(2);
+    } finally {
+      log.mockRestore();
+    }
   });
 
   // docs/266 — `managed` alone can't be rendered: one reason is a repo
