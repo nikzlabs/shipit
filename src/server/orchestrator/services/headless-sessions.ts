@@ -16,7 +16,7 @@ import {
   KNOWN_AGENT_IDS,
 } from "../../shared/agent-registry.js";
 import { isHarnessInstalled } from "../../shared/installed-harnesses.js";
-import { generateBranchPrefix } from "../git-utils.js";
+import { generateBranchPrefix, generateBranchSlug } from "../git-utils.js";
 import { prepareSessionAgentEnvironment } from "../session-agent-env.js";
 import { graduateSession, type GraduateSessionDeps } from "./graduate-session.js";
 import { ServiceError } from "./types.js";
@@ -25,15 +25,48 @@ import type { ClaimSessionService } from "./claim-session.js";
 import { prepareDispatch } from "../prepared-dispatch.js";
 import { buildIssueSeedPrompt } from "../../shared/issue-ref.js";
 
-function assertValidBranchName(name: string): void {
-  if (/[\s~^:?*[\\]/.test(name) || name.includes("..")) {
-    throw new ServiceError(400, "Invalid branch name");
-  }
-}
-
 export interface HeadlessUploadInput {
   filename: string;
   data: Buffer;
+}
+
+/**
+ * The stable, issue-derived half of an issue-seeded branch name: the pointer,
+ * lowercased and kebabbed. `""` when the pointer slugifies to nothing.
+ *
+ * This function is also what makes the result a valid git ref: it keeps only
+ * `[a-z0-9]` and single interior dashes, so no space, `~^:?*[\`, or `..` can
+ * survive an identifier however a tracker spells it. That is now the ONLY
+ * source of a derived branch name besides `generateBranchPrefix`, which is why
+ * the route's old `assertValidBranchName` check went away with the
+ * caller-supplied `branch` option it existed to police (planning#413).
+ *
+ * docs/248 req 22 — the issue title is deliberately NOT in the branch name. A
+ * branch gets pushed to a public remote, so a title from a private planning
+ * issue would be published there. The rule is unconditional rather than scoped
+ * to "private" issues because ShipIt has no signal for which repositories are
+ * private: a declared planning repo may be public and a session's own code
+ * repo may be private, so any narrower rule would be a guess. The cost — a
+ * less readable branch for Linear and code-repo issues too — was accepted
+ * explicitly (see the requirements doc's resolved questions).
+ *
+ * Capped at 50 chars so the uniqueness suffix `seedFromIssueRef` appends keeps
+ * the whole ref inside the ~60 chars the old cap allowed.
+ */
+export function issueBranchBase(identifier: string): string {
+  return identifier
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 50)
+    .replace(/-+$/g, "");
+}
+
+/** Does `branch` look like an issue-seeded branch for this pointer? */
+export function isIssueSeededBranch(branch: string, identifier: string): boolean {
+  const base = issueBranchBase(identifier);
+  return base !== "" && (branch === base || branch.startsWith(`${base}-`));
 }
 
 /**
@@ -41,6 +74,26 @@ export interface HeadlessUploadInput {
  * Shared seeding primitive: the in-app "Start session" path (pull, docs/170)
  * and the future webhook trigger (push, docs/156) both build an `IssueRef` and
  * route through here, so the branch/prompt derivation stays in one place.
+ *
+ * **The branch is issue-derived but never issue-determined (planning#413).** It
+ * carries a random `generateBranchSlug()` suffix, so `SHI-304` seeds
+ * `shi-304-k7p2qz` and the next session on the same issue gets a different one.
+ * The pointer alone used to be the whole name, which made the branch a pure
+ * function of the issue — and sessions on one issue are routinely *sequential*
+ * (a follow-up, a re-run after a merge, a second attempt), not just concurrent.
+ * The second session then inherited the first's remote branch. What went wrong
+ * there is a branch-name identity problem, so it is not confined to the push:
+ * `quickCreatePr` resolves the branch's existing OPEN PR (`findPullRequest`)
+ * before pushing and returns it, so the new session's card points at the other
+ * session's PR; and where that PR already MERGED, `verifyMissingPr` finds it by
+ * branch name alone and promotes THIS session to terminal-merged, archiving it
+ * and re-firing the merge→issue effects under a second session id. The rejected
+ * non-fast-forward push is the least of it. Nothing reads the branch to recover
+ * the issue — the pointer travels in persisted chat history, the seed prompt and
+ * the PR body's `Closes` line — so the suffix costs only readability.
+ *
+ * Only a DERIVED branch is guaranteed unique: an explicit `opts.branch` still
+ * wins over the seed, so a caller that supplies one owns its collisions.
  */
 export function seedFromIssueRef(issueRef: IssueRef): {
   prompt: string;
@@ -50,26 +103,8 @@ export function seedFromIssueRef(issueRef: IssueRef): {
   const identifier = issueRef.identifier.trim();
   const titleText = issueRef.title.trim();
 
-  // Branch: the issue's **pointer only**, lowercased and kebabbed so it stays a
-  // valid git ref (assertValidBranchName rejects spaces/specials).
-  //
-  // docs/248 req 22 — the issue title is deliberately NOT in the branch name. A
-  // branch gets pushed to a public remote, so a title from a private planning
-  // issue would be published there. The rule is unconditional rather than scoped
-  // to "private" issues because ShipIt has no signal for which repositories are
-  // private: a declared planning repo may be public and a session's own code
-  // repo may be private, so any narrower rule would be a guess. The cost — a
-  // less readable branch for Linear and code-repo issues too — was accepted
-  // explicitly (see the requirements doc's resolved questions).
-  //
-  // Determinism is unchanged: the branch was already a pure function of the
-  // issue, so two sessions on one issue collide exactly as they did before.
-  const slugify = (s: string) =>
-    s
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "");
-  const branch = slugify(identifier).slice(0, 60).replace(/-+$/g, "") || generateBranchPrefix();
+  const base = issueBranchBase(identifier);
+  const branch = base ? `${base}-${generateBranchSlug()}` : generateBranchPrefix();
 
   // Seed prompt: the pointer only — see `buildIssueSeedPrompt`. The issue's
   // description is deliberately NOT pasted in; the agent fetches it.
@@ -86,12 +121,16 @@ export interface CreateHeadlessSessionOptions {
   prompt?: string;
   /**
    * docs/170 — when present, the branch, title, and (absent an explicit
-   * `prompt`) the first agent prompt are derived from the issue. Explicit
-   * `prompt`/`branch`/`title` still win so callers can override.
+   * `prompt`) the first agent prompt are derived from the issue. An explicit
+   * `prompt`/`title` still wins so callers can override.
+   *
+   * There is deliberately NO `branch` override (planning#413): a supplied name
+   * is used verbatim, so two calls carrying one name collide on a single remote
+   * branch — the failure the issue seed's uniqueness suffix exists to prevent.
+   * The branch is always derived here, from the pointer or generated.
    */
   issueRef?: IssueRef;
   title?: string;
-  branch?: string;
   agent?: AgentId;
   model?: string;
   /** docs/252 — the rest of the selection triple, when the caller knows it. */
@@ -156,7 +195,7 @@ export async function createHeadlessSession(
   if (!repoUrl) throw new ServiceError(400, "Add a repo first.");
 
   // docs/170 — derive branch/title/prompt from a tracker issue when supplied.
-  // Explicit options still win (a caller may pre-fill the prompt or branch).
+  // An explicit prompt/title still wins; the branch is never caller-supplied.
   const seed = opts.issueRef ? seedFromIssueRef(opts.issueRef) : undefined;
 
   const trimmedPrompt = (opts.prompt?.trim() || seed?.prompt)?.trim();
@@ -165,10 +204,12 @@ export async function createHeadlessSession(
     throw new ServiceError(400, "prompt exceeds 50,000 characters");
   }
 
-  const explicitBranch = opts.branch?.trim() || seed?.branch;
+  // Both branch sources are unique by construction (planning#413) and both are
+  // valid refs by construction, which is why nothing validates the result: the
+  // seed is `issueBranchBase` + a random slug, the fallback is generated.
+  const explicitBranch = seed?.branch;
   const explicitTitle = opts.title?.trim() || seed?.title;
   const branchName = explicitBranch || generateBranchPrefix();
-  assertValidBranchName(branchName);
 
   // Defense-in-depth: the model is the single source of truth (docs/142,
   // Problem C). When a recognized model is supplied, derive the agent from it

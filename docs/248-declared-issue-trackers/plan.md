@@ -475,7 +475,10 @@ Current state; each is a rework site unless noted.
   failure be reported in CLI output with the declared names in hand (reqs 8, 19)
   instead of arriving as an opaque 404 from a write that should never have run.
 - `src/server/orchestrator/services/headless-sessions.ts` — `seedFromIssueRef`
-  builds the branch from the identifier alone (req 22). **Carries over.**
+  builds the branch from the identifier alone (req 22). **Carries over**, with
+  a random uniqueness suffix added since (planning#413): the identifier still
+  names the branch, but no longer *determines* it, so a second session on one
+  issue cannot land on the first session's remote branch.
 - `src/server/orchestrator/services/issue-seeded-session.ts` — the same
   derivation applied on the **in-app** path (planning#322). The Issues tab prefills
   the composer rather than creating the session (docs/236), so the issue reaches

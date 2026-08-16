@@ -38,7 +38,6 @@ describe("createHeadlessSession", () => {
     const result = await createHeadlessSession({
       repoUrl: "https://github.com/acme/app.git",
       initialPrompt: "fix CI",
-      branch: "quick-ci",
       agent: "codex",
       model: "gpt-5.4",
     });
@@ -53,7 +52,6 @@ describe("createHeadlessSession", () => {
       body: JSON.stringify({
         repoUrl: "https://github.com/acme/app.git",
         initialPrompt: "fix CI",
-        branch: "quick-ci",
         agent: "codex",
         model: "gpt-5.4",
       }),

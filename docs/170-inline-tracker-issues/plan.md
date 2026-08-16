@@ -234,8 +234,60 @@ So `handleIssueStartSession` parks the ref in the session store
 it to the **first** message as `send_message.issueRef`. Warm graduation is the
 only thing that reads it: it renames the branch via
 `services/issue-seeded-session.ts` (which reuses `seedFromIssueRef`, so both
-paths derive the same branch) and fires `markIssueStartedFromSeed`. A message to
-an already-graduated session ignores the field.
+paths derive the same *shape* of branch) and fires `markIssueStartedFromSeed`. A
+message to an already-graduated session ignores the field.
+
+### The branch is issue-derived, never issue-determined (planning#413)
+
+`seedFromIssueRef` appends a random `generateBranchSlug()` suffix, so `SHI-304`
+seeds `shi-304-k7p2qz`. The pointer alone used to be the whole branch name,
+which made it a pure function of the issue — and sessions on one issue are
+routinely **sequential** (a follow-up, a re-run after the first PR merged, a
+second attempt), not only concurrent. The second session then inherited the
+first's remote branch.
+
+The damage is **not** confined to the push, because a branch name is an identity
+several subsystems resolve *through*:
+
+- **An open PR on that branch is adopted as the new session's own.**
+  `quickCreatePr` (`services/github.ts`) resolves
+  `findPullRequest(owner, repo, head)` *before* pushing and short-circuits on a
+  hit, so the second session's PR card points at the first session's PR. The
+  debounced auto-push is still armed and fires anyway — and is rejected
+  non-fast-forward.
+- **A merged one takes the new session down with it.** `verifyMissingPr`
+  (`pr-status-poller.ts`) looks a PR up **by branch name only**, so the surviving
+  remote branch promotes the *second* session to terminal-merged: archived, and
+  the merge→issue-lifecycle effects re-fired under a second session id (the
+  fire-once guard is per-session, so the tracker gets a duplicate resolved-by
+  comment). `SessionManager.findByBranch` likewise goes from many:1 back to 1:1.
+
+Nothing recovers the issue *from* the branch — the pointer travels in persisted
+chat history (`issue_ref` on the message row), the seed prompt, and the PR body's
+`Closes` line — so the suffix costs only a little readability.
+`isIssueSeededBranch` (the pointer stem, not the full name) is what the
+graduation path tests for idempotence, since a name containing fresh randomness
+can never equal a branch already on disk.
+
+**The caller-supplied `branch` option is gone with it.** `POST /api/sessions/headless`
+took a `branch` field and `createHeadlessSession` used it verbatim, ahead of the
+seed — so uniqueness would have held only for derived names, and any caller
+sending one name twice reproduced exactly the collision above. Nothing in ShipIt
+sent one (the client's typed wrapper declared the field; no component filled it),
+and `services/child-sessions.ts` had already dropped the same option from
+agent-driven spawns for a second reason: supplied names drifted outside the
+`shipit/` namespace and broke branch conventions. The branch is now always
+derived — from the issue pointer, or generated — on every creation path.
+
+This also supersedes docs/156's planned `-2`/`-3` suffix scheme for webhook
+re-triggers: that path routes through `createHeadlessSession`, so it inherits the
+random suffix and needs no counter of its own.
+
+The route's `assertValidBranchName` check went with the option. It existed to
+police a name arriving from outside; the two remaining sources are valid refs by
+construction (`issueBranchBase` keeps only `[a-z0-9]` and single interior dashes,
+`generateBranchPrefix` is base64url), so nothing validates the result any more.
+A caller that still sends `branch` is ignored, not rejected.
 
 ## Key files
 
