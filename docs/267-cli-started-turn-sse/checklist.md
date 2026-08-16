@@ -16,3 +16,10 @@
       stream: `started` → `finished` pairing, and one start per adopted turn.
 - [x] `npm run test:dev`, `npm run lint:dev`, `npm run typecheck`.
 - [x] Independent review of the branch diff.
+- [x] Review follow-up: pin the assistant edge on its own (not riding behind a
+      self-wake), so the coverage fails if `adoptsCliStartedTurns` stops being
+      wired.
+- [x] Review follow-up: pin the pairing on the abnormal exit (`done` with no
+      `agent_result`), not on the clean result alone.
+- [x] Review follow-up: add `requirements.md` — the folder is what the rule
+      attaches to, bug fix or not.

@@ -6,8 +6,11 @@ description: The sidebar showed "CI passed" for a session whose agent was workin
 
 # A CLI-started turn announces itself on the global SSE
 
+Implements [`requirements.md`](./requirements.md).
+
 The session sidebar showed the green "CI passed" checkmark for a session whose
-agent was in fact working. Switching into the session revealed it running.
+agent was in fact working. Switching into the session revealed it running
+(reqs 1–4).
 
 ## Root cause
 
@@ -41,7 +44,7 @@ the sidebar showing a checkmark for most of that window.
 
 One broadcast, in `adoptCliStartedTurn`, under two conditions.
 
-**Only on the false→true edge.** `adoptCliStartedTurn` runs on *every*
+**Only on the false→true edge** (reqs 6–7). `adoptCliStartedTurn` runs on *every*
 `agent_self_wake`, and that event rides the CLI's `task_notification`, which
 fires whenever a background job reports back — 15+ times in one session in the
 log above. Only the first is a real transition; a job started earlier in the
@@ -50,7 +53,7 @@ transition is captured as `startsTurn` before `running` moves, and every
 once-per-adopted-turn effect hangs off it. An unconditional broadcast would emit
 a burst of SSE frames to every browser per turn.
 
-**Only on a streaming turn.** An adopted turn gets a post-turn flow — and with
+**Only on a streaming turn** (req 5). An adopted turn gets a post-turn flow — and with
 it the matching `session_agent_finished` — only from `turn-executor`'s
 `rearmForCliStartedTurn`, which `beginRearm` refuses to run when the turn is not
 streaming (`turn-executor.ts:1526`, verified at the source). On a one-shot turn
@@ -108,5 +111,8 @@ cannot promise to retract.
 - `src/server/orchestrator/ws-handlers/agent-listeners.test.ts` — edge, no-burst,
   mid-turn silence, one-shot silence.
 - `src/server/orchestrator/integration_tests/self-wake-sse.test.ts` — the pair
-  (`started` → `finished`) read off a real `/api/events` stream, and one start
-  per adopted turn across a burst of notifications.
+  (`started` → `finished`) read off a real `/api/events` stream, for the
+  self-wake edge, for the assistant edge standing alone (so the case fails if
+  the executor stops enabling `adoptsCliStartedTurns`), and for the abnormal
+  exit that produces no `agent_result` at all; plus one start per adopted turn
+  across a burst of notifications.

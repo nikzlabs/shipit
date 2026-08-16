@@ -201,6 +201,62 @@ describe("Integration: a CLI-started turn on the global SSE (docs/267)", () => {
     client.close();
   });
 
+  // The OTHER adoption edge, on its own. A live steer the CLI acked too late to
+  // apply runs as its own turn, and nothing announces it — the model producing
+  // output is the first proof it exists (docs/140). Emitted as the FIRST
+  // post-result event here, so the case fails if the executor stops enabling
+  // assistant-edge adoption (`adoptsCliStartedTurns`) rather than riding in
+  // behind a self-wake that already marked the runner running.
+  it("announces a turn the CLI started from a late steer, where assistant output is the only signal", async () => {
+    sse = await SseTestClient.connect(port);
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+    const sessionId = client.sessionId;
+
+    client.send({ type: "send_message", text: "Turn one" });
+    const claude = await waitForClaude(() => lastClaude);
+    claude.initSession("wake-sse-steer");
+    claude.emit("event", { type: "result", subtype: "success", session_id: "wake-sse-steer" });
+    expect(await waitForLifecycle(sse, sessionId, 2)).toEqual(["started", "finished"]);
+
+    claude.emit("event", { type: "assistant", message: { content: [{ type: "text", text: "renaming it" }] } });
+    expect(await waitForLifecycle(sse, sessionId, 3)).toEqual(["started", "finished", "started"]);
+
+    claude.emit("event", { type: "result", subtype: "success", session_id: "wake-sse-steer" });
+    expect(await waitForLifecycle(sse, sessionId, 4))
+      .toEqual(["started", "finished", "started", "finished"]);
+
+    client.close();
+  });
+
+  // The pairing must survive the terminal path that produces no `agent_result`
+  // at all. A start that is announced and never retracted is a worse bug than
+  // the missing announcement this change fixes, so the abnormal exit gets its
+  // own case rather than being inferred from the clean one.
+  it("retracts the announcement when the adopted turn's process dies without a result", async () => {
+    sse = await SseTestClient.connect(port);
+    const client = await TestClient.connect(port);
+    await client.receive(); // preview_status
+    const sessionId = client.sessionId;
+
+    client.send({ type: "send_message", text: "Run the consult in the background" });
+    const claude = await waitForClaude(() => lastClaude);
+    claude.initSession("wake-sse-crash");
+    claude.emit("event", { type: "result", subtype: "success", session_id: "wake-sse-crash" });
+    await waitForLifecycle(sse, sessionId, 2);
+
+    claude.emit("event", { type: "agent_self_wake", taskId: "bg-1", status: "completed" });
+    expect(await waitForLifecycle(sse, sessionId, 3)).toEqual(["started", "finished", "started"]);
+
+    // The resident process is killed mid-adopted-turn (OOM, SIGTERM, a container
+    // restart): `done` with no preceding result for that turn.
+    claude.emit("done", 1);
+    expect(await waitForLifecycle(sse, sessionId, 4))
+      .toEqual(["started", "finished", "started", "finished"]);
+
+    client.close();
+  });
+
   it("announces one start per adopted turn, however many notifications it produces", async () => {
     sse = await SseTestClient.connect(port);
     const client = await TestClient.connect(port);
