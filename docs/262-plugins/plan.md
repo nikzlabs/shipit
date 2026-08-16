@@ -917,10 +917,13 @@ instead of a repeat.
   **The correction is planning#395, and it is a deletion**: a plugin fragment
   stops declaring `ports:` altogether, and the port becomes the consuming
   project's — which is where it belonged, since only the consumer knows what its
-  own stack already uses. A plugin cannot then arrive holding a number, so there
-  is no collision to resolve. That also puts the two-number scheme above in
-  question: the pin exists because a tracked commit can move the fragment's port
-  behind the consumer's back, and under planning#395 it cannot.
+  own stack already uses. A plugin can then no longer *arrive* holding a number,
+  which is the collision this bug is. It does not by itself make every preview
+  address unique — a consumer can still assign one number twice, and what ShipIt
+  does about that is an open question on that doc, not something ownership
+  settles. It also puts the two-number scheme above in question: the pin exists
+  because a tracked commit can move the fragment's port behind the consumer's
+  back, and under planning#395 it cannot.
 
   Until then the ambiguity is real, and `warnOnAmbiguousPreviewPorts` reports it
   on every start — for this case and for the one planning#395 does NOT address,

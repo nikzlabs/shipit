@@ -6,7 +6,7 @@
  * manager for a number that belongs somewhere else.
  */
 
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi, afterEach } from "vitest";
 import { useSessionStore } from "../../stores/session-store.js";
 import { usePreviewStore } from "../../stores/preview-store.js";
 import { dispatchMessage } from "./index.js";
@@ -27,7 +27,11 @@ const list = (sessionId: string, name: string, port: number): WsServerMessage =>
 beforeEach(() => {
   useSessionStore.getState().reset();
   useSessionStore.setState({ sessionId: "active" });
-  usePreviewStore.setState({ services: [] });
+  usePreviewStore.setState({ services: [], startupSteps: [] });
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 describe("service messages are scoped to their session", () => {
@@ -59,6 +63,21 @@ describe("service messages are scoped to their session", () => {
     expect(usePreviewStore.getState().services.map((s) => s.name)).toEqual(["web"]);
   });
 
+  it("drops a service list that arrives while no session is active", () => {
+    // The window a claim leaves open: `/{slug}/new` resets every store and only
+    // sets the new id when the claim RESOLVES, and nothing resets the preview
+    // store again afterwards. A message accepted here is one the incoming
+    // session then adopts as its own — names, ports and all.
+    useSessionStore.setState({ sessionId: undefined });
+    dispatchMessage(ctx, list("outgoing", "probe", 42000));
+    expect(usePreviewStore.getState().services).toEqual([]);
+
+    // …and the session that is then claimed starts empty, not holding the
+    // outgoing session's rows.
+    useSessionStore.setState({ sessionId: "claimed" });
+    expect(usePreviewStore.getState().services).toEqual([]);
+  });
+
   it("applies a status update for the active session", () => {
     dispatchMessage(ctx, list("active", "web", 5173));
     dispatchMessage(ctx, {
@@ -75,5 +94,32 @@ describe("service messages are scoped to their session", () => {
       status: "error",
       error: "boom",
     });
+  });
+
+  it("does not clear the next session's startup overlay from a delayed callback", () => {
+    // The overlay is cleared 800ms after a service reports `running` — long
+    // enough to switch sessions, and the dispatch-time guard cannot see a
+    // callback that fires later. Only the callback can re-check.
+    vi.useFakeTimers();
+    usePreviewStore.setState({
+      startupSteps: [{ stepId: "dev_server", status: "running", logLines: [] }],
+    });
+    dispatchMessage(ctx, {
+      type: "service_status",
+      sessionId: "active",
+      name: "web",
+      status: "running",
+      port: 5173,
+      preview: "auto",
+    });
+
+    // The user switches away inside the window.
+    useSessionStore.setState({ sessionId: "other" });
+    usePreviewStore.setState({
+      startupSteps: [{ stepId: "install", status: "running", logLines: [] }],
+    });
+    vi.advanceTimersByTime(1000);
+
+    expect(usePreviewStore.getState().startupSteps.map((s) => s.stepId)).toEqual(["install"]);
   });
 });

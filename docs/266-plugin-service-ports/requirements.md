@@ -31,22 +31,27 @@ comes from the plugin's fragment, and the per-service `overrides` are
 4. A plugin service and one of the consuming project's own services can both
    run in a session without either becoming unreachable, whatever ports the
    plugin repository's own development setup happens to use.
-5. Selecting a service in the Preview pane serves that service. No selection
-   resolves to a different service.
-6. A plugin repository whose fragment was written under the old rule is not
-   silently mis-run: the consuming project is told what to do about it.
+5. Selecting a service in the Preview pane serves that service — no plugin
+   service and project service pair resolves to the same one.
 
 ## Open questions
 
 Each needs a human answer before design. Nothing here is settled by writing it
 down, and none of it may be resolved by inference.
 
-- **Who picks the number?** (a) the consuming project names it explicitly in its
-  `plugins.use` entry, alongside `autostart` and `as`; (b) ShipIt assigns one
-  and both sides are told; (c) explicit when the project names one, assigned
-  otherwise. *Recommendation: (c)* — a project that does not care never has to
-  think about ports, and one that does (a fixed port some other tool of theirs
-  expects) can say so.
+- **Must the consuming project always name the number, or may ShipIt supply a
+  default when it does not?** Requirement 2 says the project defines the port,
+  and the plain reading is that it writes one — in its `plugins.use` entry,
+  alongside `autostart` and `as`. The question is only whether a project that
+  has no opinion must still write one, or whether ShipIt picking an unused
+  number on its behalf still counts as the project defining it.
+  *Recommendation: the plain reading* — always explicit. A default is the
+  smaller ask right up until it has to answer "which number, and unique against
+  what", which is the question that produced #2325.
+- **What happens if the consuming project assigns one number twice** — to a
+  plugin service and to one of its own, or to two plugin services? Owning the
+  decision does not make it correct. Refuse the declaration and say so, warn and
+  serve the first, or allocate around it?
 - **How does the plugin's own process learn its port?** The service has to bind
   something. A ShipIt-supplied environment variable, alongside the existing
   `SHIPIT_PLUGIN_STATE` / `SHIPIT_PROJECT_DIR` / `SHIPIT_PLUGIN_COMMIT`, is the
@@ -60,7 +65,10 @@ down, and none of it may be resolved by inference.
   *default* the consuming project may override. *Recommendation: (a)* — (c) is
   the current design with extra steps, and it keeps the collision alive.
 - **Is there a migration window at all,** or does this land as a clean break?
-  Plugins are new, so a break is cheap now and expensive later.
+  Plugins are new, so a break is cheap now and expensive later. Related, and not
+  a requirement until answered: is a consuming project *told* when a plugin it
+  imports was written under the old rule, or does the plugin repository's card
+  simply report its fragment as invalid?
 - **How is a plugin service known to be previewable** once no port is declared?
   Today a fragment's `ports:` is what makes a service default to
   `x-shipit-preview: auto`. Does the fragment then have to say `auto`
@@ -87,6 +95,9 @@ down, and none of it may be resolved by inference.
 - Two of the **project's own** services declaring one container port. The
   project owns both definitions and can change either, so ShipIt moves neither;
   it warns and serves the first (`ServiceManager.warnOnAmbiguousPreviewPorts`,
-  landed with PR #2326).
+  landed with PR #2326). Requirement 5 is scoped to the plugin/project pair for
+  this reason: moving the port's ownership to the consuming project cannot by
+  itself make every preview address unique, and claiming otherwise would hide
+  the open question above about a project that assigns one number twice.
 - Retained preview iframes surviving a port changing owner (planning#394) — a
   client-side path to the same symptom, independent of who declares the port.

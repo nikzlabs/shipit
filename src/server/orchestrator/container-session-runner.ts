@@ -855,7 +855,27 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
      * without any port collision at all. The list is a fact about the map, not
      * about the start succeeding.
      */
-    const onStackError = () => onReady();
+    const onStackError = (err: Error) => {
+      onReady();
+      // AFTER the list — the same order, and the same reason, as
+      // `buildComposeAttachReplay`. The client's `setServices` CLEARS
+      // `composeError` (a fresh list means the stack is talking again), and not
+      // every `stack_error` is followed by a `compose_error` of its own: an
+      // adoption-time network failure is one that is not. Without this the list
+      // would silently wipe the one thing on screen explaining the failure, and
+      // nothing on the client would put it back (review finding).
+      //
+      // From the EVENT, not from `mgr.startError`: that field is written by the
+      // caller in its own catch, which runs after this listener, so reading it
+      // here sees the previous round's answer or none at all. Where the caller
+      // does also emit one, the message is identical and the banner is a single
+      // value, so the repeat is invisible.
+      this.emitMessage({
+        type: "compose_error",
+        sessionId: this.sessionId,
+        message: err instanceof Error ? err.message : String(err),
+      });
+    };
 
     const onSecretsStatus = (snapshot: SecretsStatusInternalSnapshot) => {
       this.emitMessage({

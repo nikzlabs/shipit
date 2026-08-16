@@ -368,9 +368,11 @@ addresses a service by port number, so if a plugin service and one of the
 project's own services end up on the same one, the pane can only reach the first
 of them — selecting the other serves the wrong app. Pick a port for an exported
 service that a consuming project is unlikely to have taken (5173 and 3000 are
-the worst choices), and if you hit it, the session log names both services and
-the port. This is a ShipIt design mistake, not yours: the port ought to be the
-consuming project's to declare, and it is being changed to work that way.
+the worst choices). When it does happen, ShipIt writes a line naming both
+services and the port into the unreachable service's own log, so it shows up in
+that service's Logs panel and in `shipit service logs <name>`. This is a ShipIt
+design mistake, not yours: the port ought to be the consuming project's to
+declare, and it is being changed to work that way.
 
 ```yaml
 # the plugin repository's own shipit.yaml

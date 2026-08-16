@@ -1262,7 +1262,15 @@ export class ServiceManager extends EventEmitter {
    *
    * Either way {@link resolvePreviewTarget} answers with the first of the two.
    * "The pane shows the wrong service" is not a symptom anyone traces back to a
-   * port on their own, so the log line is what turns it into one.
+   * port on their own, so this is what turns it into one.
+   *
+   * **It goes to the user, not only to operator stderr** (review finding). The
+   * condition is one the user has to act on — change a port, or stop importing
+   * the plugin — and a `console.warn` in the orchestrator's own output is not
+   * somewhere they can see, which would leave the pane silently serving the
+   * wrong app with the explanation on a machine they do not have. It rides the
+   * unreachable service's own log channel, so it lands in the Logs panel beside
+   * that service, and is logged for the operator too.
    */
   private warnOnAmbiguousPreviewPorts(): void {
     const claimedBy = new Map<number, string>();
@@ -1273,11 +1281,23 @@ export class ServiceManager extends EventEmitter {
         claimedBy.set(svc.publishedPort, svc.name);
         continue;
       }
-      console.warn(
-        `[compose:${this.sessionId}] ${first} and ${svc.name} both preview on port `
-        + `${svc.publishedPort} — the preview pane can only reach ${first} there. `
-        + "Give one of them a different port in the compose file.",
-      );
+      // When either side is a plugin's, the port came from its compose fragment
+      // and the consuming project has no override for it — so "change your
+      // port" is advice the reader cannot take. Name the one thing they can do.
+      const remedy = svc.origin || this.services.get(first)?.origin
+        ? `${svc.name} comes from a plugin, so its port is not yours to change: `
+          + `move the project's service to another port, or stop importing the plugin.`
+        : `Give one of them a different port in the compose file.`;
+      const message = `${first} and ${svc.name} both preview on port ${svc.publishedPort}`
+        + ` — the preview pane can only reach ${first} there. ${remedy}`;
+      console.warn(`[compose:${this.sessionId}] ${message}`);
+      const line = `[shipit] ${message}\n`;
+      // Both halves, like the log follower's own `handleData`: the durable
+      // store is what a viewer who opens the panel later reads (the in-memory
+      // ring buffer is wiped whenever a follower re-attaches), and
+      // `bufferServiceLog` is what reaches the viewers already watching.
+      this.logStore?.append(this.sessionId, `service:${svc.name}`, line);
+      this.bufferServiceLog(svc.name, line);
     }
   }
 
@@ -1361,7 +1381,6 @@ export class ServiceManager extends EventEmitter {
         },
       });
     }
-    this.warnOnAmbiguousPreviewPorts();
     const overrideServices = [...parsedServices, ...this.pluginServices.map(toComposeService)];
 
     // Resolve secrets BEFORE generating the override — the override references
@@ -1461,6 +1480,13 @@ export class ServiceManager extends EventEmitter {
       for (const svc of this.services.values()) {
         this.ensureLogFollower(svc.name);
       }
+
+      // AFTER the followers, which is the one ordering constraint on it: this
+      // writes to a service's durable log channel, and a channel that already
+      // has content makes the follower spawn with `--tail 0` instead of
+      // replaying the container's backlog. The followers above have made that
+      // decision by the time we get here.
+      this.warnOnAmbiguousPreviewPorts();
 
       this.emit("stack_ready");
     } catch (err) {

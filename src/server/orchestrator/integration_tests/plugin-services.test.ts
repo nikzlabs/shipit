@@ -407,6 +407,15 @@ describe("plugin services in a session's stack (docs/262)", () => {
     expect(list?.services.find((s) => s.name === "probe")?.port)
       .toBe(mgr.getService("probe")?.publishedPort);
 
+    // …and the failure is still on screen after it. The client's `setServices`
+    // clears the compose-error banner (a fresh list means the stack is talking
+    // again), so a list sent on a failure has to carry the failure with it or it
+    // silently wipes the one thing explaining what went wrong.
+    const order = emitted.map((m) => m.type);
+    expect(order.indexOf("compose_error")).toBeGreaterThan(order.indexOf("service_list"));
+    expect((emitted.find((m) => m.type === "compose_error") as { message: string }).message)
+      .toContain("compose up failed");
+
     runner.setServiceManager(null);
     await mgr.stop();
   });
