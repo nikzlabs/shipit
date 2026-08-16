@@ -851,6 +851,62 @@ describe("createPluginInstallRunner — forced retry and the install record", ()
     expect(record).toMatchObject({ outcome: "succeeded", commit: COMMIT });
   });
 
+  /**
+   * planning#416 — the half that had nowhere to live at all.
+   *
+   * A FAILED install's tail rides the failure reason (the test below), and that
+   * is the case where the reader already knows something is wrong. The case
+   * nikzlabs/shipit#2315 could not settle from a session is this one: the
+   * install succeeded, so nothing anywhere says what it wrote, and the two
+   * conclusions the reporter and their reviewer drew from the same documentation
+   * had no artifact to be checked against.
+   */
+  it("records what a SUCCESSFUL install printed", async () => {
+    const docker = fakeDocker({ logs: "added 41 packages\nbuilt dist/index.js" }).docker;
+    await run2(docker)(job([exportWith("probe", "npm ci && npm run build")]));
+
+    const record = readInstallRecord(pluginsDir(), "tools");
+    expect(record?.outcome).toBe("succeeded");
+    expect(record?.output).toContain("built dist/index.js");
+  });
+
+  it("bounds a successful install's output exactly as a failure's is bounded", async () => {
+    // The constraint is the point, not the number: this text is repo-authored
+    // and lands in agent context and in the UI, so an install that SUCCEEDS may
+    // not be allowed to say more than one that fails.
+    const docker = fakeDocker({ logs: `${"x".repeat(9000)}\nTAIL-MARKER` }).docker;
+    await run2(docker)(job([exportWith("probe", "npm ci")]));
+
+    const output = readInstallRecord(pluginsDir(), "tools")?.output ?? "";
+    expect(output.length).toBeLessThanOrEqual(2001); // 2000 + the elision mark
+    // Clipped from the FRONT, so the end of the run — where a build says what it
+    // wrote — survives, and the mark says that something was dropped.
+    expect(output.startsWith("…")).toBe(true);
+    expect(output).toContain("TAIL-MARKER");
+  });
+
+  it("bounds the whole run, not each command, when several exports install", async () => {
+    const docker = fakeDocker({ logs: "y".repeat(1800) }).docker;
+    await run2(docker)(job([exportWith("a", "npm ci"), exportWith("b", "npm ci")]));
+
+    const output = readInstallRecord(pluginsDir(), "tools")?.output ?? "";
+    expect(output.length).toBeLessThanOrEqual(2001);
+    // Which export produced what still has to be readable, or a two-plugin
+    // repository's output is one undifferentiated wall.
+    expect(output).toContain("--- b");
+  });
+
+  it("records no output for a skip, because nothing ran to produce any", async () => {
+    // An empty `output` here would read as "it ran and printed nothing", which
+    // is the wrong half of the one distinction this record exists to make.
+    await run2(fakeDocker({ logs: "added 41 packages" }).docker)(job([exportWith("probe", "npm ci")]));
+    await run2(fakeDocker({ logs: "added 41 packages" }).docker)(job([exportWith("probe", "npm ci")]));
+
+    const record = readInstallRecord(pluginsDir(), "tools");
+    expect(record?.outcome).toBe("skipped-stamp");
+    expect(record?.output).toBeUndefined();
+  });
+
   it("records a FAILED install with its output — the evidence that had nowhere to live", async () => {
     // A failed install publishes no generation, so before docs/266 this text
     // was returned to the round and then existed nowhere a session could read.
@@ -861,6 +917,10 @@ describe("createPluginInstallRunner — forced retry and the install record", ()
     const record = readInstallRecord(pluginsDir(), "tools");
     expect(record?.outcome).toBe("failed");
     expect(record?.detail).toContain("npm ERR! missing script: build");
+    // planning#416 — and in `output` as well, so one field answers "what did the
+    // install print" whatever the outcome. A reader that had to parse it back
+    // out of a prose reason is a reader that will get it wrong.
+    expect(record?.output).toContain("npm ERR! missing script: build");
   });
 
   it("records a skip as a skip, not as a success", async () => {

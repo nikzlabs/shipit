@@ -19,6 +19,18 @@
  * confirmed by a coincidence. `status` reports the same reasons the card shows,
  * plus the one no card holds: what the last install actually did.
  *
+ * **A SUCCESSFUL install's output rides `--json` on both verbs** (planning#416).
+ * The failed half was already reachable — the tail is in the failure reason,
+ * which reaches the refresh row's `detail` and the degraded card. The successful
+ * half reached a browser panel and nothing else, which is why
+ * nikzlabs/shipit#2315's central question ("does non-`dep-dirs` install output
+ * survive?") could not be answered from inside a session at all: the reporter and
+ * an independent reviewer read the same documentation and concluded the opposite,
+ * and it was settled by reading orchestrator source that a session on an ordinary
+ * project cannot see. It is a flag on verbs that already exist rather than a
+ * `logs` verb, because a second call only occurs to someone who already suspects
+ * the install — and the reader who needs this does not yet.
+ *
  * **Transport** (plan §2): through the worker's `/agent-ops` surface, like
  * `shipit issue` and the `gh` shim — not the browser's `/api/plugin-repos`,
  * which is a snapshot GET that must never activate anything, and not a direct
@@ -46,10 +58,29 @@ interface RefreshRow {
   degraded: string[];
   /** docs/266 reqs 5, 6 — `--force` re-installed the version already live. */
   reinstalled: boolean;
+  /** planning#416 — the last install for this repository, output included. */
+  install?: InstallRecordView;
+}
+
+/**
+ * The last install attempt, as `--json` reports it (planning#416).
+ *
+ * `output` is the one field that is new to this shim, and it is the reason the
+ * whole record rides the row: an install that SUCCEEDED and produced the wrong
+ * tree is the case a session could not diagnose at all, and "succeeded" alone
+ * does not distinguish it from one that produced the right one.
+ */
+interface InstallRecordView {
+  commit: string;
+  at: string;
+  outcome: string;
+  detail?: string;
+  output?: string;
 }
 
 function toRow(value: unknown): RefreshRow {
   const obj = (value && typeof value === "object" ? value : {}) as Record<string, unknown>;
+  const install = toInstall(obj.install);
   return {
     repo: asString(obj.repo),
     ref: asString(obj.ref),
@@ -61,6 +92,26 @@ function toRow(value: unknown): RefreshRow {
       ? obj.degraded.filter((d): d is string => typeof d === "string")
       : [],
     reinstalled: obj.reinstalled === true,
+    ...(install ? { install } : {}),
+  };
+}
+
+/**
+ * Absent unless the orchestrator sent a record with the two fields that make it
+ * one. A half-formed record is dropped rather than rendered with empty strings:
+ * this is evidence a consumer may quote into an issue on someone else's
+ * repository, and an invented `commit` there is worse than a missing field.
+ */
+function toInstall(value: unknown): InstallRecordView | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const obj = value as Record<string, unknown>;
+  if (typeof obj.commit !== "string" || typeof obj.at !== "string") return undefined;
+  return {
+    commit: obj.commit,
+    at: obj.at,
+    outcome: asString(obj.outcome) || "unknown",
+    ...(typeof obj.detail === "string" ? { detail: obj.detail } : {}),
+    ...(typeof obj.output === "string" ? { output: obj.output } : {}),
   };
 }
 
@@ -70,6 +121,11 @@ Bring a declared plugin repository to its declared version now — the same
 activation a shipit.yaml edit runs, awaited, with before/after commits.
 
 With no name, every declared repository is refreshed.
+
+--json adds what the last install for each repository did — its outcome and the
+tail of what it PRINTED, on a successful install as well as a failed one. That
+is the one thing about a plugin no other surface shows you, and the answer to
+"it says it installed, so what did it write?".
 
 --force re-runs the install for the version ALREADY live, for one named
 repository. Use it when a version is live but unusable: it discards what the
@@ -82,8 +138,9 @@ its install output — run \`shipit plugin status\` first.
 
 Why the live version of each declared plugin repository is (or is not) usable:
 the commit being executed, every problem the Plugins tab would show, and what
-the last install did. Reads only — it fetches nothing and activates nothing, so
-it is the safe first step when a plugin's surfaces are failing.
+the last install did — with \`--json\` carrying that install's own output, the
+same field refresh reports. Reads only: it fetches nothing and activates
+nothing, so it is the safe first step when a plugin's surfaces are failing.
 
   shipit plugin exec --alias <alias> --command <name> [-- args...]
 

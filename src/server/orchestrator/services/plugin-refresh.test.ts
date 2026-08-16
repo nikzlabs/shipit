@@ -266,6 +266,49 @@ describe("refreshPluginRepos — diagnosing and retrying a live version", () => 
     expect(again.rows[0]!.degraded?.join(" ")).toContain("FAILED");
   });
 
+  it("carries a SUCCEEDED install's output on the row, for `--json` to print", async () => {
+    // planning#416. The row already reported a failed install through
+    // `degraded`; a successful one is deliberately NOT degradation — nothing is
+    // wrong — and it is still the answer to "it says it installed, so what did
+    // it write?". So it rides its own field rather than the warning line.
+    writeConfig(DECLARATION);
+    const first = await refreshPluginRepos("sess", workspaceDir, deps());
+    const live = first.rows[0]!.after!;
+
+    writeInstallRecord(pluginsRoot(sessionStateDirForWorkspace(workspaceDir)), "tools", {
+      commit: live,
+      at: "2026-08-16T12:00:00.000Z",
+      outcome: "succeeded",
+      output: "added 41 packages\nbuilt dist/index.js",
+    });
+
+    const again = await refreshPluginRepos("sess", workspaceDir, deps());
+    expect(again.rows[0]!.install?.output).toContain("built dist/index.js");
+    // A successful install is not a degradation, and reporting it as one would
+    // teach a reader to ignore the field that means something is wrong.
+    expect(again.rows[0]!.degraded).toBeUndefined();
+  });
+
+  it("labels a carried record with the commit it was for, live or not", async () => {
+    // The record is the last attempt for the REPOSITORY. A reader must be able
+    // to tell "this is what your live version installed" from "this is what the
+    // refresh that failed was doing", so the commit travels with the output
+    // rather than being implied by the row it sits on.
+    writeConfig(DECLARATION);
+    await refreshPluginRepos("sess", workspaceDir, deps());
+
+    writeInstallRecord(pluginsRoot(sessionStateDirForWorkspace(workspaceDir)), "tools", {
+      commit: "b".repeat(40),
+      at: "2026-08-16T12:00:00.000Z",
+      outcome: "succeeded",
+      output: "added 41 packages",
+    });
+
+    const again = await refreshPluginRepos("sess", workspaceDir, deps());
+    expect(again.rows[0]!.install?.commit).toBe("b".repeat(40));
+    expect(again.rows[0]!.after).not.toBe("b".repeat(40));
+  });
+
   it("does not report a failed attempt on a version that is not live", async () => {
     // A failed refresh to B leaves A serving. Naming B's failure under A would
     // be the fabricated diagnosis the same review finding names.

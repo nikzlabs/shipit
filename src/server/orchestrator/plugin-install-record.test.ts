@@ -76,6 +76,32 @@ describe("plugin install record", () => {
     expect(readInstallRecord(dir, "tools")).toBeNull();
   });
 
+  it("round-trips a SUCCESSFUL install's output", async () => {
+    // planning#416 — the field that answers "it installed, so what did it
+    // write?". `detail` cannot carry it: on a success there is no detail, and
+    // on a failure it is prose a machine reader would have to parse.
+    const succeeded: PluginInstallRecord = {
+      commit: "b".repeat(40),
+      at: "2026-08-16T10:00:00.000Z",
+      outcome: "succeeded",
+      output: "added 41 packages\nbuilt dist/index.js",
+    };
+    writeInstallRecord(dir, "tools", succeeded);
+    expect(readInstallRecord(dir, "tools")).toEqual(succeeded);
+  });
+
+  it("drops an output that is not a string rather than carrying it through", async () => {
+    // The file is on disk and hand-editable, and its output is quoted into
+    // issues on other people's repositories. A non-string here would reach the
+    // shim's JSON as whatever it is.
+    fs.mkdirSync(path.join(dir, "tools"), { recursive: true });
+    fs.writeFileSync(
+      installRecordPath(dir, "tools"),
+      JSON.stringify({ commit: "a".repeat(40), at: "now", outcome: "succeeded", output: { a: 1 } }),
+    );
+    expect(readInstallRecord(dir, "tools")?.output).toBeUndefined();
+  });
+
   it("never throws when the tree cannot be written", async () => {
     // A diagnostic that can fail an install is worse than no diagnostic.
     const file = path.join(dir, "not-a-dir");
@@ -93,6 +119,15 @@ describe("plugin install record", () => {
     expect(describeInstallRecord(null)).toContain("declares no install");
     expect(describeInstallRecord(null)).toContain("none has run since");
     expect(describeInstallRecord({ ...base, outcome: "succeeded" })).toContain("succeeded");
+    // planning#416 — "succeeded" is exactly where the reader still has a
+    // question, so the line says where the answer is. And says the opposite when
+    // there is nothing there: pointing at an empty field costs a call and
+    // answers nothing.
+    expect(describeInstallRecord({ ...base, outcome: "succeeded", output: "added 41 packages" }))
+      .toContain("--json");
+    // "nothing was captured", never "it printed nothing": a best-effort log read
+    // that failed is indistinguishable here from a silent install.
+    expect(describeInstallRecord({ ...base, outcome: "succeeded" })).toContain("no output was captured");
     // The three that must never read as plain success.
     expect(describeInstallRecord({ ...base, outcome: "failed", detail: "exited 1" }))
       .toContain("FAILED");

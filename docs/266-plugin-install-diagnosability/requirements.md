@@ -43,6 +43,24 @@ Two conditions are explicitly **not** in scope, at the reporter's request: any
 change to `dep-dirs` behaviour, and anything that makes plugin containers
 writable.
 
+### Requirement 11's own provenance (planning#416, 2026-08-16)
+
+Requirement 11 came later and from a different reporter, so its origin is kept
+separate from the account above rather than folded into it.
+
+It is finding 3 of nikzlabs/shipit#2315, filed after that issue closed without
+covering it. The reporter and an independent reviewer read the same two
+paragraphs of `plugins.md` and reached **opposite** conclusions about whether
+install output outside `dep-dirs` survives into a consumer's tree. The artifact
+that settles it — the install's own output — existed, and was visible only to a
+human looking at the Plugins panel. It was eventually settled by reading
+orchestrator source, which a session working on an ordinary project cannot do.
+
+The shape was decided with the requirement: a field on the **`--json` output of
+verbs that already exist**, not a new `logs` verb. A separate verb is a second
+call that only occurs to someone who already suspects the install, and the
+reader who needs this does not yet.
+
 ## Requirements
 
 1. From inside a consuming session, an agent can determine whether the plugin
@@ -78,6 +96,10 @@ writable.
 10. It reports **every** reason the live version is degraded, not only the
     install: a withheld command, a rejected service fragment and a settings
     mismatch are equally invisible from a session today (user, 2026-08-16).
+11. A **successful** install's output is readable from the session too, not only
+    a failed one. It is the artifact that settles what an install actually
+    wrote, and the case where nothing failed is exactly the case where a reader
+    still has that question (planning#416, 2026-08-16).
 
 ## What is already true (verified, not requirements)
 

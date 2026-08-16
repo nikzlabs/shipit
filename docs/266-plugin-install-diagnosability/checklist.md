@@ -29,3 +29,24 @@
       (finding 3); the absent-record line names both its causes (finding 5); the
       status route runs the tab's pending and unreadable-config pre-checks
       (finding 6); docs corrected where they overclaimed
+
+## Requirement 11 — a successful install's output (planning#416)
+
+- [x] `PluginInstallRecord.output`: the tail an install PRINTED, written on the
+      success path as well as the failure one, bounded by the existing
+      `LOG_TAIL_LINES` / `REASON_MAX_CHARS` and clipped once more over the whole
+      run so several installing exports cannot multiply it
+- [x] `runInstallContainer` returns `{failure, output}` — the tail is read
+      before the container is removed, on both outcomes
+- [x] The record rides `refresh`'s rows; the shim emits it under `--json` only,
+      and drops a record with no `commit`/`at` rather than inventing one
+- [x] `status --json` carries it too (same record, no route change); the human
+      status line points at `--json` when there is output and says so when the
+      install printed nothing
+- [x] Tests: success output recorded, both bounds, per-export labelling, no
+      output for a skip, refresh row carries the record with its own commit,
+      shim `--json` vs human output, malformed record dropped
+- [x] `shipit-docs/plugins.md` — `--json` on both verbs, the `commit` caveat,
+      and the plugin-author section corrected where it said the consumer cannot
+      see a successful install's log at all
+- [ ] Independent review of requirement 11's slice

@@ -165,6 +165,11 @@ of it: the layer is merged over the checkout, so **everything an install writes
 reaches `/plugin` whether or not the directory is declared in `dep-dirs`** — a
 build artifact in `dist/` arrives exactly like `node_modules`.
 
+What you can see is what the install **said** it did: `shipit plugin refresh
+--json` and `shipit plugin status --json` carry the tail of its output, whether
+it succeeded or failed. That is the check to run before concluding anything
+about what a plugin's tree holds.
+
 **It does not run once per commit — it runs once per set of dependencies.** The
 directories a plugin declares in `dep-dirs` (default `[node_modules]`) are
 promoted into a store shared by every session and every project, keyed by the
@@ -221,6 +226,22 @@ A failed refresh exits non-zero and leaves the previous version live — so the
 session keeps working, on the OLD version. That distinction is the point of the
 non-zero exit: nothing is broken, but you are not running what you think.
 
+```
+shipit plugin refresh --json     # the same rows, plus the last install
+```
+
+`--json` adds an `install` object per repository: the commit it was for, the
+outcome, and **the tail of what the install printed — on a successful install as
+well as a failed one**. That is the answer to "it says it installed, so what did
+it actually write?", and no other surface a session can reach holds it. It is
+JSON-only because it is up to 40 lines of the plugin's own output: a diagnostic
+you ask for, not a thing printed at you on every refresh. `shipit plugin status
+--json` carries the same object.
+
+Read the `commit` on it before drawing a conclusion. It is the last install
+**for that repository**, which is not always the version that is live — a
+refresh to B that failed leaves A serving, and the record is B's.
+
 A refresh also prints anything wrong with the version that is live **now**, even
 on a round that found nothing to do. That is a different fact from the round's
 own result: a repository can be at the commit it should be at and still be
@@ -244,6 +265,11 @@ tab would show for it, and what the **last install** did: succeeded, failed
 already held the tree, or never ran at all. That last distinction is the one
 worth knowing about — "the install succeeded" and "the install never ran" look
 identical from outside and have opposite fixes.
+
+`--json` adds that install's own **output**, succeeded or failed. Reach for it
+when the version is live, nothing reports a failure, and the plugin still does
+not work: what the install printed is what tells you whether it built what it
+was supposed to build.
 
 It reads. It fetches nothing, activates nothing, and changes nothing that is
 live, so it is the safe first step, and it exits 0 even when the news is bad:
@@ -555,21 +581,23 @@ it. Port the boundaries along with the routes:
   symlink inside the root that points out of it, and the read then follows it.
   Resolve both sides with `realpathSync` and compare those.
 
-### Write the failure message for someone who cannot see your install log
+### Write the failure message for someone who has only your install log's tail
 
 A *failed* install is the easy case: its output tail rides the failure detail, so
 the Plugins tab shows it, `shipit plugin refresh` reprints it, and
 `shipit plugin status` still names it long after the round that failed. The hard
 case is the one this recipe is for — an install that **succeeded** and left the
-wrong tree. Nothing failed, so `status` reports an install that succeeded and a
-version that is live, and your runtime error message is the whole diagnostic
-that reader gets:
+wrong tree. Your consumer can read what it printed (`shipit plugin status
+--json`), and that is the last 40 lines of a build that thought it worked: it
+shows what the install *claimed*, not which precondition your code then found
+missing. Your runtime error message is still the diagnostic that names it:
 
 - **Name the precondition that failed, specifically.** "Dependencies or build
   missing" is not actionable; "the build (`dist/`) is missing" is, and it tells a
   failed install apart from a dropped one.
-- **Give them the sequence that works**: `shipit plugin status <name>` to see
-  what the install did, `shipit plugin refresh <name> --force` to run it again
+- **Give them the sequence that works**: `shipit plugin status <name> --json` to
+  see what the install did and printed, `shipit plugin refresh <name> --force`
+  to run it again
   for the same version, and an issue on your repository
   (`shipit issue create --tracker <name>`) quoting that line if it survives both.
 - **Say when their project cannot be the cause** — true of a missing build
