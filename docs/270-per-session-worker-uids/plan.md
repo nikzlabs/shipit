@@ -1,7 +1,7 @@
 ---
 issue: planning#405
 title: Design — per-session worker identities
-description: A reserved uid range, a shared gid, and a 0700 session directory — plus the four shared surfaces that stop working if you only do the first.
+description: A reserved uid range, a shared gid, and a 0700 session directory — plus the shared surfaces that stop working if you only do the first.
 ---
 
 # Design — per-session worker identities
@@ -160,7 +160,7 @@ write-up to name.
 
 Every session keeps **gid = the global `SHIPIT_SESSION_WORKER_UID` value**
 (1000 in the deployment files) as its primary group. Only the uid is per-session.
-That is what keeps all four shared surfaces of §1 working: they become
+That is what keeps the three shared surfaces of §1 working: they become
 `root:<sharedGid>` with the group bit set (`2775` on directories, so new entries
 inherit the group). `/credentials/.gitconfig` needs nothing from this feature:
 E3 already leaves it root-owned 0644, which every session's git can read for its
@@ -215,8 +215,8 @@ mount keeps its plain `chown -R`.
 
 ## 3. Options not taken
 
-- **Per-session gid as well as per-session uid.** Rejected: it breaks all four
-  shared surfaces of §1 with nothing to replace them, and the supplementary-group
+- **Per-session gid as well as per-session uid.** Rejected: it breaks every
+  shared surface in §1 with nothing to replace them, and the supplementary-group
   route back is unavailable in the orchestrator (§2C).
 - **A mount namespace per git operation** instead of a uid — `unshare -m` so the
   process sees only its own session's tree. Strictly better isolation, and unlike
