@@ -514,6 +514,8 @@ export class ChatHistoryManager {
   private stmtInsert;
   private stmtUpdate;
   private stmtLoadAll;
+  private stmtLoadBugReportRows;
+  private stmtLoadById;
   private stmtLoadSubAgentCards;
   private stmtLoadByToolUseId;
   private stmtLoadAllPendingSubAgentCards;
@@ -533,6 +535,16 @@ export class ChatHistoryManager {
     this.stmtInsert = this.db.prepare(INSERT_SQL);
     this.stmtUpdate = this.db.prepare(UPDATE_SQL);
     this.stmtLoadAll = this.db.prepare("SELECT * FROM messages WHERE session_id = ? ORDER BY id");
+    // nikzlabs/shipit#2350 — bug-report cards only. `consumeUnreportedBugOutcomes` runs
+    // on EVERY user turn, and a session's transcript is unboundedly long, so it
+    // must not pay for `stmtLoadAll`'s full-row materialization to discover
+    // (almost always) that there is nothing to report. Narrowed to the id + the
+    // one column, over the existing `idx_messages_session`; the common case
+    // returns zero rows and the caller short-circuits.
+    this.stmtLoadBugReportRows = this.db.prepare(
+      "SELECT id, bug_report FROM messages WHERE session_id = ? AND bug_report IS NOT NULL ORDER BY id",
+    );
+    this.stmtLoadById = this.db.prepare("SELECT * FROM messages WHERE id = ?");
     // docs/248 — `listSubAgentConsultCards` on the `--wait` poll path. No
     // `in_progress` filter, deliberately: a consult that completes while its
     // originating turn is still in flight is persisted by `persistTurnInProgress`
@@ -801,15 +813,14 @@ export class ChatHistoryManager {
     return undefined;
   }
 
-  /** Every persisted bug-report card in a session, with its owning row id. */
-  private bugReportRows(sessionId: string): { row: MessageRow; card: PersistedBugReport }[] {
-    const rows = this.stmtLoadAll.all(sessionId) as MessageRow[];
-    const out: { row: MessageRow; card: PersistedBugReport }[] = [];
-    for (const row of rows) {
-      if (!row.bug_report) continue;
-      out.push({ row, card: JSON.parse(row.bug_report) as PersistedBugReport });
-    }
-    return out;
+  /**
+   * Every persisted bug-report card in a session, with its owning row id. Reads
+   * only the two columns it needs — the callers run on hot paths (every user
+   * turn) where the answer is almost always "no cards at all".
+   */
+  private bugReportRows(sessionId: string): { id: number; card: PersistedBugReport }[] {
+    const rows = this.stmtLoadBugReportRows.all(sessionId) as { id: number; bug_report: string }[];
+    return rows.map((r) => ({ id: r.id, card: JSON.parse(r.bug_report) as PersistedBugReport }));
   }
 
   /**
@@ -822,15 +833,25 @@ export class ChatHistoryManager {
    * really is still pending and there is nothing to report.
    */
   consumeUnreportedBugOutcomes(sessionId: string): PersistedBugReport[] {
+    // Cheap probe first: no cards (the overwhelmingly common case) means no
+    // transaction and no full-row read at all.
+    const pending = this.bugReportRows(sessionId).filter(
+      ({ card }) =>
+        !card.agentNotified && (card.phase === "filed" || card.phase === "dismissed"),
+    );
+    if (pending.length === 0) return [];
+
     return this.db.transaction(() => {
       const out: PersistedBugReport[] = [];
-      for (const { row, card } of this.bugReportRows(sessionId)) {
-        if (card.agentNotified) continue;
-        if (card.phase !== "filed" && card.phase !== "dismissed") continue;
+      for (const { id, card } of pending) {
         const marked: PersistedBugReport = { ...card, agentNotified: true };
+        // Re-read the full row only for the handful of cards being marked: the
+        // update statement rewrites every column, so it needs the whole message.
+        const row = this.stmtLoadById.get(id) as MessageRow | undefined;
+        if (!row) continue;
         const msg = this.fromRow(row);
         msg.bugReport = marked;
-        this.stmtUpdate.run({ ...this.toRow(sessionId, msg), id: row.id });
+        this.stmtUpdate.run({ ...this.toRow(sessionId, msg), id });
         out.push(marked);
       }
       return out;
