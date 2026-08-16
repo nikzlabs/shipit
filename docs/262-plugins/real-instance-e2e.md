@@ -501,15 +501,35 @@ consuming project cannot set a plugin setting" when the feature had worked all
 along. This repo's `shipit.yaml` now sets a value the manifest does not contain,
 and steps 3 and 4 assert the consumer's string on the self fixture.
 
-**Both halves of finding 2 are now covered from the session**, which is the
-surface the reporter had: the value arriving is checked by the probe, and the
-*misplacement* that produced the report — `settings:` written one level above
-`overrides:` — is a declaration warning that now names where the key belongs
-(`plugins.use[0].overrides.settings`), readable via `shipit plugin status` as
-well as the Plugins tab. It was already a warning; it said only that the key was
-unknown, which reads as "there is no such thing" to someone looking for the
-feature.
+**Both halves of finding 2 are now covered from the session** — the surface the
+reporter had — but by different means, and the difference matters when reading
+this record. The **value** half was measured here: the probe reports the
+consumer's string. The **misplacement** half was not exercised in this run, since
+this repo's own declaration is correctly nested; it is unit-tested and its
+plumbing was verified at the source (parse warning → `assemblePluginSnapshot` →
+the card's declaration-problems block and `shipit plugin status`'s `!` lines).
+That warning existed before and said only that the key was unknown, which reads
+as "there is no such thing" to someone looking for the feature; it now names
+where the key belongs and that the value was ignored.
 
 **Not re-run here**, deliberately: steps 1, 2, 5–9 and the whole consumer
 fixture. Nothing in `#2302` or in this change touches them, and step 5's grant
 half cannot be undone from inside a session.
+
+**Two limits on what "confirmed" means here**, both narrower than the finding was:
+
+- The detector covers the empty-mount class — a dependency that will not resolve
+  from a root. The reporter's *other* symptom, a dev-server binary missing from
+  `node_modules/.bin`, is not literally re-exercised: this fixture's service is
+  launched by absolute path and needs no `.bin`. Same mount, so the same fix
+  serves it, but this run did not measure it.
+- A **tracked** consumer's `overrides.settings` has no live record either. The
+  merge path is the same code with no self/tracked branch
+  (`resolvePluginSettings`) and it is unit-tested, but the consumer fixture sets
+  no override on purpose, so nothing has measured that half on a real generation.
+
+**Expected values that changed on 2026-08-16**, so Run 1 is not misread as a
+failure: on the **self** fixture `settings.greeting` is now
+`hello from the consuming project`, and the service page renders that rather
+than "the `greeting` default". Run 1's rows recorded the default because no
+override existed then. The consumer fixture's expected value is unchanged.

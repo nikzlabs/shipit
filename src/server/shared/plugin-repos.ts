@@ -538,8 +538,9 @@ function parseUseList(
         // only that this is not it.
         warnings.push(
           KNOWN_OVERRIDE_KEYS.has(key)
-            ? `Unknown key \`plugins.use[${i}].${key}\` in shipit.yaml — a consuming project's `
-              + `\`${key}\` goes under \`overrides:\`, i.e. \`plugins.use[${i}].overrides.${key}\`.`
+            ? `Unknown key \`plugins.use[${i}].${key}\` in shipit.yaml — its value is ignored. A `
+              + `consuming project's \`${key}\` goes under \`overrides:\`, i.e. `
+              + `\`plugins.use[${i}].overrides.${key}\`.`
             : `Unknown key \`plugins.use[${i}].${key}\` in shipit.yaml.`,
         );
       }
