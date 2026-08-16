@@ -164,9 +164,22 @@ are **silent**: no compile error and no existing test fails if you miss them.
 
 - `docker/agent-cli/install-agent-clis.sh`: `KNOWN_HARNESSES`,
   `harness_pkg_prefix()`, `harness_bin()` (must echo the catalogue binary).
+  For an npm-packaged CLI those three are the whole script edit — the rest
+  is generic: `npm ci` against the committed lockfile (`--ignore-scripts`),
+  prune-if-deselected, symlink `node_modules/.bin/<bin>` into `BIN_DIR`
+  (`/usr/local/bin`) with a survival check, and the `installed.json`
+  report all iterate the harness lists. One exception: the blanket
+  `--ignore-scripts` means a CLI whose package needs its install script
+  (native binary — Claude Code today) needs its own targeted
+  `npm rebuild <pkg>` line, gated on being selected.
 - `docker/agent-cli/package.json` + lockfile: the pinned npm package
   (exact version, ≥7 days old). A non-npm CLI (Cursor) breaks this pipeline —
-  that's a design decision to surface, not to improvise.
+  that's a design decision to surface, not to improvise. Note the trap:
+  `installed.json` is the *authoritative* installed set
+  (`installed-harnesses.ts` reads it instead of trusting `which`), so a
+  binary installed outside this script sits on `$PATH` and is still treated
+  as not installed. A non-npm branch must both verify its binary and write
+  the id into the report.
 - The five CLI images' `ARG SHIPIT_HARNESSES=claude,codex` default, if the
   default set changes — `agent-cli-install.test.ts` asserts the literal and
   enumerates the Dockerfiles.
