@@ -36,7 +36,10 @@ root and mounts `credentials:/credentials`, `/var/run/docker.sock`,
 
 4. The design MUST state, per route, whether it is closed, partly closed, or
    left open — and an open route MUST have a named owner (an issue), not a
-   silence.
+   silence. This feature covers **route 1 only** (the `.git` route). Route 3
+   (the compose file) stays with planning#386. Route 2 (`agent.install`) MUST
+   get its own issue. *(Scope decided by the requester on 2026-08-16 — see
+   Resolved questions, Q4.)*
 
 5. All five post-turn invariants in `CLAUDE.md` ("Post-turn flow") MUST still
    hold after the change. The design MUST check itself against each of the five
@@ -55,6 +58,20 @@ root and mounts `credentials:/credentials`, `/var/run/docker.sock`,
 8. The design MUST record what could not be verified, distinguishing "read the
    code that would have to hold" from "inherited the claim from a doc".
 
+9. Once orchestrator-side git no longer runs in the orchestrator's trust
+   context (req 1), a project's own git hooks MUST fire on ShipIt's auto-commit.
+   This is conditional on costing nothing beyond removing the current hook
+   suppression: if it turns out to need more mechanism than that, it comes back
+   to the requester as a question instead of being built.
+
+10. A project's git hook MUST NOT be able to stop the turn's work from being
+    committed. A hook that fails, or that never returns, MUST be surfaced to the
+    user, and the commit MUST still land.
+    *(Derived from `CLAUDE.md` invariant 2 — uncommitted agent work has no
+    reflog entry and no recovery — not from a separate answer. If the requester
+    wants a hook to be able to block a commit, that is a change to this
+    requirement.)*
+
 ## Requirement provenance
 
 Separating what was asked for from what the design supplied, per `CLAUDE.md`
@@ -66,16 +83,19 @@ into one").
 | 1 | ✅ verbatim, as a boundary | — |
 | 2 | ✅ "NONE of this needs a plugin… do not re-frame it that way" | — |
 | 3 | ✅ "the set can be neither enumerated nor overridden away" | — |
-| 4 | ✅ "say plainly which one you would choose and what each one breaks" | — |
+| 4 | ✅ "say plainly which one you would choose and what each one breaks"; scope decided 2026-08-16 (Q4 → a) | — |
 | 5 | ✅ "check your choice against all four and say so" (there are five) | the correction from four to five |
 | 6 | — | inferred from invariant 2 |
 | 7 | — | inferred from the requester's warning not to read PR #2301's green tests as more than they are |
 | 8 | ✅ "say what you could NOT verify" | — |
+| 9 | ✅ decided 2026-08-16 (Q1 → c, "if 'c' is easy, let's do that") | the "costing nothing beyond removing the suppression" condition, which is the requester's "if it's easy" made testable |
+| 10 | — | derived from invariant 2 (see the note on the requirement) |
 
-Requirement 6 and 7 are the two places this document went beyond what it was
-handed. Both are load-bearing for the recommendation in `plan.md` — 6 rules out
-the container option, 7 selects the ownership-check mechanism over a denylist —
-so they are called out rather than folded in.
+Requirements 6, 7 and 10 are the three places this document went beyond what it
+was handed. All three are load-bearing — 6 rules out the container option, 7
+selects the ownership-check mechanism over a denylist, and 10 is the constraint
+that keeps requirement 9 from being able to lose a turn's work — so they are
+called out rather than folded in.
 
 ## What is already true (verified here, not inherited)
 
@@ -106,40 +126,48 @@ so they are called out rather than folded in.
 
 ## Open questions
 
-**Q1 — Should a project's own git hooks ever run on ShipIt's auto-commit?**
-planning#384 deliberately left this open, and it decides whether the answer is
-"never execute repo config" or "execute it somewhere that is not root in the
-orchestrator".
+**Q2 — Is it good enough to run git as the session's own user, instead of as
+root?**
 
-- **(a) Never.** Auto-commit is ShipIt's action, not the project's; a formatter
-  that must run belongs in the agent's own commit or in CI. Status quo since
-  PR #2301.
-- **(b) Run them, but only in the session container**, at the session's own uid,
-  as a separate step before the orchestrator commits.
-- **(c) Run them wherever the orchestrator's git runs**, once that is no longer
-  root.
+In plain terms. Today, two different users touch the same folder:
 
-*Recommendation: (a) for now, (c) as the free consequence of the design.* Under
-the recommended option in `plan.md` the orchestrator's git runs at the session's
-own uid, so (c) becomes a one-line change (stop passing `core.hooksPath`)
-whenever the product wants it. Nothing in the security fix depends on the
-answer.
+- **The session's user.** This is who the agent runs as inside its container. It
+  can already do anything it likes in that folder, and it can already run any
+  program it wants there. Nothing is protected from it.
+- **root, in the orchestrator.** This is a *much* more powerful user. It holds
+  the GitHub token, the Docker socket (which is control of the whole machine),
+  and every other session's folder.
 
-**Q2 — Is "the uid that already owns the session's workspace" an acceptable
-trust level for orchestrator-side git?**
-This is the pivot of the recommended design. That uid can already write every
-file in the session, run arbitrary code in the session container, and push to
-the session's repo. Running git *as that uid* means repo-controlled config
-executes with exactly the authority its author already had — no escalation —
-rather than being blocked.
+The bug is that root goes into that folder and runs `git` there — and the
+session's user can leave a booby trap in the folder that `git` picks up. So the
+weak user gets the powerful user to act for it.
 
-- **(a) Yes.** Equal-authority execution is not an escalation; this is the
-  cheapest complete answer and it makes git's own ownership check the guard.
-- **(b) No — orchestrator-side git must execute nothing repo-controlled at all**,
-  even at the workspace's own uid. Requires isolating execution (a container)
-  *and* neutering config, and costs requirement 6.
+The proposed fix is not to disarm the booby trap. It is to send the *weak* user
+in to run `git` instead of root. The trap still goes off — but it goes off as
+the user who set it, who could already do all of those things. So it gains
+nothing. Nobody is escalated.
+
+The question is whether that is an acceptable answer, or whether ShipIt should
+insist that the trap never goes off at all.
+
+- **(a) Yes — running as the session's own user is good enough.** The trap gains
+  its author no new power. This is the cheapest complete answer, and it lets git
+  itself do the checking: git already refuses to touch a folder owned by someone
+  else, so any place we forget to fix fails loudly instead of quietly running
+  the trap.
+- **(b) No — orchestrator-side git must never run anything the repo controls**,
+  not even as the session's own user. That means running git inside its own
+  container. It is stronger, but it puts Docker on the path of the auto-commit,
+  and if Docker is unhealthy at that moment the turn's work is never committed
+  and cannot be recovered. That conflicts with requirement 6.
 
 *Recommendation: (a).*
+
+A useful cross-check: this is already how the agent's own commits work. When the
+agent runs `git commit` inside its container, a booby-trapped config runs there
+too, at the same user — and that has never been considered a security problem,
+because it is the user's own container. The fix makes ShipIt's commit behave the
+same way.
 
 **Q3 — Per-session uids: now, or accept the residual?**
 Today every session's workspace is owned by the same uid (1000,
@@ -159,21 +187,32 @@ read/write is not.
 *Recommendation: (a), with the follow-up filed in the same turn the first half
 merges.*
 
-**Q4 — Do routes 2 (`agent.install`) and 3 (the compose file) belong to this
-feature?**
-They are the requester's routes 2 and 3, they are real, and they are not git.
-
-- **(a) This feature covers the git route; route 3 stays on planning#386; route
-  2 gets its own issue.** Route 3's fix is *validation* of a file the product
-  deliberately executes, not relocation of execution — a different shape of
-  work with a different owner. Route 2's escalation is plugin-container →
-  agent-container, a smaller blast radius that does not reach the orchestrator.
-- **(b) One feature covering all three.** Honest about the class, but couples a
-  security fix that can ship now to a compose-validation design that cannot.
-
-*Recommendation: (a), and `plan.md` states the per-route disposition either way
-so requirement 4 is satisfied under both.*
-
 ## Resolved questions
 
-*(none yet)*
+**2026-08-16 — Q1: should a project's own git hooks ever run on ShipIt's
+auto-commit? → (c), run them wherever the orchestrator's git runs, once that is
+no longer root.** Requester: *"if 'c' is easy, let's do that"*. Recorded as
+**requirement 9**, with the "if it's easy" made testable as a condition: it must
+cost nothing beyond removing the current hook suppression, and if it turns out
+to need more it comes back as a question. Under the recommended option in
+`plan.md` it does meet that condition — orchestrator git runs at the session's
+own uid, so enabling hooks is dropping the `core.hooksPath` override on the
+session-workspace path. Under any option where orchestrator git stays root, the
+condition fails and requirement 9 must not be built.
+
+One consequence the answer creates, and which was **not** referred back as a new
+question: a `pre-commit` hook that exits non-zero makes `git commit` fail, and a
+hook that hangs makes it never return — either way the turn's work stays
+uncommitted, which `CLAUDE.md` invariant 2 says is unrecoverable. That invariant
+already classifies this case, so the answer is derived rather than asked, and is
+recorded as **requirement 10**: a hook may not stop the commit; a failing or
+hanging hook is surfaced and the commit still lands. If the intent was that a
+hook *should* be able to block a commit, that is a change to requirement 10 and
+worth saying so.
+
+**2026-08-16 — Q4: do routes 2 (`agent.install`) and 3 (the compose file) belong
+to this feature? → (a), this feature covers the git route only.** Requester:
+*"a"*. Route 3 stays with planning#386; route 2 is now **planning#400**, filed in the
+same turn as this receipt rather than left as an intention. Folded into
+**requirement 4**, which now names the disposition instead of only demanding
+that one be stated.

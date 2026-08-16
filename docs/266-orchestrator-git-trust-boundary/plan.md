@@ -9,9 +9,10 @@ description: Five options for closing the .git route, their costs, the recommend
 Implements [requirements.md](./requirements.md). Requirements are cited as
 `(req N)`.
 
-**Status: design only.** Open questions Q1–Q4 in `requirements.md` are
-unresolved, so no implementation code has been written (`CLAUDE.md`,
-requirements discipline step 2).
+**Status: design only.** Q1 and Q4 were answered on 2026-08-16; **Q2 and Q3
+remain open** in `requirements.md`, so no implementation code has been written
+(`CLAUDE.md`, requirements discipline step 2). Q2 is the load-bearing one — it
+decides whether this design is the right answer at all.
 
 ## 1. The shape of the problem
 
@@ -21,8 +22,12 @@ trusts:
 | # | File | Who executes it | Where that lands | Disposition |
 |---|---|---|---|---|
 | 1 | `.git/config`, `.git/info/attributes`, `.git/hooks/*` | git, run by the orchestrator process | **root in the orchestrator** — `/credentials`, `/var/run/docker.sock`, every session's `/workspace` | **this design** |
-| 2 | `shipit.yaml` → `agent.install` | the session worker, `shell: true` (`install-controller.ts:532`), re-run on change by the watcher (`service-manager-setup.ts:1112-1127`) | the **session container**, at the session's own uid | out of scope — needs its own issue (req 4, Q4) |
-| 3 | `docker-compose.yml` | the orchestrator, via the Docker socket (`service-manager.ts` — direct `docker compose` CLI invocations) | **the host**, via a `driver_opts` bind | out of scope — planning#386 (req 4, Q4) |
+| 2 | `shipit.yaml` → `agent.install` | the session worker, `shell: true` (`install-controller.ts:532`), re-run on change by the watcher (`service-manager-setup.ts:1112-1127`) | the **session container**, at the session's own uid | out of scope — planning#400 |
+| 3 | `docker-compose.yml` | the orchestrator, via the Docker socket (`service-manager.ts` — direct `docker compose` CLI invocations) | **the host**, via a `driver_opts` bind | out of scope — planning#386 |
+
+Scope decided by the requester on 2026-08-16 (req 4, `requirements.md` → Resolved
+questions, Q4): this feature is route 1 only, and each open route has an issue
+rather than a mention.
 
 Route 1 is the one whose fix is *relocation*. Route 3's fix is *validation*: the
 product deliberately executes a project's compose file, so the answer is to
@@ -161,10 +166,25 @@ something the session container can already obtain, so stealing it gains
 nothing — which is what makes E1 sound rather than a credential downgrade in
 disguise.
 
-**Keep PR #2301's `core.hooksPath` guard.** It costs nothing and it stops a
-project hook from firing on an operation the user did not ask for. It is
-defence in depth under E, not the boundary — that is the reading PR #2301 warned
-against.
+**E4. Let the project's hooks fire again on the session-workspace path**
+(req 9, decided 2026-08-16). Once E1 lands, PR #2301's `core.hooksPath` override
+is no longer doing security work there — it is only suppressing a project's own
+`pre-commit` formatter on a commit the project would expect it to run on. Drop
+it for git that runs at the session's uid. Two constraints come with it:
+
+- **Keep the override everywhere orchestrator git still runs as root** — the
+  bare cache, `/opt/shipit`, and anything E1 has not converted. There it is
+  still defence in depth, and dropping it wholesale would re-open the route on
+  exactly the paths that still matter.
+- **A hook must not be able to lose the turn's work (req 10).** `git commit`
+  exits non-zero when `pre-commit` fails, and never returns when it hangs;
+  either way `autoCommit` throws and the turn's edits stay uncommitted with no
+  reflog entry. So the commit needs a bounded hook attempt and a fallback:
+  run it with hooks, and on a non-zero exit or a timeout, re-run with
+  `--no-verify` and surface a persisted notice saying the hook failed and what
+  it printed. The commit always lands; the user always learns the hook did not
+  pass. Sequencing note — the retry must stay inside the same `postTurnStep`
+  and before the drain, so invariants 1 and 3 are unaffected.
 
 **Costs and breakage, stated plainly:**
 
@@ -208,11 +228,15 @@ each by name:
    Docker (req 6). All four `runCommitAndPr` entry points in `turn-executor.ts`
    behave identically.
 3. **The commit must be UNSKIPPABLE — every preceding step runs through
-   `postTurnStep`.** Unaffected structurally. E adds one new *failure mode*: a
-   uid/permission mismatch surfaces as EACCES from git rather than a silent
-   no-op. That must be a loud, distinct log line, not a swallowed catch — an
-   unprivileged git that cannot write `.git/index.lock` looks exactly like a
-   clean tree if the error is discarded.
+   `postTurnStep`.** Unaffected structurally. E adds two new *failure modes*,
+   and neither may be swallowed. First, a uid/permission mismatch surfaces as
+   EACCES from git — an unprivileged git that cannot write `.git/index.lock`
+   looks exactly like a clean tree if the error is discarded, so it needs a
+   loud, distinct log line. Second, E4 re-enables project hooks, so a failing or
+   hanging `pre-commit` can now fail the commit; req 10 is what forbids that,
+   and the bounded-attempt-then-`--no-verify` fallback in E4 is what satisfies
+   it. E4 is the only part of this design that *adds* a way for the commit to
+   fail, which is why it carries its own requirement rather than riding along.
 4. **A branch whose work shipped under a different SHA returns to base via
    `shipit branch reset-to-base --force`, never a rebase.** Unaffected. Same git,
    same commands, different uid.
@@ -264,17 +288,30 @@ inherited guarantee at the source").
 
 ## 5. If the recommendation is accepted
 
-Sequence, once Q1–Q4 are answered:
+Q1 and Q4 are answered (2026-08-16). **Q2 and Q3 are still open, and Q2 is the
+one that decides whether this design is built at all** — it asks whether running
+git as the session's own user is an acceptable answer. Nothing below starts
+until it is answered.
+
+Sequence:
 
 1. Thread the owning uid through `safeSimpleGit` and `createGitManager`; convert
    the five raw sites. Gated on `sessionWorkerUid()`, so unset = today.
 2. Point unprivileged git at a sanitized global config + the repo-scoped
-   brokering helper (E3).
+   brokering helper (E3), and tighten `/credentials` to 0700 / `.gitconfig` to
+   0600.
 3. Remove `safe.directory=*`; replace with nothing. Any survivor fails loudly.
-4. Extend `git-hooks-guard-coverage.test.ts`'s idea — it already fails the build
+4. Drop the `core.hooksPath` override on the session-workspace path only, and
+   add the bounded-hook-then-`--no-verify` fallback with its persisted notice
+   (E4, reqs 9 and 10). Last, because it is the only step that adds a way for
+   the commit to fail — everything before it must be settled first.
+5. Extend `git-hooks-guard-coverage.test.ts`'s idea — it already fails the build
    when a `git` process is spawned without `gitArgsWithHooksDisabled` — to also
-   fail when a session-workspace git spawn carries no uid.
-5. File the per-session-uid follow-up (Q3) and the route-2 issue (Q4).
+   fail when a session-workspace git spawn carries no uid. Note that step 4
+   narrows what that test asserts rather than removing it: the override must
+   still be present on every root-side git spawn.
+6. File the per-session-uid follow-up (Q3, if answered (a)). The route-2 issue
+   is already filed as planning#400.
 
 ## Key files
 
