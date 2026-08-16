@@ -613,13 +613,13 @@ export function registerPreviewProxy(
   /**
    * Resolve the container address behind a preview subdomain's port.
    *
-   * Compose services first, then the agent container. The returned port is not
-   * always the one in the subdomain: docs/262 req 18 pins a plugin service's
-   * PUBLISHED port for the session's whole life so the preview origin is stable,
-   * while its container port follows whatever the plugin's current compose
-   * fragment declares. The manager owns that mapping; for every project service
-   * — and for the agent-container fallback, which has no service behind it — the
-   * two numbers are the same.
+   * Compose services first, then the agent container. The returned port is
+   * always the one in the subdomain: every service — the project's own and a
+   * plugin's alike — serves on one number that is both its container port and
+   * its preview origin (docs/266 req 10). A plugin service used to carry a
+   * second, pinned number here; the port is now the consuming project's to
+   * write, so nothing can move it behind a session's back and the indirection
+   * is gone.
    */
   function resolveTarget(sessionId: string, port: number): { ip: string; port: number } | null {
     const mgr = serviceManagers.get(sessionId);

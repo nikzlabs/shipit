@@ -171,8 +171,10 @@ services:
   });
 
   it("is not previewable when the consuming project names no port (docs/266 req 9)", () => {
-    // The fragment says `x-shipit-preview: auto`, which used to be enough.
-    // It no longer decides: with no port there is nothing to preview.
+    // The fragment says `x-shipit-preview: auto`, which used to make it
+    // previewable on its own. Previewability now rides the PORT: the service
+    // carries none, so it cannot enter the pane's list whatever `preview` says.
+    // `preview` keeps answering the other question — does it start (req 16).
     const { services } = collect(`
 repos:
   - repo: self
@@ -183,6 +185,18 @@ use:
 `);
     expect(services).toHaveLength(1);
     expect(services[0].port).toBeUndefined();
+  });
+
+  it("defaults a portless service to manual when the fragment says nothing", () => {
+    writeFragment("services:\n  probe:\n    image: node:22-alpine\n");
+    const { services } = collect(`
+repos:
+  - repo: self
+    name: mine
+use:
+  - plugin: probe
+    from: mine
+`);
     expect(services[0].preview).toBe("manual");
   });
 
@@ -236,6 +250,94 @@ use:
     // silently serving one of them (#2325).
     expect(issues[0]).toContain("probe");
     expect(issues[0]).toContain("worker");
+  });
+
+  it("refuses one port claimed across TWO imports, naming both (docs/266 req 7)", () => {
+    fs.mkdirSync(path.join(workspaceDir, "tools", "other"), { recursive: true });
+    fs.writeFileSync(path.join(workspaceDir, "tools", "other", "docker-compose.yml"),
+      "services:\n  other:\n    image: node:22-alpine\n");
+    const manifest = `
+plugins:
+  probe:
+    compose: tools/probe/docker-compose.yml
+  other:
+    compose: tools/other/docker-compose.yml
+`;
+    const { services, issuesByRepo } = collect(`
+repos:
+  - repo: self
+    name: mine
+use:
+  - plugin: probe
+    from: mine
+    overrides:
+      services:
+        probe:
+          port: 4300
+  - plugin: other
+    from: mine
+    alias: other
+    overrides:
+      services:
+        other:
+          port: 4300
+`, manifest);
+    // Both imports are from one repository, and a repository's services
+    // activate as a unit — so the first import goes with the second.
+    expect(services).toHaveLength(0);
+    const issues = issuesByRepo.get("mine") ?? [];
+    expect(issues).toHaveLength(1);
+    expect(issues[0]).toContain("4300");
+    expect(issues[0]).toContain("other");
+    expect(issues[0]).toContain("probe");
+  });
+
+  it("withholds the REST of an import whose port collides — never half a plugin", () => {
+    writeFragment(`
+services:
+  probe:
+    image: node:22-alpine
+  worker:
+    image: node:22-alpine
+`);
+    const { services } = collect(`
+repos:
+  - repo: self
+    name: mine
+use:
+  - plugin: probe
+    from: mine
+    overrides:
+      services:
+        probe:
+          port: 4300
+        worker:
+          port: 4300
+`);
+    // `worker` is the one that collides; `probe` is clean and still withheld.
+    expect(services.map((s) => s.name)).toEqual([]);
+  });
+
+  it("keeps an explicit `x-shipit-preview` on a portless service (no silent drop)", () => {
+    // The fragment's key is the author's answer to req 16 and survives the
+    // port rule: dropping it would stop a portless worker starting, with
+    // nothing anywhere saying why (review finding).
+    writeFragment(`
+services:
+  probe:
+    image: node:22-alpine
+    x-shipit-preview: auto
+`);
+    const { services } = collect(`
+repos:
+  - repo: self
+    name: mine
+use:
+  - plugin: probe
+    from: mine
+`);
+    expect(services[0].port).toBeUndefined();
+    expect(services[0].preview).toBe("auto");
   });
 
   it("applies the consumer's autostart override (req 16)", () => {

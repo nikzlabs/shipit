@@ -13,4 +13,8 @@
 - [x] `docs/262-plugins/plan.md` — record what this deleted
 - [x] Tests: schema validation, fragment refusal, previewability, collisions, routing
 - [x] `npm run typecheck` + `npm run lint:dev`
-- [ ] Independent review against every numbered requirement
+- [x] Independent review against every numbered requirement — all ten confirmed
+      implemented; four findings acted on (probe false-positive + sticky verdict,
+      refused row startable from the UI, healthy services re-probed forever,
+      probe outliving dispose/container replacement), plus a silent drop of a
+      fragment's `x-shipit-preview`, three stale doc sites, and dead code

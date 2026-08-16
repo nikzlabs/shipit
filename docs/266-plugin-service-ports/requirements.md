@@ -53,7 +53,9 @@ comes from the plugin's fragment, and the per-service `overrides` are
 Each needs a human answer before design. Nothing here is settled by writing it
 down, and none of it may be resolved by inference.
 
-*(none open — all eight were answered on 2026-08-16; see below)*
+*(none open — all eight were answered on 2026-08-16. Seven receipts below: the
+migration-window question is answered inside the `ports:` receipt, since one
+answer settled both.)*
 
 ## Resolved questions
 
@@ -86,8 +88,14 @@ down, and none of it may be resolved by inference.
   is declared?** Nik: the consuming project naming a port is what says it. One
   declaration, in the place that now owns the decision, and a plugin service
   the project names no port for — a database, a worker — needs nothing written
-  at all. The exported fragment does not say `x-shipit-preview: auto` either.
-  Recorded in requirement 9.
+  at all. Recorded in requirement 9.
+
+  *(Scope note added 2026-08-16 after review: this answer settles
+  PREVIEWABILITY. It says nothing about `x-shipit-preview`, which answers the
+  separate req 16 question of whether a service starts with the stack. An
+  earlier draft of this receipt claimed the fragment stops declaring that too —
+  that was an inference of mine, not part of the answer, and the implementation
+  honours an explicit `x-shipit-preview` on a portless service.)*
 - **2026-08-16 — Does the published-vs-container port split survive?** Nik:
   collapse it to one number. `plugin-ports.ts`, `<sessionDir>/plugin-ports.json`
   and the indirection in `ServiceManager.resolvePreviewTarget` go, and a plugin

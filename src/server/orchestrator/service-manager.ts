@@ -198,16 +198,31 @@ export const COMPOSE_LOG_PREFIX = "[compose] ";
 export const MAX_COMPOSE_LOG_LINE = 8_000;
 
 /**
- * How long a plugin service gets, after its container reports `running`, before
- * ShipIt checks that something is actually listening on the port the consuming
- * project gave it (docs/266 req 8).
+ * How long between checks that a plugin service is actually listening on the
+ * port the consuming project gave it (docs/266 req 8) — the wait before the
+ * first check, and between retries.
  *
- * Generous on purpose. A container is `running` the moment its entrypoint
- * execs, which for a `sh -c "npm ci && node server.js"` service is a long way
- * before anything binds — and a false "nothing is listening" on a plugin that
- * is merely slow would be worse than the silence it replaces.
+ * A container is `running` the moment its entrypoint execs, which for a
+ * `sh -c "npm ci && node server.js"` service is a long way before anything
+ * binds. So the answer is not read from one check: see
+ * {@link PLUGIN_PORT_PROBE_ATTEMPTS}.
  */
 export const PLUGIN_PORT_PROBE_DELAY_MS = 45_000;
+
+/**
+ * How many refusals in a row before ShipIt says nothing is listening.
+ *
+ * A single check at a fixed deadline was wrong in exactly the case the delay
+ * above exists for: `npm ci` routinely outruns 45s, so the probe would report a
+ * plugin that binds fine at 60s — and because the verdict was recorded and
+ * never revisited, that wrong diagnosis sat in the Logs panel for the rest of
+ * the session. Retrying makes the report mean "still not listening after
+ * ~6 minutes", which a slow install no longer trips.
+ *
+ * A service that answers is marked confirmed and never probed again, so the
+ * steady-state cost is nothing rather than a connect every poll.
+ */
+export const PLUGIN_PORT_PROBE_ATTEMPTS = 8;
 
 /** How long the probe waits for the connection itself. Same-host, so short. */
 export const PLUGIN_PORT_PROBE_TIMEOUT_MS = 2_000;
@@ -525,10 +540,18 @@ export class ServiceManager extends EventEmitter {
   private pluginServices: PluginComposeService[] = [];
   /** Port refusals from this start, held until the log followers are up. */
   private pendingPortRefusals: { service: string; message: string }[] = [];
+  /**
+   * Service name → why it was refused, for the CURRENT stack definition.
+   * Rebuilt with the service map, so fixing the port clears it.
+   */
+  private portRefusals = new Map<string, string>();
   /** Pending one-shot "is it actually listening?" probes (docs/266 req 8). */
   private portProbeTimers = new Map<string, NodeJS.Timeout>();
-  /** Services already told about — the probe reports once, not every poll. */
-  private portProbeReported = new Set<string>();
+  /**
+   * Services whose port question is answered — it bound, or it never will.
+   * Either way the probe stops: this is a diagnosis, not a health check.
+   */
+  private portProbeSettled = new Set<string>();
   private readonly stackName?: string;
   private readonly opsSession: boolean;
   /**
@@ -1343,6 +1366,7 @@ export class ServiceManager extends EventEmitter {
     // a reader who opens the panel later reads. Drained in `reportPortRefusals`,
     // at the one point that is safe (see its call site).
     this.pendingPortRefusals.push({ service: svc.name, message });
+    this.portRefusals.set(svc.name, message);
     this.services.set(svc.name, {
       name: svc.name,
       preview: "manual",
@@ -1361,8 +1385,8 @@ export class ServiceManager extends EventEmitter {
   }
 
   /**
-   * docs/266 req 8 — check, once, that a plugin service is actually listening
-   * on the port the consuming project gave it, and say so when it is not.
+   * docs/266 req 8 — check that a plugin service is actually listening on the
+   * port the consuming project gave it, and say so when it is not.
    *
    * The rule that makes this necessary is docs/266 req 3: the port is the
    * consumer's, delivered to the container as `SHIPIT_PLUGIN_PORT`, so a plugin
@@ -1372,21 +1396,23 @@ export class ServiceManager extends EventEmitter {
    * consumer cannot fix the plugin's code, but they can only report it if they
    * know — so this is the difference between a bug report and a shrug.
    *
-   * **Delayed, and once.** A server binds some time after its container is
-   * `running` (an `npm install && node server.js` service is running a minute
-   * before it listens), so probing at the transition would report every healthy
-   * plugin. And it is a diagnosis, not a health check: the poller already owns
-   * liveness, and re-probing every poll would turn one line into a stream.
+   * **Retried, then settled.** A server binds some time after its container is
+   * `running`, so one check at a fixed deadline answered the wrong question: it
+   * reported plugins that were merely slow, and the verdict stuck. So a refusal
+   * re-arms up to {@link PLUGIN_PORT_PROBE_ATTEMPTS} times, and the report means
+   * "still nothing after all of them". An accepted connection settles the
+   * service for good — confirmed services are never probed again, so this
+   * costs nothing in the steady state even though `onRunning` fires every poll.
    */
-  private armPluginPortProbe(name: string): void {
+  private armPluginPortProbe(name: string, attempt = 1): void {
     const svc = this.services.get(name);
     // Plugin services only. A project service's port is the user's own compose
     // file — if it does not listen there, that is their code and their line.
     if (!svc?.origin || svc.port === undefined) return;
-    if (this.portProbeReported.has(name) || this.portProbeTimers.has(name)) return;
+    if (this.portProbeSettled.has(name) || this.portProbeTimers.has(name)) return;
     const timer = setTimeout(() => {
       this.portProbeTimers.delete(name);
-      void this.probePluginPort(name);
+      void this.probePluginPort(name, attempt);
     }, PLUGIN_PORT_PROBE_DELAY_MS);
     timer.unref();
     this.portProbeTimers.set(name, timer);
@@ -1399,21 +1425,50 @@ export class ServiceManager extends EventEmitter {
     this.portProbeTimers.delete(name);
   }
 
-  private async probePluginPort(name: string): Promise<void> {
+  private async probePluginPort(name: string, attempt: number): Promise<void> {
     const svc = this.services.get(name);
     // Re-read rather than closing over the earlier snapshot: the service may
     // have stopped, been refused, or lost its IP while the timer was pending.
     if (!svc?.origin || svc.port === undefined || !svc.containerIp) return;
-    if (svc.status !== "running" || this.portProbeReported.has(name)) return;
-    if (await tcpAccepts(svc.containerIp, svc.port, PLUGIN_PORT_PROBE_TIMEOUT_MS)) return;
-    this.portProbeReported.add(name);
+    if (svc.status !== "running" || this.portProbeSettled.has(name)) return;
+    // Captured, because the probe itself takes time: a container replaced mid
+    // probe would otherwise have the OLD container's refusal reported against
+    // its name.
+    const { containerIp, port } = svc;
+    const accepted = await tcpAccepts(containerIp, port, PLUGIN_PORT_PROBE_TIMEOUT_MS);
+    if (this._disposed) return;
+    const now = this.services.get(name);
+    if (now?.containerIp !== containerIp || now.port !== port || now.status !== "running") return;
+    if (accepted) {
+      this.portProbeSettled.add(name);
+      return;
+    }
+    if (attempt < PLUGIN_PORT_PROBE_ATTEMPTS) {
+      this.armPluginPortProbe(name, attempt + 1);
+      return;
+    }
+    this.portProbeSettled.add(name);
     this.reportPortConflict(
       name,
-      `${name} is running but nothing is listening on port ${svc.port}, so its preview will be `
+      `${name} is running but nothing is listening on port ${port}, so its preview will be `
       + `empty. That port is this project's to choose and ShipIt passes it to the container as `
       + `${PLUGIN_PORT_ENV}; a plugin whose server binds a port of its own instead will not be `
       + `reachable. Report it to the \`${svc.origin.repo}\` plugin's authors.`,
     );
+  }
+
+  /**
+   * Refuse a start of a service {@link refusePluginPortCollision} held back.
+   *
+   * The row is `error` and the client shows a Start button on every `error`
+   * row, so without this the user can press it — and the service is not in the
+   * generated override, so `docker compose up` fails with "no such service" and
+   * the catch REPLACES the actionable "change `port:`…" text with that. They
+   * would be one click from losing the only message that told them what to do.
+   */
+  private refusePluginPortStart(name: string): void {
+    const reason = this.portRefusals.get(name);
+    if (reason) throw new Error(reason);
   }
 
   /** Emit the refusals {@link refusePluginPortCollision} queued during this start. */
@@ -1482,6 +1537,7 @@ export class ServiceManager extends EventEmitter {
       : this.parseProjectCompose(composePath);
 
     // Build service map
+    this.portRefusals.clear();
     for (const svc of parsedServices) {
       const preview = svc.shipitPreview ?? (svc.ports?.length ? "auto" : "manual");
       const port = svc.ports?.[0] ? extractContainerPort(svc.ports[0]) : undefined;
@@ -1655,6 +1711,12 @@ export class ServiceManager extends EventEmitter {
       for (const svc of startNow) {
         this.updateServiceStatus(svc.name, "error", (err as Error).message);
       }
+      // A refused port is not a consequence of THIS failure and outlives it —
+      // the plugin service is still held back, and the reason is still the only
+      // thing telling the user what to change. The success path reports these
+      // after the log followers attach; here there may be no followers at all,
+      // and saying it late beats not saying it (review finding).
+      this.reportPortRefusals();
       this.emit("stack_error", err);
       throw err;
     } finally {
@@ -1678,6 +1740,7 @@ export class ServiceManager extends EventEmitter {
   async startService(name: string): Promise<void> {
     const svc = this.services.get(name);
     if (!svc) throw new Error(`Unknown service: ${name}`);
+    this.refusePluginPortStart(name);
 
     // User-initiated start — clear any OOM auto-retry budget so the
     // service gets a fresh chance. If the user explicitly hits "start"
@@ -1720,6 +1783,7 @@ export class ServiceManager extends EventEmitter {
   async restartService(name: string): Promise<void> {
     const svc = this.services.get(name);
     if (!svc) throw new Error(`Unknown service: ${name}`);
+    this.refusePluginPortStart(name);
 
     // Same as startService — explicit user action resets the OOM budget, and
     // supersedes an earlier stop (requirement 5).
@@ -2746,9 +2810,9 @@ export class ServiceManager extends EventEmitter {
   private cancelPluginPortProbes(): void {
     for (const timer of this.portProbeTimers.values()) clearTimeout(timer);
     this.portProbeTimers.clear();
-    // `portProbeReported` is deliberately NOT cleared: a stack that reconciles
+    // `portProbeSettled` is deliberately NOT cleared: a stack that reconciles
     // repeatedly (a `shipit.yaml` edit, a plugin refresh) would otherwise
-    // re-report the same broken plugin on every round.
+    // re-probe — and re-report — a plugin already settled either way.
   }
 
   /** Drop every armed `starting` watchdog — teardown and reconcile. */

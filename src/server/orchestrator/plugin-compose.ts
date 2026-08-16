@@ -399,8 +399,13 @@ function resolvePreview(
 ): "auto" | "manual" {
   const override = use.overrides.services[source.name]?.autostart;
   if (override !== undefined) return override ? "auto" : "manual";
-  if (port === undefined) return "manual";
-  return source.preview ?? "auto";
+  // An explicit `x-shipit-preview` is still the author's answer, port or no
+  // port. Letting the port override it would SILENTLY drop a key the fragment
+  // declared — a portless worker written `auto` would stop starting, with
+  // nothing anywhere saying why. The port replaces the fragment's old `ports:`
+  // as the DEFAULT only.
+  if (source.preview !== undefined) return source.preview;
+  return port !== undefined ? "auto" : "manual";
 }
 
 /**

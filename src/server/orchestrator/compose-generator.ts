@@ -431,32 +431,6 @@ export function extractContainerPort(portMapping: string): number | undefined {
   return Number.isFinite(port) && port > 0 ? port : undefined;
 }
 
-/**
- * Every container port a parsed compose stack claims — one derivation, shared
- * by the two surfaces that must agree about it (#2325).
- *
- * A plugin service's published port is allocated around the ports the PROJECT
- * already claims, and the routing key it becomes must be unique across the
- * whole session. Two independent readings of "which numbers are taken" is how
- * that uniqueness was lost: the plugin resolver counted a service's ports one
- * way and the ServiceManager another, and a plugin then published a number the
- * project's own service was already reachable on. Both now count them here.
- *
- * Every entry of every service, not just the first: a service listening on two
- * ports occupies both, even though only the first is the one ShipIt previews.
- */
-export function declaredContainerPorts(
-  services: readonly Pick<ComposeService, "ports">[],
-): Set<number> {
-  const ports = new Set<number>();
-  for (const svc of services) {
-    for (const mapping of svc.ports ?? []) {
-      const port = extractContainerPort(mapping);
-      if (port !== undefined) ports.add(port);
-    }
-  }
-  return ports;
-}
 
 /**
  * Parse a docker-compose.yml file and extract service definitions.

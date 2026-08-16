@@ -40,14 +40,16 @@ project service's port already is (req 10). There is no second number.
 
 ### req 1, 6 — the fragment stops declaring a port
 
-`ports` leaves `ALLOWED_SERVICE_KEYS` (`plugin-compose.ts`). The existing
-unknown-key check then refuses the fragment and names the service and the key,
-which is the report req 6 asks for, on the plugin repository's own card. There
-is no migration window: a fragment written under the old rule is invalid, and
-that refusal is also how a consuming project learns one of its imports was
-written under the old rule.
+`ports` leaves `ALLOWED_SERVICE_KEYS` (`plugin-compose.ts`), and a dedicated
+check ahead of the generic allowlist loop refuses it by name. Dedicated because
+this is the one refused key that used to be legal: the reader needs the rule and
+the line to delete, not "not supported". That refusal lands on the plugin
+repository's own card, which is the report req 6 asks for. There is no migration
+window — a fragment written under the old rule is invalid, and that same refusal
+is how a consuming project learns one of its imports was written under it.
 
-`readPorts` and `PluginFragmentService.port` go with it.
+`readPorts` goes with it. `PluginFragmentService.port` stays, but now carries
+the CONSUMER's number rather than the fragment's.
 
 ### req 2, 9 — the consumer writes it, and that is what makes it previewable
 
@@ -68,14 +70,18 @@ is carried entirely by the port's presence, with nothing to keep in step.
 ```ts
 const override = use.overrides.services[source.name]?.autostart;
 if (override !== undefined) return override ? "auto" : "manual";   // req 16, unchanged
-if (port === undefined) return "manual";
-return source.preview ?? "auto";
+if (source.preview !== undefined) return source.preview;           // the author's answer
+return port !== undefined ? "auto" : "manual";                     // the new default
 ```
 
-Keeping those two questions apart matters: a portless worker the consumer wrote
-`autostart: true` for still starts, and simply has nothing to preview. Making
-"no port" force `manual` would have broken that — it was caught by the existing
-req 16 test, not by reasoning.
+Keeping those two questions apart matters, and it took two goes. A portless
+worker the consumer wrote `autostart: true` for still starts, and simply has
+nothing to preview — making "no port" force `manual` would have broken that, and
+was caught by the existing req 16 test. The second layer is the same mistake one
+level down: letting the port override an *explicit* `x-shipit-preview` would
+silently drop a key the fragment declared, stopping a portless worker the AUTHOR
+marked `auto` with nothing anywhere saying why. So the port is the default only,
+below both the consumer's override and the author's explicit answer.
 
 ### req 7 — one number written twice is refused
 
@@ -100,12 +106,19 @@ that wanted it was already refused. `claimed`, the service-NAME domain, has had
 exactly this shape since docs/262, so ports match it rather than diverging;
 fixing it properly is a two-pass change to both and is not in scope here.
 
-`warnOnAmbiguousPreviewPorts` is the site: it already finds this pair and
-already reports into the losing service's own log channel. It becomes a refusal
-for the plugin/project pair and stays a warning for the case req 7 does not
-cover — two of the **project's own** services sharing a container port, which
-stays out of scope because both definitions are the consumer's and ShipIt moves
-neither.
+The refusal happens at **admission**, before the service is registered, so
+`warnOnAmbiguousPreviewPorts` now only ever sees the case req 7 does not cover —
+two of the **project's own** services sharing a container port, which stays out
+of scope because both definitions are the consumer's and ShipIt moves neither.
+
+Two things the refused row needs beyond not starting. It is registered `error`,
+and the client puts a Start button on every `error` row — so `startService` and
+`restartService` refuse it by name (`refusePluginPortStart`). Without that, one
+click reaches `docker compose up` for a service that is not in the override, and
+the catch replaces the actionable "change `port:`…" text with a raw "no such
+service". And the refusal is reported on the **failure** path of `start()` as
+well as the success path: a refused port is not a consequence of that failure
+and outlives it, so the reason has to be said either way.
 
 ### req 3, 8 — the container is told, and a mismatch is reported
 
@@ -116,6 +129,16 @@ port is broken under this rule (req 3), so the break has to be legible: a
 plugin service that is `running` but not accepting connections on its declared
 port is reported on its own log channel, rather than leaving the consumer with
 an empty pane and nothing to read.
+
+**The check retries before it reports, and settles either way.** The first
+version checked once at a 45s deadline — and the case that delay exists for is
+exactly the one it got wrong: `npm ci` routinely outruns 45s, so a plugin that
+binds fine at 60s was reported, and because the verdict was recorded and never
+revisited the wrong diagnosis stayed in the Logs panel for the session. It now
+re-arms up to `PLUGIN_PORT_PROBE_ATTEMPTS` times, so the report means "still
+nothing after ~6 minutes". A service that answers is marked settled and never
+probed again, which also stops `onRunning` — which fires on *every* running
+poll, not just the transition — from turning this into a connect per poll.
 
 ### req 10 — the two-number scheme collapses
 
