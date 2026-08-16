@@ -51,7 +51,7 @@ const MOUNT_LOOP = /^for d in \/workspace .*; do$/m;
  * everywhere: a writable temp dir exercises the success path, an unwritable one
  * exercises the warning.
  */
-const PLUGIN_PREP = /^if ! \(mkdir -p (\/[\w-]+) && chown .* \1\) 2>\/dev\/null; then$/gm;
+const PLUGIN_PREP = /^if ! \(mkdir -p (\/[\w-][\w./-]*) && chown .* \1\) 2>\/dev\/null; then$/gm;
 
 /**
  * The absolute paths the entrypoint prepares this way, in the order it does.
