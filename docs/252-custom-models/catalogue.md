@@ -12,6 +12,10 @@ The inventory of what ShipIt will run: every **harness** (agent CLI) and every *
 [`requirements.md`](./requirements.md), chiefly req 15 (what the launch catalogue contains),
 req 6 (how a model becomes available on a harness), req 13 (retirement) and req 16 (cost).
 
+What these rows do when actually run is measured in
+[`pair-verification.md`](./pair-verification.md) — a live turn per viable
+`(harness, service, billing mode, model)` pair.
+
 This document settles **the types, and the rows that this repository can settle** — the
 Anthropic and OpenAI inventories are written out in full, because phase 1's review criterion
 is that the picker offers exactly what it offers today.
@@ -931,17 +935,23 @@ Every 🔍, but these change the *shape* rather than the contents:
 5. **Which DeepSeek models serve the Responses API, and do OpenRouter or Vercel speak it?**
    **DeepSeek: answered 2026-08-13** — both `deepseek-v4-flash` and `deepseek-v4-pro` serve
    it natively at `https://api.deepseek.com` (OpenAI SDK path `/v1/responses`), verified
-   through codex-cli 0.146.0. Vercel documents a Responses surface. **OpenRouter: answered
-   2026-08-15** (planning#391) — it serves Responses at `https://openrouter.ai/api/v1`, an
-   authenticated POST returning a genuine `"object":"response"` body where a bogus sibling
-   route on the same base 404s, and a real `codex exec` turn completed over it with
-   `wire_api = "responses"`, on `deepseek/deepseek-v4-flash`. **`deepseek/deepseek-v4-pro`
-   measured separately 2026-08-16** — HTTP 200, `"object":"response"`, `"status":"completed"`,
-   output text `PAIR_OK`, same bogus-route control — so both ids carrying the style have been
-   seen to work and neither rides on the other. The style is declared on the row's **DeepSeek
-   models only**: one model answering does not establish that the gateway translates for an
-   upstream serving no Responses API of its own — which Anthropic does not, and which Z.ai was
-   measured in the 08-15 run not to do either. Adding a further row is a measurement, not a
-   deduction.
+   through codex-cli 0.146.0. **Vercel: confirmed 2026-08-15** — both `openai/gpt-5.6-sol` and
+   `openai/gpt-5.6-terra` complete a real `codex exec` turn over
+   `https://ai-gateway.vercel.sh/v1`, so its Responses surface is now measured rather than
+   merely documented. **OpenRouter: answered 2026-08-15** (planning#391) — it serves Responses
+   at `https://openrouter.ai/api/v1`, an authenticated POST returning a genuine
+   `"object":"response"` body where a bogus sibling route on the same base 404s, and a real
+   `codex exec` turn completed over it with `wire_api = "responses"`, on
+   `deepseek/deepseek-v4-flash`. **`deepseek/deepseek-v4-pro` measured separately 2026-08-16**
+   — HTTP 200, `"object":"response"`, `"status":"completed"`, output text `PAIR_OK`, same
+   bogus-route control — so both ids carrying the style have been seen to work and neither
+   rides on the other. The style is declared on the row's **DeepSeek models only**: one model
+   answering does not establish that the gateway translates for an upstream serving no
+   Responses API of its own — which Anthropic does not, and which **GLM (Z.ai) was measured
+   not to** in the 08-15 run: on its OpenAI-compatible base `/api/paas/v4/responses` 404s
+   identically to a bogus route while `chat/completions` reaches the billing gate with a 429,
+   so declaring only `A_MSG`/`O_CC` there is correct. Adding a further row is a measurement,
+   not a deduction. Evidence and controls for the 08-15 sweep:
+   [`pair-verification.md`](./pair-verification.md).
 6. **What does GLM's coding plan offer, and how does its auth work?** Phase 2 owns the
    integration and req 15 is unmet until it lands.
