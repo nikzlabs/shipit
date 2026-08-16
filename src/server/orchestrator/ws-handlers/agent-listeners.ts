@@ -400,7 +400,13 @@ export function wireAgentListeners(
    */
   const adoptCliStartedTurn = (reason: string): void => {
     if (!runner) return;
-    if (!runner.running) {
+    // The false→true edge, captured before the flag moves. This function runs on
+    // EVERY `agent_self_wake`, and that event rides the CLI's
+    // `task_notification` — which fires whenever a background job reports back,
+    // 15+ times inside one session in the production log. So anything that must
+    // happen once per ADOPTED TURN hangs off this flag, never off the call.
+    const startsTurn = !runner.running;
+    if (startsTurn) {
       resetRunnerTurnState(runner);
       // The adopted turn runs through these SAME listeners; adopt its epoch so
       // its own crash-path finalize isn't mistaken for a stale turn's.
@@ -415,6 +421,37 @@ export function wireAgentListeners(
         running: true,
         queueLength: runner.queueLength,
       });
+      // docs/267 — …and the CROSS-SESSION half. `session_status` rides the
+      // PER-SESSION WebSocket, so it reaches only viewers already attached to
+      // this session. Every other sidebar keeps `isAgentRunning === false`, and
+      // `SessionStatusDot` falls through "agent running" (priority 2) to the
+      // green CI checkmark (priority 5) for a session that is in fact working —
+      // the truth appearing only when the user switches in and HTTP history
+      // reports the authoritative `agentRunning`. The REMOVAL half was never
+      // missing (`session_agent_finished` is already an SSE broadcast); that
+      // asymmetry was the whole bug.
+      //
+      // No `activity` field. The client tolerates its absence, and it would be
+      // invented rather than reported: nothing here knows what the CLI decided
+      // to do. It is also unused in this shape — the client applies the label
+      // only to the ACTIVE session's status line, which the `session_status`
+      // above has already put into its loading state.
+      //
+      // Streaming only, and that gate is what makes the add safe. An adopted
+      // turn gets a post-turn flow — and with it the matching
+      // `session_agent_finished` — only from `turn-executor`'s
+      // `rearmForCliStartedTurn`, which `beginRearm` refuses to run when the
+      // turn is not streaming. On a one-shot turn the process's `done` reaches
+      // `broadcastFinishedIfIdle`, which is suppressed by the very `running`
+      // flag set above, so announcing the start would pin a green dot on every
+      // sidebar with nothing left to clear it. That stuck `running` is
+      // pre-existing (and, per the `agent_self_wake` branch below, not thought
+      // to be reachable through the one-shot adapter, which reaps its
+      // background tasks and exits at turn end); it is not this change's to fix,
+      // but it is a reason not to broadcast a start we cannot promise to retract.
+      if (startsTurn && opts.useStreaming === true) {
+        deps.sseBroadcast("session_agent_started", { sessionId: turnSessionId });
+      }
     }
     console.log(`[cli-turn] runner=${runner.sessionId} adopted a turn the orchestrator did not start (${reason})`);
   };
