@@ -281,13 +281,24 @@ describe("Integration: quick-capture headless sessions", () => {
     );
   });
 
-  it("pins the model's agent when agent+model disagree (model is source of truth)", { timeout: 15_000 }, async () => {
-    // docs/166: a caller (e.g. the quick-capture overlay with a stale
-    // `vibe-agent-id`, or a legacy client) sends a Claude model with a
-    // conflicting `agent: "codex"`. The model is authoritative, so the server
-    // must derive and pin "claude", never the mismatched agent it was handed.
+  it("refuses a harness that cannot run the requested model (planning#389)", { timeout: 15_000 }, async () => {
+    // docs/166 made this pair — a Claude model with a conflicting
+    // `agent: "codex"` — resolve to Claude, so a stale `vibe-agent-id` could not
+    // pin a session to a harness the user never chose. It did that by rerouting,
+    // and rerouting is the wrong half of the remedy: the session ran, was pinned
+    // write-once to Claude and BILLED for it, with `pending_agent_notice` NULL,
+    // so a caller who meant "codex" was told nothing at all. Measured on a live
+    // instance 2026-08-15 — four such requests, one of them $0.14.
+    //
+    // A refusal prevents the wrong pin just as well and costs nothing. The pair
+    // is refused, not corrected, because the two readings of it (a stale key vs.
+    // a caller who means it) are the SAME request and no rule can tell them
+    // apart — which is the answer `shipit agent run` and `shipit session create`
+    // already give (docs/261 req 7, planning#304). docs/166's client half, which
+    // stops the pair being sent, is untouched.
     await waitFor(() => !!repoStore.get(REPO_URL)?.warmSessionId, 10_000, "warm session");
 
+    const before = sessionManager.list().length;
     const res = await app.inject({
       method: "POST",
       url: "/api/sessions/headless",
@@ -300,10 +311,36 @@ describe("Integration: quick-capture headless sessions", () => {
       },
     });
 
+    expect(res.statusCode, res.body).toBe(400);
+    expect((res.json() as { error: string }).error).toContain(
+      "Codex cannot run Opus 5 — they share no API style.",
+    );
+    // Nothing was created and nothing ran: no session row, and no agent spawned
+    // on the harness the caller did not ask for.
+    expect(sessionManager.list().length).toBe(before);
+    expect(createdAgents.some((a) => a.runCalled)).toBe(false);
+  });
+
+  it("still derives the agent from the model when none was named (docs/166)", { timeout: 15_000 }, async () => {
+    // The half of docs/166's server guard that survives planning#389: the model
+    // is the source of truth, so a caller who names one and no harness gets the
+    // harness that model belongs to — not the install default.
+    await waitFor(() => !!repoStore.get(REPO_URL)?.warmSessionId, 10_000, "warm session");
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/api/sessions/headless",
+      payload: {
+        repoUrl: REPO_URL,
+        initialPrompt: "Use the model's agent",
+        branch: "quick/agent-derive",
+        model: "claude-opus-5",
+      },
+    });
+
     expect(res.statusCode, res.body).toBe(200);
     const body = res.json() as { sessionId: string };
-    const session = sessionManager.get(body.sessionId);
-    expect(session).toMatchObject({
+    expect(sessionManager.get(body.sessionId)).toMatchObject({
       model: "claude-opus-5",
       agentId: "claude",
       agentPinned: true,

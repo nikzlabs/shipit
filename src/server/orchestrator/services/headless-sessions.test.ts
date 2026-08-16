@@ -279,6 +279,7 @@ describe("createHeadlessSession", () => {
   // deployment does not have — and the pin is write-once.
   it("falls back to the install's default agent when the requested one is not installed", async () => {
     uninstalledHarnesses.add("claude");
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
 
     await createHeadlessSession(
       sessionManager,
@@ -298,6 +299,12 @@ describe("createHeadlessSession", () => {
 
     expect(sessionManager.get("quick-1")).toMatchObject({ agentId: "codex", agentPinned: true });
     expect(registry.created).toEqual([expect.objectContaining({ agentId: "codex" })]);
+    // planning#389 — this substitution stays a substitution, and stays audible.
+    // It is a different question from the style check below: the harness COULD
+    // run the model, this deployment just doesn't ship it, and the user cannot
+    // re-aim a quick capture from where they are.
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("is not installed in this deployment"));
+    warn.mockRestore();
   });
 
   it("still honours a requested agent the deployment does have", async () => {
@@ -320,6 +327,141 @@ describe("createHeadlessSession", () => {
     );
 
     expect(sessionManager.get("quick-1")).toMatchObject({ agentId: "claude" });
+  });
+
+  // planning#389 — the four cases the harness/model pair can be in. Only the
+  // second is a refusal; the other three are the behaviours docs/166 and
+  // planning#304 settled, and they are asserted here so a future edit cannot
+  // widen the refusal into them.
+  describe("an explicit harness that disagrees with the model", () => {
+    it("refuses when the harness cannot speak the model's API style", async () => {
+      const service = claimService();
+
+      await expect(createHeadlessSession(
+        sessionManager,
+        registry as unknown as SessionRunnerRegistry,
+        service,
+        {
+          repoUrl: "https://github.com/acme/app.git",
+          prompt: "Run this on Codex",
+          // `claude-opus-5` declares anthropic-messages only; Codex speaks
+          // neither of that model's styles. Rerouting this to Claude ran and
+          // BILLED four sessions the callers never asked for.
+          agent: "codex",
+          model: "claude-opus-5",
+          serviceId: "anthropic",
+          billingMode: "sub",
+        },
+        "claude",
+        undefined,
+        undefined,
+        undefined,
+        graduationDeps,
+      )).rejects.toMatchObject({
+        statusCode: 400,
+        message: "Codex cannot run Opus 5 — they share no API style. "
+          + "Choose a model Codex can run, or run Opus 5 on Claude Code.",
+      });
+
+      // Refused before any side effect: no warm session claimed, no runner, no
+      // session row, and above all no turn dispatched onto the other harness.
+      expect(service.claim).not.toHaveBeenCalled();
+      expect(registry.created).toEqual([]);
+      expect(sessionManager.list()).toEqual([]);
+    });
+
+    it("still derives the harness from the model when the caller named none (docs/166)", async () => {
+      await createHeadlessSession(
+        sessionManager,
+        registry as unknown as SessionRunnerRegistry,
+        claimService(),
+        {
+          repoUrl: "https://github.com/acme/app.git",
+          prompt: "no harness named",
+          model: "claude-opus-5",
+        },
+        "codex",
+        undefined,
+        undefined,
+        undefined,
+        graduationDeps,
+      );
+
+      // The model is the source of truth, and with nothing to contradict there
+      // is nothing to refuse — it beats the install default, exactly as before.
+      expect(sessionManager.get("quick-1")).toMatchObject({ agentId: "claude", agentPinned: true });
+    });
+
+    it("honours a harness that shares the model with the other one (planning#304)", async () => {
+      await createHeadlessSession(
+        sessionManager,
+        registry as unknown as SessionRunnerRegistry,
+        claimService(),
+        {
+          repoUrl: "https://github.com/acme/app.git",
+          prompt: "shared model",
+          // Both harnesses list `deepseek-v4-pro`, so this is not a disagreement
+          // at all — `agentIdForModel` merely answers with whichever sorts first.
+          agent: "codex",
+          model: "deepseek-v4-pro",
+        },
+        "claude",
+        undefined,
+        undefined,
+        undefined,
+        graduationDeps,
+      );
+
+      expect(sessionManager.get("quick-1")).toMatchObject({ agentId: "codex", agentPinned: true });
+    });
+
+    it("passes through a model id no harness lists, keeping the named harness", async () => {
+      await createHeadlessSession(
+        sessionManager,
+        registry as unknown as SessionRunnerRegistry,
+        claimService(),
+        {
+          repoUrl: "https://github.com/acme/app.git",
+          prompt: "forward compat",
+          // A versioned or newer id the catalogue hasn't surfaced yet. Nothing
+          // says the pair is incoherent, so refusing it would break the same
+          // forward-compat the child-session and role validators keep.
+          agent: "codex",
+          model: "gpt-5.7-not-in-the-catalogue-yet",
+        },
+        "claude",
+        undefined,
+        undefined,
+        undefined,
+        graduationDeps,
+      );
+
+      expect(sessionManager.get("quick-1")).toMatchObject({ agentId: "codex", agentPinned: true });
+    });
+
+    it("does not describe an unknown agent id as an API-style mismatch", async () => {
+      await createHeadlessSession(
+        sessionManager,
+        registry as unknown as SessionRunnerRegistry,
+        claimService(),
+        {
+          repoUrl: "https://github.com/acme/app.git",
+          prompt: "unknown harness",
+          // Free text off the wire — the route casts it without checking. The
+          // refusal speaks about API styles, which says nothing true about an id
+          // no harness has, so this keeps falling through to the model's harness.
+          agent: "gemini" as AgentId,
+          model: "claude-opus-5",
+        },
+        "claude",
+        undefined,
+        undefined,
+        undefined,
+        graduationDeps,
+      );
+
+      expect(sessionManager.get("quick-1")).toMatchObject({ agentId: "claude" });
+    });
   });
 
   it("persists a valid reasoning effort on the session row before the first turn", async () => {

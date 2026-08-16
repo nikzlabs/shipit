@@ -463,9 +463,22 @@ export function implementerFor(
  * test registry, a bare runtime), not "nothing is eligible" — so it is skipped
  * rather than refusing everything, and the credential-route check downstream
  * stays the authority in that case.
+ *
+ * **The message names which of the two causes it is.** The eligible set is the
+ * catalogue join narrowed by credential, so a miss can mean either "this harness
+ * cannot speak that model's API style" or "it can, and nothing here holds a
+ * credential for that row" — and those have different remedies (pick another
+ * model vs. connect an account). A single credential-blaming sentence sent the
+ * reader to Settings for a pair no credential could ever fix (planning#389).
+ * Style is asked first because it is the unconditional fact: no credential makes
+ * an incompatible pair runnable.
+ *
+ * Takes the harness ID rather than its display name precisely so it can ask that
+ * question; the name is resolved from the catalogue, which is where the callers'
+ * `AgentInfo.name` comes from anyway.
  */
 export function assertHarnessCanRunSelection(
-  harnessName: string,
+  harnessId: AgentId,
   eligibleModels: readonly ModelSelection[] | undefined,
   selection: ModelSelection,
 ): void {
@@ -478,7 +491,12 @@ export function assertHarnessCanRunSelection(
       && m.modelId === selection.modelId,
   );
   if (match) return;
-  const label = getModel(selection)?.label ?? selection.modelId;
+  const model = getModel(selection);
+  const harnessName = getHarness(harnessId)?.name ?? harnessId;
+  const label = model?.label ?? selection.modelId;
+  if (model && resolveStyle(harnessId, model) === undefined) {
+    throw new ServiceError(400, `${harnessName} cannot run ${label} — they share no API style.`);
+  }
   throw new ServiceError(
     400,
     `${harnessName} cannot run ${label} on ${selection.serviceId}/${selection.billingMode} — `

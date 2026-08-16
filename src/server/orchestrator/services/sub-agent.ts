@@ -402,7 +402,7 @@ export async function runSubAgent(
   // selections the harness it chose is eligible for.
   if (target.kind === "explicit") {
     try {
-      assertHarnessCanRunSelection(info.name, info.eligibleModels, subSelection);
+      assertHarnessCanRunSelection(info.id, info.eligibleModels, subSelection);
     } catch (err) {
       if (err instanceof ServiceError) {
         throw rejectSpawn(sessionId, subAgentId, err.statusCode, "harness_cannot_run", err.message);
