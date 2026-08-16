@@ -90,10 +90,22 @@ grant itself trust — measured while building E2, and it holds.
 
 **Correction (2026-08-16, while building E2).** Earlier revisions of this
 document, `requirements.md`, and `git-config.ts`'s own comment all added "and
-never from `-c`". That is **wrong** for git 2.39.5: git's *protected
-configuration* scope is system + global + **command line**, so both
-`git -c safe.directory=*` and the `GIT_CONFIG_COUNT` environment protocol are
-honoured. Measured with `GIT_TEST_ASSUME_DIFFERENT_OWNER=1` — see §4.
+never from `-c`". That is **wrong** for git 2.39.5.
+
+State the rule, not the list. Git honours `safe.directory` from its **protected
+configuration** — the system and global files, the command line, **and the
+config environment protocols**. So: *anything ShipIt itself puts in a git
+process's argv or environment can re-grant trust; only the repository's own
+config cannot.* Measured with `GIT_TEST_ASSUME_DIFFERENT_OWNER=1` — see §4.
+
+That phrasing is deliberate, and it is requirement 3's own lesson applied to
+prose rather than to code. This document has already had an enumeration
+falsified **twice**: once when `-c` turned out to be honoured after being
+documented as never honoured, and again when `GIT_CONFIG_PARAMETERS` turned out
+to exist beside the `GIT_CONFIG_COUNT` a corrected-but-still-closed list named.
+A third vector will not announce itself either, so the sentence a reader
+inherits has to be the rule that covers one, not a longer list to be falsified
+next.
 
 **It is not a hole, and the next reader should not read it as one.** The
 boundary rests on the repo-local half, which holds: the untrusted side owns

@@ -80,11 +80,18 @@ export function gitStrictOwnership(env: NodeJS.ProcessEnv = process.env): boolea
  *   - A **repo-local** `safe.directory` is NOT honoured. This is the half the
  *     design rests on: the untrusted side owns `.git/config` and cannot use it
  *     to grant itself trust.
- *   - A `-c safe.directory=*` on the command line, and the equivalent
- *     `GIT_CONFIG_COUNT` environment protocol, ARE honoured — git's "protected
- *     configuration" scope is system + global + command-line. Earlier ShipIt
- *     docs stated the opposite; the correction is recorded in docs/266's
- *     `requirements.md`.
+ *   - Everything ShipIt itself hands the git process CAN re-grant trust. Git
+ *     honours `safe.directory` from its "protected configuration" — the system
+ *     and global files, the command line, and the config environment protocols
+ *     — so a `-c safe.directory=*` and the `GIT_CONFIG_*` env protocols are
+ *     honoured just as this global file is. Earlier ShipIt docs said `-c` never
+ *     was; the correction is recorded in docs/266's `requirements.md`.
+ *
+ *     Stated as a rule rather than as a list of vectors on purpose. The list
+ *     has been falsified twice — first `-c`, then `GIT_CONFIG_PARAMETERS`
+ *     beside the `GIT_CONFIG_COUNT` the first correction named — and a third
+ *     will not announce itself. The rule that survives both: only the
+ *     repository's own config cannot grant it.
  *
  *     **This is not a hole in the boundary.** A `-c` and an environment
  *     variable come from ShipIt's OWN argv and environment; the untrusted side

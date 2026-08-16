@@ -436,10 +436,12 @@ Rationale for *where* and *what*:
 
   **Correction (2026-08-16, docs/266 E2 / planning#403).** The repo-local half is
   right and is what the docs/266 design rests on; the `-c` half is **wrong**.
-  Measured against git 2.39.5 with `GIT_TEST_ASSUME_DIFFERENT_OWNER=1`: git's
-  *protected configuration* scope is system + global + **command line**, so
-  `git -c safe.directory=*` and the `GIT_CONFIG_COUNT` environment protocol are
-  both honoured. It does not change this feature's fix — the entry still belongs
+  Measured against git 2.39.5 with `GIT_TEST_ASSUME_DIFFERENT_OWNER=1`. The rule,
+  rather than a list that keeps being falsified: git honours `safe.directory`
+  from its *protected configuration* — the system and global files, the command
+  line, **and the config environment protocols** — so anything ShipIt puts in a
+  git process's argv or environment can re-grant trust, and only the
+  repository's own config cannot. It does not change this feature's fix — the entry still belongs
   in `GIT_CONFIG_GLOBAL` for every reason below — and it is **not a hole**: a
   `-c` and an env var come from ShipIt's own argv and environment, never from the
   repository, so the untrusted side still cannot grant itself trust. What it

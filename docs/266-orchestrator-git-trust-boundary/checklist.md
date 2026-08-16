@@ -175,9 +175,11 @@ Build sequence from [plan.md](./plan.md) §5. Requirements are cited as `(req N)
       Filed as its own issue because a flag with no expiry becomes permanent, and
       a permanent one is a supported way to turn the boundary back off.
 - [x] **A lint, not a sentence, for the corrected `-c` claim.**
-      `safe.directory` is honoured from the command line as well as from
-      system/global config, so ShipIt's own code could silence the refusal E2
-      arms. `git-hooks-guard-coverage.test.ts` fails the build when any
+      `safe.directory` is honoured from git's *protected configuration*, which is
+      everything ShipIt itself supplies — system/global files, the command line,
+      the config env protocols — and never the repository's own config. So
+      ShipIt's own code could silence the refusal E2 arms.
+      `git-hooks-guard-coverage.test.ts` fails the build when any
       orchestrator-side source outside `git-config.ts` passes the key to git or
       sets either `GIT_CONFIG_*` environment protocol. **planning#409** owns that
       rule and any widening of it; what landed here is the narrow version E2
