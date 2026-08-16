@@ -201,6 +201,14 @@ are **silent**: no compile error and no existing test fails if you miss them.
 - The five CLI images' `ARG SHIPIT_HARNESSES=claude,codex` default, if the
   default set changes — `agent-cli-install.test.ts` asserts the literal and
   enumerates the Dockerfiles.
+- 🚩 The dogfood opt-in, even when the default set does NOT change: the
+  `dev` and `onboarding` build blocks in `docker-compose.yml` pass
+  `SHIPIT_HARNESSES` explicitly (both must agree — they share the
+  `shipit-dogfood:local` image tag). An opt-in harness left out of that arg
+  installs nowhere in the dogfood, so the inner instance shows it "Not
+  installed" and it cannot be dogfooded — found the hard way with OpenCode.
+  Do not widen the Dockerfiles' `ARG` default for this; the parity test
+  pins it.
 - 🚩 Credential symlinks are hand-written per backend in
   `Dockerfile.session-worker.prod` (~`:271`), `.dev` (~`:175`) — both
   `ln -s /credentials/<dotfiles>` + `chown -h` — and `Dockerfile.prod`

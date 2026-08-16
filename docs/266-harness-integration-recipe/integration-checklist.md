@@ -37,6 +37,9 @@ unchecked.
 - [ ] Pinned dep in `docker/agent-cli/package.json` + lockfile
 - [ ] `SHIPIT_HARNESSES` defaults (5 Dockerfiles, vps setup + prompt copy,
       both compose files) if the default set changes
+- [ ] Dogfood opt-in: add the harness to the `SHIPIT_HARNESSES` build arg
+      of both dogfood build blocks in `docker-compose.yml` (dev +
+      onboarding), rebuild `dev`, confirm the inner UI shows it installed
 - [ ] Credential symlinks in the 3 Dockerfiles
 
 **4 — Tables**
