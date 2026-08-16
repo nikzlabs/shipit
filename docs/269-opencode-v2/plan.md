@@ -1,18 +1,26 @@
 ---
 issue: planning#411
-title: OpenCode 2.0 — fact sheet and adoption shape
-description: What OpenCode 2.0 is (beta, separate `opencode2` binary, new server API), why docs/268 stayed on v1, and what adopting 2.0 will take.
+title: OpenCode 2.0 — fact sheet and integration shape
+description: What OpenCode 2.0 is (beta, separate `opencode2` binary, new server API), why docs/268 stayed on v1, and the settled decision to integrate v2 as its own harness ALONGSIDE v1.
 ---
 
-# OpenCode 2.0 — fact sheet and adoption shape
+# OpenCode 2.0 — fact sheet and integration shape
 
-Reference for the **future** migration of ShipIt's OpenCode harness
-(docs/268, shipped on the v1 line) onto OpenCode 2.0, and for the deferred
-attach-to-server adapter design that 2.0's server API is the natural target
-for. Nothing here is implemented; the tracked work item is planning#411.
-This is a fact sheet in the docs/266 candidates.md tradition — when adoption
-actually starts, that work begins at its own `requirements.md` per this
-repo's requirements discipline, not from this doc.
+Reference for the **future** integration of OpenCode 2.0 into ShipIt, and
+for the deferred attach-to-server adapter design that 2.0's server API is
+the natural target for. Nothing here is implemented; the tracked work item
+is planning#411. This is a fact sheet in the docs/266 candidates.md
+tradition — when the integration actually starts, that work begins at its
+own `requirements.md` per this repo's requirements discipline, not from
+this doc.
+
+**Settled direction (user decision, 2026-08-16): ShipIt will run OpenCode 1
+and OpenCode 2 integrations AT THE SAME TIME, fully separate if needed** —
+v2 is a fourth harness beside the shipped v1 one (docs/268), not a
+migration that replaces it. Upstream's own distribution supports this
+directly: the two ship as different npm packages installing different,
+coexisting binaries. Whether the v1 row is ever retired is a separate,
+later decision that nothing here presumes.
 
 Facts checked 2026-08-16 against `opencode.ai/v2/docs`,
 `opencode.ai/v2/docs/migrate-v1`, and the npm registry. OpenCode ships
@@ -63,37 +71,59 @@ synthesized-terminal-result design already assumes that.
 
 **Whether v2 keeps a v1-compatible `run --format json` mode is unknown** —
 the migration guide documents config and API changes, not CLI run-mode
-changes, and recommends `@opencode-ai/client` for programmatic use. Until
-this is answered empirically against a stabilized v2, the size of the
-adapter rework is unbounded in both directions: near-zero if the JSONL
-stream survives, or a rewrite of `shared/opencode-stream.ts` +
-`shared/opencode-spawn-shaping.ts` and the adapter's spawn layer if run-mode
-output moved to the server API. Every other part of the docs/268
-integration — catalogue row, eligibility (`carriers`), tables, themes,
-client, credential paths — is version-agnostic.
+changes, and recommends `@opencode-ai/client` for programmatic use. Under
+the coexistence decision this stops being a rework risk and becomes the
+**adapter-shape question for the v2 harness**: if the JSONL stream
+survives, the v2 adapter can share docs/268's stream/shaping modules
+(`shared/opencode-stream.ts`, `shared/opencode-spawn-shaping.ts`)
+parameterized by binary; if run-mode output moved to the server API, the v2
+harness is the natural first user of the attach-to-server shape below and
+shares nothing. Answering it empirically against a stabilized v2 is the
+first step of the integration's Phase 0.
 
-## What adoption takes (the migration shape)
+## What the v2 integration takes (coexistence shape)
 
-A deliberate migration, **not** a Renovate bump — the package and binary
-both change names:
+Because v1 and v2 coexist, this is **a full fourth-harness integration
+through the docs/266 recipe** — a new `AgentId` with its own catalogue row,
+adapter folder, tables, silent-site entries, and empirical verification —
+with docs/268 as the closest sibling template. Not a migration of the v1
+row, which stays untouched. The v2-specific facts:
 
-1. `docker/agent-cli/package.json` + lockfile: `@opencode-ai/cli` at an
-   exact, ≥7-day-old **stable** version, replacing (or joining) the v1
-   `opencode-ai` pin; installer `harness_pkg_prefix`/`harness_bin` mappings
-   and the gated `npm rebuild` follow.
-2. Catalogue: the harness row's `binary` becomes `opencode2` (the `AgentId`
-   and everything keyed on it stays `"opencode"`).
-3. A full re-run of docs/268's empirical verification (the docs/266 Phase 0
-   + Phase 10 lists): stream capture + conformance re-lock, the error/hang
-   and MCP keep-alive behaviors (v2 may fix, reshape, or keep them — each
-   adapter workaround is then kept or retired on evidence), `$PWD`
-   resolution, config/auth surfaces (`/connect` may change the auth story,
-   including whether any subscription path becomes viable), env-var surface
-   (`OPENCODE_DISABLE_*` names), skills disclosure, and the reasoning
-   variant vocabulary.
-4. Credential paths: verify the v2 data root — if it moves off
-   `~/.local/share/opencode`, `AGENT_CREDENTIAL_PATHS`, the Dockerfile
-   symlinks, and the entrypoint prep block all follow.
+1. **Install**: `@opencode-ai/cli` at an exact, ≥7-day-old **stable**
+   version, added BESIDE the v1 `opencode-ai` pin in
+   `docker/agent-cli/package.json`; both install cleanly side by side (the
+   binaries differ: `opencode` vs `opencode2`). Installer
+   `harness_pkg_prefix`/`harness_bin` mappings and a gated `npm rebuild`
+   for the new package. Prune nuance: v1's deselection prune globs
+   `node_modules/opencode*` (the unscoped package and its platform
+   payloads); the v2 package lives under `node_modules/@opencode-ai/`, a
+   path that glob never touches — so each id needs its own prefix mapping,
+   and the v2 one must cover the scoped package AND wherever its platform
+   payloads land.
+2. **Catalogue**: a new `HarnessDef` row (id to be settled in the future
+   requirements — e.g. `"opencode2"` — with its own display name), `binary:
+   "opencode2"`, and honest capabilities from scratch: nothing observed
+   against v1 carries over on trust.
+3. **A full docs/266 Phase 0 + Phase 10 pass against the v2 binary**:
+   stream capture + conformance lock (the run-mode question above IS this
+   step), the error/hang and MCP keep-alive behaviors (v2 may fix, reshape,
+   or keep them — each docs/268 workaround is adopted or dropped on
+   evidence), `$PWD` resolution, config/auth surfaces (`/connect` may
+   change the auth story, including whether any subscription path becomes
+   viable), env-var surface (`OPENCODE_DISABLE_*` names), skills
+   disclosure, and the reasoning variant vocabulary.
+4. **Credential paths**: verify the v2 data root and its SEPARATION from
+   v1's — if both harnesses share `~/.local/share/opencode` (or v2 moves
+   elsewhere), `AGENT_CREDENTIAL_PATHS`, the Dockerfile symlinks, and the
+   entrypoint prep block need per-id answers; two harnesses writing one
+   auth store would break per-agent credential isolation.
+5. **Shared-model arbitration**: a fourth harness widens the two known
+   defects docs/266 already flags (`reviewer-settings.ts` harness
+   derivation, `child-sessions.ts` first-harness-wins) and the docs/268
+   review's harness-only reviewer tie (planning#408) — v1 and v2 will offer
+   IDENTICAL model sets, the strongest same-model-different-harness overlap
+   ShipIt will have had. The future requirements should decide how the two
+   rank against each other.
 
 ## The attach-to-server connection
 
