@@ -328,7 +328,9 @@ a lockfile.
 What a plugin's service container *can* write: its own image filesystem
 (`/tmp`), any `tmpfs:` it declares, an anonymous volume (a `volumes:` entry with
 no `:`), `/plugin-state`, and `/project`. A fragment cannot declare a named
-volume, and its bind sources may only be its own files.
+volume, and its bind sources may only be its own files. The last two are mounted
+read-write but owned by the session-worker uid (1000), so a service that
+declares some other `user:` can still be refused by the filesystem.
 
 Relocating one tool's writes is the weaker fix — the tool's next release writes
 somewhere new. The recipe below removes the need.
@@ -354,10 +356,12 @@ Run two servers over one codebase:
    `shipit service start <name>` away, which is how you smoke-test what a
    consumer actually runs.
 
-Two things collide if you are careless. A plugin service whose name matches one
+One thing collides, and it is the name. A plugin service whose name matches one
 of the project's own service names withholds **every** service that plugin
 repository provides — the project's name wins — so the dev service needs a
-different name. And both are real published ports, so give them different ones.
+different one. Ports do not collide: ShipIt strips host bindings and reaches
+every service over the session network, so distinct ports are a convenience for
+you, not a requirement.
 
 ```yaml
 # the plugin repository's own shipit.yaml
@@ -365,7 +369,8 @@ agent:
   install:
     - npm ci
     - npm run build        # the same build the manifest's `install` runs
-  dep-dirs: [node_modules, dist]   # `dist` because a skipped install restores only these
+  # a skipped install restores only these, so the build output is named too
+  dep-dirs: [node_modules, plugins/web/dist]
 compose: docker-compose.yml        # the DEV service lives here
 
 exports:
@@ -373,7 +378,8 @@ exports:
     web:
       compose: plugins/web/docker-compose.yml   # the PRODUCTION service
       install: npm ci && npm run build
-      dep-dirs: [node_modules, dist]   # load-bearing the moment you add `install-inputs`
+      # `plugins/web/dist` is load-bearing the moment you add `install-inputs`
+      dep-dirs: [node_modules, plugins/web/dist]
 
 plugins:
   repos:
@@ -394,17 +400,26 @@ services:
     image: node:22-alpine
     user: "1000:1000"
     working_dir: /app
-    command: node /app/plugins/web/serve.mjs   # serves ./dist; no watcher
-    volumes: [".:/app:ro"]
+    command: node /app/serve.mjs     # serves /app/dist; no watcher
+    volumes: [".:/app:ro"]           # `.` is THIS FILE'S directory: plugins/web
     ports: ["4300:4300"]
     x-shipit-preview: auto
 ```
 
+**A fragment's `.` is the fragment's own directory, not the repository root** —
+the same rule a standalone `docker compose up` in that directory would follow.
+So `/app` above holds `plugins/web`, and the build has to land beside the
+fragment (`plugins/web/dist`) for the service to serve it. Nothing above `/app`
+is reachable from there either, so a server that imports a dependency from the
+repository root's `node_modules` finds nothing. The whole tree is mounted as
+well, at `/plugin`, for a service that would rather run from the root.
+
 ```yaml
 # docker-compose.yml — your own session only; never reaches a consumer
 services:
-  web-dev:                       # a DIFFERENT name and a DIFFERENT port
+  web-dev:                       # a DIFFERENT name from the exported service
     image: node:22-alpine
+    user: "1000:1000"            # a contained session requires this
     working_dir: /app
     command: npm run dev -- --host 0.0.0.0 --port 4301
     volumes: [".:/app"]          # writable here; watching and hot reload are fine
@@ -412,21 +427,22 @@ services:
     x-shipit-preview: auto
 ```
 
-### With two servers, share the dispatcher — not just the handlers
+Two consequences of running two servers follow, and they are the ones that bite.
+
+### Share the dispatcher, not just the handlers
 
 Extracting the route *handlers* and mounting them two ways leaves the matching
-rules in two places, and they drift immediately: case sensitivity, trailing
-slashes, where a path segment ends. The result is a route that behaves one way
-in development and another for a consumer — the exact bug this exercise is meant
-to remove. Mount your own dispatcher at the root of both servers instead of
-reimplementing a framework's matching rules on the side you do not develop on.
+rules in two places, and they drift immediately — case sensitivity, trailing
+slashes, where a segment ends. That produces a route that behaves one way in
+development and another for a consumer: the exact bug the split was meant to
+remove. Mount your own dispatcher at the root of both servers rather than
+re-implementing a framework's matching rules on the side you do not develop on.
 
-### Outside a dev framework, nothing catches your exceptions
+### The framework was catching your exceptions; a plain server is not
 
-A framework's error boundary is a thing you had for free and no longer have. An
-exception thrown synchronously out of a plain `node:http` handler **exits the
+An exception thrown synchronously out of a `node:http` handler **exits the
 process**, and the consuming project's preview stays down until someone restarts
-it. Port the boundaries with the routes:
+it. Port the boundaries along with the routes:
 
 - Decode failures: `decodeURIComponent('%')` throws. One malformed URL from
   anywhere is enough. Catch it and return 400.
@@ -439,10 +455,12 @@ it. Port the boundaries with the routes:
 
 ### Write the failure message for someone who cannot see your install log
 
-When a plugin fails in a consuming project, the artifact that would identify the
-cause — the install's own output — is in the Plugins tab, which the session's
-agent cannot read; `shipit plugin` has `refresh` and `exec` and no `logs`. Your
-runtime error message is the whole diagnostic that reader gets, so:
+A *failed* install is the easy case: its output tail rides the failure detail, so
+the Plugins tab shows it and `shipit plugin refresh` reprints it for the agent.
+The hard case is the one this recipe is for — an install that **succeeded** and
+left the wrong tree. Nothing failed, nothing is logged, and `shipit plugin` has
+`refresh` and `exec` and no `logs`, so your runtime error message is the whole
+diagnostic that reader gets:
 
 - **Name the precondition that failed, specifically.** "Dependencies or build
   missing" is not actionable; "the build (`dist/`) is missing" is, and it tells a
@@ -450,8 +468,10 @@ runtime error message is the whole diagnostic that reader gets, so:
 - **Give the two actions they can take**: `shipit plugin refresh <name>`, and
   filing an issue on your repository with `shipit issue create --tracker <name>`
   quoting that line.
-- **Say that nothing in their project caused it.** Never point them at your
-  manifest — it is in a repository they do not have and cannot change.
+- **Say when their project cannot be the cause** — true of a missing build
+  artifact, and not of a failure that depends on a setting, a credential, an
+  egress rule or project data, which are theirs. Either way never point them at
+  your manifest: it is in a repository they can read and cannot change.
 
 ### The read-only smoke test, in three commands
 
