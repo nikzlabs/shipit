@@ -198,27 +198,34 @@ are **silent**: no compile error and no existing test fails if you miss them.
   binary installed outside this script sits on `$PATH` and is still treated
   as not installed. A non-npm branch must both verify its binary and write
   the id into the report.
-- The five CLI images' `ARG SHIPIT_HARNESSES=claude,codex` default, if the
-  default set changes — `agent-cli-install.test.ts` asserts the literal and
-  enumerates the Dockerfiles.
-- 🚩 The dogfood opt-in, even when the default set does NOT change: the
-  `dev` and `onboarding` build blocks in `docker-compose.yml` pass
-  `SHIPIT_HARNESSES` explicitly (both must agree — they share the
-  `shipit-dogfood:local` image tag). An opt-in harness left out of that arg
-  installs nowhere in the dogfood, so the inner instance shows it "Not
-  installed" and it cannot be dogfooded — found the hard way with OpenCode.
-  Do not widen the Dockerfiles' `ARG` default for this; the parity test
-  pins it.
+- 🚩 **The default set is a separate, human-approved decision** (docs/271).
+  Adding a harness to `KNOWN_HARNESSES` makes it installable and offerable at
+  once; it becomes default-on only when someone edits BOTH
+  `DEFAULT_HARNESSES` (`docker/agent-cli/install-agent-clis.sh`) and
+  `HARNESS_DEFAULT` (`deployment/vps/setup.sh`). A guard test pins those two to
+  each other, but nothing forces a new harness into them — deliberately.
+  The five CLI images carry `ARG SHIPIT_HARNESSES=` (empty) and the compose
+  files pass `${SHIPIT_HARNESSES:-}` through, so the default lives in one line
+  and there is no per-image literal to update.
+- 🚩 **A harness left out of the default set does not install in the dogfood.**
+  `docker-compose.yml`'s `dev` / `onboarding` blocks no longer pass
+  `SHIPIT_HARNESSES` — they take the same default as everything else — so the
+  inner instance shows an unapproved harness as "Not installed" and it cannot be
+  dogfooded. This was found the hard way with OpenCode when the arg was
+  hand-maintained; the failure mode survived the simplification, it just moved.
+  To dogfood a harness before approving it as a default, pass the arg explicitly
+  in BOTH blocks (they share the `shipit-dogfood:local` image tag, so whichever
+  builds last wins a disagreement), or add it to the default set.
 - 🚩 Credential symlinks are hand-written per backend in
   `Dockerfile.session-worker.prod` (~`:271`), `.dev` (~`:175`) — both
   `ln -s /credentials/<dotfiles>` + `chown -h` — and `Dockerfile.prod`
   (~`:101`, root, symlinks only). Miss this and credentials never reach the
   CLI.
-- `deployment/vps/setup.sh`: `SUPPORTED_HARNESSES` (~`:294`) — guard-tested —
-  plus 🚩 the interactive prompt's hardcoded `[claude,codex]` copy (~`:319`),
-  which is not.
-- `docker/local/prod/compose.yml` `SHIPIT_HARNESSES` defaults (×2) and 🚩
-  `deployment/vps/docker-compose.yml:26,167` (same default, un-guard-tested).
+- `deployment/vps/setup.sh`: `HARNESS_ROWS` — one `"id|Label|hint"` row adds the
+  harness to the picker AND to the validated set; guard-tested against the
+  catalogue. Its preselection, `HARNESS_DEFAULT`, is the approved-set decision
+  above and is guard-tested against `DEFAULT_HARNESSES`.
+- Nothing in the compose files: they all pass `${SHIPIT_HARNESSES:-}` through.
 - Note: `agent-cli-install.test.ts:189` uses `cursor` as its *bogus-id*
   fixture — repick if you're adding Cursor.
 

@@ -91,7 +91,7 @@ shipit_pick_render() {
 # blind. `read -s` on both reads below suppresses echo for the window that
 # matters and leaves the saved state echoing, which is what makes Ctrl-C safe.
 shipit_pick_restore() {
-  printf '\033[?25h'
+  printf '\033[?25h' > "${SHIPIT_PICK_DRAW:-/dev/stdout}"
 }
 
 shipit_pick() {
@@ -127,39 +127,62 @@ shipit_pick() {
       if [ "${SHIPIT_PICK_KEYS[i]}" = "$pre" ]; then SHIPIT_PICK_MARKS[i]=1; fi
     done
   done
-  # Set the answer to the preselection BEFORE the terminal check, so the
+  # Set the answer to the preselection BEFORE the terminal checks, so the
   # non-interactive return still hands the caller a usable value.
   SHIPIT_PICK_RESULT="$(shipit_pick_selected)"
-  if [ ! -t 0 ] || [ ! -t 1 ]; then return 1; fi
+  if [ ! -t 0 ]; then return 1; fi
+
+  # WHERE TO DRAW. Not blindly stdout: `sudo bash setup.sh | tee install.log` is
+  # a normal way to run an installer, and the typed prompts this replaced stayed
+  # usable under it because `read -p` prompts on stderr and reads stdin. Drawing
+  # only on a stdout that is a terminal would silently skip a question the
+  # operator is sitting there waiting to answer — and, worse, hand the caller a
+  # preselection it would then record as a deliberate choice. So when stdout is
+  # redirected, draw on the controlling terminal instead. Only when there is no
+  # terminal at all does this give up and return non-zero.
+  SHIPIT_PICK_DRAW="/dev/stdout"
+  if [ ! -t 1 ]; then
+    # An open-for-write, not `[ -w ]`: a process with no controlling terminal
+    # can pass the permission check and still fail to open /dev/tty (ENXIO).
+    if { : > /dev/tty; } 2>/dev/null; then
+      SHIPIT_PICK_DRAW="/dev/tty"
+    else
+      return 1
+    fi
+  fi
 
   SHIPIT_PICK_C_ON=$'\033[1;36m'
   SHIPIT_PICK_C_OFF=$'\033[0m'
   SHIPIT_PICK_C_DIM=$'\033[2m'
 
-  printf '\033[?25l'
-  trap 'shipit_pick_restore; exit 130' INT
-
   local key rest_seq
   SHIPIT_PICK_CURSOR=0
   SHIPIT_PICK_DONE=0
-  shipit_pick_render
-  while [ "$SHIPIT_PICK_DONE" -eq 0 ]; do
-    key=""
-    # A closed stdin (EOF) confirms the current state rather than spinning.
-    if ! IFS= read -rsn1 key; then break; fi
-    if [ "$key" = $'\e' ]; then
-      # An arrow key arrives as three bytes at once, so this returns
-      # immediately; the timeout only bounds a lone Escape keypress.
-      rest_seq=""
-      IFS= read -rsn2 -t 0.05 rest_seq || true
-      key="$key$rest_seq"
-    fi
-    shipit_pick_key "$key"
-    printf '\033[%dA' "$SHIPIT_PICK_COUNT"
-    shipit_pick_render
-  done
+  trap 'shipit_pick_restore; exit 130' INT
+  trap 'shipit_pick_restore; exit 143' TERM HUP
 
-  trap - INT
+  # Everything the loop draws goes to the terminal; `read` still takes stdin.
+  {
+    printf '\033[?25l'
+    shipit_pick_render
+    while [ "$SHIPIT_PICK_DONE" -eq 0 ]; do
+      key=""
+      # A closed stdin (EOF) confirms the current state rather than spinning.
+      if ! IFS= read -rsn1 key; then break; fi
+      if [ "$key" = $'\e' ]; then
+        # An arrow key arrives as three bytes at once, so this returns
+        # immediately; the timeout only bounds a lone Escape keypress.
+        rest_seq=""
+        IFS= read -rsn2 -t 0.05 rest_seq || true
+        key="$key$rest_seq"
+      fi
+      shipit_pick_key "$key"
+      printf '\033[%dA' "$SHIPIT_PICK_COUNT"
+      shipit_pick_render
+    done
+  } > "$SHIPIT_PICK_DRAW"
+
+  trap - INT TERM HUP
   shipit_pick_restore
   SHIPIT_PICK_RESULT="$(shipit_pick_selected)"
   return 0
@@ -299,11 +322,11 @@ resolve_access() {
 # editing SHIPIT_HARNESSES in the env file and re-running deploy.sh.
 #
 # HARNESS_PERSIST stays 0 for an UNANSWERED question, so the variable is left
-# unset and the image build's own default (every harness it knows) keeps
-# applying. Two reasons, and both matter: writing the default out would freeze
-# this install against a harness added later, and a non-interactive RE-RUN of
-# this script would overwrite an operator's earlier narrower choice, since
-# setup.sh does not read the env file it writes.
+# unset and the image build's own DEFAULT_HARNESSES keeps applying. Two reasons,
+# and both matter: writing the default out would freeze this install against a
+# later change to that list, and a non-interactive RE-RUN of this script would
+# overwrite an operator's earlier narrower choice, since setup.sh does not read
+# the env file it writes.
 resolve_harnesses() {
   HARNESS_PERSIST=0
   if [ -n "${SHIPIT_HARNESSES:-}" ]; then
@@ -331,7 +354,15 @@ resolve_harnesses() {
   echo ""
   echo "    [up/down] move    [space] select    [enter] confirm"
   echo ""
-  shipit_pick "$HARNESS_DEFAULT" "${HARNESS_ROWS[@]}" || true
+  # Branch on the RETURN CODE, never on the answer. A picker that could not draw
+  # hands back the preselection, which is indistinguishable from an operator who
+  # ticked exactly those boxes — and recording it as a choice is what freezes the
+  # set and clobbers a narrower one on the next run.
+  if ! shipit_pick "$HARNESS_DEFAULT" "${HARNESS_ROWS[@]}"; then
+    HARNESS_CHOICE="$HARNESS_DEFAULT"
+    HARNESS_SOURCE="default — no terminal to ask on"
+    return 0
+  fi
   HARNESS_CHOICE="$SHIPIT_PICK_RESULT"
   echo ""
   if [ -z "$HARNESS_CHOICE" ]; then

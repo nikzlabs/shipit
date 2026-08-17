@@ -55,6 +55,8 @@ describe("deployment/vps/setup.sh — checkbox prompt (docs/271)", () => {
   let pickerPath: string;
   let driverPath: string;
   let probePath: string;
+  /** Wrapper so the pty probe, which execs one script, can pass `--dry-run`. */
+  let SETUP_SH_DRY: string;
 
   beforeAll(() => {
     const setup = fs.readFileSync(SETUP_SH, "utf8");
@@ -86,6 +88,9 @@ describe("deployment/vps/setup.sh — checkbox prompt (docs/271)", () => {
       ].join("\n"),
     );
 
+    SETUP_SH_DRY = path.join(root, "dry.sh");
+    fs.writeFileSync(SETUP_SH_DRY, `exec bash ${SETUP_SH} --dry-run\n`);
+
     // Runs the driver on a pty we own, feeds it keys, and reports the pty's
     // termios plus the exit status once the child is gone.
     probePath = path.join(root, "probe.py");
@@ -94,8 +99,12 @@ describe("deployment/vps/setup.sh — checkbox prompt (docs/271)", () => {
       [
         "import os, pty, select, sys, termios, time",
         "script, keys_hex = sys.argv[1], sys.argv[2]",
+        "# argv[3], when given, is a file to redirect the child's stdout into.",
+        "redirect = sys.argv[3] if len(sys.argv) > 3 else None",
         "pid, fd = pty.fork()",
         "if pid == 0:",
+        "    if redirect:",
+        "        os.dup2(os.open(redirect, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644), 1)",
         "    os.execv('/bin/bash', ['bash', script])",
         "time.sleep(1.0)  # let the list render before typing at it",
         "os.write(fd, bytes.fromhex(keys_hex))",
@@ -233,6 +242,53 @@ describe("deployment/vps/setup.sh — checkbox prompt (docs/271)", () => {
   });
 
   /**
+   * `sudo bash setup.sh | tee install.log` is a normal way to run an installer:
+   * stdin is the terminal, stdout is not. The typed prompts this replaced worked
+   * under it, so the checklist has to as well — it draws on /dev/tty rather than
+   * on stdout.
+   *
+   * The bug this pins is quiet and expensive. When the picker gave up on a
+   * redirected stdout it still handed back the *preselection*, which is
+   * byte-identical to an operator ticking exactly those boxes — so the installer
+   * recorded a default it never asked about as a deliberate choice and wrote it
+   * to /etc/shipit/shipit.env, freezing the harness set and clobbering any
+   * narrower one a re-run should have left alone.
+   */
+  describe.runIf(hasPython())("with stdout redirected (`| tee`)", () => {
+    function runRedirected(keys: string): string {
+      const log = path.join(root, "install.log");
+      execFileSync(
+        "python3",
+        [
+          probePath,
+          SETUP_SH_DRY,
+          Buffer.from(keys, "latin1").toString("hex"),
+          log,
+        ],
+        { encoding: "utf8", timeout: 30_000 },
+      );
+      return fs.readFileSync(log, "utf8").replace(/\r/g, "");
+    }
+
+    it("still asks, and honours what was typed", () => {
+      // Space+Enter adds Cloudflare beside the default Tailscale; down, down,
+      // space, Enter drops OpenCode. Neither is a default, so an answer that
+      // reflects them proves the list was drawn and read.
+      const out = runRedirected(" \n\x1b[B\x1b[B \n");
+      expect(out).toContain("SHIPIT_ACCESS=cloudflare,tailscale");
+      expect(out).toContain("SHIPIT_HARNESSES=claude,codex");
+    });
+
+    it("reports an answered question as answered", () => {
+      const out = runRedirected("\n\n");
+      expect(out).toContain("(selected)");
+      expect(out).not.toContain("no terminal to ask on");
+    });
+  });
+
+  /**
+   * `--dry-run` asks both questions and exits before the installer touches the
+   * host.  /**
    * `--dry-run` asks both questions and exits before the installer touches the
    * host. These drive the REAL setup.sh, not the extracted block: that is the
    * point of putting the dry run inside the installer rather than in a preview
@@ -248,14 +304,19 @@ describe("deployment/vps/setup.sh — checkbox prompt (docs/271)", () => {
       if (!args.includes("--dry-run") && env.SHIPIT_DRY_RUN !== "1") {
         throw new Error("dryRun() called without --dry-run or SHIPIT_DRY_RUN=1");
       }
-      const before = KNOWN_WRITES.map((f) => fs.existsSync(f));
+      // Contents, not just existence: on a box that has already been installed
+      // once, both files exist, and an overwrite is exactly the damage a dry run
+      // must not do.
+      const snapshot = (): (string | null)[] =>
+        KNOWN_WRITES.map((f) => (fs.existsSync(f) ? fs.readFileSync(f, "utf8") : null));
+      const before = snapshot();
       const out = execFileSync("bash", [SETUP_SH, ...args], {
         input: "",
         encoding: "utf8",
         env: { ...process.env, ...env },
         stdio: ["pipe", "pipe", "pipe"],
       });
-      expect(KNOWN_WRITES.map((f) => fs.existsSync(f))).toEqual(before);
+      expect(snapshot()).toEqual(before);
       return out;
     }
 

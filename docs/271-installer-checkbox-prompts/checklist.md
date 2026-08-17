@@ -12,5 +12,6 @@
 - [x] Tests pin offered-set to the catalogue and the two default lists to each other
 - [x] Empty harness selection falls back to the approved default set, with a message
 - [x] `--dry-run` / `SHIPIT_DRY_RUN=1` in the installer itself — asks both questions, changes nothing, needs no root
+- [x] Prompts still work with stdout redirected (`| tee`) — drawn on /dev/tty, answer taken from the return code
 - [x] pty-driven test over the extracted picker block, and over the real installer in dry mode
 - [x] `deployment/README.md` updated for both questions

@@ -50,7 +50,7 @@ RUN git lfs install --system --skip-repo --skip-smudge
 # manifest, reconciling the prior prod/dev omission.
 #
 # docs/252 phase 9 (req 14) — WHICH harnesses get installed is a build input,
-# defaulting to Claude Code and Codex. This image matters as much as the worker
+# defaulting to install-agent-clis' DEFAULT_HARNESSES. This image matters as much as the worker
 # image does: the orchestrator answers what the picker offers and runs session
 # naming locally, so a selection applied only to the worker would leave an
 # uninstalled harness still offered and still used for background work. The

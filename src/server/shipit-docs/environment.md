@@ -61,7 +61,7 @@ Note: your own memory under `~/.claude/projects/<cwd>/memory/` is **not** restri
 - **Node.js** (with npm; `pnpm` and `yarn` are available via corepack — it reads the repo's `packageManager` field and fetches the pinned version). The container bakes Node 24, but **a repo's own Node pin wins** — see [Node version](#node-version) below.
 - **git**, **git-lfs**, **curl** (see [Git LFS](#git-lfs) below)
 - **python3**, **make**, **g++** (for native npm addons)
-- **Agent CLIs** — the harnesses this install selected (`claude` / Claude Code and `codex` / Codex by default; `opencode` / OpenCode where enabled) are installed; ShipIt invokes whichever the user selected for the session
+- **Agent CLIs** — the harnesses this install selected (`claude` / Claude Code, `codex` / Codex, and `opencode` / OpenCode are all installed by default; an install can narrow the set) are installed; ShipIt invokes whichever the user selected for the session
 
   Codex authentication has two modes — they are not interchangeable:
 

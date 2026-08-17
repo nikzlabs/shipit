@@ -76,10 +76,22 @@ shipit_pick "<preselected,csv>" "key|Label|one-line hint" ...
   Both `\e[A`-style and application-cursor-mode `\eOA` arrows are accepted, since
   terminals switch between them. `read -n1` strips the newline, so Enter arrives
   as the empty string.
+- **Drawn on the terminal, not on stdout.** `sudo bash setup.sh | tee install.log`
+  is a normal way to run an installer, and the typed prompts this replaced stayed
+  usable under it (`read -p` prompts on stderr and reads stdin). So the loop's
+  output is redirected to `/dev/tty` whenever stdout is not a terminal. Giving up
+  there instead — the first implementation — silently skipped a question the
+  operator was waiting to answer.
 - **No terminal, no prompt.** `shipit_pick` returns non-zero *without reading*
-  when stdin or stdout is not a TTY, leaving the caller's preselection in
-  `SHIPIT_PICK_RESULT` (req 8). Every caller also gates its explanatory prose on
-  `[ -t 0 ]`, so a piped install prints nothing about a question it never asked.
+  when stdin is not a TTY, or when stdout is redirected and `/dev/tty` cannot be
+  opened either, leaving the caller's preselection in `SHIPIT_PICK_RESULT`
+  (req 8). Callers must branch on that **return code, never on the answer**: the
+  preselection is byte-identical to an operator ticking exactly those boxes, and
+  `resolve_harnesses` treating one as the other would record a default it never
+  asked about as a deliberate choice — persisting it, and so clobbering a
+  narrower earlier choice on the next run. Every caller also gates its
+  explanatory prose on `[ -t 0 ]`, so a piped install prints nothing about a
+  question it never asked.
 - **Self-contained on purpose.** It cannot call a helper from outside the
   markers, because there is no library file to source at the moment it runs — the
   script is executing as a string piped from `curl`. The test extracts the block
@@ -145,8 +157,8 @@ requirements.md req 8 for what the old unconditional `read` did under
 invalid answer, so the `harnesses_valid` check now guards the one input that is
 still untrusted — a scripted `SHIPIT_HARNESSES` — and fails at the question
 rather than many minutes later inside the image build. An empty selection falls
-back to `claude,codex` with a message, because an image with no harness does not
-build.
+back to the approved default set with a message, because an image with no
+harness does not build.
 
 Both validators normalize (strip whitespace, lowercase) **before** checking, and
 count recognized entries rather than testing the raw string. That is not
