@@ -281,8 +281,10 @@ Net: aggregate disk drops sharply (shared base vs. per-session copies), resource
 needing careful GC is "don't reap a base that's a live lowerdir."
 
 **The per-session upper is keyed by base generation (ops finding, 2026-08-17).** An upper layer is
-only valid over the lower it was built against: overlayfs records copy-up origins, `index/` entries
-under the workdir, and whiteout/opaque markers that all name lower paths, and the kernel's own rule
+only valid over the lower it was built against. Part of that binding names specific lower *inodes*
+(copy-up origins, the `index/` entries under the workdir) and is what goes stale loudly; the larger
+part is quiet and needs no inode reference at all — a copied-up file, a whiteout and an opaque dir
+are keyed by PATH, so they go on shadowing whatever now sits there. Either way the kernel's own rule
 is that changing a layer under a live upper is undefined. The scope hash rotates the upper for free
 on a **runtime** change — but a **publish** advances the base generation without touching the scope
 hash, so a session that slept through one used to remount its old upper over a *different* lowerdir.

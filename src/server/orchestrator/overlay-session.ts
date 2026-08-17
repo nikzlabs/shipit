@@ -224,11 +224,14 @@ export function sessionOverlayScopeDir(root: string, sessionId: string, scopeHas
  * This session's `upper`/`work` parent for ONE base generation:
  * `sessions/<id>/overlay/<scopeHash>/g<N>/`.
  *
- * **An upper layer is only valid over the lower it was built against.** overlayfs
- * records per-upper state that refers to the lower — copy-up origins, the
- * `index/` entries under the workdir, whiteouts and opaque markers naming lower
- * paths — and the kernel's own rule is that changing a layer under a live upper
- * is undefined. The base is generational (`overlay-base/<hash>/g<N>`, see
+ * **An upper layer is only valid over the lower it was built against.** Part of
+ * that is state naming specific lower *inodes* — copy-up origins and the
+ * `index/` entries under the workdir — which is what goes stale loudly. The
+ * larger part is quiet and needs no inode reference at all: a copied-up file, a
+ * whiteout and an opaque dir are keyed by PATH, so they go on shadowing whatever
+ * now sits at that path. Either way the kernel's own rule is that changing a
+ * layer under a live upper is undefined. The base is generational
+ * (`overlay-base/<hash>/g<N>`, see
  * `overlayBaseGenDir`), and a publish rotates it while a session sleeps, so a
  * generation-agnostic upper path would remount an old upper over a NEW lower on
  * the session's next container start. Observed on the prod host as
@@ -280,6 +283,15 @@ export function sessionOverlayGenDir(
  * Returns `[]` when the scope dir is absent (a cold session) or unreadable, and
  * matches only those exact names, so nothing else that ever lands there becomes
  * a delete candidate.
+ *
+ * **Nothing reaped here can be a live mount**, which is not obvious because it
+ * takes two calls to see: the sole caller runs inside `createContainer`, and a
+ * session reaches `createContainer` only with no container of its own — either it
+ * never had one, or `destroyContainer` ran first and removed the Docker overlay
+ * volume, which is what makes the daemon unmount the overlay. A session whose
+ * pre-upgrade container is still running was re-adopted through `rediscover`,
+ * which repopulates in-memory state and never creates a container, so its legacy
+ * dirs are not visited at all.
  */
 export function supersededSessionOverlayLayers(
   sessionScopeDir: string,
