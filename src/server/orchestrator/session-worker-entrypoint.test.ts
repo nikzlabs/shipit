@@ -22,7 +22,14 @@
  * access to the real mounts.
  */
 import { execFileSync, spawnSync } from "node:child_process";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -54,6 +61,22 @@ const MOUNT_LOOP = /^for d in \/workspace .*; do$/m;
 const PLUGIN_PREP = /^if ! \(mkdir -p (\/[\w-][\w./-]*) && chown .* \1\) 2>\/dev\/null; then$/gm;
 
 /**
+ * The prep blocks that create a directory AS THE WORKER via gosu instead of as
+ * root — same redirection discipline as {@link PLUGIN_PREP}, different shape
+ * because they need no chown.
+ *
+ * A block belongs here when its target is one root cannot write. The mounts the
+ * orchestrator hands to the session uid are sealed 0700 before the container
+ * starts (`chownSessionCredentialsTree` -> `sealDirMode`), and the container
+ * drops DAC_OVERRIDE — so a root `mkdir` into `/credentials` can only ever fail.
+ * That is not hypothetical: OpenCode's credential dir shipped in the root form
+ * and every production boot silently warned, leaving `~/.local/share/opencode` a
+ * dangling symlink and killing the agent with EEXIST at startup.
+ */
+const GOSU_PREP =
+  /^if ! gosu "\$\{UID_GID\}:\$\{WORKER_GID\}" mkdir -p (\/[\w-][\w./-]*) 2>\/dev\/null; then$/gm;
+
+/**
  * The absolute paths the entrypoint prepares this way, in the order it does.
  *
  * Deliberately DERIVED from the script rather than listed here. The suite
@@ -66,6 +89,11 @@ const PLUGIN_PREP = /^if ! \(mkdir -p (\/[\w-][\w./-]*) && chown .* \1\) 2>\/dev
  */
 function preparedDirs(source: string): string[] {
   return [...source.matchAll(PLUGIN_PREP)].map((m) => m[1]!);
+}
+
+/** The dirs prepared via gosu, derived from the script for the same reason. */
+function gosuPreparedDirs(source: string): string[] {
+  return [...source.matchAll(GOSU_PREP)].map((m) => m[1]!);
 }
 
 /**
@@ -91,6 +119,17 @@ interface RunResult {
   groupOps: string[];
   /** One entry per `gosu` invocation, as the joined argv (the user spec first). */
   gosu: string[];
+  /**
+   * The final privilege drop — the LAST gosu invocation. gosu is used for prep
+   * steps too (the OpenCode credential dir, and the readonly-home symlinks), so
+   * "the drop" is never `gosu[0]`; an assertion about WHICH form the drop takes
+   * must read this rather than index the raw log.
+   */
+  gosuDrop: string | undefined;
+  /** The gosu invocations that are not the drop, in script order. */
+  gosuPreps: string[];
+  /** The path each gosu-prepared dir was redirected to, in script order. */
+  gosuPrepDirs: string[];
   /** The path the `/plugins` step was redirected to for this run. */
   pluginDir: string;
   /**
@@ -266,19 +305,27 @@ function runEntrypoint(dirs: string[], workerUid: string, opts: RunOpts = {}): R
   expect(source).toMatch(MOUNT_LOOP);
   const prepared = preparedDirs(source);
   expect(prepared).toContain("/plugins");
+  // Same anchor discipline, and non-vacuous: a reshaped gosu prep block must
+  // fail loudly here rather than silently escape redirection and run against the
+  // real /credentials — which in a ShipIt session container EXISTS.
+  const gosuPrepared = gosuPreparedDirs(source);
+  expect(gosuPrepared).toContain("/credentials/.local/share/opencode");
 
   // Every prepared dir is redirected under this run's temp root, so none of them
   // touches the real filesystem. `pluginDir` overrides only `/plugins` — the one
   // the failure-branch test forces — and the rest stay creatable, so exactly one
   // branch is under test at a time.
-  const redirected = new Map(prepared.map((d) => [d, join(root, d.replace(/^\//, ""))]));
+  const redirected = new Map(
+    [...prepared, ...gosuPrepared].map((d) => [d, join(root, d.replace(/^\//, ""))]),
+  );
   if (opts.pluginDir) redirected.set("/plugins", opts.pluginDir);
   const script = join(root, "entrypoint.sh");
   writeFileSync(
     script,
     source
       .replace(MOUNT_LOOP, `for d in ${dirs.join(" ")}; do`)
-      .replace(PLUGIN_PREP, (line, dir: string) => line.replaceAll(dir, redirected.get(dir)!)),
+      .replace(PLUGIN_PREP, (line, dir: string) => line.replaceAll(dir, redirected.get(dir)!))
+      .replace(GOSU_PREP, (line, dir: string) => line.replaceAll(dir, redirected.get(dir)!)),
   );
 
   // spawnSync, not execFileSync: the entrypoint WARNS on stderr while still
@@ -309,12 +356,17 @@ function runEntrypoint(dirs: string[], workerUid: string, opts: RunOpts = {}): R
     stdio: ["ignore", "pipe", "pipe"],
   });
 
+  const gosu = readFileSync(gosuLog, "utf8").split("\n").filter(Boolean);
+
   return {
     status: run.status ?? 1,
     stderr: run.stderr ?? "",
     chowns: readFileSync(chownLog, "utf8").split("\n").filter(Boolean),
     groupOps: readFileSync(groupLog, "utf8").split("\n").filter(Boolean),
-    gosu: readFileSync(gosuLog, "utf8").split("\n").filter(Boolean),
+    gosu,
+    gosuDrop: gosu.at(-1),
+    gosuPreps: gosu.slice(0, -1),
+    gosuPrepDirs: gosuPrepared.map((d) => redirected.get(d)!),
     pluginDir: redirected.get("/plugins")!,
     prepChowns: prepared
       .filter((d) => d !== "/plugins" || !opts.pluginDir)
@@ -389,7 +441,43 @@ describe("session worker ownership sentinel", () => {
     // not cost the boot anything else.
     expect(result.chowns).toEqual([`-R 1000:1000 ${dir}`, ...result.prepChowns]);
     // And the worker still starts, under the configured UID.
-    expect(result.gosu[0]).toContain("1000");
+    expect(result.gosuDrop).toContain("1000");
+  });
+
+  // docs/268 — OpenCode's credential home. The image symlinks
+  // ~/.local/share/opencode at /credentials/.local/share/opencode, so when the
+  // target is missing the link DANGLES — and mkdir(2) on a dangling symlink
+  // returns EEXIST, which OpenCode's Bun runtime surfaces raw instead of
+  // converting. The agent process dies at startup with
+  // `EEXIST: file already exists, mkdir '/home/shipit/.local/share/opencode'`.
+  //
+  // THE regression guard is the creator's IDENTITY, not that a mkdir happened.
+  // The first version ran as root and could never work in production: the
+  // orchestrator seals the per-session credentials subtree 0700 to the session's
+  // own uid BEFORE the container starts, and the container drops DAC_OVERRIDE,
+  // so root has no way in — the entrypoint's own mount loop skips /credentials
+  // for exactly that reason. Asserting only that the directory exists would pass
+  // on the broken form here, where the harness runs unprivileged against a temp
+  // dir it already owns.
+  it("creates OpenCode's credential dir as the WORKER, never as root", () => {
+    for (const [uid, gid] of [
+      ["1000", undefined],
+      // docs/270 — an allocated per-session uid with the SHARED gid.
+      ["2000001", "1000"],
+    ] as const) {
+      const result = runEntrypoint([tempDir()], uid, gid ? { workerGid: gid } : {});
+
+      expect(result.status).toBe(0);
+      expect(result.stderr).not.toContain("could not prepare");
+      expect(result.gosuPrepDirs.length).toBeGreaterThan(0);
+      for (const dir of result.gosuPrepDirs) {
+        expect(existsSync(dir)).toBe(true);
+        expect(result.gosuPreps).toContain(`${uid}:${gid ?? uid} mkdir -p ${dir}`);
+        // No chown: the worker created it, so it already owns it. This is also
+        // what proves the root `mkdir -p && chown` form is gone.
+        expect(result.chowns.some((c) => c.includes(dir))).toBe(false);
+      }
+    }
   });
 
   it("re-chowns when a restored sentinel is not owned by the worker UID", () => {
@@ -407,9 +495,17 @@ describe("session worker ownership sentinel", () => {
   it("skips the recursive walk when the sentinel is already worker-owned", () => {
     const dir = tempDir();
     const uid = String(process.getuid?.() ?? 0);
-    mkdirSync(join(dir, `.shipit-uid-${uid}-${uid}`));
+    // The sentinel has to satisfy BOTH halves of the entrypoint's check, and the
+    // directory this test creates lands with the process's real GID — which is
+    // not the UID on every machine (a ShipIt session container runs uid != gid,
+    // e.g. 2000004:1000). Reusing the uid as the gid made the `%g` comparison
+    // fail there, so the walk re-ran and the assertion this test exists for
+    // could not hold — a harness bug that reported itself as a product bug on
+    // exactly the machine the harness doc says to be careful about.
+    const gid = String(process.getgid?.() ?? 0);
+    mkdirSync(join(dir, `.shipit-uid-${uid}-${gid}`));
 
-    const result = runEntrypoint([dir], uid);
+    const result = runEntrypoint([dir], uid, { workerGid: gid });
 
     expect(result.status).toBe(0);
     // The MOUNT walk is skipped; the prepared dirs are not mounts and are
@@ -527,8 +623,8 @@ describe("host journal readability (#1917)", () => {
     const result = runEntrypoint([tempDir()], "1000");
 
     expect(result.status).toBe(0);
-    expect(result.gosu).toEqual(["1000 true"]);
-    expect(result.gosu.some((c) => c.includes("1000:1000"))).toBe(false);
+    expect(result.gosuDrop).toBe("1000 true");
+    expect(result.gosuDrop).not.toContain("1000:1000");
   });
 
   it("gives a UID with no passwd entry one, rather than dropping lossily", () => {
@@ -542,7 +638,7 @@ describe("host journal readability (#1917)", () => {
 
     expect(result.status).toBe(0);
     expect(result.groupOps).toContain("usermod -u 1000 shipit");
-    expect(result.gosu).toEqual(["1000 true"]);
+    expect(result.gosuDrop).toBe("1000 true");
     expect(result.stderr).not.toContain("without supplementary groups");
   });
 
@@ -556,7 +652,7 @@ describe("host journal readability (#1917)", () => {
     });
 
     expect(result.status).toBe(0);
-    expect(result.gosu).toEqual(["1000:1000 true"]);
+    expect(result.gosuDrop).toBe("1000:1000 true");
     expect(result.stderr).toContain("could not move the shipit account");
     expect(result.stderr).toContain("without supplementary groups");
   });
@@ -568,7 +664,7 @@ describe("host journal readability (#1917)", () => {
       passwdLine: "shipit:x:1000:2000::/home/shipit:/bin/sh",
     });
 
-    expect(result.gosu).toEqual(["1000:1000 true"]);
+    expect(result.gosuDrop).toBe("1000:1000 true");
     expect(result.stderr).toContain("without supplementary groups");
   });
 
@@ -650,7 +746,7 @@ describe("host journal readability (#1917)", () => {
 
     expect(result.status).toBe(0);
     expect(result.groupOps.some((c) => c.startsWith("usermod -u"))).toBe(false);
-    expect(result.gosu).toEqual(["1000 true"]);
+    expect(result.gosuDrop).toBe("1000 true");
   });
 
   it("aligns the journal group for an allocated uid, which needs usermod FIRST", () => {
@@ -687,7 +783,7 @@ describe("host journal readability (#1917)", () => {
     });
 
     expect(result.status).toBe(0);
-    expect(result.gosu).toEqual(["2000001 true"]);
+    expect(result.gosuDrop).toBe("2000001 true");
     expect(result.stderr).not.toContain("without supplementary groups");
   });
 

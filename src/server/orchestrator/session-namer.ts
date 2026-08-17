@@ -11,6 +11,7 @@ import {
 } from "../shared/spawn-routing.js";
 import { disjointCodexTokens } from "../shared/codex-token-usage.js";
 import { ensureCodexHomeInitialized } from "./agents/codex/home-init.js";
+import { ensureOpencodeDataDir } from "./agents/opencode/data-dir.js";
 import { opencodeModelArg, opencodeProviderConfig } from "../shared/opencode-spawn-shaping.js";
 import { parseOpencodeLine, OpencodeTurnAccumulator } from "../shared/opencode-stream.js";
 
@@ -238,6 +239,15 @@ async function callAgentCli(prompt: string, target: SessionNamingTarget): Promis
       // ceiling that pushes the turn path onto stdin.
       // `--auto` matches the turn adapter: a naming run that somehow reaches a
       // tool call must not block on an interactive permission gate with no TTY.
+      // The images symlink `$HOME/.local/share/opencode` into /credentials, and
+      // nothing creates the target — so on a fresh credentials volume the link
+      // dangles and OpenCode's own bootstrap mkdir dies EEXIST before it reads a
+      // single argument (see `agents/opencode/data-dir.ts`). Naming spawns with
+      // HOME=/root by default (`namingHome`), which is exactly the symlinked
+      // home, so without this every OpenCode naming run in production failed —
+      // silently, since naming falls back to a derived title. Same pre-spawn
+      // shape as the Codex case above, and cheap: a directory read once warm.
+      ensureOpencodeDataDir(namingHome(target));
       const args = ["run", "--format", "json", "--auto"];
       const extraEnv: Record<string, string> = {
         // The CLI resolves its project dir from $PWD over the real cwd (the

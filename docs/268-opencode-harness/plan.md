@@ -180,6 +180,53 @@ provisioning have a defined home, and a future login integration
 work with its own `LoginIntegrationId`. No OpenCode auth manager, limits
 provider, or quota integration ships in this PR.
 
+### The credential home is a symlink, and creating it is not a `mkdir -p`
+
+Found in production on the first real OpenCode session: the agent process died
+at startup, before reading an argument, with
+
+    EEXIST: file already exists, mkdir '/home/shipit/.local/share/opencode'
+
+Two facts combine into it, and each is invisible on its own.
+
+1. **The path is a symlink into `/credentials`**, in every image
+   (`Dockerfile.prod`, `Dockerfile.session-worker.*`), so a login survives a
+   container restart. Unlike the single-segment `.claude` / `.codex` targets,
+   nothing materializes a three-deep `.local/share/opencode`, so on a fresh
+   credentials volume the link **dangles**. OpenCode's key-mode auth (req 5)
+   guarantees this is the normal state: there are no credential files to copy,
+   so `copyCredentialPath` returns early and never creates it.
+2. **`mkdir(2)` returns EEXIST on a dangling symlink.** The link is a directory
+   entry, so the name is taken — this is a namespace collision, not a permission
+   check, and no capability or privilege level changes it. Node's
+   `{recursive: true}` masks it as ENOENT and still refuses; OpenCode's Bun
+   runtime surfaces the raw errno and exits 1.
+
+So "just `mkdir -p` the path" is precisely the thing that fails. Resolve the
+link and create what it points at. Two places do this, for two different
+reasons:
+
+- **`docker/session-worker/entrypoint.sh`** — at boot, and it must run **as the
+  worker via gosu**. The first version ran as root on the stated premise that
+  "/credentials was just handed off by the loop"; the loop does no such thing.
+  The orchestrator seals the per-session credentials subtree `0700` to the
+  session's own uid *before* the container starts (docs/270,
+  `chownSessionCredentialsTree` → `sealDirMode`), and the container drops
+  `DAC_OVERRIDE` (docs/150 §10) — the `CHOWN`/`FOWNER` it keeps bypass
+  ownership checks for chmod/chown, never a directory's write bit. Root
+  therefore could not create it on any boot, and the mount loop skips
+  `/credentials` for the same reason (its `[ -w ]` probe reads 0700 as
+  unwritable). The failure was invisible: best-effort `2>/dev/null`, with the
+  warning going to container stderr while the user saw only the agent's EEXIST.
+- **`agents/opencode/data-dir.ts`** — before any orchestrator-side spawn. Naming
+  runs with `HOME=/root` (`namingHome`), which is the symlinked home, so *every*
+  OpenCode naming run hit the same crash and fell back to a derived title
+  without saying why. Here ShipIt owns the path, so an ordinary mkdir suffices;
+  only the symlink hop is shared with the entrypoint.
+
+The guard tests are the identity and the hop, not the mkdir: an assertion that
+the directory merely exists passes on both broken versions.
+
 ## Phase 10 findings (live, through the real adapter)
 
 Three defects were caught only by driving the actual adapter against DeepSeek

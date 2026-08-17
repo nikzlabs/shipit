@@ -182,14 +182,32 @@ fi
 # docs/270 — OpenCode's credential home. The image symlinks
 # ~/.local/share/opencode at /credentials/.local/share/opencode, and unlike the
 # single-segment .claude/.codex targets, a recursive mkdir THROUGH that dangling
-# leaf fails (EEXIST on the link, ENOENT on the stat) — so the target directory
-# must exist before the CLI's first write. Same best-effort shape as /plugins
-# above (and recognized by the entrypoint test harness's prep-block anchor): a
-# boot must never die over an optional credential surface, and /credentials was
-# just handed off by the loop, so this mkdir+chown succeeds there and warns
-# anywhere it cannot.
-if ! (mkdir -p /credentials/.local/share/opencode && chown "${UID_GID}:${WORKER_GID}" /credentials/.local/share/opencode) 2>/dev/null; then
-  echo "[shipit] warning: could not prepare /credentials/.local/share/opencode for UID ${UID_GID}; OpenCode credential writes will fail" >&2
+# leaf fails — so the target directory must exist before the CLI's first write.
+# It is not a soft failure: OpenCode's own bootstrap dies on it. mkdir(2) returns
+# EEXIST for a path that exists as a DANGLING SYMLINK, and OpenCode's Bun runtime
+# surfaces that raw errno rather than converting it, so the whole agent process
+# exits 1 with `EEXIST: file already exists, mkdir '/home/shipit/.local/share/opencode'`.
+#
+# It MUST run as the worker via gosu, not as root. The first version of this
+# block did `mkdir -p` + `chown` as root on the premise that "/credentials was
+# just handed off by the loop" — the loop does no such thing. The orchestrator
+# hands the per-session credentials subtree to the session's uid and seals it
+# 0700 (`session-credentials-scaffold.ts` -> `chownSessionCredentialsTree` ->
+# `sealDirMode`) BEFORE the container starts, so /credentials is already
+# foreign-owned and unreadable to root at every point in this script — the loop
+# itself skips it, because its `[ -w "$d" ]` probe correctly reports a 0700 dir
+# as unwritable. Root cannot recover: the container drops DAC_OVERRIDE
+# (docs/150 §10, `container-lifecycle.ts` CapAdd), and the CHOWN/FOWNER it does
+# keep bypass ownership checks for chmod/chown, never the directory write bit.
+# So the root form could only ever fail, and did — silently, since the warning
+# goes to container stderr while the user sees the agent's EEXIST.
+#
+# gosu is the same remedy the SHIPIT_READONLY_HOME block below applies for the
+# same reason, and it needs no chown: the directory lands owned by the worker
+# because the worker is what created it. Still best-effort — a boot must never
+# die over an optional credential surface.
+if ! gosu "${UID_GID}:${WORKER_GID}" mkdir -p /credentials/.local/share/opencode 2>/dev/null; then
+  echo "[shipit] warning: could not prepare /credentials/.local/share/opencode for UID ${UID_GID}; OpenCode will fail to start (EEXIST on the dangling ~/.local/share/opencode symlink)" >&2
 fi
 
 # docs/262 req 17 — /plugin-bin holds the generated companion-CLI wrappers the
