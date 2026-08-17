@@ -299,13 +299,19 @@ is a production soak, and it is the reason this procedure has a soak step.**
    — sessions commit, push, and provision normally.
 2. Part 1's audit is current for the deployed build. Run the census
    (`npx vitest run src/server/shared/git-hooks-guard-coverage.test.ts`) against
-   the deployed commit rather than trusting the tables as written.
-3. **The build must include the `plugin-generations.ts` fix** (planning#410). If
-   it does not, do not arm: staging a plugin generation fails on that build
-   either way, and arming changes only the error text.
-4. **planning#412 is open** — `git lfs pull` and the workspace handback are
-   ordered wrongly on `main`. Check its state before arming; it touches the
-   provisioning surface this procedure watches.
+   the deployed commit rather than trusting the tables as written. The
+   production image strips test files and a VPS host has no node toolchain, so
+   run it **inside the container** against the deployed source.
+3. **The build must include the `plugin-generations.ts` fix** (planning#410).
+   Test for it rather than inferring it — `checkoutCommit` must call
+   `handWorkspaceBackToWorker(targetDir)` immediately after its `clone --local`.
+   If that line is absent, do not arm: staging a plugin generation fails on that
+   build either way, and arming changes only the error text.
+4. **Deploy the target build UNARMED first, verify it healthy, then arm in a
+   second deploy.** Arming together with an application change makes a refusal
+   unattributable — and the deployed build is routinely behind the checkout, so
+   this is the normal case rather than the careful one. Confirm which commit is
+   actually running; do not assume it matches `/opt/shipit`.
 5. Pick a quiet window. Arming takes effect on the post-turn commit path.
 
 ## Arming
