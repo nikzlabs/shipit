@@ -393,6 +393,23 @@ describe("session-credentials", () => {
     expect(readTail(path.join(accountB, ".claude", ".credentials.json"))).toBe("B-LIVE");
   });
 
+  // The same hazard in the direction that looks safe. A reserved/legacy-route
+  // session still gets same-harness background work, and that work routes to an
+  // account of its own — so the flat write-back can be handed an account's
+  // bearer. The flat root is `migrateProviderDefault`'s "this install has
+  // pre-account credentials" marker, so a copy landing there mints an extra
+  // account row at the next boot, holding a duplicate of a real account's token.
+  it("does not publish a borrowed account's token into the flat root", () => {
+    writeClaudeToken(root, "FLAT", 1_000);
+    writeClaudeToken(path.join(root, "provider-accounts", "claude", "acct-a"), "A-FRESH", 12_000);
+    fs.mkdirSync(perSessionCredentialsDir(root, sid), { recursive: true });
+    provisionSubAgentCredentials(root, sid, "claude", "acct-a"); // background work borrows A
+
+    syncAgentTokenBack(root, sid, "claude");
+
+    expect(readTail(path.join(root, ".claude", ".credentials.json"))).toBe("FLAT");
+  });
+
   it("records the borrowed account on the subtree marker, so the borrow is visible", () => {
     writeClaudeToken(path.join(root, "provider-accounts", "claude", "acct-a"), "A", 12_000);
     writeClaudeToken(path.join(root, "provider-accounts", "claude", "acct-b"), "B", 5_000);

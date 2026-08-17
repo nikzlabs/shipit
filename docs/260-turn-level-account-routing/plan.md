@@ -276,6 +276,15 @@ account I reconnected spread to my other account" — both rows then held one
 bearer, and `quarantineDuplicateClaudeCredentials` marked both `auth_failed` at
 the next boot with no way to say which row owned it.
 
+The same hazard runs in the direction that looks safe. A reserved/legacy-route
+session still gets same-harness background work, and that work routes to an
+*account* of its own — so the flat write-back (`syncAgentTokenBack`) could be
+handed an account's bearer. That is worse than one more misplaced copy:
+`<credentialsRoot>/.claude/.credentials.json` is exactly what
+`migrateProviderDefault` reads as "this install has pre-account credentials", so
+the next boot mints an extra `claude-default` row holding a duplicate of a real
+account's token — and the duplicate quarantine then demands a reconnect of both.
+
 The close is identity before ordering, on the record that already exists:
 
 - **The borrow states what is on disk.** `provisionSubAgentCredentials` writes
@@ -286,7 +295,19 @@ The close is identity before ordering, on the record that already exists:
   agree with**, so the guarantee is at the single write rather than at each of
   its four call sites. An absent marker is equally a refusal: every
   account-routed turn writes one, so its absence means no account turn has run
-  here and there is nothing of that account's to publish.
+  here and there is nothing of that account's to publish. `syncAgentTokenBack`
+  carries the mirror rule — a subtree that names any account may not publish to
+  the flat root.
+
+**Known gap: concurrent same-harness borrows.** The marker is one file with a
+read-modify-write, so two background spawns overlapping on one session and one
+harness can each capture the *other's* account as the one to restore, and the
+session's subtree ends up holding a third party's copy. It is bounded rather
+than fixed, deliberately: no cross-account credential can be published while it
+is true (the write-back only ever publishes to the account the marker names),
+and the next turn's identity check reprovisions before anything spawns — so the
+worst case is a subtree that is briefly wrong and never read. A lock would buy
+nothing that the fail-closed reprovision does not already give.
 
 A crash mid-borrow now leaves a marker that *disagrees* with the session's
 route, which makes the next turn's identity check reprovision — where a stale

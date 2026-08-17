@@ -131,6 +131,11 @@ export function chownSessionCredentialsTree(credentialsRoot: string, sessionId: 
  * allowed to publish the session's token to the account the marker names, and a
  * reader that has to import the provisioner to ask would be a module cycle. The
  * marker is state about the subtree, which is what this module owns.
+ *
+ * Orchestrator-side state only. It sits inside the per-session dir for the same
+ * reason the credentials do — one thing to delete — but nothing in the container
+ * reads it, so whether a given writer leaves it `root:root` or hands it to the
+ * worker with the rest of the tree is deliberately not something callers manage.
  */
 const SESSION_ACCOUNT_MARKER = ".shipit-provider-accounts.json";
 

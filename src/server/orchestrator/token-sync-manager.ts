@@ -1377,6 +1377,25 @@ export function sessionTokenIsAheadOfSource(
  * token. No-op for agents without a registered token file. (docs/142 A)
  */
 export function syncAgentTokenBack(credentialsRoot: string, sessionId: string, agentId: AgentId): void {
+  // The same identity-before-ordering rule as the account write-back below, in
+  // the direction that looks like it cannot be wrong and is worse when it is: a
+  // session on a reserved/legacy route still gets same-harness background work,
+  // and that work routes to an ACCOUNT independently of the session. Its borrow
+  // leaves an account's bearer in a subtree whose route is flat, and this
+  // write-back would publish it to the flat root — which is not just one more
+  // wrong copy. `<credentialsRoot>/.claude/.credentials.json` is exactly the
+  // marker `migrateProviderDefault` reads as "this install has pre-account
+  // credentials", so the next boot would mint a whole extra `claude-default`
+  // account row holding a duplicate of a real account's token, and the
+  // duplicate quarantine would then demand a reconnect of both.
+  const holder = readSessionAccountMarker(credentialsRoot, sessionId)[agentId];
+  if (holder !== undefined) {
+    console.warn(
+      `[session-credentials] refusing ${agentId} token write-back for ${sessionId} to the flat root: `
+        + `the subtree holds account ${holder}`,
+    );
+    return;
+  }
   syncAgentTokenBackToRoot(credentialsRoot, sessionId, agentId, credentialsRoot);
 }
 
