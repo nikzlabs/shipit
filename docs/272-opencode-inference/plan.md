@@ -69,8 +69,9 @@ console (`console.opencode.ai`), one API key:
   the inference wire is still unestablished (needs a real login). ⚠ Observed:
   with a *stored* credential and no env key, `opencode run` hung making no
   model request while egress to the console was blocked — a stored-credential
-  spawn appears to require console reachability; re-check during the login
-  integration.
+  spawn appears to require console reachability. **Follow-up concern only**:
+  launch delivers the key by env var, which did not exhibit this; re-check
+  during the login integration.
 - Go entitlement is account-side (console "enable OpenCode Go" ✅ CLI dialog);
   there is no separate Go key.
 
@@ -167,8 +168,15 @@ live models.dev ✅ and the recorder captures of the CLI itself ✅:
 
 ## 6. Proposed catalogue shape (assessment, not implementation)
 
-- One new `ServiceDef` `{ id: "opencode", name: "OpenCode Zen" }` with two
-  modes, matching the two products:
+- One new `ServiceDef` `{ id: "opencode", name: "OpenCode" }` with two modes,
+  matching the two products. **The name is "OpenCode", not "OpenCode Zen"**
+  (review finding): the service row carries both products, and a picker label
+  naming only the PAYG product would mislabel every Go row — the mode labels
+  are where "Zen" and "Go" belong. Both modes accept the *same* pasted key
+  (§2), which the GLM precedent already supports (one secret, two
+  `(service, mode)` rows) — but the row author must confirm the credential
+  surfaces don't deduplicate the two modes into one, hiding Go behind an
+  existing Zen key:
   - `{ kind: "key" }` — Zen PAYG. `credentials: [{ via: "string", storageEnv:
     "OPENCODE_API_KEY" }]`. Endpoints per style: `A_MSG:
     "https://opencode.ai/zen"` (Claude-style base, per the docs/268 `/v1`
@@ -179,7 +187,9 @@ live models.dev ✅ and the recorder captures of the CLI itself ✅:
   - `{ kind: "sub", quota: <new "opencode-go-usage"> }` — OpenCode Go, the
     GLM-coding-plan shape (sub-via-string, same key). Endpoints as above with
     `/zen/go`. Quota decision pending (requirements open question; findings
-    in §8).
+    in §8) — if authoring starts before the receipt lands, default to option
+    (a) (planning#339 shape), which is the recommendation and the cheaper one
+    to change.
 - **Per-model `styles` come straight from the vendor's per-model endpoint
   rows** (§3) — the live pass measured that the gateway does not translate
   across styles, so a model is declared under exactly its published style.

@@ -62,9 +62,10 @@ launches must not invert that.
 - **2026-08-17 (Nik, doc review)** — *Which product is "the subscription", and
   what breadth?* Answer: "We need to support all ways the user['s] OpenCode
   account could use OpenCode CLI without ShipIt." → req 4 added; req 2/3
-  reworded to name Go and Zen. Free models are covered as ordinary $0 rows
-  under the key mode (an account holder's key runs them); the credential-less
-  anonymous free tier is not an *account* way and stays out of scope.
+  reworded to name Go and Zen. Free models are *offerable* as ordinary $0
+  rows under the key mode — a pasted key is still required; the
+  credential-less anonymous free tier is not an *account* way and stays out
+  of scope.
 - **2026-08-17 (Nik, doc review)** — *Launch auth scope.* Answer: "agree,
   let's do the simplest thing" → launch = pasted API key only, for both modes.
   The console OAuth login remains follow-up under req 4.
