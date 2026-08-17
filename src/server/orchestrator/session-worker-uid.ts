@@ -497,7 +497,7 @@ export function chownTreeToSessionWorker(targetPath: string): void {
 
 /**
  * Hand a session workspace's `.git` directory back to the uid that will next run
- * git in it, after the root orchestrator ran git operations there (clone, fetch,
+ * git in it, after an orchestrator-side git operation wrote there (clone, fetch,
  * branch, reset, commit).
  *
  * **That uid is {@link resolveGitDirOwner}'s answer, not `SHIPIT_SESSION_WORKER_UID`
@@ -506,21 +506,40 @@ export function chownTreeToSessionWorker(targetPath: string): void {
  * when that resolves to null. `deps` is the same injection seam
  * {@link resolveGitTreeUid} documents, for tests only.
  *
- * docs/150 §7 addendum (planning#33 activation): the worktree files are written by
- * the agent *as the worker uid* inside the container, but git's own writes —
- * `.git/index`, the reflogs under `.git/logs/` (append-only, so the worker
- * can't even add to a root-owned one), refs — land `root:root` whenever the
- * root orchestrator runs git here post-boot. The entrypoint's boot-time chown
- * can't see these later writes, so the next in-container `git` the agent runs
- * (uid 1000) fails to update them. Chowning after each orchestrator-side git op
- * closes that gap.
+ * docs/150 §7 addendum (planning#33 activation): the worktree files are written
+ * by the agent *as the worker uid* inside the container, while git's own writes
+ * — `.git/index`, the reflogs under `.git/logs/` (append-only, so the worker
+ * cannot add to one it does not own), refs — are written by whoever ran that
+ * orchestrator-side git. The entrypoint's boot-time chown can't see these later
+ * writes, so without this the next in-container `git` the agent runs fails to
+ * update them. Chowning after each orchestrator-side git op closes that gap.
+ *
+ * **Which owner that is, since planning#412 found the old answer stated as
+ * current fact in a dozen comments.** Since docs/266-orchestrator-git-trust-boundary
+ * E1, git run in an EXISTING session tree goes through `safeSimpleGit(<dir>)` /
+ * `gitSpawnOverridesForTree` and drops to that session's identity, so those
+ * writes land owned by the session and not `root:root`. Two cases are NOT that,
+ * and they are why this function still exists:
+ *
+ *   - **A tree the git op CREATES.** The drop resolves from the directory a call
+ *     site names, and a `clone` names its destination as an argument — so
+ *     `cloneFromCache`'s bare `safeSimpleGit()` runs as root and lands
+ *     `root:root` (`git-hooks-guard.ts` states the read-vs-create split).
+ *   - **Two answers for one directory.** `resolveGitDirOwner` reconciles the uid
+ *     orchestrator git drops to with the identity the container runs as; where
+ *     those disagree, `.git` is unwritable to one of them until this runs. That
+ *     is the E1 follow-up documented on {@link resolveGitDirOwner}.
+ *
+ * Everything else — including "no identity resolves at all", which is local
+ * mode, dev and every test — leaves this a no-op, and is also the only place an
+ * orchestrator-side git in an existing session tree still runs as root.
  *
  * Runs on the post-turn auto-commit (every turn) plus the one-shot session
  * setup writers, so it MUST stay cheap. The immutable DATA FILES under
  * `.git/objects/` (loose objects + packs) are deliberately skipped: git writes
  * them `0444` and content-addressed, so the worker only ever reads an existing
- * object or creates a NEW one — it never rewrites one in place, and a root-owned
- * `0444` file is world-readable anyway. The object *directories* (the ≤256-way
+ * object or creates a NEW one — it never rewrites one in place, and a `0444`
+ * file it does not own is world-readable anyway. The object *directories* (the ≤256-way
  * fanout + `pack/`/`info/`) ARE chowned, so the worker can still add new objects
  * into them. This bounds the walk by the fanout instead of the unbounded
  * loose-object count a `gc.auto=0` session clone accumulates — measured ~54 ms →
@@ -654,16 +673,20 @@ export function resolveGitDirOwner(
 
 /**
  * Hand a session **worktree** (the files the agent edits) back to the worker
- * uid after the root orchestrator rewrote them. No-op when
+ * uid after an orchestrator-side git op rewrote them. No-op when
  * `SHIPIT_SESSION_WORKER_UID` is unset.
  *
  * docs/150 §7 addendum (planning#146): {@link chownWorkspaceGitToSessionWorker} hands
- * back `.git` so the agent's in-container *git* works, but NOT the worktree. A
- * root orchestrator `git rebase` / `checkout` / `rebase --continue` / `--abort`
- * re-materializes worktree files as `root:root` — including the conflicted files
- * the agent must **edit** to resolve. With only `.git` handed back, git status
- * passes but the resolution turn (and any later normal turn) still EACCES on
- * those files, and can't create/replace files in the now root-owned dirs. This
+ * back `.git` so the agent's in-container *git* works, but NOT the worktree. An
+ * orchestrator-side `git rebase` / `checkout` / `rebase --continue` / `--abort`
+ * re-materializes worktree files — including the conflicted files the agent must
+ * **edit** to resolve — owned by whichever uid that git ran as, which
+ * {@link resolveGitTreeUid} decides and which is NOT necessarily the identity
+ * the container runs as (planning#412: on an existing session tree it is the
+ * session's identity, not root; on a tree the op CREATES, and where no identity
+ * resolves, it is root). With only `.git` handed back, git status passes but the
+ * resolution turn (and any later normal turn) still EACCESes on those files, and
+ * can't create/replace files in dirs it does not own. This
  * walks the worktree and chowns every node to the worker uid, EXCEPT `.git`
  * (handled by the object-aware helper) and the declared dep dirs
  * (`agent.dep-dirs`, e.g. `node_modules`) — passed in via `excludeRelDirs`.
@@ -680,9 +703,9 @@ export function chownWorktreeToSessionWorker(workspaceDir: string, excludeRelDir
 }
 
 /**
- * Hand a session workspace back to the worker uid in full after the root
- * orchestrator ran git operations that rewrote BOTH the `.git` metadata AND the
- * worktree files — `clone`/`checkout -b`/`reset --hard`/`rebase`/`merge`.
+ * Hand a session workspace back to the worker uid in full after orchestrator-side
+ * git operations that rewrote BOTH the `.git` metadata AND the worktree files —
+ * `clone`/`checkout -b`/`reset --hard`/`rebase`/`merge`.
  *
  * **The two halves are gated differently, on purpose, and each gates itself.**
  * The `.git` half runs whenever {@link resolveGitDirOwner} resolves an identity
@@ -708,12 +731,22 @@ export function chownWorktreeToSessionWorker(workspaceDir: string, excludeRelDir
  * {@link chownWorktreeToSessionWorker} (worktree minus the declared dep dirs,
  * read from the workspace's `shipit.yaml`; falls back to {@link DEFAULT_DEP_DIRS}
  * when the config can't be read). Handing back ONLY `.git` — which the
- * session-setup paths used to do — leaves the worktree the root git op
- * re-materialized owned `root:root`, so the non-root agent (uid 1000) can run
- * git but EACCESes on its first edit of a tracked file (docs/150 §7 / planning#147).
+ * session-setup paths used to do — leaves the worktree owned by whichever uid
+ * the git op ran as, so the non-root agent can run git but EACCESes on its first
+ * edit of a tracked file (docs/150 §7 / planning#147).
+ *
+ * **planning#412 — that uid is not "root".** On an existing session tree, an
+ * orchestrator-side git drops to the session's identity since
+ * docs/266-orchestrator-git-trust-boundary E1, so the ops named above write
+ * files the session already owns; root is left only for a tree a git op CREATES
+ * (`cloneFromCache`'s bare `safeSimpleGit()`) and where no identity resolves
+ * (local mode, dev, tests, where this whole function is a no-op). The call is
+ * still owed on every path below, because the two halves reconcile two
+ * *different* consumers of one directory — see {@link resolveGitDirOwner} — but
+ * a reader should not carry away "the orchestrator wrote this as root".
  *
  * Use this from every orchestrator-side path that mutates a per-session
- * workspace's worktree as root: session setup (warm-pool create, claim refresh,
+ * workspace's worktree: session setup (warm-pool create, claim refresh,
  * claim branch-off), rebase, and fork-merge. The dep-dir skip keeps the walk
  * bounded by the source tree rather than the (potentially populated)
  * `node_modules`, which the worker already owns via its own install / the

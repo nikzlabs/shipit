@@ -612,10 +612,18 @@ export async function spawnChildSession(
     await restoreLfsAfterTreeRewrite(newWorkspaceDir, `Pin to ${opts.base}`, (message) =>
       console.warn(`[spawn] ${message}`),
     );
-    // docs/150 §7 addendum (planning#147): the `reset --hard` ran as the root
-    // orchestrator. It re-materializes the WORKTREE (not just `.git/index`/refs)
-    // as root:root, so hand the whole workspace back — `.git` alone would leave
-    // the reset worktree files uneditable by the non-root agent.
+    // docs/150 §7 addendum (planning#147): the `reset --hard` re-materializes
+    // the WORKTREE, not just `.git/index`/refs, so hand the whole workspace back
+    // — `.git` alone would leave the reset worktree files handed to nobody.
+    //
+    // planning#412 — it does not run as the root orchestrator. It goes through
+    // `safeSimpleGit(newWorkspaceDir)`, which since
+    // docs/266-orchestrator-git-trust-boundary E1 drops to that session's own
+    // identity on this existing tree, so the files it writes are already the
+    // session's. What this call owes is the reconciliation: `.git` to
+    // `resolveGitDirOwner` and the worktree to the identity the container runs
+    // as. The root git on this path is the CLONE that created the workspace,
+    // which hands its own tree over before returning (`repo-git.ts`).
     handWorkspaceBackToWorker(newWorkspaceDir);
   }
 

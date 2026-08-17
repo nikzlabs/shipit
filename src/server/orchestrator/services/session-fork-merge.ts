@@ -566,13 +566,22 @@ export async function mergeSession(
     await restoreLfsAfterTreeRewrite(activeSessionDir, "Merge", (message) =>
       console.warn(`[fork-merge] ${message}`),
     );
-    // docs/150 §7 addendum (planning#146): the push/fetch/merge git ops above ran as
-    // the root orchestrator against the active session's (booted) clone,
-    // re-rooting BOTH its `.git` and the worktree files the merge rewrote. Hand
-    // both back to the worker uid — same gap/fix as the rebase driver and the
-    // session-setup paths: handing only `.git` back would leave the merged
-    // worktree files root-owned, so the non-root agent couldn't edit them on its
-    // next turn. No-op unless the flag is set.
+    // docs/150 §7 addendum (planning#146): the push/fetch/merge git ops above
+    // rewrote BOTH the active session's `.git` and the worktree files the merge
+    // touched. Hand both back — same gap/fix as the rebase driver and the
+    // session-setup paths: handing only `.git` back leaves the merged worktree
+    // files handed to nobody, so the non-root agent can't edit them on its next
+    // turn.
+    //
+    // planning#412 — those ops do NOT run as the root orchestrator against that
+    // clone. It is an EXISTING, booted session tree, so every `safeSimpleGit`
+    // here drops to its identity since
+    // docs/266-orchestrator-git-trust-boundary E1 — the same fact the fork's own
+    // LFS note above states for the fork side. What this owes is the
+    // reconciliation: `.git` to `resolveGitDirOwner` and the worktree to the
+    // identity the container runs as. No-op where no identity resolves (local
+    // mode, dev, tests), which is also the only place these ops still run as
+    // root.
     handWorkspaceBackToWorker(activeSessionDir);
   }
 

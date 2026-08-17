@@ -320,20 +320,25 @@ describe("session-worker-uid (docs/150 §7)", () => {
     });
 
     // planning#147: the session-setup paths (warm-pool create, claim refresh/branch)
-    // used to hand back ONLY `.git`, leaving the root-cloned/reset worktree
-    // owned root:root and uneditable by the non-root agent. The composite helper
-    // hands back BOTH `.git` (object-aware) AND the worktree (minus dep dirs).
+    // used to hand back ONLY `.git`, leaving the cloned/reset worktree uneditable
+    // by the non-root agent. The composite helper hands back BOTH `.git`
+    // (object-aware) AND the worktree (minus dep dirs).
+    //
+    // planning#412 — of the two ops named, only the CLONE lands `root:root`
+    // (`cloneFromCache`'s bare `safeSimpleGit()` names no tree to stat). The
+    // `reset --hard` runs in an existing session tree and so drops to that
+    // session's identity since docs/266-orchestrator-git-trust-boundary E1.
     it("handWorkspaceBackToWorker chowns BOTH the worktree and .git, skipping dep dirs", () => {
       const myUid = process.getuid?.();
       if (myUid === undefined) return; // not POSIX — skip
       process.env.SHIPIT_SESSION_WORKER_UID = String(myUid);
-      // Worktree the root `clone`/`reset --hard` re-materialized.
+      // Worktree the `clone`/`reset --hard` re-materialized.
       const topFile = path.join(tmpDir, "package.json");
       const nestedFile = path.join(tmpDir, "src", "App.tsx");
       fs.mkdirSync(path.dirname(nestedFile), { recursive: true });
       fs.writeFileSync(topFile, "{}");
       fs.writeFileSync(nestedFile, "x");
-      // `.git` metadata the root git ops rewrote.
+      // `.git` metadata the orchestrator-side git ops rewrote.
       fs.mkdirSync(path.join(tmpDir, ".git"), { recursive: true });
       fs.writeFileSync(path.join(tmpDir, ".git", "index"), "");
       // No shipit.yaml → falls back to DEFAULT_DEP_DIRS (["node_modules"]).
