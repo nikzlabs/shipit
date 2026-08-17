@@ -119,6 +119,58 @@ export function chownSessionCredentialsTree(credentialsRoot: string, sessionId: 
 }
 
 /**
+ * docs/260 §4/§5 — which provider ACCOUNT'S credentials a session's subtree
+ * currently holds, per agent. Written by every writer that replaces the subtree
+ * (first-turn provisioning, the per-turn identity check, and the temporary
+ * sub-agent credential window), cleared by revocation, so it is authoritative
+ * for the copy on disk — token bytes cannot answer this (the CLI rotates them),
+ * and the session row no longer records a route at all.
+ *
+ * It lives at the scaffold layer rather than beside the provisioning code
+ * because the token sync is its most important READER: a write-back is only
+ * allowed to publish the session's token to the account the marker names, and a
+ * reader that has to import the provisioner to ask would be a module cycle. The
+ * marker is state about the subtree, which is what this module owns.
+ */
+const SESSION_ACCOUNT_MARKER = ".shipit-provider-accounts.json";
+
+export function readSessionAccountMarker(
+  credentialsRoot: string,
+  sessionId: string,
+): Partial<Record<AgentId, string>> {
+  const file = path.join(perSessionCredentialsDir(credentialsRoot, sessionId), SESSION_ACCOUNT_MARKER);
+  try {
+    const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as unknown;
+    if (!parsed || typeof parsed !== "object") return {};
+    const out: Partial<Record<AgentId, string>> = {};
+    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+      if ((key === "claude" || key === "codex" || key === "opencode") && typeof value === "string") out[key] = value;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+export function writeSessionAccountMarker(
+  credentialsRoot: string,
+  sessionId: string,
+  agentId: AgentId,
+  accountId: string | null,
+): void {
+  const dir = perSessionCredentialsDir(credentialsRoot, sessionId);
+  if (!fs.existsSync(dir)) return;
+  const current = readSessionAccountMarker(credentialsRoot, sessionId);
+  if (accountId === null) {
+    // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- keyed by the AgentId union, not arbitrary input
+    delete current[agentId];
+  } else {
+    current[agentId] = accountId;
+  }
+  fs.writeFileSync(path.join(dir, SESSION_ACCOUNT_MARKER), JSON.stringify(current));
+}
+
+/**
  * Path of a session's credentials subtree *relative to the credentials volume
  * root* — used as the Docker `VolumeOptions.Subpath` in production, where the
  * credentials volume root maps to `credentialsRoot` on the orchestrator. Always

@@ -1363,6 +1363,9 @@ describe("finalizeSessionAgentEnvironment", () => {
       path.join(sessionDir, ".credentials.json"),
       JSON.stringify({ claudeAiOauth: { expiresAt: 2_000_000_000_000, accessToken: "A-rotated" } }),
     );
+    // The turn that ran on acct-a left the subtree recorded as acct-a's — the
+    // write-back publishes only to the account the subtree says it holds.
+    writeSessionAccountMarker(tmpDir, "s1", "claude", "acct-a");
 
     const runner = new FakeContainerRunner();
     const credentialStore = makeFakeCredentialStore();

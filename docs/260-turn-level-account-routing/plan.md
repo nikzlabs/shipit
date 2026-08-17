@@ -254,6 +254,45 @@ after selection:
 The `agent_pinned` column keeps only whatever non-credential semantics still
 read it; if nothing does after this change, it is dropped in the same PR.
 
+### 4b. The borrow — the hole this closed and then reopened (2026-08-17)
+
+The identity check above makes the subtree belong to the turn's account *at
+spawn time*. It does not hold for the whole turn, because something else writes
+that same subtree **while the turn runs**: a same-harness `shipit agent run`,
+session naming, or voice cleanup provisions its own credentials into the
+session's dir (`provisionSubAgentCredentials`) and routes independently of the
+session — under `balanced` the background work takes the least-recently-used
+account, which is by design *the other one*.
+
+For the duration of that borrow the session's token file holds the borrowed
+account's bearer while both write-back paths — the turn-end sync-back and the
+docs/153 mid-turn publisher, which polls every 3s — are still pointed at the
+session's own account. Their only guard is a freshness compare, which orders two
+tokens and cannot tell whose they are, so the borrowed token published straight
+into the session's account root whenever it was the newer of the two. It usually
+was: **a freshly reconnected account has the latest expiry there is**, which is
+why the failure showed up right after a reconnect and why it presented as "the
+account I reconnected spread to my other account" — both rows then held one
+bearer, and `quarantineDuplicateClaudeCredentials` marked both `auth_failed` at
+the next boot with no way to say which row owned it.
+
+The close is identity before ordering, on the record that already exists:
+
+- **The borrow states what is on disk.** `provisionSubAgentCredentials` writes
+  the account marker, and `removeSubAgentCredentials` clears it — the marker
+  describes the copy, so it travels with the copy. Callers therefore read the
+  account they intend to restore *before* provisioning, not after.
+- **`syncProviderAccountTokenBack` refuses any write the marker does not
+  agree with**, so the guarantee is at the single write rather than at each of
+  its four call sites. An absent marker is equally a refusal: every
+  account-routed turn writes one, so its absence means no account turn has run
+  here and there is nothing of that account's to publish.
+
+A crash mid-borrow now leaves a marker that *disagrees* with the session's
+route, which makes the next turn's identity check reprovision — where a stale
+"match" used to let the session spawn on the borrowed account's token, which is
+this section's own poisoning class arriving through the back door.
+
 ## 5. Account identity is process-scoped (design-context constraint)
 
 - The turn route object (section 1b) is the in-turn identity. For a
@@ -401,6 +440,7 @@ plus, at most, the running-turn wait message.
 | Router + refusal memory | `provider-account-manager.ts`, `credential-store.ts`, `service-routing.ts` |
 | Attempt loop | `turn-executor.ts`, `ws-handlers/agent-listeners.ts`, `ws-handlers/agent-rate-limits.ts` |
 | Env-prep / provisioning | `session-agent-env.ts`, `token-sync-manager.ts`, `session-credentials.ts` |
+| Subtree account marker (§4b) | `session-credentials-scaffold.ts` (definition — the token sync reads it without a cycle), `session-agent-credentials.ts` (re-export + writers), `session-token-publisher.ts`, `services/sub-agent.ts`, `services/non-turn-work.ts` |
 | Process identity / capture | `ws-handlers/agent-execution.ts`, `runner-registry-factory.ts`, `bootstrap-managers.ts`, `session/agent-controller.ts` + `shared/types/agent-types.ts` (worker status route echo), `usage.ts` + `shared/database.ts` (attribution column) |
 | Dispatched / warm-up entry points | `dispatched-turn.ts`, `resident-spawn-guard.ts`, `services/github-ci-fix.ts`, `wake-session.ts`, `services/headless-sessions.ts`, `services/child-sessions.ts`, `services/sub-agent.ts` |
 | String-credential surface | `service-routing.ts` (`stringSelectionFor`), `services/credential-routes.ts`, `api-routes-bootstrap.ts`, `components/Settings/ServicesPanel.tsx` |

@@ -527,6 +527,13 @@ async function runNonTurnSpawn(
   const credentialsDir = deps.credentialsDir;
   const provisioned = runner instanceof ContainerSessionRunner && !!credentialsDir;
   const accountId = target.route?.kind === "account" ? target.route.id : undefined;
+  // The account the session's own subtree holds, read BEFORE the borrow records
+  // itself on the marker — see `runSubAgent`, which captures it for the same
+  // reason, and `provisionSubAgentCredentials` for why the borrow owns the
+  // marker while it is in place.
+  const borrowedFromAccountId = provisioned && credentialsDir
+    ? readSessionAccountMarker(credentialsDir, sessionId)[target.harnessId]
+    : undefined;
   if (provisioned && credentialsDir) {
     provisionSubAgentCredentials(credentialsDir, sessionId, target.harnessId, accountId);
   }
@@ -589,10 +596,9 @@ async function runNonTurnSpawn(
       const session = deps.sessionManager?.get(sessionId);
       // docs/260 — which account to put back is the credential subtree's own
       // recorded identity (the marker), not a session row: the row records no
-      // route any more, and the marker survives the consult because a borrow
-      // provisions through `provisionSubAgentCredentials`, which never touches
-      // it.
-      const restoreAccountId = readSessionAccountMarker(credentialsDir, sessionId)[target.harnessId];
+      // route any more. Captured before the borrow, which owns the marker for
+      // its duration.
+      const restoreAccountId = borrowedFromAccountId;
       if (session?.agentId === target.harnessId && restoreAccountId) {
         provisionProviderAccountCredentials(
           credentialsDir,

@@ -26,6 +26,8 @@ import {
   chownSessionCredentialsTree,
   copyCredentialPath,
   perSessionCredentialsDir,
+  readSessionAccountMarker,
+  writeSessionAccountMarker,
   writeSessionGitConfig,
 } from "./session-credentials-scaffold.js";
 
@@ -65,55 +67,16 @@ export function provisionProviderAccountCredentials(
 }
 
 /**
- * docs/260 §4/§5 — which provider ACCOUNT'S credentials a session's subtree
- * currently holds, per agent. Written by the only provisioning writer above
- * and cleared by revocation, so it is authoritative for the copy on disk —
- * token bytes cannot answer this (the CLI rotates them), and the session row
- * no longer records a route at all.
- *
- * Three readers: the per-turn identity check ({@link
+ * docs/260 §4/§5 — the subtree's recorded account. Defined in
+ * `session-credentials-scaffold.ts` (the token sync has to read it without
+ * importing this module) and re-exported here, where its readers have always
+ * found it: the per-turn identity check ({@link
  * ensureSessionAccountCredentials}), post-restart resident-process adoption
- * (the account a surviving CLI runs on IS the marker, since any account
- * change retires the process before reprovisioning), and disconnect
- * revocation ("which sessions hold account X's copy").
+ * (the account a surviving CLI runs on IS the marker, since any account change
+ * retires the process before reprovisioning), and disconnect revocation ("which
+ * sessions hold account X's copy").
  */
-const SESSION_ACCOUNT_MARKER = ".shipit-provider-accounts.json";
-
-export function readSessionAccountMarker(
-  credentialsRoot: string,
-  sessionId: string,
-): Partial<Record<AgentId, string>> {
-  const file = path.join(perSessionCredentialsDir(credentialsRoot, sessionId), SESSION_ACCOUNT_MARKER);
-  try {
-    const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as unknown;
-    if (!parsed || typeof parsed !== "object") return {};
-    const out: Partial<Record<AgentId, string>> = {};
-    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
-      if ((key === "claude" || key === "codex" || key === "opencode") && typeof value === "string") out[key] = value;
-    }
-    return out;
-  } catch {
-    return {};
-  }
-}
-
-export function writeSessionAccountMarker(
-  credentialsRoot: string,
-  sessionId: string,
-  agentId: AgentId,
-  accountId: string | null,
-): void {
-  const dir = perSessionCredentialsDir(credentialsRoot, sessionId);
-  if (!fs.existsSync(dir)) return;
-  const current = readSessionAccountMarker(credentialsRoot, sessionId);
-  if (accountId === null) {
-    // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- keyed by the AgentId union, not arbitrary input
-    delete current[agentId];
-  } else {
-    current[agentId] = accountId;
-  }
-  fs.writeFileSync(path.join(dir, SESSION_ACCOUNT_MARKER), JSON.stringify(current));
-}
+export { readSessionAccountMarker, writeSessionAccountMarker };
 
 /**
  * docs/260 §5 — the credential route the session's LAST SPAWNED resident
@@ -443,6 +406,28 @@ function provisionAgentCredentialsFromRoot(
  * `accountId` is the resolved provider-account id (`selectRouteForTurn(subAgentId)`
  * → `{ kind: "account", id }`); pass `undefined` for the legacy no-account
  * fallback (env-token / api-key routes), which copies from the flat root.
+ *
+ * **The marker moves with the copy**, and that is the point: a SAME-harness
+ * consult borrows the very subtree the session's own turn reads from, for an
+ * account chosen independently of the session's (`balanced` routing routinely
+ * hands background work the other account). While the borrow is in place the
+ * session's token file holds the borrowed account's bearer — so a marker still
+ * naming the session's account is a false statement, and the two write-back
+ * paths that trust it (the turn-end sync-back and the mid-turn publisher, both
+ * still pointed at the session's account) would publish one account's
+ * credential into another account's root. That is the duplicate-bearer state
+ * `quarantineDuplicateClaudeCredentials` cleans up after, and it presents to
+ * the user as a connected account silently becoming a different one.
+ *
+ * So the borrow states what is on disk, `syncProviderAccountTokenBack` refuses
+ * any write the marker does not agree with, and the restore in each caller's
+ * `finally` puts the session's own account back. A crash mid-borrow now leaves
+ * a marker that DISAGREES with the session's route, which makes the next turn's
+ * `ensureSessionAccountCredentials` reprovision — where a stale "match" used to
+ * let the session spawn on the borrowed account's token.
+ *
+ * Callers must therefore read the marker they intend to restore BEFORE calling
+ * this, not after.
  */
 export function provisionSubAgentCredentials(
   credentialsRoot: string,
@@ -454,6 +439,7 @@ export function provisionSubAgentCredentials(
     ? providerAccountCredentialRoot(credentialsRoot, subAgentId, accountId)
     : credentialsRoot;
   provisionAgentCredentialsFromRoot(credentialsRoot, sessionId, subAgentId, sourceRoot, true);
+  writeSessionAccountMarker(credentialsRoot, sessionId, subAgentId, accountId ?? null);
 }
 
 /**
@@ -471,6 +457,12 @@ export function provisionSubAgentCredentials(
  * state behind, but never temporary authentication or config. Best-effort: the
  * sub-agent CLI may still be flushing writes at the instant we clean it; the
  * next provision runs the same replacement cleanup before copying credentials.
+ *
+ * The marker is cleared with the credentials, because it describes them: a
+ * marker outliving the copy it names would tell a write-back it may publish a
+ * token that is no longer there, and tell revocation to hunt a copy that is
+ * already gone. Callers that restore the session's own account afterwards write
+ * it back as part of reprovisioning.
  */
 export function removeSubAgentCredentials(
   credentialsRoot: string,
@@ -486,4 +478,5 @@ export function removeSubAgentCredentials(
       // replace-existing pass, or the disk-janitor's session sweep.
     }
   }
+  writeSessionAccountMarker(credentialsRoot, sessionId, subAgentId, null);
 }

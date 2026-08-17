@@ -457,6 +457,16 @@ export async function runSubAgent(
   const provisioned = isContainer && !!deps.credentialsDir;
   const credentialsDir = deps.credentialsDir;
 
+  // The account the session's OWN subtree holds, read BEFORE the borrow
+  // overwrites it. A same-harness consult borrows that subtree and now records
+  // itself on the marker (`provisionSubAgentCredentials`), so reading it in the
+  // `finally` would find the consult's own account and restore that — leaving
+  // the session pointed at someone else's credentials, which is the outcome the
+  // restore exists to prevent.
+  const borrowedFromAccountId = provisioned && credentialsDir
+    ? readSessionAccountMarker(credentialsDir, sessionId)[subAgentId]
+    : undefined;
+
   const provisionAttempt = (): void => {
     if (provisioned && credentialsDir) {
       console.log(
@@ -845,13 +855,11 @@ export async function runSubAgent(
         + `account=${accountId ?? "flat"}`,
       );
       // A same-provider consult temporarily borrows the session's provider
-      // subtree while the primary is blocked waiting for it. Put the subtree's
-      // own recorded account back before the primary resumes (docs/260 — the
-      // marker, not a session row, says whose credentials the subtree holds;
-      // the borrow provisions through `provisionSubAgentCredentials`, which
-      // never touches it). Cross-provider runs touched a different subtree, so
-      // there is nothing to restore.
-      const restoreAccountId = readSessionAccountMarker(credentialsDir, sessionId)[subAgentId];
+      // subtree while the primary is blocked waiting for it. Put the account it
+      // borrowed FROM back before the primary resumes — captured above, because
+      // the borrow itself now owns the marker for its duration. Cross-provider
+      // runs touched a different subtree, so there is nothing to restore.
+      const restoreAccountId = borrowedFromAccountId;
       if (subAgentId === session.agentId && restoreAccountId) {
         provisionProviderAccountCredentials(
           credentialsDir,
