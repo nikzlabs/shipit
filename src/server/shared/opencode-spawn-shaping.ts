@@ -34,6 +34,33 @@ const OPENCODE_REASONING_LEVELS: readonly string[] = (
   HARNESSES.find((h) => h.id === "opencode")?.capabilities.reasoning?.options ?? []
 ).map((o) => o.value);
 
+/**
+ * Levels a style's AI-SDK package REFUSES, so they are never declared as
+ * variants for it.
+ *
+ * The harness's option list is what ShipIt offers a user; it is not a promise
+ * that every provider package accepts every level. `@ai-sdk/anthropic`
+ * validates `providerOptions.effort` against a zod enum of
+ * `low|medium|high|xhigh|max`, so declaring `none` or `minimal` makes the CLI
+ * throw `AI_TypeValidationError` **before any request is sent** rather than
+ * fall back — measured 2026-08-17 against Zen (docs/272 §7), where it broke the
+ * CLI's own title call on every anthropic-style turn.
+ *
+ * Dropping the variant is the fix rather than dropping the option, because an
+ * unknown `--variant` is silently ignored by the CLI (docstring above), so a
+ * user who picks `none` gets the provider's default effort instead of a turn
+ * that cannot start.
+ *
+ * Deliberately keyed by STYLE and not by model: this is the SDK package's own
+ * schema, identical for every service reached through it. A *model* that
+ * refuses a level it was offered — Go's `glm-5.3` answers "[1210] This model
+ * always engages in thinking and cannot be disabled" to `none` — is a vendor
+ * fact for the catalogue to carry, not a rule this table can state.
+ */
+const STYLE_REFUSED_LEVELS: Readonly<Record<string, readonly string[]>> = {
+  "anthropic-messages": ["none", "minimal"],
+};
+
 /** The npm AI-SDK package OpenCode loads for a resolved style. */
 function npmPackageForStyle(style: ServiceRouting["style"]): string | undefined {
   switch (style) {
@@ -73,8 +100,10 @@ export function opencodeProviderConfig(
   if (!npm || routing.credentialTarget.kind !== "env") return undefined;
   const baseURL =
     routing.style === "anthropic-messages" ? `${routing.baseUrl.replace(/\/$/, "")}/v1` : routing.baseUrl;
+  const refused = STYLE_REFUSED_LEVELS[routing.style] ?? [];
   const variants: Record<string, Record<string, unknown>> = {};
   for (const level of OPENCODE_REASONING_LEVELS) {
+    if (refused.includes(level)) continue;
     variants[level] = variantPayload(routing.style, level);
   }
   return {

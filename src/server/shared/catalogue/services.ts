@@ -236,6 +236,16 @@ const OPENCODE_ZEN_PRICES = {
   v4pro: { input: 1.74, output: 3.84, cacheRead: 0.145, cacheWrite: 1.74 },
   glm52: { input: 1.4, output: 4.4, cacheRead: 0.26, cacheWrite: 1.4 },
   kimiK3: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3 },
+  // The `openai-responses` family (live models.dev, re-pulled 2026-08-17).
+  // Sol and Luna match OpenAI's own published rate; **Terra does not** —
+  // 2.5/15 here against OpenAI's 2/12 — which is the same reason this service
+  // carries its own constants rather than reusing `OPENAI_PRICES`.
+  gpt56sol: { input: 5, output: 30, cacheRead: 0.5, cacheWrite: 6.25 },
+  gpt56terra: { input: 2.5, output: 15, cacheRead: 0.25, cacheWrite: 3.125 },
+  gpt56luna: { input: 0.2, output: 1.2, cacheRead: 0.02, cacheWrite: 0.25 },
+  // Zen publishes no cache-write rate for Grok; 0 is "not charged", not
+  // "unknown" — the vendor's table omits the column for this model.
+  grok46: { input: 2, output: 6, cacheRead: 0.5, cacheWrite: 0 },
 } as const;
 
 /**
@@ -253,6 +263,9 @@ const OPENCODE_GO_PRICES = {
   v4pro: { input: 0.66, output: 1.98, cacheRead: 0.022, cacheWrite: 0.66 },
   glm5x: { input: 1.4, output: 4.4, cacheRead: 0.26, cacheWrite: 1.4 },
   kimiK3: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3 },
+  // Go's own rate for Luna is HALF Zen's (0.1/0.6 against 0.2/1.2), which is
+  // the clearest single case of why the two products keep separate constants.
+  gpt56luna: { input: 0.1, output: 0.6, cacheRead: 0.01, cacheWrite: 0.125 },
 } as const;
 
 /**
@@ -693,6 +706,8 @@ export const SERVICES = [
     // and models.dev declares `OPENCODE_API_KEY` on both providers), which the
     // GLM precedent already supports — one secret, two `(service, mode)` rows,
     // each with its own `storageEnv` so the two credentials stay separable.
+    // Asking for the same key twice is what req 7 calls wrong; until that is
+    // built, the two names are how the two products stay addressable.
     id: "opencode",
     name: "OpenCode",
     modes: [
@@ -714,21 +729,33 @@ export const SERVICES = [
         endpoints: {
           [A_MSG]: "https://opencode.ai/zen",
           [O_CC]: "https://opencode.ai/zen/v1",
+          // Same `/v1`-carrying base as chat-completions: Codex appends only
+          // `/responses`. ✅ live, 2026-08-17.
+          [O_RESP]: "https://opencode.ai/zen/v1",
         },
         credentials: [
           {
             via: "string",
-            // The vendor's own variable name, as DeepSeek's row uses
-            // `DEEPSEEK_API_KEY` — so a deployment that exports the documented
-            // name has its key adopted as an ordinary credential at boot
-            // (docs/252 req 20). It is deliberately also a name
-            // `HARNESS_CREDENTIAL_VARS.opencode` scrubs from OpenCode spawns,
-            // and that is safe rather than circular: the scrub empties the
-            // SPAWN env (so the CLI cannot auto-detect it and out-prefer the
-            // provider block), while the adapter reads the secret from its own
-            // `process.env` and writes it to `OPENCODE_PROVIDER_API_KEY`
-            // (`opencode/adapter.ts`). Same shape DeepSeek already ships.
-            storageEnv: "OPENCODE_API_KEY",
+            // ShipIt's own name for the Zen half of the key, NOT the vendor's
+            // `OPENCODE_API_KEY`. Two reasons, and the second is why the row no
+            // longer reads like DeepSeek's:
+            //
+            //  - The products need separable names anyway (`OPENCODE_GO_KEY`
+            //    below), and a pair reading `OPENCODE_API_KEY` / `…_GO_KEY`
+            //    would make the metered product look like the default one.
+            //  - `OPENCODE_API_KEY` is a name the CLI auto-detects, so
+            //    `HARNESS_CREDENTIAL_VARS.opencode` scrubs it from every
+            //    OpenCode spawn. Storing under a scrubbed name worked — the
+            //    scrub empties the SPAWN env while the adapter reads its own
+            //    `process.env` and writes `OPENCODE_PROVIDER_API_KEY`
+            //    (`opencode/adapter.ts`) — but it left one variable meaning two
+            //    things. A distinct name keeps "what ShipIt stores" and "what
+            //    the CLI must never see" apart.
+            //
+            // The cost is that exporting the documented vendor name no longer
+            // gets a key adopted at boot (docs/252 req 20); adoption follows
+            // ShipIt's name, which is what Settings → Secrets asks for.
+            storageEnv: "OPENCODE_ZEN_API_KEY",
             // ✅ 2026-08-17, measured by invalid-key differential ("Invalid API
             // key" proves the header was read, "Missing API key" proves it was
             // ignored): `/messages` reads `x-api-key` ONLY and
@@ -736,15 +763,50 @@ export const SERVICES = [
             // the carrying harness's own default target, so no `targetOverride`
             // is needed anywhere.
             //
-            // `carriers` is a LAUNCH GATE, not a wire fact (docs/272 req 5:
-            // cross-harness pairs are offered "only after live verification
-            // shows it works", and the paid-turn sweep needs a real key nobody
-            // has run yet). OpenCode is the pairing this service's own CLI
-            // exercises, so it launches alone; deleting this line is what the
-            // §7 verification pass does for Claude Code, one measured pair at a
-            // time. Until then a Zen key cannot make an Anthropic-style row
-            // eligible on Claude Code.
-            carriers: ["opencode"],
+            // `carriers` is a LAUNCH GATE, not a wire fact — req 5 offers a
+            // cross-harness pair "only after live verification shows it
+            // works". OpenCode's own CLI is verified on both of this mode's
+            // styles (real paid turns, 2026-08-17 §7). **Claude Code is
+            // verified NOT to work** and that is why the gate stays: the turn
+            // authenticates and routes correctly, then Zen refuses the request
+            // body itself —
+            //
+            //   400 [invalid_request_error] context_management: Extra inputs
+            //   are not permitted
+            //
+            // Claude Code puts a `context_management` block in its Messages
+            // request, and Zen's upstream rejects any field outside the plain
+            // Messages schema. It is a property of the CLI's request, not of a
+            // model or a credential, so every Claude Code × Zen turn fails the
+            // same way and no row-level change can rescue it. Removing this
+            // line would offer the user a pair that 400s on its first turn.
+            //
+            // `carriers` is a LAUNCH GATE, not a wire fact — req 5 offers a
+            // cross-harness pair "only after live verification shows it
+            // works". All three pairs are now measured (2026-08-17, §7), and
+            // they did not agree:
+            //
+            //  - **OpenCode** ✅ real paid turns on both of this mode's
+            //    original styles.
+            //  - **Codex** ✅ a real paid turn on `gpt-5.6-luna` over
+            //    `openai-responses` — which is why the GPT/Grok rows below
+            //    exist at all; without one, the join refused the pair on style
+            //    before any gate was consulted.
+            //  - **Claude Code** ❌ and that is why it is absent. The turn
+            //    authenticates and routes correctly, then Zen refuses the
+            //    request body itself:
+            //
+            //      400 [invalid_request_error] context_management: Extra
+            //      inputs are not permitted
+            //
+            //    Claude Code puts a `context_management` block in its Messages
+            //    request and Zen's upstream accepts nothing outside the plain
+            //    schema. It is a property of the CLI's request, not of a
+            //    model, a credential or a row, so every Claude Code × Zen turn
+            //    fails identically and no row-level change can rescue it.
+            //    Adding "claude" here would offer a pair that 400s on its
+            //    first turn.
+            carriers: ["opencode", "codex"],
           },
         ],
         retired: [],
@@ -764,10 +826,6 @@ export const SERVICES = [
         // own 400.
         //
         // Deliberately NOT here, and each for a stated reason:
-        //   - **The `@ai-sdk/openai` rows** (GPT-5.6 Sol/Terra/Luna, Grok 4.6):
-        //     `openai-responses` is Codex's style and Codex's alone, so under
-        //     the `carriers` gate above they would be rows no harness could
-        //     reach. They arrive with the Codex pair verification, together.
         //   - **Gemini**: served at `/v1/models/<id>:streamGenerateContent`
         //     with `@ai-sdk/google` — a fourth wire format ShipIt has no
         //     `ApiStyle` for.
@@ -789,6 +847,19 @@ export const SERVICES = [
           { id: "deepseek-v4-flash", label: "DeepSeek V4 Flash", ...MODEL_IDENTITIES.deepseekV4Flash, styles: [O_CC], contextWindow: ONE_M, price: OPENCODE_ZEN_PRICES.v4flash },
           { id: "deepseek-v4-pro", label: "DeepSeek V4 Pro", ...MODEL_IDENTITIES.deepseekV4Pro, styles: [O_CC], contextWindow: ONE_M, price: OPENCODE_ZEN_PRICES.v4pro },
           { id: "glm-5.2", label: "GLM-5.2", ...MODEL_IDENTITIES.glm52, styles: [O_CC], contextWindow: ONE_M, price: OPENCODE_ZEN_PRICES.glm52 },
+          // The `openai-responses` rows. Authored after the first pass on the
+          // user's instruction, because without one Codex could not be paired
+          // with this service at all: it speaks only that style, so the join
+          // refused the pair before any credential or gate was consulted.
+          //
+          // Windows follow the catalogue's existing GPT and Grok rows
+          // (`CODEX_WINDOW`, `HALF_M`) rather than models.dev's larger figures,
+          // so one canonical model does not claim two different sizes
+          // depending on which service the user picked.
+          { id: "gpt-5.6-sol", label: "GPT-5.6 Sol", ...MODEL_IDENTITIES.gpt56sol, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENCODE_ZEN_PRICES.gpt56sol },
+          { id: "gpt-5.6-terra", label: "GPT-5.6 Terra", ...MODEL_IDENTITIES.gpt56terra, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENCODE_ZEN_PRICES.gpt56terra },
+          { id: "gpt-5.6-luna", label: "GPT-5.6 Luna", ...MODEL_IDENTITIES.gpt56luna, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENCODE_ZEN_PRICES.gpt56luna },
+          { id: "grok-4.6", label: "Grok 4.6", ...MODEL_IDENTITIES.grok46, styles: [O_RESP], contextWindow: HALF_M, price: OPENCODE_ZEN_PRICES.grok46 },
         ],
       },
       {
@@ -806,6 +877,7 @@ export const SERVICES = [
         quota: "opencode-go-usage",
         endpoints: {
           [O_CC]: "https://opencode.ai/zen/go/v1",
+          [O_RESP]: "https://opencode.ai/zen/go/v1",
         },
         credentials: [
           {
@@ -815,9 +887,15 @@ export const SERVICES = [
             // invariant, and it is what keeps the two products two credential
             // rows in Settings rather than Go hiding behind a stored Zen key.
             // The GLM precedent again — `ZAI_CODING_PLAN_KEY` / `ZAI_API_KEY`.
-            storageEnv: "OPENCODE_GO_API_KEY",
-            // Same launch gate, same wire facts as the Zen credential above.
-            carriers: ["opencode"],
+            storageEnv: "OPENCODE_GO_KEY",
+            // Same wire facts as the Zen credential above, and the same gate
+            // settled by its own measurement: ✅ a real Codex turn on Go's
+            // `gpt-5.6-luna`, accounted as an INCLUDED turn (subscription) —
+            // so Codex reaches this product on the plan, not only on Zen
+            // credits. Claude Code is absent for the reason the Zen credential
+            // records, and cannot reach Go anyway: it speaks only
+            // `anthropic-messages`, which no Go model declares.
+            carriers: ["opencode", "codex"],
           },
         ],
         retired: [],
@@ -825,9 +903,8 @@ export const SERVICES = [
         // are the ones overlapping ShipIt's existing identities. Every id ✅
         // 2026-08-17 against the `/zen/go` base by the same registry probe.
         //
-        // Not here: `gpt-5.6-luna` and `grok-4.5` (`@ai-sdk/openai`, so
-        // Codex-only — see the Zen mode), MiMo/MiniMax/Hy3 (families ShipIt
-        // lists nowhere else), and **Qwen3.8 Max, which the two sources
+        // Not here: MiMo/MiniMax/Hy3 (families ShipIt lists nowhere else), and
+        // **Qwen3.8 Max, which the two sources
         // disagree about**: the vendor's Go endpoint table publishes it under
         // `/messages` (`@ai-sdk/anthropic`) while models.dev still has it as
         // chat-completions. Declaring the wrong one is a 400 on every turn, and
@@ -839,6 +916,17 @@ export const SERVICES = [
           { id: "kimi-k3", label: "Kimi K3", ...MODEL_IDENTITIES.kimiK3, styles: [O_CC], contextWindow: ONE_M, price: OPENCODE_GO_PRICES.kimiK3 },
           { id: "deepseek-v4-pro", label: "DeepSeek V4 Pro", ...MODEL_IDENTITIES.deepseekV4Pro, styles: [O_CC], contextWindow: ONE_M, price: OPENCODE_GO_PRICES.v4pro },
           { id: "deepseek-v4-flash", label: "DeepSeek V4 Flash", ...MODEL_IDENTITIES.deepseekV4Flash, styles: [O_CC], contextWindow: ONE_M, price: OPENCODE_GO_PRICES.v4flash },
+          // Go's one `openai-responses` model, and the only way Codex can run
+          // on the subscription rather than on Zen credits. ✅ live registry
+          // probe on `/zen/go/v1/responses`, with `gpt-5.6-sol` answering
+          // `ModelError` on the same route as the negative control — Go serves
+          // Luna and not the rest of the family.
+          //
+          // Go also serves `grok-4.5` here, left unauthored: it is superseded
+          // by the 4.6 the rest of the catalogue carries, and Go does not serve
+          // 4.6, so adding it would introduce a canonical model this catalogue
+          // names nowhere else.
+          { id: "gpt-5.6-luna", label: "GPT-5.6 Luna", ...MODEL_IDENTITIES.gpt56luna, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENCODE_GO_PRICES.gpt56luna },
         ],
       },
     ],

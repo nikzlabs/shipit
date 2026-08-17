@@ -1095,6 +1095,31 @@ describe("the launch catalogue is a requirement, not a capability (req 15)", () 
       .toBe("https://opencode.ai/zen/v1");
     expect(resolveEndpoint("opencode", { serviceId: "opencode", billingMode: "sub", modelId: "glm-5.3" }))
       .toBe("https://opencode.ai/zen/go/v1");
+    // The `openai-responses` half: same `/v1`-carrying base per product,
+    // because Codex appends only `/responses`.
+    expect(resolveEndpoint("codex", { serviceId: "opencode", billingMode: "key", modelId: "gpt-5.6-sol" }))
+      .toBe("https://opencode.ai/zen/v1");
+    expect(resolveEndpoint("codex", { serviceId: "opencode", billingMode: "sub", modelId: "gpt-5.6-luna" }))
+      .toBe("https://opencode.ai/zen/go/v1");
+  });
+
+  it("serves Codex only the models each OpenCode product actually has (docs/272 §7)", () => {
+    // Verified live by no-key registry probe on both `/responses` bases: Zen
+    // serves the whole GPT-5.6 family and Grok 4.6, while Go serves Luna ALONE
+    // — `gpt-5.6-sol` answers `ModelError` there. A row claiming otherwise
+    // would 400 on its first turn, so the asymmetry is asserted rather than
+    // smoothed over.
+    const idsFor = (billingMode: "key" | "sub") =>
+      catalogueEntriesForHarness("codex")
+        .filter((e) => e.service.id === "opencode" && e.mode.kind === billingMode)
+        .map((e) => e.model.id);
+    expect(idsFor("key").sort()).toEqual(["gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "grok-4.6"]);
+    expect(idsFor("sub")).toEqual(["gpt-5.6-luna"]);
+    // Every one of them is responses-only here: Zen does not translate between
+    // styles, so a second style on these rows would be a wrong claim.
+    for (const entry of catalogueEntriesForHarness("codex").filter((e) => e.service.id === "opencode")) {
+      expect(entry.model.styles, entry.model.id).toEqual(["openai-responses"]);
+    }
   });
 
   it("prices OpenCode's models as OpenCode, not as the vendors that make them", () => {
@@ -1114,6 +1139,13 @@ describe("the launch catalogue is a requirement, not a capability (req 15)", () 
     // And the two products disagree with each other: Go publishes its own
     // per-model rate for the usage-cap arithmetic.
     expect(go("deepseek-v4-pro")!.price.input).not.toBe(zen("deepseek-v4-pro")!.price.input);
+    // The same holds on the `openai-responses` rows, in both directions:
+    // Terra costs more at Zen than at OpenAI, and Luna costs half as much on
+    // the Go plan as on Zen credits.
+    expect(zen("gpt-5.6-terra")!.price.input).toBeGreaterThan(
+      getModel({ serviceId: "openai", billingMode: "key", modelId: "gpt-5.6-terra" })!.price.input,
+    );
+    expect(go("gpt-5.6-luna")!.price.input).toBeLessThan(zen("gpt-5.6-luna")!.price.input);
   });
 
   it("names OpenCode's own inference as its harness's native service (docs/272)", () => {
@@ -1131,23 +1163,28 @@ describe("the launch catalogue is a requirement, not a capability (req 15)", () 
   // (`["opencode", false, false]`), which is where every service's answer to
   // that pair of questions lives. Two places would be two answers to drift.
 
-  it("offers OpenCode's inference on OpenCode alone until each pair is verified", () => {
+  it("offers OpenCode's inference to the harnesses whose pair was measured, and to no others", () => {
     // docs/272 req 5 — cross-harness routing is in scope and each pair ships
-    // only after a live turn proves it. The header matrix is measured
-    // (`/messages` reads x-api-key, `/chat/completions` reads Bearer), but the
-    // paid-turn sweep needs a real key, so both modes' credentials carry
-    // `carriers: ["opencode"]` as the launch gate. Deleting that line, one
-    // measured pair at a time, is what this assertion is here to make visible.
+    // only after a live turn proves it. All three pairs were run on
+    // 2026-08-17 (§7) and they did not agree, so `carriers` is now a record of
+    // measurements rather than a blanket launch gate:
+    //
+    //  - OpenCode ✅ and Codex ✅ real paid turns on both products.
+    //  - Claude Code ❌ Zen refuses the CLI's request body outright — `400
+    //    [invalid_request_error] context_management: Extra inputs are not
+    //    permitted` — so the pair is excluded by evidence. Adding "claude"
+    //    would offer a pairing that fails on its first turn.
     const zenKey = { serviceId: "opencode", billingMode: "key" as const, via: "string" as const };
     const goKey = { serviceId: "opencode", billingMode: "sub" as const, via: "string" as const };
-    expect(eligibleEntriesForHarness("opencode", [zenKey]).length).toBeGreaterThan(0);
-    expect(eligibleEntriesForHarness("opencode", [goKey]).length).toBeGreaterThan(0);
-    for (const harness of ["claude", "codex"] as const) {
-      expect(eligibleEntriesForHarness(harness, [zenKey, goKey]), harness).toEqual([]);
-      expect(harnessSupportsService(harness, "opencode"), harness).toBe(false);
+    for (const harness of ["opencode", "codex"] as const) {
+      expect(eligibleEntriesForHarness(harness, [zenKey]).length, harness).toBeGreaterThan(0);
+      expect(eligibleEntriesForHarness(harness, [goKey]).length, harness).toBeGreaterThan(0);
+      expect(harnessSupportsService(harness, "opencode"), harness).toBe(true);
     }
-    // The style join alone would have offered Zen's Claude rows to Claude Code
-    // — so the gate is doing real work rather than restating the join.
+    expect(eligibleEntriesForHarness("claude", [zenKey, goKey])).toEqual([]);
+    expect(harnessSupportsService("claude", "opencode")).toBe(false);
+    // The style join alone WOULD have offered Zen's Claude rows to Claude Code
+    // — so the exclusion is doing real work rather than restating the join.
     expect(
       catalogueEntriesForHarness("claude").some((e) => e.service.id === "opencode"),
     ).toBe(true);
