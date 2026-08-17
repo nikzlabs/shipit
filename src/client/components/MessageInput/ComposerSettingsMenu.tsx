@@ -316,6 +316,17 @@ export function ComposerSettingsMenu({
   // `displayName` is never empty — it answers "loading" and "nothing to pick"
   // itself, so this layout cannot label the second one as the first.
   const modelName = model.displayName;
+  // docs/272-user-selectable-roles req 5, in docs/260's layout — **the anchor carries the ROLE's
+  // name while one is in force**, not the model's.
+  //
+  // docs/260 req 4 gave the anchor the model name because the model was the most
+  // consequential of the four things behind it. A role outranks it on exactly
+  // that test: it IS the harness, the model and the level, and it is what the
+  // user chose. Leaving the model there put a role's name inside the menu and a
+  // model beside it on the row — two answers to "what does this session run on",
+  // and under a role the model is the less true of the two, since the row it
+  // comes from may not even be readable yet (a warm session's is not).
+  const anchorName = sessionRoleName ?? modelName;
 
   return (
     <DropdownMenu
@@ -331,20 +342,37 @@ export function ComposerSettingsMenu({
           disabled={disabled}
           // req 9 — the anchor shows one name but stands for four settings, so it
           // says so out loud rather than relying on the icon.
-          aria-label={`Settings — model: ${modelName}`}
-          title={`Model: ${modelName}. Opens harness, model, reasoning and permission mode.`}
+          aria-label={
+            sessionRoleName
+              ? `Settings — role: ${sessionRoleName}`
+              : `Settings — model: ${modelName}`
+          }
+          title={
+            sessionRoleName
+              ? `Role: ${sessionRoleName}. Opens the roles, and the settings this one sets.`
+              : `Model: ${modelName}. Opens harness, model, reasoning and permission mode.`
+          }
           data-testid="composer-settings-trigger"
           // `flex-[0_1_auto] min-w-0` is what makes the model name the elastic
           // thing in the row: it is the only item allowed to shrink, so it
           // truncates before anything else is clipped (req 8).
           className={`flex flex-[0_1_auto] min-w-0 items-center gap-1.5 overflow-hidden rounded-lg p-1.5 text-xs font-medium text-(--color-text-secondary) transition-colors hover:bg-(--color-bg-hover) disabled:cursor-not-allowed disabled:opacity-50 ${INSET_FOCUS_RING}`}
         >
-          <SlidersHorizontalIcon
-            size={ICON_SIZE.SM}
-            className="shrink-0 text-(--color-text-tertiary)"
-          />
+          {/* The mark follows the name: under a role the anchor is the role's,
+              so it wears the mark that means "role" everywhere else (req 16). */}
+          {sessionRoleName ? (
+            <BaseballCapIcon
+              size={ICON_SIZE.SM}
+              className="shrink-0 text-(--color-text-tertiary)"
+            />
+          ) : (
+            <SlidersHorizontalIcon
+              size={ICON_SIZE.SM}
+              className="shrink-0 text-(--color-text-tertiary)"
+            />
+          )}
           <span className="truncate" data-testid="composer-settings-model-name">
-            {modelName}
+            {anchorName}
           </span>
           <CaretDownIcon size={ICON_SIZE.XS} className="shrink-0" />
         </button>

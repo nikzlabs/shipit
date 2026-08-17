@@ -27,6 +27,7 @@ import { ContextDialMount } from "./ContextDialMount.js";
 import { ComposerSettingsMenu } from "./ComposerSettingsMenu.js";
 import { RoleSelector, useRolePickerState } from "./RoleSelector.js";
 import { getSavedRoleName } from "../../utils/local-storage.js";
+import { applyRoleSeeds } from "../../utils/role-seed.js";
 import { useTextareaSizing } from "./hooks/useTextareaSizing.js";
 import { useMessageDraft } from "./hooks/useMessageDraft.js";
 import { useUploadBackend } from "./hooks/useUploadBackend.js";
@@ -256,6 +257,23 @@ export function MessageInput({
    * creates will not be started on.
    */
   const leavePendingRole = () => setPendingRole(undefined);
+  const roleView = roles.find((r) => r.name === roleInForce);
+  // The seed slots the three pickers DISPLAY have to hold the role's own
+  // parameters, or the composer names a role beside a model that role will not
+  // run — reported as "the model name is incorrect".
+  //
+  // Picking a role writes them (`handleRoleChange`), but a role can also arrive
+  // from the slot on a page load, and then nothing has written them this
+  // session: a seed left over from earlier work stays on screen under the
+  // role's name. So they are reconciled here too. `applyRoleSeeds` reports
+  // whether it moved anything, which is what keeps this from looping, and the
+  // bump is needed because localStorage is not something React can subscribe to.
+  const [, noteSeedWrite] = useState(0);
+  // eslint-disable-next-line no-restricted-syntax -- reconciles an external store (localStorage) the pickers read during render; there is nothing else to subscribe to
+  useEffect(() => {
+    if (!roleInForce || hasActiveSession) return;
+    if (applyRoleSeeds(roleView)) noteSeedWrite((n) => n + 1);
+  }, [roleInForce, hasActiveSession, roleView]);
   const roleParamsRevealed = !roleInForce || revealedFor === roleInForce;
   const showRoleControl = !!onRoleChange && (hasRoles || !!roleInForce);
   const [isDragging, setIsDragging] = useState(false);

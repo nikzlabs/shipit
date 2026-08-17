@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
-import { render, screen, cleanup } from "@testing-library/react";
+import { render, screen, cleanup, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { RoleSelector, useRolePickerState } from "./RoleSelector.js";
 import { ComposerSettingsMenu } from "./ComposerSettingsMenu.js";
@@ -194,6 +194,9 @@ function renderMenu(props: Partial<React.ComponentProps<typeof ComposerSettingsM
 describe("the composer before a session is active (docs/272 reqs 5, 12)", () => {
   afterEach(() => {
     localStorage.removeItem("shipit-role-name");
+    localStorage.removeItem("vibe-model-id");
+    localStorage.removeItem("vibe-agent-id");
+    localStorage.removeItem("shipit-reasoning-by-agent");
   });
 
   it("names the role from the SEED, because there is no session row to read", () => {
@@ -241,6 +244,36 @@ describe("the composer before a session is active (docs/272 reqs 5, 12)", () => 
       />,
     );
     expect(screen.getByTestId("role-selector-trigger").textContent).toBe("");
+  });
+
+  it("corrects a stale seed to the role's own parameters (req 15)", async () => {
+    // The seed slots are what the three pickers DISPLAY here, so a seed left
+    // over from earlier work showed a model the role would not run — reported as
+    // "the model name is incorrect". A role picked in this browser writes them;
+    // a role arriving from the slot on a page load has nothing that did, so the
+    // composer reconciles them.
+    localStorage.setItem("shipit-role-name", "deep dive");
+    localStorage.setItem(
+      "vibe-model-id",
+      JSON.stringify({ serviceId: "deepseek", billingMode: "key", modelId: "deepseek-v4-flash" }),
+    );
+    setRoles([DEEP_DIVE]);
+    render(
+      <MessageInput
+        onSend={vi.fn()}
+        disabled={false}
+        agents={[claude]}
+        activeAgentId="claude"
+        onAgentChange={vi.fn()}
+        onModelChange={vi.fn()}
+        onReasoningChange={vi.fn()}
+        onRoleChange={vi.fn()}
+        hasActiveSession={false}
+      />,
+    );
+    await waitFor(() => {
+      expect(localStorage.getItem("vibe-model-id")).toBe("anthropic:sub:claude-opus-5");
+    });
   });
 
   it("stops naming the role when a parameter moves, with no server to ask (req 15)", async () => {
@@ -333,6 +366,19 @@ describe("ComposerSettingsMenu — the role row (docs/272 req 15)", () => {
       />,
     );
     expect(screen.getByTestId("composer-settings-row-harness")).toBeInTheDocument();
+  });
+
+  it("carries the ROLE's name on the anchor, not the model's (req 5)", () => {
+    // docs/260 gave the anchor the model name as the most consequential of the
+    // four things behind it. A role outranks it on that test — it IS the
+    // harness, the model and the level — and leaving the model there put two
+    // answers to "what does this session run on" on one row.
+    setRoles([DEEP_DIVE]);
+    renderMenu({ onRoleChange: vi.fn(), sessionRoleName: "deep dive", roleParamsRevealed: false });
+    expect(screen.getByTestId("composer-settings-model-name")).toHaveTextContent("deep dive");
+    expect(screen.getByTestId("composer-settings-trigger").getAttribute("aria-label")).toContain(
+      "role: deep dive",
+    );
   });
 
   it("cannot be opened once the session has taken its first turn (req 4)", async () => {

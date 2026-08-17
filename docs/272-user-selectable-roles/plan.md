@@ -173,6 +173,11 @@ Two consequences fell out of fixing it, and both are simplifications:
   the opposite of what req 15 promises. It also means a session started while `?role=` could not be
   applied still runs the role's parameters.
 
+  A role can also arrive from the slot on a **page load**, where nothing wrote those seeds this
+  session, so the composer reconciles them there too. `applyRoleSeeds` reports whether it moved
+  anything, which is what stops the write → re-render → write loop that reconciliation from an
+  effect would otherwise be.
+
 ## What the composer shows
 
 **Three states in the wide row**, and the row never grows: a selected role shows *fewer* controls
@@ -195,7 +200,11 @@ role set it up states nothing a user would want to state.
 
 **Below 700px** this is the same fact in docs/260's shape: the role becomes a row in the one
 composer settings menu, and when a role is selected the harness, model and reasoning rows are the
-ones it replaces. The Role panel carries all three parameters behind "Adjust parameters…",
+ones it replaces. **The anchor carries the role's name too**, not the model's. docs/260 req 4 gave
+it the model on the grounds that the model was the most consequential of the four things behind it;
+a role outranks it on exactly that test, being the harness, the model and the level at once — and
+leaving the model there put two answers to "what does this session run on" on one row, with the
+model the less true of the two. The Role panel carries all three parameters behind "Adjust parameters…",
 **including the harness** — switching role can switch harness, and the harness pins irreversibly at
 the first turn, so a role panel that hid it would hide the one consequence the user cannot undo.
 

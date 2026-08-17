@@ -27,19 +27,46 @@
  * than changing the model by hand restores the previous one.
  */
 
-import { saveAgentId, saveModelSelection, saveReasoning } from "./local-storage.js";
+import {
+  getSavedAgentId,
+  getSavedModelSelection,
+  getSavedReasoning,
+  saveAgentId,
+  saveModelSelection,
+  saveReasoning,
+} from "./local-storage.js";
 import type { RoleView } from "../../server/shared/types/agent-types.js";
 
-export function applyRoleSeeds(role: RoleView | undefined): void {
+/**
+ * Write the role's parameters into the three seed slots. Returns whether
+ * anything actually changed.
+ *
+ * **The return value is what makes this safe to call on every render pass**, and
+ * it has to be: the seeds also need correcting when a role arrives from the slot
+ * on page load rather than from a click, and the caller for that is an effect.
+ * Reporting "nothing moved" is what stops the write → re-render → write loop
+ * that a bare `void` return would create.
+ */
+export function applyRoleSeeds(role: RoleView | undefined): boolean {
   const resolved = role?.resolved;
-  if (!resolved) return;
-  saveAgentId(resolved.harnessId);
-  saveModelSelection({
+  if (!resolved) return false;
+  const selection = {
     serviceId: resolved.serviceId,
     billingMode: resolved.billingMode,
     modelId: resolved.modelId,
-  });
+  };
+  const current = getSavedModelSelection();
+  const unchanged =
+    getSavedAgentId() === resolved.harnessId
+    && current?.serviceId === selection.serviceId
+    && current?.billingMode === selection.billingMode
+    && current?.modelId === selection.modelId
+    && getSavedReasoning(resolved.harnessId) === resolved.reasoningEffort;
+  if (unchanged) return false;
+  saveAgentId(resolved.harnessId);
+  saveModelSelection(selection);
   // Per-agent, like the picker's own writes: a level means something different
   // on each harness, so it is stored against the one the role names.
   saveReasoning(resolved.harnessId, resolved.reasoningEffort);
+  return true;
 }
