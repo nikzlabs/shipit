@@ -1,5 +1,5 @@
 /**
- * docs/150 req 18 — a child session's follow-up turn must run on the child's
+ * docs/150-multiple-provider-subscriptions req 18 — a child session's follow-up turn must run on the child's
  * OWN agent, not on the orchestrator's global default.
  *
  * The bug this guards: `SessionRunnerRegistry.getOrCreate` applies its

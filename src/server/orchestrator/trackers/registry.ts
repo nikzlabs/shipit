@@ -86,7 +86,7 @@ export interface GitHubTrackerContext {
   /** docs/248 — `issues.trackers` from the session repository's shipit.yaml. */
   declared?: DeclaredTracker[];
   /**
-   * docs/248 req 8 — warnings from parsing that repository's `shipit.yaml`
+   * docs/248-declared-issue-trackers req 8 — warnings from parsing that repository's `shipit.yaml`
    * (an unrecognized `kind`, a malformed entry, a duplicate `name`). Carried
    * here so the routes can surface them in `shipit` CLI output, where the agent
    * can repair the declaration or raise it with the user.
@@ -131,7 +131,7 @@ export class TrackerRegistry {
   }
 
   /**
-   * The destinations a reference may resolve to (docs/248 req 11) — every
+   * The destinations a reference may resolve to (docs/248-declared-issue-trackers req 11) — every
    * declaration plus the session's own repository. Includes unlisted entries,
    * because reachability and tab-visibility are different questions: a
    * self-declared repository is reachable both by its name and, unnamed, as the

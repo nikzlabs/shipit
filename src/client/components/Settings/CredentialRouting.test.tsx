@@ -1,5 +1,5 @@
 /**
- * Component tests for the failover-cutoff inputs (docs/150 reqs 4-6).
+ * Component tests for the failover-cutoff inputs (docs/150-multiple-provider-subscriptions reqs 4-6).
  *
  * The bug these pin: the cutoff fields were uncontrolled with `onBlur` as the
  * only save trigger, so typing a number and closing Settings — or pressing

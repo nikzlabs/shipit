@@ -16,7 +16,7 @@
  * Linear project URL, or a plain external link all fail to parse and are
  * returned as `null` here — they keep opening externally, unchanged.
  *
- * docs/248 req 11 — recognizing an address is not the same as reaching it. A
+ * docs/248-declared-issue-trackers req 11 — recognizing an address is not the same as reaching it. A
  * `github.com/other/repo/issues/9` URL for a repository this session's
  * repository does not declare has no in-app view to open, so it also returns
  * `null` and keeps its ordinary external link. That is the fail-closed-but-

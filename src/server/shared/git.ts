@@ -14,7 +14,7 @@ import { type GitTreeUidDeps, gitSpawnOverridesForTree } from "./git-tree-uid.js
 /** Construction-time wiring for {@link GitManager}. */
 export interface GitManagerOptions {
   /**
-   * docs/266 E3 (planning#404) — mints the credential a **dropped-uid** remote
+   * docs/266-orchestrator-git-trust-boundary E3 (planning#404) — mints the credential a **dropped-uid** remote
    * op authenticates with. Wired at `createGitManager` (`app-di.ts`); omitted
    * everywhere else, and then every remote op behaves exactly as it did before
    * this existed.
@@ -222,7 +222,7 @@ export interface AutoCommitResult {
    */
   secretFindings: SecretFinding[];
   /**
-   * docs/266 reqs 14 + 15 — the workspace held content this git could not read.
+   * docs/266-orchestrator-git-trust-boundary reqs 14 + 15 — the workspace held content this git could not read.
    *
    * Only reachable once orchestrator git runs as the session's uid rather than
    * as root (`git-tree-uid.ts`): root reads everything, so before that change
@@ -323,7 +323,7 @@ export class GitManager {
   private stderrTail = "";
 
   /**
-   * docs/266 E3 (planning#404) — mints the credential a **dropped-uid** remote
+   * docs/266-orchestrator-git-trust-boundary E3 (planning#404) — mints the credential a **dropped-uid** remote
    * op authenticates with. Undefined outside the orchestrator (the session
    * worker constructs a `GitManager` too) and in tests, where every remote op
    * behaves exactly as it did before this existed.
@@ -373,7 +373,7 @@ export class GitManager {
 
   /**
    * The git instance a **remote** operation on `remote` should run through
-   * (docs/266 E3, planning#404).
+   * (docs/266-orchestrator-git-trust-boundary E3, planning#404).
    *
    * Everything below the first two guards is the dropped-uid path and nothing
    * else. A root-side git — the bare cache, `/opt/shipit`, local mode, the
@@ -478,7 +478,7 @@ export class GitManager {
     // unreadable-directory warning first appears, and it exits 0.
     this.resetStderr();
     const status = await this.git.status();
-    // docs/266 req 14 — classify the unreadable-DIRECTORY warning HERE, off
+    // docs/266-orchestrator-git-trust-boundary req 14 — classify the unreadable-DIRECTORY warning HERE, off
     // `status`, not after the staging step.
     //
     // `status` is where git first emits it, and every return below this point
@@ -516,7 +516,7 @@ export class GitManager {
       return { commitHash: null, conflictedFiles: [], rebaseInProgress: false, secretFindings: [], unreadable: omitted };
     }
 
-    // docs/266 req 15 — an unreadable FILE makes `add -A` exit 128 and stage
+    // docs/266-orchestrator-git-trust-boundary req 15 — an unreadable FILE makes `add -A` exit 128 and stage
     // NOTHING, including every unrelated file this turn changed. simple-git
     // rejects with a GitError carrying git's stderr (verified by running it);
     // `err.exitCode` is undefined by construction, so classify on the message.
@@ -1072,7 +1072,7 @@ export class GitManager {
    * Uses `git show` over `execFile` with a Buffer encoding because simple-git's
    * `.show()`/`.raw()` always decode stdout to a string.
    *
-   * docs/266 E2 — the uid drop has to be spelled out here because this is a raw
+   * docs/266-orchestrator-git-trust-boundary E2 — the uid drop has to be spelled out here because this is a raw
    * `execFile`, not the `safeSimpleGit` instance the rest of the class uses.
    * Without it this one method kept running as root in a session workspace.
    */

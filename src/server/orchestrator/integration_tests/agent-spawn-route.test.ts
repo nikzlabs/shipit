@@ -95,7 +95,7 @@ describe("Integration: POST /api/sessions/:id/agent/spawn — the spawn target (
     expect(error).toContain("--effort");
   });
 
-  // docs/264 req 10 REVERSES docs/261 here: this combination used to be refused
+  // docs/264-agent-roles req 10 REVERSES docs/261 here: this combination used to be refused
   // at the edge and is now the override path, so it must reach the service (the
   // 404 is the made-up session id, i.e. "the parse let it through").
   it("accepts a role combined with a parameter — the override path", async () => {
@@ -188,7 +188,7 @@ describe("Integration: POST /api/sessions/:id/agent/spawn — the spawn target (
     });
 
     /**
-     * docs/264 req 12 — the two reads, which ship together. Without them an
+     * docs/264-agent-roles req 12 — the two reads, which ship together. Without them an
      * agent allowed to name a role and override a parameter would be naming both
      * from memory: it cannot see the user's roles (they are settings) and cannot
      * see which models this install holds a credential for.

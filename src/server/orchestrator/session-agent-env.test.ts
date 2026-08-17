@@ -366,7 +366,7 @@ describe("prepareSessionAgentEnvironment", () => {
     expect(state.agentSessionId).toBe(recoveredId);
   });
 
-  it("selects the turn's route fresh, returns it as turnRoute, and never persists a session route (docs/260 reqs 1–2)", async () => {
+  it("selects the turn's route fresh, returns it as turnRoute, and never persists a session route (docs/260-turn-level-account-routing reqs 1–2)", async () => {
     // Every routed turn asks the walk at its own start — an agent-spawned
     // child, a follow-up turn, and a first turn all take the same path, so a
     // child never rides its parent's account and nothing fixes a session to
@@ -399,7 +399,7 @@ describe("prepareSessionAgentEnvironment", () => {
     expect(manager.selectAccountForTurn).toHaveBeenCalledWith("anthropic", { optimistic: true });
     expect(result.turnRoute).toEqual({ kind: "account", id: "acct-primary" });
     expect(runner.residentRoute).toEqual({ kind: "account", id: "acct-primary" });
-    // lastUsedAt stamped on the account the turn resolved onto (docs/150 req 21).
+    // lastUsedAt stamped on the account the turn resolved onto (docs/150-multiple-provider-subscriptions req 21).
     expect(manager.markAccountUsed).toHaveBeenCalledWith("anthropic", "acct-primary");
     // req 2 — no session pin exists, so none may be written.
     expect(state.setProviderRouteCalls).toEqual([]);
@@ -411,7 +411,7 @@ describe("prepareSessionAgentEnvironment", () => {
     expect(readSessionAccountMarker(tmpDir, "s1").claude).toBe("acct-primary");
   });
 
-  it("re-runs selection on every turn — legacy provider_route_* row values are never consulted (docs/260 req 1)", async () => {
+  it("re-runs selection on every turn — legacy provider_route_* row values are never consulted (docs/260-turn-level-account-routing req 1)", async () => {
     // The session row's provider_route_* columns survive only as dead legacy.
     // A row still naming another account must not steer the turn: the walk's
     // fresh answer wins, every time.
@@ -445,7 +445,7 @@ describe("prepareSessionAgentEnvironment", () => {
     expect(state.setProviderRouteCalls).toEqual([]);
   });
 
-  // ---- docs/150 req 13: the turn preflight ----
+  // ---- docs/150-multiple-provider-subscriptions req 13: the turn preflight ----
 
   it("fails the turn immediately with the earliest reset when every account is exhausted (req 13)", async () => {
     const runner = new FakeContainerRunner();
@@ -711,14 +711,14 @@ describe("prepareSessionAgentEnvironment", () => {
     });
   });
 
-  // docs/260 req 11 — the string-delivered twin of the account walk. A
+  // docs/260-turn-level-account-routing req 11 — the string-delivered twin of the account walk. A
   // subscription authenticated by a supplied key (the GLM coding plan) is
   // selected per turn through the SAME walk: refusal memory is the only skip
   // (blocked while now < min(exhaustedUntil, exhaustedAt + ~30 min)), nothing
   // is persisted onto the session between turns, and only credentials the
   // provider actually refused this turn (the attempt loop's exclusion set)
   // can produce the terminal failure.
-  describe("string-delivered subscription credentials are routed per turn (docs/260 req 11)", () => {
+  describe("string-delivered subscription credentials are routed per turn (docs/260-turn-level-account-routing req 11)", () => {
     const glmRoutes = (primary: Partial<CredentialRoute> = {}): CredentialRoute[] => [
       {
         id: "cred_a", serviceId: "zai", billingMode: "sub", via: "string", label: "Plan A",

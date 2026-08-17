@@ -336,7 +336,7 @@ migration, and returned immediately on every boot thereafter. It cannot explain
 repair-then-recreation between ordinary turns on an already-migrated install.
 
 What *is* established is narrower, and only about **newly provisioned**
-sessions: docs/150 req 19 stopped creating the root aliases and retires any an
+sessions: docs/150-multiple-provider-subscriptions req 19 stopped creating the root aliases and retires any an
 earlier boot left behind, and `copyCredentialPath` dereferences rather than
 preserving symlinks, so a session provisioned today cannot acquire the leaked
 shape at all. An audit of the current tree found no remaining production path

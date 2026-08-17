@@ -227,7 +227,7 @@ in-app **pull** path stopped calling it.
 **The issue still reaches the server, just later (planning#322).** Prefilled text is
 not enough: two server behaviors are owed to a session *started from an issue*
 regardless of what the user types — the branch must come from the issue's
-pointer and never its title (docs/248 req 22), and the issue must move to
+pointer and never its title (docs/248-declared-issue-trackers req 22), and the issue must move to
 **started**. Neither can be inferred from a prompt the user is free to rewrite.
 So `handleIssueStartSession` parks the ref in the session store
 (`pendingIssueRef`, scoped to the session it seeded) and `handleSend` attaches

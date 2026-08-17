@@ -4,7 +4,7 @@
  *
  * ## Why the session DIRECTORY is the record
  *
- * docs/266 E1 made orchestrator-side git run as the uid that owns the tree it is
+ * docs/266-orchestrator-git-trust-boundary E1 made orchestrator-side git run as the uid that owns the tree it is
  * about to touch. That predicate is sound while every session shares one uid,
  * and stops being sound the moment they do not: the workspace is bind-mounted
  * read-write into compose services, and an **Open** session's service may run as

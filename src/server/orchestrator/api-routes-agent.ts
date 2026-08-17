@@ -180,7 +180,7 @@ export async function registerAgentRoutes(
     },
   );
 
-  // GET /api/sessions/:id/agent/roles — docs/264 req 12, the first of the two
+  // GET /api/sessions/:id/agent/roles — docs/264-agent-roles req 12, the first of the two
   // reads: the roles this install has, so the agent can map an intent onto one
   // (req 3), tell the user what exists, and name one it knows is there rather
   // than guessing at a name the refusal would then have to correct.
@@ -206,7 +206,7 @@ export async function registerAgentRoutes(
     },
   );
 
-  // GET /api/sessions/:id/agent/params — docs/264 req 12's second read: the
+  // GET /api/sessions/:id/agent/params — docs/264-agent-roles req 12's second read: the
   // parameters an override may name (req 10), for THIS install — the harnesses
   // it installed, each one's reasoning levels, and the models it holds a
   // credential for.

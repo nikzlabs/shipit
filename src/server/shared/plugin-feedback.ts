@@ -45,7 +45,7 @@ export interface PluginFeedbackRepo {
  *
  * **`repo: self` produces none** (plan §1a): its issues are already this
  * session's own repository, which every session reaches without a declaration
- * (docs/248 req 12). Minting a second name for it would put one repository's
+ * (docs/248-declared-issue-trackers req 12). Minting a second name for it would put one repository's
  * issues behind two addresses for no gain.
  *
  * The `use:` block is deliberately not consulted: one destination per declared

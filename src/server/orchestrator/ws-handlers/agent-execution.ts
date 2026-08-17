@@ -536,7 +536,7 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
       return prepareSessionAgentEnvironment(runner, {
         sessionId,
         agentId: id,
-        // docs/150 req 13 — this IS the turn's pre-spawn step, so an
+        // docs/150-multiple-provider-subscriptions req 13 — this IS the turn's pre-spawn step, so an
         // unroutable turn fails here rather than spawning against an
         // exhausted account.
         enforceAccountRouting: true,
@@ -554,11 +554,11 @@ export async function runAgentWithMessage(ctx: FullCtx, opts: {
         },
       });
     },
-    // docs/260 req 10 — labels for attempt notices, in the user's own words.
+    // docs/260-turn-level-account-routing req 10 — labels for attempt notices, in the user's own words.
     routeLabel: (routeId) =>
       ctx.providerAccountManager?.getByRouteId(routeId)?.label
       ?? ctx.credentialStore.getCredentialRoute(routeId)?.label,
-    // docs/260 req 2 — billing mode + service of the turn's captured route,
+    // docs/260-turn-level-account-routing req 2 — billing mode + service of the turn's captured route,
     // so failure policy never re-reads the session row.
     routeProfile: (kind, routeId) => {
       const row = ctx.providerAccountManager?.getByRouteId(routeId)

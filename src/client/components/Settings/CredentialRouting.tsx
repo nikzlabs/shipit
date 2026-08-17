@@ -79,7 +79,7 @@ function TitledHint({ title, hint }: { title: string; hint: string }) {
 }
 
 /**
- * docs/150 req 21 — how these credentials relate to each other.
+ * docs/150-multiple-provider-subscriptions req 21 — how these credentials relate to each other.
  *
  * Worded around the credentials, not the algorithm: the real question a user
  * can answer is "are these two the same kind of thing or not?", and the
@@ -270,7 +270,7 @@ async function saveCutoff(
 }
 
 /**
- * docs/150 reqs 4-6 — the two proactive cutoffs for one `(service, mode)`.
+ * docs/150-multiple-provider-subscriptions reqs 4-6 — the two proactive cutoffs for one `(service, mode)`.
  *
  * Deliberately worded as "start using the next account at N%", not "limit":
  * crossing a cutoff moves *new* work, it does not stop the account working. An

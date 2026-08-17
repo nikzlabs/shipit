@@ -773,7 +773,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
   private buildDetectedPortsFromServices(mgr: ServiceManager): number[] {
     return mgr.getServices()
       .filter(s => (s.preview === "auto" || s.preview === "manual") && s.status === "running" && s.port)
-      // docs/266 req 10 — one number per service: this list becomes the
+      // docs/266-plugin-service-ports req 10 — one number per service: this list becomes the
       // preview origin, and a plugin service's port is the consuming project's
       // own, exactly as a project service's is.
       .map(s => s.port!);
@@ -803,7 +803,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
         name: svc.name,
         status: svc.status,
         // The browser's routing key — the container port and the preview
-        // origin at once, for every service (docs/266 req 10).
+        // origin at once, for every service (docs/266-plugin-service-ports req 10).
         port: svc.port,
         preview: svc.preview,
         error: svc.error,

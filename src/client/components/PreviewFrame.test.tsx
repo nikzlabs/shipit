@@ -1108,7 +1108,7 @@ describe("PreviewFrame", () => {
     expect(screen.getByText("Preview not available over this host")).toBeInTheDocument();
     expect(screen.getByText("192.168.1.5:4123")).toBeInTheDocument();
     expect(screen.queryByText("Connecting to dev server...")).not.toBeInTheDocument();
-    // docs/254 req 8: explaining the constraint isn't enough — name a host that
+    // docs/254-local-bind-and-tailnet-access req 8: explaining the constraint isn't enough — name a host that
     // actually works, so the user has something to act on rather than a rule to
     // reason about. Asserted here and not only in the helper's unit tests,
     // because the helper could keep passing while the component stopped

@@ -14,7 +14,7 @@ describe("repo-colors", () => {
     expect(new Set(REPO_COLOR_NAMES).size).toBe(REPO_COLOR_COUNT);
   });
 
-  // docs/254 req 8 — "big enough that a user with many repos rarely sees a
+  // docs/254-repo-group-separation req 8 — "big enough that a user with many repos rarely sees a
   // repeat". A shrink below this is a product regression, not a refactor.
   it("offers at least 16 colors", () => {
     expect(REPO_COLOR_COUNT).toBeGreaterThanOrEqual(16);

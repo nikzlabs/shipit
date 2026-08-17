@@ -787,7 +787,7 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
 
     client.close();
   });
-  // docs/260 reqs 6, 9, 12 — an answer is a full turn on the shared routing
+  // docs/260-turn-level-account-routing reqs 6, 9, 12 — an answer is a full turn on the shared routing
   // path (`handleAnswerQuestion` delegates to `runAgentWithMessage`), so it
   // takes the same per-turn account selection and attempt loop a user-typed
   // turn does. Under docs/150 this scenario was a preflight block ("no CLI
@@ -796,7 +796,7 @@ describe("Integration: AskUserQuestion / answer_question flow", () => {
   // refusal-blocked account (req 12), and the turn fails only after every
   // account has actually refused THIS turn — with the failure built from what
   // the provider said (req 6).
-  it("still tries refusal-benched accounts for an answer, failing only after every account actually refuses (docs/260 reqs 6, 9, 12)", async () => {
+  it("still tries refusal-benched accounts for an answer, failing only after every account actually refuses (docs/260-turn-level-account-routing reqs 6, 9, 12)", async () => {
     const client = await TestClient.connect(port);
     await client.receive(); // preview_status
 

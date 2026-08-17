@@ -175,7 +175,7 @@ export function writeSessionResidentRoute(
 }
 
 /**
- * docs/260 req 4 — make the session's credential subtree belong to the
+ * docs/260-turn-level-account-routing req 4 — make the session's credential subtree belong to the
  * CHOSEN account before the turn spawns, whatever it held before.
  *
  *   - `match`: the marker already names the chosen account; the per-turn
@@ -230,7 +230,7 @@ function readFirstTokenFile(root: string, agentId: AgentId): string | null {
 
 /**
  * Take a session's copy of a provider account's credentials away, with no
- * replacement to copy in (docs/150 req 23).
+ * replacement to copy in (docs/150-multiple-provider-subscriptions req 23).
  *
  * Disconnecting the account only removes the *source* subtree under
  * `provider-accounts/<provider>/<accountId>/`. Every session pinned to that
@@ -276,7 +276,7 @@ export function revokeSessionProviderCredentials(
  * files Claude's `--resume` and Codex's `thread/resume` read. Those are
  * per-session and carry no account identity, so an account switch does not
  * invalidate them; deleting them is what would strand the user mid-conversation
- * (docs/150 req 9, and the same data-loss shape docs/153 hit).
+ * (docs/150-multiple-provider-subscriptions req 9, and the same data-loss shape docs/153 hit).
  *
  * Three cases, mirroring the allowlist's own fail-safe contract:
  *

@@ -651,7 +651,7 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
         .map((account) => account.id)).toEqual([secondId]);
     });
 
-    // docs/260 req 3 — deleting an account never enumerates, moves, or reports
+    // docs/260-turn-level-account-routing req 3 — deleting an account never enumerates, moves, or reports
     // sessions. The old wire shape carried `switchedSessionIds` /
     // `strandedSessionIds`; both are gone: the response is the remaining
     // account list and nothing else, and each session's next turn routes
@@ -659,7 +659,7 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
     // revoking the session's own credential COPY, found by the session's
     // recorded marker (docs/260 §6), which is asserted here over HTTP so the
     // route is known to thread `credentialsDir` into the service.
-    it("disconnects the last account over HTTP: {accounts} only, no stranded/switched reporting (docs/260 req 3)", async () => {
+    it("disconnects the last account over HTTP: {accounts} only, no stranded/switched reporting (docs/260-turn-level-account-routing req 3)", async () => {
       const created = await app.inject({
         method: "POST",
         url: "/api/provider-accounts",
@@ -696,12 +696,12 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
       expect(readSessionAccountMarker(tmpDir, "codex-session").codex).toBeUndefined();
     });
 
-    // docs/260 req 13 — the one refusal left, and it is process-scoped, not
+    // docs/260-turn-level-account-routing req 13 — the one refusal left, and it is process-scoped, not
     // pin-scoped: a live process on the account with a running turn (or
     // in-progress background work) blocks the disconnect, because killing it
     // loses the tokens already spent and rewriting credentials under a live
     // turn is a mid-turn 401. Waiting clears it, so the 409 names the session.
-    it("refuses to disconnect while a live process on the account is busy, and allows it once idle (docs/260 req 13)", async () => {
+    it("refuses to disconnect while a live process on the account is busy, and allows it once idle (docs/260-turn-level-account-routing req 13)", async () => {
       const created = await app.inject({
         method: "POST",
         url: "/api/provider-accounts",
@@ -737,7 +737,7 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
         .filter((account) => account.serviceId === "openai")).toEqual([]);
     });
 
-    // docs/150 req 2 — the reorder control's whole job is to change the order
+    // docs/150-multiple-provider-subscriptions req 2 — the reorder control's whole job is to change the order
     // the user *sees*. Writing `priority` while every wire response still
     // carried storage order is what made the buttons read as broken, so this
     // asserts the order over HTTP, where the client actually reads it.
@@ -935,13 +935,13 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
       expect(claude?.hasRunnableModels).toBe(false);
     });
 
-    // docs/260 req 13 — provider-wide sign-out drops every account row, so it
+    // docs/260-turn-level-account-routing req 13 — provider-wide sign-out drops every account row, so it
     // needs the same busy-process guard the per-account disconnect has: a live
     // process working on a CONNECTED account (running turn or in-progress
     // background work, keyed on the runner's residentRoute — no pins) blocks
     // it. Signing out mid-turn rewrites credentials under a live agent, and
     // the user gets a 401 instead of an answer.
-    it("refuses while a live process on a connected account is mid-turn, and allows it once idle (docs/260 req 13)", async () => {
+    it("refuses while a live process on a connected account is mid-turn, and allows it once idle (docs/260-turn-level-account-routing req 13)", async () => {
       // The guard is scoped to CONNECTED accounts, so the account must exist
       // as a row the manager lists — a route id on a session row means nothing
       // any more.
@@ -966,7 +966,7 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
     });
 
     // A session that ran on a signed-out account is NOT stranded and nothing
-    // reports it as such (docs/260 req 3): its next turn simply routes among
+    // reports it as such (docs/260-turn-level-account-routing req 3): its next turn simply routes among
     // whatever accounts remain (or surfaces auth_required). Only the mid-turn
     // case is unrecoverable, which is why that is the only thing guarded.
     //
@@ -1002,7 +1002,7 @@ describe("Integration: Phase 2 HTTP mutation endpoints", () => {
       expect(readSessionAccountMarker(tmpDir, "signout-2").claude).toBeUndefined();
     });
 
-    // docs/150 req 19 — the route used to drop the account rows and clear only
+    // docs/150-multiple-provider-subscriptions req 19 — the route used to drop the account rows and clear only
     // the singleton path, which on a migrated install aliased the *first*
     // account. Every account connected after that kept live OAuth tokens on
     // disk, with its row deleted so nothing in the UI could reach them.

@@ -164,7 +164,7 @@ export async function forkSession(
   // the source's objects are root-owned and a dropped clone may not link them.
   // A fork now copies the object store.
   //
-  // docs/266 E2 / planning#407 — this clone READS a session workspace, which is
+  // docs/266-orchestrator-git-trust-boundary E2 / planning#407 — this clone READS a session workspace, which is
   // a tree untrusted code can write, so it must run at that tree's uid like
   // every other orchestrator-side git. It was the one path that could not, and
   // the reason is the destination: a bare `safeSimpleGit()` has no `baseDir`, so
@@ -174,7 +174,7 @@ export async function forkSession(
   // uid, then clone with the drop resolved from the SOURCE tree. Measured
   // against git 2.39.5 with the ownership check armed: `git clone --local` on a
   // foreign source fails `detected dubious ownership in repository at
-  // '<src>/.git'` — so once docs/266 E2 removes `safe.directory=*`, the old
+  // '<src>/.git'` — so once docs/266-orchestrator-git-trust-boundary E2 removes `safe.directory=*`, the old
   // shape does not merely run as root, it stops working.
   //
   // Hand over `newWorkspaceDir` and NOT its parent `newSessionDir`: removing or
@@ -384,7 +384,7 @@ export async function mergeSession(
   createGitManager: (dir: string) => GitManager,
   activeSessionDir: string,
   sourceSessionId: string,
-  // docs/266 E3 (planning#404) — the `origin` fetch below runs on a SESSION
+  // docs/266-orchestrator-git-trust-boundary E3 (planning#404) — the `origin` fetch below runs on a SESSION
   // workspace, so under E1 it has dropped uid and cannot read the
   // orchestrator's PAT. Without this it degrades to an anonymous fetch and
   // silently takes the local-remote fallback on every private repo.

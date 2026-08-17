@@ -11,7 +11,7 @@
  * configured uid disagree; the hazard below is the same either way, since both
  * answers are the untrusted side.) An ordinary `npm install` reaches the same place —
  * a dependency's `postinstall` runs in the session worker as that same uid, so
- * this is NOT a plugin-specific hazard (docs/266 req 2).
+ * this is NOT a plugin-specific hazard (docs/266-orchestrator-git-trust-boundary req 2).
  *
  * Git executes code named by repository-local configuration. Reproduced against
  * git 2.39.5 with PR #2301's `core.hooksPath=/dev/null` guard in force:
@@ -19,13 +19,13 @@
  * during a plain `git status`, and a `!`-prefixed `alias.*` runs too. The set is
  * not enumerable — `filter.<name>` is arbitrarily named — and several members
  * are load-bearing (git-lfs *is* a filter), so it cannot be denied key by key
- * (docs/266 req 3).
+ * (docs/266-orchestrator-git-trust-boundary req 3).
  *
  * So the fix is not to disarm the payload. It is to stop running it as **root
  * in the orchestrator**, which holds `/credentials`, `/var/run/docker.sock` and
  * every session's workspace. Run git as the uid that owns the tree instead, and
  * the payload executes at exactly the authority its author already had — which
- * is no escalation at all (docs/266 req 11, decided 2026-08-16).
+ * is no escalation at all (docs/266-orchestrator-git-trust-boundary req 11, decided 2026-08-16).
  *
  * ## Why ownership is the predicate, and not a path or a threaded parameter
  *
@@ -42,7 +42,7 @@
  * Ownership is the same fact git's own CVE-2022-24765 check tests. That makes
  * the two self-consistent by construction: where we correctly drop, git is
  * satisfied; where we fail to drop, git *would* refuse with "detected dubious
- * ownership" rather than execute the payload (docs/266 req 7).
+ * ownership" rather than execute the payload (docs/266-orchestrator-git-trust-boundary req 7).
  *
  * ## docs/270: WHICH tree's ownership
  *
@@ -60,7 +60,7 @@
  * writes `safe.directory=*` by default, which is precisely what suppresses that
  * refusal, so a call site that fails to drop silently runs as root exactly as
  * before. `SHIPIT_GIT_STRICT_OWNERSHIP=1` removes the `*` and turns that into a
- * loud `fatal: detected dubious ownership` (docs/266 E2, planning#403). It is a
+ * loud `fatal: detected dubious ownership` (docs/266-orchestrator-git-trust-boundary E2, planning#403). It is a
  * switch rather than a deletion because arming it turns every missed site into
  * a hard failure at once, on the post-turn commit path, and this module is
  * inert unless the process is root — so it cannot be exercised for real
@@ -171,7 +171,7 @@ export function resolveGitTreeUid(
  * ```
  *
  * Like the hooks wrapper, this IS enforced by
- * `git-hooks-guard-coverage.test.ts` (docs/266 E2): a raw git spawn that names a
+ * `git-hooks-guard-coverage.test.ts` (docs/266-orchestrator-git-trust-boundary E2): a raw git spawn that names a
  * working directory and omits this call fails the build. Five things count as
  * naming one — a `cwd` option, a `-C <dir>` argument, `--git-dir`/`--work-tree`,
  * `GIT_DIR`/`GIT_WORK_TREE` in the spawn's `env`, and a `clone`/`init`/`worktree`

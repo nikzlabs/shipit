@@ -247,7 +247,7 @@ export interface SessionInfo {
    */
   spawnedByTurn?: string;
   /**
-   * docs/264 req 14 — the **role** this session was started from, when one
+   * docs/264-agent-roles req 14 — the **role** this session was started from, when one
    * started it (`shipit session create --role deep-dive`).
    *
    * A **snapshot of the name, not a live link**, and the distinction is the

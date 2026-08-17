@@ -360,7 +360,7 @@ Use Docker Compose's native `secrets:` feature. Secrets are mounted as read-only
 # secrets-entrypoint.sh (baked into the orchestrator image; planning#287 stages a copy
 # at <SHIPIT_SECRETS_INTERNAL_DIR>/_entrypoint/ and bind-mounts it into each
 # service container from there. It used to be copied into <clone>/.shipit/, where
-# the post-turn `git add -A` committed it into the user's repo — docs/246 req 1.)
+# the post-turn `git add -A` committed it into the user's repo — docs/246-shipit-state-out-of-clone req 1.)
 for f in /run/secrets/shipit-*; do
   [ -f "$f" ] || continue
   export "$(basename "$f" | sed 's/^shipit-//')"="$(cat "$f")"

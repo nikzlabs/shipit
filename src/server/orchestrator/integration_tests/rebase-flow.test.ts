@@ -360,7 +360,7 @@ describe("rebase flow: API + WS events", () => {
     expect(finalContent).toContain("merged");
   });
 
-  // docs/260 reqs 6, 9, 12 — the conflict-resolution turn is a system turn on
+  // docs/260-turn-level-account-routing reqs 6, 9, 12 — the conflict-resolution turn is a system turn on
   // the shared dispatch path (`runner.dispatch` → `runDispatchedTurn` →
   // `executeAgentTurn`), so it takes the same per-turn account selection and
   // attempt loop a user-typed turn does. Under docs/150 this scenario was a
@@ -371,7 +371,7 @@ describe("rebase flow: API + WS events", () => {
   // refused THIS turn does the resolution fail — with the provider's own
   // words (req 6) — and the rebase reports the failure instead of silently
   // hanging on a resolution turn that will never happen.
-  it("still tries refusal-benched accounts for the conflict-resolution turn, aborting only after every account refuses (docs/260 reqs 6, 9, 12)", { timeout: 20_000 }, async () => {
+  it("still tries refusal-benched accounts for the conflict-resolution turn, aborting only after every account refuses (docs/260-turn-level-account-routing reqs 6, 9, 12)", { timeout: 20_000 }, async () => {
     await githubAuth.setToken("test-token");
     const { sessionId, sessionDir } = await createSession();
     setupDivergence(sessionDir, { conflicting: true });

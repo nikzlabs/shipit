@@ -40,7 +40,7 @@ shipit_channel_ref() {
 # Fetch the channel ref and hard-reset the checkout to it. Refuses to clobber
 # uncommitted changes. Safe (effectively a no-op) right after a fresh clone.
 #
-# --untracked-files=no is deliberate (docs/254 req 9). `git reset --hard` only
+# --untracked-files=no is deliberate (docs/254-local-bind-and-tailnet-access req 9). `git reset --hard` only
 # discards changes to TRACKED files; untracked files are left untouched. So
 # refusing on them never protected anything, while it did break updates outright:
 # operator state lives in the checkout (.shipit.env, and before it was ignored,
@@ -73,7 +73,7 @@ shipit_sync_checkout() {
 # (SHIPIT_TAILNET_BIND=1), so both survive re-runs; compose's ${VAR:-}
 # substitution picks them up. Lives in the checkout but is .gitignore'd — it has
 # to be, because shipit_sync_checkout refuses to run when `git status
-# --porcelain` is non-empty and that lists untracked files (docs/254 req 9).
+# --porcelain` is non-empty and that lists untracked files (docs/254-local-bind-and-tailnet-access req 9).
 SHIPIT_ENV_FILE="${SHIPIT_ENV_FILE:-$SHIPIT_HOME/.shipit.env}"
 
 # Generated compose overlay carrying the opt-in tailnet port binding (docs/254).

@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 /**
- * docs/260 req 16 — the sidebar's "Needs you" switch must be legible in every
+ * docs/260-attention-sidebar-view req 16 — the sidebar's "Needs you" switch must be legible in every
  * theme, light and dark.
  *
  * This is a guard test rather than a review note because the failure is

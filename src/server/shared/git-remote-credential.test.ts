@@ -15,7 +15,7 @@ import {
 /**
  * The dropped-uid state, faked. `resolveGitTreeUid` answers "no drop" for any
  * process that is not root, and this container has no root and refuses
- * `unshare -r` — so the branch docs/266 E3 exists for is only reachable
+ * `unshare -r` — so the branch docs/266-orchestrator-git-trust-boundary E3 exists for is only reachable
  * through this seam. What it can NOT prove is stated in `plan.md` §4.
  */
 const AS_ROOT_ON_WORKER_TREE: GitTreeUidDeps = {
@@ -148,7 +148,7 @@ describe("resolveTreeRemoteCredential", () => {
   });
 
   it("degrades to null — never throws — when the resolver fails or declines", async () => {
-    // docs/266 req 6 / CLAUDE.md invariant 2: the post-turn path may not gain a
+    // docs/266-orchestrator-git-trust-boundary req 6 / CLAUDE.md invariant 2: the post-turn path may not gain a
     // way to fail. A credential that cannot be minted falls back to the
     // behaviour that shipped with E1; it never aborts the operation.
     expect(

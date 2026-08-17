@@ -196,7 +196,7 @@ export function IssueWriteCard({ cardId, onUndo, onOpen }: IssueWriteCardProps) 
   // display identifier (uniform across trackers) rather than `card.issueId`,
   // which for GitHub is the undo target, not a valid `getIssue` key.
   //
-  // docs/248 req 16 — "the UI shows what it now resolves to". A card written
+  // docs/248-declared-issue-trackers req 16 — "the UI shows what it now resolves to". A card written
   // against a NAME must open wherever that name points today, not the
   // destination frozen on the card, or the recorded reference would silently
   // disagree with the Undo beside it (which does follow the name). When the name

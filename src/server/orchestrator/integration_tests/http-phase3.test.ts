@@ -412,7 +412,7 @@ describe("Integration: Phase 3 HTTP endpoints", () => {
     });
   });
 
-  // ---- Retired singleton subscription sign-in (docs/150 reqs 16, 19) ----
+  // ---- Retired singleton subscription sign-in (docs/150-multiple-provider-subscriptions reqs 16, 19) ----
   //
   // These were the "connect your first account" endpoints. They took no
   // account id, so whatever they authenticated could not afterwards be

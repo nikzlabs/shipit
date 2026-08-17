@@ -48,12 +48,12 @@ export interface PluginServiceOverride {
   as?: string;
   /**
    * The port this plugin service serves on — the consuming project's to write,
-   * always explicitly (docs/266 req 2). It is the container port AND the
+   * always explicitly (docs/266-plugin-service-ports req 2). It is the container port AND the
    * preview origin at once, exactly as a project service's port is, and naming
-   * it is what makes the service previewable (docs/266 req 9).
+   * it is what makes the service previewable (docs/266-plugin-service-ports req 9).
    *
    * A plugin author cannot know what a consuming project already runs, so the
-   * exported fragment no longer declares one at all (docs/266 req 1). Absent
+   * exported fragment no longer declares one at all (docs/266-plugin-service-ports req 1). Absent
    * here means the service is not previewable, not "pick something".
    */
   port?: number;

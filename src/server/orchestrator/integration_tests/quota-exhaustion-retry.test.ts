@@ -1,5 +1,5 @@
 /**
- * docs/150 req 14 — "When hard exhaustion happens partway through a turn,
+ * docs/150-multiple-provider-subscriptions req 14 — "When hard exhaustion happens partway through a turn,
  * ShipIt retries on the next eligible account regardless of what that turn has
  * already done" — generalized by docs/260 into the per-turn attempt loop.
  *
@@ -86,7 +86,7 @@ function makeDeps(agents: FakeAgent[]): {
       getSelectedModel: () => undefined,
     },
     buildRunParams: vi.fn().mockResolvedValue({ prompt: "do work", cwd: "/tmp/s1" }),
-    // docs/260 req 6 — the terminal report and the in-turn attempt notices
+    // docs/260-turn-level-account-routing req 6 — the terminal report and the in-turn attempt notices
     // name credentials by the user's own labels, resolved through this hook.
     routeLabel: (routeId: string) => ROUTE_LABELS[routeId],
   };
@@ -141,7 +141,7 @@ const QUOTA_ERROR = "You've hit Claude's 5h usage limit. It resets at 2099-01-01
 /** Verbatim from the incident — the CLI's own notice, delivered as assistant text. */
 const QUOTA_NOTICE_TEXT = "You've hit your session limit · resets 5:10pm (UTC)";
 
-describe("same-turn quota failover (docs/150 req 14)", () => {
+describe("same-turn quota failover (docs/150-multiple-provider-subscriptions req 14)", () => {
   afterEach(() => vi.restoreAllMocks());
 
   it("preserves quota details when the attempt ledger also contains an auth failure", () => {
@@ -195,12 +195,12 @@ describe("same-turn quota failover (docs/150 req 14)", () => {
     runner.dispose({ force: true });
   });
 
-  // docs/260 reqs 6 + 12 — the loop is bounded per CREDENTIAL, not per hop:
+  // docs/260-turn-level-account-routing reqs 6 + 12 — the loop is bounded per CREDENTIAL, not per hop:
   // with two connected accounts both refusing, the turn attempts each exactly
   // once (each retry's selection excludes every ledger entry), then fails with
   // the terminal report built from what the providers actually said — it never
   // re-runs a credential that already refused this turn.
-  it("tries each account once, then fails with the ledger-built all-refused report (docs/260 reqs 6, 12)", async () => {
+  it("tries each account once, then fails with the ledger-built all-refused report (docs/260-turn-level-account-routing reqs 6, 12)", async () => {
     const runner = new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
     const agents: FakeAgent[] = [];
     const { deps, prepareAgentEnv, persistUserRow } = makeDeps(agents);
@@ -322,8 +322,8 @@ describe("same-turn quota failover (docs/150 req 14)", () => {
   // loop ends on must not look like a success. That is the original incident
   // (a limit notice retiring as a completed turn), now every account further
   // along: with all accounts refusing in text, the turn ends errored on the
-  // ledger-built report (docs/260 reqs 6, 12), never as a clean turn.
-  it("ends errored on the all-refused report, not successful, when every account hits the limit in text (docs/260 req 6)", async () => {
+  // ledger-built report (docs/260-turn-level-account-routing reqs 6, 12), never as a clean turn.
+  it("ends errored on the all-refused report, not successful, when every account hits the limit in text (docs/260-turn-level-account-routing req 6)", async () => {
     const runner = new SessionRunner({ sessionId: "s1", sessionDir: "/tmp/s1", defaultAgentId: "claude" as AgentId });
     const agents: FakeAgent[] = [];
     const { deps, prepareAgentEnv, persistUserRow } = makeDeps(agents);

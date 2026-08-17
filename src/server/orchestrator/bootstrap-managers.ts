@@ -807,7 +807,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   };
 
   /**
-   * docs/150 req 7 — the provider failed a turn saying the subscription is
+   * docs/150-multiple-provider-subscriptions req 7 — the provider failed a turn saying the subscription is
    * spent. Stamp the credential that turn ran on, so the router stops choosing
    * it and the session fails over on its next turn.
    *
@@ -904,7 +904,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     ...(dockerSecretsConfig ? { dockerSecretsConfig } : {}),
     serviceEnvDir,
     ...(credentialsDir ? { credentialsDir } : {}),
-    // docs/150 req 13 — give the system-turn env-prep hook the same router the
+    // docs/150-multiple-provider-subscriptions req 13 — give the system-turn env-prep hook the same router the
     // WS path has, so a dispatched turn is blocked by an exhausted provider
     // instead of spawning against it.
     ...(providerAccountManager ? { providerAccountManager } : {}),
@@ -1143,7 +1143,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     });
     codexOAuthRefresherRef.ref = codexRefresher;
     codexRefresher.start();
-    // docs/150 req 3 — mirror Claude's wiring above. Without this, a revoked
+    // docs/150-multiple-provider-subscriptions req 3 — mirror Claude's wiring above. Without this, a revoked
     // Codex account kept `status: "ready"`, so the router went on choosing it
     // over a healthy secondary and every turn failed on the same dead token.
     // Claude has had this listener since docs/195; Codex was simply missed.
@@ -1271,7 +1271,7 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
     const modeKey = limitsModeKey(owner);
     limitsProvidersByMode.get(modeKey)?.setRateLimits(session, weekly, routeId);
     limitsRegistry?.markAuthRefreshed(modeKey);
-    // docs/260 req 9 — a healthy reading newer than a remembered refusal
+    // docs/260-turn-level-account-routing req 9 — a healthy reading newer than a remembered refusal
     // clears that memory immediately (the user's post-upgrade refresh, a
     // fresh event from a probe turn). Both shapes are offered the reading;
     // each clear no-ops unless the route is its own kind and blocked.

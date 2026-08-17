@@ -245,7 +245,7 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
     // tracked files.
     //
     // planning#412 — this used to say those ops "run as the root orchestrator"
-    // and leave the tree `root:root`. Since docs/266 E1 they do NOT: they go
+    // and leave the tree `root:root`. Since docs/266-orchestrator-git-trust-boundary E1 they do NOT: they go
     // through `deps.createGitManager(sessionDir)` → `safeSimpleGit`, which drops
     // to the session's own identity, so `rollback`'s `git reset --hard` writes
     // worker-owned files. The handback is now belt-and-braces for the paths that

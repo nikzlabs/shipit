@@ -1,5 +1,5 @@
 /**
- * docs/266 reqs 1–4, 9, 10 — `shipit plugin status`, the session's answer to
+ * docs/266-plugin-install-diagnosability reqs 1–4, 9, 10 — `shipit plugin status`, the session's answer to
  * "is what is live usable, and if not, why".
  *
  * **A read.** It fetches nothing, activates nothing and changes nothing that is
@@ -80,7 +80,7 @@ export interface PluginStatusResult {
  * generation's `manifestWarnings`, which carries the "active but not installed"
  * sentence and nothing else — so after a FAILED install for the live commit the
  * next plain refresh printed `already at <sha>` and said nothing (review
- * finding), which is precisely the silence docs/266 req 7 exists to end.
+ * finding), which is precisely the silence docs/266-plugin-install-diagnosability req 7 exists to end.
  */
 export function liveInstallProblem(
   record: PluginInstallRecord | null,

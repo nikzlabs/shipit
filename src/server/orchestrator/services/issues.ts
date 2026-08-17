@@ -60,7 +60,7 @@ export function isDuplicateStatus(name?: string): boolean {
 }
 
 /**
- * docs/248 req 11/19 — the message a fail-closed destination lookup produces.
+ * docs/248-declared-issue-trackers req 11/19 — the message a fail-closed destination lookup produces.
  * Names the declared set so the agent can correct the reference instead of
  * retrying blind, and states plainly that there is no fallback.
  */
@@ -210,7 +210,7 @@ export async function listStatusesForTracker(
  * HTTP status: 404 for an undeclared tracker, 409 for a declared-but-unconnected
  * one (the agent should connect it, not retry). Used by the write services below.
  *
- * docs/248 req 11 — the 404 is a **fail-closed**, not a lookup miss to route
+ * docs/248-declared-issue-trackers req 11 — the 404 is a **fail-closed**, not a lookup miss to route
  * around: an id naming no declared destination has nowhere to go, and the
  * message says so rather than leaving the agent to guess (req 19).
  */
@@ -1084,7 +1084,7 @@ export async function undoIssueWrite(
   fetchImpl?: FetchImpl,
   github?: GitHubTrackerContext,
 ): Promise<void> {
-  // docs/248 req 11's carve-out — an Undo acts on the destination recorded on
+  // docs/248-declared-issue-trackers req 11's carve-out — an Undo acts on the destination recorded on
   // the card, even when the repository no longer declares it. This is the one
   // path that does NOT go through the narrowed `get()`; see
   // `TrackerRegistry.getRecorded`.
@@ -1194,7 +1194,7 @@ export async function undoIssueWrite(
  * Store a Linear API token after validating it can reach the API. We validate
  * by listing teams (cheap, read-only); the returned teams are handed back as a
  * **lookup**, so the settings UI can show which team keys are available for a
- * `kind: linear` declaration. docs/248 req 4 — picking one here no longer binds
+ * `kind: linear` declaration. docs/248-declared-issue-trackers req 4 — picking one here no longer binds
  * anything: the team lives in the repository's declaration.
  */
 export async function connectLinear(
@@ -1215,7 +1215,7 @@ export async function connectLinear(
 }
 
 /**
- * List the workspace's Linear teams. docs/248 req 4 — a lookup for *writing* a
+ * List the workspace's Linear teams. docs/248-declared-issue-trackers req 4 — a lookup for *writing* a
  * declaration (which team keys does this credential reach?), not a picker that
  * persists a binding.
  */

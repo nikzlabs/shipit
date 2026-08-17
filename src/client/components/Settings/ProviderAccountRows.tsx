@@ -19,14 +19,14 @@ import { CredentialRowShell } from "./CredentialRowShell.js";
 import { useRowDrag } from "./useRowDrag.js";
 
 /**
- * docs/150 req 16 / docs/252 — the account rows of an account-backed
+ * docs/150-multiple-provider-subscriptions req 16 / docs/252 — the account rows of an account-backed
  * subscription, and the sign-in they share with the add-service dialog.
  *
  * **Nothing here adds an account any more** (docs/252 req 17). The card's "Add
  * account" button is gone; what is left in its place is
  * {@link createAccount}, {@link startAccountLogin} and {@link AccountChallenge},
  * called and rendered by `AddServiceDialog`, which is the one way in. The challenge is a
- * shared component rather than a copy per host for the reason docs/150 req 16
+ * shared component rather than a copy per host for the reason docs/150-multiple-provider-subscriptions req 16
  * exists: a user's first account was once connected by different code than
  * their second.
  *
@@ -520,7 +520,7 @@ export function ClaudeAuthOutput({
  * It renders inside `AddServiceDialog` and nowhere else: docs/252 req 19 moved
  * reconnect into that dialog, so the copy that used to sit on the account row
  * is gone rather than kept in step. It stays a component in this module because
- * docs/150 req 16 already paid for the alternative once — a user's first account
+ * docs/150-multiple-provider-subscriptions req 16 already paid for the alternative once — a user's first account
  * connected by different code than their second — and because the dialog is not
  * the natural owner of the two providers' difference: Anthropic hands back an
  * authorization code the user pastes into ShipIt, OpenAI shows a user code the
@@ -770,7 +770,7 @@ export function ProviderAccountRows({
   };
 
   /**
-   * docs/150 req 2 — the fallback order, now set by dropping a row (req 21).
+   * docs/150-multiple-provider-subscriptions req 2 — the fallback order, now set by dropping a row (req 21).
    *
    * *Make primary* went with the carets, and deleting it was the point rather
    * than a consequence: "primary" was never a property. `isPrimary` is stamped
@@ -800,7 +800,7 @@ export function ProviderAccountRows({
   };
 
   /**
-   * docs/260 req 3 — disconnect is one click. There is no pinned-session
+   * docs/260-turn-level-account-routing req 3 — disconnect is one click. There is no pinned-session
    * question to ask (no session is pinned to anything), no replacement to
    * pick, and nothing to report about moved or stranded sessions: each
    * session's next turn routes among whatever accounts remain. The one

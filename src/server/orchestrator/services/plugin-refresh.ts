@@ -41,14 +41,14 @@ export interface PluginRefreshRow {
   /** Why it failed, or an advisory (a moved tag a durable pin overrode). */
   detail?: string;
   /**
-   * docs/266 req 7 — why the version that is now live is not usable, when it is
+   * docs/266-plugin-install-diagnosability req 7 — why the version that is now live is not usable, when it is
    * not. Separate from `detail`, which is about THIS round: the condition this
    * carries is durable state that the round may have had nothing to do with,
    * and a refresh that correctly found nothing to do must still say it.
    */
   degraded?: string[];
   /**
-   * docs/266 reqs 5, 6 — this round re-installed the version that was already
+   * docs/266-plugin-install-diagnosability reqs 5, 6 — this round re-installed the version that was already
    * live (`--force`). It needs its own field because `status` answers "did the
    * live commit change", and for a forced re-install the honest answer to that
    * is no: before and after are the same commit, and reporting `unchanged`
@@ -95,7 +95,7 @@ export async function refreshPluginRepos(
   deps: PluginRefreshDeps,
   repoName?: string,
   /**
-   * docs/266 reqs 5, 6 — re-stage and re-install the version already live.
+   * docs/266-plugin-install-diagnosability reqs 5, 6 — re-stage and re-install the version already live.
    * Refused without `repoName`, here rather than only in the shim: this is the
    * boundary every caller crosses, and discarding a live version's writable
    * layer for every declared repository at once is not something to make
@@ -187,7 +187,7 @@ export async function refreshPluginRepos(
         ? "failed"
         : after !== was ? "activated" : "unchanged";
       const detail = outcome?.status === "failed" ? outcome.reason : outcome?.warning;
-      // docs/266 req 7 — the live version's OWN problems, read off the record
+      // docs/266-plugin-install-diagnosability req 7 — the live version's OWN problems, read off the record
       // that is live now rather than off this round. A round that found nothing
       // to do is the case this exists for: it exited 0 and said `unchanged`
       // while every surface of that plugin was failing, and a consumer had no

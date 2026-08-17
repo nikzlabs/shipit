@@ -265,7 +265,7 @@ describe("Integration: File content viewer", () => {
   }
 
   /**
-   * docs/266 reqs 14 + 15 / planning#407 — this call site destructured only
+   * docs/266-orchestrator-git-trust-boundary reqs 14 + 15 / planning#407 — this call site destructured only
    * `commitHash`, so a workspace ShipIt's own git cannot fully read produced a
    * save that looked committed and was not. The notice is PERSISTED because the
    * user must still find it after a reload — and there may be no runner at all

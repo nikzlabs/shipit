@@ -38,7 +38,7 @@ function links(tree: Nodes): { url: string; text: string }[] {
 const ISSUE = (key: string) => ({ url: `${ISSUE_LINK_SCHEME}${key}`, text: key });
 
 describe("remarkLinkifyIssues", () => {
-  // planning#325 — docs/248 req 10's name form. The badge must cover the WHOLE
+  // planning#325 — docs/248-declared-issue-trackers req 10's name form. The badge must cover the WHOLE
   // reference; matching only the trailing key left `roadmap#` outside the pill.
   it("wraps a name form carrying a Linear key, prefix included", () => {
     expect(links(run("Fixed in roadmap#SHI-319 today"))).toEqual([ISSUE("roadmap#SHI-319")]);

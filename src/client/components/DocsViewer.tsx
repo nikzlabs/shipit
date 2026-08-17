@@ -89,7 +89,7 @@ function ChecklistProgressBadge({
  * the doc modal.
  *
  * When `onOpenIssue` is wired and the pointer resolves to a **declared**
- * destination (docs/248 req 11 — all three reference forms resolve here, and one
+ * destination (docs/248-declared-issue-trackers req 11 — all three reference forms resolve here, and one
  * that names nothing declared does not), the chip opens ShipIt's inline issue
  * detail view rather than linking out to the upstream tracker (CLAUDE.md §2:
  * inline beats link-out — the deep link lives inside that view). An unresolvable

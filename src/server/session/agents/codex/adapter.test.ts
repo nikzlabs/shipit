@@ -2193,7 +2193,7 @@ describe("CodexAdapter / dual-mode auth (feature 119)", () => {
     expect(probed).toContain(`${root}/.codex`);
   });
 
-  // docs/150 req 12 — failover moves work between subscriptions only.
+  // docs/150-multiple-provider-subscriptions req 12 — failover moves work between subscriptions only.
   it("does not fall back to the env key for a scoped account with no auth.json", () => {
     process.env.OPENAI_API_KEY = "sk-platform-billing";
 

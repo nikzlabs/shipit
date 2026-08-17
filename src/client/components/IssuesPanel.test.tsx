@@ -162,7 +162,7 @@ describe("IssuesPanel repo picker (docs/236)", () => {
 
 /**
  * planning#327 — an issue opened in the tab must not stay on screen after switching
- * to a repository that doesn't declare its tracker (docs/248 req 11). Panel-level
+ * to a repository that doesn't declare its tracker (docs/248-declared-issue-trackers req 11). Panel-level
  * because the observable behaviour is "the detail is gone and the list is back".
  */
 describe("IssuesPanel repo switch (planning#327)", () => {

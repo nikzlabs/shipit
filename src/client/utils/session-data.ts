@@ -121,7 +121,7 @@ interface BootstrapResponse {
     reviewers?: ReviewerSlotView[];
     /** docs/264 phase 2 — every agent role, each resolved by the server. */
     roles?: RoleView[];
-    /** docs/150 reqs 4-6 — per-provider proactive failover cutoffs, keyed by agent id. */
+    /** docs/150-multiple-provider-subscriptions reqs 4-6 — per-provider proactive failover cutoffs, keyed by agent id. */
     failoverCutoffs?: Record<string, { session: number; weekly: number }>;
     accountSelectionMode?: Record<string, "strict" | "balanced">;
   };

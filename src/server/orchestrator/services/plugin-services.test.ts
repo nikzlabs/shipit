@@ -124,13 +124,13 @@ describe("resolveSessionPluginServices", () => {
     writeConfig(SELF_DECLARATION);
     const services = await resolve();
     expect(services).toHaveLength(1);
-    // One number (docs/266 req 10) — the consumer's, straight from `plugins.use`.
+    // One number (docs/266-plugin-service-ports req 10) — the consumer's, straight from `plugins.use`.
     expect(services[0]).toMatchObject({ name: "probe", port: 4820 });
     expect(getPluginServiceFailures(SESSION_ID, "mine")).toEqual([]);
   });
 
   it("does NOT move a plugin around the project's ports — that pair is refused, not allocated", async () => {
-    // docs/266 req 7. This resolver reads the project's compose file
+    // docs/266-plugin-service-ports req 7. This resolver reads the project's compose file
     // separately from the stack that actually runs, and those two readings
     // disagreeing is what #2325 was. So it no longer decides anything about
     // ports at all: the plugin keeps the number the consumer wrote, and

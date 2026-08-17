@@ -324,7 +324,7 @@ export class CodexOAuthRefresher extends EventEmitter {
     state.emittedUnauthenticated = true;
     this.emit("account_unauthenticated", accountId);
     this.deps.sseBroadcast("codex_account_unauthenticated", { accountId });
-    // docs/150 req 19 — `accountId` is not optional decoration. The client
+    // docs/150-multiple-provider-subscriptions req 19 — `accountId` is not optional decoration. The client
     // files sign-in state per account and has no provider-wide slot left to
     // fall back to, so an unqualified `agent_auth_failed` is dropped: the row
     // of the account that was actually revoked would keep reading "ready".

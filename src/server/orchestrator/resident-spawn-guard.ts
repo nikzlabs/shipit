@@ -138,7 +138,7 @@ export function releaseResidentForCredentialChange(
   runner: SessionRunnerInterface | null | undefined,
 ): boolean {
   if (!runner || runner.running) return false;
-  // docs/260 req 13 — in-progress background work (a sub-agent review, an
+  // docs/260-turn-level-account-routing req 13 — in-progress background work (a sub-agent review, an
   // agent-started background process) is never killed for a credential
   // change either: the tokens already spent on it outweigh the shortened
   // revocation window, and the process converges at its next clean turn

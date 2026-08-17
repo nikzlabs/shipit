@@ -140,9 +140,9 @@ export async function registerBootstrapRoutes(
     enableSubAgents?: boolean;
     /** docs/163 — voice-note delivery mode (native / external / both). */
     voiceDeliveryMode?: "native" | "external" | "both";
-    /** docs/150 reqs 4-6 — per-provider proactive failover cutoffs (1-100). */
+    /** docs/150-multiple-provider-subscriptions reqs 4-6 — per-provider proactive failover cutoffs (1-100). */
     failoverCutoffs?: Record<string, { session?: number; weekly?: number }>;
-    /** docs/150 req 21 — per-provider account selection mode. */
+    /** docs/150-multiple-provider-subscriptions req 21 — per-provider account selection mode. */
     accountSelectionMode?: Record<string, "strict" | "balanced">;
     /**
      * docs/252 phase 7 (req 9) — pin the model non-turn work runs on, or `null`
@@ -337,7 +337,7 @@ export async function registerBootstrapRoutes(
     },
   );
 
-  // docs/150 req 2 applied to a subscription's string credentials: the fallback
+  // docs/150-multiple-provider-subscriptions req 2 applied to a subscription's string credentials: the fallback
   // order within one `(service, billing mode)` group.
   app.put<{ Params: { serviceId: string; billingMode: string }; Body: { routeIds?: unknown } }>(
     "/api/credential-routes/:serviceId/:billingMode/order",
@@ -407,7 +407,7 @@ export async function registerBootstrapRoutes(
     },
   );
 
-  // docs/150 req 2 — persist the user's fallback order for a provider.
+  // docs/150-multiple-provider-subscriptions req 2 — persist the user's fallback order for a provider.
   app.put<{ Params: { provider: AgentId }; Body: { accountIds?: unknown } }>(
     "/api/provider-accounts/:provider/order",
     async (request, reply) => {
@@ -602,7 +602,7 @@ export async function registerBootstrapRoutes(
     "/api/auth/api-key",
     async (_request, reply) => {
       try {
-        // docs/150 req 19 — one call that clears every connected account's
+        // docs/150-multiple-provider-subscriptions req 19 — one call that clears every connected account's
         // credentials *and* rows, then the singleton path for pre-account
         // installs. Dropping only the rows (what this did before) left the
         // OAuth tokens of every account past the migrated default on disk with
@@ -648,7 +648,7 @@ export async function registerBootstrapRoutes(
     },
   );
 
-  // docs/150 reqs 16/19 — the singleton subscription sign-in endpoints
+  // docs/150-multiple-provider-subscriptions reqs 16/19 — the singleton subscription sign-in endpoints
   // (`POST /api/auth/start`, `POST /api/auth/code`, `POST /api/codex-auth/start`,
   // `POST /api/codex-auth/cancel`) are gone. They were the *other* way to
   // connect a subscription: no account id, one implicit flow per provider, and

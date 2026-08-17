@@ -410,7 +410,7 @@ function stringSelectionFor(
     const mode = deps.credentialStore.getSelectionMode(selection.serviceId, selection.billingMode);
     const ordered = orderStringCredentials(stored, mode)
       .filter((route) => !exclude.has(route.id));
-    // docs/260 reqs 9, 11, 12 — the account walk's contract, same shape for
+    // docs/260-turn-level-account-routing reqs 9, 11, 12 — the account walk's contract, same shape for
     // the string-delivered twin: refusal memory (the shared read rule) is the
     // only skip, and an optimistic caller that finds everything blocked takes
     // the best blocked credential anyway — only real refusals this turn may
@@ -449,7 +449,7 @@ function stringSelectionFor(
      * Same three tiers, same helpers, same rule that only refusal memory
      * SKIPS: telemetry can order a credential to the back of the walk but must
      * never take it out, because a credential whose data says it is spent is
-     * still the one to try when nothing else is left (docs/260 req 9).
+     * still the one to try when nothing else is left (docs/260-turn-level-account-routing req 9).
      *
      * planning#339 is untouched: a service with no quota reader reports no
      * snapshot, `limits[id]` is undefined, and both helpers answer "no

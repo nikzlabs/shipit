@@ -41,7 +41,7 @@ export interface HeadlessUploadInput {
  * the route's old `assertValidBranchName` check went away with the
  * caller-supplied `branch` option it existed to police (planning#413).
  *
- * docs/248 req 22 — the issue title is deliberately NOT in the branch name. A
+ * docs/248-declared-issue-trackers req 22 — the issue title is deliberately NOT in the branch name. A
  * branch gets pushed to a public remote, so a title from a private planning
  * issue would be published there. The rule is unconditional rather than scoped
  * to "private" issues because ShipIt has no signal for which repositories are

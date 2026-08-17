@@ -71,7 +71,7 @@ export const PLUGIN_PROJECT_ENV = "SHIPIT_PROJECT_DIR";
 export const PLUGIN_COMMIT_ENV = "SHIPIT_PLUGIN_COMMIT";
 
 /**
- * Env var naming the port this plugin service must serve on (docs/266 reqs 3,
+ * Env var naming the port this plugin service must serve on (docs/266-plugin-service-ports reqs 3,
  * 8). The number is the consuming project's, written in its `plugins.use`
  * entry, and the plugin author cannot know it ahead of time — so a plugin
  * server reads this instead of picking one.

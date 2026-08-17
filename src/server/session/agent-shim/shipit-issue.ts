@@ -237,7 +237,7 @@ function resolveListTarget(
 }
 
 /**
- * docs/248 req 13 — a create ALWAYS names its destination. No default, and no
+ * docs/248-declared-issue-trackers req 13 — a create ALWAYS names its destination. No default, and no
  * unnamed fallback to the session's own repository: for a public code repository
  * that fallback is the *public* repo, so a forgotten flag would file a planning
  * issue publicly. A repository that wants `create` to reach its own issues
@@ -704,7 +704,7 @@ const LABEL_COLOR_RE = /^#?[0-9a-fA-F]{6}$/;
  * corrects one that already exists with the wrong color, casing or description.
  * Both are do-then-surface, with a provenance card whose Undo reverses them
  * (delete-if-unused for a create, restore-the-prior-values for an edit), and
- * both mutate a tracker's CONFIG, so docs/248 req 13's rule applies as it does
+ * both mutate a tracker's CONFIG, so docs/248-declared-issue-trackers req 13's rule applies as it does
  * to `issue create`: `--tracker <name>` is required, there is no default.
  *
  * There is deliberately no `label delete`: undo would have to re-create the

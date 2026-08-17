@@ -1,5 +1,5 @@
 /**
- * docs/150 req 21 — the per-provider account selection mode.
+ * docs/150-multiple-provider-subscriptions req 21 — the per-provider account selection mode.
  *
  * `strict` is today's behavior: the user's order is a preference, and work
  * starts on the highest-ranked eligible account. `balanced` treats the accounts

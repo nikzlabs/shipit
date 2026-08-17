@@ -121,7 +121,7 @@ export function OpsSessionGroup({
   separated?: boolean;
 }) {
   if (sessions.length === 0) return null;
-  // docs/254 req 10 — a non-repo group gets its OWN semantic color, not a
+  // docs/254-repo-group-separation req 10 — a non-repo group gets its OWN semantic color, not a
   // palette entry, so the palette keeps meaning "a repository". Ops is amber,
   // matching the warning tone this group's docstring has always described.
   const color = separated ? "var(--color-warning)" : undefined;
@@ -197,7 +197,7 @@ export function SandboxSessionGroup({
   separated?: boolean;
 }) {
   if (sessions.length === 0) return null;
-  // docs/254 req 10 — semantic color, not a palette entry. Sandbox already owns
+  // docs/254-repo-group-separation req 10 — semantic color, not a palette entry. Sandbox already owns
   // teal (`--color-sandbox`) on its Cube icon; the edge reuses it.
   const color = separated ? "var(--color-sandbox)" : undefined;
   const edge = groupEdgeStyle(color);

@@ -1318,7 +1318,7 @@ describe("ServicesPanel credential-row errors (docs/257 req 5)", () => {
 /**
  * docs/257 req 5 — a card with something to say stays mounted (the clause is
  * `notices[provider]` in the `configured` filter, since the card's presence is
- * otherwise derived from the account list). docs/260 req 3 narrowed what a
+ * otherwise derived from the account list). docs/260-turn-level-account-routing req 3 narrowed what a
  * disconnect has to say: a SUCCESSFUL disconnect reports nothing — no moved or
  * stranded sessions, no replacement to pick — so the last account's removal
  * legitimately drops the card. The notices that still keep it mounted arrive
@@ -1337,7 +1337,7 @@ describe("ServicesPanel keeps a card that has something to say (docs/257 req 5)"
     ]);
   };
 
-  it("drops the card silently when the LAST account disconnects — nothing left to say (docs/260 req 3)", async () => {
+  it("drops the card silently when the LAST account disconnects — nothing left to say (docs/260-turn-level-account-routing req 3)", async () => {
     seedOneClaudeAccount();
     // The server just disconnects: `{accounts}` only, no session bookkeeping.
     vi.stubGlobal("fetch", () =>
@@ -1362,7 +1362,7 @@ describe("ServicesPanel keeps a card that has something to say (docs/257 req 5)"
     expect(useUiStore.getState().toast).toBeNull();
   });
 
-  it("keeps the card and lands the busy-process refusal on the row (docs/260 req 13)", async () => {
+  it("keeps the card and lands the busy-process refusal on the row (docs/260-turn-level-account-routing req 13)", async () => {
     seedOneClaudeAccount();
     // The one refusal disconnect still makes: a live process is running a turn
     // or holding background work on this account. The account survives, so the

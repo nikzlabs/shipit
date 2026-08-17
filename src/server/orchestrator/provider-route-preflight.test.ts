@@ -1,5 +1,5 @@
 /**
- * docs/150 reqs 13, 17 — which selection failures stop a turn, and what the
+ * docs/150-multiple-provider-subscriptions reqs 13, 17 — which selection failures stop a turn, and what the
  * user is told when one does.
  *
  * Assertions key off structure (the reason, the reset instant, the model name,

@@ -32,7 +32,7 @@ export interface WsSendMessage {
    * FIRST message only (the Issues tab's "Start session" prefills the composer
    * rather than dispatching, so creation and the first message are two separate
    * user actions). Acted on solely by warm graduation, which pins the branch to
-   * the reference-derived name (docs/248 req 22) and fires the one-shot
+   * the reference-derived name (docs/248-declared-issue-trackers req 22) and fires the one-shot
    * `→ started` transition. A message to an already-graduated session ignores
    * it — the ref describes how the session was *created*, not what this message
    * is about.

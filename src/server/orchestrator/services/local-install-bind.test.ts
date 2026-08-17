@@ -307,7 +307,7 @@ describe("deployment/local/lib.sh — tailnet bind resolution (docs/254)", () =>
   });
 });
 
-describe("deployment/local/lib.sh — shipit_sync_checkout untracked files (docs/254 req 9)", () => {
+describe("deployment/local/lib.sh — shipit_sync_checkout untracked files (docs/254-local-bind-and-tailnet-access req 9)", () => {
   let root: string;
   let home: string;
   let bare: string;
@@ -389,7 +389,7 @@ describe("deployment/local/lib.sh — shipit_sync_checkout untracked files (docs
   });
 });
 
-describe("docker/local/prod/compose.yml — default bind address (docs/254 req 2)", () => {
+describe("docker/local/prod/compose.yml — default bind address (docs/254-local-bind-and-tailnet-access req 2)", () => {
   it("defaults to loopback, so a laptop on untrusted wifi exposes nothing", () => {
     const yml = fs.readFileSync(COMPOSE_YML, "utf8");
     const ports = yml

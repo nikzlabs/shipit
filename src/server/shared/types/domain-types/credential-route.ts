@@ -77,19 +77,19 @@ export interface CredentialRoute {
   via: CredentialVia;
   label: string;
   /**
-   * docs/150 req 22 — true while `label` is ShipIt's, not the user's. A connect
+   * docs/150-multiple-provider-subscriptions req 22 — true while `label` is ShipIt's, not the user's. A connect
    * replaces a generated label with the email the provider reports and must not
    * touch one the user typed.
    */
   labelIsGenerated?: boolean;
-  /** docs/150 req 22 — the provider's own id, for duplicate detection. */
+  /** docs/150-multiple-provider-subscriptions req 22 — the provider's own id, for duplicate detection. */
   externalId?: string;
   /**
    * Derived on read from `priority` (`index === 0` after sorting), but part of
    * the wire shape the client already reads. Never authoritative on disk.
    */
   isPrimary: boolean;
-  /** docs/150 req 2 — authoritative fallback order, ascending. */
+  /** docs/150-multiple-provider-subscriptions req 2 — authoritative fallback order, ascending. */
   priority?: number;
   status: CredentialStatus;
   /**
@@ -112,7 +112,7 @@ export interface CredentialRoute {
 }
 
 /**
- * docs/260 req 9 — how long a harness quota refusal may block a credential
+ * docs/260-turn-level-account-routing req 9 — how long a harness quota refusal may block a credential
  * before it is re-tried. The cap is the insurance against a wrong or stale
  * refusal record: whatever `exhaustedUntil` claims, the credential is probed
  * again within this window, and a refusal that was wrong self-heals at the
@@ -121,7 +121,7 @@ export interface CredentialRoute {
 export const REFUSAL_REPROBE_MS = 30 * 60_000;
 
 /**
- * docs/260 req 9 — the ONLY reading of `exhaustedUntil`/`exhaustedAt`, shared
+ * docs/260-turn-level-account-routing req 9 — the ONLY reading of `exhaustedUntil`/`exhaustedAt`, shared
  * by the account walk and the string-credential walk so the two shapes cannot
  * drift (req 11).
  *
@@ -161,7 +161,7 @@ export function credentialModeKey(serviceId: string, billingMode: CredentialBill
 }
 
 /**
- * docs/150 reqs 2 and 19 — put a group's credentials in **selection order** and
+ * docs/150-multiple-provider-subscriptions reqs 2 and 19 — put a group's credentials in **selection order** and
  * stamp `isPrimary` from position.
  *
  * The order lives in one function because a credential list has no other order:

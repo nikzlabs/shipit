@@ -112,7 +112,7 @@ export interface PluginFragmentService {
   preview: "auto" | "manual";
   /**
    * The port the service serves on — the consuming project's
-   * `overrides.services.<name>.port` and nothing else (docs/266 reqs 2, 9).
+   * `overrides.services.<name>.port` and nothing else (docs/266-plugin-service-ports reqs 2, 9).
    * Absent means the project named none, so the service is not previewable.
    */
   port?: number;
@@ -202,7 +202,7 @@ const SERVICE_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
  */
 export const ALLOWED_SERVICE_KEYS: ReadonlySet<string> = new Set([
   "image", "command", "entrypoint", "working_dir", "environment", "volumes",
-  // No `ports`: the number is the consuming project's to write (docs/266 req 1),
+  // No `ports`: the number is the consuming project's to write (docs/266-plugin-service-ports req 1),
   // and a fragment that declares one is refused by name in `parseService`.
   "expose", "depends_on", "healthcheck", "init", "read_only", "tmpfs",
   "user", "stop_grace_period", "stop_signal", "shm_size", "mem_limit",
@@ -255,7 +255,7 @@ export function collectPluginFragments(
   // consumer did not import and cannot be asked to rename.
   const claimed = new Map<string, string>();
   for (const name of opts.projectServiceNames) claimed.set(name.toLowerCase(), "this project");
-  // docs/266 req 7, the half that is settled here: every plugin service's port
+  // docs/266-plugin-service-ports req 7, the half that is settled here: every plugin service's port
   // is written in `shipit.yaml`, so two imports claiming one number is knowable
   // from the declaration alone. The project's OWN ports are deliberately NOT
   // seeded — this module's separate read of the project compose file is the
@@ -299,7 +299,7 @@ export function collectPluginFragments(
       continue;
     }
 
-    // docs/266 req 7 — checked across the whole import before any of it is
+    // docs/266-plugin-service-ports req 7 — checked across the whole import before any of it is
     // pushed, and against the imports already accepted, so both the two-imports
     // case and the two-services-in-one-import case are caught. The import is
     // refused whole, matching the all-or-nothing rule below.
@@ -351,7 +351,7 @@ export function collectPluginFragments(
 
 /**
  * The first port two of this declaration's plugin services both claim, phrased
- * for the consumer (docs/266 req 7). `undefined` when the import is clean.
+ * for the consumer (docs/266-plugin-service-ports req 7). `undefined` when the import is clean.
  *
  * Both numbers are the consumer's own, in one file, so naming both services and
  * refusing is something the reader can act on — which is the whole difference
@@ -381,7 +381,7 @@ function findPortCollision(
  * req 16 — whether a service starts automatically, which is NOT the same
  * question as whether it is previewable.
  *
- * docs/266 req 9 governs previewability, and it needs nothing from this field:
+ * docs/266-plugin-service-ports req 9 governs previewability, and it needs nothing from this field:
  * a service the consuming project named no port for carries no port, and the
  * pane's detected-ports list is built from ports (`buildDetectedPortsFromServices`),
  * so it cannot reach the pane whatever this returns. Which is why a portless
@@ -525,7 +525,7 @@ function snapshotRepo(
 
 interface ParsedFragmentService {
   name: string;
-  /** The author's start hint. It no longer decides previewability (docs/266 req 9). */
+  /** The author's start hint. It no longer decides previewability (docs/266-plugin-service-ports req 9). */
   preview?: "auto" | "manual";
   definition: Record<string, unknown>;
 }
@@ -641,7 +641,7 @@ function parseFragmentService(
       + "through the plugin's checkout, which a build context cannot be — declare an `image:` instead.",
     );
   }
-  // docs/266 reqs 1 + 6. Checked ahead of the allowlist loop so the reader gets
+  // docs/266-plugin-service-ports reqs 1 + 6. Checked ahead of the allowlist loop so the reader gets
   // the rule and the remedy rather than "not supported": this is the one refused
   // key that used to be legal, and the line to delete is the whole message.
   if (svc.ports !== undefined) {
@@ -792,7 +792,7 @@ export interface PluginComposeService {
   preview: "auto" | "manual";
   /**
    * The port the container serves on AND the preview origin it answers at — one
-   * number, the consuming project's (docs/266 reqs 2, 10), exactly as a project
+   * number, the consuming project's (docs/266-plugin-service-ports reqs 2, 10), exactly as a project
    * service's port already is.
    */
   port?: number;
@@ -1232,7 +1232,7 @@ function pluginEnvironment(
     env[PLUGIN_SETTINGS_ENV] = CONTAINER_PLUGIN_SETTINGS_FILE;
   }
   if (fragment.commit) env[PLUGIN_COMMIT_ENV] = fragment.commit;
-  // docs/266 reqs 3, 8 — the consuming project's number, told to the process
+  // docs/266-plugin-service-ports reqs 3, 8 — the consuming project's number, told to the process
   // that has to bind it. Only when there is one: a service the project named no
   // port for is not previewable, and an unset variable is how it tells that
   // apart from "serve here".

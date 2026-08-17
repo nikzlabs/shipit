@@ -131,7 +131,7 @@ async function buildApp(overrides?: {
     stateDir: tmpDir,
     runnerRegistry: overrides?.runnerRegistry ?? { get: () => undefined },
     chatHistoryManager: overrides?.chatHistoryManager ?? { replaceInProgress: vi.fn(), append: vi.fn() },
-    // docs/150 req 19 — cleanup resolves the account whose credentials it reads.
+    // docs/150-multiple-provider-subscriptions req 19 — cleanup resolves the account whose credentials it reads.
     // Defaults to a reserved route (no account root), which is the pre-account
     // shape the rest of these tests assume.
     providerAccountManager: overrides?.providerAccountManager ?? {
@@ -271,7 +271,7 @@ describe("GET /api/voice/cleanup/status", () => {
     await app.close();
   });
 
-  // docs/150 req 19 — the singleton config root holds nothing once the legacy
+  // docs/150-multiple-provider-subscriptions req 19 — the singleton config root holds nothing once the legacy
   // aliases are retired, so cleanup has to read the account the router picks.
   it("reads the bearer from the credential root of the account the router picks", async () => {
     const authManager = makeAuthManager("oauth-bearer-token");

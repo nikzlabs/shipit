@@ -126,7 +126,7 @@ describe("SubAgentConsultCardRow run-on attribution (docs/261 req 9)", () => {
   });
 
   /**
-   * docs/264 req 14 — the role is what the caller ASKED FOR, and it is not
+   * docs/264-agent-roles req 14 — the role is what the caller ASKED FOR, and it is not
    * recoverable from the tuple: two roles can resolve to the same model, and the
    * reviewer's params resolve per run. A card that showed only the tuple left the
    * reader unable to tell a `reviewer` run from a `deep dive` one, and the name

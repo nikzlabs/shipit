@@ -1341,7 +1341,7 @@ const MIGRATIONS: Migration[] = [
       }
     }
   },
-  // docs/264 req 14 — provenance for a child session started from a role:
+  // docs/264-agent-roles req 14 — provenance for a child session started from a role:
   // WHICH role started it. NULL for every existing row and for every session
   // started any other way, which is the correct reading — nothing to backfill,
   // because a session that predates roles was not started from one.

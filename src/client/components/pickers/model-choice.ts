@@ -80,7 +80,7 @@ export function modelsOfService(
   return models.filter((m) => serviceKeyOf(m) === key);
 }
 
-/** One harness a role could name, with the levels it declares (docs/264 req 6). */
+/** One harness a role could name, with the levels it declares (docs/264-agent-roles req 6). */
 export interface HarnessChoice {
   id: string;
   name: string;
@@ -88,7 +88,7 @@ export interface HarnessChoice {
 }
 
 /**
- * docs/264 req 6 — **which harnesses can run this model**, on this install.
+ * docs/264-agent-roles req 6 — **which harnesses can run this model**, on this install.
  *
  * A role names its harness and never derives it, so the editor has to offer the
  * set rather than pick from it. Most models have exactly one member here and the

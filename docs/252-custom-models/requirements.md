@@ -801,7 +801,7 @@ _None._
   service, because that is the only case that is lossless: the model and price are
   unchanged and the user need not be consulted. This generalizes an existing rule
   rather than inventing one — ShipIt already excludes metered API-key routes from quota
-  tracking and never fails over onto them (docs/150 req 12). Requirement 12 rewritten.
+  tracking and never fails over onto them (docs/150-multiple-provider-subscriptions req 12). Requirement 12 rewritten.
 
 - 2026-08-05 — What should happen when a configured service's credential stops working
   mid-session? **Chosen: stop, and report it — nothing more.** Recovering from a bad

@@ -163,7 +163,7 @@ describe("GitHubTracker", () => {
     ]);
   });
 
-  it("maps created_at onto the tracker-neutral createdAt (docs/247 req 9)", async () => {
+  it("maps created_at onto the tracker-neutral createdAt (docs/247-shipit-private-planning req 9)", async () => {
     const tracker = new GitHubTracker({
       token: "t",
       repo: REPO,

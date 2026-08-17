@@ -49,7 +49,7 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
-/** The declared destination these tests address (docs/248 req 13). */
+/** The declared destination these tests address (docs/248-declared-issue-trackers req 13). */
 const DECLARED_TRACKER = "github:octocat/hello-world";
 
 describe("Integration: issue label writes (planning#232 create, planning#88 edit)", () => {
@@ -150,7 +150,7 @@ describe("Integration: issue label writes (planning#232 create, planning#88 edit
     const created = await createTestSession(sessionManager, tmpDir);
     sessionId = created.sessionId;
     sessionManager.setRemoteUrl(sessionId, "https://github.com/octocat/hello-world.git");
-    // docs/248 req 13 — a create (of an issue OR a label) always names its
+    // docs/248-declared-issue-trackers req 13 — a create (of an issue OR a label) always names its
     // destination, and the orchestrator refuses the unnamed `github` id as a
     // backstop against a `curl` that bypasses the shim. So these tests declare
     // the session's own repository under a name and address it by that.

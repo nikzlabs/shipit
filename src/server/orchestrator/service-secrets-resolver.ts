@@ -122,7 +122,7 @@ export interface ServiceSecretsResolverOptions {
    *
    * **Required** (planning#292). It used to be optional, and omitting it fell back to
    * writing `.shipit/.env.<svc>` into the agent-readable git clone — the last
-   * in-clone writer in the codebase (docs/246 req 7). Production never took that
+   * in-clone writer in the codebase (docs/246-shipit-state-out-of-clone req 7). Production never took that
    * branch (`bootstrap-managers.ts` always computes a root, defaulting to
    * `<stateDir>/service-env`), so only tests reached it; requiring the option
    * makes "service secrets never land in the clone" a property of the type
@@ -508,7 +508,7 @@ export class ServiceSecretsResolver {
     // the session clone. The old placement (`<clone>/.shipit/`) was chosen so
     // the wrapper could ride the workspace volume that service containers
     // already mount, but it put a ShipIt-generated file where the post-turn
-    // `git add -A` commits it into the user's repository (docs/246 req 1). The
+    // `git add -A` commits it into the user's repository (docs/246-shipit-state-out-of-clone req 1). The
     // secrets root is the one directory this mode already has a daemon-side
     // mapping for, so the override can bind-mount the wrapper by absolute path
     // and stop depending on the workspace mount entirely. Refreshed on every

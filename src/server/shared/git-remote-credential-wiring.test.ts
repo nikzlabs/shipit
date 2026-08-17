@@ -8,7 +8,7 @@ import type { RemoteOrigin } from "./git-remote-credential.js";
 import { initGlobalGitConfig, setGitIdentity } from "../orchestrator/git-config.js";
 
 /**
- * docs/266 E3 (planning#404) — which {@link GitManager} operations ask for a
+ * docs/266-orchestrator-git-trust-boundary E3 (planning#404) — which {@link GitManager} operations ask for a
  * credential, and which must never.
  *
  * `gitTreeUidDeps` fakes the dropped-uid state. It has to: `resolveGitTreeUid`
@@ -76,7 +76,7 @@ describe("GitManager: which ops resolve a remote credential", () => {
   });
 
   it("the auto-commit path never asks — it acquires no network dependency", async () => {
-    // docs/266 req 6 and CLAUDE.md invariant 2. `autoCommit` is purely local;
+    // docs/266-orchestrator-git-trust-boundary req 6 and CLAUDE.md invariant 2. `autoCommit` is purely local;
     // if it ever started resolving a credential it would gain a way to fail
     // for an environmental reason, and uncommitted agent work has no reflog
     // entry and no recovery.

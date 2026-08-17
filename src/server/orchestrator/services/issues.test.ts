@@ -698,7 +698,7 @@ describe("issue write services (docs/177)", () => {
     ).rejects.toMatchObject({ statusCode: 422 });
   });
 
-  // docs/248 req 11's carve-out — reversing a write grants no access the write
+  // docs/248-declared-issue-trackers req 11's carve-out — reversing a write grants no access the write
   // did not already have (the card could only exist if the destination was
   // declared when it was written), so an Undo must survive the repository
   // dropping that declaration rather than being stranded behind a config edit.

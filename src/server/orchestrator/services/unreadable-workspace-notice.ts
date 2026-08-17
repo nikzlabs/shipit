@@ -2,7 +2,7 @@ import type { UnreadableWorkspace } from "../../shared/git.js";
 import { redactSecretsInText } from "../../shared/secret-scan.js";
 
 /**
- * docs/266 reqs 14 + 15 / planning#407 — the user-facing words for a commit that
+ * docs/266-orchestrator-git-trust-boundary reqs 14 + 15 / planning#407 — the user-facing words for a commit that
  * ShipIt's own git could not read the whole workspace for.
  *
  * Lifted out of `ws-handlers/post-turn.ts` because the post-turn commit is not
@@ -61,7 +61,7 @@ export function formatUnreadableWorkspaceNotice(
 }
 
 /**
- * docs/266 req 15 — the words for an auto-commit that failed for a reason
+ * docs/266-orchestrator-git-trust-boundary req 15 — the words for an auto-commit that failed for a reason
  * ShipIt could NOT classify.
  *
  * Requirement 15 is unconditional: a turn whose work was not committed at all

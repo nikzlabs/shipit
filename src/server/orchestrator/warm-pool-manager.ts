@@ -179,7 +179,7 @@ export function createWarmPool(
         // absorb the transfer for asset-heavy repos.
         //
         // planning#412 — this used to add "and before the chown below (the pull
-        // writes files as root)". That reason DIED with docs/266 E1 and the
+        // writes files as root)". That reason DIED with docs/266-orchestrator-git-trust-boundary E1 and the
         // sentence outlived it. `cloneFromCache` hands the tree to the session
         // uid before returning (`repo-git.ts:320`), so the `checkout -b` above
         // — which goes through `safeSimpleGit` — already drops and writes

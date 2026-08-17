@@ -1,5 +1,5 @@
 /**
- * docs/150 req 22 — account identity at connect time.
+ * docs/150-multiple-provider-subscriptions req 22 — account identity at connect time.
  *
  * Two things are under test and they fail differently, so they are separated:
  * *reading* an identity out of what the provider CLI wrote (pure filesystem

@@ -260,7 +260,7 @@ async function runInstallOnce(
     // because it is the one case where the upper layer holds output no store hit
     // would reproduce (a build artifact outside any declared dep dir).
     //
-    // docs/266 reqs 5, 6 — `--force` skips it, and skips the store hit below.
+    // docs/266-plugin-install-diagnosability reqs 5, 6 — `--force` skips it, and skips the store hit below.
     // Both are correct for an ordinary activation and both would make a forced
     // re-install a no-op that reports success, which is the exact failure the
     // retry exists to break out of: a consumer whose live version is unusable

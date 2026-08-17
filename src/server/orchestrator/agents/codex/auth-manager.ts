@@ -214,7 +214,7 @@ export function extractCodexPlan(obj: Record<string, unknown>): string | null {
 }
 
 /**
- * docs/150 req 22 — the ChatGPT account this `auth.json` belongs to.
+ * docs/150-multiple-provider-subscriptions req 22 — the ChatGPT account this `auth.json` belongs to.
  *
  * `chatgpt_account_id` is the stable key: it is the account's own id, so it
  * survives an email change and tells two accounts on the same plan apart —

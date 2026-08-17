@@ -145,7 +145,7 @@ describe("parseSubAgentSpawnTarget — the explicit path (docs/261 req 7)", () =
   });
 });
 
-describe("parseSpawnTarget — the role path with overrides (docs/264 reqs 10, 13, 18)", () => {
+describe("parseSpawnTarget — the role path with overrides (docs/264-agent-roles reqs 10, 13, 18)", () => {
   it("accepts a role on its own, with nothing overridden", async () => {
     const { parseSubAgentSpawnTarget } = await import("./sub-agent-target.js");
     expect(parseSubAgentSpawnTarget({ role: "reviewer" })).toEqual({
@@ -450,7 +450,7 @@ describe("resolveSpawnTarget", () => {
     expect(resolved.route).toBeDefined();
     expect(resolved.reviewer?.tier).toBe(1);
     expect(resolved.reviewer?.tierBasis).toBe("model-and-harness");
-    // docs/264 req 14 — the run is attributable to what was ASKED FOR, not only
+    // docs/264-agent-roles req 14 — the run is attributable to what was ASKED FOR, not only
     // to what it resolved to.
     expect(resolved.roleName).toBe("reviewer");
   });

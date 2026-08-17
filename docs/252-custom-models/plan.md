@@ -2329,7 +2329,7 @@ means a per-mode credential shape in the catalogue, which is not this pass.
 **The "Clear saved credentials" escape hatch stayed, moved onto the account rows** — a first
 draft dropped it on the reasoning that a row's **Disconnect** does the same job, and
 cross-backend review showed that is false. Disconnect deletes ONE account;
-`DELETE /api/auth/api-key` is deliberately provider-wide (docs/150 req 19), clearing every
+`DELETE /api/auth/api-key` is deliberately provider-wide (docs/150-multiple-provider-subscriptions req 19), clearing every
 account's credentials *and* the singleton pre-account path where a legacy install's unscoped
 OAuth tokens sit with no row to reach them from. Its gate did change: it hung off
 `agent.hasRunnableModels`, the same harness-wide flag that made the status dot lie, and now
@@ -2891,7 +2891,7 @@ is key-authenticated.
 that landed together, because they are one change: pressing *Sign in* in step 3 calls
 `createAccountAndStartLogin`, and the provider's challenge renders in the dialog through
 `AccountChallenge` — the **same component** the account row renders, never a copy of it,
-which is docs/150 req 16 the requirement rather than the aspiration.
+which is docs/150-multiple-provider-subscriptions req 16 the requirement rather than the aspiration.
 
 **What it deleted is the interesting part.** The hand-off ("Continue to sign in" → close →
 reveal the card → press *Add account*) needed somewhere for the button to live before any
@@ -3362,7 +3362,7 @@ kind. Three changes, one fact:
   helpers and the same snapshot map. Without this the cutoff control would have
   been a number that never fires, which is what the original comment was right
   to refuse. Only refusal memory still SKIPS; telemetry orders and never
-  removes (docs/260 req 9).
+  removes (docs/260-turn-level-account-routing req 9).
 
 Req 19 is what made this a bug rather than a quirk: once both delivery shapes
 are identical rows, a threshold honoured for one and silently not the other is

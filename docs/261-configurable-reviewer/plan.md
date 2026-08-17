@@ -501,7 +501,7 @@ to forbid it would be asserting a guarantee the product does not have.
 ### The complete shape, for whoever writes repository policy
 
 **This is the reference copy, and it is deliberately here rather than in anything ShipIt
-injects into a session** (docs/264 req 15). The path stays implemented and reachable; what
+injects into a session** (docs/264-agent-roles req 15). The path stays implemented and reachable; what
 changed is who is taught it. An agent is taught to name a **role** and to relay an override —
 a role plus an override does the same job in less and keeps what runs anchored to something
 the user configured — so the injected pages and both harness system prompts no longer carry

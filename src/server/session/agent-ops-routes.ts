@@ -313,13 +313,13 @@ export function registerAgentOpsRoutes(
     async (request, reply) =>
       relay("POST", "/plugin/refresh", {
         repo: request.body?.repo,
-        // docs/266 reqs 5, 6 — forwarded as a strict boolean; the orchestrator
+        // docs/266-plugin-install-diagnosability reqs 5, 6 — forwarded as a strict boolean; the orchestrator
         // re-checks it the same way. Discarding a live version's writable layer
         // is not something a truthy string should be able to ask for.
         force: request.body?.force === true,
       }, reply, { timeoutMs: 0 }));
 
-  // GET /agent-ops/plugin/status — docs/266 reqs 1–4. `shipit plugin status
+  // GET /agent-ops/plugin/status — docs/266-plugin-install-diagnosability reqs 1–4. `shipit plugin status
   // [name]`: why the live version of a declared repository is (or is not)
   // usable, including the last install's outcome.
   //
@@ -359,7 +359,7 @@ export function registerAgentOpsRoutes(
   // ---------------------------------------------------------------------------
 
   // GET /agent-ops/issue/trackers — the destinations this session can reach plus
-  // its shipit.yaml declaration warnings (docs/248 reqs 8, 10). The shim calls
+  // its shipit.yaml declaration warnings (docs/248-declared-issue-trackers reqs 8, 10). The shim calls
   // this before resolving a reference, so names resolve against exactly the set
   // the orchestrator holds.
   app.get("/agent-ops/issue/trackers", async (_request, reply) => relay("GET", "/issue/trackers", undefined, reply));
@@ -584,12 +584,12 @@ export function registerAgentOpsRoutes(
     async (request, reply) => relay("POST", "/agent/spawn", request.body ?? {}, reply, { timeoutMs: 0 }),
   );
 
-  // GET /agent-ops/agent/roles — docs/264 req 12. The roles this install has
+  // GET /agent-ops/agent/roles — docs/264-agent-roles req 12. The roles this install has
   // (name, description, what each resolves to), so `--role NAME` can name one
   // the agent knows exists. Cheap read; the default timeout applies.
   app.get("/agent-ops/agent/roles", async (_request, reply) => relay("GET", "/agent/roles", undefined, reply));
 
-  // GET /agent-ops/agent/params — docs/264 req 12's other half: the harnesses,
+  // GET /agent-ops/agent/params — docs/264-agent-roles req 12's other half: the harnesses,
   // reasoning levels and credentialed models an override (req 10) may name on
   // this install. Ships with the roles read, never without it — an agent that may
   // name a model and cannot see which models exist names one from memory.
@@ -644,7 +644,7 @@ export function registerAgentOpsRoutes(
 
   // POST /agent-ops/session/create — create a new spawned child session
   //
-  // docs/264 req 16 — the target half is the SAME vocabulary `agent/spawn`
+  // docs/264-agent-roles req 16 — the target half is the SAME vocabulary `agent/spawn`
   // carries: a role with any subset of its parameters overridden, or all five
   // named. `agentId` / `reasoningEffort` are the wire names both commands use, so
   // one parser reads both bodies; the legacy `agent` / `model` keys stay accepted

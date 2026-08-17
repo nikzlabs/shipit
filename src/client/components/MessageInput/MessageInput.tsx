@@ -34,7 +34,7 @@ import type { AgentOption, ModelChoice } from "../../agent-types.js";
 import type { ModelInfo } from "../../utils/model-info.js";
 
 /**
- * docs/260 req 3 — below this many px of the COMPOSER's own width the toolbar
+ * docs/260-composer-toolbar-layout req 3 — below this many px of the COMPOSER's own width the toolbar
  * collapses to `+ · settings · ring ⟶ mic · stop · send`. At or above it the row
  * is exactly what shipped before. Deliberately a composer width and not a
  * viewport one: the chat panel is a draggable split, so a wide window with a
@@ -176,7 +176,7 @@ export function MessageInput({
   surface?: "chat" | "overlay";
 }) {
   const isMobile = useIsMobile();
-  // docs/260 req 2/3 — measured on the COMPOSER, not the window. The chat panel
+  // docs/260-composer-toolbar-layout req 2/3 — measured on the COMPOSER, not the window. The chat panel
   // is a draggable split, so a wide window with a narrow panel is exactly the
   // case a media query cannot see and the reported bug. `useNarrowContainer`
   // reports `false` until measured and where ResizeObserver is absent (jsdom),
@@ -1063,7 +1063,7 @@ export function MessageInput({
              * and its popover row opens the usage modal. The standalone cost
              * pill was removed to eliminate a stale-vs-authoritative
              * discrepancy between the two. */}
-            {/* docs/260 req 1 / req 8 — the wide row's clipping group. The four
+            {/* docs/260-composer-toolbar-layout req 1 / req 8 — the wide row's clipping group. The four
                 labelled controls (dial, harness, model, reasoning) sit inside a
                 `min-w-0 overflow-hidden` box so that when the row runs out of
                 width their LABELS are cut, instead of the row overflowing and

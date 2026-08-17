@@ -182,7 +182,7 @@ describe("Integration: mid-session model switching across services (docs/252 pha
     client.close();
   });
 
-  it("resolves each turn's credential against the CURRENT service, with no session-row pin (docs/260 reqs 1-2)", async () => {
+  it("resolves each turn's credential against the CURRENT service, with no session-row pin (docs/260-turn-level-account-routing reqs 1-2)", async () => {
     // docs/260 — selection happens per turn and produces a turn-route VALUE
     // threaded to spawn shaping; `sessions.provider_route_*` has no routing
     // reads or writes left. The docs/252 hazard this test used to pin at the

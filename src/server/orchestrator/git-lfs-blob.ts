@@ -165,7 +165,7 @@ function smudgeLfsObject(
       // feature exists to close, and this tree is one untrusted code can write.
       // Drop to the tree's owner so the filter runs at its author's authority.
       //
-      // docs/266 E3 — git-lfs authenticates its transfer through `git credential
+      // docs/266-orchestrator-git-trust-boundary E3 — git-lfs authenticates its transfer through `git credential
       // fill`, so a dropped-uid smudge needs a credential of its own for exactly
       // the same reason a push does: it can no longer read the orchestrator's
       // PAT. Without this an LFS asset in a PRIVATE repo silently renders as its
@@ -231,7 +231,7 @@ export function createLfsBlobResolver(
     isAvailable?: () => Promise<boolean>;
     networkBudget?: number;
     /**
-     * docs/266 E3 — mints the credential the dropped-uid `git lfs smudge`
+     * docs/266-orchestrator-git-trust-boundary E3 — mints the credential the dropped-uid `git lfs smudge`
      * transfers with. Omitted, and a private repo's LFS assets stop resolving
      * once the orchestrator's git can no longer read the PAT.
      */

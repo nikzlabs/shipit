@@ -49,7 +49,7 @@ export interface SubscriptionLimits {
   serviceId: string;
   billingMode: BillingMode;
   /**
-   * docs/150 req 10 — which *route* produced these numbers: a provider-account
+   * docs/150-multiple-provider-subscriptions req 10 — which *route* produced these numbers: a provider-account
    * id (`acct_…`) or a reserved route id (`claude-env-oauth`,
    * `claude-api-key`).
    *
@@ -84,7 +84,7 @@ export interface SubscriptionLimits {
 }
 
 /**
- * Does this window's reading still describe **now**? (docs/260 req 8)
+ * Does this window's reading still describe **now**? (docs/260-turn-level-account-routing req 8)
  *
  * A percentage describes the window it was measured in. Once `resetAt` passes,
  * that window is gone and the number is a fact about a period that has ended;
@@ -124,7 +124,7 @@ export function subscriptionWindowIsCurrent(
 
 /**
  * Map sent over the wire on every `subscription_limits` SSE broadcast:
- * **`${serviceId}:${billingMode}` → route → limits** (docs/150 req 10,
+ * **`${serviceId}:${billingMode}` → route → limits** (docs/150-multiple-provider-subscriptions req 10,
  * re-keyed by docs/252 req 10).
  *
  * The OUTER key moved off `AgentId`; the inner one deliberately did not.

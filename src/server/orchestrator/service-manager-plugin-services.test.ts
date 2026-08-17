@@ -145,7 +145,7 @@ describe("plugin services in the compose stack", () => {
     await mgr.stop();
   });
 
-  it("routes a plugin service by its one port — origin and container alike (docs/266 req 10)", async () => {
+  it("routes a plugin service by its one port — origin and container alike (docs/266-plugin-service-ports req 10)", async () => {
     const workspaceDir = setup("services:\n  web:\n    image: node:20\n");
     const mgr = createManager(workspaceDir);
     mgr.setPluginServices([pluginService({ port: 5000 })]);
@@ -159,7 +159,7 @@ describe("plugin services in the compose stack", () => {
     await mgr.stop();
   });
 
-  it("refuses a plugin service on one of the project's own ports, naming both (docs/266 req 7)", async () => {
+  it("refuses a plugin service on one of the project's own ports, naming both (docs/266-plugin-service-ports req 7)", async () => {
     // #2325 was this pair resolving silently to the project's service. Both
     // numbers are the consumer's now — one in the compose file, one in
     // `plugins.use` — so it is refused and said out loud instead. It has to
@@ -242,7 +242,7 @@ describe("plugin services in the compose stack", () => {
     }
   });
 
-  it("clears the refusal once the consumer moves the port (docs/266 req 7)", async () => {
+  it("clears the refusal once the consumer moves the port (docs/266-plugin-service-ports req 7)", async () => {
     // The refusal is a row carrying a reason, not a latch. A reconcile rebuilds
     // the map from scratch, so fixing either number has to be enough — a stale
     // `error` surviving it would tell the user their fix did not work.
@@ -302,7 +302,7 @@ describe("plugin services in the compose stack", () => {
 	    }
 	  });
 
-	  describe("a plugin that ignores the port it was given (docs/266 req 8)", () => {
+	  describe("a plugin that ignores the port it was given (docs/266-plugin-service-ports req 8)", () => {
     /** Reach the one-shot probe without waiting out its real delays. */
     interface Probe { armPluginPortProbe(name: string, attempt?: number): void }
 

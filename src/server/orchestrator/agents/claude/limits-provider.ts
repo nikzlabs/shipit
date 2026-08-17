@@ -166,7 +166,7 @@ export class ClaudeLimitsProvider implements LimitsProvider {
     if (!eventLatest && !apiLatest && !locked) return null;
 
     // Plan tier isn't in either payload — derive from the credentials file.
-    // Account-scoped for the same reason `doRefresh` is (docs/150 req 19): the
+    // Account-scoped for the same reason `doRefresh` is (docs/150-multiple-provider-subscriptions req 19): the
     // unscoped read hits the singleton config root, which since the aliases
     // were retired holds nothing on a migrated install — so every account's
     // pill lost its plan label, and before that they all showed the migrated

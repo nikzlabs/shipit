@@ -44,7 +44,7 @@ function drag(sourceId: string, targetId: string) {
 
 describe("useRowDrag", () => {
   it("hands back the complete new order, not a move-one verb", () => {
-    // The reorder endpoint rejects a partial list on purpose (docs/150 req 2):
+    // The reorder endpoint rejects a partial list on purpose (docs/150-multiple-provider-subscriptions req 2):
     // a stale client — one whose list predates a credential added in another
     // tab — must fail loudly instead of silently demoting it to the end.
     const onReorder = vi.fn();

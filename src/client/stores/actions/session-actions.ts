@@ -24,7 +24,7 @@ import type { AgentId, SessionInfo } from "../../../server/shared/types.js";
  * answer is "unknown", and the sidebar's active repo is only a guess, which
  * would keep an issue open across a repo change (observed with warm sessions,
  * which aren't in the list). A sentinel differs from every other scope, so an
- * unknown session always re-scopes — fail closed, per docs/248 req 11.
+ * unknown session always re-scopes — fail closed, per docs/248-declared-issue-trackers req 11.
  */
 function sessionRepoUrl(sessionId?: string): string | null {
   const session = useSessionStore.getState();

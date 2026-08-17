@@ -38,7 +38,7 @@ describe("HarnessOnboardingPanel (docs/257 reqs 1, 2, 5, 7)", () => {
   });
 
   it("hosts the Settings → Services surface rather than its own card list", () => {
-    // Req 7 — behavioural identity, achieved by literal reuse. docs/150 req 16
+    // Req 7 — behavioural identity, achieved by literal reuse. docs/150-multiple-provider-subscriptions req 16
     // paid for the alternative once, when a user's first account was connected
     // by different code than their second.
     render(<HarnessOnboardingPanel agentList={agentList} />);

@@ -87,7 +87,7 @@ function credentialFreeRemote(url: string, context: string): string {
 }
 
 /**
- * docs/266 E3 (planning#404) — the per-remote credential mechanism moved to
+ * docs/266-orchestrator-git-trust-boundary E3 (planning#404) — the per-remote credential mechanism moved to
  * `shared/git-remote-credential.ts` so `shared/git.ts` can use the identical
  * shape for the dropped-uid git on a session workspace. Re-exported here
  * because this module was its original home (docs/262 req 10) and every

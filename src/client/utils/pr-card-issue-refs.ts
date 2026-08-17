@@ -9,7 +9,7 @@
  *    (→ `origin`).
  *
  * Each reference is then resolved against the destinations this session can
- * reach (docs/248 req 11), so the chip knows whether there is an inline view to
+ * reach (docs/248-declared-issue-trackers req 11), so the chip knows whether there is an inline view to
  * open. A reference that names nothing declared still renders — it is what the
  * PR body says, and hiding it would be worse than showing it — but as a legible
  * badge rather than a link into a tracker ShipIt cannot reach.

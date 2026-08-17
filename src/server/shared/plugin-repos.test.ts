@@ -60,7 +60,7 @@ describe("parsePluginRepos — grammar", () => {
     expect(config.uses[1].alias).toBe("remote-probe");
   });
 
-  it("keeps a service `port` the consuming project wrote (docs/266 req 2)", () => {
+  it("keeps a service `port` the consuming project wrote (docs/266-plugin-service-ports req 2)", () => {
     const { config, warnings } = repos({
       repos: [{ repo: "self", name: "mine" }],
       use: [{ plugin: "probe", from: "mine", overrides: { services: { probe: { port: 4300 } } } }],
@@ -99,7 +99,7 @@ describe("parsePluginRepos — grammar", () => {
   // degrade into different executable semantics (review finding).
   it.each([
     ["a non-boolean autostart", { services: { svc: { autostart: "false" } } }, "autostart"],
-    // docs/266 req 2 — a quoted port is a different type with the same
+    // docs/266-plugin-service-ports req 2 — a quoted port is a different type with the same
     // spelling, and a silently dropped one is a service that never previews.
     ["a quoted port", { services: { svc: { port: "4300" } } }, "port"],
     ["a fractional port", { services: { svc: { port: 43.5 } } }, "port"],

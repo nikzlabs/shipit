@@ -106,7 +106,7 @@ interface OomBreakerState {
   windowMs: number;
 }
 
-/** docs/150 req 11 — the provider account this session is running on. */
+/** docs/150-multiple-provider-subscriptions req 11 — the provider account this session is running on. */
 interface ProviderRouteDiagnostic {
   agentId: string | null;
   kind: "account" | "reserved" | null;
@@ -462,7 +462,7 @@ function ParsedConfigRows({
 }
 
 /**
- * docs/150 req 11 — "which account is this session on right now?".
+ * docs/150-multiple-provider-subscriptions req 11 — "which account is this session on right now?".
  *
  * The account's *name* is the answer; `route id` is below it for bug reports,
  * where the opaque `acct_…` is what correlates with the server logs.

@@ -1084,7 +1084,7 @@ export class SessionManager {
   }
 
   /**
-   * docs/264 req 14 — record WHICH role started this session. Write-once.
+   * docs/264-agent-roles req 14 — record WHICH role started this session. Write-once.
    *
    * **The `IS NULL` clause is the immutability**, not a comment about it: a
    * second call cannot change what a first one recorded, so the field means "the

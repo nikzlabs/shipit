@@ -68,7 +68,7 @@ function initWorkspace(dir: string): void {
 
 
 /**
- * docs/248 req 22 — the pushed branch name must never carry the issue title.
+ * docs/248-declared-issue-trackers req 22 — the pushed branch name must never carry the issue title.
  *
  * A branch is pushed to a public remote, so a title from a private planning
  * issue would be published there. The rule is unconditional: ShipIt has no
@@ -671,7 +671,7 @@ describe("createHeadlessSession", () => {
     providerAccountManager.migrateDefaultAccounts();
     expect(providerAccountManager.getPrimary("anthropic")?.id).toBe("claude-default");
     expect(providerAccountManager.getPrimary("openai")?.id).toBe("codex-default");
-    // A resolved selection always stamps usage (docs/150 req 21) — so an
+    // A resolved selection always stamps usage (docs/150-multiple-provider-subscriptions req 21) — so an
     // untouched spy proves no selection resolved.
     const markUsed = vi.spyOn(providerAccountManager, "markAccountUsed");
 
@@ -773,7 +773,7 @@ describe("createHeadlessSession", () => {
       graduationDeps,
     );
 
-    // docs/248 req 22 — the branch is the POINTER (plus a uniqueness suffix,
+    // docs/248-declared-issue-trackers req 22 — the branch is the POINTER (plus a uniqueness suffix,
     // planning#413), never the title. A branch gets pushed to a public remote,
     // so the issue title must not appear in it. The session title and the seed
     // prompt still carry it: both stay inside ShipIt.

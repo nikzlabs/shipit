@@ -201,7 +201,7 @@ describe("SubscriptionLimitsBadge group", () => {
     expect(screen.queryByText("OpenAI")).toBeNull();
   });
 
-  it("renders one labelled pill per connected account (docs/150 req 10)", () => {
+  it("renders one labelled pill per connected account (docs/150-multiple-provider-subscriptions req 10)", () => {
     const now = Date.now();
     useSettingsStore.getState().setProviderAccounts([
       { id: "acct-work", serviceId: "anthropic", billingMode: "sub", via: "account", label: "Work", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },

@@ -176,7 +176,7 @@ export function SessionSidebar({
   // Reordering is only meaningful when there's more than one visible repo to swap.
   const reorderEnabled = visibleRepos.length > 1;
 
-  // docs/254 req 11 — draw the per-group identity edges only when there is more
+  // docs/254-repo-group-separation req 11 — draw the per-group identity edges only when there is more
   // than one group to tell apart. Deliberately keyed off the rendered GROUP
   // count, not `isSingleRepo`: one repo alongside an Ops or Sandbox group is
   // still two groups the eye has to separate, and suppressing the treatment
@@ -444,7 +444,7 @@ export function SessionSidebar({
           </Button>
           </WithTooltip>
         )}
-        {/* docs/260 req 4 — the view switch belongs with the collapse control
+        {/* docs/260-attention-sidebar-view req 4 — the view switch belongs with the collapse control
             (both act on the sidebar itself), not in the right-hand cluster of
             create/act controls. The mobile bar has no collapse control, so the
             slot is free and the switch is simply first (req 15). */}

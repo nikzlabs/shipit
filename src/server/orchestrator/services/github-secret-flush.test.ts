@@ -62,7 +62,7 @@ describe("flushPendingTurnCommit — secret refusal", () => {
 });
 
 /**
- * docs/266 reqs 14 + 15 / planning#407 — this flush ignored the `unreadable`
+ * docs/266-orchestrator-git-trust-boundary reqs 14 + 15 / planning#407 — this flush ignored the `unreadable`
  * field entirely, so a `blocked` add returned the same null hash as "nothing to
  * commit" and the caller went on to push and open a PR without the work the
  * flush existed to include. Silently.

@@ -13,12 +13,12 @@ import {
 } from "./session-agent-credentials.js";
 
 /**
- * docs/260 req 4 — the per-turn credential identity check. The session's
+ * docs/260-turn-level-account-routing req 4 — the per-turn credential identity check. The session's
  * subtree must belong to the CHOSEN account before the turn spawns, whatever
  * it held before; the recorded marker (not token bytes, not a session row) is
  * what says whose credentials the subtree holds.
  */
-describe("ensureSessionAccountCredentials (docs/260 req 4)", () => {
+describe("ensureSessionAccountCredentials (docs/260-turn-level-account-routing req 4)", () => {
   let root: string;
   const SESSION = "s1";
 

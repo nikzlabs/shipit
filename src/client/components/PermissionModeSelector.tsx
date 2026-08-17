@@ -31,7 +31,7 @@ import type { ModelInfo } from "../utils/model-info.js";
  */
 
 /**
- * docs/260 req 17 — `label` is the mode ALONE ("Guarded"), because it renders as
+ * docs/260-composer-toolbar-layout req 17 — `label` is the mode ALONE ("Guarded"), because it renders as
  * a badge in the composer row where the second word was 34px of nothing. The
  * menu below spells out "<label> mode", where it reads as a description and
  * there is room for it.

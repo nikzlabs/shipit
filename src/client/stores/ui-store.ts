@@ -107,7 +107,7 @@ interface UiState {
   projectSettingsTab: ProjectSettingsTab;
   sidebarCollapsed: boolean;
   /**
-   * docs/260 req 13 — which of the sidebar's two views is showing: the repo
+   * docs/260-attention-sidebar-view req 13 — which of the sidebar's two views is showing: the repo
    * tree (`"all"`) or the flat needs-attention list (`"attention"`). Persisted
    * to localStorage so the sidebar reopens in the view the user chose.
    */

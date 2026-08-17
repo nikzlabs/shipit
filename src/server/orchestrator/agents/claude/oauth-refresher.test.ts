@@ -335,7 +335,7 @@ describe("ClaudeOAuthRefresher", () => {
     // `reason: "revoked"`. Replaces the legacy `auth_required` broadcast.
     expect(sseEvents).toContain("agent_auth_failed");
     const failed = rig.sseCalls.find((c) => c.event === "agent_auth_failed");
-    // docs/150 req 19 — names the revoked account; the client has no
+    // docs/150-multiple-provider-subscriptions req 19 — names the revoked account; the client has no
     // provider-wide slot left to absorb an unqualified failure.
     expect(failed!.data).toEqual({ loginId: "anthropic-oauth", accountId: "claude-default", reason: "revoked" });
 

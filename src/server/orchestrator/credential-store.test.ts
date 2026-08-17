@@ -20,7 +20,7 @@ describe("CredentialStore", () => {
     return tmpDir;
   }
 
-  // ---- Proactive failover cutoffs (docs/150 reqs 4-6) ----
+  // ---- Proactive failover cutoffs (docs/150-multiple-provider-subscriptions reqs 4-6) ----
 
   describe("failover cutoffs", () => {
     it("defaults both windows to 90% (req 5)", () => {
@@ -92,7 +92,7 @@ describe("CredentialStore", () => {
     });
 
     it("the newest refusal's stated reset wins, even when it is earlier", () => {
-      // docs/260 req 9 — a re-probe answered with a short, precise reset must
+      // docs/260-turn-level-account-routing req 9 — a re-probe answered with a short, precise reset must
       // supersede an older long estimate; otherwise the credential stays
       // benched for the full 30-minute re-probe cap instead of the five
       // minutes the provider just named. Same rule as `markAccountExhausted`.

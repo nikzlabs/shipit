@@ -25,14 +25,14 @@ describe("SessionManager", () => {
   });
 
   /**
-   * docs/264 req 14 — provenance for a child started from a role.
+   * docs/264-agent-roles req 14 — provenance for a child started from a role.
    *
    * Write-once by construction (`WHERE origin_role_name IS NULL`), because it is
    * read long after the fact — by a user asking what a session in their sidebar
    * came from — and provenance that could be rewritten answers a different
    * question every time it is asked.
    */
-  describe("originRoleName (docs/264 req 14)", () => {
+  describe("originRoleName (docs/264-agent-roles req 14)", () => {
     it("records the role a session was created from, and reads it back", () => {
       const mgr = new SessionManager(dbManager);
       mgr.track("sess-1");

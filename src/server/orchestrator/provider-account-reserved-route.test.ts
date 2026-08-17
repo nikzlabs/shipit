@@ -1,5 +1,5 @@
 /**
- * docs/150 req 12 — a reserved env/API-key route is metered billing, never a
+ * docs/150-multiple-provider-subscriptions req 12 — a reserved env/API-key route is metered billing, never a
  * subscription account.
  *
  * The requirement is that ShipIt never rolls a spent subscription onto

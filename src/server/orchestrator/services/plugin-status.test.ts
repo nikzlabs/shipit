@@ -1,5 +1,5 @@
 /**
- * docs/266 reqs 1–4, 10 — the projection behind `shipit plugin status`.
+ * docs/266-plugin-install-diagnosability reqs 1–4, 10 — the projection behind `shipit plugin status`.
  *
  * The case that matters most is the one nikzlabs/shipit#2323 reported and the
  * platform could not express: a repository the card calls **active** whose

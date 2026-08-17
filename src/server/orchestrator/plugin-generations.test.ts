@@ -25,7 +25,7 @@ import type { DeclaredPluginRepo } from "../shared/plugin-repos.js";
 import type * as SessionWorkerUidModule from "./session-worker-uid.js";
 
 /**
- * docs/266 E2 / planning#410 — the ownership handback `checkoutCommit` performs
+ * docs/266-orchestrator-git-trust-boundary E2 / planning#410 — the ownership handback `checkoutCommit` performs
  * between the root clone and the dropped git that follows it.
  *
  * Spied rather than exercised because the state it protects cannot be produced
@@ -112,7 +112,7 @@ afterEach(() => {
   fs.rmSync(tmp, { recursive: true, force: true });
 });
 
-describe("staged checkout ownership (docs/266 E2, planning#410)", () => {
+describe("staged checkout ownership (docs/266-orchestrator-git-trust-boundary E2, planning#410)", () => {
   /**
    * The clone runs as root (a bare `safeSimpleGit()` has no tree to stat), and
    * every git call after it resolves the staging dir — which lives under
@@ -1041,7 +1041,7 @@ describe("consumer lease over a superseded generation (req 15)", () => {
   });
 
   /**
-   * docs/266 reqs 5, 6 — the forced retry of a version that is already live.
+   * docs/266-plugin-install-diagnosability reqs 5, 6 — the forced retry of a version that is already live.
    *
    * The short-circuit it skips was load-bearing: the comment on the deletion
    * claim used to say a live commit "never reaches this line". These tests are

@@ -150,7 +150,7 @@ describe("collectPluginFragments", () => {
     expect(services[0].definition["x-shipit-preview"]).toBeUndefined();
   });
 
-  it("refuses a fragment that still declares `ports:` (docs/266 reqs 1, 6)", () => {
+  it("refuses a fragment that still declares `ports:` (docs/266-plugin-service-ports reqs 1, 6)", () => {
     writeFragment(`
 services:
   probe:
@@ -170,7 +170,7 @@ services:
     expect(issues[0]).toContain("`plugins.use`");
   });
 
-  it("is not previewable when the consuming project names no port (docs/266 req 9)", () => {
+  it("is not previewable when the consuming project names no port (docs/266-plugin-service-ports req 9)", () => {
     // The fragment says `x-shipit-preview: auto`, which used to make it
     // previewable on its own. Previewability now rides the PORT: the service
     // carries none, so it cannot enter the pane's list whatever `preview` says.
@@ -220,7 +220,7 @@ use:
     expect(services[0].preview).toBe("auto");
   });
 
-  it("refuses two plugin services given one port, naming both (docs/266 req 7)", () => {
+  it("refuses two plugin services given one port, naming both (docs/266-plugin-service-ports req 7)", () => {
     writeFragment(`
 services:
   probe:
@@ -252,7 +252,7 @@ use:
     expect(issues[0]).toContain("worker");
   });
 
-  it("refuses one port claimed across TWO imports, naming both (docs/266 req 7)", () => {
+  it("refuses one port claimed across TWO imports, naming both (docs/266-plugin-service-ports req 7)", () => {
     fs.mkdirSync(path.join(workspaceDir, "tools", "other"), { recursive: true });
     fs.writeFileSync(path.join(workspaceDir, "tools", "other", "docker-compose.yml"),
       "services:\n  other:\n    image: node:22-alpine\n");
@@ -918,14 +918,14 @@ describe("buildPluginComposeServices", () => {
       PROBE_PORT: "4820",
       SHIPIT_PROJECT_DIR: "/project",
       SHIPIT_PLUGIN_STATE: "/plugin-state",
-      // docs/266 reqs 3, 8 — the consuming project's number, told to the
+      // docs/266-plugin-service-ports reqs 3, 8 — the consuming project's number, told to the
       // process that has to bind it. A plugin cannot know it any other way.
       SHIPIT_PLUGIN_PORT: "4820",
     });
     expect(env.SHIPIT_PLUGIN_COMMIT).toBeUndefined();
   });
 
-  it("sets no port variable for a service the project named no port for (docs/266 req 9)", () => {
+  it("sets no port variable for a service the project named no port for (docs/266-plugin-service-ports req 9)", () => {
     const { services } = collect(`
 repos:
   - repo: self

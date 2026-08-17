@@ -586,7 +586,7 @@ const AGENT_HANDLERS: Record<
 > = {
   run: handleAgentRun,
   result: handleAgentResult,
-  // docs/264 req 12 — the two reads that make `--role NAME` and an override
+  // docs/264-agent-roles req 12 — the two reads that make `--role NAME` and an override
   // nameable: what roles exist here, and what parameters exist here. They ship
   // together deliberately; see `shipit-agent.ts`.
   roles: handleAgentRoles,

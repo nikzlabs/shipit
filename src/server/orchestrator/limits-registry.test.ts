@@ -253,7 +253,7 @@ describe("LimitsRegistry", () => {
     expect(spy.calls).toHaveLength(0);
   });
 
-  it("keeps two accounts of one provider independent (docs/150 req 10)", async () => {
+  it("keeps two accounts of one provider independent (docs/150-multiple-provider-subscriptions req 10)", async () => {
     // The defect this shape exists to prevent: with a provider-keyed cache,
     // whichever account reported last overwrote the other, so the badge showed
     // one number that silently jumped between subscriptions.

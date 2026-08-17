@@ -1072,7 +1072,7 @@ function HarnessSupportCell({ harness, service }: { harness: AgentOption; servic
  * the source of a listed service with no credential and no way to remove it.
  * Now pressing the button creates the account and starts the login, and the
  * provider's challenge renders in this dialog: the same `AccountChallenge` the
- * account row renders, never a second copy of it (docs/150 req 16).
+ * account row renders, never a second copy of it (docs/150-multiple-provider-subscriptions req 16).
  *
  * **An attempt is the dialog's, and only the dialog's.** `POST
  * /api/provider-accounts` creates the account row before the login completes,

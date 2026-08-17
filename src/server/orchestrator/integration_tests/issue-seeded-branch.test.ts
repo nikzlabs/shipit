@@ -6,7 +6,7 @@
  * message. Two things therefore have to ride on that message rather than on
  * creation, and both regressed when the flow changed:
  *
- *   1. The branch must be pinned to the issue's POINTER (docs/248 req 22). The
+ *   1. The branch must be pinned to the issue's POINTER (docs/248-declared-issue-trackers req 22). The
  *      prefilled prompt opens with the issue's *title*, so a session that
  *      graduates normally has its branch AI-named from that text — publishing
  *      tracker content to a git remote. This test asserts the pushed-branch
@@ -191,7 +191,7 @@ describe("Integration: issue-seeded session branch + started (planning#322)", ()
       execSync("git branch --show-current", { cwd: sessionDir }).toString().trim(),
     ).toBe(branch);
 
-    // docs/248 req 22 — no fragment of the issue title reaches the branch name.
+    // docs/248-declared-issue-trackers req 22 — no fragment of the issue title reaches the branch name.
     for (const word of ISSUE_TITLE.toLowerCase().split(/\W+/).filter(Boolean)) {
       expect(branch).not.toContain(word);
     }

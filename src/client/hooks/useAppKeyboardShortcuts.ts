@@ -39,7 +39,7 @@ export function useAppKeyboardShortcuts(params: {
     useUiStore.getState().setQuickCaptureOpen(true, true);
   });
 
-  // docs/260 req 14 — flip the sidebar between its two views. Registered in the
+  // docs/260-attention-sidebar-view req 14 — flip the sidebar between its two views. Registered in the
   // keybinding registry (docs/180), so it appears in the ? overlay and the
   // Keyboard settings tab and is rebindable like every other chord; this hook
   // only binds whatever the registry currently resolves to. Reuses the

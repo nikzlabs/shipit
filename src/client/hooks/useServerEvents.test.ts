@@ -332,7 +332,7 @@ describe("useServerEvents — Claude auth diagnostics", () => {
     expect(useUiStore.getState().toast?.message).toBe("Claude credentials are missing. Sign in again.");
   });
 
-  // Every sign-in flow is account-scoped since docs/150 req 19, so an unscoped
+  // Every sign-in flow is account-scoped since docs/150-multiple-provider-subscriptions req 19, so an unscoped
   // payload names no row that could render it. Dropping it is what keeps the
   // buffer's key meaningful.
   it("drops an unscoped diagnostics payload rather than pooling it", () => {
@@ -357,7 +357,7 @@ describe("useServerEvents — Claude auth diagnostics", () => {
     });
 
     expect(useSettingsStore.getState().claudeAuthDiagnostics).toEqual({});
-    // docs/150 req 19 — nowhere for an account-less challenge to go either.
+    // docs/150-multiple-provider-subscriptions req 19 — nowhere for an account-less challenge to go either.
     expect(useSettingsStore.getState().providerAccountAuths).toEqual({});
   });
 

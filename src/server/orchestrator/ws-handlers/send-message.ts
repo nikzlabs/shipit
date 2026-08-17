@@ -460,7 +460,7 @@ export async function handleSendMessage(
     if (session?.warm) {
       // planning#322 — this message is the first one of a session the Issues tab
       // started from an issue, so the issue reaches ShipIt here rather than at
-      // creation. Pin the branch to the pointer (docs/248 req 22) BEFORE
+      // creation. Pin the branch to the pointer (docs/248-declared-issue-trackers req 22) BEFORE
       // graduating: the pins are what stop AI naming from deriving a branch
       // slug from this very text, which opens with the issue's title.
       const issuePins = msg.issueRef

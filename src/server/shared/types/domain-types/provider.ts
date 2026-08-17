@@ -17,7 +17,7 @@
 export type ProviderRouteKind = "account" | "reserved" | "string";
 
 /**
- * docs/150 reqs 4–6 — per-provider proactive failover cutoffs, as percentages
+ * docs/150-multiple-provider-subscriptions reqs 4–6 — per-provider proactive failover cutoffs, as percentages
  * of a quota window (1–100).
  *
  * A cutoff is a **preference, not a wall**. Reaching one moves new work to the
@@ -37,7 +37,7 @@ export interface FailoverCutoffs {
 export const DEFAULT_FAILOVER_CUTOFF = 90;
 
 /**
- * docs/150 req 21 — how a provider's accounts relate to each other, which an
+ * docs/150-multiple-provider-subscriptions req 21 — how a provider's accounts relate to each other, which an
  * ordered list alone cannot say.
  *
  * - `strict` — the order IS a preference. Work starts on the highest-ranked

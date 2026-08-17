@@ -302,7 +302,7 @@ export async function fetchAndResolveDefaultBranch(
     timeout: { block: FETCH_STALL_TIMEOUT_MS },
     unsafe: { allowUnsafeConfigPaths: true, allowUnsafeEditor: true },
   };
-  // docs/266 E3 (planning#404) — this fetch runs on a SESSION workspace, so
+  // docs/266-orchestrator-git-trust-boundary E3 (planning#404) — this fetch runs on a SESSION workspace, so
   // under E1 it has dropped to the session's uid and can no longer read the
   // orchestrator's PAT. Without a credential of its own it degrades to an
   // anonymous fetch, which is invisible on a public repo and an auth failure on

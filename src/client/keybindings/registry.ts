@@ -67,7 +67,7 @@ export const KEYBINDINGS: readonly KeybindingDef[] = [
     requiresSecondModifier: true,
   },
   {
-    // docs/260 req 14 — flips the sidebar between the repo tree and the flat
+    // docs/260-attention-sidebar-view req 14 — flips the sidebar between the repo tree and the flat
     // "Needs you" list. Deliberately in the `mod+alt+…` family quick-capture
     // already uses: `mod+shift+a` is reserved by macOS Chrome for tab search at
     // the browser level, where a page cannot preventDefault it, so that chord

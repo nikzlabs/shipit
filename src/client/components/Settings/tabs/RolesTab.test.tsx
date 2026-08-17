@@ -202,7 +202,7 @@ describe("RolesTab — the list", () => {
    *
    * This test exists because the resemblance already misled a reader into
    * proposing the reviewer row's fix here too. Qualifying this harness would say
-   * a stored parameter might not apply, which is false and undoes docs/264 req 6.
+   * a stored parameter might not apply, which is false and undoes docs/264-agent-roles req 6.
    */
   it("states a pinned role's harness flat — it is stored, not derived", () => {
     useSettingsStore.getState().setRoles([REVIEWER, pinnedRole()]);

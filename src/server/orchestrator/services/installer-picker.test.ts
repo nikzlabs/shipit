@@ -338,7 +338,7 @@ describe("deployment/vps/setup.sh — checkbox prompt (docs/271)", () => {
     });
 
     it("reports the defaults when nothing is preset and nothing can be asked", () => {
-      // Tailscale-only access, the approved harness set (docs/271 reqs 6, 7).
+      // Tailscale-only access, the approved harness set (docs/271-installer-checkbox-prompts reqs 6, 7).
       const out = dryRun();
       expect(out).toContain("run tailscale.sh");
       expect(out).not.toContain("run cloudflare.sh");

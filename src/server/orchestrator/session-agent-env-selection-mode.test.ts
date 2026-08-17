@@ -1,5 +1,5 @@
 /**
- * docs/150 req 21 — the account selection mode decides what a session pins,
+ * docs/150-multiple-provider-subscriptions req 21 — the account selection mode decides what a session pins,
  * and only at the moment it pins.
  *
  * These target `prepareSessionAgentEnvironment` rather than a full HTTP flow
@@ -77,7 +77,7 @@ function makeSessionManager(opts: {
   return { sm, setProviderRouteCalls };
 }
 
-describe("account selection mode at turn time (docs/260 reqs 1, 8, 21)", () => {
+describe("account selection mode at turn time (docs/260-turn-level-account-routing reqs 1, 8 + docs/150-multiple-provider-subscriptions req 21)", () => {
   let tmpDir: string;
 
   beforeEach(() => {
@@ -93,7 +93,7 @@ describe("account selection mode at turn time (docs/260 reqs 1, 8, 21)", () => {
    * against the real implementation in
    * `provider-account-selection-mode.test.ts`; what matters here is that
    * env-prep asks, honours the answer, returns it as the turn route, and
-   * stamps it — persisting nothing on the session row (docs/260 req 1).
+   * stamps it — persisting nothing on the session row (docs/260-turn-level-account-routing req 1).
    */
   async function routeTurn(mode: "strict" | "balanced") {
     const accounts = [
@@ -130,7 +130,7 @@ describe("account selection mode at turn time (docs/260 reqs 1, 8, 21)", () => {
   it("strict routes the turn to the highest-ranked account even when it is the busiest", async () => {
     const { turnRoute, setProviderRouteCalls } = await routeTurn("strict");
     expect(turnRoute?.id).toBe("acct-first");
-    // docs/260 req 1 — the choice is a VALUE; nothing lands on the session row.
+    // docs/260-turn-level-account-routing req 1 — the choice is a VALUE; nothing lands on the session row.
     expect(setProviderRouteCalls).toHaveLength(0);
   });
 

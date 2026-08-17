@@ -154,7 +154,7 @@ export interface GraduateSessionOpts {
   /** Optional spawn-turn id paired with `parentSessionId`. */
   spawnedByTurn?: string;
   /**
-   * docs/264 req 14 — the role this session was created from, when one created
+   * docs/264-agent-roles req 14 — the role this session was created from, when one created
    * it (`shipit session create --role deep-dive`). Written once here and never
    * again: it is a snapshot of the name, not a live link to the role (req 11).
    */
@@ -215,7 +215,7 @@ export function graduateSession(deps: GraduateSessionDeps, opts: GraduateSession
     }
   }
   if (reasoning) sessionManager.setReasoning(sessionId, reasoning);
-  // docs/264 req 14 — provenance, before any linkage: which role started this
+  // docs/264-agent-roles req 14 — provenance, before any linkage: which role started this
   // session. `setOriginRoleName` is write-once, so a re-graduation (a fork, a
   // rollback) cannot rewrite what the original creation recorded.
   if (originRoleName) sessionManager.setOriginRoleName(sessionId, originRoleName);

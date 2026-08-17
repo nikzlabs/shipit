@@ -242,7 +242,7 @@ describe("Integration: Issues tab routes (docs/170)", () => {
     const body = res.json() as { trackers: TrackerInfo[] };
     // GitHub is registered alongside Linear (planning#82); both unconfigured with no
     // token and no active-session repo binding.
-    // docs/248 req 1 — with no session (so no declarations) the only destination
+    // docs/248-declared-issue-trackers req 1 — with no session (so no declarations) the only destination
     // is the session's own repository, which is itself unconfigured here. Linear
     // is NOT present: it is a declared tracker now, not a built-in.
     expect(body.trackers).toEqual([{ id: "github", label: "GitHub", kind: "github", configured: false }]);
@@ -306,7 +306,7 @@ describe("Integration: Issues tab routes (docs/170)", () => {
   });
 
   it("connects the credential, then lists the declared team's issues priority-sorted", async () => {
-    // docs/248 req 4 — connecting stores the credential and returns the teams it
+    // docs/248-declared-issue-trackers req 4 — connecting stores the credential and returns the teams it
     // can reach as a LOOKUP for writing a declaration. It binds nothing: the
     // team lives in the repository's `shipit.yaml`, which `lin-sess` carries.
     const connect = await app.inject({

@@ -1354,7 +1354,7 @@ services:
 
     // planning#287 — the entrypoint wrapper is staged in the secrets root, NOT in
     // the clone, where the post-turn `git add -A` would commit it into the
-    // user's repository (docs/246 req 1).
+    // user's repository (docs/246-shipit-state-out-of-clone req 1).
     const stagedWrapper = path.join(secretsRoot, "_entrypoint", "secrets-entrypoint.sh");
     expect(fs.existsSync(stagedWrapper)).toBe(true);
     expect(fs.statSync(stagedWrapper).mode & 0o777).toBe(0o755);
@@ -1371,7 +1371,7 @@ services:
     fs.rmSync(secretsRoot, { recursive: true, force: true });
   });
 
-  // planning#287 / docs/246 req 1 — the whole point: a Docker-secrets session leaves
+  // planning#287 / docs/246-shipit-state-out-of-clone req 1 — the whole point: a Docker-secrets session leaves
   // the git clone untouched. Before the fix this test failed on
   // `.shipit/secrets-entrypoint.sh`.
   it("Docker-secrets mode writes nothing into the clone", async () => {

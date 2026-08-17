@@ -1,5 +1,5 @@
 /**
- * docs/150 req 22 — the provider's own identity for a connected account.
+ * docs/150-multiple-provider-subscriptions req 22 — the provider's own identity for a connected account.
  *
  * ShipIt's account rows are user-facing labels over a credential directory, and
  * until now that was *all* they were: two rows could hold credentials for the
@@ -102,7 +102,7 @@ export interface ProviderAccountIdentityStore {
 }
 
 /**
- * docs/150 req 22 — apply the identity a just-completed sign-in reported.
+ * docs/150-multiple-provider-subscriptions req 22 — apply the identity a just-completed sign-in reported.
  *
  * Returns `null` when the connect may proceed (having recorded the identity and
  * possibly adopted the reported email as the label), or the message to show the

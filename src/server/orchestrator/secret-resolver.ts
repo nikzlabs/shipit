@@ -6,7 +6,7 @@
  * Every file this module writes lands OUTSIDE the session's git clone — the
  * orchestrator-private service-env root (docs/183), the Docker-secrets root, or
  * the session state dir. There is no in-clone placement left for any of them
- * (docs/246 req 7, enforced with no exemptions by `no-clone-writes.test.ts`).
+ * (docs/246-shipit-state-out-of-clone req 7, enforced with no exemptions by `no-clone-writes.test.ts`).
  *
  * Responsibilities:
  *   - Phase 1: simple string form (`x-shipit-secrets: [STRIPE_KEY, ...]`) +
@@ -532,7 +532,7 @@ function renderEnvFile(entries: { key: string; value: string }[]): string {
  * writer this replaced is gone (planning#292) — it survived docs/183 as a fallback
  * for callers that configured no root, which production never was, and it was
  * the last thing in the codebase that put a ShipIt-generated file inside a
- * user's git clone (docs/246 req 7).
+ * user's git clone (docs/246-shipit-state-out-of-clone req 7).
  *
  * Why this is agent-invisible: in production `rootDir` defaults to
  * `<stateDir>/service-env`, where `stateDir` is the workspace-volume root. The
@@ -823,7 +823,7 @@ const SECRETS_ENTRYPOINT_FILE = "secrets-entrypoint.sh";
  * to be copied somewhere with a known daemon-side path. ShipIt used to copy it
  * into the session's git clone and mount it through the workspace volume, which
  * put a generated file where the post-turn `git add -A` commits it into the
- * user's repository (docs/246 req 1).
+ * user's repository (docs/246-shipit-state-out-of-clone req 1).
  *
  * The Docker-secrets root is the natural home: it is the one directory this mode
  * already requires a daemon-side mapping for (`hostDir`, used by

@@ -29,7 +29,7 @@ export const AUTO_MERGE_ICON_CLASS = "text-(--color-text-secondary)";
  *
  * Widening the group is not the alternative it looks like: any padding that
  * cleared the ring is also width the labels no longer get, and giving the labels
- * that width is precisely what the clipping is for (docs/260 req 1/8 — when the
+ * that width is precisely what the clipping is for (docs/260-composer-toolbar-layout req 1/8 — when the
  * row runs out of room the LABELS give way, rather than the row overflowing and
  * carrying Send off the edge).
  *

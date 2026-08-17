@@ -1206,7 +1206,7 @@ describe("wireEventHandlers — account-scoped auth SSE (docs/150)", () => {
     );
   }
 
-  // docs/150 req 22 — the refusal has to happen on this event, not later. Once
+  // docs/150-multiple-provider-subscriptions req 22 — the refusal has to happen on this event, not later. Once
   // the row goes `ready` it is selectable, and a duplicate is worst exactly
   // when it is picked as the failover target for the account it duplicates.
   it("refuses a completion that resolves to an already-connected account", () => {
@@ -1281,7 +1281,7 @@ describe("wireEventHandlers — account-scoped auth SSE (docs/150)", () => {
     });
   });
 
-  // docs/150 req 19 — a scope-less completion is no longer a supported flow
+  // docs/150-multiple-provider-subscriptions req 19 — a scope-less completion is no longer a supported flow
   // (`AgentAuthManager.start` requires the account), so this is the defensive
   // case: a manager emitting `complete` without a start. It must not fabricate
   // an account, and must not re-run the default-account migration the singleton

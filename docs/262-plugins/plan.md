@@ -1727,7 +1727,7 @@ instead of a repeat.
     recorded (`destinationForName` now matches aliases too).
   - **`repo: self` registers nothing** — its issues are already this session's
     own repository, which every session reaches without a declaration
-    (docs/248 req 12).
+    (docs/248-declared-issue-trackers req 12).
 
   **The report carries the session's context, stamped server-side.** A create
   addressed at a plugin destination gets a footer with the repository's declared

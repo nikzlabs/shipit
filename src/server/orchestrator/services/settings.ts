@@ -411,7 +411,7 @@ export async function getGlobalSettings(
   const providerAccounts = providerAccountManager?.list() ?? [];
   const voiceDeliveryMode = credentialStore?.getVoiceDeliveryMode() ?? "native";
   const voiceWebhookConfigured = !!credentialStore?.getVoiceWebhook();
-  // docs/150 reqs 4-6 / req 21, re-keyed by docs/252 phase 2 — the routing
+  // docs/150-multiple-provider-subscriptions reqs 4-6 / req 21, re-keyed by docs/252 phase 2 — the routing
   // settings, one entry per **subscription mode in the catalogue** rather than
   // one per registered agent. Both settings answer "which of these credentials
   // next?", which only exists where there is a group to choose from, and req 12
@@ -522,9 +522,9 @@ export interface SaveGlobalSettingsOptions {
   autoResetMergedBranch?: boolean;
   /** docs/144 — global gate for sub-agent spawning. */
   enableSubAgents?: boolean;
-  /** docs/150 reqs 4-6 — per-provider proactive failover cutoffs (1-100). */
+  /** docs/150-multiple-provider-subscriptions reqs 4-6 — per-provider proactive failover cutoffs (1-100). */
   failoverCutoffs?: Record<string, Partial<FailoverCutoffs>>;
-  /** docs/150 req 21 — per-provider account selection mode. */
+  /** docs/150-multiple-provider-subscriptions req 21 — per-provider account selection mode. */
   accountSelectionMode?: Record<string, AccountSelectionMode>;
   /** docs/163 — voice-note delivery mode (native / external / both). */
   voiceDeliveryMode?: VoiceDeliveryMode;
@@ -626,7 +626,7 @@ export async function saveGlobalSettings(
     credentialStore.setEnableSubAgents(enableSubAgents);
   }
 
-  // docs/150 reqs 4-6 — validate rather than clamp at the API edge: a request
+  // docs/150-multiple-provider-subscriptions reqs 4-6 — validate rather than clamp at the API edge: a request
   // carrying 0 or 150 is a caller bug, and silently accepting it as 1 or 100
   // would hide it. The store still clamps on read, which covers a config file
   // edited by hand.
@@ -648,7 +648,7 @@ export async function saveGlobalSettings(
     }
   }
 
-  // docs/150 req 21 — validated the same way as the cutoffs above: reject an
+  // docs/150-multiple-provider-subscriptions req 21 — validated the same way as the cutoffs above: reject an
   // unknown group or an unrecognized mode rather than coercing it. The store
   // falls back to the default on *read*, which covers a hand-edited config
   // file; a bad value arriving through the API is a caller bug and should say
@@ -834,7 +834,7 @@ export function setAgentEnv(
   return { agentId, key, agents: listAgents(agentRegistry) };
 }
 
-// docs/150 req 19 — `startAuth` / `submitAuthCode` are gone with the singleton
+// docs/150-multiple-provider-subscriptions req 19 — `startAuth` / `submitAuthCode` are gone with the singleton
 // endpoints that were their only callers. The account-scoped equivalents live
 // in `provider-accounts.ts` (`startProviderAccountLogin`,
 // `submitProviderAccountCode`), which take the account whose credentials the
@@ -905,7 +905,7 @@ export function renameProviderAccount(
 }
 
 /**
- * docs/150 req 2 — persist the user's fallback order for a provider.
+ * docs/150-multiple-provider-subscriptions req 2 — persist the user's fallback order for a provider.
  *
  * `accountIds` must be the complete set: a partial list is rejected rather than
  * interpreted, so a stale client (one whose account list predates an account
@@ -958,7 +958,7 @@ export function reorderProviderAccounts(
 //      subtree survives archival, so leaving the copy is the same leak on a
 //      delay.
 
-/** docs/260 req 13 — busy means a running turn OR tracked background work. */
+/** docs/260-turn-level-account-routing req 13 — busy means a running turn OR tracked background work. */
 function runnerBusy(runner: SessionRunnerInterface): boolean {
   return runner.running || runner.backgroundWorkDescriptions.length > 0;
 }

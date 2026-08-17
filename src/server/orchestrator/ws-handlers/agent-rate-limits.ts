@@ -17,7 +17,7 @@ const AGENT_LIMIT_LABELS: Record<AgentId, string> = {
 };
 
 /**
- * docs/150 req 7 — how long an account stays out of the running when the
+ * docs/150-multiple-provider-subscriptions req 7 — how long an account stays out of the running when the
  * provider says "you are out of quota" but does not say when that ends.
  *
  * Neither extreme works. Not stamping at all means the very next turn walks
@@ -135,7 +135,7 @@ function parseClockResetUtc(message: string, now: number): string | null {
 }
 
 /**
- * docs/150 req 7 — does this turn error mean the account that ran it is out of
+ * docs/150-multiple-provider-subscriptions req 7 — does this turn error mean the account that ran it is out of
  * quota, and if so, until when?
  *
  * Returns `null` when the error is anything else, so the caller leaves the
@@ -167,7 +167,7 @@ export function detectHardExhaustion(
  *
  * The cost of asymmetry is that this channel carries the agent's own prose,
  * where a phrase match is no longer proof: a false positive benches a healthy
- * account AND repeats the turn's side effects (docs/150 req 14 accepts that on
+ * account AND repeats the turn's side effects (docs/150-multiple-provider-subscriptions req 14 accepts that on
  * a real failover, not on a misread). So it does NOT reuse the error channel's
  * patterns — it matches only the provider's own notice, anchored at the start
  * of a message short enough to be one ({@link TURN_TEXT_NOTICE_PATTERNS},
@@ -236,7 +236,7 @@ export function normalizeAgentUsageLimitError(
   const providerLimits = Object.values(limits?.[modeKey] ?? {});
   const sessionWindows = providerLimits.map((l) => l.session).filter((w) => w !== null);
   if (sessionWindows.length === 0) return message;
-  // docs/260 req 8 — and only on windows that still describe now. A rolled-over
+  // docs/260-turn-level-account-routing req 8 — and only on windows that still describe now. A rolled-over
   // or timestamp-less 100% reading would rewrite a real monthly-limit refusal
   // into a 5h one and quote a reset instant that has already passed, which is
   // the opposite of req 6's "report what the provider said".

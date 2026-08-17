@@ -11,7 +11,7 @@ interface LinearTeam {
 }
 
 /**
- * Linear **credential** settings (docs/170, reworked by docs/248 req 4).
+ * Linear **credential** settings (docs/170, reworked by docs/248-declared-issue-trackers req 4).
  *
  * This surface holds the API token and nothing that identifies a destination.
  * Which Linear team a repository's Issues tab shows is part of that repository's

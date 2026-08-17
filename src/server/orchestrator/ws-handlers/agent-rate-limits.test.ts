@@ -98,7 +98,7 @@ describe("normalizeAgentUsageLimitError", () => {
     );
   });
 
-  // docs/260 req 8 — a snapshot is only refreshed by a turn on that account or
+  // docs/260-turn-level-account-routing req 8 — a snapshot is only refreshed by a turn on that account or
   // by the refresh button, so a 100% reading can outlive its window by hours.
   // Rewriting a real monthly-limit refusal from one would tell the user the
   // wrong limit AND quote a reset that has already passed (req 6).
@@ -145,7 +145,7 @@ describe("normalizeAgentUsageLimitError", () => {
 });
 
 /**
- * docs/150 req 7 — recognizing that a failed turn means the *subscription* is
+ * docs/150-multiple-provider-subscriptions req 7 — recognizing that a failed turn means the *subscription* is
  * spent, as opposed to any of the other things a turn dies of. A false
  * positive benches a working subscription, so the negative cases matter as
  * much as the positive ones.
@@ -182,7 +182,7 @@ describe("detectHardExhaustion", () => {
       "Request timed out",
       "tool use failed: file not found",
       "",
-      // docs/150 req 17 (non-goal) — a model the account cannot run must NOT
+      // docs/150-multiple-provider-subscriptions req 17 (non-goal) — a model the account cannot run must NOT
       // trigger the same-turn retry. "No automatic recovery" holds because this
       // detector is the retry's only trigger and matches quota language only.
       "model claude-opus-5 is not available on your plan",

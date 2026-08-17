@@ -155,7 +155,7 @@ describe("git-config: setGlobalCredentialHelper / clearGlobalCredentialHelper", 
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it("keeps the token OUT of the gitconfig and in a 0600 file beside it (docs/266 E3)", () => {
+  it("keeps the token OUT of the gitconfig and in a 0600 file beside it (docs/266-orchestrator-git-trust-boundary E3)", () => {
     setGlobalCredentialHelper("ghp_some_token_value");
 
     // The config is shared with the session-worker uid so a dropped-uid git can
@@ -267,7 +267,7 @@ describe("git-config: setGlobalCredentialHelper / clearGlobalCredentialHelper", 
       cleared = true;
     }
     expect(cleared).toBe(true);
-    // docs/266 E3 — clearing must remove the token FILE too. Unsetting the key
+    // docs/266-orchestrator-git-trust-boundary E3 — clearing must remove the token FILE too. Unsetting the key
     // alone would leave a revoked PAT on disk until the next one overwrote it.
     expect(fs.existsSync(path.join(tmpDir, GLOBAL_CREDENTIAL_FILENAME))).toBe(false);
     // Second call must not throw even though the helper is already gone.
@@ -473,7 +473,7 @@ describe("git-config: safe.directory gating (planning#33)", () => {
     expect(readSafeDirs().filter((d) => d === "*")).toHaveLength(1);
   });
 
-  // docs/266 E2 (planning#403) — the fail-closed half. With the switch armed the
+  // docs/266-orchestrator-git-trust-boundary E2 (planning#403) — the fail-closed half. With the switch armed the
   // `*` is gone, so a call site that failed to drop to the tree's owner is
   // refused by git instead of running as root against a tree untrusted code can
   // write (req 7).

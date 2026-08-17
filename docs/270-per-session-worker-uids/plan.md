@@ -22,7 +22,7 @@ and none of them fails until something real runs:
 | `/dep-cache` (per-repo npm cache) | every session writes it as 1000 | session B cannot write what session A created |
 | `/workspace/.pnpm-store` (per-runtime store) | same | same, and `pnpm install` dead-ends with no in-session recovery |
 | overlay dependency base (docs/183) | base chowned to 1000; overlayfs copy-up **preserves the lower file's owner**, so the copy is writable | a base owned by anyone else copies up unwritable — the exact bug docs/183's chown exists to fix |
-| ~~`/credentials/.gitconfig`~~ | *was* 0600 owned by 1000 — the identity and push credential for dropped-uid git | **solved upstream instead.** docs/266 E3 merged first and moved the PAT into a root-only sidecar, leaving the config root-owned **0644** — readable by every session uid, writable by none. This feature changes nothing there; the row records a surface that *would* have needed the treatment |
+| ~~`/credentials/.gitconfig`~~ | *was* 0600 owned by 1000 — the identity and push credential for dropped-uid git | **solved upstream instead.** docs/266-orchestrator-git-trust-boundary E3 merged first and moved the PAT into a root-only sidecar, leaving the config root-owned **0644** — readable by every session uid, writable by none. This feature changes nothing there; the row records a surface that *would* have needed the treatment |
 
 A design that changes only the uid passes every test in the suite and then
 breaks `npm install` in production. Requirement 9 exists for this.
@@ -30,7 +30,7 @@ breaks `npm install` in production. Requirement 9 exists for this.
 Only the first three are this feature's work. The fourth is kept in the table
 rather than deleted because the design was written against a `.gitconfig` that
 was 0600 and worker-owned, and planned to convert it by group like the others —
-docs/266 E3 landed first with a better answer, so the conversion was dropped
+docs/266-orchestrator-git-trust-boundary E3 landed first with a better answer, so the conversion was dropped
 rather than kept as a redundant second mechanism.
 
 There is also a fifth thing, which is not a *shared surface* but a shared
@@ -221,7 +221,7 @@ mount keeps its plain `chown -R`.
 - **A mount namespace per git operation** instead of a uid — `unshare -m` so the
   process sees only its own session's tree. Strictly better isolation, and unlike
   docs/266 option C it is a syscall rather than a container, so it does not
-  acquire a Docker dependency on the commit path (docs/266 req 6). Rejected here
+  acquire a Docker dependency on the commit path (docs/266-orchestrator-git-trust-boundary req 6). Rejected here
   because it needs `CAP_SYS_ADMIN` in the orchestrator container, which is not in
   Docker's default capability set — a deploy change that trades a broad new
   capability for the isolation, and one this feature was not asked to make. Worth
@@ -253,7 +253,7 @@ rounding them off.
   **planning#414** rather than left as a sentence.
 - **planning#384 is not closed.** `safe.directory` is still `*` (planning#403),
   the dropped git still reaches the PAT (planning#404), and a project's hooks
-  still do not fire on ShipIt's auto-commit (docs/266 E4).
+  still do not fire on ShipIt's auto-commit (docs/266-orchestrator-git-trust-boundary E4).
 
 ## 5. What I could not verify
 
@@ -292,5 +292,5 @@ source"), separating what was read, what was measured, and what is inferred.
 - `src/server/orchestrator/compose-generator.ts:1338,1728` — the `user:` refusal
   and the fill-in.
 - `src/server/orchestrator/git-config.ts` — the global gitconfig, **unchanged by
-  this feature**; docs/266 E3 owns its mode and owner.
+  this feature**; docs/266-orchestrator-git-trust-boundary E3 owns its mode and owner.
 - `src/server/orchestrator/container-lifecycle.ts:573` — the env forward.

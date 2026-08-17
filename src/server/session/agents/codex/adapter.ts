@@ -308,7 +308,7 @@ export class CodexAdapter
     // Platform API billing — that's exactly the bug this feature exists to
     // fix.
     //
-    // docs/150 req 12 — a spawn scoped to a provider account never falls back
+    // docs/150-multiple-provider-subscriptions req 12 — a spawn scoped to a provider account never falls back
     // to the env key. Failover moves work between subscription accounts only;
     // a scoped account with no `auth.json` is an unusable account, and saying
     // so (`auth_required`) is honest, where quietly billing the orchestrator's

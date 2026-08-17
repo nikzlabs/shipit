@@ -309,7 +309,7 @@ export function useServerEvents(): void {
     // entirely about copy, not control flow — so a new backend is a row in that
     // table plus, at most, one new `details.kind` variant.
     //
-    // docs/150 req 16/19: every subscription sign-in is account-scoped, so an
+    // docs/150-multiple-provider-subscriptions req 16/19: every subscription sign-in is account-scoped, so an
     // event without `accountId` has no home and is ignored rather than
     // falling back to a provider-wide slot. The provider-wide slots
     // (`sessionStore.authUrl`, `settingsStore.codexDeviceAuth*`) are gone with
@@ -323,7 +323,7 @@ export function useServerEvents(): void {
           | { kind: "code-paste-url"; verificationUri: string }
           | { kind: "device-code"; verificationUri: string; userCode: string; expiresInSec: number };
       };
-      // docs/150 req 16 — a challenge belongs on the row that started it, so an
+      // docs/150-multiple-provider-subscriptions req 16 — a challenge belongs on the row that started it, so an
       // unscoped payload has nowhere to land and is dropped.
       if (!data.accountId) return;
       useSettingsStore.getState().setProviderAccountAuth(data.loginId, data.accountId, {
@@ -376,7 +376,7 @@ export function useServerEvents(): void {
         message?: string;
       };
       const copy = AUTH_COPY[data.loginId];
-      // docs/150 req 22 — a refused duplicate connect usually DELETES the row it
+      // docs/150-multiple-provider-subscriptions req 22 — a refused duplicate connect usually DELETES the row it
       // names, so the per-row error below has nowhere to land. Skip the
       // retry-flavoured copy too: retrying would only be refused again.
       //
