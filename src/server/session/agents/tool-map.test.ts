@@ -74,6 +74,17 @@ describe("canonicalizeTool", () => {
     expect(canonicalizeTool("codex", "AskUserQuestion")).toBe("ask_user");
   });
 
+  it("maps OpenCode CLI tool names to canonical names", () => {
+    expect(canonicalizeTool("opencode", "bash")).toBe("shell");
+    expect(canonicalizeTool("opencode", "edit")).toBe("file_edit");
+    expect(canonicalizeTool("opencode", "read")).toBe("file_read");
+    expect(canonicalizeTool("opencode", "write")).toBe("file_write");
+    expect(canonicalizeTool("opencode", "webfetch")).toBe("web_fetch");
+    expect(canonicalizeTool("opencode", "task")).toBe("agent");
+    expect(canonicalizeTool("opencode", "todowrite")).toBe("todo");
+    expect(canonicalizeTool("opencode", "skill")).toBe("skill");
+  });
+
   it("does not keep removed Codex compatibility aliases", () => {
     expect(canonicalizeTool("codex", "command")).toBeNull();
     expect(canonicalizeTool("codex", "file_write")).toBeNull();
@@ -112,6 +123,12 @@ describe("agentToolName", () => {
     expect(agentToolName("codex", "shell")).toBe("shell");
     expect(agentToolName("codex", "file_edit")).toBe("fileChange");
     expect(agentToolName("codex", "agent")).toBe("Agent");
+  });
+
+  it("reverse-maps canonical names to OpenCode CLI tool names", () => {
+    expect(agentToolName("opencode", "shell")).toBe("bash");
+    expect(agentToolName("opencode", "todo")).toBe("todowrite");
+    expect(agentToolName("opencode", "agent")).toBe("task");
   });
 
   it("returns null for unmapped canonical names", () => {

@@ -43,11 +43,13 @@ stream → the 13-member `AgentEvent` union, `shared/types/agent-types.ts`).
 The Claude adapter is a name-agnostic passthrough — `mapEvent`
 (`claude/adapter.ts`) contains no tool-name literals; tool_use blocks flow
 through verbatim. What CAN break here is the *event vocabulary*: an
-unrecognized event `type` or `system.subtype` (Claude), or item type
-(Codex: `commandExecution`, `fileChange`, `collabToolCall`, …) hits
-`default: return null` and the event **vanishes from the transcript
-entirely** — the Codex adapter also synthesizes tool names from those item
-types, so there a rename loses the whole call, not its label. Failure mode:
+unrecognized event `type` or `system.subtype` (Claude) falls into
+`mapEvent`'s `default: return null`, and an unrecognized Codex item type
+(`commandExecution`, `fileChange`, `collabToolCall`, …) falls out of the
+item dispatch (`default: break`) — either way the event **vanishes from
+the transcript entirely**. The Codex adapter also synthesizes tool names
+from those item types, so there a rename loses the whole call, not its
+label. Failure mode:
 silent drop.
 
 **Layer B — name recognition.** Raw CLI tool names are persisted verbatim
@@ -246,9 +248,11 @@ For a routine Renovate bump PR, the full recipe compresses to:
 
 Walkthrough against the precedent: on the 2.1.220 bump, Step 2 shows
 `TodoWrite` absent from the tour stream and four unknown-to-the-registries
-`Task*` names present (they mapped in `tool-map.ts` but sat in no
-recognition registry); Step 4 shows no task panel in the UI and stripped
-inputs in history. The break surfaces on the bump PR, red, with the exact
+`Task*` names present — they mapped in `tool-map.ts`, but the *pre-fix*
+`TASK_LIST_TOOL_NAMES` held only `TodoWrite`, so no recognition registry
+claimed them (today's membership is the post-d409940c fixed state; don't
+read it back into the precedent); Step 4 shows no task panel in the UI and
+stripped inputs in history. The break surfaces on the bump PR, red, with the exact
 failing surface named — instead of weeks later via a user.
 
 ## Why both fixtures and a live turn (mechanism decision)
@@ -321,8 +325,8 @@ land in any row. (Line numbers drift; the identifiers don't.)
 | `findPlanContent` / `isPlanDocumentWrite`, `ExitPlanMode` gates | `client/components/MessageList/` | plan card body on reload, subagent card | blank plan card / Skill-chip fallback |
 
 Also name-shaped but not tool names, same silent-drop class: Claude
-`system.subtype` strings and Codex item types in the adapters
-(`default: return null`), and `mcp__<server>__<tool>` parsing.
+`system.subtype` strings (`default: return null`) and Codex item types
+(`default: break`) in the adapters, and `mcp__<server>__<tool>` parsing.
 
 ## Key files
 
