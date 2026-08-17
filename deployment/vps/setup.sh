@@ -166,6 +166,213 @@ shipit_pick() {
 }
 # --- END shipit-picker -----------------------------------------------------
 
+# --- The interactive questions (docs/271) -----------------------------------
+# Both questions live in functions here, ahead of every step that touches the
+# host, so `--dry-run` can ask them and exit. That is the whole reason they are
+# functions: a separate preview script would be a second copy of the rows and
+# the defaults to keep in step with these.
+
+SHIPIT_ENV_FILE="/etc/shipit/shipit.env"
+ACCESS_DEFAULT="cloudflare"
+HARNESS_DEFAULT="claude,codex"
+# Keep this list and the picker rows in resolve_harnesses in step — this one is
+# what validates a scripted install's SHIPIT_HARNESSES, the rows are what an
+# operator sees.
+SUPPORTED_HARNESSES="claude codex opencode"
+
+ACCESS=""
+INSTALL_CLOUDFLARE=false
+INSTALL_TAILSCALE=false
+HARNESS_CHOICE=""
+HARNESS_PERSIST=0
+HARNESS_SOURCE=""
+
+# True only for a list of recognized names with at least one entry, so that a
+# value made of nothing but separators (",") is rejected rather than quietly
+# meaning "expose nothing" — that is what `none` is for.
+access_valid() {
+  local candidate count=0
+  for candidate in $(printf '%s' "$1" | tr ',' ' '); do
+    case "$candidate" in
+      cloudflare | tailscale) count=$((count + 1)) ;;
+      *) return 1 ;;
+    esac
+  done
+  [ "$count" -gt 0 ]
+}
+
+# As above: a list of recognized names with at least one entry. Counting the
+# entries rather than testing the raw string is what rejects "," and " ", which
+# name no harness and would otherwise fail much later in the image build.
+harnesses_valid() {
+  local candidate count=0
+  for candidate in $(printf '%s' "$1" | tr ',' ' '); do
+    case " $SUPPORTED_HARNESSES " in
+      *" $candidate "*) count=$((count + 1)) ;;
+      *) return 1 ;;
+    esac
+  done
+  [ "$count" -gt 0 ]
+}
+
+# Set ACCESS and the two INSTALL_* flags it drives.
+#
+# Cloudflare and Tailscale are independent, so they are two checkboxes rather
+# than a four-item menu: both selected installs both, neither selected installs
+# ShipIt without exposing it. SHIPIT_ACCESS pre-answers the question for a
+# scripted install, the same way SHIPIT_HARNESSES does.
+resolve_access() {
+  if [ -n "${SHIPIT_ACCESS:-}" ]; then
+    ACCESS="$(printf '%s' "$SHIPIT_ACCESS" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
+    # "none" is the spelling for "expose nothing"; an empty variable is
+    # indistinguishable from unset, so it cannot carry that meaning.
+    if [ "$ACCESS" = "none" ]; then
+      ACCESS=""
+    elif ! access_valid "$ACCESS"; then
+      echo "Error: SHIPIT_ACCESS must be a comma-separated list of 'cloudflare' and/or 'tailscale', or 'none' (got '$SHIPIT_ACCESS')" >&2
+      exit 1
+    fi
+    echo "Access setup: ${ACCESS:-none} (from the environment)"
+  elif [ -t 0 ]; then
+    echo "Access setup — how do you want to reach ShipIt from your browser?"
+    echo ""
+    echo "  Cloudflare Tunnel exposes ShipIt at https://your-domain.com (a domain you"
+    echo "  own and have added to Cloudflare). Cloudflare proxies traffic into this VPS"
+    echo "  over an outbound tunnel — no inbound ports to open, no public IP exposed."
+    echo "  Cloudflare Zero Trust is required by default so only authorized users can"
+    echo "  reach ShipIt; the script can create the Access app and policy."
+    echo ""
+    echo "  Tailscale exposes ShipIt only to devices on your Tailscale network"
+    echo "  (tailnet). No public URL; no one outside your tailnet can reach it."
+    echo ""
+    echo "  Select both to get both. Select neither to install ShipIt without exposing"
+    echo "  it yet — you can run cloudflare.sh or tailscale.sh later to add access."
+    echo ""
+    echo "  [up/down] move    [space] select    [enter] confirm"
+    echo ""
+    shipit_pick "$ACCESS_DEFAULT" \
+      "cloudflare|Cloudflare Tunnel|public HTTPS domain, Zero Trust protected" \
+      "tailscale|Tailscale|private, reachable from your tailnet only" || true
+    ACCESS="$SHIPIT_PICK_RESULT"
+    echo ""
+  else
+    ACCESS="$ACCESS_DEFAULT"
+  fi
+
+  INSTALL_CLOUDFLARE=false
+  INSTALL_TAILSCALE=false
+  case ",$ACCESS," in *,cloudflare,*) INSTALL_CLOUDFLARE=true ;; esac
+  case ",$ACCESS," in *,tailscale,*) INSTALL_TAILSCALE=true ;; esac
+}
+
+# Set HARNESS_CHOICE, plus HARNESS_PERSIST (write it to the env file?) and
+# HARNESS_SOURCE (where the answer came from, for the log line).
+#
+# Which agent CLIs this install has is chosen HERE, at install time, and is a
+# property of the deployment rather than a setting: it is a build arg for both
+# the orchestrator and the session-worker images, so changing it later means
+# editing SHIPIT_HARNESSES in the env file and re-running deploy.sh.
+#
+# HARNESS_PERSIST stays 0 for an UNANSWERED question, so the variable is left
+# unset and compose's ${SHIPIT_HARNESSES:-claude,codex} default keeps applying —
+# writing the default out would freeze this install against a later change to it.
+resolve_harnesses() {
+  HARNESS_PERSIST=0
+  if [ -n "${SHIPIT_HARNESSES:-}" ]; then
+    # Normalized FIRST, exactly as docker/agent-cli/install-agent-clis.sh does
+    # before its own check: it accepts "Claude, Codex", so rejecting that here
+    # would break scripted installs that work today.
+    HARNESS_CHOICE="$(printf '%s' "$SHIPIT_HARNESSES" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
+    if ! harnesses_valid "$HARNESS_CHOICE"; then
+      echo "Error: SHIPIT_HARNESSES must be a comma-separated list of: $(echo "$SUPPORTED_HARNESSES" | tr ' ' ',') (got '$SHIPIT_HARNESSES')" >&2
+      exit 1
+    fi
+    HARNESS_PERSIST=1
+    HARNESS_SOURCE="from the environment"
+    return 0
+  fi
+  if [ ! -t 0 ]; then
+    HARNESS_CHOICE="$HARNESS_DEFAULT"
+    HARNESS_SOURCE="default"
+    return 0
+  fi
+  echo ""
+  echo "==> Agent harnesses"
+  echo "    Which agent CLIs should this install run? They are installed into the"
+  echo "    ShipIt images, so adding one later means re-running this deploy."
+  echo ""
+  echo "    [up/down] move    [space] select    [enter] confirm"
+  echo ""
+  shipit_pick "$HARNESS_DEFAULT" \
+    "claude|Claude Code|Anthropic's CLI" \
+    "codex|Codex|OpenAI's CLI" \
+    "opencode|OpenCode|open-source, bring your own provider" || true
+  HARNESS_CHOICE="$SHIPIT_PICK_RESULT"
+  echo ""
+  if [ -z "$HARNESS_CHOICE" ]; then
+    # An image with no harness fails the build, so an empty selection cannot be
+    # honoured.
+    HARNESS_CHOICE="$HARNESS_DEFAULT"
+    HARNESS_SOURCE="default — nothing selected, and an install needs at least one"
+  else
+    HARNESS_PERSIST=1
+    HARNESS_SOURCE="selected"
+  fi
+}
+
+# --- Dry run: ask, report, change nothing (docs/271) ------------------------
+# Runs before the saved config is even read, so it needs no root and touches no
+# file. Everything it prints comes from the same functions the real install uses.
+DRY_RUN=0
+for arg in "$@"; do
+  case "$arg" in
+    --dry-run) DRY_RUN=1 ;;
+    *)
+      echo "Error: unknown argument '$arg' (the only option is --dry-run)" >&2
+      exit 1
+      ;;
+  esac
+done
+if [ "${SHIPIT_DRY_RUN:-}" = "1" ]; then DRY_RUN=1; fi
+
+if [ "$DRY_RUN" = "1" ]; then
+  echo "==========================================="
+  echo "  ShipIt - Server Provisioning  (DRY RUN)"
+  echo "==========================================="
+  echo ""
+  echo "  Nothing will be installed, started, or written."
+  echo ""
+  resolve_access
+  resolve_harnesses
+  echo "==========================================="
+  echo "  Dry run complete — nothing was changed."
+  echo "==========================================="
+  echo ""
+  echo "  A real run would:"
+  if [ "$INSTALL_CLOUDFLARE" = "true" ]; then
+    echo "    - run cloudflare.sh: ask for your domain, create the Zero Trust app and"
+    echo "      policy, create the tunnel and DNS routes, and lock down the firewall"
+  fi
+  if [ "$INSTALL_TAILSCALE" = "true" ]; then
+    echo "    - run tailscale.sh: join the tailnet and start the preview forwarder"
+  fi
+  if [ "$INSTALL_CLOUDFLARE" != "true" ] && [ "$INSTALL_TAILSCALE" != "true" ]; then
+    echo "    - expose nothing; ShipIt would listen on 127.0.0.1:4123 inside the VPS"
+  fi
+  echo "    - build the images with harnesses: $HARNESS_CHOICE ($HARNESS_SOURCE)"
+  echo ""
+  echo "  It would also install Docker, clone ShipIt to /opt/shipit, raise the host"
+  echo "  limits, install the systemd units, and — only if this host cannot run the"
+  echo "  NET_ADMIN egress sidecar — ask one more y/N question about containment."
+  echo "  Those steps need root. This one did not."
+  echo ""
+  echo "  To run the real install with these answers and no questions, set:"
+  echo "    SHIPIT_ACCESS=${ACCESS:-none}"
+  echo "    SHIPIT_HARNESSES=$HARNESS_CHOICE"
+  echo ""
+  exit 0
+fi
+
 # --- Load saved config from previous run, if any ---
 DOMAIN=""
 REPO_URL=""
@@ -192,69 +399,7 @@ echo "==========================================="
 echo "  ShipIt - Server Provisioning"
 echo "==========================================="
 echo ""
-# --- Access setup (docs/271 reqs 1, 4) ---
-# Cloudflare and Tailscale are independent, so they are two checkboxes rather
-# than a four-item menu: both selected installs both, neither selected installs
-# ShipIt without exposing it. SHIPIT_ACCESS pre-answers the question for a
-# scripted install, the same way SHIPIT_HARNESSES does below.
-ACCESS_DEFAULT="cloudflare"
-ACCESS=""
-
-# True only for a list of recognized names with at least one entry, so that a
-# value made of nothing but separators (",") is rejected rather than quietly
-# meaning "expose nothing" — that is what `none` is for.
-access_valid() {
-  local candidate count=0
-  for candidate in $(printf '%s' "$1" | tr ',' ' '); do
-    case "$candidate" in
-      cloudflare | tailscale) count=$((count + 1)) ;;
-      *) return 1 ;;
-    esac
-  done
-  [ "$count" -gt 0 ]
-}
-
-if [ -n "${SHIPIT_ACCESS:-}" ]; then
-  ACCESS="$(printf '%s' "$SHIPIT_ACCESS" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
-  # "none" is the spelling for "expose nothing"; an empty variable is
-  # indistinguishable from unset, so it cannot carry that meaning.
-  if [ "$ACCESS" = "none" ]; then
-    ACCESS=""
-  elif ! access_valid "$ACCESS"; then
-    echo "Error: SHIPIT_ACCESS must be a comma-separated list of 'cloudflare' and/or 'tailscale', or 'none' (got '$SHIPIT_ACCESS')" >&2
-    exit 1
-  fi
-  echo "Access setup: ${ACCESS:-none} (from the environment)"
-elif [ -t 0 ]; then
-  echo "Access setup — how do you want to reach ShipIt from your browser?"
-  echo ""
-  echo "  Cloudflare Tunnel exposes ShipIt at https://your-domain.com (a domain you"
-  echo "  own and have added to Cloudflare). Cloudflare proxies traffic into this VPS"
-  echo "  over an outbound tunnel — no inbound ports to open, no public IP exposed."
-  echo "  Cloudflare Zero Trust is required by default so only authorized users can"
-  echo "  reach ShipIt; the script can create the Access app and policy."
-  echo ""
-  echo "  Tailscale exposes ShipIt only to devices on your Tailscale network"
-  echo "  (tailnet). No public URL; no one outside your tailnet can reach it."
-  echo ""
-  echo "  Select both to get both. Select neither to install ShipIt without exposing"
-  echo "  it yet — you can run cloudflare.sh or tailscale.sh later to add access."
-  echo ""
-  echo "  [up/down] move    [space] select    [enter] confirm"
-  echo ""
-  shipit_pick "$ACCESS_DEFAULT" \
-    "cloudflare|Cloudflare Tunnel|public HTTPS domain, Zero Trust protected" \
-    "tailscale|Tailscale|private, reachable from your tailnet only" || true
-  ACCESS="$SHIPIT_PICK_RESULT"
-  echo ""
-else
-  ACCESS="$ACCESS_DEFAULT"
-fi
-
-INSTALL_CLOUDFLARE=false
-INSTALL_TAILSCALE=false
-case ",$ACCESS," in *,cloudflare,*) INSTALL_CLOUDFLARE=true ;; esac
-case ",$ACCESS," in *,tailscale,*) INSTALL_TAILSCALE=true ;; esac
+resolve_access
 
 # --- Save config for future re-runs (no secrets stored) ---
 mkdir -p "$(dirname "$CONFIG_FILE")"
@@ -406,8 +551,8 @@ systemctl enable --now shipit-restarter.path
 # network namespace to apply a default-deny egress allowlist. If this host can't
 # run that sidecar (NET_ADMIN denied, rootless Docker, locked-down kernel),
 # ShipIt would fail closed and refuse to start sessions. Detect that here and
-# offer the opt-out, persisted where deploy.sh reads it.
-SHIPIT_ENV_FILE="/etc/shipit/shipit.env"
+# offer the opt-out, persisted where deploy.sh reads it. SHIPIT_ENV_FILE is set
+# with the questions above, since resolve_harnesses names it too.
 
 # Probe whether a NET_ADMIN container can manipulate its network namespace — the
 # capability the egress sidecar needs to install iptables rules. Bringing
@@ -464,20 +609,9 @@ else
 fi
 
 # --- Agent harness selection (docs/252 req 14) ---
-# Which agent CLIs this install has is chosen HERE, at install time, and is a
-# property of the deployment rather than a setting: it is a build arg for both the
-# orchestrator and the session-worker images, so changing it later means editing
-# SHIPIT_HARNESSES in the env file below and re-running deploy.sh. Claude Code and
-# Codex are the default, so accepting it gets today's behaviour.
-#
-# Skipped without a prompt when SHIPIT_HARNESSES is already set (a scripted
-# install: `SHIPIT_HARNESSES=codex bash setup.sh`) or when stdin is not a TTY, so
-# the curl|bash path stays non-interactive.
-#
-# Keep this list and the picker rows below in step — this one is what validates a
-# scripted install's SHIPIT_HARNESSES, the rows are what an operator sees.
-SUPPORTED_HARNESSES="claude codex opencode"
-
+# The question itself is resolve_harnesses, defined with the other question near
+# the top so `--dry-run` can ask it. All that is left here is to act on it: the
+# answer is a build arg for the images deploy.sh is about to build.
 persist_shipit_env() {
   local key="$1" value="$2"
   mkdir -p "$(dirname "$SHIPIT_ENV_FILE")"
@@ -490,59 +624,13 @@ persist_shipit_env() {
   fi
 }
 
-# As above: a list of recognized names with at least one entry. Counting the
-# entries rather than testing the raw string is what rejects "," and " ", which
-# name no harness and would otherwise fail much later in the image build.
-harnesses_valid() {
-  local candidate count=0
-  for candidate in $(printf '%s' "$1" | tr ',' ' '); do
-    case " $SUPPORTED_HARNESSES " in
-      *" $candidate "*) count=$((count + 1)) ;;
-      *) return 1 ;;
-    esac
-  done
-  [ "$count" -gt 0 ]
-}
-
-if [ -z "${SHIPIT_HARNESSES:-}" ] && [ -t 0 ]; then
-  echo ""
-  echo "==> Agent harnesses"
-  echo "    Which agent CLIs should this install run? They are installed into the"
-  echo "    ShipIt images, so adding one later means re-running this deploy."
-  echo ""
-  echo "    [up/down] move    [space] select    [enter] confirm"
-  echo ""
-  shipit_pick "claude,codex" \
-    "claude|Claude Code|Anthropic's CLI" \
-    "codex|Codex|OpenAI's CLI" \
-    "opencode|OpenCode|open-source, bring your own provider" || true
-  HARNESS_CHOICE="$SHIPIT_PICK_RESULT"
-  echo ""
-  if [ -z "$HARNESS_CHOICE" ]; then
-    # An image with no harness fails the build, so an empty selection cannot be
-    # honoured — say so rather than letting the deploy fall over later.
-    echo "    No harness selected; a deployment needs at least one, so keeping the"
-    echo "    default (claude,codex). Change it later by setting SHIPIT_HARNESSES in"
-    echo "    $SHIPIT_ENV_FILE and re-running deploy.sh."
-  else
-    persist_shipit_env SHIPIT_HARNESSES "$HARNESS_CHOICE"
-    echo "    Installing harnesses: $HARNESS_CHOICE (SHIPIT_HARNESSES persisted in $SHIPIT_ENV_FILE)."
-  fi
-elif [ -n "${SHIPIT_HARNESSES:-}" ]; then
-  # The picker cannot produce an invalid answer, so this is the only untrusted
-  # input left. Catch it here rather than at the image build, which fails many
-  # minutes later with a message about a build arg.
-  #
-  # Normalized FIRST, exactly as docker/agent-cli/install-agent-clis.sh does
-  # before its own check: it accepts "Claude, Codex", so rejecting that here
-  # would break scripted installs that work today.
-  HARNESS_CHOICE="$(printf '%s' "$SHIPIT_HARNESSES" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
-  if ! harnesses_valid "$HARNESS_CHOICE"; then
-    echo "Error: SHIPIT_HARNESSES must be a comma-separated list of: $(echo "$SUPPORTED_HARNESSES" | tr ' ' ',') (got '$SHIPIT_HARNESSES')" >&2
-    exit 1
-  fi
+resolve_harnesses
+if [ "$HARNESS_PERSIST" = "1" ]; then
   persist_shipit_env SHIPIT_HARNESSES "$HARNESS_CHOICE"
-  echo "==> Agent harnesses: $HARNESS_CHOICE (from the environment)."
+  echo "==> Agent harnesses: $HARNESS_CHOICE ($HARNESS_SOURCE; persisted in $SHIPIT_ENV_FILE)."
+else
+  # Left unset on purpose — see resolve_harnesses.
+  echo "==> Agent harnesses: $HARNESS_CHOICE ($HARNESS_SOURCE)."
 fi
 
 # --- Build and start ShipIt (always run - this is the deploy step) ---

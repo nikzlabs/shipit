@@ -28,9 +28,6 @@ import { execFileSync } from "node:child_process";
 const SETUP_SH = fileURLToPath(
   new URL("../../../../deployment/vps/setup.sh", import.meta.url),
 );
-const PREVIEW_SH = fileURLToPath(
-  new URL("../../../../deployment/vps/preview-prompts.sh", import.meta.url),
-);
 const BEGIN = "# --- BEGIN shipit-picker";
 const END = "# --- END shipit-picker";
 
@@ -139,7 +136,6 @@ describe("deployment/vps/setup.sh — checkbox prompt (docs/271)", () => {
 
   it("is valid bash", () => {
     execFileSync("bash", ["-n", SETUP_SH], { stdio: "pipe" });
-    execFileSync("bash", ["-n", PREVIEW_SH], { stdio: "pipe" });
   });
 
   it("without a terminal, answers with the preselection instead of prompting", () => {
@@ -237,22 +233,84 @@ describe("deployment/vps/setup.sh — checkbox prompt (docs/271)", () => {
   });
 
   /**
-   * `preview-prompts.sh` extracts the picker from setup.sh, so the *prompt* it
-   * draws can never drift. Its option rows are its own, though, and a preview
-   * that offers a harness the installer does not (or misses one it added) is
-   * worse than no preview — so the keys are pinned to each other here.
+   * `--dry-run` asks both questions and exits before the installer touches the
+   * host. These drive the REAL setup.sh, not the extracted block: that is the
+   * point of putting the dry run inside the installer rather than in a preview
+   * script beside it, so what an operator previews cannot drift from what runs.
    */
-  it("the dry-run preview offers the same options as the installer", () => {
-    const keys = (file: string): string[] => {
-      const src = fs.readFileSync(file, "utf8");
-      // Rows are passed as "key|Label|hint" arguments to shipit_pick.
-      return [...src.matchAll(/^\s*"([a-z]+)\|[^"]+\|[^"]*"/gm)]
-        .map((m) => m[1])
-        .sort();
-    };
-    const preview = keys(PREVIEW_SH);
-    expect(preview.length).toBeGreaterThan(0);
-    expect(preview).toEqual(keys(SETUP_SH));
+  describe("--dry-run", () => {
+    const KNOWN_WRITES = ["/etc/shipit/setup.conf", "/etc/shipit/shipit.env"];
+
+    /** Runs the installer in dry mode, and fails if it wrote anything on the way. */
+    function dryRun(env: Record<string, string> = {}, args = ["--dry-run"]): string {
+      // A helper that can invoke this script for real is a footgun: on a root
+      // runner a forgotten flag starts apt-get and Docker. Refuse up front.
+      if (!args.includes("--dry-run") && env.SHIPIT_DRY_RUN !== "1") {
+        throw new Error("dryRun() called without --dry-run or SHIPIT_DRY_RUN=1");
+      }
+      const before = KNOWN_WRITES.map((f) => fs.existsSync(f));
+      const out = execFileSync("bash", [SETUP_SH, ...args], {
+        input: "",
+        encoding: "utf8",
+        env: { ...process.env, ...env },
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+      expect(KNOWN_WRITES.map((f) => fs.existsSync(f))).toEqual(before);
+      return out;
+    }
+
+    it("asks nothing and installs nothing when the answers are preset", () => {
+      // No --dry-run argument: SHIPIT_DRY_RUN is the form that works through
+      // `sudo bash -c "$(curl …)"`, where passing an argument is awkward.
+      const out = dryRun(
+        {
+          SHIPIT_DRY_RUN: "1",
+          SHIPIT_ACCESS: "tailscale",
+          SHIPIT_HARNESSES: "Codex",
+        },
+        [],
+      );
+      expect(out).toContain("DRY RUN");
+      expect(out).toContain("run tailscale.sh");
+      expect(out).not.toContain("run cloudflare.sh");
+      expect(out).toContain("harnesses: codex");
+    });
+
+    it("reports the defaults when nothing is preset and nothing can be asked", () => {
+      const out = dryRun();
+      expect(out).toContain("run cloudflare.sh");
+      expect(out).toContain("harnesses: claude,codex (default)");
+      // The summary doubles as the recipe for repeating the same install.
+      expect(out).toContain("SHIPIT_ACCESS=cloudflare");
+      expect(out).toContain("SHIPIT_HARNESSES=claude,codex");
+    });
+
+    it("says so when neither access option is chosen", () => {
+      const out = dryRun({ SHIPIT_ACCESS: "none" });
+      expect(out).toContain("expose nothing");
+      expect(out).toContain("SHIPIT_ACCESS=none");
+    });
+
+    it("rejects an unknown argument instead of installing", () => {
+      expect(() =>
+        execFileSync("bash", [SETUP_SH, "--nope"], { stdio: "pipe" }),
+      ).toThrow();
+    });
+
+    it.runIf(hasScript())("asks both questions at a terminal", () => {
+      // Down, space, Enter on the access list; down, down, space, Enter on the
+      // harness list. This is the whole prompt path of the real installer.
+      const out = execFileSync(
+        "script",
+        ["-qec", `bash ${SETUP_SH} --dry-run`, "/dev/null"],
+        { input: "\x1b[B \n\x1b[B\x1b[B \n", encoding: "utf8", timeout: 30_000 },
+      ).replace(/\r/g, "");
+      expect(out).toContain("[*] Cloudflare Tunnel");
+      expect(out).toContain("[ ] OpenCode");
+      expect(out).toContain("run cloudflare.sh");
+      expect(out).toContain("run tailscale.sh");
+      expect(out).toContain("SHIPIT_HARNESSES=claude,codex,opencode");
+    });
   });
 
   /**

@@ -8,6 +8,6 @@
 - [x] `SHIPIT_HARNESSES` from the environment validated at the question, not at the image build
 - [x] Validators normalize like `install-agent-clis.sh` and reject separator-only values
 - [x] Empty harness selection falls back to `claude,codex` with a message
-- [x] `deployment/vps/preview-prompts.sh` dry run, with a test pinning its options to the installer's
-- [x] pty-driven test over the extracted picker block
+- [x] `--dry-run` / `SHIPIT_DRY_RUN=1` in the installer itself — asks both questions, changes nothing, needs no root
+- [x] pty-driven test over the extracted picker block, and over the real installer in dry mode
 - [x] `deployment/README.md` updated for both questions

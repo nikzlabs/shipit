@@ -125,19 +125,31 @@ preselected checkbox is the wrong shape for that.
 ## Trying it without a VPS
 
 ```bash
-bash deployment/vps/preview-prompts.sh
+bash deployment/vps/setup.sh --dry-run          # from a checkout
+SHIPIT_DRY_RUN=1 bash -c "$(curl -fsSL …/deployment/vps/setup.sh)"   # or straight from the one-liner
 ```
 
-Draws both checklists, prints what the real run would do, and exits. It installs
-nothing and writes nothing. The picker code is `sed`'d out of `setup.sh` at run
-time rather than copied, so the prompt it draws is the real one; only the option
-rows are its own, and a test pins their keys to the installer's so the preview
-cannot silently offer a different set.
+Asks both questions, prints what the real run would do (including the
+`SHIPIT_ACCESS` / `SHIPIT_HARNESSES` pair that repeats the same answers
+non-interactively), and exits. It needs no root and writes no file.
+
+**The dry run is in the installer, not beside it.** The first version of this
+feature shipped a separate `preview-prompts.sh` that extracted the picker and
+re-declared the option rows — which meant a second copy of the rows, the
+defaults, and the explanatory prose, plus a test to pin them together. Putting
+the questions in `resolve_access` / `resolve_harnesses` and branching on
+`--dry-run` before the first host-touching step removes the copy entirely: what
+an operator previews *is* what runs, and the pty tests drive the real
+`setup.sh`.
+
+The branch sits ahead of the saved-config read, so a dry run never needs root
+and never touches `/etc/shipit`. The one question it cannot preview is the
+egress-containment prompt, which only appears when a Docker probe fails on that
+specific host; the summary says so.
 
 ## Key files
 
-- `deployment/vps/setup.sh` — the picker and both callers.
-- `deployment/vps/preview-prompts.sh` — the dry run above.
+- `deployment/vps/setup.sh` — the picker, both question functions, and the dry run.
 - `src/server/orchestrator/services/installer-picker.test.ts` — extracts the
   picker block and drives it under a pty (`script -qec`), asserting the key map,
   the `[*]`/`[ ]` rendering, the non-interactive return, and the validators'
