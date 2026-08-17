@@ -7,6 +7,7 @@ import {
   type GitRemoteCredentialResolver,
   gitCredentialSpawnOverrides,
   resolveTreeRemoteCredential,
+  sanitizeGitEnv,
 } from "../shared/git-remote-credential.js";
 
 /**
@@ -183,18 +184,25 @@ export function runGit(
   cwd: string,
   timeoutMs: number,
   /**
-   * planning#426 — the environment half of a per-remote credential
-   * (`gitCredentialSpawnOverrides().env`). The *shape* half rides `args`, which
-   * is what makes it undroppable; see `shared/git-remote-credential.ts`.
+   * planning#426 — the whole environment for this git, defaulting to the
+   * orchestrator's own.
+   *
+   * It REPLACES rather than extends `process.env`, and that is the point: the
+   * credentialled pull has to *remove* inherited variables (`GIT_CONFIG_COUNT`,
+   * `GIT_ASKPASS`, …), and a spread can only ever add. `GIT_TERMINAL_PROMPT=0`
+   * is re-applied below either way, so no caller can lose it.
+   *
+   * The credential's own variables travel here — the *shape* half rides `args`,
+   * which is what makes it undroppable; see `shared/git-remote-credential.ts`.
    */
-  extraEnv?: Record<string, string>,
+  env?: NodeJS.ProcessEnv,
 ): Promise<RunResult> {
   return new Promise((resolve) => {
     let proc;
     try {
       proc = spawn("git", gitArgsWithHooksDisabled(args), {
         cwd,
-        env: { ...process.env, ...extraEnv, GIT_TERMINAL_PROMPT: "0" },
+        env: { ...(env ?? process.env), GIT_TERMINAL_PROMPT: "0" },
         stdio: ["ignore", "pipe", "pipe"],
         ...gitSpawnOverridesForTree(cwd),
       });
@@ -427,7 +435,22 @@ export async function materializeLfsContent(
 
   const startedAt = Date.now();
   const res = await (opts?.spawnGit ?? runGit)(
-    [...cred.args, "lfs", "pull"], workspaceDir, pullTimeoutMs(), cred.env,
+    [...cred.args, "lfs", "pull"],
+    workspaceDir,
+    pullTimeoutMs(),
+    // Sanitized ONLY when a credential is in play, which is exactly when
+    // `credentialledGit` is constructed and for the same reason: one inherited
+    // `GIT_CONFIG_COUNT` / `GIT_CONFIG_PARAMETERS` is higher-precedence than
+    // anything `-c` can say, so it could reinstate the very helper the reset just
+    // cleared, and `GIT_ASKPASS` would be reached instead of the helper we
+    // supplied. Review finding.
+    //
+    // Deliberately NOT applied to the uncredentialled pull. `sanitizeGitEnv`
+    // also drops `GIT_SSH_COMMAND` and `PAGER`, and dropping those on the
+    // root-side path would change an op that authenticates through the global
+    // helper and works today — availability over tidiness, the same trade
+    // `resolveTreeRemoteCredential` makes by returning `null` there.
+    credential ? { ...sanitizeGitEnv(process.env), ...cred.env } : undefined,
   );
   const durationMs = Date.now() - startedAt;
 

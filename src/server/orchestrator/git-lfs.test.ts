@@ -212,6 +212,47 @@ describe("materializeLfsContent", () => {
     expect(env.SHIPIT_GIT_CRED_USERNAME).toBe("x-access-token");
   });
 
+  // Review finding. `GIT_CONFIG_COUNT` outranks every `-c`, so an inherited one
+  // could reinstate the helper the reset just cleared; `GIT_ASKPASS` would be
+  // reached instead of the helper we supplied. `credentialledGit` drops both, and
+  // the credentialled pull has to match it.
+  it("drops the inherited variables that could override the supplied credential", async () => {
+    const dir = lfsRepo();
+    const saved = { count: process.env.GIT_CONFIG_COUNT, askpass: process.env.GIT_ASKPASS };
+    process.env.GIT_CONFIG_COUNT = "1";
+    process.env.GIT_CONFIG_KEY_0 = "credential.helper";
+    process.env.GIT_CONFIG_VALUE_0 = "!echo password=attacker";
+    process.env.GIT_ASKPASS = "/tmp/askpass";
+    let seen: NodeJS.ProcessEnv = {};
+    try {
+      await materializeLfsContent(dir, {
+        isAvailable: () => Promise.resolve(true),
+        resolveCredential: () => Promise.resolve({
+          origin: "https://github.com",
+          token: { username: "x-access-token", password: "ghp_secret" },
+        }),
+        spawnGit: (_args, _cwd, _timeout, env) => {
+          seen = env ?? {};
+          return Promise.resolve({ code: 0, stdout: "", stderr: "", timedOut: false });
+        },
+      });
+    } finally {
+      if (saved.count === undefined) delete process.env.GIT_CONFIG_COUNT;
+      else process.env.GIT_CONFIG_COUNT = saved.count;
+      if (saved.askpass === undefined) delete process.env.GIT_ASKPASS;
+      else process.env.GIT_ASKPASS = saved.askpass;
+      delete process.env.GIT_CONFIG_KEY_0;
+      delete process.env.GIT_CONFIG_VALUE_0;
+    }
+
+    expect(seen.GIT_CONFIG_COUNT).toBeUndefined();
+    expect(seen.GIT_CONFIG_KEY_0).toBeUndefined();
+    expect(seen.GIT_CONFIG_VALUE_0).toBeUndefined();
+    expect(seen.GIT_ASKPASS).toBeUndefined();
+    // The credential itself still made it through.
+    expect(seen.SHIPIT_GIT_CRED_PASSWORD).toBe("ghp_secret");
+  });
+
   it("runs the pull unchanged when no credential applies", async () => {
     const dir = lfsRepo();
     const seen: string[][] = [];

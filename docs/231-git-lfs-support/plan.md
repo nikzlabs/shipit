@@ -361,6 +361,29 @@ refusing outright. `forkSession` now takes two sinks (`ForkReportSinks`, wired b
 Every non-`materialized` status is reported, not just `failed` — `disabled` and
 `binary-missing` leave stubs on disk in exactly the same way.
 
+The notice **appends** (`appendPendingAgentNotice`) rather than overwriting.
+docs/221's slot is last-write-wins because every writer described the same fact —
+where the branch now points — and supersession is correct for that. This is a
+*different* fact, so overwriting a branch-movement notice with it (or the reverse)
+would be data loss rather than supersession. Branch-movement notices keep the
+plain setter and keep superseding each other. Found by review.
+
+Two constraints stated rather than left implied:
+
+- **A later `setPendingAgentNotice` still replaces an appended notice wholesale.**
+  One slot cannot fix that direction, and widening it into a queue is not worth
+  the window: it requires a manual sync of the fork *before its first turn*, the
+  user-facing toast has already fired, and docs/221's own contract already accepts
+  losing one notice to a crash. Named in Known gaps.
+- **The credential is offered only to `origin`'s own host** (`gitCredentialConfig`
+  scopes `credential.<origin>.helper`). For GitHub that is right: the LFS *batch
+  API* lives on `github.com`, and the transfer URLs it hands back
+  (`objects.githubusercontent.com` / `github-cloud.s3.amazonaws.com`, §5) are
+  pre-signed and need no credential. A deployment whose LFS endpoint is on a
+  different host from its git remote would get no credential offered — the same
+  scoping every other credential path in this repo has, and the deliberate
+  alternative to the host-blind helper docs/172 Gap 2 removed.
+
 **The janitor's orphan-branch deletion**, the third path the soak named, is a
 different fault and is fixed differently. Its `push --delete` runs root-side
 against the root-owned bare cache, so no uid drop applies and the global helper
@@ -409,6 +432,14 @@ binary is present.
 
 ## Known gaps
 
+- **A branch-movement notice can still overwrite a fork's unresolved-LFS notice**
+  (planning#426). The LFS notice appends, so it never destroys one that is already
+  pending, but `pending_agent_notice` is a single slot and a later
+  `setPendingAgentNotice` replaces its whole contents. Reaching it needs a manual
+  "Sync with `<base>`" on a fork *before that fork's first turn*; the SSE toast has
+  already fired by then, and the agent-facing docs teach the `head -c 120` check
+  independently. A queue instead of a slot is the fix if this is ever observed —
+  deliberately not built for a window this narrow.
 - **No LFS object sharing via the bare cache.** Every session clone pays its own
   network transfer, where git objects are hardlinked from the per-remote bare
   cache. Fetching LFS into the cache and hardlinking `lfs/objects` into each

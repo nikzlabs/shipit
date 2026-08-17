@@ -102,6 +102,12 @@
       and name which shape a failure was
 - [x] Correct the `sweepOrphanMergedBranches` docstring, which still claimed the
       cache's remote URL embeds the token — a mechanism docs/262 req 19 deleted
+- [x] Review finding: drop the inherited `GIT_CONFIG_COUNT` / `GIT_ASKPASS` class
+      on the credentialled pull, matching `credentialledGit` — one of those
+      outranks every `-c` and could reinstate the helper the reset just cleared
+- [x] Review finding: APPEND the LFS notice instead of overwriting, since docs/221's
+      slot is last-write-wins for a different fact class; name the residual
+      later-writer clobber in Known gaps rather than building a queue for it
 - [x] Tests: the credential on the pull's argv and in its environment (and the
       secret in neither the argv nor the config), the unchanged no-credential
       path, both failure classifications, the notice's content and every cause,

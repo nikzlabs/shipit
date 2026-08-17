@@ -166,7 +166,7 @@ export interface ForkReportSinks {
  * failure it reports is one where nothing looks wrong.
  */
 export function forkReportSinks(deps: {
-  sessionManager: Pick<SessionManager, "setPendingAgentNotice">;
+  sessionManager: Pick<SessionManager, "appendPendingAgentNotice">;
   sseBroadcast: (event: string, data: unknown) => void;
 }): ForkReportSinks {
   return {
@@ -175,7 +175,11 @@ export function forkReportSinks(deps: {
       deps.sseBroadcast("error", { message });
     },
     noticeForAgent: (sessionId, notice) => {
-      deps.sessionManager.setPendingAgentNotice(sessionId, notice);
+      // APPENDS rather than sets: docs/221's slot is last-write-wins because every
+      // writer described the same fact (where the branch now points), and this is
+      // a different fact — unresolved LFS content. Overwriting a branch-movement
+      // notice with it, or vice versa, would lose one of the two (review finding).
+      deps.sessionManager.appendPendingAgentNotice(sessionId, notice);
     },
   };
 }
