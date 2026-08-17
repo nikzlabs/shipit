@@ -20,16 +20,22 @@ import { testDispatch } from "../integration_tests/dispatch-test-helpers.js";
 import type { AgentProcess, AgentEvent, AgentRunParams, WsServerMessage } from "../../shared/types.js";
 
 // planning#146: the rebase driver must hand the workspace (BOTH `.git` AND the
-// worktree) back to the worker uid after its root-run git ops (the
-// `postTurn: "none"` path elides the usual post-turn handoff). It does so via the
-// shared `handWorkspaceBackToWorker` helper, whose `.git`/worktree/dep-dir
-// internals are unit-tested in session-worker-uid.test.ts. The real helper is a
-// no-op unless SHIPIT_SESSION_WORKER_UID is set AND the process can chown to that
-// uid (root-only), and a test can't drop to uid 1000 to reproduce the real
+// worktree) back to the worker uid after its git ops (the `postTurn: "none"`
+// path elides the usual post-turn handoff). It does so via the shared
+// `handWorkspaceBackToWorker` helper, whose `.git`/worktree/dep-dir internals
+// are unit-tested in session-worker-uid.test.ts. The real helper is a no-op
+// unless SHIPIT_SESSION_WORKER_UID is set AND the process can chown to that uid
+// (root-only), and a test can't drop to another uid to reproduce the real
 // EACCES — so we spy on it to assert the driver WIRES the handoff. The
-// end-to-end "agent edits a root-owned conflicted file as 1000" proof is the
-// manual dev validation, noted in docs/150. importOriginal keeps the module's
-// other exports intact for transitive importers.
+// end-to-end "agent edits a conflicted file it does not own" proof is the manual
+// dev validation, noted in docs/150. importOriginal keeps the module's other
+// exports intact for transitive importers.
+//
+// planning#412 — those git ops are NOT root-run: since
+// docs/266-orchestrator-git-trust-boundary E1 they drop to the session's own
+// identity on this existing tree (see the driver's file-header note). What the
+// handback reconciles is `.git`'s owner against the uid that will next run git
+// in it, and the worktree's against the identity the container runs as.
 vi.mock("../session-worker-uid.js", async (importOriginal) => {
   // eslint-disable-next-line no-restricted-syntax -- vitest's importOriginal generic requires an inline import() type
   const actual = await importOriginal<typeof import("../session-worker-uid.js")>();
@@ -722,11 +728,12 @@ describe("rebase-driver: runRebaseFlow", () => {
   });
 
   // planning#146: every `runRebaseFlow` exit path must hand BOTH `.git` AND the
-  // worktree back to the worker uid, because the driver runs its git ops as the
-  // root orchestrator (which re-roots both) and dispatches resolution turns with
-  // `postTurn: "none"` (which elides the usual post-turn handoff). Handing only
-  // `.git` back restores git operability but leaves the conflicted files the
-  // agent must EDIT root-owned, so the resolution turn still fails EACCES.
+  // worktree back to the worker uid, because the driver's git ops rewrite both
+  // and it dispatches resolution turns with `postTurn: "none"` (which elides the
+  // usual post-turn handoff). Handing only `.git` back restores git operability
+  // but leaves the conflicted files the agent must EDIT owned by whoever ran
+  // that git, so the resolution turn still fails EACCES. (planning#412: that is
+  // the session's own identity, not root — file-header note in the driver.)
   it("planning#146: hands .git AND worktree back to the worker uid on the up-to-date path", async () => {
     const { workDir, git } = setupRepoWithRemote(tmpDir);
     const runner = new SessionRunner({ sessionId: "s1", sessionDir: workDir, defaultAgentId: "claude" });

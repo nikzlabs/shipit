@@ -356,13 +356,19 @@ describe("autoResetMergedBranchOnContinue", () => {
   });
 
   /**
-   * The reset runs as ROOT against a worktree the uid-1000 worker owns, so every
-   * file it re-materializes lands `root:root` and the agent EACCESes on its first
-   * edit of this very turn. Nothing else repairs it (the boot chown is
-   * sentinel-skipped on warm reuse, `selfHealWorkspaceOwnership` runs only on
-   * container re-create, and the post-turn handback is `.git`-only), so these pin
-   * the handback on every path that could have re-rooted the tree — and pin the
-   * deliberate *absence* of the walk on the read-only paths.
+   * The reset re-materializes worktree files and rewrites `.git`, and without
+   * the handback the agent EACCESes on its first edit of this very turn. Nothing
+   * else repairs it (the boot chown is sentinel-skipped on warm reuse,
+   * `selfHealWorkspaceOwnership` runs only on container re-create, and the
+   * post-turn handback is `.git`-only), so these pin the handback on every path
+   * that could have rewritten the tree — and pin the deliberate *absence* of the
+   * walk on the read-only paths.
+   *
+   * planning#412 — the reset does NOT run as ROOT. It goes through
+   * `createGitManager(sessionDir)` → `safeSimpleGit`, which since
+   * docs/266-orchestrator-git-trust-boundary E1 drops to the session's identity
+   * on this existing tree; the handback reconciles two consumers of one
+   * directory rather than repairing a `root:root` tree.
    */
   describe("workspace ownership handback", () => {
     it("hands back after a successful reset", async () => {
@@ -373,7 +379,7 @@ describe("autoResetMergedBranchOnContinue", () => {
     });
 
     it("hands back when the reset THROWS (the fail-safe catch must not skip it)", async () => {
-      // The worst version of the bug: the tree may already be re-rooted, the catch
+      // The worst version of the bug: the tree may already be rewritten, the catch
       // swallows the error and returns NOT_MOVED, and the turn then runs on a
       // workspace the agent cannot write to. The `finally` is what closes it.
       vi.mocked(handWorkspaceBackToWorker).mockClear();
@@ -391,10 +397,10 @@ describe("autoResetMergedBranchOnContinue", () => {
       expect(handWorkspaceBackToWorker).toHaveBeenCalledWith("/ws");
     });
 
-    it("hands back on a post-fetch TOCTOU bail (the fetch's own root writes count)", async () => {
-      // No reset ran, but `git fetch` as root already wrote FETCH_HEAD, remote
-      // refs and new objects into `.git` — hence the flag is set before the fetch,
-      // not before the reset.
+    it("hands back on a post-fetch TOCTOU bail (the fetch's own .git writes count)", async () => {
+      // No reset ran, but `git fetch` already wrote FETCH_HEAD, remote refs and
+      // new objects into `.git` — hence the flag is set before the fetch, not
+      // before the reset.
       vi.mocked(handWorkspaceBackToWorker).mockClear();
       const getHeadHash = vi
         .fn()
@@ -1232,9 +1238,11 @@ describe("resetBranchToBaseExplicit (docs/239)", () => {
   });
 
   it("hands workspace ownership back to the worker on EVERY path", async () => {
-    // The orchestrator did this git work as root; without the handback the agent
-    // hits EACCES on its first edit — inside the very turn the wake enables. In a
-    // `finally`, so a refusal is covered too.
+    // This git work rewrites the worktree and `.git`; without the handback the
+    // agent hits EACCES on its first edit — inside the very turn the wake
+    // enables. In a `finally`, so a refusal is covered too. (planning#412: it
+    // runs as the session's identity, not root — see the handback docblock
+    // above.)
     vi.mocked(handWorkspaceBackToWorker).mockClear();
     await resetBranchToBaseExplicit(makeDeps({ createGitManager: () => gitWith() }), "s1", "/ws");
     expect(handWorkspaceBackToWorker).toHaveBeenCalledWith("/ws");

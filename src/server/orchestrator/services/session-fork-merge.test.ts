@@ -10,11 +10,14 @@ import { handWorkspaceBackToWorker } from "../session-worker-uid.js";
 import type { SessionManager } from "../sessions.js";
 import type { GitRemoteCredentialResolver } from "../../shared/git-remote-credential.js";
 
-// planning#146 (analog): the root orchestrator's `git.merge` into the *active*
-// session's booted clone re-roots BOTH `.git` and the worktree files it
-// rewrites — so `mergeSession` must hand BOTH back to the worker uid, not just
-// `.git` (handing only `.git` back left the merged worktree files root-owned and
-// the non-root agent couldn't edit them). It does so via the shared
+// planning#146 (analog): the orchestrator's `git.merge` into the *active*
+// session's booted clone rewrites BOTH `.git` and worktree files — so
+// `mergeSession` must hand BOTH back to the worker uid, not just `.git` (handing
+// only `.git` back left the merged worktree files handed to nobody and the
+// non-root agent couldn't edit them). planning#412: that merge runs as the
+// session's own identity, not as root — since
+// docs/266-orchestrator-git-trust-boundary E1 every `safeSimpleGit` on an
+// existing session tree drops. It does so via the shared
 // `handWorkspaceBackToWorker` helper (`.git`/worktree/dep-dir internals unit-
 // tested in session-worker-uid.test.ts). The real helper is a no-op unless the
 // flag is set / chown-to-1000 is permitted (root-only), so we spy to assert the

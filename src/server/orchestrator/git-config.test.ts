@@ -418,10 +418,18 @@ describe("git-config: writeContainerGitConfig (docs/088 finding #5)", () => {
   });
 });
 
-// docs/150 §7 addendum — the planning#33 activation blocker. When the session worker
-// runs as an unprivileged uid, the root orchestrator's git ops over the
-// worker-owned worktrees are refused with "detected dubious ownership" unless
-// `safe.directory` is configured in the (trusted) global git config.
+// docs/150 §7 addendum — the planning#33 activation blocker. When the session
+// worker runs as an unprivileged uid, an orchestrator git that RAN AS ROOT over
+// a worker-owned worktree was refused with "detected dubious ownership" unless
+// `safe.directory` was configured in the (trusted) global git config.
+//
+// planning#412 — stated in the past tense because since
+// docs/266-orchestrator-git-trust-boundary E1 a correct call site drops to the
+// tree's owner and never meets that refusal. What `safe.directory=*` still
+// suppresses is the refusal on an INCORRECT site — one that failed to drop and
+// so is still root against a tree untrusted code can write. That is why arming
+// `SHIPIT_GIT_STRICT_OWNERSHIP` (which removes the `*`) is the point of the
+// gating these tests pin; see `git-config.ts`'s own docstring.
 describe("git-config: safe.directory gating (planning#33)", () => {
   let tmpDir: string;
   let origGitConfigGlobal: string | undefined;

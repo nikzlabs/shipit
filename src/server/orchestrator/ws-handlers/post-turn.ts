@@ -114,12 +114,20 @@ export async function postTurnCommit(
     try {
       return await commitInLock();
     } finally {
-      // docs/150 §7 addendum: the git ops above run as the root orchestrator and
-      // write into the worker-owned (uid 1000) workspace — `git status` refreshes
-      // `.git/index`, and a commit writes objects/refs/reflogs. Left root:root,
-      // they block the agent's next in-container `git` (which appends to the
-      // root-owned reflog). Hand `.git` back here, on every path (commit, no-op,
-      // throw). No-op unless a uid resolves — see `resolveGitDirOwner`.
+      // docs/150 §7 addendum: the git ops above write into `.git` — `git status`
+      // refreshes `.git/index`, and a commit writes objects/refs/reflogs. Hand
+      // `.git` back here, on every path (commit, no-op, throw). No-op unless a
+      // uid resolves — see `resolveGitDirOwner`.
+      //
+      // planning#412 — this used to say those ops "run as the root orchestrator"
+      // and leave `.git` `root:root`. Since E1 they run as the tree's own
+      // identity (the paragraph above this `try` is the same fact stated from
+      // the other side), so what this reconciles is `.git`'s owner against
+      // `resolveGitDirOwner` — the identity that will next run git in it, which
+      // is the orchestrator's dropped uid AND the agent's, and the two can
+      // disagree. Left unreconciled the agent's next in-container `git` fails
+      // appending to a reflog it does not own; the ops themselves stay root only
+      // where no identity resolves (local mode, dev, tests).
       chownWorkspaceGitToSessionWorker(opts.sessionDir);
     }
   });

@@ -193,11 +193,24 @@ export function createWarmPool(
         await materializeLfsWithWarning(workspaceDir, repoUrl, (message) =>
           sseBroadcast("error", { message }),
         );
-        // docs/150 §7 addendum (planning#147): hand the workspace back to the worker
-        // uid after the root orchestrator's fetch + `checkout -b` + ref
-        // realignment. `checkout -b <resetTarget>` re-materializes the WORKTREE
-        // (not just `.git`), so hand back both — otherwise the warm session's
-        // cloned files stay root-owned and the non-root agent can't edit them.
+        // docs/150 §7 addendum (planning#147): hand the workspace back — both
+        // halves, because `checkout -b <resetTarget>` re-materializes the
+        // WORKTREE and not just `.git`.
+        //
+        // planning#412 — what this repairs is the CLONE, not the ops listed
+        // above. `cloneFromCache`'s `git clone --local` is a bare
+        // `safeSimpleGit()` naming no directory to stat, so it alone runs as
+        // root and lands `root:root` (`git-hooks-guard.ts`, "blind to a tree it
+        // CREATES"); `cloneFromCache` already hands that tree over before it
+        // returns (`repo-git.ts`), and every op here — fetch, `checkout -b`,
+        // ref realignment, the LFS pull — then goes through
+        // `safeSimpleGit(workspaceDir)` / `gitSpawnOverridesForTree` and drops
+        // to this session's identity, so each writes worker-owned files. This
+        // call is what reconciles `.git` with `resolveGitDirOwner` — the uid
+        // that will next RUN git in it — and hands the worktree to the identity
+        // the container runs as. It is a no-op wherever no identity resolves
+        // (local mode, dev, tests), which is also the only place the ops above
+        // still write as root.
         handWorkspaceBackToWorker(workspaceDir);
 
         sessionManager.setBranch(appSessionId, branchPrefix);

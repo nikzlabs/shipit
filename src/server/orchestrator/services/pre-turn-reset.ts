@@ -849,10 +849,10 @@ export async function autoResetMergedBranchOnContinue(
     console.error(`[pre-turn-reset] auto-reset failed for ${sessionId} (running turn on the un-moved branch):`, err);
     return NOT_MOVED;
   } finally {
-    // The orchestrator ran that git work as ROOT, so every file the reset
-    // re-materialized landed `root:root` — in a worktree the non-root worker
-    // (uid 1000) owns. Without this handback the agent EACCESes on its first
-    // edit of the very turn the reset exists to enable, and nothing repairs it:
+    // The reset re-materialized worktree files and rewrote `.git`, so both
+    // halves need handing back to the identities that consume them. Without
+    // this the agent EACCESes on its first edit of the very turn the reset
+    // exists to enable, and nothing repairs it:
     // the entrypoint's boot chown is sentinel-skipped on warm reuse,
     // `selfHealWorkspaceOwnership` runs only on container (re)create, and the
     // post-turn handback is `.git`-only — so git keeps working while the
@@ -860,18 +860,31 @@ export async function autoResetMergedBranchOnContinue(
     // (docs/218 shipped without it; docs/239's `resetBranchToBaseExplicit`
     // added it to its own path only.)
     //
+    // planning#412 — this used to say the orchestrator "ran that git work as
+    // ROOT, so every file the reset re-materialized landed `root:root`". It did
+    // not. This path's git is `deps.createGitManager(sessionDir)` →
+    // `safeSimpleGit(sessionDir)`, and since
+    // docs/266-orchestrator-git-trust-boundary E1 that drops to the session's
+    // own identity on an EXISTING session tree (a tree a git op CREATES is the
+    // uncovered case, and there is none here). So the reset writes files the
+    // session already owns. What is still owed is the reconciliation: `.git` to
+    // `resolveGitDirOwner` — the identity that will next RUN git in it — and the
+    // worktree to the identity the container runs as. Both are no-ops where no
+    // identity resolves (local mode, dev, tests), which is also the only place
+    // this git still runs as root.
+    //
     // In a `finally`, not after the success return, because the `catch` above is
     // fail-safe: a reset that succeeds and THEN throws in the heal has already
-    // re-rooted the tree, and returning NOT_MOVED would run the turn on a
+    // rewritten the tree, and returning NOT_MOVED would run the turn on a
     // workspace the agent cannot write to — the worst version of this bug.
     //
     // Scoped to `mutatedWorkspace` rather than unconditional because this helper
     // runs on EVERY interactive turn (`ws-handlers/agent-execution.ts`), and the
     // handback is a full worktree walk; charging every turn of every session for
     // it to cover paths that only ever *read* git is not worth it. The flag is
-    // set before `fetch`, not before the reset, so the fetch's own root-owned
-    // `.git` writes (FETCH_HEAD, remote refs, new objects) are covered too — a
-    // post-fetch TOCTOU bail still hands back.
+    // set before `fetch`, not before the reset, so the fetch's own `.git` writes
+    // (FETCH_HEAD, remote refs, new objects) are covered too — a post-fetch
+    // TOCTOU bail still hands back.
     if (mutatedWorkspace) handWorkspaceBackToWorker(sessionDir);
   }
 }
@@ -1321,9 +1334,11 @@ function resolveResetBase(session: SessionInfo, prStatus: PrStatusSummary | null
  *    still returns success; in a chain that means every later push against the
  *    diverged remote is silently dropped as a non-fast-forward and the next PR
  *    never updates. Here it fails loudly instead.
- *  - **`handWorkspaceBackToWorker` runs in a `finally`.** The orchestrator does
- *    this git work as root; without the handback the agent hits `EACCES` on its
- *    first edit — inside the very turn the wake exists to enable.
+ *  - **`handWorkspaceBackToWorker` runs in a `finally`.** This git work rewrites
+ *    the worktree and `.git`; without the handback the agent hits `EACCES` on
+ *    its first edit — inside the very turn the wake exists to enable. (It runs
+ *    as the session's identity, not as root — see the `finally` in
+ *    `autoResetToBase` for why that changes the reason and not the call.)
  *  - **The base is derived durably** ({@link resolveResetBase}), not from the
  *    live PR snapshot alone. A docs/202 re-arm nulls that snapshot in the normal
  *    post-turn flow, which made an ordinary merge → commit → re-arm sequence

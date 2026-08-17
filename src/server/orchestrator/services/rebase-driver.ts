@@ -38,14 +38,28 @@ import { restoreLfsAfterTreeRewrite } from "../git-lfs.js";
 import type { AutoResolveResult } from "../auto-conflict-resolve-manager.js";
 import { prepareDispatch } from "../prepared-dispatch.js";
 
-// Hand the whole session workspace (worktree + `.git`) back to the worker uid
-// after the rebase driver's root git ops (planning#146). A rebase rewrites BOTH as
-// root:root, and because the driver dispatches turns with `postTurn: "none"`
-// the normal post-turn handoff never runs — so without the worktree handback the
-// non-root agent can run git but can't EDIT the conflicted files it must
-// resolve. Shared with the session-setup + fork-merge paths via
-// `handWorkspaceBackToWorker` (session-worker-uid.ts); no-op when the flag is
-// unset.
+// Hand the whole session workspace (worktree + `.git`) back after the driver's
+// git ops (planning#146). A rebase rewrites BOTH, and because the driver
+// dispatches turns with `postTurn: "none"` the normal post-turn handoff never
+// runs — so without this the non-root agent can be left unable to run git or to
+// EDIT the conflicted files it must resolve. Shared with the session-setup +
+// fork-merge paths via `handWorkspaceBackToWorker` (session-worker-uid.ts).
+//
+// planning#412 — this used to say those ops "run as root" and rewrite the tree
+// "as root:root". They do NOT. Every git here goes through
+// `createGitManager(sessionDir)` → `safeSimpleGit(sessionDir)`, and since
+// docs/266-orchestrator-git-trust-boundary E1 that drops to the session's own
+// identity (`git-tree-uid.ts` → `session-identity.ts`), so the rebase writes
+// `.git` and worktree files owned by the session. The tree is an EXISTING
+// session clone, which is exactly the case the drop covers — a tree a git op
+// CREATES is the case it does not (`git-hooks-guard.ts`), and this driver
+// creates none.
+//
+// What the handback is for now: `.git` is reconciled with `resolveGitDirOwner`
+// — the identity that will next RUN git in it, which is not always the recorded
+// one — and the worktree is handed to the identity the container runs as. Both
+// halves self-gate, and both are no-ops where no identity resolves (local mode,
+// dev, tests), which is also the only place these ops still write as root.
 
 /**
  * Maximum number of conflict iterations before bailing out. A multi-commit
@@ -485,13 +499,13 @@ export async function runRebaseFlow(
         conflicts: result.conflicts.map((c) => ({ path: c.path })),
       });
 
-      // planning#146: `git.rebase` above ran as the root orchestrator and re-rooted
-      // BOTH `.git` AND the worktree — including the conflicted files this turn's
-      // agent must EDIT. Hand the whole workspace back to the worker uid BEFORE
-      // the resolution turn so the non-root agent can both run git and write the
-      // conflicted files (the root orchestrator can still operate the
-      // worker-owned tree via the `safe.directory=*` global config). No-op when
-      // the flag is unset.
+      // planning#146: `git.rebase` above rewrote BOTH `.git` AND the worktree —
+      // including the conflicted files this turn's agent must EDIT. Hand the
+      // whole workspace back BEFORE the resolution turn so the non-root agent
+      // can both run git and write those files. See the file-header note: since
+      // docs/266-orchestrator-git-trust-boundary E1 that rebase runs as the
+      // session's identity and does not leave the tree root-owned, so this is
+      // the `.git`/worktree ownership reconciliation, not a root repair.
       handWorkspaceBackToWorker(runner.sessionDir);
 
       const prompt = buildRebaseConflictPrompt(baseBranch, result.conflicts);
@@ -588,15 +602,18 @@ export async function runRebaseFlow(
     // would otherwise start against the stubs, which is the exact failure this
     // closes. Non-LFS repos pay one `git grep` for that ordering.
     if (worktreeRewritten) await restoreLfsForSync(deps, baseBranch);
-    // planning#146 / docs/150 §7: every orchestrator git op above (fetch, rebase,
-    // rebaseContinue, stageAll, forcePush, rebaseAbort) runs as root and leaves
-    // BOTH `.git` and the rewritten worktree files root-owned. Unlike a normal
-    // turn, the rebase driver dispatches its resolution turns with
-    // `postTurn: "none"`, which elides the post-turn handoff — so without this
-    // the non-root agent's next in-container `git` fails on a root-owned `.git`
-    // AND a later turn can't edit any rebase-rewritten file. Hand the whole
-    // workspace back on every exit path (clean, resolved, up-to-date, abort,
-    // throw). No-op when the flag is unset.
+    // planning#146 / docs/150 §7: every orchestrator git op above (fetch,
+    // rebase, rebaseContinue, stageAll, forcePush, rebaseAbort) rewrites BOTH
+    // `.git` and worktree files. Unlike a normal turn, the rebase driver
+    // dispatches its resolution turns with `postTurn: "none"`, which elides the
+    // post-turn handoff — so this is the ONLY place either half is reconciled
+    // on this path. Hand the whole workspace back on every exit path (clean,
+    // resolved, up-to-date, abort, throw).
+    //
+    // planning#412 — those ops do not leave the tree root-owned; they run as
+    // the session's identity (file-header note). What the agent would hit
+    // without this is `.git` handed to a uid other than the one that will run
+    // git in it, not a `root:root` tree.
     handWorkspaceBackToWorker(runner.sessionDir);
     // planning#338 — release the flow's hold, then start the head of the queue.
     // Skipped while a DISPLACING turn still owns the runner (`running` — it is
@@ -932,9 +949,10 @@ export async function runAutoResolveAttempt(
   try {
     if (await git.isRebaseInProgress()) {
       try { await git.rebaseAbort(); } catch { /* may already be aborted */ }
-      // planning#146: the abort above ran as root and may have re-rooted `.git` +
-      // worktree; hand the whole workspace back so the next agent op isn't
-      // blocked on a root-owned tree.
+      // planning#146: the abort above rewrote `.git` + worktree; hand the whole
+      // workspace back so the next agent op isn't blocked on a `.git` owned by
+      // someone other than the uid that runs git in it. (It ran as the session's
+      // identity, not as root — file-header note.)
       handWorkspaceBackToWorker(runner.sessionDir);
       return { outcome: "deferred", lastError: "stale_rebase", didWork: false };
     }
@@ -1036,11 +1054,12 @@ export async function runAutoResolveAttempt(
   const winner = await Promise.race([flowPromise, timeoutPromise]);
   settled = true;
   if (timeoutHandle) clearTimeout(timeoutHandle);
-  // planning#146: on the timeout path the teardown's `git.rebaseAbort()` ran as root
-  // (and resolves the race only after it completes), so `.git` + worktree can be
-  // left root-owned without `runRebaseFlow`'s finally having the last write. Hand
-  // the whole workspace back here too — redundant but harmless on the normal
-  // path. No-op when the flag is unset.
+  // planning#146: on the timeout path the teardown's `git.rebaseAbort()`
+  // resolves the race only after it completes, so `.git` + worktree can be left
+  // rewritten without `runRebaseFlow`'s finally having the last write. Hand the
+  // whole workspace back here too — redundant but harmless on the normal path.
+  // (That abort runs as the session's identity, not as root — file-header note;
+  // what is owed afterwards is the ownership reconciliation, not a root repair.)
   handWorkspaceBackToWorker(runner.sessionDir);
   // nikzlabs/shipit#2349 — and restore LFS content here too, even though
   // `runRebaseFlow`'s own finally will restore as it unwinds. On the TIMEOUT path

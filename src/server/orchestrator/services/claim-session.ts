@@ -451,11 +451,22 @@ export function createClaimSessionService(deps: ClaimSessionDeps): ClaimSessionS
         await materializeLfsWithWarning(workspaceDir, url, (message) =>
           deps.sseBroadcast("error", { message }),
         );
-        // docs/150 §7 addendum (planning#147): hand the workspace back to the worker
-        // uid after the root orchestrator's fetch + `checkout -b` + ref
-        // realignment. `checkout -b <resetTarget>` re-materializes the WORKTREE,
-        // so hand back both worktree AND `.git` — `.git` alone leaves the
-        // cloned/branched files root-owned and uneditable by the non-root agent.
+        // docs/150 §7 addendum (planning#147): hand back both worktree AND
+        // `.git`, because `checkout -b <resetTarget>` re-materializes the
+        // WORKTREE and not just `.git`.
+        //
+        // planning#412 — the tree this repairs is the one `cloneFromCache` just
+        // CREATED. That clone is a bare `safeSimpleGit()` naming no directory to
+        // stat, so it is the one git here that runs as root and lands
+        // `root:root`; `cloneFromCache` hands it over before returning
+        // (`repo-git.ts`), and the fetch, `checkout -b`, ref realignment and LFS
+        // pull above then all drop to this session's identity through
+        // `safeSimpleGit(workspaceDir)` / `gitSpawnOverridesForTree` and write
+        // worker-owned files. So this call's job is reconciling `.git` with
+        // `resolveGitDirOwner` — the uid that will next RUN git in it — and
+        // handing the worktree to the identity the container runs as. No-op
+        // wherever no identity resolves (local mode, dev, tests), which is also
+        // the only place the ops above still write as root.
         handWorkspaceBackToWorker(workspaceDir);
 
         deps.sessionManager.setRemoteUrl(appSessionId, url);

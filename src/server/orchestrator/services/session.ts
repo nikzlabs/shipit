@@ -272,7 +272,11 @@ export async function unarchiveSession(
     // docs/231 — the `checkout -b` above wrote LFS pointer stubs (the
     // orchestrator's smudge filter is off by design), so restore real content.
     // Runs after the credential helper is in place — a private repo's LFS
-    // endpoint needs it — and re-chowns because the pull writes as root.
+    // endpoint needs it — and re-chowns after it. planning#412: not because the
+    // pull writes as root (since docs/266-orchestrator-git-trust-boundary E1 it
+    // drops to this session's identity, `git-lfs.ts`), but because the pull
+    // rewrites worktree content and `.git/lfs` metadata, which is exactly what
+    // `handWorkspaceBackToWorker` reconciles.
     await materializeLfsAndChown(session.workspaceDir, session.remoteUrl);
 
     sessionManager.setBranch(sessionId, newBranch);
@@ -436,9 +440,18 @@ async function restoreSessionWorkspaceImpl(
         + `recreated off ${startPoint ?? "HEAD"}; unpushed commits (if any) were lost`,
       );
     }
-    // `git checkout` rewrote the worktree as the root orchestrator; hand it back
-    // to the worker uid so the non-root agent can edit tracked files (docs/150 §7).
-    // docs/270 — object-aware, for the hardlink reason above.
+    // `git checkout` rewrote the worktree; hand it back so the non-root agent
+    // can edit tracked files (docs/150 §7). docs/270 — object-aware, for the
+    // hardlink reason above.
+    //
+    // planning#412 — that checkout does NOT run as the root orchestrator. It
+    // goes through `safeSimpleGit(session.workspaceDir)`, which since
+    // docs/266-orchestrator-git-trust-boundary E1 drops to the session's
+    // identity on this existing tree. The root git on this path is
+    // `cloneFromCache`'s bare `safeSimpleGit()` clone above, which names no
+    // directory to stat and so lands `root:root` — and which hands its own tree
+    // over before returning (`repo-git.ts`). This call reconciles `.git` with
+    // `resolveGitDirOwner` and the worktree with the container's identity.
     handWorkspaceBackToWorker(session.workspaceDir);
   }
 
