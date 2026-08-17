@@ -102,13 +102,26 @@ prune_build_artifacts() {
   # cache (entries reachable from prior builds' intermediate stages) is
   # skipped and the cache snowballs across deploys.
   #
-  # Cap the cache at 10 GB via a size-based filter. Time-based filters
+  # Cap the cache at 15 GB via a size-based filter. Time-based filters
   # (`--filter until=72h` / `--filter unused-for=72h`) do NOT work in our
   # build → prune flow: both translate to BuildKit's `KeepDuration`,
   # which is checked against `last_used`, and the build we just ran
   # refreshed `last_used` on every layer it touched. Tested on prod:
   # 0 B reclaimed against 83 GB of reclaimable cache. See the BuildKit
   # source at moby/buildkit's cache/manager.go for the comparison logic.
+  #
+  # On the 15 GB number: a measured prod cache was 9.115 GB, of which
+  # ~2.66 GB was the build that had just run and ~6.45 GB was the prior
+  # generation. So one generation is roughly 3 GB and the cap needs room
+  # for the live one plus enough history that a rebuild of an unchanged
+  # layer stays a cache hit. 10 GB left only ~0.9 GB of headroom — close
+  # enough that the next toolchain addition would have started evicting
+  # the LIVE generation, and eviction is oldest-by-`last_used` over a set
+  # the just-finished build all refreshed at once, so what it takes is
+  # near-arbitrary: it could as easily be the 1.4 GB Playwright/Chrome
+  # layer or the 1.6 GB `/root/.npm` cache mount as something stale.
+  # 15 GB holds the live generation plus two, and still bounds the disk.
+  # Revisit if `docker buildx du` starts reporting totals near it.
   #
   # `--max-used-space` is the semantically-correct flag (caps total
   # cache size, prunes oldest-by-last-used to stay under) but requires
@@ -117,8 +130,8 @@ prune_build_artifacts() {
   # also acts as a cap (keepBytes = max(MaxUsedSpace, ReservedSpace) in
   # the GC, with MaxUsedSpace=0 when unset). The final unfiltered
   # `-af` is the nuke fallback if neither flag is recognized.
-  docker builder prune -af --max-used-space 10GB \
-    || docker builder prune -af --keep-storage 10GB \
+  docker builder prune -af --max-used-space 15GB \
+    || docker builder prune -af --keep-storage 15GB \
     || docker builder prune -af \
     || true
 }
