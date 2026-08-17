@@ -5,6 +5,7 @@ import { ICON_SIZE } from "../design-tokens.js";
 import { useApi } from "../hooks/useApi.js";
 import { Badge } from "./ui/badge.js";
 import type {
+  CredentialRoute,
   LimitsRefreshOutcome,
   LimitsRefreshResult,
   SubscriptionLimits,
@@ -12,6 +13,12 @@ import type {
   SubscriptionLimitsWindow,
 } from "../../server/shared/types.js";
 import { useSettingsStore } from "../stores/settings-store.js";
+import { useUiStore } from "../stores/ui-store.js";
+import {
+  credentialStatusWord,
+  isUnconnectedAttempt,
+  type CredentialStatusWord,
+} from "../utils/credential-state.js";
 import { serviceLabel } from "../utils/service-label.js";
 import { allServices, nativeServiceForHarness } from "../../server/shared/catalogue/index.js";
 
@@ -116,18 +123,20 @@ interface SubscriptionLimitsBadgeProps {
  */
 export function SubscriptionLimitsBadge({ limits, autoRefresh }: SubscriptionLimitsBadgeProps) {
   const accounts = useSettingsStore((s) => s.providerAccounts);
-  const pills = buildPills(limits, accounts);
+  const routes = useSettingsStore((s) => s.credentialRoutes);
+  const pills = buildPills(limits, accounts, routes);
   if (pills.length === 0) return null;
 
   return (
     <>
-      {pills.map(({ key, serviceId, routeId, label, snapshot }) => (
+      {pills.map(({ key, serviceId, routeId, label, snapshot, attention }) => (
         <SubscriptionLimitPill
           key={key}
           serviceId={serviceId}
           routeId={routeId}
           label={label}
           snapshot={snapshot}
+          {...(attention ? { attention } : {})}
           // Anthropic is the only service with an on-demand /api/oauth/usage
           // refresh endpoint; every other group's numbers are event-fed only.
           showRefresh={serviceId === "anthropic"}
@@ -144,6 +153,7 @@ interface SubscriptionPill {
   routeId: string;
   label: string;
   snapshot?: SubscriptionLimits;
+  attention?: CredentialStatusWord;
 }
 
 /**
@@ -157,12 +167,21 @@ interface SubscriptionPill {
  */
 export function useSubscriptionPillCount(limits: SubscriptionLimitsMap): number {
   const accounts = useSettingsStore((s) => s.providerAccounts);
-  return buildPills(limits, accounts).length;
+  const routes = useSettingsStore((s) => s.credentialRoutes);
+  return buildPills(limits, accounts, routes).length;
 }
 
 function buildPills(
   limits: SubscriptionLimitsMap,
-  accounts: { id: string; serviceId: string; label: string }[],
+  accounts: CredentialRoute[],
+  /**
+   * Every credential the user holds — the superset that also carries the
+   * **supplied secrets** (an env-delivered token, a pasted plan key), which are
+   * not provider-account rows and so are absent from `accounts`. Read only for
+   * their state: what a supplied secret's pill says, and whether it gets one at
+   * all when it has never reported a quota.
+   */
+  routes: CredentialRoute[],
 ): SubscriptionPill[] {
   const pills: SubscriptionPill[] = [];
   for (const modeKey of pillOrder()) {
@@ -171,7 +190,15 @@ function buildPills(
     // planning#342 — an account row IS a credential of its service now, so
     // the pill matches on the service directly instead of mapping the row's
     // harness back to one.
-    const modeAccounts = accounts.filter((account) => account.serviceId === serviceId);
+    // A row that has never been anything but a sign-in attempt is not a
+    // credential yet ({@link isUnconnectedAttempt}), and the header must ask
+    // the same question Settings asks — a row exists from the instant *Sign
+    // in* is pressed and is deleted again if the user backs out. Without the
+    // test, starting a sign-in put a pill in the header saying the account
+    // needs reconnecting, about an account that was never connected.
+    const modeAccounts = accounts.filter(
+      (account) => account.serviceId === serviceId && !isUnconnectedAttempt(account),
+    );
 
     // Connected accounts define pill presence, not cached snapshots. A quiet
     // account may have no quota event yet, but its pill must remain available
@@ -183,19 +210,57 @@ function buildPills(
         routeId: account.id,
         label: account.label,
         snapshot: byRoute?.[account.id],
+        // A credential that cannot authenticate a turn has no quota worth
+        // reading, and the pill is the only place the header says anything
+        // about an account at all — so the state travels with it.
+        ...(credentialStatusWord(account) ? { attention: credentialStatusWord(account) } : {}),
       });
     }
 
-    // Reserved routes are not provider-account rows, so snapshots remain the
-    // only evidence that they exist. Append them after the user's account order.
+    // A supplied secret of this same subscription — `ANTHROPIC_AUTH_TOKEN`,
+    // GLM's coding-plan key. Not an account, so `accounts` does not hold it and
+    // the label stays the service's rather than inventing a name for something
+    // the user never named; but it IS a credential with a state, and planning#358
+    // records a provider refusing one exactly as it records a failed login.
+    const modeSecrets = new Map(
+      routes
+        .filter((r) => r.serviceId === serviceId && r.billingMode === "sub" && r.via === "string")
+        .map((r) => [r.id, r] as const),
+    );
+
+    // Reserved routes are not provider-account rows, so a snapshot is normally
+    // the only evidence that they exist. Append them after the user's account
+    // order.
+    const fromSnapshot = new Set<string>();
     for (const snapshot of Object.values(byRoute ?? {})) {
       if (modeAccounts.some((account) => account.id === snapshot.routeId)) continue;
+      fromSnapshot.add(snapshot.routeId);
+      const secret = modeSecrets.get(snapshot.routeId);
       pills.push({
         key: `${modeKey}:${snapshot.routeId}`,
         serviceId,
         routeId: snapshot.routeId,
         label: serviceLabel(serviceId),
         snapshot,
+        ...(secret && credentialStatusWord(secret) ? { attention: credentialStatusWord(secret) } : {}),
+      });
+    }
+
+    // ...and "normally" is the hole: a refused secret whose turns all failed may
+    // have no snapshot at all, and then the header said nothing whatsoever about
+    // the credential every turn was dying on. A supplied secret is `ready` from
+    // the moment it is stored, so this adds a pill only for one the provider has
+    // actually refused — never a second pill for a healthy one.
+    for (const secret of modeSecrets.values()) {
+      if (fromSnapshot.has(secret.id)) continue;
+      const attention = credentialStatusWord(secret);
+      if (!attention) continue;
+      pills.push({
+        key: `${modeKey}:${secret.id}`,
+        serviceId,
+        routeId: secret.id,
+        label: serviceLabel(serviceId),
+        attention,
       });
     }
   }
@@ -225,12 +290,42 @@ interface SubscriptionLimitPillProps {
   showRefresh?: boolean;
   /** See `SubscriptionLimitsBadgeProps.autoRefresh`. Only acts with `showRefresh`. */
   autoRefresh?: boolean;
+  /**
+   * This credential needs the user before it can run a turn — from
+   * {@link credentialStatusWord}. Present ⇒ the pill says so **instead of**
+   * showing meters (see {@link CredentialAttention}).
+   *
+   * Omitted by the Settings credential row, which prints the same word itself
+   * one element to the left and hides the pill entirely for a non-ready
+   * credential. The header has no such row, so there the pill carries it.
+   */
+  attention?: CredentialStatusWord;
 }
 
-export function SubscriptionLimitPill({ serviceId, routeId, label, snapshot, showRefresh, autoRefresh }: SubscriptionLimitPillProps) {
+export function SubscriptionLimitPill({ serviceId, routeId, label, snapshot, showRefresh, autoRefresh, attention }: SubscriptionLimitPillProps) {
   const now = Date.now();
   const resolvedServiceId = snapshot?.serviceId ?? serviceId;
   const resolvedRouteId = routeId ?? snapshot?.routeId;
+
+  // A broken credential's meters are worse than nothing: the numbers are real
+  // but frozen at whatever the account last reported, so the pill reads
+  // "healthy, 30% used" while every turn on that account is being refused. The
+  // user's report was exactly this — the pills worked, the commands did not,
+  // and only Settings knew why. So the state replaces the numbers rather than
+  // sitting beside them, and the refresh button goes with them: there is
+  // nothing to fetch until the sign-in is redone.
+  if (attention) {
+    return (
+      <Badge numeric className="gap-2 pl-2 pr-2 pt-0 pb-0.5 bg-(--color-bg-hover) min-w-0">
+        {label !== undefined && (
+          <span className="truncate" title={label}>
+            {label}
+          </span>
+        )}
+        <CredentialAttention attention={attention} />
+      </Badge>
+    );
+  }
 
   // The pill carries inline meters with underline gauges, so it overrides
   // Badge's symmetric padding with the asymmetric `pl-2 pr-* pt-0 pb-0.5` it
@@ -277,6 +372,37 @@ export function SubscriptionLimitPill({ serviceId, routeId, label, snapshot, sho
         />
       )}
     </Badge>
+  );
+}
+
+/**
+ * The attention word inside a header pill, and the way out of the state it
+ * names: pressing it opens Settings → Services, where the credential's remedy
+ * lives — *Reconnect* for an account, *Replace* for a supplied secret.
+ *
+ * It is a button rather than a label because the alternative is a dead end —
+ * the whole failure this fixes is a user who could see that something was
+ * wrong only after going looking for it. The word is the same one the Settings
+ * row says ({@link credentialStatusWord}), so the two surfaces cannot disagree
+ * about what is wrong or about what to do next.
+ */
+function CredentialAttention({ attention }: { attention: CredentialStatusWord }) {
+  return (
+    <button
+      type="button"
+      onClick={() => {
+        useUiStore.getState().setSettingsTab("services");
+        useUiStore.getState().setSettingsOpen(true);
+      }}
+      className={`inline-flex items-center gap-1 whitespace-nowrap hover:underline ${
+        attention.tone === "error" ? "text-(--color-error)" : "text-(--color-warning)"
+      }`}
+      title="Open Settings → Services to fix this credential"
+      data-credential-attention={attention.text}
+    >
+      <WarningCircleIcon size={ICON_SIZE.XS} weight="fill" />
+      {attention.text}
+    </button>
   );
 }
 

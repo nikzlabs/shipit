@@ -87,6 +87,7 @@ import { providerAccountAuthKey, useSettingsStore } from "../../stores/settings-
 import { useUiStore } from "../../stores/ui-store.js";
 import { ServiceLogo } from "../ServiceLogo.js";
 import { SubscriptionLimitPill } from "../SubscriptionLimitsBadge.js";
+import { isUnconnectedAttempt } from "../../utils/credential-state.js";
 import { CredentialRowShell } from "./CredentialRowShell.js";
 import { useRowDrag, type RowDragProps } from "./useRowDrag.js";
 import {
@@ -99,7 +100,6 @@ import {
   abandonAccount,
   cancelAccountLogin,
   createAccount,
-  isUnconnectedAttempt,
   providerAccountsOf,
   signInBlockedReason,
   startAccountLogin,
