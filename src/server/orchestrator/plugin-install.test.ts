@@ -27,6 +27,7 @@ import {
   PLUGIN_INSTALL_NETWORK,
 } from "./plugin-install.js";
 import { clearUntrustedContainerNetworks, isUntrustedContainerIp } from "./api-container-guard.js";
+import { handPluginCheckoutToWorker, chownTreeToSessionWorker } from "./session-worker-uid.js";
 import { readInstallRecord } from "./plugin-install-record.js";
 import { pluginWorkDir } from "./plugin-overlay.js";
 import type { PluginInstallJob } from "./plugin-generations.js";
@@ -52,6 +53,20 @@ vi.mock("./egress-proxy-install.js", async (load) => ({
   // eslint-disable-next-line no-restricted-syntax -- Vitest partial-module mock typing
   ...(await load<typeof import("./egress-proxy-install.js")>()),
   launchEgressProxy: vi.fn(async () => "proxy-id"),
+}));
+
+// planning#417 / docs/272-shared-cache-ownership req 3 — the ownership handover
+// is spied rather than faked out: WHICH helper the install path calls is the
+// whole finding, and it cannot be observed any other way. Both helpers no-op
+// below root (they resolve an identity first and return when there is none), so
+// a test that only looked at the resulting file modes would pass whichever one
+// was called — which is exactly why this shipped and had to be found by a human
+// reading two files side by side.
+vi.mock("./session-worker-uid.js", async (load) => ({
+  // eslint-disable-next-line no-restricted-syntax -- Vitest partial-module mock typing
+  ...(await load<typeof import("./session-worker-uid.js")>()),
+  handPluginCheckoutToWorker: vi.fn(),
+  chownTreeToSessionWorker: vi.fn(),
 }));
 
 /** A contained session's posture, as `ContainerSessionManager` would report it. */
@@ -292,6 +307,25 @@ describe("createPluginInstallRunner", () => {
     // while another mount holds it.
     expect(removedVolumes).toContain(createdVolumes[0]!.Name);
     expect(containers[0]!.removed).toBe(true);
+  });
+
+  it("hands the staging checkout over object-aware, never with the plain recursive chown", async () => {
+    // planning#417. `job.stagingDir` was created by `git clone --local` from the
+    // shared plugin bare cache, so `.git/objects` is HARDLINKED into it and an
+    // inode has exactly one owner across every link. The plain
+    // `chownTreeToSessionWorker` descends into those data files, so calling it
+    // here handed the CACHE's objects to whichever session installed last —
+    // chmod and rewrite rights over content every sibling session reads.
+    // `handPluginCheckoutToWorker` chowns object DIRECTORIES and never the data
+    // files, while still handing over the checkout root and every worktree file
+    // the overlayfs lower-dir constraint needs.
+    const { docker } = fakeDocker();
+    const run = createPluginInstallRunner({ docker, image: "worker:test", sessionId: "s1", stateDir });
+
+    expect(await run(job([exportWith("probe", "npm ci")]))).toEqual({ ok: true });
+
+    expect(vi.mocked(handPluginCheckoutToWorker)).toHaveBeenCalledWith(stagingDir);
+    expect(vi.mocked(chownTreeToSessionWorker)).not.toHaveBeenCalled();
   });
 
   it("wipes a half-populated layer from an earlier failed install", async () => {

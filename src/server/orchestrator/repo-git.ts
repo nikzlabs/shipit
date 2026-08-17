@@ -14,14 +14,23 @@ import {
 import { ensurePnpmStoreGitExcluded } from "../shared/git.js";
 import { hasUrlCredentials, stripRemoteUrlCredentials } from "./git-utils.js";
 import { handWorkspaceBackToWorker } from "./session-worker-uid.js";
+import { ensureSharedTreeOwnedByShipIt } from "./shared-tree-ownership.js";
 import { linkLfsObjectsIntoClone } from "./git-lfs-store.js";
 
 /**
  * Validate a bare cache directory and re-clone it from the remote if it's
  * missing or corrupt. Returns the (possibly-fresh) RepoGit instance.
  *
- * Called by every path that operates on a bare cache (claim-session,
- * unarchive). A cache can go missing for reasons outside the orchestrator's
+ * Called by MOST paths that operate on a bare cache — claim-session, unarchive,
+ * prefetch, plugin fetch. **Not all of them, and this sentence used to say "every
+ * path", which is why the docs/272 ownership gate is not here:**
+ * `warm-pool-manager.ts` builds its `RepoGit` with `createRepoGit(cacheDir)` and
+ * both fetches and clones without passing through this function. Anything that
+ * must hold for every bare-cache operation belongs on the `RepoGit` methods
+ * themselves (verified at the source, 2026-08-17,
+ * docs/272-shared-cache-ownership).
+ *
+ * A cache can go missing for reasons outside the orchestrator's
  * control — manual filesystem wipe, an unmount, an interrupted previous
  * clone — and the database record (status="ready") doesn't notice. Without
  * recovery, the next claim-session falls into a slow-path that immediately
@@ -250,6 +259,13 @@ export class RepoGit {
     } catch {
       // Marker doesn't exist — proceed with fetch
     }
+    // docs/272-shared-cache-ownership req 1 — the cache must be ShipIt's own
+    // BEFORE any git runs in it. This is the site planning#425 fails on: a cache
+    // root owned by uid 1000 makes `safeSimpleGit(this.repoDir)` drop to uid 1000,
+    // which then cannot create `refs/heads/shipit/<branch>.lock` inside a
+    // root-owned subdirectory a pre-drop build left behind. 11 refs failed on
+    // every pass, logged non-fatal. One `lstat` when the cache is already ours.
+    ensureSharedTreeOwnedByShipIt(this.repoDir, "bare-cache fetch");
     // Self-heal caches cloned before the refspec fix: without it `fetch`
     // never advances local heads and the cache HEAD stays frozen (see
     // ensureFetchRefspec). Idempotent, so cheap to run every fetch.
@@ -278,8 +294,56 @@ export class RepoGit {
    * Clone from the bare cache into a session directory using --local
    * for hardlinked objects (fast, disk-efficient on same filesystem).
    * Configures gc.auto=0 to prevent hardlink breakage.
+   *
+   * ## Which tree governs the identity this runs as (planning#428, docs/272-shared-cache-ownership req 6)
+   *
+   * This function spans two trees with two different owners, so "what uid should
+   * git run as" has to be answered for each, and the two answers are not the
+   * same mechanism. The site carried no docstring at all, and that is part of why
+   * three separate audits cleared it — including the docs/266 census, 21/21,
+   * against the build that then broke session creation in production.
+   *
+   * **The DESTINATION was already right.** `handWorkspaceBackToWorker(sessionDir)`
+   * below hands the fresh tree to the session's own identity, object-aware, before
+   * the dropped `git config` writes that follow. The long comment there argues
+   * both the ordering and the object awareness. Nothing about that half changes.
+   *
+   * **The SOURCE is what failed.** The clone below is a bare `safeSimpleGit()` —
+   * no `baseDir`, so no ownership predicate, so it runs as **root** — and once
+   * `SHIPIT_GIT_STRICT_OWNERSHIP` removes `safe.directory=*`, root reading a
+   * uid-1000 bare cache is `fatal: detected dubious ownership in repository at
+   * '<cache>'`. 6 of 10 production caches were uid 1000, so most repositories
+   * could not start a session, and the arming was rolled back on this line.
+   *
+   * So the question is narrower than "pick a uid": **as which identity may ShipIt
+   * read a shared cache it does not own?** The answer is *as itself, having first
+   * made the cache its own* — `ensureSharedTreeOwnedByShipIt` below, which is the
+   * enforcement of the invariant `resolveGitTreeUid` already assumes when it
+   * declines to drop on a root-owned tree. Both of this operation's hard
+   * constraints are properties of the SOURCE, which is why the source governs:
+   * git's ownership check tests the repository being *read*, and `clone --local`
+   * can only hardlink an object file the cloning identity may link
+   * (`/proc/sys/fs/protected_hardlinks` is 1 on the deploy hosts).
+   *
+   * The alternative — drop to the source's *current* owner and read the cache as
+   * uid 1000 — is refused for two reasons, the second being the one that
+   * generalizes: the destination's parent is a **0700 session directory owned by
+   * the session's own identity** (docs/270 req 1), so a clone running as uid 1000
+   * cannot traverse into the tree it is writing; and adopting a foreign uid to
+   * read ShipIt's own cache would run ShipIt's git as an identity of unknown
+   * provenance, which is the thing the invariant exists to prevent.
+   * `session-fork-merge.ts` drops to its source's uid for the mirror-image reason
+   * — there the source is a session workspace untrusted code can write, so
+   * reading it as root would be the escalation. A shared cache is the opposite
+   * case: nothing untrusted can write it (`buildMounts` binds the workspace,
+   * per-session credentials, uploads, scratch, session state, the plugin store,
+   * the dep cache and the pnpm store — never the cache).
    */
   async cloneFromCache(sessionDir: string, remoteUrl?: string): Promise<void> {
+    // docs/272-shared-cache-ownership req 4 — the source must be ShipIt's own
+    // before root reads it, or git refuses the repository once armed. One `lstat`
+    // when it already is.
+    ensureSharedTreeOwnedByShipIt(this.repoDir, "session clone from bare cache");
     // git clone --local creates hardlinks for objects on the same volume
     await safeSimpleGit().raw(["clone", "--local", this.repoDir, sessionDir]);
     // docs/232 — `clone --local` hardlinks `.git/objects` but does NOT carry
@@ -387,8 +451,13 @@ export class RepoGit {
         const proc = spawn(
           "git",
           gitArgsWithHooksDisabled(["merge-base", "--is-ancestor", ancestor, descendant]),
-          // The bare cache is ShipIt's own and root-owned, so the docs/266 drop
-          // is a no-op — but it is resolved from the filesystem, not assumed.
+          // docs/272-shared-cache-ownership — resolved from the filesystem, not
+          // assumed, and this comment used to assume it: it said "the bare cache
+          // is ShipIt's own and root-owned, so the drop is a no-op". Root-owned
+          // was a claim about the disk that planning#428 disproved. The drop is a
+          // no-op *because* the gate in `fetchCache`/`cloneFromCache` has made
+          // this tree ShipIt's own; a foreign uid resolving here means that
+          // repair failed, and `resolveGitTreeUid` says so once per tree.
           { cwd: this.repoDir, stdio: "ignore", ...gitSpawnOverridesForTree(this.repoDir) },
         );
         proc.on("error", () => resolve(false));

@@ -132,11 +132,20 @@ This is the shape with no ownership predicate. Its purpose is always `clone`,
 and the hazard is always the **destination**: root leaves it `root:root`, and the
 next `safeSimpleGit(<destination>)` drops to that path's session uid.
 
-| Site | Source tree | Destination handled? |
-|---|---|---|
-| `repo-git.ts:284` `cloneFromCache` | shared bare cache, root-owned | ✅ `handWorkspaceBackToWorker(sessionDir)` before the `config` writes — fixed by docs/270, which documents the exact reasoning |
-| `services/marketplace.ts` `cloneCatalog` | a URL — no local source tree | ✅ n/a — the marketplace cache is ShipIt's own, not a session's |
-| `plugin-generations.ts:1114` `checkoutCommit` | plugin bare cache, root-owned | ❌ **was the gap — fixed in this change** |
+**Read the "Source tree" column as a question, not a clearance — that is the
+planning#428 correction.** This table asked "is the destination handled?" and
+answered the source column from the code rather than from the disk. It was
+wrong about the disk, and the site it cleared is the one that broke production:
+6 of 10 caches were owned by uid 1000, root reading one is `fatal: detected
+dubious ownership`, and most repositories could not start a session while armed.
+Both questions now have to be answered per site, and the CI census enforces both
+(docs/272-shared-cache-ownership req 7).
+
+| Site | Source tree | Source handled? | Destination handled? |
+|---|---|---|---|
+| `repo-git.ts:284` `cloneFromCache` | shared bare cache | ✅ **as of docs/272** — `ensureSharedTreeOwnedByShipIt(this.repoDir)` makes the cache ShipIt's own before the clone. Previously ⚠️ "root-owned" on the strength of the code; the disk disagreed (planning#428) | ✅ `handWorkspaceBackToWorker(sessionDir)` before the `config` writes — fixed by docs/270, which documents the exact reasoning |
+| `services/marketplace.ts` `cloneCatalog` | a URL — no local source tree | ✅ n/a — nothing local to own | ✅ n/a as a *session* handover — the marketplace cache is ShipIt's own. Its ownership is now kept so by the boot pass (docs/272), which is what planning#418 lacked |
+| `plugin-generations.ts:1114` `checkoutCommit` | plugin bare cache | ✅ **as of docs/272** — same `repo-cache/<hash>` root, same enforcement, reached through `RepoGit.fetchCache` | ✅ handback added by planning#410 — **was the gap** |
 
 `services/session-fork-merge.ts` used to be a fourth. planning#407 converted it:
 it creates the destination, hands it to the source session's identity, and clones
@@ -186,8 +195,32 @@ disagreement between the tree and its `.git/objects` before anything else.
 
 `services/marketplace.ts` recovers from its own instance (it rebuilds the cache,
 which makes ownership uniform again) and logs all three trees plus the uid the
-resolver chose. Neither is a general fix; the general question — whether the
-resolver should consult `.git/objects` rather than the tree root — is open.
+resolver chose. Neither is a general fix.
+
+### The general question, now answered (docs/272-shared-cache-ownership)
+
+> *Should the resolver consult `.git/objects` rather than the tree root?*
+
+**No, and the ⚠️ rows above are no longer ⚠️ for the trees ShipIt owns.** Neither
+half of that question has a good answer: statting the whole tree is O(tree) per
+git invocation, and statting a *sample* — `.git/objects` being the candidate —
+trades one silent wrong answer for another, because nothing makes the sample
+representative. Underneath both is the reason it cannot be fixed at the resolver
+at all: a **mixed** tree has no correct uid to return. Root can write all of it
+but running root over a tree a non-root uid owns is the escalation this whole
+feature exists to prevent; the tree's own owner cannot write the parts belonging
+to anyone else, which is precisely the observed prefetch failure.
+
+So the mixed state is ended rather than resolved.
+`orchestrator/shared-tree-ownership.ts` makes "this tree is ShipIt's own" a
+repaired condition — one `lstat` before any git touches a shared cache, plus a
+boot pass that clears the hardlink drift a top-level stat cannot see. The
+resolver keeps its single stat and its "root-owned tree ⇒ no drop" clearance, and
+the uniformity that clearance assumes now has an owner.
+
+**And the warning above generalizes, so keep it:** "root-owned is a fact about the
+disk, not a guarantee" was right, and the answer is not a better audit — an audit
+records the disk at one moment. It is enforcement at the operation.
 
 ## Table C — the gap, and what it would have done
 

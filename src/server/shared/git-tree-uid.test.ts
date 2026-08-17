@@ -9,7 +9,10 @@
  * is not.
  */
 
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import {
   resolveGitTreeUid,
   gitSpawnOverridesForTree,
@@ -94,6 +97,67 @@ describe("resolveGitTreeUid under per-session identities (docs/270)", () => {
     // Local mode and every test: docs/266's behaviour, byte for byte.
     expect(resolveGitTreeUid("/workspace/sessions/s1/workspace", asRoot({ uid: 1000, gid: 1000 })))
       .toEqual({ uid: 1000, gid: 1000 });
+  });
+});
+
+/**
+ * docs/272-shared-cache-ownership req 8 — the once-per-tree diagnostic on the
+ * non-session fall-through.
+ *
+ * Pinned because an independent review read it as firing for every session
+ * workspace under per-session uids, which would make it a stream of false
+ * positives telling the operator a session's tree "belongs to no session". It
+ * does not: `sessionIdForPath` returns on the line above, and BOTH roots are
+ * configured in production (`index.ts` passes `sessionsRoot` and
+ * `credentialsSessionsRoot`). That was verified at the source — and a verified
+ * argument is worth less than an enforced one, so it is a test.
+ */
+describe("the foreign-tree diagnostic (docs/272-shared-cache-ownership)", () => {
+  let warn: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  it("says nothing for a session workspace, however the tree is owned", () => {
+    // A real session directory, so the session record resolves the way it does in
+    // production rather than falling back. Its owner is whoever runs the test.
+    const sessionsRoot = fs.mkdtempSync(path.join(os.tmpdir(), "shipit-git-tree-uid-"));
+    const sessionDir = path.join(sessionsRoot, "s1");
+    fs.mkdirSync(sessionDir);
+    configureSessionIdentityRoots({ sessionsRoot });
+    try {
+      // The tree claims a per-session worker uid — the shape the review expected
+      // to trip the log.
+      const resolved = resolveGitTreeUid(
+        path.join(sessionDir, "workspace"),
+        asRoot({ uid: 2_000_024, gid: 2_000_024 }),
+      );
+      // Answered from the session's own directory, not from the tree…
+      expect(resolved).toEqual({ uid: process.getuid?.(), gid: process.getgid?.() });
+      // …so the fall-through, and its log, are never reached.
+      expect(warn).not.toHaveBeenCalled();
+    } finally {
+      fs.rmSync(sessionsRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("says nothing for a root-owned shared cache — the healthy steady state", () => {
+    configureSessionIdentityRoots({ sessionsRoot: "/workspace/sessions" });
+    expect(resolveGitTreeUid("/workspace/repo-cache/abc", asRoot({ uid: 0, gid: 0 }))).toBeNull();
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("names the drop once per tree when a non-session tree IS foreign", () => {
+    // The planning#425 shape: a shared cache left uid-1000-owned by an unknown
+    // writer. Two calls, one line — the drop itself stays uncached and per-call.
+    configureSessionIdentityRoots({ sessionsRoot: "/workspace/sessions" });
+    const cache = `/workspace/repo-cache/${Math.abs(process.pid)}-once`;
+    resolveGitTreeUid(cache, asRoot({ uid: 1000, gid: 1000 }));
+    resolveGitTreeUid(cache, asRoot({ uid: 1000, gid: 1000 }));
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]!.join(" ")).toContain("not uniformly owned");
   });
 });
 

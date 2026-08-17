@@ -123,6 +123,9 @@ import type { RepoGit, GitRemoteCredential } from "./repo-git.js";
 import { getRepoScopedGitCredential } from "./services/github.js";
 import { repoUrlToHash, parseGitHubRemote } from "./git-utils.js";
 import { sessionCredentialsRoot } from "./session-credentials.js";
+import { bareCacheRoot } from "./session-dir-factory.js";
+import { getCatalogCacheRoot } from "./services/marketplace.js";
+import { reclaimSharedTreesUnder } from "./shared-tree-ownership.js";
 import { getMessage, sleep, defaultRunDocker, reclaimRegenerableSessionDirs } from "./disk-utils.js";
 
 export interface DiskJanitorDeps {
@@ -228,6 +231,12 @@ export interface DiskJanitorResult {
   orphanEgressSidecarsRemoved: number;
   /** docs/262 — plugin install containers left behind by a previous process. */
   orphanPluginInstallsRemoved: number;
+  /**
+   * docs/272-shared-cache-ownership — nodes under the shared git caches
+   * (`repo-cache/`, `marketplace-cache/`) handed back to the orchestrator's own
+   * identity. Nonzero means drift was found; a steady deployment reports 0.
+   */
+  sharedTreeNodesReclaimed: number;
 }
 
 /**
@@ -256,6 +265,7 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
     logDirsRemoved: 0,
     orphanEgressSidecarsRemoved: 0,
     orphanPluginInstallsRemoved: 0,
+    sharedTreeNodesReclaimed: 0,
   };
   const runDocker = deps.runDocker ?? defaultRunDocker;
   const paceMs = deps.paceMs ?? 0;
@@ -312,6 +322,21 @@ export async function runDiskJanitor(deps: DiskJanitorDeps): Promise<DiskJanitor
     );
   } catch (err) {
     console.warn("[disk-janitor] nm-store sweep failed:", getMessage(err));
+  }
+
+  // docs/272-shared-cache-ownership req 1/2 — the shared git trees ShipIt owns
+  // outside any session. Boot-only is the right cadence per CLAUDE.md's split:
+  // ownership drift is leftover state from previous incarnations (a pre-drop build
+  // writing as root inside a uid-1000 tree; a hardlinked chown from a plugin
+  // install), not something that grows with the clock. The cheap gate in
+  // `RepoGit` handles anything that appears while the process is up; this is the
+  // pass that repairs what is already on disk, including the object-file drift no
+  // top-level stat can see. Idempotent — a uniform tree costs one lstat per node
+  // and zero chowns — and inert below root, so every test and local mode skip it.
+  try {
+    result.sharedTreeNodesReclaimed = reclaimSharedTrees(deps.stateDir);
+  } catch (err) {
+    console.warn("[disk-janitor] shared-cache ownership pass failed:", getMessage(err));
   }
 
   if (deps.credentialsDir) {
@@ -809,6 +834,33 @@ async function sweepDeadNmStores(
     }
   }
   return removed;
+}
+
+/**
+ * docs/272-shared-cache-ownership req 1/2 — hand every shared git tree back to
+ * the orchestrator's own identity.
+ *
+ * Both roots, and both for reasons the class already proved. `repo-cache/` is
+ * where planning#425 and planning#428 live, and it holds the plugin bare caches
+ * too (`getBareCacheDir` is the same helper for both), so one pass covers the
+ * whole of planning#417's cache side. `marketplace-cache/` is planning#418's tree:
+ * that issue made a broken catalog cache *recoverable* but never addressed the
+ * ownership drift that broke it, and its write-up records the cause as
+ * undetermined — a root process getting `insufficient permission for adding an
+ * object`, which is this class's signature.
+ *
+ * Synchronous and unpaced, unlike the reclaims around it. Those delete things and
+ * hammer the Docker daemon; this one `lstat`s and occasionally `lchown`s, both
+ * cheap and neither destructive, and pacing it would stretch a bounded walk
+ * across the window in which the first claim arrives.
+ */
+function reclaimSharedTrees(stateDir: string): number {
+  const roots = [bareCacheRoot(stateDir), getCatalogCacheRoot(stateDir)];
+  let reclaimed = 0;
+  for (const root of roots) {
+    reclaimed += reclaimSharedTreesUnder(root, "boot ownership pass").chowned;
+  }
+  return reclaimed;
 }
 
 /**
