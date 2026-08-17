@@ -26,7 +26,7 @@
 
 import { Children, forwardRef, type ComponentPropsWithoutRef, type ReactNode } from "react";
 import { CaretDownIcon, CheckIcon, LockIcon } from "@phosphor-icons/react";
-import { ICON_SIZE } from "../../design-tokens.js";
+import { INSET_FOCUS_RING, ICON_SIZE } from "../../design-tokens.js";
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -38,9 +38,16 @@ import {
 /**
  * The trigger's own classes, exported so the guard test has one string to
  * compare rather than a rendered snapshot to eyeball.
+ *
+ * The focus ring is {@link INSET_FOCUS_RING} rather than the UA default
+ * because three of these live inside the composer's `overflow-hidden` clipping
+ * group, which shaved the default ring off on every side; that constant's
+ * docstring has the mechanism. It is set here, on the shared control, rather
+ * than at the composer's three call sites, so a picker cannot pick up the
+ * clipped ring by being mounted somewhere new.
  */
 export const PICKER_TRIGGER_CLASS =
-  "flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-lg transition-colors font-medium text-(--color-text-secondary) disabled:opacity-50 disabled:cursor-not-allowed";
+  `flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-lg transition-colors font-medium text-(--color-text-secondary) disabled:opacity-50 disabled:cursor-not-allowed ${INSET_FOCUS_RING}`;
 
 interface PickerTriggerProps extends ComponentPropsWithoutRef<"button"> {
   /** What the control currently holds. Never empty — a blank trigger is unclickable-looking. */

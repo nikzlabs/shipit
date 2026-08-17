@@ -5,6 +5,7 @@ import type { PermissionMode } from "../../server/shared/types.js";
 import { useSessionStore } from "../stores/session-store.js";
 import { usePrStore } from "../stores/pr-store.js";
 import { useSettingsStore } from "../stores/settings-store.js";
+import { INSET_FOCUS_RING } from "../design-tokens.js";
 
 afterEach(cleanup);
 
@@ -922,6 +923,50 @@ describe("MessageInput", () => {
       const mode = screen.getByTestId("permission-mode-selector");
       expect(mode).toHaveTextContent("Guarded");
       expect(mode).not.toHaveTextContent("Guarded mode");
+    });
+
+    /**
+     * The clipping groups above are what makes this a guard rather than a style
+     * preference: their content box hugs the buttons, so ANY focus indicator
+     * painted outside a control's border box — the UA's own outline, or a
+     * non-inset Tailwind `ring-*` — is shaved off on all four sides, and the
+     * control reads as having a broken selected state. It is silent to every
+     * other test here, because the markup is correct and only the paint is wrong.
+     *
+     * Asserted on the whole row, not only on the controls the group currently
+     * contains: which of them sit inside it is a layout detail that has already
+     * changed once (req 3 moved four of them into one anchor), and a row where
+     * one button's ring is a different shape from its neighbours' is its own
+     * defect.
+     */
+    it("draws every toolbar control's focus ring inside its border box", () => {
+      const inset = INSET_FOCUS_RING.split(" ");
+
+      // Reasoning is absent from this list because the fixture's agent has no
+      // reasoning knob, so its trigger self-hides. It costs nothing: it renders
+      // the same `PICKER_TRIGGER_CLASS` as harness and model, and
+      // `picker-consistency.test.tsx` asserts that string on all eight pickers.
+      renderComposer(760, { permissionMode: "guarded" });
+      for (const id of [
+        "context-dial",
+        "harness-trigger",
+        "model-trigger",
+        "permission-mode-selector",
+      ]) {
+        const control = screen.getByTestId(id);
+        for (const cls of inset) {
+          expect(`${id}: ${control.className}`).toContain(cls);
+        }
+      }
+      cleanup();
+
+      renderComposer(520);
+      for (const id of ["composer-settings-trigger", "context-dial"]) {
+        const control = screen.getByTestId(id);
+        for (const cls of inset) {
+          expect(`${id}: ${control.className}`).toContain(cls);
+        }
+      }
     });
   });
 

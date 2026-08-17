@@ -13,7 +13,7 @@ import {
   SlidersHorizontalIcon,
   SparkleIcon,
 } from "@phosphor-icons/react";
-import { ICON_SIZE } from "../../design-tokens.js";
+import { INSET_FOCUS_RING, ICON_SIZE } from "../../design-tokens.js";
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -294,7 +294,7 @@ export function ComposerSettingsMenu({
           // `flex-[0_1_auto] min-w-0` is what makes the model name the elastic
           // thing in the row: it is the only item allowed to shrink, so it
           // truncates before anything else is clipped (req 8).
-          className="flex flex-[0_1_auto] min-w-0 items-center gap-1.5 overflow-hidden rounded-lg p-1.5 text-xs font-medium text-(--color-text-secondary) transition-colors hover:bg-(--color-bg-hover) disabled:cursor-not-allowed disabled:opacity-50"
+          className={`flex flex-[0_1_auto] min-w-0 items-center gap-1.5 overflow-hidden rounded-lg p-1.5 text-xs font-medium text-(--color-text-secondary) transition-colors hover:bg-(--color-bg-hover) disabled:cursor-not-allowed disabled:opacity-50 ${INSET_FOCUS_RING}`}
         >
           <SlidersHorizontalIcon
             size={ICON_SIZE.SM}
