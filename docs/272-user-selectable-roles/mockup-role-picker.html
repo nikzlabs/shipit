@@ -1,0 +1,434 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>User-selectable roles — picker prototype</title>
+<style>
+  :root {
+    --bg-page: #0a0a0b;
+    --bg-modal: #111113;
+    --bg-secondary: #18181b;
+    --bg-elevated: #1f1f23;
+    --bg-hover: #26262b;
+    --border: #2a2a30;
+    --border-soft: #1f1f24;
+    --text-primary: #ececee;
+    --text-secondary: #a1a1aa;
+    --text-tertiary: #6b6b74;
+    --accent: #6366f1;
+    --accent-soft: #818cf8;
+    --success: #22c55e;
+    --warning: #f59e0b;
+    --danger: #ef4444;
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background:
+      radial-gradient(1200px 600px at 80% -10%, #15151a 0%, transparent 60%),
+      var(--bg-page);
+    color: var(--text-primary);
+    padding: 40px 24px 90px;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; }
+  .page-title { font-size: 20px; font-weight: 600; margin: 0 0 6px; }
+  .page-sub { font-size: 13px; color: var(--text-secondary); line-height: 1.65; margin: 0 0 8px; max-width: 78ch; }
+  .req { color: var(--accent-soft); font-size: 12px; }
+  code.k {
+    background: var(--bg-secondary); border: 1px solid var(--border-soft);
+    padding: 1px 5px; border-radius: 4px; font-size: 12px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  .section {
+    margin: 44px 0 0; padding-top: 26px; border-top: 1px solid var(--border-soft);
+  }
+  .section:first-of-type { border-top: 0; }
+  .section-label {
+    font-size: 11px; letter-spacing: .09em; text-transform: uppercase;
+    color: var(--text-tertiary); margin: 0 0 14px;
+    display: flex; align-items: baseline; gap: 10px;
+  }
+  .section-label .n {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 18px; height: 18px; border-radius: 50%;
+    background: var(--bg-elevated); border: 1px solid var(--border);
+    color: var(--text-secondary); font-size: 10px; letter-spacing: 0;
+  }
+  .note {
+    font-size: 12px; color: var(--text-secondary); line-height: 1.65;
+    background: var(--bg-secondary); border: 1px solid var(--border-soft);
+    border-left: 2px solid var(--accent); border-radius: 0 8px 8px 0;
+    padding: 10px 14px; margin: 14px 0 0; max-width: 80ch;
+  }
+  .note.warn { border-left-color: var(--warning); }
+  .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; align-items: start; }
+  .stack { display: flex; flex-direction: column; gap: 18px; }
+
+  /* ---- composer ---- */
+  .composer {
+    background: var(--bg-modal); border: 1px solid var(--border);
+    border-radius: 14px; padding: 12px 12px 10px;
+  }
+  .composer .field {
+    color: var(--text-tertiary); font-size: 13.5px; padding: 6px 4px 16px;
+  }
+  .toolbar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: var(--bg-elevated); border: 1px solid var(--border);
+    color: var(--text-secondary); border-radius: 8px;
+    padding: 5px 9px; font-size: 12px; white-space: nowrap;
+  }
+  .chip .car { color: var(--text-tertiary); font-size: 9px; }
+  .chip.model { color: var(--text-primary); }
+  .chip.open { border-color: var(--accent); background: var(--bg-hover); color: var(--text-primary); }
+  .chip .sep { color: var(--text-tertiary); }
+  .chip .role {
+    color: var(--accent-soft); display: inline-flex; align-items: center; gap: 4px;
+  }
+  .dot { width: 5px; height: 5px; border-radius: 50%; background: var(--accent-soft); display: inline-block; }
+  .spacer { flex: 1; }
+  .send {
+    width: 28px; height: 28px; border-radius: 8px; background: var(--accent);
+    display: inline-flex; align-items: center; justify-content: center; color: #fff; font-size: 13px;
+  }
+  .glyph { width: 13px; height: 13px; display: inline-block; vertical-align: -2px; }
+
+  /* ---- menu ---- */
+  .menu {
+    width: 340px; background: var(--bg-modal); border: 1px solid var(--border);
+    border-radius: 12px; padding: 6px; box-shadow: 0 18px 50px rgba(0,0,0,.6);
+  }
+  .menu.wide { width: 380px; }
+  .group-label {
+    font-size: 10px; letter-spacing: .09em; text-transform: uppercase;
+    color: var(--text-tertiary); padding: 9px 10px 5px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .group-label .hint { text-transform: none; letter-spacing: 0; font-size: 10.5px; color: #55555d; }
+  .divider { height: 1px; background: var(--border-soft); margin: 5px 6px; }
+  .row {
+    display: flex; align-items: flex-start; gap: 9px;
+    padding: 7px 10px; border-radius: 8px; font-size: 13px; color: var(--text-primary);
+  }
+  .row.sel { background: var(--bg-hover); }
+  .row .body { flex: 1; min-width: 0; }
+  .row .name { display: flex; align-items: center; gap: 7px; }
+  .row .desc { display: block; font-size: 11.5px; color: var(--text-tertiary); line-height: 1.5; margin-top: 2px; }
+  .row .params { display: block; font-size: 11px; color: #5c5c66; margin-top: 4px; font-family: ui-monospace, Menlo, monospace; }
+  .row.disabled { opacity: .55; }
+  .row.disabled .name { color: var(--text-secondary); }
+  .check { color: var(--accent-soft); font-size: 12px; width: 12px; flex: none; padding-top: 2px; }
+  .check.blank { color: transparent; }
+  .pill {
+    font-size: 9.5px; letter-spacing: .04em; text-transform: uppercase;
+    border-radius: 999px; padding: 1.5px 6px; border: 1px solid var(--border);
+    color: var(--text-tertiary); background: var(--bg-secondary); white-space: nowrap;
+  }
+  .pill.warn { color: var(--warning); border-color: #4a3410; background: #2a1e08; }
+  .pill.danger { color: var(--danger); border-color: #4a1a1a; background: #2a0e0e; }
+  .pill.match { color: var(--accent-soft); border-color: #2f2f6b; background: #16162e; }
+  .vendor {
+    width: 16px; height: 16px; border-radius: 4px; flex: none; margin-top: 1px;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 9px; font-weight: 700; color: #0a0a0b;
+  }
+  .v-a { background: #d97757; } .v-o { background: #9ca3af; } .v-d { background: #4f7cf7; color:#fff; }
+  .v-role { background: transparent; border: 1px solid var(--border); color: var(--accent-soft); }
+
+  /* ---- phone ---- */
+  .phone {
+    width: 300px; background: var(--bg-modal); border: 1px solid var(--border);
+    border-radius: 14px; padding: 6px; box-shadow: 0 18px 50px rgba(0,0,0,.6);
+  }
+  .panel-head {
+    display: flex; align-items: center; gap: 8px; padding: 8px 10px 9px;
+    border-bottom: 1px solid var(--border-soft); margin-bottom: 5px;
+    font-size: 12px; color: var(--text-secondary);
+  }
+  .rootrow {
+    display: flex; align-items: center; gap: 9px; padding: 9px 10px;
+    border-radius: 8px; font-size: 13px;
+  }
+  .rootrow .lab { flex: 1; }
+  .rootrow .val { font-size: 11.5px; color: var(--text-tertiary); }
+  .rootrow .val.accent { color: var(--accent-soft); }
+  .caption { font-size: 11.5px; color: var(--text-tertiary); margin: 9px 2px 0; line-height: 1.6; }
+  .ab { display: flex; gap: 8px; align-items: center; margin-bottom: 9px; }
+  .ab .tag {
+    font-size: 10px; letter-spacing: .06em; text-transform: uppercase;
+    color: var(--text-secondary); background: var(--bg-elevated);
+    border: 1px solid var(--border); border-radius: 6px; padding: 2px 7px;
+  }
+  .ab .tag.rec { color: var(--success); border-color: #1d3b26; background: #0e1f14; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1 class="page-title">User-selectable roles — picker prototype</h1>
+  <p class="page-sub">
+    Prototype for <code class="k">docs/272-user-selectable-roles</code>. A role is a
+    <strong>starting point</strong>, selected before the session's first turn, and it never becomes a
+    binding (req 3, req 4). It adds <strong>no control to the composer</strong> — it lives inside the
+    model picker that is already there (req 5). The reviewer is never offered and never indicated
+    (req 10, req 13).
+  </p>
+
+  <!-- 1 ............................................................. -->
+  <div class="section">
+    <p class="section-label"><span class="n">1</span> The composer row — three states <span class="req">req 5, req 13</span></p>
+    <div class="stack" style="max-width: 640px;">
+
+      <div>
+        <div class="ab"><span class="tag">state a</span><span class="caption" style="margin:0">No role. Exactly today's composer — nothing added.</span></div>
+        <div class="composer">
+          <div class="field">Describe what you want to build…</div>
+          <div class="toolbar">
+            <span class="chip">⚡ Auto <span class="car">▾</span></span>
+            <span class="chip">Claude Code <span class="car">▾</span></span>
+            <span class="chip model">Opus 5 <span class="car">▾</span></span>
+            <span class="chip">Think <span class="car">▾</span></span>
+            <span class="spacer"></span><span class="send">↑</span>
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <div class="ab"><span class="tag rec">state b · recommended</span><span class="caption" style="margin:0">The combination matches a role. The model chip names it; no new chip appears.</span></div>
+        <div class="composer">
+          <div class="field">Describe what you want to build…</div>
+          <div class="toolbar">
+            <span class="chip">⚡ Auto <span class="car">▾</span></span>
+            <span class="chip">Claude Code <span class="car">▾</span></span>
+            <span class="chip model">
+              Opus 5 <span class="sep">·</span>
+              <span class="role"><span class="dot"></span>Deep dive</span>
+              <span class="car">▾</span>
+            </span>
+            <span class="chip">Think hard <span class="car">▾</span></span>
+            <span class="spacer"></span><span class="send">↑</span>
+          </div>
+        </div>
+      </div>
+
+      <div>
+        <div class="ab"><span class="tag">state c</span><span class="caption" style="margin:0">The user changed the reasoning level. The match is simply gone — no warning, no offer to restore.</span></div>
+        <div class="composer">
+          <div class="field">Describe what you want to build…</div>
+          <div class="toolbar">
+            <span class="chip">⚡ Auto <span class="car">▾</span></span>
+            <span class="chip">Claude Code <span class="car">▾</span></span>
+            <span class="chip model">Opus 5 <span class="car">▾</span></span>
+            <span class="chip">Think <span class="car">▾</span></span>
+            <span class="spacer"></span><span class="send">↑</span>
+          </div>
+        </div>
+      </div>
+
+    </div>
+    <p class="note">
+      <strong>Why the match rides the model chip.</strong> Req 13 asks ShipIt to indicate a match;
+      req 5 forbids a fifth control. A chip that only ever <em>reads</em> is not a control, and the
+      model chip is the one that already changes width with its content. State c is the whole of
+      "does not warn": the role name disappears and nothing replaces it.
+    </p>
+    <p class="note warn">
+      <strong>The rejected alternative:</strong> replacing the model name with the role name
+      (<code class="k">Deep dive ▾</code>). It reads better but hides the model behind a menu, and
+      the model is the thing users check most often. Say if you would rather have it.
+    </p>
+  </div>
+
+  <!-- 2 ............................................................. -->
+  <div class="section">
+    <p class="section-label"><span class="n">2</span> The model picker, opened — Roles at the top <span class="req">req 1, req 9, req 10</span></p>
+    <div class="cols">
+      <div>
+        <div class="menu wide">
+          <div class="group-label">Roles <span class="hint">— sets everything below</span></div>
+
+          <div class="row sel">
+            <span class="check">✓</span>
+            <span class="vendor v-role">◆</span>
+            <span class="body">
+              <span class="name">Deep dive <span class="pill match">current</span></span>
+              <span class="desc">Long architectural investigations. Reads widely before proposing.</span>
+              <span class="params">Claude Code · Opus 5 · think hard</span>
+            </span>
+          </div>
+
+          <div class="row">
+            <span class="check blank">✓</span>
+            <span class="vendor v-role">◆</span>
+            <span class="body">
+              <span class="name">Docs writer</span>
+              <span class="desc">Writes and edits prose. Never touches source files.</span>
+              <span class="params">Claude Code · Sonnet 5 · think</span>
+            </span>
+          </div>
+
+          <div class="row">
+            <span class="check blank">✓</span>
+            <span class="vendor v-role">◆</span>
+            <span class="body">
+              <span class="name">Triage</span>
+              <span class="desc">Cheap first pass on a bug report.</span>
+              <span class="params">Codex · gpt-5-mini · low</span>
+            </span>
+          </div>
+
+          <div class="row disabled">
+            <span class="check blank">✓</span>
+            <span class="vendor v-role">◆</span>
+            <span class="body">
+              <span class="name">Cheap sweep <span class="pill danger">disconnected</span></span>
+              <span class="desc">DeepSeek is not connected. Reconnect it in Settings → Services.</span>
+              <span class="params">Codex · deepseek-v3 · medium</span>
+            </span>
+          </div>
+
+          <div class="row disabled">
+            <span class="check blank">✓</span>
+            <span class="vendor v-role">◆</span>
+            <span class="body">
+              <span class="name">Old reliable <span class="pill warn">stranded</span></span>
+              <span class="desc">Its model was retired. Edit the role in Settings to pick another.</span>
+              <span class="params">Claude Code · opus-4-1 · think</span>
+            </span>
+          </div>
+
+          <div class="divider"></div>
+          <div class="row">
+            <span class="check blank">✓</span>
+            <span class="vendor v-role" style="border-style:dashed;">—</span>
+            <span class="body"><span class="name">No role</span>
+            <span class="desc">Set the harness, model and reasoning yourself.</span></span>
+          </div>
+
+          <div class="divider"></div>
+          <div class="group-label">Anthropic <span class="hint">— subscription</span></div>
+          <div class="row"><span class="check blank">✓</span><span class="vendor v-a">A</span>
+            <span class="body"><span class="name">Opus 5</span></span></div>
+          <div class="row"><span class="check blank">✓</span><span class="vendor v-a">A</span>
+            <span class="body"><span class="name">Sonnet 5</span></span></div>
+          <div class="group-label">OpenAI <span class="hint">— api</span></div>
+          <div class="row"><span class="check blank">✓</span><span class="vendor v-o">O</span>
+            <span class="body"><span class="name">gpt-5-mini</span></span></div>
+        </div>
+      </div>
+
+      <div>
+        <p class="note" style="margin-top:0">
+          <strong>Roles sit above the models, in the same menu.</strong> Selecting one writes the
+          harness, service, billing mode, model and reasoning level at once — the rows below then
+          show that model as selected. Selecting a plain model instead clears the role name from the
+          chip, because the combination is no longer the role's.
+        </p>
+        <p class="note">
+          <strong>Unavailable roles stay, and say why</strong> (req 9). They cannot be selected and
+          carry the reason and the fix. The <code class="k">reviewer</code> role is absent (req 10) —
+          this list is the whole reason that question mattered.
+        </p>
+        <p class="note">
+          <strong>"No role" is not a fifth state.</strong> It clears the indicator only; it does not
+          change the harness, model or reasoning. Nothing is put back (req 3).
+        </p>
+        <p class="note warn">
+          <strong>Open question shown here:</strong> if two roles carry identical parameters, this
+          prototype marks the first by name and stays silent about the other.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <!-- 3 ............................................................. -->
+  <div class="section">
+    <p class="section-label"><span class="n">3</span> Below 700px — the drill-down menu <span class="req">req 5, docs/260</span></p>
+    <div class="cols" style="grid-template-columns: 300px 300px 1fr;">
+
+      <div>
+        <div class="phone">
+          <div class="rootrow"><span>⚡</span><span class="lab">Mode</span><span class="val">Auto</span><span class="car">›</span></div>
+          <div class="rootrow"><span>◆</span><span class="lab">Role</span><span class="val accent">Deep dive</span><span class="car">›</span></div>
+          <div class="rootrow"><span>▣</span><span class="lab">Harness</span><span class="val">Claude Code</span><span class="car">›</span></div>
+          <div class="rootrow"><span>◇</span><span class="lab">Model</span><span class="val">Opus 5</span><span class="car">›</span></div>
+          <div class="rootrow"><span>◈</span><span class="lab">Reasoning</span><span class="val">Think hard</span><span class="car">›</span></div>
+        </div>
+        <p class="caption">Root list — <strong>five</strong> rows, not four.</p>
+      </div>
+
+      <div>
+        <div class="phone">
+          <div class="panel-head">‹ Role</div>
+          <div class="row sel"><span class="check">✓</span><span class="body">
+            <span class="name">Deep dive</span><span class="params">Opus 5 · think hard</span></span></div>
+          <div class="row"><span class="check blank">✓</span><span class="body">
+            <span class="name">Docs writer</span><span class="params">Sonnet 5 · think</span></span></div>
+          <div class="row"><span class="check blank">✓</span><span class="body">
+            <span class="name">Triage</span><span class="params">gpt-5-mini · low</span></span></div>
+          <div class="row disabled"><span class="check blank">✓</span><span class="body">
+            <span class="name">Old reliable <span class="pill warn">stranded</span></span></span></div>
+          <div class="divider"></div>
+          <div class="row"><span class="check blank">✓</span><span class="body"><span class="name">No role</span></span></div>
+        </div>
+        <p class="caption">The Role panel.</p>
+      </div>
+
+      <div>
+        <p class="note" style="margin-top:0">
+          <strong>This is the one place the design does grow.</strong> docs/260 states the root list
+          stays four rows however far the catalogue grows — that promise is about
+          <em>catalogue</em> growth, and this adds a fifth row for a new kind of setting, not for
+          more models. It is the honest cost of req 13 and worth naming before it is built.
+        </p>
+        <p class="note warn">
+          <strong>The alternative, if five rows is too many:</strong> fold Role into the Model row
+          (<code class="k">Model · Deep dive</code>) and put roles at the top of the Model panel, as
+          the wide picker does. One rule for both widths, but a row labelled "Model" then also sets
+          the harness and reasoning.
+        </p>
+      </div>
+    </div>
+  </div>
+
+  <!-- 4 ............................................................. -->
+  <div class="section">
+    <p class="section-label"><span class="n">4</span> Quick capture <span class="req">req 11, req 12</span></p>
+    <div class="cols" style="grid-template-columns: 420px 1fr;">
+      <div>
+        <div class="composer">
+          <div class="field">What do you want to ship?</div>
+          <div class="toolbar">
+            <span class="chip model">
+              Opus 5 <span class="sep">·</span>
+              <span class="role"><span class="dot"></span>Deep dive</span>
+              <span class="car">▾</span>
+            </span>
+            <span class="spacer"></span><span class="send">↑</span>
+          </div>
+        </div>
+        <p class="caption">
+          The overlay already picks a model and derives the harness. It gains the same Roles group
+          in the same menu, and the same read-only indicator.
+        </p>
+      </div>
+      <div>
+        <p class="note" style="margin-top:0">
+          <strong>Start-from-issue and fork get nothing of their own</strong> — neither starts a
+          turn, so the user lands in a session and selects the role in its composer (req 4, req 11).
+        </p>
+        <p class="note">
+          <strong>The role is remembered</strong> (req 12): the next new session opens with
+          "Deep dive" already indicated, exactly as the model and harness are remembered today.
+          Clearing it is "No role" in the same menu.
+        </p>
+      </div>
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

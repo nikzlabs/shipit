@@ -29,7 +29,8 @@ A **user** who starts a session themselves cannot. This feature closes that gap.
 3. **A role is a starting point, not a binding.** Once the session has started it is an ordinary
    session. The user changes the model, the harness or the reasoning level with the controls they
    already use, and the session follows them. ShipIt does not put the role's values back, and does
-   not warn the user that they have moved away from the role.
+   not warn the user that they have moved away from the role. It does show them where they now
+   stand (req 13).
 
 4. **A role can be selected until the session's first turn starts, and not after.** A session that
    exists but has done no work is still a session the user can configure — starting one from a
@@ -77,7 +78,20 @@ A **user** who starts a session themselves cannot. This feature closes that gap.
     starting point (req 3) and still optional (req 7): the user changes it, or clears it, in the
     same place they selected it.
 
-## Requirement provenance
+13. **ShipIt shows when the current combination is one of the user's roles.** Whenever the
+    harness, service, billing mode, model and reasoning level a session is set to are the same as
+    a role's, ShipIt names that role. This holds however the combination was reached: by selecting
+    the role, by setting the controls one at a time, or by moving away from a role and back again.
+    ShipIt indicates the match; it never re-applies the role.
+
+    Three things this states, because each is a case the user meets:
+
+    - **A match is on the parameters only.** A role's standing instructions are not part of what a
+      session is set to, so a session that matches a role's parameters is not running its
+      instructions. The indication says the settings are the role's, and never implies more.
+    - **The reviewer is never indicated**, for the same reason it is never offered (req 10).
+    - **When the combination is nobody's role, ShipIt says nothing about roles.** The plain
+      combination is the ordinary case, not a deviation, and must not be shown as one.
 
 Kept separate so that what the user asked for stays visible next to what was proposed to them.
 
@@ -89,10 +103,16 @@ Kept separate so that what the user asked for stays visible next to what was pro
   requirements 7 and 8.
 - **Answered by the user on 2026-08-17**: requirements 9, 10, 11 and 12, and the wording of
   requirement 4. See the receipts below.
+- **Asked for by the user on 2026-08-17, reviewing this document**: requirement 13, and the last
+  sentence of requirement 3 — "it should indicate if the current combination matches some role
+  (excluding reviewer roles)".
 
 ## Open questions
 
-_None._
+- **When two roles carry the same five parameters, which one does ShipIt name (req 13)?** Roles
+  are unique by name, not by parameters, so nothing stops a user from configuring two that are
+  identical to run on. Assumed for the prototype: ShipIt names the first by name and does not
+  hint that others match. This is low stakes and does not block design; correct it if you disagree.
 
 ## Resolved questions
 
