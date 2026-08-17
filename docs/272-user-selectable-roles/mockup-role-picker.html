@@ -202,7 +202,8 @@
     made of, and restating them says nothing the user did not just decide (req 5). The name opens
     the <em>roles</em>, as every other control opens what it chooses between (req 14); the replaced
     controls come back from inside that list, and changing one is the whole of leaving the role
-    (req 15). Roles are <strong>not</strong> in the model menu: a role is not a model, and that list
+    (req 15). The name reports the user's <em>choice</em> — setting the same three values by hand
+    never names a role (req 13). Roles are <strong>not</strong> in the model menu: a role is not a model, and that list
     is long already (req 16). Colours are the real <code class="k">claude-light</code> and
     <code class="k">claude</code> tokens; the composer is drawn from
     <code class="k">MessageInput.tsx</code>.
@@ -290,8 +291,9 @@
 
       <div>
         <div class="ab"><span class="tag">changed → left the role</span><span class="why">
-          Reasoning moved from <em>think hard</em> to <em>medium</em>, so this is no longer Deep
-          dive. The row is exactly today's, and the way back is the same control it always was.
+          Reasoning moved from <em>think hard</em> to <em>medium</em>, so the user has left Deep
+          dive. The role name stops being shown because it is no longer true. The row is exactly
+          today's, and the way back is the same control it always was.
         </span></div>
         <div class="composer">
           <div class="field">Describe what to build… (type @ to attach files)</div>
@@ -385,13 +387,6 @@
           <div class="divider"></div>
           <div class="row">
             <span class="check blank">✓</span>
-            <span class="vendor v-role" style="border-style:dashed;">—</span>
-            <span class="body"><span class="name">No role</span>
-              <span class="desc">Set the harness, model and reasoning yourself.</span></span>
-          </div>
-          <div class="divider"></div>
-          <div class="row">
-            <span class="check blank">✓</span>
             <span class="vendor v-role" style="border:0; color:var(--text-tertiary);">⚙</span>
             <span class="body"><span class="name" style="color:var(--text-secondary)">Adjust parameters…</span>
               <span class="desc">Bring back the harness, model and reasoning controls.</span></span>
@@ -399,7 +394,8 @@
         </div>
         <p class="caption">
           The role menu — what the role name opens. The footer is how the replaced controls come
-          back (req 15).
+          back (req 15). There is no "No role" entry: leaving a role means changing how the session
+          runs, not un-naming it.
         </p>
       </div>
 
@@ -428,8 +424,7 @@
         </p>
         <p class="note">
           <strong>Unavailable roles stay, and say why</strong> (req 9) — with the reason and the fix,
-          unselectable. The <code class="k">reviewer</code> is absent (req 10). "No role" clears the
-          role and changes nothing else: nothing is put back (req 3).
+          unselectable. The <code class="k">reviewer</code> is absent (req 10).
         </p>
       </div>
     </div>
@@ -465,14 +460,12 @@
           <div class="row disabled"><span class="check blank">✓</span><span class="body">
             <span class="name">Old reliable <span class="pill warn">stranded</span></span></span></div>
           <div class="divider"></div>
-          <div class="row"><span class="check blank">✓</span><span class="body"><span class="name">No role</span></span></div>
-          <div class="divider"></div>
           <div class="row"><span class="check blank">✓</span><span class="body">
             <span class="name" style="color:var(--text-secondary)">Adjust parameters…</span></span></div>
         </div>
         <p class="caption">
-          The Role panel — the same list, and the same footer, as the wide menu. Choosing it adds
-          Harness, Model and Reasoning back to the root list.
+          The Role panel — the same list, and the same footer, as the wide menu. "Adjust
+          parameters…" adds Harness, Model and Reasoning back to the root list.
         </p>
       </div>
 
@@ -481,14 +474,14 @@
       <div>
         <div class="phone">
           <div class="rootrow"><span class="mg">&#9656;&#9656;</span><span class="lab">Mode</span><span class="val">Auto</span><span class="car">›</span></div>
-          <div class="rootrow"><span>◆</span><span class="lab">Role</span><span class="val">None</span><span class="car">›</span></div>
+          <div class="rootrow"><span>◆</span><span class="lab">Role</span><span class="val">—</span><span class="car">›</span></div>
           <div class="rootrow"><span>▣</span><span class="lab">Harness</span><span class="val">Claude Code</span><span class="car">›</span></div>
           <div class="rootrow"><span>◇</span><span class="lab">Model</span><span class="val">Opus 5</span><span class="car">›</span></div>
           <div class="rootrow"><span>◍</span><span class="lab">Reasoning</span><span class="val">Medium</span><span class="car">›</span></div>
         </div>
         <p class="caption">
-          No role — the four rows docs/260 already has, plus Role. This is the only state where the
-          menu is longer than today.
+          No role chosen — the four rows docs/260 already has, plus Role. This is the only state
+          where the menu is longer than today.
         </p>
       </div>
     </div>
@@ -532,7 +525,7 @@
         </p>
         <p class="note">
           <strong>The role is remembered</strong> (req 12): the next new session opens showing
-          "Deep dive". Clearing it is "No role", in the same menu.
+          "Deep dive". Changing any parameter leaves it.
         </p>
       </div>
     </div>

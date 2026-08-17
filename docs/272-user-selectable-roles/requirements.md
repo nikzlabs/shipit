@@ -29,8 +29,8 @@ A **user** who starts a session themselves cannot. This feature closes that gap.
 3. **A role is a starting point, not a binding.** Once the session has started it is an ordinary
    session. The user changes the model, the harness or the reasoning level with the controls they
    already use, and the session follows them. ShipIt does not put the role's values back, and does
-   not warn the user that they have moved away from the role. It does show them where they now
-   stand (req 13).
+   not warn the user that they have moved away from the role. The role name simply stops being
+   shown, because it is no longer true (req 13).
 
 4. **A role can be selected until the session's first turn starts, and not after.** A session that
    exists but has done no work is still a session the user can configure — starting one from a
@@ -83,20 +83,22 @@ A **user** who starts a session themselves cannot. This feature closes that gap.
     starting point (req 3) and still optional (req 7): the user changes it, or clears it, in the
     same place they selected it.
 
-13. **ShipIt shows when the current combination is one of the user's roles.** Whenever the
-    harness, service, billing mode, model and reasoning level a session is set to are the same as
-    a role's, ShipIt names that role. This holds however the combination was reached: by selecting
-    the role, by setting the controls one at a time, or by moving away from a role and back again.
-    ShipIt indicates the match; it never re-applies the role.
+13. **The role name means the user chose that role, and nothing else means it.** ShipIt shows a
+    role only where the user selected one. Setting the harness, model and reasoning by hand to the
+    same values a role happens to carry does **not** name that role, however exactly they match.
 
-    Three things this states, because each is a case the user meets:
+    This is the rule that keeps the name honest. A role is not only its five parameters — selecting
+    one also puts its standing instructions in force (req 2), and those are not something a user
+    can arrive at by moving three controls. If a coincidental match were named, two sessions would
+    read identically while only one of them ran the role's instructions, and nothing on the screen
+    would tell them apart. So the name reports the choice, which is exactly the thing the
+    instructions follow from.
 
-    - **A match is on the parameters only.** A role's standing instructions are not part of what a
-      session is set to, so a session that matches a role's parameters is not running its
-      instructions. The indication says the settings are the role's, and never implies more.
-    - **The reviewer is never indicated**, for the same reason it is never offered (req 10).
-    - **When the combination is nobody's role, ShipIt says nothing about roles.** The plain
-      combination is the ordinary case, not a deviation, and must not be shown as one.
+    Two consequences:
+
+    - **When no role was chosen, ShipIt says nothing about roles.** The plain combination is the
+      ordinary case, not a deviation, and must not be shown as one.
+    - **The reviewer is never named**, for the same reason it is never offered (req 10).
 
 14. **The role name opens the list of roles, like every other control in the row opens its own
     list.** Clicking a control in the composer opens what that control chooses between; the role is
@@ -108,10 +110,15 @@ A **user** who starts a session themselves cannot. This feature closes that gap.
     already is when they are thinking about what the role runs on. Once back, they are the ordinary
     controls, in their ordinary place.
 
-    The moment the combination is no longer the role's, the composer returns to its ordinary form —
-    the three controls, shown as they are today (req 13) — and offers to select a role again.
-    Nothing is confirmed, warned about or put back: changing a control is the whole of leaving a
-    role, and selecting one again is the whole of returning.
+    The moment the user changes one of them, the composer returns to its ordinary form — the three
+    controls, shown as they are today — and offers to select a role again. Nothing is confirmed,
+    warned about or put back: changing a control is the whole of leaving a role, and selecting one
+    again is the whole of returning.
+
+    **There is no separate way to clear a role**, and no "no role" entry in the list. Leaving a role
+    means changing something about how the session runs; an action that only un-names it, while the
+    session goes on running exactly as the role set it up to, states nothing a user would want to
+    state.
 
     Below 700px this is the same fact in the shape docs/260 already uses: the role folds into the
     one composer settings menu, alongside the controls it sets.
@@ -138,9 +145,10 @@ Kept separate so that what the user asked for stays visible next to what was pro
   requirements 7 and 8.
 - **Answered by the user on 2026-08-17**: requirements 9, 10, 11 and 12, and the wording of
   requirement 4. See the receipts below.
-- **Asked for by the user on 2026-08-17, reviewing this document**: requirement 13, and the last
-  sentence of requirement 3 — "it should indicate if the current combination matches some role
-  (excluding reviewer roles)".
+- **Asked for by the user on 2026-08-17, reviewing this document, then reversed by them the same
+  day**: requirement 13. It first said ShipIt names a role whenever the current parameters match
+  one. It now says the name reports the user's *choice*. Both receipts are kept below; the reversal
+  is not tidied away, because the first version was acted on and shaped a whole draft.
 
 ## Open questions
 
@@ -175,6 +183,27 @@ Kept separate so that what the user asked for stays visible next to what was pro
   still present. → req 5, req 14. This replaced the agent's proposal of a role *label* beside the
   three controls, and with it the whole clip-group argument that had chosen between two ways of
   writing that label.
+
+- **2026-08-17 — What would "No role" do? (superseding the receipt below it)** Nothing coherent, so
+  it is removed. The user asked what the menu entry did, and it did not survive the question: while
+  req 13 derived the name from the parameters, "No role" could not clear anything — the parameters
+  still matched, so the name returned at once — and it duplicated "Adjust parameters…", which
+  already brings the controls back. Pulling on it exposed the collision below. → req 15.
+
+- **2026-08-17 — Does a coincidental match name the role? (supersedes the 2026-08-17 receipt on
+  indicating a match)** No. The user chose to **drop the derived indicator**: a role is named only
+  where the user selected it.
+
+  What forced the question: a role is not only its parameters. Selecting one also puts its standing
+  instructions in force (req 2), and no amount of moving three controls does that. Under the derived
+  rule, a session that chose Deep dive and a session that merely landed on the same three values
+  looked identical while only one of them ran the instructions — and the agent's own req 13 admitted
+  this in a bullet rather than resolving it. Naming the choice instead of the match makes the name
+  mean one thing again.
+
+  Rejected with it: showing the two states differently (two near-identical things on one row);
+  treating the name as being about settings only (least honest); and applying the instructions to
+  any matching session (a standing prompt nobody asked for). → req 13.
 
 - **2026-08-17 — What does clicking the role name do?** It opens the list of roles. The user
   challenged the agent's "clicking the role name reveals what it set" — "wouldn't clicking open the
