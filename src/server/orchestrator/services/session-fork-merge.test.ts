@@ -219,14 +219,18 @@ describe("session-fork-merge: forkSession base-branch inheritance", () => {
     };
   }
 
-  async function fork(parentDir: string, parentRow: StubRow) {
+  /**
+   * @param cacheDir the shared bare cache `getBareCacheDir` should resolve to.
+   *   Pass a nonexistent path to exercise the parent-copy fallback.
+   */
+  async function fork(parentDir: string, parentRow: StubRow, cacheDir = path.join(tmpDir, "no-such-cache")) {
     const { rows, manager } = makeForkSessionManager(parentRow);
     const sessionsRoot = path.join(tmpDir, "sessions");
     fs.mkdirSync(sessionsRoot, { recursive: true });
     const result = await forkSession(
       manager,
       (dir) => ({ dir }) as never,
-      () => "",
+      () => cacheDir,
       sessionsRoot,
       { authenticated: false, configureGitCredentials: () => {} },
       { init: () => {} },
@@ -251,10 +255,10 @@ describe("session-fork-merge: forkSession base-branch inheritance", () => {
     const { result } = await fork(parentDir, {
       id: "parent-id", title: "Parent", workspaceDir: parentDir,
       branch: "shipit/parent-desc", remoteUrl: bareDir,
-    });
+    }, bareDir);
 
     // The fixture is honest only if the parent itself answers "main" while
-    // sitting on its own branch — that is the value the fork has to inherit.
+    // sitting on its own branch — that is the value the fork must end up with.
     expect(await new GitManager(parentDir).getDefaultBranch()).toBe("main");
 
     const forkDir = result.session.workspaceDir!;
@@ -264,9 +268,29 @@ describe("session-fork-merge: forkSession base-branch inheritance", () => {
     expect(await forkGit.getCurrentBranch()).toBe("shipit/forkslug");
   });
 
-  it("carries a non-main default branch across the fork", async () => {
-    // The whole reason for copying the parent's `origin/HEAD` rather than
-    // deleting it and probing: a probe only knows `main` and `master`.
+  it("reads the bare cache's HEAD in preference to the parent's, healing a fork of a fork", async () => {
+    // A parent that is ITSELF a fork made before this fix carries the wrong
+    // `origin/HEAD`. Copying from the parent would propagate that down the
+    // lineage forever; the cache can never name a `shipit/...` branch.
+    const { bareDir, parentDir } = setupParentOnFeatureBranch("main");
+    execSync("git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/shipit/parent-desc", {
+      cwd: parentDir, stdio: "pipe",
+    });
+    expect(await new GitManager(parentDir).getDefaultBranch()).toBe("shipit/parent-desc");
+
+    const { result } = await fork(parentDir, {
+      id: "parent-id", title: "Parent", workspaceDir: parentDir,
+      branch: "shipit/parent-desc", remoteUrl: bareDir,
+    }, bareDir);
+
+    expect(await new GitManager(result.session.workspaceDir!).getDefaultBranch()).toBe("main");
+  });
+
+  it("falls back to the parent's origin/HEAD when no bare cache is on disk", async () => {
+    // A reclaimed cache, or a local/dogfood setup that never built one. `trunk`
+    // is the case that proves the fallback is a real read: deleting the ref and
+    // letting `getDefaultBranch()` probe would answer `main`, since the probe
+    // only knows `main` and `master`.
     const { bareDir, parentDir } = setupParentOnFeatureBranch("trunk");
     const { result } = await fork(parentDir, {
       id: "parent-id", title: "Parent", workspaceDir: parentDir,

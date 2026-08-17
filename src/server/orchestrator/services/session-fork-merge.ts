@@ -41,40 +41,85 @@ async function readOriginHead(dir: string): Promise<string | null> {
 }
 
 /**
- * Give the fork the PARENT's answer to "what is origin's default branch?".
+ * The `refs/remotes/origin/<name>` a fork's `origin/HEAD` should point at, or
+ * null when nothing on disk knows.
  *
- * `git clone --local <src>` points the new clone's `refs/remotes/origin/HEAD` at
- * whatever branch the SOURCE has checked out. For a fork the source is a session
- * workspace, so that is the parent session's own `shipit/<slug>` branch — and
- * neither the `remote set-url` nor the `fetch --prune` above refreshes it
- * (`origin/HEAD` is a local symbolic ref; only `git remote set-head` rewrites
- * it). The stale ref then survives the prune whenever the parent's branch really
- * does exist on the remote, which is exactly the case where the fork goes on to
- * open a PR.
+ * Sources, most authoritative first:
+ *
+ *  1. **The shared bare cache's own HEAD.** `git clone --bare` sets it to the
+ *     remote's default branch, and it is the very value `repo-default-branch.ts`
+ *     persists as `RepoInfo.defaultBranch`. It can never be a `shipit/<slug>`
+ *     session branch, and that is what makes it the right source rather than the
+ *     parent: a parent that is ITSELF a fork made before this fix has the wrong
+ *     `origin/HEAD`, and copying from it would carry the bug down the lineage
+ *     forever. Reading the cache instead heals every such fork on its next fork.
+ *
+ *     Read as a raw `symbolic-ref HEAD` (the same thing `plugin-generations.ts`
+ *     does to a cache) rather than through `RepoGit.getDefaultBranch()`, which
+ *     hard-codes `"main"` when it cannot tell. That guess is worse than no answer
+ *     here: on a `trunk` repo whose cache is missing it would confidently
+ *     overwrite a correct value with a wrong one, where a throw falls through to
+ *     a source that still knows.
+ *
+ *  2. **The parent clone's `origin/HEAD`.** The same fact one clone downstream —
+ *     the parent got it from the cache. Covers a session whose cache has been
+ *     reclaimed, and local/dogfood setups that never built one.
+ *
+ *  3. **Nothing**, so the caller deletes instead of leaving the inherited ref.
+ */
+async function resolveForkOriginHead(parentDir: string, bareCacheDir: string | null): Promise<string | null> {
+  if (bareCacheDir) {
+    try {
+      const head = (await safeSimpleGit(bareCacheDir).raw(["symbolic-ref", "HEAD"])).trim();
+      const match = /^refs\/heads\/(.+)$/.exec(head);
+      if (match) return `refs/remotes/origin/${match[1]}`;
+    } catch {
+      // No cache on disk, or an unreadable HEAD — fall through to the parent.
+    }
+  }
+  return readOriginHead(parentDir);
+}
+
+/**
+ * Point the fork's `origin/HEAD` at the repo's real default branch.
+ *
+ * `git clone --local <src>` derives the new clone's `refs/remotes/origin/HEAD`
+ * from whatever branch the SOURCE has checked out. For a fork the source is a
+ * session workspace, so that is the parent session's own `shipit/<slug>` branch
+ * — and neither the `remote set-url` nor the `fetch --prune` above rewrites it
+ * (`origin/HEAD` is a local symbolic ref; only `git remote set-head` repoints
+ * one). `--prune` drops stale TRACKING refs, not the symref, so the wrong value
+ * survives either way: resolvable when the parent's branch was pushed, dangling
+ * but still named when it wasn't.
  *
  * That single ref is what `GitManager.getDefaultBranch()` reads, and it is the
  * repo-wide answer to "what is the base branch?" — so the fork opened its PR
  * against the parent's branch, rendered "Sync with shipit/<parent-slug>" instead
- * of the default branch, and diffed against it too. A fork is a sibling of its
+ * of the default branch, and diffed against it too. A fork is a SIBLING of its
  * parent, not a child of it: both target the repo's default branch.
  *
- * The parent already holds the right value: it was cloned from the bare cache,
- * whose HEAD is the remote's default branch, so its `origin/HEAD` names main /
- * master / trunk. Copying it is local and instant. `git remote set-head origin
- * --auto` would ask the remote instead, and `git-utils.ts` avoids that call by
- * name — it is a network round trip that can hang.
+ * Every source here is on local disk. `git remote set-head origin --auto` would
+ * ask the remote and be authoritative, but `git-utils.ts` avoids that call by
+ * name — a network round trip that can hang.
  *
- * When the parent has no `origin/HEAD` either, DELETE the fork's rather than
- * leaving the wrong one: `getDefaultBranch()` then falls through to its
- * `origin/main` / `origin/master` probe, which is the same answer the parent
- * itself gives. Best-effort throughout — a fork must not fail over this.
+ * With no source at all, DELETE the fork's inherited ref rather than leave the
+ * wrong one: `getDefaultBranch()` then falls through to its `origin/main` /
+ * `origin/master` probe, which is the same answer the parent itself gives.
+ *
+ * A resolved name is written even if the fork has no matching tracking ref yet
+ * (a failed fetch): `getDefaultBranch()` reads the NAME out of the symref, and
+ * `resolvePrBaseBranch` validates that name against the live remote branch list
+ * before opening a PR. Deleting a dangling-but-correctly-named ref would trade a
+ * right answer for the probe's `main` guess.
+ *
+ * Best-effort throughout — a fork must not fail over this.
  */
-async function inheritOriginHead(parentDir: string, forkDir: string): Promise<void> {
-  const parentOriginHead = await readOriginHead(parentDir);
+async function inheritOriginHead(parentDir: string, forkDir: string, bareCacheDir: string | null): Promise<void> {
+  const originHead = await resolveForkOriginHead(parentDir, bareCacheDir);
   try {
     await safeSimpleGit(forkDir).raw(
-      parentOriginHead
-        ? ["symbolic-ref", "refs/remotes/origin/HEAD", parentOriginHead]
+      originHead
+        ? ["symbolic-ref", "refs/remotes/origin/HEAD", originHead]
         : ["symbolic-ref", "--delete", "refs/remotes/origin/HEAD"],
     );
   } catch (err) {
@@ -86,7 +131,7 @@ async function inheritOriginHead(parentDir: string, forkDir: string): Promise<vo
 export async function forkSession(
   sessionManager: SessionManager,
   _createRepoGit: (dir: string) => RepoGit,
-  _getBareCacheDir: (repoUrl: string) => string,
+  getBareCacheDir: (repoUrl: string) => string,
   sessionsRoot: string,
   githubAuthManager: { authenticated: boolean; configureGitCredentials: (dir: string) => void },
   _threadManager: { init: (sessionId: string) => void },
@@ -259,9 +304,16 @@ export async function forkSession(
   }
   // Unconditional, not folded into the `remoteUrl` guard above: a fork of a
   // remote-less session inherits the same wrong `origin/HEAD` (there its origin
-  // is the parent's workspace dir), and the parent has none to copy, so the
-  // delete branch is the one that runs.
-  await inheritOriginHead(activeSessionDir, newWorkspaceDir);
+  // is the parent's workspace dir), and has neither cache nor parent value to
+  // replace it with, so the delete branch is the one that runs. It must also run
+  // when the fetch above FAILED — the inherited ref is wrong either way.
+  let bareCacheDir: string | null = null;
+  try {
+    bareCacheDir = activeSession?.remoteUrl ? getBareCacheDir(activeSession.remoteUrl) : null;
+  } catch {
+    // An unmappable remote URL just means no cache source; the parent still has one.
+  }
+  await inheritOriginHead(activeSessionDir, newWorkspaceDir, bareCacheDir);
 
   const branchArgs = ["checkout", "-b", trimmed];
   if (startPoint) branchArgs.push(startPoint);
