@@ -3,6 +3,7 @@ import { render, screen, cleanup } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { RoleSelector, useRolePickerState } from "./RoleSelector.js";
 import { ComposerSettingsMenu } from "./ComposerSettingsMenu.js";
+import { MessageInput } from "./MessageInput.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
 import { useSessionStore } from "../../stores/session-store.js";
 import type { AgentOption } from "../../agent-types.js";
@@ -189,6 +190,83 @@ function renderMenu(props: Partial<React.ComponentProps<typeof ComposerSettingsM
     />,
   );
 }
+
+describe("the composer before a session is active (docs/272 reqs 5, 12)", () => {
+  afterEach(() => {
+    localStorage.removeItem("shipit-role-name");
+  });
+
+  it("names the role from the SEED, because there is no session row to read", () => {
+    // This is the bug this test exists for. `/{repo}/new` sits on a WARM
+    // session, and `SessionManager.list()` filters `warm = 0` — so the browser
+    // has no row for it, the server's answer to `set_role` lands on nothing, and
+    // the control read "None" forever however many times it was clicked. Before
+    // a session is active the seed IS the display, exactly as it is for the
+    // harness, model and reasoning pickers on that same route.
+    localStorage.setItem("shipit-role-name", "deep dive");
+    setRoles([DEEP_DIVE]);
+    render(
+      <MessageInput
+        onSend={vi.fn()}
+        disabled={false}
+        agents={[claude]}
+        activeAgentId="claude"
+        onAgentChange={vi.fn()}
+        onModelChange={vi.fn()}
+        onReasoningChange={vi.fn()}
+        onRoleChange={vi.fn()}
+        hasActiveSession={false}
+      />,
+    );
+    expect(screen.getByTestId("role-selector-trigger")).toHaveTextContent("deep dive");
+  });
+
+  it("ignores the seed once a session IS active — the server is the only authority (req 13)", () => {
+    // The seed names the role the NEXT session starts on. Reading it for a live
+    // session would name a role that session never took.
+    localStorage.setItem("shipit-role-name", "deep dive");
+    setRoles([DEEP_DIVE]);
+    render(
+      <MessageInput
+        onSend={vi.fn()}
+        disabled={false}
+        agents={[claude]}
+        activeAgentId="claude"
+        onAgentChange={vi.fn()}
+        onModelChange={vi.fn()}
+        onReasoningChange={vi.fn()}
+        onRoleChange={vi.fn()}
+        hasActiveSession
+        sessionId={SESSION_ID}
+      />,
+    );
+    expect(screen.getByTestId("role-selector-trigger").textContent).toBe("");
+  });
+
+  it("stops naming the role when a parameter moves, with no server to ask (req 15)", async () => {
+    localStorage.setItem("shipit-role-name", "deep dive");
+    setRoles([DEEP_DIVE]);
+    render(
+      <MessageInput
+        onSend={vi.fn()}
+        disabled={false}
+        agents={[claude]}
+        activeAgentId="claude"
+        onAgentChange={vi.fn()}
+        onModelChange={vi.fn()}
+        onReasoningChange={vi.fn()}
+        onRoleChange={vi.fn()}
+        hasActiveSession={false}
+      />,
+    );
+    // Reveal the parameters, then move one.
+    await userEvent.click(screen.getByTestId("role-selector-trigger"));
+    await userEvent.click(screen.getByTestId("role-adjust-parameters"));
+    await userEvent.click(screen.getByTestId("reasoning-trigger"));
+    await userEvent.click(screen.getByTestId("reasoning-option-high"));
+    expect(screen.getByTestId("role-selector-trigger").textContent).toBe("");
+  });
+});
 
 describe("ComposerSettingsMenu — the role row (docs/272 req 15)", () => {
   beforeEach(() => {

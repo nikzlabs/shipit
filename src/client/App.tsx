@@ -145,6 +145,7 @@ import {
   parseNewSessionSlug,
 } from "./utils/repo-label.js";
 import { clearParkedHarness, saveModelId, saveModelSelection, saveRoleName } from "./utils/local-storage.js";
+import { applyRoleSeeds } from "./utils/role-seed.js";
 import { persistHarnessPick } from "./utils/harness-seed.js";
 import {
   siblingsOf,
@@ -1538,11 +1539,6 @@ export default function App() {
       // the new harness runs it" keeps what the user is looking at rather than
       // whatever the slot last held. With none, the helper reads the seed.
       const liveModel = useUiStore.getState().modelInfo?.model;
-      // docs/272 req 15 — changing one of the three controls a role set is the
-      // whole of leaving that role. The server clears the session's own copy
-      // (it is the authority on what the session runs); this clears the SEED,
-      // so the role does not quietly re-apply itself to the next new session.
-      saveRoleName(undefined);
       persistHarnessPick({
         agentId,
         agents: useUiStore.getState().agentList,
@@ -1572,8 +1568,6 @@ export default function App() {
       // A model pick names a harness too (the harness is derived from it), so it
       // is the user overruling any redirect that is parked — see `ParkedHarness`.
       clearParkedHarness();
-      // docs/272 req 15 — see `handleAgentChange`.
-      saveRoleName(undefined);
       if (selection.serviceId) {
         saveModelSelection({
           serviceId: selection.serviceId,
@@ -1599,8 +1593,6 @@ export default function App() {
   // ReasoningSelector; here we just push it to the server for this session.
   const handleReasoningChange = useCallback(
     (effort: string | null) => {
-      // docs/272 req 15 — see `handleAgentChange`.
-      saveRoleName(undefined);
       send({ type: "set_reasoning", effort });
     },
     [send],
@@ -1620,10 +1612,24 @@ export default function App() {
    * The seed is written optimistically and the session is not: a refused role
    * comes back as an error and leaves the session untouched, while the seed is
    * only ever a starting point the user can change in the same place.
+   *
+   * **Nothing here clears the seed**, and that is deliberate. Leaving a role
+   * happens when a parameter moves, and only the server knows whether one
+   * actually did — re-selecting the harness a role already set is not a change
+   * (req 15), and "Adjust parameters…" opens those very controls holding the
+   * role's own values. So the seed follows the server's answer, in
+   * `model-selection-changed.ts`, rather than being cleared by the three
+   * handlers on the way out. Clearing it here re-implemented the comparison and
+   * got it wrong in the one case the rule exists for.
    */
   const handleRoleChange = useCallback(
     (roleName: string) => {
       saveRoleName(roleName);
+      // req 15 — the seeds the three pickers display become the role's, so
+      // "Adjust parameters…" shows what the role actually set rather than what
+      // some earlier session left behind. See `utils/role-seed.ts`.
+      applyRoleSeeds(useSettingsStore.getState().roles.find((r) => r.name === roleName));
+      clearParkedHarness();
       send({ type: "set_role", roleName });
     },
     [send],

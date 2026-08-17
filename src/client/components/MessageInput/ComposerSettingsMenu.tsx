@@ -218,6 +218,7 @@ export function ComposerSettingsMenu({
   roleParamsRevealed = true,
   onAdjustRoleParameters,
   onRoleSelected,
+  onLeaveRole,
   roleLocked = false,
 }: {
   agents: AgentOption[];
@@ -265,6 +266,12 @@ export function ComposerSettingsMenu({
   onAdjustRoleParameters?: () => void;
   /** Told when a role is picked, so the caller can fold the parameters away again. */
   onRoleSelected?: () => void;
+  /**
+   * docs/272 req 15 — told when one of the three controls a role set was moved
+   * from inside this menu, so a composer with no session bound (which has no
+   * server answer to follow) stops naming the role.
+   */
+  onLeaveRole?: () => void;
   /** docs/272 req 4 — the first turn has run, so no role applies any more. */
   roleLocked?: boolean;
 }) {
@@ -530,7 +537,7 @@ export function ComposerSettingsMenu({
                   }
                   isCurrent={agent.id === harness.currentAgentId}
                   disabled={!agent.hasRunnableModels}
-                  onSelect={() => onAgentChange?.(agent.id as AgentId)}
+                  onSelect={() => { onLeaveRole?.(); onAgentChange?.(agent.id as AgentId); }}
                 />
               );
             })}
@@ -561,7 +568,7 @@ export function ComposerSettingsMenu({
                         || !row.groupKey
                         || row.groupKey === model.selectedGroupKey)
                     }
-                    onSelect={() => model.handleModelSelect(row)}
+                    onSelect={() => { onLeaveRole?.(); model.handleModelSelect(row); }}
                   />
                 ))}
               </div>
@@ -579,7 +586,7 @@ export function ComposerSettingsMenu({
                 testId={`composer-settings-reasoning-${opt.value ?? "default"}`}
                 label={opt.label}
                 isCurrent={(opt.value ?? undefined) === (reasoning.current ?? undefined)}
-                onSelect={() => reasoning.select(opt.value)}
+                onSelect={() => { onLeaveRole?.(); reasoning.select(opt.value); }}
               />
             ))}
           </>

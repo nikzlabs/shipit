@@ -147,6 +147,32 @@ review predicted an oscillation here and it does not reproduce for that reason �
 of the catalogue rather than of the connect block, so it is pinned by a test in
 `services/session-role.test.ts` rather than left to be re-derived.
 
+## Before a session is active, the seed is the display
+
+The composer's role control has no session row to read on the two surfaces where picking a role is
+most natural, and this shipped broken because of it: `/{repo}/new` sits on a **warm** session, and
+`SessionManager.list()` filters `warm = 0`, so the browser's session list has no row for it. The
+server received `set_role`, applied it, and answered — and the answer landed on nothing. The control
+read "None" however many times it was clicked.
+
+So the rule is the one the other three controls already follow through `seedFromHistory`: **while no
+session is active the seed is what the composer displays**, and once one is active the server's
+answer is the only thing it displays. The seed may name a role chosen for the *next* session, so
+reading it for a live session would name a role that session never took — which is req 13's own
+prohibition.
+
+Two consequences fell out of fixing it, and both are simplifications:
+
+- **The seed follows the server's answer** rather than being cleared by each of the three handlers
+  on the way out. Leaving a role happens when a parameter *moves*, and only the server knows whether
+  one did — re-selecting the harness a role already set is not a change (req 15). Clearing it at the
+  call sites re-implemented that comparison and got it wrong in the one case the rule exists for.
+- **Picking a role writes the three pickers' seeds from the role's resolved params**
+  (`utils/role-seed.ts`). Without it, "Adjust parameters…" brought back controls showing whatever
+  the seeds held from some earlier session — the role's own values were nowhere on screen, which is
+  the opposite of what req 15 promises. It also means a session started while `?role=` could not be
+  applied still runs the role's parameters.
+
 ## What the composer shows
 
 **Three states in the wide row**, and the row never grows: a selected role shows *fewer* controls

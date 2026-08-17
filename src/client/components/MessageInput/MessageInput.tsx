@@ -26,6 +26,7 @@ import { useKeybinding } from "../../keybindings/use-keybinding.js";
 import { ContextDialMount } from "./ContextDialMount.js";
 import { ComposerSettingsMenu } from "./ComposerSettingsMenu.js";
 import { RoleSelector, useRolePickerState } from "./RoleSelector.js";
+import { getSavedRoleName } from "../../utils/local-storage.js";
 import { useTextareaSizing } from "./hooks/useTextareaSizing.js";
 import { useMessageDraft } from "./hooks/useMessageDraft.js";
 import { useUploadBackend } from "./hooks/useUploadBackend.js";
@@ -225,7 +226,36 @@ export function MessageInput({
   // it.
   const { roles, hasRoles } = useRolePickerState();
   const [revealedFor, setRevealedFor] = useState<string | undefined>(undefined);
-  const roleInForce = sessionRoleName;
+  // **Before a session is active there is no row to read the role from**, and
+  // that is where this was reported broken: on `/{repo}/new` the composer sits
+  // on a WARM session, `SessionManager.list()` filters `warm = 0`, so the
+  // browser's session list has no row for it — the server applied the role and
+  // its answer landed on nothing, leaving the control reading "None" forever.
+  // Quick Capture has no session at all and reaches the same place.
+  //
+  // So before a session is active the seed IS the display, exactly as
+  // `seedFromHistory` makes the seed the display for the harness, model and
+  // reasoning pickers on this same route. Held in state as well as in
+  // localStorage because React cannot subscribe to localStorage, and initialised
+  // from it so a role chosen before a reload is still named after one.
+  const [pendingRole, setPendingRole] = useState<string | undefined>(() => getSavedRoleName());
+  // Once a session IS active its role is the SERVER's answer and nothing else.
+  // The seed may name a role this session never took — it is chosen for the
+  // *next* one — so falling back to it there would name a role the session is
+  // not running, which is the one thing req 13 rules out.
+  const roleInForce = hasActiveSession ? sessionRoleName : (sessionRoleName ?? pendingRole);
+  /**
+   * req 15, for the session-less composer: moving one of the three controls a
+   * role set leaves the role here too.
+   *
+   * A bound session gets this from the server, which answers on the row and only
+   * when something actually moved. With no session there is no server to ask, so
+   * the local rule is the blunter one — any pick from those three menus drops the
+   * pending role. It errs toward *not* naming a role, which is the safe
+   * direction: the alternative is a composer claiming a role the session it
+   * creates will not be started on.
+   */
+  const leavePendingRole = () => setPendingRole(undefined);
   const roleParamsRevealed = !roleInForce || revealedFor === roleInForce;
   const showRoleControl = !!onRoleChange && (hasRoles || !!roleInForce);
   const [isDragging, setIsDragging] = useState(false);
@@ -941,11 +971,14 @@ export function MessageInput({
                   // controls it sets. The reveal state is shared with the wide
                   // row so crossing the breakpoint does not re-fold what the
                   // user just opened.
-                  {...(onRoleChange ? { onRoleChange } : {})}
+                  {...(onRoleChange
+                    ? { onRoleChange: (name: string) => { setPendingRole(name); onRoleChange(name); } }
+                    : {})}
                   {...(roleInForce ? { sessionRoleName: roleInForce } : {})}
                   roleParamsRevealed={roleParamsRevealed}
                   onAdjustRoleParameters={() => { if (roleInForce) setRevealedFor(roleInForce); }}
                   onRoleSelected={() => setRevealedFor(undefined)}
+                  onLeaveRole={leavePendingRole}
                   roleLocked={roleLocked}
                   modelInfo={modelInfo ?? null}
                   hasActiveSession={hasActiveSession}
@@ -1158,6 +1191,7 @@ export function MessageInput({
                     // A fresh pick folds the parameters away: they described the
                     // role the user has just left behind.
                     setRevealedFor(undefined);
+                    setPendingRole(name);
                     onRoleChange?.(name);
                   }}
                   {...(roleInForce && !roleParamsRevealed
@@ -1182,7 +1216,8 @@ export function MessageInput({
                 <HarnessSelector
                   agents={agents}
                   activeAgentId={activeAgentId}
-                  onAgentChange={onAgentChange}
+                  // docs/272 req 15 — see `leavePendingRole`.
+                  onAgentChange={(id) => { leavePendingRole(); onAgentChange(id); }}
                   hasActiveSession={hasActiveSession}
                   // No session bound to this composer at all (Quick Capture, or
                   // the new-session route before its warm session is claimed),
@@ -1204,7 +1239,7 @@ export function MessageInput({
                 <ModelSelector
                   agents={agents}
                   activeAgentId={activeAgentId}
-                  onModelChange={onModelChange}
+                  onModelChange={(selection) => { leavePendingRole(); onModelChange?.(selection); }}
                   modelInfo={modelInfo ?? null}
                   hasActiveSession={hasActiveSession}
                   seedFromHistory={!sessionId}
@@ -1222,7 +1257,7 @@ export function MessageInput({
                   key={sessionId ?? "__new__"}
                   agent={agents.find((a) => a.id === activeAgentId)}
                   sessionReasoning={sessionReasoning}
-                  onChange={onReasoningChange}
+                  onChange={(effort) => { leavePendingRole(); onReasoningChange(effort); }}
                   disabled={disabled || isLoading || inert}
                   seedFromHistory={!hasActiveSession}
                 />

@@ -31,9 +31,8 @@ Implementation to-do for this branch. See [`plan.md`](./plan.md).
 - [x] `eslint` over the changed files, `tsc --noEmit`
 - [x] Independent review against every numbered requirement — ShipIt's configured reviewer
       (Codex, run `d4146b02`). All 17 met; two concerns raised, both resolved (see `plan.md`)
-- [ ] Visual check in a running instance — **not done on this branch.** The
-      session's `node_modules` overlay mount is broken (readdir returns empty
-      while lookups resolve), so the dogfood `dev` service could not be started;
-      dependencies had to be installed to a scratch prefix and copied in just to
-      run the tests. The role control's appearance was built to the approved
-      prototype (`mockup-role-picker.html`) rather than verified in the app.
+- [x] Visual check in a running instance — driven in the dogfood inner ShipIt:
+      pick → pill replaces the three controls → "Adjust parameters…" brings them
+      back showing the ROLE's values → moving one leaves the role. Both layouts.
+      This is what caught the warm-session display bug, which every unit and
+      integration test passed straight through.
