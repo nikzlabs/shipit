@@ -1560,6 +1560,12 @@ export class ServiceManager extends EventEmitter {
     // silently was not.
     const projectPorts = new Map<number, string>();
     for (const svc of this.services.values()) {
+      // Skip stale plugin services from the previous activation — they will
+      // be re-admitted (or refused) below. Without this filter, a plugin
+      // service whose port is set in `plugins.use` clashes with its own
+      // outgoing instance during a transition activation and is refused with
+      // a message blaming "this project's own service" (nikzlabs/shipit#2379).
+      if (svc.origin) continue;
       if (svc.port !== undefined && !projectPorts.has(svc.port)) projectPorts.set(svc.port, svc.name);
     }
     const admittedPlugins = this.pluginServices.filter((svc) => {
