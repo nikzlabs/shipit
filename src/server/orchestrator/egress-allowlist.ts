@@ -56,6 +56,11 @@ export const EGRESS_DEFAULT_ALLOWLIST: readonly string[] = [
   "api.z.ai",
   "openrouter.ai",
   "ai-gateway.vercel.sh",
+  // docs/272 — OpenCode Zen and OpenCode Go both serve from this one host
+  // (`/zen/v1`, `/zen/go/v1`), so one exact entry covers the service's two
+  // billing modes. NOT ".opencode.ai": the suffix would also open the console,
+  // and inference is what a session needs.
+  "opencode.ai",
 
   // --- Git host ---
   // ShipIt only authenticates against GitHub today (see docs/172 Gap 2). The
@@ -124,6 +129,7 @@ export const EGRESS_LIFELINE_ALLOWLIST: readonly string[] = [
   "api.z.ai",
   "openrouter.ai",
   "ai-gateway.vercel.sh",
+  "opencode.ai",
 ];
 
 /**

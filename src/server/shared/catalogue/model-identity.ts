@@ -169,6 +169,11 @@ export const MODEL_IDENTITIES = {
 export const MODEL_ID_ALIASES: Record<string, string> = {
   // Anthropic's own short id for Haiku 4.5, which the picker has always used.
   haiku: "claude-haiku-4.5",
+  // OpenCode Zen spells the same model with hyphens where Anthropic spells it
+  // with a dot (`claude-haiku-4-5`). A punctuation difference in one id, not a
+  // second model: Zen is a gateway serving Anthropic's own Haiku 4.5, at
+  // Anthropic's own rate.
+  "claude-haiku-4-5": "claude-haiku-4.5",
 };
 
 /**

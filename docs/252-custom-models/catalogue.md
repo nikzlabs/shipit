@@ -290,6 +290,11 @@ export type LoginIntegrationId = "anthropic-oauth" | "openai-chatgpt";
 export type QuotaIntegrationId = "anthropic-oauth-usage" | "openai-chatgpt-usage" | "zai-plan-usage";
 ```
 
+Since docs/272 the union also carries `"opencode-go-usage"`, and it is the case that shows
+"declared" and "implemented" are genuinely separate: OpenCode publishes no per-key usage API
+at all, so Go's integration ships with **no reader by decision** rather than by backlog — the
+mode reports nothing and ShipIt reacts to the service's own 429 instead.
+
 **GLM is the case that forces this, and it is the launch subscription** (req 15): its coding
 plan is billed as a *plan* — an allowance, not per-token — while being authenticated with an
 ordinary API key, which for Claude Code goes in `ANTHROPIC_AUTH_TOKEN` rather than

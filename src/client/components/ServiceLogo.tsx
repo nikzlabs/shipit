@@ -4,8 +4,8 @@
  * `ServiceCard` used to draw the service's **initial** here, on the reasoning
  * that "the catalogue carries no artwork, and a letter is honest about that".
  * The letter was honest and it was also unhelpful: a column of `A` `O` `D` `G`
- * `O` `V` tiles asks the reader to decode the first character of a name they are
- * already reading one control to the right, and two of the six launch services
+ * `O` `V` `O` tiles asks the reader to decode the first character of a name they
+ * are already reading one control to the right, and three of the seven services
  * start with the same letter. A brand mark is the one thing on the row that can
  * be recognised without reading, which is the whole job of an avatar.
  *
@@ -16,19 +16,21 @@
  * status or a row — and a logo is neither drawn nor chosen; it is quoted.
  *
  * **Every mark is monochrome, in `currentColor`.** Not a compromise with the
- * multi-theme rule but the accurate rendering: five of these six vendors publish
+ * multi-theme rule but the accurate rendering: six of these seven vendors publish
  * a single-colour mark (Anthropic `#191919`, Vercel `#000`, Z.ai `#2D2D2D`,
- * OpenRouter `#94A3B8`, OpenAI black), so the only thing brand colour would add
- * to the column is DeepSeek's blue — one coloured tile among five grey ones,
- * which reads as a rendering bug rather than as branding. Drawing them all in
+ * OpenRouter `#94A3B8`, OpenCode `#000`, OpenAI black), so the only thing brand
+ * colour would add to the column is DeepSeek's blue — one coloured tile among
+ * six grey ones, which reads as a rendering bug rather than as branding.
+ * Drawing them all in
  * the caller's text colour also means they stay legible in every theme, which a
  * hardcoded `#000` would not.
  *
  * ## Provenance
  *
  * Paths are Simple Icons' (CC0-1.0, so copyable without attribution machinery),
- * read from `simple-icons@16.28.0` on 2026-08-14 — except OpenAI's, which that
- * version no longer ships and which comes from `simple-icons@11.14.0`. All are
+ * read from `simple-icons@16.28.0` on 2026-08-14 (OpenCode's from the same
+ * version on 2026-08-17) — except OpenAI's, which that version no longer ships
+ * and which comes from `simple-icons@11.14.0`. All are
  * 24×24. The marks themselves remain their owners' trademarks; they are used
  * here to identify the service a credential belongs to, which is the use
  * trademark law leaves open.
@@ -82,6 +84,9 @@ const SERVICE_MARKS: Record<ServiceId, string> = {
   openrouter:
     "M16.778 1.844v1.919q-.569-.026-1.138-.032-.708-.008-1.415.037c-1.93.126-4.023.728-6.149 2.237-2.911 2.066-2.731 1.95-4.14 2.75-.396.223-1.342.574-2.185.798-.841.225-1.753.333-1.751.333v4.229s.768.108 1.61.333c.842.224 1.789.575 2.185.799 1.41.798 1.228.683 4.14 2.75 2.126 1.509 4.22 2.11 6.148 2.236.88.058 1.716.041 2.555.005v1.918l7.222-4.168-7.222-4.17v2.176c-.86.038-1.611.065-2.278.021-1.364-.09-2.417-.357-3.979-1.465-2.244-1.593-2.866-2.027-3.68-2.508.889-.518 1.449-.906 3.822-2.59 1.56-1.109 2.614-1.377 3.978-1.466.667-.044 1.418-.017 2.278.02v2.176L24 6.014Z",
   vercel: "m12 1.608 12 20.784H0Z",
+  // OpenCode's mark (docs/272), from `simple-icons@16.28.0` — the same CC0-1.0
+  // source and the same 24×24 grid as the rows above.
+  opencode: "M22 24H2V0h20zM17 4.8H7v14.4h10z",
 };
 
 /**

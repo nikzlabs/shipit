@@ -409,6 +409,10 @@ describe("quota integrations that are implemented, and those that can be re-read
     ["anthropic", true, true],
     ["openai", true, false],
     ["zai", true, true],
+    // OpenCode Go is the case with no reader to write: the vendor publishes no
+    // per-key usage API at all (docs/272 req 6), so it reports nothing by
+    // decision rather than while waiting for one.
+    ["opencode", false, false],
   ])("%s: reports quota %s, refreshable %s", (serviceId, reports, refreshable) => {
     expect(modeReportsQuota(serviceId, "sub")).toBe(reports);
     expect(subQuotaRefreshable(serviceId)).toBe(refreshable);
@@ -1076,6 +1080,63 @@ describe("the launch catalogue is a requirement, not a capability (req 15)", () 
     }
   });
 
+  it("carries OpenCode's two products as two modes of one service (docs/272)", () => {
+    const opencode = CATALOGUE.find((s) => s.id === "opencode");
+    // The NAME is "OpenCode", never "OpenCode Zen": one row carries both
+    // products, so a label naming the metered one would mislabel every Go row.
+    expect(opencode?.name).toBe("OpenCode");
+    expect(opencode?.modes.map((m) => m.kind).sort()).toEqual(["key", "sub"]);
+    // Each product at its own base, and the Anthropic-style base deliberately
+    // WITHOUT the `/v1` its consumers append.
+    expect(resolveEndpoint("opencode", { serviceId: "opencode", billingMode: "key", modelId: "claude-opus-5" }))
+      .toBe("https://opencode.ai/zen");
+    expect(resolveEndpoint("opencode", { serviceId: "opencode", billingMode: "key", modelId: "glm-5.2" }))
+      .toBe("https://opencode.ai/zen/v1");
+    expect(resolveEndpoint("opencode", { serviceId: "opencode", billingMode: "sub", modelId: "glm-5.3" }))
+      .toBe("https://opencode.ai/zen/go/v1");
+  });
+
+  it("prices OpenCode's models as OpenCode, not as the vendors that make them", () => {
+    // Zen is sold "at cost" and is still not a pass-through — the same
+    // correction the two gateways forced. Naming the pairs is the only check
+    // that can see it.
+    const zen = (modelId: string) => getModel({ serviceId: "opencode", billingMode: "key", modelId });
+    const go = (modelId: string) => getModel({ serviceId: "opencode", billingMode: "sub", modelId });
+    // Sonnet 5 undercuts Anthropic's own published rate.
+    expect(zen("claude-sonnet-5")!.price.input).toBeLessThan(
+      getModel({ serviceId: "anthropic", billingMode: "key", modelId: "claude-sonnet-5" })!.price.input,
+    );
+    // DeepSeek V4 Pro is marked up over DeepSeek's own.
+    expect(zen("deepseek-v4-pro")!.price.input).toBeGreaterThan(
+      getModel({ serviceId: "deepseek", billingMode: "key", modelId: "deepseek-v4-pro" })!.price.input,
+    );
+    // And the two products disagree with each other: Go publishes its own
+    // per-model rate for the usage-cap arithmetic.
+    expect(go("deepseek-v4-pro")!.price.input).not.toBe(zen("deepseek-v4-pro")!.price.input);
+  });
+
+  it("offers OpenCode's inference on OpenCode alone until each pair is verified", () => {
+    // docs/272 req 5 — cross-harness routing is in scope and each pair ships
+    // only after a live turn proves it. The header matrix is measured
+    // (`/messages` reads x-api-key, `/chat/completions` reads Bearer), but the
+    // paid-turn sweep needs a real key, so both modes' credentials carry
+    // `carriers: ["opencode"]` as the launch gate. Deleting that line, one
+    // measured pair at a time, is what this assertion is here to make visible.
+    const zenKey = { serviceId: "opencode", billingMode: "key" as const, via: "string" as const };
+    const goKey = { serviceId: "opencode", billingMode: "sub" as const, via: "string" as const };
+    expect(eligibleEntriesForHarness("opencode", [zenKey]).length).toBeGreaterThan(0);
+    expect(eligibleEntriesForHarness("opencode", [goKey]).length).toBeGreaterThan(0);
+    for (const harness of ["claude", "codex"] as const) {
+      expect(eligibleEntriesForHarness(harness, [zenKey, goKey]), harness).toEqual([]);
+      expect(harnessSupportsService(harness, "opencode"), harness).toBe(false);
+    }
+    // The style join alone would have offered Zen's Claude rows to Claude Code
+    // — so the gate is doing real work rather than restating the join.
+    expect(
+      catalogueEntriesForHarness("claude").some((e) => e.service.id === "opencode"),
+    ).toBe(true);
+  });
+
   it("lets a gateway offer a vendor's models to someone with no account there", () => {
     // Reqs 2 and 6 behaving as specified, not a bug: OpenRouter's key reaches
     // Anthropic's models, and it reaches them under Claude Code.
@@ -1112,10 +1173,17 @@ describe("resolving a bare model id", () => {
   });
 
   it("reports every mode offering an id, so a migration can prefer one", () => {
+    // Three, and the third is the case this list exists for: OpenCode Zen
+    // (docs/272) serves Anthropic's models under **Anthropic's own ids**, not
+    // under a `provider/` namespace like the two gateways — so one bare id now
+    // names rows at two services. Catalogue order keeps Anthropic first, which
+    // is what makes a legacy bare id still resolve where it came from.
     expect(modesOfferingModel("claude-fable-5")).toEqual([
       { serviceId: "anthropic", billingMode: "sub" },
       { serviceId: "anthropic", billingMode: "key" },
+      { serviceId: "opencode", billingMode: "key" },
     ]);
+    expect(resolveModelSelection("claude-fable-5")?.serviceId).toBe("anthropic");
     expect(modesOfferingModel("nope")).toEqual([]);
   });
 });
@@ -1206,6 +1274,37 @@ describe("credentials", () => {
           seen.set(credential.storageEnv, owner);
         }
       }
+    }
+  });
+
+  it("never names a variable one of the CLIs reads for itself", () => {
+    // Appendix A, and docs/272 is where it stopped being hypothetical: a
+    // service's storage name must not be a name a harness would read as its
+    // OWN credential, or a route works or fails depending on how the install
+    // happens to be signed in. OpenCode's key is stored as
+    // `OPENCODE_ZEN_API_KEY`/`OPENCODE_GO_KEY` rather than under the vendor's
+    // `OPENCODE_API_KEY` for exactly this reason — the CLI auto-detects that
+    // one and would out-prefer the provider block ShipIt writes.
+    const harnessOwned = new Set(
+      allHarnesses().flatMap((harness) =>
+        [harness.spawn.credential.string, harness.spawn.credential.account]
+          .map((target) => (target && "kind" in target && target.kind === "env" ? target.name : undefined))
+          .filter((name): name is string => name !== undefined),
+      ),
+    );
+    // The variables each CLI prefers over its on-disk login, which the spawn
+    // scrub deletes (`shared/spawn-routing.ts`). Naming one here would mean
+    // storing a secret in a slot a scrub is entitled to remove.
+    for (const scrubbed of ["OPENCODE_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENCODE_AUTH_CONTENT"]) {
+      harnessOwned.add(scrubbed);
+    }
+    for (const envName of credentialStorageEnvNames()) {
+      // The first-party rows are the historical exception and stay: their
+      // storage name IS their harness's variable, which is safe only because
+      // the service and the harness are the same vendor — Claude Code reading
+      // an Anthropic credential is the credential arriving where it belongs.
+      if (["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY"].includes(envName)) continue;
+      expect(harnessOwned.has(envName), `${envName} is a harness's own variable`).toBe(false);
     }
   });
 

@@ -64,7 +64,16 @@ export type LoginIntegrationId = "anthropic-oauth" | "openai-chatgpt";
 export type QuotaIntegrationId =
   | "anthropic-oauth-usage"
   | "openai-chatgpt-usage"
-  | "zai-plan-usage";
+  | "zai-plan-usage"
+  // docs/272 req 6 — OpenCode Go's caps are dollar-denominated (5h $12, weekly
+  // $30, monthly $60) and the vendor exposes NO per-key usage API: the console's
+  // own reporting is session-authenticated, and every candidate REST route 404s
+  // (docs/272 plan.md §8). So this is declared, because the union requires it of
+  // every `sub` mode, and nothing implements it — the state `zai-plan-usage` was
+  // in before planning#339 wrote its reader, except that here there is nothing
+  // to read rather than nobody to write it. ShipIt reacts to the service's own
+  // 429 instead.
+  | "opencode-go-usage";
 
 /**
  * Per-model unit rates, USD per million tokens. **Always the service's API rate

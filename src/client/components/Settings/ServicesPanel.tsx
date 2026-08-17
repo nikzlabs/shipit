@@ -59,7 +59,7 @@
 // the event that starts its sign-in — see the call site.
 // eslint-disable-next-line no-restricted-imports -- mount-is-the-event, see above
 import { useEffect, useRef, useState } from "react";
-import { CheckIcon, CircleHalfIcon, InfoIcon, MinusIcon, PlusIcon } from "@phosphor-icons/react";
+import { CheckIcon, CircleHalfIcon, InfoIcon, MinusIcon, PlusIcon, WarningIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../../design-tokens.js";
 import type { AgentOption } from "../../agent-types.js";
 import type {
@@ -684,6 +684,9 @@ function ServiceModeCard({
       routing={routing}
       testId={`service-card-${credentialModeKey(service.id, billingMode)}`}
     >
+      {/* The service's own standing hazard, where the credential lives — see
+          {@link MODE_NOTICES}. Nothing renders for a mode with none. */}
+      <ModeNotice serviceId={service.id} billingMode={billingMode} />
       {/* The docs/150 account rows, whole: the login flow and the fallback
           order live there and are not reimplemented here. */}
       {provider && (
@@ -740,6 +743,57 @@ function ServiceModeCard({
         </div>
       )}
     </ServiceCard>
+  );
+}
+
+/**
+ * A standing **billing hazard** of one `(service, mode)` — something the service
+ * does with the user's money that ShipIt cannot see, so it cannot be surfaced as
+ * a number, a status or a failure and has to be said in words.
+ *
+ * Deliberately a short, closed map rather than a `description` field on every
+ * card: req 19 deleted per-card prose precisely because it printed something on
+ * every service whether or not there was anything to say. An entry here is the
+ * exception that earns its line, and today there is exactly one.
+ *
+ * It also lives here rather than in the catalogue: the rows are routing data
+ * (endpoints, credentials, models), and a sentence of user-facing copy is not
+ * something a spawn ever reads.
+ */
+const MODE_NOTICES: Record<string, string> = {
+  // docs/272 req 6. Two halves, both load-bearing. OpenCode publishes no
+  // per-key usage API (plan.md §8), so a Go card carries no remaining-quota
+  // figure and ShipIt learns of exhaustion only from the plan's own 429 — and
+  // the console's "Use balance" option turns that exhaustion into metered Zen
+  // spend server-side, with no error and no signal ShipIt could read. That is
+  // the "silent shift onto metered billing" docs/252 req 12 refuses to make;
+  // ShipIt cannot prevent this one, so it says so where the credential lives.
+  [credentialModeKey("opencode", "sub")]:
+    "ShipIt cannot read OpenCode Go's usage — the service publishes no per-key quota API — so this card shows no remaining figure and reacts only to the plan's own limit errors. If “Use balance” is enabled in the OpenCode console, running out of Go usage continues on your metered Zen credits instead of stopping, and ShipIt is not told.",
+};
+
+/** The hazard line for a `(service, mode)`, or nothing where there is none. */
+function ModeNotice({
+  serviceId,
+  billingMode,
+}: {
+  serviceId: string;
+  billingMode: BillingMode;
+}) {
+  const notice = MODE_NOTICES[credentialModeKey(serviceId, billingMode)];
+  if (!notice) return null;
+  return (
+    <p
+      className="flex items-start gap-1.5 text-[11px] text-(--color-text-tertiary)"
+      data-testid={`mode-notice-${credentialModeKey(serviceId, billingMode)}`}
+    >
+      <WarningIcon
+        aria-hidden
+        size={ICON_SIZE.XS}
+        className="mt-0.5 shrink-0 text-(--color-warning)"
+      />
+      <span>{notice}</span>
+    </p>
   );
 }
 
@@ -1830,6 +1884,10 @@ function AddServiceDialog({
                     ? "ShipIt fails over between the credentials of one subscription when one runs out."
                     : "One key per service. Metered — no quota to report, so its card shows no usage."}
                 </p>
+                {/* The same hazard the card will carry, said BEFORE the key is
+                    pasted — the one moment the user can still decide against
+                    the mode. */}
+                <ModeNotice serviceId={service.id} billingMode={billingMode} />
               </>
             )}
             <div className="flex flex-wrap gap-1">
