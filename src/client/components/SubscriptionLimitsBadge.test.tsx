@@ -12,8 +12,9 @@ import {
   resetAutoRefreshThrottle,
   AUTO_REFRESH_MIN_INTERVAL_MS,
 } from "./SubscriptionLimitsBadge.js";
-import type { SubscriptionLimits, SubscriptionLimitsMap } from "../../server/shared/types.js";
+import type { CredentialRoute, SubscriptionLimits, SubscriptionLimitsMap } from "../../server/shared/types.js";
 import { useSettingsStore } from "../stores/settings-store.js";
+import { useUiStore } from "../stores/ui-store.js";
 
 /** docs/150 — wrap snapshots into the provider → route → limits wire shape. */
 function routed(...snaps: SubscriptionLimits[]): Record<string, SubscriptionLimits> {
@@ -24,6 +25,7 @@ afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
   useSettingsStore.getState().setProviderAccounts([]);
+  useUiStore.getState().setSettingsOpen(false);
 });
 
 // Reset timestamps live in the future relative to the test clock so the
@@ -595,6 +597,102 @@ describe("SubscriptionLimitPill", () => {
     // The marker is a descendant of the dimmed wrapper, so the stale fade
     // cascades to it — no separate opacity handling needed.
     expect(meter?.querySelector("[data-time-marker]")).not.toBeNull();
+  });
+});
+
+// The reported failure: an Anthropic account whose sign-in had expired kept a
+// pill full of real-looking numbers, so the header said "healthy" while every
+// turn on it was refused, and only Settings knew why.
+describe("SubscriptionLimitsBadge credential attention", () => {
+  const now = Date.now();
+
+  function connect(overrides: Partial<CredentialRoute> = {}): void {
+    useSettingsStore.getState().setProviderAccounts([
+      {
+        id: "acct-work",
+        serviceId: "anthropic",
+        billingMode: "sub",
+        via: "account",
+        label: "Work",
+        isPrimary: true,
+        status: "ready",
+        createdAt: now,
+        updatedAt: now,
+        ...overrides,
+      },
+    ]);
+  }
+
+  it("replaces the meters with 'reconnect needed' for an account whose sign-in failed", () => {
+    connect({ status: "auth_failed" });
+    // A snapshot IS present — the numbers are stale-but-real, which is exactly
+    // what made the broken state invisible.
+    const limits: SubscriptionLimitsMap = { "anthropic:sub": routed(makeSnap({ routeId: "acct-work" })) };
+    render(<SubscriptionLimitsBadge limits={limits} />);
+
+    expect(screen.getByText("Work")).toBeInTheDocument();
+    expect(screen.getByText("reconnect needed")).toBeInTheDocument();
+    expect(screen.queryByText(/5h/)).toBeNull();
+    expect(screen.queryByText(/7d/)).toBeNull();
+    // Nothing to fetch until the sign-in is redone.
+    expect(screen.queryByLabelText("Refresh subscription usage")).toBeNull();
+  });
+
+  it("opens Settings → Services when the attention word is pressed", () => {
+    connect({ status: "auth_failed" });
+    render(<SubscriptionLimitsBadge limits={{}} />);
+
+    screen.getByText("reconnect needed").click();
+
+    expect(useUiStore.getState().settingsOpen).toBe(true);
+    expect(useUiStore.getState().settingsTab).toBe("services");
+  });
+
+  it("names the remedy the credential actually has — a pasted secret has no login to re-run", () => {
+    connect({ via: "string", status: "auth_failed" });
+    render(<SubscriptionLimitsBadge limits={{}} />);
+    expect(screen.getByText("credential rejected")).toBeInTheDocument();
+  });
+
+  // `externalId` present ⇒ this is a *reconnect* of a real account, not a
+  // first sign-in. A row that has never been a credential is not in the header
+  // at all (see below).
+  it("says a sign-in is in flight rather than showing quota it cannot have", () => {
+    connect({ status: "authenticating", externalId: "user_1" });
+    render(<SubscriptionLimitsBadge limits={{}} />);
+    expect(screen.getByText("signing in…")).toBeInTheDocument();
+  });
+
+  it("leaves a ready account's pill exactly as it was", () => {
+    connect();
+    const limits: SubscriptionLimitsMap = { "anthropic:sub": routed(makeSnap({ routeId: "acct-work" })) };
+    render(<SubscriptionLimitsBadge limits={limits} />);
+    expect(screen.getByText(/5h 30%/)).toBeInTheDocument();
+    expect(screen.queryByText("reconnect needed")).toBeNull();
+  });
+
+  // The row `POST /api/provider-accounts` creates the instant *Sign in* is
+  // pressed is not a credential, and Settings does not list it. Without the
+  // same test here, starting a sign-in put a red "reconnect needed" in the
+  // header about an account that had never been connected.
+  it("renders no pill at all for a sign-in attempt that was never a credential", () => {
+    connect({ status: "unavailable" });
+    const { container } = render(<SubscriptionLimitsBadge limits={{}} />);
+    expect(container.firstChild).toBeNull();
+  });
+
+  it("does show a signed-out account that WAS connected", () => {
+    connect({ status: "unavailable", externalId: "user_1" });
+    render(<SubscriptionLimitsBadge limits={{}} />);
+    expect(screen.getByText("reconnect needed")).toBeInTheDocument();
+  });
+
+  // Settings prints the same word one element to the left and hides the pill
+  // for a non-ready credential, so a pill rendered there must not repeat it.
+  it("stays silent when the host says the word itself", () => {
+    render(<SubscriptionLimitPill label="Work" snapshot={makeSnap()} />);
+    expect(screen.queryByText("reconnect needed")).toBeNull();
+    expect(screen.getByText(/5h 30%/)).toBeInTheDocument();
   });
 });
 
