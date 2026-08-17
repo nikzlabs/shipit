@@ -60,14 +60,33 @@ other uid left behind. It chowned them and did not touch the mode. Now:
 helper also walks the per-session credential subtree, which is `0600`/`0700` on
 purpose. A mode change belongs to the callers that want one.
 
-## 3. What this does not change
+## 3. What it costs: the stack now needs the non-root runtime
+
+Declaring nothing means relying on the fill-in, and the fill-in exists only where
+`SHIPIT_SESSION_WORKER_UID` does. So on a deployment with **containment on and no
+worker uid**, this repo's compose file is refused outright rather than merely
+degraded — and the refusal takes the whole file, every service with it.
+
+That is the correct behaviour, not a regression to route around: with no worker uid
+there is no fill-in, so an undeclared service would run as its image default,
+which for these images is root, under containment. Nor is the combination
+impossible — containment is gated on `SESSION_EGRESS_ENFORCE` and the sidecar
+image (`egress-firewall-install.ts`), not on the worker uid.
+
+It is also not a live loss. In all-root mode the workspace is root-owned `0755`,
+so the previous `user: "1000:1000"` could not write it either; the stack was
+already broken there, in a quieter way. Every deployment that runs the dogfood has
+the non-root runtime on. The guard test in `compose-generator.test.ts` asserts
+**both** directions so the dependency is visible rather than implied.
+
+## 4. What this does not change
 
 A service that genuinely needs its own user — an image with a baked-in account —
 still cannot own what it writes, so git remains unavailable to it and files it
 creates stay unwritable to the agent. That is inherent to running as a different
 uid, and `compose.md` now says so instead of implying group-write made it fine.
 
-## 4. Key files
+## 5. Key files
 
 - `docker-compose.yml` — the four services that no longer declare a user.
 - `src/server/orchestrator/session-worker-uid.ts` —

@@ -625,7 +625,9 @@ ShipIt replaces `dns:` and removes `SETUID` and `SETGID` for contained services.
 Every contained service runs as a numeric, non-root UID that is neither of the
 reserved UIDs 911 and 912. **You do not have to declare it** — a service with no
 `user:` is given the session's own identity, which satisfies that rule by
-construction. If you *do* declare one it must meet the rule itself: numeric,
+construction. (On a deployment old enough to have no per-session identity to give,
+the declaration is still required, and ShipIt says so by name when it refuses the
+file. If you see that refusal, declare a numeric non-root UID.) If you *do* declare one it must meet the rule itself: numeric,
 non-root, not 911 or 912, and outside ShipIt's per-session range 2000000–2999999
 (which is refused for every service, contained or not), and the image must run
 directly as that user. Use an Open session for images that require root
