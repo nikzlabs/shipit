@@ -199,10 +199,11 @@
   <p class="page-sub">
     Prototype for <code class="k">docs/272-user-selectable-roles</code>. A selected role shows
     <strong>its name alone</strong> — the harness, model and reasoning level are what the role is
-    made of, and restating them says nothing the user did not just decide (req 5). The parameters
-    open from the name, and changing one is the whole of leaving the role (req 14). Roles are
-    <strong>not</strong> in the model menu: a role is not a model, and that list is long already
-    (req 15). Colours are the real <code class="k">claude-light</code> and
+    made of, and restating them says nothing the user did not just decide (req 5). The name opens
+    the <em>roles</em>, as every other control opens what it chooses between (req 14); the replaced
+    controls come back from inside that list, and changing one is the whole of leaving the role
+    (req 15). Roles are <strong>not</strong> in the model menu: a role is not a model, and that list
+    is long already (req 16). Colours are the real <code class="k">claude-light</code> and
     <code class="k">claude</code> tokens; the composer is drawn from
     <code class="k">MessageInput.tsx</code>.
   </p>
@@ -263,9 +264,10 @@
       </div>
 
       <div>
-        <div class="ab"><span class="tag">role opened</span><span class="why">
-          Clicking the role name reveals what it set. The controls appear <em>beside</em> it, live
-          and changeable — not a read-out.
+        <div class="ab"><span class="tag">parameters shown</span><span class="why">
+          Reached from <strong>“Adjust parameters…”</strong> at the foot of the roles list — not by
+          clicking the name, which opens the list like every other control opens its own (req 14).
+          The controls come back live and changeable, beside the role they belong to.
         </span></div>
         <div class="composer lit">
           <div class="field">Describe what to build… (type @ to attach files)</div>
@@ -331,7 +333,7 @@
 
   <!-- 2 ............................................................. -->
   <div class="section">
-    <p class="section-label"><span class="n">2</span> The role menu — its own, not the model's <span class="req">req 15, req 9, req 10</span></p>
+    <p class="section-label"><span class="n">2</span> The role menu — its own, not the model's <span class="req">req 16, req 9, req 10</span></p>
     <div class="cols">
       <div>
         <div class="menu">
@@ -387,8 +389,18 @@
             <span class="body"><span class="name">No role</span>
               <span class="desc">Set the harness, model and reasoning yourself.</span></span>
           </div>
+          <div class="divider"></div>
+          <div class="row">
+            <span class="check blank">✓</span>
+            <span class="vendor v-role" style="border:0; color:var(--text-tertiary);">⚙</span>
+            <span class="body"><span class="name" style="color:var(--text-secondary)">Adjust parameters…</span>
+              <span class="desc">Bring back the harness, model and reasoning controls.</span></span>
+          </div>
         </div>
-        <p class="caption">The role menu. Short, and about one thing.</p>
+        <p class="caption">
+          The role menu — what the role name opens. The footer is how the replaced controls come
+          back (req 15).
+        </p>
       </div>
 
       <div>
@@ -412,7 +424,7 @@
           <strong>Two menus, because they answer different questions.</strong> A role carries a
           harness, a reasoning level and standing instructions that no model row can express. Listed
           among models it would read as a kind of model, and would crowd the one list users open
-          most (req 15).
+          most (req 16).
         </p>
         <p class="note">
           <strong>Unavailable roles stay, and say why</strong> (req 9) — with the reason and the fix,
@@ -425,7 +437,7 @@
 
   <!-- 3 ............................................................. -->
   <div class="section">
-    <p class="section-label"><span class="n">3</span> Below 700px — folded into the one menu <span class="req">req 14, docs/260</span></p>
+    <p class="section-label"><span class="n">3</span> Below 700px — folded into the one menu <span class="req">req 15, docs/260</span></p>
     <div class="flow" style="align-items: flex-start;">
 
       <div>
@@ -454,8 +466,14 @@
             <span class="name">Old reliable <span class="pill warn">stranded</span></span></span></div>
           <div class="divider"></div>
           <div class="row"><span class="check blank">✓</span><span class="body"><span class="name">No role</span></span></div>
+          <div class="divider"></div>
+          <div class="row"><span class="check blank">✓</span><span class="body">
+            <span class="name" style="color:var(--text-secondary)">Adjust parameters…</span></span></div>
         </div>
-        <p class="caption">The Role panel — the same list as the wide menu.</p>
+        <p class="caption">
+          The Role panel — the same list, and the same footer, as the wide menu. Choosing it adds
+          Harness, Model and Reasoning back to the root list.
+        </p>
       </div>
 
       <span class="arrow">→</span>
@@ -481,10 +499,10 @@
       list is no longer the standing shape — it is what the user sees when no role is selected.
     </p>
     <p class="note warn">
-      <strong>Open, and worth your view:</strong> with a role selected, the three controls vanish
-      from the narrow menu entirely, so changing the model means clearing the role or opening Role
-      and changing it there. On the wide row the same act is one click on the role name. If that is
-      too hidden, the Role panel can carry the three controls beneath the list.
+      <strong>Open, and worth your view:</strong> "Adjust parameters…" is two taps from the composer
+      at this width — open the menu, open Role, choose it — where changing a model with no role
+      selected is one tap plus a pick. That is the price of the collapse, and it is paid only by
+      someone who wants a role's model but not its reasoning level.
     </p>
   </div>
 

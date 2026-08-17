@@ -98,17 +98,25 @@ A **user** who starts a session themselves cannot. This feature closes that gap.
     - **When the combination is nobody's role, ShipIt says nothing about roles.** The plain
       combination is the ordinary case, not a deviation, and must not be shown as one.
 
-14. **The parameters a role set stay reachable, and changing one is what leaves the role.** From
-    the role's name the user opens the harness, model and reasoning controls and changes any of
-    them. The moment the combination is no longer the role's, the composer returns to its ordinary
-    form — the three controls, shown as they are today (req 13) — and offers to select a role
-    again. Nothing is confirmed, warned about or put back: changing a control is the whole of
-    leaving a role, and selecting one again is the whole of returning.
+14. **The role name opens the list of roles, like every other control in the row opens its own
+    list.** Clicking a control in the composer opens what that control chooses between; the role is
+    not the one exception. So the role name opens the roles, and switching role is the ordinary,
+    one-click act.
+
+15. **The parameters a role set stay reachable, and changing one is what leaves the role.** The
+    controls the role replaced are brought back from inside the roles list, which is where the user
+    already is when they are thinking about what the role runs on. Once back, they are the ordinary
+    controls, in their ordinary place.
+
+    The moment the combination is no longer the role's, the composer returns to its ordinary form —
+    the three controls, shown as they are today (req 13) — and offers to select a role again.
+    Nothing is confirmed, warned about or put back: changing a control is the whole of leaving a
+    role, and selecting one again is the whole of returning.
 
     Below 700px this is the same fact in the shape docs/260 already uses: the role folds into the
     one composer settings menu, alongside the controls it sets.
 
-15. **Roles are not listed among the models.** A role is not a model — it carries a harness, a
+16. **Roles are not listed among the models.** A role is not a model — it carries a harness, a
     reasoning level and standing instructions that no model row can express — and the model list is
     long already. Putting roles inside it would crowd the one list users open most, and would teach
     that a role is a kind of model.
@@ -121,10 +129,11 @@ Kept separate so that what the user asked for stays visible next to what was pro
   user starts themselves": requirements 1 and 2.
 - **Proposed in chat and approved by the user on 2026-08-17**: requirements 3, 4 and 6 — the
   role-as-starting-point shape, new sessions only, recorded provenance.
-- **Directed by the user on 2026-08-17, replacing what was proposed**: requirements 5, 14 and 15.
-  The agent had proposed that role selection live inside the model menu and add no control. The
-  user replaced this: a selected role shows its **name alone**, its parameters open from the name,
-  and roles do not belong in the model list. See the receipts below.
+- **Directed by the user on 2026-08-17, replacing what was proposed**: requirements 5, 14, 15 and
+  16. The agent had proposed that role selection live inside the model menu and add no control. The
+  user replaced this: a selected role shows its **name alone**, its parameters stay reachable, and
+  roles do not belong in the model list. The user then caught the agent giving the role name a
+  click that no other control has (req 14). See the receipts below.
 - **Inherited from docs/264 and docs/261, restated here because this feature must not break them**:
   requirements 7 and 8.
 - **Answered by the user on 2026-08-17**: requirements 9, 10, 11 and 12, and the wording of
@@ -166,6 +175,13 @@ Kept separate so that what the user asked for stays visible next to what was pro
   still present. → req 5, req 14. This replaced the agent's proposal of a role *label* beside the
   three controls, and with it the whole clip-group argument that had chosen between two ways of
   writing that label.
+
+- **2026-08-17 — What does clicking the role name do?** It opens the list of roles. The user
+  challenged the agent's "clicking the role name reveals what it set" — "wouldn't clicking open the
+  role menu?" — and it would: every other control in the composer opens what it chooses between, so
+  a role name that instead expanded a panel would be the single exception a user has to learn.
+  Switching role is the common act and gets the plain click; the parameters are reached from inside
+  that same list. → req 14, req 15.
 
 - **2026-08-17 — Do roles appear in the model menu?** No. "I would not put it in the models because
   it's not actually a model, and the model list can be already crowded." → req 15. This replaced
