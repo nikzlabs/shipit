@@ -1913,6 +1913,50 @@ describe("service routing (docs/252 phase 3)", () => {
     expect(env).toEqual({ ANTHROPIC_API_KEY: "sk-ant" });
   });
 
+  // docs/105 — a redirected provider may report per-call token usage ONLY in
+  // the raw `message_delta` frame (Z.ai/GLM does, and also sends an empty
+  // `result.usage.iterations`), and without a per-call reading the context dial
+  // sums the turn's billing totals: 2.1M against a 1M window. The frames are
+  // one event per token chunk, so the first-party spawn — which gets real
+  // iterations — must not pay for them.
+  describe("--include-partial-messages", () => {
+    const spawnArgs = (): string[] => mockChildSpawn.mock.calls[0][1] as string[];
+
+    it("is passed on a routed one-shot spawn", () => {
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as never);
+      mockChildSpawn.mockClear();
+      process.env.DEEPSEEK_API_KEY = "sk-ds";
+      try {
+        new ClaudeProcess().run({ prompt: "hi", cwd: "/workspace", serviceRouting: routing });
+        expect(spawnArgs()).toContain("--include-partial-messages");
+      } finally {
+        delete process.env.DEEPSEEK_API_KEY;
+      }
+    });
+
+    it("is passed on a routed resident streaming spawn", () => {
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as never);
+      mockChildSpawn.mockClear();
+      process.env.DEEPSEEK_API_KEY = "sk-ds";
+      try {
+        new StreamingClaudeProcess().run({ prompt: "hi", cwd: "/workspace", serviceRouting: routing });
+        expect(spawnArgs()).toContain("--include-partial-messages");
+      } finally {
+        delete process.env.DEEPSEEK_API_KEY;
+      }
+    });
+
+    it("is omitted on an unrouted spawn, which keeps its argv unchanged", () => {
+      const mockProc = createMockChildProcess();
+      mockChildSpawn.mockReturnValue(mockProc as never);
+      mockChildSpawn.mockClear();
+      new ClaudeProcess().run({ prompt: "hi", cwd: "/workspace" });
+      expect(spawnArgs()).not.toContain("--include-partial-messages");
+    });
+  });
+
   it("runs AFTER the scoped-home scrub at the real spawn site, not before", () => {
     // The ordering is load-bearing, not incidental: the scrub deletes the very
     // variables the shaping writes, so shaping first would produce a spawn with

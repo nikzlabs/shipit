@@ -301,6 +301,24 @@ function frameUserMessage(text: string): string {
   return `${JSON.stringify(msg)}\n`;
 }
 
+/**
+ * docs/105 — make the CLI re-emit the raw Anthropic SSE frames alongside its
+ * own events. Passed **only on a service-routed spawn**, and for exactly one
+ * reason: the closing `message_delta` frame is the only place a redirected
+ * provider may state a single call's token usage, and without a per-call
+ * reading the context dial falls back to summing the turn's billing totals —
+ * which multiplies context by the call count (a GLM turn read 2.1M against a
+ * 1M window). Z.ai zeroes the `assistant` event's usage AND sends
+ * `iterations: []`, so the frames are its only reading; measured 2026-08-17.
+ *
+ * The flag is not free — it adds one event per streamed token chunk, ~440
+ * lines where a small turn had 8 — so the first-party Anthropic spawn, which
+ * gets an authoritative `result.usage.iterations`, keeps its argv unchanged
+ * and pays nothing. The adapter drops every frame except the one it reads, so
+ * nothing extra crosses the container boundary either way.
+ */
+const PARTIAL_MESSAGE_ARGS = ["--include-partial-messages"] as const;
+
 export class ClaudeProcess extends EventEmitter {
   private proc: ChildProcess | null = null;
   private buffer = "";
@@ -453,6 +471,10 @@ export class ClaudeProcess extends EventEmitter {
       args.push("--permission-mode", "plan");
     } else if (permissionMode === "guarded") {
       args.push("--permission-mode", "auto");
+    }
+
+    if (serviceRouting) {
+      args.push(...PARTIAL_MESSAGE_ARGS);
     }
 
     if (sessionId) {
@@ -872,6 +894,7 @@ export class StreamingClaudeProcess extends EventEmitter {
       args.push("--permission-mode", "auto");
     }
 
+    if (serviceRouting) args.push(...PARTIAL_MESSAGE_ARGS);
     if (sessionId) args.push("--resume", sessionId);
     if (mcpConfigPath) args.push("--mcp-config", mcpConfigPath);
     // docs/193 — see ClaudeProcess.run above. Honored in --print stream-json

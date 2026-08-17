@@ -713,6 +713,213 @@ describe("ClaudeAdapter", () => {
     expect((events[1] as any).contextTokens).toBeUndefined();
   });
 
+  // The GLM shape, measured against `glm-5.3[1m]` on Z.ai's Anthropic endpoint
+  // (2026-08-17): every `assistant` event's usage is zeroed because the CLI
+  // snapshots it from `message_start`, `result.usage.iterations` is an EMPTY
+  // array rather than absent, and the only real per-call numbers arrive in the
+  // closing `message_delta` frame that `--include-partial-messages` re-emits.
+  // Without that frame the dial summed the turn totals — 2.1M on a 1M window.
+  it("uses the final message_delta when a provider zeroes assistant usage", () => {
+    const inner = new FakeInnerProcess();
+    const adapter = new ClaudeAdapter(inner as any);
+    const events: unknown[] = [];
+    adapter.on("event", (e) => events.push(e));
+
+    inner.emit("event", {
+      type: "assistant",
+      message: { content: [{ type: "text", text: "reading" }], usage: { input_tokens: 0, output_tokens: 0 } },
+    } satisfies ClaudeEvent);
+    inner.emit("event", {
+      type: "stream_event",
+      parent_tool_use_id: null,
+      event: {
+        type: "message_delta",
+        usage: { input_tokens: 16_229, output_tokens: 216, cache_read_input_tokens: 8_512 },
+      },
+    } satisfies ClaudeEvent);
+    inner.emit("event", {
+      type: "assistant",
+      message: { content: [{ type: "text", text: "done" }], usage: { input_tokens: 0, output_tokens: 0 } },
+    } satisfies ClaudeEvent);
+    inner.emit("event", {
+      type: "stream_event",
+      parent_tool_use_id: null,
+      event: {
+        type: "message_delta",
+        usage: { input_tokens: 282, output_tokens: 32, cache_read_input_tokens: 24_704 },
+      },
+    } satisfies ClaudeEvent);
+    inner.emit("event", {
+      type: "result",
+      subtype: "success",
+      session_id: "glm-via-claude",
+      usage: {
+        input_tokens: 16_511,
+        output_tokens: 248,
+        cache_read_input_tokens: 33_216,
+        iterations: [],
+      },
+    } satisfies ClaudeEvent);
+
+    // The two stream frames are consumed, not forwarded: the CLI's own
+    // `assistant` events already carry the content.
+    expect(events.map((e) => (e as any).type)).toEqual([
+      "agent_assistant",
+      "agent_assistant",
+      "agent_result",
+    ]);
+    // The LAST call's prompt (282 + 24,704), not the 49,727 turn-wide sum.
+    expect((events[2] as any).contextTokens).toBe(24_986);
+    // Billing totals stay the turn-wide sums.
+    expect((events[2] as any).tokens).toMatchObject({ input: 16_511, cacheRead: 33_216 });
+  });
+
+  // DeepSeek's shape once the flag applies to it too: BOTH sources are
+  // populated, and the real wire order within a call is `assistant` first then
+  // the closing `message_delta` — so the delta is what "latest wins" resolves
+  // to. Measured 2026-08-17 on `deepseek-v4-flash`: the two agree exactly, and
+  // the last call read 168 + 25,216.
+  it("takes the closing delta when a provider populates both sources", () => {
+    const inner = new FakeInnerProcess();
+    const adapter = new ClaudeAdapter(inner as any);
+    const events: unknown[] = [];
+    adapter.on("event", (e) => events.push(e));
+
+    inner.emit("event", {
+      type: "assistant",
+      message: {
+        content: [{ type: "text", text: "first call" }],
+        usage: { input_tokens: 25_195, cache_read_input_tokens: 0, output_tokens: 0 },
+      },
+    } satisfies ClaudeEvent);
+    inner.emit("event", {
+      type: "stream_event",
+      event: {
+        type: "message_delta",
+        usage: { input_tokens: 25_195, cache_read_input_tokens: 0, output_tokens: 145 },
+      },
+    } satisfies ClaudeEvent);
+    inner.emit("event", {
+      type: "assistant",
+      message: {
+        content: [{ type: "text", text: "last call" }],
+        usage: { input_tokens: 168, cache_read_input_tokens: 25_216, output_tokens: 0 },
+      },
+    } satisfies ClaudeEvent);
+    inner.emit("event", {
+      type: "stream_event",
+      event: {
+        type: "message_delta",
+        usage: { input_tokens: 168, cache_read_input_tokens: 25_216, output_tokens: 263 },
+      },
+    } satisfies ClaudeEvent);
+    inner.emit("event", {
+      type: "result",
+      subtype: "success",
+      session_id: "deepseek-with-frames",
+      usage: {
+        input_tokens: 25_363,
+        output_tokens: 408,
+        cache_read_input_tokens: 25_216,
+        iterations: [],
+      },
+    } satisfies ClaudeEvent);
+
+    expect((events[2] as any).contextTokens).toBe(25_384);
+  });
+
+  it("ignores message_delta frames from a subagent call", () => {
+    const inner = new FakeInnerProcess();
+    const adapter = new ClaudeAdapter(inner as any);
+    const events: unknown[] = [];
+    adapter.on("event", (e) => events.push(e));
+
+    inner.emit("event", {
+      type: "stream_event",
+      event: { type: "message_delta", usage: { input_tokens: 50, cache_read_input_tokens: 100_000 } },
+    } satisfies ClaudeEvent);
+    inner.emit("event", {
+      type: "stream_event",
+      parent_tool_use_id: "tool-1",
+      event: { type: "message_delta", usage: { input_tokens: 50, cache_read_input_tokens: 900_000 } },
+    } satisfies ClaudeEvent);
+    inner.emit("event", {
+      type: "result",
+      subtype: "success",
+      session_id: "delta-with-subagent",
+      usage: { input_tokens: 100, output_tokens: 10, cache_read_input_tokens: 1_000_000 },
+    } satisfies ClaudeEvent);
+
+    expect((events[0] as any).contextTokens).toBe(100_050);
+  });
+
+  it("ignores message_start and content deltas, which carry no final usage", () => {
+    const inner = new FakeInnerProcess();
+    const adapter = new ClaudeAdapter(inner as any);
+    const events: unknown[] = [];
+    adapter.on("event", (e) => events.push(e));
+
+    inner.emit("event", {
+      type: "stream_event",
+      event: { type: "message_start", usage: { input_tokens: 500 } },
+    } satisfies ClaudeEvent);
+    inner.emit("event", {
+      type: "stream_event",
+      event: { type: "content_block_delta" },
+    } satisfies ClaudeEvent);
+    inner.emit("event", {
+      type: "result",
+      subtype: "success",
+      session_id: "start-frames-only",
+      usage: { input_tokens: 40, output_tokens: 5, cache_read_input_tokens: 90_000 },
+    } satisfies ClaudeEvent);
+
+    expect(events).toHaveLength(1);
+    expect((events[0] as any).contextTokens).toBeUndefined();
+  });
+
+  it("clears the message_delta reading after each result", () => {
+    const inner = new FakeInnerProcess();
+    const adapter = new ClaudeAdapter(inner as any);
+    const events: unknown[] = [];
+    adapter.on("event", (e) => events.push(e));
+
+    inner.emit("event", {
+      type: "stream_event",
+      event: { type: "message_delta", usage: { input_tokens: 12, cache_read_input_tokens: 40_000 } },
+    } satisfies ClaudeEvent);
+    for (const session_id of ["first", "second"]) {
+      inner.emit("event", {
+        type: "result", subtype: "success", session_id,
+        usage: { input_tokens: 20, output_tokens: 5, cache_read_input_tokens: 80_000 },
+      } satisfies ClaudeEvent);
+    }
+
+    expect((events[0] as any).contextTokens).toBe(40_012);
+    expect((events[1] as any).contextTokens).toBeUndefined();
+  });
+
+  it("prefers result iterations over a message_delta reading", () => {
+    const inner = new FakeInnerProcess();
+    const adapter = new ClaudeAdapter(inner as any);
+    const events: unknown[] = [];
+    adapter.on("event", (e) => events.push(e));
+
+    inner.emit("event", {
+      type: "stream_event",
+      event: { type: "message_delta", usage: { input_tokens: 10, cache_read_input_tokens: 50_000 } },
+    } satisfies ClaudeEvent);
+    inner.emit("event", {
+      type: "result", subtype: "success", session_id: "iterations-still-win",
+      usage: {
+        input_tokens: 20, output_tokens: 5, cache_read_input_tokens: 80_000,
+        iterations: [{ input_tokens: 20, cache_read_input_tokens: 60_000 }],
+      },
+    } satisfies ClaudeEvent);
+
+    expect((events[0] as any).contextTokens).toBe(60_020);
+  });
+
   it("maps error result with error message", () => {
     const inner = new FakeInnerProcess();
     const adapter = new ClaudeAdapter(inner as any);
