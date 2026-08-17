@@ -55,6 +55,7 @@ import {
   allLoginIntegrations,
   credentialHarnessForLogin,
   harnessesForLoginIntegration,
+  harnessForNativeService,
   loginIntegrationForService,
   serviceForLoginIntegration,
 } from "./index.js";
@@ -1115,6 +1116,21 @@ describe("the launch catalogue is a requirement, not a capability (req 15)", () 
     expect(go("deepseek-v4-pro")!.price.input).not.toBe(zen("deepseek-v4-pro")!.price.input);
   });
 
+  it("names OpenCode's own inference as its harness's native service (docs/272)", () => {
+    // …and the thing that makes that safe: three readers used "native" to mean
+    // "the vendor's account machinery owns this", which is false here. The
+    // question they ask now is the login integration, and this service has
+    // none — a pasted key with no sign-in flow.
+    expect(HARNESSES.find((h) => h.id === "opencode")?.nativeService).toBe("opencode");
+    expect(loginIntegrationForService("opencode")).toBeUndefined();
+    expect(harnessForNativeService("opencode")).toBe("opencode");
+  });
+
+  // Go's "declares a quota integration and reports nothing" is NOT asserted
+  // here: it is a row of the `subQuotaRefreshable` matrix above
+  // (`["opencode", false, false]`), which is where every service's answer to
+  // that pair of questions lives. Two places would be two answers to drift.
+
   it("offers OpenCode's inference on OpenCode alone until each pair is verified", () => {
     // docs/272 req 5 — cross-harness routing is in scope and each pair ships
     // only after a live turn proves it. The header matrix is measured
@@ -1274,37 +1290,6 @@ describe("credentials", () => {
           seen.set(credential.storageEnv, owner);
         }
       }
-    }
-  });
-
-  it("never names a variable one of the CLIs reads for itself", () => {
-    // Appendix A, and docs/272 is where it stopped being hypothetical: a
-    // service's storage name must not be a name a harness would read as its
-    // OWN credential, or a route works or fails depending on how the install
-    // happens to be signed in. OpenCode's key is stored as
-    // `OPENCODE_ZEN_API_KEY`/`OPENCODE_GO_KEY` rather than under the vendor's
-    // `OPENCODE_API_KEY` for exactly this reason — the CLI auto-detects that
-    // one and would out-prefer the provider block ShipIt writes.
-    const harnessOwned = new Set(
-      allHarnesses().flatMap((harness) =>
-        [harness.spawn.credential.string, harness.spawn.credential.account]
-          .map((target) => (target && "kind" in target && target.kind === "env" ? target.name : undefined))
-          .filter((name): name is string => name !== undefined),
-      ),
-    );
-    // The variables each CLI prefers over its on-disk login, which the spawn
-    // scrub deletes (`shared/spawn-routing.ts`). Naming one here would mean
-    // storing a secret in a slot a scrub is entitled to remove.
-    for (const scrubbed of ["OPENCODE_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENCODE_AUTH_CONTENT"]) {
-      harnessOwned.add(scrubbed);
-    }
-    for (const envName of credentialStorageEnvNames()) {
-      // The first-party rows are the historical exception and stay: their
-      // storage name IS their harness's variable, which is safe only because
-      // the service and the harness are the same vendor — Claude Code reading
-      // an Anthropic credential is the credential arriving where it belongs.
-      if (["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY"].includes(envName)) continue;
-      expect(harnessOwned.has(envName), `${envName} is a harness's own variable`).toBe(false);
     }
   });
 

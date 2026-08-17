@@ -718,7 +718,17 @@ export const SERVICES = [
         credentials: [
           {
             via: "string",
-            storageEnv: "OPENCODE_ZEN_API_KEY",
+            // The vendor's own variable name, as DeepSeek's row uses
+            // `DEEPSEEK_API_KEY` — so a deployment that exports the documented
+            // name has its key adopted as an ordinary credential at boot
+            // (docs/252 req 20). It is deliberately also a name
+            // `HARNESS_CREDENTIAL_VARS.opencode` scrubs from OpenCode spawns,
+            // and that is safe rather than circular: the scrub empties the
+            // SPAWN env (so the CLI cannot auto-detect it and out-prefer the
+            // provider block), while the adapter reads the secret from its own
+            // `process.env` and writes it to `OPENCODE_PROVIDER_API_KEY`
+            // (`opencode/adapter.ts`). Same shape DeepSeek already ships.
+            storageEnv: "OPENCODE_API_KEY",
             // ✅ 2026-08-17, measured by invalid-key differential ("Invalid API
             // key" proves the header was read, "Missing API key" proves it was
             // ignored): `/messages` reads `x-api-key` ONLY and
@@ -800,7 +810,12 @@ export const SERVICES = [
         credentials: [
           {
             via: "string",
-            storageEnv: "OPENCODE_GO_KEY",
+            // Its own name even though the SECRET is the same pasted key as
+            // Zen's: one `storageEnv` per `(service, mode)` is the catalogue
+            // invariant, and it is what keeps the two products two credential
+            // rows in Settings rather than Go hiding behind a stored Zen key.
+            // The GLM precedent again — `ZAI_CODING_PLAN_KEY` / `ZAI_API_KEY`.
+            storageEnv: "OPENCODE_GO_API_KEY",
             // Same launch gate, same wire facts as the Zen credential above.
             carriers: ["opencode"],
           },

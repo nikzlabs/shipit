@@ -575,6 +575,7 @@ describe("prepareSessionAgentEnvironment", () => {
       extra?: Record<string, unknown>;
       model?: string;
       turn?: boolean;
+      agent?: "claude" | "codex" | "opencode";
     }) {
       const runner = new FakeContainerRunner();
       const credentialStore = makeFakeCredentialStore({
@@ -588,7 +589,7 @@ describe("prepareSessionAgentEnvironment", () => {
       });
       const result = await prepareSessionAgentEnvironment(runner as unknown as SessionRunnerInterface, {
         sessionId: "s1",
-        agentId: "claude",
+        agentId: opts.agent ?? "claude",
         ...(opts.turn === false ? {} : { enforceAccountRouting: true }),
         deps: { credentialsDir: tmpDir, credentialStore, sessionManager: sm },
       });
@@ -691,6 +692,34 @@ describe("prepareSessionAgentEnvironment", () => {
         secrets: { cred_ds: "sk-ds" },
       });
       expect(state.setModelSelectionCalls).toEqual([]);
+    });
+
+    it("still writes when the derived service IS the native one but has no login (docs/272)", async () => {
+      // OpenCode's native service is its own inference (Zen/Go): a pasted key,
+      // no login flow. The native-vendor skip's premise — "the old unshaped
+      // fallback reaches the same credential" — is false there, because the
+      // OpenCode adapter refuses a spawn with no routing outright. So a
+      // selection-less turn on an OpenCode-key-only install has to settle the
+      // row even though the derived service IS the harness's own vendor.
+      const { state } = await prep({
+        agent: "opencode",
+        routes: [{
+          id: "cred_oc",
+          serviceId: "opencode",
+          billingMode: "key",
+          via: "string",
+          label: "OpenCode",
+          isPrimary: true,
+          priority: 0,
+          status: "ready",
+          createdAt: 0,
+          updatedAt: 0,
+        }],
+        secrets: { cred_oc: "sk-oc" },
+      });
+      expect(state.setModelSelectionCalls).toEqual([
+        { serviceId: "opencode", billingMode: "key", modelId: "claude-opus-5" },
+      ]);
     });
 
     it("writes nothing on a warm-up", async () => {

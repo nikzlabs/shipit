@@ -26,15 +26,20 @@ The investigation is in [requirements.md](./requirements.md) and
 - [x] Zen and Go carry their own price constants — neither is a pass-through
 - [x] `claude-haiku-4-5` alias, so Zen's spelling of Haiku 4.5 is one model with
       Anthropic's — `catalogue/model-identity.ts`
-- [x] Storage names (`OPENCODE_ZEN_API_KEY`, `OPENCODE_GO_KEY`) deliberately not
-      the CLI's own `OPENCODE_API_KEY`, with a test pinning that rule for every
-      service
+- [x] Storage names `OPENCODE_API_KEY` (Zen) and `OPENCODE_GO_API_KEY` (Go) —
+      one per mode, so the two products stay two credential rows; the Zen name
+      is also one the spawn scrub deletes, so an adapter test pins that the
+      secret still reaches `OPENCODE_PROVIDER_API_KEY` from `process.env`
 - [x] `opencode.ai` in the three egress lists (default, lifeline, firewall)
 - [x] OpenCode's mark in `ServiceLogo`
 - [x] The Go billing-hazard notice on the card and in the add-service step
       (req 6) — `ServicesPanel.tsx`
 - [x] `x-shipit-secrets` names in `docker-compose.yml`, so the dogfood instance
       can hold both credentials
+- [x] `HarnessDef.opencode.nativeService = "opencode"`, with the three readers
+      that used "native" to mean "has account machinery" switched to ask
+      `loginIntegrationForService` (credential-failure policy, the planning#353
+      write and the blocked-turn subject, the account verbs in settings)
 
 ## Live verification with a real key (the gate on req 5)
 
@@ -59,10 +64,6 @@ measured — see plan.md §7.
 
 ## Follow-ups (not blocking the rows)
 
-- [ ] `HarnessDef.opencode.nativeService = "opencode"`, once
-      `session-agent-env.ts`'s planning#353 guard distinguishes "native" from
-      "native and account-delivered" — today setting it would route a
-      selection-less OpenCode turn into an unshaped spawn with no credential
 - [ ] The console OAuth device login (req 4's follow-up half): a
       `LoginIntegrationId`, an auth manager, and the credential-home symlink
       caveats from docs/268

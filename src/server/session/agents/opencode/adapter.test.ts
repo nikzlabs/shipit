@@ -279,6 +279,41 @@ describe("OpencodeAdapter", () => {
     expect(events.at(-1)?.type).toBe("agent_result");
   });
 
+  it("delivers the Zen key the scrub just removed from the spawn (docs/272)", () => {
+    // OpenCode's own service stores its secret under `OPENCODE_API_KEY` — the
+    // vendor's name, which is ALSO one of the variables the spawn scrub
+    // deletes, because the CLI auto-detects it and would out-prefer the
+    // provider block ShipIt writes. Those two facts only coexist because the
+    // adapter reads the source from its OWN `process.env` rather than from the
+    // scrubbed spawn env. If that ever changes, the turn spawns with no
+    // credential (or, worse, on the CLI's own registry), so it is pinned here.
+    vi.stubEnv("OPENCODE_API_KEY", "sk-zen-secret");
+    let spawnEnv: Record<string, string> = {};
+    const child = new FakeChild();
+    const adapter = new OpencodeAdapter({
+      spawnFn: (_cmd, _args, opts) => {
+        spawnEnv = (opts?.env ?? {}) as Record<string, string>;
+        return child as unknown as ChildProcess;
+      },
+    });
+    adapter.run({
+      ...RUN_PARAMS,
+      model: "glm-5.2",
+      serviceRouting: {
+        serviceId: "opencode",
+        serviceName: "OpenCode",
+        billingMode: "key",
+        style: "openai-chat-completions",
+        baseUrl: "https://opencode.ai/zen/v1",
+        credentialSourceEnv: "OPENCODE_API_KEY",
+        credentialTarget: { kind: "env", name: "OPENCODE_PROVIDER_API_KEY" },
+      },
+    });
+    expect(spawnEnv.OPENCODE_PROVIDER_API_KEY).toBe("sk-zen-secret");
+    expect(spawnEnv.OPENCODE_API_KEY).toBeUndefined();
+    child.close(0);
+  });
+
   it("refuses to spawn against routing it cannot express, instead of misrouting", () => {
     const { adapter, events } = makeAdapter();
     const errors: Error[] = [];

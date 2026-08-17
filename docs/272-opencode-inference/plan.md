@@ -196,18 +196,23 @@ excludes, and `nativeService` staying deferred. Key files:
     "https://opencode.ai/zen/v1"`. Free models are ordinary $0 rows of this
     mode (resolved requirements question); the anonymous no-credential tier is
     out of scope.
-    - **As built**: the storage name is `OPENCODE_ZEN_API_KEY`, not the
-      vendor's `OPENCODE_API_KEY` — that variable is one the OpenCode CLI reads
-      for itself and the spawn scrub deletes, so storing a secret in it would
-      make a route work or fail depending on how the install happens to be
-      signed in (docs/252 Appendix A). Go's is `OPENCODE_GO_KEY`. Two names for
-      one pasted key is what keeps the two credentials separable, and it is
-      also what answers the dedup worry above: the credential surfaces are
-      keyed by `(service, mode)`, so a stored Zen key cannot stand in for a Go
-      one. `O_RESP` is declared by neither mode as built — see the carriers
-      note below. The free rows stay unauthored: each duplicates a paid row in
-      rate-limited form, and none is a frontier coding model, which is the
-      subset rule the list follows.
+    - **As built**: the storage names are `OPENCODE_API_KEY` (Zen) and
+      `OPENCODE_GO_API_KEY` (Go). Two names for one pasted key is what keeps
+      the two credentials separable, and it also answers the dedup worry above
+      — the credential surfaces are keyed by `(service, mode)`, so a stored Zen
+      key cannot stand in for a Go one. Zen's name is the vendor's own, as
+      DeepSeek's row uses `DEEPSEEK_API_KEY`, so a deployment exporting the
+      documented variable has it adopted at boot (docs/252 req 20). That it is
+      ALSO a name `HARNESS_CREDENTIAL_VARS.opencode` scrubs is safe rather than
+      circular, and the reason is worth stating because it looks like a
+      collision: the scrub empties the SPAWN env, so the CLI cannot auto-detect
+      the key and out-prefer ShipIt's provider block, while the adapter reads
+      the secret from its own `process.env` and writes
+      `OPENCODE_PROVIDER_API_KEY` (`opencode/adapter.ts`). `O_RESP` is declared
+      by neither mode as built — see the carriers note below. The free rows
+      stay unauthored: each duplicates a paid row in rate-limited form, and
+      none is a frontier coding model, which is the subset rule the list
+      follows.
   - `{ kind: "sub", quota: <new "opencode-go-usage"> }` — OpenCode Go, the
     GLM-coding-plan shape (sub-via-string, same key). Endpoints as above with
     `/zen/go`. Quota: **decided (req 6)** — a new `QuotaIntegrationId`
@@ -251,17 +256,25 @@ excludes, and `nativeService` staying deferred. Key files:
 - `HarnessDef.opencode` gains `nativeService: "opencode"` — the follow-up
   docs/268's catalogue row deferred. Combined with the `cost` field (§5), the
   metered-spend column can use the harness's own figure on native + key.
-  - **Not done, and the reason is a turn path rather than tidiness.**
-    `session-agent-env.ts` settles a selection-less turn's model onto the row
-    (planning#353) **only when the derived service is not the harness's own
-    vendor**, because for Anthropic and OpenAI the older fallback reaches the
-    same ACCOUNT credential. OpenCode's service is string-credentialled and no
-    fallback reaches it: an unshaped OpenCode spawn carries no credential at all
-    (`opencode/adapter.ts`, the `else if (params.model)` branch). Naming a
-    native service here would therefore send a selection-less turn into a spawn
-    that cannot authenticate. The guard needs "native AND account-delivered"
-    before this flips; nothing reads the metered-spend source yet, so the wait
-    costs nothing.
+  - **Done, and it needed three consumers fixed first** — the whole content of
+    this line is that "native service" had been standing in for "the vendor's
+    account machinery owns this", which is true of Anthropic and OpenAI and
+    false here: OpenCode's native service is a pasted key with no login flow,
+    and an unshaped OpenCode spawn cannot authenticate at all (the adapter
+    refuses a turn with no routing). Each of the three now asks
+    `loginIntegrationForService` as well:
+    - `session-agent-env.ts` — the planning#353 write. It skipped settling a
+      selection-less turn's model onto the row for the native vendor, because
+      the older fallback reaches the same ACCOUNT credential there. Left
+      unfixed, naming a native service would have sent a selection-less
+      OpenCode turn into a spawn with no credential.
+    - `session-agent-env.ts` — the blocked-turn subject, which would otherwise
+      say "every connected OpenCode account…" about a service with no accounts.
+    - `credential-failure-policy.ts` — `vendorOwnedRecovery`, which would have
+      sent a refused OpenCode credential down a heal path that heals nothing
+      and re-selected it every turn (the GLM bug the axis exists for).
+    - and `services/settings.ts`, where the account verbs must keep answering
+      400 for OpenCode.
 - The OAuth console login (follow-up under req 4): new `LoginIntegrationId`
   ("opencode-console"), an auth manager, and the docs/268 credential-home
   symlink caveats apply (`AGENT_CREDENTIAL_PATHS` already lists

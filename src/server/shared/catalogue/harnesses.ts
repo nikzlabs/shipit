@@ -149,25 +149,22 @@ export const HARNESSES = [
     id: "opencode",
     name: "OpenCode",
     binary: "opencode",
-    // Still no `nativeService` (explicit `undefined` so the union keeps the
-    // property accessible), and the reason has changed: the rows now exist —
-    // docs/272 added the `opencode` service (Zen + Go) — but declaring them
-    // this harness's own vendor would change a turn path this feature does not
-    // need to touch.
+    // docs/272 — the follow-up docs/268 deferred: OpenCode's own inference
+    // (Zen + Go) now has honest `ServiceDef` rows, so this CLI has a native
+    // service. What it buys is attribution — on native + key the metered-spend
+    // column may use the harness's OWN figure, and OpenCode reports one (every
+    // Zen/Go response body carries a top-level `cost`, docs/272 §5).
     //
-    // `session-agent-env.ts`'s planning#353 write settles a selection-less
-    // turn's model onto the row **only when the derived service is not the
-    // harness's own vendor**, because for Anthropic and OpenAI the old
-    // fallback (`selectAccountForTurn(nativeService)`) reaches the same
-    // ACCOUNT credential. OpenCode's service is string-credentialled, so
-    // nothing reaches it that way: an unshaped OpenCode spawn carries no
-    // credential at all (`opencode/adapter.ts`, the `else if (params.model)`
-    // branch), so naming a native service here would newly route a
-    // selection-less turn into it. That guard wants "native AND
-    // account-delivered" before this line can flip; until then the only thing
-    // deferred is the metered-spend column's "harness's own figure" source
-    // (docs/272 plan.md §6), which nothing reads yet.
-    nativeService: undefined,
+    // What it must NOT be read as: unlike claude and codex, this native service
+    // has no account machinery — no login flow, no OAuth heal — and an
+    // UNSHAPED OpenCode spawn cannot authenticate at all (the adapter refuses a
+    // turn with no routing). Three places used "native service" as a stand-in
+    // for "the vendor's account machinery owns this", and all three now ask
+    // `loginIntegrationForService` as well: `credential-failure-policy.ts`,
+    // `session-agent-env.ts` (the planning#353 write and the blocked-turn
+    // subject) and `services/settings.ts`. Adding a fourth reader of
+    // `nativeService` means asking which of the two questions it wants.
+    nativeService: "opencode",
     //
     // VERIFIED (docs/268, CLI 1.18.15, against a local HTTP recorder). A
     // custom provider block with `npm: "@ai-sdk/openai-compatible"` issues
