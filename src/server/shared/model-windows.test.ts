@@ -99,6 +99,7 @@ describe("context windows survive the catalogue derivation unchanged", () => {
     // advertises 400K/1.05M; using that would move the dial on every Codex
     // session's first frame.
     expect(getContextWindowForModel("gpt-5.6-sol")).toBe(272_000);
+    expect(getContextWindowForModel("gpt-5.3-codex-spark")).toBe(272_000);
     expect(getContextWindowForModel("gpt-5.2")).toBe(272_000);
   });
 });

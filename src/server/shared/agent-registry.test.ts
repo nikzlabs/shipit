@@ -184,7 +184,12 @@ describe("model capability metadata", () => {
     const codexModels = getAgentCapabilities("codex")?.models;
 
     expect(claudeModels).toContain("claude-sonnet-5");
-    expect(codexModels?.slice(0, 3)).toEqual(["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]);
+    expect(codexModels?.slice(0, 4)).toEqual([
+      "gpt-5.6-sol",
+      "gpt-5.6-terra",
+      "gpt-5.6-luna",
+      "gpt-5.3-codex-spark",
+    ]);
     expect(codexModels).not.toContain("gpt-5.6");
   });
 });

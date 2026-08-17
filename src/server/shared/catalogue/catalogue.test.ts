@@ -613,16 +613,40 @@ describe("the harness\u00d7service join", () => {
       "haiku",
       "claude-fable-5",
     ]);
-    expect(catalogueModelIdsForHarness("codex").slice(0, 8)).toEqual([
+    expect(catalogueModelIdsForHarness("codex").slice(0, 9)).toEqual([
       "gpt-5.6-sol",
       "gpt-5.6-terra",
       "gpt-5.6-luna",
+      "gpt-5.3-codex-spark",
       "gpt-5.4",
       "gpt-5.4-mini",
       "gpt-5.5",
       "gpt-5.3-codex",
       "gpt-5.2",
     ]);
+  });
+
+  it("offers Codex Spark only through the OpenAI subscription", () => {
+    const sub = getModel({
+      serviceId: "openai",
+      billingMode: "sub",
+      modelId: "gpt-5.3-codex-spark",
+    });
+    const key = getModel({
+      serviceId: "openai",
+      billingMode: "key",
+      modelId: "gpt-5.3-codex-spark",
+    });
+    const proxy = getModel({
+      serviceId: "openai",
+      billingMode: "key",
+      modelId: "gpt-5.3-codex",
+    });
+
+    // This equality IS the documented provisional-rate relationship. If
+    // GPT-5.3-Codex's rate moves, re-check whether it remains Spark's proxy.
+    expect(sub?.price).toEqual(proxy?.price);
+    expect(key).toBeUndefined();
   });
 
   it("reaches services the harness shares a style with, and no others", () => {
@@ -651,6 +675,8 @@ describe("the harness\u00d7service join", () => {
 
 describe("eligibility (req 8)", () => {
   const deepseekKey = { serviceId: "deepseek", billingMode: "key" as const, via: "string" as const };
+  const openaiKey = { serviceId: "openai", billingMode: "key" as const, via: "string" as const };
+  const openaiAccount = { serviceId: "openai", billingMode: "sub" as const, via: "account" as const };
   const anthropicAccount = {
     serviceId: "anthropic",
     billingMode: "sub" as const,
@@ -660,6 +686,18 @@ describe("eligibility (req 8)", () => {
   it("offers nothing at all when no credential is configured", () => {
     expect(eligibleEntriesForHarness("claude", [])).toEqual([]);
     expect(eligibleEntriesForHarness("codex", [])).toEqual([]);
+  });
+
+  it("offers Codex Spark to an OpenAI subscription, never an OpenAI API key", () => {
+    const spark = {
+      serviceId: "openai",
+      billingMode: "sub" as const,
+      modelId: "gpt-5.3-codex-spark",
+    };
+    expect(isSelectionEligible("codex", spark, [openaiAccount])).toBe(true);
+    expect(
+      isSelectionEligible("codex", { ...spark, billingMode: "key" }, [openaiKey]),
+    ).toBe(false);
   });
 
   it("req 2: a DeepSeek key alone makes Claude Code runnable, with no Anthropic row", () => {
@@ -940,6 +978,7 @@ describe("spawn shaping", () => {
       "gpt-5.6-sol": "GPT-5.6 Sol",
       "gpt-5.6-terra": "GPT-5.6 Terra",
       "gpt-5.6-luna": "GPT-5.6 Luna",
+      "gpt-5.3-codex-spark": "GPT-5.3 Codex Spark",
       "gpt-5.5": "GPT-5.5",
       "gpt-5.4": "GPT-5.4",
       "gpt-5.4-mini": "GPT-5.4 Mini",

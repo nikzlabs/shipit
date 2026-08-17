@@ -17,6 +17,8 @@ table — a phase is checked off when its PR has merged.
 - [x] `ModelSelection` triple through types, persistence and the picker's plumbing
 - [x] Migrate the three persisted selections (session, `vibe-model-id`, sub-agent defaults)
 - [x] Catalogue invariants under test
+- [x] Add GPT-5.3-Codex-Spark as an OpenAI subscription-only model, with its
+      provisional pricing basis recorded
 
 ## Phase 2 — Credentials and Settings
 

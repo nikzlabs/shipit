@@ -945,9 +945,9 @@ const MIGRATIONS: Migration[] = [
   // The last row is the one judgement, and it fails in the safe direction: a
   // session wrongly on `sub` stops and says so, where one wrongly on `key`
   // silently spends money. It is also only sound because the chosen mode must
-  // actually OFFER the model — and it does for every model in scope here, since
-  // both first-party services declare every one of their models under both
-  // modes (including `claude-fable-5`, which phase 1's research placed in both).
+  // actually OFFER the model — and it does for every id in the frozen migration
+  // lists below. Later catalogue additions can be mode-specific; they are not
+  // pre-feature rows and must not be added to these historical lists.
   //
   // ## Why the mapping is inlined
   //
@@ -999,10 +999,10 @@ const MIGRATIONS: Migration[] = [
        WHERE model IN (${placeholders(OPENAI_MODELS.length)})`,
     ).run(...OPENAI_MODELS);
 
-    // Billing mode, by route id — never by route kind. Both first-party services
-    // declare every one of their models under BOTH modes, so whichever mode is
-    // chosen here is guaranteed to offer the row's model; that is what makes the
-    // evidence-free default below sound rather than merely convenient.
+    // Billing mode, by route id — never by route kind. Every model id in the
+    // frozen migration lists above was offered under BOTH modes when this
+    // migration shipped, so whichever mode is chosen here offers the row's
+    // model. Later mode-specific catalogue rows are outside this migration.
     db.exec(
       `UPDATE sessions SET billing_mode = 'key'
        WHERE service_id IS NOT NULL

@@ -231,6 +231,13 @@ No open questions remain.
     API rates**, which is what says whether the subscription is worth keeping. It is shown as
     a comparison and never as money spent.
 
+    When a vendor offers a model with no published API rate, ShipIt uses the closest
+    same-vendor model's published rate as a **documented provisional estimate**. The
+    catalogue names the proxy and its basis, and replaces it when the vendor publishes the
+    model's own rate. Under a subscription the proxy is only the at-API-rates comparison.
+    Under an API key it also supplies the explicitly estimated metered-spend figure; ShipIt
+    never claims that a proxy is the vendor's exact billed rate.
+
     Volume is reported in **tokens**, not turns. A turn is not a unit of anything — one can be
     a one-line question and the next a full refactor — so a turn count says little about what
     was consumed, and it is not the unit either price or quota is computed in. Tokens are.
@@ -325,7 +332,8 @@ No open questions remain.
     knows**, not only the ones the user configured, so what a service would give is readable
     while deciding whether to pay for it. The price is the service's own rate — under a
     subscription that is what the tokens would have cost, not an extra charge — and is
-    labelled as the estimate req 16 says it is. It is reachable from the services screen
+    labelled as the estimate req 16 says it is. Req 16's documented provisional-rate rule
+    applies when a model has no published API price. It is reachable from the services screen
     without occupying it (req 19), and it is the **one** place the question is answered: a
     configured service leads to the same statement rather than carrying a second, shorter
     answer of its own.
@@ -341,19 +349,19 @@ No open questions remain.
 
 ## Open questions
 
-- 2026-08-17 — GPT-5.3-Codex-Spark is available through a ChatGPT Pro
-  subscription in the Codex CLI and IDE extension, but OpenAI marks it as
-  unavailable through the API and publishes no API token price. Reqs 16 and 23
-  currently require every catalogue model to carry and display a real API-rate
-  estimate. How should ShipIt represent a subscription-only model for which no
-  such rate exists? **Recommendation: allow an explicitly unavailable price,
-  show “API price unavailable” in the supported-models dialog, and exclude its
-  turns from dollar estimates while continuing to report their token volume.**
-  This keeps the model selectable without inventing a price or presenting an
-  unknown cost as zero. Alternatives are to use another model's rate as a
-  labelled proxy, or not to add Spark until OpenAI publishes an API rate.
+_None._
 
 ## Resolved questions
+
+- 2026-08-17 — GPT-5.3-Codex-Spark is available through a ChatGPT Pro
+  subscription in the Codex CLI and IDE extension, but OpenAI marks it as
+  unavailable through the API and publishes no API token price. How should
+  ShipIt satisfy reqs 16 and 23? **Chosen: follow the existing GLM-5.3
+  precedent and use the closest published model rate as a documented
+  provisional estimate.** The user first selected “Price unavailable,” then
+  corrected the design assumption: *“we already have a precedent with
+  glm-5.3”*. Spark therefore uses GPT-5.3-Codex's published API rate until
+  OpenAI publishes a Spark rate. Reqs 16 and 23 now state this narrow rule.
 
 - 2026-08-16 — Req 19 moved a card's model ids into a hover list on a `N models` control, which
   left the question "what can this service run" answerable only for a service already
