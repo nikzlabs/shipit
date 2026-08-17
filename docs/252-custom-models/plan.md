@@ -153,6 +153,15 @@ the source per vendor, and the derivation for the two whose cache rates are
 published as multipliers rather than rates, are in `services.ts`'s header
 comment. What authoring the rows *found* is below, after the phase list.
 
+**Catalogue maintenance (2026-08-17): GPT-5.3-Codex-Spark.** Spark is an
+OpenAI subscription-only research preview: it is available to ChatGPT Pro in
+the Codex CLI and IDE extension, but OpenAI marks API access unavailable. It is
+therefore declared only under `openai:sub`. OpenAI publishes no Spark API rate,
+so its catalogue row follows the GLM-5.3 precedent and carries GPT-5.3-Codex's
+published rate as an explicitly documented provisional estimate. The row keeps
+Codex's existing 272K first-frame fallback; runtime telemetry remains
+authoritative after a turn starts.
+
 **The rows themselves are written out in [`catalogue.md`](./catalogue.md)**, including the
 types. So this phase is transcription for what the repo already settles, research for each 🔍
 marker. **Two** shape questions stay open on purpose, both from the survey and neither

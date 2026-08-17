@@ -116,6 +116,7 @@ export const MODEL_IDENTITIES = {
   gpt54: identity("gpt-5.4", "gpt"),
   gpt54mini: identity("gpt-5.4-mini", "gpt"),
   gpt53codex: identity("gpt-5.3-codex", "gpt"),
+  gpt53codexSpark: identity("gpt-5.3-codex-spark", "gpt"),
   gpt52: identity("gpt-5.2", "gpt"),
 
   deepseekV4Flash: identity("deepseek-v4-flash", "deepseek"),

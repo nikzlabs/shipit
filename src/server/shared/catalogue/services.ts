@@ -122,6 +122,17 @@ const OPENAI_PRICES = {
   gpt54: { input: 2.5, output: 15, cacheRead: 0.25, cacheWrite: 0 },
   gpt54mini: { input: 0.75, output: 4.5, cacheRead: 0.075, cacheWrite: 0 },
   gpt53codex: { input: 1.75, output: 14, cacheRead: 0.175, cacheWrite: 0 },
+  /**
+   * PROVISIONAL (2026-08-17): Spark is a ChatGPT Pro-only research preview.
+   * OpenAI's Codex model guide (`learn.chatgpt.com/docs/models`, checked
+   * 2026-08-17) names the exact `gpt-5.3-codex-spark` slug, marks Codex CLI and
+   * IDE extension support true, limits availability to ChatGPT Pro, and marks
+   * API access false. OpenAI therefore publishes no token price. Reqs 16 and
+   * 23 use the closest same-vendor published rate in that case, following the
+   * existing GLM-5.3 precedent. Replace this with Spark's own rate if one is
+   * published.
+   */
+  gpt53codexSparkProvisional: { input: 1.75, output: 14, cacheRead: 0.175, cacheWrite: 0 },
   gpt52: { input: 1.75, output: 14, cacheRead: 0.175, cacheWrite: 0 },
 } as const;
 
@@ -289,6 +300,9 @@ export const SERVICES = [
           { id: "gpt-5.6-sol", label: "GPT-5.6 Sol", ...MODEL_IDENTITIES.gpt56sol, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.sol },
           { id: "gpt-5.6-terra", label: "GPT-5.6 Terra", ...MODEL_IDENTITIES.gpt56terra, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.terra },
           { id: "gpt-5.6-luna", label: "GPT-5.6 Luna", ...MODEL_IDENTITIES.gpt56luna, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.luna },
+          // OpenAI lists Spark after the GPT-5.6 family in its recommended Codex
+          // models. Keep that vendor order while leaving Sol as the default.
+          { id: "gpt-5.3-codex-spark", label: "GPT-5.3 Codex Spark", ...MODEL_IDENTITIES.gpt53codexSpark, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt53codexSparkProvisional },
           { id: "gpt-5.4", label: "GPT-5.4", ...MODEL_IDENTITIES.gpt54, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt54 },
           { id: "gpt-5.4-mini", label: "GPT-5.4 Mini", ...MODEL_IDENTITIES.gpt54mini, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt54mini },
           { id: "gpt-5.5", label: "GPT-5.5", ...MODEL_IDENTITIES.gpt55, styles: [O_RESP], contextWindow: CODEX_WINDOW, price: OPENAI_PRICES.gpt55 },
