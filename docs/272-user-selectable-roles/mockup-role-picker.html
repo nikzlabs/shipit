@@ -39,7 +39,7 @@
   }
   .wrap { max-width: 1200px; margin: 0 auto; }
   .page-title { font-size: 20px; font-weight: 600; margin: 0 0 6px; }
-  .page-sub { font-size: 13px; color: var(--text-secondary); line-height: 1.7; margin: 0; max-width: 80ch; }
+  .page-sub { font-size: 13px; color: var(--text-secondary); line-height: 1.7; margin: 0; max-width: 82ch; }
   .req { color: var(--accent); font-size: 12px; font-weight: 600; }
   code.k {
     background: var(--bg-secondary); border: 1px solid var(--border-primary);
@@ -69,18 +69,20 @@
     font-size: 12px; color: var(--text-secondary); line-height: 1.7;
     background: var(--bg-secondary); border: 1px solid var(--border-primary);
     border-left: 2px solid var(--accent); border-radius: 0 8px 8px 0;
-    padding: 10px 14px; margin: 14px 0 0; max-width: 82ch;
+    padding: 10px 14px; margin: 14px 0 0; max-width: 84ch;
   }
   .note.warn { border-left-color: var(--warning); }
-  .note.bad { border-left-color: var(--error); }
   .cols { display: grid; grid-template-columns: 1fr 1fr; gap: 22px; align-items: start; }
-  .stack { display: flex; flex-direction: column; gap: 20px; }
+  .stack { display: flex; flex-direction: column; gap: 22px; }
+  .flow { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .arrow { color: var(--text-tertiary); font-size: 18px; flex: none; }
 
-  /* ---- composer: borderless controls in one rounded field ---- */
+  /* ---- composer ---- */
   .composer {
     background: var(--bg-elevated); border: 1px solid var(--border-primary);
     border-radius: 14px; padding: 13px 14px 11px;
   }
+  .composer.lit { border-color: var(--accent); }
   .composer .field { color: var(--text-tertiary); font-size: 14px; padding: 3px 2px 18px; }
   .toolbar { display: flex; align-items: center; gap: 2px; }
   .ctl {
@@ -93,12 +95,7 @@
   .ctl.icon-only { color: var(--text-tertiary); padding: 4px 6px; }
   .ctl .lock { font-size: 10px; color: var(--text-tertiary); }
   .spacer { flex: 1; }
-  /* the docs/260 clip group — labels give way, ends stay pinned */
-  .clipgroup {
-    display: flex; align-items: center; gap: 2px; min-width: 0; overflow: hidden;
-  }
-  .clipgroup.narrow { max-width: 300px; }
-  .clipgroup.outlined { outline: 1px dashed var(--accent); outline-offset: 3px; border-radius: 4px; }
+  .clipgroup { display: flex; align-items: center; gap: 2px; min-width: 0; overflow: hidden; }
   .dial { display: inline-flex; align-items: center; gap: 6px; padding: 4px 7px; font-size: 12.5px; }
   .ring {
     width: 13px; height: 13px; border-radius: 50%; flex: none;
@@ -108,28 +105,39 @@
   }
   .dial .tok { color: var(--text-primary); font-weight: 500; }
   .dial .cost { color: var(--accent); font-family: ui-monospace, Menlo, monospace; font-size: 12px; }
-  .role-mark { color: var(--accent); display: inline-flex; align-items: center; gap: 4px; }
-  .role-mark .dot { width: 5px; height: 5px; border-radius: 50%; background: var(--accent); }
-  .sep { color: var(--text-tertiary); }
+  /* the role, as a single named control */
+  .rolectl {
+    display: inline-flex; align-items: center; gap: 6px; white-space: nowrap;
+    font-size: 13px; padding: 4px 9px; border-radius: 999px;
+    color: var(--accent); background: var(--accent-subtle);
+    border: 1px solid transparent;
+  }
+  .rolectl .dia { font-size: 9px; }
+  .rolectl .car { font-size: 9px; opacity: .8; }
+  .rolectl.open { border-color: var(--accent); }
+  .rolectl.empty { color: var(--text-tertiary); background: transparent; }
+  .rolectl.empty .dia { color: var(--text-tertiary); }
   .stop, .send {
-    width: 30px; height: 30px; border-radius: 8px; flex: none; margin-left: 6px;
+    width: 30px; height: 30px; border-radius: 8px; flex: none;
     display: inline-flex; align-items: center; justify-content: center; font-size: 12px;
   }
-  .stop { background: var(--error); color: #fff; }
+  .stop { background: var(--error); color: #fff; margin-left: 6px; }
   .send { background: var(--accent-subtle); color: var(--accent); margin-left: 4px; }
   .mg { font-size: 9px; letter-spacing: -1px; font-variant-emoji: text; }
+  .strike { position: relative; }
 
   /* ---- menu ---- */
   .menu {
-    width: 372px; background: var(--bg-elevated); border: 1px solid var(--border-primary);
+    width: 330px; background: var(--bg-elevated); border: 1px solid var(--border-primary);
     border-radius: 12px; padding: 6px; box-shadow: 0 18px 44px var(--shadow);
   }
+  .menu.narrow { width: 252px; }
   .group-label {
     font-size: 10px; letter-spacing: .09em; text-transform: uppercase;
     color: var(--text-tertiary); padding: 9px 10px 5px;
     display: flex; align-items: center; gap: 8px;
   }
-  .group-label .hint { text-transform: none; letter-spacing: 0; font-size: 10.5px; opacity: .8; }
+  .group-label .hint { text-transform: none; letter-spacing: 0; font-size: 10.5px; opacity: .85; }
   .divider { height: 1px; background: var(--border-primary); margin: 5px 6px; }
   .row {
     display: flex; align-items: flex-start; gap: 9px;
@@ -139,10 +147,7 @@
   .row .body { flex: 1; min-width: 0; }
   .row .name { display: flex; align-items: center; gap: 7px; }
   .row .desc { display: block; font-size: 11.5px; color: var(--text-secondary); line-height: 1.55; margin-top: 2px; }
-  .row .params {
-    display: block; font-size: 11px; color: var(--text-tertiary); margin-top: 4px;
-    font-family: ui-monospace, Menlo, monospace;
-  }
+  .row .params { display: block; font-size: 11px; color: var(--text-tertiary); margin-top: 4px; font-family: ui-monospace, Menlo, monospace; }
   .row.disabled { opacity: .6; }
   .check { color: var(--accent); font-size: 12px; width: 12px; flex: none; padding-top: 2px; }
   .check.blank { color: transparent; }
@@ -153,7 +158,6 @@
   }
   .pill.warn { color: var(--warning); border-color: var(--warning); background: var(--warning-subtle); }
   .pill.danger { color: var(--error); border-color: var(--error); background: var(--error-subtle); }
-  .pill.match { color: var(--accent); border-color: var(--accent); background: var(--accent-subtle); }
   .vendor {
     width: 16px; height: 16px; border-radius: 4px; flex: none; margin-top: 1px;
     display: inline-flex; align-items: center; justify-content: center;
@@ -164,7 +168,7 @@
 
   /* ---- phone ---- */
   .phone {
-    width: 296px; background: var(--bg-elevated); border: 1px solid var(--border-primary);
+    width: 290px; background: var(--bg-elevated); border: 1px solid var(--border-primary);
     border-radius: 14px; padding: 6px; box-shadow: 0 18px 44px var(--shadow);
   }
   .panel-head {
@@ -173,10 +177,11 @@
     font-size: 12px; color: var(--text-secondary);
   }
   .rootrow { display: flex; align-items: center; gap: 9px; padding: 9px 10px; border-radius: 8px; font-size: 13px; }
+  .rootrow.sub { padding-left: 26px; }
   .rootrow .lab { flex: 1; }
   .rootrow .val { font-size: 11.5px; color: var(--text-tertiary); }
   .rootrow .val.accent { color: var(--accent); }
-  .caption { font-size: 11.5px; color: var(--text-tertiary); margin: 9px 2px 0; line-height: 1.6; }
+  .caption { font-size: 11.5px; color: var(--text-tertiary); margin: 9px 2px 0; line-height: 1.6; max-width: 40ch; }
   .ab { display: flex; gap: 8px; align-items: baseline; margin-bottom: 9px; flex-wrap: wrap; }
   .ab .tag {
     font-size: 10px; letter-spacing: .06em; text-transform: uppercase; white-space: nowrap;
@@ -184,7 +189,6 @@
     border: 1px solid var(--border-primary); border-radius: 6px; padding: 2px 7px;
   }
   .ab .tag.rec { color: var(--success); border-color: var(--success); background: transparent; }
-  .ab .tag.no { color: var(--error); border-color: var(--error); background: transparent; }
   .ab .why { font-size: 11.5px; color: var(--text-secondary); }
 </style>
 </head>
@@ -193,14 +197,14 @@
 
   <h1 class="page-title">User-selectable roles — picker prototype</h1>
   <p class="page-sub">
-    Prototype for <code class="k">docs/272-user-selectable-roles</code>. A role is a
-    <strong>starting point</strong>, selected before the session's first turn, and it never becomes
-    a binding (req 3, req 4). It adds <strong>no control to the composer</strong> — it lives inside
-    the model picker that is already there (req 5). The reviewer is never offered and never
-    indicated (req 10, req 13).
-    Colours are the real <code class="k">claude-light</code> and <code class="k">claude</code>
-    tokens; the composer below is drawn from <code class="k">MessageInput.tsx</code>, not from
-    memory.
+    Prototype for <code class="k">docs/272-user-selectable-roles</code>. A selected role shows
+    <strong>its name alone</strong> — the harness, model and reasoning level are what the role is
+    made of, and restating them says nothing the user did not just decide (req 5). The parameters
+    open from the name, and changing one is the whole of leaving the role (req 14). Roles are
+    <strong>not</strong> in the model menu: a role is not a model, and that list is long already
+    (req 15). Colours are the real <code class="k">claude-light</code> and
+    <code class="k">claude</code> tokens; the composer is drawn from
+    <code class="k">MessageInput.tsx</code>.
   </p>
   <div class="themebar">
     <button class="on" onclick="document.body.className='claude-light';this.classList.add('on');this.nextElementSibling.classList.remove('on')">Claude Light</button>
@@ -209,15 +213,14 @@
 
   <!-- 1 ............................................................. -->
   <div class="section">
-    <p class="section-label"><span class="n">1</span> The real composer row <span class="req">req 5, req 13</span></p>
+    <p class="section-label"><span class="n">1</span> The composer, role selected <span class="req">req 5</span></p>
 
     <div class="stack" style="max-width: 900px;">
 
       <div>
-        <div class="ab"><span class="tag">today</span><span class="why">
-          The row as it ships. Attach, voice and mode sit left; the four labelled controls sit in
-          the dashed <strong>clip group</strong>, whose labels are cut when width runs short
-          (docs/260 req 1). The padlock means this session has pinned its harness.
+        <div class="ab"><span class="tag">no role · today</span><span class="why">
+          Unchanged, except for one thing: the way in. Attach, voice and mode sit left; the labelled
+          controls sit right. The padlock means the session has pinned its harness.
         </span></div>
         <div class="composer">
           <div class="field">Describe what to build… (type @ to attach files)</div>
@@ -226,8 +229,9 @@
             <span class="ctl icon-only">🎙</span>
             <span class="ctl icon-only"><span class="mg">&#9656;&#9656;</span></span>
             <span class="spacer"></span>
-            <span class="clipgroup outlined">
+            <span class="clipgroup">
               <span class="dial"><span class="ring"></span><span class="tok">114.9K</span><span class="cost">$0.004</span></span>
+              <span class="rolectl empty"><span class="dia">◆</span> Role <span class="car">▾</span></span>
               <span class="ctl">Claude Code <span class="lock">🔒</span></span>
               <span class="ctl">Opus 5 <span class="car">▾</span></span>
               <span class="ctl"><span class="ic">◍</span> Medium <span class="car">▾</span></span>
@@ -238,9 +242,9 @@
       </div>
 
       <div>
-        <div class="ab"><span class="tag rec">option a · recommended</span><span class="why">
-          The role is its own label inside the clip group, marked and coloured, placed
-          <strong>before</strong> the model it set.
+        <div class="ab"><span class="tag rec">role selected</span><span class="why">
+          The three controls are gone. The role name stands in their place, because it decided all
+          three. The row is <strong>shorter</strong> than today, not longer.
         </span></div>
         <div class="composer">
           <div class="field">Describe what to build… (type @ to attach files)</div>
@@ -249,12 +253,9 @@
             <span class="ctl icon-only">🎙</span>
             <span class="ctl icon-only"><span class="mg">&#9656;&#9656;</span></span>
             <span class="spacer"></span>
-            <span class="clipgroup outlined">
+            <span class="clipgroup">
               <span class="dial"><span class="ring"></span><span class="tok">114.9K</span><span class="cost">$0.004</span></span>
-              <span class="ctl"><span class="role-mark"><span class="dot"></span>Deep dive</span></span>
-              <span class="ctl">Claude Code <span class="lock">🔒</span></span>
-              <span class="ctl">Opus 5 <span class="car">▾</span></span>
-              <span class="ctl"><span class="ic">◍</span> Medium <span class="car">▾</span></span>
+              <span class="rolectl"><span class="dia">◆</span> Deep dive <span class="car">▾</span></span>
             </span>
             <span class="stop">■</span><span class="send">↑</span>
           </div>
@@ -262,24 +263,23 @@
       </div>
 
       <div>
-        <div class="ab"><span class="tag">option a, narrow</span><span class="why">
-          The same row with the window dragged in. The role label is the <strong>first</strong> thing
-          the clip group gives up, because it is the only label repeated inside the menu it came
-          from. Harness, model and reasoning keep their names.
+        <div class="ab"><span class="tag">role opened</span><span class="why">
+          Clicking the role name reveals what it set. The controls appear <em>beside</em> it, live
+          and changeable — not a read-out.
         </span></div>
-        <div class="composer">
-          <div class="field">Describe what to build…</div>
+        <div class="composer lit">
+          <div class="field">Describe what to build… (type @ to attach files)</div>
           <div class="toolbar">
             <span class="ctl icon-only">＋</span>
             <span class="ctl icon-only">🎙</span>
             <span class="ctl icon-only"><span class="mg">&#9656;&#9656;</span></span>
             <span class="spacer"></span>
-            <span class="clipgroup outlined narrow">
+            <span class="clipgroup">
               <span class="dial"><span class="ring"></span><span class="tok">114.9K</span></span>
-              <span class="ctl"><span class="role-mark"><span class="dot"></span></span></span>
+              <span class="rolectl open"><span class="dia">◆</span> Deep dive <span class="car">▴</span></span>
               <span class="ctl">Claude Code <span class="lock">🔒</span></span>
               <span class="ctl">Opus 5 <span class="car">▾</span></span>
-              <span class="ctl"><span class="ic">◍</span> Medium <span class="car">▾</span></span>
+              <span class="ctl"><span class="ic">◍</span> Think hard <span class="car">▾</span></span>
             </span>
             <span class="stop">■</span><span class="send">↑</span>
           </div>
@@ -287,32 +287,9 @@
       </div>
 
       <div>
-        <div class="ab"><span class="tag no">option b · rejected</span><span class="why">
-          Appending to the model label — <code class="k">Opus 5 · Deep dive</code>. This is what the
-          first draft of this prototype proposed, before the real row was checked.
-        </span></div>
-        <div class="composer">
-          <div class="field">Describe what to build…</div>
-          <div class="toolbar">
-            <span class="ctl icon-only">＋</span>
-            <span class="ctl icon-only">🎙</span>
-            <span class="ctl icon-only"><span class="mg">&#9656;&#9656;</span></span>
-            <span class="spacer"></span>
-            <span class="clipgroup outlined narrow">
-              <span class="dial"><span class="ring"></span><span class="tok">114.9K</span></span>
-              <span class="ctl">Claude Code <span class="lock">🔒</span></span>
-              <span class="ctl">Opus 5 <span class="sep">·</span> <span class="role-mark">Deep dive</span> <span class="car">▾</span></span>
-              <span class="ctl"><span class="ic">◍</span> Medium <span class="car">▾</span></span>
-            </span>
-            <span class="stop">■</span><span class="send">↑</span>
-          </div>
-        </div>
-      </div>
-
-      <div>
-        <div class="ab"><span class="tag">no role</span><span class="why">
-          Nobody's role. Identical to today — the plain combination is the ordinary case, not a
-          deviation (req 13).
+        <div class="ab"><span class="tag">changed → left the role</span><span class="why">
+          Reasoning moved from <em>think hard</em> to <em>medium</em>, so this is no longer Deep
+          dive. The row is exactly today's, and the way back is the same control it always was.
         </span></div>
         <div class="composer">
           <div class="field">Describe what to build… (type @ to attach files)</div>
@@ -321,8 +298,9 @@
             <span class="ctl icon-only">🎙</span>
             <span class="ctl icon-only"><span class="mg">&#9656;&#9656;</span></span>
             <span class="spacer"></span>
-            <span class="clipgroup outlined">
+            <span class="clipgroup">
               <span class="dial"><span class="ring"></span><span class="tok">114.9K</span><span class="cost">$0.004</span></span>
+              <span class="rolectl empty"><span class="dia">◆</span> Role <span class="car">▾</span></span>
               <span class="ctl">Claude Code <span class="lock">🔒</span></span>
               <span class="ctl">Opus 5 <span class="car">▾</span></span>
               <span class="ctl"><span class="ic">◍</span> Medium <span class="car">▾</span></span>
@@ -334,42 +312,35 @@
 
     </div>
 
-    <p class="note bad">
-      <strong>What the real row changed.</strong> The four labelled controls live in a
-      <code class="k">min-w-0 overflow-hidden</code> group whose <em>labels</em> are sacrificed when
-      the row runs out of width, so that Send is never carried off the edge (docs/260 req 1, req 8;
-      <code class="k">MessageInput.tsx</code> — <code class="k">wide-row-clip-group</code>). Every
-      character added inside that group is spent from a budget that is already contested and
-      already clips between 700 and ~808px. Appending to the model label (option b) makes the
-      single widest label wider, so the group starts clipping sooner and clips a compound label
-      whose two halves are not equally important.
-    </p>
     <p class="note">
-      <strong>Why option a instead.</strong> A separate label can be given a separate priority. The
-      role name is the one label in the group that is <em>redundant</em> — the menu it came from
-      names it too — so it should be the first to shrink to its marker and the last to matter. That
-      is a rule the clip group can express and a compound label cannot.
+      <strong>The collapse is what pays for the control.</strong> docs/261 decided the composer row
+      does not grow, and req 5 sets that aside deliberately. It is affordable because the growth is
+      only in the state where <em>no</em> role is selected: choosing one removes three labels and
+      adds one. The width problem that dominated the previous draft — the
+      <code class="k">min-w-0 overflow-hidden</code> clip group whose labels are cut between 700 and
+      ~808px — is not made worse by a role, and is relieved while one is selected.
     </p>
     <p class="note warn">
-      <strong>Still worth your judgement:</strong> option a puts a read-only label among four
-      controls that open menus. It is the only thing in that group that does nothing when clicked.
-      The alternative is to accept option b's clipping, or to show the role only inside the menu and
-      nowhere on the row — which would not satisfy req 13.
+      <strong>The one thing to weigh.</strong> The empty state adds a control the user may never
+      want. Drawn here as <code class="k">◆ Role</code>; it could be the diamond alone, which costs
+      about 30px, or it could appear only for a user who has configured at least one role — that
+      last option keeps the row identical to today for everyone else, at the price of a feature that
+      is invisible until it is discovered elsewhere.
     </p>
   </div>
 
   <!-- 2 ............................................................. -->
   <div class="section">
-    <p class="section-label"><span class="n">2</span> The model menu, opened — Roles at the top <span class="req">req 1, req 9, req 10</span></p>
+    <p class="section-label"><span class="n">2</span> The role menu — its own, not the model's <span class="req">req 15, req 9, req 10</span></p>
     <div class="cols">
       <div>
         <div class="menu">
-          <div class="group-label">Roles <span class="hint">— sets everything below</span></div>
+          <div class="group-label">Roles <span class="hint">— sets harness, model and reasoning</span></div>
 
           <div class="row sel">
             <span class="check">✓</span><span class="vendor v-role">◆</span>
             <span class="body">
-              <span class="name">Deep dive <span class="pill match">current</span></span>
+              <span class="name">Deep dive</span>
               <span class="desc">Long architectural investigations. Reads widely before proposing.</span>
               <span class="params">Claude Code · Opus 5 · think hard</span>
             </span>
@@ -398,7 +369,6 @@
             <span class="body">
               <span class="name">Cheap sweep <span class="pill danger">disconnected</span></span>
               <span class="desc">DeepSeek is not connected. Reconnect it in Settings → Services.</span>
-              <span class="params">Codex · deepseek-v3 · medium</span>
             </span>
           </div>
 
@@ -407,7 +377,6 @@
             <span class="body">
               <span class="name">Old reliable <span class="pill warn">stranded</span></span>
               <span class="desc">Its model was retired. Edit the role in Settings to pick another.</span>
-              <span class="params">Claude Code · opus-4-1 · think</span>
             </span>
           </div>
 
@@ -418,38 +387,37 @@
             <span class="body"><span class="name">No role</span>
               <span class="desc">Set the harness, model and reasoning yourself.</span></span>
           </div>
-
-          <div class="divider"></div>
-          <div class="group-label">Anthropic <span class="hint">— subscription</span></div>
-          <div class="row"><span class="check blank">✓</span><span class="vendor v-a">A</span>
-            <span class="body"><span class="name">Opus 5</span></span></div>
-          <div class="row"><span class="check blank">✓</span><span class="vendor v-a">A</span>
-            <span class="body"><span class="name">Sonnet 5</span></span></div>
-          <div class="group-label">OpenAI <span class="hint">— api</span></div>
-          <div class="row"><span class="check blank">✓</span><span class="vendor v-o">O</span>
-            <span class="body"><span class="name">gpt-5-mini</span></span></div>
         </div>
+        <p class="caption">The role menu. Short, and about one thing.</p>
       </div>
 
       <div>
-        <p class="note" style="margin-top:0">
-          <strong>Roles sit above the models, in the menu that is already there.</strong> Selecting
-          one writes the harness, service, billing mode, model and reasoning level at once — the
-          rows below then show that model as selected. Selecting a plain model clears the role
-          label, because the combination is no longer the role's.
+        <div class="menu">
+          <div class="group-label">Anthropic <span class="hint">— subscription</span></div>
+          <div class="row sel"><span class="check">✓</span><span class="vendor v-a">A</span>
+            <span class="body"><span class="name">Opus 5</span></span></div>
+          <div class="row"><span class="check blank">✓</span><span class="vendor v-a">A</span>
+            <span class="body"><span class="name">Sonnet 5</span></span></div>
+          <div class="row"><span class="check blank">✓</span><span class="vendor v-a">A</span>
+            <span class="body"><span class="name">Haiku 4.5</span></span></div>
+          <div class="group-label">OpenAI <span class="hint">— api</span></div>
+          <div class="row"><span class="check blank">✓</span><span class="vendor v-o">O</span>
+            <span class="body"><span class="name">gpt-5-mini</span></span></div>
+          <div class="row"><span class="check blank">✓</span><span class="vendor v-o">O</span>
+            <span class="body"><span class="name">gpt-5</span></span></div>
+        </div>
+        <p class="caption">The model menu — untouched. No Roles group, nothing added to a list that is already long.</p>
+
+        <p class="note">
+          <strong>Two menus, because they answer different questions.</strong> A role carries a
+          harness, a reasoning level and standing instructions that no model row can express. Listed
+          among models it would read as a kind of model, and would crowd the one list users open
+          most (req 15).
         </p>
         <p class="note">
-          <strong>Unavailable roles stay, and say why</strong> (req 9). They cannot be selected, and
-          carry the reason and the fix. The <code class="k">reviewer</code> role is absent (req 10)
-          — this list is the whole reason that question mattered.
-        </p>
-        <p class="note">
-          <strong>"No role" is not a fifth state.</strong> It clears the label only. It does not
-          change the harness, model or reasoning: nothing is put back (req 3).
-        </p>
-        <p class="note warn">
-          <strong>The open question, shown:</strong> if two roles carry identical parameters, this
-          prototype marks the first by name and stays silent about the other.
+          <strong>Unavailable roles stay, and say why</strong> (req 9) — with the reason and the fix,
+          unselectable. The <code class="k">reviewer</code> is absent (req 10). "No role" clears the
+          role and changes nothing else: nothing is put back (req 3).
         </p>
       </div>
     </div>
@@ -457,19 +425,21 @@
 
   <!-- 3 ............................................................. -->
   <div class="section">
-    <p class="section-label"><span class="n">3</span> Below 700px — the drill-down <span class="req">req 5, docs/260</span></p>
-    <div class="cols" style="grid-template-columns: 296px 296px 1fr;">
+    <p class="section-label"><span class="n">3</span> Below 700px — folded into the one menu <span class="req">req 14, docs/260</span></p>
+    <div class="flow" style="align-items: flex-start;">
 
       <div>
         <div class="phone">
           <div class="rootrow"><span class="mg">&#9656;&#9656;</span><span class="lab">Mode</span><span class="val">Auto</span><span class="car">›</span></div>
           <div class="rootrow"><span>◆</span><span class="lab">Role</span><span class="val accent">Deep dive</span><span class="car">›</span></div>
-          <div class="rootrow"><span>▣</span><span class="lab">Harness</span><span class="val">Claude Code</span><span class="car">›</span></div>
-          <div class="rootrow"><span>◇</span><span class="lab">Model</span><span class="val">Opus 5</span><span class="car">›</span></div>
-          <div class="rootrow"><span>◍</span><span class="lab">Reasoning</span><span class="val">Medium</span><span class="car">›</span></div>
         </div>
-        <p class="caption">Root list — <strong>five</strong> rows, not four.</p>
+        <p class="caption">
+          Role selected — <strong>two</strong> rows. Harness, model and reasoning are not listed,
+          for the same reason they leave the wide row: the role decided them.
+        </p>
       </div>
+
+      <span class="arrow">→</span>
 
       <div>
         <div class="phone">
@@ -485,24 +455,37 @@
           <div class="divider"></div>
           <div class="row"><span class="check blank">✓</span><span class="body"><span class="name">No role</span></span></div>
         </div>
-        <p class="caption">The Role panel.</p>
+        <p class="caption">The Role panel — the same list as the wide menu.</p>
       </div>
 
+      <span class="arrow">→</span>
+
       <div>
-        <p class="note" style="margin-top:0">
-          <strong>This is where the design does grow.</strong> docs/260 states the root list stays
-          four rows however far the catalogue grows. That promise is about <em>catalogue</em>
-          growth, and this adds a row for a new kind of setting rather than for more models — but it
-          is still a cost, and worth naming before it is built.
-        </p>
-        <p class="note warn">
-          <strong>The alternative, if five rows is too many:</strong> fold Role into the Model row
-          (<code class="k">Model · Deep dive</code>) and put roles at the top of the Model panel, as
-          the wide menu does. One rule at both widths, but a row labelled "Model" would then also
-          set the harness and reasoning.
+        <div class="phone">
+          <div class="rootrow"><span class="mg">&#9656;&#9656;</span><span class="lab">Mode</span><span class="val">Auto</span><span class="car">›</span></div>
+          <div class="rootrow"><span>◆</span><span class="lab">Role</span><span class="val">None</span><span class="car">›</span></div>
+          <div class="rootrow"><span>▣</span><span class="lab">Harness</span><span class="val">Claude Code</span><span class="car">›</span></div>
+          <div class="rootrow"><span>◇</span><span class="lab">Model</span><span class="val">Opus 5</span><span class="car">›</span></div>
+          <div class="rootrow"><span>◍</span><span class="lab">Reasoning</span><span class="val">Medium</span><span class="car">›</span></div>
+        </div>
+        <p class="caption">
+          No role — the four rows docs/260 already has, plus Role. This is the only state where the
+          menu is longer than today.
         </p>
       </div>
     </div>
+
+    <p class="note">
+      <strong>The narrow layout now states the same rule as the wide one</strong>, which the
+      previous draft did not: a role replaces the controls it set, at both widths. The five-row root
+      list is no longer the standing shape — it is what the user sees when no role is selected.
+    </p>
+    <p class="note warn">
+      <strong>Open, and worth your view:</strong> with a role selected, the three controls vanish
+      from the narrow menu entirely, so changing the model means clearing the role or opening Role
+      and changing it there. On the wide row the same act is one click on the role name. If that is
+      too hidden, the Role panel can carry the three controls beneath the list.
+    </p>
   </div>
 
   <!-- 4 ............................................................. -->
@@ -515,16 +498,13 @@
           <div class="toolbar">
             <span class="ctl icon-only">＋</span>
             <span class="spacer"></span>
-            <span class="clipgroup">
-              <span class="ctl"><span class="role-mark"><span class="dot"></span>Deep dive</span></span>
-              <span class="ctl">Opus 5 <span class="car">▾</span></span>
-            </span>
+            <span class="rolectl"><span class="dia">◆</span> Deep dive <span class="car">▾</span></span>
             <span class="send">↑</span>
           </div>
         </div>
-        <p class="caption">
-          The overlay already picks a model and derives the harness. It gains the same Roles group
-          in the same menu, and the same read-only label.
+        <p class="caption" style="max-width:52ch">
+          One control instead of two. The overlay is the surface where the collapse pays best — it
+          is the narrowest, and the least suited to four labelled controls.
         </p>
       </div>
       <div>
@@ -533,9 +513,8 @@
           turn, so the user lands in a session and selects the role in its composer (req 4, req 11).
         </p>
         <p class="note">
-          <strong>The role is remembered</strong> (req 12): the next new session opens with
-          "Deep dive" already shown, exactly as the model and harness are remembered today. Clearing
-          it is "No role", in the same menu.
+          <strong>The role is remembered</strong> (req 12): the next new session opens showing
+          "Deep dive". Clearing it is "No role", in the same menu.
         </p>
       </div>
     </div>

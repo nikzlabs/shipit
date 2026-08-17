@@ -39,11 +39,16 @@ A **user** who starts a session themselves cannot. This feature closes that gap.
    Standing instructions describe what a session is for, and a session that is already under way
    is already for something.
 
-5. **Selecting a role does not add a control to the composer.** The composer already carries the
-   permission mode, the harness, the model and the reasoning level, and below 700px it collapses
-   them into one menu (docs/260). Role selection lives inside what is already there. This is a
-   constraint on the design, not a preference: docs/261 records the decision that the composer row
-   does not grow.
+5. **A selected role replaces the controls it set. The composer shows the role name, and nothing
+   else about what the session runs on.** The harness, the model and the reasoning level are what
+   the role is *made of*; once the user has chosen the role, restating its three parts tells them
+   nothing they did not just decide. The permission mode is not a role parameter and is unaffected.
+
+   The composer therefore carries **one** role affordance: the role's name when a role is selected,
+   and a way to select one when none is. This sets aside docs/261's decision that the composer row
+   does not grow — deliberately, on the user's instruction, and recorded here rather than left to
+   be discovered as a contradiction. The row still does not grow *while a role is selected*: it
+   shows fewer labels than it does today, not more.
 
 6. **ShipIt records which role a session was started on.** The user can tell later what a session
    was started as, and so can the agent. Because a role is a starting point (req 3), this is a
@@ -93,12 +98,33 @@ A **user** who starts a session themselves cannot. This feature closes that gap.
     - **When the combination is nobody's role, ShipIt says nothing about roles.** The plain
       combination is the ordinary case, not a deviation, and must not be shown as one.
 
+14. **The parameters a role set stay reachable, and changing one is what leaves the role.** From
+    the role's name the user opens the harness, model and reasoning controls and changes any of
+    them. The moment the combination is no longer the role's, the composer returns to its ordinary
+    form — the three controls, shown as they are today (req 13) — and offers to select a role
+    again. Nothing is confirmed, warned about or put back: changing a control is the whole of
+    leaving a role, and selecting one again is the whole of returning.
+
+    Below 700px this is the same fact in the shape docs/260 already uses: the role folds into the
+    one composer settings menu, alongside the controls it sets.
+
+15. **Roles are not listed among the models.** A role is not a model — it carries a harness, a
+    reasoning level and standing instructions that no model row can express — and the model list is
+    long already. Putting roles inside it would crowd the one list users open most, and would teach
+    that a role is a kind of model.
+
+## Requirement provenance
+
 Kept separate so that what the user asked for stays visible next to what was proposed to them.
 
 - **From the user's request** — "allow to use roles also in the input for the sessions that the
   user starts themselves": requirements 1 and 2.
-- **Proposed in chat and approved by the user on 2026-08-17**: requirements 3, 4, 5 and 6 — the
-  role-as-starting-point shape, new sessions only, no new composer control, recorded provenance.
+- **Proposed in chat and approved by the user on 2026-08-17**: requirements 3, 4 and 6 — the
+  role-as-starting-point shape, new sessions only, recorded provenance.
+- **Directed by the user on 2026-08-17, replacing what was proposed**: requirements 5, 14 and 15.
+  The agent had proposed that role selection live inside the model menu and add no control. The
+  user replaced this: a selected role shows its **name alone**, its parameters open from the name,
+  and roles do not belong in the model list. See the receipts below.
 - **Inherited from docs/264 and docs/261, restated here because this feature must not break them**:
   requirements 7 and 8.
 - **Answered by the user on 2026-08-17**: requirements 9, 10, 11 and 12, and the wording of
@@ -131,3 +157,17 @@ Kept separate so that what the user asked for stays visible next to what was pro
 
 - **2026-08-17 — Does the selected role persist to the next new session?** Yes, remember it, as
   ShipIt already remembers the model and the harness. → req 12.
+
+- **2026-08-17 — What does the composer show while a role is selected?** The role name, and nothing
+  else about what the session runs on: "I don't really need all the parameters… it needs to be only
+  the role name, and that's it." The parameters open from the name — "maybe I click on the role and
+  the controls appear" — and below 700px the role folds into the composer settings menu. Changing a
+  parameter so it no longer matches returns the row to today's form, with a way to select a role
+  still present. → req 5, req 14. This replaced the agent's proposal of a role *label* beside the
+  three controls, and with it the whole clip-group argument that had chosen between two ways of
+  writing that label.
+
+- **2026-08-17 — Do roles appear in the model menu?** No. "I would not put it in the models because
+  it's not actually a model, and the model list can be already crowded." → req 15. This replaced
+  the agent's proposal of a Roles group at the top of the model menu, which was the shape the whole
+  first prototype was built around.
