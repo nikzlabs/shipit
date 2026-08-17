@@ -35,22 +35,18 @@ services:
       # block below — both name the same image tag, so whichever built last would
       # silently win a disagreement.
     image: shipit-dogfood:local
-    # 1000:1000 is NOT the workspace owner, and since docs/270 it cannot be: the
-    # session UID is per-session and a project may not name it. This service
-    # reaches the workspace through the shared GROUP instead — gid 1000, which
-    # docs/271 made group-writable — and that is why it can create
-    # `.inner-shipit/` and its Vite cache again. Before that fix this line was
-    # simply wrong and the inner orchestrator never started.
+    # NO `user:` — ShipIt fills in this session's own identity, and that is the
+    # only arrangement in which this service actually works.
     #
-    # KEPT rather than deleted, though docs/271 also stopped requiring it. An
-    # orchestrator that predates the fix still refuses a contained service with no
-    # `user:` — and refuses the WHOLE file, stopping every other service too — so
-    # deleting this line would break dogfooding on every session until the fix is
-    # deployed everywhere. Drop it (here and in `onboarding`, `sdk-test`,
-    # `android`) once that has happened: with no `user:` ShipIt fills in the
-    # session's own identity, and files this service writes become agent-owned
-    # outright instead of merely group-reachable.
-    user: "1000:1000"
+    # docs/271 made the workspace group-writable, which was enough to let a
+    # foreign uid CREATE files, and this service ran as 1000:1000 on that basis.
+    # It is not enough for git: `safe.directory` checks the repository's OWNER,
+    # not whether the process can write it, so the inner orchestrator (uid 1000)
+    # failed on every repo in its own state dir with "detected dubious ownership
+    # in repository at /workspace/.inner-shipit/marketplace-cache/…" — owned by
+    # 2000006, mode 2775. Group-write cannot fix that, and no `safe.directory`
+    # exception should be added to paper over it (docs/272).
+    #
     # No `npm install` here anymore. The `dev` service now shares the agent
     # container's /workspace/node_modules (see volumes below), which
     # `agent.install` populates at session boot — so the deps are already in
@@ -330,8 +326,7 @@ services:
       # Must match the `dev` build block above — same image tag. Neither names
       # harnesses; see the note there.
     image: shipit-dogfood:local
-    # Same UID, same reason as `dev` above — see the note there.
-    user: "1000:1000"
+    # No `user:`, same reason as `dev` above — see the note there.
     command: >
       sh -c "
       mkdir -p $${SHIPIT_STATE_DIR:-/workspace/.inner-shipit/onboarding} $${AGENT_HOME:-/root} &&
@@ -394,8 +389,7 @@ services:
   # fix can be verified in production ShipIt before the orchestrator ships it.
   sdk-test:
     image: node:24-slim
-    # Same UID, same reason as `dev` above — see the note there.
-    user: "1000:1000"
+    # No `user:`, same reason as `dev` above — see the note there.
     working_dir: /workspace
     init: true
     # tsx comes from the agent container's bind-mounted node_modules, populated by
@@ -506,9 +500,8 @@ services:
     # Unlike `emulator` above, this service deliberately KEEPS ShipIt's
     # session-worker UID: it writes Gradle build output into the shared workspace,
     # so matching the agent's UID is exactly what we want (docs/150 §7). It gets
-    # that UID through the shared group, not by owning the tree — see the `dev`
-    # note above for why 1000 is no longer the owner and why this line stays.
-    user: "1000:1000"
+    # that UID from ShipIt's identity fill-in, which is what having no `user:`
+    # here buys — see the `dev` note above for why declaring 1000 was wrong.
     # That UID has no home directory inside this image, and both Gradle and adb need a
     # writable HOME for their caches/keys — so point them at the (UID-owned)
     # workspace instead of a root-owned `/`. Both dirs are gitignored.

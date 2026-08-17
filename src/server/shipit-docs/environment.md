@@ -4,10 +4,29 @@ You are running inside a Docker container managed by ShipIt.
 
 ## Runtime user — non-root
 
-You run as the unprivileged user **`shipit`** (UID/GID 1000), **not** root. Your
-home directory is `/home/shipit`. `whoami` reports `shipit` and `id -u` reports
-`1000`. This is a defense-in-depth boundary (docs/150): a prompt-injected or
-mistaken shell command can't modify system paths or read root-only files.
+You run as the unprivileged user **`shipit`**, **not** root. Your home directory
+is `/home/shipit`, and `whoami` reports `shipit`. This is a defense-in-depth
+boundary (docs/150): a prompt-injected or mistaken shell command can't modify
+system paths or read root-only files.
+
+**Your UID is per-session — never hardcode it.** `id -u` reports a number
+allocated to this session alone, in the range 2000000–2999999, so that one
+session cannot reach another's files (docs/270). Your **GID is 1000** and is
+shared by every session; that is the group the workspace is owned by. Read the
+values instead of assuming them:
+
+```
+$ id
+uid=2000006(shipit) gid=1000(shipit) groups=1000(shipit)
+```
+
+The number this doc used to give was `1000` for both, which is now wrong for the
+UID and was the reason agents wrote `user: "1000:1000"` into a compose service.
+**Do not do that**: a Compose service pinned to a UID that is not this session's
+cannot own the workspace, so git refuses it (`detected dubious ownership`) and
+dependency caches fail with `EACCES`. Omit `user:` and ShipIt supplies the right
+identity — see the "Services share the agent's user" section of
+/shipit-docs/compose.md.
 
 What this means in practice:
 

@@ -1310,9 +1310,37 @@ describe("generateComposeOverride", () => {
   // start dev` died on a stack where only `emulator` was really unfixable.
   // Reading the repo's real file (not a fixture) is the point — a fixture would
   // have stayed green through exactly that regression.
-  it("this repository's own compose file is valid in contained mode", () => {
+  //
+  // docs/272 — and it now depends on the NON-ROOT RUNTIME, which this test has to
+  // state rather than inherit from whatever the runner's environment happens to
+  // be. Those services declare no `user:` on purpose: a declared one cannot be
+  // this session's uid, so it cannot own the workspace, so git refuses it
+  // ("dubious ownership"). ShipIt fills the identity in instead — and the fill-in
+  // exists only where a worker uid does.
+  //
+  // Both directions are asserted because the second is a real constraint, not an
+  // implementation detail: on a deployment with containment ON and no worker uid,
+  // an undeclared service would run as the image default (often root), so the
+  // refusal is correct and this stack genuinely cannot run there. Containment is
+  // gated on `SESSION_EGRESS_ENFORCE` and the sidecar image, NOT on the worker uid
+  // (`egress-firewall-install.ts`), so that combination is configurable rather
+  // than impossible. Pinning only the passing direction would have hidden it.
+  it("this repository's own compose file is valid in contained mode, on the non-root runtime", () => {
     const own = path.join(process.cwd(), "docker-compose.yml");
-    expect(() => parseComposeFile(own, { dockerSocket: false, containEgress: true })).not.toThrow();
+    const orig = process.env.SHIPIT_SESSION_WORKER_UID;
+    try {
+      process.env.SHIPIT_SESSION_WORKER_UID = "2000006";
+      expect(() => parseComposeFile(own, { dockerSocket: false, containEgress: true })).not.toThrow();
+
+      delete process.env.SHIPIT_SESSION_WORKER_UID;
+      expect(() => parseComposeFile(own, { dockerSocket: false, containEgress: true }))
+        .toThrow("numeric, non-root");
+      // Open sessions are unaffected either way — nothing there requires a `user:`.
+      expect(() => parseComposeFile(own, { dockerSocket: false })).not.toThrow();
+    } finally {
+      if (orig === undefined) delete process.env.SHIPIT_SESSION_WORKER_UID;
+      else process.env.SHIPIT_SESSION_WORKER_UID = orig;
+    }
   });
 
   it("labels manual services without adding profiles", () => {

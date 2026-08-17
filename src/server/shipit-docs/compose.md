@@ -89,12 +89,26 @@ That reservation is why declaring nothing is the right answer rather than merely
 the convenient one: the UID your service wants is the session's own, and naming
 it is exactly what the range refuses. Leave `user:` out and ShipIt supplies it.
 
+**If your compose file declares a `user:` only because a contained session used to
+refuse it, delete that line.** That rule is gone. A `user:` kept out of habit is
+now actively harmful, in two ways that look nothing alike:
+
+- **git refuses to work.** `safe.directory` checks who *owns* a repository, not
+  whether the process can write it. A service running as a foreign UID fails with
+  `fatal: detected dubious ownership in repository at …` on any git command,
+  including ones your tooling runs for you. Group-writability cannot fix this, and
+  adding a `safe.directory` exception papers over a real ownership mismatch.
+- **Caches under `node_modules` break.** A cache directory created by one UID and
+  written by another gives `EACCES … mkdir '…/node_modules/.vite/deps_temp_…'`.
+  ShipIt repairs a leaked cache tree at container start, but the cheap fix is to
+  stop creating the mismatch.
+
 **If your image genuinely needs its own user** — it keeps startup scripts in that
 account's home, or drops privileges itself — declare it, and the service still
-works: ShipIt adds the session's group to it, and the workspace is group-writable,
-so a service running as a foreign UID can still write the tree the agent shares
-with it. Files it creates there are owned by that UID, though, so prefer no
-`user:` wherever the image tolerates it.
+runs: ShipIt adds the session's group to it, and the workspace is group-writable,
+so it can write the tree the agent shares with it. Accept the two costs above in
+exchange, and keep such a service away from git and from the workspace's
+dependency directories.
 
 ## Hot reload (HMR) needs polling
 
@@ -611,7 +625,9 @@ ShipIt replaces `dns:` and removes `SETUID` and `SETGID` for contained services.
 Every contained service runs as a numeric, non-root UID that is neither of the
 reserved UIDs 911 and 912. **You do not have to declare it** — a service with no
 `user:` is given the session's own identity, which satisfies that rule by
-construction. If you *do* declare one it must meet the rule itself: numeric,
+construction. (On a deployment old enough to have no per-session identity to give,
+the declaration is still required, and ShipIt says so by name when it refuses the
+file. If you see that refusal, declare a numeric non-root UID.) If you *do* declare one it must meet the rule itself: numeric,
 non-root, not 911 or 912, and outside ShipIt's per-session range 2000000–2999999
 (which is refused for every service, contained or not), and the image must run
 directly as that user. Use an Open session for images that require root

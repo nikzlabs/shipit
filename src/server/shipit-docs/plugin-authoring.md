@@ -164,8 +164,10 @@ What a plugin's service container *can* write: its own image filesystem
 (`/tmp`), any `tmpfs:` it declares, an anonymous volume (a `volumes:` entry with
 no `:`), `/plugin-state`, and `/project`. A fragment cannot declare a named
 volume, and its bind sources may only be its own files. The last two are mounted
-read-write but owned by the session-worker uid (1000), so a service that
-declares some other `user:` can still be refused by the filesystem.
+read-write but owned by the **consuming session's own uid** — a per-session number
+in 2000000–2999999, not a fixed 1000 — so a service that declares some other
+`user:` can still be refused by the filesystem. Declare no `user:` and ShipIt
+supplies that identity; a fragment cannot name it, since no fragment can know it.
 
 Relocating one tool's writes is the weaker fix — the tool's next release writes
 somewhere new. The recipe below removes the need.
@@ -234,7 +236,9 @@ plugins:
 services:
   web:
     image: node:22-alpine
-    user: "1000:1000"
+    # No `user:` — ShipIt supplies the consuming session's own uid, which is
+    # per-session and therefore not something a fragment could name. A pinned
+    # uid cannot own `/project`, so git and dependency caches fail there.
     working_dir: /app
     command: node /app/serve.mjs     # reads SHIPIT_PLUGIN_PORT; no watcher
     volumes: [".:/app:ro"]           # `.` is THIS FILE'S directory: plugins/web
@@ -255,7 +259,8 @@ well, at `/plugin`, for a service that would rather run from the root.
 services:
   web-dev:                       # a DIFFERENT name from the exported service
     image: node:22-alpine
-    user: "1000:1000"            # a contained session requires this
+    # No `user:` needed, in a contained session either — ShipIt fills in this
+    # session's own identity, which is what lets the service write this mount.
     working_dir: /app
     command: npm run dev -- --host 0.0.0.0 --port 4301
     volumes: [".:/app"]          # writable here; watching and hot reload are fine

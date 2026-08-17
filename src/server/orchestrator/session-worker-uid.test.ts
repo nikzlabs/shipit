@@ -506,6 +506,68 @@ describe("session-worker-uid (docs/150 §7)", () => {
       }
     });
 
+    // docs/272 — the dep dir is the one place docs/271's group-write did not
+    // reach, because the worktree walk excludes it by design. That made
+    // `node_modules` the only directory a foreign-uid Compose service could not
+    // write, which is exactly where every dev server puts its cache:
+    //   EACCES: permission denied, mkdir '/app/node_modules/.vite/deps_temp_…'
+    it("makes the dep dir root group-writable, so a service can create a cache in it", () => {
+      const myUid = process.getuid?.();
+      if (myUid === undefined) return; // not POSIX — skip
+      process.env.SHIPIT_SESSION_WORKER_UID = String(myUid);
+      const { nm } = seedNodeModules();
+      fs.chmodSync(nm, 0o755); // what a umask-022 writer leaves behind
+
+      reconcileDepDirCacheOwnership(nm);
+
+      expect(fs.lstatSync(nm).mode & 0o7777).toBe(0o2775);
+    });
+
+    // The leak path: a cache tree some OTHER uid wrote. It was already chowned
+    // back; without the mode it stayed unwritable to the next foreign uid, so the
+    // repair fixed ownership and left the EACCES in place.
+    it("group-writes a leaked cache tree it takes ownership of", () => {
+      const myUid = process.getuid?.();
+      if (myUid === undefined) return; // not POSIX — skip
+      process.env.SHIPIT_SESSION_WORKER_UID = String(myUid);
+      const { nm, viteFile } = seedNodeModules();
+      const viteDir = path.join(nm, ".vite");
+      fs.chmodSync(viteDir, 0o755);
+      fs.chmodSync(viteFile, 0o644);
+      // Make the child look leaked without needing root: the reconcile compares
+      // against the resolved identity, so move that instead of the file's owner.
+      process.env.SHIPIT_SESSION_WORKER_UID = String(myUid + 1);
+
+      reconcileDepDirCacheOwnership(nm);
+
+      const mode = (p: string) => fs.lstatSync(p).mode & 0o7777;
+      expect(mode(viteDir)).toBe(0o2775);
+      expect(mode(viteFile)).toBe(0o664);
+    });
+
+    // Review finding A: `addGroupWrite` skips a symlink, but `readdirSync`
+    // follows one — so a symlinked dep dir would have had the children of its
+    // TARGET chowned, and now chmodded, wherever that target lives.
+    it("refuses to walk a symlinked dep dir at all", () => {
+      const myUid = process.getuid?.();
+      if (myUid === undefined) return; // not POSIX — skip
+      process.env.SHIPIT_SESSION_WORKER_UID = String(myUid);
+      const outside = path.join(tmpDir, "outside");
+      const victim = path.join(outside, "pkg", "index.js");
+      fs.mkdirSync(path.dirname(victim), { recursive: true });
+      fs.writeFileSync(victim, "");
+      fs.chmodSync(path.dirname(victim), 0o755);
+      fs.chmodSync(victim, 0o644);
+      const link = path.join(tmpDir, "node_modules");
+      fs.symlinkSync(outside, link);
+
+      reconcileDepDirCacheOwnership(link);
+
+      // Untouched — neither the mode pass nor the chown reached through the link.
+      expect(fs.lstatSync(path.dirname(victim)).mode & 0o7777).toBe(0o755);
+      expect(fs.lstatSync(victim).mode & 0o7777).toBe(0o644);
+    });
+
     // Common case: everything already worker-owned → a shallow scan that chowns
     // nothing (the steady-state cost is just the direct-child lstats).
     //

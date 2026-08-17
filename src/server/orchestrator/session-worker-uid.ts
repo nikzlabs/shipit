@@ -2,7 +2,8 @@
  * Orchestrator-side ownership handoff to the unprivileged session worker user
  * (docs/150 §7).
  *
- * The session-worker container drops to the `shipit` user (UID/GID 1000) at
+ * The session-worker container drops to the `shipit` user — a per-session uid
+ * with the shared gid 1000 since docs/270, UID/GID 1000 before it — at
  * boot, but the **orchestrator** container stays root and keeps writing into
  * each session's mounted subtrees *after* the container has started —
  * credential refreshes every turn, the per-session gitconfig, user uploads,
@@ -769,25 +770,79 @@ export function handWorkspaceBackToWorker(workspaceDir: string): void {
 export function reconcileDepDirCacheOwnership(depDirPath: string): void {
   const owner = identityForTarget(depDirPath);
   if (owner === null) return;
+  // docs/272 — the dep dir ROOT must be group-writable too, or a Compose service
+  // that is not this session's uid cannot create a cache directory inside it at
+  // all. docs/271 made the worktree group-writable and this path was left out of
+  // that, because the worktree walk deliberately EXCLUDES the dep dirs (a bounded
+  // walk, `chownWorktreeToSessionWorker`'s `excludeRelDirs`) — so `node_modules`
+  // was the one place a service still could not write, which is precisely where
+  // every dev server puts its cache (`node_modules/.vite`, `.cache`).
+  //
+  // O(1): one `lstat` and at most one `chmod`, on a directory this function is
+  // about to `readdir` anyway.
+  const rootStat = lstatOrNull(depDirPath);
+  if (rootStat === null) return; // dep dir doesn't exist yet (no install)
+  // A SYMLINKED dep dir is not this pass's to walk. `addGroupWrite` would skip
+  // the link itself (a symlink's mode is meaningless, and `chmod` follows it),
+  // but `readdirSync` DOES follow it — so continuing would chown and now also
+  // chmod the children of whatever it points at, possibly outside the session
+  // entirely. Refusing the whole path is the only coherent answer, and it tightens
+  // the chown below as well: that already followed such a link (review finding A).
+  if (rootStat.isSymbolicLink()) return;
+  addGroupWrite(depDirPath, rootStat);
   let entries: string[];
   try {
     entries = fs.readdirSync(depDirPath);
   } catch {
-    return; // dep dir doesn't exist yet (no install) — nothing to reconcile
+    return; // unreadable — nothing to reconcile
   }
   for (const entry of entries) {
     const child = path.join(depDirPath, entry);
-    let stat: fs.Stats;
-    try {
-      stat = fs.lstatSync(child);
-    } catch {
-      continue; // vanished mid-scan
-    }
+    const stat = lstatOrNull(child);
+    if (stat === null) continue; // vanished mid-scan
     if (stat.uid !== owner.uid || stat.gid !== owner.gid) {
-      // Leaked tree (root-owned cache a root process wrote here) — chown it whole.
+      // Leaked tree (a cache some other uid wrote here) — chown it whole, and
+      // group-write it for the same reason the root above gets it: the next
+      // writer may be a service running as a uid that is not this one. Bounded by
+      // the LEAK size, not the dependency count, so the recursive mode pass costs
+      // nothing in the common case where there is no leak at all.
       chownRecursive(child, owner);
+      groupWriteRecursive(child);
     }
   }
+}
+
+/** `lstat` or null — the "it vanished mid-scan" case, which is never an error. */
+function lstatOrNull(p: string): fs.Stats | null {
+  try {
+    return fs.lstatSync(p);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * {@link addGroupWrite} over a tree, for a leaked cache the reconcile just took
+ * ownership of.
+ *
+ * Deliberately NOT folded into {@link chownRecursive}, which also walks the
+ * per-session CREDENTIAL subtree (`chownTreeToSessionWorker`). Credentials are
+ * `0600`/`0700` on purpose and must not become group-readable, let alone
+ * group-writable — docs/270 makes the same point about the global gitconfig. A
+ * mode change belongs to the callers that want one, not to the shared chown.
+ */
+function groupWriteRecursive(p: string): void {
+  const stat = lstatOrNull(p);
+  if (stat === null) return;
+  addGroupWrite(p, stat);
+  if (!stat.isDirectory()) return; // a symlink lstats as a non-directory
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(p);
+  } catch {
+    return;
+  }
+  for (const entry of entries) groupWriteRecursive(path.join(p, entry));
 }
 
 /**
