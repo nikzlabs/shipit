@@ -56,7 +56,7 @@ interface RefreshRow {
   detail?: string;
   /** docs/266-plugin-install-diagnosability req 7 — why the version live NOW is unusable, if it is. */
   degraded: string[];
-  /** docs/266-plugin-install-diagnosability reqs 5, 6 — `--force` re-installed the version already live. */
+  /** docs/266 reqs 5, 6 — this round re-installed the version already live. */
   reinstalled: boolean;
   /** planning#416 — the last install for this repository, output included. */
   install?: InstallRecordView;
@@ -347,8 +347,11 @@ function describe(row: RefreshRow): string {
     const live = row.after ? ` — still on ${short(row.after)}` : "";
     return `${head}: refresh failed${live}\n  ${row.detail ?? "no reason reported"}${degraded}`;
   }
-  // docs/266 — a forced re-install lands on the SAME commit, so "already at"
-  // would tell a consumer their retry did nothing.
+  // docs/266 — a re-install lands on the SAME commit, so "already at" would tell
+  // a consumer their retry did nothing. docs/273-plugin-generation-rebuild: this
+  // is no longer only a forced retry — a round that finds the live version was
+  // never installed for what the declaration now selects re-installs by itself,
+  // and reads the same way.
   if (row.reinstalled) {
     return `${head}: re-installed ${short(row.after)}${row.detail ? `\n  ${row.detail}` : ""}${degraded}`;
   }

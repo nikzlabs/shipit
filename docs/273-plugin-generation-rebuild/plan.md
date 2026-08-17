@@ -83,12 +83,23 @@ What that buys, per requirement:
   until the settle round after the publish rebuilds it on the new volume name.
   The superseded generation is then unheld and the next prune reclaims it.
 
-The id is only forked when it has to be. `activateOnce` still stages into
-`generations/<commit>` and takes the lease when that directory (or its layer)
-already exists; the change is what happens when the lease is **refused** — the
-build takes a fresh id and proceeds, instead of failing. That keeps every
-existing property of the ordinary path, including the install stamp that makes
-a re-stage after a failed publish a no-op.
+The id forks in two cases, and only those:
+
+- **The target is the version that is LIVE** — a `--force`, or a rebuild for a
+  selection the live generation was never installed for. It forks without asking
+  the lease, because a granted claim proves only that nobody has the tree
+  *mounted*, and clearing a live layer nobody happens to be running is still
+  destructive: an install that then fails leaves the version live with its
+  previous install output gone. That is req 4, and it is what the reporter
+  watched fail — an attempt moved their plugin from `active, usable` to
+  `degraded, NOT USABLE`.
+- **The lease refuses the id** — a target that is not live but is still held: a
+  pin back to a version a prune left in place because a container was using it.
+
+Everything else still stages into `generations/<commit>` under the lease, as
+before. That reuse is what keeps the install stamp meaningful: an install that
+succeeded and then failed to publish re-stages under the same id and finds its
+own layer already built.
 
 ### Knowing when to rebuild (req 1)
 
@@ -125,7 +136,7 @@ at the commit that was already live", whoever asked for it.
 
 | File | Change |
 |---|---|
-| `plugin-generations.ts` | Generation id (`GenerationRecord.id`), `installedFor`, the coverage test in the already-live shortcut, fresh id when the lease is refused, id-aware prune |
+| `plugin-generations.ts` | Generation id (`GenerationRecord.id`), `installedFor`, the coverage test in the already-live shortcut, a forked id for a live target and for a refused lease, id-aware prune |
 | `plugin-overlay.ts` | `pluginWorkDir` / `pluginOverlayVolumeName` / `buildPluginOverlaySpec` keyed by generation id; the volume name keeps its old form when the id is a bare commit |
 | `plugin-install.ts` | `PluginInstallJob.generationId` — the layer and the stamp belong to the build, not the commit |
 | `plugin-leases.ts` | `GenerationRef.generationId` — the lease key and the volume name must be the same identity |

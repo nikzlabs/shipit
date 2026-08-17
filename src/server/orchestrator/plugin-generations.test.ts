@@ -1330,6 +1330,45 @@ describe("rebuilding a live generation (docs/273-plugin-generation-rebuild)", ()
     expect(fs.realpathSync(activeLinkPath(stateDir, "tools"))).toBe(path.join(generationsDir(), live.id!));
   });
 
+  it("forks the id for a live version even when the lease would allow reuse", async () => {
+    // A granted claim proves nobody has the tree MOUNTED. It does not make
+    // clearing a live layer safe: an install that then fails would leave the
+    // version live with its previous install output gone — req 4's "leaves the
+    // plugin exactly as it found it", and what the reporter watched fail.
+    const installs: string[] = [];
+    const runInstall = recordingInstall(installs);
+    const free = lease(); // refuses nothing
+    await activateGeneration(repo({ branch: "main" }), {
+      ...deps(["probe"]), runInstall, beginGenerationDeletion: free.begin,
+    });
+    const before = readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)!;
+    const askedWhileBuildingIt = [...free.asked];
+
+    // Everything the lease was asked BEFORE the install ran — the only window in
+    // which its answer could have licensed clearing the live layer.
+    let askedBeforeInstall: string[] = [];
+    const forced = await activateGeneration(repo({ branch: "main" }), {
+      ...deps(["probe"]),
+      runInstall: async (job) => {
+        askedBeforeInstall = free.asked.slice(askedWhileBuildingIt.length);
+        return recordingInstall(installs)(job);
+      },
+      beginGenerationDeletion: free.begin,
+      force: true,
+    });
+
+    expect(forced.status).toBe("activated");
+    const after = readActiveGeneration(stateDir, "tools", TOOLS_SOURCE)!;
+    expect(after.commit).toBe(before.commit);
+    expect(after.id).not.toBe(before.id);
+    // The forced round never asked the lease about the live build: reuse is not
+    // a question whose answer could make it right. (It is asked about the
+    // superseded build later — that is the prune, after the swap.)
+    expect(askedBeforeInstall).toEqual([]);
+    // …and the install ran against the new build, not over the live layer.
+    expect(installs[1]).toBe(`${after.id}:probe`);
+  });
+
   it("changes nothing when the rebuild's own install fails", async () => {
     const installs: string[] = [];
     await activateGeneration(repo({ branch: "main" }), {

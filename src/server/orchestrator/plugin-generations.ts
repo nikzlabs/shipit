@@ -902,31 +902,63 @@ async function activateOnce(repo: DeclaredPluginRepo, deps: ActivateDeps): Promi
     //    coming back empty while path lookups still resolve, so the container
     //    misbehaves rather than fails.
     //
-    // **docs/273-plugin-generation-rebuild — a refusal forks the id instead of
-    // failing the round.** It used to end the activation with "still in use",
-    // and for the recovery this path exists to serve that was a deadlock with
-    // no way out: what holds the version is the plugin's own service, which is
-    // failing BECAUSE the install did not run, and the hold is taken for a
-    // DECLARED service — so stopping it, or setting `autostart: false`, releases
-    // nothing (nikzlabs/shipit#2411). A fresh id gives the rebuild its own
-    // checkout, its own layer and its own volume, so it touches nothing the live
-    // version owns: no lease is needed, nothing is refused, and the live version
-    // keeps serving until the link swap. The superseded tree is left to the
-    // prune, which takes the lease and will decline it while the old container
-    // still has it — costing disk until the next round, never correctness.
-    let clearGeneration = deps.beginGenerationDeletion
-      ? await deps.beginGenerationDeletion({ repoName: repo.name, generationId }).catch(() => null)
-      : noop;
-    if (!clearGeneration) {
+    // **docs/273-plugin-generation-rebuild — the id forks instead of the round
+    // failing, and a build whose target is LIVE never reuses the id at all.**
+    //
+    // Two things follow from `fork()`, and they are not the same thing:
+    //
+    //  - A build of the version that is live — `--force`, or a rebuild for a
+    //    selection the live generation was never installed for — ALWAYS forks,
+    //    whatever the lease would say. Not asking is the point: a granted claim
+    //    proves nobody has the tree MOUNTED, and clearing a live layer that
+    //    nobody happens to be running is still destructive, because an install
+    //    that then fails leaves the version live with the output of its previous
+    //    install gone. req 4 is that a recovery which cannot complete leaves the
+    //    plugin exactly as it found it, and it is what the reporter watched fail:
+    //    an attempt moved their plugin from `active, usable` to `degraded, NOT
+    //    USABLE` (nikzlabs/shipit#2411).
+    //  - A REFUSED claim forks too, rather than ending the round with "still in
+    //    use". That refusal was the deadlock: what holds the version is the
+    //    plugin's own service, which is failing BECAUSE the install did not run,
+    //    and the hold is taken for a DECLARED service — so stopping it, or
+    //    setting `autostart: false`, releases nothing.
+    //
+    // A forked build owns its checkout, its layer and its volume, so it touches
+    // nothing the live version has: no lease is needed, nothing is refused, the
+    // live version keeps serving until the link swap, and a failure discards the
+    // new tree whole. The superseded one is left to the prune, which takes the
+    // lease and declines while its container still has it — costing disk until a
+    // later round, never correctness.
+    //
+    // What still reuses the id, and still needs the lease for it: a target that
+    // is NOT live. A leftover `generations/<commit>` from a crashed attempt, and
+    // a pin back to a version a prune left in place because a companion CLI or a
+    // service was using it. Reuse is what keeps the install stamp meaningful —
+    // an install that succeeded and then failed to publish re-stages under the
+    // same id and finds its own layer already built.
+    const fork = (): void => {
       generationId = `${commit}.${crypto.randomUUID().replace(/-/g, "").slice(0, REVISION_CHARS)}`;
       finalDir = generationDir(stateDir, repo.name, generationId);
-      // No claim for the forked id: nothing has ever published or mounted it, so
-      // there is nothing to exclude — the publish below finds no `finalDir` to
-      // move aside, and install creates its layer from nothing.
-      clearGeneration = noop;
       console.log(
-        `[plugins] ${repo.name}: ${commit.slice(0, 9)} is in use, so this build takes the id ${generationId}`,
+        `[plugins] ${repo.name}: building ${commit.slice(0, 9)} beside the copy in place, as ${generationId}`,
       );
+    };
+
+    let clearGeneration: (() => void) | null;
+    if (previous && generationIdOf(previous) === generationId) {
+      fork();
+      clearGeneration = noop;
+    } else {
+      clearGeneration = deps.beginGenerationDeletion
+        ? await deps.beginGenerationDeletion({ repoName: repo.name, generationId }).catch(() => null)
+        : noop;
+      if (!clearGeneration) {
+        fork();
+        // No claim for the forked id: nothing has ever published or mounted it,
+        // so there is nothing to exclude — the publish below finds no `finalDir`
+        // to move aside, and install creates its layer from nothing.
+        clearGeneration = noop;
+      }
     }
 
     // The lease is released once, from whichever path reaches it first — the
