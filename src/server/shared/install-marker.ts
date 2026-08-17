@@ -141,7 +141,7 @@ function depsHashMatches(a: string | null, b: string | null): boolean {
   return a !== null && b !== null && a === b;
 }
 
-function sameCommands(a: string[], b: string[]): boolean {
+export function sameCommands(a: string[], b: string[]): boolean {
   if (a.length !== b.length) return false;
   return a.every((cmd, i) => cmd === b[i]);
 }

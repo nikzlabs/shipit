@@ -79,29 +79,33 @@ Both italics are load-bearing, and each was checked rather than assumed:
    [Verified](#what-was-verified-and-what-was-not), *the restart path*.
    *(Inferred, not stated — see Provenance.)*
 
-6. A plugin MUST still be able to write the consuming project's files. This is
-   not a new requirement; it is docs/262 req 29, settled by the requester on
-   2026-08-15 in their own words — *"plugins should be able to write to the user
-   repo, that is their purpose"* — together with its consequence, that "the
-   project's own files are NOT a containment boundary and must never be
-   described as one". A design that removes a plugin's ability to write some
-   part of the project is therefore a **change to req 29**, and belongs to the
-   requester rather than to this feature. *(Carried in from docs/262; see Open
-   question Q1.)*
+6. A plugin MUST still be able to write the consuming project's files —
+   **including `shipit.yaml` itself**. This is not a new requirement; it is
+   docs/262 req 29, settled by the requester on 2026-08-15 in their own words —
+   *"plugins should be able to write to the user repo, that is their purpose"* —
+   together with its consequence, that "the project's own files are NOT a
+   containment boundary and must never be described as one". Reaffirmed for this
+   feature on 2026-08-17: what changes is that ShipIt stops *executing* a changed
+   `agent.install` unattended, not what a plugin may *write*. *(Carried in from
+   docs/262; reaffirmed — see Resolved questions, Q1.)*
 
-7. A change to `agent.install` that ShipIt does not execute MUST be **visible**
-   and MUST NOT break the session. The session's clone, file tree, agent chat,
-   and previously-working dependencies keep working; only the un-accepted
-   execution is withheld, and the user is told it was. *(Inferred from the shape
+7. A change to `agent.install` that ShipIt does not execute MUST appear in the
+   **chat transcript**, naming both the command list that is in force and the
+   one that was withheld, and MUST still be there after a reload. It MUST NOT
+   break the session: the clone, file tree, agent chat, and
+   previously-installed dependencies keep working; only the un-accepted
+   execution is withheld. *(The transcript answer was given by the requester on
+   2026-08-17 — see Resolved questions, Q2. The rest is inferred from the shape
    docs/178 already chose for the same class of decision — "The clone, file
    tree, diffs, and agent chat still work while untrusted; only foreign-code
-   execution is gated" (`service-manager-setup.ts:388-398`) — not from a
-   separate answer. See Provenance.)*
+   execution is gated" (`service-manager-setup.ts:388-398`). See Provenance.)*
 
 8. Whatever ShipIt withholds, the user MUST have a way to get it. A user who
-   *wants* the new install command MUST be able to have it run without editing
-   ShipIt's configuration or restarting the session. *(Inferred — see
-   Provenance.)*
+   *wants* the new install command MUST be able to have it run **by asking the
+   agent**, without editing ShipIt's configuration, accepting a prompt, or
+   restarting the session — the agent runs commands in that container already,
+   so this is authority the user has already granted it. *(Answered by the
+   requester on 2026-08-17 — see Resolved questions, Q2.)*
 
 9. The design MUST state this route as **closed**, **partly closed**, or **left
    open**, and an open remainder MUST have a named owner (an issue), not a
@@ -112,37 +116,46 @@ Both italics are load-bearing, and each was checked rather than assumed:
     code that would have to hold" from "inherited the claim from a doc".
     *(Carried over from docs/266 req 8.)*
 
-## Open questions
+11. A session that has never had a plugin MUST be unaffected — same install
+    behaviour as today, and no new message in its transcript. *(Answered by the
+    requester on 2026-08-17 — see Resolved questions, Q3.)*
 
-Three, and they are the requester's rather than mine because each turns on a
-product tradeoff — what a plugin is allowed to be, and how often a user is
-interrupted — not on a fact about the code. The mechanism itself is not among
-them: requirement 6 already rules out the mount-narrowing shapes unless the
-requester reopens req 29, which is what Q1 asks.
+12. A plugin MUST NOT be able to escape requirement 1 by **removing its own
+    declaration** from `shipit.yaml` in the same write that changes
+    `agent.install`. *(Inferred while designing req 11 — see Provenance. It is
+    recorded as a requirement rather than a design note because req 11's
+    plain reading, "a session that declares a plugin", is exactly the reading
+    that leaves this open.)*
 
-- **Q1 — May a plugin ever change what `agent.install` runs?** The issue lists
-  three shapes and decides none. Requirement 6 answers two of them for me:
-  excluding the control files from the plugin `/project` mount, and narrowing
-  what `/project` contains, both take away a write docs/262 req 29 grants in
-  plain words. My recommendation is to leave the mount alone and **re-gate the
-  execution** — a plugin may write `shipit.yaml` like any other project file,
-  and what changes is that ShipIt stops running the result unattended. But
-  requirement 6 is the requester's requirement, so overriding it is theirs too.
+## Resolved questions
 
-- **Q2 — When ShipIt withholds a changed `agent.install`, what does the user
-  see?** A prompt to accept (the shape docs/178 uses for the repo trust gate) is
-  one answer; a transcript card that says it was not run, leaving the user to
-  ask the agent for it, is a much smaller one and reaches the same place —
-  because the agent running a command in its own container is exactly the
-  authority the user already granted it. This is the "how often is the user
-  re-prompted" tradeoff.
+- **2026-08-17 — May a plugin ever change what `agent.install` runs?** The issue
+  listed three shapes and decided none. Requirement 6 already answered two of
+  them: excluding the control files from the plugin `/project` mount, and
+  narrowing what `/project` contains, both take away a write docs/262 req 29
+  grants in plain words. The requester answered **re-gate the execution**: leave
+  the mount alone, let a plugin write `shipit.yaml` like any other project file,
+  and stop ShipIt running a changed `agent.install` unattended. Requirement 6
+  now says so, and requirement 29 of docs/262 stands unchanged.
 
-- **Q3 — Which sessions pay for it?** The escalation exists only where a plugin
-  container has the mount (req 4), so the gate can be scoped to
-  plugin-bearing sessions and cost nothing anywhere else — at the price of a
-  rule whose behaviour depends on something the user may not have in mind.
-  Applying it to every session is uniform and explainable, and re-prompts users
-  who have no plugin and no exposure.
+- **2026-08-17 — When ShipIt withholds a changed `agent.install`, what does the
+  user see?** Two shapes were put: a prompt to accept (what docs/178 uses for
+  the repo trust gate, needing a new per-session, per-command-list acceptance
+  store and new client UI, since the existing trust store is keyed by remote URL
+  globally), or a **transcript card** naming what was withheld, leaving the user
+  to ask the agent for it. The requester chose the **transcript card**.
+  Requirements 7 and 8 now say so. The reasoning that made it sufficient rather
+  than merely cheaper: the agent runs commands in that container anyway, so
+  "ask the agent to run it" is not a weaker acceptance than a button — it is the
+  same authority, exercised where a human can see it.
+
+- **2026-08-17 — Which sessions pay for it?** Applying the gate to every session
+  is uniform, and costs a message on the very common "the agent edited
+  `shipit.yaml` because I asked it to" path. Scoping it to plugin-bearing
+  sessions costs nothing where no plugin container holds the mount, which
+  requirement 4 says is everywhere else. The requester chose **only
+  plugin-bearing sessions**; requirement 11 states it, and requirement 12
+  records the bypass that the obvious reading of it would leave open.
 
 ## Provenance
 
@@ -151,16 +164,27 @@ sentence in planning#400 or to a resolved question in docs/262; the quoted words
 are shown at each. Requirements 9 and 10 are conventions docs/266 set for this
 set of three routes and are carried over unchanged.
 
-Requirements 5, 7 and 8 are **inferred**, and are recorded as requirements
-rather than left implicit because each would otherwise be decided silently
-inside the design:
+Requirements 5 and 12, and the second half of 7, are **inferred**, and are
+recorded as requirements rather than left implicit because each would otherwise
+be decided silently inside the design:
 
 - **5** is inferred from requirement 3 rather than from a new answer: an
   acceptance that binds on Tuesday's file-watcher event and not on Wednesday's
   container restart is not an acceptance of a command list at all.
-- **7** and **8** are inferred from docs/178's existing shape for the same class
-  of decision. If the requester wants a withheld install to be silent, or wants
-  it to be unrecoverable without an edit, those are changes to these two.
+- **7**'s "does not break the session" half is inferred from docs/178's existing
+  shape for the same class of decision; its "appears in the chat transcript"
+  half is the requester's, answered on 2026-08-17.
+- **12** is inferred from requirement 11, and is the one place where taking the
+  requester's answer at its plain word would have left the route open. The
+  answer chosen was "only plugin-bearing sessions"; a plugin that deletes its own
+  `plugins.use` entry in the same write makes the session look plugin-free at
+  exactly the moment the check runs. The requirement records the property so the
+  design cannot quietly satisfy req 11 and miss it.
+
+Requirements 6, 7 and 8 changed in the same diff as the receipts above, per the
+requirements discipline. Nothing here promotes a mechanism into a requirement:
+"read the install marker" and "check for the session's plugin data directory"
+are how requirements 3 and 12 get satisfied, and they live in `plan.md`.
 
 Nothing here promotes a mechanism into a requirement. "Re-gate rather than
 narrow the mount" is a design position and lives in Q1 and in `plan.md`, not in

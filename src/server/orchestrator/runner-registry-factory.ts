@@ -27,6 +27,7 @@ import type { ProviderAccountManager } from "./provider-account-manager.js";
 import type { TurnOutcome } from "./turn-settlement.js";
 import type { AutoPushScheduler } from "./services/auto-push-scheduler.js";
 import { applyShipitConfigChange, emitPluginReposUpdated, setupServiceManager, type ServiceSetupDeps } from "./service-manager-setup.js";
+import { emitNoticeInTurn } from "./chat-card-persistence.js";
 import { clearActivationState } from "./services/plugin-activation.js";
 import { buildAgentRunParams } from "./session-agent-run-params.js";
 import { applyModelRetirement } from "./model-retirement.js";
@@ -754,6 +755,20 @@ export function createRunnerRegistry(
         if ("rerunServiceSetup" in runner) {
           (runner as { rerunServiceSetup?: () => void }).rerunServiceSetup = () => {
             setupServiceManager(runner, setupDeps);
+          };
+        }
+
+        // docs/271 — surface a withheld `agent.install` in the transcript. The
+        // runner decides; this only reports, and it is wired here because the
+        // `ChatHistoryManager` lives at this level. `emitNoticeInTurn` persists
+        // as well as emits, and picks the in-turn vs post-turn placement itself
+        // — which matters because a withheld install fires from session setup,
+        // where no turn is running.
+        if ("onInstallWithheld" in runner) {
+          (runner as { onInstallWithheld?: (message: string) => void }).onInstallWithheld = (
+            message: string,
+          ) => {
+            emitNoticeInTurn(runner, runner.sessionId, message, chatHistoryManager, "warn");
           };
         }
       } else if (activatePluginRepos) {
