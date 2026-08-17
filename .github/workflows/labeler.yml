@@ -23,7 +23,20 @@ jobs:
     # for public repos).
     runs-on: ubuntu-24.04
     steps:
+      # Best-effort for real: a failure here must not turn the PR red, which is
+      # what the header above already claims and what this line makes true.
+      #
+      # The failure that prompted it was not a labeling problem at all — GitHub's
+      # own CDN answered the action download with `429 Too Many Requests`, three
+      # times, so the job died before any label logic ran. Nothing in a PR's diff
+      # can cause or fix that, and a cosmetic release-note label is not worth
+      # blocking a merge on someone else's rate limit.
+      #
+      # Step-level rather than job-level on purpose: the step still reports its
+      # failure in the run, so a genuinely broken `.github/labeler.yml` stays
+      # visible instead of silently labeling nothing forever.
       - uses: actions/labeler@v6.1.0
+        continue-on-error: true
         with:
           repo-token: ${{ github.token }}
           configuration-path: .github/labeler.yml
