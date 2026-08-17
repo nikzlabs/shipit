@@ -693,6 +693,8 @@ export const SERVICES = [
     // and models.dev declares `OPENCODE_API_KEY` on both providers), which the
     // GLM precedent already supports — one secret, two `(service, mode)` rows,
     // each with its own `storageEnv` so the two credentials stay separable.
+    // Asking for the same key twice is what req 7 calls wrong; until that is
+    // built, the two names are how the two products stay addressable.
     id: "opencode",
     name: "OpenCode",
     modes: [
@@ -718,17 +720,26 @@ export const SERVICES = [
         credentials: [
           {
             via: "string",
-            // The vendor's own variable name, as DeepSeek's row uses
-            // `DEEPSEEK_API_KEY` — so a deployment that exports the documented
-            // name has its key adopted as an ordinary credential at boot
-            // (docs/252 req 20). It is deliberately also a name
-            // `HARNESS_CREDENTIAL_VARS.opencode` scrubs from OpenCode spawns,
-            // and that is safe rather than circular: the scrub empties the
-            // SPAWN env (so the CLI cannot auto-detect it and out-prefer the
-            // provider block), while the adapter reads the secret from its own
-            // `process.env` and writes it to `OPENCODE_PROVIDER_API_KEY`
-            // (`opencode/adapter.ts`). Same shape DeepSeek already ships.
-            storageEnv: "OPENCODE_API_KEY",
+            // ShipIt's own name for the Zen half of the key, NOT the vendor's
+            // `OPENCODE_API_KEY`. Two reasons, and the second is why the row no
+            // longer reads like DeepSeek's:
+            //
+            //  - The products need separable names anyway (`OPENCODE_GO_KEY`
+            //    below), and a pair reading `OPENCODE_API_KEY` / `…_GO_KEY`
+            //    would make the metered product look like the default one.
+            //  - `OPENCODE_API_KEY` is a name the CLI auto-detects, so
+            //    `HARNESS_CREDENTIAL_VARS.opencode` scrubs it from every
+            //    OpenCode spawn. Storing under a scrubbed name worked — the
+            //    scrub empties the SPAWN env while the adapter reads its own
+            //    `process.env` and writes `OPENCODE_PROVIDER_API_KEY`
+            //    (`opencode/adapter.ts`) — but it left one variable meaning two
+            //    things. A distinct name keeps "what ShipIt stores" and "what
+            //    the CLI must never see" apart.
+            //
+            // The cost is that exporting the documented vendor name no longer
+            // gets a key adopted at boot (docs/252 req 20); adoption follows
+            // ShipIt's name, which is what Settings → Secrets asks for.
+            storageEnv: "OPENCODE_ZEN_API_KEY",
             // ✅ 2026-08-17, measured by invalid-key differential ("Invalid API
             // key" proves the header was read, "Missing API key" proves it was
             // ignored): `/messages` reads `x-api-key` ONLY and
@@ -815,7 +826,7 @@ export const SERVICES = [
             // invariant, and it is what keeps the two products two credential
             // rows in Settings rather than Go hiding behind a stored Zen key.
             // The GLM precedent again — `ZAI_CODING_PLAN_KEY` / `ZAI_API_KEY`.
-            storageEnv: "OPENCODE_GO_API_KEY",
+            storageEnv: "OPENCODE_GO_KEY",
             // Same launch gate, same wire facts as the Zen credential above.
             carriers: ["opencode"],
           },

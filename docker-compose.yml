@@ -275,8 +275,8 @@ services:
       - { name: VERCEL_AI_GATEWAY_API_KEY }
       # docs/272 — OpenCode's two products ride one pasted key, stored under two
       # names so the Zen credential and the Go credential stay separable.
-      - { name: OPENCODE_API_KEY }
-      - { name: OPENCODE_GO_API_KEY }
+      - { name: OPENCODE_ZEN_API_KEY }
+      - { name: OPENCODE_GO_KEY }
 
   # A ShipIt that has never been set up — for testing onboarding (docs/257).
   #

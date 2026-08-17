@@ -289,15 +289,16 @@ describe("OpencodeAdapter", () => {
     expect(events.at(-1)?.type).toBe("agent_result");
   });
 
-  it("delivers the Zen key the scrub just removed from the spawn (docs/272)", () => {
-    // OpenCode's own service stores its secret under `OPENCODE_API_KEY` — the
-    // vendor's name, which is ALSO one of the variables the spawn scrub
-    // deletes, because the CLI auto-detects it and would out-prefer the
-    // provider block ShipIt writes. Those two facts only coexist because the
-    // adapter reads the source from its OWN `process.env` rather than from the
-    // scrubbed spawn env. If that ever changes, the turn spawns with no
-    // credential (or, worse, on the CLI's own registry), so it is pinned here.
-    vi.stubEnv("OPENCODE_API_KEY", "sk-zen-secret");
+  it("delivers the Zen key through the provider block, never the CLI's own name (docs/272)", () => {
+    // Two variables, deliberately different. ShipIt stores OpenCode's own
+    // service credential under `OPENCODE_ZEN_API_KEY`, and the adapter must
+    // hand it to the CLI ONLY as the provider block's
+    // `OPENCODE_PROVIDER_API_KEY`. `OPENCODE_API_KEY` — the name the CLI
+    // auto-detects and would out-prefer the provider block with — stays
+    // scrubbed from the spawn even when the host exports one, which is the
+    // whole reason a redirected turn cannot silently bill the wrong product.
+    vi.stubEnv("OPENCODE_ZEN_API_KEY", "sk-zen-secret");
+    vi.stubEnv("OPENCODE_API_KEY", "sk-ambient-vendor-key");
     let spawnEnv: Record<string, string> = {};
     const child = new FakeChild();
     const adapter = new OpencodeAdapter({
@@ -315,7 +316,7 @@ describe("OpencodeAdapter", () => {
         billingMode: "key",
         style: "openai-chat-completions",
         baseUrl: "https://opencode.ai/zen/v1",
-        credentialSourceEnv: "OPENCODE_API_KEY",
+        credentialSourceEnv: "OPENCODE_ZEN_API_KEY",
         credentialTarget: { kind: "env", name: "OPENCODE_PROVIDER_API_KEY" },
       },
     });

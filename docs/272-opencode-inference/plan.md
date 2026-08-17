@@ -196,18 +196,20 @@ excludes, and `nativeService` staying deferred. Key files:
     "https://opencode.ai/zen/v1"`. Free models are ordinary $0 rows of this
     mode (resolved requirements question); the anonymous no-credential tier is
     out of scope.
-    - **As built**: the storage names are `OPENCODE_API_KEY` (Zen) and
-      `OPENCODE_GO_API_KEY` (Go). Two names for one pasted key is what keeps
+    - **As built**: the storage names are `OPENCODE_ZEN_API_KEY` (Zen) and
+      `OPENCODE_GO_KEY` (Go). Two names for one pasted key is what keeps
       the two credentials separable, and it also answers the dedup worry above
       — the credential surfaces are keyed by `(service, mode)`, so a stored Zen
-      key cannot stand in for a Go one. Zen's name is the vendor's own, as
-      DeepSeek's row uses `DEEPSEEK_API_KEY`, so a deployment exporting the
-      documented variable has it adopted at boot (docs/252 req 20). That it is
-      ALSO a name `HARNESS_CREDENTIAL_VARS.opencode` scrubs is safe rather than
-      circular, and the reason is worth stating because it looks like a
-      collision: the scrub empties the SPAWN env, so the CLI cannot auto-detect
-      the key and out-prefer ShipIt's provider block, while the adapter reads
-      the secret from its own `process.env` and writes
+      key cannot stand in for a Go one. Zen's name was the vendor's own
+      (`OPENCODE_API_KEY`) at first, on the DeepSeek precedent, so that a
+      deployment exporting the documented variable had it adopted at boot
+      (docs/252 req 20). It was renamed on 2026-08-17 at the user's request,
+      and the rename also separates two meanings that one name had been
+      carrying: `OPENCODE_API_KEY` is what the CLI auto-detects and what
+      `HARNESS_CREDENTIAL_VARS.opencode` therefore scrubs from every spawn, so
+      it is now only ever "the name ShipIt must keep away from the CLI", never
+      also "the name ShipIt stores under". Delivery is unchanged — the adapter
+      reads the source variable from its own `process.env` and writes
       `OPENCODE_PROVIDER_API_KEY` (`opencode/adapter.ts`). `O_RESP` is declared
       by neither mode as built — see the carriers note below. The free rows
       stay unauthored: each duplicates a paid row in rate-limited form, and
@@ -305,12 +307,40 @@ Done live, no key:
 - ✅ Vendor docs: products, prices, caps, auto-reload, workspace limits, Go
   model list, per-model endpoints/styles.
 
-Still needs a real key (per req 5's "live verification needed"):
+Done live WITH the user's key, in the dogfood instance (2026-08-17, second
+pass — the key was supplied after the rows merged):
+
+- ✅ **Go × `O_CC` is a working product.** `glm-5.3` ran a real turn end to end
+  through the catalogue row: tool call, correct answer, and the turn accounted
+  as **included** (44 565 tokens, $0 metered, $0.0345 at API rates) rather than
+  metered — so the `sub` mode's spend path is verified, not just its routing.
+  Repeated with `--variant high`.
+- ✅ **Both Zen routes authenticate**, and are then refused for **balance**:
+  `AI_APICallError: Insufficient balance`. The account's Zen half has no
+  credit. Against the same route a bogus key answers 401 `AuthError: Invalid
+  API key` from `https://opencode.ai/zen/v1/messages`, so base URL, the `/v1`
+  the adapter appends, the `x-api-key` header and the model id are confirmed on
+  the wire — the missing piece is a completed generation, not the plumbing.
+- 🐛 **Found and fixed here**: ShipIt declared all seven reasoning levels as
+  variants on every provider block, and `@ai-sdk/anthropic` validates `effort`
+  against `low|medium|high|xhigh|max` — so `none`/`minimal` threw
+  `AI_TypeValidationError` *before any request was sent* on every
+  anthropic-style turn. `opencode-spawn-shaping.ts` now omits the levels a
+  style's package refuses. Two findings it left behind are in `checklist.md`:
+  Go's `glm-5.3` refuses `none` upstream (a per-model fact `ModelDef` cannot
+  express today), and a service-refused turn renders as an empty assistant
+  bubble with the error text dropped somewhere above the adapter.
+
+Still needs a real key **with Zen credit** (per req 5's "live verification
+needed"):
 
 1. One real paid turn per (product × style) — Zen `A_MSG`/`O_RESP`/`O_CC`,
-   Go `O_CC`/`O_RESP`(/`A_MSG` if any Go model still publishes it).
+   Go `O_RESP`(/`A_MSG` if any Go model still publishes it). Go `O_CC` is done.
 2. Claude Code and Codex driven end-to-end at Zen/Go (the actual cross-harness
    pairs, docs/252 pair-verification method) — settles `carriers` empirically.
+   Note the ordering constraint the run exposed: Claude Code speaks only
+   `A_MSG`, which only **Zen** offers, so the cross-harness gate cannot be
+   lifted from Go's side no matter how many Go turns succeed.
 3. The Go cap-exceeded shape (expected 429 `UsageLimitError`-family, cf. the
    free tier's `FreeUsageLimitError`) and the "Use balance" fallback's
    visibility (expected: none).
