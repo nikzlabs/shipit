@@ -341,7 +341,17 @@ No open questions remain.
 
 ## Open questions
 
-_None._
+- 2026-08-17 — GPT-5.3-Codex-Spark is available through a ChatGPT Pro
+  subscription in the Codex CLI and IDE extension, but OpenAI marks it as
+  unavailable through the API and publishes no API token price. Reqs 16 and 23
+  currently require every catalogue model to carry and display a real API-rate
+  estimate. How should ShipIt represent a subscription-only model for which no
+  such rate exists? **Recommendation: allow an explicitly unavailable price,
+  show “API price unavailable” in the supported-models dialog, and exclude its
+  turns from dollar estimates while continuing to report their token volume.**
+  This keeps the model selectable without inventing a price or presenting an
+  unknown cost as zero. Alternatives are to use another model's rate as a
+  labelled proxy, or not to add Spark until OpenAI publishes an API rate.
 
 ## Resolved questions
 
