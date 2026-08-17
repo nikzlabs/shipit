@@ -1336,6 +1336,28 @@ function AddServiceDialog({
     && (!signInAccount || signInStalled);
 
   /**
+   * **The user has started on the token path, and that is what decides which
+   * button is the step's.** Before the first character the step recommends
+   * signing in and *Sign in* is the blue one; a mode with both paths cannot
+   * know better than that. After it, the recommendation is answered — the user
+   * is holding a token and typing it in — and the blue one is *Save*.
+   *
+   * Without this the big blue verb said "Sign in to Anthropic" over a field the
+   * user had just pasted a token into, and pressing it did the *other* thing:
+   * replaced the step with the CLI wizard. Nothing is lost when it happens
+   * (`secret` is component state; the field comes back holding it if the login
+   * stalls), but the token path still ends up reached by pressing the grey
+   * button beside the blue one, which is not how a primary button reads.
+   *
+   * The colour therefore moves on the first keystroke, which the comment below
+   * calls a failure in the case it describes. The difference is the cause: that
+   * one changed colour on its own, on arriving at a step, over a button that
+   * was disabled the whole way through — this one answers a key the user just
+   * pressed, and lands on the button that keystroke enabled.
+   */
+  const tokenEntered = acceptsString && !!secret.trim();
+
+  /**
    * The `(service, mode)` are arguments rather than closure reads because
    * {@link pickMode} calls this from the very click that chose them: `service`
    * and `billingMode` are still the previous render's values there. Both
@@ -1860,7 +1882,9 @@ function AddServiceDialog({
           */}
           {acceptsString && (!acceptsAccount || signInIdle) && (
             <Button
-              variant={acceptsAccount ? "secondary" : "primary"}
+              // Primary where the field is the step, and primary again once the
+              // user has answered the recommendation by typing in it.
+              variant={acceptsAccount && !tokenEntered ? "secondary" : "primary"}
               size="md"
               className="rounded-md"
               disabled={!service || !billingMode || !secret.trim() || saving}
@@ -1897,10 +1921,12 @@ function AddServiceDialog({
           */}
           {acceptsAccount && signInIdle && (
             <Button
-              // Secondary only where the step signs itself in: there the button
-              // is a recovery, not the way forward. Where the user must press
-              // it, it is the step's own action and stays primary.
-              variant={autoStarts ? "secondary" : "primary"}
+              // Secondary where the step signs itself in — there the button is
+              // a recovery, not the way forward — and secondary once a token is
+              // in the field, where it is no longer the path the user chose.
+              // Demoted rather than removed: it is still a working way in, and
+              // a token typed by mistake is a click away from being abandoned.
+              variant={autoStarts || tokenEntered ? "secondary" : "primary"}
               size="md"
               className="rounded-md"
               disabled={!harnessInstalled || !!blockedBySignIn}

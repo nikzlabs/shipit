@@ -1039,6 +1039,27 @@ describe("ServicesPanel", () => {
     expect(save.className).not.toContain("bg-(--color-accent)");
   });
 
+  it("hands the emphasis to Save once a token is in the field", async () => {
+    // The recommendation holds only until the user answers it. With a token
+    // typed in, the blue button used to still say "Sign in to Anthropic" — and
+    // pressing it did the other thing, replacing the step with the CLI wizard.
+    // Demoted, not removed: signing in is still a working way in from here.
+    render(<ServicesPanel agentList={[claudeAgent]} />);
+    await userEvent.click(screen.getByTestId("services-add-empty"));
+    await userEvent.click(screen.getByTestId("add-service-option-anthropic"));
+    await userEvent.click(screen.getByTestId("add-service-mode-sub"));
+    await userEvent.type(screen.getByTestId("add-service-secret"), "sk-ant-oat01-x");
+
+    expect(screen.getByTestId("add-service-save").className).toContain("bg-(--color-accent)");
+    expect(screen.getByTestId("add-service-sign-in").className).not.toContain("bg-(--color-accent)");
+
+    // Emptying the field puts the recommendation back, so the sign-in is never
+    // stranded behind a stray character.
+    await userEvent.clear(screen.getByTestId("add-service-secret"));
+    expect(screen.getByTestId("add-service-sign-in").className).toContain("bg-(--color-accent)");
+    expect(screen.getByTestId("add-service-save").className).not.toContain("bg-(--color-accent)");
+  });
+
   it("keeps step 3 titled for the key when the mode takes nothing else", async () => {
     render(<ServicesPanel agentList={[claudeAgent]} />);
     await userEvent.click(screen.getByTestId("services-add-empty"));
