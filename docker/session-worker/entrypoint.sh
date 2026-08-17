@@ -196,11 +196,15 @@ fi
 # `sealDirMode`) BEFORE the container starts, so /credentials is already
 # foreign-owned and unreadable to root at every point in this script — the loop
 # itself skips it, because its `[ -w "$d" ]` probe correctly reports a 0700 dir
-# as unwritable. Root cannot recover: the container drops DAC_OVERRIDE
-# (docs/150 §10, `container-lifecycle.ts` CapAdd), and the CHOWN/FOWNER it does
-# keep bypass ownership checks for chmod/chown, never the directory write bit.
-# So the root form could only ever fail, and did — silently, since the warning
-# goes to container stderr while the user sees the agent's EEXIST.
+# as unwritable. The container drops DAC_OVERRIDE (docs/150 §10,
+# `container-lifecycle.ts` CapAdd), which is the only capability that bypasses a
+# directory's write bit; the CHOWN and FOWNER it keeps bypass ownership checks
+# for chown and chmod, and neither runs before the mkdir in the old compound. So
+# the root form failed at its first command on every production boot — silently,
+# since the warning goes to container stderr while the user sees the agent's
+# EEXIST. (Root retains enough to seize the directory — CHOWN it to itself, then
+# write. That is a repair we specifically do not want: it would undo the docs/270
+# seal on the session's own credentials to create an empty directory.)
 #
 # gosu is the same remedy the SHIPIT_READONLY_HOME block below applies for the
 # same reason, and it needs no chown: the directory lands owned by the worker

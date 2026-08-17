@@ -1,6 +1,5 @@
 /**
- * Make OpenCode's XDG data dir exist before the orchestrator spawns the CLI
- * (docs/268).
+ * Make OpenCode's XDG data dir exist before ShipIt spawns the CLI (docs/268).
  *
  * OpenCode keeps `auth.json` and its `opencode.db` session store under
  * `$HOME/.local/share/opencode`, and creates that directory during bootstrap —
@@ -28,15 +27,28 @@
  * So the fix is not "mkdir -p the path": that is exactly what fails. Resolve the
  * link and create what it POINTS AT.
  *
- * The session container has the same symlink and solves it at boot, in
- * `docker/session-worker/entrypoint.sh`, where it must additionally run as the
- * worker (that mount is sealed 0700 to the session's own uid and the container
- * drops DAC_OVERRIDE). Here in the orchestrator we are the owner, so an ordinary
- * mkdir is enough — only the symlink hop is shared.
+ * **Two mechanisms, deliberately, because they have different jobs.**
  *
- * Best-effort: a naming run that cannot prepare the dir will fail on its own and
- * fall back to a derived title, which is a better outcome than throwing out of a
- * fire-and-forget path.
+ *   - `docker/session-worker/entrypoint.sh` prepares it once at container boot,
+ *     via gosu as the worker (the mount is sealed 0700 to the session's own uid
+ *     and the container drops DAC_OVERRIDE, so root cannot). That covers
+ *     everything in the container, including an `opencode` the user runs in the
+ *     terminal panel — which passes through no spawn site of ours.
+ *   - This helper covers the spawn itself, which is what makes local/dogfood
+ *     mode work: there is no container there and so no entrypoint, while the
+ *     orchestrator image carries the same symlink at `/root`. Inside a container
+ *     it is an idempotent directory read.
+ *
+ * What it must **not** be used for is a spawn whose HOME is the flat credentials
+ * root (`namingHome()` with no account — `/root` in the orchestrator). Creating
+ * the dir there would flip `copyCredentialPath`'s "no source" early-return and
+ * start copying the orchestrator's own OpenCode session store into every
+ * session's credential subtree, which is the isolation docs/138 exists to
+ * provide. OpenCode is key-mode only (docs/268 req 5), so a credential-less
+ * spawn wants a scratch `XDG_DATA_HOME` instead — see `session-namer.ts`.
+ *
+ * Best-effort: a caller that cannot prepare the dir will fail on its own, which
+ * beats throwing out of a fire-and-forget path.
  */
 
 import fs from "node:fs";

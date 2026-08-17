@@ -229,6 +229,60 @@ describe("generateSessionName", () => {
     vi.doUnmock("./agents/codex/home-init.js");
   });
 
+  // docs/268 — OpenCode naming must not touch the home's XDG data dir.
+  //
+  // Two failures ride on this one assertion. The home's
+  // `.local/share/opencode` is a symlink into /credentials in every image, and
+  // while its target is missing the CLI's bootstrap mkdir dies EEXIST (a
+  // dangling symlink is an existing directory entry — no privilege level gets
+  // past it), so every production naming run crashed and fell back to a derived
+  // title. And the obvious repair — create the target — is the wrong one here:
+  // unscoped naming's HOME is the FLAT credentials root, so materializing it
+  // flips `copyCredentialPath`'s "no source" early-return and starts copying
+  // this orchestrator-wide session store into every session's credential
+  // subtree. A scratch XDG root is what avoids both.
+  it("gives OpenCode naming a scratch XDG data root and leaves the home untouched", async () => {
+    const fs = await import("node:fs");
+    const os = await import("node:os");
+    const path = await import("node:path");
+
+    const savedHome = process.env.HOME;
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "naming-home-"));
+    process.env.HOME = home;
+
+    let dataHome: string | undefined;
+    let existedDuringSpawn = false;
+    vi.doMock("node:child_process", () => ({
+      execFile: (
+        _file: string,
+        _args: string[],
+        opts: { env?: Record<string, string> },
+        cb: (err: Error | null, stdout: string, stderr: string) => void,
+      ) => {
+        dataHome = opts.env?.XDG_DATA_HOME;
+        existedDuringSpawn = !!dataHome && fs.existsSync(dataHome);
+        setImmediate(() => cb(null, "", ""));
+        return { on: () => {}, stdin: { end: () => {} } } as unknown;
+      },
+    }));
+
+    const mod = await import("./session-namer.js");
+    await mod.generateSessionName("hi", { harnessId: "opencode", model: "deepseek/x" });
+
+    // Redirected away from the home, and real while the CLI runs.
+    expect(dataHome).toBeTruthy();
+    expect(existedDuringSpawn).toBe(true);
+    expect(dataHome!.startsWith(home)).toBe(false);
+    // THE guard: naming created nothing in the credentials home.
+    expect(fs.existsSync(path.join(home, ".local", "share", "opencode"))).toBe(false);
+    // And the scratch root is not left behind.
+    expect(fs.existsSync(dataHome!)).toBe(false);
+
+    fs.rmSync(home, { recursive: true, force: true });
+    if (savedHome === undefined) Reflect.deleteProperty(process.env, "HOME");
+    else process.env.HOME = savedHome;
+  });
+
   // planning#390 — the gate follows the home the spawn actually uses, so an
   // UNSCOPED run (a redirected service, which resolves no account root) is
   // covered too. It used to be skipped entirely on the premise that only an

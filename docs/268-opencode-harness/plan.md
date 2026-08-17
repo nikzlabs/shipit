@@ -202,30 +202,43 @@ Two facts combine into it, and each is invisible on its own.
    `{recursive: true}` masks it as ENOENT and still refuses; OpenCode's Bun
    runtime surfaces the raw errno and exits 1.
 
-So "just `mkdir -p` the path" is precisely the thing that fails. Resolve the
-link and create what it points at. Two places do this, for two different
-reasons:
+So "just `mkdir -p` the path" is precisely the thing that fails — and where the
+home is the credentials root, creating the target is the wrong repair anyway.
+Three places, three different answers:
 
-- **`docker/session-worker/entrypoint.sh`** — at boot, and it must run **as the
-  worker via gosu**. The first version ran as root on the stated premise that
-  "/credentials was just handed off by the loop"; the loop does no such thing.
-  The orchestrator seals the per-session credentials subtree `0700` to the
-  session's own uid *before* the container starts (docs/270,
+- **`docker/session-worker/entrypoint.sh`** — prepares it at boot, and must run
+  **as the worker via gosu**. The first version ran as root on the stated
+  premise that "/credentials was just handed off by the loop"; the loop does no
+  such thing. The orchestrator seals the per-session credentials subtree `0700`
+  to the session's own uid *before* the container starts (docs/270,
   `chownSessionCredentialsTree` → `sealDirMode`), and the container drops
-  `DAC_OVERRIDE` (docs/150 §10) — the `CHOWN`/`FOWNER` it keeps bypass
-  ownership checks for chmod/chown, never a directory's write bit. Root
-  therefore could not create it on any boot, and the mount loop skips
-  `/credentials` for the same reason (its `[ -w ]` probe reads 0700 as
-  unwritable). The failure was invisible: best-effort `2>/dev/null`, with the
-  warning going to container stderr while the user saw only the agent's EEXIST.
-- **`agents/opencode/data-dir.ts`** — before any orchestrator-side spawn. Naming
-  runs with `HOME=/root` (`namingHome`), which is the symlinked home, so *every*
-  OpenCode naming run hit the same crash and fell back to a derived title
-  without saying why. Here ShipIt owns the path, so an ordinary mkdir suffices;
-  only the symlink hop is shared with the entrypoint.
+  `DAC_OVERRIDE` (docs/150 §10) — the only capability that bypasses a
+  directory's write bit. The mount loop skips `/credentials` for the same reason
+  (its `[ -w ]` probe reads 0700 as unwritable), so the root form failed at its
+  first command on every production boot. Invisibly: best-effort `2>/dev/null`,
+  with the warning going to container stderr while the user saw only the agent's
+  EEXIST. Root does retain enough to *seize* the directory (`CAP_CHOWN` it to
+  itself, then write) — a repair we specifically do not want, since it would
+  undo the docs/270 seal to create an empty directory.
+- **`shared/opencode-data-dir.ts`, called from the adapter's spawn** — covers
+  local/dogfood mode, which has no container and therefore no entrypoint, while
+  the orchestrator image carries the same symlink at `/root`. The pinned agent's
+  own local turn was already fine (`clearAgentHomeCredentialLinks` unlinks the
+  baked link for reserved routes), but sub-agent and PR-description spawns
+  bypass that. In a container the call is an idempotent directory read.
+- **`session-namer.ts` — a scratch `XDG_DATA_HOME`, not the home's dir at all.**
+  Unscoped naming's HOME is the *flat credentials root*, so materializing
+  `.local/share/opencode` there would flip `copyCredentialPath`'s "no source"
+  early-return and start copying the orchestrator-wide OpenCode session store
+  into every session's credential subtree — defeating docs/138 isolation, with
+  no cleanup path (`SUBTREE_STATE_SUBPATHS` has no row for it). Key-mode auth
+  means naming needs nothing from the home, so it gets a per-run temp XDG root,
+  torn down beside the config file. Revisit if OpenCode login integration lands.
 
-The guard tests are the identity and the hop, not the mkdir: an assertion that
-the directory merely exists passes on both broken versions.
+The guard tests pin the creator's **identity**, the **symlink hop**, and that
+naming **leaves the home untouched** — never that a mkdir happened. An
+"it exists" assertion passes on every broken version, including the one that
+caused this.
 
 ## Phase 10 findings (live, through the real adapter)
 

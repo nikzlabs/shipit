@@ -36,6 +36,7 @@ import type {
   AgentRunParams,
 } from "../agent-process.js";
 import { resolveAgentHome, type AgentHomeResolver } from "../../../shared/agent-home.js";
+import { ensureOpencodeDataDir } from "../../../shared/opencode-data-dir.js";
 import { scrubHarnessEnvCredentials } from "../../../shared/spawn-routing.js";
 import { resolveMcpServer } from "../../mcp-resolve.js";
 import { PLAYWRIGHT_MCP_ARGS, PLAYWRIGHT_MCP_COMMAND } from "../playwright-mcp.js";
@@ -194,9 +195,18 @@ export class OpencodeAdapter
     // first, then the credential scrub, then service delivery — the scrub
     // deletes the very variable the delivery writes.
     const scopedHome = this.resolveHome?.();
+    const home = resolveAgentHome(scopedHome);
+    // `$HOME/.local/share/opencode` is a symlink into the credentials tree in
+    // every image, and OpenCode's bootstrap mkdir dies EEXIST on it while the
+    // target is missing — a dangling symlink IS an existing directory entry, so
+    // no privilege level gets past it. In a container the entrypoint has already
+    // made it at boot and this is a directory read; local/dogfood mode has no
+    // entrypoint, and the sub-agent and PR-description spawns there do not go
+    // through the link-clearing that the pinned agent's own turn does.
+    ensureOpencodeDataDir(home);
     const spawnEnv: Record<string, string> = {
       ...(process.env as Record<string, string>),
-      HOME: resolveAgentHome(scopedHome),
+      HOME: home,
       // The CLI resolves its project directory from $PWD when the variable is
       // present (Bun honors it over the real cwd), and a worker's own PWD
       // points at the worker, not the workspace — verified live: the turn's
