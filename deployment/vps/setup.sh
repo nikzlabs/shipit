@@ -9,11 +9,10 @@ CONFIG_FILE="/etc/shipit/setup.conf"
 # --- BEGIN shipit-picker (docs/271) ----------------------------------------
 # A checkbox prompt: arrow keys (or j/k) move, space toggles, Enter confirms.
 #
-# Bash and ANSI escapes only — no whiptail, dialog, ncurses, or `tput`. This
-# script is curl|bash'd onto a bare Ubuntu box BEFORE anything is installed
-# (req 9), so the prompt cannot depend on a package the install has not reached
-# yet. `stty` is used only to keep the terminal from echoing stray keystrokes,
-# and its absence degrades the display, never the answer.
+# Bash and ANSI escapes only — no whiptail, dialog, ncurses, `tput`, or even
+# `stty`. This script is curl|bash'd onto a bare Ubuntu box BEFORE anything is
+# installed (req 9), so the prompt cannot depend on a package the install has not
+# reached yet.
 #
 # Usage:
 #   shipit_pick "<preselected,csv>" "key|Label|one-line hint" ...
@@ -81,15 +80,18 @@ shipit_pick_render() {
   done
 }
 
-# Undo everything the loop did to the terminal. Runs on the normal exit path AND
-# from the SIGINT trap — a Ctrl-C that left echo off and the cursor hidden would
-# hand the operator an apparently broken shell.
+# Undo what the loop did to the terminal. Runs on the normal exit path AND from
+# the SIGINT trap — a Ctrl-C that left the cursor hidden would hand the operator
+# a shell with no visible cursor.
+#
+# Echo is deliberately NOT managed here. The obvious `stty -echo` around the loop
+# is a trap: `read` saves the terminal state as it finds it and re-applies that
+# state when an interrupt tears it down, which happens AFTER this trap runs — so
+# a hand-set `-echo` is restored *back* on Ctrl-C, leaving the operator typing
+# blind. `read -s` on both reads below suppresses echo for the window that
+# matters and leaves the saved state echoing, which is what makes Ctrl-C safe.
 shipit_pick_restore() {
   printf '\033[?25h'
-  if [ -n "${SHIPIT_PICK_STTY:-}" ]; then
-    stty "$SHIPIT_PICK_STTY" 2>/dev/null || true
-    SHIPIT_PICK_STTY=""
-  fi
 }
 
 shipit_pick() {
@@ -134,11 +136,6 @@ shipit_pick() {
   SHIPIT_PICK_C_OFF=$'\033[0m'
   SHIPIT_PICK_C_DIM=$'\033[2m'
 
-  SHIPIT_PICK_STTY=""
-  if command -v stty >/dev/null 2>&1; then
-    SHIPIT_PICK_STTY="$(stty -g 2>/dev/null || true)"
-    if [ -n "$SHIPIT_PICK_STTY" ]; then stty -echo 2>/dev/null || true; fi
-  fi
   printf '\033[?25l'
   trap 'shipit_pick_restore; exit 130' INT
 
@@ -203,23 +200,27 @@ echo ""
 ACCESS_DEFAULT="cloudflare"
 ACCESS=""
 
+# True only for a list of recognized names with at least one entry, so that a
+# value made of nothing but separators (",") is rejected rather than quietly
+# meaning "expose nothing" — that is what `none` is for.
 access_valid() {
-  local candidate
+  local candidate count=0
   for candidate in $(printf '%s' "$1" | tr ',' ' '); do
     case "$candidate" in
-      cloudflare | tailscale) ;;
+      cloudflare | tailscale) count=$((count + 1)) ;;
       *) return 1 ;;
     esac
   done
-  return 0
+  [ "$count" -gt 0 ]
 }
 
 if [ -n "${SHIPIT_ACCESS:-}" ]; then
   ACCESS="$(printf '%s' "$SHIPIT_ACCESS" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
   # "none" is the spelling for "expose nothing"; an empty variable is
   # indistinguishable from unset, so it cannot carry that meaning.
-  if [ "$ACCESS" = "none" ]; then ACCESS=""; fi
-  if ! access_valid "$ACCESS"; then
+  if [ "$ACCESS" = "none" ]; then
+    ACCESS=""
+  elif ! access_valid "$ACCESS"; then
     echo "Error: SHIPIT_ACCESS must be a comma-separated list of 'cloudflare' and/or 'tailscale', or 'none' (got '$SHIPIT_ACCESS')" >&2
     exit 1
   fi
@@ -489,15 +490,18 @@ persist_shipit_env() {
   fi
 }
 
+# As above: a list of recognized names with at least one entry. Counting the
+# entries rather than testing the raw string is what rejects "," and " ", which
+# name no harness and would otherwise fail much later in the image build.
 harnesses_valid() {
-  local candidate
+  local candidate count=0
   for candidate in $(printf '%s' "$1" | tr ',' ' '); do
     case " $SUPPORTED_HARNESSES " in
-      *" $candidate "*) ;;
+      *" $candidate "*) count=$((count + 1)) ;;
       *) return 1 ;;
     esac
   done
-  [ -n "$1" ]
+  [ "$count" -gt 0 ]
 }
 
 if [ -z "${SHIPIT_HARNESSES:-}" ] && [ -t 0 ]; then
@@ -528,12 +532,17 @@ elif [ -n "${SHIPIT_HARNESSES:-}" ]; then
   # The picker cannot produce an invalid answer, so this is the only untrusted
   # input left. Catch it here rather than at the image build, which fails many
   # minutes later with a message about a build arg.
-  if ! harnesses_valid "$SHIPIT_HARNESSES"; then
+  #
+  # Normalized FIRST, exactly as docker/agent-cli/install-agent-clis.sh does
+  # before its own check: it accepts "Claude, Codex", so rejecting that here
+  # would break scripted installs that work today.
+  HARNESS_CHOICE="$(printf '%s' "$SHIPIT_HARNESSES" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"
+  if ! harnesses_valid "$HARNESS_CHOICE"; then
     echo "Error: SHIPIT_HARNESSES must be a comma-separated list of: $(echo "$SUPPORTED_HARNESSES" | tr ' ' ',') (got '$SHIPIT_HARNESSES')" >&2
     exit 1
   fi
-  persist_shipit_env SHIPIT_HARNESSES "$SHIPIT_HARNESSES"
-  echo "==> Agent harnesses: $SHIPIT_HARNESSES (from the environment)."
+  persist_shipit_env SHIPIT_HARNESSES "$HARNESS_CHOICE"
+  echo "==> Agent harnesses: $HARNESS_CHOICE (from the environment)."
 fi
 
 # --- Build and start ShipIt (always run - this is the deploy step) ---

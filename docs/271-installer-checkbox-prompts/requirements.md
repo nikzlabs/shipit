@@ -36,8 +36,15 @@ changing the prompt does not change the install.
    Cloudflare for access, Claude Code and Codex for harnesses.
 7. An install with no terminal to prompt on proceeds with those defaults instead
    of hanging or failing — the `curl | bash` and CI paths stay non-interactive.
+
+   The harness question already worked this way. The access question did **not**:
+   it read unconditionally, so at EOF `set -e` killed the script, and under
+   `curl | bash` the read swallowed the script's own next line as the answer and
+   died on "choose 1, 2, 3, or 4". This requirement is therefore a fix there, not
+   a preservation.
 8. A pre-set `SHIPIT_HARNESSES` still skips the harness question and is used
-   as-is.
+   as-is — including the mixed-case and spaced forms the image build accepts
+   (`Claude, Codex`).
 9. The installer needs nothing installed on the host to draw the list. It runs on
    a bare Ubuntu box before Docker, `jq`, or the repo are there.
 

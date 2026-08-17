@@ -33,8 +33,17 @@ const END = "# --- END shipit-picker";
 
 /** util-linux `script` gives us a pty; without it the interactive cases can't run. */
 function hasScript(): boolean {
+  return has("script");
+}
+
+/** The signal cases need a pty we still hold after the child is interrupted. */
+function hasPython(): boolean {
+  return has("python3");
+}
+
+function has(bin: string): boolean {
   try {
-    execFileSync("sh", ["-c", "command -v script"], { stdio: "ignore" });
+    execFileSync("sh", ["-c", `command -v ${bin}`], { stdio: "ignore" });
     return process.platform === "linux";
   } catch {
     return false;
@@ -45,6 +54,7 @@ describe("deployment/vps/setup.sh — checkbox prompt (docs/271)", () => {
   let root: string;
   let pickerPath: string;
   let driverPath: string;
+  let probePath: string;
 
   beforeAll(() => {
     const setup = fs.readFileSync(SETUP_SH, "utf8");
@@ -72,6 +82,33 @@ describe("deployment/vps/setup.sh — checkbox prompt (docs/271)", () => {
         '  "cloudflare|Cloudflare Tunnel|public HTTPS domain" \\',
         '  "tailscale|Tailscale|tailnet only"; then echo "SKIPPED"; fi',
         'echo "RESULT=[$SHIPIT_PICK_RESULT]"',
+        "",
+      ].join("\n"),
+    );
+
+    // Runs the driver on a pty we own, feeds it keys, and reports the pty's
+    // termios plus the exit status once the child is gone.
+    probePath = path.join(root, "probe.py");
+    fs.writeFileSync(
+      probePath,
+      [
+        "import os, pty, select, sys, termios, time",
+        "script, keys_hex = sys.argv[1], sys.argv[2]",
+        "pid, fd = pty.fork()",
+        "if pid == 0:",
+        "    os.execv('/bin/bash', ['bash', script])",
+        "time.sleep(1.0)  # let the list render before typing at it",
+        "os.write(fd, bytes.fromhex(keys_hex))",
+        "time.sleep(1.0)",
+        "try:",
+        "    while select.select([fd], [], [], 0.2)[0]:",
+        "        if not os.read(fd, 4096):",
+        "            break",
+        "except OSError:",
+        "    pass",
+        "echo = bool(termios.tcgetattr(fd)[3] & termios.ECHO)",
+        "_, status = os.waitpid(pid, 0)",
+        "print('ECHO=%s EXIT=%d' % ('on' if echo else 'off', os.waitstatus_to_exitcode(status)))",
         "",
       ].join("\n"),
     );
@@ -156,24 +193,97 @@ describe("deployment/vps/setup.sh — checkbox prompt (docs/271)", () => {
     expect(answer(pick("x \n"))).toBe("");
   });
 
-  it.runIf(hasScript())(
-    "restores the cursor and the terminal it borrowed",
-    () => {
-      // Leaving the cursor hidden (or echo off) hands back an apparently broken
-      // shell long after the installer has moved on.
-      const out = pick("\n");
-      expect(out).toContain("[?25l");
-      expect(out.lastIndexOf("[?25h")).toBeGreaterThan(
-        out.lastIndexOf("[?25l"),
+  it.runIf(hasScript())("hides the cursor while drawing, and puts it back", () => {
+    const out = pick("\n");
+    expect(out).toContain("[?25l");
+    expect(out.lastIndexOf("[?25h")).toBeGreaterThan(out.lastIndexOf("[?25l"));
+  });
+
+  describe.runIf(hasPython())("terminal state afterwards", () => {
+    /**
+     * Reads the pty's own termios after the picker exits. That is the only way
+     * to observe this: `script` delivers Ctrl-C to the whole foreground process
+     * group, so any wrapper that could report the state is killed alongside the
+     * picker. `keys` is hex-encoded so control bytes survive argv.
+     */
+    function ptyRun(keys: string): { echo: boolean; exit: number } {
+      const out = execFileSync(
+        "python3",
+        [probePath, driverPath, Buffer.from(keys, "latin1").toString("hex")],
+        { encoding: "utf8", timeout: 30_000 },
       );
-      const echo = execFileSync(
-        "script",
-        ["-qec", `bash ${driverPath} >/dev/null 2>&1; stty -a | tr -d '\\r'`, "/dev/null"],
-        { input: "\n", encoding: "utf8", timeout: 20_000 },
-      );
-      // `stty -a` also lists echoe/echok/-echonl, so anchor on the flag itself.
-      expect(echo).toMatch(/(^|[ ;])echo([ ;]|$)/m);
-      expect(echo).not.toMatch(/(^|[ ;])-echo([ ;]|$)/m);
-    },
-  );
+      const m = /ECHO=(on|off) EXIT=(-?\d+)/.exec(out);
+      if (!m) throw new Error(`unreadable probe output: ${JSON.stringify(out)}`);
+      return { echo: m[1] === "on", exit: Number(m[2]) };
+    }
+
+    it("leaves echo on after a normal confirm", () => {
+      expect(ptyRun("\n")).toEqual({ echo: true, exit: 0 });
+    });
+
+    it("leaves echo on after Ctrl-C", () => {
+      // The regression this exists for: an `stty -echo` around the read loop
+      // looks correct and is not. `read` re-applies the termios it saved — which
+      // by then is already `-echo` — when an interrupt tears it down, AFTER the
+      // trap has restored it. That leaves the operator typing blind in their own
+      // shell long after the installer is gone. `read -s` is what keeps the
+      // saved state echoing, so nothing in the picker may hand-set echo.
+      expect(ptyRun("\x03")).toEqual({ echo: true, exit: 130 });
+    });
+  });
+
+  /**
+   * The picker cannot produce an invalid answer, so these validators exist for
+   * the pre-answers a scripted install sets. Their bar is not "looks sane" but
+   * "accepts exactly what docker/agent-cli/install-agent-clis.sh accepts" —
+   * that script lowercases and strips whitespace before its own check, so a
+   * stricter test here would reject `SHIPIT_HARNESSES="Claude,Codex"` installs
+   * that work today and fail them at the question instead.
+   */
+  describe("env pre-answer validation", () => {
+    function check(fn: string, value: string): boolean {
+      const setup = fs.readFileSync(SETUP_SH, "utf8");
+      const body = new RegExp(`^${fn}\\(\\) \\{[\\s\\S]*?^\\}`, "m").exec(setup);
+      expect(body, `${fn}() not found in setup.sh`).not.toBeNull();
+      const script = [
+        'SUPPORTED_HARNESSES="claude codex opencode"',
+        body![0],
+        // The callers normalize before validating; mirror that here.
+        `v="$(printf '%s' "$1" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')"`,
+        `if ${fn} "$v"; then echo VALID; else echo INVALID; fi`,
+      ].join("\n");
+      const out = execFileSync("bash", ["-s", value], {
+        input: script,
+        encoding: "utf8",
+      });
+      return out.includes("VALID") && !out.includes("INVALID");
+    }
+
+    it.each([
+      ["claude,codex", true],
+      ["codex", true],
+      // Mixed case and spaces reach the image build fine, so they must reach it.
+      ["Claude,Codex", true],
+      ["claude, codex", true],
+      ["claude,", true],
+      // Names nothing at all: caught here rather than minutes into the build.
+      [",", false],
+      [" ", false],
+      ["bogus", false],
+      ["claude,bogus", false],
+    ])("SHIPIT_HARNESSES=%j -> %s", (value, expected) => {
+      expect(check("harnesses_valid", value)).toBe(expected);
+    });
+
+    it.each([
+      ["cloudflare", true],
+      ["cloudflare,tailscale", true],
+      ["Tailscale", true],
+      // "none" is handled before the validator; "," must not silently mean it.
+      [",", false],
+      ["bogus", false],
+    ])("SHIPIT_ACCESS=%j -> %s", (value, expected) => {
+      expect(check("access_valid", value)).toBe(expected);
+    });
+  });
 });

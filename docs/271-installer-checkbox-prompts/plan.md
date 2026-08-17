@@ -60,9 +60,18 @@ shipit_pick "<preselected,csv>" "key|Label|one-line hint" ...
 - **Four functions.** `shipit_pick` (setup + read loop), `shipit_pick_key` (the
   key map, split out so it is exercisable without a terminal),
   `shipit_pick_render` (one line per row, redrawn in place with `\033[<n>A`), and
-  `shipit_pick_restore` (un-hides the cursor and restores `stty`, from the normal
-  path **and** from the `INT` trap — a Ctrl-C that left echo off would hand back
-  an apparently broken shell).
+  `shipit_pick_restore` (un-hides the cursor, from the normal path **and** from
+  the `INT` trap).
+- **Nothing hand-sets echo, and that is load-bearing.** The obvious `stty -echo`
+  around the read loop with a restore in the trap is wrong in a way that only
+  shows up on Ctrl-C: `read` saves the terminal state as it finds it — by then
+  already `-echo` — and re-applies that state when an interrupt tears it down,
+  *after* the trap has restored it. The operator is left typing blind in their
+  own shell long after the installer is gone. The first version of this feature
+  had exactly that bug; it was caught in review and reproduced under a pty.
+  `read -s` on both reads suppresses echo for the window that matters and leaves
+  the saved state echoing, which is what makes Ctrl-C safe — and it drops the
+  last external command, so "no dependency" is literal.
 - **Keys**: `↑`/`↓` and `j`/`k` move and wrap, space toggles, Enter confirms.
   Both `\e[A`-style and application-cursor-mode `\eOA` arrows are accepted, since
   terminals switch between them. `read -n1` strips the newline, so Enter arrives
@@ -91,12 +100,23 @@ everything downstream is untouched (req 5). `SHIPIT_ACCESS` is new — it is the
 counterpart of `SHIPIT_HARNESSES` and gives the non-interactive path a way to say
 something other than the default, which the old typed prompt never had.
 
+The no-terminal access path is also a fix rather than a preservation — see
+requirements.md req 7 for what the old unconditional `read` did under
+`curl | bash`.
+
 **Harnesses** was a typed comma-separated list. The picker cannot produce an
 invalid answer, so the `harnesses_valid` check now guards the one input that is
 still untrusted — a scripted `SHIPIT_HARNESSES` — and fails at the question
 rather than many minutes later inside the image build. An empty selection falls
 back to `claude,codex` with a message, because an image with no harness does not
 build.
+
+Both validators normalize (strip whitespace, lowercase) **before** checking, and
+count recognized entries rather than testing the raw string. That is not
+tidiness: `docker/agent-cli/install-agent-clis.sh` does the same normalization
+before its own check, so a stricter test here would reject
+`SHIPIT_HARNESSES="Claude,Codex"` installs that work today — and a laxer one
+would let `","`, which names nothing, through to fail in the build.
 
 The egress-containment question is deliberately left as a typed `[y/N]`: it
 confirms a security downgrade rather than choosing among options, and a
@@ -107,6 +127,8 @@ preselected checkbox is the wrong shape for that.
 - `deployment/vps/setup.sh` — the picker and both callers.
 - `src/server/orchestrator/services/installer-picker.test.ts` — extracts the
   picker block and drives it under a pty (`script -qec`), asserting the key map,
-  the `[*]`/`[ ]` rendering, the non-interactive return, and that the cursor and
-  terminal echo are restored.
+  the `[*]`/`[ ]` rendering, the non-interactive return, and the validators'
+  accepted inputs. The two echo assertions use a Python pty harness instead,
+  because `script` delivers Ctrl-C to the whole foreground process group — any
+  wrapper that could report the terminal state dies with the picker.
 - `deployment/README.md` — operator-facing description of both questions.
