@@ -77,6 +77,8 @@ export const CODEX_TOOL_NAMES = [
   "collabToolCall",
   "spawn_agent",
   "Agent",
+  "wait",
+  "closeAgent",
   "webSearch",
   "imageView",
   "view_image",

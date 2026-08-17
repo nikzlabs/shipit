@@ -123,6 +123,39 @@ export interface ClaudeTaskUpdatedEvent {
 }
 
 /**
+ * A per-task liveness ping for a running background task ({usage,
+ * last_tool_name} tick along as it works). Superseded by the authoritative
+ * {@link ClaudeBackgroundTasksChangedEvent} list and the
+ * {@link ClaudeTaskNotificationEvent} completion edge; deliberately dropped by
+ * the adapter. Observed on CLI 2.1.224 (docs/272 Run 1, 2026-08-17).
+ */
+export interface ClaudeTaskProgressEvent {
+  type: "system";
+  subtype: "task_progress";
+  session_id?: string;
+  task_id?: string;
+  tool_use_id?: string;
+  description?: string;
+  subagent_type?: string;
+  usage?: { total_tokens?: number; tool_uses?: number; duration_ms?: number };
+  last_tool_name?: string;
+}
+
+/**
+ * A per-tick thinking-token estimate — the most frequent event in a real
+ * stream (50+ per turn). Authoritative usage arrives once on `result`;
+ * deliberately dropped by the adapter. Observed on CLI 2.1.224 (docs/272
+ * Run 1, 2026-08-17).
+ */
+export interface ClaudeThinkingTokensEvent {
+  type: "system";
+  subtype: "thinking_tokens";
+  session_id?: string;
+  estimated_tokens?: number;
+  estimated_tokens_delta?: number;
+}
+
+/**
  * docs/235 — a background task finished and the CLI is waking itself to react.
  * This is the edge that opens a **self-woken turn**: on the wire it is
  * immediately followed by a fresh `system/init` and, later, a `result`, with no
@@ -181,6 +214,8 @@ export type ClaudeSystemEvent =
   | ClaudeBackgroundTasksChangedEvent
   | ClaudeTaskStartedEvent
   | ClaudeTaskUpdatedEvent
+  | ClaudeTaskProgressEvent
+  | ClaudeThinkingTokensEvent
   | ClaudeTaskNotificationEvent;
 
 export interface ClaudeContentBlockText {
