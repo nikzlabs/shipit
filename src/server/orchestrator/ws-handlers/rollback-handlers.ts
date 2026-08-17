@@ -4,7 +4,8 @@ import type { WsClientMessage } from "../../shared/types.js";
 import type { ConnectionCtx, AppCtx, RunnerCtx } from "./types.js";
 import { getErrorMessage } from "../validation.js";
 import { buildConversationReplay } from "../services/replay.js";
-import { archiveSession, forkSession } from "../services/session.js";
+import { archiveSession, forkSession, forkReportSinks } from "../services/session.js";
+import { gitRemoteCredentialResolver } from "../services/github.js";
 import type { PersistedMessage, RewindSnapshotInfo } from "../chat-history.js";
 import { resolveRunner } from "./resolve-runner.js";
 import { generateBranchSlug, generateBranchPrefix } from "../git-utils.js";
@@ -287,6 +288,12 @@ export async function handleRewindAtGap(ctx: RewindCtx, msg: WsRewindAtGap): Pro
           prStatusPoller: ctx.prStatusPoller,
           sseBroadcast: ctx.sseBroadcast,
         },
+        // planning#426 — same two duties as the REST fork route: a credential for
+        // the dropped-uid `fetch origin` / `git lfs pull`, and a report when the
+        // fork's LFS content did not resolve. A rewind is the more reachable of
+        // the two entry points, so it must not be the one that stays silent.
+        gitRemoteCredentialResolver(ctx.githubAuthManager),
+        forkReportSinks({ sessionManager: ctx.sessionManager, sseBroadcast: ctx.sseBroadcast }),
       );
       const truncatedMessages = allMessages.slice(0, gapPosition);
       ctx.chatHistoryManager.saveMessages(result.session.id, truncatedMessages);

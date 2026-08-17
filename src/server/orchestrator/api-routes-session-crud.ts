@@ -21,6 +21,8 @@ import {
   applyTemplate,
   createSandboxSession,
   forkSession,
+  forkReportSinks,
+  gitRemoteCredentialResolver,
   createHeadlessSession,
   ServiceError,
   createClaimSessionService,
@@ -388,6 +390,12 @@ export async function registerSessionCrudRoutes(
           request.params.id, dir,
           request.body.branchName, request.body.startPoint, undefined,
           graduationDeps,
+          // planning#426 — the fork's `fetch origin` and `git lfs pull` run on a
+          // session workspace with dropped uid, so they need a credential of their
+          // own; and a fork whose LFS content did not resolve must say so rather
+          // than present as complete.
+          gitRemoteCredentialResolver(deps.githubAuthManager),
+          forkReportSinks({ sessionManager, sseBroadcast: deps.sseBroadcast }),
         );
         // session_list SSE broadcast is owned by graduateSession (docs/156).
         return result;

@@ -8,6 +8,7 @@ import { initGlobalGitConfig, setGitIdentity } from "../git-config.js";
 import { forkSession, mergeSession } from "./session-fork-merge.js";
 import { handWorkspaceBackToWorker } from "../session-worker-uid.js";
 import type { SessionManager } from "../sessions.js";
+import type { GitRemoteCredentialResolver } from "../../shared/git-remote-credential.js";
 
 // planning#146 (analog): the root orchestrator's `git.merge` into the *active*
 // session's booted clone re-roots BOTH `.git` and the worktree files it
@@ -36,8 +37,24 @@ vi.mock("../git-lfs.js", () => ({
   materializeLfsWithWarning: vi.fn(() =>
     Promise.resolve({ status: "not-an-lfs-repo" as const, usesLfs: false }),
   ),
+  // planning#426 — the notice text itself is asserted in `git-lfs.test.ts` against
+  // the real builder; here it only needs to be a recognisable marker so the
+  // WIRING (a non-materialized result reaches the new session) is what is tested.
+  buildLfsUnresolvedAgentNotice: vi.fn(() => "[System] LFS-UNRESOLVED-NOTICE"),
 }));
-import { restoreLfsAfterTreeRewrite } from "../git-lfs.js";
+import { restoreLfsAfterTreeRewrite, materializeLfsWithWarning } from "../git-lfs.js";
+// planning#426 — `forkSession`'s `fetch origin` must resolve a credential of its
+// own. The DECISION to resolve is `resolveTreeRemoteCredential`'s and is proven
+// against the dropped-uid fake in `shared/git-remote-credential-wiring.test.ts`;
+// what has to hold here is that the fork REACHES it, for its own workspace and
+// its own `origin`. The real implementation is kept — it correctly answers "no
+// drop applies" in a test process, so every git op below runs its unchanged path.
+vi.mock("../../shared/git-remote-credential.js", async (importOriginal) => {
+  // eslint-disable-next-line no-restricted-syntax -- vitest's importOriginal generic requires an inline import() type
+  const actual = await importOriginal<typeof import("../../shared/git-remote-credential.js")>();
+  return { ...actual, resolveTreeRemoteCredential: vi.fn(actual.resolveTreeRemoteCredential) };
+});
+import { resolveTreeRemoteCredential } from "../../shared/git-remote-credential.js";
 
 /** Bare origin + a working clone with one pushed commit on `main`. */
 function setupRepoWithRemote(tmpDir: string, name: string) {
@@ -225,7 +242,7 @@ describe("session-fork-merge: forkSession base-branch inheritance", () => {
    */
   async function fork(parentDir: string, parentRow: StubRow, cacheDir = path.join(tmpDir, "no-such-cache")) {
     const { rows, manager } = makeForkSessionManager(parentRow);
-    const sessionsRoot = path.join(tmpDir, "sessions");
+    const sessionsRoot = path.join(path.dirname(parentDir), "sessions");
     fs.mkdirSync(sessionsRoot, { recursive: true });
     const result = await forkSession(
       manager,
@@ -321,5 +338,225 @@ describe("session-fork-merge: forkSession base-branch inheritance", () => {
       execSync("git symbolic-ref refs/remotes/origin/HEAD", { cwd: forkDir, stdio: "pipe" }),
     ).toThrow();
     expect(await new GitManager(forkDir).getDefaultBranch()).not.toBe("shipit/parent-desc");
+  });
+});
+
+/**
+ * planning#426 — a fork of an LFS repository silently got pointer stubs.
+ *
+ * Two halves, and the second is a defect on its own terms even when the first
+ * turns out to be legitimate ("the token has no access to this repository"):
+ *
+ *  1. The `fetch origin` and the `git lfs pull` are remote ops on a SESSION
+ *     workspace, so since docs/266-orchestrator-git-trust-boundary E1 they run at
+ *     dropped uid and cannot read the orchestrator's PAT. `mergeSession` already
+ *     took a resolver for this; `forkSession` did not.
+ *  2. Whatever the cause, the fork must not present as COMPLETE. A stub looks
+ *     like the file and git calls the tree clean, so every downstream read gets
+ *     plausible wrong data rather than a missing file.
+ */
+describe("session-fork-merge: forkSession reports unresolved LFS content (planning#426)", () => {
+  let tmpDir: string;
+  let origGitConfigGlobal: string | undefined;
+
+  beforeEach(() => {
+    vi.mocked(materializeLfsWithWarning).mockClear();
+    vi.mocked(resolveTreeRemoteCredential).mockClear();
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "fork-lfs-"));
+    origGitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
+    initGlobalGitConfig(path.join(tmpDir, "credentials"));
+    setGitIdentity("Test User", "test@test.com");
+  });
+
+  afterEach(() => {
+    if (origGitConfigGlobal !== undefined) process.env.GIT_CONFIG_GLOBAL = origGitConfigGlobal;
+    else delete process.env.GIT_CONFIG_GLOBAL;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  interface Row { id: string; title: string; workspaceDir?: string; branch?: string; remoteUrl?: string }
+
+  /**
+   * A parent session-shaped clone with a local bare origin, on its own branch.
+   *
+   * `name` scopes each fixture to its own subdirectory so a test can build several
+   * without recreating `tmpDir` — the global gitconfig (and therefore the commit
+   * identity) lives under it, so tearing it down mid-test loses the identity.
+   */
+  function setupParent(name = "a"): { parentDir: string; remoteUrl: string } {
+    const remoteUrl = path.join(tmpDir, name, "origin.git");
+    fs.mkdirSync(path.join(tmpDir, name), { recursive: true });
+    execSync(`git init --bare -b main ${remoteUrl}`, { stdio: "pipe" });
+    const parentDir = path.join(tmpDir, name, "parent");
+    execSync(`git clone ${remoteUrl} ${parentDir}`, { stdio: "pipe" });
+    fs.writeFileSync(path.join(parentDir, "a.txt"), "a\n");
+    execSync("git add -A && git commit -m Initial", { cwd: parentDir, stdio: "pipe" });
+    execSync("git push -u origin main", { cwd: parentDir, stdio: "pipe" });
+    execSync("git checkout -b shipit/parent-desc", { cwd: parentDir, stdio: "pipe" });
+    return { parentDir, remoteUrl };
+  }
+
+  async function forkWithReport(
+    parentDir: string,
+    remoteUrl: string,
+    resolveRemoteCredential?: GitRemoteCredentialResolver,
+  ) {
+    const rows = new Map<string, Row>([[
+      "parent-id",
+      { id: "parent-id", title: "Parent", workspaceDir: parentDir, branch: "shipit/parent-desc", remoteUrl },
+    ]]);
+    const upsert = (id: string, patch: Partial<Row>) =>
+      rows.set(id, { id, title: "", ...rows.get(id), ...patch });
+    const notices: { sessionId: string; notice: string }[] = [];
+    const warnings: string[] = [];
+    const manager = {
+      get: (id: string) => rows.get(id),
+      list: () => [...rows.values()],
+      track: (id: string, title?: string, workspaceDir?: string) =>
+        upsert(id, { ...(title ? { title } : {}), ...(workspaceDir ? { workspaceDir } : {}) }),
+      setBranch: (id: string, branch: string) => upsert(id, { branch }),
+      setRemoteUrl: (id: string, url: string) => upsert(id, { remoteUrl: url }),
+      setWarm: () => {},
+      rename: (id: string, title: string) => upsert(id, { title }),
+      setBranchRenamed: () => {},
+    } as unknown as SessionManager;
+
+    const sessionsRoot = path.join(path.dirname(parentDir), "sessions");
+    fs.mkdirSync(sessionsRoot, { recursive: true });
+    const result = await forkSession(
+      manager,
+      (dir) => ({ dir }) as never,
+      () => path.join(tmpDir, "no-such-cache"),
+      sessionsRoot,
+      { authenticated: false, configureGitCredentials: () => {} },
+      { init: () => {} },
+      "parent-id",
+      parentDir,
+      "shipit/forkslug",
+      undefined,
+      "Forked",
+      {
+        sessionManager: manager,
+        runnerRegistry: { get: () => undefined } as never,
+        repoStore: { touch: () => {} } as never,
+        createGitManager: (dir: string) => new GitManager(dir),
+        sseBroadcast: () => {},
+      },
+      resolveRemoteCredential,
+      {
+        warn: (message) => warnings.push(message),
+        noticeForAgent: (sessionId, notice) => notices.push({ sessionId, notice }),
+      },
+    );
+    return { result, notices, warnings };
+  }
+
+  it("parks a notice on the NEW session when the pull left stubs behind", async () => {
+    const { parentDir, remoteUrl } = setupParent();
+    // The pull failed with no credential — the shape the planning#410 soak saw 46
+    // times. The real pull, its argv and its classification are covered against a
+    // real git-lfs in `git-lfs.test.ts`; what has to hold HERE is that a
+    // non-materialized result reaches the fork's first turn instead of a log line.
+    vi.mocked(materializeLfsWithWarning).mockResolvedValueOnce({
+      status: "failed", usesLfs: true, failure: "no-credential",
+      warning: "git lfs pull exited 2: could not read Username",
+    });
+
+    const { result, notices } = await forkWithReport(parentDir, remoteUrl);
+
+    // The fork still completed — provisioning must not fail over an asset problem.
+    expect(result.session.workspaceDir).toBeTruthy();
+    // …and it does not present as complete. Addressed to the NEW session, because
+    // it is the fork's tree that holds the stubs, not the parent's.
+    expect(notices).toHaveLength(1);
+    expect(notices[0].sessionId).toBe(result.session.id);
+    expect(notices[0].sessionId).not.toBe("parent-id");
+    expect(notices[0].notice).toBe("[System] LFS-UNRESOLVED-NOTICE");
+  });
+
+  it("parks a notice for every non-materialized status, not just a failed pull", async () => {
+    // `disabled` and `binary-missing` leave stubs on disk exactly as a failed pull
+    // does, so gating the notice on `status === "failed"` would have been wrong.
+    for (const status of ["disabled", "binary-missing", "failed"] as const) {
+      const { parentDir, remoteUrl } = setupParent(status);
+      vi.mocked(materializeLfsWithWarning).mockResolvedValueOnce({ status, usesLfs: true });
+      const { notices } = await forkWithReport(parentDir, remoteUrl);
+      expect(notices, `status ${status} must be reported`).toHaveLength(1);
+    }
+  });
+
+  it("says nothing when the content materialized, or the repo does not use LFS", async () => {
+    // The negative half. Without it, every fork could carry a warning nobody can
+    // act on, which is the fastest way to make the real one ignorable.
+    for (const result of [
+      { status: "materialized" as const, usesLfs: true },
+      { status: "not-an-lfs-repo" as const, usesLfs: false },
+    ]) {
+      const { parentDir, remoteUrl } = setupParent(result.status);
+      vi.mocked(materializeLfsWithWarning).mockResolvedValueOnce(result);
+      const { notices, warnings } = await forkWithReport(parentDir, remoteUrl);
+      expect(notices, `status ${result.status} must stay silent`).toEqual([]);
+      expect(warnings).toEqual([]);
+    }
+  });
+
+  // The plumbing half. `mergeSession` has taken a resolver since docs/266 E3;
+  // `forkSession` was the raw site left behind, so its `fetch origin` ran with the
+  // global helper only — which on a dropped-uid git answers nothing, and then falls
+  // through to the workspace-LOCAL helper: the container's broker binary, which
+  // does not exist on the orchestrator. Hence `could not read Username`.
+  it("resolves a credential for its `fetch origin`, scoped to its own workspace", async () => {
+    const { parentDir } = setupParent("cred");
+    const remoteUrl = "https://github.com/acme/widgets.git";
+    const resolver: GitRemoteCredentialResolver = () => Promise.resolve(null);
+    const { result } = await forkWithReport(parentDir, remoteUrl, resolver);
+
+    // The fork's OWN workspace, not the parent's — a credential resolved against
+    // the parent tree would read the wrong `origin` and the wrong owner.
+    expect(resolveTreeRemoteCredential).toHaveBeenCalledWith(
+      result.session.workspaceDir,
+      "origin",
+      resolver,
+    );
+  });
+
+  it("does not resolve one when the parent has no remote at all", async () => {
+    // A sandbox parent: `git init`, no origin. There is nothing to authenticate to,
+    // and offering a credential to a local path would be the host confusion
+    // `parseRemoteOrigin` declines on purpose.
+    const parentDir = path.join(tmpDir, "sandbox");
+    fs.mkdirSync(parentDir, { recursive: true });
+    execSync("git init -b main", { cwd: parentDir, stdio: "pipe" });
+    fs.writeFileSync(path.join(parentDir, "a.txt"), "a\n");
+    execSync("git add -A && git commit -m Initial", { cwd: parentDir, stdio: "pipe" });
+    execSync("git checkout -b shipit/parent-desc", { cwd: parentDir, stdio: "pipe" });
+
+    const rows = new Map([["parent-id", {
+      id: "parent-id", title: "Parent", workspaceDir: parentDir, branch: "shipit/parent-desc",
+    }]]);
+    const manager = {
+      get: (id: string) => rows.get(id),
+      list: () => [...rows.values()],
+      track: () => {}, setBranch: () => {}, setRemoteUrl: () => {},
+      setWarm: () => {}, rename: () => {}, setBranchRenamed: () => {},
+    } as unknown as SessionManager;
+    const sessionsRoot = path.join(tmpDir, "sandbox-sessions");
+    fs.mkdirSync(sessionsRoot, { recursive: true });
+
+    await forkSession(
+      manager, (dir) => ({ dir }) as never, () => path.join(tmpDir, "no-such-cache"),
+      sessionsRoot, { authenticated: false, configureGitCredentials: () => {} },
+      { init: () => {} }, "parent-id", parentDir, "shipit/forkslug", undefined, "Forked",
+      {
+        sessionManager: manager,
+        runnerRegistry: { get: () => undefined } as never,
+        repoStore: { touch: () => {} } as never,
+        createGitManager: (dir: string) => new GitManager(dir),
+        sseBroadcast: () => {},
+      },
+      () => Promise.resolve(null),
+    );
+
+    expect(resolveTreeRemoteCredential).not.toHaveBeenCalled();
   });
 });

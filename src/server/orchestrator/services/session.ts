@@ -31,7 +31,7 @@ import { ServiceError } from "./types.js";
 import { validateString, validateStringArray } from "./validation.js";
 
 // Re-exports so external consumers continue to resolve these from "./session.js".
-export { forkSession, mergeSession } from "./session-fork-merge.js";
+export { forkSession, forkReportSinks, mergeSession, type ForkReportSinks } from "./session-fork-merge.js";
 export {
   DEFAULT_MAX_ACTIVE_SPAWNED_SESSIONS,
   DEFAULT_MAX_SPAWNED_SESSIONS_PER_TURN,

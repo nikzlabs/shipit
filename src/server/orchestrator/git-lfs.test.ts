@@ -24,6 +24,8 @@ import {
   restoreLfsAfterTreeRewrite,
   isGitLfsAvailable,
   resetGitLfsAvailabilityCache,
+  classifyPullFailure,
+  buildLfsUnresolvedAgentNotice,
 } from "./git-lfs.js";
 
 function git(cwd: string, args: string): string {
@@ -170,6 +172,145 @@ describe("materializeLfsContent", () => {
     process.env.SHIPIT_GIT_LFS = "auto";
     const result = await materializeLfsContent(lfsRepo(), { isAvailable: () => Promise.resolve(false) });
     expect(result.status).toBe("binary-missing");
+  });
+
+  // planning#426 — the pull is a REMOTE op, and since docs/266 E1/E3 the git that
+  // runs it on a session workspace has dropped uid and cannot read the
+  // orchestrator's PAT. It must therefore carry its own credential, the way
+  // `GitManager.remoteGit` does; without it a private LFS repo dies with
+  // `fatal: could not read Username for 'https://github.com'`.
+  it("carries the resolved credential on the pull's argv and environment", async () => {
+    const dir = lfsRepo();
+    // `origin` has to be a real https remote or the resolver would decline —
+    // this asserts the wiring, so the credential is injected directly.
+    git(dir, "remote add origin https://github.com/example/private.git");
+    const seen: { args: string[]; env: Record<string, string | undefined> }[] = [];
+    await materializeLfsContent(dir, {
+      isAvailable: () => Promise.resolve(true),
+      resolveCredential: () => Promise.resolve({
+        origin: "https://github.com",
+        token: { username: "x-access-token", password: "ghp_secret" },
+      }),
+      spawnGit: (args, _cwd, _timeout, env) => {
+        seen.push({ args, env: env ?? {} });
+        return Promise.resolve({ code: 0, stdout: "", stderr: "", timedOut: false });
+      },
+    });
+
+    expect(seen).toHaveLength(1);
+    const { args, env } = seen[0];
+    // The SHAPE rides the argv, ahead of the subcommand, because no `.env()` can
+    // remove it — `shared/git-remote-credential.ts` explains why that asymmetry
+    // is load-bearing. The empty reset is what stops the workspace-LOCAL helper
+    // (the container's broker binary, absent on the orchestrator) from answering.
+    expect(args.slice(-2)).toEqual(["lfs", "pull"]);
+    expect(args).toContain("credential.helper=");
+    expect(args.some((a) => a.startsWith("credential.https://github.com.helper="))).toBe(true);
+    // The SECRET rides the environment, so it never lands in `/proc/<pid>/cmdline`.
+    expect(args.join(" ")).not.toContain("ghp_secret");
+    expect(env.SHIPIT_GIT_CRED_PASSWORD).toBe("ghp_secret");
+    expect(env.SHIPIT_GIT_CRED_USERNAME).toBe("x-access-token");
+  });
+
+  it("runs the pull unchanged when no credential applies", async () => {
+    const dir = lfsRepo();
+    const seen: string[][] = [];
+    await materializeLfsContent(dir, {
+      isAvailable: () => Promise.resolve(true),
+      // `null` is the answer on every path that is NOT a dropped-uid git — root
+      // git reads the global helper, which reads the root-only PAT file — so this
+      // must stay byte-for-byte what it was before planning#426.
+      resolveCredential: () => Promise.resolve(null),
+      spawnGit: (args) => {
+        seen.push(args);
+        return Promise.resolve({ code: 0, stdout: "", stderr: "", timedOut: false });
+      },
+    });
+    expect(seen).toEqual([["lfs", "pull"]]);
+  });
+
+  // The issue's "separate the two shapes explicitly — they need different fixes".
+  it("reports a credential-less failure as a plumbing fault, with its own advice", async () => {
+    const result = await materializeLfsContent(lfsRepo(), {
+      isAvailable: () => Promise.resolve(true),
+      resolveCredential: () => Promise.resolve(null),
+      spawnGit: () => Promise.resolve({
+        code: 2,
+        stdout: "",
+        stderr: "fatal: could not read Username for 'https://github.com': terminal prompts disabled\n"
+          + "batch response: Git credentials for https://github.com/example/private.git not found",
+        timedOut: false,
+      }),
+    });
+    expect(result.status).toBe("failed");
+    expect(result.failure).toBe("no-credential");
+    expect(result.warning).toMatch(/could not present a credential/);
+  });
+
+  it("reports a refused credential as an access problem, not a plumbing one", async () => {
+    const result = await materializeLfsContent(lfsRepo(), {
+      isAvailable: () => Promise.resolve(true),
+      resolveCredential: () => Promise.resolve(null),
+      spawnGit: () => Promise.resolve({
+        code: 2,
+        stdout: "",
+        stderr: "batch response: Repository or object not found: 403 Forbidden",
+        timedOut: false,
+      }),
+    });
+    expect(result.failure).toBe("access-denied");
+    expect(result.warning).toMatch(/refused the credential/);
+  });
+});
+
+describe("classifyPullFailure", () => {
+  it("separates the two credential shapes and defaults to `other`", () => {
+    // git's words for "no helper answered" …
+    expect(classifyPullFailure("fatal: could not read Username for 'https://github.com'")).toBe("no-credential");
+    expect(classifyPullFailure("fatal: could not read Password: terminal prompts disabled")).toBe("no-credential");
+    // … and git-lfs's own words for the same thing, which is the line the
+    // planning#410 soak actually captured.
+    expect(
+      classifyPullFailure("batch response: Git credentials for https://github.com/a/b.git not found"),
+    ).toBe("no-credential");
+    // A credential WAS offered and refused — a legitimate outcome, different fix.
+    expect(classifyPullFailure("batch response: 403 Forbidden")).toBe("access-denied");
+    expect(classifyPullFailure("Authentication failed for 'https://github.com/a/b.git'")).toBe("access-denied");
+    // Anything else keeps the generic advice rather than guessing.
+    expect(classifyPullFailure("error: dial tcp: lookup github.com: no such host")).toBe("other");
+    expect(classifyPullFailure("")).toBe("other");
+  });
+});
+
+describe("buildLfsUnresolvedAgentNotice", () => {
+  // planning#426's reporting half. A toast is gone in seconds; the party that
+  // reads the stubs as if they were content arrives on the next turn, which may
+  // be tomorrow.
+  it("names the cause and teaches the one cheap check", () => {
+    const notice = buildLfsUnresolvedAgentNotice({
+      status: "failed", usesLfs: true, failure: "no-credential",
+    });
+    expect(notice.startsWith("[System]")).toBe(true);
+    expect(notice).toMatch(/could not present a credential/);
+    // The header is the whole point: it is what distinguishes "this asset is a
+    // stub" from the misdiagnoses the original docs/231 reporter lost time to.
+    expect(notice).toContain("version https://git-lfs.github.com/spec/v1");
+    expect(notice).toMatch(/git lfs pull/);
+    // "may", not "are" — a batched pull can fail part-way.
+    expect(notice).toMatch(/may therefore\s+hold|may therefore hold/);
+  });
+
+  it("distinguishes every non-materialized cause", () => {
+    expect(buildLfsUnresolvedAgentNotice({ status: "disabled", usesLfs: true }))
+      .toMatch(/downloads are disabled/);
+    expect(buildLfsUnresolvedAgentNotice({ status: "binary-missing", usesLfs: true }))
+      .toMatch(/binary is not available/);
+    expect(buildLfsUnresolvedAgentNotice({ status: "failed", usesLfs: true, failure: "access-denied" }))
+      .toMatch(/refused the credential/);
+    expect(buildLfsUnresolvedAgentNotice({ status: "failed", usesLfs: true, failure: "timeout" }))
+      .toMatch(/time limit/);
+    expect(buildLfsUnresolvedAgentNotice({ status: "failed", usesLfs: true }))
+      .toMatch(/the pull failed/);
   });
 });
 

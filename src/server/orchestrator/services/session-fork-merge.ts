@@ -22,7 +22,11 @@ import { graduateSession, type GraduateSessionDeps } from "./graduate-session.js
 import { ServiceError } from "./types.js";
 import { chownTreeToSessionWorker, handWorkspaceBackToWorker } from "../session-worker-uid.js";
 import { allocateAndSealSessionDir } from "../session-uid-allocator.js";
-import { restoreLfsAfterTreeRewrite, materializeLfsWithWarning } from "../git-lfs.js";
+import {
+  buildLfsUnresolvedAgentNotice,
+  materializeLfsWithWarning,
+  restoreLfsAfterTreeRewrite,
+} from "../git-lfs.js";
 import { stripRemoteUrlCredentials } from "../git-utils.js";
 import { resolveGitTreeUid } from "../../shared/git-tree-uid.js";
 
@@ -127,6 +131,55 @@ async function inheritOriginHead(parentDir: string, forkDir: string, bareCacheDi
   }
 }
 
+/**
+ * What a fork reports when its workspace did not come out complete
+ * (planning#426).
+ *
+ * Two sinks rather than one, because the two readers are different and the issue
+ * asks for the one the *user* reads:
+ *
+ *  - `warn` reaches the user now — a toast, exactly as every other provisioning
+ *    path's LFS warning does (`sseBroadcast("error", …)`). A fork is a
+ *    user-initiated action, so there is always someone looking.
+ *  - `noticeForAgent` reaches the party that would otherwise read the pointer
+ *    stubs as if they were content, on the new session's FIRST turn — which may
+ *    be tomorrow, long after any toast is gone. That is the half that makes this
+ *    more than noise: an LFS stub is a small text file that *looks like* the
+ *    tracked asset, so a build, a test or an agent reading it gets plausible
+ *    wrong data rather than a missing file.
+ *
+ * Both default to a log line, so the older positional callers and the tests keep
+ * working unchanged.
+ */
+export interface ForkReportSinks {
+  warn?: (message: string) => void;
+  noticeForAgent?: (sessionId: string, notice: string) => void;
+}
+
+/**
+ * The production wiring of {@link ForkReportSinks} — an SSE toast now and a
+ * durable `pending_agent_notice` for the fork's first turn.
+ *
+ * A named factory rather than an object literal at each route, because both fork
+ * entry points (`POST /api/sessions/:id/fork` and the chat **rewind**) owe the
+ * identical reporting and a divergence between them would be invisible: the
+ * failure it reports is one where nothing looks wrong.
+ */
+export function forkReportSinks(deps: {
+  sessionManager: Pick<SessionManager, "setPendingAgentNotice">;
+  sseBroadcast: (event: string, data: unknown) => void;
+}): ForkReportSinks {
+  return {
+    warn: (message) => {
+      console.warn(`[fork] ${message}`);
+      deps.sseBroadcast("error", { message });
+    },
+    noticeForAgent: (sessionId, notice) => {
+      deps.sessionManager.setPendingAgentNotice(sessionId, notice);
+    },
+  };
+}
+
 /** Fork a session into a new clone with its own branch. */
 export async function forkSession(
   sessionManager: SessionManager,
@@ -141,6 +194,18 @@ export async function forkSession(
   startPoint: string | undefined,
   title: string | undefined,
   graduationDeps: GraduateSessionDeps,
+  /**
+   * planning#426 — the `fetch origin` and the `git lfs pull` below both run on a
+   * SESSION workspace, so since docs/266-orchestrator-git-trust-boundary E1 they
+   * have dropped uid and cannot read the orchestrator's PAT. Without this the
+   * fetch degrades to anonymous (silently wrong `origin/*` refs, which is the
+   * diff inflation the fetch exists to prevent) and the LFS pull fails outright
+   * with `could not read Username` — leaving a fork of an LFS repo full of
+   * pointer stubs. `mergeSession` below already took this parameter for the
+   * identical reason; the fork was the site left behind.
+   */
+  resolveRemoteCredential?: GitRemoteCredentialResolver,
+  report: ForkReportSinks = {},
 ): Promise<{ session: SessionInfo; parentSessionId: string; sessions: SessionInfo[] }> {
   const trimmed = branchName.trim();
   if (!trimmed) throw new ServiceError(400, "Branch name is required");
@@ -295,11 +360,26 @@ export async function forkSession(
   // the active session's local view rather than real origin — that's
   // what produces the "+1657 -94" diff inflation on a fresh fork until
   // the next auto-push fetch normalizes them.
+  const warn = report.warn ?? ((message: string) => console.warn(`[fork] ${message}`));
   if (activeSession?.remoteUrl) {
     try {
-      await newGit.raw(["fetch", "origin", "--prune"]);
+      // planning#426 — credentialled, for the reason `resolveRemoteCredential`
+      // documents. Resolved here rather than once above because the credential is
+      // read per remote op by design (a mint is short-lived), and `null` — every
+      // test, local mode, a root-owned tree — hands back the plain `newGit` so
+      // this path stays byte-for-byte what it was.
+      const credential = await resolveTreeRemoteCredential(newWorkspaceDir, "origin", resolveRemoteCredential);
+      const fetchGit = credential ? credentialledGit(newWorkspaceDir, credential) : newGit;
+      await fetchGit.raw(["fetch", "origin", "--prune"]);
     } catch (err) {
-      console.warn("[git] fork: fetch origin failed (non-fatal):", String(err));
+      // Still non-fatal — a fork with stale `origin/*` refs is usable, it just
+      // inflates the first PR diff. But it is no longer SILENT: this is one of the
+      // three paths that produced the planning#426 soak's `could not read
+      // Username` lines, and a `console.warn` is not a surface anyone reads.
+      warn(
+        "Could not refresh remote-tracking refs from origin, so this fork's first diff against "
+        + `\`origin/<base>\` may look larger than it is — run \`git fetch origin --prune\`. (${String(err)})`,
+      );
     }
   }
   // Unconditional, not folded into the `remoteUrl` guard above: a fork of a
@@ -337,8 +417,17 @@ export async function forkSession(
   // handoff has to come *earlier* rather than later. It does: it is up beside the
   // clone, for the independent reason that every `safeSimpleGit` between here and
   // there also drops to that identity. Nothing is owed afterwards.
-  await materializeLfsWithWarning(newWorkspaceDir, activeSession?.remoteUrl ?? newWorkspaceDir, (message) =>
-    console.warn(`[fork] ${message}`),
+  //
+  // planning#426 — the pull's credential comes from the same resolver the fetch
+  // above uses, registered once at boot (`git-lfs.ts`
+  // `configureLfsRemoteCredentialResolver`). Without it a dropped-uid pull on a
+  // private repo authenticates with nothing, and *this* is the path where that is
+  // worst: the fork's `.git/lfs` starts EMPTY, so a failed pull leaves every
+  // tracked asset as a stub rather than just the ones a rewrite touched.
+  const lfs = await materializeLfsWithWarning(
+    newWorkspaceDir,
+    activeSession?.remoteUrl ?? newWorkspaceDir,
+    warn,
   );
 
   // Fork-specific workspace identity: insert the row, pin branch + remote.
@@ -349,6 +438,20 @@ export async function forkSession(
   sessionManager.setBranch(newSessionId, trimmed);
   if (activeSession?.remoteUrl) {
     sessionManager.setRemoteUrl(newSessionId, activeSession.remoteUrl);
+  }
+
+  // planning#426 — the reporting half, and it is a defect on its own terms even
+  // when the cause turns out to be legitimate ("the token has no access to this
+  // repository"). A fork whose LFS content did not resolve must not present as
+  // complete: the tree IS complete, every file IS present, and the contents are
+  // pointers. So tell the party about to read them, on this session's first turn.
+  //
+  // Written AFTER `track`, because the notice is a column on the session row and
+  // the pull runs before that row exists (it has to — it needs the finished
+  // worktree). `not-an-lfs-repo` and `materialized` are the two silent outcomes;
+  // every other status left stubs behind.
+  if (lfs.usesLfs && lfs.status !== "materialized") {
+    report.noticeForAgent?.(newSessionId, buildLfsUnresolvedAgentNotice(lfs));
   }
 
   // graduate-session.ts owns the warm → active transition (docs/156).

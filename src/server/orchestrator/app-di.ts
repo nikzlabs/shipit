@@ -26,6 +26,7 @@ import { adoptEnvCredentials } from "./adopt-env-credentials.js";
 import { resolveSecretCipher, type SecretCipher } from "./secret-cipher.js";
 import { ProviderAccountManager } from "./provider-account-manager.js";
 import { initGlobalGitConfig, pinGitMessageLocale } from "./git-config.js";
+import { configureLfsRemoteCredentialResolver } from "./git-lfs.js";
 import { SessionContainerManager } from "./session-container.js";
 import type { SessionRunnerFactory } from "./session-runner.js";
 import { PrStatusPoller } from "./pr-status-poller.js";
@@ -641,6 +642,11 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
   console.log("[server] GitHub credentials found:", hasGitHubToken);
   // docs/266-orchestrator-git-trust-boundary E3 — close the loop on the box declared with `createGitManager`.
   remoteCredentialResolver.resolve = gitRemoteCredentialResolver(githubAuthManager);
+  // planning#426 — the same resolver, for the one remote op that cannot go through
+  // a `GitManager`: `git lfs pull`, which is a raw spawn in `git-lfs.ts`. Without
+  // it a dropped-uid pull on a PRIVATE repo authenticates with nothing and the
+  // session silently keeps its pointer stubs.
+  configureLfsRemoteCredentialResolver(gitRemoteCredentialResolver(githubAuthManager));
   if (hasGitHubToken && !deps.githubAuthManager) {
     // Load user info and configure git credentials in the background
     githubAuthManager.loadUserInfo().catch((err: unknown) => {
