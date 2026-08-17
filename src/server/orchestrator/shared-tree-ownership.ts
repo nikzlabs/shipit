@@ -223,11 +223,24 @@ function walk(
  * {@link reclaimSharedTree} and says so loudly — `context` names the operation
  * that was about to run, so the log line answers "why is this happening now".
  *
- * Call it from the operations that actually touch a shared cache rather than from
- * a funnel that looks like it covers them. `ensureBareCache`'s docstring claims
- * to be "called by every path that operates on a bare cache"; it is not —
- * `warm-pool-manager.ts` builds its `RepoGit` directly and fetches and clones
- * without it (verified at the source, docs/272 plan).
+ * ## Which operations call it, stated precisely
+ *
+ * NOT "every git that touches a shared cache" — `fetchCache` and
+ * `cloneFromCache`, which are the operations that can **fail**. The rest are safe
+ * without it for a structural reason worth keeping: the drop is resolved from the
+ * tree's **top level**, so the identity git runs as always owns the top level, and
+ * a write *at* the top level therefore cannot fail. That covers `setRemoteUrl`
+ * (`config.lock` in the cache root — it kept working throughout the production
+ * incident, including where it runs *before* `fetchCache` on the warm-pool path)
+ * and the startup janitor's branch sweep. The failures are exactly the operations
+ * that go **deeper**: a ref lock under `refs/heads/shipit/` (planning#425) and a
+ * clone that reads the whole object store (planning#428).
+ *
+ * Call it from those operations rather than from a funnel that looks like it
+ * covers them. `ensureBareCache`'s docstring claims to be "called by every path
+ * that operates on a bare cache"; it is not — `warm-pool-manager.ts` builds its
+ * `RepoGit` directly and fetches and clones without it (verified at the source,
+ * docs/272 plan).
  */
 export function ensureSharedTreeOwnedByShipIt(
   dir: string,

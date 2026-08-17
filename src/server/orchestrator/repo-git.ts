@@ -21,8 +21,16 @@ import { linkLfsObjectsIntoClone } from "./git-lfs-store.js";
  * Validate a bare cache directory and re-clone it from the remote if it's
  * missing or corrupt. Returns the (possibly-fresh) RepoGit instance.
  *
- * Called by every path that operates on a bare cache (claim-session,
- * unarchive). A cache can go missing for reasons outside the orchestrator's
+ * Called by MOST paths that operate on a bare cache — claim-session, unarchive,
+ * prefetch, plugin fetch. **Not all of them, and this sentence used to say "every
+ * path", which is why the docs/272 ownership gate is not here:**
+ * `warm-pool-manager.ts` builds its `RepoGit` with `createRepoGit(cacheDir)` and
+ * both fetches and clones without passing through this function. Anything that
+ * must hold for every bare-cache operation belongs on the `RepoGit` methods
+ * themselves (verified at the source, 2026-08-17,
+ * docs/272-shared-cache-ownership).
+ *
+ * A cache can go missing for reasons outside the orchestrator's
  * control — manual filesystem wipe, an unmount, an interrupted previous
  * clone — and the database record (status="ready") doesn't notice. Without
  * recovery, the next claim-session falls into a slow-path that immediately
@@ -443,8 +451,13 @@ export class RepoGit {
         const proc = spawn(
           "git",
           gitArgsWithHooksDisabled(["merge-base", "--is-ancestor", ancestor, descendant]),
-          // The bare cache is ShipIt's own and root-owned, so the docs/266 drop
-          // is a no-op — but it is resolved from the filesystem, not assumed.
+          // docs/272-shared-cache-ownership — resolved from the filesystem, not
+          // assumed, and this comment used to assume it: it said "the bare cache
+          // is ShipIt's own and root-owned, so the drop is a no-op". Root-owned
+          // was a claim about the disk that planning#428 disproved. The drop is a
+          // no-op *because* the gate in `fetchCache`/`cloneFromCache` has made
+          // this tree ShipIt's own; a foreign uid resolving here means that
+          // repair failed, and `resolveGitTreeUid` says so once per tree.
           { cwd: this.repoDir, stdio: "ignore", ...gitSpawnOverridesForTree(this.repoDir) },
         );
         proc.on("error", () => resolve(false));

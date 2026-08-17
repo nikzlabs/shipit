@@ -210,9 +210,22 @@ const REPORTED_FOREIGN_TREE_LIMIT = 64;
  * therefore "cannot" get one.
  *
  * So the line names the drop and the reading. It stays quiet for the two cases
- * that dominate — a root-owned tree returns above without reaching here, and a
- * session path is answered by the session's own record — so in a healthy
- * deployment it never fires at all.
+ * that dominate, and both are *early returns above this call* rather than
+ * anything this function decides:
+ *
+ *   - **A session path** returns at the `sessionIdForPath(dir) !== null` guard,
+ *     which is the statement immediately before the `statOwner` fall-through. In
+ *     production BOTH roots are configured (`index.ts` passes `sessionsRoot` and
+ *     `credentialsSessionsRoot`), so every workspace and every per-session
+ *     credential subtree is answered from the session's own record and never
+ *     reaches here — *including* under per-session uids, where the tree's owner
+ *     is a 2000000-range uid. An independent review read this the other way, as a
+ *     false positive per session; the misread is cheap to make from a diff, so
+ *     `git-tree-uid.test.ts` pins it rather than leaving it to the prose.
+ *   - **A root-owned tree** returns at the `owner.uid === 0` check just above.
+ *
+ * So in a healthy deployment this never fires at all, and when it does fire it is
+ * either a genuinely foreign tree (a host-bind dev checkout) or a defect.
  */
 function noteForeignTreeDrop(dir: string, owner: GitTreeUid): void {
   if (reportedForeignTrees.has(dir)) return;

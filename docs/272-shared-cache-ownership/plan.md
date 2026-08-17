@@ -313,6 +313,34 @@ both backends).
 > codebase, read it first as **"the process dropped uid, and the tree is not
 > uniformly owned."**
 
+## The independent review, and the one finding that was refuted
+
+ShipIt's configured reviewer (a different model family) checked the branch against
+all twelve requirements and found them met. Three findings were acted on: the
+`isAncestor` comment still asserted the cache was root-owned as a static fact, the
+gate's "before any git touches a shared cache" was imprecise, and
+`ensureBareCache`'s own docstring still carried the false funnel claim that this
+work corrects elsewhere. All three were stale or over-broad *sentences* — the class
+this feature keeps tripping over.
+
+Its **headline** finding was wrong, and how it was wrong is worth keeping. It read
+`noteForeignTreeDrop` as firing for every session workspace under per-session uids
+— "a stream of false positives telling the operator a session's tree belongs to no
+session" — on the stated grounds that "`resolveGitTreeUid` has NO session
+awareness". It has: `sessionIdForPath(dir) !== null` is the statement immediately
+above the fall-through, and in production both roots are configured
+(`index.ts:154`), so every workspace and every per-session credential subtree
+returns before the log. Refuted at the source, then **pinned in
+`git-tree-uid.test.ts`** rather than argued — a session path resolving to a
+2000000-range tree owner must produce no log line. The misread is cheap to make
+from a diff, so the docstring now names the guard and the line instead of
+describing the behaviour.
+
+The lesson generalizes in both directions: an out-of-family reviewer is the right
+place to send an impossibility claim, *and* a finding it hands back is a claim to
+check at the source like any other. The two corrections in the section above were
+found the same way.
+
 ## Rejected alternatives
 
 - **`--no-hardlinks` on every clone from a shared cache** (planning#417's option
