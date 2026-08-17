@@ -1,0 +1,119 @@
+---
+issue: planning#420
+title: Compose services must be able to write the workspace
+description: Restores the "services share the agent's user" contract that per-session UIDs and the contained `user:` rule broke together.
+---
+
+# Compose workspace writability
+
+Implements [requirements.md](./requirements.md) — one requirement: services and
+agents must both work.
+
+## 1. What was broken
+
+Three rules, each correct alone, met and made the workspace unusable to every
+Compose service in every repository.
+
+**Per-session UIDs (docs/270).** Each session now runs as its own UID; the GID
+stays shared. The workspace is chowned `sessionUid:sharedGid` — and its **mode
+was never touched**. A root orchestrator materializes a checkout under umask 022,
+so the tree stays `0644`/`0755`. Only the session UID could write it.
+
+**A service can never hold that UID.** ShipIt fills in the session identity only
+for a service that declares no `user:` (`compose-generator.ts`), and a project may
+not declare a UID in the session range — req 4a refuses it. So a declared user is
+always a non-owner.
+
+**Containment made declaring mandatory (docs/263).** A contained service had to
+declare a numeric non-root `user:`, and the refusal fails the *whole* file.
+Containment is the default (`session-container.ts`, `isEgressContained` → `?? true`).
+
+The result, per requirement 1, was two ways to have broken services:
+
+| Project shape | Outcome |
+|---|---|
+| No `user:` (the documented advice) | whole compose file **refused** — no services at all |
+| Declares `user:` to satisfy the refusal | services start and **cannot write** the workspace |
+
+`compose.md` documented both halves of the trap in one page — "Services share the
+agent's user … Avoid setting `user:`" beside "Each service must declare a numeric,
+non-root `user:`" — while the UID it told services to share was the one it
+forbade them to name. github#2374 is a user hitting exactly this: three Vite dev
+servers died together on the config-bundle temp file they could not create.
+
+## 2. The fix
+
+Two halves. The first stops a wrong `user:` being demanded; the second keeps a
+deliberate one working.
+
+### A. Stop requiring a declaration that cannot be right
+
+`validateServiceSecurity` (`compose-generator.ts`) accepts an absent `user:` in a
+contained session **when ShipIt's fill-in will supply the identity** — i.e. when a
+worker UID exists. What containment needs is a numeric, non-root, non-reserved
+runtime UID; an allocated session identity is all three by construction, so the
+fill-in satisfies the rule *better* than a declaration, which merely asserts it.
+
+Nothing else relaxes. A declared root user, a declared 911/912, and a declared
+UID inside the session range are all still refused, and a deployment with no
+worker UID still requires the declaration — there the image default would apply,
+and it is often root.
+
+### B. Make the group channel actually carry writes
+
+The group is the only channel a non-owner service has, and it was already shared —
+every session runs with the same GID. What was missing was the write bit.
+
+- **`chownWorktreeRecursive`** (`session-worker-uid.ts`) now adds `g+rwX`, plus
+  setgid on directories, to every node it chowns. It runs from
+  `handWorkspaceBackToWorker`, i.e. on clone, checkout, reset, rebase and
+  fork-merge — every path that materializes worktree files as root.
+- **`chown_workspace`** (`docker/session-worker/entrypoint.sh`) does the same at
+  boot, in two extra passes with the same prunes, so the container-side handoff
+  and the orchestrator-side one agree.
+- **`group_add: [<sharedGid>]`** is added to the generated override for a service
+  that declares its own `user:`. An image with a baked-in account (`1300:1301`)
+  is otherwise outside the session's group entirely, and no amount of group-write
+  on the tree would reach it. The declared UID is untouched — req 4 stands.
+
+**This costs no isolation, and it is not a new judgement.** The session directory
+is `0700` (`sealSessionDir`), which is the whole cross-session boundary: a
+group-writable file inside a session is unreachable to every UID outside it. The
+entrypoint's `umask 002` already rests on exactly that reasoning for files created
+after boot. This applies the same rule to the ones root created before it.
+
+Two things are deliberately **not** re-moded, for the same reason they are not
+re-chowned: regular files under `.git/objects` and `.git/lfs/objects` (hardlinked
+into the shared bare cache and every sibling clone — a mode belongs to the inode),
+and `.pnpm-store` (shared per runtime, and group-shared by the orchestrator).
+Object *directories* are moded, so the worker can still add an object.
+
+## 3. Known residual
+
+**A file a foreign-UID service creates is still not agent-writable.** With
+`group_add` the service can write the tree, but its own umask is 022, so what it
+creates lands `0644` owned by that UID. The setgid bit puts it in the shared
+group, so the agent can read it; it cannot modify it. This is pre-existing — it
+has been true of any declared `user:` since docs/150 — and it does not arise for a
+service that declares nothing, which is now every service that can manage it. The
+durable fix is a group-writable umask inside the service, which means wrapping a
+command ShipIt does not own; it is not attempted here.
+
+## 4. Deploy ordering
+
+This repo's own `docker-compose.yml` **keeps** its `user: "1000:1000"` lines for
+now. They work again because of half B, and deleting them would break dogfooding
+on every session running an orchestrator that predates half A — which still
+refuses an undeclared contained service, and refuses the whole file with it. The
+comment on the `dev` service names the follow-up: drop them once the fix is
+deployed, so those services get the session identity and own their own output.
+
+## 5. Key files
+
+- `src/server/orchestrator/session-worker-uid.ts` — `addGroupWrite`, called from
+  the worktree handoff and from the cross-session group share.
+- `src/server/orchestrator/compose-generator.ts` — the relaxed contained-`user:`
+  rule and the `group_add` injection.
+- `docker/session-worker/entrypoint.sh` — `chown_workspace`'s mode passes.
+- `src/server/shipit-docs/compose.md` — the agent-facing contract, no longer
+  self-contradictory.

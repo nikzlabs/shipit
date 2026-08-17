@@ -1338,11 +1338,31 @@ export function validateServiceSecurity(
     const containedUser = typeof svc.user === "string" || typeof svc.user === "number"
       ? String(svc.user).trim()
       : "";
+    // docs/271 — what containment needs is a numeric, non-root, non-reserved
+    // runtime UID (docs/263: so repository code can neither be root nor assume a
+    // UID the namespace firewall exempts). A DECLARATION is one way to have one.
+    // ShipIt's own fill-in is the other, and it is the better one: an allocated
+    // session identity is non-root and outside 911/912 by construction, so it
+    // satisfies the rule without asking the project to be right about it.
+    //
+    // Requiring the declaration anyway is what broke every repository. The
+    // fill-in supplies THIS session's uid, and a project may not declare that uid
+    // — req 4a above refuses the whole session range. So a contained project had
+    // two options and both failed: declare nothing and have its entire compose
+    // file refused, or declare some other uid and get services that cannot write
+    // the workspace they share with the agent. `compose.md` documented the first
+    // half of the trap in the same breath as the rule ("Services share the
+    // agent's user … Avoid setting `user:`"), which is what github#2374 caught.
+    //
+    // The group-write half of the fix (`session-worker-uid.ts`) is what keeps a
+    // DELIBERATE declaration working. This is what stops one being demanded.
+    const shipitFillsIn = containedUser === "" && sessionWorkerUid() !== null;
     const containedUid = /^\d+(?::\d+)?$/.test(containedUser)
       ? Number(containedUser.split(":", 1)[0])
       : NaN;
-    if (!Number.isInteger(containedUid) || containedUid <= 0
-      || containedUid === EGRESS_RESOLVER_UID || containedUid === EGRESS_PROXY_UID) {
+    if (!shipitFillsIn
+      && (!Number.isInteger(containedUid) || containedUid <= 0
+        || containedUid === EGRESS_RESOLVER_UID || containedUid === EGRESS_PROXY_UID)) {
       throw new ComposeValidationError(
         `Service \`${name}\`: contained services must declare a numeric, non-root \`user:\` `
         + `that is not reserved UID ${EGRESS_RESOLVER_UID} or ${EGRESS_PROXY_UID}. `
@@ -1740,6 +1760,23 @@ export function generateComposeOverride(
       || (!opts.containEgress && svc.name === "docker-socket-proxy");
     if (workerUid !== null && svc.user === undefined && !preservesImageStartupUser) {
       entry.user = `${workerUid}:${workerGid}`;
+    } else if (workerGid !== null && svc.user !== undefined && !preservesImageStartupUser) {
+      // docs/271 — a DELIBERATE `user:` keeps its uid (req 4 — we never override
+      // that choice) and gains the session group as a supplementary group, which
+      // is the only way it can write the workspace it shares with the agent.
+      //
+      // The workspace is owned by this session's uid and made group-writable by
+      // `chownWorktreeRecursive`, with the shared gid as its group. A declared
+      // user that happens to name that gid already reached it; one that names its
+      // own (`user: "1300:1301"`, an image's baked-in account) did not, and no
+      // amount of group-write on the tree would have helped it. `group_add` is
+      // the piece that makes the group channel available to BOTH shapes rather
+      // than only to the lucky spelling.
+      //
+      // Additive and capability-free: a supplementary group grants nothing beyond
+      // what that gid owns, which here is this session's own workspace. It is not
+      // a route out of containment.
+      entry.group_add = [String(workerGid)];
     }
 
     // Strip host port bindings — compose services are accessed through

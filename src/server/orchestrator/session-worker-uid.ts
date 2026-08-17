@@ -360,19 +360,35 @@ function shareOne(p: string, gid: number): fs.Stats | null {
   } catch (err) {
     console.warn(`[session-worker-uid] group share failed for ${p}:`, err);
   }
-  if (stat.isSymbolicLink()) return stat;
-  const mode = stat.mode & 0o7777;
-  // g+rw always; g+x and setgid only for directories, matching `chmod -R g+rwX`
-  // plus `find -type d -exec chmod g+s`.
-  const next = stat.isDirectory() ? mode | 0o2070 : mode | 0o060;
-  if (next !== mode) {
-    try {
-      fs.chmodSync(p, next);
-    } catch (err) {
-      console.warn(`[session-worker-uid] group share chmod failed for ${p}:`, err);
-    }
-  }
+  addGroupWrite(p, stat);
   return stat;
+}
+
+/**
+ * The MODE half of a group share, for one node: `g+rw` always, plus `g+x` and
+ * the setgid bit on directories — i.e. `chmod g+rwX` plus
+ * `find -type d -exec chmod g+s`.
+ *
+ * Split out of {@link shareOne} because two callers need the mode and disagree
+ * about the OWNER. `shareOne` regroups a tree shared BETWEEN sessions and leaves
+ * its owner alone; {@link chownWorktreeRecursive} hands a tree to THIS session's
+ * uid. Sharing the mode logic is what keeps "group-writable" one definition
+ * rather than two that drift.
+ *
+ * A symlink is skipped: its own mode is meaningless on Linux, and `chmod`
+ * follows it, so chmodding one rewrites whatever it points at — possibly outside
+ * the tree. Best-effort per node, like every other helper here.
+ */
+function addGroupWrite(p: string, stat: fs.Stats): void {
+  if (stat.isSymbolicLink()) return;
+  const mode = stat.mode & 0o7777;
+  const next = stat.isDirectory() ? mode | 0o2070 : mode | 0o060;
+  if (next === mode) return;
+  try {
+    fs.chmodSync(p, next);
+  } catch (err) {
+    console.warn(`[session-worker-uid] group-write chmod failed for ${p}:`, err);
+  }
 }
 
 function shareRecursive(p: string, gid: number): void {
@@ -791,6 +807,27 @@ function chownWorktreeRecursive(p: string, owner: SessionIdentity, root: string,
     return; // gone — nothing to own
   }
   lchownLogged(p, owner);
+  // docs/271 — and group-writable, so a Compose service that is NOT this
+  // session's uid can still write the workspace it shares with the agent.
+  //
+  // The owner above cannot be that service's uid, and there is no way to make it
+  // one: a service's uid is either ShipIt's fill-in (this session's identity) or
+  // one the project declared, and a project may not declare an identity in the
+  // session range (docs/270 req 4a). So the GROUP is the only channel the two can
+  // share — and it is already shared, because every session runs with the same
+  // gid. What was missing is the write bit: a root orchestrator materializes the
+  // checkout under umask 022, i.e. 0644/0755, and this walk chowned it without
+  // ever touching the mode. Every Compose service in every repository therefore
+  // got a workspace it could read and not write (github#2374: three Vite dev
+  // servers died at once on the config-bundle temp file).
+  //
+  // This costs no isolation, and it is not a new judgement. The session
+  // directory is 0700 ({@link sealSessionDir}), which is the whole cross-session
+  // boundary, so a group-writable file inside a session is unreachable to every
+  // uid outside it. The entrypoint's `umask 002` already rests on exactly that
+  // reasoning for the files the agent creates AFTER boot; this applies the same
+  // rule to the ones root created before it.
+  addGroupWrite(p, stat);
   if (stat.isDirectory()) {
     let entries: string[];
     try {

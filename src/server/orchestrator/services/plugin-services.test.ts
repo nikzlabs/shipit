@@ -415,12 +415,13 @@ describe("readProjectServices carries why the name domain is unknown", () => {
   });
 
   it("reports a file the containment rules refuse as refused, naming the fix", () => {
-    // A stock compose file. Nothing is wrong with it — it just does not declare
-    // the `user:` a contained session requires.
+    // Valid YAML the containment rules decline on a rule: a declared ROOT user.
+    // It was an absent `user:` until docs/271 stopped refusing that one.
     declareStack(`
 services:
   web:
     image: node:22-alpine
+    user: "0"
 `);
     const project = read(true);
 

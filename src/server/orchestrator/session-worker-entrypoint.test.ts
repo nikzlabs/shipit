@@ -28,6 +28,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -860,6 +861,40 @@ describe("host journal readability (#1917)", () => {
     // Ordinary content is untouched by the exclusion — the walk is not a no-op.
     expect(chowned).toContain(join(tree, "src/a.ts"));
     expect(chowned).toContain(join(tree, ".git/config"));
+  });
+
+  // docs/271 / github#2374 — the handoff chowned the checkout and left its mode
+  // alone, so a root-materialized tree stayed 0644/0755 and the only channel a
+  // Compose service has into the workspace (the shared group, since it can never
+  // be the owner) carried read and not write.
+  it("leaves the workspace group-writable, without re-moding hardlinked objects", () => {
+    const tree = tempDir();
+    mkdirSync(join(tree, ".git/objects/4d"), { recursive: true });
+    mkdirSync(join(tree, "src"), { recursive: true });
+    for (const f of [".git/objects/4d/deadbeef", "src/a.ts", "run.sh"]) {
+      writeFileSync(join(tree, f), "");
+    }
+    chmodSync(join(tree, "src"), 0o755);
+    chmodSync(join(tree, "src/a.ts"), 0o644);
+    chmodSync(join(tree, "run.sh"), 0o755);
+    // A hardlinked object file: 0444, and its mode belongs to an inode the bare
+    // cache and every sibling clone share.
+    chmodSync(join(tree, ".git/objects/4d/deadbeef"), 0o444);
+
+    runChownWorkspace(tree);
+
+    const mode = (p: string) => statSync(join(tree, p)).mode & 0o7777;
+    // Directories: group write + traverse, and setgid so an entry a service
+    // creates inherits the shared group rather than the service's own.
+    expect(mode("src")).toBe(0o2775);
+    // Files: group write; `X` keeps an executable executable and promotes
+    // nothing that was not.
+    expect(mode("src/a.ts")).toBe(0o664);
+    expect(mode("run.sh")).toBe(0o775);
+    // The object file is left exactly as it was — same reason it is not chowned.
+    expect(mode(".git/objects/4d/deadbeef")).toBe(0o444);
+    // The object DIRECTORY is moded, or the worker could not add an object.
+    expect(mode(".git/objects/4d")).toBe(0o2775);
   });
 
   it("does not descend into the shared pnpm store", () => {

@@ -73,16 +73,28 @@ so files a dev server writes into the shared workspace — build caches like
 is what lets you run a one-off `npm run build` or typecheck from the terminal while
 the dev server is running, without hitting `EACCES` on a cache the server created.
 
-You don't need to configure anything for this. **Avoid setting `user:` (especially
-`user: root`) on a service that writes into the mounted workspace** — an explicit
-`user:` is honored as-is, which can re-introduce root-owned caches the terminal
-user can't delete or rebuild.
+You don't need to configure anything for this, **in an Open session and in a
+contained one alike**. **Avoid setting `user:` (especially `user: root`) on a
+service that writes into the mounted workspace** — an explicit `user:` is honored
+as-is, which can re-introduce root-owned caches the terminal user can't delete or
+rebuild.
 
 One range is not yours to use: **UIDs 2000000–2999999 are reserved by ShipIt**
 for per-session identities, and a `user:` inside it is rejected during
 validation. Nothing real falls in that range — system accounts stop at 999, the
 account your image ships is almost always in the low thousands, and `nobody` is
 65534 — so this only ever affects a number picked arbitrarily. Pick a lower one.
+
+That reservation is why declaring nothing is the right answer rather than merely
+the convenient one: the UID your service wants is the session's own, and naming
+it is exactly what the range refuses. Leave `user:` out and ShipIt supplies it.
+
+**If your image genuinely needs its own user** — it keeps startup scripts in that
+account's home, or drops privileges itself — declare it, and the service still
+works: ShipIt adds the session's group to it, and the workspace is group-writable,
+so a service running as a foreign UID can still write the tree the agent shares
+with it. Files it creates there are owned by that UID, though, so prefer no
+`user:` wherever the image tolerates it.
 
 ## Hot reload (HMR) needs polling
 
@@ -492,10 +504,10 @@ services:
     x-shipit-preview: auto         # show the web UI as the interactive preview
 ```
 
-- **`user:` is required — images that ship their own user need an explicit
-  one, written numerically.** By default ShipIt runs compose services as the
-  session-worker UID so files a dev server writes into the *shared workspace*
-  stay agent-owned. Images that run as their own baked-in user and keep startup
+- **This image is one that needs an explicit `user:`, written numerically.** By
+  default ShipIt runs compose services as the session's own UID so files a dev
+  server writes into the *shared workspace* stay agent-owned, and most images want
+  exactly that. Images that run as their own baked-in user and keep startup
   scripts in that user's home break under a foreign UID — the emulator fails with
   `sh: /home/androidusr/docker-android/mixins/scripts/run.sh: Permission denied`.
   An explicit `user:` is always honored verbatim (ShipIt never overrides a
@@ -596,11 +608,14 @@ definitions from a second file. Compose `include:` is rejected in **every**
 session for the same reason — the effective model would be the root file plus
 files ShipIt never validated.
 ShipIt replaces `dns:` and removes `SETUID` and `SETGID` for contained services.
-Each service must declare a numeric, non-root `user:` other than the reserved
-UIDs 911 and 912, and outside ShipIt's per-session range 2000000–2999999 (which
-is refused for every service, contained or not). The image must run directly as
-that user. Use an Open session
-for images that require root initialization or an entrypoint privilege drop.
+Every contained service runs as a numeric, non-root UID that is neither of the
+reserved UIDs 911 and 912. **You do not have to declare it** — a service with no
+`user:` is given the session's own identity, which satisfies that rule by
+construction. If you *do* declare one it must meet the rule itself: numeric,
+non-root, not 911 or 912, and outside ShipIt's per-session range 2000000–2999999
+(which is refused for every service, contained or not), and the image must run
+directly as that user. Use an Open session for images that require root
+initialization or an entrypoint privilege drop.
 
 A contained service first starts on an internal network with no public route.
 ShipIt pauses it, installs the allowlist controls, and then resumes it. Do not

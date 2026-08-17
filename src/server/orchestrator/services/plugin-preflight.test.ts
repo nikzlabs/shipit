@@ -349,10 +349,13 @@ describe("the phase-3 gate fails closed (reqs 13, 15)", () => {
    * so this is the normal first contact with a contained session, not an edge.
    */
   it("says a refused project compose file was refused, and why", () => {
+    // A declared ROOT user: valid YAML the rule declines. It was an absent
+    // `user:` until docs/271 stopped refusing that one.
     declareProjectStack(`
 services:
   web:
     image: node:22-alpine
+    user: "0"
 `);
     const verdict = judge({}, { containEgress: true });
 
@@ -379,6 +382,7 @@ services:
 services:
   web:
     image: node:22-alpine
+    user: "0"
 `);
     const reason = (judge({}, { containEgress: true }) as { reason: string }).reason;
 

@@ -417,8 +417,14 @@ function expectBoundaryHolds(
   //    to notice — it arrives either from the fragment allowlist growing or from
   //    the override generator, and either way it wants review against this
   //    requirement rather than a silent pass.
+  //    `group_add` is here for docs/271: a plugin fragment declares its own
+  //    `user:`, so ShipIt never fills in the session identity for it, and the
+  //    shared group is the only way it can write the `/project` mount req 29
+  //    gives it read-write. It grants nothing beyond what that gid owns — this
+  //    session's own tree — so it is a mount-reachability key, not a boundary
+  //    one, and it is listed rather than waved through.
   expect(Object.keys(entry).sort()).toEqual([
-    "cap_drop", "command", "environment", "image", "labels", "networks",
+    "cap_drop", "command", "environment", "group_add", "image", "labels", "networks",
     ...(expected.contained ? ["restart", "security_opt"] : []),
     "user", "volumes", "working_dir",
   ].sort());
