@@ -150,12 +150,16 @@ updating in place (no host-side systemd watcher locally).
 ## Choosing which agent harnesses to install
 
 A **harness** is an agent CLI plus the adapter that normalizes its event stream. ShipIt installs
-**Claude Code and Codex** by default; `SHIPIT_HARNESSES` selects a different set:
+**every harness it ships with** by default — today Claude Code, Codex, and OpenCode, and any added
+later without you having to opt in. `SHIPIT_HARNESSES` narrows that set:
 
 ```bash
 SHIPIT_HARNESSES=codex        # this install runs Codex only
-SHIPIT_HARNESSES=claude,codex # the default
+SHIPIT_HARNESSES=claude,codex # Claude Code and Codex, no OpenCode
 ```
+
+Narrowing is worth doing if image size or build time matters to you: each harness is a CLI baked
+into both images.
 
 It is a **build input, not a setting** — the CLIs are baked into the images — so changing it means
 editing the env file and re-running the deploy, and there is nothing in Settings that adds or
@@ -220,11 +224,13 @@ The script first asks how you want to reach ShipIt. Cloudflare and Tailscale are
 checkboxes — arrow keys move, the space bar toggles, Enter confirms:
 
 ```
-  > [*] Cloudflare Tunnel  public HTTPS domain, Zero Trust protected
-    [ ] Tailscale          private, reachable from your tailnet only
+  > [ ] Cloudflare Tunnel  public HTTPS domain, Zero Trust protected
+    [*] Tailscale          private, reachable from your tailnet only
 ```
 
-Tick both to install both; tick neither to install ShipIt without exposing it and add access later.
+Tailscale is the default: it reaches your own devices and nothing else, with no domain to own and no
+public URL to protect. Tick Cloudflare as well to get both, or tick neither to install ShipIt without
+exposing it and add access later.
 
 To try the questions without provisioning anything, add `--dry-run` (or set `SHIPIT_DRY_RUN=1`, which
 is easier to pass through the one-liner above). The installer asks both questions, prints what a real

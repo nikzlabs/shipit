@@ -32,8 +32,13 @@ list for the other. They should be a keyboard-driven checkbox list instead.
 These are not new asks. They record what the installer already does, so that
 changing the prompt does not change the install.
 
-6. The options preselected when the list first appears are today's defaults:
-   Cloudflare for access, Claude Code and Codex for harnesses.
+6. The options preselected when the list first appears are:
+   - **Access:** Tailscale, and only Tailscale.
+   - **Harnesses:** every harness this ShipIt has. Adding a harness later must
+     make it default-on without anyone remembering to update a default.
+
+   This is a change of defaults, not a preservation of them — see the resolved
+   question below.
 7. An install with no terminal to prompt on proceeds with those defaults instead
    of hanging or failing — the `curl | bash` and CI paths stay non-interactive.
 
@@ -64,4 +69,18 @@ None.
 
 ## Resolved questions
 
-None.
+**2026-08-17 — what should the defaults be?** Nik: "For access, make Tailscale
+the only default. For harnesses, all should be enabled by default, even when we
+add more." Requirement 6 was rewritten from the previous defaults (Cloudflare;
+Claude Code and Codex) to say this.
+
+Two consequences he was told about rather than asked:
+
+- The harness default is now **every** harness, everywhere — not only in the VPS
+  picker. An unanswered question falls through to the image build's own default,
+  so leaving that at `claude,codex` would have made "all by default" true only
+  for operators who saw the prompt. The build default is now derived from
+  `KNOWN_HARNESSES`, which is also what "even when we add more" requires.
+- That reverses **docs/268 req 3**, which put OpenCode outside the default set
+  when it was new. Recorded there too; this instruction is the later one and
+  wins.

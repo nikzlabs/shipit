@@ -173,12 +173,30 @@ shipit_pick() {
 # the defaults to keep in step with these.
 
 SHIPIT_ENV_FILE="/etc/shipit/shipit.env"
-ACCESS_DEFAULT="cloudflare"
-HARNESS_DEFAULT="claude,codex"
-# Keep this list and the picker rows in resolve_harnesses in step — this one is
-# what validates a scripted install's SHIPIT_HARNESSES, the rows are what an
-# operator sees.
-SUPPORTED_HARNESSES="claude codex opencode"
+
+# Tailscale is the default access path: it exposes ShipIt to your own devices and
+# nothing else, with no domain to own and no public URL to protect. Cloudflare is
+# the deliberate choice, since a public hostname is the bigger commitment.
+ACCESS_DEFAULT="tailscale"
+
+# The harnesses this installer offers, as "key|Label|hint" picker rows. ONE list:
+# the keys validate a scripted SHIPIT_HARNESSES, the rows are what an operator
+# sees, and EVERY key is selected by default — so adding a harness here is all it
+# takes for new installs to get it (docs/271). The image build derives the same
+# default from KNOWN_HARNESSES in docker/agent-cli/install-agent-clis.sh.
+HARNESS_ROWS=(
+  "claude|Claude Code|Anthropic's CLI"
+  "codex|Codex|OpenAI's CLI"
+  "opencode|OpenCode|open-source, bring your own provider"
+)
+SUPPORTED_HARNESSES=""
+HARNESS_DEFAULT=""
+for _row in "${HARNESS_ROWS[@]}"; do
+  _key="${_row%%|*}"
+  SUPPORTED_HARNESSES="${SUPPORTED_HARNESSES:+$SUPPORTED_HARNESSES }$_key"
+  HARNESS_DEFAULT="${HARNESS_DEFAULT:+$HARNESS_DEFAULT,}$_key"
+done
+unset _row _key
 
 ACCESS=""
 INSTALL_CLOUDFLARE=false
@@ -274,8 +292,11 @@ resolve_access() {
 # editing SHIPIT_HARNESSES in the env file and re-running deploy.sh.
 #
 # HARNESS_PERSIST stays 0 for an UNANSWERED question, so the variable is left
-# unset and compose's ${SHIPIT_HARNESSES:-claude,codex} default keeps applying —
-# writing the default out would freeze this install against a later change to it.
+# unset and the image build's own default (every harness it knows) keeps
+# applying. Two reasons, and both matter: writing the default out would freeze
+# this install against a harness added later, and a non-interactive RE-RUN of
+# this script would overwrite an operator's earlier narrower choice, since
+# setup.sh does not read the env file it writes.
 resolve_harnesses() {
   HARNESS_PERSIST=0
   if [ -n "${SHIPIT_HARNESSES:-}" ]; then
@@ -303,10 +324,7 @@ resolve_harnesses() {
   echo ""
   echo "    [up/down] move    [space] select    [enter] confirm"
   echo ""
-  shipit_pick "$HARNESS_DEFAULT" \
-    "claude|Claude Code|Anthropic's CLI" \
-    "codex|Codex|OpenAI's CLI" \
-    "opencode|OpenCode|open-source, bring your own provider" || true
+  shipit_pick "$HARNESS_DEFAULT" "${HARNESS_ROWS[@]}" || true
   HARNESS_CHOICE="$SHIPIT_PICK_RESULT"
   echo ""
   if [ -z "$HARNESS_CHOICE" ]; then

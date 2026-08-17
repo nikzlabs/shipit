@@ -120,11 +120,12 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
 # claude.ts / codex-adapter.ts / session-worker.ts (playwright-mcp) keep working.
 #
 # docs/252 phase 9 (req 14) — WHICH of them get installed is a build input
-# (SHIPIT_HARNESSES, default "claude,codex"), consumed by the shared installer
-# below. The same arg is passed to the ORCHESTRATOR image, which independently
+# (SHIPIT_HARNESSES, defaulting to every harness the installer knows), consumed
+# by the shared installer below. The same arg is passed to the ORCHESTRATOR image, which independently
 # installs the same CLIs; both images have to agree, because the orchestrator is
 # what offers a harness in the picker and this image is where turns actually run.
-ARG SHIPIT_HARNESSES=claude,codex
+# Empty = every harness install-agent-clis knows (docs/271). Override to narrow it.
+ARG SHIPIT_HARNESSES=
 COPY docker/agent-cli/package.json docker/agent-cli/package-lock.json /opt/agent-cli/
 COPY docker/agent-cli/install-agent-clis.sh /usr/local/bin/install-agent-clis
 RUN chmod 0755 /usr/local/bin/install-agent-clis

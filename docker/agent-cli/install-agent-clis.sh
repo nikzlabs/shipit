@@ -2,7 +2,8 @@
 # docs/252 phase 9 (req 14) — install the agent CLIs this deployment selected.
 #
 # WHICH harnesses an install has is a build input, not a setting: SHIPIT_HARNESSES
-# (comma- or space-separated harness ids, default "claude,codex") is a build arg on
+# (comma- or space-separated harness ids, defaulting to every harness this build
+# knows) is a build arg on
 # EVERY image that carries the CLIs, and this one script is what consumes it. Two
 # images install them independently — the orchestrator (docker/Dockerfile.prod,
 # which probes its own binaries for the picker and runs session naming locally) and
@@ -74,10 +75,18 @@ contains() {
 # Normalize the selection: commas → spaces, lowercase, de-duplicated, validated.
 # Fail fast and loudly — a typo here would otherwise ship an image missing the
 # harness the operator asked for, which surfaces much later as "the picker is empty".
-# An EMPTY value means unset, matching the compose `${SHIPIT_HARNESSES:-claude,codex}`
-# substitution: blanking the line in shipit.env gets the default, not an agentless
-# image. Naming nothing explicitly (",") is the error below.
-raw_selection="${SHIPIT_HARNESSES:-claude,codex}"
+# An EMPTY value means unset: the images pass the build arg through empty by
+# default, and blanking the line in shipit.env gets the default rather than an
+# agentless image. Naming nothing explicitly (",") is the error below.
+#
+# The default is KNOWN_HARNESSES — every harness this build knows about (docs/271).
+# That is deliberately derived rather than spelled out: a new harness added to
+# that one list is then on by default everywhere, with no build arg, compose file
+# or installer to remember to update.
+raw_selection="${SHIPIT_HARNESSES:-}"
+if [ -z "$raw_selection" ]; then
+  raw_selection="$KNOWN_HARNESSES"
+fi
 selected=""
 for token in $(printf '%s' "$raw_selection" | tr ',' ' ' | tr '[:upper:]' '[:lower:]'); do
   if ! contains "$token" $KNOWN_HARNESSES; then

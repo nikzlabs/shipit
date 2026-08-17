@@ -20,7 +20,8 @@ RUN git lfs install --system --skip-repo --skip-smudge
 # omission. docs/252 phase 9 — the install itself is the shared
 # docker/agent-cli/install-agent-clis.sh, whose SHIPIT_HARNESSES build arg selects
 # which harnesses land in the image and which get pruned (req 14).
-ARG SHIPIT_HARNESSES=claude,codex
+# Empty = every harness install-agent-clis knows (docs/271). Override to narrow it.
+ARG SHIPIT_HARNESSES=
 COPY docker/agent-cli/package.json docker/agent-cli/package-lock.json /opt/agent-cli/
 COPY docker/agent-cli/install-agent-clis.sh /usr/local/bin/install-agent-clis
 RUN chmod 0755 /usr/local/bin/install-agent-clis

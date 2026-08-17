@@ -89,8 +89,39 @@ shipit_pick "<preselected,csv>" "key|Label|one-line hint" ...
 
 | Question | Options | Preselected | Pre-answer |
 |---|---|---|---|
-| Access setup | `cloudflare`, `tailscale` | `cloudflare` | `SHIPIT_ACCESS` |
-| Agent harnesses | `claude`, `codex`, `opencode` | `claude,codex` | `SHIPIT_HARNESSES` |
+| Access setup | `cloudflare`, `tailscale` | `tailscale` | `SHIPIT_ACCESS` |
+| Agent harnesses | every known harness | all of them | `SHIPIT_HARNESSES` |
+
+## Defaults (req 6)
+
+**Tailscale, alone, for access.** It reaches your own devices and nothing else,
+with no domain to own and no public URL to protect. Cloudflare is the deliberate
+choice, because a public hostname is the bigger commitment.
+
+**Every harness, for harnesses — including ones added later.** "Even when we add
+more" rules out a spelled-out default, so there are exactly two lists and each
+derives its default:
+
+- `HARNESS_ROWS` in `setup.sh` — the picker rows. Their keys *are*
+  `SUPPORTED_HARNESSES` and `HARNESS_DEFAULT`, both built from the array at
+  startup, so adding a row offers the harness, validates it, and preselects it.
+- `KNOWN_HARNESSES` in `docker/agent-cli/install-agent-clis.sh` — the image
+  build. `SHIPIT_HARNESSES` empty now means "all of these", and every Dockerfile
+  declares `ARG SHIPIT_HARNESSES=` (empty) so the script decides rather than five
+  Dockerfiles each carrying a copy of the answer. Compose passes
+  `${SHIPIT_HARNESSES:-}` through for the same reason.
+
+Both are pinned to the TS catalogue by `agent-cli-install.test.ts`, so a harness
+added to `HARNESSES` and nowhere else fails the build with a message naming it.
+
+The build default matters as much as the picker: an **unanswered** question
+deliberately persists nothing (see `resolve_harnesses`), so the build's default
+is what a `curl | bash` or local install actually gets. Leaving that at
+`claude,codex` would have made "all by default" true only for operators who saw
+the prompt.
+
+This reverses docs/268 req 3, which kept OpenCode out of the default set while it
+was new. That doc records the supersession.
 
 **Access** was a 1/2/3/4 menu whose items 3 and 4 were "both" and "none". Since
 Cloudflare and Tailscale are independent, they are now two checkboxes and those

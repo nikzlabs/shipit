@@ -265,24 +265,26 @@ describe("deployment/vps/setup.sh — checkbox prompt (docs/271)", () => {
       const out = dryRun(
         {
           SHIPIT_DRY_RUN: "1",
-          SHIPIT_ACCESS: "tailscale",
+          SHIPIT_ACCESS: "cloudflare",
           SHIPIT_HARNESSES: "Codex",
         },
         [],
       );
       expect(out).toContain("DRY RUN");
-      expect(out).toContain("run tailscale.sh");
-      expect(out).not.toContain("run cloudflare.sh");
+      expect(out).toContain("run cloudflare.sh");
+      expect(out).not.toContain("run tailscale.sh");
       expect(out).toContain("harnesses: codex");
     });
 
     it("reports the defaults when nothing is preset and nothing can be asked", () => {
+      // Tailscale-only access, every harness (docs/271 reqs 6a/6b).
       const out = dryRun();
-      expect(out).toContain("run cloudflare.sh");
-      expect(out).toContain("harnesses: claude,codex (default)");
+      expect(out).toContain("run tailscale.sh");
+      expect(out).not.toContain("run cloudflare.sh");
+      expect(out).toContain("harnesses: claude,codex,opencode (default)");
       // The summary doubles as the recipe for repeating the same install.
-      expect(out).toContain("SHIPIT_ACCESS=cloudflare");
-      expect(out).toContain("SHIPIT_HARNESSES=claude,codex");
+      expect(out).toContain("SHIPIT_ACCESS=tailscale");
+      expect(out).toContain("SHIPIT_HARNESSES=claude,codex,opencode");
     });
 
     it("says so when neither access option is chosen", () => {
@@ -298,18 +300,20 @@ describe("deployment/vps/setup.sh — checkbox prompt (docs/271)", () => {
     });
 
     it.runIf(hasScript())("asks both questions at a terminal", () => {
-      // Down, space, Enter on the access list; down, down, space, Enter on the
-      // harness list. This is the whole prompt path of the real installer.
+      // Space, Enter on the access list (adds Cloudflare beside the default
+      // Tailscale); down, down, space, Enter on the harness list (drops
+      // OpenCode). This is the whole prompt path of the real installer.
       const out = execFileSync(
         "script",
         ["-qec", `bash ${SETUP_SH} --dry-run`, "/dev/null"],
-        { input: "\x1b[B \n\x1b[B\x1b[B \n", encoding: "utf8", timeout: 30_000 },
+        { input: " \n\x1b[B\x1b[B \n", encoding: "utf8", timeout: 30_000 },
       ).replace(/\r/g, "");
-      expect(out).toContain("[*] Cloudflare Tunnel");
-      expect(out).toContain("[ ] OpenCode");
+      expect(out).toContain("[ ] Cloudflare Tunnel");
+      expect(out).toContain("[*] Tailscale");
       expect(out).toContain("run cloudflare.sh");
       expect(out).toContain("run tailscale.sh");
-      expect(out).toContain("SHIPIT_HARNESSES=claude,codex,opencode");
+      // Down, down, space turned OpenCode off, so the answer narrows.
+      expect(out).toContain("SHIPIT_HARNESSES=claude,codex");
     });
   });
 

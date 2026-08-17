@@ -56,7 +56,8 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
 # canonical comment in Dockerfile.session-worker.prod. docs/252 phase 9 — the
 # shared installer selects which harnesses land here from the SHIPIT_HARNESSES
 # build arg (req 14).
-ARG SHIPIT_HARNESSES=claude,codex
+# Empty = every harness install-agent-clis knows (docs/271). Override to narrow it.
+ARG SHIPIT_HARNESSES=
 COPY docker/agent-cli/package.json docker/agent-cli/package-lock.json /opt/agent-cli/
 COPY docker/agent-cli/install-agent-clis.sh /usr/local/bin/install-agent-clis
 RUN chmod 0755 /usr/local/bin/install-agent-clis
