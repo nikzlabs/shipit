@@ -754,15 +754,17 @@ export async function waitForWorkerHealth(workerUrl: string): Promise<void> {
  */
 export function prepareOverlayDirs(
   specs: DepDirOverlaySpec[] | undefined,
-  opts: { workspaceDir?: string } = {},
+  opts: { workspaceDir?: string; sessionId?: string } = {},
 ): void {
   if (!specs) return;
+  const tag = opts.sessionId ? `[overlay:${opts.sessionId}]` : "[overlay]";
   const superseded = specs.flatMap((spec) =>
     spec.orchDirs
       ? supersededSessionOverlayLayers(spec.orchDirs.sessionScopeDir, spec.generation)
       : [],
   );
   if (superseded.length > 0) {
+    // Marker first — see the ordering rule in the docstring.
     if (opts.workspaceDir) removeInstallMarkerForRotation(opts.workspaceDir);
     for (const dir of superseded) {
       try {
@@ -771,14 +773,16 @@ export function prepareOverlayDirs(
         // Best-effort: a leftover upper we could not remove is disk, not
         // correctness — the mount below pins the new generation's own dirs.
         console.warn(
-          `[overlay] could not reap superseded session upper ${dir}:`,
+          `${tag} could not reap superseded session upper ${dir}:`,
           err instanceof Error ? err.message : String(err),
         );
       }
     }
+    const markerNote = opts.workspaceDir
+      ? " and dropped the install marker so agent.install re-validates over the new base"
+      : "";
     console.log(
-      `[overlay] base generation rotated — reset ${superseded.length} superseded session upper(s) ` +
-      `and dropped the install marker so agent.install re-validates over the new base`,
+      `${tag} base generation rotated — reset ${superseded.length} superseded upper layer(s)${markerNote}`,
     );
   }
   for (const spec of specs) {
@@ -1157,7 +1161,10 @@ export async function createContainer(
     if (config.overlaySpecs) {
       // `workspaceDir` lets the rotation reset drop this session's install
       // marker along with the superseded upper — see prepareOverlayDirs.
-      prepareOverlayDirs(config.overlaySpecs, { workspaceDir: config.workspaceDir });
+      prepareOverlayDirs(config.overlaySpecs, {
+        workspaceDir: config.workspaceDir,
+        sessionId: config.sessionId,
+      });
       for (const spec of config.overlaySpecs) {
         await createOverlayVolume(deps.docker, spec, deps.baseLabels());
       }
