@@ -296,6 +296,11 @@ export async function registerBootstrapRoutes(
         // bootstrap. `propagateCredentialChange` carries that broadcast, with
         // the `buildAgentListPayload` shape docs/257 needs.
         propagateCredentialChange();
+        // planning#339 — and the same quota re-read the Services surface does.
+        // `setAgentEnv` is the OTHER writer of a string-delivered credential
+        // (onboarding, the Codex tab, the dogfood seeder), and it always writes
+        // a secret — there is no rename here — so it is always a re-read.
+        if (result.route) refreshQuotaForCredential(result.route, "manual");
         deps.sseBroadcast("credential_routes", { routes: listCredentialRoutes(deps.credentialStore) });
         return { agentId: result.agentId, key: result.key, success: true, agents: result.agents };
       } catch (err) {
