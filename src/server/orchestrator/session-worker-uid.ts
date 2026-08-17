@@ -2,7 +2,8 @@
  * Orchestrator-side ownership handoff to the unprivileged session worker user
  * (docs/150 §7).
  *
- * The session-worker container drops to the `shipit` user (UID/GID 1000) at
+ * The session-worker container drops to the `shipit` user — a per-session uid
+ * with the shared gid 1000 since docs/270, UID/GID 1000 before it — at
  * boot, but the **orchestrator** container stays root and keeps writing into
  * each session's mounted subtrees *after* the container has started —
  * credential refreshes every turn, the per-session gitconfig, user uploads,

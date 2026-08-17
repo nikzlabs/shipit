@@ -60,6 +60,40 @@ other uid left behind. It chowned them and did not touch the mode. Now:
 helper also walks the per-session credential subtree, which is `0600`/`0700` on
 purpose. A mode change belongs to the callers that want one.
 
+## 2a. Where the pin came from: the agent-facing docs said 1000
+
+The client agent that hit this in another repository found the cause, and it was
+not a mechanism at all. `/shipit-docs/environment.md` told every agent, as fact:
+
+> You run as the unprivileged user `shipit` (UID/GID **1000**) … `id -u` reports
+> `1000`.
+
+That was true before docs/270 made the uid per-session, and false after. An agent
+reading it and writing `user: "1000:1000"` into a compose service was doing
+exactly what its documentation said. `plugin-authoring.md` went further and
+shipped the pin in two copyable examples, one annotated "a contained session
+requires this" — a requirement docs/271 had already removed.
+
+So the docs were manufacturing the bug faster than any warning could have caught
+it, and this is the fix that reaches every repository rather than one:
+
+- `environment.md` now says the uid is **per-session, in 2000000–2999999, never to
+  be hardcoded**, gives `id` output rather than a number to copy, states that the
+  **gid** is the shared 1000, and names the consequence of pinning it (git
+  ownership, dependency caches) with a pointer to `compose.md`.
+- `plugin-authoring.md` drops `user:` from both examples and corrects "owned by
+  the session-worker uid (1000)". A fragment *cannot* name the right uid — no
+  fragment can know it — so declaring none is the only correct advice.
+- `session-worker-uid.ts`'s own header carried the same stale parenthetical.
+
+**A diagnostic was considered and rejected.** The obvious alternative was to
+detect a declared `user:` on a workspace-mounting service and warn through the
+agent-facing service list (`shipit service list` already carries the refusal text
+this way). It would have been several layers of new plumbing to report a problem
+the documentation was creating on purpose. Fix the source first; if pinned `user:`
+lines keep appearing in projects whose docs now say otherwise, the warning becomes
+worth building.
+
 ## 3. What it costs: the stack now needs the non-root runtime
 
 Declaring nothing means relying on the fill-in, and the fill-in exists only where
