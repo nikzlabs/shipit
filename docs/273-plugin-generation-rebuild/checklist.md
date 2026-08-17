@@ -17,4 +17,11 @@
       rebuild pruned under the lease, volume-name collision, lease identity,
       refresh reports an unforced rebuild
 - [x] `npm run lint:dev`, `npm run typecheck`, `npm test` (14734 passed)
-- [ ] Independent review (`shipit agent run --role reviewer`)
+- [x] Independent review (`shipit agent run --role reviewer`) against every
+      numbered requirement — run 390d7db0
+- [x] Review findings applied: `generationDir`'s parameter renamed off `commit`,
+      so a future caller cannot read the signature and path into the copy a
+      rebuild was made beside (finding 1); the service round derives
+      `generationId ?? commit` instead of requiring both, so a fragment without
+      an id is tracked rather than dropped from the round with no log line and
+      no card issue (finding 2)

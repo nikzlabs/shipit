@@ -462,8 +462,14 @@ function generationsRoot(stateDir: string, repoName: string): string {
   return path.join(repoRoot(stateDir, repoName), "generations");
 }
 
-function generationDir(stateDir: string, repoName: string, commit: string): string {
-  return path.join(generationsRoot(stateDir, repoName), commit);
+/**
+ * A generation's directory, keyed by its ID and not its commit
+ * (docs/273-plugin-generation-rebuild). The two are the same string for an
+ * ordinary build and deliberately are not for a rebuild — passing the bare
+ * commit here would path into the copy the rebuild was made beside.
+ */
+function generationDir(stateDir: string, repoName: string, generationId: string): string {
+  return path.join(generationsRoot(stateDir, repoName), generationId);
 }
 
 /** The symlink every reader follows — the only name that means "live". */

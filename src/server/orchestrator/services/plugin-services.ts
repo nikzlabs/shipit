@@ -338,10 +338,17 @@ function holdResolvedGenerations(
 ): { tracked: TrackedGenerations; held: Set<string> } {
   const tracked: TrackedGenerations = new Map();
   for (const fragment of fragments) {
-    if (!fragment.self && fragment.commit && fragment.generationId) {
+    if (!fragment.self && fragment.commit) {
       tracked.set(fragment.repo, {
         commit: fragment.commit,
-        generationId: fragment.generationId,
+        // The same fallback every other reader of a generation id uses
+        // (`generationIdOf`): a generation with no id is one named by its
+        // commit. Requiring BOTH fields instead would drop the repository from
+        // this round with no log line and no card issue — its services would
+        // simply not be surfaced — and "the id is missing" is not a state this
+        // round can distinguish from "there are no services" once it has
+        // silently skipped it (review finding).
+        generationId: fragment.generationId ?? fragment.commit,
         checkoutDir: fragment.checkoutDir,
       });
     }
