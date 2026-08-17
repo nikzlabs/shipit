@@ -1796,7 +1796,7 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     if (record(failures)) this.emitMessage({ type: "plugin_repos_updated", sessionId: this.sessionId });
   }
 
-  async runInstall(commands: string[]): Promise<{ ok: boolean }> {
+  async runInstall(commands: string[]): Promise<{ ok: boolean; withheld?: boolean }> {
     if (commands.length === 0) return { ok: true };
 
     // docs/271 — the ONE place a session's `agent.install` reaches the worker,
@@ -1811,16 +1811,31 @@ export class ContainerSessionRunner extends EventEmitter<SessionRunnerEvents> im
     // Returns ok WITHOUT posting: a withheld install is not a failure. The
     // session keeps working on the dependencies it already has (req 7), and the
     // notice tells the user how to get the new ones (req 8).
-    const verdict = evaluateInstallGate({ sessionDir: this.sessionDir, requested: commands });
+    // `this.sessionDir` IS the clone (`app-lifecycle.ts:685`), which is what the
+    // gate wants — it derives the session root and state dir from it.
+    const verdict = evaluateInstallGate({ workspaceDir: this.sessionDir, requested: commands });
     if (verdict.withheld) {
       console.warn(
         `[install:${this.sessionId}] agent.install changed in a plugin-bearing session — withheld (${commands.length} command(s))`,
       );
       if (!verdict.alreadyReported) {
+        // Record BEFORE reporting, so a throw in the notice hook cannot turn
+        // into a notice on every recreate.
         recordWithheldCommands(this.sessionDir, commands);
-        this.onInstallWithheld?.(installWithheldNotice(verdict.accepted, commands));
+        try {
+          this.onInstallWithheld?.(installWithheldNotice(verdict.accepted, commands));
+        } catch (err) {
+          // The hook reaches SQLite and the viewer transports. A failure there
+          // must not become a FAILED INSTALL: `setupServiceManager` maps a throw
+          // to `{ ok: false }`, which latches every `dependsOnInstall` service
+          // to `error` — the opposite of req 7's "must not break the session".
+          console.error(
+            `[install:${this.sessionId}] could not report the withheld agent.install:`,
+            err instanceof Error ? err.message : String(err),
+          );
+        }
       }
-      return { ok: true };
+      return { ok: true, withheld: true };
     }
 
     // Concurrent-call guard: if an install is already in flight (either we

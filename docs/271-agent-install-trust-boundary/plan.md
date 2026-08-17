@@ -19,21 +19,28 @@ the chat transcript says so, and the user gets them by asking the agent (reqs 3,
 ## Where the gate goes, and why there is only one
 
 `ContainerSessionRunner.runInstall(commands)`
-(`container-session-runner.ts:1782`) is the **single** orchestrator-side
-chokepoint through which a session's own `agent.install` reaches the worker.
-Verified by enumerating its callers:
+(`container-session-runner.ts:1782`) carries **all but one** of the paths by
+which a session's own `agent.install` reaches the worker. Enumerated:
 
-| Caller | Path |
-|---|---|
-| `service-manager-setup.ts:472` | session setup / container (re)create — the **restart path** (req 5) |
-| `container-session-runner.ts:2020` (`maybeReinstallForDepChange`) | the live `shipit.yaml` delta the issue names, and the dep-file reinstall |
-| `plugin-generations.ts:835` | a **different** `deps.runInstall` — the plugin's *own* generation install, object-shaped signature, not this method |
-| `warm-pool-manager.ts:282,293` | comments only, no call |
+| Caller | Path | Gated |
+|---|---|---|
+| `service-manager-setup.ts:472` | session setup / container (re)create — the **restart path** (req 5) | via `runInstall` |
+| `container-session-runner.ts:2020` (`maybeReinstallForDepChange`) | the live `shipit.yaml` delta the issue names, and the dep-file reinstall | via `runInstall` |
+| `warm-pool-manager.ts:358` (`runPreInstall`, called at `:298`) | the warm-pool **pre-install**, which POSTs `/install` on the standby's worker **directly** | separately, at `runPreInstall` |
+| `plugin-generations.ts:835` | a **different** `deps.runInstall` — the plugin's *own* generation install, object-shaped signature, not this method | n/a |
 
-So the two paths requirement 5 needs covered converge on one function, and the
-gate is one `if` rather than a rule duplicated at each site. This is the reason
-the gate is *not* placed in `applyShipitConfigChange` where the issue found the
-bug: that closes the watcher delta and leaves the restart path open.
+The two paths requirement 5 names converge on `runInstall`, so the gate is one
+`if` rather than a rule duplicated at each site. This is why it is *not* placed
+in `applyShipitConfigChange` where the issue found the bug: that closes the
+watcher delta and leaves the restart path open.
+
+The warm-pool pre-install is the exception and is gated at its own call site. A
+standby's clone is fresh and no plugin container has ever run against it, so the
+gate allows in practice — but "in practice" is not what requirement 5 asks for,
+and an ungated run there would also stamp the marker, which is the anchor the
+gate reads. **An earlier revision of this table said those lines were "comments
+only, no call"; that was wrong** — the call sits three lines below the comment
+block, and the independent review caught it.
 
 The restart path is the one the issue does not mention and requirement 5 exists
 for: a plugin's write to `shipit.yaml` is auto-committed by the post-turn flow
@@ -123,6 +130,40 @@ withholds silently rather than crashing.
 Requirement 8 needs no mechanism: the agent runs commands in that container
 already, so the notice names the withheld commands and the user asks for them.
 
+## Two things that would have made this a no-op
+
+Both were found by the independent review, and both are the kind of thing a
+green test suite hides.
+
+### `runner.sessionDir` is the CLONE, not the session root
+
+`ContainerSessionRunner` is built with `session.workspaceDir`
+(`route-registry.ts:501`), and `app-lifecycle.ts:685` states it before taking
+`path.dirname` of it. The first revision of the gate read
+`<sessionDir>/workspace`, `<sessionDir>/state/shared` and
+`<sessionDir>/plugin-data` off that value — one level too deep every time.
+
+It did not fail loudly. `resolveShipitConfig` returns **defaults** for a missing
+file rather than throwing (`shipit-config.ts:916-930`), so the config read
+yielded "no plugins", the `plugin-data` probe found nothing, and the gate
+returned a permanent, silent `ALLOW`. Nineteen unit tests passed, because the
+fixture built a session-root-shaped directory and passed the root — a shape no
+caller uses. The gate now derives everything from the clone via
+`sessionRootForWorkspace` and `sessionStateDirForWorkspace`, and the runner test
+constructs its runner the way production does.
+
+### A withheld install must not publish an overlay base
+
+`runInstall` resolving `{ ok: true }` is not enough information for its caller.
+`setupServiceManager` hands the result to `publishOverlayBases`, which stamps the
+rolling base pointer's `markerStamp.installCommands`
+(`overlay-publish.ts:200-212`) with the list it was given. For a withheld
+install that list never ran — and a later fresh session at the same commit would
+get a marker pre-stamped with it, which is precisely the anchor this gate reads.
+The gate would have laundered the plugin's commands into its own accepted list.
+So `runInstall` returns `{ ok: true, withheld: true }` and the publish is
+skipped.
+
 ## Key files
 
 - `src/server/orchestrator/agent-install-gate.ts` — **new**. The whole decision:
@@ -133,7 +174,14 @@ already, so the notice names the withheld commands and the user asks for them.
   top of `runInstall`, beside the existing empty-commands early return, and the
   `onInstallWithheld` hook.
 - `src/server/orchestrator/runner-registry-factory.ts` — wires
-  `onInstallWithheld` to `emitNoticeInTurn`.
+  `onInstallWithheld` to `emitNoticeInTurn`. The hook call is wrapped in
+  `try`/`catch` at the runner: it reaches SQLite and the viewer transports, and
+  `setupServiceManager` maps a throw out of `runInstall` to `{ ok: false }`,
+  which latches every `dependsOnInstall` service to `error` — so a failure to
+  *report* must never become a failed install (req 7).
+- `src/server/orchestrator/service-manager-setup.ts` — skips the overlay publish
+  for a withheld install.
+- `src/server/orchestrator/warm-pool-manager.ts` — gates the pre-install.
 
 ## What this does NOT close (req 9)
 
@@ -158,7 +206,17 @@ already, so the notice names the withheld commands and the user asks for them.
    nothing here tries to stop them, and a plugin-bearing session's gate is
    trivially bypassed by any of them. That is the requester's scoping, stated in
    the issue.
-4. **The route is closed for `agent.install` only.** The other two routes are
+4. **The worker's `/install` endpoint is reachable on the session subnet, and is
+   closed by a token rather than by this gate.** `compose-service-egress.ts:299-304`
+   allows a contained service to reach the agent, so a plugin *service* can
+   route to the worker — but `shared/worker-auth.ts` requires the
+   per-container token for a non-loopback caller on `/install`, and no plugin
+   container holds it. This is a **load-bearing dependency of this design that
+   this design does not own**: the guard's no-token fallback fails open, so a
+   container created without a token would expose a direct-POST bypass of
+   everything here. Verified by the independent review at the source, recorded
+   because a future change to that fallback silently reopens this route.
+5. **The route is closed for `agent.install` only.** The other two routes are
    docs/266 (`.git`, shipped) and planning#386 (the compose file, closed). This
    design does not make `/project` safe to write in general, and docs/262 req 29
    still stands: what a plugin writes to the project is untrusted content the

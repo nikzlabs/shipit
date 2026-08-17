@@ -57,12 +57,11 @@ import fs from "node:fs";
 import path from "node:path";
 import { resolveShipitConfig } from "../shared/shipit-config.js";
 import { parseMarker, sameCommands } from "../shared/install-marker.js";
-import { pluginDataRoot } from "./plugin-state.js";
+import { pluginDataRoot, sessionRootForWorkspace } from "./plugin-state.js";
 import {
   INSTALL_MARKER_FILE,
-  SESSION_WORKSPACE_SUBDIR,
   sessionSharedStateDir,
-  sessionStateDir,
+  sessionStateDirForWorkspace,
 } from "./session-state-dir.js";
 
 /**
@@ -90,13 +89,25 @@ export interface InstallGateVerdict {
 
 const ALLOW: InstallGateVerdict = { withheld: false, accepted: [], alreadyReported: false };
 
-/** `<sessionDir>/workspace` — the session's clone. */
-function workspaceDirFor(sessionDir: string): string {
-  return path.join(sessionDir, SESSION_WORKSPACE_SUBDIR);
-}
-
-function sharedStateDirFor(sessionDir: string): string {
-  return sessionSharedStateDir(sessionStateDir(sessionDir));
+/**
+ * Every entry point here takes the session's **clone** — `workspaceDir`, e.g.
+ * `/workspace/sessions/{uuid}/workspace` — and derives the session root and the
+ * state dir from it, never the other way round.
+ *
+ * This is not a stylistic choice. `ContainerSessionRunner.sessionDir` *is* the
+ * clone: `route-registry.ts:501` builds runners with `session.workspaceDir`,
+ * and `app-lifecycle.ts:685` says so in a comment before taking `path.dirname`
+ * of it for the container config. An earlier revision of this module read
+ * `<sessionDir>/workspace`, `<sessionDir>/state/shared` and
+ * `<sessionDir>/plugin-data` off that value, which lands one level too deep
+ * every time — and because `resolveShipitConfig` returns *defaults* for a
+ * missing file rather than throwing (`shipit-config.ts:916-930`), the effect was
+ * not an error but a permanent, silent `ALLOW`. The gate looked shipped and
+ * withheld nothing. Hence the canonical helpers below, and the production-shaped
+ * runner test in `container-session-runner.test.ts`.
+ */
+function sharedStateDirFor(workspaceDir: string): string {
+  return sessionSharedStateDir(sessionStateDirForWorkspace(workspaceDir));
 }
 
 /**
@@ -115,16 +126,18 @@ function sharedStateDirFor(sessionDir: string): string {
  *
  * An unreadable `shipit.yaml` falls back to the directory check alone, which is
  * safe: an unreadable config resolves no install commands either, so there is
- * nothing to withhold.
+ * nothing to withhold. (A *missing* file does not reach that branch at all —
+ * `resolveShipitConfig` returns defaults, with no plugins, which is the same
+ * answer by a different route.)
  */
-export function sessionHasPlugin(sessionDir: string): boolean {
+export function sessionHasPlugin(workspaceDir: string): boolean {
   try {
-    if (resolveShipitConfig(workspaceDirFor(sessionDir)).plugins.uses.length > 0) return true;
+    if (resolveShipitConfig(workspaceDir).plugins.uses.length > 0) return true;
   } catch {
     // Fall through to the on-disk evidence.
   }
   try {
-    return fs.existsSync(pluginDataRoot(sessionDir));
+    return fs.existsSync(pluginDataRoot(sessionRootForWorkspace(workspaceDir)));
   } catch {
     return false;
   }
@@ -135,10 +148,10 @@ export function sessionHasPlugin(sessionDir: string): boolean {
  * there is none to compare against (no marker, unreadable, or not a current
  * stamped marker). `null` always means "allow" at the call site.
  */
-export function acceptedInstallCommands(sessionDir: string): string[] | null {
+export function acceptedInstallCommands(workspaceDir: string): string[] | null {
   try {
     const raw = fs.readFileSync(
-      path.join(sharedStateDirFor(sessionDir), INSTALL_MARKER_FILE),
+      path.join(sharedStateDirFor(workspaceDir), INSTALL_MARKER_FILE),
       "utf8",
     );
     return parseMarker(raw)?.installCommands ?? null;
@@ -148,10 +161,10 @@ export function acceptedInstallCommands(sessionDir: string): string[] | null {
 }
 
 /** The command list most recently withheld and reported, if any. */
-export function reportedWithheldCommands(sessionDir: string): string[] | null {
+export function reportedWithheldCommands(workspaceDir: string): string[] | null {
   try {
     const raw = fs.readFileSync(
-      path.join(sharedStateDirFor(sessionDir), INSTALL_WITHHELD_FILE),
+      path.join(sharedStateDirFor(workspaceDir), INSTALL_WITHHELD_FILE),
       "utf8",
     );
     const parsed: unknown = JSON.parse(raw);
@@ -167,9 +180,9 @@ export function reportedWithheldCommands(sessionDir: string): string[] | null {
  * costs a repeated notice, never a wrong execution, so it must not throw into
  * the install path.
  */
-export function recordWithheldCommands(sessionDir: string, commands: string[]): void {
+export function recordWithheldCommands(workspaceDir: string, commands: string[]): void {
   try {
-    const dir = sharedStateDirFor(sessionDir);
+    const dir = sharedStateDirFor(workspaceDir);
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, INSTALL_WITHHELD_FILE), JSON.stringify(commands));
   } catch {
@@ -185,18 +198,19 @@ export function recordWithheldCommands(sessionDir: string, commands: string[]): 
  * one `existsSync` and nothing else.
  */
 export function evaluateInstallGate(args: {
-  sessionDir: string;
+  /** The session's CLONE — `ContainerSessionRunner.sessionDir`. See above. */
+  workspaceDir: string;
   requested: string[];
 }): InstallGateVerdict {
-  const { sessionDir, requested } = args;
+  const { workspaceDir, requested } = args;
   if (requested.length === 0) return ALLOW;
-  if (!sessionHasPlugin(sessionDir)) return ALLOW;
+  if (!sessionHasPlugin(workspaceDir)) return ALLOW;
 
-  const accepted = acceptedInstallCommands(sessionDir);
+  const accepted = acceptedInstallCommands(workspaceDir);
   if (accepted === null) return ALLOW; // First install — the repo-trust decision covers it.
   if (sameCommands(accepted, requested)) return ALLOW;
 
-  const reported = reportedWithheldCommands(sessionDir);
+  const reported = reportedWithheldCommands(workspaceDir);
   return {
     withheld: true,
     accepted,
