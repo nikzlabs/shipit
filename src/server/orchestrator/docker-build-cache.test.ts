@@ -11,7 +11,7 @@
  * discuss both rules at length and would otherwise satisfy the assertions on
  * their own, or trip them.
  */
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
@@ -22,15 +22,18 @@ function instructions(dockerfile: string): string {
     .join("\n");
 }
 
-/** Every image deploy.sh builds, plus the dev images that must stay in lockstep. */
-const ALL_IMAGES = [
-  "Dockerfile.prod",
-  "Dockerfile.dev",
-  "Dockerfile.dogfood",
-  "Dockerfile.session-worker.prod",
-  "Dockerfile.session-worker.dev",
-  "Dockerfile.egress-sidecar",
-];
+/**
+ * EVERY Dockerfile in docker/ — enumerated from disk rather than listed by hand.
+ *
+ * The hand-written list this replaces omitted Dockerfile.android-dev and
+ * Dockerfile.session-worker.docker, and the android one had carried an unpinned
+ * `FROM debian:bookworm-slim` above ~1.9 GB of Android toolchain the whole time.
+ * A guard that names its own inputs only guards the files someone remembered, so
+ * a new Dockerfile is opted IN by existing and opted out only by deletion.
+ */
+const ALL_IMAGES = readdirSync(fileURLToPath(new URL("../../../docker/", import.meta.url)))
+  .filter((f) => f.startsWith("Dockerfile."))
+  .sort();
 
 describe("external image references are pinned", () => {
   // deploy.sh builds with `--pull`, which force-resolves every external
@@ -60,18 +63,61 @@ describe("external image references are pinned", () => {
     expect(uvRef("Dockerfile.session-worker.dev")).toBe(prod);
   });
 
-  // A digest is the stronger pin and is what the node bases use, but an explicit
-  // immutable version tag (`golang:1.23.5-alpine3.20`) is enough for the cache
-  // property this guard protects. What must never appear is a tag upstream moves.
-  it.each(ALL_IMAGES)("%s pins every FROM to an explicit version", (dockerfile) => {
+  // A version tag is NOT a pin. This assertion used to accept one, and that is
+  // precisely how `FROM debian:bookworm-slim` sat above ~1.9 GB of Android
+  // toolchain without tripping anything: it is not `:latest`, it carries a `:`,
+  // and Debian re-pushes it anyway. `alpine:3.20` moves across patch releases and
+  // `golang:1.23.5-alpine3.20` is rebuilt in place for base security updates —
+  // both look pinned and are not. Only a digest is immutable, so require one.
+  it.each(ALL_IMAGES)("%s pins every FROM to a digest", (dockerfile) => {
     const froms = instructions(dockerfile).match(/^FROM\s+\S+/gm) ?? [];
     for (const from of froms) {
       const ref = from.replace(/^FROM\s+/, "");
-      // `FROM <stage> AS <name>` back-references an earlier stage in the file.
+      // `FROM <stage>` back-references an earlier stage in the same file.
       if (!ref.includes("/") && !ref.includes(":")) continue;
-      expect(ref, `${dockerfile}: ${from} must pin a version tag or digest`).not.toMatch(/:latest$/);
-      expect(ref, `${dockerfile}: ${from} must pin a version tag or digest`).toMatch(/[:@]/);
+      // `FROM ${BASE_IMAGE}` selects a LOCALLY built image by build arg
+      // (Dockerfile.session-worker.docker layers on shipit-session-worker:<tag>).
+      // There is no registry to resolve, and the tag is the caller's choice.
+      if (ref.includes("$")) continue;
+      expect(
+        ref,
+        `${dockerfile}: ${from} must pin a sha256 digest — a version tag still moves when upstream rebuilds it`,
+      ).toMatch(/@sha256:[0-9a-f]{64}$/);
     }
+  });
+});
+
+describe("BASE_IMAGE_DIGEST tracks the base it claims to name", () => {
+  // install-runtime.ts builds the dependency-install cache key from
+  // BASE_IMAGE_DIGEST, and its docstring states the safety property outright:
+  // "a base bump is guaranteed to change BASE_IMAGE_DIGEST (it is the FROM
+  // content sha)". Nothing enforced that. The value is a hand-copied duplicate of
+  // the digest in the same file's FROM, so bumping the base and forgetting the ARG
+  // leaves the key naming a base that is no longer in use — and because the key
+  // biases toward REUSE, the install marker then matches and reuses a node_modules
+  // tree built against a different C/C++ ABI. That is the one failure mode
+  // install-runtime.ts says can't happen. It fails silently, at runtime, in a
+  // native addon. This test is what makes the docstring's "guaranteed" true.
+  const FILES = ["Dockerfile.session-worker.prod", "Dockerfile.session-worker.dev"];
+
+  it.each(FILES)("%s ARG default equals its final FROM digest", (dockerfile) => {
+    const src = instructions(dockerfile);
+    const declared = /^ARG\s+BASE_IMAGE_DIGEST=(sha256:[0-9a-f]{64})\s*$/m.exec(src)?.[1];
+    expect(declared, `${dockerfile}: no ARG BASE_IMAGE_DIGEST=sha256:… found`).toBeDefined();
+
+    const froms = [...src.matchAll(/^FROM\s+\S+@(sha256:[0-9a-f]{64})/gm)].map((m) => m[1]);
+    expect(froms.length, `${dockerfile}: no digest-pinned FROM found`).toBeGreaterThan(0);
+    expect(
+      froms.at(-1),
+      `${dockerfile}: ARG BASE_IMAGE_DIGEST (${declared}) does not match the final FROM digest — the install cache key would name a base that is no longer in use`,
+    ).toBe(declared);
+  });
+
+  // Both worker images must resolve to the SAME key, or a dependency tree
+  // installed under one is considered incompatible under the other.
+  it("both worker images declare the same BASE_IMAGE_DIGEST", () => {
+    const declared = (f: string) => /^ARG\s+BASE_IMAGE_DIGEST=(\S+)/m.exec(instructions(f))?.[1];
+    expect(declared(FILES[0])).toBe(declared(FILES[1]));
   });
 });
 
