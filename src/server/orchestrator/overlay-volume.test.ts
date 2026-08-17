@@ -154,6 +154,31 @@ describe("createOverlayVolume", () => {
     expect(created).toHaveLength(1);
   });
 
+  // The recreate above is what lets the driver opts follow a since-rotated base.
+  // It only tells the truth if the SPEC moved on every axis: the ops finding of
+  // 2026-08-17 was a recreated volume whose lowerdir advanced a generation while
+  // its upperdir/workdir stayed put, so the daemon remounted an upper built
+  // against a different lower. Both halves must rotate together.
+  it("recreates with a lowerdir AND upper/work that rotate together on a generation bump", async () => {
+    const { docker, created } = makeFakeDocker();
+    const gen = (n: number): OverlaySpec => ({
+      volumeName: spec.volumeName,
+      lowerdir: `/data/overlay-base/h1/g${n}`,
+      upperdir: `/data/sessions/s1/overlay/h1/g${n}/upper`,
+      workdir: `/data/sessions/s1/overlay/h1/g${n}/work`,
+    });
+    await createOverlayVolume(docker, gen(262));
+    await createOverlayVolume(docker, gen(265));
+    expect(created).toHaveLength(2);
+    expect(created[0].DriverOpts?.o).toBe(
+      "lowerdir=/data/overlay-base/h1/g262," +
+      "upperdir=/data/sessions/s1/overlay/h1/g262/upper," +
+      "workdir=/data/sessions/s1/overlay/h1/g262/work",
+    );
+    // No path from the previous generation survives into the new mount.
+    expect(created[1].DriverOpts?.o).not.toContain("g262");
+  });
+
   it("serializes concurrent creates (no interleaving)", async () => {
     // Track entry/exit order of createVolume to prove serialization.
     const order: string[] = [];
