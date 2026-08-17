@@ -1,0 +1,153 @@
+/**
+ * Build-cache guards over the Dockerfile source.
+ *
+ * Neither rule below is about correctness — a violation still produces a working
+ * image. It produces it slowly, on every deploy, which is why nothing else
+ * catches it: the build succeeds, the tests pass, and the only symptom is that
+ * `update.sh` takes several extra minutes and re-downloads several GB.
+ *
+ * We can't `docker build` in-session, so guard the source the way
+ * git-lfs-dockerfiles.test.ts does. Comments are stripped before matching — they
+ * discuss both rules at length and would otherwise satisfy the assertions on
+ * their own, or trip them.
+ */
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { describe, expect, it } from "vitest";
+
+function instructions(dockerfile: string): string {
+  return readFileSync(fileURLToPath(new URL(`../../../docker/${dockerfile}`, import.meta.url)), "utf8")
+    .split("\n")
+    .filter((line) => !line.trimStart().startsWith("#"))
+    .join("\n");
+}
+
+/** Every image deploy.sh builds, plus the dev images that must stay in lockstep. */
+const ALL_IMAGES = [
+  "Dockerfile.prod",
+  "Dockerfile.dev",
+  "Dockerfile.dogfood",
+  "Dockerfile.session-worker.prod",
+  "Dockerfile.session-worker.dev",
+  "Dockerfile.egress-sidecar",
+];
+
+describe("external image references are pinned", () => {
+  // deploy.sh builds with `--pull`, which force-resolves every external
+  // reference against the registry on every deploy. A mutable tag therefore
+  // re-resolves whenever upstream publishes, and BuildKit invalidates every
+  // layer below the reference. `COPY --from=ghcr.io/astral-sh/uv:latest` sat
+  // above the Playwright, JDK, Android SDK and Gradle layers and rebuilt all of
+  // them on Astral's release schedule (roughly weekly).
+  it.each(ALL_IMAGES)("%s pins every image it copies from to a digest", (dockerfile) => {
+    const copies = instructions(dockerfile).match(/^COPY\s+--from=\S+/gm) ?? [];
+    for (const copy of copies) {
+      const ref = copy.replace(/^COPY\s+--from=/, "");
+      // A bare name with no registry/tag is an earlier build STAGE, not an image.
+      if (!ref.includes("/") && !ref.includes(":")) continue;
+      expect(ref, `${dockerfile}: ${copy} must pin a sha256 digest`).toMatch(/@sha256:[0-9a-f]{64}$/);
+    }
+  });
+
+  // The two worker images ship the same tools to the same agent; a uv that
+  // differs between them makes a dev-only or prod-only Python failure that
+  // reproduces nowhere else.
+  it("both session-worker images pin the same uv", () => {
+    const uvRef = (dockerfile: string) =>
+      /^COPY\s+--from=(ghcr\.io\/astral-sh\/uv\S+)/m.exec(instructions(dockerfile))?.[1];
+    const prod = uvRef("Dockerfile.session-worker.prod");
+    expect(prod).toMatch(/@sha256:[0-9a-f]{64}$/);
+    expect(uvRef("Dockerfile.session-worker.dev")).toBe(prod);
+  });
+
+  // A digest is the stronger pin and is what the node bases use, but an explicit
+  // immutable version tag (`golang:1.23.5-alpine3.20`) is enough for the cache
+  // property this guard protects. What must never appear is a tag upstream moves.
+  it.each(ALL_IMAGES)("%s pins every FROM to an explicit version", (dockerfile) => {
+    const froms = instructions(dockerfile).match(/^FROM\s+\S+/gm) ?? [];
+    for (const from of froms) {
+      const ref = from.replace(/^FROM\s+/, "");
+      // `FROM <stage> AS <name>` back-references an earlier stage in the file.
+      if (!ref.includes("/") && !ref.includes(":")) continue;
+      expect(ref, `${dockerfile}: ${from} must pin a version tag or digest`).not.toMatch(/:latest$/);
+      expect(ref, `${dockerfile}: ${from} must pin a version tag or digest`).toMatch(/[:@]/);
+    }
+  });
+});
+
+describe("the two build stages share their cache", () => {
+  /** Instructions of the `AS build` stage, comments and blank lines removed. */
+  function buildStage(dockerfile: string): string[] {
+    const lines = instructions(dockerfile).split("\n");
+    const start = lines.findIndex((l) => /^FROM\s.*\sAS build$/.test(l));
+    const rest = lines.slice(start + 1);
+    const end = rest.findIndex((l) => /^FROM\s/.test(l));
+    return [lines[start], ...(end === -1 ? rest : rest.slice(0, end))].filter((l) => l.trim() !== "");
+  }
+
+  // Dockerfile.prod and Dockerfile.session-worker.prod open their build stages
+  // with the SAME four instructions on the SAME pinned base, so BuildKit — whose
+  // cache is content-addressed, not per-Dockerfile — serves both from one set of
+  // records. Any divergence above `npm ci` forks the chain and BUILDS IT TWICE.
+  //
+  // That is not hypothetical. A production `docker buildx du --verbose` taken
+  // while `ENV SHIPIT_BUILD_ID` sat at the top of Dockerfile.prod's build stage
+  // showed every step below it duplicated — `apt-get install python3 make g++`
+  // twice at 349.8MB, `npm ci --prefer-offline` twice at 587.1MB — roughly
+  // 937MB of redundant cache, and an orchestrator apt+npm that re-ran on every
+  // deploy. The base image's own layers appeared ONCE, which is what isolated
+  // the fork to that one instruction. Keep the prefix identical.
+  it("Dockerfile.prod and the worker share an identical prefix through npm ci", () => {
+    const orchestrator = buildStage("Dockerfile.prod");
+    const worker = buildStage("Dockerfile.session-worker.prod");
+    const cut = (stage: string[]) => stage.findIndex((l) => l.includes("npm ci"));
+
+    expect(cut(orchestrator), "Dockerfile.prod build stage has no npm ci").toBeGreaterThan(0);
+    expect(
+      orchestrator.slice(0, cut(orchestrator) + 1),
+      "the two build stages diverge before npm ci — BuildKit will build the prefix twice",
+    ).toEqual(worker.slice(0, cut(worker) + 1));
+  });
+});
+
+describe("SHIPIT_BUILD_ID does not poison the shared prefix", () => {
+  // The value is the git HEAD sha (deploy.sh passes it per update), so it differs
+  // on every deploy and anything keyed on it rebuilds every time. The line it must
+  // stay below is the `npm ci` — not the final FROM. Dockerfile.prod legitimately
+  // consumes it in the BUILD stage, because vite.config.ts `resolveBuildId()`
+  // bakes it into the client bundle for stale-SPA detection, and its git fallback
+  // can't fire (`.git` is .dockerignored). Placing it after `npm ci` costs nothing:
+  // from `COPY . .` down the source has changed anyway.
+  //
+  // So the rule is positional, not per-stage. Everything from the top of the build
+  // stage through `npm ci` is the prefix shared with the worker image and must
+  // stay free of it.
+  it.each(["Dockerfile.prod", "Dockerfile.session-worker.prod"])(
+    "%s keeps SHIPIT_BUILD_ID out of the cache-shared prefix",
+    (dockerfile) => {
+      const lines = instructions(dockerfile).split("\n");
+      const npmCi = lines.findIndex((line) => line.includes("npm ci"));
+      expect(npmCi, `${dockerfile} has no npm ci`).toBeGreaterThan(0);
+
+      const early = lines.slice(0, npmCi + 1).findIndex((line) => line.includes("SHIPIT_BUILD_ID"));
+      expect(
+        early,
+        `${dockerfile}:${early + 1} references SHIPIT_BUILD_ID at or above the npm ci — that busts the shared prefix and rebuilds it on every deploy`,
+      ).toBe(-1);
+
+      // And it is genuinely still consumed, so this guard can't be satisfied by
+      // dropping the build id altogether.
+      expect(lines.slice(npmCi).join("\n")).toMatch(/SHIPIT_BUILD_ID/);
+    },
+  );
+
+  // The client half specifically: vite must SEE the value, or stale-SPA detection
+  // silently dies (shouldReloadForServerBuild short-circuits to false on an
+  // undefined id — no error, no failed build, users left on the old client).
+  it("Dockerfile.prod passes SHIPIT_BUILD_ID to the client build", () => {
+    const src = instructions("Dockerfile.prod");
+    expect(src, "vite.config.ts reads $SHIPIT_BUILD_ID; the npm run build step must supply it").toMatch(
+      /SHIPIT_BUILD_ID=\$\{?SHIPIT_BUILD_ID\}?\s+npm run build/,
+    );
+  });
+});

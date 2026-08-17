@@ -2,9 +2,35 @@
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
   "extends": ["config:recommended"],
   "mode": "auto",
-  "includePaths": ["docker/agent-cli/**"],
+  "includePaths": [
+    "docker/agent-cli/**",
+    "docker/Dockerfile.session-worker.prod",
+    "docker/Dockerfile.session-worker.dev"
+  ],
   "rangeStrategy": "pin",
   "packageRules": [
+    {
+      "description": "uv (Astral) is COPYed into both session-worker images from ghcr.io/astral-sh/uv. It used to be an unpinned `:latest`, which — because deploy.sh builds with --pull — re-resolved on every uv release and invalidated every layer below it (agent CLIs, Playwright+Chrome, JDK, Android SDK, Gradle). It is pinned now, so the job of this rule is to keep that pin from rotting. Both Dockerfiles must move together, so group them into one PR; a human reviews and merges. `minimumReleaseAgeBehaviour: timestamp-optional` is load-bearing, NOT boilerplate: the cooldown is evaluated against a `releaseTimestamp`, and Renovate's Docker datasource is not guaranteed to supply one outside Docker Hub. Under the default `timestamp-required`, a candidate with no timestamp is held as pending indefinitely and NO PR is ever raised — the pin would rot silently, which is the exact failure this rule exists to prevent. `timestamp-optional` applies the 7-day cooldown when a timestamp exists and lets the update through when it does not; `automerge: false` keeps a human as the real gate either way.",
+      "matchFileNames": [
+        "docker/Dockerfile.session-worker.prod",
+        "docker/Dockerfile.session-worker.dev"
+      ],
+      "matchPackageNames": ["ghcr.io/astral-sh/uv"],
+      "groupName": "uv",
+      "minimumReleaseAge": "7 days",
+      "minimumReleaseAgeBehaviour": "timestamp-optional",
+      "automerge": false,
+      "assignees": ["nicolasalt"]
+    },
+    {
+      "description": "The node base image in the session-worker Dockerfiles is deliberately NOT Renovate-managed. Its digest is duplicated by hand into the BASE_IMAGE_DIGEST build arg in the same files, which src/server/session/install-runtime.ts uses as part of the dependency-install cache key. Renovate would bump the FROM lines and leave that ARG default stale, silently keying installs to a base image that is no longer in use. Bump the FROM lines and the ARG together, by hand.",
+      "matchFileNames": [
+        "docker/Dockerfile.session-worker.prod",
+        "docker/Dockerfile.session-worker.dev"
+      ],
+      "matchPackageNames": ["node"],
+      "enabled": false
+    },
     {
       "description": "Agent CLIs baked into ShipIt session-worker/orchestrator images (docs/141-cli-version-strategy). Hold every new version for the 7-day supply-chain cooldown, group all three into a single PR, and keep the bump as exact pins so docker/agent-cli/package-lock.json is regenerated with fresh integrity hashes. Auto-merge stays OFF until the Axis-3 CLI contract test is wired as a required status check — until then a human reviews + merges the bump PR.",
       "matchFileNames": ["docker/agent-cli/package.json"],

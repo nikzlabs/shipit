@@ -102,8 +102,24 @@ RUN corepack enable
 # works" without the agent bootstrapping a package manager. ShipIt provides the
 # tool but never picks the winner: the project's lockfile decides (uv.lock → uv,
 # poetry.lock → Poetry, requirements.txt → pip). See docs/168.
-# TODO: pin like the agent CLIs once a Renovate policy covers it.
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
+#
+# PINNED, and the pin is load-bearing for build time, not just for supply chain.
+# deploy.sh builds with `--pull`, which force-resolves every external reference
+# against the registry. With the former `:latest` tag, each new uv release (they
+# ship roughly weekly) changed the resolved digest and invalidated EVERY layer
+# below this line — the agent CLIs, Playwright + Chrome, JDK 17, the Android SDK
+# and Gradle, several GB of downloads — on a schedule set by Astral rather than
+# by us. Keep this pin in lockstep with Dockerfile.session-worker.dev.
+#
+# The digest is the OCI image INDEX, not a per-platform manifest, so the pin
+# still resolves linux/amd64 and linux/arm64 the way the tag did. The tag stays
+# alongside it for readability; the digest is what actually binds.
+#
+# Renovate owns the bump (renovate.json, `uv` rule) under the same 7-day cooldown
+# as the agent CLIs. To move it by hand, read the new digest with:
+#   docker buildx imagetools inspect ghcr.io/astral-sh/uv:<version>
+# Guarded by src/server/orchestrator/docker-build-cache.test.ts.
+COPY --from=ghcr.io/astral-sh/uv:0.12.3@sha256:2d890623d310b57771ce840f0da5eed5fc6d657da05ffaa45d82797b53fa3abc /uv /uvx /usr/local/bin/
 
 # Agent CLIs: lockfile-pinned, integrity-verified, cooldown-aged install.
 # See docs/141-cli-version-strategy. The versions live in

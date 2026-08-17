@@ -1,7 +1,20 @@
 # ---- Build stage (full image has python3/make/gcc for native addons) ----
 FROM node:24-slim@sha256:4e6b70dd6cbfc88c8157ba19aa3d9f9cce6ba4703576d55459e45efcbc9c5f5d AS build
-ARG SHIPIT_BUILD_ID
-ENV SHIPIT_BUILD_ID=${SHIPIT_BUILD_ID}
+
+# The next four instructions are DELIBERATELY byte-identical to the opening of
+# Dockerfile.session-worker.prod's build stage, on the same pinned base. BuildKit's
+# cache is content-addressed rather than per-Dockerfile, so the two images share
+# one set of records for the apt layer and the `npm ci` — build one, get the other
+# free. Diverging here does not cost a little, it builds the whole prefix twice.
+#
+# Which is why SHIPIT_BUILD_ID must NOT enter the prefix. deploy.sh passes the git
+# HEAD sha, so an `ENV` up here changes on EVERY update, invalidating every layer
+# below it AND forking this chain away from the worker's. A production
+# `docker buildx du --verbose` taken while it sat at the top of this stage showed
+# the damage: `apt-get install python3 make g++` twice at 349.8MB and
+# `npm ci --prefer-offline` twice at 587.1MB, with the base image's own layers
+# appearing once. It is declared below instead, next to the one build step that
+# needs it. Guarded by src/server/orchestrator/docker-build-cache.test.ts.
 
 RUN apt-get update && apt-get install -y python3 make g++ && rm -rf /var/lib/apt/lists/*
 
@@ -11,7 +24,23 @@ COPY package.json package-lock.json ./
 RUN --mount=type=cache,target=/root/.npm npm ci --prefer-offline
 
 COPY . .
-RUN npm run build
+
+# The client bundle DOES need the build id at build time: vite.config.ts
+# `resolveBuildId()` reads $SHIPIT_BUILD_ID and bakes it into
+# `__SHIPIT_CLIENT_BUILD_ID__`, which `shouldReloadForServerBuild`
+# (src/client/utils/client-build.ts) compares against the server's to reload a
+# stale SPA after a deploy. Its git fallback cannot help here — `.git` is in
+# .dockerignore — so an unset value silently returns `undefined`, and that
+# comparison then short-circuits to `false` forever: no error, no failed build,
+# just users left on the pre-update client.
+#
+# So it is declared HERE rather than at the top of the stage. Everything above is
+# the prefix shared with Dockerfile.session-worker.prod and must stay identical;
+# from `COPY . .` down the source has changed anyway, so consuming a per-deploy
+# value costs nothing that was going to be cached. Scoped to this one RUN rather
+# than an `ENV` so it can't leak back up if the steps are ever reordered.
+ARG SHIPIT_BUILD_ID
+RUN SHIPIT_BUILD_ID=${SHIPIT_BUILD_ID} npm run build
 
 # Prune devDependencies so we can copy a clean node_modules to prod
 RUN --mount=type=cache,target=/root/.npm npm prune --omit=dev && npm install tsx
