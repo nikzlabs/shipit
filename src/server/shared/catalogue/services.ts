@@ -212,6 +212,49 @@ const VERCEL_PRICES = {
 } as const;
 
 /**
+ * OpenCode Zen's OWN list rates, per million tokens, read from the models.dev
+ * registry source (`sst/models.dev@dev`, providers/opencode) on **2026-08-17**.
+ * (The registry's GitHub repository is the same data models.dev serves; this
+ * container's egress allows GitHub and not models.dev itself.)
+ *
+ * Zen is a gateway sold "at cost", and like the other gateways it is NOT a
+ * pass-through of the upstream vendor's list: Sonnet 5 is 2/10 here (Anthropic's
+ * introductory rate, where ShipIt's own Anthropic row deliberately carries the
+ * durable 3/15), and DeepSeek V4 Pro is 1.74/3.84 against DeepSeek's own
+ * 0.435/0.87. Each figure below is Zen's published one, verbatim.
+ *
+ * `cacheWrite === input` wherever Zen publishes no cache-write rate — the same
+ * convention the DeepSeek/GLM/OpenRouter rows use (a cache miss is billed at
+ * the ordinary input rate).
+ */
+const OPENCODE_ZEN_PRICES = {
+  opus5: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
+  sonnet5: { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 },
+  fable5: { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 },
+  v4flash: { input: 0.14, output: 0.28, cacheRead: 0.028, cacheWrite: 0.14 },
+  v4pro: { input: 1.74, output: 3.84, cacheRead: 0.145, cacheWrite: 1.74 },
+  glm52: { input: 1.4, output: 4.4, cacheRead: 0.26, cacheWrite: 1.4 },
+  kimiK3: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3 },
+} as const;
+
+/**
+ * OpenCode Go's rates, same source and date as {@link OPENCODE_ZEN_PRICES}.
+ * Go is a $10/month subscription (`sub`), so these are req 16's "would have
+ * cost" comparison and never a charge — but they are still Go's own published
+ * per-model figures, which differ from Zen's for the SAME model (DeepSeek V4
+ * Flash is 0.22/0.66 here against Zen's 0.14/0.28; the fact sheet measured
+ * exactly this drift between 08-07 and 08-17, so re-read at revision time).
+ */
+const OPENCODE_GO_PRICES = {
+  glm53: { input: 1.4, output: 4.4, cacheRead: 0.26, cacheWrite: 1.4 },
+  glm52: { input: 1.4, output: 4.4, cacheRead: 0.26, cacheWrite: 1.4 },
+  kimiK3: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3 },
+  qwen38max: { input: 2, output: 6, cacheRead: 0.25, cacheWrite: 2.5 },
+  v4pro: { input: 0.66, output: 1.98, cacheRead: 0.022, cacheWrite: 0.66 },
+  v4flash: { input: 0.22, output: 0.66, cacheRead: 0.007, cacheWrite: 0.22 },
+} as const;
+
+/**
  * What Codex's app-server assigns the GPT-5 family, which is what ShipIt
  * reports and therefore what the dial must show on the first frame. OpenAI
  * advertises larger maxima (400K for GPT-5.2/5.3-codex/5.4-mini, 1.05M for the
@@ -631,6 +674,144 @@ export const SERVICES = [
           { id: "google/gemini-3.7-flash", label: "Gemini 3.7 Flash", ...MODEL_IDENTITIES.gemini37flash, styles: [O_CC, O_RESP], contextWindow: ONE_M, price: VERCEL_PRICES.gemini37flash },
           { id: "moonshotai/kimi-k3", label: "Kimi K3", ...MODEL_IDENTITIES.kimiK3, styles: [A_MSG, O_CC, O_RESP], contextWindow: ONE_M, price: VERCEL_PRICES.kimiK3 },
           { id: "alibaba/qwen3.8-max", label: "Qwen3.8 Max", ...MODEL_IDENTITIES.qwen38max, styles: [A_MSG, O_CC, O_RESP], contextWindow: ONE_M, price: VERCEL_PRICES.qwen38max },
+        ],
+      },
+    ],
+  },
+  {
+    // docs/272 — OpenCode's own hosted inference (vendor: Anomaly, the SST
+    // team). Two paid products, one console, ONE pasted API key serving both
+    // (fact sheet §2, measured): OpenCode Zen is pay-as-you-go credits (`key`),
+    // OpenCode Go is the $10/month capped subscription (`sub`). The service is
+    // named "OpenCode", not "OpenCode Zen": the row carries both products, and
+    // the PAYG product's name on a Go row would mislabel it — "Zen"/"Go" live in
+    // the mode structure, not the service name.
+    //
+    // **Launch auth is the pasted key only, for both modes** (docs/272 req 2/3;
+    // the console's OAuth device login is follow-up under req 4). Both modes'
+    // credentials are `carriers: ["opencode"]` — see the credential comments.
+    //
+    // **The model lists are what the launch carrier can actually run.** The
+    // vendor publishes each model's endpoint style (fact sheet §3, live-checked:
+    // the gateway forwards and does NOT translate across styles, so a model is
+    // declared under exactly its published style). Zen also serves the GPT
+    // family and Grok over `/responses` — a style the OpenCode harness does not
+    // speak (`opencode-spawn-shaping.ts` writes no `@ai-sdk/openai` block) — so
+    // those rows are deliberately NOT authored: they would be picker-invisible
+    // dead rows until the Codex pairing is live-verified, and they should
+    // arrive WITH that verification (plan §7 item 2). Same for Gemini (no
+    // ShipIt style at all) and the `*-free` tier (offerable later as $0 rows of
+    // this mode; not frontier, so outside the maintained subset).
+    id: "opencode",
+    name: "OpenCode",
+    modes: [
+      {
+        // OpenCode Zen — PAYG credits. Billing hazard the settings surface does
+        // not carry (it belongs to the console, not to ShipIt): auto-reload
+        // defaults to $20 and refills automatically; the console can disable it
+        // and set workspace/member monthly limits (fact sheet §5).
+        kind: "key",
+        endpoints: {
+          // Claude Code appends `/v1/messages` and the OpenCode adapter
+          // appends `/v1` + `/messages`, so the Anthropic-style base carries no
+          // `/v1` — both converge on `POST /zen/v1/messages`, which the live
+          // pass measured as x-api-key-only (fact sheet §7's header matrix;
+          // OpenCode's `@ai-sdk/anthropic` block sends exactly that header).
+          [A_MSG]: "https://opencode.ai/zen",
+          // Chat-completions bases are verbatim, so this one carries its own
+          // `/v1`: `POST /zen/v1/chat/completions`, Bearer-only (measured live,
+          // including one real free-model completion).
+          [O_CC]: "https://opencode.ai/zen/v1",
+        },
+        credentials: [
+          {
+            via: "string",
+            // The vendor's own variable name, like DEEPSEEK_API_KEY — and
+            // deliberately also the name `HARNESS_CREDENTIAL_VARS.opencode`
+            // scrubs from OpenCode spawns: the CLI auto-detects it and would
+            // out-prefer the provider block's explicit credential. Delivery is
+            // unaffected — the adapter reads the source from its own process
+            // env AFTER the scrub and writes `OPENCODE_PROVIDER_API_KEY`.
+            storageEnv: "OPENCODE_API_KEY",
+            // docs/272 req 5 — cross-harness pairs are offered ONLY after a
+            // live pair run (docs/252 pair-verification method), and none has
+            // run yet: the fact sheet's header matrix says Claude Code and
+            // Codex SHOULD both work with no targetOverride (each style's
+            // accepted header matches each harness's default delivery), but
+            // that is a prediction, not a measurement. Widen per pair as §7's
+            // real-key runs land; do not widen on the prediction.
+            carriers: ["opencode"],
+          },
+        ],
+        retired: [],
+        models: [
+          // Anthropic-family rows: Zen's published style is `/messages`
+          // (`@ai-sdk/anthropic` in the vendor's own endpoint table). Prices
+          // are Zen's, not Anthropic's — Sonnet is the 2/10 introductory rate
+          // here (see OPENCODE_ZEN_PRICES).
+          { id: "claude-opus-5", label: "Opus 5", ...MODEL_IDENTITIES.opus5, styles: [A_MSG], contextWindow: ONE_M, price: OPENCODE_ZEN_PRICES.opus5 },
+          { id: "claude-sonnet-5", label: "Sonnet 5", ...MODEL_IDENTITIES.sonnet5, styles: [A_MSG], contextWindow: ONE_M, price: OPENCODE_ZEN_PRICES.sonnet5 },
+          { id: "claude-fable-5", label: "Fable 5", ...MODEL_IDENTITIES.fable5, styles: [A_MSG], contextWindow: ONE_M, price: OPENCODE_ZEN_PRICES.fable5 },
+          // Open-weight rows: chat-completions per the vendor table (the
+          // 2026-08-17 registry pull confirmed Kimi/DeepSeek/GLM all moved to
+          // `@ai-sdk/openai-compatible` from the 08-07 snapshot's anthropic
+          // style — the drift the fact sheet §4 warns about).
+          { id: "deepseek-v4-flash", label: "DeepSeek V4 Flash", ...MODEL_IDENTITIES.deepseekV4Flash, styles: [O_CC], contextWindow: ONE_M, price: OPENCODE_ZEN_PRICES.v4flash },
+          { id: "deepseek-v4-pro", label: "DeepSeek V4 Pro", ...MODEL_IDENTITIES.deepseekV4Pro, styles: [O_CC], contextWindow: ONE_M, price: OPENCODE_ZEN_PRICES.v4pro },
+          { id: "glm-5.2", label: "GLM-5.2", ...MODEL_IDENTITIES.glm52, styles: [O_CC], contextWindow: ONE_M, price: OPENCODE_ZEN_PRICES.glm52 },
+          { id: "kimi-k3", label: "Kimi K3", ...MODEL_IDENTITIES.kimiK3, styles: [O_CC], contextWindow: ONE_M, price: OPENCODE_ZEN_PRICES.kimiK3 },
+        ],
+      },
+      {
+        // OpenCode Go — the $10/month subscription over the open-model list,
+        // authenticated by the SAME pasted key as Zen (sub-via-string, the GLM
+        // coding-plan shape; entitlement is account-side, there is no separate
+        // Go key). Caps are dollar-denominated: $12/5h, $30/week, $60/month
+        // (vendor docs, 2026-08-17).
+        kind: "sub",
+        // docs/272 req 6 — declared and NOT implemented (the planning#339 GLM
+        // precedent): no per-key usage/quota API exists (fact sheet §8 searched
+        // the CLI binary, the console SPA and candidate REST endpoints), so the
+        // reader reports nothing until a source does, generic 429
+        // refusal-memory benching handles the caps, and no cutoffs are offered
+        // over a number nobody reports. The console's own usage view is behind
+        // console-session auth — reachable only via the follow-up OAuth login
+        // integration (req 4), which is where a real reader would come from.
+        quota: "opencode-go-usage",
+        endpoints: {
+          // Go's base is Zen's with `/zen/go`; Bearer measured live on this
+          // route (fact sheet §7). Only chat-completions is declared because
+          // only chat-completions models are authored — Go's other published
+          // styles (`/responses` for GPT-5.6 Luna and Grok 4.5,
+          // `/messages` for MiniMax) belong to rows outside the launch subset.
+          [O_CC]: "https://opencode.ai/zen/go/v1",
+        },
+        credentials: [
+          {
+            via: "string",
+            // Its own storage name even though the SECRET is the same pasted
+            // key as Zen's — one storageEnv per (service, mode) is the
+            // catalogue invariant (`credentialModeForStorageEnv`), and it is
+            // what keeps the two modes two credential rows in Settings instead
+            // of Go hiding behind an existing Zen key. Same GLM precedent:
+            // ZAI_CODING_PLAN_KEY / ZAI_API_KEY.
+            storageEnv: "OPENCODE_GO_API_KEY",
+            // Same req 5 gate as the Zen mode above.
+            carriers: ["opencode"],
+          },
+        ],
+        retired: [],
+        models: [
+          // GLM-5.3 leads for the same reason it leads the Z.ai coding plan:
+          // the current frontier open coding model, and what
+          // `firstEligibleNonTurnSelection` picks for background work on a
+          // Go-only install — deliberate and free under an allowance mode.
+          { id: "glm-5.3", label: "GLM-5.3", ...MODEL_IDENTITIES.glm53, styles: [O_CC], contextWindow: ONE_M, price: OPENCODE_GO_PRICES.glm53 },
+          { id: "kimi-k3", label: "Kimi K3", ...MODEL_IDENTITIES.kimiK3, styles: [O_CC], contextWindow: ONE_M, price: OPENCODE_GO_PRICES.kimiK3 },
+          { id: "qwen3.8-max", label: "Qwen3.8 Max", ...MODEL_IDENTITIES.qwen38max, styles: [O_CC], contextWindow: ONE_M, price: OPENCODE_GO_PRICES.qwen38max },
+          { id: "deepseek-v4-pro", label: "DeepSeek V4 Pro", ...MODEL_IDENTITIES.deepseekV4Pro, styles: [O_CC], contextWindow: ONE_M, price: OPENCODE_GO_PRICES.v4pro },
+          { id: "deepseek-v4-flash", label: "DeepSeek V4 Flash", ...MODEL_IDENTITIES.deepseekV4Flash, styles: [O_CC], contextWindow: ONE_M, price: OPENCODE_GO_PRICES.v4flash },
+          { id: "glm-5.2", label: "GLM-5.2", ...MODEL_IDENTITIES.glm52, styles: [O_CC], contextWindow: ONE_M, price: OPENCODE_GO_PRICES.glm52 },
         ],
       },
     ],

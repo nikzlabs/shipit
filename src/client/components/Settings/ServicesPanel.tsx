@@ -110,6 +110,19 @@ import { MODE_LABEL, ServiceCard } from "./ServiceCard.js";
 import { SupportedModelsDialog } from "./SupportedModelsDialog.js";
 import { CredentialSelectionModeControl, FailoverCutoffControls } from "./CredentialRouting.js";
 
+/**
+ * docs/272 req 6 — OpenCode Go's one billing hazard, stated where the Go
+ * credential is added and where it lives afterwards. "Use balance" is a
+ * console-side option: when it is on, hitting a Go usage cap does not block —
+ * usage continues on the account's metered Zen credits, server-side, with no
+ * error and no signal ShipIt can observe (docs/272 fact sheet §5). ShipIt
+ * reacts to the caps' own 429s (generic benching); it cannot see this switch.
+ */
+const OPENCODE_GO_USE_BALANCE_WARNING =
+  "If the OpenCode console's “Use balance” option is on, hitting a Go usage cap "
+  + "does not stop anything: usage silently continues on your metered Zen credit "
+  + "balance, invisibly to ShipIt. Turn it off in the console if caps should stop spend.";
+
 /** Every `(service, mode)` the catalogue declares, flattened in catalogue order. */
 function catalogueModes(): { service: ServiceDef; billingMode: BillingMode }[] {
   return allServices().flatMap((service) =>
@@ -736,6 +749,22 @@ function ServiceModeCard({
             </p>
           )}
         </div>
+      )}
+      {/*
+        docs/272 req 6 — the Go card carries this warning permanently, an
+        exception to req 19's "no descriptions on cards" earned by being a
+        billing hazard about THIS credential rather than generic prose: the
+        console-side switch converts a hit cap into metered spend with no
+        signal ShipIt can see, so nothing else in the product can warn at the
+        moment it happens.
+      */}
+      {service.id === "opencode" && billingMode === "sub" && (
+        <p
+          className="px-1 text-[11px] text-(--color-warning)"
+          data-testid="opencode-go-use-balance-warning"
+        >
+          {OPENCODE_GO_USE_BALANCE_WARNING}
+        </p>
       )}
     </ServiceCard>
   );
@@ -1824,6 +1853,17 @@ function AddServiceDialog({
                     ? "ShipIt fails over between the credentials of one subscription when one runs out."
                     : "One key per service. Metered — no quota to report, so its card shows no usage."}
                 </p>
+                {/* docs/272 req 6 — said at add time too, since this is the
+                    moment the user is looking at the console this option
+                    lives in. */}
+                {service.id === "opencode" && billingMode === "sub" && (
+                  <p
+                    className="text-[11px] text-(--color-warning)"
+                    data-testid="add-service-opencode-go-warning"
+                  >
+                    {OPENCODE_GO_USE_BALANCE_WARNING}
+                  </p>
+                )}
               </>
             )}
             <div className="flex flex-wrap gap-1">

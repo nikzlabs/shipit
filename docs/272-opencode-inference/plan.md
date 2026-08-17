@@ -6,11 +6,57 @@ description: Verified facts about OpenCode Zen / Go (endpoints, auth, wire style
 
 # OpenCode inference — fact sheet and design assessment
 
-Implements nothing yet. This is the investigation deliverable for
+## As built (2026-08-17) — deltas from §6's assessment
+
+The implementation follows §6 with five deliberate deltas, each verifiable in
+`src/server/shared/catalogue/`:
+
+- **Carriers are gated, not open.** §6 read the auth-header matrix as "no
+  `carriers` restriction is indicated"; req 5 makes cross-harness offering
+  conditional on live pair runs, and none has run (they need a real key — §7).
+  Both modes ship `carriers: ["opencode"]`; each widening arrives with its
+  pair's evidence.
+- **No `/responses` rows yet.** The OpenCode harness speaks
+  `openai-chat-completions` and `anthropic-messages` only, so with the carrier
+  gate above, Zen's GPT-5.6 family and Grok (and Go's Luna/Grok 4.5) would be
+  rows nothing can run. They arrive with the Codex pair verification instead
+  of shipping dead. Consequently only the styles models actually use have
+  endpoints (`A_MSG`+`O_CC` on Zen, `O_CC` on Go).
+- **Go's storage name is `OPENCODE_GO_API_KEY`** (§6 said "same key", which is
+  true of the *secret*; the catalogue forbids one `storageEnv` across two
+  modes — `credentialModeForStorageEnv` — so the pasted key is stored under
+  two mode-scoped names, exactly the GLM `ZAI_CODING_PLAN_KEY`/`ZAI_API_KEY`
+  precedent). The Settings surfaces were confirmed not to deduplicate: one
+  card per `(service, mode)`, so Go never hides behind an existing Zen key.
+- **The service row is LAST in `SERVICES`.** Catalogue order decides defaults
+  and unbiased bare-id resolution; Zen carries bare Anthropic ids
+  (`claude-opus-5`), and a legacy id must keep resolving to Anthropic.
+- **`nativeService: "opencode"` needed three consumers re-keyed**, because
+  "native service" had quietly meant "login-backed vendor" everywhere it was
+  read: `vendorOwnedRecovery` (credential-failure-policy — a Go 429 must take
+  the set-aside/benching path, not an OAuth heal that heals nothing), the
+  planning#353 native-vendor skip in `session-agent-env` (an unshaped OpenCode
+  spawn cannot authenticate — the adapter refuses it — so an
+  OpenCode-key-only install must still settle the row), and
+  `requireAccountService` in `services/settings.ts` (account verbs stay 400).
+  All three now key on `loginIntegrationForService`, with tests.
+
+Pricing/context provenance for the shipped rows: the models.dev registry
+*source* (`sst/models.dev@dev`, checked out 2026-08-17) — the session
+container's egress allows GitHub but not models.dev itself. Notable figures
+copied verbatim: Zen sells Sonnet 5 at the 2/10 introductory rate (ShipIt's
+own Anthropic row deliberately carries the durable 3/15), Zen's DeepSeek V4
+Pro is 1.74/3.84 against the vendor's 0.435/0.87, and Go prices DeepSeek V4
+Flash at 0.22/0.66 against Zen's 0.14/0.28 — three reasons no price constant
+is shared with any other service's rows.
+
+This began as the investigation deliverable for
 [requirements.md](./requirements.md): what OpenCode's hosted inference *is*,
 established empirically, and how it would land in the docs/252 catalogue.
-All requirements questions are resolved (2026-08-17 receipts); implementation
-can start, with §7's real-key items as its live-verification phase.
+**The catalogue shape is now implemented** (2026-08-17, see §6 for the
+as-built deltas and [checklist.md](./checklist.md) for the item-level state);
+§7's real-key items remain the open live-verification phase — until they run,
+both modes stay `carriers: ["opencode"]` and the issue stays open.
 
 **Verification markers** (docs/252 discipline): ✅ = observed — in this
 repository, in the pinned `opencode-ai@1.18.15` binary, at a local HTTP

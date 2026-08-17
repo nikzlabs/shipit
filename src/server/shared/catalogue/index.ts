@@ -369,7 +369,10 @@ export function modeAllowsMultipleCredentials(billingMode: BillingMode): boolean
  * Every `sub` mode DECLARES one — the type makes it required, so "a
  * subscription with nowhere to read its quota from" cannot be expressed — but
  * declaring is not implementing: `zai-plan-usage` has no reader yet
- * (planning#339), so GLM's coding plan reports nothing.
+ * (planning#339), so GLM's coding plan reports nothing, and
+ * `opencode-go-usage` ships the same way BY DECISION (docs/272 req 6): no
+ * per-key usage API exists at the vendor, so the reader waits for one (or for
+ * the console OAuth follow-up) rather than invent a number.
  *
  * One list, because "does this mode report a quota" is asked in two places that
  * must agree: whether to offer failover CUTOFFS (a percentage of a number

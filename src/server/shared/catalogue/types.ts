@@ -64,7 +64,8 @@ export type LoginIntegrationId = "anthropic-oauth" | "openai-chatgpt";
 export type QuotaIntegrationId =
   | "anthropic-oauth-usage"
   | "openai-chatgpt-usage"
-  | "zai-plan-usage";
+  | "zai-plan-usage"
+  | "opencode-go-usage";
 
 /**
  * Per-model unit rates, USD per million tokens. **Always the service's API rate

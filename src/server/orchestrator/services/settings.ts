@@ -8,7 +8,7 @@ import type { AgentRegistry } from "../../shared/agent-registry.js";
 import { isAllowedAgentEnvKey } from "../../shared/agent-registry.js";
 import type { AccountSelectionMode, AgentId, CredentialRoute, FailoverCutoffs } from "../../shared/types.js";
 import { credentialModeKey, DEFAULT_FAILOVER_CUTOFF, DEFAULT_SELECTION_MODE, parseCredentialModeKey } from "../../shared/types.js";
-import { allServices, credentialModeForStorageEnv, getMode, getModel, getService, nativeServiceForHarness } from "../../shared/catalogue/index.js";
+import { allServices, credentialModeForStorageEnv, getMode, getModel, getService, loginIntegrationForService, nativeServiceForHarness } from "../../shared/catalogue/index.js";
 import { firstEligibleNonTurnSelection, harnessForNonTurnSelection, resolveNonTurnModel } from "../non-turn-model.js";
 import { listConfiguredCredentials } from "../service-routing.js";
 import { listCredentialRoutes, upsertSingleStringCredential } from "./credential-routes.js";
@@ -1242,10 +1242,15 @@ function requireAccountService(provider: AgentId): string {
   if (provider !== "claude" && provider !== "codex" && provider !== "opencode") {
     throw new ServiceError(400, "Unknown provider");
   }
-  // OpenCode carries no nativeService (docs/268 — key-mode only, no account
-  // rows), so it falls to the same 400 below rather than a special case here.
+  // OpenCode HAS a nativeService since docs/272 ("opencode" — Zen/Go), but
+  // that service is key-authenticated with no login flow and therefore no
+  // account rows, so account verbs on it stay a 400. The login integration is
+  // what declares account machinery, so it — not the native service alone —
+  // is the gate.
   const serviceId = nativeServiceForHarness(provider);
-  if (!serviceId) throw new ServiceError(400, "Unknown provider");
+  if (!serviceId || !loginIntegrationForService(serviceId)) {
+    throw new ServiceError(400, "Unknown provider");
+  }
   return serviceId;
 }
 

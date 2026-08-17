@@ -23,6 +23,7 @@ import {
   getModel,
   isContextSentinel,
   isPriceSentinel,
+  modeReportsQuota,
   MODEL_FAMILY_IDS,
   MODEL_ID_ALIASES,
   MODEL_IDENTITIES,
@@ -1035,6 +1036,115 @@ describe("the launch catalogue is a requirement, not a capability (req 15)", () 
   });
 });
 
+describe("OpenCode inference — Zen and Go (docs/272)", () => {
+  const zen = (modelId: string): ModelSelection => ({ serviceId: "opencode", billingMode: "key", modelId });
+  const go = (modelId: string): ModelSelection => ({ serviceId: "opencode", billingMode: "sub", modelId });
+
+  it("ships one service named OpenCode with both products as its two modes", () => {
+    const service = CATALOGUE.find((s) => s.id === "opencode");
+    // "OpenCode", not "OpenCode Zen" — the row carries both products, and the
+    // PAYG product's name would mislabel every Go row (plan §6).
+    expect(service?.name).toBe("OpenCode");
+    expect(service?.modes.map((m) => m.kind).sort()).toEqual(["key", "sub"]);
+  });
+
+  it("keeps both modes off Claude Code and Codex until a live pair run says otherwise (req 5)", () => {
+    // The header matrix PREDICTS both harnesses work (plan §3); req 5 says a
+    // pair is offered only after a real paid turn has been driven through it.
+    // `carriers: ["opencode"]` is that gate. Widening it is a per-pair edit
+    // that should arrive WITH the pair's verification evidence — if you are
+    // here to relax this expectation, cite the run.
+    expect(harnessServiceSupport("opencode", "opencode")).toBe("all");
+    expect(harnessServiceSupport("claude", "opencode")).toBe("none");
+    expect(harnessServiceSupport("codex", "opencode")).toBe("none");
+    const opencodeKey = { serviceId: "opencode", billingMode: "key" as const, via: "string" as const };
+    // The style JOIN would offer Zen's Claude rows to Claude Code — the
+    // carrier restriction is the only thing keeping them off, so pin the
+    // eligibility answer, not just the support table.
+    expect(eligibleEntriesForHarness("claude", [opencodeKey])).toEqual([]);
+    const onOpencode = eligibleEntriesForHarness("opencode", [opencodeKey]);
+    expect(onOpencode.length).toBeGreaterThan(0);
+    expect(onOpencode.every((e) => e.selection.serviceId === "opencode")).toBe(true);
+  });
+
+  it("declares the Go quota integration without implementing it (req 6, the planning#339 shape)", () => {
+    const goMode = getMode("opencode", "sub");
+    expect(goMode?.kind === "sub" && goMode.quota).toBe("opencode-go-usage");
+    // No reader exists (no per-key usage API at the vendor — fact sheet §8),
+    // so no usage read-out and no failover cutoffs may be offered. When a
+    // reader lands, IMPLEMENTED_QUOTA_INTEGRATIONS in index.ts is the line
+    // that changes, and this expectation flips with it.
+    expect(modeReportsQuota("opencode", "sub")).toBe(false);
+  });
+
+  it("stores the one pasted key under two mode-scoped names, like GLM's plan/key pair", () => {
+    expect(credentialModeForStorageEnv("OPENCODE_API_KEY")).toEqual({
+      serviceId: "opencode",
+      billingMode: "key",
+    });
+    expect(credentialModeForStorageEnv("OPENCODE_GO_API_KEY")).toEqual({
+      serviceId: "opencode",
+      billingMode: "sub",
+    });
+  });
+
+  it("shapes an OpenCode spawn onto the measured endpoints, per style", () => {
+    // Literal URLs pinned for the same reason as the OpenRouter test above:
+    // one host, two base-URL conventions. The anthropic-messages base carries
+    // NO `/v1` (Claude Code appends `/v1/messages`; the OpenCode adapter
+    // appends `/v1` itself — `opencode-spawn-shaping.ts`), while the
+    // chat-completions bases carry their own.
+    const anthropicStyle = resolveSpawnShaping("opencode", zen("claude-opus-5"));
+    expect(anthropicStyle?.style).toBe("anthropic-messages");
+    expect(anthropicStyle?.endpoint.url).toBe("https://opencode.ai/zen");
+    expect(anthropicStyle?.credential).toEqual({
+      sourceEnv: "OPENCODE_API_KEY",
+      target: { kind: "env", name: "OPENCODE_PROVIDER_API_KEY" },
+    });
+
+    const zenChat = resolveSpawnShaping("opencode", zen("kimi-k3"));
+    expect(zenChat?.style).toBe("openai-chat-completions");
+    expect(zenChat?.endpoint.url).toBe("https://opencode.ai/zen/v1");
+
+    const goChat = resolveSpawnShaping("opencode", go("glm-5.3"));
+    expect(goChat?.style).toBe("openai-chat-completions");
+    expect(goChat?.endpoint.url).toBe("https://opencode.ai/zen/go/v1");
+    expect(goChat?.credential).toEqual({
+      sourceEnv: "OPENCODE_GO_API_KEY",
+      target: { kind: "env", name: "OPENCODE_PROVIDER_API_KEY" },
+    });
+  });
+
+  it("a Zen-served Anthropic model IS Anthropic's, at Zen's own price", () => {
+    // Same statement as the gateway tests: identity shared, pricing not.
+    // Zen publishes Sonnet at the introductory 2/10 where ShipIt's Anthropic
+    // row deliberately carries the durable 3/15 — reusing the Anthropic
+    // constant here would misprice every Zen Sonnet turn.
+    const direct = getModel({ serviceId: "anthropic", billingMode: "key", modelId: "claude-sonnet-5" });
+    const viaZen = getModel(zen("claude-sonnet-5"));
+    expect(viaZen?.canonicalModelKey).toBe(direct?.canonicalModelKey);
+    expect(viaZen?.price.input).not.toBe(direct?.price.input);
+  });
+
+  it("Zen and Go price the same model independently", () => {
+    // Measured drift, not a copy-paste hazard: the vendor publishes 0.14/0.28
+    // for DeepSeek V4 Flash on Zen and 0.22/0.66 on Go (2026-08-17 registry).
+    expect(getModel(zen("deepseek-v4-flash"))?.price.input).not.toBe(
+      getModel(go("deepseek-v4-flash"))?.price.input,
+    );
+  });
+
+  it("OpenCode's native service is itself, and it is NOT login-backed", () => {
+    // What `nativeService: "opencode"` buys is turn attribution (the CLI's own
+    // reported `cost` on native + key). What it must not imply is account
+    // machinery: no login integration exists, which is what
+    // credential-failure-policy and session-agent-env now key their
+    // vendor-owned-recovery behaviour on.
+    expect(HARNESSES.find((h) => h.id === "opencode")?.nativeService).toBe("opencode");
+    expect(loginIntegrationForService("opencode")).toBeUndefined();
+  });
+});
+
 describe("resolving a bare model id", () => {
   it("takes the first service and mode declaring it", () => {
     expect(resolveModelSelection("claude-opus-5")).toEqual({
@@ -1061,9 +1171,14 @@ describe("resolving a bare model id", () => {
   });
 
   it("reports every mode offering an id, so a migration can prefer one", () => {
+    // OpenCode Zen (docs/272) also carries the bare Anthropic ids, LAST —
+    // catalogue order is load-bearing here: an unbiased legacy id must keep
+    // resolving to the vendor it plainly came from, not to a later gateway
+    // that happens to spell it the same way.
     expect(modesOfferingModel("claude-fable-5")).toEqual([
       { serviceId: "anthropic", billingMode: "sub" },
       { serviceId: "anthropic", billingMode: "key" },
+      { serviceId: "opencode", billingMode: "key" },
     ]);
     expect(modesOfferingModel("nope")).toEqual([]);
   });

@@ -273,6 +273,12 @@ services:
       - { name: ZAI_API_KEY }
       - { name: OPENROUTER_API_KEY }
       - { name: VERCEL_AI_GATEWAY_API_KEY }
+      # docs/272 — OpenCode inference. One vendor key serves both products;
+      # the two names are the catalogue's two (service, mode) storage slots
+      # (Zen PAYG / Go subscription), so paste the same key into both to
+      # exercise both modes in the inner instance.
+      - { name: OPENCODE_API_KEY }
+      - { name: OPENCODE_GO_API_KEY }
 
   # A ShipIt that has never been set up — for testing onboarding (docs/257).
   #

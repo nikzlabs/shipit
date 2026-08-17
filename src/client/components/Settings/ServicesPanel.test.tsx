@@ -154,6 +154,40 @@ describe("ServicesPanel", () => {
     });
   });
 
+  describe("the OpenCode Go 'Use balance' warning (docs/272 req 6)", () => {
+    it("is on the Go card, and only there", () => {
+      useSettingsStore.getState().setCredentialRoutes([
+        route({ id: "cred_go", serviceId: "opencode", billingMode: "sub", via: "string", isPrimary: true }),
+        route({ id: "cred_zen", serviceId: "opencode", billingMode: "key", via: "string" }),
+      ]);
+      render(<ServicesPanel />);
+      // Two cards — the shared pasted key must NOT collapse Go behind Zen.
+      expect(screen.getByTestId("service-card-opencode:sub")).toBeInTheDocument();
+      expect(screen.getByTestId("service-card-opencode:key")).toBeInTheDocument();
+      // The warning is the Go card's alone: the console-side option converts a
+      // hit cap into metered Zen spend with no signal ShipIt can see.
+      const warning = screen.getByTestId("opencode-go-use-balance-warning");
+      expect(warning.textContent).toContain("Use balance");
+      expect(screen.getByTestId("service-card-opencode:key").textContent).not.toContain("Use balance");
+    });
+
+    it("is said again at add time, on the Go credential step", async () => {
+      render(<ServicesPanel />);
+      await userEvent.click(screen.getByTestId("services-add-empty"));
+      await userEvent.click(screen.getByTestId("add-service-option-opencode"));
+      await userEvent.click(screen.getByTestId("add-service-mode-sub"));
+      expect(screen.getByTestId("add-service-opencode-go-warning").textContent).toContain("Use balance");
+    });
+
+    it("does not appear on the Zen credential step", async () => {
+      render(<ServicesPanel />);
+      await userEvent.click(screen.getByTestId("services-add-empty"));
+      await userEvent.click(screen.getByTestId("add-service-option-opencode"));
+      await userEvent.click(screen.getByTestId("add-service-mode-key"));
+      expect(screen.queryByTestId("add-service-opencode-go-warning")).not.toBeInTheDocument();
+    });
+  });
+
   describe("step 1's harness support table", () => {
     it("gives every installed harness a column, and says per service which can run it", async () => {
       render(<ServicesPanel agentList={[claudeAgent, codexAgent]} />);

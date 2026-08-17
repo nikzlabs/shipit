@@ -30,7 +30,7 @@
  */
 
 import type { BillingMode } from "../shared/catalogue/index.js";
-import { getService, nativeServiceForHarness } from "../shared/catalogue/index.js";
+import { getService, loginIntegrationForService, nativeServiceForHarness } from "../shared/catalogue/index.js";
 import type { SessionInfo } from "../shared/types.js";
 
 /** The session fields that answer "what is this turn billed to?". */
@@ -86,7 +86,17 @@ export function credentialFailurePolicyForRoute(
     billingMode,
     serviceId,
     stopsOnFailure: billingMode === "key",
-    vendorOwnedRecovery: serviceId === undefined || serviceId === nativeService,
+    // "Native" alone stopped implying "has recovery machinery" when OpenCode
+    // gained `nativeService: "opencode"` (docs/272): that service is
+    // authenticated by a pasted key with no login flow, so there is no OAuth
+    // healer to act and no sign-in flow a toast could start. The login
+    // integration is what declares the machinery, so it is the second
+    // condition — without it a spent OpenCode Go plan would take the heal path
+    // (which heals nothing), skip the set-aside, and re-select the dead
+    // credential every turn: exactly the GLM bug this axis was added for.
+    vendorOwnedRecovery:
+      serviceId === undefined
+      || (serviceId === nativeService && loginIntegrationForService(serviceId) !== undefined),
   };
 }
 

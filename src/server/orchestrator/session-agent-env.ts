@@ -70,6 +70,7 @@ import { collectAccountAgentEnv, collectServiceCredentialEnv } from "./secret-re
 import {
   credentialStorageEnvNames,
   getService,
+  loginIntegrationForService,
   nativeServiceForHarness,
 } from "../shared/catalogue/index.js";
 import { CREDENTIAL_ROUTE_ENV_PREFIX } from "../shared/types/domain-types/credential-route.js";
@@ -491,7 +492,17 @@ function selectTurnRoute(
  */
 function blockedSubjectFor(agentId: AgentId, session: SessionInfo): string | undefined {
   const serviceId = session.serviceId;
-  if (!serviceId || serviceId === nativeServiceForHarness(agentId)) return undefined;
+  if (!serviceId) return undefined;
+  // The first-party case keeps the pre-feature sentence only where "first
+  // party" still means a login-backed vendor: "connect another OpenCode
+  // account in Settings" would be wrong for OpenCode's native service
+  // (docs/272), which has no accounts — its credentials are pasted keys, so it
+  // gets the service-named "credential … Settings → Services" sentence like
+  // any other supplied-key service.
+  const isAccountBackedNative =
+    serviceId === nativeServiceForHarness(agentId)
+    && loginIntegrationForService(serviceId) !== undefined;
+  if (isAccountBackedNative) return undefined;
   return getService(serviceId)?.name ?? serviceId;
 }
 
@@ -622,7 +633,16 @@ export async function prepareSessionAgentEnvironment(
   // the resident identity agree.
   if (isTurn && !modelSelectionOf(session)) {
     const derived = firstEligibleSelectionForHarness(agentId, { credentialStore: deps.credentialStore });
-    if (derived && derived.serviceId !== nativeServiceForHarness(agentId)) {
+    // docs/272 — the skip's premise is that the old selection-less fallback
+    // WORKS for the native vendor, which is only true where an unshaped spawn
+    // can authenticate: a login-backed vendor whose OAuth lives on disk
+    // (claude, codex). OpenCode's native service is key-authenticated with no
+    // login, and its adapter refuses an unshaped spawn outright — so for a
+    // harness whose native service has no login integration, the row is
+    // written even when the derived service IS the native one.
+    const nativeWorksUnshaped =
+      loginIntegrationForService(nativeServiceForHarness(agentId)) !== undefined;
+    if (derived && (derived.serviceId !== nativeServiceForHarness(agentId) || !nativeWorksUnshaped)) {
       deps.sessionManager.setModelSelection(sessionId, derived);
       session = deps.sessionManager.get(sessionId) ?? session;
       // req 4's convergence, for a selection the SERVER moved rather than the
