@@ -5,7 +5,7 @@ import path from "node:path";
 import { execSync } from "node:child_process";
 import { GitManager } from "../../shared/git.js";
 import { initGlobalGitConfig, setGitIdentity } from "../git-config.js";
-import { mergeSession } from "./session-fork-merge.js";
+import { forkSession, mergeSession } from "./session-fork-merge.js";
 import { handWorkspaceBackToWorker } from "../session-worker-uid.js";
 import type { SessionManager } from "../sessions.js";
 
@@ -30,6 +30,10 @@ vi.mock("../session-worker-uid.js", async (importOriginal) => {
 // real git-lfs in `git-lfs.test.ts`; here we assert `mergeSession` wires it.
 vi.mock("../git-lfs.js", () => ({
   restoreLfsAfterTreeRewrite: vi.fn(() =>
+    Promise.resolve({ status: "not-an-lfs-repo" as const, usesLfs: false }),
+  ),
+  // `forkSession` calls this too; the fork tests below care about refs, not LFS.
+  materializeLfsWithWarning: vi.fn(() =>
     Promise.resolve({ status: "not-an-lfs-repo" as const, usesLfs: false }),
   ),
 }));
@@ -134,5 +138,188 @@ describe("session-fork-merge: mergeSession ownership handoff (planning#146 analo
     ).rejects.toThrow();
 
     expect(handWorkspaceBackToWorker).toHaveBeenCalledWith(activeDir);
+  });
+});
+
+/**
+ * A fork is a SIBLING of its parent, not a child of it: it targets the repo's
+ * default branch, exactly as the parent does.
+ *
+ * `git clone --local` sets the new clone's `refs/remotes/origin/HEAD` from the
+ * SOURCE's checked-out branch, which for a fork is the parent session's own
+ * `shipit/<slug>`. Nothing downstream refreshes it, and it is the ref
+ * `GitManager.getDefaultBranch()` reads — so the fork used to open its PR
+ * against the parent's branch and render "Sync with shipit/<parent-slug>".
+ */
+describe("session-fork-merge: forkSession base-branch inheritance", () => {
+  let tmpDir: string;
+  let origGitConfigGlobal: string | undefined;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "fork-base-"));
+    origGitConfigGlobal = process.env.GIT_CONFIG_GLOBAL;
+    initGlobalGitConfig(path.join(tmpDir, "credentials"));
+    setGitIdentity("Test User", "test@test.com");
+  });
+
+  afterEach(() => {
+    if (origGitConfigGlobal !== undefined) process.env.GIT_CONFIG_GLOBAL = origGitConfigGlobal;
+    else delete process.env.GIT_CONFIG_GLOBAL;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  /** A bare origin whose default branch is `defaultBranch`, plus a session-shaped
+   *  clone sitting on its own pushed `shipit/<slug>` branch. */
+  function setupParentOnFeatureBranch(defaultBranch: string) {
+    const bareDir = path.join(tmpDir, "origin.git");
+    const seedDir = path.join(tmpDir, "seed");
+    const parentDir = path.join(tmpDir, "parent");
+    fs.mkdirSync(bareDir, { recursive: true });
+    execSync(`git init --bare -b ${defaultBranch}`, { cwd: bareDir, stdio: "pipe" });
+    // Seed the remote from a throwaway clone, THEN clone the parent from the
+    // populated repo. Cloning an empty repo writes no `refs/remotes/origin/HEAD`
+    // at all, so a parent built that way would not have the ref this test is
+    // about — production clones from a bare cache that always has commits.
+    execSync(`git clone ${bareDir} ${seedDir}`, { stdio: "pipe" });
+    fs.writeFileSync(path.join(seedDir, "shared.txt"), "v1\n");
+    execSync("git add -A && git commit -m Initial", { cwd: seedDir, stdio: "pipe" });
+    execSync(`git push -u origin ${defaultBranch}`, { cwd: seedDir, stdio: "pipe" });
+    execSync(`git clone ${bareDir} ${parentDir}`, { stdio: "pipe" });
+    // The parent then does what every ShipIt session does: cut its own branch and
+    // push it. The push matters — a parent branch that exists on the remote
+    // SURVIVES the fork's `fetch --prune`, so a stale `origin/HEAD` stays
+    // resolvable and silently wins.
+    execSync("git checkout -b shipit/parent-desc", { cwd: parentDir, stdio: "pipe" });
+    fs.writeFileSync(path.join(parentDir, "work.txt"), "parent work\n");
+    execSync("git add -A && git commit -m Work", { cwd: parentDir, stdio: "pipe" });
+    execSync("git push -u origin shipit/parent-desc", { cwd: parentDir, stdio: "pipe" });
+    return { bareDir, parentDir };
+  }
+
+  interface StubRow { id: string; title: string; workspaceDir?: string; branch?: string; remoteUrl?: string }
+
+  /** In-memory SessionManager covering only what forkSession + graduateSession touch. */
+  function makeForkSessionManager(parent: StubRow) {
+    const rows = new Map<string, StubRow>([[parent.id, { ...parent }]]);
+    const upsert = (id: string, patch: Partial<StubRow>) =>
+      rows.set(id, { id, title: "", ...rows.get(id), ...patch });
+    return {
+      rows,
+      manager: {
+        get: (id: string) => rows.get(id),
+        list: () => [...rows.values()],
+        track: (id: string, title?: string, workspaceDir?: string) =>
+          upsert(id, { ...(title ? { title } : {}), ...(workspaceDir ? { workspaceDir } : {}) }),
+        setBranch: (id: string, branch: string) => upsert(id, { branch }),
+        setRemoteUrl: (id: string, remoteUrl: string) => upsert(id, { remoteUrl }),
+        setWarm: () => {},
+        rename: (id: string, title: string) => upsert(id, { title }),
+        setBranchRenamed: () => {},
+      } as unknown as SessionManager,
+    };
+  }
+
+  /**
+   * @param cacheDir the shared bare cache `getBareCacheDir` should resolve to.
+   *   Pass a nonexistent path to exercise the parent-copy fallback.
+   */
+  async function fork(parentDir: string, parentRow: StubRow, cacheDir = path.join(tmpDir, "no-such-cache")) {
+    const { rows, manager } = makeForkSessionManager(parentRow);
+    const sessionsRoot = path.join(tmpDir, "sessions");
+    fs.mkdirSync(sessionsRoot, { recursive: true });
+    const result = await forkSession(
+      manager,
+      (dir) => ({ dir }) as never,
+      () => cacheDir,
+      sessionsRoot,
+      { authenticated: false, configureGitCredentials: () => {} },
+      { init: () => {} },
+      parentRow.id,
+      parentDir,
+      "shipit/forkslug",
+      undefined,
+      "Forked",
+      {
+        sessionManager: manager,
+        runnerRegistry: { get: () => undefined } as never,
+        repoStore: { touch: () => {} } as never,
+        createGitManager: (dir: string) => new GitManager(dir),
+        sseBroadcast: () => {},
+      },
+    );
+    return { result, rows };
+  }
+
+  it("targets the repo's default branch, not the parent session's branch", async () => {
+    const { bareDir, parentDir } = setupParentOnFeatureBranch("main");
+    const { result } = await fork(parentDir, {
+      id: "parent-id", title: "Parent", workspaceDir: parentDir,
+      branch: "shipit/parent-desc", remoteUrl: bareDir,
+    }, bareDir);
+
+    // The fixture is honest only if the parent itself answers "main" while
+    // sitting on its own branch — that is the value the fork must end up with.
+    expect(await new GitManager(parentDir).getDefaultBranch()).toBe("main");
+
+    const forkDir = result.session.workspaceDir!;
+    const forkGit = new GitManager(forkDir);
+    expect(await forkGit.getDefaultBranch()).toBe("main");
+    // And the fork is genuinely on its own branch, off the parent's.
+    expect(await forkGit.getCurrentBranch()).toBe("shipit/forkslug");
+  });
+
+  it("reads the bare cache's HEAD in preference to the parent's, healing a fork of a fork", async () => {
+    // A parent that is ITSELF a fork made before this fix carries the wrong
+    // `origin/HEAD`. Copying from the parent would propagate that down the
+    // lineage forever; the cache can never name a `shipit/...` branch.
+    const { bareDir, parentDir } = setupParentOnFeatureBranch("main");
+    execSync("git symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/shipit/parent-desc", {
+      cwd: parentDir, stdio: "pipe",
+    });
+    expect(await new GitManager(parentDir).getDefaultBranch()).toBe("shipit/parent-desc");
+
+    const { result } = await fork(parentDir, {
+      id: "parent-id", title: "Parent", workspaceDir: parentDir,
+      branch: "shipit/parent-desc", remoteUrl: bareDir,
+    }, bareDir);
+
+    expect(await new GitManager(result.session.workspaceDir!).getDefaultBranch()).toBe("main");
+  });
+
+  it("falls back to the parent's origin/HEAD when no bare cache is on disk", async () => {
+    // A reclaimed cache, or a local/dogfood setup that never built one. `trunk`
+    // is the case that proves the fallback is a real read: deleting the ref and
+    // letting `getDefaultBranch()` probe would answer `main`, since the probe
+    // only knows `main` and `master`.
+    const { bareDir, parentDir } = setupParentOnFeatureBranch("trunk");
+    const { result } = await fork(parentDir, {
+      id: "parent-id", title: "Parent", workspaceDir: parentDir,
+      branch: "shipit/parent-desc", remoteUrl: bareDir,
+    });
+
+    expect(await new GitManager(result.session.workspaceDir!).getDefaultBranch()).toBe("trunk");
+  });
+
+  it("drops the inherited origin/HEAD when the parent has none (no remote)", async () => {
+    // A sandbox session: `git init`, no origin at all. The fork must not be left
+    // pointing at the parent's branch just because there was nothing to copy.
+    const parentDir = path.join(tmpDir, "sandbox");
+    fs.mkdirSync(parentDir, { recursive: true });
+    execSync("git init -b main", { cwd: parentDir, stdio: "pipe" });
+    fs.writeFileSync(path.join(parentDir, "a.txt"), "a\n");
+    execSync("git add -A && git commit -m Initial", { cwd: parentDir, stdio: "pipe" });
+    execSync("git checkout -b shipit/parent-desc", { cwd: parentDir, stdio: "pipe" });
+    fs.writeFileSync(path.join(parentDir, "b.txt"), "b\n");
+    execSync("git add -A && git commit -m More", { cwd: parentDir, stdio: "pipe" });
+
+    const { result } = await fork(parentDir, {
+      id: "parent-id", title: "Sandbox", workspaceDir: parentDir, branch: "shipit/parent-desc",
+    });
+
+    const forkDir = result.session.workspaceDir!;
+    expect(() =>
+      execSync("git symbolic-ref refs/remotes/origin/HEAD", { cwd: forkDir, stdio: "pipe" }),
+    ).toThrow();
+    expect(await new GitManager(forkDir).getDefaultBranch()).not.toBe("shipit/parent-desc");
   });
 });
