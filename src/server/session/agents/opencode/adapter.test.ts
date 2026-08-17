@@ -96,11 +96,21 @@ describe("OpencodeAdapter", () => {
       expect(init.agentId).toBe("opencode");
     }
 
-    // The tool call surfaces as tool_use + tool_result back-to-back.
+    // The tool call surfaces as tool_use + tool_result back-to-back — with the
+    // wire's lowercase name and camelCase keys normalized to the transcript
+    // vocabulary (planning#432): `write`/`filePath` miss every recognition
+    // registry and would render as a bare row with no diff or path.
     const assistantToolUse = events.find(
       (e) => e.type === "agent_assistant" && e.content.some((b) => b.type === "tool_use"),
     );
     expect(assistantToolUse).toBeDefined();
+    if (assistantToolUse?.type === "agent_assistant") {
+      const block = assistantToolUse.content.find((b) => b.type === "tool_use");
+      if (block?.type === "tool_use") {
+        expect(block.name).toBe("Write");
+        expect(block.input).toEqual({ file_path: "/tmp/sandbox/hello.txt", content: "hi" });
+      }
+    }
     const toolResult = events.find((e) => e.type === "agent_tool_result");
     expect(toolResult).toBeDefined();
 

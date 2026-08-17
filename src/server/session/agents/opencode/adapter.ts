@@ -42,6 +42,7 @@ import { resolveMcpServer } from "../../mcp-resolve.js";
 import { PLAYWRIGHT_MCP_ARGS, PLAYWRIGHT_MCP_COMMAND } from "../playwright-mcp.js";
 import { opencodeModelArg, opencodeProviderConfig } from "../../../shared/opencode-spawn-shaping.js";
 import { parseOpencodeLine, OpencodeTurnAccumulator, type OpencodeEvent, type OpencodeToolPart } from "../../../shared/opencode-stream.js";
+import { normalizeOpencodeToolCall } from "./opencode-tool-normalizer.js";
 
 const OPENCODE_REASONING = HARNESSES.find((h) => h.id === "opencode")?.capabilities.reasoning;
 
@@ -468,11 +469,13 @@ export class OpencodeAdapter
         // message-group boundary contract (tool results split groups) holds.
         const part = event.part as OpencodeToolPart & { id?: string };
         const callId = part.callID ?? part.id ?? `opencode-call-${Date.now()}`;
-        const name = part.tool ?? "unknown";
-        const input =
+        const rawInput =
           typeof part.state?.input === "object" && part.state.input !== null
             ? (part.state.input as Record<string, unknown>)
             : {};
+        // Lowercase wire names miss every recognition registry (planning#432) —
+        // translate to the transcript vocabulary before anything persists.
+        const { name, input } = normalizeOpencodeToolCall(part.tool ?? "unknown", rawInput);
         const isError = part.state?.status === "error";
         const output = part.state?.output ?? "";
         return [
