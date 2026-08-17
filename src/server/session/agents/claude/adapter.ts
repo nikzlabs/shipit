@@ -90,9 +90,14 @@ export class ClaudeAdapter
    *    (Z.ai/GLM reports usage ONLY there — its assistant events are zeroed).
    *
    * Both describe the same thing, the prompt size of one model call, so the
-   * later one simply wins; when a provider sends both they agree. Zero and
-   * output-only readings are ignored rather than written, so a provider that
-   * zeroes one source cannot empty a reading the other supplied.
+   * later one simply wins. The real wire order within a call is `assistant`
+   * first, then the closing `message_delta`, so the winner is the delta — the
+   * protocol's FINAL figure for that call, which is the one to prefer. That
+   * ordering is measured, not assumed, and so is the agreement: on DeepSeek
+   * with the flag both sources read exactly 168 + 25,216 on the last call
+   * (2026-08-17). Zero and output-only readings are ignored rather than
+   * written, so a provider that zeroes one source cannot empty a reading the
+   * other supplied — which is the whole GLM case.
    */
   private latestCallContextTokens: number | undefined;
 
@@ -291,6 +296,10 @@ export class ClaudeAdapter
         // spawns only). Nothing here reaches the orchestrator — the CLI's own
         // `assistant` events already carry the content — but `message_delta`
         // is the only place some providers state a call's token usage.
+        // The `parent_tool_use_id` guard is defensive: the CLI's schema carries
+        // the field on these frames, but every frame observed under the flag —
+        // including on a turn that ran a subagent — had it null, so subagent
+        // calls appear not to be re-emitted at all.
         if (!raw.parent_tool_use_id && raw.event?.type === "message_delta") {
           this.recordCallContext(raw.event.usage);
         }

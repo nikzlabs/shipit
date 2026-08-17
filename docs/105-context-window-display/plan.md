@@ -161,18 +161,43 @@ a 3-call turn whose true final context was 26,145 tokens summed to 77,725, and a
 real session reported **2.1M against a 1M window**.
 
 The fix asks the CLI for the raw SSE frames (`--include-partial-messages`) and
-takes the last top-level `message_delta.usage`. The flag costs one event per
-streamed token chunk (~440 lines where a small turn had 8), so it is passed
-**only on a service-routed spawn** — the first-party Anthropic spawn has real
-iterations and keeps its argv unchanged. The adapter consumes the frames and
-maps them to `null`, so nothing extra crosses the container boundary.
+takes the last top-level `message_delta.usage`. The flag costs one re-emitted
+event per content delta plus a few small lifecycle frames per call (~440 lines
+where a small turn had 8; each line is small — a `message_start` frame carries
+the response's metadata, not an echo of the request — so the volume does not
+grow with context). It is therefore passed **only on a service-routed spawn**:
+the first-party Anthropic spawn has real iterations and keeps its argv
+unchanged. The adapter consumes the frames and maps them to `null`, so nothing
+extra crosses the container boundary.
+
+The gate is per-route rather than per-provider on purpose. It means DeepSeek
+pays the chunk overhead for a reading its assistant events already gave it —
+accepted, because the alternative is a `serviceId === "zai"` test that puts
+provider knowledge in the worker and silently mis-reads the next provider with
+GLM's shape.
 
 Precedence is unchanged: `iterations` first, then the last per-call reading from
-either event, never the result totals. Nested subagent events (a
-`parent_tool_use_id` on either the assistant event or the frame) are excluded,
-and zero/output-only usage is ignored rather than written, so a provider that
-zeroes one source cannot empty a reading the other supplied. The turn-wide
-result totals remain the billing source and are untouched.
+either event, never the result totals. Within a call the wire order is
+`assistant` then the closing `message_delta`, so "latest wins" resolves to the
+delta — the protocol's final figure. Both orderings and the agreement between
+the two sources are measured, not assumed: on DeepSeek under the flag the
+assistant event and the delta read exactly 168 + 25,216 on the last call
+(2026-08-17). Nested subagent events (a `parent_tool_use_id` on either the
+assistant event or the frame) are excluded — defensively for the frames, since
+every frame observed under the flag had it null, including on a turn that ran a
+subagent. Zero and output-only usage is ignored rather than written, so a
+provider that zeroes one source cannot empty a reading the other supplied. The
+turn-wide result totals remain the billing source and are untouched.
+
+Two limits are worth naming. **A provider that reports usage in neither
+per-call place** still falls through to `turnContextTokens()`'s sum and can
+therefore over-read — the bug class is narrowed to unmeasured providers, not
+eliminated. And the reading is cleared at `run()`, `sendUserMessage()` and each
+result, but **not on the adoption path** (`turn-adoption.ts` attaches listeners
+without going through either entry point), so a turn adopted after an abnormal
+end can inherit the previous turn's reading. That is pre-existing behaviour from
+the DeepSeek fix; the delta source makes a stale value more likely to be
+populated.
 
 ## Authoritative context window from `result.modelUsage.contextWindow`
 

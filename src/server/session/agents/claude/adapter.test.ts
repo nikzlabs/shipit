@@ -774,6 +774,60 @@ describe("ClaudeAdapter", () => {
     expect((events[2] as any).tokens).toMatchObject({ input: 16_511, cacheRead: 33_216 });
   });
 
+  // DeepSeek's shape once the flag applies to it too: BOTH sources are
+  // populated, and the real wire order within a call is `assistant` first then
+  // the closing `message_delta` — so the delta is what "latest wins" resolves
+  // to. Measured 2026-08-17 on `deepseek-v4-flash`: the two agree exactly, and
+  // the last call read 168 + 25,216.
+  it("takes the closing delta when a provider populates both sources", () => {
+    const inner = new FakeInnerProcess();
+    const adapter = new ClaudeAdapter(inner as any);
+    const events: unknown[] = [];
+    adapter.on("event", (e) => events.push(e));
+
+    inner.emit("event", {
+      type: "assistant",
+      message: {
+        content: [{ type: "text", text: "first call" }],
+        usage: { input_tokens: 25_195, cache_read_input_tokens: 0, output_tokens: 0 },
+      },
+    } satisfies ClaudeEvent);
+    inner.emit("event", {
+      type: "stream_event",
+      event: {
+        type: "message_delta",
+        usage: { input_tokens: 25_195, cache_read_input_tokens: 0, output_tokens: 145 },
+      },
+    } satisfies ClaudeEvent);
+    inner.emit("event", {
+      type: "assistant",
+      message: {
+        content: [{ type: "text", text: "last call" }],
+        usage: { input_tokens: 168, cache_read_input_tokens: 25_216, output_tokens: 0 },
+      },
+    } satisfies ClaudeEvent);
+    inner.emit("event", {
+      type: "stream_event",
+      event: {
+        type: "message_delta",
+        usage: { input_tokens: 168, cache_read_input_tokens: 25_216, output_tokens: 263 },
+      },
+    } satisfies ClaudeEvent);
+    inner.emit("event", {
+      type: "result",
+      subtype: "success",
+      session_id: "deepseek-with-frames",
+      usage: {
+        input_tokens: 25_363,
+        output_tokens: 408,
+        cache_read_input_tokens: 25_216,
+        iterations: [],
+      },
+    } satisfies ClaudeEvent);
+
+    expect((events[2] as any).contextTokens).toBe(25_384);
+  });
+
   it("ignores message_delta frames from a subagent call", () => {
     const inner = new FakeInnerProcess();
     const adapter = new ClaudeAdapter(inner as any);
