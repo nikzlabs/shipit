@@ -167,7 +167,18 @@ live models.dev ✅ and the recorder captures of the CLI itself ✅:
   notice low-cost models, such as Haiku, Nano, or Flash, in your usage
   history. OpenCode uses these models to generate session titles."
 
-## 6. Proposed catalogue shape (assessment, not implementation)
+## 6. The catalogue shape — proposed here, and now built
+
+**Built on 2026-08-17**, as described below, with three departures the section
+records inline: the launch `carriers` gate (req 5), the model rows that gate
+excludes, and `nativeService` staying deferred. Key files:
+`src/server/shared/catalogue/services.ts` (the rows),
+`catalogue/types.ts` (`opencode-go-usage`),
+`catalogue/model-identity.ts` (Zen's Haiku spelling),
+`client/components/Settings/ServicesPanel.tsx` (the Go hazard notice),
+`client/components/ServiceLogo.tsx`, `orchestrator/egress-allowlist.ts` +
+`egress-firewall.ts` (`opencode.ai`). Remaining work:
+[checklist.md](./checklist.md).
 
 - One new `ServiceDef` `{ id: "opencode", name: "OpenCode" }` with two modes,
   matching the two products. **The name is "OpenCode", not "OpenCode Zen"**
@@ -179,18 +190,46 @@ live models.dev ✅ and the recorder captures of the CLI itself ✅:
   surfaces don't deduplicate the two modes into one, hiding Go behind an
   existing Zen key:
   - `{ kind: "key" }` — Zen PAYG. `credentials: [{ via: "string", storageEnv:
-    "OPENCODE_API_KEY" }]`. Endpoints per style: `A_MSG:
+    "OPENCODE_ZEN_API_KEY" }]`. Endpoints per style: `A_MSG:
     "https://opencode.ai/zen"` (Claude-style base, per the docs/268 `/v1`
     convention), `O_RESP: "https://opencode.ai/zen/v1"`, `O_CC:
     "https://opencode.ai/zen/v1"`. Free models are ordinary $0 rows of this
     mode (resolved requirements question); the anonymous no-credential tier is
     out of scope.
+    - **As built**: the storage names are `OPENCODE_API_KEY` (Zen) and
+      `OPENCODE_GO_API_KEY` (Go). Two names for one pasted key is what keeps
+      the two credentials separable, and it also answers the dedup worry above
+      — the credential surfaces are keyed by `(service, mode)`, so a stored Zen
+      key cannot stand in for a Go one. Zen's name is the vendor's own, as
+      DeepSeek's row uses `DEEPSEEK_API_KEY`, so a deployment exporting the
+      documented variable has it adopted at boot (docs/252 req 20). That it is
+      ALSO a name `HARNESS_CREDENTIAL_VARS.opencode` scrubs is safe rather than
+      circular, and the reason is worth stating because it looks like a
+      collision: the scrub empties the SPAWN env, so the CLI cannot auto-detect
+      the key and out-prefer ShipIt's provider block, while the adapter reads
+      the secret from its own `process.env` and writes
+      `OPENCODE_PROVIDER_API_KEY` (`opencode/adapter.ts`). `O_RESP` is declared
+      by neither mode as built — see the carriers note below. The free rows
+      stay unauthored: each duplicates a paid row in rate-limited form, and
+      none is a frontier coding model, which is the subset rule the list
+      follows.
   - `{ kind: "sub", quota: <new "opencode-go-usage"> }` — OpenCode Go, the
     GLM-coding-plan shape (sub-via-string, same key). Endpoints as above with
-    `/zen/go`. Quota: **decided (req 6)** — the planning#339 shape: a new
-    `QuotaIntegrationId` (`opencode-go-usage`) whose reader reports nothing
-    until a per-key source exists, with generic 429 refusal-memory benching;
-    the Go settings surface carries the "Use balance" warning (§5, §8).
+    `/zen/go`. Quota: **decided (req 6)** — a new `QuotaIntegrationId`
+    (`opencode-go-usage`) that reports nothing until a per-key source exists,
+    with generic 429 refusal-memory benching; the Go settings surface carries
+    the "Use balance" warning (§5, §8). That is the state GLM's plan was in
+    before planning#339 wrote its reader — with one difference worth keeping in
+    view: GLM was waiting for a reader somebody could write, and here there is
+    no usage API to read at all.
+- **The two-mode shape is what ships, and req 7 says it is not the end state.**
+  Nik's PR review: one key and one authentication flow serve both products, so
+  asking the user which product their key is for — and asking for the same key
+  twice — is a distinction ShipIt invented. Anthropic earns its mode choice
+  because a subscription and an API key authenticate differently; OpenCode does
+  not. Deferred by the same answer to a follow-up after this PR merges; the
+  open design questions are in [checklist.md](./checklist.md). Until then the
+  two slots take the same pasted key, which works.
 - **Per-model `styles` come straight from the vendor's per-model endpoint
   rows** (§3) — the live pass measured that the gateway does not translate
   across styles, so a model is declared under exactly its published style.
@@ -199,9 +238,51 @@ live models.dev ✅ and the recorder captures of the CLI itself ✅:
   indicated: an ordinary API key that works wherever the wire format does is
   the exact "absent means any harness with a string target" case — subject to
   the real-key pair runs in §7.
+  - **As built, both credentials DO carry `carriers: ["opencode"]`, and it is
+    a launch gate rather than a wire fact.** Req 5 offers a cross-harness pair
+    only after live verification shows it works, and the paid sweep in §7 needs
+    a key nobody has run yet; the header matrix says the credential *would*
+    authenticate on all three harnesses, which is not the same claim. So the
+    service launches on the harness whose own CLI exercises it, and the gate
+    lifts one measured pair at a time by deleting the line. Two consequences
+    worth stating: Zen's Claude-family rows are offered on OpenCode only even
+    though Claude Code speaks their style, and the `@ai-sdk/openai` rows
+    (GPT-5.6 Sol/Terra/Luna, Grok 4.6, Go's Luna and Grok 4.5) are **not
+    authored at all** — `openai-responses` is Codex's style alone, so under the
+    gate they would be rows no harness could reach.
+  - **Row-authoring source, as built**: the vendor's own per-model endpoint
+    table (`opencode.ai/docs/zen`, `/docs/go`) cross-checked against live
+    models.dev — they agree everywhere except the Go Qwen rows, where the docs
+    say `/messages` and models.dev says chat-completions. Every authored id was
+    then re-verified per product with a no-key probe: the registry check runs
+    BEFORE the auth check, so a served id answers `AuthError: Missing API key`
+    and an absent one `ModelError`. Negative controls: `glm-5.3` and
+    `qwen3.8-max` are ModelError at Zen, `claude-opus-5` and `grok-4.6` are
+    ModelError at Go. (One operational note from that pass: `opencode.ai` sits
+    behind Cloudflare and answers `403 error code: 1010` to a request with no
+    User-Agent. Both CLIs send one; a bare `fetch` probe must.)
 - `HarnessDef.opencode` gains `nativeService: "opencode"` — the follow-up
   docs/268's catalogue row deferred. Combined with the `cost` field (§5), the
   metered-spend column can use the harness's own figure on native + key.
+  - **Done, and it needed three consumers fixed first** — the whole content of
+    this line is that "native service" had been standing in for "the vendor's
+    account machinery owns this", which is true of Anthropic and OpenAI and
+    false here: OpenCode's native service is a pasted key with no login flow,
+    and an unshaped OpenCode spawn cannot authenticate at all (the adapter
+    refuses a turn with no routing). Each of the three now asks
+    `loginIntegrationForService` as well:
+    - `session-agent-env.ts` — the planning#353 write. It skipped settling a
+      selection-less turn's model onto the row for the native vendor, because
+      the older fallback reaches the same ACCOUNT credential there. Left
+      unfixed, naming a native service would have sent a selection-less
+      OpenCode turn into a spawn with no credential.
+    - `session-agent-env.ts` — the blocked-turn subject, which would otherwise
+      say "every connected OpenCode account…" about a service with no accounts.
+    - `credential-failure-policy.ts` — `vendorOwnedRecovery`, which would have
+      sent a refused OpenCode credential down a heal path that heals nothing
+      and re-selected it every turn (the GLM bug the axis exists for).
+    - and `services/settings.ts`, where the account verbs must keep answering
+      400 for OpenCode.
 - The OAuth console login (follow-up under req 4): new `LoginIntegrationId`
   ("opencode-console"), an auth manager, and the docs/268 credential-home
   symlink caveats apply (`AGENT_CREDENTIAL_PATHS` already lists

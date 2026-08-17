@@ -51,6 +51,7 @@ export const EGRESS_TIER_A_RESOLVE_HOSTS: readonly string[] = [
   "api.z.ai",
   "openrouter.ai",
   "ai-gateway.vercel.sh",
+  "opencode.ai",
   // Package registries
   "registry.npmjs.org",
   "registry.yarnpkg.com",

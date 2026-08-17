@@ -212,6 +212,50 @@ const VERCEL_PRICES = {
 } as const;
 
 /**
+ * OpenCode Zen's OWN list rates, per million tokens, read from live models.dev
+ * and the vendor's own `opencode.ai/docs/zen` model table on **2026-08-17**
+ * (docs/272).
+ *
+ * Zen is a gateway sold "at cost", and — exactly like the two gateways above —
+ * that does NOT make it a pass-through: it prices **Sonnet 5 at 2/10 where
+ * Anthropic charges 3/15**, and **DeepSeek V4 Pro at 1.74/3.84 where DeepSeek
+ * charges 0.435/0.87**. So these are its own constants, and a row reuses an
+ * upstream one only where the two were compared and found equal (Opus 5, Fable
+ * 5, Haiku 4.5, Kimi K3 — all identical to the vendor's published rate).
+ *
+ * `cacheWrite === input` wherever the source publishes no cache-write rate —
+ * the same convention DeepSeek, GLM and OpenRouter use above (a cache miss is
+ * billed at the ordinary input rate), and a real answer rather than a missing
+ * one.
+ */
+const OPENCODE_ZEN_PRICES = {
+  // Anthropic's own rate for Opus 5, Fable 5 and Haiku 4.5 — checked, equal, so
+  // those three rows reuse `ANTHROPIC_PRICES`. Sonnet 5 is where Zen diverges.
+  sonnet5: { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 },
+  v4flash: { input: 0.14, output: 0.28, cacheRead: 0.028, cacheWrite: 0.14 },
+  v4pro: { input: 1.74, output: 3.84, cacheRead: 0.145, cacheWrite: 1.74 },
+  glm52: { input: 1.4, output: 4.4, cacheRead: 0.26, cacheWrite: 1.4 },
+  kimiK3: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3 },
+} as const;
+
+/**
+ * OpenCode Go's list rates, per million tokens, same sources and date.
+ *
+ * Go is a **subscription**, so under {@link ModelPrice} these are req 16's
+ * "would have cost" comparison and never a charge — which is also why they may
+ * differ from Zen's figures for the same model without either being wrong: Go
+ * publishes its own per-model rate for the usage-cap arithmetic (DeepSeek V4
+ * Flash 0.22/0.66 here against Zen's 0.14/0.28, V4 Pro 0.66/1.98 against Zen's
+ * 1.74/3.84).
+ */
+const OPENCODE_GO_PRICES = {
+  v4flash: { input: 0.22, output: 0.66, cacheRead: 0.007, cacheWrite: 0.22 },
+  v4pro: { input: 0.66, output: 1.98, cacheRead: 0.022, cacheWrite: 0.66 },
+  glm5x: { input: 1.4, output: 4.4, cacheRead: 0.26, cacheWrite: 1.4 },
+  kimiK3: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3 },
+} as const;
+
+/**
  * What Codex's app-server assigns the GPT-5 family, which is what ShipIt
  * reports and therefore what the dial must show on the first frame. OpenAI
  * advertises larger maxima (400K for GPT-5.2/5.3-codex/5.4-mini, 1.05M for the
@@ -631,6 +675,170 @@ export const SERVICES = [
           { id: "google/gemini-3.7-flash", label: "Gemini 3.7 Flash", ...MODEL_IDENTITIES.gemini37flash, styles: [O_CC, O_RESP], contextWindow: ONE_M, price: VERCEL_PRICES.gemini37flash },
           { id: "moonshotai/kimi-k3", label: "Kimi K3", ...MODEL_IDENTITIES.kimiK3, styles: [A_MSG, O_CC, O_RESP], contextWindow: ONE_M, price: VERCEL_PRICES.kimiK3 },
           { id: "alibaba/qwen3.8-max", label: "Qwen3.8 Max", ...MODEL_IDENTITIES.qwen38max, styles: [A_MSG, O_CC, O_RESP], contextWindow: ONE_M, price: VERCEL_PRICES.qwen38max },
+        ],
+      },
+    ],
+  },
+  {
+    // docs/272 — OpenCode's OWN hosted inference, and the first service whose
+    // native harness is neither Claude Code nor Codex.
+    //
+    // **The name is "OpenCode", not "OpenCode Zen"**: one account and one key
+    // buy two products — Zen (pay-as-you-go credits) and Go ($10/month with
+    // usage caps) — so the service row carries both and the billing modes are
+    // where "Zen" and "Go" belong. A picker label naming only the metered
+    // product would mislabel every subscription row.
+    //
+    // Both modes take the SAME pasted key (✅ vendor docs for both products,
+    // and models.dev declares `OPENCODE_API_KEY` on both providers), which the
+    // GLM precedent already supports — one secret, two `(service, mode)` rows,
+    // each with its own `storageEnv` so the two credentials stay separable.
+    id: "opencode",
+    name: "OpenCode",
+    modes: [
+      {
+        kind: "key",
+        // OpenCode Zen. ✅ 2026-08-17, live against the real endpoints: every id
+        // below answers `AuthError: Missing API key` on this base while a bogus
+        // id answers `ModelError: Model … is not supported` — the registry check
+        // runs BEFORE the auth check, so a no-key probe proves the id is served
+        // here. Negative controls on the same run: `glm-5.3` and `qwen3.8-max`
+        // are `ModelError` at Zen (they are Go-only), and `claude-opus-5` is
+        // `ModelError` at Go.
+        //
+        // The two Anthropic-style bases differ by exactly `/v1` and that is not
+        // a typo: Claude Code appends `/v1/messages` to `A_MSG`, while
+        // chat-completions consumers append only `/chat/completions`, so that
+        // base carries its own `/v1`. (The OpenCode adapter appends `/v1` to an
+        // `A_MSG` base itself — docs/268.)
+        endpoints: {
+          [A_MSG]: "https://opencode.ai/zen",
+          [O_CC]: "https://opencode.ai/zen/v1",
+        },
+        credentials: [
+          {
+            via: "string",
+            // The vendor's own variable name, as DeepSeek's row uses
+            // `DEEPSEEK_API_KEY` — so a deployment that exports the documented
+            // name has its key adopted as an ordinary credential at boot
+            // (docs/252 req 20). It is deliberately also a name
+            // `HARNESS_CREDENTIAL_VARS.opencode` scrubs from OpenCode spawns,
+            // and that is safe rather than circular: the scrub empties the
+            // SPAWN env (so the CLI cannot auto-detect it and out-prefer the
+            // provider block), while the adapter reads the secret from its own
+            // `process.env` and writes it to `OPENCODE_PROVIDER_API_KEY`
+            // (`opencode/adapter.ts`). Same shape DeepSeek already ships.
+            storageEnv: "OPENCODE_API_KEY",
+            // ✅ 2026-08-17, measured by invalid-key differential ("Invalid API
+            // key" proves the header was read, "Missing API key" proves it was
+            // ignored): `/messages` reads `x-api-key` ONLY and
+            // `/chat/completions` reads `Authorization: Bearer` ONLY. Both match
+            // the carrying harness's own default target, so no `targetOverride`
+            // is needed anywhere.
+            //
+            // `carriers` is a LAUNCH GATE, not a wire fact (docs/272 req 5:
+            // cross-harness pairs are offered "only after live verification
+            // shows it works", and the paid-turn sweep needs a real key nobody
+            // has run yet). OpenCode is the pairing this service's own CLI
+            // exercises, so it launches alone; deleting this line is what the
+            // §7 verification pass does for Claude Code, one measured pair at a
+            // time. Until then a Zen key cannot make an Anthropic-style row
+            // eligible on Claude Code.
+            carriers: ["opencode"],
+          },
+        ],
+        retired: [],
+        // The maintained subset is the **frontier coding set that overlaps
+        // ShipIt's existing families** (docs/272 requirements, 2026-08-17
+        // receipt) — Zen advertises 63 current models and most of them are
+        // older generations, free-tier variants, or vendors ShipIt lists
+        // nowhere else.
+        //
+        // **Style is per model and the vendor publishes it**, in the endpoint
+        // table on `opencode.ai/docs/zen` and as `provider.npm` in models.dev
+        // (the two agree for every row below, checked 2026-08-17):
+        // `@ai-sdk/anthropic` → `/messages`, `@ai-sdk/openai` → `/responses`,
+        // no entry → `/chat/completions`. It is NOT a free choice: ✅ live, the
+        // gateway does not translate between styles — a chat-completions-upstream
+        // model asked over another style reaches the upstream and fails with its
+        // own 400.
+        //
+        // Deliberately NOT here, and each for a stated reason:
+        //   - **The `@ai-sdk/openai` rows** (GPT-5.6 Sol/Terra/Luna, Grok 4.6):
+        //     `openai-responses` is Codex's style and Codex's alone, so under
+        //     the `carriers` gate above they would be rows no harness could
+        //     reach. They arrive with the Codex pair verification, together.
+        //   - **Gemini**: served at `/v1/models/<id>:streamGenerateContent`
+        //     with `@ai-sdk/google` — a fourth wire format ShipIt has no
+        //     `ApiStyle` for.
+        //   - **The free tier** (`*-free`, ~7 models): offerable as ordinary $0
+        //     rows of this mode (2026-08-17 receipt) and left unauthored — each
+        //     duplicates a paid row in a rate-limited form, and none is a
+        //     frontier coding model, which is the subset rule this list follows.
+        models: [
+          { id: "claude-opus-5", label: "Opus 5", ...MODEL_IDENTITIES.opus5, styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.opus5 },
+          // Zen undercuts Anthropic's own rate here (2/10 against 3/15) — the
+          // reason this service carries its own price constants at all.
+          { id: "claude-sonnet-5", label: "Sonnet 5", ...MODEL_IDENTITIES.sonnet5, styles: [A_MSG], contextWindow: ONE_M, price: OPENCODE_ZEN_PRICES.sonnet5 },
+          { id: "claude-fable-5", label: "Fable 5", ...MODEL_IDENTITIES.fable5, styles: [A_MSG], contextWindow: ONE_M, price: ANTHROPIC_PRICES.fable5 },
+          // Zen spells Haiku `claude-haiku-4-5` where Anthropic's own row is
+          // `haiku`; both reduce to one canonical model through
+          // `MODEL_ID_ALIASES`.
+          { id: "claude-haiku-4-5", label: "Haiku 4.5", ...MODEL_IDENTITIES.haiku45, styles: [A_MSG], contextWindow: { default: 200_000 }, price: ANTHROPIC_PRICES.haiku45 },
+          { id: "kimi-k3", label: "Kimi K3", ...MODEL_IDENTITIES.kimiK3, styles: [O_CC], contextWindow: ONE_M, price: OPENCODE_ZEN_PRICES.kimiK3 },
+          { id: "deepseek-v4-flash", label: "DeepSeek V4 Flash", ...MODEL_IDENTITIES.deepseekV4Flash, styles: [O_CC], contextWindow: ONE_M, price: OPENCODE_ZEN_PRICES.v4flash },
+          { id: "deepseek-v4-pro", label: "DeepSeek V4 Pro", ...MODEL_IDENTITIES.deepseekV4Pro, styles: [O_CC], contextWindow: ONE_M, price: OPENCODE_ZEN_PRICES.v4pro },
+          { id: "glm-5.2", label: "GLM-5.2", ...MODEL_IDENTITIES.glm52, styles: [O_CC], contextWindow: ONE_M, price: OPENCODE_ZEN_PRICES.glm52 },
+        ],
+      },
+      {
+        kind: "sub",
+        // OpenCode Go — the $10/month plan, authenticated by the same pasted
+        // key as Zen (sub-via-string, the GLM coding-plan shape). Go entitlement
+        // is account-side in the console; there is no separate Go key, and only
+        // one member per workspace can subscribe ✅ vendor docs.
+        //
+        // Quota: declared, unread — docs/272 req 6, the human's decision on the
+        // two honest options. Go's caps are dollar-denominated (5h $12, weekly
+        // $30, monthly $60 ✅ vendor docs) and there is no per-key usage API to
+        // read them from (plan.md §8), so ShipIt shows no remaining-quota figure
+        // and reacts to the service's own 429 like any other subscription.
+        quota: "opencode-go-usage",
+        endpoints: {
+          [O_CC]: "https://opencode.ai/zen/go/v1",
+        },
+        credentials: [
+          {
+            via: "string",
+            // Its own name even though the SECRET is the same pasted key as
+            // Zen's: one `storageEnv` per `(service, mode)` is the catalogue
+            // invariant, and it is what keeps the two products two credential
+            // rows in Settings rather than Go hiding behind a stored Zen key.
+            // The GLM precedent again — `ZAI_CODING_PLAN_KEY` / `ZAI_API_KEY`.
+            storageEnv: "OPENCODE_GO_API_KEY",
+            // Same launch gate, same wire facts as the Zen credential above.
+            carriers: ["opencode"],
+          },
+        ],
+        retired: [],
+        // Go's published list is 20 models of open-weight coding families; these
+        // are the ones overlapping ShipIt's existing identities. Every id ✅
+        // 2026-08-17 against the `/zen/go` base by the same registry probe.
+        //
+        // Not here: `gpt-5.6-luna` and `grok-4.5` (`@ai-sdk/openai`, so
+        // Codex-only — see the Zen mode), MiMo/MiniMax/Hy3 (families ShipIt
+        // lists nowhere else), and **Qwen3.8 Max, which the two sources
+        // disagree about**: the vendor's Go endpoint table publishes it under
+        // `/messages` (`@ai-sdk/anthropic`) while models.dev still has it as
+        // chat-completions. Declaring the wrong one is a 400 on every turn, and
+        // the gateway does not translate, so it waits for a real key to settle
+        // it — the first item of docs/272 plan.md §7.
+        models: [
+          { id: "glm-5.3", label: "GLM-5.3", ...MODEL_IDENTITIES.glm53, styles: [O_CC], contextWindow: ONE_M, price: OPENCODE_GO_PRICES.glm5x },
+          { id: "glm-5.2", label: "GLM-5.2", ...MODEL_IDENTITIES.glm52, styles: [O_CC], contextWindow: ONE_M, price: OPENCODE_GO_PRICES.glm5x },
+          { id: "kimi-k3", label: "Kimi K3", ...MODEL_IDENTITIES.kimiK3, styles: [O_CC], contextWindow: ONE_M, price: OPENCODE_GO_PRICES.kimiK3 },
+          { id: "deepseek-v4-pro", label: "DeepSeek V4 Pro", ...MODEL_IDENTITIES.deepseekV4Pro, styles: [O_CC], contextWindow: ONE_M, price: OPENCODE_GO_PRICES.v4pro },
+          { id: "deepseek-v4-flash", label: "DeepSeek V4 Flash", ...MODEL_IDENTITIES.deepseekV4Flash, styles: [O_CC], contextWindow: ONE_M, price: OPENCODE_GO_PRICES.v4flash },
         ],
       },
     ],

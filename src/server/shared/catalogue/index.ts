@@ -371,6 +371,13 @@ export function modeAllowsMultipleCredentials(billingMode: BillingMode): boolean
  * planning#339, when `ZaiLimitsProvider` gave GLM's coding plan a reader; until
  * then GLM declared an id nothing read and reported nothing.
  *
+ * `opencode-go-usage` is the other kind of absence, and the distinction is worth
+ * keeping: it is missing **by decision, not by backlog** (docs/272 req 6). GLM's
+ * id was waiting for a reader somebody could write; OpenCode publishes no
+ * per-key usage API for a reader to read, so Go reports nothing and ShipIt
+ * reacts to the service's own 429 instead. It joins this list if the vendor ever
+ * ships a usage endpoint.
+ *
  * One list, because "does this mode report a quota" is asked in two places that
  * must agree: whether to offer failover CUTOFFS (a percentage of a number
  * nobody reports can never fire — the dishonesty req 10 refuses a surface

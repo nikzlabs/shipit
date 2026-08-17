@@ -30,7 +30,7 @@
  */
 
 import type { BillingMode } from "../shared/catalogue/index.js";
-import { getService, nativeServiceForHarness } from "../shared/catalogue/index.js";
+import { getService, loginIntegrationForService, nativeServiceForHarness } from "../shared/catalogue/index.js";
 import type { SessionInfo } from "../shared/types.js";
 
 /** The session fields that answer "what is this turn billed to?". */
@@ -86,7 +86,17 @@ export function credentialFailurePolicyForRoute(
     billingMode,
     serviceId,
     stopsOnFailure: billingMode === "key",
-    vendorOwnedRecovery: serviceId === undefined || serviceId === nativeService,
+    // "Native" stopped implying "has recovery machinery" the moment OpenCode
+    // gained a native service (docs/272): that service is authenticated by a
+    // pasted key, with no login flow, so there is no OAuth healer to run and no
+    // sign-in a toast could offer. The LOGIN INTEGRATION is what declares the
+    // machinery, so it is the second condition — without it a refused OpenCode
+    // credential would take the heal path (which heals nothing), skip the
+    // set-aside, and be re-selected every turn: the GLM bug this axis exists
+    // for, reintroduced by a service row.
+    vendorOwnedRecovery:
+      serviceId === undefined
+      || (serviceId === nativeService && loginIntegrationForService(serviceId) !== undefined),
   };
 }
 

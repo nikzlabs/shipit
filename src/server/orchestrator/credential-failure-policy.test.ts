@@ -40,6 +40,29 @@ describe("credentialFailurePolicyFor — docs/252 req 12", () => {
     });
   });
 
+  it("vendor-owned recovery needs account machinery, not just a native service (docs/272)", () => {
+    // OpenCode's native service is key-authenticated with no login flow, so
+    // there is no OAuth healer to run and no sign-in a toast could start. A
+    // refused OpenCode credential must take ShipIt's own set-aside path — the
+    // one GLM's plan takes — or the dead credential is re-selected every turn.
+    expect(credentialFailurePolicyForRoute("opencode", "sub", "opencode")).toMatchObject({
+      stopsOnFailure: false,
+      vendorOwnedRecovery: false,
+    });
+    // The login-backed natives keep the heal path exactly as before.
+    expect(credentialFailurePolicyForRoute("claude", "sub", "anthropic")).toMatchObject({
+      vendorOwnedRecovery: true,
+    });
+    expect(credentialFailurePolicyForRoute("codex", "sub", "openai")).toMatchObject({
+      vendorOwnedRecovery: true,
+    });
+    // A turn with no service pinned still answers true — the unchanged
+    // pre-feature fallback.
+    expect(credentialFailurePolicyForRoute("opencode", undefined, undefined)).toMatchObject({
+      vendorOwnedRecovery: true,
+    });
+  });
+
   it("ignores the dead provider_route_* columns on the session fallback (docs/260-turn-level-account-routing req 2)", () => {
     // Nothing writes those columns any more, so a value there is a pre-260
     // leftover. Letting it override the live selection was a hidden

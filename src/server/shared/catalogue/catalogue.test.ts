@@ -55,6 +55,7 @@ import {
   allLoginIntegrations,
   credentialHarnessForLogin,
   harnessesForLoginIntegration,
+  harnessForNativeService,
   loginIntegrationForService,
   serviceForLoginIntegration,
 } from "./index.js";
@@ -409,6 +410,10 @@ describe("quota integrations that are implemented, and those that can be re-read
     ["anthropic", true, true],
     ["openai", true, false],
     ["zai", true, true],
+    // OpenCode Go is the case with no reader to write: the vendor publishes no
+    // per-key usage API at all (docs/272 req 6), so it reports nothing by
+    // decision rather than while waiting for one.
+    ["opencode", false, false],
   ])("%s: reports quota %s, refreshable %s", (serviceId, reports, refreshable) => {
     expect(modeReportsQuota(serviceId, "sub")).toBe(reports);
     expect(subQuotaRefreshable(serviceId)).toBe(refreshable);
@@ -1076,6 +1081,78 @@ describe("the launch catalogue is a requirement, not a capability (req 15)", () 
     }
   });
 
+  it("carries OpenCode's two products as two modes of one service (docs/272)", () => {
+    const opencode = CATALOGUE.find((s) => s.id === "opencode");
+    // The NAME is "OpenCode", never "OpenCode Zen": one row carries both
+    // products, so a label naming the metered one would mislabel every Go row.
+    expect(opencode?.name).toBe("OpenCode");
+    expect(opencode?.modes.map((m) => m.kind).sort()).toEqual(["key", "sub"]);
+    // Each product at its own base, and the Anthropic-style base deliberately
+    // WITHOUT the `/v1` its consumers append.
+    expect(resolveEndpoint("opencode", { serviceId: "opencode", billingMode: "key", modelId: "claude-opus-5" }))
+      .toBe("https://opencode.ai/zen");
+    expect(resolveEndpoint("opencode", { serviceId: "opencode", billingMode: "key", modelId: "glm-5.2" }))
+      .toBe("https://opencode.ai/zen/v1");
+    expect(resolveEndpoint("opencode", { serviceId: "opencode", billingMode: "sub", modelId: "glm-5.3" }))
+      .toBe("https://opencode.ai/zen/go/v1");
+  });
+
+  it("prices OpenCode's models as OpenCode, not as the vendors that make them", () => {
+    // Zen is sold "at cost" and is still not a pass-through — the same
+    // correction the two gateways forced. Naming the pairs is the only check
+    // that can see it.
+    const zen = (modelId: string) => getModel({ serviceId: "opencode", billingMode: "key", modelId });
+    const go = (modelId: string) => getModel({ serviceId: "opencode", billingMode: "sub", modelId });
+    // Sonnet 5 undercuts Anthropic's own published rate.
+    expect(zen("claude-sonnet-5")!.price.input).toBeLessThan(
+      getModel({ serviceId: "anthropic", billingMode: "key", modelId: "claude-sonnet-5" })!.price.input,
+    );
+    // DeepSeek V4 Pro is marked up over DeepSeek's own.
+    expect(zen("deepseek-v4-pro")!.price.input).toBeGreaterThan(
+      getModel({ serviceId: "deepseek", billingMode: "key", modelId: "deepseek-v4-pro" })!.price.input,
+    );
+    // And the two products disagree with each other: Go publishes its own
+    // per-model rate for the usage-cap arithmetic.
+    expect(go("deepseek-v4-pro")!.price.input).not.toBe(zen("deepseek-v4-pro")!.price.input);
+  });
+
+  it("names OpenCode's own inference as its harness's native service (docs/272)", () => {
+    // …and the thing that makes that safe: three readers used "native" to mean
+    // "the vendor's account machinery owns this", which is false here. The
+    // question they ask now is the login integration, and this service has
+    // none — a pasted key with no sign-in flow.
+    expect(HARNESSES.find((h) => h.id === "opencode")?.nativeService).toBe("opencode");
+    expect(loginIntegrationForService("opencode")).toBeUndefined();
+    expect(harnessForNativeService("opencode")).toBe("opencode");
+  });
+
+  // Go's "declares a quota integration and reports nothing" is NOT asserted
+  // here: it is a row of the `subQuotaRefreshable` matrix above
+  // (`["opencode", false, false]`), which is where every service's answer to
+  // that pair of questions lives. Two places would be two answers to drift.
+
+  it("offers OpenCode's inference on OpenCode alone until each pair is verified", () => {
+    // docs/272 req 5 — cross-harness routing is in scope and each pair ships
+    // only after a live turn proves it. The header matrix is measured
+    // (`/messages` reads x-api-key, `/chat/completions` reads Bearer), but the
+    // paid-turn sweep needs a real key, so both modes' credentials carry
+    // `carriers: ["opencode"]` as the launch gate. Deleting that line, one
+    // measured pair at a time, is what this assertion is here to make visible.
+    const zenKey = { serviceId: "opencode", billingMode: "key" as const, via: "string" as const };
+    const goKey = { serviceId: "opencode", billingMode: "sub" as const, via: "string" as const };
+    expect(eligibleEntriesForHarness("opencode", [zenKey]).length).toBeGreaterThan(0);
+    expect(eligibleEntriesForHarness("opencode", [goKey]).length).toBeGreaterThan(0);
+    for (const harness of ["claude", "codex"] as const) {
+      expect(eligibleEntriesForHarness(harness, [zenKey, goKey]), harness).toEqual([]);
+      expect(harnessSupportsService(harness, "opencode"), harness).toBe(false);
+    }
+    // The style join alone would have offered Zen's Claude rows to Claude Code
+    // — so the gate is doing real work rather than restating the join.
+    expect(
+      catalogueEntriesForHarness("claude").some((e) => e.service.id === "opencode"),
+    ).toBe(true);
+  });
+
   it("lets a gateway offer a vendor's models to someone with no account there", () => {
     // Reqs 2 and 6 behaving as specified, not a bug: OpenRouter's key reaches
     // Anthropic's models, and it reaches them under Claude Code.
@@ -1112,10 +1189,17 @@ describe("resolving a bare model id", () => {
   });
 
   it("reports every mode offering an id, so a migration can prefer one", () => {
+    // Three, and the third is the case this list exists for: OpenCode Zen
+    // (docs/272) serves Anthropic's models under **Anthropic's own ids**, not
+    // under a `provider/` namespace like the two gateways — so one bare id now
+    // names rows at two services. Catalogue order keeps Anthropic first, which
+    // is what makes a legacy bare id still resolve where it came from.
     expect(modesOfferingModel("claude-fable-5")).toEqual([
       { serviceId: "anthropic", billingMode: "sub" },
       { serviceId: "anthropic", billingMode: "key" },
+      { serviceId: "opencode", billingMode: "key" },
     ]);
+    expect(resolveModelSelection("claude-fable-5")?.serviceId).toBe("anthropic");
     expect(modesOfferingModel("nope")).toEqual([]);
   });
 });

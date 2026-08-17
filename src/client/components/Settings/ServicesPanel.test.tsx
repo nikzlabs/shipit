@@ -1764,6 +1764,47 @@ describe("the compact service card (docs/252 req 19)", () => {
 });
 
 /**
+ * docs/272 req 6 — the one standing hazard the panel says in words.
+ *
+ * OpenCode Go's caps are real and ShipIt can read none of them: the service
+ * publishes no per-key usage API, so the card carries no remaining figure, and
+ * the console's "Use balance" option turns cap exhaustion into metered Zen
+ * spend server-side with nothing on the wire for ShipIt to notice. A number
+ * cannot say that and a failure never arrives, so the sentence is the only
+ * surface left.
+ */
+describe("the OpenCode Go billing hazard (docs/272 req 6)", () => {
+  it("says it on the card that holds the Go credential", () => {
+    useSettingsStore.getState().setCredentialRoutes([
+      route({ id: "cred_go", serviceId: "opencode", billingMode: "sub", via: "string" }),
+    ]);
+    render(<ServicesPanel />);
+    const notice = screen.getByTestId("mode-notice-opencode:sub");
+    expect(notice).toHaveTextContent(/no per-key quota API/);
+    expect(notice).toHaveTextContent(/Use balance/);
+  });
+
+  it("says nothing on the metered Zen card, which has no such hazard", () => {
+    // The map is closed on purpose: req 19 deleted per-card prose because it
+    // printed on every service whether or not there was anything to say.
+    useSettingsStore.getState().setCredentialRoutes([
+      route({ id: "cred_zen", serviceId: "opencode", billingMode: "key", via: "string" }),
+    ]);
+    render(<ServicesPanel />);
+    expect(screen.getByTestId("service-card-opencode:key")).toBeInTheDocument();
+    expect(screen.queryByTestId("mode-notice-opencode:key")).not.toBeInTheDocument();
+  });
+
+  it("says it before the key is pasted, while the mode can still be refused", async () => {
+    render(<ServicesPanel />);
+    await userEvent.click(screen.getByTestId("services-add-empty"));
+    await userEvent.click(screen.getByTestId("add-service-option-opencode"));
+    await userEvent.click(screen.getByTestId("add-service-mode-sub"));
+    expect(await screen.findByTestId("mode-notice-opencode:sub")).toBeInTheDocument();
+  });
+});
+
+/**
  * docs/252 req 20's consequence for the panel: **"both shapes" means both
  * PRESENT, not both possible.**
  *

@@ -149,11 +149,22 @@ export const HARNESSES = [
     id: "opencode",
     name: "OpenCode",
     binary: "opencode",
-    // Deliberately no `nativeService` (explicit `undefined` so the union
-    // keeps the property accessible): OpenCode's own gateway (OpenCode Zen)
-    // is a real service that would need honest ServiceDef rows — follow-up,
-    // not part of docs/268.
-    nativeService: undefined,
+    // docs/272 — the follow-up docs/268 deferred: OpenCode's own inference
+    // (Zen + Go) now has honest `ServiceDef` rows, so this CLI has a native
+    // service. What it buys is attribution — on native + key the metered-spend
+    // column may use the harness's OWN figure, and OpenCode reports one (every
+    // Zen/Go response body carries a top-level `cost`, docs/272 §5).
+    //
+    // What it must NOT be read as: unlike claude and codex, this native service
+    // has no account machinery — no login flow, no OAuth heal — and an
+    // UNSHAPED OpenCode spawn cannot authenticate at all (the adapter refuses a
+    // turn with no routing). Three places used "native service" as a stand-in
+    // for "the vendor's account machinery owns this", and all three now ask
+    // `loginIntegrationForService` as well: `credential-failure-policy.ts`,
+    // `session-agent-env.ts` (the planning#353 write and the blocked-turn
+    // subject) and `services/settings.ts`. Adding a fourth reader of
+    // `nativeService` means asking which of the two questions it wants.
+    nativeService: "opencode",
     //
     // VERIFIED (docs/268, CLI 1.18.15, against a local HTTP recorder). A
     // custom provider block with `npm: "@ai-sdk/openai-compatible"` issues
