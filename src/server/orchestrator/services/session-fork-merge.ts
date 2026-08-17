@@ -26,6 +26,62 @@ import { restoreLfsAfterTreeRewrite, materializeLfsWithWarning } from "../git-lf
 import { stripRemoteUrlCredentials } from "../git-utils.js";
 import { resolveGitTreeUid } from "../../shared/git-tree-uid.js";
 
+/**
+ * Read a clone's `refs/remotes/origin/HEAD` as a full ref
+ * (`refs/remotes/origin/main`), or null when it isn't set.
+ */
+async function readOriginHead(dir: string): Promise<string | null> {
+  try {
+    const ref = (await safeSimpleGit(dir).raw(["symbolic-ref", "refs/remotes/origin/HEAD"])).trim();
+    return ref || null;
+  } catch {
+    // Not set (a `git init` sandbox, an older clone) — the caller deletes instead.
+    return null;
+  }
+}
+
+/**
+ * Give the fork the PARENT's answer to "what is origin's default branch?".
+ *
+ * `git clone --local <src>` points the new clone's `refs/remotes/origin/HEAD` at
+ * whatever branch the SOURCE has checked out. For a fork the source is a session
+ * workspace, so that is the parent session's own `shipit/<slug>` branch — and
+ * neither the `remote set-url` nor the `fetch --prune` above refreshes it
+ * (`origin/HEAD` is a local symbolic ref; only `git remote set-head` rewrites
+ * it). The stale ref then survives the prune whenever the parent's branch really
+ * does exist on the remote, which is exactly the case where the fork goes on to
+ * open a PR.
+ *
+ * That single ref is what `GitManager.getDefaultBranch()` reads, and it is the
+ * repo-wide answer to "what is the base branch?" — so the fork opened its PR
+ * against the parent's branch, rendered "Sync with shipit/<parent-slug>" instead
+ * of the default branch, and diffed against it too. A fork is a sibling of its
+ * parent, not a child of it: both target the repo's default branch.
+ *
+ * The parent already holds the right value: it was cloned from the bare cache,
+ * whose HEAD is the remote's default branch, so its `origin/HEAD` names main /
+ * master / trunk. Copying it is local and instant. `git remote set-head origin
+ * --auto` would ask the remote instead, and `git-utils.ts` avoids that call by
+ * name — it is a network round trip that can hang.
+ *
+ * When the parent has no `origin/HEAD` either, DELETE the fork's rather than
+ * leaving the wrong one: `getDefaultBranch()` then falls through to its
+ * `origin/main` / `origin/master` probe, which is the same answer the parent
+ * itself gives. Best-effort throughout — a fork must not fail over this.
+ */
+async function inheritOriginHead(parentDir: string, forkDir: string): Promise<void> {
+  const parentOriginHead = await readOriginHead(parentDir);
+  try {
+    await safeSimpleGit(forkDir).raw(
+      parentOriginHead
+        ? ["symbolic-ref", "refs/remotes/origin/HEAD", parentOriginHead]
+        : ["symbolic-ref", "--delete", "refs/remotes/origin/HEAD"],
+    );
+  } catch (err) {
+    console.warn("[git] fork: could not align origin/HEAD (non-fatal):", String(err));
+  }
+}
+
 /** Fork a session into a new clone with its own branch. */
 export async function forkSession(
   sessionManager: SessionManager,
@@ -201,6 +257,12 @@ export async function forkSession(
       console.warn("[git] fork: fetch origin failed (non-fatal):", String(err));
     }
   }
+  // Unconditional, not folded into the `remoteUrl` guard above: a fork of a
+  // remote-less session inherits the same wrong `origin/HEAD` (there its origin
+  // is the parent's workspace dir), and the parent has none to copy, so the
+  // delete branch is the one that runs.
+  await inheritOriginHead(activeSessionDir, newWorkspaceDir);
+
   const branchArgs = ["checkout", "-b", trimmed];
   if (startPoint) branchArgs.push(startPoint);
   await newGit.raw(branchArgs);
