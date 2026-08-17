@@ -47,9 +47,9 @@ table — a phase is checked off when its PR has merged.
       was wrong, and `usage` — read as a percentage — is the plan's ALLOWANCE, so the first
       draft would have reported a plan at 0.05% as fully spent. The fail-closed rule that an
       out-of-range value is a misread field rather than something to clamp is what caught it.
-      Req 15 is now met on GLM's quota. One question is left for the label, not the number:
-      the long window's absolute length is unestablished, so a monthly allowance would render
-      under `SubscriptionLimits`' "7d" heading.
+      Both windows carry a true `startedAt` derived from the payload's own `unit`/`number`:
+      `unit: 3` is hours (measured), `unit: 6` is weeks (confirmed by the plan holder).
+      Req 15 is now met on GLM's quota.
 
 ## Phase 5 — Credential-failure policy
 

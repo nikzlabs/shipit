@@ -60,14 +60,13 @@
  *     entry gained one the moment a request landed, resetting exactly 5.00 hours
  *     later. So an absent reset is "no window is open", not a malformed payload.
  *
- * `unit` + `number` define the window length. **`unit: 3` is hours** — measured:
- * `number: 5` produced a reset exactly five hours out. That is the only unit
- * value this reader claims to know. `unit: 6` (`number: 1`) is the long window,
- * whose absolute length is NOT established: its reset sat 4.85 days out and did
- * not move between probes, which fits a monthly cycle as readily as a weekly
- * one. So the long window is placed by its reset horizon and carries no
- * `startedAt`, leaving the badge to draw its elapsed marker against the 7d
- * constant it already assumes. See `docs/252-custom-models/plan.md`.
+ * `unit` + `number` define the window length, so both windows carry a real
+ * `startedAt` rather than one inferred from the badge's own constants.
+ * **`unit: 3` is hours** — measured: `number: 5` produced a reset exactly five
+ * hours out. **`unit: 6` is weeks** — confirmed by the plan holder rather than
+ * measured, because one reset boundary cannot tell a weekly cycle from a
+ * monthly one. The two provenances are recorded at {@link UNIT_MS}, which is
+ * where a third unit would have to justify itself.
  *
  * ## The parser still fails closed
  *
@@ -332,20 +331,29 @@ function pickFresher(a: WindowSnapshot | null, b: WindowSnapshot | null): Window
 // ---- Payload parsing ----
 
 /**
- * Milliseconds per `unit` value, for the unit values this reader has actually
- * measured — which today is exactly one.
+ * Milliseconds per `unit` value, for the unit values whose meaning is
+ * **established** — and the provenance of each differs, which is worth knowing
+ * before adding a third.
  *
- * `unit: 3` is hours: an entry with `number: 5` produced a `nextResetTime`
- * exactly five hours after the request that opened the window. Nothing else is
- * listed, because nothing else has been observed. `unit: 6` is deliberately
- * ABSENT rather than guessed at: its window sat 4.85 days out and did not move
- * between probes, which fits a monthly cycle as readily as a weekly one, and a
- * wrong entry here would put a precise-looking `startedAt` on a window whose
- * length we invented. An unlisted unit falls back to the reset horizon below,
- * which is less precise and cannot be wrong in that particular way.
+ *   - **`3` is hours — measured.** An entry with `number: 5` produced a
+ *     `nextResetTime` exactly five hours after the request that opened the
+ *     window. Predicted first, then confirmed by consuming a little quota and
+ *     re-probing.
+ *   - **`6` is weeks — confirmed by the plan holder**, not by measurement. One
+ *     reset boundary cannot distinguish a weekly cycle from a monthly one (the
+ *     observed window sat 4.85 days out and did not move between probes), so
+ *     this one rests on someone who can see what Z.ai's own subscription UI
+ *     calls that limit.
+ *
+ * Note the enum is NOT the sequential time-unit ladder it looks like — 3 is
+ * hours and 6 is weeks, so the gaps are not days-then-weeks. That is exactly
+ * why nothing else is listed: an unrecognised unit falls back to the reset
+ * horizon in {@link readWindow}, which is less precise but cannot put a
+ * confident-looking `startedAt` on a window whose length we invented.
  */
 const UNIT_MS: Record<number, number> = {
   3: 60 * 60_000,
+  6: 7 * 24 * 60 * 60_000,
 };
 
 /** Longest window that belongs in the `session` slot rather than the long one. */

@@ -84,8 +84,9 @@ describe("parseZaiQuota — against the payload Z.ai actually returns", () => {
       weekly: {
         usedPct: 7.9,
         resetAt: new Date(NOW + 116 * HOUR).toISOString(),
-        // No `startedAt`: `unit: 6`'s length is not established, and a precise
-        // marker drawn from a guessed length is worse than none.
+        // `unit: 6, number: 1` is one week, so this window's start is known
+        // too. Its provenance differs from the 5h window's — see `UNIT_MS`.
+        startedAt: new Date(NOW + 116 * HOUR - 7 * 24 * HOUR).toISOString(),
       },
       plan: "Lite",
     });
@@ -134,7 +135,9 @@ describe("parseZaiQuota — against the payload Z.ai actually returns", () => {
     expect(parsed?.weekly?.usedPct).toBe(7.9);
   });
 
-  it("places a window of unmeasured `unit` by its reset horizon, with no startedAt", () => {
+  it("places a window of UNRECOGNISED `unit` by its reset horizon, with no startedAt", () => {
+    // The fallback exists so an unknown unit degrades to something less precise
+    // rather than to a confident `startedAt` drawn from an invented length.
     const parsed = parseZaiQuota(
       {
         data: {

@@ -1818,19 +1818,24 @@ So consumption is now derived from `usage - remaining` (exact, and
 self-consistent across both entries, which `currentValue` is not), and
 `percentage` is kept only as a fallback for a payload that omits `remaining`.
 
-**`unit: 3` is hours, and that is the only unit this reader claims to know.** It
-was established, not assumed: an entry declaring `number: 5` produced a reset
-exactly 5.00 hours after the request that opened the window. Knowing the
-declared length is what lets the 5-hour window carry a real `startedAt`, so the
-badge's elapsed marker stops depending on a constant Z.ai never agreed to. The
-long window (`unit: 6, number: 1`) is deliberately **not** in the unit table:
-its reset sat 4.85 days out and did not move between probes, which fits a
-monthly cycle as readily as a weekly one. It is placed by reset horizon instead
-and carries no `startedAt` — less precise, and unable to be wrong in the
-particular way a guessed length would be. **The one open question this leaves**
-is the label: `SubscriptionLimits` has only `session` and `weekly` slots, so a
-monthly allowance would render under a "7d" heading. The number and the
-countdown are right either way; only the heading is at risk.
+**`unit` + `number` give each window its true length, so both carry a real
+`startedAt` and the badge's elapsed marker stops depending on constants Z.ai
+never agreed to.** The two entries in `UNIT_MS` have different provenance, and
+the file records which is which rather than presenting both as facts of the
+same weight:
+
+- **`unit: 3` is hours — measured.** An entry declaring `number: 5` produced a
+  reset exactly 5.00 hours after the request that opened the window. Predicted
+  first, then confirmed by consuming a little quota and re-probing.
+- **`unit: 6` is weeks — confirmed by the plan holder, not measured.** One reset
+  boundary cannot distinguish a weekly cycle from a monthly one; the observed
+  window sat 4.85 days out and did not move between probes, which fits either.
+
+Worth noting because it is the trap: the enum is **not** the sequential
+time-unit ladder it resembles — 3 is hours and 6 is weeks, so the gaps are not
+days-then-weeks. That is why only these two are listed, and an unrecognised unit
+falls back to placement by reset horizon: less precise, but unable to put a
+confident-looking `startedAt` on a window whose length we invented.
 
 **Switching it on was one line, and that is the load-bearing part.** Adding
 `zai-plan-usage` to `IMPLEMENTED_QUOTA_INTEGRATIONS` gave GLM's rows a usage
