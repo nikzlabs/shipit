@@ -1,7 +1,15 @@
 # ---- Build stage (full image has python3/make/gcc for native addons) ----
 FROM node:24-slim@sha256:4e6b70dd6cbfc88c8157ba19aa3d9f9cce6ba4703576d55459e45efcbc9c5f5d AS build
-ARG SHIPIT_BUILD_ID
-ENV SHIPIT_BUILD_ID=${SHIPIT_BUILD_ID}
+
+# NOTE: do NOT declare/consume SHIPIT_BUILD_ID in this stage. deploy.sh passes it
+# as the git HEAD sha, so its value changes on EVERY update — and an `ENV` here
+# invalidates the cache for every layer below it, which is the `apt-get install`
+# and the `npm ci` two steps down. Both then re-run on every single deploy for no
+# gain: nothing reads the value at build time (every consumer is `process.env` at
+# runtime — see src/server/orchestrator/build-id.ts). The production stage below
+# declares the ARG and bakes the ENV near its end, where it costs one cheap layer.
+# Dockerfile.session-worker.prod follows the same rule (ARG + LABEL, last).
+# Guarded by src/server/orchestrator/docker-build-cache.test.ts.
 
 RUN apt-get update && apt-get install -y python3 make g++ && rm -rf /var/lib/apt/lists/*
 

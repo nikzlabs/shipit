@@ -49,8 +49,10 @@ RUN corepack enable
 # faster than pip and reads uv.lock natively, so a repo standardized on uv "just
 # works" without the agent bootstrapping a package manager. ShipIt provides the
 # tool but never picks the winner: the project's lockfile decides. See docs/168.
-# TODO: pin like the agent CLIs once a Renovate policy covers it.
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
+# Pinned, and kept in lockstep with Dockerfile.session-worker.prod — see the
+# canonical comment there for why a mutable tag here costs a multi-GB rebuild of
+# every layer below it. Renovate owns the bump (renovate.json, `uv` rule).
+COPY --from=ghcr.io/astral-sh/uv:0.12.3 /uv /uvx /usr/local/bin/
 
 # Agent CLIs: lockfile-pinned, integrity-verified install (docs/141). See the
 # canonical comment in Dockerfile.session-worker.prod. docs/252 phase 9 — the
