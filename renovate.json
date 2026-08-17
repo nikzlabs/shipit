@@ -5,7 +5,9 @@
   "includePaths": [
     "docker/agent-cli/**",
     "docker/Dockerfile.session-worker.prod",
-    "docker/Dockerfile.session-worker.dev"
+    "docker/Dockerfile.session-worker.dev",
+    "docker/Dockerfile.android-dev",
+    "docker/Dockerfile.egress-sidecar"
   ],
   "rangeStrategy": "pin",
   "packageRules": [
@@ -23,7 +25,18 @@
       "assignees": ["nicolasalt"]
     },
     {
-      "description": "The node base image in the session-worker Dockerfiles is deliberately NOT Renovate-managed. Its digest is duplicated by hand into the BASE_IMAGE_DIGEST build arg in the same files, which src/server/session/install-runtime.ts uses as part of the dependency-install cache key. Renovate would bump the FROM lines and leave that ARG default stale, silently keying installs to a base image that is no longer in use. Bump the FROM lines and the ARG together, by hand.",
+      "description": "Base images in docker/Dockerfile.android-dev and docker/Dockerfile.egress-sidecar (debian, alpine, golang). These were unpinned or tag-pinned, which is not a pin: Debian re-pushes `bookworm-slim`, `alpine:3.20` moves across patch releases, and Docker rebuilds `golang:1.23.5-alpine3.20` in place for base security updates. Each move invalidated everything below it — for android-dev that is ~1.9GB of JDK + Android SDK + Gradle. They are digest-pinned now, so this rule exists to keep those digests fresh rather than frozen; unlike the node bases below, nothing duplicates these digests elsewhere, so a Renovate bump is self-contained. A human reviews and merges.",
+      "matchFileNames": [
+        "docker/Dockerfile.android-dev",
+        "docker/Dockerfile.egress-sidecar"
+      ],
+      "matchPackageNames": ["debian", "alpine", "golang"],
+      "groupName": "container base images",
+      "automerge": false,
+      "assignees": ["nicolasalt"]
+    },
+    {
+      "description": "The node base image in the session-worker Dockerfiles is deliberately NOT Renovate-managed. Its digest is duplicated by hand into the BASE_IMAGE_DIGEST build arg in the same files, which src/server/session/install-runtime.ts uses as part of the dependency-install cache key — so a bump has to move TWO lines that Renovate sees as unrelated. It is no longer a silent failure: docker-build-cache.test.ts asserts the ARG matches the final FROM digest, so a FROM-only bump is a red build rather than a dependency tree quietly reused against a different C/C++ ABI. Keeping it manual is what makes both lines move in the SAME commit. Bump the FROM lines and the ARG together, by hand.",
       "matchFileNames": [
         "docker/Dockerfile.session-worker.prod",
         "docker/Dockerfile.session-worker.dev"
