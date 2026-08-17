@@ -9,7 +9,7 @@ services:
         # docs/252 req 14 — the harnesses this install has. Override in
         # $SHIPIT_HOME/.shipit.env (sourced by deployment/local/lib.sh) and
         # re-run the installer; both images below must get the same value.
-        SHIPIT_HARNESSES: ${SHIPIT_HARNESSES:-claude,codex}
+        SHIPIT_HARNESSES: ${SHIPIT_HARNESSES:-}
     # docs/254 — bind loopback by DEFAULT. ShipIt has no built-in authentication
     # (SECURITY-MODEL.md), so publishing on 0.0.0.0 exposed an agent with a shell
     # and repo access to every network the machine joins. A host firewall is not a
@@ -74,7 +74,7 @@ services:
       dockerfile: docker/Dockerfile.session-worker.prod
       args:
         # docs/252 req 14 — must match the orchestrator's value above.
-        SHIPIT_HARNESSES: ${SHIPIT_HARNESSES:-claude,codex}
+        SHIPIT_HARNESSES: ${SHIPIT_HARNESSES:-}
     image: shipit-session-worker:prod
     profiles:
       - build-only

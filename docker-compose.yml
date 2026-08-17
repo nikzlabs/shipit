@@ -28,13 +28,12 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.dogfood
-      # docs/268 made opencode opt-in (not in the Dockerfiles' claude,codex
-      # default, which agent-cli-install.test.ts pins); the dogfood opts in
-      # here so the inner instance can exercise every shipped harness. Must
-      # match the `onboarding` build block below — both name the same image
-      # tag, so whichever builds last would silently win a disagreement.
-      args:
-        SHIPIT_HARNESSES: claude,codex,opencode
+      # Harnesses are not named here: the images default to the approved set
+      # (install-agent-clis' DEFAULT_HARNESSES, docs/271), which today is every
+      # shipped harness — what the inner instance wants so it can exercise all of
+      # them. Naming a set here would also have to match the `onboarding` build
+      # block below — both name the same image tag, so whichever built last would
+      # silently win a disagreement.
     image: shipit-dogfood:local
     # REQUIRED in a Contained session (docs/263). A contained service must
     # declare a numeric, non-root runtime UID that is not the reserved resolver
@@ -324,10 +323,8 @@ services:
     build:
       context: .
       dockerfile: docker/Dockerfile.dogfood
-      # Must match the `dev` build block above — same image tag. See the
-      # note there for why opencode is opted in.
-      args:
-        SHIPIT_HARNESSES: claude,codex,opencode
+      # Must match the `dev` build block above — same image tag. Neither names
+      # harnesses; see the note there.
     image: shipit-dogfood:local
     # Same UID, same reason as `dev` above — see the note there.
     user: "1000:1000"

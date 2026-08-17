@@ -35,6 +35,13 @@ function scriptSource(): string {
   return fs.readFileSync(SCRIPT, "utf8");
 }
 
+/** The approved default set — the harnesses an install with no selection gets. */
+function defaultHarnesses(): string[] {
+  const m = /^DEFAULT_HARNESSES="([^"]*)"/m.exec(scriptSource());
+  if (!m) throw new Error("DEFAULT_HARNESSES not found in install-agent-clis.sh");
+  return m[1].split(/\s+/).filter(Boolean);
+}
+
 /** Dockerfile instructions with comments stripped (comments discuss the flags). */
 function instructions(dockerfile: string): string {
   return fs.readFileSync(path.join(REPO_ROOT, "docker", dockerfile), "utf8")
@@ -66,10 +73,36 @@ describe("installer script ↔ catalogue", () => {
     // this assertion a new harness would install correctly and still be
     // unofferable — `setup.sh` would reject the operator's answer as invalid.
     const setup = fs.readFileSync(path.join(REPO_ROOT, "deployment/vps/setup.sh"), "utf8");
-    const match = /^SUPPORTED_HARNESSES="([^"]*)"/m.exec(setup);
-    expect(match, "SUPPORTED_HARNESSES not found in deployment/vps/setup.sh").toBeTruthy();
-    const offered = (match?.[1] ?? "").split(/\s+/).filter(Boolean).sort();
+    const match = /^HARNESS_ROWS=\(\n([\s\S]*?)^\)/m.exec(setup);
+    expect(match, "HARNESS_ROWS not found in deployment/vps/setup.sh").toBeTruthy();
+    const offered = [...(match?.[1] ?? "").matchAll(/^\s*"([a-z]+)\|/gm)]
+      .map((m) => m[1])
+      .sort();
     expect(offered).toEqual(HARNESSES.map((h) => h.id).slice().sort());
+  });
+
+  it("the approved default set names only catalogue harnesses", () => {
+    // DEFAULT_HARNESSES is hand-maintained and deliberately NOT the catalogue, so
+    // nothing forces a new harness into it — but a typo, or an id left behind
+    // after a harness is removed, would fail the image build with "unknown
+    // harness" long after the edit.
+    const ids = new Set<string>(HARNESSES.map((h) => h.id));
+    for (const id of defaultHarnesses()) {
+      expect(ids.has(id), `DEFAULT_HARNESSES names '${id}', which is not a harness`).toBe(true);
+    }
+    expect(defaultHarnesses().length).toBeGreaterThan(0);
+  });
+
+  it("the VPS installer preselects exactly the approved default set", () => {
+    // Two copies exist because setup.sh asks its question before the repo is
+    // cloned, so it cannot read install-agent-clis.sh. They must agree, or an
+    // operator who accepts the prompt's defaults gets a different install from
+    // one who never sees the prompt.
+    const setup = fs.readFileSync(path.join(REPO_ROOT, "deployment/vps/setup.sh"), "utf8");
+    const match = /^HARNESS_DEFAULT="([^"]*)"/m.exec(setup);
+    expect(match, "HARNESS_DEFAULT not found in deployment/vps/setup.sh").toBeTruthy();
+    const preselected = (match?.[1] ?? "").split(",").filter(Boolean).sort();
+    expect(preselected).toEqual(defaultHarnesses().slice().sort());
   });
 
   it("maps every harness to an npm package and to its catalogue binary", () => {
@@ -85,7 +118,10 @@ describe("installer script ↔ catalogue", () => {
 
 describe("every image installs the CLIs through the shared script", () => {
   it.each(CLI_IMAGES)("%s declares the SHIPIT_HARNESSES build arg", (dockerfile) => {
-    expect(instructions(dockerfile)).toMatch(/^ARG SHIPIT_HARNESSES=claude,codex$/m);
+    // Empty on purpose (docs/271): the default lives in install-agent-clis.sh's
+    // DEFAULT_HARNESSES, so changing what a default install gets is one edit
+    // rather than five Dockerfiles. A value here would override it.
+    expect(instructions(dockerfile)).toMatch(/^ARG SHIPIT_HARNESSES=$/m);
   });
 
   it.each(CLI_IMAGES)("%s runs install-agent-clis rather than its own npm ci", (dockerfile) => {
@@ -104,8 +140,8 @@ describe("install-agent-clis.sh behaviour", () => {
   let report: string;
 
   /**
-   * A stub `npm` that materializes what the real one would: the two harness
-   * packages, their platform-specific optional dependencies (the reason the script
+   * A stub `npm` that materializes what the real one would: every harness
+   * package, its platform-specific optional dependencies (the reason the script
    * prunes by prefix rather than by exact name), and the `.bin` shims.
    */
   function stubNpm(): string {
@@ -117,8 +153,9 @@ set -eu
 [ "\${1:-}" = "ci" ] || exit 0
 mkdir -p node_modules/@anthropic-ai/claude-code node_modules/@anthropic-ai/claude-code-linux-x64
 mkdir -p node_modules/@openai/codex node_modules/@openai/codex-linux-x64
+mkdir -p node_modules/opencode node_modules/opencode-linux-x64
 mkdir -p node_modules/@playwright/mcp node_modules/.bin
-for b in claude codex playwright-mcp; do
+for b in claude codex opencode playwright-mcp; do
   printf '#!/bin/sh\\necho %s\\n' "$b" > "node_modules/.bin/$b"
   chmod 0755 "node_modules/.bin/$b"
 done
@@ -160,11 +197,18 @@ done
     fs.rmSync(tmp, { recursive: true, force: true });
   });
 
-  it("installs Claude Code and Codex by default — an install that accepts the defaults is unchanged", () => {
+  it("installs DEFAULT_HARNESSES by default, not every known harness (docs/271)", () => {
+    // Asserted against the script's own approved list. Deliberately NOT against
+    // the catalogue: a newly integrated harness is installable and offerable at
+    // once, but reaches every default install only when someone adds it to that
+    // line. An assertion against HARNESSES would quietly demand the opposite.
     run();
-    expect(declared()).toEqual(["claude", "codex"]);
-    expect(exists(path.join(binDir, "claude"))).toBe(true);
-    expect(exists(path.join(binDir, "codex"))).toBe(true);
+    expect(declared().slice().sort()).toEqual(defaultHarnesses().slice().sort());
+    for (const id of defaultHarnesses()) {
+      const binary = HARNESSES.find((h) => (h.id as string) === id)?.binary;
+      expect(binary, `'${id}' is not a catalogue harness`).toBeTruthy();
+      expect(exists(path.join(binDir, binary!)), id).toBe(true);
+    }
     // Not a harness — the browser MCP server ships regardless of the selection.
     expect(exists(path.join(binDir, "playwright-mcp"))).toBe(true);
   });
@@ -192,11 +236,11 @@ done
   });
 
   it("treats an empty value as unset — `--build-arg SHIPIT_HARNESSES=` gets the default", () => {
-    // Matches the compose-level `${SHIPIT_HARNESSES:-claude,codex}` substitution,
-    // so an operator who blanks the line in shipit.env gets the default rather
-    // than an image with no agent at all.
+    // Matches the compose-level `${SHIPIT_HARNESSES:-}` substitution, so an
+    // operator who blanks the line in shipit.env gets the default rather than an
+    // image with no agent at all.
     run("");
-    expect(declared()).toEqual(["claude", "codex"]);
+    expect(declared().slice().sort()).toEqual(defaultHarnesses().slice().sort());
   });
 
   it("fails the build when the selection names nothing", () => {

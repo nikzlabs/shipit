@@ -150,18 +150,25 @@ updating in place (no host-side systemd watcher locally).
 ## Choosing which agent harnesses to install
 
 A **harness** is an agent CLI plus the adapter that normalizes its event stream. ShipIt installs
-**Claude Code and Codex** by default; `SHIPIT_HARNESSES` selects a different set:
+**Claude Code, Codex, and OpenCode** by default. A harness added to ShipIt later is offered in the
+installer's list straight away but is not preselected — the default set changes only deliberately, so
+an update never adds an agent CLI to your images behind your back. `SHIPIT_HARNESSES` narrows the
+set, or names one that is not in it:
 
 ```bash
 SHIPIT_HARNESSES=codex        # this install runs Codex only
-SHIPIT_HARNESSES=claude,codex # the default
+SHIPIT_HARNESSES=claude,codex # Claude Code and Codex, no OpenCode
 ```
+
+Narrowing is worth doing if image size or build time matters to you: each harness is a CLI baked
+into both images.
 
 It is a **build input, not a setting** — the CLIs are baked into the images — so changing it means
 editing the env file and re-running the deploy, and there is nothing in Settings that adds or
 removes a harness:
 
-- **VPS**: the installer asks once and persists your answer as `SHIPIT_HARNESSES` in
+- **VPS**: the installer asks once — a checklist you move through with the arrow keys, toggle with
+  the space bar, and confirm with Enter — and persists your answer as `SHIPIT_HARNESSES` in
   `/etc/shipit/shipit.env`. To change it later, edit that line and run
   `bash /opt/shipit/deployment/vps/deploy.sh`. Presetting the variable
   (`SHIPIT_HARNESSES=codex bash setup.sh`) skips the prompt.
@@ -215,7 +222,28 @@ ssh root@<server-ip>   # or: ssh <user>@<server-ip> for a sudo-capable user
 sudo bash -c "$(curl -fsSL https://raw.githubusercontent.com/nikzlabs/shipit/stable/deployment/vps/setup.sh)"
 ```
 
-The script will ask whether to install Cloudflare, Tailscale, both, or neither, then automatically:
+The script first asks how you want to reach ShipIt. Cloudflare and Tailscale are independent
+checkboxes — arrow keys move, the space bar toggles, Enter confirms:
+
+```
+  > [ ] Cloudflare Tunnel  public HTTPS domain, Zero Trust protected
+    [*] Tailscale          private, reachable from your tailnet only
+```
+
+Tailscale is the default: it reaches your own devices and nothing else, with no domain to own and no
+public URL to protect. Tick Cloudflare as well to get both, or tick neither to install ShipIt without
+exposing it and add access later.
+
+To try the questions without provisioning anything, add `--dry-run` (or set `SHIPIT_DRY_RUN=1`, which
+is easier to pass through the one-liner above). The installer asks both questions, prints what a real
+run would do, and exits. It needs no root and writes nothing:
+
+```bash
+SHIPIT_DRY_RUN=1 bash -c "$(curl -fsSL https://raw.githubusercontent.com/nikzlabs/shipit/stable/deployment/vps/setup.sh)"
+```
+A scripted install can pre-answer with `SHIPIT_ACCESS=tailscale` (or `cloudflare,tailscale`, or
+`none`), which skips the question; so does running with no terminal, which keeps the default shown
+above. It then automatically:
 - Install git and clone ShipIt to `/opt/shipit` (installing a fork? prefix the command with `sudo env SHIPIT_REPO_URL=https://github.com/you/shipit.git` — plain `sudo` drops the variable from the environment)
 - Install Docker
 - Configure host limits needed for session containers and file watching

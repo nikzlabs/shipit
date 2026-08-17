@@ -79,13 +79,14 @@ RUN git lfs install --system --skip-repo --skip-smudge
 # manifest, reconciling the prior prod/dev omission.
 #
 # docs/252 phase 9 (req 14) — WHICH harnesses get installed is a build input,
-# defaulting to Claude Code and Codex. This image matters as much as the worker
+# defaulting to install-agent-clis' DEFAULT_HARNESSES. This image matters as much as the worker
 # image does: the orchestrator answers what the picker offers and runs session
 # naming locally, so a selection applied only to the worker would leave an
 # uninstalled harness still offered and still used for background work. The
 # installer writes /opt/shipit/agents/installed.json, which the orchestrator reads
 # instead of probing its own $PATH.
-ARG SHIPIT_HARNESSES=claude,codex
+# Empty = install-agent-clis' DEFAULT_HARNESSES (docs/271). Set to override.
+ARG SHIPIT_HARNESSES=
 COPY docker/agent-cli/package.json docker/agent-cli/package-lock.json /opt/agent-cli/
 COPY docker/agent-cli/install-agent-clis.sh /usr/local/bin/install-agent-clis
 RUN chmod 0755 /usr/local/bin/install-agent-clis

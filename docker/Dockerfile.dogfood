@@ -47,7 +47,8 @@ RUN git lfs install --system --skip-repo --skip-smudge
 # the SHIPIT_HARNESSES build arg (req 14) and writes the declared set to
 # /opt/shipit/agents/installed.json, which the inner AgentRegistry reads instead
 # of probing PATH.
-ARG SHIPIT_HARNESSES=claude,codex
+# Empty = install-agent-clis' DEFAULT_HARNESSES (docs/271). Set to override.
+ARG SHIPIT_HARNESSES=
 COPY docker/agent-cli/package.json docker/agent-cli/package-lock.json /opt/agent-cli/
 COPY docker/agent-cli/install-agent-clis.sh /usr/local/bin/install-agent-clis
 RUN chmod 0755 /usr/local/bin/install-agent-clis

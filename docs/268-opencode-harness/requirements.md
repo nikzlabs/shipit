@@ -25,8 +25,11 @@ assessment. They are recorded here as requirements, not relitigated.
    scope — a separate future design task with its own docs folder.
 3. **Pinned npm install.** OpenCode installs through the existing
    `docker/agent-cli` npm pipeline, pinned to an exact `opencode-ai` version at
-   least 7 days published (dependency policy). Not in the default
-   `SHIPIT_HARNESSES` set.
+   least 7 days published (dependency policy). ~~Not in the default
+   `SHIPIT_HARNESSES` set.~~ **Superseded 2026-08-17 (docs/271):** every known
+   harness is now in the default set, OpenCode included. See that doc's resolved
+   questions for the instruction; the pinned-install half of this requirement is
+   unchanged.
 4. **Lossy-stream tolerance.** OpenCode has known event-loss bugs (dropped
    `text`/`step_finish`; exit before the final event; post-error hangs). A turn
    whose final `step_finish` never arrives must still terminate correctly: the
