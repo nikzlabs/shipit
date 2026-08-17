@@ -972,6 +972,53 @@ day one, assuming v0 didn't surface anything that requires the v1a/v1b split.
    self-heal without user action. This is the v1 substitute for the v2
    Errors sub-tab.
 
+   **Retry has to be able to succeed** (planning#418). Retry is the only
+   recovery affordance the tab has, and it re-enters `ensureCatalogCloned`, so
+   any state that function cannot get out of is a permanently dead skill
+   browser — §1 gives the user no shell on the orchestrator volume to go fix it
+   by hand. Two states used to be exactly that, and both are handled at the
+   service:
+
+   - **The clone is unusable.** Seen in production as `error: insufficient
+     permission for adding an object to repository database .git/objects` — a
+     `.git` the orchestrator cannot write, which every subsequent `git fetch` in
+     that same directory reproduces identically. A catalog cache is disposable
+     state, so a failed update now REBUILDS it: clone into
+     `<id>.rebuild-<rand>`, rename the old tree to `<id>.stale-<rand>`, rename
+     the new one into place. The swap needs write permission on
+     `marketplace-cache/` only and never on the tree being replaced, which is
+     what lets it recover from a clone dir the process cannot open at all. The
+     clone happens *before* either rename, so a rebuild that fails leaves the
+     existing cache untouched. A stale tree that cannot be unlinked is left for
+     the next rebuild's sweep — one directory per incident, not per fetch.
+   - **The remote is unreachable.** A network blip must not blank a catalog
+     sitting readable on disk. When the update and the rebuild both fail but the
+     cached manifest still parses, the row is marked `fetch-failed` (Retry chip
+     and reason stay visible) and the stale cache is returned, so the plugin list
+     still renders. Only a cache with nothing usable in it throws.
+
+   **Rebuilds are serialized per cache directory.** The boot pre-clone fires one
+   `ensureCatalogCloned` per marketplace in a single tick while the Discover and
+   Retry routes call in on demand, so concurrent callers on one catalog are
+   normal operation. Unserialized, the rebuild is destructive rather than merely
+   wasteful: the leftover sweep deletes another caller's staging clone mid-flight,
+   and the gap between the two renames sends a concurrent caller down the
+   first-clone path or makes it throw a 502 over a cache that is healthy a moment
+   later. `withCatalogLock` is the same shape as the install mutex above.
+
+   **Where the unwritable `.git` came from.** Not a non-root orchestrator — the
+   production orchestrator is root. Under docs/266, `safeSimpleGit(cacheDir)`
+   resolves its uid drop from the **top-level** tree, while git writes into
+   `.git/objects`. A cache root owned by a non-root uid therefore makes even a
+   root orchestrator run git as that uid, against an objects dir a root-era fetch
+   left root-owned — which is how a root process reaches a permission error that
+   reads as impossible. The rebuild cures it permanently, because a fresh clone
+   is uniformly owned and the resolver and the objects dir stop disagreeing. The
+   diagnostic logs the process uid/gid, the uid the resolver actually chose, and
+   the owner and mode of the cache root, `.git` and `.git/objects` — the
+   disagreement between those three is the finding, and one of them alone cannot
+   show it. See the note added to `docs/266`'s arming runbook.
+
 Acceptance: a user on Claude *or* Codex can open Settings → Skills, browse the
 agent's official catalog, see a skill's `SKILL.md` rendered inline in Monaco,
 click Install, see the file land in `.claude/skills/<plugin>__<skill>/` or

@@ -19,6 +19,7 @@ import { GitManager } from "../../shared/git.js";
 import { AgentRegistry } from "../../shared/agent-registry.js";
 import { MarketplaceStore } from "../marketplace-store.js";
 import {
+  ensureCatalogCloned,
   installPlugin,
   listPlugins,
   withWorkspaceLock,
@@ -118,6 +119,46 @@ function makeFakeCodexCatalog(cacheRoot: string, id: string): string {
   );
 
   return cacheDir;
+}
+
+/**
+ * A real git repo laid out as a Claude marketplace, served to the code under
+ * test over `file://` — so `ensureCatalogCloned` runs actual clone/fetch/pull
+ * with no network. `--depth 1` needs the `file://` TRANSPORT, not a bare path.
+ */
+async function makeOriginRepo(dir: string, marker: string): Promise<void> {
+  fs.mkdirSync(path.join(dir, ".claude-plugin"), { recursive: true });
+  const sg = simpleGit(dir);
+  await sg.init(["--initial-branch=main"]);
+  await sg.addConfig("user.name", "Test", undefined, "local");
+  await sg.addConfig("user.email", "test@example.com", undefined, "local");
+  await writeOriginCatalog(dir, marker);
+  await sg.add(["-A"]);
+  await sg.commit("catalog");
+}
+
+/** Rewrite the origin's catalog so a later fetch has something to pick up. */
+async function writeOriginCatalog(dir: string, marker: string): Promise<void> {
+  fs.writeFileSync(
+    path.join(dir, ".claude-plugin", "marketplace.json"),
+    JSON.stringify({
+      name: "origin-catalog",
+      plugins: [{ name: marker, description: marker, source: `./plugins/${marker}` }],
+    }),
+  );
+  const skillDir = path.join(dir, "plugins", marker, "skills", "only");
+  fs.mkdirSync(skillDir, { recursive: true });
+  fs.writeFileSync(
+    path.join(skillDir, "SKILL.md"),
+    `---\nname: only\ndescription: ${marker}\n---\n\n${marker}\n`,
+  );
+}
+
+async function commitOriginCatalog(dir: string, marker: string): Promise<void> {
+  await writeOriginCatalog(dir, marker);
+  const sg = simpleGit(dir);
+  await sg.add(["-A"]);
+  await sg.commit(`catalog ${marker}`);
 }
 
 async function initRepo(workspace: string): Promise<GitManager> {
@@ -410,6 +451,195 @@ describe("services/marketplace (docs/149)", () => {
       expect(order).toEqual(["a-start", "a-end", "b-start", "b-end"]);
       // Make sure `git` ref doesn't trip an unused-var lint in the test.
       void git;
+    });
+  });
+
+  /**
+   * planning#418 — the Discover tab's only recovery affordance is Retry, which
+   * re-enters `ensureCatalogCloned`. So every state it cannot get out of is a
+   * permanently dead skill browser for the user.
+   */
+  describe("ensureCatalogCloned recovery", () => {
+    let originDir: string;
+    let liveRoot: string;
+
+    /** Seed a marketplace row pointing at the local `file://` origin. */
+    function seedLiveCatalog(id: string): void {
+      store.seedIfMissing({
+        id,
+        source: { kind: "git", url: `file://${originDir}` },
+        agentId: "claude",
+        autoUpdate: true,
+      });
+    }
+
+    beforeEach(async () => {
+      originDir = path.join(tmp, "origin");
+      liveRoot = path.join(tmp, "live-cache");
+      await makeOriginRepo(originDir, "first");
+    });
+
+    it("clones on first use and marks the row ok", async () => {
+      seedLiveCatalog("live");
+      const dir = await ensureCatalogCloned(store, "live", liveRoot);
+
+      expect(dir).toBe(path.join(liveRoot, "live"));
+      expect(store.get("live")?.status).toBe("ok");
+      const plugins = await listPlugins(store, "live", liveRoot);
+      expect(plugins.map((p) => p.name)).toEqual(["first"]);
+    });
+
+    it("rebuilds a clone it cannot update, instead of retrying the same failure forever", async () => {
+      seedLiveCatalog("live");
+      await ensureCatalogCloned(store, "live", liveRoot);
+      await commitOriginCatalog(originDir, "second");
+
+      // Corrupt the clone so every git command inside it fails. Stands in for
+      // the reported production state — a `.git` the orchestrator cannot write,
+      // where `git fetch` reports "insufficient permission for adding an object
+      // to repository database .git/objects" on every single Retry.
+      const cacheDir = path.join(liveRoot, "live");
+      fs.writeFileSync(path.join(cacheDir, ".git", "config"), "this is not a git config\n[");
+
+      const dir = await ensureCatalogCloned(store, "live", liveRoot);
+
+      expect(dir).toBe(cacheDir);
+      expect(store.get("live")?.status).toBe("ok");
+      expect(store.get("live")?.fetchError).toBeUndefined();
+      // The rebuild is a real fresh clone, so it carries the newer upstream state.
+      const plugins = await listPlugins(store, "live", liveRoot);
+      expect(plugins.map((p) => p.name)).toEqual(["second"]);
+      // And it leaves no staging/stale directories behind.
+      expect(fs.readdirSync(liveRoot)).toEqual(["live"]);
+    });
+
+    it("recovers from a clone whose .git is not writable", async () => {
+      // Root ignores the mode bits, so this can only assert anything unprivileged.
+      if (process.getuid?.() === 0) return;
+      seedLiveCatalog("live");
+      await ensureCatalogCloned(store, "live", liveRoot);
+      await commitOriginCatalog(originDir, "second");
+
+      fs.chmodSync(path.join(liveRoot, "live", ".git", "objects"), 0o500);
+      try {
+        // Precondition: this is the exact failure from the bug report.
+        await expect(simpleGit(path.join(liveRoot, "live")).fetch("origin")).rejects.toThrow(
+          /insufficient permission for adding an object/,
+        );
+
+        await ensureCatalogCloned(store, "live", liveRoot);
+        expect(store.get("live")?.status).toBe("ok");
+        const plugins = await listPlugins(store, "live", liveRoot);
+        expect(plugins.map((p) => p.name)).toEqual(["second"]);
+        // The replaced tree is one whose files cannot be unlinked, so it is
+        // renamed aside and left for the next rebuild's sweep — one directory
+        // per incident, never a growing pile.
+        expect(fs.readdirSync(liveRoot).filter((n) => n.startsWith("live.stale-"))).toHaveLength(1);
+      } finally {
+        // The unwritable tree moved during the rebuild; hand every copy back so
+        // the suite's temp-dir cleanup can remove it.
+        for (const name of fs.readdirSync(liveRoot)) {
+          const objects = path.join(liveRoot, name, ".git", "objects");
+          if (fs.existsSync(objects)) fs.chmodSync(objects, 0o700);
+        }
+      }
+    });
+
+    it("keeps serving a readable stale cache when the remote is unreachable", async () => {
+      seedLiveCatalog("live");
+      await ensureCatalogCloned(store, "live", liveRoot);
+      // Both the fetch and the rebuild clone now fail: there is no origin left.
+      fs.rmSync(originDir, { recursive: true, force: true });
+
+      const dir = await ensureCatalogCloned(store, "live", liveRoot);
+
+      expect(dir).toBe(path.join(liveRoot, "live"));
+      // The failure is still reported — the Discover row keeps its Retry chip.
+      expect(store.get("live")?.status).toBe("fetch-failed");
+      expect(store.get("live")?.fetchError).toMatch(/rebuilding the cache also failed/);
+      // …but the catalog the user came for still lists.
+      const plugins = await listPlugins(store, "live", liveRoot);
+      expect(plugins.map((p) => p.name)).toEqual(["first"]);
+    });
+
+    it("does not destroy a working cache when the rebuild clone fails", async () => {
+      seedLiveCatalog("live");
+      await ensureCatalogCloned(store, "live", liveRoot);
+      const cacheDir = path.join(liveRoot, "live");
+      fs.writeFileSync(path.join(cacheDir, ".git", "config"), "not a git config\n[");
+      fs.rmSync(originDir, { recursive: true, force: true });
+
+      await ensureCatalogCloned(store, "live", liveRoot);
+
+      // The old tree is still in place, and nothing partial was left around it.
+      expect(fs.existsSync(path.join(cacheDir, ".claude-plugin", "marketplace.json"))).toBe(true);
+      expect(fs.readdirSync(liveRoot)).toEqual(["live"]);
+    });
+
+    it("serializes concurrent callers so one rebuild cannot sweep another's staging clone", async () => {
+      // The boot pre-clone fires one call per marketplace in a single tick while
+      // the Discover route can call in on demand. Unserialized, `sweepRebuildLeftovers`
+      // deletes a concurrent rebuild's staging tree mid-clone.
+      seedLiveCatalog("live");
+      await ensureCatalogCloned(store, "live", liveRoot);
+      await commitOriginCatalog(originDir, "second");
+      const cacheDir = path.join(liveRoot, "live");
+      fs.writeFileSync(path.join(cacheDir, ".git", "config"), "not a git config\n[");
+
+      const results = await Promise.all([
+        ensureCatalogCloned(store, "live", liveRoot),
+        ensureCatalogCloned(store, "live", liveRoot),
+        ensureCatalogCloned(store, "live", liveRoot),
+      ]);
+
+      expect(results).toEqual([cacheDir, cacheDir, cacheDir]);
+      expect(store.get("live")?.status).toBe("ok");
+      const plugins = await listPlugins(store, "live", liveRoot);
+      expect(plugins.map((p) => p.name)).toEqual(["second"]);
+      expect(fs.readdirSync(liveRoot)).toEqual(["live"]);
+    });
+
+    it("drops the staging clone when the cache dir cannot be renamed aside", async () => {
+      // Root ignores the mode bits, so this can only assert anything unprivileged.
+      if (process.getuid?.() === 0) return;
+      seedLiveCatalog("live");
+      await ensureCatalogCloned(store, "live", liveRoot);
+      const cacheDir = path.join(liveRoot, "live");
+      fs.writeFileSync(path.join(cacheDir, ".git", "config"), "not a git config\n[");
+      // The clone succeeds; the rename out of a read-only cache root does not.
+      fs.chmodSync(liveRoot, 0o500);
+      try {
+        const dir = await ensureCatalogCloned(store, "live", liveRoot);
+        // The old cache is still readable, so it is served with the failure recorded.
+        expect(dir).toBe(cacheDir);
+        expect(store.get("live")?.status).toBe("fetch-failed");
+      } finally {
+        fs.chmodSync(liveRoot, 0o700);
+      }
+      // No half-finished staging clone was left behind.
+      expect(fs.readdirSync(liveRoot)).toEqual(["live"]);
+    });
+
+    it("does not serve a stale cache whose manifest no longer parses", async () => {
+      seedLiveCatalog("live");
+      await ensureCatalogCloned(store, "live", liveRoot);
+      const cacheDir = path.join(liveRoot, "live");
+      fs.writeFileSync(path.join(cacheDir, ".claude-plugin", "marketplace.json"), "{ not json");
+      fs.writeFileSync(path.join(cacheDir, ".git", "config"), "not a git config\n[");
+      fs.rmSync(originDir, { recursive: true, force: true });
+
+      // Returning this dir would just move the dead end into `listPlugins`,
+      // which throws 500 — and the client hides that behind the Retry row.
+      await expect(ensureCatalogCloned(store, "live", liveRoot)).rejects.toThrow(ServiceError);
+      expect(store.get("live")?.status).toBe("fetch-failed");
+    });
+
+    it("throws when the cache holds nothing usable and the clone fails", async () => {
+      seedLiveCatalog("live");
+      fs.rmSync(originDir, { recursive: true, force: true });
+
+      await expect(ensureCatalogCloned(store, "live", liveRoot)).rejects.toThrow(ServiceError);
+      expect(store.get("live")?.status).toBe("fetch-failed");
     });
   });
 
