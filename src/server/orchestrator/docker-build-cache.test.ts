@@ -110,29 +110,44 @@ describe("the two build stages share their cache", () => {
   });
 });
 
-describe("SHIPIT_BUILD_ID does not poison the build stage", () => {
-  // The value is the git HEAD sha (deploy.sh passes it per update), so it is
-  // different on every single deploy. Consuming it early invalidates everything
-  // below — in Dockerfile.prod that was the `apt-get install python3 make g++`
-  // and the `npm ci`, both re-running on every deploy for nothing. Nothing reads
-  // it at build time; every consumer is `process.env` at runtime (build-id.ts).
-  // It belongs in the FINAL stage, as late as possible.
+describe("SHIPIT_BUILD_ID does not poison the shared prefix", () => {
+  // The value is the git HEAD sha (deploy.sh passes it per update), so it differs
+  // on every deploy and anything keyed on it rebuilds every time. The line it must
+  // stay below is the `npm ci` — not the final FROM. Dockerfile.prod legitimately
+  // consumes it in the BUILD stage, because vite.config.ts `resolveBuildId()`
+  // bakes it into the client bundle for stale-SPA detection, and its git fallback
+  // can't fire (`.git` is .dockerignored). Placing it after `npm ci` costs nothing:
+  // from `COPY . .` down the source has changed anyway.
+  //
+  // So the rule is positional, not per-stage. Everything from the top of the build
+  // stage through `npm ci` is the prefix shared with the worker image and must
+  // stay free of it.
   it.each(["Dockerfile.prod", "Dockerfile.session-worker.prod"])(
-    "%s consumes SHIPIT_BUILD_ID only in the final stage",
+    "%s keeps SHIPIT_BUILD_ID out of the cache-shared prefix",
     (dockerfile) => {
       const lines = instructions(dockerfile).split("\n");
-      const lastFrom = lines.reduce((last, line, i) => (/^FROM\s/.test(line) ? i : last), -1);
-      expect(lastFrom, `${dockerfile} has no FROM`).toBeGreaterThanOrEqual(0);
+      const npmCi = lines.findIndex((line) => line.includes("npm ci"));
+      expect(npmCi, `${dockerfile} has no npm ci`).toBeGreaterThan(0);
 
-      const early = lines.slice(0, lastFrom).findIndex((line) => line.includes("SHIPIT_BUILD_ID"));
+      const early = lines.slice(0, npmCi + 1).findIndex((line) => line.includes("SHIPIT_BUILD_ID"));
       expect(
         early,
-        `${dockerfile}:${early + 1} references SHIPIT_BUILD_ID before the final FROM — that busts the cache for every layer below it on every deploy`,
+        `${dockerfile}:${early + 1} references SHIPIT_BUILD_ID at or above the npm ci — that busts the shared prefix and rebuilds it on every deploy`,
       ).toBe(-1);
 
-      // And it is genuinely still baked, so this guard can't be satisfied by
+      // And it is genuinely still consumed, so this guard can't be satisfied by
       // dropping the build id altogether.
-      expect(lines.slice(lastFrom).join("\n")).toMatch(/SHIPIT_BUILD_ID/);
+      expect(lines.slice(npmCi).join("\n")).toMatch(/SHIPIT_BUILD_ID/);
     },
   );
+
+  // The client half specifically: vite must SEE the value, or stale-SPA detection
+  // silently dies (shouldReloadForServerBuild short-circuits to false on an
+  // undefined id — no error, no failed build, users left on the old client).
+  it("Dockerfile.prod passes SHIPIT_BUILD_ID to the client build", () => {
+    const src = instructions("Dockerfile.prod");
+    expect(src, "vite.config.ts reads $SHIPIT_BUILD_ID; the npm run build step must supply it").toMatch(
+      /SHIPIT_BUILD_ID=\$\{?SHIPIT_BUILD_ID\}?\s+npm run build/,
+    );
+  });
 });

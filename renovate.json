@@ -10,7 +10,7 @@
   "rangeStrategy": "pin",
   "packageRules": [
     {
-      "description": "uv (Astral) is COPYed into both session-worker images from ghcr.io/astral-sh/uv. It used to be an unpinned `:latest`, which — because deploy.sh builds with --pull — re-resolved on every uv release and invalidated every layer below it (agent CLIs, Playwright+Chrome, JDK, Android SDK, Gradle). It is pinned now, so Renovate owns the bump under the same 7-day supply-chain cooldown as the agent CLIs. Both Dockerfiles must move together, so group them into one PR; a human reviews and merges.",
+      "description": "uv (Astral) is COPYed into both session-worker images from ghcr.io/astral-sh/uv. It used to be an unpinned `:latest`, which — because deploy.sh builds with --pull — re-resolved on every uv release and invalidated every layer below it (agent CLIs, Playwright+Chrome, JDK, Android SDK, Gradle). It is pinned now, so the job of this rule is to keep that pin from rotting. Both Dockerfiles must move together, so group them into one PR; a human reviews and merges. `minimumReleaseAgeBehaviour: timestamp-optional` is load-bearing, NOT boilerplate: the cooldown is evaluated against a `releaseTimestamp`, and Renovate's Docker datasource is not guaranteed to supply one outside Docker Hub. Under the default `timestamp-required`, a candidate with no timestamp is held as pending indefinitely and NO PR is ever raised — the pin would rot silently, which is the exact failure this rule exists to prevent. `timestamp-optional` applies the 7-day cooldown when a timestamp exists and lets the update through when it does not; `automerge: false` keeps a human as the real gate either way.",
       "matchFileNames": [
         "docker/Dockerfile.session-worker.prod",
         "docker/Dockerfile.session-worker.dev"
@@ -18,6 +18,7 @@
       "matchPackageNames": ["ghcr.io/astral-sh/uv"],
       "groupName": "uv",
       "minimumReleaseAge": "7 days",
+      "minimumReleaseAgeBehaviour": "timestamp-optional",
       "automerge": false,
       "assignees": ["nicolasalt"]
     },

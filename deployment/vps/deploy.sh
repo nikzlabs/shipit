@@ -110,18 +110,18 @@ prune_build_artifacts() {
   # 0 B reclaimed against 83 GB of reclaimable cache. See the BuildKit
   # source at moby/buildkit's cache/manager.go for the comparison logic.
   #
-  # On the 15 GB number: a measured prod cache was 9.115 GB, of which
-  # ~2.66 GB was the build that had just run and ~6.45 GB was the prior
-  # generation. So one generation is roughly 3 GB and the cap needs room
-  # for the live one plus enough history that a rebuild of an unchanged
-  # layer stays a cache hit. 10 GB left only ~0.9 GB of headroom — close
-  # enough that the next toolchain addition would have started evicting
-  # the LIVE generation, and eviction is oldest-by-`last_used` over a set
-  # the just-finished build all refreshed at once, so what it takes is
-  # near-arbitrary: it could as easily be the 1.4 GB Playwright/Chrome
-  # layer or the 1.6 GB `/root/.npm` cache mount as something stale.
-  # 15 GB holds the live generation plus two, and still bounds the disk.
-  # Revisit if `docker buildx du` starts reporting totals near it.
+  # On the 15 GB number: a measured prod cache totalled 9.115 GB — 2.66 GB
+  # of records from the build that had just run, 6.45 GB of older ones.
+  # That left only ~0.9 GB under the previous 10 GB cap. The margin matters
+  # more than it looks, because eviction is oldest-by-`last_used` over a set
+  # the just-finished build refreshed all at once, so once the cap bites,
+  # what it takes is near-arbitrary — as easily the 1.444 GB
+  # Playwright/Chrome layer or the 1.637 GB `/root/.npm` cache mount (`-a`
+  # prunes cache mounts too) as something genuinely stale. 15 GB restores
+  # real headroom while still bounding the disk. Note ~0.94 GB of that
+  # measured total was a DUPLICATED build prefix that a Dockerfile.prod fix
+  # has since removed, so the steady-state figure should be lower; re-measure
+  # with `docker buildx du` and revisit if totals climb back toward the cap.
   #
   # `--max-used-space` is the semantically-correct flag (caps total
   # cache size, prunes oldest-by-last-used to stay under) but requires
