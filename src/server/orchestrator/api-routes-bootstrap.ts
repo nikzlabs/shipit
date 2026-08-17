@@ -6,7 +6,8 @@
 import { loginIntegrationForService, nativeServiceForHarness } from "../shared/catalogue/index.js";
 import type { FastifyInstance } from "fastify";
 import { releaseResidentForCredentialChange } from "./resident-spawn-guard.js";
-import type { AgentId } from "../shared/types.js";
+import type { AgentId, CredentialBillingMode } from "../shared/types.js";
+import { limitsModeKey } from "../shared/types/usage-limits-types.js";
 import type { ApiDeps } from "./api-routes.js";
 import type { ServiceManager } from "./service-manager.js";
 
@@ -97,6 +98,44 @@ export async function registerBootstrapRoutes(
           console.warn(`[credentials] agent-env push failed for ${sessionId}:`, getErrorMessage(err));
         });
     }
+  };
+
+  /**
+   * planning#339 — keep a **string-delivered subscription**'s usage read-out in
+   * step with the credential behind it.
+   *
+   * An account-backed subscription gets this for free: its sign-in seeds a
+   * baseline and its sign-out clears the cache (`bootstrap-managers.ts`). A
+   * pasted key has neither event, so the same two moments have to be named at
+   * the three places a credential is written. Without them, GLM's plan — whose
+   * numbers are pulled on demand and pushed by nothing — showed an empty pill
+   * until the user pressed refresh, and kept showing a filled one after they
+   * removed the credential.
+   *
+   * Generic on purpose, not GLM-specific: the reader is selected by the
+   * `(service, mode)` the credential names, so a second string-delivered
+   * subscription inherits both behaviours by existing.
+   *
+   * `reason` is what distinguishes the two writes. A **new** credential is a
+   * seed and self-skips if a reading somehow exists; a **replaced secret** is a
+   * different credential wearing the same route id, so its cached reading
+   * describes a key that is gone and the fetch must actually happen.
+   */
+  const refreshQuotaForCredential = (
+    route: { serviceId: string; billingMode: CredentialBillingMode; id: string },
+    reason: "manual" | "seed",
+  ): void => {
+    if (route.billingMode !== "sub" || !deps.refreshSubscriptionLimits) return;
+    void deps.refreshSubscriptionLimits(limitsModeKey(route), reason, route.id).catch((err: unknown) => {
+      console.warn(`[limits] quota refresh for ${route.id} failed:`, getErrorMessage(err));
+    });
+  };
+
+  const forgetQuotaForCredential = (
+    route: { serviceId: string; billingMode: CredentialBillingMode; id: string },
+  ): void => {
+    if (route.billingMode !== "sub") return;
+    deps.forgetSubscriptionLimits?.(limitsModeKey(route), route.id);
   };
 
   // ---- GET /api/bootstrap ----
@@ -289,6 +328,7 @@ export async function registerBootstrapRoutes(
       try {
         const result = createStringCredential(deps.credentialStore, request.body);
         propagateCredentialChange();
+        refreshQuotaForCredential(result.route, "seed");
         deps.sseBroadcast("credential_routes", { routes: result.routes });
         return result;
       } catch (err) {
@@ -307,6 +347,9 @@ export async function registerBootstrapRoutes(
       try {
         const result = updateStringCredential(deps.credentialStore, request.params.routeId, request.body ?? {});
         propagateCredentialChange();
+        // A rename changes nothing about the quota; a replaced secret changes
+        // whose quota it is, so only the latter re-reads.
+        if (request.body?.secret !== undefined) refreshQuotaForCredential(result.route, "manual");
         deps.sseBroadcast("credential_routes", { routes: result.routes });
         return result;
       } catch (err) {
@@ -323,8 +366,12 @@ export async function registerBootstrapRoutes(
     "/api/credential-routes/:routeId",
     async (request, reply) => {
       try {
+        // Read before the delete: afterwards there is no row left to say which
+        // `(service, mode)` the cached reading was filed under.
+        const removed = deps.credentialStore.getCredentialRoute(request.params.routeId);
         const result = deleteCredentialRoute(deps.credentialStore, request.params.routeId, deps.runnerRegistry);
         propagateCredentialChange();
+        if (removed) forgetQuotaForCredential(removed);
         deps.sseBroadcast("credential_routes", { routes: result.routes });
         return result;
       } catch (err) {

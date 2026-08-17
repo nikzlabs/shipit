@@ -424,15 +424,18 @@ and used by nothing. Shipping this alone is deliberate: credential storage and d
 where the security-relevant review is, and it deserves a PR that isn't also changing how
 turns run.
 
-**Phase 2 has landed, apart from GLM's quota integration.** `CredentialRoute`
+**Phase 2 has landed.** `CredentialRoute`
 (`shared/types/domain-types/credential-route.ts`) is the storage shape;
 `credential-store.ts` holds the routes and a per-instance `credentialSecrets`
 map; `services/credential-routes.ts` is the CRUD with the catalogue's rules;
 `ServicesPanel.tsx` is the add-flow. GLM's coding plan can be stored, delivered
-and removed like any other string-delivered subscription — what has **not**
-been built is `zai-plan-usage`, its quota reader, which needs phase 6's
-per-`(service, mode)` quota machinery to have somewhere to report into. Req 15
-is met on catalogue contents and credentials, and unmet on GLM's quota.
+and removed like any other string-delivered subscription.
+
+Its quota reader — the one piece phase 2 left open, because it needed phase 6's
+per-`(service, mode)` machinery to have somewhere to report into — is
+[GLM's quota reader](#glms-quota-reader-planning339) below. Req 15 is met on
+catalogue contents and credentials; on GLM's quota it is met in code and
+awaiting verification against a real coding-plan key.
 
 **What phase 2 found.** Five things, three of which change what a later phase
 does.
@@ -1753,6 +1756,74 @@ would interleave differently than today's "accounts first, then strings". Both
 walks now speak `CredentialRoute` and share `orderForSelectionMode`, so the
 unification is a small change rather than a translation — but it is a behaviour
 change, and this one was not.
+
+## GLM's quota reader (planning#339)
+
+The last piece of phase 2, deferred until phase 6 had somewhere for it to report
+into. `zai-plan-usage` had been a **declared id with nothing behind it** since
+phase 1: the catalogue named it on GLM's subscription, the type made naming one
+mandatory, and no code anywhere selected on it. GLM's rows rendered no usage
+bar, and phase 5 withheld their failover cutoffs on the grounds that a cutoff is
+a percentage of a number nobody reports.
+
+`orchestrator/limits/zai-limits-provider.ts` is the reader. Four things about it
+are decisions rather than mechanics.
+
+**It is the first `LimitsProvider` that is not a harness's.** The two shipped
+readers are built in `agents/index.ts`, keyed by `AgentId`, because each belongs
+to a CLI's own vendor. GLM's plan belongs to a *service*: it is authenticated by
+a pasted key and delivered to whichever harness carries it, so there is no agent
+id to file it under. Phase 6 is what made that a non-problem — a provider
+declares its own `(serviceId, billingMode)` and `bootstrap-managers.ts` indexes
+the registry on that — so registration is the same seam, reached from a
+different construction site.
+
+**It is pulled, not pushed.** Both first-party readers are event-fed: their
+numbers arrive on the agent's stream during a turn. Nothing pushes GLM's, so
+`refreshNow()` fetches `GET https://api.z.ai/api/monitor/usage/quota/limit` with
+the route's key as a bearer token, and `fetch()` returns what was last pulled.
+That makes the two moments an account-backed subscription gets for free —
+a baseline at sign-in, a cache clear at sign-out — things a pasted key has to be
+given explicitly, which is what the `refreshQuotaForCredential` /
+`forgetQuotaForCredential` helpers in `api-routes-bootstrap.ts` are: a seed when
+a credential is added and at boot, a re-read when its secret is replaced, and a
+forget when it is removed. `setRateLimits()` is still honoured, because a
+reading that does arrive is a real one, but nothing is known to produce one.
+
+**The contract is reverse-engineered, so the parser fails closed.** The endpoint
+is internal to Z.ai's own subscription UI and is not documented; every field name
+is a guess informed by community implementations. `parseZaiQuota` therefore
+discards anything it cannot read completely: a window needs **both** a
+percentage and a future reset time, a percentage outside 0–100 is treated as
+evidence we read the wrong field rather than clamped to 100, and two windows
+that cannot be told apart report nothing. The rule that most repays reading is
+the classification one — community reports say a numeric `unit` distinguishes
+the 5-hour window from the weekly one but not which value means which, so the
+reader ignores `unit` and classifies by **reset horizon** instead, which needs no
+magic number and checks itself. A payload that has changed under us renders an
+empty pill, never a plausible one; req 10 prefers the first, and phase 5 refused
+to build a control over the second.
+
+**Switching it on was one line, and that is the load-bearing part.** Adding
+`zai-plan-usage` to `IMPLEMENTED_QUOTA_INTEGRATIONS` gave GLM's rows a usage
+read-out *and* their failover cutoffs, with no change to `ServicesPanel`,
+`CredentialRouting` or the string-credential walk in `service-routing.ts` — all
+three already asked `modeReportsQuota` rather than naming a service. Phase 5's
+deferred item closed by the reader existing, which is the shape the deferral
+predicted.
+
+Two smaller things travelled with it. `subQuotaRefreshable` in the catalogue
+replaces the `serviceId === "anthropic"` written out by hand at **three** client
+call sites to decide whether a pill gets a refresh button — a narrower question
+than `modeReportsQuota`, because Codex's numbers can only ever be received. And
+the refresh button's failure copy now names the service it actually called,
+rather than telling a GLM user that Anthropic rate-limited them.
+
+**What is not done: verification.** Every number above is a guess until the
+reader has been run against a real GLM coding-plan key, which cannot be done
+from a session container. The fail-closed parser is what makes shipping it
+before that defensible — the failure mode is an empty pill — but planning#339
+stays open on its own acceptance until someone with a key exercises it.
 
 ## The default for a session that never picked a model (planning#353)
 
@@ -3593,7 +3664,8 @@ disappeared.
 | `client/components/ModelPicker.tsx` | The split picker: `HarnessSelector` + `ModelSelector`, model rows grouped by `(service, billing mode)`. Replaced `ModelAgentSelector`, whose hand-kept `METERED_MODELS` set went with it. `boundSession` / `displayedHarness` decide whether it describes a session or previews the next one |
 | `client/utils/new-session-agent.ts` | `newSessionAgentId` — the one rule for the harness a brand-new session is created on, read by the connect URL and by the picker that displays it |
 | `shared/types/usage-limits-types.ts` | `SubscriptionLimits` — already keyed by `routeId` |
-| `orchestrator/agents/*/limits-provider.ts` | Per-`AgentId` today; becomes per service (req 10) |
+| `orchestrator/agents/*/limits-provider.ts` | The two first-party readers, built per-`AgentId` because each belongs to its CLI's own vendor; each declares the `(service, mode)` it reports for (req 10) |
+| `orchestrator/limits/zai-limits-provider.ts` | GLM's plan quota (planning#339) — the first reader that is not a harness's, pulled over HTTP rather than event-fed, with a deliberately fail-closed parser for an undocumented endpoint |
 | `orchestrator/usage.ts` | `RecordedTurn` — token/cost accounting, distinct from quota |
 | `orchestrator/service-routing.ts` | The resolver: configured credentials, per-mode turn routing (including which of a subscription's string credentials), the spawn identity, and `firstEligibleSelectionForHarness` — the default for a session that never picked a model (planning#353). Phase 7's second caller |
 | `orchestrator/credential-failure-policy.ts` | req 12's branch — `sub` fails over, `key` stops — asked by every gate so it cannot be drawn twice |

@@ -325,6 +325,10 @@ export async function registerRoutes(
       ? {
           refreshSubscriptionLimits: (modeKey: string, reason: "manual" | "seed", routeId?: string) =>
             limitsRegistry.refreshNow(modeKey, reason, routeId),
+          // planning#339 — drop a removed credential's cached reading, so its
+          // pill goes with it instead of outliving the credential it describes.
+          forgetSubscriptionLimits: (modeKey: string, routeId: string) =>
+            limitsRegistry.markSignedOut(modeKey, routeId),
           // docs/144 — let the sub-agent spawn route forward a consult's
           // rate-limit snapshot into the matching provider.
           recordAgentRateLimits,

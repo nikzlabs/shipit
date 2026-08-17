@@ -1284,11 +1284,15 @@ describe("ServicesPanel — one card component (docs/252 D2, D7, D8, D9)", () =>
   });
 
   /**
-   * D14 / planning#339 — a cutoff is a percentage of a *reported* quota, and
-   * nothing reports one for a string-delivered plan yet, so the control would
-   * set a number that can never fire.
+   * D14 / planning#339 — a cutoff follows the QUOTA, not the delivery shape.
+   *
+   * GLM's coding plan is the case that proves it: a subscription with no login
+   * flow, authenticated by a pasted key, on a service that is not first-party.
+   * It had the order and no cutoffs for as long as `zai-plan-usage` was a
+   * declared id with no reader behind it, and gained them — with no change to
+   * this panel — the moment planning#339 built one.
    */
-  it("offers the order but not the cutoffs on a string-delivered subscription", () => {
+  it("offers the order AND the cutoffs on a string-delivered subscription that reports quota", () => {
     useSettingsStore.getState().setCredentialRoutes([
       route({ id: "cred_1", serviceId: "zai", billingMode: "sub", via: "string", isPrimary: true }),
       route({ id: "cred_2", serviceId: "zai", billingMode: "sub", via: "string", priority: 1 }),
@@ -1299,7 +1303,7 @@ describe("ServicesPanel — one card component (docs/252 D2, D7, D8, D9)", () =>
     expect(within(band).getByRole("radiogroup", { name: "How ShipIt picks between these credentials" }))
       .toBeInTheDocument();
     expect(within(band).getByTestId("credential-selection-mode-zai:sub")).toBeInTheDocument();
-    expect(screen.queryByTestId("failover-cutoffs-zai:sub")).not.toBeInTheDocument();
+    expect(within(band).getByTestId("failover-cutoffs-zai:sub")).toBeInTheDocument();
   });
 
   /**
@@ -1804,24 +1808,37 @@ describe("an account-capable mode holding only supplied credentials (docs/252 re
   });
 
   /**
-   * The half planning#339 still owns: GLM's coding plan declares
-   * `zai-plan-usage`, which has no reader, so a cutoff there would set a number
-   * that can never fire — the dishonesty req 10 refuses a surface over. The
-   * ORDER still works, because ordering needs no quota.
+   * planning#339 closed — GLM's coding plan reports a quota, so it gets both
+   * halves of the band and a usage read-out on its rows, exactly as a
+   * first-party subscription does. That is what req 15 asked the launch
+   * subscription on a NON-first-party service to demonstrate.
+   *
+   * The rule this replaced is still the rule (a mode whose quota nobody reads
+   * gets no cutoffs and no pill — req 10 prefers no indicator to a fictional
+   * one); what changed is that no shipped service is on the wrong side of it
+   * any more, so the rule itself is pinned on `modeReportsQuota` in
+   * `catalogue.test.ts` rather than on a service that happens to lack a reader.
    */
-  it("offers no cutoffs for a subscription whose quota nobody reads yet", () => {
+  it("offers the cutoffs and a read-out for a supplied subscription that reports quota", () => {
     useSettingsStore.getState().setCredentialRoutes([
       route({ id: "cred_1", serviceId: "zai", billingMode: "sub", via: "string", priority: 0, isPrimary: true }),
       route({ id: "cred_2", serviceId: "zai", billingMode: "sub", via: "string", priority: 1 }),
     ]);
+    useUiStore.getState().setSubscriptionLimits({
+      "zai:sub": {
+        cred_1: {
+          serviceId: "zai", billingMode: "sub", routeId: "cred_1", plan: null,
+          session: { usedPct: 44, resetAt: new Date(Date.now() + 3_600_000).toISOString() },
+          weekly: null, fetchedAt: Date.now(),
+        },
+      },
+    });
     render(<ServicesPanel />);
 
     const band = screen.getByTestId("service-routing-service-card-zai:sub");
     expect(within(band).getByTestId("credential-selection-mode-zai:sub")).toBeInTheDocument();
-    expect(screen.queryByTestId("failover-cutoffs-zai:sub")).not.toBeInTheDocument();
-    // …and no usage read-out either: an empty pill would say "no usage" where
-    // the truth is "not measured".
-    expect(screen.queryByTestId("credential-row-cred_1")?.textContent).not.toMatch(/5h|7d/);
+    expect(within(band).getByTestId("failover-cutoffs-zai:sub")).toBeInTheDocument();
+    expect(screen.getByTestId("credential-row-cred_1").textContent).toMatch(/5h/);
   });
 
   /**

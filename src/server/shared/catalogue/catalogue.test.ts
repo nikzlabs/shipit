@@ -23,6 +23,8 @@ import {
   getModel,
   isContextSentinel,
   isPriceSentinel,
+  modeReportsQuota,
+  subQuotaRefreshable,
   MODEL_FAMILY_IDS,
   MODEL_ID_ALIASES,
   MODEL_IDENTITIES,
@@ -380,6 +382,55 @@ describe("every mode can be authenticated", () => {
     for (const service of CATALOGUE) {
       for (const mode of service.modes) {
         if (mode.kind === "sub") expect(mode.quota, `${service.id}/sub`).toBeTruthy();
+      }
+    }
+  });
+});
+
+/**
+ * planning#339 — **declaring a quota integration is not implementing one**, and
+ * the two questions the UI asks about it are separate.
+ *
+ * `modeReportsQuota` decides whether a credential shows a usage read-out and
+ * whether failover CUTOFFS are offered (a percentage of a number nobody
+ * reports can never fire — the dishonesty req 10 refuses a surface over).
+ * `subQuotaRefreshable` decides whether that read-out carries a refresh button,
+ * which is a strictly narrower question: Codex's numbers are pushed by the
+ * app-server during a turn and can only be received, so a button there would
+ * spin and change nothing.
+ *
+ * These are pinned per service because the failure they guard is silent both
+ * ways: a reader that ships without joining `IMPLEMENTED_QUOTA_INTEGRATIONS`
+ * renders nothing, and an id added to it with no reader behind it renders an
+ * empty pill that reads as "no usage" when the truth is "not measured".
+ */
+describe("quota integrations that are implemented, and those that can be re-read (planning#339)", () => {
+  it.each([
+    ["anthropic", true, true],
+    ["openai", true, false],
+    ["zai", true, true],
+  ])("%s: reports quota %s, refreshable %s", (serviceId, reports, refreshable) => {
+    expect(modeReportsQuota(serviceId, "sub")).toBe(reports);
+    expect(subQuotaRefreshable(serviceId)).toBe(refreshable);
+  });
+
+  it("a key mode never reports a quota and is never refreshable", () => {
+    for (const service of CATALOGUE) {
+      if (!service.modes.some((mode) => mode.kind === "key")) continue;
+      expect(modeReportsQuota(service.id, "key"), `${service.id}/key`).toBe(false);
+      // A service with no `sub` mode has nothing to refresh either.
+      if (!service.modes.some((mode) => mode.kind === "sub")) {
+        expect(subQuotaRefreshable(service.id), service.id).toBe(false);
+      }
+    }
+  });
+
+  it("nothing is refreshable without also reporting", () => {
+    // The narrower question cannot outrun the broader one: a refresh button on
+    // a mode that renders no read-out has nothing to put its result into.
+    for (const service of CATALOGUE) {
+      if (subQuotaRefreshable(service.id)) {
+        expect(modeReportsQuota(service.id, "sub"), service.id).toBe(true);
       }
     }
   });

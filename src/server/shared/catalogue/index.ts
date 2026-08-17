@@ -366,20 +366,40 @@ export function modeAllowsMultipleCredentials(billingMode: BillingMode): boolean
 /**
  * The quota integrations this build actually implements.
  *
- * Every `sub` mode DECLARES one — the type makes it required, so "a
- * subscription with nowhere to read its quota from" cannot be expressed — but
- * declaring is not implementing: `zai-plan-usage` has no reader yet
- * (planning#339), so GLM's coding plan reports nothing.
+ * Every `sub` mode DECLARES one, but declaring is not implementing, so this is
+ * the list that decides what a user sees. `zai-plan-usage` joined it in
+ * planning#339, when `ZaiLimitsProvider` gave GLM's coding plan a reader; until
+ * then GLM declared an id nothing read and reported nothing.
  *
  * One list, because "does this mode report a quota" is asked in two places that
  * must agree: whether to offer failover CUTOFFS (a percentage of a number
  * nobody reports can never fire — the dishonesty req 10 refuses a surface
- * over), and whether a credential row shows a usage read-out at all. When the
- * GLM reader lands, this is the line that changes.
+ * over), and whether a credential row shows a usage read-out at all.
  */
 const IMPLEMENTED_QUOTA_INTEGRATIONS = new Set<QuotaIntegrationId>([
   "anthropic-oauth-usage",
   "openai-chatgpt-usage",
+  "zai-plan-usage",
+]);
+
+/**
+ * The quota integrations that can be re-read **on demand**, which is what puts
+ * a refresh button beside a credential's usage read-out.
+ *
+ * A narrower question than {@link modeReportsQuota} and deliberately its own
+ * list: Codex reports a quota it can only ever *receive*. Its numbers are
+ * pushed by the app-server during a turn, so a button there would spin and
+ * change nothing. Anthropic has `/api/oauth/usage` and GLM has Z.ai's quota
+ * endpoint, so both have something to press.
+ *
+ * This lives in the catalogue because three client surfaces ask it — the header
+ * badge, the account rows and the credential rows — and each of them used to
+ * answer it with `serviceId === "anthropic"` written out by hand. Three copies
+ * of one fact is three places to forget when a fourth reader lands.
+ */
+const ON_DEMAND_QUOTA_INTEGRATIONS = new Set<QuotaIntegrationId>([
+  "anthropic-oauth-usage",
+  "zai-plan-usage",
 ]);
 
 /**
@@ -395,6 +415,20 @@ const IMPLEMENTED_QUOTA_INTEGRATIONS = new Set<QuotaIntegrationId>([
 export function modeReportsQuota(serviceId: string, billingMode: BillingMode): boolean {
   const mode = getMode(serviceId, billingMode);
   return mode?.kind === "sub" && IMPLEMENTED_QUOTA_INTEGRATIONS.has(mode.quota);
+}
+
+/**
+ * Can this service's subscription quota be re-read on demand — i.e. is there a
+ * refresh button to show? See {@link ON_DEMAND_QUOTA_INTEGRATIONS}.
+ *
+ * Takes only a service id because the question is only ever asked about a
+ * subscription: a key has no allowance, so there is no read-out to refresh.
+ */
+export function subQuotaRefreshable(serviceId: string): boolean {
+  const mode = getMode(serviceId, "sub");
+  return mode?.kind === "sub"
+    && IMPLEMENTED_QUOTA_INTEGRATIONS.has(mode.quota)
+    && ON_DEMAND_QUOTA_INTEGRATIONS.has(mode.quota);
 }
 
 /** A catalogue row paired with the identity that names it. */

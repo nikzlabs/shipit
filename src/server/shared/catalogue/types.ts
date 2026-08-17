@@ -257,10 +257,20 @@ interface ModeCommon {
 }
 
 /**
- * `kind` is the sole billing discriminator, and `quota` is required exactly
- * where a quota exists — encoded in the union rather than as an optional field,
- * so "a subscription with nowhere to read its quota from" (req 10) cannot be
- * declared.
+ * `kind` is the sole billing discriminator, and `quota` names the reader that
+ * fills req 10's indicator — encoded in the union rather than as an optional
+ * field, so every subscription has to say where its quota comes from.
+ *
+ * **What that does NOT guarantee is that the named reader exists.** This
+ * comment used to claim "a subscription with nowhere to read its quota from
+ * cannot be declared", and the claim was already false when it was written:
+ * GLM declared `zai-plan-usage` for two phases while nothing implemented it
+ * (planning#339). Declaring is not implementing, and the type cannot tell the
+ * difference — `IMPLEMENTED_QUOTA_INTEGRATIONS` in `./index.ts` is what
+ * actually decides whether a mode shows a read-out.
+ *
+ * So if a future service has a subscription with no usage API at all, the fix
+ * is an explicit no-reader variant of this union, not another dangling id.
  */
 export type BillingModeDef =
   | (ModeCommon & { kind: "key" })

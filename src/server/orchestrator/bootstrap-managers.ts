@@ -17,6 +17,7 @@ import type { AppDeps } from "./app-di.js";
 import type { ManagerSet } from "./app-di.js";
 import { buildAgentRuntime } from "./agents/index.js";
 import { LimitsRegistry } from "./limits-registry.js";
+import { ZaiLimitsProvider, ZAI_SERVICE_ID } from "./limits/zai-limits-provider.js";
 import { limitsModeKey } from "../shared/types/usage-limits-types.js";
 import { credentialOwnerForRouteId } from "./service-routing.js";
 import { accountServiceForHarness } from "./provider-account-manager.js";
@@ -1191,8 +1192,34 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
   // declares it reports for. A harness is not a vendor: two harnesses could in
   // principle report into the same mode, and one harness redirected elsewhere
   // reports into none.
+  /**
+   * planning#339 — GLM's plan quota, and the first provider that is not a
+   * harness's.
+   *
+   * It is built here rather than in `buildAgentRuntime()` because that module's
+   * tables are per-`AgentId` and this subscription has no harness of its own:
+   * the plan is a SERVICE's, authenticated by a pasted key and delivered to
+   * whichever harness carries it. Registration is nevertheless the same seam —
+   * the provider declares `(zai, sub)` and the map below indexes it on that,
+   * exactly as it does for the two first-party readers.
+   *
+   * The credential store is the whole answer for both routes and secrets: a
+   * deployment-supplied `ZAI_CODING_PLAN_KEY` is adopted into an ordinary row
+   * at boot (`adoptEnvCredentials`, req 20), so there is no environment path to
+   * read separately. A row with no secret behind it is skipped rather than
+   * offered — fetching for it could only ever produce `no-credentials`.
+   */
+  const zaiLimitsProvider = new ZaiLimitsProvider({
+    listRouteIds: () =>
+      credentialStore
+        .listCredentialRoutes(ZAI_SERVICE_ID, "sub")
+        .filter((route) => route.via === "string" && credentialStore.getCredentialSecret(route.id) !== undefined)
+        .map((route) => route.id),
+    secretForRoute: (routeId) => credentialStore.getCredentialSecret(routeId),
+  });
+
   const limitsProvidersByMode = new Map(
-    [...limitsProviders.values()].map((p) => [limitsModeKey(p), p]),
+    [...limitsProviders.values(), zaiLimitsProvider].map((p) => [limitsModeKey(p), p]),
   );
   limitsRegistry = !isTestMode
     ? new LimitsRegistry({ providers: limitsProvidersByMode, sseBroadcast })
@@ -1234,6 +1261,22 @@ export async function bootstrapManagers(args: BootstrapManagersDeps) {
         // no-op for providers without an on-demand path (Codex).
         void limitsRegistry.refreshNow(modeKey, "seed", accountId);
       });
+    }
+
+    /**
+     * planning#339 — the same once-per-credential baseline for GLM, at boot.
+     *
+     * A sign-in is what seeds an account-backed reader, and a pasted key has
+     * none: the credential is simply *there* from the moment the process
+     * starts. Nothing else would ever call this reader — no event stream
+     * pushes GLM's numbers during a turn — so without this the pill would stay
+     * empty until the user pressed refresh. Fire-and-forget on purpose; a
+     * failed baseline is one empty pill, not a boot that stalls on an outbound
+     * request.
+     */
+    const zaiModeKey = limitsModeKey(zaiLimitsProvider);
+    for (const routeId of zaiLimitsProvider.routeIds()) {
+      void limitsRegistry.refreshNow(zaiModeKey, "seed", routeId);
     }
   }
 

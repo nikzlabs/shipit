@@ -195,6 +195,16 @@ export interface ApiDeps {
     routeId?: string,
   ) => Promise<LimitsRefreshResult[]>;
   /**
+   * planning#339 — forget one route's cached quota reading and rebroadcast.
+   *
+   * The counterpart of the seed above, for a **string-delivered** credential:
+   * removing one has no sign-out event to ride on, so without this the reading
+   * it produced stays in the registry's cache until some unrelated event
+   * happens to sweep it, leaving a usage pill for a credential that no longer
+   * exists. Omitted in test mode (no `LimitsRegistry`).
+   */
+  forgetSubscriptionLimits?: (modeKey: string, routeId: string) => void;
+  /**
    * docs/144 — push a sub-agent consult's carried-back rate-limit snapshot into
    * the matching `LimitsProvider`. Same closure the WS turn path uses; threaded
    * here so the sub-agent spawn route can keep the limit pill fresh. Omitted in

@@ -77,6 +77,7 @@ import {
   modeAllowsMultipleCredentials,
   modeCredentialFor,
   modeReportsQuota,
+  subQuotaRefreshable,
   type BillingMode,
   type ServiceDef,
 } from "../../../server/shared/catalogue/index.js";
@@ -641,8 +642,9 @@ function ServiceModeCard({
       {/*
         D14 / planning#339 — a cutoff is a percentage of a *reported* quota, so
         it is offered where a quota is reported and nowhere else. GLM's coding
-        plan declares `zai-plan-usage`, which has no reader yet, so it still
-        gets none.
+        plan gets one from the moment `zai-plan-usage` has a reader; before
+        that it declared the id and reported nothing, and a cutoff on a number
+        nobody reports can never fire.
 
         **Keyed on the MODE, not on the delivery shape**, which is the fix. This
         read `provider && accounts.length > 1` — "an account-backed mode with
@@ -751,10 +753,11 @@ function ServiceModeCard({
  * for the life of the install. A row that can be reordered but not named is
  * exactly the asymmetry req 19 is closing between the two row types.
  *
- * **No quota pill, and no sentence about the absence.** A key reports no quota
- * (req 10) and a string-delivered subscription reports none until its reader
- * lands (planning#339); either way the slot is simply empty, which is what the
- * whole column already means everywhere else.
+ * **No quota pill for a key, and no sentence about the absence.** A key reports
+ * no quota (req 10), and so does a subscription whose declared reader is not
+ * implemented; either way the slot is simply empty, which is what the whole
+ * column already means everywhere else. A string-delivered subscription with a
+ * reader — GLM's plan since planning#339 — gets the pill like any other.
  */
 /**
  * This credential's quota snapshot, if one has been reported.
@@ -857,16 +860,19 @@ function StringCredentialRow({
           route and gated only on the mode being a subscription, and the header
           pill has always rendered one for these routes; only this row did not.
 
-          `modeReportsQuota` rather than `billingMode === "sub"`: GLM's coding
-          plan is a subscription whose reader does not exist yet, and an empty
-          pill would say "no usage" where the truth is "not measured".
+          `modeReportsQuota` rather than `billingMode === "sub"`: a declared
+          quota id is not an implemented reader, and an empty pill would say
+          "no usage" where the truth is "not measured". GLM's coding plan was
+          the case that made the distinction — it declared `zai-plan-usage` for
+          two phases with nothing behind it, and gained a reader in
+          planning#339.
         */
         modeReportsQuota(route.serviceId, route.billingMode) ? (
           <SubscriptionLimitPill
             serviceId={route.serviceId}
             routeId={route.id}
             {...(snapshotFor(limits, route) ? { snapshot: snapshotFor(limits, route) } : {})}
-            showRefresh={route.serviceId === "anthropic"}
+            showRefresh={subQuotaRefreshable(route.serviceId)}
           />
         ) : undefined
       }
