@@ -225,6 +225,8 @@ checkboxes — arrow keys move, the space bar toggles, Enter confirms:
 ```
 
 Tick both to install both; tick neither to install ShipIt without exposing it and add access later.
+To see both questions without provisioning anything, run `bash deployment/vps/preview-prompts.sh`
+from a checkout — it draws the real prompts, prints what the install would do, and exits.
 A scripted install can pre-answer with `SHIPIT_ACCESS=tailscale` (or `cloudflare,tailscale`, or
 `none`), which skips the question; so does running with no terminal, which keeps the default shown
 above. It then automatically:

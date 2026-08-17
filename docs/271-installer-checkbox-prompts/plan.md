@@ -122,9 +122,22 @@ The egress-containment question is deliberately left as a typed `[y/N]`: it
 confirms a security downgrade rather than choosing among options, and a
 preselected checkbox is the wrong shape for that.
 
+## Trying it without a VPS
+
+```bash
+bash deployment/vps/preview-prompts.sh
+```
+
+Draws both checklists, prints what the real run would do, and exits. It installs
+nothing and writes nothing. The picker code is `sed`'d out of `setup.sh` at run
+time rather than copied, so the prompt it draws is the real one; only the option
+rows are its own, and a test pins their keys to the installer's so the preview
+cannot silently offer a different set.
+
 ## Key files
 
 - `deployment/vps/setup.sh` — the picker and both callers.
+- `deployment/vps/preview-prompts.sh` — the dry run above.
 - `src/server/orchestrator/services/installer-picker.test.ts` — extracts the
   picker block and drives it under a pty (`script -qec`), asserting the key map,
   the `[*]`/`[ ]` rendering, the non-interactive return, and the validators'

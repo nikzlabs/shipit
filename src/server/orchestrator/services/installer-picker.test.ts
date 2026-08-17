@@ -28,6 +28,9 @@ import { execFileSync } from "node:child_process";
 const SETUP_SH = fileURLToPath(
   new URL("../../../../deployment/vps/setup.sh", import.meta.url),
 );
+const PREVIEW_SH = fileURLToPath(
+  new URL("../../../../deployment/vps/preview-prompts.sh", import.meta.url),
+);
 const BEGIN = "# --- BEGIN shipit-picker";
 const END = "# --- END shipit-picker";
 
@@ -136,6 +139,7 @@ describe("deployment/vps/setup.sh — checkbox prompt (docs/271)", () => {
 
   it("is valid bash", () => {
     execFileSync("bash", ["-n", SETUP_SH], { stdio: "pipe" });
+    execFileSync("bash", ["-n", PREVIEW_SH], { stdio: "pipe" });
   });
 
   it("without a terminal, answers with the preselection instead of prompting", () => {
@@ -230,6 +234,25 @@ describe("deployment/vps/setup.sh — checkbox prompt (docs/271)", () => {
       // saved state echoing, so nothing in the picker may hand-set echo.
       expect(ptyRun("\x03")).toEqual({ echo: true, exit: 130 });
     });
+  });
+
+  /**
+   * `preview-prompts.sh` extracts the picker from setup.sh, so the *prompt* it
+   * draws can never drift. Its option rows are its own, though, and a preview
+   * that offers a harness the installer does not (or misses one it added) is
+   * worse than no preview — so the keys are pinned to each other here.
+   */
+  it("the dry-run preview offers the same options as the installer", () => {
+    const keys = (file: string): string[] => {
+      const src = fs.readFileSync(file, "utf8");
+      // Rows are passed as "key|Label|hint" arguments to shipit_pick.
+      return [...src.matchAll(/^\s*"([a-z]+)\|[^"]+\|[^"]*"/gm)]
+        .map((m) => m[1])
+        .sort();
+    };
+    const preview = keys(PREVIEW_SH);
+    expect(preview.length).toBeGreaterThan(0);
+    expect(preview).toEqual(keys(SETUP_SH));
   });
 
   /**
