@@ -193,7 +193,16 @@ export type BillingModeDef =
 export type ModeCredential =
   | { via: "account"; login: LoginIntegrationId }   // a login flow producing an account root
   | { via: "string"; storageEnv: string;            // a secret: pasted, or supplied by env
-      targetOverride?: Partial<Record<HarnessId, CredentialTarget>> };
+      targetOverride?: Partial<Record<HarnessId, CredentialTarget>>;
+      /** The harnesses that can actually authenticate with this credential —
+       *  absent means "any harness with a string target". Added by docs/268
+       *  phase 10 (`types.ts:243` ✅): a string-delivered credential is not
+       *  always a neutral API key (`claude-env-oauth` is an Anthropic OAuth
+       *  token only Claude Code can carry; GLM's plan key is `carriers:
+       *  ["claude"]`), and with a second anthropic-messages harness the style
+       *  join alone would offer such credentials on harnesses whose every
+       *  turn 401s. */
+      carriers?: HarnessId[] };
 
 export interface ServiceDef {
   id: string;
