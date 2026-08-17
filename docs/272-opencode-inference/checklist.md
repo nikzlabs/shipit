@@ -62,12 +62,21 @@ Zen authenticates and then answers `AI_APICallError: Insufficient balance`.
       `AuthError: Invalid API key` from `https://opencode.ai/zen/v1/messages`,
       so the base URL, the `/v1` the adapter appends, the `x-api-key` header
       and the model id are all confirmed on the wire
-- [ ] A completed generation on either Zen route — **blocked on Zen credit**
-- [ ] Claude Code × Zen (`anthropic-messages`) — a live turn, then drop
-      `carriers` from the Zen credential. Also blocked on Zen credit: Claude
-      Code speaks only `anthropic-messages`, which only Zen offers, so no
-      cross-harness pair can be measured while Zen cannot answer. The gate
-      stays exactly as it shipped
+- [x] A completed generation on both Zen routes, once credit was added:
+      `claude-haiku-4-5` over `anthropic-messages` and `deepseek-v4-flash` over
+      `openai-chat-completions` each answered exactly what they were asked, and
+      each was accounted as a METERED turn ($0.0306 / 24 462 tokens and
+      $0.0032 / 22 890 tokens), so the `key` mode's spend path is verified as
+      well as its routing
+- [x] Claude Code × Zen (`anthropic-messages`) — measured, and it **does not
+      work**. The turn authenticates and routes (`route=reserved:env:OPENCODE_
+      ZEN_API_KEY`, `opencode/key -> https://opencode.ai/zen`), then Zen
+      rejects the request body: `400 [invalid_request_error]
+      context_management: Extra inputs are not permitted`. Claude Code sends a
+      `context_management` block that Zen's upstream refuses. It is a property
+      of the CLI's request rather than of a model, a credential or a row, so
+      the gate stays and no row-level change can lift it. A fix would have to
+      stop the CLI sending the field; the binary exposes no flag for it
 - [ ] Codex × Zen / Go (`openai-responses`) — a live turn, then add the
       `@ai-sdk/openai` rows (GPT-5.6 Sol/Terra/Luna, Grok) that are unauthored
       today because no harness could reach them. Neither product declares

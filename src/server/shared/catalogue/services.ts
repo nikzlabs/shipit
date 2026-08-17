@@ -747,14 +747,27 @@ export const SERVICES = [
             // the carrying harness's own default target, so no `targetOverride`
             // is needed anywhere.
             //
-            // `carriers` is a LAUNCH GATE, not a wire fact (docs/272 req 5:
-            // cross-harness pairs are offered "only after live verification
-            // shows it works", and the paid-turn sweep needs a real key nobody
-            // has run yet). OpenCode is the pairing this service's own CLI
-            // exercises, so it launches alone; deleting this line is what the
-            // §7 verification pass does for Claude Code, one measured pair at a
-            // time. Until then a Zen key cannot make an Anthropic-style row
-            // eligible on Claude Code.
+            // `carriers` is a LAUNCH GATE, not a wire fact — req 5 offers a
+            // cross-harness pair "only after live verification shows it
+            // works". OpenCode's own CLI is verified on both of this mode's
+            // styles (real paid turns, 2026-08-17 §7). **Claude Code is
+            // verified NOT to work** and that is why the gate stays: the turn
+            // authenticates and routes correctly, then Zen refuses the request
+            // body itself —
+            //
+            //   400 [invalid_request_error] context_management: Extra inputs
+            //   are not permitted
+            //
+            // Claude Code puts a `context_management` block in its Messages
+            // request, and Zen's upstream rejects any field outside the plain
+            // Messages schema. It is a property of the CLI's request, not of a
+            // model or a credential, so every Claude Code × Zen turn fails the
+            // same way and no row-level change can rescue it. Removing this
+            // line would offer the user a pair that 400s on its first turn.
+            //
+            // Codex needs no entry: it speaks only `openai-responses`, which
+            // this mode declares for no model, so the catalogue join already
+            // refuses that pair on style alone.
             carriers: ["opencode"],
           },
         ],

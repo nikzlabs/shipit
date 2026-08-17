@@ -315,12 +315,21 @@ pass — the key was supplied after the rows merged):
   as **included** (44 565 tokens, $0 metered, $0.0345 at API rates) rather than
   metered — so the `sub` mode's spend path is verified, not just its routing.
   Repeated with `--variant high`.
-- ✅ **Both Zen routes authenticate**, and are then refused for **balance**:
-  `AI_APICallError: Insufficient balance`. The account's Zen half has no
-  credit. Against the same route a bogus key answers 401 `AuthError: Invalid
-  API key` from `https://opencode.ai/zen/v1/messages`, so base URL, the `/v1`
-  the adapter appends, the `x-api-key` header and the model id are confirmed on
-  the wire — the missing piece is a completed generation, not the plumbing.
+- ✅ **Both Zen routes complete real turns** (measured once the user added
+  credit; before that both authenticated and were refused for balance, with a
+  bogus key answering 401 `AuthError: Invalid API key` on the same route).
+  `claude-haiku-4-5` over `anthropic-messages` and `deepseek-v4-flash` over
+  `openai-chat-completions`, each accounted as a **metered** turn ($0.0306 /
+  24 462 tokens and $0.0032 / 22 890 tokens) — so `key`-mode spend is verified
+  too, and the two modes are seen to account differently against one account.
+- ❌ **Claude Code × Zen does not work, and the `carriers` gate therefore
+  stays.** The turn authenticates and routes correctly, then Zen refuses the
+  request body: `400 [invalid_request_error] context_management: Extra inputs
+  are not permitted`. Claude Code sends a `context_management` block that Zen's
+  upstream rejects; it is a property of the CLI's request, not of a model or a
+  credential, so every such turn fails identically. This is exactly the outcome
+  req 5's "only after live verification shows it works" exists to catch — the
+  wire facts in §3 all held, and the pair still failed.
 - 🐛 **Found and fixed here**: ShipIt declared all seven reasoning levels as
   variants on every provider block, and `@ai-sdk/anthropic` validates `effort`
   against `low|medium|high|xhigh|max` — so `none`/`minimal` threw
@@ -331,16 +340,18 @@ pass — the key was supplied after the rows merged):
   express today), and a service-refused turn renders as an empty assistant
   bubble with the error text dropped somewhere above the adapter.
 
-Still needs a real key **with Zen credit** (per req 5's "live verification
-needed"):
+Still open (per req 5's "live verification needed"):
 
-1. One real paid turn per (product × style) — Zen `A_MSG`/`O_RESP`/`O_CC`,
-   Go `O_RESP`(/`A_MSG` if any Go model still publishes it). Go `O_CC` is done.
-2. Claude Code and Codex driven end-to-end at Zen/Go (the actual cross-harness
-   pairs, docs/252 pair-verification method) — settles `carriers` empirically.
-   Note the ordering constraint the run exposed: Claude Code speaks only
-   `A_MSG`, which only **Zen** offers, so the cross-harness gate cannot be
-   lifted from Go's side no matter how many Go turns succeed.
+1. The `O_RESP` half of both products — no model declares that style today, so
+   the GPT/Grok rows have to be authored before a turn can be run. Every style
+   a row DOES declare is now measured: Zen `A_MSG` ✅, Zen `O_CC` ✅, Go
+   `O_CC` ✅.
+2. Codex × Zen/Go, which needs (1) first: Codex speaks only `O_RESP`, so the
+   catalogue join refuses the pair on style alone and there is nothing to
+   measure until an `O_RESP` row exists. Claude Code × Zen is measured and
+   **failed** (see above) — the gate is now held by evidence rather than by
+   caution, and lifting it needs the CLI to stop sending `context_management`,
+   not a catalogue edit.
 3. The Go cap-exceeded shape (expected 429 `UsageLimitError`-family, cf. the
    free tier's `FreeUsageLimitError`) and the "Use balance" fallback's
    visibility (expected: none).
