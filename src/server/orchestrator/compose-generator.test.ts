@@ -1909,7 +1909,7 @@ describe("generateComposeOverride env_file injection", () => {
   // planning#292 — a service missing from the map gets NO env_file rather than the
   // old `.shipit/.env.<service>` fallback. Nothing writes that file any more, so
   // referencing it would fail the whole stack at `up` time instead of one
-  // service, and it named a path inside the user's git clone (docs/246 req 7).
+  // service, and it named a path inside the user's git clone (docs/246-shipit-state-out-of-clone req 7).
   it("emits no env_file for a service missing from serviceEnvFiles", () => {
     const override = generateComposeOverride(
       [
@@ -2132,7 +2132,7 @@ describe("generateComposeOverride — Docker-secrets mode", () => {
 
   // planning#287 — the wrapper mount used to come out of the workspace volume, which
   // is why a generated `secrets-entrypoint.sh` had to be copied into the user's
-  // git clone (docs/246 req 1). It is now bind-mounted from its staged absolute
+  // git clone (docs/246-shipit-state-out-of-clone req 1). It is now bind-mounted from its staged absolute
   // path, so the mount is identical whether or not a workspace volume exists.
   it("bind-mounts the wrapper from its absolute staged path, even with a workspace volume", () => {
     const override = generateComposeOverride(

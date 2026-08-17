@@ -33,7 +33,7 @@ export function codexHome(): string {
 }
 
 /**
- * Per-spawn HOME override for an agent CLI (docs/150 req 19).
+ * Per-spawn HOME override for an agent CLI (docs/150-multiple-provider-subscriptions req 19).
  *
  * The process-global {@link agentHome} is correct inside a session container,
  * where the image symlinks `~/.claude` / `~/.codex` at the per-session

@@ -1,5 +1,5 @@
 /**
- * docs/266 reqs 3, 4 — what happened the last time ShipIt tried to install a
+ * docs/266-plugin-install-diagnosability reqs 3, 4 — what happened the last time ShipIt tried to install a
  * plugin repository, written where a session can still read it afterwards.
  *
  * **Why this is not on the generation record.** A failed install publishes no

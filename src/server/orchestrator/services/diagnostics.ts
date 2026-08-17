@@ -53,7 +53,7 @@ export interface ServiceDiagnostic {
 }
 
 /**
- * docs/150 req 11 — which provider account this session is running on, right
+ * docs/150-multiple-provider-subscriptions req 11 — which provider account this session is running on, right
  * now.
  *
  * The chat-visible failover notice covers the *moment* a session changes
@@ -199,7 +199,7 @@ export interface SessionDiagnostics {
    */
   oomBreaker: OomBreakerState | null;
   /**
-   * docs/150 req 11 — the provider account this session runs on. `null` when
+   * docs/150-multiple-provider-subscriptions req 11 — the provider account this session runs on. `null` when
    * the build has no session/account wiring (test mode).
    */
   providerRoute: ProviderRouteDiagnostic | null;
@@ -230,7 +230,7 @@ export interface DiagnosticsDeps {
    */
   oomBreaker?: SessionOomCircuitBreaker;
   /**
-   * docs/150 req 11 — the session's stored provider route, and a way to turn an
+   * docs/150-multiple-provider-subscriptions req 11 — the session's stored provider route, and a way to turn an
    * account id into the name the user gave it. Two narrow accessors rather than
    * the session manager and account manager themselves, matching how
    * `getWorkspaceDir` is injected here: the service stays free of both.

@@ -54,9 +54,9 @@ interface RefreshRow {
   after: string | null;
   status: string;
   detail?: string;
-  /** docs/266 req 7 — why the version live NOW is unusable, if it is. */
+  /** docs/266-plugin-install-diagnosability req 7 — why the version live NOW is unusable, if it is. */
   degraded: string[];
-  /** docs/266 reqs 5, 6 — `--force` re-installed the version already live. */
+  /** docs/266-plugin-install-diagnosability reqs 5, 6 — `--force` re-installed the version already live. */
   reinstalled: boolean;
   /** planning#416 — the last install for this repository, output included. */
   install?: InstallRecordView;
@@ -332,7 +332,7 @@ async function refresh(args: string[], deps: RunDeps): Promise<void> {
 function describe(row: RefreshRow): string {
   const short = (commit: string | null): string => (commit ? commit.slice(0, 9) : "none");
   const head = `${row.repo} (${row.ref})`;
-  // docs/266 req 7 — what is wrong with the version that is live NOW, appended
+  // docs/266-plugin-install-diagnosability req 7 — what is wrong with the version that is live NOW, appended
   // to every status. A round that found nothing to do is exactly the case this
   // is for: it said `already at <sha>` and exited 0 while the plugin was
   // unusable, and the reason was sitting on a card the session cannot read.
@@ -359,7 +359,7 @@ function describe(row: RefreshRow): string {
 }
 
 /**
- * `shipit plugin status [name]` — docs/266 reqs 1–4, 9, 10.
+ * `shipit plugin status [name]` — docs/266-plugin-install-diagnosability reqs 1–4, 9, 10.
  *
  * Exit code is about the QUESTION, not the answer: asking succeeds even when
  * every repository is broken. An agent diagnosing a failure must be able to run

@@ -379,7 +379,7 @@ export class ClaudeAdapter
         // `error_max_turns`. `"error"` — what this used to test for — is a
         // value the real CLI never emits, so `error` here was ALWAYS undefined
         // and everything gated on it was dead in production: the docs/182
-        // turn-errored flag and the docs/150 req 7 quota-exhaustion stamp that
+        // turn-errored flag and the docs/150-multiple-provider-subscriptions req 7 quota-exhaustion stamp that
         // makes the next turn fail over to another account. Normalize both
         // signals into the adapter-neutral success/error status instead.
         const errored = raw.is_error === true || raw.subtype !== "success";

@@ -40,7 +40,7 @@ Build sequence from [plan.md](./plan.md) §2. Requirements are cited as `(req N)
       (`shareTreeWithAllSessions`, which sets a **mode** as well as a group
       because copy-up preserves the lower file's mode too).
       A fourth — `/credentials/.gitconfig` — was designed for and then **not
-      needed**: docs/266 E3 merged first and left it root-owned 0644 with the PAT
+      needed**: docs/266-orchestrator-git-trust-boundary E3 merged first and left it root-owned 0644 with the PAT
       moved to a root-only sidecar, which already serves every session uid. The
       change was dropped rather than kept as a redundant second mechanism, and
       this feature touches `git-config.ts` not at all.
@@ -225,7 +225,7 @@ three sites a reviewer named turned out not to share the root cause.
   prefix, asserted by shape rather than by value.
 - **Stale claims corrected**, each of which invited someone to undo a fix:
   `sessionWorkerGid()` still listed the orchestrator's global gitconfig as a
-  group-shared surface (docs/266 E3 deliberately made it root-owned `0644`), and
+  group-shared surface (docs/266-orchestrator-git-trust-boundary E3 deliberately made it root-owned `0644`), and
   `git-lfs.ts` still said the LFS pull "writes files as root", which E1 ended.
 - `umask 002` was set only in the session entrypoint, which the plugin install
   container deliberately bypasses — so its writes into the shared cache and the

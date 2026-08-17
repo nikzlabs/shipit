@@ -24,7 +24,7 @@ import type { AgentAuthPhase } from "../../server/shared/types/ws-server-message
 /**
  * An in-flight sign-in challenge for one connected account.
  *
- * docs/150 req 19 — this replaced a pair of provider-wide slots
+ * docs/150-multiple-provider-subscriptions req 19 — this replaced a pair of provider-wide slots
  * (`codexDeviceAuth` for Codex's device code, `sessionStore.authUrl` for
  * Claude's paste URL) that could only ever describe *one* sign-in per
  * provider. Two rows connecting at once overwrote each other, and neither slot
@@ -51,7 +51,7 @@ export interface ProviderAccountAuth {
 }
 
 /**
- * docs/150 req 16 — key for the per-account sign-in maps below.
+ * docs/150-multiple-provider-subscriptions req 16 — key for the per-account sign-in maps below.
  *
  * Sign-in state used to live in a single slot, which was only ever correct
  * because exactly one account could be connecting at a time. Once every
@@ -154,7 +154,7 @@ interface SettingsState {
    *
    *  - A refused *duplicate* account arrives as an `agent_auth_failed` SSE, and
    *    a handler outside React has no other channel into a component it does
-   *    not render (docs/150 req 22).
+   *    not render (docs/150-multiple-provider-subscriptions req 22).
    *  - A **successful** disconnect of the LAST account removes the account, and
    *    `ServicesPanel` then stops rendering that service's card entirely — so a
    *    notice held in the card's own state unmounts in the same commit that
@@ -237,7 +237,7 @@ interface SettingsState {
   /** docs/144 — global gate for sub-agent spawning. */
   enableSubAgents: boolean;
   /**
-   * docs/150 reqs 4-6 — per-provider proactive failover cutoffs, keyed by agent
+   * docs/150-multiple-provider-subscriptions reqs 4-6 — per-provider proactive failover cutoffs, keyed by agent
    * id. Reaching either window's cutoff moves new work to the next eligible
    * credential. docs/252 phase 2 — keyed by `credentialModeKey(serviceId,
    * billingMode)`, with one entry per SUBSCRIPTION mode in the catalogue (keys
@@ -246,7 +246,7 @@ interface SettingsState {
    */
   failoverCutoffs: Record<string, { session: number; weekly: number }>;
   /**
-   * docs/150 req 21 — selection mode. Same key and the same contract as
+   * docs/150-multiple-provider-subscriptions req 21 — selection mode. Same key and the same contract as
    * `failoverCutoffs`, so the client never encodes the "strict" default.
    */
   accountSelectionMode: Record<string, "strict" | "balanced">;

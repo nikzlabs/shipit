@@ -205,7 +205,7 @@ export interface ProviderAccountManagerOptions {
 }
 
 /**
- * Why an account could not be selected (docs/150 req 13). A bare `null` could
+ * Why an account could not be selected (docs/150-multiple-provider-subscriptions req 13). A bare `null` could
  * not express either of these, and req 13 is specifically about *telling the
  * user which one happened* — "everything is exhausted until 14:30" and "nothing
  * is connected" are different problems with different fixes.
@@ -237,7 +237,7 @@ export interface SelectAccountOptions {
    */
   exclude?: readonly string[];
   /**
-   * docs/260 req 8 — the credential route backing the session's resident CLI
+   * docs/260-turn-level-account-routing req 8 — the credential route backing the session's resident CLI
    * process, when one is alive (an account id, or a stored string-credential
    * id). Under `balanced` the mode spreads **sessions**, not turns: while this
    * credential is eligible, unblocked, and under its cutoff it is chosen
@@ -248,7 +248,7 @@ export interface SelectAccountOptions {
    */
   residentRouteId?: string;
   /**
-   * docs/260 req 12 — set by callers that will actually ATTEMPT the result
+   * docs/260-turn-level-account-routing req 12 — set by callers that will actually ATTEMPT the result
    * (the turn's attempt loop). When every non-excluded account is
    * refusal-blocked, an optimistic selection returns the best blocked one
    * instead of failing, so a resend after an all-refused turn re-tries every
@@ -465,7 +465,7 @@ export class ProviderAccountManager {
   }
 
   /**
-   * docs/150 req 2 — every account-delivered credential of `serviceId`'s
+   * docs/150-multiple-provider-subscriptions req 2 — every account-delivered credential of `serviceId`'s
    * subscription, **in the user's fallback order**: ascending `priority`, ties
    * broken by stored order so the sort is stable.
    *
@@ -481,7 +481,7 @@ export class ProviderAccountManager {
    * Sorting at the source instead of at the ~8 wire boundaries means a new
    * broadcast site cannot reintroduce it by forgetting to sort.
    *
-   * docs/150 req 19 — `isPrimary` is **derived here**, not read from disk.
+   * docs/150-multiple-provider-subscriptions req 19 — `isPrimary` is **derived here**, not read from disk.
    * "Primary" only ever meant "first in the fallback order": every writer
    * stores `false`, and `reorder` used to stamp `isPrimary: index === 0`. Two
    * fields encoding one fact is two fields that can disagree, so the stored
@@ -527,7 +527,7 @@ export class ProviderAccountManager {
   }
 
   /**
-   * docs/150 req 19 — give every stored row an explicit `priority`, once.
+   * docs/150-multiple-provider-subscriptions req 19 — give every stored row an explicit `priority`, once.
    *
    * Rows minted before `priority` existed (and the migrated `claude-default` /
    * `codex-default` rows) have none, which forced {@link list} to carry a
@@ -559,7 +559,7 @@ export class ProviderAccountManager {
   }
 
   /**
-   * docs/150 req 2 — kept as the name the router reads, so the intent is
+   * docs/150-multiple-provider-subscriptions req 2 — kept as the name the router reads, so the intent is
    * explicit at the call site. {@link list} is already this order; the two are
    * deliberately the same list, because an account list has no other order.
    */
@@ -568,7 +568,7 @@ export class ProviderAccountManager {
   }
 
   /**
-   * docs/150 req 2 — persist an explicit fallback order.
+   * docs/150-multiple-provider-subscriptions req 2 — persist an explicit fallback order.
    *
    * Takes the complete list rather than a move-one-account verb: an ordering is
    * only meaningful as a whole, and requiring the full set makes a stale client
@@ -643,7 +643,7 @@ export class ProviderAccountManager {
     return this.require(serviceId, accountId);
   }
 
-  // ---- Account identity (docs/150 req 22) ----
+  // ---- Account identity (docs/150-multiple-provider-subscriptions req 22) ----
 
   /**
    * The row already holding this provider-reported account id, if any.
@@ -726,7 +726,7 @@ export class ProviderAccountManager {
   }
 
   /**
-   * docs/150 req 21 — stamp an account as used, now.
+   * docs/150-multiple-provider-subscriptions req 21 — stamp an account as used, now.
    *
    * This is the write that makes `balanced` mean anything: `lastUsedAt` was
    * declared on `ProviderAccount` from the start but never written by anything,
@@ -805,7 +805,7 @@ export class ProviderAccountManager {
    * null while `hasAnyAuthForProvider` still reported true, and with
    * `ANTHROPIC_API_KEY` set in the environment it silently routed the turn onto
    * metered Platform API billing instead of the working subscription. That
-   * contradicts docs/150 req 3 (continue on another connected account) and
+   * contradicts docs/150-multiple-provider-subscriptions req 3 (continue on another connected account) and
    * req 12 (never route onto pay-as-you-go billing because a subscription is
    * unavailable).
    *
@@ -872,7 +872,7 @@ export class ProviderAccountManager {
     const now = Date.now();
     const cutoffs = this.credentialStore.getFailoverCutoffs(...routingSettingsKeyFor(serviceId));
 
-    // docs/260 reqs 5, 9 — four tiers, and only the last one skips. Telemetry
+    // docs/260-turn-level-account-routing reqs 5, 9 — four tiers, and only the last one skips. Telemetry
     // (a snapshot claiming 100%) ORDERS an account to the back but cannot
     // block it: an account whose data says it is spent is still tried, last —
     // that is req 9's "try once to confirm". The only skip is refusal memory:
@@ -911,7 +911,7 @@ export class ProviderAccountManager {
       clear.push(account);
     }
 
-    // docs/260 req 8 — `balanced` spreads SESSIONS, not turns: the account
+    // docs/260-turn-level-account-routing req 8 — `balanced` spreads SESSIONS, not turns: the account
     // backing a live resident process keeps serving its session while it is
     // clear. Only the clear tier qualifies — a resident account that is over
     // its cutoff or looks spent has stopped being "equally ranked" and the
@@ -984,7 +984,7 @@ export class ProviderAccountManager {
   }
 
   /**
-   * docs/150 req 7 — stamp an account as out of quota until `until` (epoch ms).
+   * docs/150-multiple-provider-subscriptions req 7 — stamp an account as out of quota until `until` (epoch ms).
    *
    * This is the *hard* exhaustion signal: the provider failed a turn saying the
    * subscription is spent. It has to be persisted rather than inferred from the
@@ -993,7 +993,7 @@ export class ProviderAccountManager {
    * freshly connected account may not exist at all. Without the stamp the
    * router would keep choosing the account that just refused the turn.
    *
-   * The NEWEST refusal's stated reset wins outright (docs/260 req 9): a
+   * The NEWEST refusal's stated reset wins outright (docs/260-turn-level-account-routing req 9): a
    * re-probe answered with "resets in five minutes" must supersede an older
    * week-long estimate, and `refusalBlockedUntil`'s 30-minute cap bounds the
    * cost of the reverse direction (a vaguer short fallback replacing a longer
@@ -1029,7 +1029,7 @@ export class ProviderAccountManager {
   }
 
   /**
-   * docs/260 req 9 — a quota reading that is newer than a refusal and shows
+   * docs/260-turn-level-account-routing req 9 — a quota reading that is newer than a refusal and shows
    * the account healthy clears the refusal memory immediately, so "user
    * upgrades their plan and presses the refresh button" re-opens the account
    * on the very next turn instead of waiting out the re-probe cap.
@@ -1413,7 +1413,7 @@ function isNonEmptyFile(filePath: string): boolean {
  * unusable forever.
  */
 /**
- * docs/150 req 21 — reorder the eligible accounts according to the provider's
+ * docs/150-multiple-provider-subscriptions req 21 — reorder the eligible accounts according to the provider's
  * selection mode. Called once, before the eligibility walk, so every tier of
  * that walk (under-cutoff, then over-cutoff) inherits the same order.
  *
@@ -1447,7 +1447,7 @@ export function orderForSelectionMode<T extends { lastUsedAt?: number }>(
 }
 
 /**
- * docs/260 req 5 — what the TELEMETRY claims about a window, used only to
+ * docs/260-turn-level-account-routing req 5 — what the TELEMETRY claims about a window, used only to
  * order an account to the back of the walk ("looks spent, try last"), never
  * to skip it. The refusal memory in `refusalBlockedUntil` (shared,
  * `credential-route.ts`) is the only thing that skips.
@@ -1489,7 +1489,7 @@ function readClaudeAccessToken(file: string): string | null {
 
 
 /**
- * docs/150 reqs 4–6 — has this account crossed either proactive cutoff?
+ * docs/150-multiple-provider-subscriptions reqs 4–6 — has this account crossed either proactive cutoff?
  *
  * Separate from {@link exhaustedUntil} on purpose: that answers "can this
  * account run a turn at all", this answers "should it be the first choice".
@@ -1502,7 +1502,7 @@ function readClaudeAccessToken(file: string): string | null {
  * silence as "past 90%" would demote every healthy account.
  *
  * A window that no longer describes now (`subscriptionWindowIsCurrent`) is not
- * over its cutoff either (docs/260 req 8). Without that rule an account that
+ * over its cutoff either (docs/260-turn-level-account-routing req 8). Without that rule an account that
  * hit its 5h limit stayed demoted after the limit reset — permanently, under
  * strict priority, because the demotion is exactly what kept turns off the
  * account whose turns are the only source of a fresher reading, and a demoted

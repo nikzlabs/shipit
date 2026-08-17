@@ -221,7 +221,7 @@ describe("Integration: Claude auth (OAuth & API key)", () => {
     expect(res.json()).toMatchObject({ error: "API key cannot be empty" });
   });
 
-  // docs/150 reqs 16, 19 — the account-less `POST /api/auth/code` is gone.
+  // docs/150-multiple-provider-subscriptions reqs 16, 19 — the account-less `POST /api/auth/code` is gone.
   // Pasting an authorization code now names the account it authenticates, so
   // the credentials land in that account's root rather than in a provider-wide
   // one no row can manage. Covered in http-mutations.test.ts.

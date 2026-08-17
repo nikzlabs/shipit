@@ -189,7 +189,7 @@ export function adoptEnvCredentials(
         isPrimary: false,
         // Appended, never inserted: adopting a credential must not silently
         // change which one existing work runs on, exactly as adding one by hand
-        // must not (docs/150 req 2).
+        // must not (docs/150-multiple-provider-subscriptions req 2).
         priority: group.reduce((max, r) => Math.max(max, r.priority ?? -1), -1) + 1,
         status: "ready",
         createdAt: now,

@@ -95,12 +95,12 @@ export interface ManagedService {
   /**
    * The container port the service serves on AND the preview origin it answers
    * at (`{sessionId}--{port}.<host>`) — one number for every service, the
-   * project's own and a plugin's alike (docs/266 req 10).
+   * project's own and a plugin's alike (docs/266-plugin-service-ports req 10).
    *
    * A plugin service used to carry a second, pinned number, because its
    * fragment declared the port and a tracked-branch commit could move it behind
    * the session's back. The port is now written in the consuming project's
-   * `plugins.use` entry (docs/266 req 2), so it moves only when the consumer
+   * `plugins.use` entry (docs/266-plugin-service-ports req 2), so it moves only when the consumer
    * moves it — the same guarantee a project service always had, by the same
    * means — and the indirection is gone.
    *
@@ -199,7 +199,7 @@ export const MAX_COMPOSE_LOG_LINE = 8_000;
 
 /**
  * How long between checks that a plugin service is actually listening on the
- * port the consuming project gave it (docs/266 req 8) — the wait before the
+ * port the consuming project gave it (docs/266-plugin-service-ports req 8) — the wait before the
  * first check, and between retries.
  *
  * A container is `running` the moment its entrypoint execs, which for a
@@ -545,7 +545,7 @@ export class ServiceManager extends EventEmitter {
    * Rebuilt with the service map, so fixing the port clears it.
    */
   private portRefusals = new Map<string, string>();
-  /** Pending one-shot "is it actually listening?" probes (docs/266 req 8). */
+  /** Pending one-shot "is it actually listening?" probes (docs/266-plugin-service-ports req 8). */
   private portProbeTimers = new Map<string, NodeJS.Timeout>();
   /**
    * Services whose port question is answered — it bound, or it never will.
@@ -843,7 +843,7 @@ export class ServiceManager extends EventEmitter {
         // service that flaps in and out of `running` while OOMing must
         // still hit the cap, otherwise we loop forever.
         this.retry.armOomStableResetIfNeeded(name);
-        // docs/266 req 8 — a plugin server that ignores the port ShipIt gave it
+        // docs/266-plugin-service-ports req 8 — a plugin server that ignores the port ShipIt gave it
         // is broken under this rule, so the break has to be legible.
         this.armPluginPortProbe(name);
       },
@@ -1209,7 +1209,7 @@ export class ServiceManager extends EventEmitter {
   /**
    * Resolve a preview subdomain's port to the container address behind it.
    *
-   * One pass over one number (docs/266 req 10). The subdomain's port IS the
+   * One pass over one number (docs/266-plugin-service-ports req 10). The subdomain's port IS the
    * container port, for a project service and a plugin service alike, so there
    * is nothing to map — the two-pass lookup this replaced existed only to carry
    * a plugin's pinned origin onto a container port the fragment could move.
@@ -1341,7 +1341,7 @@ export class ServiceManager extends EventEmitter {
   }
 
   /**
-   * docs/266 req 7 — refuse a plugin service whose port one of the project's
+   * docs/266-plugin-service-ports req 7 — refuse a plugin service whose port one of the project's
    * own services already serves, and say which two claim it.
    *
    * Refused rather than moved. Both numbers are the consuming project's now:
@@ -1385,10 +1385,10 @@ export class ServiceManager extends EventEmitter {
   }
 
   /**
-   * docs/266 req 8 — check that a plugin service is actually listening on the
+   * docs/266-plugin-service-ports req 8 — check that a plugin service is actually listening on the
    * port the consuming project gave it, and say so when it is not.
    *
-   * The rule that makes this necessary is docs/266 req 3: the port is the
+   * The rule that makes this necessary is docs/266-plugin-service-ports req 3: the port is the
    * consumer's, delivered to the container as `SHIPIT_PLUGIN_PORT`, so a plugin
    * whose server hardcodes its own number is broken. Broken silently, without
    * this: the container is `running`, the service list shows it green, the
@@ -1550,7 +1550,7 @@ export class ServiceManager extends EventEmitter {
       });
     }
 
-    // docs/266 req 7 — a plugin service given a port one of the project's OWN
+    // docs/266-plugin-service-ports req 7 — a plugin service given a port one of the project's OWN
     // services already serves is refused, and refused HERE: against
     // `parsedServices`, the parse that actually runs. The plugin resolver's
     // separate read of the same file is the thing that disagreed with the live
@@ -2812,7 +2812,7 @@ export class ServiceManager extends EventEmitter {
     this.startingWatchdogs.delete(name);
   }
 
-  /** Drop every pending port probe — teardown and reconcile (docs/266 req 8). */
+  /** Drop every pending port probe — teardown and reconcile (docs/266-plugin-service-ports req 8). */
   private cancelPluginPortProbes(): void {
     for (const timer of this.portProbeTimers.values()) clearTimeout(timer);
     this.portProbeTimers.clear();

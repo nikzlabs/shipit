@@ -45,7 +45,7 @@ const FEATURES = [
  * - **It hosts the Settings → Services surface as-is** — same card list, same
  *   button, same dialog, same steps inside it (req 7). Connecting a harness
  *   here and connecting one from Settings are the same act, so they are the
- *   same code: docs/150 req 16 already paid for the alternative once, when a
+ *   same code: docs/150-multiple-provider-subscriptions req 16 already paid for the alternative once, when a
  *   user's first account was connected by different code than their second.
  * - **There is no step rail and no completion button.** The panel's own step is
  *   one — add a service — and req 4's sequence is that dialog's own (service →

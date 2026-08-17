@@ -205,7 +205,7 @@ export function registerSseEndpoint(app: FastifyInstance, rt: OrchestratorRuntim
     //
     // The replay must carry `accountId` for the same reason the live broadcast
     // does (app-lifecycle.ts): the client files a challenge under the account
-    // row that started it (docs/150 req 16), and there is no provider-wide slot
+    // row that started it (docs/150-multiple-provider-subscriptions req 16), and there is no provider-wide slot
     // to fall back to. Omitting it here — as this did before — meant a reload
     // mid-sign-in replayed a challenge the UI had nowhere to put.
     for (const [loginId, mgr] of authManagers) {

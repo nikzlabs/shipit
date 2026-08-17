@@ -80,7 +80,7 @@ export function wireAuthRequiredHandler(
     // failure, and left the dead credential selected for every later turn. Req 12
     // says subscriptions fail over; for these, ShipIt's own answer is to set the
     // credential aside so the next turn resolves another.
-    // docs/260 req 2 — the policy comes from the TURN'S OWN captured route
+    // docs/260-turn-level-account-routing req 2 — the policy comes from the TURN'S OWN captured route
     // when the executor resolved one; the session's model selection is only
     // the fallback for a turn that never captured (failed before env-prep,
     // tests, local runtime). The session row's selection is mutable mid-turn

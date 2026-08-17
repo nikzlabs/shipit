@@ -186,7 +186,7 @@ export interface PluginInstallJob {
    */
   isCancelled?: () => boolean;
   /**
-   * docs/266 reqs 5, 6 — this is a consumer's forced retry of a version that is
+   * docs/266-plugin-install-diagnosability reqs 5, 6 — this is a consumer's forced retry of a version that is
    * already live, so the runner's two "already done" shortcuts (the install
    * stamp and a shared-store hit) must not answer for it. Absent on every
    * ordinary activation, where both shortcuts are correct.
@@ -298,7 +298,7 @@ export interface ActivateDeps {
   /** Ensure the bare cache exists and is current. Injected so tests stay offline. */
   ensureCache: (cacheDir: string, repoUrl: string) => Promise<void>;
   /**
-   * docs/266 reqs 5, 6 — a consumer's forced retry of the version that is
+   * docs/266-plugin-install-diagnosability reqs 5, 6 — a consumer's forced retry of the version that is
    * already live: re-stage it, run its install for real, and publish it again.
    * Set only by `shipit plugin refresh <name> --force`, and only ever for ONE
    * named repository (the shim refuses it without a name), because it discards
@@ -684,7 +684,7 @@ async function activateOnce(repo: DeclaredPluginRepo, deps: ActivateDeps): Promi
   // touched: repairing a published generation in place is exactly the
   // partial-state req 15 forbids (review finding).
   //
-  // **docs/266 reqs 5, 6 — `deps.force` is the one caller that skips this**, and
+  // **docs/266-plugin-install-diagnosability reqs 5, 6 — `deps.force` is the one caller that skips this**, and
   // skipping it is the whole feature: without a way past this branch, the only
   // recovery from a live-but-unusable version is the plugin author publishing a
   // new commit, so every consumer's fix runs through a third party and a
@@ -873,7 +873,7 @@ async function activateOnce(repo: DeclaredPluginRepo, deps: ActivateDeps): Promi
           + `which this runtime cannot run — ${one ? "the plugin is" : "the plugins are"} active but `
           + `${one ? "was" : "were"} not installed.`
         : undefined;
-      // docs/266 req 3 — the same sentence, in the durable place a session can
+      // docs/266-plugin-install-diagnosability req 3 — the same sentence, in the durable place a session can
       // read. This is the one way a generation goes live having installed
       // nothing, so it is exactly the state that must not be silent from inside
       // the session: the card says it, and now so does `shipit plugin status`.
@@ -1067,7 +1067,7 @@ async function defaultBranch(bareCacheDir: string): Promise<string> {
 /**
  * Materialize `commit` into `targetDir` from the bare cache (hardlinked objects).
  *
- * ## Why the handback sits between the two git calls (docs/266 E2, planning#410)
+ * ## Why the handback sits between the two git calls (docs/266-orchestrator-git-trust-boundary E2, planning#410)
  *
  * This is the same shape `repo-git.ts`'s `cloneFromCache` documents, and it had
  * the same defect. The clone above is a bare `safeSimpleGit()` — no `baseDir`,

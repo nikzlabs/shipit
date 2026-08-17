@@ -430,7 +430,7 @@ describe("string-delivered subscription failover", () => {
     });
 
     /**
-     * docs/260 req 9 — telemetry ORDERS, it never skips. A credential whose
+     * docs/260-turn-level-account-routing req 9 — telemetry ORDERS, it never skips. A credential whose
      * data says it is spent is still the one to try when nothing else is left:
      * that turn is how a fresher reading is obtained at all.
      */
@@ -792,7 +792,7 @@ describe("sessionSpawnIdentity — the resident-process boundary", () => {
 });
 
 /**
- * docs/260 req 8 — the move BACK, at the decision that actually performs it.
+ * docs/260-turn-level-account-routing req 8 — the move BACK, at the decision that actually performs it.
  *
  * `selectAccountForTurn` choosing the primary again is only half the story:
  * a session with a resident streaming CLI keeps running on the process's
@@ -801,7 +801,7 @@ describe("sessionSpawnIdentity — the resident-process boundary", () => {
  * strict order, release decision — rather than a fake that answers whatever
  * the test wants to hear.
  */
-describe("residentRouteNeedsRelease — moving a live session back (docs/260 req 8)", () => {
+describe("residentRouteNeedsRelease — moving a live session back (docs/260-turn-level-account-routing req 8)", () => {
   const future = () => new Date(Date.now() + 3_600_000).toISOString();
   const past = () => new Date(Date.now() - 60_000).toISOString();
 

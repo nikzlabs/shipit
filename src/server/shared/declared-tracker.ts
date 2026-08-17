@@ -1,5 +1,5 @@
 /**
- * Declared issue trackers (docs/248 reqs 1–6) — the types and the small amount
+ * Declared issue trackers (docs/248-declared-issue-trackers reqs 1–6) — the types and the small amount
  * of pure logic that turns a declaration into a routable destination.
  *
  * Deliberately **filesystem-free** so both halves of the app can import it. The
@@ -94,7 +94,7 @@ export function declaredTrackerKey(decl: DeclaredTracker): string {
 }
 
 /**
- * A destination a reference may resolve to (docs/248 req 11). This is the whole
+ * A destination a reference may resolve to (docs/248-declared-issue-trackers req 11). This is the whole
  * resolution context: the set of destinations reachable from a session, each
  * with the `name` it was declared under (absent for the session's own
  * repository, the one destination that needs no declaration — req 12).

@@ -35,7 +35,7 @@ describe("pickCleanupProvider", () => {
     expect(await pickCleanupProvider(authStub(null), null)).toBeNull();
   });
 
-  // docs/150 req 19 — the unscoped read lands on the singleton config root,
+  // docs/150-multiple-provider-subscriptions req 19 — the unscoped read lands on the singleton config root,
   // which holds nothing once the legacy aliases are retired. Cleanup has to
   // name the account, or every migrated install silently loses the Claude
   // cleanup path and drops to the OpenAI fallback.

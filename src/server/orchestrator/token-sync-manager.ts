@@ -218,7 +218,7 @@ export function syncProviderAccountTokenIn(
  * Where the AGENT CONTAINER will actually read `<sessionDir>/<rel>`.
  *
  * Normally that is just `<sessionDir>/<rel>`. But a session provisioned before
- * docs/150 req 19 can carry a *leaked subtree-root symlink* — `<sessionDir>/.claude`
+ * docs/150-multiple-provider-subscriptions req 19 can carry a *leaked subtree-root symlink* — `<sessionDir>/.claude`
  * pointing at an absolute `/credentials/provider-accounts/...` path — and that
  * one path resolves to two different physical files:
  *
@@ -775,7 +775,7 @@ function materializeLeakedSubtreeSymlinks(
       // container's namespace*. Two target shapes are observed in the wild:
       //   - prod: absolute `/credentials/provider-accounts/...` (the literal
       //     volume-mount path on the orchestrator side, baked in by the legacy
-      //     alias when credentialsDir = "/credentials"). docs/150 req 19 stopped
+      //     alias when credentialsDir = "/credentials"). docs/150-multiple-provider-subscriptions req 19 stopped
       //     creating those aliases and retires them at boot, but a session
       //     provisioned before that still carries the leaked symlink.
       //   - test: absolute `<credentialsRoot>/provider-accounts/...` (the

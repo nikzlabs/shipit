@@ -100,7 +100,7 @@ interface SubscriptionLimitsBadgeProps {
  * `/api/oauth/usage` path). See docs/161 and
  * docs/135-subscription-limits-badge/plan.md.
  *
- * docs/150 req 10 — quota is per account, so a provider with two connected
+ * docs/150-multiple-provider-subscriptions req 10 — quota is per account, so a provider with two connected
  * subscriptions gets two pills, each labelled with that account's name.
  *
  * The name is shown whenever the route IS an account, unconditionally. An

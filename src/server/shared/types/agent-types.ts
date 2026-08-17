@@ -36,7 +36,7 @@ export interface AgentReasoningCapability {
 
 /*
  * docs/261's `SUB_AGENT_ROLES` — a compiled-in list of the roles that exist —
- * is **deleted** here rather than extended (docs/264 reqs 13, 18). A role is now
+ * is **deleted** here rather than extended (docs/264-agent-roles reqs 13, 18). A role is now
  * any name the user typed, stored server-side, so no constant can hold the set
  * and every caller that checked against one was rejecting the user's own roles.
  * The name that remains constant is the reserved one: {@link RESERVED_ROLE_NAME},
@@ -45,7 +45,7 @@ export interface AgentReasoningCapability {
  */
 
 /**
- * docs/264 req 10 — any subset of a role's parameters, named by the caller at
+ * docs/264-agent-roles req 10 — any subset of a role's parameters, named by the caller at
  * the moment it starts one.
  *
  * Every field optional, and that is req 16's "partial is the normal case": a
@@ -65,7 +65,7 @@ export interface RoleOverrides {
 }
 
 /**
- * docs/264 req 16 — what a spawn runs on, in the one vocabulary **both** spawn
+ * docs/264-agent-roles req 16 — what a spawn runs on, in the one vocabulary **both** spawn
  * commands speak.
  *
  * The shape is always *a base plus overrides*, and the three kinds are the three
@@ -230,7 +230,7 @@ export interface ReviewerPinPatch {
 // ---- Agent roles (docs/264 phase 1) ----------------------------------------
 
 /**
- * docs/264 req 2 — the one role name ShipIt owns.
+ * docs/264-agent-roles req 2 — the one role name ShipIt owns.
  *
  * Reserved rather than seeded: {@link RoleAutoParams} is rejected for every
  * other name, this one cannot be renamed or deleted, and `getRoles()`
@@ -247,7 +247,7 @@ export interface ReviewerPinPatch {
 export const RESERVED_ROLE_NAME = "reviewer";
 
 /**
- * docs/264 reqs 1, 6 — a role whose params the **user** pinned: the complete
+ * docs/264-agent-roles reqs 1, 6 — a role whose params the **user** pinned: the complete
  * tuple, the harness included.
  *
  * Every field is required, which is req 1's "a role is complete on its own"
@@ -271,7 +271,7 @@ export interface RolePinnedParams {
 }
 
 /**
- * docs/264 req 2 — params ShipIt resolves per run, rather than params the user
+ * docs/264-agent-roles req 2 — params ShipIt resolves per run, rather than params the user
  * pinned. The shipped reviewer's, and **only** the shipped reviewer's.
  *
  * It carries no fields because there is nothing to carry: the answer is

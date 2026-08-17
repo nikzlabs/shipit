@@ -1,5 +1,5 @@
 /**
- * Turn preflight for provider-account routing (docs/150 req 13).
+ * Turn preflight for provider-account routing (docs/150-multiple-provider-subscriptions req 13).
  *
  * `selectAccountForTurn` already answers "which account runs this turn, and if
  * none, why" — this module is the other half: turning a `{ ok: false }` answer

@@ -1,5 +1,5 @@
 /**
- * docs/266 reqs 14 + 15 — the two permission states, against real git.
+ * docs/266-orchestrator-git-trust-boundary reqs 14 + 15 — the two permission states, against real git.
  *
  * These are the measured cases from `docs/266-orchestrator-git-trust-boundary/plan.md`
  * §2, run here as executable assertions rather than as a table in prose. They

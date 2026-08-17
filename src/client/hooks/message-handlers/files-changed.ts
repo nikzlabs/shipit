@@ -35,7 +35,7 @@ export const handleFilesChanged: Handler<WsFilesChanged> = (_ctx, data) => {
   }
 
   // planning#323 — `shipit.yaml` is where a repository declares its issue trackers
-  // (docs/248 req 16: resolution happens at use). The server re-reads the file
+  // (docs/248-declared-issue-trackers req 16: resolution happens at use). The server re-reads the file
   // on every request, so the browser's copy of the declarations is the only
   // stale view — and that copy IS the reference-resolution context
   // (`trackerDestinations()`), which doc chips, PR-card chips and markdown

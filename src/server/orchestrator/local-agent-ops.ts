@@ -90,7 +90,7 @@ const EXACT_ROUTES: Readonly<Record<string, string>> = {
   // answers with a plain "this runtime cannot run plugin commands" rather than
   // a 403 that looks like a missing surface.
   "plugin/exec": "plugin/exec",
-  // docs/266 reqs 1–4 — `shipit plugin status`. A read, so local mode serves it
+  // docs/266-plugin-install-diagnosability reqs 1–4 — `shipit plugin status`. A read, so local mode serves it
   // as completely as production does: the declaration, the live generation and
   // the install record are all on disk, and none of the three needs a container.
   // It is the verb an inner-instance session reaches for when a plugin is live

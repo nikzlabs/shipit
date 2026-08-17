@@ -400,7 +400,7 @@ describe("ClaudeLimitsProvider account routing", () => {
     expect(getAccessToken).toHaveBeenCalledWith(undefined);
   });
 
-  // docs/150 req 19 — `fetch()` reads the plan label through the same door.
+  // docs/150-multiple-provider-subscriptions req 19 — `fetch()` reads the plan label through the same door.
   // It stayed unscoped after `doRefresh` was fixed, so each pill was labelled
   // with whatever the singleton root held: the migrated default's plan for
   // every account, and nothing at all once the aliases were retired.

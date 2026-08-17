@@ -410,7 +410,7 @@ export async function activateDeclaredPlugins(
   consumerKey?: string,
   onlyRepo?: string,
   /**
-   * docs/266 reqs 5, 6 — re-stage and re-install the version that is already
+   * docs/266-plugin-install-diagnosability reqs 5, 6 — re-stage and re-install the version that is already
    * live. Only ever set together with `onlyRepo`: `shipit plugin refresh
    * --force` refuses without a repository name, and this signature keeps that
    * pairing visible at the one call site that can set it.

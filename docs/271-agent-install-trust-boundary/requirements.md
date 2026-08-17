@@ -68,7 +68,7 @@ Both italics are load-bearing, and each was checked rather than assumed:
    the agent itself, or the project's own compose services. Those write the
    workspace at the authority they already hold, so the route gives them
    nothing. A design that closes only the plugin path satisfies this feature —
-   which is the opposite of docs/266 req 2, deliberately, because the executor
+   which is the opposite of docs/266-orchestrator-git-trust-boundary req 2, deliberately, because the executor
    here is the session worker rather than the orchestrator. *(Stated by the
    requester: "For an npm `postinstall` this is not an escalation — the writer
    and the executor are the same uid in the same container.")*
@@ -109,12 +109,12 @@ Both italics are load-bearing, and each was checked rather than assumed:
 
 9. The design MUST state this route as **closed**, **partly closed**, or **left
    open**, and an open remainder MUST have a named owner (an issue), not a
-   silence. *(Carried over from docs/266 req 4, which set this convention for
+   silence. *(Carried over from docs/266-orchestrator-git-trust-boundary req 4, which set this convention for
    the three routes as a set.)*
 
 10. The design MUST record what could not be verified, distinguishing "read the
     code that would have to hold" from "inherited the claim from a doc".
-    *(Carried over from docs/266 req 8.)*
+    *(Carried over from docs/266-orchestrator-git-trust-boundary req 8.)*
 
 11. A session that has never had a plugin MUST be unaffected — same install
     behaviour as today, and no new message in its transcript. *(Answered by the

@@ -202,7 +202,7 @@ export interface AppCtx {
    */
   getSubscriptionLimitsSnapshot?: () => SubscriptionLimitsMap;
   /**
-   * docs/150 req 7 — bench the provider account a session is pinned to until
+   * docs/150-multiple-provider-subscriptions req 7 — bench the provider account a session is pinned to until
    * `until` (epoch ms), because the provider just failed that session's turn
    * saying the subscription is spent. Makes the router skip the account so the
    * next turn fails over instead of hitting the same wall. Optional — test

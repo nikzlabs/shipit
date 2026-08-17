@@ -13,7 +13,7 @@ true**. The design is in [plan.md](./plan.md).
 
 ## The residual this closes, in one sentence
 
-docs/266 E1 made orchestrator-side git run as the uid that owns the tree instead
+docs/266-orchestrator-git-trust-boundary E1 made orchestrator-side git run as the uid that owns the tree instead
 of as root — but **every session's tree is owned by the same uid**, and the
 orchestrator container mounts every session's tree, so a payload that executes
 during session A's git operation can still read and write session B's workspace.
@@ -106,10 +106,10 @@ Separating what was handed to this feature from what it supplied, per `CLAUDE.md
 
 | Req | Handed to this feature | Supplied by this document |
 |---|---|---|
-| 1 | ✅ planning#405 and docs/266 req 13, near-verbatim | the explicit "read matters as much as write" clause |
+| 1 | ✅ planning#405 and docs/266-orchestrator-git-trust-boundary req 13, near-verbatim | the explicit "read matters as much as write" clause |
 | 2 | — | supplied; see the note on the requirement and §"What is already true" |
 | 3 | ✅ planning#405, with the source cited | — |
-| 4 | ✅ docs/266 req 12 (requester, 2026-08-16), inherited by name | — |
+| 4 | ✅ docs/266-orchestrator-git-trust-boundary req 12 (requester, 2026-08-16), inherited by name | — |
 | 4a | ✅ decided 2026-08-16 (Q1 → a) | — |
 | 5 | — | supplied; a per-session identity that did not survive a restart would orphan the session's own files |
 | 6 | — | supplied; it is what "per-session" means, stated so it can be tested |
@@ -120,7 +120,7 @@ Separating what was handed to this feature from what it supplied, per `CLAUDE.md
 | 9 | — | supplied, from reading the three shared surfaces (see below). This is the requirement most likely to be missed, because nothing fails until an install runs |
 | 10 | — | supplied, from the entrypoint's own journal-group block |
 | 11 | — | supplied |
-| 12 | ✅ docs/266 req 13's "MUST NOT be described as closed" applied to this feature's own outcome | the "count and name them" wording |
+| 12 | ✅ docs/266-orchestrator-git-trust-boundary req 13's "MUST NOT be described as closed" applied to this feature's own outcome | the "count and name them" wording |
 
 Requirements 2 and 9 are the two places this document went beyond what it was
 handed, and both are load-bearing: 2 is what stops the new uid from being chosen
@@ -259,6 +259,6 @@ other**, which this feature deliberately does not fix.
 
 planning#384 (docs/266) is **not** closed by this feature, and this document does
 not describe it as closed. This feature addresses one of its four outstanding
-pieces: the cross-session residual (docs/266 req 13). `safe.directory` is still
+pieces: the cross-session residual (docs/266-orchestrator-git-trust-boundary req 13). `safe.directory` is still
 `*` (planning#403), the dropped git still reaches the PAT (planning#404), and a
-project's own hooks still do not fire on ShipIt's auto-commit (docs/266 E4).
+project's own hooks still do not fire on ShipIt's auto-commit (docs/266-orchestrator-git-trust-boundary E4).

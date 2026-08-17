@@ -739,7 +739,7 @@ describe("agent-ops routes", () => {
     expect(client.calls[0].body).toEqual({ role: "reviewer", prompt: "review", depth: 0 });
   });
 
-  // docs/264 req 10 — and a role WITH overrides goes over the same hop. The
+  // docs/264-agent-roles req 10 — and a role WITH overrides goes over the same hop. The
   // combination used to be refused; it is now the override path, so the relay
   // has to carry both halves.
   it("POST /agent-ops/agent/spawn forwards a role together with its overrides", async () => {
@@ -750,7 +750,7 @@ describe("agent-ops routes", () => {
     expect(client.calls[0].body).toEqual(payload);
   });
 
-  // docs/264 req 12 — the two reads. They exist so an agent names a role and an
+  // docs/264-agent-roles req 12 — the two reads. They exist so an agent names a role and an
   // override that are real on THIS install rather than remembered from another.
   it("GET /agent-ops/agent/roles relays the install's roles", async () => {
     client.setResponse("GET", "/agent/roles", {

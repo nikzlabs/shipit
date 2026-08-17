@@ -1206,7 +1206,7 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
   });
 
   /**
-   * docs/264 reqs 7, 10, 16 — **an override the caller named EMPTY is refused,
+   * docs/264-agent-roles reqs 7, 10, 16 — **an override the caller named EMPTY is refused,
    * not dropped**, on the child path exactly as on `agent run`.
    *
    * The HTTP wrapper had its own truthiness test in front of the shared parser,
@@ -1240,7 +1240,7 @@ describe("Integration: agent-spawned sessions (docs/117)", () => {
   }
 
   /**
-   * docs/264 reqs 3, 4, 7, 18 — a role named with spaces round it is that role.
+   * docs/264-agent-roles reqs 3, 4, 7, 18 — a role named with spaces round it is that role.
    * The parser used to trim, so this spawn either ran ShipIt's automatic reviewer
    * (for `" reviewer "`) or was refused as unknown while existing.
    */

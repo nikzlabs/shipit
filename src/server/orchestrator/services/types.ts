@@ -95,7 +95,7 @@ export interface GlobalSettings {
   /** docs/169 — when true, the PR poller's auto-fix-CI loop fires on FAILURE while the agent is idle. */
   autoFixCi: boolean;
   /**
-   * docs/150 reqs 4-6 — proactive failover cutoffs. Reaching either window's
+   * docs/150-multiple-provider-subscriptions reqs 4-6 — proactive failover cutoffs. Reaching either window's
    * cutoff moves new work to the next eligible credential; both default to 90%.
    *
    * docs/252 phase 2 — keyed by `credentialModeKey(serviceId, billingMode)`,
@@ -105,7 +105,7 @@ export interface GlobalSettings {
    * default.
    */
   failoverCutoffs: Record<string, FailoverCutoffs>;
-  /** docs/150 req 21 — selection mode, keyed exactly as {@link GlobalSettings.failoverCutoffs}. */
+  /** docs/150-multiple-provider-subscriptions req 21 — selection mode, keyed exactly as {@link GlobalSettings.failoverCutoffs}. */
   accountSelectionMode: Record<string, AccountSelectionMode>;
   /** docs/218 — when true, resuming a merged, untouched session resets its branch to the latest base before the turn. Default on. */
   autoResetMergedBranch: boolean;

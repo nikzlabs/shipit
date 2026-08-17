@@ -417,7 +417,7 @@ describe("ProviderAccountManager", () => {
     expect(mgr.selectRouteForTurn("anthropic")).toEqual({ kind: "account", id: "acct_secondary" });
   });
 
-  it("prefers a healthy secondary account over the API-key fallback (docs/150 req 12)", () => {
+  it("prefers a healthy secondary account over the API-key fallback (docs/150-multiple-provider-subscriptions req 12)", () => {
     // A connected subscription must never lose a turn to metered Platform API
     // billing just because the *primary* row is broken.
     process.env.ANTHROPIC_API_KEY = "sk-test";
@@ -716,12 +716,12 @@ describe("ProviderAccountManager", () => {
   });
 
   /**
-   * docs/150 req 7 — hard exhaustion has to be *persisted*, not inferred from
+   * docs/150-multiple-provider-subscriptions req 7 — hard exhaustion has to be *persisted*, not inferred from
    * the live quota snapshot: that snapshot is telemetry, and it can lag the
    * failure, report a null percentage below a warning threshold, or not exist
    * at all for a freshly connected account.
    */
-  describe("markAccountExhausted (docs/150 req 7)", () => {
+  describe("markAccountExhausted (docs/150-multiple-provider-subscriptions req 7)", () => {
     it("benches the account so the router stops choosing it", () => {
       const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
       const a = mgr.create("anthropic", "A");
@@ -761,7 +761,7 @@ describe("ProviderAccountManager", () => {
       expect(refusalBlockedUntil(mgr.get("anthropic", a.id)!, Date.now())).toBeNull();
     });
 
-    // docs/260 req 9 — the newest refusal's stated reset supersedes an older,
+    // docs/260-turn-level-account-routing req 9 — the newest refusal's stated reset supersedes an older,
     // longer estimate. A re-probe answered with "resets in a minute" must not
     // leave the account benched on a stale two-hour deadline.
     it("the newest refusal's stated reset wins, even when it is earlier", () => {
@@ -784,11 +784,11 @@ describe("ProviderAccountManager", () => {
   });
 
   /**
-   * docs/150 req 2 — the user-controlled fallback order. Reqs 4-6 and 3 all say
+   * docs/150-multiple-provider-subscriptions req 2 — the user-controlled fallback order. Reqs 4-6 and 3 all say
    * failover advances "to the next eligible account in the user's priority
    * order", so this is what those mean by order.
    */
-  describe("priority order (docs/150 req 2)", () => {
+  describe("priority order (docs/150-multiple-provider-subscriptions req 2)", () => {
     function threeReady(): { mgr: ProviderAccountManager; ids: string[] } {
       const mgr = new ProviderAccountManager({ credentialsDir: root, credentialStore: store });
       const ids = ["A", "B", "C"].map((label) => {
@@ -883,7 +883,7 @@ describe("ProviderAccountManager", () => {
 
     // Rows written before `priority` existed must keep behaving exactly as they
     // did, or an upgrade would silently move which account turns run on. That
-    // used to be a read-time fallback; docs/150 req 19 replaces it with a
+    // used to be a read-time fallback; docs/150-multiple-provider-subscriptions req 19 replaces it with a
     // one-time backfill, so the guarantee is asserted against the backfill.
     const stripPriority = (mgr: ProviderAccountManager, ids: string[], primaryId: string): void => {
       for (const id of ids) {
@@ -947,12 +947,12 @@ describe("ProviderAccountManager", () => {
   });
 
   /**
-   * docs/150 reqs 4-6 — the proactive cutoff. The load-bearing property is that
+   * docs/150-multiple-provider-subscriptions reqs 4-6 — the proactive cutoff. The load-bearing property is that
    * a cutoff is a PREFERENCE, not a wall: crossing it demotes an account, it
    * does not make it unusable. Collapsing the two would make a 90% setting
    * strictly worse than no failover at all.
    */
-  describe("proactive failover cutoffs (docs/150 reqs 4-6)", () => {
+  describe("proactive failover cutoffs (docs/150-multiple-provider-subscriptions reqs 4-6)", () => {
     const win = (usedPct: number | null) => ({
       usedPct,
       resetAt: new Date(Date.now() + 3_600_000).toISOString(),
@@ -1002,7 +1002,7 @@ describe("ProviderAccountManager", () => {
       expect(mgr.selectAccountForTurn("anthropic")).toEqual({ ok: true, route: { kind: "account", id: a } });
     });
 
-    // docs/260 reqs 5, 9 — telemetry claiming 100% ORDERS an account to the
+    // docs/260-turn-level-account-routing reqs 5, 9 — telemetry claiming 100% ORDERS an account to the
     // back but cannot block it: the account is still tried, once, to confirm.
     // Only a refusal the harness itself reported may skip an account.
     it("still tries a telemetry-spent account rather than refusing untried (reqs 5, 9)", () => {
@@ -1030,12 +1030,12 @@ describe("ProviderAccountManager", () => {
     });
 
     /**
-     * docs/260 req 8 — the move BACK. Snapshots are event-fed only, so an
+     * docs/260-turn-level-account-routing req 8 — the move BACK. Snapshots are event-fed only, so an
      * account nothing routes to never reports again; if its last reading kept
      * demoting it, the demotion became permanent and strict priority could
      * never return to the primary. An expired window is not evidence.
      */
-    describe("an expired window stops counting (docs/260 req 8)", () => {
+    describe("an expired window stops counting (docs/260-turn-level-account-routing req 8)", () => {
       const expired = (usedPct: number | null) => ({
         usedPct,
         resetAt: new Date(Date.now() - 60_000).toISOString(),
@@ -1098,7 +1098,7 @@ describe("ProviderAccountManager", () => {
     // docs/260 — the pinned-route probes (`isRouteUsableForTurn`,
     // `classifyRouteForTurn`) are gone with pinning itself: selection answers
     // every routing question, and cutoffs are ordering, never displacement.
-    describe("per-turn ordering (docs/260 reqs 5, 8)", () => {
+    describe("per-turn ordering (docs/260-turn-level-account-routing reqs 5, 8)", () => {
       it("orders an over-cutoff account behind a clear one, and a telemetry-spent one last", () => {
         const { a, b } = twoReadyAccounts();
         const mgr = mgrWith({ [a]: { session: win(92) }, [b]: { session: win(100) } });
@@ -1150,7 +1150,7 @@ describe("ProviderAccountManager", () => {
     });
   });
 
-  describe("selectAccountForTurn (docs/150 reqs 13, 14, 17)", () => {
+  describe("selectAccountForTurn (docs/150-multiple-provider-subscriptions reqs 13, 14, 17)", () => {
     const READY = "ready" as const;
 
     function withLimits(
@@ -1187,7 +1187,7 @@ describe("ProviderAccountManager", () => {
       });
     });
 
-    // docs/260 req 9 — telemetry alone cannot produce all_exhausted: an
+    // docs/260-turn-level-account-routing req 9 — telemetry alone cannot produce all_exhausted: an
     // account whose DATA says spent is tried once to confirm. Only remembered
     // refusals (below) can make selection fail — and even those yield to an
     // optimistic caller (req 12).
@@ -1350,7 +1350,7 @@ describe("ProviderAccountManager", () => {
       });
     });
 
-    // docs/260 req 9 — refusal memory clears on a HEALTHY reading newer than
+    // docs/260-turn-level-account-routing req 9 — refusal memory clears on a HEALTHY reading newer than
     // the refusal (lazily, at the selection read), and never on anything less.
     describe("refusal memory clearing (req 9)", () => {
       function setupBenchedPair() {
@@ -1488,7 +1488,7 @@ describe("ProviderAccountManager", () => {
         quota.markAccountExhausted("anthropic", account.id, near);
 
         expect(quota.selectAccountForTurn("anthropic")).toMatchObject({ ok: false, reason: "all_exhausted" });
-        // docs/260 req 9 — the newest refusal's stated reset replaces the
+        // docs/260-turn-level-account-routing req 9 — the newest refusal's stated reset replaces the
         // older, longer estimate; the refreshed `exhaustedAt` clock is what
         // keeps the memory alive past any pre-failure snapshot.
         expect(store.getCredentialRoute(account.id)?.exhaustedUntil).toBe(near);

@@ -6,7 +6,7 @@ import { REPO_COLOR_ASSIGNMENT_ORDER, REPO_COLOR_COUNT } from "../server/shared/
 import { groupBandFill } from "./components/SessionSidebar/SessionGroup.js";
 
 /**
- * docs/254 req 9 — the repo-identity palette must not be mistakable for the
+ * docs/254-repo-group-separation req 9 — the repo-identity palette must not be mistakable for the
  * sidebar's status colors, in ANY theme.
  *
  * This is a guard test rather than a review note because the failure is silent

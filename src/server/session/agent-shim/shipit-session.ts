@@ -96,7 +96,7 @@ export async function handleSessionCreate(args: string[], deps: RunDeps): Promis
     values: {
       "--prompt-file": "promptFile", "-f": "promptFile", "-F": "promptFile",
       "-t": "title", "--title": "title",
-      // docs/264 req 16 — the SAME target vocabulary `shipit agent run` takes:
+      // docs/264-agent-roles req 16 — the SAME target vocabulary `shipit agent run` takes:
       // a role by name, any subset of its parameters as overrides, or all five
       // named. `--agent`/`--model` are two of those five and keep working
       // exactly as they did; `--role`, `--service`, `--billing-mode` and
@@ -181,7 +181,7 @@ export async function handleSessionCreate(args: string[], deps: RunDeps): Promis
     );
   }
 
-  // docs/264 req 16 — the shared vocabulary, in the wire names both spawn
+  // docs/264-agent-roles req 16 — the shared vocabulary, in the wire names both spawn
   // commands use, so one server-side parser reads both bodies. `--billing-mode`
   // is checked here for the same reason `agent run` checks it: it is the one
   // field with a closed value set the shim can reject without the catalogue,
@@ -235,7 +235,7 @@ export async function handleSessionCreate(args: string[], deps: RunDeps): Promis
     `branch:     ${asString(res.body.branch)}`,
     `status:     ${asString(res.body.status) || "running"}`,
   ];
-  // docs/264 req 14 — say which role started it, and that this is where the
+  // docs/264-agent-roles req 14 — say which role started it, and that this is where the
   // role's involvement ends: the child routes like any other session afterwards,
   // so a later "why is it on a different model?" has its answer up front.
   if (session.originRoleName) {
@@ -656,7 +656,7 @@ export async function handleSessionView(args: string[], deps: RunDeps): Promise<
   if (child.model) {
     lines.push(`model:      ${asString(child.model)}`);
   }
-  // docs/264 req 14 — what STARTED it, beside what it runs on now. The two can
+  // docs/264-agent-roles req 14 — what STARTED it, beside what it runs on now. The two can
   // legitimately differ: a role hands a child its opening tuple and stops being
   // involved, so a child may have moved on through ordinary routing.
   if (child.originRoleName) {

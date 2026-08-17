@@ -447,7 +447,7 @@ describe("postTurnCommit — a secret-blocked commit is sticky and announced", (
 });
 
 /**
- * docs/266 reqs 14 + 15 — the two permission states reach the user, and the
+ * docs/266-orchestrator-git-trust-boundary reqs 14 + 15 — the two permission states reach the user, and the
  * `blocked` one does NOT retire a standing secret block.
  *
  * That last part is the subtle one. `blocked` means `git add -A` exited 128 and
@@ -538,7 +538,7 @@ describe("postTurnCommit — unreadable workspace content", () => {
 });
 
 /**
- * docs/266 req 15 / planning#407 — a commit that failed for a reason ShipIt could
+ * docs/266-orchestrator-git-trust-boundary req 15 / planning#407 — a commit that failed for a reason ShipIt could
  * not classify is still a turn that committed nothing, and requirement 15 says
  * "a log line is not a report".
  *

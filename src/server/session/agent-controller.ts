@@ -95,7 +95,7 @@ export class AgentController {
   private readonly spawnedAgents = new Map<string, SubAgentRunHandle>();
 
   /**
-   * docs/248 req 8 — whether the "your Node pin isn't being honored" note has
+   * docs/248-repo-node-version req 8 — whether the "your Node pin isn't being honored" note has
    * already ridden a turn's prompt.
    *
    * Scoped to this controller, i.e. to the container: the pin is resolved once

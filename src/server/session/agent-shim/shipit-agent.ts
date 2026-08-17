@@ -85,7 +85,7 @@ const ROLE_HINT =
   + "install — `shipit agent roles` lists them). A role names one word and supplies the rest.";
 
 /**
- * docs/264 req 16 — turn the parsed flags into the spawn target's half of the
+ * docs/264-agent-roles req 16 — turn the parsed flags into the spawn target's half of the
  * request body. **One rule, shared with `shipit session create`.**
  *
  * What changed from docs/261, and both halves matter:
@@ -272,7 +272,7 @@ export async function handleAgentRun(args: string[], deps: RunDeps): Promise<voi
 }
 
 /**
- * `shipit agent roles [--json]` (docs/264 req 12) — the roles this install has.
+ * `shipit agent roles [--json]` (docs/264-agent-roles req 12) — the roles this install has.
  *
  * The read that makes `--role NAME` nameable: an agent mapping "review the PR"
  * onto a role (req 3), or telling the user which roles exist, had no way to see
@@ -325,7 +325,7 @@ export async function handleAgentRoles(args: string[], deps: RunDeps): Promise<v
 }
 
 /**
- * `shipit agent params [--json]` (docs/264 req 12) — the parameters an override
+ * `shipit agent params [--json]` (docs/264-agent-roles req 12) — the parameters an override
  * may name on THIS install.
  *
  * Ships with `roles` and never without it. An agent allowed to carry "review this

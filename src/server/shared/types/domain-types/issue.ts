@@ -91,7 +91,7 @@ export interface TrackerIssue {
    * Linear's `createdAt` and GitHub's `created_at` both map here. Surfaced so an
    * issue's original creation date is readable through `shipit issue view --json`
    * — a migration that recreates issues on another backend has to record when
-   * each one was actually filed (docs/247 req 9), and the recreated issue's own
+   * each one was actually filed (docs/247-shipit-private-planning req 9), and the recreated issue's own
    * `createdAt` is the migration date, not the original.
    */
   createdAt?: string;
@@ -389,7 +389,7 @@ export interface TrackerInfo {
   label: string;
   configured: boolean;
   /**
-   * docs/248 req 2 — the `name` this tracker was declared under, and how every
+   * docs/248-declared-issue-trackers req 2 — the `name` this tracker was declared under, and how every
    * reference and operation addresses it. Absent for the session's own code
    * repository, the one destination that needs no declaration (req 12).
    *

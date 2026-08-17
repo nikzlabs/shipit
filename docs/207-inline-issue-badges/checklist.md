@@ -21,7 +21,7 @@
 - [x] Name-form lookbehind rejects a leading `/` so a GitHub short form
       (`owner/repo#42`) isn't half-matched; bare-key behaviour unchanged
 - [x] `IssueBadge`'s Linear-team-prefix gate replaced with the shared
-      `resolveIssueRef` over the declared destinations (docs/248 req 11) —
+      `resolveIssueRef` over the declared destinations (docs/248-declared-issue-trackers req 11) —
       undeclared and ambiguous both degrade to the original text
 - [x] `toTrackerDestinations` split out of `trackerDestinations` so the badge can
       resolve from its subscribed `trackers` array without breaking the snapshot

@@ -31,7 +31,7 @@
  *
  * **docs/264 phase 2 made this a SECTION rather than a tab.** The tab it used to
  * own is now `RolesTab`, which renders this above the list of pinned roles: the
- * reviewer is one role among many (docs/264 req 2), and the only one whose
+ * reviewer is one role among many (docs/264-agent-roles req 2), and the only one whose
  * params are two ranked candidates rather than one tuple — which is exactly why
  * it keeps its own cards instead of becoming a row. Nothing below changed;
  * the outer padding and scroll container moved to the tab.

@@ -274,7 +274,7 @@ export async function getRepoScopedGitCredential(
  * with **no timeout of their own**, cached per `owner/repo` for the token's
  * TTL. Uncapped, a GitHub API that accepts a connection and then stalls would
  * stall the post-turn auto-push behind it for as long as the socket lives —
- * and that push is the path `CLAUDE.md` invariant 2 and docs/266 req 6 say
+ * and that push is the path `CLAUDE.md` invariant 2 and docs/266-orchestrator-git-trust-boundary req 6 say
  * cannot acquire a dependency that can be unavailable. Five seconds is well
  * past a healthy mint and far short of anything a user would read as a hang.
  */
@@ -282,7 +282,7 @@ export const REMOTE_CREDENTIAL_DEADLINE_MS = 5_000;
 
 /**
  * The credential a **dropped-uid** orchestrator git authenticates a remote with
- * (docs/266 E3, planning#404). Wired into `createGitManager` at `app-di.ts`.
+ * (docs/266-orchestrator-git-trust-boundary E3, planning#404). Wired into `createGitManager` at `app-di.ts`.
  *
  * This is {@link getRepoScopedGitCredential} with a deadline bolted on, and the
  * deadline is the only difference. The broker path it was built for is a live
@@ -831,7 +831,7 @@ export async function flushPendingTurnCommit(
   const { commitHash, conflictedFiles, rebaseInProgress, secretFindings, unreadable } =
     await git.autoCommit(summary);
   const secretBlocked = secretFindings.length > 0;
-  // docs/266 reqs 14 + 15 / planning#407 — this flush is the turn's commit for the
+  // docs/266-orchestrator-git-trust-boundary reqs 14 + 15 / planning#407 — this flush is the turn's commit for the
   // work it carries (a mid-turn `gh pr create`, a consult landing after its
   // parent turn), so the same two states get the same words here as on the
   // post-turn path. Ignoring the field was the bug: a `blocked` add returns a
@@ -874,7 +874,7 @@ export async function flushPendingTurnCommit(
       runner.emitMessage({ type: "system_notice", sessionId: runner.sessionId, level: "warn", message });
     }
   }
-  // docs/266 req 15 / planning#407 — `blocked` means `git add -A` exited 128 and
+  // docs/266-orchestrator-git-trust-boundary req 15 / planning#407 — `blocked` means `git add -A` exited 128 and
   // staged NOTHING, so the edits this flush exists to include are not on the
   // branch. That is reported to the CALLER, not just to the transcript, and it
   // is deliberately NOT "commitHash is null": a null hash is the ordinary
@@ -977,7 +977,7 @@ export async function agentCreatePr(
         "Remove the secret (use an env var / ShipIt secret) — or add a `gitleaks:allow` comment to the line if it's a false positive — then try again.",
     );
   }
-  // docs/266 req 15 / planning#407 — the same abort, for the same reason, one
+  // docs/266-orchestrator-git-trust-boundary req 15 / planning#407 — the same abort, for the same reason, one
   // cause along. An unreadable FILE makes `git add -A` stage nothing at all, so
   // the agent's edits are not on the branch either; pushing now publishes the
   // prior state and hands the agent a PR URL that contradicts the notice the

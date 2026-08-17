@@ -110,7 +110,7 @@ describe("getRepoScopedGitCredential (docs/172 Gap 2-R / planning#81)", () => {
   });
 });
 
-describe("resolveOrchestratorGitRemoteCredential (docs/266 E3, planning#404)", () => {
+describe("resolveOrchestratorGitRemoteCredential (docs/266-orchestrator-git-trust-boundary E3, planning#404)", () => {
   it("prefers the repo-scoped installation token", async () => {
     const cred = await resolveOrchestratorGitRemoteCredential(
       stubAppAuth({ token: "ghp_pat", appEnabled: true, minted: "ghs_scoped" }),

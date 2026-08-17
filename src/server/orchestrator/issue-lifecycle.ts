@@ -225,7 +225,7 @@ async function runMergeEffect(
     deps.sessionManager.markAppliedMergeIssueEffect(sessionId, key);
   } catch (err) {
     console.warn(`[issue-lifecycle] merge effect ${key} failed:`, err);
-    // docs/248 req 19 — an unreachable destination is a failure the user must
+    // docs/248-declared-issue-trackers req 19 — an unreachable destination is a failure the user must
     // see, not just a server log. The effect itself stays retryable (its key is
     // unrecorded), so the REPORT gets its own fire-once key: a transient failure
     // that later succeeds leaves one note behind, not one per reconnect re-fire.
@@ -241,7 +241,7 @@ async function runMergeEffect(
 }
 
 /**
- * Report a lifecycle failure into the session's transcript (docs/248 req 19: a
+ * Report a lifecycle failure into the session's transcript (docs/248-declared-issue-trackers req 19: a
  * failure "is never silently dropped"). These fire outside any turn, so — like
  * {@link surfaceWriteCard} — the message is appended straight to chat history
  * (durable, rehydrates on reload) and broadcast only if a viewer is attached.
@@ -321,7 +321,7 @@ export async function applyMergedPrIssueRefs(
   const { closes, refs } = parsePrBodyIssueRefs(info.body);
   if (closes.length === 0 && refs.length === 0) return;
 
-  // docs/248 reqs 10/11 — a PR body may name a destination by declared name
+  // docs/248-declared-issue-trackers reqs 10/11 — a PR body may name a destination by declared name
   // (`Closes planning#42`) or by canonical address. Both resolve through the
   // session repository's declarations; one that identifies no declared
   // destination is dropped rather than routed at the session's own repository,

@@ -239,7 +239,7 @@ describe("linkAgentHomeToCredentials", () => {
  * credential (correctly) stays — but Step 1b used to leave whatever an earlier
  * account-routed turn had linked. The home then carried one route's
  * subscription credentials while the turn ran on another, and only the CLI's
- * env-beats-disk preference kept the billing right. docs/150 req 12.
+ * env-beats-disk preference kept the billing right. docs/150-multiple-provider-subscriptions req 12.
  */
 describe("clearAgentHomeCredentialLinks", () => {
   it("removes a previous account turn's links so an env-authenticated turn has no account credentials", () => {

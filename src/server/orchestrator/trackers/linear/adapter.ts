@@ -81,7 +81,7 @@ export function stripLinearUrlSlug(url: string): string {
 export interface LinearTrackerConfig {
   token: string | null;
   /**
-   * docs/248 req 5 — the declared team key (`SHI`), which is also the prefix its
+   * docs/248-declared-issue-trackers req 5 — the declared team key (`SHI`), which is also the prefix its
    * issue keys carry. Null when the declaration was unusable; the tracker then
    * reports unconfigured rather than guessing a team.
    */
@@ -145,7 +145,7 @@ interface LinearIssueNode {
 
 /**
  * `formatRef` renders a Linear issue key in the destination's reference form
- * (docs/248 req 15): `planning#306` when the tracker was declared under a
+ * (docs/248-declared-issue-trackers req 15): `planning#306` when the tracker was declared under a
  * name, the bare `SHI-304` otherwise. Threaded in rather than applied at the
  * call sites so every identifier this adapter produces — including a sub-issue's
  * `parentIdentifier` — goes through the one formatter.
@@ -351,7 +351,7 @@ export class LinearTracker implements Tracker {
   readonly label: string;
 
   private token: string | null;
-  /** The declared team key (docs/248 req 5), upper-cased. */
+  /** The declared team key (docs/248-declared-issue-trackers req 5), upper-cased. */
   private teamKey: string | null;
   /** The declared `name` this tracker is addressed by, when it has one. */
   private refName: string | undefined;
@@ -537,7 +537,7 @@ export class LinearTracker implements Tracker {
   /**
    * Resolve a key (`SHI-28`) or UUID to the issue's UUID — mutations want it.
    *
-   * docs/248 reqs 11/17 — Linear's `issue(id:)` lookup is **workspace-global**,
+   * docs/248-declared-issue-trackers reqs 11/17 — Linear's `issue(id:)` lookup is **workspace-global**,
    * not team-scoped, so an id belonging to another team resolves happily. That
    * would let an operation which named *this* tracker act on a destination the
    * repository may not declare at all: exactly the wrong-target substitution this
@@ -768,7 +768,7 @@ export class LinearTracker implements Tracker {
   }
 
   async deleteComment(commentId: string): Promise<void> {
-    // docs/248 req 17 — a comment id is workspace-global, so this mutation can
+    // docs/248-declared-issue-trackers req 17 — a comment id is workspace-global, so this mutation can
     // reach a comment on ANY team's issue. That matters on the undo path: a
     // recorded write re-resolves through its declared NAME first (req 16), so a
     // `roadmap` re-pointed from SHI to OPS hands the undo an OPS-bound adapter

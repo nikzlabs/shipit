@@ -28,7 +28,7 @@ lookup id (`Tracker.getIssue(key)`). This feature closes that gap the same way
 - **Bare issue references become inline badges.** A reference-shaped token in
   chat / docs / PR-body / tooltip markdown renders as a small monospace pill in
   the accent color. Clicking it opens the issue in the inline Issues viewer.
-  Both of docs/248 req 10's prose-legible forms are recognized: the **bare key**
+  Both of docs/248-declared-issue-trackers req 10's prose-legible forms are recognized: the **bare key**
   (`TRACKER-43`) and the **name form** (`roadmap#SHI-319`, `planning#57`).
 - **The badge does not grow the line height.** It renders at `text-[0.85em]`
   with `leading-none` and horizontal-only padding, so it stays within the
@@ -121,7 +121,7 @@ now has no gate logic of its own.
 - `src/client/stores/issues-store.ts` — `toTrackerDestinations` (the projection
   the badge's render-time `useMemo` needs) and `trackerDestinations` over it.
 - `src/server/shared/issue-ref-resolution.ts` — `resolveIssueRef`, the shared
-  gate (docs/248 req 11). The badge has no resolution logic of its own.
+  gate (docs/248-declared-issue-trackers req 11). The badge has no resolution logic of its own.
 - `docs/207-inline-issue-badges/mockup.html` — line-height visual reference.
 
 ## Verification

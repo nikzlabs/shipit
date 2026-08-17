@@ -11,7 +11,7 @@
  * three kinds of {@link SpawnTarget}:
  *
  *  - a **role** (`--role deep-dive`), available to both commands, completed from
- *    the role's own params — resolved, for the shipped reviewer (docs/264 req 2);
+ *    the role's own params — resolved, for the shipped reviewer (docs/264-agent-roles req 2);
  *  - **nothing**, available to both, so the call must name all five itself. Kept
  *    implemented for a repository that holds a complete target of its own
  *    (req 15);
@@ -268,7 +268,7 @@ export interface ResolvedSpawnTarget {
    * turns, so carrying this in would pin it to one credential for its whole life
    * and break account failover the first time that subscription is exhausted.
    * {@link resolveSpawnTargetForChild} drops it for exactly that reason
-   * (docs/264 req 11 — a role decides what a child *starts as*, not what it is
+   * (docs/264-agent-roles req 11 — a role decides what a child *starts as*, not what it is
    * bound to).
    */
   route?: ProviderRoute;
@@ -291,7 +291,7 @@ export interface ResolvedSpawnTarget {
     tierBasis: "model-and-harness" | "harness-only";
   };
   /**
-   * docs/264 req 14 — the role this target came from, when one did.
+   * docs/264-agent-roles req 14 — the role this target came from, when one did.
    *
    * A **snapshot of the name**, for attribution: the consult card reports it, and
    * a child session records it as `originRoleName`. It is not a live link — see
@@ -299,7 +299,7 @@ export interface ResolvedSpawnTarget {
    */
   roleName?: string;
   /**
-   * docs/264 req 8 — the role's standing instructions, when it carries any.
+   * docs/264-agent-roles req 8 — the role's standing instructions, when it carries any.
    *
    * Joined onto the run's own task by {@link joinRolePrompt}. Absent for an
    * explicit call and for a role without them.
@@ -393,7 +393,7 @@ export const resolveSubAgentSpawnTarget = resolveSpawnTarget;
 
 /**
  * {@link resolveSpawnTarget} for a **child session** — the same resolution with
- * the frozen route deliberately removed (docs/264 req 11).
+ * the frozen route deliberately removed (docs/264-agent-roles req 11).
  *
  * A one-shot run is admitted, routed and finished inside one request, so freezing
  * its credential is what keeps its attribution honest. A child session outlives

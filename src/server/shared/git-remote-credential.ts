@@ -6,7 +6,7 @@
  *
  * It started in `orchestrator/repo-git.ts` (docs/262 req 10), where a plugin
  * repository needed its own installation token instead of the global helper's
- * host PAT. docs/266 E3 (planning#404) needs the identical shape for a
+ * host PAT. docs/266-orchestrator-git-trust-boundary E3 (planning#404) needs the identical shape for a
  * *different* reason — the dropped-uid git on a session workspace — and that
  * caller is `shared/git.ts`'s {@link GitManager}, which `repo-git.ts` already
  * imports from. Leaving the helpers there would be a cycle, and copying them
@@ -14,7 +14,7 @@
  * credential this git may use". So the mechanism moved down; `repo-git.ts`
  * re-exports it and its behaviour is unchanged.
  *
- * ## What docs/266 E3 needs it for
+ * ## What docs/266-orchestrator-git-trust-boundary E3 needs it for
  *
  * E1 made orchestrator git on a session workspace run as that workspace's uid.
  * That git still has to `push`, so it needs a credential it can read — and
@@ -72,7 +72,7 @@ import { type GitTreeUidDeps, resolveGitTreeUid } from "./git-tree-uid.js";
  * a plugin repository, which is a *different* repository and, under GitHub App
  * mode, needs its own installation token (docs/262 req 10, `plugin-fetch.ts`);
  * and it is wrong for a dropped-uid git, which must not be able to reach the
- * PAT at all (docs/266 E3).
+ * PAT at all (docs/266-orchestrator-git-trust-boundary E3).
  */
 export interface GitRemoteCredential {
   /**
@@ -317,7 +317,7 @@ export type GitRemoteCredentialResolver = (
  * authenticate.
  *
  * Never throws. Every failure below resolves to `null`, which means the caller
- * runs the git it would have run anyway: docs/266 req 6 and `CLAUDE.md`
+ * runs the git it would have run anyway: docs/266-orchestrator-git-trust-boundary req 6 and `CLAUDE.md`
  * invariant 2 both say the post-turn path may not gain a way to fail, and a
  * credential that cannot be minted must therefore degrade to E1's behaviour
  * rather than abort the operation.

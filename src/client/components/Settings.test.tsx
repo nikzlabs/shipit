@@ -262,12 +262,12 @@ describe("Settings - Services → Anthropic subscription", () => {
     vi.unstubAllGlobals();
   });
 
-  // docs/260 req 3 — disconnecting is one click, even for the last account.
+  // docs/260-turn-level-account-routing req 3 — disconnecting is one click, even for the last account.
   // Sessions are never pinned to an account, so there is no replacement to
   // pick and no moved/stranded bookkeeping to report: the row disappears, the
   // response carries `{accounts}` only, and each session simply routes among
   // whatever accounts remain at its next turn.
-  it("disconnects the last account in one click with nothing to report (docs/260 req 3)", async () => {
+  it("disconnects the last account in one click with nothing to report (docs/260-turn-level-account-routing req 3)", async () => {
     const now = Date.now();
     useSettingsStore.getState().setProviderAccounts([
       { serviceId: "anthropic", billingMode: "sub", via: "account", id: "acct-a", label: "Account A", isPrimary: true, status: "ready", createdAt: now, updatedAt: now },
@@ -658,7 +658,7 @@ describe("Settings - Services → OpenAI subscription", () => {
   /**
    * docs/252 req 19 — the device code renders in the add-service dialog, which
    * *Reconnect* opens on step 3 for this account. Still one implementation for
-   * both providers (docs/150 req 16): `AccountChallenge` shows OpenAI's
+   * both providers (docs/150-multiple-provider-subscriptions req 16): `AccountChallenge` shows OpenAI's
    * device-code variant here and Anthropic's paste variant above.
    */
   it("renders a Codex device code in the sign-in it belongs to (req 16)", async () => {

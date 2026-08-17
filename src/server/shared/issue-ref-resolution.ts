@@ -1,5 +1,5 @@
 /**
- * Reference → destination resolution (docs/248 reqs 10, 11, 12, 16, 19).
+ * Reference → destination resolution (docs/248-declared-issue-trackers reqs 10, 11, 12, 16, 19).
  *
  * A thin layer **above** `parseIssueRef`, which stays pure and context-free. The
  * split is the design: the parser answers "what shape is this string", this

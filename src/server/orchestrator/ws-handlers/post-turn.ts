@@ -180,7 +180,7 @@ export async function postTurnCommit(
   }
 
   /**
-   * docs/266 req 15 / planning#407 — `git.autoCommit`, with the guarantee that a
+   * docs/266-orchestrator-git-trust-boundary req 15 / planning#407 — `git.autoCommit`, with the guarantee that a
    * turn which committed NOTHING says so in the transcript.
    *
    * `autoCommit` returns the two states it can classify (`unreadable`, and the
@@ -228,7 +228,7 @@ export async function postTurnCommit(
     const firstLine = opts.turnSummary.split("\n")[0]?.slice(0, 120) || "Agent turn";
     const { commitHash, conflictedFiles, rebaseInProgress, secretFindings, unreadable } =
       await autoCommitReportingFailure(git, firstLine);
-    // docs/266 reqs 14 + 15 — orchestrator git now runs as the session's uid, so
+    // docs/266-orchestrator-git-trust-boundary reqs 14 + 15 — orchestrator git now runs as the session's uid, so
     // for the first time it can hit workspace content it cannot read (a compose
     // service running at its own explicit `user:`). The two outcomes need
     // different words, which is why they are two requirements and not one: an

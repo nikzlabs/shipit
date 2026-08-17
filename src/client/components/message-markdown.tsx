@@ -46,7 +46,7 @@ function openIssueInPanel(ref: OpenIssueRef): void {
  * the markdown-href branch, the doc `issue:` chips and the `shipit issue` shim
  * use. A reference-shaped token collides with everyday prose (`GPT-4`, `UTF-8`,
  * `PR#3`), so resolution is what decides an issue from noise, and routing it
- * through the shared implementation is what keeps docs/248 req 11's two
+ * through the shared implementation is what keeps docs/248-declared-issue-trackers req 11's two
  * fail-closed rules in one place: a token naming **no** declared destination and
  * a token matching **more than one** both render as their raw text — never as a
  * badge pointing at a guess. (An earlier gate here compared the token's team

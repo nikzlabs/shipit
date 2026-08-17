@@ -357,9 +357,9 @@ describe("ModelSelector", () => {
     );
   });
 
-  it("never puts the service or billing mode on the trigger, even when the id is ambiguous (docs/260 req 18)", () => {
+  it("never puts the service or billing mode on the trigger, even when the id is ambiguous (docs/260-composer-toolbar-layout req 18)", () => {
     // docs/252 put a disambiguating pill here, because a bare id cannot say who
-    // is billing you. docs/260 req 18 removed it: it cost 80.5px in exactly the
+    // is billing you. docs/260-composer-toolbar-layout req 18 removed it: it cost 80.5px in exactly the
     // state that was already pushing Send off the edge. The fact is still in the
     // MENU — the grouping and the checkmark — one tap away.
     setSessionState(

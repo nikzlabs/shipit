@@ -1,5 +1,5 @@
 /**
- * Account-scoped agent HOME for `RUNTIME_MODE=local` (docs/150 req 19, docs/118).
+ * Account-scoped agent HOME for `RUNTIME_MODE=local` (docs/150-multiple-provider-subscriptions req 19, docs/118).
  *
  * In containerized mode the account a session was routed to reaches the CLI
  * through the filesystem: the worker image symlinks `~/.claude` / `~/.codex`

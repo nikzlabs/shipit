@@ -219,7 +219,7 @@ export interface RunnerRegistryDeps {
    */
   getSubscriptionLimitsSnapshot?: () => SubscriptionLimitsMap;
   /**
-   * docs/150 req 7 — bench the session's provider account after the provider
+   * docs/150-multiple-provider-subscriptions req 7 — bench the session's provider account after the provider
    * fails its turn for quota. Forwarded into the listener so a dispatched /
    * system turn marks exhaustion exactly like a WS turn does.
    */
@@ -357,7 +357,7 @@ export function createRunnerRegistry(
           sessionId: runner.sessionId,
           backgroundTasks: runner.backgroundWorkDescriptions,
         });
-        // docs/260 req 13 — a system turn deferred behind background work
+        // docs/260-turn-level-account-routing req 13 — a system turn deferred behind background work
         // (the dispatch gate in `dispatchOnRunner`) drains the moment the
         // work clears, rather than waiting for the next user turn. Re-enter
         // through `dispatchOnRunner` so the entry keeps its settlement (the
@@ -529,7 +529,7 @@ export function createRunnerRegistry(
             return prepareSessionAgentEnvironment(runner, {
               sessionId,
               agentId,
-              // docs/150 req 13 — the dispatched/system-turn twin of the WS
+              // docs/150-multiple-provider-subscriptions req 13 — the dispatched/system-turn twin of the WS
               // path's preflight, so a child, CI-fix, or wake turn is blocked
               // by an exhausted provider exactly like a user-typed one.
               enforceAccountRouting: true,
@@ -560,11 +560,11 @@ export function createRunnerRegistry(
               return marked !== undefined ? { kind: "account" as const, id: marked } : undefined;
             },
           } : {}),
-          // docs/260 req 10 — labels for the attempt-loop notices.
+          // docs/260-turn-level-account-routing req 10 — labels for the attempt-loop notices.
           routeLabel: (routeId: string) =>
             providerAccountManager?.getByRouteId(routeId)?.label
             ?? credentialStore.getCredentialRoute(routeId)?.label,
-          // docs/260 req 2 — billing mode + service of the turn's captured
+          // docs/260-turn-level-account-routing req 2 — billing mode + service of the turn's captured
           // route, so failure policy never re-reads the session row.
           routeProfile: (kind: ProviderRouteKind, routeId: string) => {
             const row = providerAccountManager?.getByRouteId(routeId)

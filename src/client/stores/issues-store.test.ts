@@ -584,7 +584,7 @@ describe("issues-store warmTrackers retries while declarations are unreadable", 
 
 /**
  * planning#327 — an open issue must not survive into a repository that doesn't
- * declare its tracker (docs/248 req 11: an undeclared destination fails
+ * declare its tracker (docs/248-declared-issue-trackers req 11: an undeclared destination fails
  * closed). Two halves: `setRepoScope` covers the switch itself (synchronous,
  * before the new declarations are known), `fetchTrackers` is the authoritative
  * check once they land.
@@ -683,7 +683,7 @@ describe("issues-store repo scoping (planning#327)", () => {
   /**
    * The case the id-presence check misses, and the one the live repro hit: the
    * session's own repository's GitHub Issues are the bare `github` id in EVERY
-   * repository (docs/248 req 12), so a cross-repo switch changes the
+   * repository (docs/248-declared-issue-trackers req 12), so a cross-repo switch changes the
    * destination without changing the id.
    */
   it("fetchTrackers closes the open issue when its tracker id now names another destination", async () => {

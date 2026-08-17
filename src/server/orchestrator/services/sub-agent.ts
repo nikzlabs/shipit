@@ -343,7 +343,7 @@ export async function runSubAgent(
     throw err;
   }
 
-  // docs/264 req 8 — the role's standing instructions and this run's task become
+  // docs/264-agent-roles req 8 — the role's standing instructions and this run's task become
   // the sub-agent's one prompt, labelled so the callee can tell the standing
   // brief from what it was asked to do now. A role without them returns the task
   // unchanged, byte for byte. The limit is checked on the JOINED string and the
@@ -512,7 +512,7 @@ export async function runSubAgent(
   // card, rather than at completion: a consult is in flight for minutes, and
   // "who is being asked" is the first thing the row has to answer.
   //
-  // docs/264 req 14 — plus the ROLE, when one started the run. A role is what
+  // docs/264-agent-roles req 14 — plus the ROLE, when one started the run. A role is what
   // the caller actually named, so a card that reports only the resolved tuple
   // cannot say whether a review ran as `reviewer` or as `deep-dive`, which is the
   // thing a user reading the transcript asked for. A snapshot of the name, like
@@ -626,7 +626,7 @@ export async function runSubAgent(
     });
     let result = await spawn();
 
-    // docs/150 reqs 7, 14, 20 — one-shot reviews use the same persisted hard-
+    // docs/150-multiple-provider-subscriptions reqs 7, 14, 20 — one-shot reviews use the same persisted hard-
     // exhaustion signal and structured account router as ordinary turns. One
     // fallback is bounded by the connected subscription set: every account is
     // attempted at most once. API-key routes never enter this branch because

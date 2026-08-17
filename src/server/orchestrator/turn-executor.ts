@@ -52,7 +52,7 @@ export interface RefusedAttempt {
 }
 
 /**
- * docs/260 req 6 — the terminal all-refused message, built ONLY from this
+ * docs/260-turn-level-account-routing req 6 — the terminal all-refused message, built ONLY from this
  * turn's actual refusals. Ends with what the user can do about it, matching
  * the routing message it replaces — and a resend genuinely re-tries every
  * account (req 12), so the sentence is true by construction.
@@ -671,7 +671,7 @@ export async function executeAgentTurn(
     return true;
   };
 
-  // docs/150 req 14 — same-turn quota failover. When the provider kills a turn
+  // docs/150-multiple-provider-subscriptions req 14 — same-turn quota failover. When the provider kills a turn
   // because the subscription is spent, the user should not have to notice or
   // resend: the turn re-runs once on the next eligible account, "regardless of
   // what that turn has already done."
@@ -704,7 +704,7 @@ export async function executeAgentTurn(
    * attempt had. Req 12: keys do not fail over; ShipIt stops and says so, which
    * here means letting the turn retire with the provider's own error.
    *
-   * docs/260 req 2 — the credential that refused is the TURN'S OWN capture,
+   * docs/260-turn-level-account-routing req 2 — the credential that refused is the TURN'S OWN capture,
    * so ITS billing mode decides. The session row is only the fallback for a
    * turn with no capture (failed before env-prep, tests, local runtime): the
    * row's selection is mutable mid-turn (`set_model`), and its dead
@@ -771,7 +771,7 @@ export async function executeAgentTurn(
     detected: Parameters<typeof exhaustionLockoutUntil>[0],
   ): RefusedAttempt => {
     const routeId = capturedCredentialRoute?.providerRouteId ?? "unknown";
-    // docs/260 req 6 — "resets at" only ever quotes the PROVIDER'S OWN stated
+    // docs/260-turn-level-account-routing req 6 — "resets at" only ever quotes the PROVIDER'S OWN stated
     // instant. When it named none, `exhaustionLockoutUntil` synthesizes a
     // short self-expiring lockout for the internal bench stamp — an estimate
     // that must not be presented to the user as a provider-reported reset.
@@ -909,7 +909,7 @@ export async function executeAgentTurn(
     capturedSessionId: sessionId,
     getCapturedRouteId: () => capturedCredentialRoute?.providerRouteId,
     getCapturedRouteKind: () => capturedCredentialRoute?.providerRouteKind,
-    // docs/260 req 2 — failure policy resolved from the captured route (see
+    // docs/260-turn-level-account-routing req 2 — failure policy resolved from the captured route (see
     // `capturedRoutePolicy`); the auth handler falls back to the session's
     // selection when this answers undefined.
     getCapturedRoutePolicy: capturedRoutePolicy,
@@ -1271,7 +1271,7 @@ export async function executeAgentTurn(
       // `runner-registry-factory.ts`) — one check instead of two.
       if (!sessionAutoCommitAllowed(deps.listenerDeps.sessionManager, sessionId)) return null;
       const result = await deps.autoCommit(runner.sessionDir, summary);
-      // docs/266 reqs 14 + 15 / planning#407 — same two states, same words as the
+      // docs/266-orchestrator-git-trust-boundary reqs 14 + 15 / planning#407 — same two states, same words as the
       // `postTurnCommit` path. This path exists for setups that wire
       // `autoCommit` without `commitTurn`, and requirement 15 is about the
       // turn's outcome, not about which helper produced it.
@@ -1608,7 +1608,7 @@ export async function executeAgentTurn(
     // mid-teardown was reported to the CI auto-fix loop as never-run. Each
     // dispatch latches this for its own turn — see `SessionRunnerEvents`.
     runner?.emit("turn_result");
-    // docs/150 req 14 — before ANY post-turn work. Draining the queue or
+    // docs/150-multiple-provider-subscriptions req 14 — before ANY post-turn work. Draining the queue or
     // broadcasting "finished" here would tell the user (and the next queued
     // turn) that a turn we are about to re-run is over. The retry owns
     // drain / commit / finished, exactly as the auth retry does.
@@ -1706,7 +1706,7 @@ export async function executeAgentTurn(
     // review; the earlier "release so it can't leak behind the retry" reasoning
     // was guarding a leak that cannot happen.)
     if (automaticRecoveryInProgress) return;
-    // docs/150 req 14 — same stand-down for the quota retry: `retryOnNextAccount`
+    // docs/150-multiple-provider-subscriptions req 14 — same stand-down for the quota retry: `retryOnNextAccount`
     // killed this process on purpose and the re-dispatched turn owns every
     // terminal step. Without this, the kill's `done` would drain the queue and
     // finalize a turn that is being re-run.
@@ -2043,7 +2043,7 @@ export async function executeAgentTurn(
       ...(input.attemptLedger?.length
         ? { excludeRouteIds: input.attemptLedger.map((entry) => entry.routeId) }
         : {}),
-      // docs/260 reqs 8/13 — the resident process's credential prefers to keep
+      // docs/260-turn-level-account-routing reqs 8/13 — the resident process's credential prefers to keep
       // serving this session under `balanced`, and MUST keep it when the
       // process is being reused (its token is in memory) or holds background
       // work (killing it would lose the tokens already spent — req 13).
@@ -2060,7 +2060,7 @@ export async function executeAgentTurn(
     capturedCredentialRoute = turnRoute
       ? { providerRouteKind: turnRoute.kind, providerRouteId: turnRoute.id }
       : undefined;
-    // docs/260 req 10 — say the account in the transcript when it changed:
+    // docs/260-turn-level-account-routing req 10 — say the account in the transcript when it changed:
     // after a refusal ("X is out of quota — continuing on Y"), and between
     // turns when routing moved the session ("Continuing on Y"). Labels are the
     // user's own; both notices ride the in-turn persisted path.
@@ -2137,7 +2137,7 @@ export async function executeAgentTurn(
     }
   } catch (err) {
     const error = err instanceof Error ? err : new Error(String(err));
-    // docs/260 req 6 — when the attempt loop ran out of candidates, the
+    // docs/260-turn-level-account-routing req 6 — when the attempt loop ran out of candidates, the
     // routing throw is generic while this turn holds the actual refusals.
     // Replace the message with the ledger: each attempted credential, what
     // the provider answered, and when it resets. Still the same error class,

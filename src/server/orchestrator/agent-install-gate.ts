@@ -16,7 +16,7 @@
  * Note what is NOT the escalation, because it decides the shape of the fix:
  * an `npm postinstall`, a project compose service, and the agent itself all
  * write the workspace at an authority they already hold, so the route gives
- * them nothing (docs/271 req 4). Only a plugin container is *below* the
+ * them nothing (docs/271-agent-install-trust-boundary req 4). Only a plugin container is *below* the
  * executor. And a plugin causing the AGENT to run something is settled and in
  * scope of what declaring a plugin grants — docs/262 req 22 says instructions
  * the agent follows are "the sharpest form of the trust a declaration grants".
@@ -29,7 +29,7 @@
  * that a plugin may write the consuming project — "plugins should be able to
  * write to the user repo, that is their purpose" — and that the project's own
  * files are not a containment boundary. Reaffirmed for this feature on
- * 2026-08-17 (docs/271 req 6). What changes is only that ShipIt stops
+ * 2026-08-17 (docs/271-agent-install-trust-boundary req 6). What changes is only that ShipIt stops
  * *executing* a changed command list unattended.
  *
  * ## Why the marker is the anchor
@@ -111,7 +111,7 @@ function sharedStateDirFor(workspaceDir: string): string {
 }
 
 /**
- * Does this session have a plugin (docs/271 reqs 11, 12)?
+ * Does this session have a plugin (docs/271-agent-install-trust-boundary reqs 11, 12)?
  *
  * Two halves, and the second is the load-bearing one. A declaration in the
  * live config is the obvious reading — but a plugin can delete its own
@@ -194,7 +194,7 @@ export function recordWithheldCommands(workspaceDir: string, commands: string[])
  * Decide whether `requested` may be handed to the worker.
  *
  * Order matters for cost as well as correctness: the plugin check runs first so
- * a session with no plugin — the overwhelming majority (docs/271 req 11) — pays
+ * a session with no plugin — the overwhelming majority (docs/271-agent-install-trust-boundary req 11) — pays
  * one `existsSync` and nothing else.
  */
 export function evaluateInstallGate(args: {
@@ -224,7 +224,7 @@ function renderCommands(commands: string[]): string {
 }
 
 /**
- * The transcript notice (docs/271 req 7). It names BOTH lists because the
+ * The transcript notice (docs/271-agent-install-trust-boundary req 7). It names BOTH lists because the
  * user's question on seeing it is "what is my session actually running?", and
  * it names the remedy because requirement 8's answer is "ask the agent" — the
  * agent runs commands in this container already, so that is the same authority

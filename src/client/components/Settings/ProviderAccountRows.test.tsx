@@ -103,7 +103,7 @@ describe("ProviderAccountRows inline results and errors (docs/257 req 5)", () =>
     expect(useUiStore.getState().toast).toBeNull();
   });
 
-  it("disconnects in one click with no session bookkeeping to report (docs/260 req 3)", async () => {
+  it("disconnects in one click with no session bookkeeping to report (docs/260-turn-level-account-routing req 3)", async () => {
     // No pinning means no "moved N sessions" story: the row disappears and the
     // remaining accounts render, nothing else. Sessions route among what
     // remains at their next turn.
@@ -129,7 +129,7 @@ describe("ProviderAccountRows inline results and errors (docs/257 req 5)", () =>
   it("gives the duplicate-account refusal a landing place on the card", () => {
     // The one credential failure that arrives from OUTSIDE the card: it comes
     // as an `agent_auth_failed` SSE, and the refusal deletes the row a per-row
-    // error would have used (docs/150 req 22). It was a global toast.
+    // error would have used (docs/150-multiple-provider-subscriptions req 22). It was a global toast.
     renderRows();
     act(() => {
       useSettingsStore.getState().setProviderAccountNotice("anthropic-oauth", {
@@ -274,7 +274,7 @@ describe("ProviderAccountRows compact row", () => {
 });
 
 /**
- * docs/150 req 19 — the provider-wide purge, which a row's Disconnect is NOT.
+ * docs/150-multiple-provider-subscriptions req 19 — the provider-wide purge, which a row's Disconnect is NOT.
  *
  * `DELETE /api/auth/api-key` clears every account's credentials *and* the
  * singleton pre-account path, where a legacy install's unscoped OAuth tokens

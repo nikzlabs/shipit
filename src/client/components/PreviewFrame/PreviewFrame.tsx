@@ -536,7 +536,7 @@ export function PreviewFrame({
   // Subdomain routing is the only supported container-preview path (the old
   // path-based fallback is gone — it 404'd every absolute asset URL).
   const cannotSubdomainPreview = isContainerMode && isRunning && !!activePort && !!sessionId && previewSubdomainUrl === null;
-  // A concrete host the user could switch to, when one exists (docs/254 req 8).
+  // A concrete host the user could switch to, when one exists (docs/254-local-bind-and-tailnet-access req 8).
   const suggestedWildcardHost = cannotSubdomainPreview ? suggestWildcardHost(apiHost) : null;
 
   // When not running, hide the iframe behind the overlay (but keep DOM element alive)

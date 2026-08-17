@@ -366,7 +366,7 @@ is still pasting.
 Req 7 requires identical *behaviour* and explicitly leaves the mechanism to this document.
 **The decision is literal reuse**: step 2 renders the same component Settings → Services
 renders, with the same state, the same endpoints and the same actions. This continues the
-existing line rather than starting one — docs/150 req 16 already collapsed onboarding's
+existing line rather than starting one — docs/150-multiple-provider-subscriptions req 16 already collapsed onboarding's
 provider cards onto the Settings component after a user's first account was being connected by
 different code than their second, and today's wizard is that collapse
 (`OnboardingWizard.tsx:114–127`).
@@ -448,7 +448,7 @@ everywhere is both smaller and better.
 **One toast is fired from outside the card and still belongs to this flow.** A refused
 *duplicate* account arrives as `agent_auth_failed` with `reason: "duplicate"` and is turned
 straight into a global toast in `useServerEvents.ts:304`, deliberately, because the refusal
-usually deletes the row the per-row error would have landed on (docs/150 req 22). It is
+usually deletes the row the per-row error would have landed on (docs/150-multiple-provider-subscriptions req 22). It is
 reachable during onboarding — sign in with an account already connected — so it is in scope,
 and it needs somewhere in the panel to land now that the row it named is gone. An earlier draft
 filed it under "toasts from elsewhere in the app", which is wrong: the trigger is this flow's
@@ -694,7 +694,7 @@ the split is about reviewability, not about shipping order.
   stamped server-side, turn admission is answered server-side, and a second derivation is how
   the panel and the composer come to disagree.
 - **An onboarding-only copy of the Services surface.** Directly contrary to req 7, and
-  docs/150 req 16 already paid for this lesson once, when a user's first account was connected
+  docs/150-multiple-provider-subscriptions req 16 already paid for this lesson once, when a user's first account was connected
   by different code than their second.
 - **An error sink so Settings keeps its toasts.** See *Errors render in the panel*.
 - **A success/confirmation step before the panel yields.** It is a dismissal wearing a

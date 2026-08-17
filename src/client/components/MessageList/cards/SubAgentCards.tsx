@@ -25,7 +25,7 @@ const SUB_AGENT_DISPLAY_NAMES: Record<string, string> = { claude: "Claude", code
  *    being wrong about everything the reader cares about.
  *  - `attribution` is the quieter second line: service, billing mode, the
  *    harness that drove it, the reasoning level (req 5 — part of the reviewer, so
- *    it is part of the report), and — docs/264 req 14 — the **role** the run was
+ *    it is part of the report), and — docs/264-agent-roles req 14 — the **role** the run was
  *    started as, when one was.
  *
  * The role leads that line because it is what the caller actually asked for, and

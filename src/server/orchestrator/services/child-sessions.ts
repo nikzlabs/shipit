@@ -308,7 +308,7 @@ export async function spawnChildSession(
     },
   };
 
-  // docs/264 req 11 — a role (or a complete target) is resolved ONCE, here,
+  // docs/264-agent-roles req 11 — a role (or a complete target) is resolved ONCE, here,
   // before any disk work, and hands the child a complete starting tuple. The
   // one-shot path's frozen ROUTE is deliberately not carried in
   // (`resolveSpawnTargetForChild`): a child takes turns of its own for days, and
@@ -349,7 +349,7 @@ export async function spawnChildSession(
   if (!task) {
     throw new ServiceError(400, "prompt is required");
   }
-  // docs/264 req 8 — the role's standing instructions and the spawn's own prompt
+  // docs/264-agent-roles req 8 — the role's standing instructions and the spawn's own prompt
   // become the child's first message, labelled. The length check runs on the
   // JOINED string (that is what is sent) and its refusal names the ROLE, because
   // the caller cannot shorten instructions it did not write.
@@ -439,7 +439,7 @@ export async function spawnChildSession(
     );
   }
 
-  // docs/264 req 16 — a reasoning level is now sayable on a child spawn, which it
+  // docs/264-agent-roles req 16 — a reasoning level is now sayable on a child spawn, which it
   // was not before (`session create` parsed `--agent`/`--model` and nothing
   // else). A NAMED level is validated against the harness the child will run and
   // **refused** when that harness does not declare it — an override the caller
@@ -667,7 +667,7 @@ export async function spawnChildSession(
   // block above, which needs it to answer whether an explicit `--model` the
   // parent's harness already offers implies a switch at all.)
   //
-  // docs/264 req 11 — a SEEDED target (a role, or a complete five-parameter
+  // docs/264-agent-roles req 11 — a SEEDED target (a role, or a complete five-parameter
   // call) skips all of this: it already holds the harness, and the block below
   // is about completing from a parent, which a seeded child does not do. The
   // completion rules stay exactly as they are for the inheriting case, which is
@@ -810,7 +810,7 @@ export async function spawnChildSession(
   // backend, so it carries whenever the target harness offers it. A model id
   // names one backend's catalogue and can mean nothing at all on the other.
   //
-  // docs/264 req 16 — a NAMED `--effort` (validated far above, against the
+  // docs/264-agent-roles req 16 — a NAMED `--effort` (validated far above, against the
   // child's harness) and a SEEDED role's level both win outright: they are what
   // the caller asked for, not something the child happens to have inherited.
   const inheritedReasoning = ((): string | undefined => {
@@ -831,7 +831,7 @@ export async function spawnChildSession(
     ...(selection.serviceId ? { serviceId: selection.serviceId } : {}),
     ...(selection.billingMode ? { billingMode: selection.billingMode } : {}),
     ...(inheritedReasoning ? { reasoning: inheritedReasoning } : {}),
-    // docs/264 req 14 — provenance: which role started this session. Written at
+    // docs/264-agent-roles req 14 — provenance: which role started this session. Written at
     // creation and never again (see `sessions.ts`'s `setOriginRoleName`), because
     // it is a SNAPSHOT of the name and not a live link: editing that role later
     // does not change this child, deleting it does not orphan it, and the child
@@ -944,7 +944,7 @@ export interface ChildSessionView {
    */
   model?: string;
   /**
-   * docs/264 req 14 — the role this child was started from, when one started it.
+   * docs/264-agent-roles req 14 — the role this child was started from, when one started it.
    * A snapshot of the name: it says what was asked for at creation, not what the
    * child is running now (`agent`/`model` above answer that, per turn).
    */

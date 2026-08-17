@@ -415,7 +415,7 @@ export interface PrepareSessionAgentEnvironmentResult {
  *
  * With `enforce`, throws {@link ProviderRouteUnavailableError} when no
  * credential of the selected `(service, billing mode)` can serve the turn
- * (docs/150 req 13). Returns `undefined` when the only problem is that nothing
+ * (docs/150-multiple-provider-subscriptions req 13). Returns `undefined` when the only problem is that nothing
  * is signed in (which has its own UX), or when this call isn't the turn's own
  * preflight.
  *
@@ -438,7 +438,7 @@ function selectTurnRoute(
   },
 ): ProviderRoute | undefined {
   const manager = deps.providerAccountManager;
-  // docs/260 reqs 8/13 — a reused or busy resident process fixes the route:
+  // docs/260-turn-level-account-routing reqs 8/13 — a reused or busy resident process fixes the route:
   // the turn runs on the credential the live process already holds, whatever
   // the strategy prefers. Only while that credential still exists — a
   // deleted account or removed key has nothing left to protect, and normal
@@ -459,7 +459,7 @@ function selectTurnRoute(
   // one question per `AgentId` could answer with a credential belonging to a
   // different mode entirely, which is how an included turn became a metered one.
   //
-  // docs/260 req 12 — `optimistic` is unconditional here: this is the turn's
+  // docs/260-turn-level-account-routing req 12 — `optimistic` is unconditional here: this is the turn's
   // own pre-spawn selection and the result WILL be attempted, so refusal
   // memory may order candidates but not produce `all_exhausted` on its own.
   // The blocking throw fires only when every candidate was actually refused
@@ -512,7 +512,7 @@ export async function prepareSessionAgentEnvironment(
     agentId: AgentId;
     deps: SessionAgentEnvDeps;
     /**
-     * docs/150 req 13 — set by the two callers that are the turn's own
+     * docs/150-multiple-provider-subscriptions req 13 — set by the two callers that are the turn's own
      * pre-spawn step (`turn-executor` via `SystemTurnDeps.prepareAgentEnv`,
      * for both the WS and dispatched paths). Only there may this function
      * throw: a blocked turn has to fail *as a turn*, so the agent-error path
@@ -542,7 +542,7 @@ export async function prepareSessionAgentEnvironment(
      */
     residentRoute?: { kind: ProviderRouteKind; id: string };
     /**
-     * docs/260 reqs 8/13 — the turn MUST run on `residentRoute`: the process
+     * docs/260-turn-level-account-routing reqs 8/13 — the turn MUST run on `residentRoute`: the process
      * is being reused (its token is in memory), or it holds background work
      * and may not be killed for a move. Selection short-circuits to the
      * resident route while its credential still exists; a deleted credential
@@ -672,7 +672,7 @@ export async function prepareSessionAgentEnvironment(
     }
   }
 
-  // docs/150 req 21 — stamp the credential this turn actually resolved onto,
+  // docs/150-multiple-provider-subscriptions req 21 — stamp the credential this turn actually resolved onto,
   // which is what `balanced` sorts by. An account merely *considered* has not
   // been used; a warm-up stamps nothing (it resolved nothing).
   if (selectedRoute?.kind === "account" && deps.providerAccountManager) {
@@ -693,7 +693,7 @@ export async function prepareSessionAgentEnvironment(
     `[env-prep] ${sessionId} agent=${agentId} route=${routeLabel} turn=${isTurn ? "yes" : "warm-up"} repair=${repairLabel}`,
   );
 
-  // Step 1 (docs/260 req 4): the session's credential subtree FOLLOWS the
+  // Step 1 (docs/260-turn-level-account-routing req 4): the session's credential subtree FOLLOWS the
   // turn. For an account route, `ensureSessionAccountCredentials` verifies by
   // recorded identity that the subtree belongs to the chosen account and
   // reprovisions it wholesale on any mismatch — a wrong-account token can
@@ -703,7 +703,7 @@ export async function prepareSessionAgentEnvironment(
   // on `agentPinned` (their flat source has no per-account identity, and a
   // per-turn re-copy would clobber session-local state with an older root).
   if (isTurn && runner instanceof ContainerSessionRunner) {
-    // docs/260 req 4 — the account-identity step fails CLOSED. If the subtree
+    // docs/260-turn-level-account-routing req 4 — the account-identity step fails CLOSED. If the subtree
     // cannot be verified/reprovisioned for the chosen account, the turn must
     // NOT spawn: the tree on disk may still hold ANOTHER account's token, and
     // a spawn would spend that account while the capture attributes this one
@@ -778,7 +778,7 @@ export async function prepareSessionAgentEnvironment(
   // *clears* instead of linking. Leaving an earlier account turn's link behind
   // meant the home held one route's subscription credentials while the turn ran
   // on another; the CLI's env-beats-disk preference picked the right one by
-  // luck, not by design (docs/150 req 12).
+  // luck, not by design (docs/150-multiple-provider-subscriptions req 12).
   if (isLocalRuntime() && isTurn) {
     const accountId = selectedRoute?.kind === "account" ? selectedRoute.id : undefined;
     try {

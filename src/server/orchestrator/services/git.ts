@@ -216,7 +216,7 @@ export async function getTurnDiff(
   git: GitManager,
   fromCommit: string,
   toCommit: string,
-  // docs/266 E3 — the LFS smudge below runs on a session workspace, so under E1
+  // docs/266-orchestrator-git-trust-boundary E3 — the LFS smudge below runs on a session workspace, so under E1
   // it has dropped uid and cannot read the orchestrator's PAT. Without this a
   // private repo's LFS assets render as pointer text.
   resolveRemoteCredential?: GitRemoteCredentialResolver,
@@ -359,7 +359,7 @@ export async function getSessionChangedPaths(
 export async function getDiffVsBranch(
   git: GitManager,
   baseBranch: string,
-  /** docs/266 E3 — see {@link getTurnDiff}. */
+  /** docs/266-orchestrator-git-trust-boundary E3 — see {@link getTurnDiff}. */
   resolveRemoteCredential?: GitRemoteCredentialResolver,
 ): Promise<{
   fromCommit: string;

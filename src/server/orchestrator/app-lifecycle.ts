@@ -1649,7 +1649,7 @@ export function wireEventHandlers(eventDeps: EventWiringDeps): void {
     });
 
     mgr.on("complete", () => {
-      // docs/150 req 19 — every flow is account-scoped (`start` requires the
+      // docs/150-multiple-provider-subscriptions req 19 — every flow is account-scoped (`start` requires the
       // scope), so a completion always names its account. The old `else` here
       // re-ran `migrateDefaultAccounts()` to re-register a default row after a
       // singleton sign-in; there is no singleton sign-in any more, and a user
@@ -1659,7 +1659,7 @@ export function wireEventHandlers(eventDeps: EventWiringDeps): void {
       // than papering over with a migration.
       const accountId = mgr.getActiveAccountId() ?? undefined;
       if (accountId) {
-        // docs/150 req 22 — the CLI has written credentials; find out WHOSE
+        // docs/150-multiple-provider-subscriptions req 22 — the CLI has written credentials; find out WHOSE
         // before anything treats the row as connected. A refusal must happen
         // here rather than on the next turn: once the row goes `ready` it is
         // selectable, and a duplicate account is worst precisely when it gets

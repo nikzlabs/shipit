@@ -223,6 +223,8 @@ Feature docs live in `docs/NNN-feature-name/` (`requirements.md`, `plan.md`, `ch
 
 The scan surfaces **every** `.md` file in the workspace, not just `docs/` — so treat any markdown you write as user-visible.
 
+**A `docs/NNN` number is not a unique identifier — 66 numbers are shared by two or more folders.** So a citation that points into a document — `req N`, `E N`, a section — MUST name the folder: `docs/266-plugin-service-ports req 2`, never `docs/266 req 2`. A bare `docs/NNN` as provenance is fine.
+
 ### Every new feature is under requirements discipline
 
 Requirements discipline (docs/241, `/shipit-docs/spec-discipline.md`) is opt-in per feature *for projects built inside ShipIt*. **In this repo it is mandatory for every new feature**: if the work warrants a `docs/NNN-*` folder, that folder gets a `requirements.md`, written **before** `plan.md`. Existing features without one are not retroactively required to have it — but the moment you materially rework one, write its requirements first.

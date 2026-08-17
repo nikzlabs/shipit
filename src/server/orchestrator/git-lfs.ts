@@ -49,7 +49,7 @@ import { gitSpawnOverridesForTree } from "../shared/git-tree-uid.js";
  *    pull would be overwritten by pointers the checkout re-writes),
  *  - **after** `configureGitCredentials` (private repos need the helper), and
  *  - **before** `handWorkspaceBackToWorker`. The original reason was that the
- *    pull wrote files as root, so the chown had to come last. Since docs/266 E1
+ *    pull wrote files as root, so the chown had to come last. Since docs/266-orchestrator-git-trust-boundary E1
  *    the pull DROPS to the tree's identity, so most of what it writes already
  *    belongs to the session; the ordering still holds because the drop is a
  *    no-op wherever the process is not root (local mode, dev, tests) and because
@@ -118,7 +118,7 @@ export interface RunResult {
  * failure. `GIT_TERMINAL_PROMPT=0` keeps a missing credential from blocking
  * session provisioning on an invisible prompt.
  *
- * docs/266 E2 — drops to the tree's owner like every other orchestrator-side
+ * docs/266-orchestrator-git-trust-boundary E2 — drops to the tree's owner like every other orchestrator-side
  * git. `cwd` here is a session workspace on both live paths (`repoDeclaresLfs`
  * runs `git grep` in it, `materializeLfsContent` runs `git lfs pull`), so this
  * ran as root against a tree untrusted code can write. It is a no-op on the

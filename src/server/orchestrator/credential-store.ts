@@ -43,7 +43,7 @@ import type { BillingMode, ModelSelection } from "../shared/catalogue/index.js";
  * property of the key. Server-side only — the token is never echoed back to the
  * browser (status reports configured-or-not).
  *
- * docs/248 req 4 — the stored `team` binding is gone. A Linear tracker's team is
+ * docs/248-declared-issue-trackers req 4 — the stored `team` binding is gone. A Linear tracker's team is
  * part of the repository's declaration (`kind: linear`, `team: SHI`), so ShipIt's
  * settings surface holds the credential and nothing else. Deployments that had a
  * team stored lose their Linear tab until a repository declares one; that is a
@@ -108,7 +108,7 @@ interface CredentialData {
    */
   liveSteering?: boolean;
   /**
-   * docs/150 reqs 4–6 — proactive failover cutoffs.
+   * docs/150-multiple-provider-subscriptions reqs 4–6 — proactive failover cutoffs.
    *
    * docs/252 phase 2 re-keys this (and {@link accountSelectionMode}) from
    * `AgentId` to `credentialModeKey(serviceId, billingMode)`. Both are answers
@@ -117,7 +117,7 @@ interface CredentialData {
    * CLI. Legacy `AgentId` keys are migrated once at load.
    */
   failoverCutoffs?: Record<string, FailoverCutoffs>;
-  /** docs/150 req 21 — account selection mode, keyed as {@link failoverCutoffs}. */
+  /** docs/150-multiple-provider-subscriptions req 21 — account selection mode, keyed as {@link failoverCutoffs}. */
   accountSelectionMode?: Record<string, AccountSelectionMode>;
   /**
    * When true, the PR poller's auto-resolve loop fires when a tracked PR
@@ -317,7 +317,7 @@ interface CredentialData {
 }
 
 /**
- * docs/264 req 18 — "no length limit beyond what storage needs". These are that
+ * docs/264-agent-roles req 18 — "no length limit beyond what storage needs". These are that
  * limit and nothing narrower.
  *
  * They exist because the credentials file is read whole into memory on every
@@ -638,7 +638,7 @@ export class CredentialStore {
    * Every stored credential, optionally narrowed to one `(service, billing
    * mode)` pair. Storage order, not selection order — ordering by `priority`
    * and deriving `isPrimary` from position is `ProviderAccountManager.list()`'s
-   * job (docs/150 req 19) and must stay in one place.
+   * job (docs/150-multiple-provider-subscriptions req 19) and must stay in one place.
    */
   listCredentialRoutes(serviceId?: string, billingMode?: CredentialBillingMode): CredentialRoute[] {
     return (this.data.credentialRoutes ?? [])
@@ -655,7 +655,7 @@ export class CredentialStore {
   /**
    * Add or replace a credential route.
    *
-   * docs/150 req 19 — no `isPrimary` invariant is maintained here. "Primary" is
+   * docs/150-multiple-provider-subscriptions req 19 — no `isPrimary` invariant is maintained here. "Primary" is
    * position 0 of the `priority` order, derived on read; a second copy of that
    * fact is exactly what req 19 removed. A stale flag on disk is ignored.
    */
@@ -762,7 +762,7 @@ export class CredentialStore {
    *
    * The string-delivered twin of `ProviderAccountManager.markAccountExhausted`,
    * and it shares that method's two rules for the same reasons: the NEWEST
-   * refusal's stated reset wins outright (docs/260 req 9 — a re-probe saying
+   * refusal's stated reset wins outright (docs/260-turn-level-account-routing req 9 — a re-probe saying
    * "resets in five minutes" must supersede an older week-long estimate, and
    * `refusalBlockedUntil`'s 30-minute cap bounds the cost of the reverse
    * direction); and a `key` route is silently ignored, because metered billing
@@ -775,7 +775,7 @@ export class CredentialStore {
   markCredentialRouteExhausted(routeId: string, until: number): CredentialRoute | null {
     const route = this.getCredentialRoute(routeId);
     if (route?.billingMode !== "sub") return null;
-    // docs/260 req 9 — every refusal refreshes the observation clock:
+    // docs/260-turn-level-account-routing req 9 — every refusal refreshes the observation clock:
     // `refusalBlockedUntil` reads `min(until, at + cap)`, and a row without
     // the clock reads as expired. Before 260 this stamp never wrote
     // `exhaustedAt`, which is why string credentials had no recovery path at
@@ -789,7 +789,7 @@ export class CredentialStore {
   }
 
   /**
-   * docs/260 req 9 — the string-delivered twin of
+   * docs/260-turn-level-account-routing req 9 — the string-delivered twin of
    * `ProviderAccountManager.clearRefusalOnHealthyReading`: a reading newer
    * than the refusal whose known windows are all below 100% clears the memory.
    */
@@ -815,7 +815,7 @@ export class CredentialStore {
   }
 
   /**
-   * docs/150 req 21 — stamp the credential a turn actually resolved onto, which
+   * docs/150-multiple-provider-subscriptions req 21 — stamp the credential a turn actually resolved onto, which
    * is what the `balanced` selection mode sorts by. The string-delivered twin of
    * `ProviderAccountManager.markAccountUsed`.
    */
@@ -1070,7 +1070,7 @@ export class CredentialStore {
     this.save();
   }
 
-  // ---- Linear credential (docs/170; team binding retired by docs/248 req 4) ----
+  // ---- Linear credential (docs/170; team binding retired by docs/248-declared-issue-trackers req 4) ----
 
   /** The stored Linear API token, or null when none is set. */
   getLinearToken(): string | null {
@@ -1214,7 +1214,7 @@ export class CredentialStore {
     this.save();
   }
 
-  // ---- Proactive failover cutoffs (docs/150 reqs 4-6) ----
+  // ---- Proactive failover cutoffs (docs/150-multiple-provider-subscriptions reqs 4-6) ----
 
   /**
    * Cutoffs for one `(service, billing mode)`, defaulting to 90% on both
@@ -1248,7 +1248,7 @@ export class CredentialStore {
     return next;
   }
 
-  // ---- Account selection mode (docs/150 req 21) ----
+  // ---- Account selection mode (docs/150-multiple-provider-subscriptions req 21) ----
 
   /**
    * Unrecognized stored values fall back to the default rather than being
@@ -1604,7 +1604,7 @@ export class CredentialStore {
     }
     if (role === null) {
       if (name === RESERVED_ROLE_NAME) {
-        throw new Error(`The "${RESERVED_ROLE_NAME}" role cannot be deleted (docs/264 req 2)`);
+        throw new Error(`The "${RESERVED_ROLE_NAME}" role cannot be deleted (docs/264-agent-roles req 2)`);
       }
       if (!this.data.roles?.[name]) return;
       const next: Record<string, StoredRole> = {};
@@ -1619,12 +1619,12 @@ export class CredentialStore {
       if (role.params.kind !== "auto") {
         throw new Error(
           `The "${RESERVED_ROLE_NAME}" role's params are resolved by ShipIt and cannot be pinned `
-            + "(docs/264 req 2). Its description and standing instructions are editable.",
+            + "(docs/264-agent-roles req 2). Its description and standing instructions are editable.",
         );
       }
     } else if (role.params.kind === "auto") {
       throw new Error(
-        `Only the "${RESERVED_ROLE_NAME}" role may have automatic params (docs/264 req 2); `
+        `Only the "${RESERVED_ROLE_NAME}" role may have automatic params (docs/264-agent-roles req 2); `
           + `"${name}" must name a harness, a service, a billing mode, a model and a level.`,
       );
     }
@@ -1673,7 +1673,7 @@ export class CredentialStore {
 }
 
 /**
- * docs/150 req 5 — a cutoff is a percentage, so anything outside 1–100 is
+ * docs/150-multiple-provider-subscriptions req 5 — a cutoff is a percentage, so anything outside 1–100 is
  * meaningless. Clamped rather than rejected: this runs on read as well as
  * write, and a config file that already holds a bad value should still yield a
  * working selector rather than throwing on every turn.

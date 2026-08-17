@@ -76,7 +76,7 @@ export async function registerPluginRepoRoutes(
         request.params.id,
         session.workspaceDir,
         request.body?.repo?.trim() || undefined,
-        // docs/266 reqs 5, 6 — strictly `=== true`: the body is agent-supplied
+        // docs/266-plugin-install-diagnosability reqs 5, 6 — strictly `=== true`: the body is agent-supplied
         // JSON, and a truthy string must not discard a live version's writable
         // layer.
         request.body?.force === true,
@@ -92,7 +92,7 @@ export async function registerPluginRepoRoutes(
     },
   );
 
-  // GET /api/sessions/:id/plugin/status — docs/266 reqs 1–4, 9, 10. The
+  // GET /api/sessions/:id/plugin/status — docs/266-plugin-install-diagnosability reqs 1–4, 9, 10. The
   // agent's `shipit plugin status [name]`.
   //
   // A GET, and `containerAccessible` for the same reason refresh is
@@ -291,7 +291,7 @@ export async function registerPluginRepoRoutes(
  * The whole snapshot for one session, as the Plugins tab renders it.
  *
  * **Extracted so `shipit plugin status` cannot answer differently from the card**
- * (docs/266 req 10). The reasons a live version is unusable — a withheld
+ * (docs/266-plugin-install-diagnosability req 10). The reasons a live version is unusable — a withheld
  * command, a rejected service fragment, a settings mismatch, a manifest warning
  * — are computed here, and a second implementation for the agent-facing verb
  * would drift from this one exactly where it matters: the session is the side

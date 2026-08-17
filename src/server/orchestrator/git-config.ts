@@ -38,7 +38,7 @@ export interface GitIdentity {
 }
 
 /**
- * docs/266 E2 (planning#403) — is git's own ownership check armed for
+ * docs/266-orchestrator-git-trust-boundary E2 (planning#403) — is git's own ownership check armed for
  * orchestrator-side git?
  *
  * Off by default, which is today's behaviour exactly. Turning it on is a
@@ -63,7 +63,7 @@ export function gitStrictOwnership(env: NodeJS.ProcessEnv = process.env): boolea
  * per-session worktree, and any future path without an enumerate-on-create
  * dance.
  *
- * ## Why it is now the wrong shape (docs/266 req 7)
+ * ## Why it is now the wrong shape (docs/266-orchestrator-git-trust-boundary req 7)
  *
  * E1 made orchestrator-side git run as the uid that OWNS the tree, so the
  * refusal it suppresses no longer fires on a *correct* call site. What it still
@@ -152,7 +152,7 @@ function applySafeDirectoryPolicy(): void {
  * Filename, beside `.gitconfig`, of the root-only file holding the GitHub PAT
  * in git-credential-helper output format (`username=…\npassword=…`).
  *
- * docs/266 E3. Deliberately NOT `.git-credentials` — that is git's own
+ * docs/266-orchestrator-git-trust-boundary E3. Deliberately NOT `.git-credentials` — that is git's own
  * `credential-store` format (a list of `https://user:pass@host` URLs), and a
  * file with that name in a directory git might treat as `$HOME` could be picked
  * up by a helper nobody configured. This one is only ever read by the inline
@@ -333,7 +333,7 @@ export function pinGitMessageLocale(): void {
   if (previous !== undefined && previous !== "C") {
     console.log(
       `[git-config] overriding LC_ALL=${previous} with C — ShipIt matches git's English `
-      + "stderr to detect workspace content it cannot read (docs/266 reqs 14, 15)",
+      + "stderr to detect workspace content it cannot read (docs/266-orchestrator-git-trust-boundary reqs 14, 15)",
     );
   }
   process.env.LC_ALL = "C";
@@ -408,7 +408,7 @@ export const FALLBACK_CONTAINER_GIT_IDENTITY: GitIdentity = {
  *
  * So: one config, no environment override to be clobbered.
  *
- * **docs/266 E3 (planning#404) removed the last reason to want a second file,
+ * **docs/266-orchestrator-git-trust-boundary E3 (planning#404) removed the last reason to want a second file,
  * and changed how this one is shared.** The third bullet no longer holds: the
  * dropped git gets a repo-scoped credential of its own per remote op
  * (`shared/git-remote-credential.ts`), so the PAT does not have to be visible
@@ -567,7 +567,7 @@ export function setGitIdentity(name: string, email: string): void {
  * is identical at the git layer.
  */
 export function setGlobalCredentialHelper(token: string): void {
-  // docs/266 E3 (planning#404) — the PAT is written to a ROOT-ONLY file and the
+  // docs/266-orchestrator-git-trust-boundary E3 (planning#404) — the PAT is written to a ROOT-ONLY file and the
   // config carries only the path.
   //
   // It used to be inline: `!f() { echo "password=<TOKEN>"; …}; f` in the config
@@ -585,7 +585,7 @@ export function setGlobalCredentialHelper(token: string): void {
   // token sits beside it at 0600, owned by root and never chowned. Root git is
   // unaffected — it reads the file and the helper echoes what it read. A
   // dropped-uid git gets EACCES, `cat` prints nothing (stderr discarded so the
-  // failure adds no noise to the stderr classifiers docs/266 E5-detect matches
+  // failure adds no noise to the stderr classifiers docs/266-orchestrator-git-trust-boundary E5-detect matches
   // on), and git moves on to the next helper: the repo-scoped one that
   // `GitManager` supplies per remote op (`shared/git-remote-credential.ts`).
   //
@@ -635,7 +635,7 @@ export function clearGlobalCredentialHelper(): void {
   } catch {
     // Already unset — `git config --unset` exits non-zero in that case.
   }
-  // docs/266 E3 — the token lives beside the config now, so unsetting the key
+  // docs/266-orchestrator-git-trust-boundary E3 — the token lives beside the config now, so unsetting the key
   // is no longer the whole revocation. Remove the file too, or a revoked PAT
   // stays on disk until the next one overwrites it.
   try {

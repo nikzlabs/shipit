@@ -443,7 +443,7 @@ export function dispatchOnRunner(
     return enqueueAndReport();
   }
 
-  // docs/260 req 13 — a resident process holding background work (a sub-agent
+  // docs/260-turn-level-account-routing req 13 — a resident process holding background work (a sub-agent
   // review, agent-started background tasks) may not be displaced by a system
   // turn: a system turn always spawns fresh, and the fresh spawn retires the
   // resident (`dispatched-turn.ts`), losing the tokens already spent on that
@@ -672,7 +672,7 @@ export interface SystemTurnDeps {
     /** docs/213 — likely secrets in the staged diff; non-empty ⇒ commit refused. */
     secretFindings: SecretFinding[];
     /**
-     * docs/266 reqs 14 + 15 — workspace content ShipIt's own git could not read.
+     * docs/266-orchestrator-git-trust-boundary reqs 14 + 15 — workspace content ShipIt's own git could not read.
      * Carried through this dep, not just returned by `GitManager.autoCommit`,
      * because the fallback commit path in `turn-executor.ts` is the one place a
      * turn commits WITHOUT `postTurnCommit` — and requirement 15 does not care
@@ -870,7 +870,7 @@ export interface SystemTurnDeps {
       /** docs/260 §5 — the resident process's credential route, when alive. */
       residentRoute?: { kind: ProviderRouteKind; id: string };
       /**
-       * docs/260 reqs 8/13 — the turn MUST run on `residentRoute` (a reused
+       * docs/260-turn-level-account-routing reqs 8/13 — the turn MUST run on `residentRoute` (a reused
        * live process, or one holding background work that may not be killed).
        */
       requireResidentRoute?: boolean;
@@ -894,14 +894,14 @@ export interface SystemTurnDeps {
    */
   recoverResidentRoute?: (sessionId: string, agentId: AgentId) => { kind: ProviderRouteKind; id: string } | undefined;
   /**
-   * docs/260 req 10 — the user-facing label for a credential route id
+   * docs/260-turn-level-account-routing req 10 — the user-facing label for a credential route id
    * (account label or stored-credential label), for the attempt-loop notices
    * and the terminal all-refused message. Optional — tests omit it and the
    * raw id is shown.
    */
   routeLabel?: (routeId: string) => string | undefined;
   /**
-   * docs/260 req 2/req 12 — resolve a credential route id to its billing mode
+   * docs/260-turn-level-account-routing req 2/req 12 — resolve a credential route id to its billing mode
    * and owning service, so failure policy (retry vs stop, heal vs set aside)
    * branches on the TURN'S OWN captured route rather than a session row.
    * Optional — when absent or unresolvable, policy falls back to the

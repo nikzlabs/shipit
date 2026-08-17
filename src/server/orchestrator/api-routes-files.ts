@@ -72,7 +72,7 @@ async function commitManualEdit(
     const { commitHash, unreadable } = await withWorkspaceLock(dir, () =>
       git.autoCommit(`Edit ${path.basename(filePath)}`),
     );
-    // docs/266 reqs 14 + 15 / planning#407 — the save itself succeeded (the file is
+    // docs/266-orchestrator-git-trust-boundary reqs 14 + 15 / planning#407 — the save itself succeeded (the file is
     // on disk), but the user was told nothing about the commit either way, and
     // a `blocked` add commits NOTHING while returning the same null hash as
     // "nothing to commit". Persisted, because the point is that the edit the

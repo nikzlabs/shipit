@@ -434,7 +434,7 @@ Rationale for *where* and *what*:
   or global config — never from a repo-local config or a `-c safe.directory=`
   command-line override (its own anti-spoofing rule).
 
-  **Correction (2026-08-16, docs/266 E2 / planning#403).** The repo-local half is
+  **Correction (2026-08-16, docs/266-orchestrator-git-trust-boundary E2 / planning#403).** The repo-local half is
   right and is what the docs/266 design rests on; the `-c` half is **wrong**.
   Measured against git 2.39.5 with `GIT_TEST_ASSUME_DIFFERENT_OWNER=1`. The rule,
   rather than a list that keeps being falsified: git honours `safe.directory`

@@ -18,10 +18,10 @@
  *   with everyday strings (`UTF-8`, `GPT-4`, `COVID-19`, `PR#3`), so matching
  *   alone can't decide what's an issue. This plugin is deliberately liberal; the
  *   badge renderer resolves the token against the repository's *declared*
- *   trackers (docs/248 req 11) and renders the raw text for anything undeclared
+ *   trackers (docs/248-declared-issue-trackers req 11) and renders the raw text for anything undeclared
  *   or ambiguous. Keeping the gate at render is what lets the parse stay pure +
  *   memoized on `text` while the declared-tracker state lives in a store.
- * - **That split matters MORE since the name form landed** (docs/248 req 10, and
+ * - **That split matters MORE since the name form landed** (docs/248-declared-issue-trackers req 10, and
  *   planning#325 which added it here). `<name>#<id>` is a far more collision-prone
  *   shape than an uppercase key — `PR#3`, `issue#5`, `channel#2` all match — so
  *   the render-time resolver is the only thing standing between ordinary prose

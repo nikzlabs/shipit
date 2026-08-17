@@ -318,7 +318,7 @@ export async function registerSessionSpawnRoutes(
         const { effectivePrompt, sourceBase, repoUrlOverride, shipitFixMeta } =
           await prepareShipitFixSpawn(deps, request.params.parentId, body);
 
-        // docs/264 req 16 — one parser, one refusal rule, both commands. The
+        // docs/264-agent-roles req 16 — one parser, one refusal rule, both commands. The
         // legacy `agent`/`model` keys are read as overrides so a shim that
         // predates the target sends the same shape; `parentBase: true` is the one
         // difference from `agent run`, and it is what keeps the shipped partial

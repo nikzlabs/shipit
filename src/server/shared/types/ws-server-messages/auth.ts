@@ -89,7 +89,7 @@ export interface WsAgentAuthComplete {
  * step (retry on `timeout`/`denied`/`error`, prompt re-sign-in on
  * `revoked`/`missing_credentials`). (docs/155 Phase 2b, docs/153)
  *
- * `duplicate` (docs/150 req 22) is the odd one out: the sign-in itself
+ * `duplicate` (docs/150-multiple-provider-subscriptions req 22) is the odd one out: the sign-in itself
  * *succeeded*, and was then refused because the account is already connected.
  * It needs its own reason because retrying is exactly the wrong next step, and
  * because the refusal usually removes the row it names — so the UI has to

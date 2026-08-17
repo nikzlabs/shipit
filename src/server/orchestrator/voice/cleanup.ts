@@ -49,7 +49,7 @@ export interface CleanupResult {
  * Resolve the cleanup provider to use, in order of preference. Returns null
  * when neither a Claude OAuth bearer nor an OpenAI key is available.
  *
- * `credentialDir` scopes the OAuth read to a provider account (docs/150 req 19).
+ * `credentialDir` scopes the OAuth read to a provider account (docs/150-multiple-provider-subscriptions req 19).
  * Unscoped, `getAccessToken()` reads the singleton config root — which used to
  * be an alias into the migrated default account, and since req 19 retired those
  * aliases holds nothing on a migrated install. Passing nothing here would drop

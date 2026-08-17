@@ -73,7 +73,7 @@ export interface GitHubTrackerConfig {
    * persisted Undo card, sub-tab).
    */
   id?: TrackerId;
-  /** docs/248 req 2 — the declared `name` this tracker is addressed by. */
+  /** docs/248-declared-issue-trackers req 2 — the declared `name` this tracker is addressed by. */
   name?: string;
   /** docs/248 — sub-tab label. Defaults to the name, then to `"GitHub"`. */
   label?: string;
@@ -204,7 +204,7 @@ function issueLabels(node: GitHubIssueNode): IssueLabel[] {
 
 /**
  * `formatRef` renders an issue number in the destination's reference form
- * (docs/248 req 15): `planning#42` when the repository declared this tracker
+ * (docs/248-declared-issue-trackers req 15): `planning#42` when the repository declared this tracker
  * under a name, `owner/repo#42` otherwise. This adapter is one of only two
  * places in the codebase that produce a reference string (the other is
  * `parseIssueRef`), which is why routing both through one formatter is enough to
@@ -906,7 +906,7 @@ export class GitHubTracker implements Tracker {
   }
 
   /**
-   * docs/248 req 18 — fail closed with an error that names **both**
+   * docs/248-declared-issue-trackers req 18 — fail closed with an error that names **both**
    * possibilities. GitHub deliberately returns `404` rather than `403` for a
    * private repository the credential cannot see, so "missing" and
    * "inaccessible" are genuinely indistinguishable from the response; claiming

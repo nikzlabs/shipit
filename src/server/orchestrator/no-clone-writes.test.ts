@@ -1,5 +1,5 @@
 /**
- * docs/246 req 7 — nothing ShipIt generates may be written into a session's git
+ * docs/246-shipit-state-out-of-clone req 7 — nothing ShipIt generates may be written into a session's git
  * clone. This is the mechanical half of that requirement: a future artifact
  * placed under `<clone>/.shipit/` fails here instead of being caught (or
  * missed) in review.
@@ -102,7 +102,7 @@ function filesComposingInCloneArtifacts(): string[] {
   return out.split("\n").map((l) => l.trim()).filter(Boolean);
 }
 
-describe("no ShipIt-generated writes inside a session clone (docs/246 req 7)", () => {
+describe("no ShipIt-generated writes inside a session clone (docs/246-shipit-state-out-of-clone req 7)", () => {
   it("no source file composes an in-clone artifact path", () => {
     expect(
       filesComposingInCloneArtifacts(),

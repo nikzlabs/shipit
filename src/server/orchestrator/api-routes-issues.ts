@@ -714,7 +714,7 @@ export async function registerIssueRoutes(
   });
 
   // GET /api/trackers/linear/teams — the team keys this credential can reach, so
-  // Settings can show what a `kind: linear` declaration may name. docs/248 req 4:
+  // Settings can show what a `kind: linear` declaration may name. docs/248-declared-issue-trackers req 4:
   // a lookup for writing a declaration, not a picker that binds anything.
   app.get("/api/trackers/linear/teams", async (_request, reply) => {
     try {
@@ -744,7 +744,7 @@ export async function registerIssueRoutes(
   // (and the undo snapshot, on the persisted card) returns to the container.
 
   /**
-   * docs/248 req 13 — a create ALWAYS names its destination. The shim enforces
+   * docs/248-declared-issue-trackers req 13 — a create ALWAYS names its destination. The shim enforces
    * this by requiring `--tracker <name>`, but `/agent-ops/issue/*` is reachable
    * from the session container by anything the agent runs (a `curl` bypasses the
    * shim entirely), so the rule needs a server-side backstop or it is only a

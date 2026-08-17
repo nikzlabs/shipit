@@ -102,7 +102,7 @@ export interface AgentListenerDeps {
   /** Optional: latest subscription-limits snapshot, used to reclassify generic CLI errors. */
   getSubscriptionLimitsSnapshot?: () => SubscriptionLimitsMap;
   /**
-   * docs/150 req 7 — the provider failed this turn saying the subscription is
+   * docs/150-multiple-provider-subscriptions req 7 — the provider failed this turn saying the subscription is
    * spent. Stamps the account the turn ran on so the router stops choosing it,
    * which is what makes the *next* turn fail over instead of hitting the same
    * wall. `until` is epoch ms.
@@ -194,7 +194,7 @@ export interface WireListenersOpts {
   /** docs/260 — the captured route's kind, for reserved-vs-account branches. */
   getCapturedRouteKind?: () => "account" | "reserved" | "string" | undefined;
   /**
-   * docs/260 req 2 — failure policy resolved from the TURN'S OWN captured
+   * docs/260-turn-level-account-routing req 2 — failure policy resolved from the TURN'S OWN captured
    * route. Undefined when the turn captured none (then the session's model
    * selection answers instead).
    */
@@ -905,7 +905,7 @@ export function wireAgentListeners(
             deps.getSubscriptionLimitsSnapshot?.(),
           )
         : undefined;
-      // docs/150 req 7 — a turn the provider killed for quota is the most
+      // docs/150-multiple-provider-subscriptions req 7 — a turn the provider killed for quota is the most
       // reliable exhaustion signal there is: it is the account refusing work,
       // not telemetry describing it. Stamp it against the NORMALIZED text,
       // which is where the reset instant ends up when we could recover one.
@@ -1579,7 +1579,7 @@ export function wireAgentListeners(
           }
         }
       } else if (opts.getCapturedRouteId?.()) {
-        // docs/260 req 10 — a turn can end WITHOUT usage telemetry (a Codex
+        // docs/260-turn-level-account-routing req 10 — a turn can end WITHOUT usage telemetry (a Codex
         // compact result reports no tokens or cost), but its credential route
         // is still the fact the next turn's "Continuing on X" notice compares
         // against. Left unrecorded, that comparison would read the route of an
@@ -1734,7 +1734,7 @@ export function wireAgentListeners(
     // turn about to be re-run has not ended. Same stand-down shape as the
     // `auth_required` recovery, for the same reason.
     if (opts.willRetryOnQuotaError?.(err) === true) return;
-    // docs/150 req 13 — a turn blocked because no connected account can serve
+    // docs/150-multiple-provider-subscriptions req 13 — a turn blocked because no connected account can serve
     // it is a routing decision, not a crashed process. It reaches this handler
     // (env-prep throws, `executeAgentTurn` re-emits as `error`) so it inherits
     // the whole terminal-turn cleanup below, but the user must not be told

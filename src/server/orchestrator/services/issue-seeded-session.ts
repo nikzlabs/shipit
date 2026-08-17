@@ -35,7 +35,7 @@ export interface IssueSeededSessionDeps {
  * `explicitBranch` / `explicitTitle`. Both are always set, which is the point:
  * either one makes `graduateSession` skip AI naming, and AI naming is what
  * would otherwise rewrite the branch to a slug of the first message — a message
- * that begins with the issue's title (docs/248 req 22).
+ * that begins with the issue's title (docs/248-declared-issue-trackers req 22).
  *
  * `branch` is what the session is ACTUALLY on afterwards, not what we wanted.
  * A failed rename returns the existing throwaway branch rather than a name the

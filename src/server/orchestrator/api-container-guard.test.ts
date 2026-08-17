@@ -459,7 +459,7 @@ const GOLDEN_CONTAINER_ROUTES = [
   // itself does NOT run in the calling container — this route builds an
   // invocation container that holds no ShipIt credential (plan §2).
   "POST /api/sessions/:id/plugin/exec",
-  // docs/266 reqs 1–4, 9 — `shipit plugin status`. Container-reachable for the
+  // docs/266-plugin-install-diagnosability reqs 1–4, 9 — `shipit plugin status`. Container-reachable for the
   // same reason the two above are: this IS the agent's path, and the browser's
   // `/api/plugin-repos` snapshot is not reachable from a container. It is a GET
   // and that is load-bearing — it activates nothing, which is what makes it
@@ -546,7 +546,7 @@ const GOLDEN_CONTAINER_ROUTES = [
   // returns only that session's own persisted consult cards (planning#247).
   "POST /api/sessions/:id/agent/spawn",
   "GET /api/sessions/:id/agent/result",
-  // docs/264 req 12 — the two reads that make `--role NAME` and an override
+  // docs/264-agent-roles req 12 — the two reads that make `--role NAME` and an override
   // nameable. Deliberately container-reachable: the agent cannot name a role it
   // cannot see, and an agent allowed to override a parameter without the list
   // names one from memory. Neither read carries anything session-private — the

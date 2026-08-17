@@ -350,7 +350,7 @@ const KNOWN_GITHUB_TRACKER_KEYS = new Set(["kind", "name", "label", "repo"]);
 const KNOWN_LINEAR_TRACKER_KEYS = new Set(["kind", "name", "label", "team"]);
 
 /**
- * A tracker `name` (docs/248 req 2). The same character set the name form of a
+ * A tracker `name` (docs/248-declared-issue-trackers req 2). The same character set the name form of a
  * reference accepts (`planning#42`), so a declared name is always writable as a
  * reference — a name with a `#`, a slash or whitespace would be unaddressable.
  */

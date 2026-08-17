@@ -283,7 +283,7 @@ describe("adoptEnvCredentials", () => {
   });
 
   /**
-   * docs/150 req 2 — adopting must not silently change which credential
+   * docs/150-multiple-provider-subscriptions req 2 — adopting must not silently change which credential
    * existing work runs on, exactly as adding one by hand must not.
    */
   it("appends to the group's order rather than taking the front", () => {

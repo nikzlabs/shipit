@@ -159,7 +159,7 @@ export async function resolveSessionPluginServices(
     : {};
   const pluginVolumes = await ensurePluginVolumes(sessionId, stateDir, tracked, held, deps, roots);
 
-  // docs/266 req 10 — there is no allocation step any more. A plugin service's
+  // docs/266-plugin-service-ports req 10 — there is no allocation step any more. A plugin service's
   // port is the consuming project's own `plugins.use` entry, so it is both the
   // container port and the preview origin, and nothing here can move it. The
   // pin (`plugin-ports.ts`) existed only because a tracked commit could change

@@ -616,7 +616,7 @@ export function registerPreviewProxy(
    * Compose services first, then the agent container. The returned port is
    * always the one in the subdomain: every service — the project's own and a
    * plugin's alike — serves on one number that is both its container port and
-   * its preview origin (docs/266 req 10). A plugin service used to carry a
+   * its preview origin (docs/266-plugin-service-ports req 10). A plugin service used to carry a
    * second, pinned number here; the port is now the consuming project's to
    * write, so nothing can move it behind a session's back and the indirection
    * is gone.

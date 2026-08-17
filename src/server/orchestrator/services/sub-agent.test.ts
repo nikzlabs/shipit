@@ -109,7 +109,7 @@ function makeDeps(opts: {
   runnerPresent?: boolean;
   /** docs/261 — credential routes the reviewer resolution can choose between. */
   credentialRoutes?: { id: string; serviceId: string; billingMode: "sub" | "key"; via: string; status: string; priority: number; isPrimary: boolean; label: string; createdAt: number; updatedAt: number }[];
-  /** docs/264 req 8 — standing instructions stored on the role being started. */
+  /** docs/264-agent-roles req 8 — standing instructions stored on the role being started. */
   rolePrompt?: string;
 }) {
   const session: FakeSession | null =
@@ -487,7 +487,7 @@ describe("runSubAgent — --role reviewer", () => {
   });
 
   /**
-   * docs/264 req 14 — the card says what was ASKED FOR as well as what ran.
+   * docs/264-agent-roles req 14 — the card says what was ASKED FOR as well as what ran.
    *
    * `runOn` alone cannot answer "was this the reviewer, or `deep-dive`?": a role
    * resolves to a tuple, and the reviewer's resolves differently per run, so the
@@ -521,7 +521,7 @@ describe("runSubAgent — --role reviewer", () => {
   });
 
   /**
-   * docs/264 req 8 — a role's standing instructions reach the callee, labelled,
+   * docs/264-agent-roles req 8 — a role's standing instructions reach the callee, labelled,
    * with the run's own task. A sub-agent has one prompt channel, so this is the
    * only way a role can say what the job IS rather than only what runs it.
    */
@@ -887,7 +887,7 @@ describe("runSubAgent — happy path", () => {
       { optimistic?: boolean } | undefined,
     ];
     expect(service).toBe("openai");
-    // docs/260 req 12 — `optimistic` (return blocked accounts anyway) belongs
+    // docs/260-turn-level-account-routing req 12 — `optimistic` (return blocked accounts anyway) belongs
     // to the TURN's own attempt loop, which will actually try the result. A
     // consult is a non-turn caller: it selects non-optimistically, so a
     // refusal-blocked account is skipped rather than handed back.

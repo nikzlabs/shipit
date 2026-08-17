@@ -1,5 +1,5 @@
 /**
- * docs/266 reqs 3, 4 — the durable answer to "what did the last install do".
+ * docs/266-plugin-install-diagnosability reqs 3, 4 — the durable answer to "what did the last install do".
  *
  * The property under test is not the JSON. It is that every one of the five
  * outcomes stays DISTINGUISHABLE after a round trip: "succeeded", "skipped"

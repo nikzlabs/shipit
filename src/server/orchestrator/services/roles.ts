@@ -786,7 +786,7 @@ function freezeTarget(
 export const ROLE_PROMPT_LIMITS = { oneShot: 200_000, child: 50_000 } as const;
 
 /**
- * docs/264 req 8 — join a role's **standing instructions** onto the task a run
+ * docs/264-agent-roles req 8 — join a role's **standing instructions** onto the task a run
  * was given.
  *
  * A sub-agent has ONE prompt channel (docs/144), so the two have to become one

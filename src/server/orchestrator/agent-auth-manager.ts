@@ -45,7 +45,7 @@ export interface AgentAuthFailedPayload {
    *
    * `duplicate` is never emitted by a manager: it is ShipIt refusing an
    * otherwise-successful sign-in that resolved to an already-connected account
-   * (docs/150 req 22). It shares this payload so the client has one failure
+   * (docs/150-multiple-provider-subscriptions req 22). It shares this payload so the client has one failure
    * channel per provider flow.
    */
   reason?: "timeout" | "denied" | "error" | "revoked" | "duplicate";
@@ -62,7 +62,7 @@ export interface AgentAuthFailedPayload {
  * `$HOME` — `<root>/.claude` + `<root>/.claude.json` for Claude, `<root>/.codex`
  * for Codex — so scoping a flow is just spawning the CLI with `HOME` set to it.
  *
- * docs/150 req 19 — both fields are **required**. They were optional during the
+ * docs/150-multiple-provider-subscriptions req 19 — both fields are **required**. They were optional during the
  * migration, when `startAuth` could still begin an account-less flow; that
  * endpoint and its callers are gone, and `startAccountAuth` is now the only way
  * a flow begins. Keeping them optional would leave a second way for provider
@@ -102,7 +102,7 @@ export interface AgentAuthManager extends EventEmitter {
    * cached pending state to accommodate page reloads mid-flow (Codex's
    * device-code replay).
    *
-   * docs/150 req 19 — the scope is required; there is no account-less flow.
+   * docs/150-multiple-provider-subscriptions req 19 — the scope is required; there is no account-less flow.
    * `ProviderAccountManager.startAccountAuth` is the only caller, and it also
    * refuses to start while another account holds the provider's single login
    * process.

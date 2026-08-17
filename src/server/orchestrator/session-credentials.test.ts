@@ -247,7 +247,7 @@ describe("session-credentials", () => {
     expect(fs.existsSync(path.join(perSessionCredentialsDir(root, sid), ".codex"))).toBe(false);
   });
 
-  // docs/150 req 9 — an account switch reprovisions credentials but must not
+  // docs/150-multiple-provider-subscriptions req 9 — an account switch reprovisions credentials but must not
   // take the session's conversation with it. Claude resumes from
   // `.claude/projects/<encoded-cwd>/<agentSessionId>.jsonl` and Codex from
   // `.codex/sessions/.../rollout-*.jsonl`; both are per-session files that

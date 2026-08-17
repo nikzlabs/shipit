@@ -226,7 +226,7 @@ describe("LinearTracker", () => {
     await expect(tracker.listIssues()).rejects.toThrow(/boom/);
   });
 
-  // docs/248 reqs 11/17 — Linear's `issue(id:)` is workspace-global, so an id for
+  // docs/248-declared-issue-trackers reqs 11/17 — Linear's `issue(id:)` is workspace-global, so an id for
   // another team resolves. An operation that named THIS tracker must not act on
   // it: the reference resolver cannot close this, because a raw `tracker=`+`id=`
   // pair over the agent relay never passes through the resolver.
@@ -279,7 +279,7 @@ describe("LinearTracker", () => {
     expect(varsFor(fetchImpl, "TeamIssues").excludedTypes).toEqual(["canceled"]);
   });
 
-  // docs/248 req 5 — the declaration carries the team KEY; Linear's own queries
+  // docs/248-declared-issue-trackers req 5 — the declaration carries the team KEY; Linear's own queries
   // want the internal id, so the adapter resolves one to the other lazily and
   // caches it for the request's lifetime.
   it("resolves the declared team key to a team id once, then reuses it", async () => {
@@ -380,7 +380,7 @@ describe("LinearTracker writes (docs/177)", () => {
     await expect(tracker.deleteComment("c1")).resolves.toBeUndefined();
   });
 
-  // docs/248 req 17 — a comment id is workspace-global, and the undo path hands
+  // docs/248-declared-issue-trackers req 17 — a comment id is workspace-global, and the undo path hands
   // this adapter one recorded before its declared name was re-pointed. Deleting
   // it would mutate a team this adapter does not name.
   it("refuses to delete a comment belonging to another team", async () => {
@@ -463,7 +463,7 @@ describe("LinearTracker writes (docs/177)", () => {
     ).toBe(false);
   });
 
-  it("refuses to edit a comment on another team's issue (docs/248 req 17)", async () => {
+  it("refuses to edit a comment on another team's issue (docs/248-declared-issue-trackers req 17)", async () => {
     // The team guard fires on the issue leg, before the comment is even read.
     const fetchImpl = routerFetch([
       { match: "IssueId", data: { issue: { id: "uuid-1", team: { key: "OPS" } } } },
@@ -883,7 +883,7 @@ describe("LinearTracker writes (docs/177)", () => {
     expect(issue?.availableStatuses?.map((s) => s.name)).toContain("In Review");
   });
 
-  it("getIssue selects and surfaces the issue's createdAt (docs/247 req 9)", async () => {
+  it("getIssue selects and surfaces the issue's createdAt (docs/247-shipit-private-planning req 9)", async () => {
     const fetchImpl = routerFetch([
       { match: "query Issue", data: { issue: issueNode({ createdAt: "2025-11-02T09:15:00.000Z" }) } },
     ]);

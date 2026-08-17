@@ -7,7 +7,7 @@
  * omits either of them:
  *
  *   1. **Hooks** — every raw git spawn goes through `gitArgsWithHooksDisabled`.
- *   2. **Uid** (docs/266 E2) — every raw git spawn that names a working
+ *   2. **Uid** (docs/266-orchestrator-git-trust-boundary E2) — every raw git spawn that names a working
  *      directory also carries `gitSpawnOverridesForTree`, so it runs as the uid
  *      that OWNS that tree rather than as root.
  *
@@ -24,7 +24,7 @@
  * construction — but a raw `spawn`/`execFile` bypasses that choke point
  * entirely, and the two sites this rule caught when it was written
  * (`git-lfs.ts`'s `runGit`, `git.ts`'s `getFileBufferAtCommit`) were both
- * running as root inside a session workspace. Once docs/266 E2 removes
+ * running as root inside a session workspace. Once docs/266-orchestrator-git-trust-boundary E2 removes
  * `safe.directory=*` such a site does not merely run as root: git refuses it
  * outright, on paths as load-bearing as session provisioning. Catching it at CI
  * is the whole point.
@@ -42,7 +42,7 @@
  * `execSync("git …")` were entirely invisible to it, as was any binary that
  * travelled in a variable, which its own docstring named as a live blind spot.
  * A guard that only sees the call shapes someone already wrote is the same
- * defect as docs/266 E1's "covers call sites nobody has written yet", which was
+ * defect as docs/266-orchestrator-git-trust-boundary E1's "covers call sites nobody has written yet", which was
  * true of `safeSimpleGit`'s callers and false of two raw spawns.
  *
  * So a site is now discovered in two steps rather than matched in one:
@@ -669,7 +669,7 @@ describe("git spawn coverage: hooks guard", () => {
   });
 });
 
-describe("git spawn coverage: tree-uid drop (docs/266 E2)", () => {
+describe("git spawn coverage: tree-uid drop (docs/266-orchestrator-git-trust-boundary E2)", () => {
   it("every orchestrator-side `git` spawn with a working directory carries gitSpawnOverridesForTree", () => {
     const sites = gitSpawnSites();
     const withCwd = sites.filter(namesAWorkingDirectory);
@@ -690,7 +690,7 @@ describe("git spawn coverage: tree-uid drop (docs/266 E2)", () => {
       "A session workspace is writable by untrusted code, and git executes what",
       "that repository's own config names (filter.*.clean, core.fsmonitor, alias) —",
       "so as root, in the orchestrator, that is arbitrary code beside the Docker",
-      "socket and the credential store (docs/266 req 1).",
+      "socket and the credential store (docs/266-orchestrator-git-trust-boundary req 1).",
       "Spread the overrides into the options: { cwd, ...gitSpawnOverridesForTree(cwd) }.",
       "It resolves to {} for a root-owned tree, so it is correct to add unconditionally.",
     ].join("\n")).toEqual([]);
@@ -771,7 +771,7 @@ describe("git spawn coverage: tree-uid drop (docs/266 E2)", () => {
 });
 
 /**
- * docs/266 E2 / planning#410 — a bare `safeSimpleGit()` has no tree to stat, so
+ * docs/266-orchestrator-git-trust-boundary E2 / planning#410 — a bare `safeSimpleGit()` has no tree to stat, so
  * it is the ONE orchestrator git shape with no ownership predicate at all.
  *
  * The general statement, because it is what tells the next reader which sites to
@@ -801,7 +801,7 @@ describe("git spawn coverage: tree-uid drop (docs/266 E2)", () => {
  * fails the build with the question it has to answer: what owns the destination
  * when the next git call resolves it?
  */
-describe("git spawn coverage: bare safeSimpleGit() is a census (docs/266 E2)", () => {
+describe("git spawn coverage: bare safeSimpleGit() is a census (docs/266-orchestrator-git-trust-boundary E2)", () => {
   /**
    * `safeSimpleGit()` with no usable `baseDir`, therefore no ownership
    * predicate — including the spellings that are semantically bare but are not
@@ -1159,7 +1159,7 @@ describe("git spawn coverage: what counts as a git spawn (planning#409)", () => 
 });
 
 /**
- * docs/266 E2 — nobody may hand git a `safe.directory` except the one place that
+ * docs/266-orchestrator-git-trust-boundary E2 — nobody may hand git a `safe.directory` except the one place that
  * owns the policy.
  *
  * This is the rule the correction earned. `safe.directory` is honoured from
@@ -1210,7 +1210,7 @@ describe("git spawn coverage: what counts as a git spawn (planning#409)", () => 
  * `github-ci-fix.ts`. If you widen these rules and cannot write that sentence
  * for an exclusion, the exclusion is wrong.
  */
-describe("git spawn coverage: nobody re-grants safe.directory (docs/266 E2)", () => {
+describe("git spawn coverage: nobody re-grants safe.directory (docs/266-orchestrator-git-trust-boundary E2)", () => {
   /** The one module that owns the policy — {@link applySafeDirectoryPolicy}. */
   const POLICY_OWNER = path.join("orchestrator", "git-config.ts");
 
@@ -1268,7 +1268,7 @@ describe("git spawn coverage: nobody re-grants safe.directory (docs/266 E2)", ()
       "everything ShipIt itself supplies (system/global files, the command line,",
       "the config env protocols) and never the repository's own config. So a `-c",
       "safe.directory=...` anywhere in ShipIt's own code silences exactly the",
-      "`detected dubious ownership` refusal docs/266 E2 exists to arm (req 7).",
+      "`detected dubious ownership` refusal docs/266-orchestrator-git-trust-boundary E2 exists to arm (req 7).",
       "The refusal is the signal that a git call site failed to drop to the tree's",
       "owner. Fix the call site with gitSpawnOverridesForTree — never the refusal.",
       `Only ${POLICY_OWNER}'s \`git config --global\` write may name the key.`,

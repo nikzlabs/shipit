@@ -401,10 +401,10 @@ describe("getSessionDiagnostics", () => {
     expect(result.recentLogs[49]?.text).toBe("msg75");
   });
 
-  // docs/150 req 11 — "which account is this session on right now?" is not the
+  // docs/150-multiple-provider-subscriptions req 11 — "which account is this session on right now?" is not the
   // same question as the chat-visible failover notice, which only covers the
   // moment of a switch.
-  describe("provider route (docs/150 req 11)", () => {
+  describe("provider route (docs/150-multiple-provider-subscriptions req 11)", () => {
     const labels: Record<string, string> = { acct_1: "Work" };
     const lookup = (_provider: string, id: string) => labels[id];
 

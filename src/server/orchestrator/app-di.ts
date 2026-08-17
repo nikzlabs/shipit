@@ -436,7 +436,7 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
   const sessionsRoot = path.join(workspaceDir, "sessions");
 
   // ---- Per-session GitManager factory ----
-  // docs/266 E3 (planning#404) — every GitManager this factory builds can mint
+  // docs/266-orchestrator-git-trust-boundary E3 (planning#404) — every GitManager this factory builds can mint
   // its own credential for a REMOTE op, so a git that has dropped to the
   // session's uid never needs to read the orchestrator's PAT.
   //
@@ -639,7 +639,7 @@ export async function initializeManagers(deps: AppDeps): Promise<ManagerSet> {
   const githubAuthManager = deps.githubAuthManager ?? new GitHubAuthManager(workspaceDir, credentialStore);
   const hasGitHubToken = githubAuthManager.checkCredentials();
   console.log("[server] GitHub credentials found:", hasGitHubToken);
-  // docs/266 E3 — close the loop on the box declared with `createGitManager`.
+  // docs/266-orchestrator-git-trust-boundary E3 — close the loop on the box declared with `createGitManager`.
   remoteCredentialResolver.resolve = gitRemoteCredentialResolver(githubAuthManager);
   if (hasGitHubToken && !deps.githubAuthManager) {
     // Load user info and configure git credentials in the background

@@ -40,7 +40,7 @@ describe("credentialFailurePolicyFor — docs/252 req 12", () => {
     });
   });
 
-  it("ignores the dead provider_route_* columns on the session fallback (docs/260 req 2)", () => {
+  it("ignores the dead provider_route_* columns on the session fallback (docs/260-turn-level-account-routing req 2)", () => {
     // Nothing writes those columns any more, so a value there is a pre-260
     // leftover. Letting it override the live selection was a hidden
     // per-session pin deciding whether a turn retries.

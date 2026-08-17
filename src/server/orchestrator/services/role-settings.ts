@@ -119,7 +119,7 @@ export function planRoleWrites(
         throw new ServiceError(
           400,
           `The "${RESERVED_ROLE_NAME}" role cannot be deleted — "review this" has to keep `
-            + "resolving to something (docs/264 req 2).",
+            + "resolving to something (docs/264-agent-roles req 2).",
         );
       }
       plans.push({ name, role: null });
@@ -171,14 +171,14 @@ function planOne(
     throw new ServiceError(
       400,
       `The "${RESERVED_ROLE_NAME}" role cannot be renamed — "review this" has to keep resolving `
-        + "to something (docs/264 req 2). Its description and standing instructions are editable.",
+        + "to something (docs/264-agent-roles req 2). Its description and standing instructions are editable.",
     );
   }
   if (name === RESERVED_ROLE_NAME) {
     if (previousName !== RESERVED_ROLE_NAME) {
       throw new ServiceError(
         400,
-        `"${RESERVED_ROLE_NAME}" is reserved for the role ShipIt ships (docs/264 req 2). `
+        `"${RESERVED_ROLE_NAME}" is reserved for the role ShipIt ships (docs/264-agent-roles req 2). `
           + "Choose another name.",
       );
     }
@@ -186,13 +186,13 @@ function planOne(
       throw new ServiceError(
         400,
         `The "${RESERVED_ROLE_NAME}" role's params are resolved by ShipIt and cannot be pinned `
-          + "(docs/264 req 2). Its description and standing instructions are editable.",
+          + "(docs/264-agent-roles req 2). Its description and standing instructions are editable.",
       );
     }
   } else if (write.params.kind === "auto") {
     throw new ServiceError(
       400,
-      `Only the "${RESERVED_ROLE_NAME}" role may have automatic params (docs/264 req 2); `
+      `Only the "${RESERVED_ROLE_NAME}" role may have automatic params (docs/264-agent-roles req 2); `
         + `"${name}" must name a harness, a service, a billing mode, a model and a level.`,
     );
   }

@@ -4,7 +4,7 @@
  * The contract is narrow but load-bearing: whatever happens to the git rename,
  * the caller must come away with pins that make `graduateSession` skip AI
  * naming — that is what keeps the issue's title out of the pushed branch
- * (docs/248 req 22). The failure modes are therefore as interesting as the
+ * (docs/248-declared-issue-trackers req 22). The failure modes are therefore as interesting as the
  * happy path.
  */
 

@@ -154,7 +154,7 @@ describe("MarkdownContent tracker-issue links", () => {
     expect(setRightTab).not.toHaveBeenCalled();
   });
 
-  // docs/248 req 11 — a bare key is a NAME-less reference, so it identifies a
+  // docs/248-declared-issue-trackers req 11 — a bare key is a NAME-less reference, so it identifies a
   // destination only if exactly one declaration binds that team. Two make it
   // ambiguous, and picking the first would route the click at a destination the
   // key does not identify. Ambiguous falls back to plain text, like undeclared.
@@ -184,7 +184,7 @@ describe("MarkdownContent tracker-issue links", () => {
     );
   });
 
-  // planning#325 — docs/248 req 10's name form in prose. Before this, the matcher
+  // planning#325 — docs/248-declared-issue-trackers req 10's name form in prose. Before this, the matcher
   // caught only the `planning#321` half of `planning#321` and nothing at all of
   // `planning#57`, and the gate was a Linear-team-prefix comparison with no
   // answer for either.
@@ -225,7 +225,7 @@ describe("MarkdownContent tracker-issue links", () => {
     );
   });
 
-  // docs/248 req 11 — an undeclared name has no destination to open, so it
+  // docs/248-declared-issue-trackers req 11 — an undeclared name has no destination to open, so it
   // degrades to exactly its original text rather than guessing one.
   it("renders an undeclared name form as plain text", () => {
     useIssuesStore.setState({ trackers: [LINEAR_CONNECTED], openIssue: vi.fn() });

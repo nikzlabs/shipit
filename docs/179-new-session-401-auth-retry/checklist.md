@@ -64,7 +64,7 @@
 - [x] Convergence (criterion 2) — **accepted unresolved, deliberately.** The writer that
       recreated the links between turns on the production install was never identified,
       and #1874 is closed without it: the leaked shape is unreachable for sessions
-      provisioned after docs/150 req 19 (no root aliases created, existing ones retired,
+      provisioned after docs/150-multiple-provider-subscriptions req 19 (no root aliases created, existing ones retired,
       `copyCredentialPath` dereferences), a pre-req-19 session's repair converges after
       one pass (asserted by `session-agent-env.test.ts`), and the §4 fix makes
       repair-under-a-resident-process impossible whether or not repair converges. The

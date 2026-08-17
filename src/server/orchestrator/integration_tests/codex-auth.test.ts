@@ -18,7 +18,7 @@
  * The SSE event family is unified (docs/155 Phase 2b) — payload-shape
  * differences across backends live in the discriminated `details` field.
  *
- * docs/150 req 16 — the singleton `POST /api/codex-auth/start` this used to
+ * docs/150-multiple-provider-subscriptions req 16 — the singleton `POST /api/codex-auth/start` this used to
  * drive is gone; connecting the first Codex subscription goes through the same
  * per-account route as the second.
  *
@@ -195,7 +195,7 @@ describe("Integration: Codex device-auth flow (HTTP -> SSE -> agent_list)", () =
   let sse: SseTestClient | null = null;
 
   /**
-   * docs/150 req 16 — connecting a subscription is "create the row, start its
+   * docs/150-multiple-provider-subscriptions req 16 — connecting a subscription is "create the row, start its
    * login", identically for the first account and the fifth. There is no
    * account-less start any more, so every flow below begins here.
    */
@@ -295,7 +295,7 @@ describe("Integration: Codex device-auth flow (HTTP -> SSE -> agent_list)", () =
     // reconnect (session switch / tab refocus) until an auth broadcast re-sent it.
     expect(findCodex(initial)?.reasoning?.options.length).toBeGreaterThan(0);
 
-    // Kick off the flow through the one connect path (docs/150 req 16).
+    // Kick off the flow through the one connect path (docs/150-multiple-provider-subscriptions req 16).
     const accountId = await createCodexAccount();
     const start = await startAccountLogin(accountId);
     expect(start.statusCode).toBe(202);
@@ -309,7 +309,7 @@ describe("Integration: Codex device-auth flow (HTTP -> SSE -> agent_list)", () =
       "agent_auth_pending",
       (d) => (d as { loginId?: string }).loginId === "openai-chatgpt",
     ) as { loginId: string; accountId?: string; details: { kind: string; verificationUri: string; userCode: string; expiresInSec: number } };
-    // docs/150 reqs 16/19 — the challenge must name its account. The client
+    // docs/150-multiple-provider-subscriptions reqs 16/19 — the challenge must name its account. The client
     // files it under that row and has no provider-wide slot to fall back to,
     // so an unqualified event is dropped and the row sits blank forever.
     expect(pending.accountId).toBe(accountId);

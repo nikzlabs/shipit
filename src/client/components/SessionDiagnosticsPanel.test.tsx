@@ -254,7 +254,7 @@ describe("SessionDiagnosticsPanel", () => {
     });
   });
 
-  // docs/150 req 11 — after a proactive cutoff or a hard-exhaustion retry has
+  // docs/150-multiple-provider-subscriptions req 11 — after a proactive cutoff or a hard-exhaustion retry has
   // moved a session, this panel is where "which account am I on?" gets
   // answered. The account's NAME is the answer; the opaque id is supporting
   // detail for a bug report, not the thing the user reads.

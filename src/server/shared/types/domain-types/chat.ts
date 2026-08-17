@@ -105,7 +105,7 @@ export interface SubAgentConsultCard {
    */
   runOn?: SubAgentRunTarget;
   /**
-   * docs/264 req 14 — the **role** that started this run, when one did.
+   * docs/264-agent-roles req 14 — the **role** that started this run, when one did.
    *
    * {@link runOn} says what ran; this says what was *asked for*. They are
    * different facts and neither implies the other: a role resolves to a tuple

@@ -413,7 +413,7 @@ describe("shipit session create", () => {
       },
     );
     expect(out.exitCode).toBe(0);
-    // docs/264 req 16 — the child spawn now sends the SAME wire names the
+    // docs/264-agent-roles req 16 — the child spawn now sends the SAME wire names the
     // one-shot spawn does (`agentId`/`modelId`), so one server-side parser reads
     // both bodies. The flags the agent types are unchanged.
     expect(out.calls[0].body).toMatchObject({
@@ -422,7 +422,7 @@ describe("shipit session create", () => {
     });
   });
 
-  // docs/264 req 16 — the rest of the shared vocabulary, which a child session
+  // docs/264-agent-roles req 16 — the rest of the shared vocabulary, which a child session
   // could not say at all before: a service, a billing mode and a reasoning level.
   it("forwards --role, --service, --billing-mode and --effort on a child spawn", async () => {
     const { run } = makeRunner();
@@ -461,7 +461,7 @@ describe("shipit session create", () => {
   });
 
   /**
-   * docs/264 reqs 7, 10, 16 — **a named-but-empty parameter rides along instead
+   * docs/264-agent-roles reqs 7, 10, 16 — **a named-but-empty parameter rides along instead
    * of being dropped**, which is what makes the two commands one refusal rule
    * rather than two implementations that agree on the common case.
    *
@@ -3225,7 +3225,7 @@ describe("runShim — agent run", () => {
     }
   });
 
-  // docs/264 req 10 REVERSES docs/261 here: a role alongside a parameter used to
+  // docs/264-agent-roles req 10 REVERSES docs/261 here: a role alongside a parameter used to
   // be refused as "two questions at once", and is now the override path. The
   // parameter rides along and the server validates it against this install.
   it("carries --role plus a parameter as an override rather than refusing it", async () => {
@@ -3376,7 +3376,7 @@ describe("runShim — agent run", () => {
 });
 
 // ---------------------------------------------------------------------------
-// shipit agent roles / params (docs/264 req 12 — what the agent may name)
+// shipit agent roles / params (docs/264-agent-roles req 12 — what the agent may name)
 // ---------------------------------------------------------------------------
 
 /**

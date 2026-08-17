@@ -132,7 +132,7 @@ export function assertWorkerUidNotReserved(): void {
  * session that is *not* their creator can still use them (req 9).
  *
  * The orchestrator's global gitconfig is deliberately NOT in that list, though
- * an earlier draft of this comment said it was. docs/266 E3 made it root-owned
+ * an earlier draft of this comment said it was. docs/266-orchestrator-git-trust-boundary E3 made it root-owned
  * `0644` in a `0711` directory precisely so the worker can read it and cannot
  * write it, and `restoreRootOwnership` exists to keep it that way. Group-writing
  * it would hand every session the ability to rewrite the config that names the
@@ -547,7 +547,7 @@ export function chownWorkspaceGitToSessionWorker(workspaceDir: string, deps?: Gi
  *   - The **agent inside the container** runs at {@link identityForTarget} —
  *     the session's own allocated uid (docs/270), or the shared global one.
  *   - **Orchestrator-side git** runs at whatever {@link resolveGitTreeUid}
- *     resolves — "are we root, and who owns this tree" — since docs/266 E1.
+ *     resolves — "are we root, and who owns this tree" — since docs/266-orchestrator-git-trust-boundary E1.
  *
  * The handback answered only the first, so where the two disagree the post-turn
  * commit dropped to the tree's owner and then EACCESed inside a `.git` handed to

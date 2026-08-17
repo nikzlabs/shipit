@@ -1,5 +1,5 @@
 /**
- * docs/266 reqs 14 + 15 / planning#407 — the words, in one place.
+ * docs/266-orchestrator-git-trust-boundary reqs 14 + 15 / planning#407 — the words, in one place.
  *
  * The requirement that the two states get DIFFERENT words is the reason
  * docs/266 states them as two requirements; a single vague notice would satisfy

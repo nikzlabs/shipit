@@ -118,7 +118,7 @@ export interface CreateCredentialInput {
  * Store a string-delivered credential for a `(service, billing mode)`.
  *
  * Appends to the group's order rather than inserting, for the same reason
- * connecting an account does (docs/150 req 2): adding a credential must never
+ * connecting an account does (docs/150-multiple-provider-subscriptions req 2): adding a credential must never
  * silently change which one existing work runs on.
  */
 export function createStringCredential(
@@ -292,7 +292,7 @@ function deliveredValueFor(
 /**
  * Remove a stored credential and its secret.
  *
- * docs/260 req 13 — refused while a live process is RUNNING a turn or holds
+ * docs/260-turn-level-account-routing req 13 — refused while a live process is RUNNING a turn or holds
  * background work on this credential (`runner.residentRoute` names it): the
  * deletion's change-release would otherwise kill exactly the work req 13
  * protects. An idle resident is fine — the release after this call retires it
@@ -365,7 +365,7 @@ export function deleteCredentialRoute(
 }
 
 /**
- * Persist the fallback order within one subscription group (docs/150 req 2).
+ * Persist the fallback order within one subscription group (docs/150-multiple-provider-subscriptions req 2).
  *
  * Takes the complete set rather than a move-one verb: an ordering is only
  * meaningful as a whole, and requiring every id makes a stale client — one

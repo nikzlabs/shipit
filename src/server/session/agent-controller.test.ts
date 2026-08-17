@@ -1,5 +1,5 @@
 /**
- * docs/248 req 8 — the Node-pin system note that rides the first turn's prompt.
+ * docs/248-repo-node-version req 8 — the Node-pin system note that rides the first turn's prompt.
  *
  * Exercised through the real `/agent/start` route with a fake agent, because
  * the behaviour being pinned is an interaction between three things: the

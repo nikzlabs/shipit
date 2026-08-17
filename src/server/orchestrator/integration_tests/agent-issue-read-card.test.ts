@@ -212,7 +212,7 @@ describe("Integration: issue read navigation card (docs/188)", () => {
     client.close();
   });
 
-  // docs/248 req 16 — the card records the declared NAME it was addressed
+  // docs/248-declared-issue-trackers req 16 — the card records the declared NAME it was addressed
   // through, not just the destination it resolved to, so a later re-point
   // re-targets it. Persisted with the card (it rides the existing `issue_ref`
   // JSON blob, so no schema change), which is what makes it survive a reload.

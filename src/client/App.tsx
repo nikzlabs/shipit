@@ -1165,9 +1165,9 @@ export default function App() {
             voiceDeliveryMode?: "native" | "external" | "both";
             voiceWebhookConfigured?: boolean;
             providerAccounts?: CredentialRoute[];
-            /** docs/150 reqs 4-6 — per-provider proactive failover cutoffs. */
+            /** docs/150-multiple-provider-subscriptions reqs 4-6 — per-provider proactive failover cutoffs. */
             failoverCutoffs?: Record<string, { session: number; weekly: number }>;
-            /** docs/150 req 21 — per-provider account selection mode. */
+            /** docs/150-multiple-provider-subscriptions req 21 — per-provider account selection mode. */
             accountSelectionMode?: Record<string, "strict" | "balanced">;
             /** docs/252 phase 7 (req 9) — the pinned non-turn model + what it resolves to. */
             nonTurnModel?: { serviceId: string; billingMode: "sub" | "key"; modelId: string };
@@ -1413,7 +1413,7 @@ export default function App() {
       // guesswork (the user is free to rewrite it). Park the ref against the
       // session we just landed in; `handleSend` attaches it to the first
       // message, which is where the branch gets pinned to the pointer
-      // (docs/248 req 22) and the issue moves to started.
+      // (docs/248-declared-issue-trackers req 22) and the issue moves to started.
       const seededSessionId = useSessionStore.getState().sessionId;
       useSessionStore.getState().setPendingIssueRef(
         seededSessionId

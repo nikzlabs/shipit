@@ -345,7 +345,7 @@ describe("findComposeNodeConflicts", () => {
   });
 });
 
-// docs/248 req 8 — the agent shouldn't have to ask. Before this, an un-honored
+// docs/248-repo-node-version req 8 — the agent shouldn't have to ask. Before this, an un-honored
 // pin lived only in the diagnostics panel, which the agent cannot reach.
 describe("formatNodeRuntimeNotice", () => {
   const base = {

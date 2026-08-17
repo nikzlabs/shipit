@@ -127,7 +127,7 @@ function readShipitDoc(name: string): string {
 }
 
 /**
- * docs/264 req 15 — the five parameters named **together** as guidance, in any
+ * docs/264-agent-roles req 15 — the five parameters named **together** as guidance, in any
  * form: a runnable command, a table row, or a sentence.
  *
  * Scoped to the whole page on purpose, and both halves of that are deliberate:
@@ -227,7 +227,7 @@ describe("product-owned review commands (docs/261 phase 5)", () => {
   it("keeps the child-session path documented as completing from the parent, not as a one-shot", () => {
     // The paths must not collapse into one rule: `shipit session create --model
     // X` is complete because a child has a parent to complete it from, while the
-    // same flag alone is refused on a one-shot run. docs/264 req 16 unified the
+    // same flag alone is refused on a one-shot run. docs/264-agent-roles req 16 unified the
     // *surface*, deliberately not the completion semantics.
     const text = readShipitDoc("agent.md");
     expect(text).toContain("shipit session create");
@@ -236,7 +236,7 @@ describe("product-owned review commands (docs/261 phase 5)", () => {
 });
 
 /**
- * docs/264 req 15 — **a role is the path ShipIt teaches; assembling a target
+ * docs/264-agent-roles req 15 — **a role is the path ShipIt teaches; assembling a target
  * from five parameters is not.**
  *
  * The mirror of the block above, and the inversion of what this file asserted
@@ -252,7 +252,7 @@ describe("product-owned review commands (docs/261 phase 5)", () => {
  * override does the same job in less and keeps what runs anchored to something
  * the user configured.
  */
-describe("the five-parameter shape is not what ShipIt teaches (docs/264 req 15)", () => {
+describe("the five-parameter shape is not what ShipIt teaches (docs/264-agent-roles req 15)", () => {
   it("names no complete five-parameter target in any system-prompt variant", () => {
     for (const opts of ALL_VARIANTS) {
       const text = buildAgentSystemInstructions(opts);

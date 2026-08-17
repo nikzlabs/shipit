@@ -67,7 +67,7 @@ describe("isGitHubTracker", () => {
   });
 });
 
-describe("linearTrackerId / parseLinearTrackerId (docs/248 req 5)", () => {
+describe("linearTrackerId / parseLinearTrackerId (docs/248-declared-issue-trackers req 5)", () => {
   it("round-trips a team key through the qualified id", () => {
     expect(linearTrackerId("SHI")).toBe("linear:SHI");
     expect(parseLinearTrackerId("linear:SHI")).toBe("SHI");

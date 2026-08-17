@@ -105,7 +105,7 @@ describe("wireAgentListeners", () => {
     runner.dispose({ force: true });
   });
 
-  it("records the turn's credential route even when the result carries no usage telemetry (docs/260 req 10)", () => {
+  it("records the turn's credential route even when the result carries no usage telemetry (docs/260-turn-level-account-routing req 10)", () => {
     // A Codex compact result reports no tokens or cost, but its route is
     // still the fact the next turn's "Continuing on X" notice compares
     // against. Left unrecorded, the comparison would read an OLDER turn's
@@ -179,12 +179,12 @@ describe("wireAgentListeners", () => {
     runner.dispose({ force: true });
   });
 
-  // docs/150 req 13 — a turn blocked because no connected account can serve it
+  // docs/150-multiple-provider-subscriptions req 13 — a turn blocked because no connected account can serve it
   // reaches the same `error` listener as a crashed process (env-prep throws,
   // `executeAgentTurn` re-emits). It must inherit the terminal-turn cleanup but
   // NOT the "Agent process error" framing: nothing crashed, and the message
   // already tells the user what to do.
-  // docs/150 req 7 — a turn the provider killed for quota is the most reliable
+  // docs/150-multiple-provider-subscriptions req 7 — a turn the provider killed for quota is the most reliable
   // exhaustion signal there is: the account itself refusing work, not telemetry
   // describing it. Stamping it is what makes the NEXT turn fail over.
   describe("marking a supplied secret auth_failed on the surface path (planning#358)", () => {
@@ -289,7 +289,7 @@ describe("wireAgentListeners", () => {
     });
   });
 
-  describe("hard-exhaustion detection on agent_result (docs/150 req 7)", () => {
+  describe("hard-exhaustion detection on agent_result (docs/150-multiple-provider-subscriptions req 7)", () => {
     function wireForResult() {
       const agent = new FakeAgent();
       const runner = new SessionRunner({
@@ -418,7 +418,7 @@ describe("wireAgentListeners", () => {
     });
   });
 
-  describe("blocked-turn errors (docs/150 req 13)", () => {
+  describe("blocked-turn errors (docs/150-multiple-provider-subscriptions req 13)", () => {
     function wireForError() {
       const agent = new FakeAgent();
       const runner = new SessionRunner({

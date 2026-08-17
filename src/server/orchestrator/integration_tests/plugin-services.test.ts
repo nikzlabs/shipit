@@ -121,7 +121,7 @@ ${uses}
 `;
 }
 
-// docs/266 req 2 — the consuming project names the port. Without one the
+// docs/266-plugin-service-ports req 2 — the consuming project names the port. Without one the
 // service runs but is not previewable, which most of these cases need it to be.
 const PLAIN_USE = "    - plugin: probe\n      from: mine\n"
   + "      overrides:\n        services:\n          probe:\n            port: 4820\n";
@@ -205,7 +205,7 @@ describe("plugin services in a session's stack (docs/262)", () => {
       image: "node:22-alpine",
       command: "node /app/service/server.mjs",
     });
-    // …and a fragment declares no `ports:` at all (docs/266 req 1), so the
+    // …and a fragment declares no `ports:` at all (docs/266-plugin-service-ports req 1), so the
     // generated service publishes none either.
     expect(override.probe.ports).toBeUndefined();
     // …and ShipIt's half of the in-session contract is added (plan §2), which
@@ -330,7 +330,7 @@ describe("plugin services in a session's stack (docs/262)", () => {
     expect(statuses.find((s) => s.name === "probe")?.origin)
       .toEqual({ kind: "plugin", repo: "mine", alias: "probe", plugin: "probe" });
     // The port on the wire is the routing key the preview origin is built
-    // from — which is the service's one and only port now (docs/266 req 10).
+    // from — which is the service's one and only port now (docs/266-plugin-service-ports req 10).
     expect(statuses.find((s) => s.name === "probe")?.port)
       .toBe(stack.mgr.getService("probe")?.port);
 

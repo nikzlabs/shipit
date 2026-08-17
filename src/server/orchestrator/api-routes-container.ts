@@ -81,7 +81,7 @@ export async function registerContainerRoutes(
             serviceManagers: deps.serviceManagers ?? new Map<string, ServiceManager>(),
             getLogBuffer: deps.getLogBuffer ?? (() => []),
             getWorkspaceDir: (id) => sessionManager.get(id)?.workspaceDir ?? null,
-            // docs/150 req 11 — which account this session is running on.
+            // docs/150-multiple-provider-subscriptions req 11 — which account this session is running on.
             getSessionRoute: (id) => sessionManager.get(id),
             getAccountLabel: (provider, accountId) =>
               deps.providerAccountManager.get(accountServiceForHarness(provider), accountId)?.label,

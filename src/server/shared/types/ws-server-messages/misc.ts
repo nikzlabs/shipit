@@ -55,12 +55,12 @@ export interface WsGlobalSettings {
   /** When true, mid-turn messages steer the running agent. (docs/140) */
   liveSteering: boolean;
   /**
-   * docs/150 reqs 4-6 — per-provider proactive failover cutoffs, keyed by agent
+   * docs/150-multiple-provider-subscriptions reqs 4-6 — per-provider proactive failover cutoffs, keyed by agent
    * id. Optional so an older orchestrator's payload still parses.
    */
   failoverCutoffs?: Record<string, { session: number; weekly: number }>;
   /**
-   * docs/150 req 21 — per-provider account selection mode, keyed by agent id.
+   * docs/150-multiple-provider-subscriptions req 21 — per-provider account selection mode, keyed by agent id.
    * Optional for the same reason as the cutoffs above: an older orchestrator's
    * payload must still parse, and its absence means "strict".
    */
