@@ -26,6 +26,7 @@
 
 import { useState } from "react";
 import {
+  BaseballCapIcon,
   PencilSimpleIcon,
   PlusIcon,
   TrashIcon,
@@ -138,10 +139,23 @@ export function RolesTab({ agentList = [] }: { agentList?: AgentOption[] }) {
       <section className="flex flex-col gap-3 border-t border-(--color-border-secondary) pt-4">
         <div className="flex items-start justify-between gap-2">
           <div className="min-w-0">
-            <h3 className="text-sm font-medium text-(--color-text-primary)">Roles</h3>
+            {/* docs/272-user-selectable-roles req 16 — the SAME mark the composer shows, beside
+                the word it stands for. That is the whole reason it is here: in
+                the composer the mark is unlabelled, and a mark nobody has seen
+                is a puzzle. Roles are created here, so this is where a user
+                meets it with its name — neither half of the rule works alone. */}
+            <h3 className="flex items-center gap-1.5 text-sm font-medium text-(--color-text-primary)">
+              <BaseballCapIcon
+                size={ICON_SIZE.SM}
+                className="shrink-0 text-(--color-text-tertiary)"
+                aria-hidden
+              />
+              Roles
+            </h3>
             <p className="mt-0.5 text-xs text-(--color-text-tertiary)">
-              Named units of agent work an agent can start by name — each one naming the harness
-              that runs it, the model it runs, the reasoning level, and optionally what the job is.
+              Named units of agent work — each one naming the harness that runs it, the model it
+              runs, the reasoning level, and optionally what the job is. Pick one in the composer
+              to start a session on it, or name it to an agent.
             </p>
           </div>
           <Button

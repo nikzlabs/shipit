@@ -637,6 +637,10 @@ export async function prepareSessionAgentEnvironment(
         selection: derived,
         modelId: derived.modelId,
         reasoningEffort: session.reasoningEffort ?? null,
+        // docs/272 — the role in force is unchanged by this write (the server is
+        // filling a model nobody selected, not moving one the user chose), so it
+        // is reported as it stands rather than cleared.
+        roleName: session.roleName ?? null,
         notice: `No model was selected, so this session is running ${
           getService(derived.serviceId)?.name ?? derived.serviceId
         }.`,

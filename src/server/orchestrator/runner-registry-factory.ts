@@ -42,6 +42,7 @@ import { applyPreTurnReset } from "./pre-turn-reset-hook.js";
 import { emitResetEligible } from "./services/pre-turn-reset.js";
 import { wireResetEligibleOnFileChange } from "./reset-eligible-watch.js";
 import { postTurnCommit } from "./ws-handlers/post-turn.js";
+import { takeRoleStandingInstructions } from "./services/session-role.js";
 import { routeVoiceNote } from "./voice/voice-note-router.js";
 import type { VoiceNotePayload, VoiceNoteSource } from "../shared/types/voice-note-types.js";
 import { getAgentCapabilities } from "../shared/agent-registry.js";
@@ -644,6 +645,15 @@ export function createRunnerRegistry(
         // SDK click, a `shipit session message`), so it carries a resolved
         // bug-report card's outcome exactly as a typed turn does.
         consumeBugOutcomes: (sessionId) => chatHistoryManager.consumeUnreportedBugOutcomes(sessionId),
+        // docs/272 req 2 — a quick-capture session's first turn is dispatched
+        // here, at creation, before any WS connect, so the role's standing
+        // instructions have to reach the dispatched path as well as the typed
+        // one. The helper latches on `originRoleName`; wiring it in both places
+        // cannot deliver twice.
+        ...(credentialStore
+          ? { takeRoleInstructions: (sessionId: string) =>
+              takeRoleStandingInstructions(sessionId, { sessionManager, credentialStore }) }
+          : {}),
         // ...and put it back if that turn never reached the agent, so a spawn
         // failure can't burn the only warning that the tree was rewritten.
         restorePendingAgentNotice: (sessionId, notice) => sessionManager.setPendingAgentNotice(sessionId, notice),

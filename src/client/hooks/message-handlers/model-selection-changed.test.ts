@@ -32,6 +32,7 @@ function message(over: Partial<WsModelSelectionChanged> = {}): WsModelSelectionC
     selection: { serviceId: "vercel", billingMode: "key", modelId: "anthropic/claude-opus-5" },
     modelId: "anthropic/claude-opus-5",
     reasoningEffort: null,
+    roleName: null,
     ...over,
   };
 }

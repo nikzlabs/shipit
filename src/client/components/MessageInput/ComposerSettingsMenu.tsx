@@ -1,5 +1,6 @@
 import { useState } from "react";
 import {
+  BaseballCapIcon,
   BrainIcon,
   CaretDownIcon,
   CaretLeftIcon,
@@ -29,6 +30,7 @@ import {
 import { modelRowsFor } from "../../utils/model-rows.js";
 import { useReasoningPickerState } from "../ReasoningSelector.js";
 import { formatModelName } from "../../utils/format-model.js";
+import { roleUnavailableDetail, useRolePickerState } from "./RoleSelector.js";
 import type { AgentId, PermissionMode } from "../../../server/shared/types.js";
 import type { AgentOption, ModelChoice } from "../../agent-types.js";
 import type { ModelInfo } from "../../utils/model-info.js";
@@ -72,7 +74,7 @@ const MODE_META: Record<PermissionMode, { label: string; icon: typeof NotepadIco
 /** Display order: most → least oversight, matching `PermissionModeSelector`. */
 const LADDER: PermissionMode[] = ["plan", "guarded", "auto"];
 
-type Panel = "root" | "mode" | "harness" | "model" | "reasoning";
+type Panel = "root" | "mode" | "harness" | "model" | "reasoning" | "role";
 
 /** One root row: an icon, a label, the current value, and a chevron when it drills down. */
 function RootRow({
@@ -151,6 +153,7 @@ function ChoiceRow({
   isCurrent,
   disabled,
   onSelect,
+  keepOpen,
   testId,
 }: {
   icon?: React.ReactNode;
@@ -159,12 +162,21 @@ function ChoiceRow({
   isCurrent: boolean;
   disabled?: boolean;
   onSelect: () => void;
+  /**
+   * docs/272 req 15 — this row NAVIGATES rather than commits, so the menu must
+   * survive it. "Adjust parameters…" brings the harness, model and level rows
+   * back into this same menu; closing on the tap would put the user one reopen
+   * away from the thing they just asked to see. The root rows prevent default
+   * for exactly this reason.
+   */
+  keepOpen?: boolean;
   testId: string;
 }) {
   return (
     <DropdownMenuItem
       disabled={disabled}
-      onSelect={() => {
+      onSelect={(e) => {
+        if (keepOpen) e.preventDefault();
         if (!disabled) onSelect();
       }}
       className={`items-start px-3 py-2 text-sm ${
@@ -201,6 +213,12 @@ export function ComposerSettingsMenu({
   guardedModelOk = true,
   disabled = false,
   pickersLocked = false,
+  onRoleChange,
+  sessionRoleName,
+  roleParamsRevealed = true,
+  onAdjustRoleParameters,
+  onRoleSelected,
+  roleLocked = false,
 }: {
   agents: AgentOption[];
   activeAgentId: AgentId;
@@ -238,8 +256,26 @@ export function ComposerSettingsMenu({
    * inert.
    */
   pickersLocked?: boolean;
+  /** docs/272-user-selectable-roles req 1 — start this session on the named role. */
+  onRoleChange?: (roleName: string) => void;
+  /** docs/272 req 5 — the role IN FORCE, which replaces the three rows below it. */
+  sessionRoleName?: string;
+  /** docs/272 req 15 — "Adjust parameters…" was chosen, so the three rows are back. */
+  roleParamsRevealed?: boolean;
+  onAdjustRoleParameters?: () => void;
+  /** Told when a role is picked, so the caller can fold the parameters away again. */
+  onRoleSelected?: () => void;
+  /** docs/272 req 4 — the first turn has run, so no role applies any more. */
+  roleLocked?: boolean;
 }) {
   const [panel, setPanel] = useState<Panel>("root");
+  const { roles, hasRoles } = useRolePickerState();
+  // docs/272 req 16 — offered only once the user has a role of their own; a role
+  // still in force keeps its row even if the list has since emptied, or the row
+  // naming the session would vanish while the session still runs as it.
+  const showRole = !!onRoleChange && (hasRoles || !!sessionRoleName);
+  // req 5 — the three rows the role replaced, folded away until asked for.
+  const showParams = !sessionRoleName || roleParamsRevealed;
 
   const harness = useHarnessPickerState({ agents, activeAgentId, hasActiveSession, seedFromHistory });
   const model = useModelPickerState({
@@ -329,7 +365,24 @@ export function ComposerSettingsMenu({
               valueAccent={!modeIsDefault}
               onSelect={canPickMode ? () => setPanel("mode") : undefined}
             />
-            {onAgentChange && (
+            {showRole && (
+              <RootRow
+                testId="composer-settings-row-role"
+                icon={<BaseballCapIcon size={ICON_SIZE.SM} className="shrink-0" />}
+                label="Role"
+                value={sessionRoleName ?? "None"}
+                onSelect={roleLocked || pickersLocked ? undefined : () => setPanel("role")}
+                trailing={
+                  roleLocked ? (
+                    <LockIcon
+                      size={ICON_SIZE.XS}
+                      className="shrink-0 text-(--color-text-tertiary)"
+                    />
+                  ) : undefined
+                }
+              />
+            )}
+            {onAgentChange && showParams && (
               <RootRow
                 testId="composer-settings-row-harness"
                 icon={<RobotIcon size={ICON_SIZE.SM} className="shrink-0" />}
@@ -359,7 +412,7 @@ export function ComposerSettingsMenu({
                 Harness, model and reasoning are fixed while a turn is running.
               </p>
             )}
-            {onAgentChange && (
+            {onAgentChange && showParams && (
               <RootRow
                 testId="composer-settings-row-model"
                 icon={<SparkleIcon size={ICON_SIZE.SM} className="shrink-0" />}
@@ -368,7 +421,7 @@ export function ComposerSettingsMenu({
                 onSelect={pickersLocked ? undefined : () => setPanel("model")}
               />
             )}
-            {reasoning && onReasoningChange && (
+            {reasoning && onReasoningChange && showParams && (
               <RootRow
                 testId="composer-settings-row-reasoning"
                 icon={<BrainIcon size={ICON_SIZE.SM} className="shrink-0" />}
@@ -376,6 +429,53 @@ export function ComposerSettingsMenu({
                 value={reasoning.currentLabel}
                 onSelect={pickersLocked ? undefined : () => setPanel("reasoning")}
               />
+            )}
+          </>
+        )}
+
+        {panel === "role" && (
+          <>
+            <PanelHeader title="Role" onBack={() => setPanel("root")} />
+            <DropdownMenuSeparator />
+            {roles.map((role) => {
+              const unavailable = roleUnavailableDetail(role);
+              return (
+                <ChoiceRow
+                  key={role.name}
+                  testId={`composer-settings-role-${role.name}`}
+                  label={role.name}
+                  {...(unavailable ?? role.description
+                    ? { description: unavailable ?? role.description! }
+                    : {})}
+                  isCurrent={role.name === sessionRoleName}
+                  // req 9 — shown with its reason rather than hidden.
+                  disabled={Boolean(unavailable)}
+                  onSelect={() => {
+                    onRoleSelected?.();
+                    onRoleChange?.(role.name);
+                  }}
+                />
+              );
+            })}
+            {sessionRoleName && !roleParamsRevealed && (
+              <>
+                <DropdownMenuSeparator />
+                <ChoiceRow
+                  testId="composer-settings-role-adjust"
+                  label="Adjust parameters…"
+                  // req 15 — and the harness is named here deliberately. It pins
+                  // irreversibly at the first message and switching role can
+                  // switch it, so a panel that listed only the model and the
+                  // level would hide the one consequence the user cannot undo.
+                  description="Show the harness, model and level this role set"
+                  isCurrent={false}
+                  keepOpen
+                  onSelect={() => {
+                    onAdjustRoleParameters?.();
+                    setPanel("root");
+                  }}
+                />
+              </>
             )}
           </>
         )}

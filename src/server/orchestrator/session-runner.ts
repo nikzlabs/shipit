@@ -832,6 +832,17 @@ export interface SystemTurnDeps {
    */
   consumeBugOutcomes?: (sessionId: string) => ResolvedBugReport[];
   /**
+   * docs/272-user-selectable-roles req 2 — the standing instructions of the role this session
+   * was started on, for its **first turn**, or `""`.
+   *
+   * Optional and named as a *take*, because the call has a side effect: the
+   * helper behind it latches on `originRoleName`, so the second call for the
+   * same session returns nothing. Wired here as well as on the WS path because
+   * quick capture's first turn is dispatched server-side at creation and would
+   * otherwise be the one entry point where a role's instructions never arrive.
+   */
+  takeRoleInstructions?: (sessionId: string) => string;
+  /**
    * docs/149 — write a CLI-rotated OAuth token back to the orchestrator source
    * after a system turn. Optional; production wires it to
    * `finalizeSessionAgentEnvironment` so the agent-spawned and CI-auto-fix

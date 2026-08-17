@@ -41,6 +41,13 @@ export const handleModelSelectionChanged: Handler<WsModelSelectionChanged> = (_c
             ...(data.reasoningEffort
               ? { reasoningEffort: data.reasoningEffort }
               : { reasoningEffort: undefined }),
+            // docs/272 reqs 13, 15 — the role in force. It rides this message
+            // because setting one and leaving one are the same event as the
+            // three fields above: `set_role` writes all four at once, and a
+            // harness/model/reasoning pick clears this one *because* it moved
+            // one of them. Applied unconditionally, null included — this is the
+            // only thing that un-names a role on screen.
+            ...(data.roleName ? { roleName: data.roleName } : { roleName: undefined }),
           }
         : s,
     ),

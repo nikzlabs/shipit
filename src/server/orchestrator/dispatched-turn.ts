@@ -261,12 +261,17 @@ export async function runDispatchedTurn(
   const agentPrefix = [pendingNotice, bugOutcomeNotice, reset?.agentPrefix]
     .filter(Boolean)
     .join("\n\n");
+  // docs/272 req 2 — the role's standing instructions, first turn only. Called
+  // unconditionally: the latch is inside, so this path and the WS one cannot
+  // disagree about when a role has already spoken.
+  const roleContext = deps.takeRoleInstructions?.(runner.sessionId) ?? "";
   const prompt =
     (agentPrefix ? `${agentPrefix}\n\n` : "") +
     assembleAgentPrompt({
       userText: agentText,
       fileContext,
       imageContext,
+      ...(roleContext ? { roleContext } : {}),
       // docs/144 — set only by a human-dictated dispatch (a quick-capture prompt
       // spoken into the overlay); server-composed turns never carry it.
       dictated: opts.dictated,

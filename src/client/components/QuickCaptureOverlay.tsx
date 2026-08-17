@@ -15,9 +15,11 @@ import {
   getSavedModelSelection,
   getSavedQuickSessionRepo,
   getSavedReasoning,
+  getSavedRoleName,
   saveModelId,
   saveModelSelection,
   saveQuickSessionRepo,
+  saveRoleName,
 } from "../utils/local-storage.js";
 import { newSessionAgentId } from "../utils/new-session-agent.js";
 import { persistHarnessPick } from "../utils/harness-seed.js";
@@ -58,6 +60,13 @@ export function QuickCaptureOverlay({
   // param can't reach turn 1. We therefore send the chosen level in the
   // creation params (below). `undefined` falls back to the saved seed at send.
   const [selectedReasoning, setSelectedReasoning] = useState<string | undefined>(undefined);
+  // docs/272-user-selectable-roles reqs 11, 12 — the overlay is one of the two surfaces that
+  // start a session and its first turn together, so it offers the role too.
+  // Seeded from the same slot the composer writes, which is what "the next new
+  // session starts on it" means for a surface with no session of its own. Local
+  // state rather than the slot alone, so a pick made here is visible before the
+  // send that persists it.
+  const [selectedRole, setSelectedRole] = useState<string | undefined>(getSavedRoleName());
   // docs/175-auto-merge-at-session-creation/plan.md decision #1: this toggle is
   // per-session and must NEVER be persisted. Do NOT wire it to localStorage the
   // way the model/agent pickers are — a sticky auto-merge is an invisible,
@@ -217,6 +226,12 @@ export function QuickCaptureOverlay({
         ? { serviceId: savedSelection.serviceId, billingMode: savedSelection.billingMode }
         : {}),
       ...(reasoning ? { reasoning } : {}),
+      // docs/272 reqs 1, 11 — the role, which the server resolves and applies
+      // OVER the harness/model/reasoning above rather than alongside them: those
+      // describe controls the user handed over when they picked it. Sending both
+      // keeps the client from having to resolve a role's tuple, which is the
+      // second implementation docs/264 keeps out of the browser.
+      ...(selectedRole ? { role: selectedRole } : {}),
       ...(armAutoMerge ? { armAutoMerge: true } : {}),
       // docs/144 — Mode B is the voice-native path (hold the hotkey, speak a
       // task, it spawns a session), so the dictation hint matters most here.
@@ -337,6 +352,10 @@ export function QuickCaptureOverlay({
                 ...(selectedModel ? { current: { modelId: selectedModel } } : {}),
               });
               if (nextModelId) setSelectedModel(nextModelId);
+              // docs/272 req 15 — changing one of the three a role set is the
+              // whole of leaving it, here as in the composer.
+              saveRoleName(undefined);
+              setSelectedRole(undefined);
               seedWritten();
               // Reasoning is per-agent — drop any explicit pick made for the
               // harness being left, exactly as a model switch does below.
@@ -361,6 +380,9 @@ export function QuickCaptureOverlay({
                 saveModelId(selection.modelId);
               }
               setSelectedModel(selection.modelId);
+              // docs/272 req 15 — see the harness handler above.
+              saveRoleName(undefined);
+              setSelectedRole(undefined);
               seedWritten();
               // Reasoning is per-agent; a model switch can change the agent, so
               // drop the explicit pick and let the new agent's seed take over.
@@ -371,7 +393,19 @@ export function QuickCaptureOverlay({
             // `pending` state drive the displayed value. We only need the
             // callback to (a) make the control visible and (b) capture the pick
             // for the creation params below.
-            onReasoningChange={(effort) => setSelectedReasoning(effort ?? undefined)}
+            onReasoningChange={(effort) => {
+              // docs/272 req 15 — the level is the third of the three.
+              saveRoleName(undefined);
+              setSelectedRole(undefined);
+              setSelectedReasoning(effort ?? undefined);
+            }}
+            {...(selectedRole ? { sessionRoleName: selectedRole } : {})}
+            onRoleChange={(roleName) => {
+              // No session to apply it to yet, so the pick IS the seed: the
+              // creation params carry it and the server applies it there.
+              saveRoleName(roleName);
+              setSelectedRole(roleName);
+            }}
             modelInfo={modelInfo}
             hasActiveSession={false}
           />

@@ -841,6 +841,17 @@ export async function spawnChildSession(
     ...(opts.spawnedByTurn ? { spawnedByTurn: opts.spawnedByTurn } : {}),
   });
 
+  // docs/272-user-selectable-roles req 5 — the role is also IN FORCE, not merely recorded, so
+  // the composer of the child a user opens names it exactly as it names a role
+  // the user picked themselves. The two fields differ in what happens next: this
+  // one is cleared the moment anyone moves the child's harness, model or
+  // reasoning (req 15), while the provenance above never changes.
+  //
+  // The standing instructions are NOT re-delivered on that account: docs/264
+  // already joined them into the creating task, and `takeRoleStandingInstructions`
+  // latches on the `originRoleName` written just above.
+  if (seeded?.roleName) sessionManager.setRoleName(newSessionId, seeded.roleName);
+
   const child = sessionManager.get(newSessionId);
   if (!child) throw new ServiceError(500, "Failed to read back spawned child session");
 

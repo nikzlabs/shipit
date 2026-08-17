@@ -144,7 +144,7 @@ import {
   repoLabelToNewPath,
   parseNewSessionSlug,
 } from "./utils/repo-label.js";
-import { clearParkedHarness, saveModelId, saveModelSelection } from "./utils/local-storage.js";
+import { clearParkedHarness, saveModelId, saveModelSelection, saveRoleName } from "./utils/local-storage.js";
 import { persistHarnessPick } from "./utils/harness-seed.js";
 import {
   siblingsOf,
@@ -1538,6 +1538,11 @@ export default function App() {
       // the new harness runs it" keeps what the user is looking at rather than
       // whatever the slot last held. With none, the helper reads the seed.
       const liveModel = useUiStore.getState().modelInfo?.model;
+      // docs/272 req 15 — changing one of the three controls a role set is the
+      // whole of leaving that role. The server clears the session's own copy
+      // (it is the authority on what the session runs); this clears the SEED,
+      // so the role does not quietly re-apply itself to the next new session.
+      saveRoleName(undefined);
       persistHarnessPick({
         agentId,
         agents: useUiStore.getState().agentList,
@@ -1567,6 +1572,8 @@ export default function App() {
       // A model pick names a harness too (the harness is derived from it), so it
       // is the user overruling any redirect that is parked — see `ParkedHarness`.
       clearParkedHarness();
+      // docs/272 req 15 — see `handleAgentChange`.
+      saveRoleName(undefined);
       if (selection.serviceId) {
         saveModelSelection({
           serviceId: selection.serviceId,
@@ -1592,7 +1599,32 @@ export default function App() {
   // ReasoningSelector; here we just push it to the server for this session.
   const handleReasoningChange = useCallback(
     (effort: string | null) => {
+      // docs/272 req 15 — see `handleAgentChange`.
+      saveRoleName(undefined);
       send({ type: "set_reasoning", effort });
+    },
+    [send],
+  );
+
+  /**
+   * docs/272-user-selectable-roles reqs 1, 12 — start this session on a configured role.
+   *
+   * Two writes, and they answer different questions. `set_role` is what applies
+   * the role to THIS session: the server resolves it, writes the harness, model
+   * and level onto the row, and records the name — nothing is guessed here,
+   * because a second implementation of "can this role run" in the browser is
+   * exactly what docs/264 kept out of it. The seed is what makes the NEXT new
+   * session start on the same role (req 12), the way the model and harness seeds
+   * already work.
+   *
+   * The seed is written optimistically and the session is not: a refused role
+   * comes back as an error and leaves the session untouched, while the seed is
+   * only ever a starting point the user can change in the same place.
+   */
+  const handleRoleChange = useCallback(
+    (roleName: string) => {
+      saveRoleName(roleName);
+      send({ type: "set_role", roleName });
     },
     [send],
   );
@@ -2196,6 +2228,15 @@ export default function App() {
           onModelChange={handleModelChange}
           onReasoningChange={handleReasoningChange}
           sessionReasoning={currentSession?.reasoningEffort}
+          {...(currentSession?.roleName ? { sessionRoleName: currentSession.roleName } : {})}
+          onRoleChange={handleRoleChange}
+          // docs/272 req 4 — a role applies until the session's first turn and
+          // not after. `agentPinned` IS that moment: it is set when the first
+          // turn provisions per-agent credentials, which is the same fact that
+          // makes the harness irreversible. Server-side `set_role` refuses on
+          // it too; this only stops the user reaching for a control that would
+          // be refused.
+          roleLocked={!!currentSession?.agentPinned}
           modelInfo={modelInfo}
           contextTokens={contextTokens}
           hasActiveSession={!showNewSessionView && !!sessionId}

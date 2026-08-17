@@ -354,6 +354,48 @@ export function saveQuickSessionRepo(url: string | undefined): void {
   }
 }
 
+/**
+ * docs/272-user-selectable-roles req 12 — the role the user last selected, which the NEXT new
+ * session starts on.
+ *
+ * The same treatment the model and the harness already get, for the same
+ * reason: a user who works through a role works through it repeatedly, and
+ * re-picking it on every new session is a click that says nothing. Still a
+ * starting point and still optional (reqs 3, 7) — it is changed, and left, in
+ * the same place it was chosen.
+ *
+ * **Cleared by a harness / model / reasoning pick**, wherever one is made. That
+ * is req 15 applied to the seed as well as to the session: leaving a role means
+ * changing how the session runs, and a seed that outlived the leaving would
+ * quietly re-apply the role to the next session the user starts.
+ *
+ * A name, not a resolved tuple. The role's parameters are the server's to
+ * resolve at the moment it starts (req 8 — nothing is ever substituted), so a
+ * cached copy here would be a second answer that goes stale the first time the
+ * role is edited.
+ */
+const ROLE_PREFERENCE_KEY = "shipit-role-name";
+
+export function getSavedRoleName(): string | undefined {
+  try {
+    return localStorage.getItem(ROLE_PREFERENCE_KEY) ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function saveRoleName(roleName: string | undefined): void {
+  try {
+    if (roleName) {
+      localStorage.setItem(ROLE_PREFERENCE_KEY, roleName);
+    } else {
+      localStorage.removeItem(ROLE_PREFERENCE_KEY);
+    }
+  } catch {
+    // localStorage may be unavailable
+  }
+}
+
 export function getSavedActiveRepo(): string | undefined {
   try {
     return localStorage.getItem(ACTIVE_REPO_KEY) ?? undefined;

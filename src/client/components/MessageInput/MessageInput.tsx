@@ -25,6 +25,7 @@ import { useSettingsStore } from "../../stores/settings-store.js";
 import { useKeybinding } from "../../keybindings/use-keybinding.js";
 import { ContextDialMount } from "./ContextDialMount.js";
 import { ComposerSettingsMenu } from "./ComposerSettingsMenu.js";
+import { RoleSelector, useRolePickerState } from "./RoleSelector.js";
 import { useTextareaSizing } from "./hooks/useTextareaSizing.js";
 import { useMessageDraft } from "./hooks/useMessageDraft.js";
 import { useUploadBackend } from "./hooks/useUploadBackend.js";
@@ -109,6 +110,9 @@ export function MessageInput({
   onModelChange,
   onReasoningChange,
   sessionReasoning,
+  sessionRoleName,
+  onRoleChange,
+  roleLocked = false,
   modelInfo,
   contextTokens = 0,
   hasActiveSession = false,
@@ -160,6 +164,23 @@ export function MessageInput({
   onReasoningChange?: (effort: string | null) => void;
   /** docs/217 — the active session's persisted reasoning effort, if any. */
   sessionReasoning?: string;
+  /**
+   * docs/272-user-selectable-roles reqs 5, 13 — the role currently IN FORCE, if any.
+   *
+   * The server's answer, never derived here: a session whose harness, model and
+   * level happen to equal a role's is not that role, because selecting one also
+   * puts its standing instructions in force and moving three controls does not.
+   * When set, the three selectors it replaced come out of the row and this name
+   * stands in their place.
+   */
+  sessionRoleName?: string;
+  /** docs/272 req 1 — start this session on the named role. Absent ⇒ no role control. */
+  onRoleChange?: (roleName: string) => void;
+  /**
+   * docs/272 req 4 — the session has taken its first turn, so no role applies any
+   * more. The same fact that pins the harness, and shown the same way.
+   */
+  roleLocked?: boolean;
   modelInfo?: ModelInfo | null;
   contextTokens?: number;
   hasActiveSession?: boolean;
@@ -190,6 +211,23 @@ export function MessageInput({
   // rather than `disabled`, which guards submission only.
   const inert = !!disabledReason;
   const [text, setText] = useState("");
+  // ── docs/272-user-selectable-roles — the role control's three states ─────────────────────
+  // 1. no roles configured → nothing at all, the row exactly as it is today (req 16)
+  // 2. roles exist, none in force → today's three controls plus the bare mark
+  // 3. a role in force → the role's name INSTEAD of the three controls (req 5)
+  //
+  // `roleParamsRevealed` is the fourth thing that can happen and is not a fourth
+  // state: "Adjust parameters…" brings the three controls back beside the name
+  // (req 15). The role stays in force until one of them actually moves, and the
+  // reveal is deliberately local and unpersisted — it is a look, not a setting.
+  // Keyed off the role name so switching role folds the parameters away again,
+  // which is what stops a revealed row from outliving the decision that opened
+  // it.
+  const { roles, hasRoles } = useRolePickerState();
+  const [revealedFor, setRevealedFor] = useState<string | undefined>(undefined);
+  const roleInForce = sessionRoleName;
+  const roleParamsRevealed = !roleInForce || revealedFor === roleInForce;
+  const showRoleControl = !!onRoleChange && (hasRoles || !!roleInForce);
   const [isDragging, setIsDragging] = useState(false);
   const [showAutoComplete, setShowAutoComplete] = useState(false);
   const [autoCompleteQuery, setAutoCompleteQuery] = useState("");
@@ -898,6 +936,17 @@ export function MessageInput({
                   onModelChange={onModelChange}
                   onReasoningChange={onReasoningChange}
                   sessionReasoning={sessionReasoning}
+                  // docs/272 req 15 — the same fact in docs/260's shape: below
+                  // 700px the role folds into this one menu, alongside the
+                  // controls it sets. The reveal state is shared with the wide
+                  // row so crossing the breakpoint does not re-fold what the
+                  // user just opened.
+                  {...(onRoleChange ? { onRoleChange } : {})}
+                  {...(roleInForce ? { sessionRoleName: roleInForce } : {})}
+                  roleParamsRevealed={roleParamsRevealed}
+                  onAdjustRoleParameters={() => { if (roleInForce) setRevealedFor(roleInForce); }}
+                  onRoleSelected={() => setRevealedFor(undefined)}
+                  roleLocked={roleLocked}
                   modelInfo={modelInfo ?? null}
                   hasActiveSession={hasActiveSession}
                   // Same split the wide row makes three lines apart: the harness
@@ -1094,11 +1143,41 @@ export function MessageInput({
               </div>
             )}
 
+            {/* docs/272-user-selectable-roles reqs 5, 14, 16 — the role control. It sits at the
+                head of the three selectors it can replace, because when a role
+                is in force it stands exactly where they would have. Inside the
+                clip group with them, and cheap to keep there: a row showing a
+                role is SHORTER than today's, so this can only reduce the width
+                pressure docs/260 manages, never add to it. */}
+            {showRoleControl && (
+              <div className="flex items-center shrink-0">
+                <RoleSelector
+                  roles={roles}
+                  {...(roleInForce ? { selectedRole: roleInForce } : {})}
+                  onSelectRole={(name) => {
+                    // A fresh pick folds the parameters away: they described the
+                    // role the user has just left behind.
+                    setRevealedFor(undefined);
+                    onRoleChange?.(name);
+                  }}
+                  {...(roleInForce && !roleParamsRevealed
+                    ? { onAdjustParameters: () => setRevealedFor(roleInForce) }
+                    : {})}
+                  locked={roleLocked}
+                  disabled={disabled || isLoading || inert}
+                />
+              </div>
+            )}
+
             {/* docs/252 phase 3 — harness and model are two controls, not one
                 grouped dropdown. The harness is irreversible once the session
                 pins it and the model is not, so the asymmetry is structural
-                rather than a lock badge inside a menu. */}
-            {onAgentChange && (
+                rather than a lock badge inside a menu.
+
+                docs/272 req 5 — hidden while a role is in force and its
+                parameters have not been asked for: the role IS these three, so
+                restating them says nothing the user did not just decide. */}
+            {onAgentChange && roleParamsRevealed && (
               <div className="flex items-center shrink-0">
                 <HarnessSelector
                   agents={agents}
@@ -1120,7 +1199,7 @@ export function MessageInput({
                 />
               </div>
             )}
-            {onAgentChange && (
+            {onAgentChange && roleParamsRevealed && (
               <div className="flex items-center shrink-0">
                 <ModelSelector
                   agents={agents}
@@ -1136,7 +1215,7 @@ export function MessageInput({
 
             {/* docs/217 — Control B: per-session reasoning effort, beside the
                 model selector. Self-hides when the active agent has no knob. */}
-            {onReasoningChange && (
+            {onReasoningChange && roleParamsRevealed && (
               <div className="flex items-center shrink-0">
                 <ReasoningSelector
                   // Key on the session so the optimistic pick never lingers across a switch.
