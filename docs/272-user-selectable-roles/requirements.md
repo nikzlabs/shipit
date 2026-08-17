@@ -123,7 +123,22 @@ A **user** who starts a session themselves cannot. This feature closes that gap.
     Below 700px this is the same fact in the shape docs/260 already uses: the role folds into the
     one composer settings menu, alongside the controls it sets.
 
-16. **Roles are not listed among the models.** A role is not a model — it carries a harness, a
+16. **The composer offers a role only once the user has one, and the same mark means "role"
+    wherever roles appear.** A user who has configured no roles sees the composer exactly as it is
+    today — nothing added, not even an icon. The control appears when their first role exists.
+
+    With no role selected the control is the mark alone, with no label, so it has to be learned
+    somewhere. Settings is where: roles are created there (docs/264 req 5), the same mark identifies
+    them there, and a user therefore meets it with its name beside it before they ever meet it bare
+    in the composer. Neither half works without the other — an unlabelled mark nobody has seen is a
+    puzzle, and a mark used in only one of the two places teaches nothing.
+
+    **The reviewer does not count towards "has a role."** It is present on every install, including
+    one where nobody has configured anything (docs/264 req 2), so counting it would make this
+    condition always true and the rule dead on arrival. It is also never offered here (req 10), so
+    a composer control that appeared on its behalf would open onto a list with nothing in it.
+
+17. **Roles are not listed among the models.** A role is not a model — it carries a harness, a
     reasoning level and standing instructions that no model row can express — and the model list is
     long already. Putting roles inside it would crowd the one list users open most, and would teach
     that a role is a kind of model.
@@ -136,8 +151,8 @@ Kept separate so that what the user asked for stays visible next to what was pro
   user starts themselves": requirements 1 and 2.
 - **Proposed in chat and approved by the user on 2026-08-17**: requirements 3, 4 and 6 — the
   role-as-starting-point shape, new sessions only, recorded provenance.
-- **Directed by the user on 2026-08-17, replacing what was proposed**: requirements 5, 14, 15 and
-  16. The agent had proposed that role selection live inside the model menu and add no control. The
+- **Directed by the user on 2026-08-17, replacing what was proposed**: requirements 5, 14, 15, 16
+  and 17. The agent had proposed that role selection live inside the model menu and add no control. The
   user replaced this: a selected role shows its **name alone**, its parameters stay reachable, and
   roles do not belong in the model list. The user then caught the agent giving the role name a
   click that no other control has (req 14). See the receipts below.
@@ -204,6 +219,12 @@ Kept separate so that what the user asked for stays visible next to what was pro
   Rejected with it: showing the two states differently (two near-identical things on one row);
   treating the name as being about settings only (least honest); and applying the instructions to
   any matching session (a standing prompt nobody asked for). → req 13.
+
+- **2026-08-17 — Should the composer show a role control to a user who has no roles?** No. The
+  agent had drawn the empty state as an icon with the word "Role" beside it, and then, on the user's
+  instruction, as the icon alone — which left the objection that "a mark with no word has to be
+  learned". The user resolved it in one move: show the mark only once a role exists, and use the
+  same mark in Settings so it is learned there, with its name beside it. → req 16.
 
 - **2026-08-17 — What does clicking the role name do?** It opens the list of roles. The user
   challenged the agent's "clicking the role name reveals what it set" — "wouldn't clicking open the
