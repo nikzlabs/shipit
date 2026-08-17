@@ -80,3 +80,6 @@ unchecked.
       turn per auth mode (billing route!); `shipit agent run` both
       directions; every declared capability flag confirmed against
       observed behavior
+- [ ] Event-conversion verification: run the docs/272 recipe (tool-tour
+      capture, inventory diff, recognition matrix on persisted history +
+      UI) — `docs/272-harness-conversion-verification/verification-checklist.md`

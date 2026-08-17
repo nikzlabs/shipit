@@ -397,6 +397,12 @@ fake agent (`integration_tests/test-helpers.ts:722`) hardcodes
 
 ### 10. Empirical verification before calling it done
 
+> The event-conversion half of this phase — proving tool events (edits,
+> to-do/task writes, …) convert into AgentEvents and get their dedicated
+> transcript treatment, for the integration AND for every later CLI
+> version bump — is expanded into its own recipe:
+> [docs/272-harness-conversion-verification/plan.md].
+
 - Run the docs/209 skill-disclosure probe against the real CLI.
 - Capture a real turn's event stream in a container and lock it with a
   conformance test — mandatory both when the schema is undocumented (Grok)
