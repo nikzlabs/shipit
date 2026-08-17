@@ -1,14 +1,22 @@
 # ---- Build stage (full image has python3/make/gcc for native addons) ----
 FROM node:24-slim@sha256:4e6b70dd6cbfc88c8157ba19aa3d9f9cce6ba4703576d55459e45efcbc9c5f5d AS build
 
-# NOTE: do NOT declare/consume SHIPIT_BUILD_ID in this stage. deploy.sh passes it
-# as the git HEAD sha, so its value changes on EVERY update — and an `ENV` here
-# invalidates the cache for every layer below it, which is the `apt-get install`
-# and the `npm ci` two steps down. Both then re-run on every single deploy for no
-# gain: nothing reads the value at build time (every consumer is `process.env` at
-# runtime — see src/server/orchestrator/build-id.ts). The production stage below
-# declares the ARG and bakes the ENV near its end, where it costs one cheap layer.
-# Dockerfile.session-worker.prod follows the same rule (ARG + LABEL, last).
+# The next four instructions are DELIBERATELY byte-identical to the opening of
+# Dockerfile.session-worker.prod's build stage, on the same pinned base. BuildKit's
+# cache is content-addressed rather than per-Dockerfile, so the two images share
+# one set of records for the apt layer and the `npm ci` — build one, get the other
+# free. Diverging here does not cost a little, it builds the whole prefix twice.
+#
+# Which is why SHIPIT_BUILD_ID must NOT be declared or consumed in this stage.
+# deploy.sh passes the git HEAD sha, so an `ENV` here changes on EVERY update,
+# invalidating every layer below it AND forking this chain away from the worker's.
+# A production `docker buildx du --verbose` taken while it sat here showed the
+# damage: `apt-get install python3 make g++` twice at 349.8MB and
+# `npm ci --prefer-offline` twice at 587.1MB, with the base image's own layers
+# appearing once. Nothing reads the value at build time either — every consumer is
+# `process.env` at runtime (src/server/orchestrator/build-id.ts). The production
+# stage below declares the ARG and bakes the ENV near its end, where it costs one
+# cheap layer, which is what Dockerfile.session-worker.prod already did.
 # Guarded by src/server/orchestrator/docker-build-cache.test.ts.
 
 RUN apt-get update && apt-get install -y python3 make g++ && rm -rf /var/lib/apt/lists/*

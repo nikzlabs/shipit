@@ -75,6 +75,41 @@ describe("external image references are pinned", () => {
   });
 });
 
+describe("the two build stages share their cache", () => {
+  /** Instructions of the `AS build` stage, comments and blank lines removed. */
+  function buildStage(dockerfile: string): string[] {
+    const lines = instructions(dockerfile).split("\n");
+    const start = lines.findIndex((l) => /^FROM\s.*\sAS build$/.test(l));
+    const rest = lines.slice(start + 1);
+    const end = rest.findIndex((l) => /^FROM\s/.test(l));
+    return [lines[start], ...(end === -1 ? rest : rest.slice(0, end))].filter((l) => l.trim() !== "");
+  }
+
+  // Dockerfile.prod and Dockerfile.session-worker.prod open their build stages
+  // with the SAME four instructions on the SAME pinned base, so BuildKit — whose
+  // cache is content-addressed, not per-Dockerfile — serves both from one set of
+  // records. Any divergence above `npm ci` forks the chain and BUILDS IT TWICE.
+  //
+  // That is not hypothetical. A production `docker buildx du --verbose` taken
+  // while `ENV SHIPIT_BUILD_ID` sat at the top of Dockerfile.prod's build stage
+  // showed every step below it duplicated — `apt-get install python3 make g++`
+  // twice at 349.8MB, `npm ci --prefer-offline` twice at 587.1MB — roughly
+  // 937MB of redundant cache, and an orchestrator apt+npm that re-ran on every
+  // deploy. The base image's own layers appeared ONCE, which is what isolated
+  // the fork to that one instruction. Keep the prefix identical.
+  it("Dockerfile.prod and the worker share an identical prefix through npm ci", () => {
+    const orchestrator = buildStage("Dockerfile.prod");
+    const worker = buildStage("Dockerfile.session-worker.prod");
+    const cut = (stage: string[]) => stage.findIndex((l) => l.includes("npm ci"));
+
+    expect(cut(orchestrator), "Dockerfile.prod build stage has no npm ci").toBeGreaterThan(0);
+    expect(
+      orchestrator.slice(0, cut(orchestrator) + 1),
+      "the two build stages diverge before npm ci — BuildKit will build the prefix twice",
+    ).toEqual(worker.slice(0, cut(worker) + 1));
+  });
+});
+
 describe("SHIPIT_BUILD_ID does not poison the build stage", () => {
   // The value is the git HEAD sha (deploy.sh passes it per update), so it is
   // different on every single deploy. Consuming it early invalidates everything
