@@ -62,6 +62,27 @@ measured — see plan.md §7.
 - [ ] Re-pull live models.dev / the vendor tables and re-check every row's
       price, window and style — they drifted measurably in ten days
 
+## One key, no choice (req 7) — the follow-up this PR was scoped out of
+
+Req 7 arrived while this PR was open and is deliberately NOT in it: today the
+user pastes the same key into two modes, which is the distinction the
+requirement rejects. What the follow-up has to settle:
+
+- [ ] Where the "one credential, two modes" concept lives. A stored secret is
+      keyed by `(service, mode)` today, and that is what forces two rows —
+      either a mode-shared credential, or OpenCode as one mode whose product is
+      resolved per turn.
+- [ ] How the Go entitlement is DETECTED rather than declared. There is no
+      usage API (plan.md §8), but the two products have separate bases, so a
+      probe against `/zen/go/v1` should distinguish an entitled account from an
+      unentitled one. Measure what each answers before designing on it.
+- [ ] What the picker and the metered-spend column show once one credential
+      can bill two ways — the mode is still the honest answer to "what paid for
+      this turn", even when the user never chose it.
+- [ ] Whether the "Use balance" hazard (req 6) needs re-wording once Go and Zen
+      are one credential, since that option is exactly the case where a turn
+      the user thinks is on the plan is billed to credits.
+
 ## Follow-ups (not blocking the rows)
 
 - [ ] The console OAuth device login (req 4's follow-up half): a

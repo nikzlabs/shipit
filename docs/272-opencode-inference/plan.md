@@ -222,6 +222,14 @@ excludes, and `nativeService` staying deferred. Key files:
     before planning#339 wrote its reader — with one difference worth keeping in
     view: GLM was waiting for a reader somebody could write, and here there is
     no usage API to read at all.
+- **The two-mode shape is what ships, and req 7 says it is not the end state.**
+  Nik's PR review: one key and one authentication flow serve both products, so
+  asking the user which product their key is for — and asking for the same key
+  twice — is a distinction ShipIt invented. Anthropic earns its mode choice
+  because a subscription and an API key authenticate differently; OpenCode does
+  not. Deferred by the same answer to a follow-up after this PR merges; the
+  open design questions are in [checklist.md](./checklist.md). Until then the
+  two slots take the same pasted key, which works.
 - **Per-model `styles` come straight from the vendor's per-model endpoint
   rows** (§3) — the live pass measured that the gateway does not translate
   across styles, so a model is declared under exactly its published style.

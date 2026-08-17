@@ -43,12 +43,30 @@ launches must not invert that.
    The Go settings surface warns that the console's "Use balance" option
    makes cap exhaustion silently continue on metered Zen credits, invisibly
    to ShipIt.
+7. **The user supplies their OpenCode key once and chooses nothing.** ShipIt
+   takes whatever key they give it and works out for itself whether the
+   account carries the Go subscription; it does not ask which product the key
+   is for, and it does not ask for the same key twice. A billing-mode choice
+   is only justified where the two ways of paying authenticate differently —
+   Anthropic's subscription and API key do; OpenCode's do not, since one key
+   and one flow serve both products.
 
 ## Open questions
 
 (none)
 
 ## Resolved questions
+
+- **2026-08-17 (Nik, PR review)** — *Should the user pick a billing mode for
+  OpenCode?* Answer: "If for the user it is the same key, then why do they need
+  to choose when they edit ShipIt? So ShipIt should use whatever the key the
+  user provides, and if they have a subscription, ShipIt has to detect it. We
+  have different flow for Anthropic, for example, because the way to
+  authenticate with the subscription and the API key are different. But where
+  we have a single way, we don't need to distinguish that." → req 7 added. The
+  same answer scoped the work: "this is probably a separate change. Let's do it
+  after the current PR is merged" — so the first PR ships the two-mode shape,
+  with the same key set in both slots, and req 7 is the follow-up's brief.
 
 - **2026-08-17 (Nik, doc review)** — *Go quota indicator.* The investigation
   found no per-key usage/quota API (fact sheet §8); of the two stated options
