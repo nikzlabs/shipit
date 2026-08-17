@@ -776,6 +776,17 @@ export async function registerRoutes(
         typeof request.query.role === "string" && request.query.role.length > 0
           ? request.query.role
           : undefined;
+      //
+      // **It does not need a fourth guard against re-applying a role the clear
+      // just above removed**, which cross-agent review expected it to: the seed
+      // outlives the clear, so a later connect does reach here with the role's
+      // name — and `resolveUserRole` refuses it, because the only two things
+      // that clear a role here (a retired model, a model the harness no longer
+      // lists) are both things that make the ROLE unrunnable too. A retired id
+      // lives in its mode's `retired[]` and not in its model list, so
+      // `selectionExists` is already false for it. Pinned by a test in
+      // `services/session-role.test.ts`, since it is a property of the catalogue
+      // rather than of this block.
       if (requestedRole && !session.agentPinned && !session.roleName) {
         try {
           const seededRole = resolveUserRole(requestedRole, { credentialStore });

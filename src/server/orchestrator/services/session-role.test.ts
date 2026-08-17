@@ -224,3 +224,34 @@ describe("takeRoleStandingInstructions is a one-shot latched on originRoleName (
     expect(f.setOriginRoleName).not.toHaveBeenCalled();
   });
 });
+
+// ---- A retired model is a role that needs editing, not one to re-point ------
+
+describe("a retired model strands the role rather than following its successor", () => {
+  it("refuses it and sends the user to Settings (req 8, docs/264 req 7)", async () => {
+    const { resolveUserRole } = await import("./session-role.js");
+    // `gpt-5.6` lives in its mode's `retired[]` and NOT in its model list, so
+    // `selectionExists` is already false for it — which is what makes the
+    // refusal automatic rather than a rule this module has to restate.
+    //
+    // This matters beyond the message: without it, a browser seed naming such a
+    // role would re-apply the retired model on every page load, immediately
+    // after the connect handler had just moved the session onto the successor —
+    // an oscillation cross-agent review predicted. The refusal is what stops it,
+    // so it is pinned here rather than left to be inferred from the catalogue.
+    const retired: AgentRole = {
+      name: "legacy",
+      params: {
+        kind: "pinned",
+        harnessId: "codex",
+        serviceId: "openai",
+        billingMode: "sub",
+        modelId: "gpt-5.6",
+        reasoningEffort: "high",
+      },
+    };
+    expect(() => resolveUserRole("legacy", deps([retired], [route("openai", "sub")]))).toThrow(
+      /Settings → Roles/,
+    );
+  });
+});

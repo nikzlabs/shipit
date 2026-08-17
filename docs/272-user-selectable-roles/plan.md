@@ -107,6 +107,15 @@ session has a role in force and `originRoleName` is not yet set; emitting it als
 The latch is read and written on the shared `prompt-assembly` path, so both turn entry points — the
 WS path and the dispatched path that serves quick capture — get it from one place.
 
+**It is at-most-once, and that is a choice with a cost.** The latch closes when the prompt is
+assembled, not when the agent acknowledges it, so a first turn that dies between those two points —
+a failed spawn, an OOM — loses the role's standing instructions for good: the user's re-send runs
+without them, and re-selecting the role will not bring them back either. The alternative shape
+exists in this codebase (`consumePendingAgentNotice` is re-parked when its turn never reached the
+agent) and was not taken here, because it needs a restore callback threaded through both entry
+points for a failure that only lands in one narrow window. If it turns out to bite, re-parking is
+the fix, and it is the same three lines that fix is elsewhere.
+
 ## Two paths move a parameter without the user touching a control
 
 `leaveRoleOnParameterChange` covers the three handlers the user operates. It does **not** cover
@@ -128,6 +137,15 @@ its next *reconnect*, be moved to Claude and kept there while the composer still
 A role in force means the three fields were written together from one tuple the user chose — there
 are not two independent sources to reconcile — so the derivation is skipped. That is docs/264
 req 6's "nothing is ever derived" reaching a path that predates it.
+
+**What this deliberately does not need: a guard against the seed re-applying the role it just
+cleared.** The browser's seed outlives the clear, so a later connect does arrive naming the role —
+and `resolveUserRole` refuses it, because both things that clear a role here also make the role
+itself unrunnable. A retired id lives in its mode's `retired[]` and not in its model list, so
+`selectionExists` is already false; a model the harness cannot list fails the same check. Cross-agent
+review predicted an oscillation here and it does not reproduce for that reason — which is a property
+of the catalogue rather than of the connect block, so it is pinned by a test in
+`services/session-role.test.ts` rather than left to be re-derived.
 
 ## What the composer shows
 

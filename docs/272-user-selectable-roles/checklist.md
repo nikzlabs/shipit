@@ -29,7 +29,8 @@ Implementation to-do for this branch. See [`plan.md`](./plan.md).
 - [x] Unit tests: refusals, apply, the one-shot latch, the picker state, prompt ordering
 - [x] Integration test: select → session seeded → parameter change clears the name
 - [x] `eslint` over the changed files, `tsc --noEmit`
-- [ ] Independent review against every numbered requirement
+- [x] Independent review against every numbered requirement — ShipIt's configured reviewer
+      (Codex, run `d4146b02`). All 17 met; two concerns raised, both resolved (see `plan.md`)
 - [ ] Visual check in a running instance — **not done on this branch.** The
       session's `node_modules` overlay mount is broken (readdir returns empty
       while lookups resolve), so the dogfood `dev` service could not be started;
