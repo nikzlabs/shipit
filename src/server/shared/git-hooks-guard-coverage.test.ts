@@ -839,7 +839,8 @@ describe("git spawn coverage: bare safeSimpleGit() is a census (docs/266 E2)", (
     },
     "server/orchestrator/services/marketplace.ts": {
       count: 1,
-      why: "clone from a URL into a fresh cache dir — no local source tree to own, and the "
+      why: "cloneCatalog: clone from a URL into a fresh cache dir (the first clone AND a "
+        + "rebuild's staging dir both go through it) — no local source tree to own, and the "
         + "cache is ShipIt's own rather than a session's.",
     },
   };

@@ -972,6 +972,36 @@ day one, assuming v0 didn't surface anything that requires the v1a/v1b split.
    self-heal without user action. This is the v1 substitute for the v2
    Errors sub-tab.
 
+   **Retry has to be able to succeed** (planning#418). Retry is the only
+   recovery affordance the tab has, and it re-enters `ensureCatalogCloned`, so
+   any state that function cannot get out of is a permanently dead skill
+   browser — §1 gives the user no shell on the orchestrator volume to go fix it
+   by hand. Two states used to be exactly that, and both are handled at the
+   service:
+
+   - **The clone is unusable.** Seen in production as `error: insufficient
+     permission for adding an object to repository database .git/objects` — a
+     `.git` the orchestrator cannot write, which every subsequent `git fetch` in
+     that same directory reproduces identically. A catalog cache is disposable
+     state, so a failed update now REBUILDS it: clone into
+     `<id>.rebuild-<rand>`, rename the old tree to `<id>.stale-<rand>`, rename
+     the new one into place. The swap needs write permission on
+     `marketplace-cache/` only and never on the tree being replaced, which is
+     what lets it recover from a clone dir the process cannot open at all. The
+     clone happens *before* either rename, so a rebuild that fails leaves the
+     existing cache untouched. A stale tree that cannot be unlinked is left for
+     the next rebuild's sweep — one directory per incident, not per fetch.
+   - **The remote is unreachable.** A network blip must not blank a catalog
+     sitting readable on disk. When the update and the rebuild both fail but the
+     cached manifest still parses, the row is marked `fetch-failed` (Retry chip
+     and reason stay visible) and the stale cache is returned, so the plugin list
+     still renders. Only a cache with nothing usable in it throws.
+
+   The rebuild path also logs the process uid/gid alongside the cache dir's
+   owner and mode, because a permission failure does not carry the one fact that
+   explains it and reconstructing it afterwards means shell access to the
+   orchestrator volume.
+
 Acceptance: a user on Claude *or* Codex can open Settings → Skills, browse the
 agent's official catalog, see a skill's `SKILL.md` rendered inline in Monaco,
 click Install, see the file land in `.claude/skills/<plugin>__<skill>/` or
