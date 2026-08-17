@@ -781,6 +781,13 @@ export function reconcileDepDirCacheOwnership(depDirPath: string): void {
   // about to `readdir` anyway.
   const rootStat = lstatOrNull(depDirPath);
   if (rootStat === null) return; // dep dir doesn't exist yet (no install)
+  // A SYMLINKED dep dir is not this pass's to walk. `addGroupWrite` would skip
+  // the link itself (a symlink's mode is meaningless, and `chmod` follows it),
+  // but `readdirSync` DOES follow it — so continuing would chown and now also
+  // chmod the children of whatever it points at, possibly outside the session
+  // entirely. Refusing the whole path is the only coherent answer, and it tightens
+  // the chown below as well: that already followed such a link (review finding A).
+  if (rootStat.isSymbolicLink()) return;
   addGroupWrite(depDirPath, rootStat);
   let entries: string[];
   try {

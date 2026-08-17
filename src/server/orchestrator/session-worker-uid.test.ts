@@ -545,6 +545,29 @@ describe("session-worker-uid (docs/150 §7)", () => {
       expect(mode(viteFile)).toBe(0o664);
     });
 
+    // Review finding A: `addGroupWrite` skips a symlink, but `readdirSync`
+    // follows one — so a symlinked dep dir would have had the children of its
+    // TARGET chowned, and now chmodded, wherever that target lives.
+    it("refuses to walk a symlinked dep dir at all", () => {
+      const myUid = process.getuid?.();
+      if (myUid === undefined) return; // not POSIX — skip
+      process.env.SHIPIT_SESSION_WORKER_UID = String(myUid);
+      const outside = path.join(tmpDir, "outside");
+      const victim = path.join(outside, "pkg", "index.js");
+      fs.mkdirSync(path.dirname(victim), { recursive: true });
+      fs.writeFileSync(victim, "");
+      fs.chmodSync(path.dirname(victim), 0o755);
+      fs.chmodSync(victim, 0o644);
+      const link = path.join(tmpDir, "node_modules");
+      fs.symlinkSync(outside, link);
+
+      reconcileDepDirCacheOwnership(link);
+
+      // Untouched — neither the mode pass nor the chown reached through the link.
+      expect(fs.lstatSync(path.dirname(victim)).mode & 0o7777).toBe(0o755);
+      expect(fs.lstatSync(victim).mode & 0o7777).toBe(0o644);
+    });
+
     // Common case: everything already worker-owned → a shallow scan that chowns
     // nothing (the steady-state cost is just the direct-child lstats).
     //

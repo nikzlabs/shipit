@@ -500,8 +500,8 @@ services:
     # Unlike `emulator` above, this service deliberately KEEPS ShipIt's
     # session-worker UID: it writes Gradle build output into the shared workspace,
     # so matching the agent's UID is exactly what we want (docs/150 §7). It gets
-    # that UID by injection — see the `dev` note above for why declaring 1000
-    # is wrong here.
+    # that UID from ShipIt's identity fill-in, which is what having no `user:`
+    # here buys — see the `dev` note above for why declaring 1000 was wrong.
     # That UID has no home directory inside this image, and both Gradle and adb need a
     # writable HOME for their caches/keys — so point them at the (UID-owned)
     # workspace instead of a root-owned `/`. Both dirs are gitignored.
