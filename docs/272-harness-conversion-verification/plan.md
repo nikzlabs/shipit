@@ -225,12 +225,22 @@ what actually persisted and rendered:
 
 ### Step 5 — record what you saw
 
-"A pass is not 'it worked'." Record, on the bump PR or the integration
-doc: harness, CLI version, date, the three Step-2 inventories (or their
-delta from the previous version), and per matrix row the artifact actually
+"A pass is not 'it worked'." Every run gets its **own file** under
+[runs/](runs/), named
+`runs/YYYY-MM-DD-HHMM-<harness>-<cli-version>.md` (UTC start time, so the
+listing sorts chronologically), with the run metadata in a `run:`
+frontmatter block — harness, CLI + version, the pin at run time, date,
+capture/live models, which steps ran, where the raw capture lives, and
+the verdict. (The docs-list parser reads only line-anchored `issue:` /
+`title:` / `description:`; nested keys under `run:` are ignored by it and
+safe.) The body records the three Step-2 inventories (or their delta from
+the previous run's file), and per matrix row the artifact actually
 observed (e.g. "task panel: 3 items, ids task-1..3 parsed from results,
-survived reload"). Comparable records are what turn the next bump into a
-diff instead of a rediscovery.
+survived reload"). A bump PR links its run file. Comparable per-run files
+are what turn the next bump into `diff runs/<old> runs/<new>` instead of
+a rediscovery — the first recorded run,
+[runs/2026-08-17-1638-claude-2.1.224.md](runs/2026-08-17-1638-claude-2.1.224.md),
+is the template to copy.
 
 ## The version-bump subset (req 3)
 
