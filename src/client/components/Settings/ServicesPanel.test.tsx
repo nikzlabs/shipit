@@ -968,7 +968,7 @@ describe("ServicesPanel", () => {
     // The step used to be titled by whichever shape existed rather than by the
     // one being recommended: "3 · Paste the key" sat above prose saying the
     // service is connected by signing in, with *Save* primary. The key stays
-    // reachable — it genuinely works — but under its own sub-heading.
+    // reachable — it genuinely works — its placeholder already says what to do.
     render(<ServicesPanel agentList={[claudeAgent]} />);
     await userEvent.click(screen.getByTestId("services-add-empty"));
     await userEvent.click(screen.getByTestId("add-service-option-anthropic"));
@@ -977,7 +977,6 @@ describe("ServicesPanel", () => {
     const step = screen.getByTestId("add-service-step-credential");
     expect(step).toHaveTextContent("3 · Sign in");
     expect(step).not.toHaveTextContent("3 · Paste the key");
-    expect(screen.getByTestId("add-service-string-alternative")).toHaveTextContent("Or paste a key");
 
     // The DOM order of the two buttons is the visual ranking, and the variants
     // say which one is being recommended.
