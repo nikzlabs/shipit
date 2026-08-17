@@ -46,6 +46,37 @@ import type { RoleView } from "../../../server/shared/types/agent-types.js";
 const RESERVED_ROLE_NAME = "reviewer";
 
 /**
+ * **The one appearance of "a role is in force"**, worn by both layouts.
+ *
+ * It exists as a constant for the reason `PICKER_TRIGGER_CLASS` does, and it was
+ * added for the same reason that one was: the two had already drifted. The wide
+ * row followed the approved prototype's tinted pill while the narrow anchor
+ * inherited docs/260's plain settings control, so the same state wore two faces
+ * depending on how wide the composer happened to be.
+ *
+ * Deliberately **appearance only** — colour, radius, padding, type. Layout
+ * belongs to each call site, because the two genuinely differ there and must:
+ * the wide row's control is `shrink-0`, while the narrow anchor is the row's one
+ * elastic item and has to truncate before anything else is clipped (docs/260
+ * req 8). Folding that in here would make one of them wrong.
+ *
+ * Guarded by a test asserting both triggers carry this string.
+ */
+export const ROLE_PILL_CLASS =
+  `items-center gap-1.5 rounded-full bg-(--color-accent-subtle) px-2.5 py-1 text-xs font-medium `
+  + `text-(--color-accent) transition-colors hover:brightness-95 disabled:cursor-not-allowed `
+  + `disabled:opacity-50 ${INSET_FOCUS_RING}`;
+
+/**
+ * …and its counterpart when no role is chosen: the mark alone, quiet, in the
+ * same tertiary weight the row's other icons use (req 16).
+ */
+export const ROLE_MARK_CLASS =
+  `items-center gap-1.5 rounded-lg p-1.5 text-xs font-medium text-(--color-text-tertiary) `
+  + `transition-colors hover:bg-(--color-bg-hover) hover:text-(--color-text-secondary) `
+  + `disabled:cursor-not-allowed disabled:opacity-50 ${INSET_FOCUS_RING}`;
+
+/**
  * One line saying why a role cannot be started, or `undefined` when it can.
  *
  * The three reasons are kept apart, exactly as Settings keeps them apart, because
@@ -158,11 +189,7 @@ export function RoleSelector({
             every other picker uses — which is where docs/261 req 13's "learn one,
             learn all" actually lives: the thing the user operates.
           */
-          className={`flex shrink-0 items-center gap-1.5 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${INSET_FOCUS_RING} ${
-            selectedRole
-              ? "rounded-full bg-(--color-accent-subtle) px-2.5 py-1 text-(--color-accent) hover:brightness-95"
-              : "rounded-lg p-1.5 text-(--color-text-tertiary) hover:bg-(--color-bg-hover) hover:text-(--color-text-secondary)"
-          }`}
+          className={`flex shrink-0 ${selectedRole ? ROLE_PILL_CLASS : ROLE_MARK_CLASS}`}
         >
           <BaseballCapIcon size={ICON_SIZE.SM} className="shrink-0" />
           {/*

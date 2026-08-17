@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from "vitest";
 import { render, screen, cleanup, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { RoleSelector, useRolePickerState } from "./RoleSelector.js";
+import { ROLE_PILL_CLASS, RoleSelector, useRolePickerState } from "./RoleSelector.js";
 import { ComposerSettingsMenu } from "./ComposerSettingsMenu.js";
 import { MessageInput } from "./MessageInput.js";
 import { useSettingsStore } from "../../stores/settings-store.js";
@@ -190,6 +190,39 @@ function renderMenu(props: Partial<React.ComponentProps<typeof ComposerSettingsM
     />,
   );
 }
+
+describe("one appearance for 'a role is in force' (docs/272 req 5)", () => {
+  it("dresses the wide row's control and the narrow anchor identically", () => {
+    // They had drifted: the wide row followed the approved prototype's tinted
+    // pill, the narrow anchor inherited docs/260's plain settings control, and
+    // the same state wore two faces on nothing but the composer's width.
+    //
+    // Asserting they IMPORT the constant would not catch the regression this
+    // exists to catch — an import can be present and the class overridden at the
+    // call site — so it compares what was actually rendered, exactly as
+    // `picker-consistency.test.tsx` does for the three pickers.
+    setRoles([DEEP_DIVE]);
+    const { unmount } = render(
+      <RoleSelector roles={[DEEP_DIVE]} selectedRole="deep dive" onSelectRole={vi.fn()} />,
+    );
+    const wide = screen.getByTestId("role-selector-trigger").className;
+    unmount();
+
+    renderMenu({ onRoleChange: vi.fn(), sessionRoleName: "deep dive" });
+    const narrow = screen.getByTestId("composer-settings-trigger").className;
+
+    // Everything the shared constant carries — colour, radius, padding, type —
+    // is on both. What differs is layout, which is each call site's own and must
+    // be: the wide control is `shrink-0`, the narrow anchor is the row's one
+    // elastic item (docs/260 req 8).
+    for (const cls of ROLE_PILL_CLASS.split(/\s+/).filter(Boolean)) {
+      expect(narrow, `narrow anchor is missing "${cls}"`).toContain(cls);
+      expect(wide, `wide control is missing "${cls}"`).toContain(cls);
+    }
+    expect(wide).toContain("shrink-0");
+    expect(narrow).toContain("flex-[0_1_auto]");
+  });
+});
 
 describe("the composer before a session is active (docs/272 reqs 5, 12)", () => {
   afterEach(() => {

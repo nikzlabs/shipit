@@ -208,6 +208,16 @@ model the less true of the two. The Role panel carries all three parameters behi
 **including the harness** — switching role can switch harness, and the harness pins irreversibly at
 the first turn, so a role panel that hid it would hide the one consequence the user cannot undo.
 
+**One appearance, both layouts.** "A role is in force" looks the same whether the composer is wide
+or narrow: the tinted pill the prototype approved, worn by the wide row's control and by the narrow
+anchor alike. They had drifted — the wide row followed the prototype while the anchor inherited
+docs/260's plain settings control — so the same state wore two faces on nothing but the composer's
+width. `ROLE_PILL_CLASS` is the one string both render, and it deliberately carries **appearance
+only**: layout stays at each call site, because the two must differ there (the wide control is
+`shrink-0`; the narrow anchor is the row's one elastic item, docs/260 req 8). A test compares what
+the two actually render, since asserting the import would not catch a class overridden at the call
+site — the lesson `picker-consistency.test.tsx` already encodes.
+
 **The reviewer is never offered and never named** (reqs 10, 13), and it does not count towards "the
 user has a role" (req 16) — it exists on every install, so counting it would make that condition
 always true and the rule dead on arrival.

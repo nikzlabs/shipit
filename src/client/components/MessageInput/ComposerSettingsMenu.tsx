@@ -30,7 +30,7 @@ import {
 import { modelRowsFor } from "../../utils/model-rows.js";
 import { useReasoningPickerState } from "../ReasoningSelector.js";
 import { formatModelName } from "../../utils/format-model.js";
-import { roleUnavailableDetail, useRolePickerState } from "./RoleSelector.js";
+import { ROLE_PILL_CLASS, roleUnavailableDetail, useRolePickerState } from "./RoleSelector.js";
 import type { AgentId, PermissionMode } from "../../../server/shared/types.js";
 import type { AgentOption, ModelChoice } from "../../agent-types.js";
 import type { ModelInfo } from "../../utils/model-info.js";
@@ -353,18 +353,27 @@ export function ComposerSettingsMenu({
               : `Model: ${modelName}. Opens harness, model, reasoning and permission mode.`
           }
           data-testid="composer-settings-trigger"
-          // `flex-[0_1_auto] min-w-0` is what makes the model name the elastic
-          // thing in the row: it is the only item allowed to shrink, so it
-          // truncates before anything else is clipped (req 8).
-          className={`flex flex-[0_1_auto] min-w-0 items-center gap-1.5 overflow-hidden rounded-lg p-1.5 text-xs font-medium text-(--color-text-secondary) transition-colors hover:bg-(--color-bg-hover) disabled:cursor-not-allowed disabled:opacity-50 ${INSET_FOCUS_RING}`}
+          // `flex-[0_1_auto] min-w-0` is what makes the name the elastic thing in
+          // the row: it is the only item allowed to shrink, so it truncates
+          // before anything else is clipped (req 8). That stays true in both
+          // appearances below — it is layout, and layout is this call site's,
+          // which is exactly why `ROLE_PILL_CLASS` carries none of it.
+          //
+          // docs/272 — under a role the anchor wears the SAME pill the wide row's
+          // control wears. The two had drifted into two faces for one state, on
+          // nothing but the composer's width.
+          className={`flex flex-[0_1_auto] min-w-0 overflow-hidden ${
+            sessionRoleName
+              ? ROLE_PILL_CLASS
+              : `items-center gap-1.5 rounded-lg p-1.5 text-xs font-medium text-(--color-text-secondary) transition-colors hover:bg-(--color-bg-hover) disabled:cursor-not-allowed disabled:opacity-50 ${INSET_FOCUS_RING}`
+          }`}
         >
           {/* The mark follows the name: under a role the anchor is the role's,
               so it wears the mark that means "role" everywhere else (req 16). */}
           {sessionRoleName ? (
-            <BaseballCapIcon
-              size={ICON_SIZE.SM}
-              className="shrink-0 text-(--color-text-tertiary)"
-            />
+            // No tertiary tint here: inside the pill the mark takes the pill's
+            // own colour, exactly as it does in the wide row.
+            <BaseballCapIcon size={ICON_SIZE.SM} className="shrink-0" />
           ) : (
             <SlidersHorizontalIcon
               size={ICON_SIZE.SM}
