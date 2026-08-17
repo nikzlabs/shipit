@@ -25,6 +25,7 @@ afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
   useSettingsStore.getState().setProviderAccounts([]);
+  useSettingsStore.getState().setCredentialRoutes([]);
   useUiStore.getState().setSettingsOpen(false);
 });
 
@@ -685,6 +686,58 @@ describe("SubscriptionLimitsBadge credential attention", () => {
     connect({ status: "unavailable", externalId: "user_1" });
     render(<SubscriptionLimitsBadge limits={{}} />);
     expect(screen.getByText("reconnect needed")).toBeInTheDocument();
+  });
+
+  // A supplied secret — an env-delivered token, a pasted plan key — is not an
+  // account row, so it reaches the header through its snapshot alone. planning#358
+  // records a provider refusing one exactly as it records a failed login, and
+  // the header has to say so too.
+  function supply(overrides: Partial<CredentialRoute> = {}): void {
+    useSettingsStore.getState().setCredentialRoutes([
+      {
+        id: "claude-env-oauth",
+        serviceId: "anthropic",
+        billingMode: "sub",
+        via: "string",
+        label: "Anthropic (ANTHROPIC_AUTH_TOKEN)",
+        isPrimary: true,
+        status: "ready",
+        createdAt: now,
+        updatedAt: now,
+        ...overrides,
+      },
+    ]);
+  }
+
+  it("replaces a supplied secret's meters when the provider has refused it", () => {
+    supply({ status: "auth_failed" });
+    const limits: SubscriptionLimitsMap = { "anthropic:sub": routed(makeSnap({ routeId: "claude-env-oauth" })) };
+    render(<SubscriptionLimitsBadge limits={limits} />);
+    expect(screen.getByText("credential rejected")).toBeInTheDocument();
+    expect(screen.queryByText(/5h 30%/)).toBeNull();
+  });
+
+  // The hole the snapshot-only path left: every turn on the token failed, so it
+  // never reported a quota, so the header said nothing at all about the
+  // credential those turns were dying on.
+  it("gives a refused supplied secret a pill even though it never reported a quota", () => {
+    supply({ status: "auth_failed" });
+    render(<SubscriptionLimitsBadge limits={{}} />);
+    expect(screen.getByText("Anthropic")).toBeInTheDocument();
+    expect(screen.getByText("credential rejected")).toBeInTheDocument();
+  });
+
+  it("adds no pill for a healthy supplied secret that has never reported a quota", () => {
+    supply();
+    const { container } = render(<SubscriptionLimitsBadge limits={{}} />);
+    expect(container.firstChild).toBeNull();
+  });
+
+  it("does not double up a refused secret that also has a snapshot", () => {
+    supply({ status: "auth_failed" });
+    const limits: SubscriptionLimitsMap = { "anthropic:sub": routed(makeSnap({ routeId: "claude-env-oauth" })) };
+    const { container } = render(<SubscriptionLimitsBadge limits={limits} />);
+    expect(container.querySelectorAll(":scope > span")).toHaveLength(1);
   });
 
   // Settings prints the same word one element to the left and hides the pill

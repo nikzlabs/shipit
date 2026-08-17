@@ -441,6 +441,17 @@ Settings' own row passes no attention word, because it prints it one
 element to the left and hides the pill entirely for a non-ready
 credential (docs/252 req 19).
 
+This covers **supplied secrets too**, not only accounts. An
+env-delivered token (`ANTHROPIC_AUTH_TOKEN`) or a pasted plan key is not
+a provider-account row, so it reached the header through its snapshot
+alone — and a token every turn is dying on may never have reported a
+quota, in which case the header said nothing whatsoever about it. A
+`via: "string"` credential of a subscription mode that the provider has
+**refused** now gets a pill of its own saying "credential rejected",
+read from `credentialRoutes`. A healthy one is unchanged: it is `ready`
+from the moment it is stored, so it still appears only if it has
+numbers to show.
+
 A row that has never been anything but a sign-in attempt gets **no
 pill at all** — the header asks `isUnconnectedAttempt()`, the same
 question the Services panel asks about which rows are credentials

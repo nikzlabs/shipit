@@ -123,7 +123,8 @@ interface SubscriptionLimitsBadgeProps {
  */
 export function SubscriptionLimitsBadge({ limits, autoRefresh }: SubscriptionLimitsBadgeProps) {
   const accounts = useSettingsStore((s) => s.providerAccounts);
-  const pills = buildPills(limits, accounts);
+  const routes = useSettingsStore((s) => s.credentialRoutes);
+  const pills = buildPills(limits, accounts, routes);
   if (pills.length === 0) return null;
 
   return (
@@ -166,12 +167,21 @@ interface SubscriptionPill {
  */
 export function useSubscriptionPillCount(limits: SubscriptionLimitsMap): number {
   const accounts = useSettingsStore((s) => s.providerAccounts);
-  return buildPills(limits, accounts).length;
+  const routes = useSettingsStore((s) => s.credentialRoutes);
+  return buildPills(limits, accounts, routes).length;
 }
 
 function buildPills(
   limits: SubscriptionLimitsMap,
   accounts: CredentialRoute[],
+  /**
+   * Every credential the user holds — the superset that also carries the
+   * **supplied secrets** (an env-delivered token, a pasted plan key), which are
+   * not provider-account rows and so are absent from `accounts`. Read only for
+   * their state: what a supplied secret's pill says, and whether it gets one at
+   * all when it has never reported a quota.
+   */
+  routes: CredentialRoute[],
 ): SubscriptionPill[] {
   const pills: SubscriptionPill[] = [];
   for (const modeKey of pillOrder()) {
@@ -207,16 +217,50 @@ function buildPills(
       });
     }
 
-    // Reserved routes are not provider-account rows, so snapshots remain the
-    // only evidence that they exist. Append them after the user's account order.
+    // A supplied secret of this same subscription — `ANTHROPIC_AUTH_TOKEN`,
+    // GLM's coding-plan key. Not an account, so `accounts` does not hold it and
+    // the label stays the service's rather than inventing a name for something
+    // the user never named; but it IS a credential with a state, and planning#358
+    // records a provider refusing one exactly as it records a failed login.
+    const modeSecrets = new Map(
+      routes
+        .filter((r) => r.serviceId === serviceId && r.billingMode === "sub" && r.via === "string")
+        .map((r) => [r.id, r] as const),
+    );
+
+    // Reserved routes are not provider-account rows, so a snapshot is normally
+    // the only evidence that they exist. Append them after the user's account
+    // order.
+    const fromSnapshot = new Set<string>();
     for (const snapshot of Object.values(byRoute ?? {})) {
       if (modeAccounts.some((account) => account.id === snapshot.routeId)) continue;
+      fromSnapshot.add(snapshot.routeId);
+      const secret = modeSecrets.get(snapshot.routeId);
       pills.push({
         key: `${modeKey}:${snapshot.routeId}`,
         serviceId,
         routeId: snapshot.routeId,
         label: serviceLabel(serviceId),
         snapshot,
+        ...(secret && credentialStatusWord(secret) ? { attention: credentialStatusWord(secret) } : {}),
+      });
+    }
+
+    // ...and "normally" is the hole: a refused secret whose turns all failed may
+    // have no snapshot at all, and then the header said nothing whatsoever about
+    // the credential every turn was dying on. A supplied secret is `ready` from
+    // the moment it is stored, so this adds a pill only for one the provider has
+    // actually refused — never a second pill for a healthy one.
+    for (const secret of modeSecrets.values()) {
+      if (fromSnapshot.has(secret.id)) continue;
+      const attention = credentialStatusWord(secret);
+      if (!attention) continue;
+      pills.push({
+        key: `${modeKey}:${secret.id}`,
+        serviceId,
+        routeId: secret.id,
+        label: serviceLabel(serviceId),
+        attention,
       });
     }
   }
@@ -333,8 +377,8 @@ export function SubscriptionLimitPill({ serviceId, routeId, label, snapshot, sho
 
 /**
  * The attention word inside a header pill, and the way out of the state it
- * names: pressing it opens Settings → Services, where the credential's
- * *Reconnect* lives.
+ * names: pressing it opens Settings → Services, where the credential's remedy
+ * lives — *Reconnect* for an account, *Replace* for a supplied secret.
  *
  * It is a button rather than a label because the alternative is a dead end —
  * the whole failure this fixes is a user who could see that something was
@@ -353,7 +397,7 @@ function CredentialAttention({ attention }: { attention: CredentialStatusWord })
       className={`inline-flex items-center gap-1 whitespace-nowrap hover:underline ${
         attention.tone === "error" ? "text-(--color-error)" : "text-(--color-warning)"
       }`}
-      title="Open Settings → Services to fix this account's sign-in"
+      title="Open Settings → Services to fix this credential"
       data-credential-attention={attention.text}
     >
       <WarningCircleIcon size={ICON_SIZE.XS} weight="fill" />
