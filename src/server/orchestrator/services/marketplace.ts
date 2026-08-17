@@ -27,6 +27,7 @@ import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { safeSimpleGit } from "../../shared/git-hooks-guard.js";
+import { resolveGitTreeUid } from "../../shared/git-tree-uid.js";
 import type { GitManager } from "../../shared/git.js";
 import type { AgentRegistry } from "../../shared/agent-registry.js";
 import { frontmatterField, scanSkillsDir } from "../../shared/skill-scan.js";
@@ -112,13 +113,21 @@ export function getCatalogCacheDir(stateDir: string, marketplaceId: string): str
  *
  *   - **The existing clone is unusable.** Observed in the wild as `error:
  *     insufficient permission for adding an object to repository database
- *     .git/objects` — a `.git` this process cannot write, which every
+ *     .git/objects` — a `.git` the git process cannot write, which every
  *     subsequent `git fetch` in that same directory reproduces exactly. A
  *     catalog cache is disposable, so a failed update REBUILDS it (a fresh
  *     clone into a sibling, renamed into place) rather than retrying the
  *     operation that cannot succeed. The swap needs write permission on
  *     `cacheRoot` only, never on the tree being replaced, which is what lets it
  *     recover from a clone dir this process cannot touch at all.
+ *
+ *     Note "the git process", not "the orchestrator": under docs/266 the two
+ *     are not the same uid. `safeSimpleGit(cacheDir)` resolves a drop from the
+ *     TOP-LEVEL tree, so a cache root owned by a non-root uid makes even a root
+ *     orchestrator run git as that uid, against a `.git/objects` a root-era
+ *     fetch left root-owned. The rebuild cures that for good: a fresh clone is
+ *     uniformly owned, so the resolver and the objects dir stop disagreeing.
+ *     {@link describeCacheOwnership} logs the pair so a recurrence says so.
  *   - **The remote is unreachable.** A network blip must not blank a catalog
  *     that is sitting readable on disk. When both the update and the rebuild
  *     fail but the cached manifest still parses, the row is marked
@@ -133,7 +142,16 @@ export async function ensureCatalogCloned(
 ): Promise<string> {
   const info = store.get(marketplaceId);
   if (!info) throw new ServiceError(404, `Unknown marketplace: ${marketplaceId}`);
+  return withCatalogLock(path.join(cacheRoot, marketplaceId), () =>
+    ensureCatalogClonedLocked(store, marketplaceId, cacheRoot, info));
+}
 
+async function ensureCatalogClonedLocked(
+  store: MarketplaceStore,
+  marketplaceId: string,
+  cacheRoot: string,
+  info: MarketplaceInfo,
+): Promise<string> {
   const url = sourceToGitUrl(info.source);
   const ref = sourceToRef(info.source);
   const cacheDir = path.join(cacheRoot, marketplaceId);
@@ -161,10 +179,9 @@ export async function ensureCatalogCloned(
       return cacheDir;
     } catch (err) {
       const updateError = (err as Error).message;
-      // The one fact that would have told us WHY a previous incarnation's tree
-      // is unwritable, and the one we could not obtain after the fact.
       console.warn(
-        `[marketplace] update failed for ${marketplaceId} (${describeOwnership(cacheDir)}); rebuilding the cache:`,
+        `[marketplace] update failed for ${marketplaceId} (${describeCacheOwnership(cacheDir)}); `
+          + "rebuilding the cache:",
         updateError,
       );
       try {
@@ -176,8 +193,11 @@ export async function ensureCatalogCloned(
         store.setFetchStatus(marketplaceId, "fetch-failed", { fetchError: msg });
         // Serve what is on disk rather than nothing — the row already carries
         // the reason, so the failure is reported without costing the user the
-        // catalog they could otherwise still browse.
-        if (await findMarketplaceManifestPath(cacheDir) !== null) return cacheDir;
+        // catalog they could otherwise still browse. The manifest has to PARSE,
+        // not merely exist: returning a cache `listPlugins` will throw 500 on
+        // would rebuild the same dead end one layer up, and the client hides
+        // that 500 behind the fetch-failed row (`SkillsTab.tsx`).
+        if (await catalogIsReadable(cacheDir)) return cacheDir;
         throw new ServiceError(502, `Failed to fetch marketplace ${marketplaceId}: ${msg}`);
       }
     }
@@ -190,8 +210,59 @@ export async function ensureCatalogCloned(
     return cacheDir;
   } catch (err) {
     const msg = (err as Error).message;
+    console.warn(
+      `[marketplace] first clone failed for ${marketplaceId} (${describeCacheOwnership(cacheDir)}):`,
+      msg,
+    );
     store.setFetchStatus(marketplaceId, "fetch-failed", { fetchError: msg });
     throw new ServiceError(502, `Failed to fetch marketplace ${marketplaceId}: ${msg}`);
+  }
+}
+
+/**
+ * Per-catalog serialization for {@link ensureCatalogCloned}.
+ *
+ * Not optional once a rebuild exists. Two callers reach the same catalog id
+ * concurrently in normal operation: the boot pre-clone in `route-registry.ts`
+ * fires one `void ensureCatalogCloned(...)` per marketplace in a single tick,
+ * and the Discover / Retry routes call in on demand. Unserialized, a rebuild is
+ * actively destructive rather than merely wasteful — `sweepRebuildLeftovers`
+ * deletes `<id>.rebuild-*`, so one caller's sweep removes another's staging
+ * clone mid-flight, and the window between the two renames leaves `cacheDir`
+ * absent, which sends a concurrent caller down the first-clone path (a full
+ * clone racing the rename) or makes it throw a spurious 502 over a cache that is
+ * healthy a moment later. Last-writer-wins on `setFetchStatus` then leaves the
+ * row disagreeing with the disk.
+ *
+ * Keyed by cache DIRECTORY, not by marketplace id, so two cache roots (the
+ * tests, and a future second state dir) never serialize against each other.
+ * Runtime state only — a lock surviving a process restart would be a bug — and
+ * the same shape as {@link withWorkspaceLock} above.
+ */
+const _catalogMutex = new Map<string, Promise<unknown>>();
+
+function withCatalogLock<T>(cacheDir: string, fn: () => Promise<T>): Promise<T> {
+  const prior = _catalogMutex.get(cacheDir);
+  const chained = async (): Promise<T> => {
+    if (prior) {
+      try { await prior; } catch { /* prior failure must not block the next op */ }
+    }
+    return fn();
+  };
+  const run = chained().finally(() => {
+    if (_catalogMutex.get(cacheDir) === run) _catalogMutex.delete(cacheDir);
+  });
+  _catalogMutex.set(cacheDir, run);
+  return run;
+}
+
+/** Does the cached catalog still parse? The predicate for serving a stale copy. */
+async function catalogIsReadable(cacheDir: string): Promise<boolean> {
+  try {
+    await readMarketplaceManifest(cacheDir);
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -258,7 +329,15 @@ async function rebuildCatalogClone(opts: {
   // Both renames touch directory entries in `cacheRoot` and nothing inside the
   // trees, so this works even when the tree being replaced is one we cannot
   // open for writing — which is the whole point of the rebuild.
-  await fs.rename(cacheDir, staleDir);
+  try {
+    await fs.rename(cacheDir, staleDir);
+  } catch (err) {
+    // A denial at the `cacheRoot` level lands here, with a complete fresh clone
+    // already on disk. Drop it now rather than leaving it for the next
+    // rebuild's sweep — a permanent denial means every Retry arrives here.
+    await fs.rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
+    throw err;
+  }
   try {
     await fs.rename(stagingDir, cacheDir);
   } catch (err) {
@@ -293,18 +372,38 @@ async function sweepRebuildLeftovers(cacheRoot: string, marketplaceId: string): 
 }
 
 /**
- * Who owns the cache dir, and who is asking — the pair that decides whether a
- * write into `.git/objects` is permitted. Logged on the rebuild path because
- * this is the fact a permission failure does NOT carry, and reconstructing it
- * afterwards means shell access to the orchestrator volume.
+ * Everything that decides whether a write into `.git/objects` is permitted —
+ * the fact a permission failure does NOT carry, and one that otherwise takes
+ * shell access to the orchestrator volume to reconstruct.
+ *
+ * It reports THREE directories, not one, because the interesting failure is a
+ * disagreement between them. `resolveGitTreeUid` (docs/266) stats only the
+ * top-level tree, so a cache whose checkout root is owned by a non-root uid
+ * makes even a ROOT orchestrator's git drop to that uid — and it then meets a
+ * `.git/objects` a later root-era fetch left root-owned. That produces exactly
+ * `insufficient permission for adding an object to repository database
+ * .git/objects` from a root process, which is otherwise impossible and was the
+ * mechanism this bug's write-up first ruled out. Logging only the process uid
+ * and the top-level dir cannot show it; logging the uid the resolver actually
+ * chose, beside all three trees, names it outright.
  */
-function describeOwnership(dir: string): string {
-  const self = `pid uid=${process.getuid?.() ?? "?"} gid=${process.getgid?.() ?? "?"}`;
+function describeCacheOwnership(cacheDir: string): string {
+  const resolved = resolveGitTreeUid(cacheDir);
+  return [
+    `pid uid=${process.getuid?.() ?? "?"} gid=${process.getgid?.() ?? "?"}`,
+    `git runs as ${resolved === null ? "this process" : `uid=${resolved.uid} gid=${resolved.gid}`}`,
+    `. ${statLabel(cacheDir)}`,
+    `.git ${statLabel(path.join(cacheDir, ".git"))}`,
+    `.git/objects ${statLabel(path.join(cacheDir, ".git", "objects"))}`,
+  ].join(", ");
+}
+
+function statLabel(p: string): string {
   try {
-    const st = fsSync.statSync(dir);
-    return `${self}, dir uid=${st.uid} gid=${st.gid} mode=${(st.mode & 0o7777).toString(8)}`;
+    const st = fsSync.statSync(p);
+    return `uid=${st.uid} gid=${st.gid} mode=${(st.mode & 0o7777).toString(8)}`;
   } catch {
-    return `${self}, dir unstattable`;
+    return "absent";
   }
 }
 

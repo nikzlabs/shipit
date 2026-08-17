@@ -135,7 +135,7 @@ next `safeSimpleGit(<destination>)` drops to that path's session uid.
 | Site | Source tree | Destination handled? |
 |---|---|---|
 | `repo-git.ts:284` `cloneFromCache` | shared bare cache, root-owned | ✅ `handWorkspaceBackToWorker(sessionDir)` before the `config` writes — fixed by docs/270, which documents the exact reasoning |
-| `services/marketplace.ts:143` | a URL — no local source tree | ✅ n/a — the marketplace cache is ShipIt's own, not a session's |
+| `services/marketplace.ts` `cloneCatalog` | a URL — no local source tree | ✅ n/a — the marketplace cache is ShipIt's own, not a session's |
 | `plugin-generations.ts:1114` `checkoutCommit` | plugin bare cache, root-owned | ❌ **was the gap — fixed in this change** |
 
 `services/session-fork-merge.ts` used to be a fourth. planning#407 converted it:
@@ -156,11 +156,38 @@ directory at the moment git writes into it.
 | `services/session-fork-merge.ts:138` `clone --local` with `baseDir` = the source session | the fork's workspace | ✅ chowned to the **source** session's identity before the clone and re-sealed to the fork's after, both orderings argued in place |
 | `services/templates.ts:166` `createGitManager(sessionDir).init()` — a **standalone** session | `.git` in a fresh session workspace | ✅ `createSessionDirFactory` seals the session dir *and* `chownTreeToSessionWorker`s the empty tree before anything is written into it. Its comment names this exact failure — "a session whose RECORD says one uid and whose contents say another" |
 | `services/templates.ts:69` `scaffoldGit.init()` | a throwaway `mkdtemp` scaffold | ✅ root-owned and outside `sessionsRoot`, so no drop resolves. Stated in place |
-| `services/marketplace.ts:146` `clone <url> <cacheDir>` | the catalog cache | ✅ `<stateDir>/marketplace-cache`, a sibling of `sessions/` and not under it — root-owned throughout |
+| `services/marketplace.ts` `cloneCatalog` → `<cacheDir>` | the catalog cache | ⚠️ `<stateDir>/marketplace-cache`, a sibling of `sessions/` and not under it, so the answer comes from the TREE — root-owned **when this deployment created it**, which is a property of the disk and not a guarantee. See the note below |
 | `repo-git.ts:148,160` `clone [--bare] <url> .` | the shared bare cache | ✅ `baseDir` is the cache dir itself, root-owned |
 | `route-registry.ts:429` `git.init()` | a test session's workspace | ✅ `isTestMode` only, and tests are non-root, so no drop resolves |
 
 No further gaps. The one that was wrong is the one already fixed.
+
+### Note — "root-owned" is a fact about the disk, not a guarantee (planning#418)
+
+Two rows above used to read "root-owned throughout" as a clearance. They are
+downgraded to ⚠️ because that phrasing hides where the fact comes from. For a
+path outside `sessionsRoot`, `resolveGitTreeUid` answers from the TREE, so the
+clearance holds only while the tree stays root-owned — and nothing in this
+codebase enforces that. A cache root left non-root-owned by an older deployment,
+a restore, or a non-root runtime silently flips the answer, and this is not
+hypothetical: the marketplace cache reached exactly that state in production.
+
+What it does when it flips is worth stating, because it is not the failure mode
+the drop was designed around. `resolveGitTreeUid` stats **only the top-level
+tree**, while git writes into `.git/objects`. So a checkout root owned by a
+non-root uid makes a **root** orchestrator run git as that uid against a
+`.git/objects` a root-era fetch left root-owned, and the result is
+`insufficient permission for adding an object to repository database
+.git/objects` from a root process — which reads as impossible and is exactly why
+it was ruled out for a full pass of planning#418's diagnosis. A `⚠️` row is
+therefore not "probably fine": it is a site whose correctness a future `ls -ldn`
+can disprove, and where a permission error should be read as an ownership
+disagreement between the tree and its `.git/objects` before anything else.
+
+`services/marketplace.ts` recovers from its own instance (it rebuilds the cache,
+which makes ownership uniform again) and logs all three trees plus the uid the
+resolver chose. Neither is a general fix; the general question — whether the
+resolver should consult `.git/objects` rather than the tree root — is open.
 
 ## Table C — the gap, and what it would have done
 
@@ -212,7 +239,7 @@ question (is the tree owned by the uid we drop to, at this moment?) is per-site.
 | `git-utils.ts:317,385,461,463` (fetch, default-branch sync, cache-sync check) | session workspace | ✅ E3 mints a repo-scoped credential for the dropped fetch |
 | `overlay-session.ts:366,557` | session workspace | ✅ |
 | `services/rebase-driver.ts`, `services/github-ci-fix.ts` (via `GitManager`) | session workspace | ✅ |
-| `repo-git.ts:120,140` · `startup-tasks.ts:259` · `workflow-loader.ts:101` · `plugin-generations.ts:1010,1063` · `services/marketplace.ts:132` | bare caches / ShipIt's own dirs, root-owned | ✅ no drop, correctly |
+| `repo-git.ts:120,140` · `startup-tasks.ts:259` · `workflow-loader.ts:101` · `plugin-generations.ts:1010,1063` · `services/marketplace.ts` `updateCatalogClone` | bare caches / ShipIt's own dirs, root-owned | ✅ no drop **while the tree stays root-owned** — see the marketplace note below |
 
 ## What arming does NOT touch
 

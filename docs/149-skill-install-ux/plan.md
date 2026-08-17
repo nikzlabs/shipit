@@ -997,10 +997,27 @@ day one, assuming v0 didn't surface anything that requires the v1a/v1b split.
      and reason stay visible) and the stale cache is returned, so the plugin list
      still renders. Only a cache with nothing usable in it throws.
 
-   The rebuild path also logs the process uid/gid alongside the cache dir's
-   owner and mode, because a permission failure does not carry the one fact that
-   explains it and reconstructing it afterwards means shell access to the
-   orchestrator volume.
+   **Rebuilds are serialized per cache directory.** The boot pre-clone fires one
+   `ensureCatalogCloned` per marketplace in a single tick while the Discover and
+   Retry routes call in on demand, so concurrent callers on one catalog are
+   normal operation. Unserialized, the rebuild is destructive rather than merely
+   wasteful: the leftover sweep deletes another caller's staging clone mid-flight,
+   and the gap between the two renames sends a concurrent caller down the
+   first-clone path or makes it throw a 502 over a cache that is healthy a moment
+   later. `withCatalogLock` is the same shape as the install mutex above.
+
+   **Where the unwritable `.git` came from.** Not a non-root orchestrator — the
+   production orchestrator is root. Under docs/266, `safeSimpleGit(cacheDir)`
+   resolves its uid drop from the **top-level** tree, while git writes into
+   `.git/objects`. A cache root owned by a non-root uid therefore makes even a
+   root orchestrator run git as that uid, against an objects dir a root-era fetch
+   left root-owned — which is how a root process reaches a permission error that
+   reads as impossible. The rebuild cures it permanently, because a fresh clone
+   is uniformly owned and the resolver and the objects dir stop disagreeing. The
+   diagnostic logs the process uid/gid, the uid the resolver actually chose, and
+   the owner and mode of the cache root, `.git` and `.git/objects` — the
+   disagreement between those three is the finding, and one of them alone cannot
+   show it. See the note added to `docs/266`'s arming runbook.
 
 Acceptance: a user on Claude *or* Codex can open Settings → Skills, browse the
 agent's official catalog, see a skill's `SKILL.md` rendered inline in Monaco,
