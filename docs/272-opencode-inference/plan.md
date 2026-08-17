@@ -1,15 +1,16 @@
 ---
 issue: planning#431
 title: OpenCode inference — fact sheet and design assessment
-description: Verified facts about OpenCode Zen / Go (endpoints, auth, wire styles, models, billing, quota) and the proposed catalogue shape. Investigation only — implementation gated on requirements.md.
+description: Verified facts about OpenCode Zen / Go (endpoints, auth, wire styles, models, billing, quota) and the proposed catalogue shape. Investigation complete — all requirements questions resolved.
 ---
 
 # OpenCode inference — fact sheet and design assessment
 
 Implements nothing yet. This is the investigation deliverable for
 [requirements.md](./requirements.md): what OpenCode's hosted inference *is*,
-established empirically, and how it would land in the docs/252 catalogue. The
-remaining open question (Go quota) lives in requirements.md.
+established empirically, and how it would land in the docs/252 catalogue.
+All requirements questions are resolved (2026-08-17 receipts); implementation
+can start, with §7's real-key items as its live-verification phase.
 
 **Verification markers** (docs/252 discipline): ✅ = observed — in this
 repository, in the pinned `opencode-ai@1.18.15` binary, at a local HTTP
@@ -186,10 +187,10 @@ live models.dev ✅ and the recorder captures of the CLI itself ✅:
     out of scope.
   - `{ kind: "sub", quota: <new "opencode-go-usage"> }` — OpenCode Go, the
     GLM-coding-plan shape (sub-via-string, same key). Endpoints as above with
-    `/zen/go`. Quota decision pending (requirements open question; findings
-    in §8) — if authoring starts before the receipt lands, default to option
-    (a) (planning#339 shape), which is the recommendation and the cheaper one
-    to change.
+    `/zen/go`. Quota: **decided (req 6)** — the planning#339 shape: a new
+    `QuotaIntegrationId` (`opencode-go-usage`) whose reader reports nothing
+    until a per-key source exists, with generic 429 refusal-memory benching;
+    the Go settings surface carries the "Use balance" warning (§5, §8).
 - **Per-model `styles` come straight from the vendor's per-model endpoint
   rows** (§3) — the live pass measured that the gateway does not translate
   across styles, so a model is declared under exactly its published style.
@@ -252,8 +253,9 @@ console SPA and its lazy chunks, candidate REST endpoints, vendor docs.
   behind console-session auth — reachable programmatically only via the
   console OAuth token, i.e. the follow-up login integration, not the launch
   key.
-- Consequence for the catalogue: at launch the honest options are
-  (a) planning#339-shape — a `QuotaIntegrationId` with no reader, generic 429
-  refusal-memory benching — or (b) local accumulation of the `cost` field
-  against the published caps. The choice is the requirements open question;
-  (a) is recommended there.
+- Consequence for the catalogue: the honest options were (a) planning#339
+  shape — a `QuotaIntegrationId` with no reader, generic 429 refusal-memory
+  benching — or (b) local accumulation of the `cost` field against the
+  published caps. **(a) was chosen** (requirements req 6, 2026-08-17
+  receipt); (b) stays available as a later upgrade if a quota display is
+  wanted before a real usage API appears.

@@ -9,9 +9,9 @@ The ask, verbatim: *"we need to support OpenCode inference. They provide their
 own subscription or the API key, and we need to investigate."*
 
 This folder is that investigation. The numbered requirements are the
-human-owned statements (reqs 4–5 were added from the 2026-08-17 review
-answers — see Resolved questions); anything still author-supplied is under
-**Open questions**.
+human-owned statements (reqs 4–6 were added from the 2026-08-17 review
+answers — see Resolved questions). All open questions are resolved; the
+investigation is complete and implementation can start.
 
 Companion fact sheet and design assessment: [plan.md](./plan.md).
 
@@ -37,28 +37,27 @@ Standing platform context, not a new requirement: ShipIt is subscription-first �
 connected subscriptions rank above metered keys (CLAUDE.md preamble). Whatever
 launches must not invert that.
 
+6. The Go mode launches **without a usage-quota indicator**: ShipIt reacts to
+   the service's own limit errors (429 benching, as for any subscription) and
+   displays no remaining-quota figure until a per-key usage source exists.
+   The Go settings surface warns that the console's "Use balance" option
+   makes cap exhaustion silently continue on metered Zen credits, invisibly
+   to ShipIt.
+
 ## Open questions
 
-- **Go quota indicator — investigated, decision pending.** The caps are
-  vendor-confirmed ($12/5h, $30/week, $60/month, dollar-denominated), but the
-  2026-08-17 live investigation found **no per-key usage/quota API**: not in
-  the CLI binary, not at probed console endpoints, not in the vendor docs
-  (fact sheet §8). What does exist: per-request `cost` in every response body,
-  a 429 `UsageLimitError`-family shape on exceeded limits (observed for the
-  free tier), console-UI usage reporting behind console-session auth, and a
-  console "Use balance" option that makes Go **silently fall back to Zen PAYG
-  credits** when caps are hit. Options: (a) ship the `sub` mode with a
-  `QuotaIntegrationId` whose reader reports nothing until a source exists —
-  the GLM precedent (planning#339) — and rely on generic 429 refusal-memory
-  benching; (b) additionally accumulate the per-response `cost` field into a
-  local cap estimate (new mechanism, ShipIt-maintained window arithmetic).
-  Recommend (a) for launch. Note for the decision: with "Use balance" enabled
-  the cap boundary produces no error at all, so ShipIt cannot detect that a
-  subscription turn became a metered one — worth a settings-surface warning
-  when the Go row is authored.
+(none)
 
 ## Resolved questions
 
+- **2026-08-17 (Nik, doc review)** — *Go quota indicator.* The investigation
+  found no per-key usage/quota API (fact sheet §8); of the two stated options
+  — (a) ship the `sub` mode with a `QuotaIntegrationId` whose reader reports
+  nothing until a source exists (the GLM precedent, planning#339) plus
+  generic 429 refusal-memory benching, or (b) additionally accumulate the
+  per-response `cost` field into a local cap estimate — the answer to
+  "Recommend (a) for launch" was: "let's do that." → req 6 added; the
+  "Use balance" settings warning is part of it.
 - **2026-08-17 (Nik, doc review)** — *Which product is "the subscription", and
   what breadth?* Answer: "We need to support all ways the user['s] OpenCode
   account could use OpenCode CLI without ShipIt." → req 4 added; req 2/3
