@@ -28,7 +28,7 @@ const B = "b".repeat(40);
 const ref = (over: Partial<GenerationRef> = {}): GenerationRef => ({
   sessionId: "sess",
   repoName: "tools",
-  commit: A,
+  generationId: A,
   ...over,
 });
 
@@ -47,6 +47,26 @@ describe("holdGeneration / claimGenerationDeletion", () => {
     const claim = claimGenerationDeletion(ref());
     expect(claim).not.toBeNull();
     claim!();
+  });
+
+  /**
+   * docs/273-plugin-generation-rebuild — a rebuild is an independent tree with
+   * its own volume, so the lease must not treat it as the build it was made
+   * beside. If it did, pruning the superseded one would be refused for ever
+   * (its rebuild is mounted), and — worse — a hold on either would answer for
+   * both.
+   */
+  it("tells two builds of one commit apart", () => {
+    const commit = A;
+    const rebuilt = ref({ generationId: `${commit}.deadbeef` });
+    const held = holdGeneration(ref({ generationId: commit }));
+
+    expect(generationHoldCount(rebuilt)).toBe(0);
+    const claim = claimGenerationDeletion(rebuilt);
+    expect(claim).not.toBeNull();
+
+    claim!();
+    held!();
   });
 
   it("refuses a hold while a deletion is under way, and allows one after", () => {
@@ -84,8 +104,8 @@ describe("holdGeneration / claimGenerationDeletion", () => {
   });
 
   it("holds are per generation, not per repository", () => {
-    const held = holdGeneration(ref({ commit: A }));
-    const claim = claimGenerationDeletion(ref({ commit: B }));
+    const held = holdGeneration(ref({ generationId: A }));
+    const claim = claimGenerationDeletion(ref({ generationId: B }));
     expect(claim).not.toBeNull();
     claim!();
     held!();
@@ -102,14 +122,14 @@ describe("holdGenerationsForOwner", () => {
   const owner = pluginServiceOwner("sess");
 
   it("replaces the previous set, releasing what is no longer named", () => {
-    holdGenerationsForOwner(owner, [ref({ commit: A })]);
-    expect(generationHoldCount(ref({ commit: A }))).toBe(1);
+    holdGenerationsForOwner(owner, [ref({ generationId: A })]);
+    expect(generationHoldCount(ref({ generationId: A }))).toBe(1);
 
     // A refresh: the service surface now runs B, so A must become prunable.
-    holdGenerationsForOwner(owner, [ref({ commit: B })]);
-    expect(generationHoldCount(ref({ commit: A }))).toBe(0);
-    expect(generationHoldCount(ref({ commit: B }))).toBe(1);
-    const claim = claimGenerationDeletion(ref({ commit: A }));
+    holdGenerationsForOwner(owner, [ref({ generationId: B })]);
+    expect(generationHoldCount(ref({ generationId: A }))).toBe(0);
+    expect(generationHoldCount(ref({ generationId: B }))).toBe(1);
+    const claim = claimGenerationDeletion(ref({ generationId: A }));
     expect(claim).not.toBeNull();
     claim!();
   });
@@ -130,9 +150,9 @@ describe("holdGenerationsForOwner", () => {
   });
 
   it("leaves out a generation that is being deleted, and reports what it got", () => {
-    const done = claimGenerationDeletion(ref({ commit: A }));
-    const held = holdGenerationsForOwner(owner, [ref({ commit: A }), ref({ commit: B })]);
-    expect(held.map((r) => r.commit)).toEqual([B]);
+    const done = claimGenerationDeletion(ref({ generationId: A }));
+    const held = holdGenerationsForOwner(owner, [ref({ generationId: A }), ref({ generationId: B })]);
+    expect(held.map((r) => r.generationId)).toEqual([B]);
     done!();
   });
 
@@ -147,13 +167,13 @@ describe("holdGenerationsForOwner", () => {
 describe("releaseSessionGenerationHolds", () => {
   it("drops every hold a disposed session had, of both kinds", () => {
     holdGeneration(ref());
-    holdGenerationsForOwner(pluginServiceOwner("sess"), [ref({ commit: B })]);
+    holdGenerationsForOwner(pluginServiceOwner("sess"), [ref({ generationId: B })]);
     holdGeneration(ref({ sessionId: "other" }));
 
     releaseSessionGenerationHolds("sess");
 
     expect(generationHoldCount(ref())).toBe(0);
-    expect(generationHoldCount(ref({ commit: B }))).toBe(0);
+    expect(generationHoldCount(ref({ generationId: B }))).toBe(0);
     expect(generationHoldCount(ref({ sessionId: "other" }))).toBe(1);
   });
 
@@ -199,7 +219,7 @@ describe("createGenerationDeletionLease", () => {
     volumes.add(VOLUME);
     const begin = createGenerationDeletionLease({ docker, sessionId: "sess" });
 
-    const done = await begin({ repoName: "tools", commit: A });
+    const done = await begin({ repoName: "tools", generationId: A });
     expect(done).not.toBeNull();
     // Removing the volume is PART of taking the lease: the directories it
     // describes are about to go, so a volume left behind would be a mount
@@ -214,7 +234,7 @@ describe("createGenerationDeletionLease", () => {
     held.add(VOLUME); // a plugin service is still attached to the superseded tree
     const begin = createGenerationDeletionLease({ docker, sessionId: "sess" });
 
-    expect(await begin({ repoName: "tools", commit: A })).toBeNull();
+    expect(await begin({ repoName: "tools", generationId: A })).toBeNull();
     expect(volumes.has(VOLUME)).toBe(true);
     // The refusal released its own claim, so the next publish's prune retries
     // rather than finding the generation permanently unclaimable.
@@ -234,7 +254,7 @@ describe("createGenerationDeletionLease", () => {
     const release = holdGeneration(ref());
     const begin = createGenerationDeletionLease({ docker, sessionId: "sess" });
 
-    expect(await begin({ repoName: "tools", commit: A })).toBeNull();
+    expect(await begin({ repoName: "tools", generationId: A })).toBeNull();
     // The in-process half is checked first and is decisive on its own: a CLI
     // that has resolved the generation but not yet created its container holds
     // no volume the daemon could report.
@@ -254,7 +274,7 @@ describe("createGenerationDeletionLease", () => {
       }),
     } as unknown as Docker;
     const begin = createGenerationDeletionLease({ docker, sessionId: "sess" });
-    expect(await begin({ repoName: "tools", commit: A })).toBeNull();
+    expect(await begin({ repoName: "tools", generationId: A })).toBeNull();
     // Fail-closed, but not wedged: the claim is released on the way out.
     const retry = claimGenerationDeletion(ref());
     expect(retry).not.toBeNull();

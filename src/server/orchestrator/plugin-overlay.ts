@@ -50,7 +50,12 @@ import {
   volumeExists,
   type OverlaySpec,
 } from "./overlay-volume.js";
-import { pluginsRoot, readGenerationRecordAt, WORK_SUBDIR } from "./plugin-generations.js";
+import {
+  pluginsRoot,
+  readGenerationRecordAt,
+  splitGenerationId,
+  WORK_SUBDIR,
+} from "./plugin-generations.js";
 import { pluginBasePinDir } from "./plugin-dep-store.js";
 
 /** Marks a volume as belonging to one plugin generation, for orphan cleanup. */
@@ -66,9 +71,21 @@ export interface PluginOverlaySpec extends OverlaySpec {
 }
 
 /**
- * Name a generation's volume. Keyed by session AND commit: per generation,
- * never per repository, because a volume's driver options cannot change while
- * consumers hold it.
+ * Name a generation's volume. Keyed by session AND generation id: per
+ * generation, never per repository, because a volume's driver options cannot
+ * change while consumers hold it.
+ *
+ * **It is the generation id and not the commit** (docs/273-plugin-generation-rebuild).
+ * A rebuild of a commit that is already live gets its own id — `<commit>.<8
+ * hex>` — precisely so that its checkout, its writable layer and this volume
+ * are a complete new set beside the live one. Truncating to the commit would
+ * hand the rebuild the live version's volume name over different lower and
+ * upper dirs, which is the one thing `ensurePluginRuntimeOverlay`'s whole
+ * design is there to make impossible.
+ *
+ * A bare-commit id renders exactly as it always did, so a session upgraded
+ * mid-flight keeps naming its live volumes what its running containers already
+ * hold.
  *
  * **The 12-character session prefix is load-bearing, not cosmetic.** The disk
  * janitor's orphan sweep matches `^shipit-([a-f0-9-]{12})_` and compares the
@@ -77,8 +94,14 @@ export interface PluginOverlaySpec extends OverlaySpec {
  * match the pattern at all, so a crash-orphaned volume would never be
  * reclaimed — it would simply accumulate.
  */
-export function pluginOverlayVolumeName(sessionId: string, repoName: string, commit: string): string {
-  return `shipit-${sessionId.slice(0, 12)}_plugin-${safeSegment(repoName)}-${nameHash(repoName)}-${commit.slice(0, 12)}`;
+export function pluginOverlayVolumeName(
+  sessionId: string,
+  repoName: string,
+  generationId: string,
+): string {
+  const { commit, revision } = splitGenerationId(generationId);
+  const build = revision ? `${commit.slice(0, 12)}-${revision}` : commit.slice(0, 12);
+  return `shipit-${sessionId.slice(0, 12)}_plugin-${safeSegment(repoName)}-${nameHash(repoName)}-${build}`;
 }
 
 /**
@@ -102,9 +125,15 @@ function nameHash(name: string): string {
   return crypto.createHash("sha256").update(name).digest("hex").slice(0, 8);
 }
 
-/** Where a generation's writable layer lives, as the orchestrator sees it. */
-export function pluginWorkDir(stateDir: string, repoName: string, commit: string): string {
-  return path.join(pluginsRoot(stateDir), repoName, WORK_SUBDIR, commit);
+/**
+ * Where a generation's writable layer lives, as the orchestrator sees it.
+ *
+ * Keyed by the generation id, so a rebuild of a live commit installs into its
+ * own layer rather than clearing the one a running container has mounted
+ * (docs/273-plugin-generation-rebuild).
+ */
+export function pluginWorkDir(stateDir: string, repoName: string, generationId: string): string {
+  return path.join(pluginsRoot(stateDir), repoName, WORK_SUBDIR, generationId);
 }
 
 /**
@@ -121,7 +150,14 @@ export function pluginWorkDir(stateDir: string, repoName: string, commit: string
 export function buildPluginOverlaySpec(args: {
   sessionId: string;
   repoName: string;
-  commit: string;
+  /**
+   * The build this mount belongs to — `<commit>` for an ordinary generation and
+   * `<commit>.<8 hex>` for a rebuild of one that was live
+   * (docs/273-plugin-generation-rebuild). Never the bare commit for a rebuild:
+   * the volume name and the layer path both come from here, and the two must
+   * describe the same set of directories as `checkoutDir`.
+   */
+  generationId: string;
   stateDir: string;
   /** Lowerdir as the orchestrator sees it — staging during install, the generation after. */
   checkoutDir: string;
@@ -140,7 +176,7 @@ export function buildPluginOverlaySpec(args: {
   /** Orchestrator-visible root of that same volume. Omit in dev. */
   stateRoot?: string;
 }): PluginOverlaySpec {
-  const work = pluginWorkDir(args.stateDir, args.repoName, args.commit);
+  const work = pluginWorkDir(args.stateDir, args.repoName, args.generationId);
   const orchDirs = {
     lowerdir: args.checkoutDir,
     upperdir: path.join(work, "upper"),
@@ -150,7 +186,7 @@ export function buildPluginOverlaySpec(args: {
   // overlayfs takes a `:`-separated lowerdir stack, highest priority first.
   const lowerdirs = [orchDirs.lowerdir, ...(args.depBases ?? [])].map(toDaemon);
   return {
-    volumeName: pluginOverlayVolumeName(args.sessionId, args.repoName, args.commit),
+    volumeName: pluginOverlayVolumeName(args.sessionId, args.repoName, args.generationId),
     lowerdir: lowerdirs.join(":"),
     upperdir: toDaemon(orchDirs.upperdir),
     workdir: toDaemon(orchDirs.workdir),
@@ -224,7 +260,8 @@ export async function ensurePluginRuntimeOverlay(
   args: {
     sessionId: string;
     repoName: string;
-    commit: string;
+    /** The build being mounted — `generationIdFor(record, dir)`, never the bare commit. */
+    generationId: string;
     stateDir: string;
     /** The PUBLISHED generation directory — resolve `active` before calling. */
     checkoutDir: string;

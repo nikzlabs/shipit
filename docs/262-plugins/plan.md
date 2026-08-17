@@ -426,7 +426,12 @@ round: this path silently reported a partial generation as fully active).
 
 For a consumer generation the commit determines every input, so the stamp is
 not what decides a re-install — a new commit is a new generation and a new
-layer. It exists for the case that is not a new commit: an install that
+layer. (**Not quite: docs/273-plugin-generation-rebuild.** The commit determines
+the repository's own inputs; WHICH of its exports are installed is the
+consumer's `plugins.use` selection, so a selection that grows is a new install
+at the same commit. A generation's identity is therefore its build, not its
+commit — `generations/<sha>`, or `generations/<sha>.<8 hex>` for one built
+beside a copy something is using.) It exists for the case that is not a new commit: an install that
 succeeded and then had its *publish* fail leaves a populated layer behind, and
 the next attempt re-stages the same commit. The stamp turns that into a no-op
 instead of a repeat.

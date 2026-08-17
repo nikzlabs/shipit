@@ -129,11 +129,12 @@ is the one thing about a plugin no other surface shows you, and the answer to
 for what the install claimed to do rather than as a complete log.
 
 --force re-runs the install for the version ALREADY live, for one named
-repository. Use it when a version is live but unusable: it discards what the
-last install left and installs again, instead of waiting for the plugin's
-author to publish a new commit. It is refused while a plugin container is still
-using that version, and if the re-install fails the version stays live without
-its install output — run \`shipit plugin status\` first.
+repository. Use it when a version is live but unusable: it installs that commit
+again instead of waiting for the plugin's author to publish a new commit. You
+do not have to stop the plugin's own service first — a version something is
+using is rebuilt beside it and swapped in when the install succeeds. A
+re-install that fails changes nothing: the version that was live stays live,
+and \`shipit plugin status\` says what the install did.
 
   shipit plugin status [repo-name] [--json]
 
@@ -293,9 +294,9 @@ async function refresh(args: string[], deps: RunDeps): Promise<void> {
   const repo = positional[0];
   const force = booleans.has("force");
   // docs/266 — refused here as well as in the service, because this is where the
-  // agent can be told what to type instead. `--force` discards a live version's
-  // install output; applying that to every declared repository because a name
-  // was left off is not a mistake to make reachable.
+  // agent can be told what to type instead. `--force` re-runs a live version's
+  // install and replaces what that install left; applying that to every declared
+  // repository because a name was left off is not a mistake to make reachable.
   if (force && !repo) {
     fail(
       deps.io,

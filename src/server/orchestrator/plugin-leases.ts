@@ -61,11 +61,19 @@ import type Docker from "dockerode";
 import type { BeginGenerationDeletion } from "./plugin-generations.js";
 import { pluginOverlayVolumeName, removePluginOverlay } from "./plugin-overlay.js";
 
-/** One generation, as both consumers and the pruner name it. */
+/**
+ * One generation, as both consumers and the pruner name it.
+ *
+ * Keyed by the GENERATION ID, not the commit
+ * (docs/273-plugin-generation-rebuild): a rebuild of a live commit is a second,
+ * independent tree with its own overlay volume, and the two halves of the lease
+ * only agree about which tree they are talking about if the in-process key and
+ * the volume name come from the same identity.
+ */
 export interface GenerationRef {
   sessionId: string;
   repoName: string;
-  commit: string;
+  generationId: string;
 }
 
 /** Idempotent — calling it twice releases once. */
@@ -86,7 +94,7 @@ const deleting = new Set<string>();
 const owners = new Map<string, Map<string, ReleaseHold>>();
 
 function generationKey(ref: GenerationRef): string {
-  return `${ref.sessionId}::${ref.repoName}::${ref.commit}`;
+  return `${ref.sessionId}::${ref.repoName}::${ref.generationId}`;
 }
 
 /** The owner name the service surface holds its generations under. */
@@ -222,17 +230,17 @@ export function claimGenerationDeletion(ref: GenerationRef): ReleaseHold | null 
  * without services accumulated one per refresh.
  *
  * Built per session because the volume name is keyed by session, repository and
- * commit. Absent where there is no Docker (local/dogfood mode, tests): there are
+ * generation. Absent where there is no Docker (local/dogfood mode, tests): there are
  * no plugin containers there, so nothing can be holding a generation.
  */
 export function createGenerationDeletionLease(deps: {
   docker: Docker;
   sessionId: string;
 }): BeginGenerationDeletion {
-  return async ({ repoName, commit }) => {
-    const claim = claimGenerationDeletion({ sessionId: deps.sessionId, repoName, commit });
+  return async ({ repoName, generationId }) => {
+    const claim = claimGenerationDeletion({ sessionId: deps.sessionId, repoName, generationId });
     if (!claim) return null;
-    const volume = pluginOverlayVolumeName(deps.sessionId, repoName, commit);
+    const volume = pluginOverlayVolumeName(deps.sessionId, repoName, generationId);
     let released: boolean;
     try {
       released = await removePluginOverlay(deps.docker, volume);

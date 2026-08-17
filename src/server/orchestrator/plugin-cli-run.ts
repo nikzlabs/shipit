@@ -88,6 +88,7 @@ import { destinationKey } from "../shared/plugin-repos.js";
 import { resolveShipitConfig } from "../shared/shipit-config.js";
 import {
   activeLinkPath,
+  generationIdFor,
   readGenerationManifestAt,
   readGenerationRecordAt,
 } from "./plugin-generations.js";
@@ -399,7 +400,7 @@ async function runHeldPluginCommand(
         repoName,
         // Both from the SAME pinned directory, so the volume's name and its
         // lowerdir can never describe two different generations.
-        commit: pinned.commit,
+        generationId: pinned.generationId,
         stateDir,
         checkoutDir: pinned.dir,
         // req 28 — the shared dependency bases this generation pins are read out
@@ -565,6 +566,13 @@ async function runHeldPluginCommand(
 interface PinnedGeneration {
   dir: string;
   commit: string;
+  /**
+   * docs/273-plugin-generation-rebuild — which BUILD of that commit this is,
+   * taken from the resolved directory's own name. The volume this invocation
+   * attaches is named by it, so a rebuild published beside the version an
+   * earlier call mounted cannot be reached under the older build's name.
+   */
+  generationId: string;
   exports: PluginExport[];
   /**
    * Drops the consumer lease this pin holds (req 15). Called by
@@ -627,7 +635,8 @@ function pinGeneration(
   // later would reopen exactly the race it closes: a publish landing in that
   // tick prunes this directory, and the invocation container then mounts an
   // overlay whose lowerdir is gone.
-  const release = holdGeneration({ sessionId, repoName, commit: record.commit });
+  const generationId = generationIdFor(dir, record);
+  const release = holdGeneration({ sessionId, repoName, generationId });
   if (!release) {
     // The pruner has claimed this generation, so it was superseded between the
     // wrapper's call and this line and its tree is being removed right now.
@@ -635,7 +644,7 @@ function pinGeneration(
     // the newer generation the refresh just published.
     throw new Error("the version it resolved was replaced mid-call — run the command again");
   }
-  return { dir, commit: record.commit, exports: readGenerationManifestAt(dir), release };
+  return { dir, commit: record.commit, generationId, exports: readGenerationManifestAt(dir), release };
 }
 
 /**

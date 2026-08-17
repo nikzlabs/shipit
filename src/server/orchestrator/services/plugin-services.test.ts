@@ -260,10 +260,10 @@ services:
  * it is the one a prune racing a compose-up would otherwise win.
  */
 describe("resolveSessionPluginServices — the consumer lease", () => {
-  const generation = (commit = "abc123") => ({
+  const generation = (generationId = "abc123") => ({
     sessionId: SESSION_ID,
     repoName: "tools",
-    commit,
+    generationId,
   });
 
   it("holds the live generation of every tracked repository it resolved", async () => {

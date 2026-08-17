@@ -185,14 +185,20 @@ export function installCommands(exportsList: readonly PluginExport[]): InstallCo
  * and then had its publish fail leaves a populated upper layer, and the next
  * attempt re-stages the same commit. Re-running there is not wrong, only
  * wasted; the stamp turns it into a no-op.
+ *
+ * That case is precisely a re-stage under the SAME generation id, which is why
+ * the stamp's path is keyed by the id (docs/273-plugin-generation-rebuild) and
+ * its content is not: a rebuild under a forked id starts from an empty layer
+ * and finds no stamp, which is the correct answer for a layer that holds
+ * nothing.
  */
 export function installStamp(job: PluginInstallJob): string {
   return JSON.stringify({ commit: job.commit, commands: installCommands(job.exports) });
 }
 
 /** Path of the stamp — beside the upper/work dirs, never inside the merged view. */
-export function installStampPath(stateDir: string, repoName: string, commit: string): string {
-  return path.join(pluginWorkDir(stateDir, repoName, commit), "install-stamp.json");
+export function installStampPath(stateDir: string, repoName: string, generationId: string): string {
+  return path.join(pluginWorkDir(stateDir, repoName, generationId), "install-stamp.json");
 }
 
 /**
@@ -248,11 +254,14 @@ async function runInstallOnce(
   record: (outcome: PluginInstallOutcome, detail?: string, output?: string) => void,
 ): Promise<PluginInstallResult> {
 
-    const stampPath = installStampPath(deps.stateDir, job.repoName, job.commit);
+    // docs/273-plugin-generation-rebuild — the stamp belongs to the BUILD, not
+    // to the commit: a rebuild has its own empty layer, so a stamp from the
+    // layer it is replacing must not answer for it.
+    const stampPath = installStampPath(deps.stateDir, job.repoName, job.generationId);
     const stamp = installStamp(job);
     const layerDirs = {
-      upperdir: path.join(pluginWorkDir(deps.stateDir, job.repoName, job.commit), "upper"),
-      workdir: path.join(pluginWorkDir(deps.stateDir, job.repoName, job.commit), "work"),
+      upperdir: path.join(pluginWorkDir(deps.stateDir, job.repoName, job.generationId), "upper"),
+      workdir: path.join(pluginWorkDir(deps.stateDir, job.repoName, job.generationId), "work"),
     };
 
     // This generation's own layer is already installed — the
@@ -332,7 +341,7 @@ async function runInstallOnce(
       spec = buildPluginOverlaySpec({
         sessionId: deps.sessionId,
         repoName: job.repoName,
-        commit: job.commit,
+        generationId: job.generationId,
         stateDir: deps.stateDir,
         checkoutDir: job.stagingDir,
         ...roots,

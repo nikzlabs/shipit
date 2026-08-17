@@ -297,8 +297,14 @@ export function readProjectServices(
   }
 }
 
-/** The tracked generation each declared repository contributed to this round. */
-type TrackedGenerations = Map<string, { commit: string; checkoutDir: string }>;
+/**
+ * The tracked generation each declared repository contributed to this round.
+ *
+ * `generationId` and not the commit is what the lease and the volume are keyed
+ * by (docs/273-plugin-generation-rebuild); the commit rides along for the log
+ * lines, which speak about the version the session is running.
+ */
+type TrackedGenerations = Map<string, { commit: string; generationId: string; checkoutDir: string }>;
 
 /**
  * Take the service surface's half of the consumer lease over every generation
@@ -332,14 +338,18 @@ function holdResolvedGenerations(
 ): { tracked: TrackedGenerations; held: Set<string> } {
   const tracked: TrackedGenerations = new Map();
   for (const fragment of fragments) {
-    if (!fragment.self && fragment.commit) {
-      tracked.set(fragment.repo, { commit: fragment.commit, checkoutDir: fragment.checkoutDir });
+    if (!fragment.self && fragment.commit && fragment.generationId) {
+      tracked.set(fragment.repo, {
+        commit: fragment.commit,
+        generationId: fragment.generationId,
+        checkoutDir: fragment.checkoutDir,
+      });
     }
   }
   const held = new Set(
     holdGenerationsForOwner(
       pluginServiceOwner(sessionId),
-      [...tracked].map(([repoName, { commit }]) => ({ sessionId, repoName, commit })),
+      [...tracked].map(([repoName, { generationId }]) => ({ sessionId, repoName, generationId })),
     ).map((ref) => ref.repoName),
   );
   return { tracked, held };
@@ -370,7 +380,7 @@ async function ensurePluginVolumes(
   const docker = deps.docker;
   if (!docker) return volumes;
 
-  for (const [repoName, { commit, checkoutDir }] of tracked) {
+  for (const [repoName, { commit, generationId, checkoutDir }] of tracked) {
     if (!held.has(repoName)) {
       // The generation is being pruned right now, which means it has already
       // been superseded — this round is looking at a version that is on its way
@@ -392,7 +402,7 @@ async function ensurePluginVolumes(
       const volumeName = await ensurePluginRuntimeOverlay(docker, {
         sessionId,
         repoName,
-        commit,
+        generationId,
         stateDir,
         checkoutDir,
         // req 28 — the bases this generation pins are read out of `checkoutDir`

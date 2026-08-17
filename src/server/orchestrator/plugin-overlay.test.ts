@@ -19,7 +19,7 @@ import {
 const base = {
   sessionId: "0123abcd-4567-89ef-0123-456789abcdef",
   repoName: "tools",
-  commit: "a".repeat(40),
+  generationId: "a".repeat(40),
   stateDir: "/workspace/sessions/sess-1/state",
   checkoutDir: `/workspace/sessions/sess-1/state/plugins/tools/generations/${"a".repeat(40)}`,
 };
@@ -48,7 +48,7 @@ describe("buildPluginOverlaySpec", () => {
       stateRoot: "/workspace",
       volumeMountpoint: "/var/lib/docker/volumes/shipit-workspace/_data",
     });
-    expect(spec.orchDirs.upperdir).toBe(`${pluginWorkDir(base.stateDir, "tools", base.commit)}/upper`);
+    expect(spec.orchDirs.upperdir).toBe(`${pluginWorkDir(base.stateDir, "tools", base.generationId)}/upper`);
     expect(spec.orchDirs.lowerdir).toBe(base.checkoutDir);
     expect(spec.orchDirs.upperdir).not.toBe(spec.upperdir);
   });
@@ -91,8 +91,29 @@ describe("pluginOverlayVolumeName", () => {
     expect(a).not.toBe(b);
   });
 
+  /**
+   * docs/273-plugin-generation-rebuild — the one that bites. The name truncates
+   * the commit to 12 characters, so a rebuild of a live commit would have been
+   * handed the LIVE version's volume name over a different lowerdir and a
+   * different upper layer: two overlays, one name, and whichever container
+   * attached second would silently run the wrong tree.
+   */
+  it("distinguishes a rebuild of a commit from the build it was made beside", () => {
+    const commit = "a".repeat(40);
+    const first = pluginOverlayVolumeName(base.sessionId, "tools", commit);
+    const rebuilt = pluginOverlayVolumeName(base.sessionId, "tools", `${commit}.deadbeef`);
+    expect(rebuilt).not.toBe(first);
+    // Two rebuilds of one commit are two builds as well.
+    expect(rebuilt).not.toBe(pluginOverlayVolumeName(base.sessionId, "tools", `${commit}.feedface`));
+    // …and a bare-commit id still renders exactly as it did before rebuilds
+    // existed, so a session upgraded mid-flight keeps naming its live volumes
+    // what its running containers already hold.
+    expect(first).toBe(`shipit-${base.sessionId.slice(0, 12)}_plugin-tools-${
+      /-([0-9a-f]{8})-a{12}$/.exec(first)![1]}-${commit.slice(0, 12)}`);
+  });
+
   it("keeps the session-prefixed shape orphan collection looks for", () => {
-    expect(pluginOverlayVolumeName(base.sessionId, "tools", base.commit))
+    expect(pluginOverlayVolumeName(base.sessionId, "tools", base.generationId))
       .toMatch(/^shipit-0123abcd-456_plugin-tools-[0-9a-f]{8}-a{12}$/);
   });
 
@@ -102,13 +123,13 @@ describe("pluginOverlayVolumeName", () => {
   // version of this name — does not match at all, so an orphaned volume would
   // never be reclaimed.
   it("is reclaimable by the disk janitor's orphan sweep", () => {
-    const name = pluginOverlayVolumeName(base.sessionId, "tools", base.commit);
+    const name = pluginOverlayVolumeName(base.sessionId, "tools", base.generationId);
     const match = /^shipit-([a-f0-9-]{12})_/.exec(name);
     expect(match?.[1]).toBe(base.sessionId.slice(0, 12));
   });
 
   it("renders an awkward repo name into something a volume name can hold", () => {
-    expect(pluginOverlayVolumeName(base.sessionId, "My Tools/v2!", base.commit))
+    expect(pluginOverlayVolumeName(base.sessionId, "My Tools/v2!", base.generationId))
       .toMatch(/^shipit-0123abcd-456_plugin-my-tools-v2-[0-9a-f]{8}-a{12}$/);
   });
 });
@@ -156,9 +177,9 @@ describe("ensurePluginRuntimeOverlay", () => {
   const args = (stateDir: string) => ({
     sessionId: base.sessionId,
     repoName: "tools",
-    commit: base.commit,
+    generationId: base.generationId,
     stateDir,
-    checkoutDir: path.join(stateDir, "plugins", "tools", "generations", base.commit),
+    checkoutDir: path.join(stateDir, "plugins", "tools", "generations", base.generationId),
   });
 
   it("creates the volume exactly once for concurrent first consumers", async () => {
@@ -177,7 +198,7 @@ describe("ensurePluginRuntimeOverlay", () => {
       expect(removes).toEqual([]);
       // And the layer it points at is there, uncleared — install output
       // lives in `upper/` and this must never be the thing that wipes it.
-      expect(fs.existsSync(path.join(pluginWorkDir(stateDir, "tools", base.commit), "upper"))).toBe(true);
+      expect(fs.existsSync(path.join(pluginWorkDir(stateDir, "tools", base.generationId), "upper"))).toBe(true);
     } finally {
       fs.rmSync(stateDir, { recursive: true, force: true });
     }
@@ -253,11 +274,11 @@ describe("ensurePluginRuntimeOverlay with shared dependency bases", () => {
 
   /** A published generation whose record pins `pins`. */
   function generation(stateDir: string, pins: string[]): string {
-    const dir = path.join(stateDir, "plugins", "tools", "generations", base.commit);
+    const dir = path.join(stateDir, "plugins", "tools", "generations", base.generationId);
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(
       path.join(dir, ".shipit-generation.json"),
-      JSON.stringify({ repoName: "tools", source: "acme/tools", commit: base.commit, basePins: pins }),
+      JSON.stringify({ repoName: "tools", source: "acme/tools", commit: base.generationId, basePins: pins }),
     );
     return dir;
   }
@@ -270,7 +291,7 @@ describe("ensurePluginRuntimeOverlay with shared dependency bases", () => {
       fs.mkdirSync(path.join(stateDir, "overlay-base", "a".repeat(16), "g1"), { recursive: true });
 
       await ensurePluginRuntimeOverlay(docker, {
-        sessionId: base.sessionId, repoName: "tools", commit: base.commit,
+        sessionId: base.sessionId, repoName: "tools", generationId: base.generationId,
         stateDir, checkoutDir, depStoreDir: stateDir,
       });
 
@@ -290,7 +311,7 @@ describe("ensurePluginRuntimeOverlay with shared dependency bases", () => {
       // are silently absent — a "cannot find module" minutes later, with
       // nothing naming the cause.
       await expect(ensurePluginRuntimeOverlay(docker, {
-        sessionId: base.sessionId, repoName: "tools", commit: base.commit,
+        sessionId: base.sessionId, repoName: "tools", generationId: base.generationId,
         stateDir, checkoutDir, depStoreDir: stateDir,
       })).rejects.toThrow(/shared dependency layer/);
       expect(creates).toHaveLength(0);

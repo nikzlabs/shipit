@@ -81,6 +81,7 @@ import {
   PLUGIN_STATE_SUBDIR,
 } from "./plugin-state.js";
 import {
+  generationIdFor,
   readGenerationManifestAt,
   type LiveGenerations,
 } from "./plugin-generations.js";
@@ -141,6 +142,18 @@ export interface PluginFragmentService {
   self: boolean;
   /** The live generation's commit, for a tracked repository (req 15). */
   commit?: string;
+  /**
+   * docs/273-plugin-generation-rebuild — the live generation's IDENTITY, which
+   * is what its overlay volume and writable layer are named by. Usually the
+   * commit; `<commit>.<8 hex>` for a build that was made beside a live one.
+   * Absent for `repo: self`, which has no generation at all.
+   *
+   * Carried beside `commit` rather than derived from it because the two answer
+   * different questions: the commit is what the session is RUNNING and goes in
+   * `SHIPIT_PLUGIN_COMMIT`, the id is which copy of it, and a mount built from
+   * the commit would name the volume of a different build.
+   */
+  generationId?: string;
   /**
    * The concrete tree this was read from — an already-resolved generation
    * directory, never the `active` symlink. Carried so the overlay volume's
@@ -330,6 +343,7 @@ export function collectPluginFragments(
         self: snapshot.self,
         checkoutDir: snapshot.root,
         ...(snapshot.commit ? { commit: snapshot.commit } : {}),
+        ...(snapshot.generationId ? { generationId: snapshot.generationId } : {}),
       });
     }
   }
@@ -490,6 +504,8 @@ interface RepoSnapshot {
   exports: readonly PluginExport[];
   /** The generation's commit (req 15); absent for `repo: self`. */
   commit?: string;
+  /** That generation's identity — the directory, layer and volume name. */
+  generationId?: string;
 }
 
 function snapshotRepo(
@@ -516,6 +532,9 @@ function snapshotRepo(
     self: false,
     exports: readGenerationManifestAt(verified.dir),
     commit: verified.record.commit,
+    // From the resolved DIRECTORY, so the volume this names and the lowerdir it
+    // points at cannot describe two builds (docs/273-plugin-generation-rebuild).
+    generationId: generationIdFor(verified.dir, verified.record),
   };
 }
 
