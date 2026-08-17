@@ -240,11 +240,14 @@ describe("the card is not optimistic about a COMPOSE FILE (planning#377)", () =>
       path.join(workspaceDir, "shipit.yaml"),
       "compose: docker-compose.yml\nplugins:\n  repos:\n    - repo: acme/tools\n      name: tools\n      branch: main\n  use:\n    - plugin: probe\n      from: tools\n",
     );
-    // A STOCK compose file: nothing is wrong with it, it simply does not declare
-    // the numeric non-root `user:` a contained session requires (docs/263).
+    // Valid YAML that a contained session declines on a RULE, which is the
+    // distinction under test. It used to be a stock file with no `user:` at all;
+    // docs/271 stopped refusing that one (ShipIt supplies the identity instead),
+    // so the example is now a declared root user — still refused, and still
+    // nothing an unreadable-file message would describe correctly.
     fs.writeFileSync(
       path.join(workspaceDir, "docker-compose.yml"),
-      "services:\n  web:\n    image: node:22-alpine\n",
+      'services:\n  web:\n    image: node:22-alpine\n    user: "0"\n',
     );
   });
   afterEach(() => {

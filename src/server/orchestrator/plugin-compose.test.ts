@@ -626,10 +626,15 @@ services:
   });
 
   it("applies the contained-egress rules a contained session applies to the project", () => {
+    // A DECLARED root user, not an absent one: docs/271 stopped refusing the
+    // absent case, because ShipIt fills in the session identity and that already
+    // satisfies the rule. What this test is for is unchanged — a fragment is held
+    // to the project's contained rules rather than a laxer copy of them.
     expect(reject(`
 services:
   probe:
     image: node:22-alpine
+    user: "0"
 `, { containEgress: true })).toContain("numeric, non-root `user:`");
   });
 

@@ -1176,11 +1176,15 @@ services:
 
     it("marks a well-formed file it declines as refused", () => {
       setup();
-      // The one that made this worth telling apart: docs/263 refuses a STOCK
-      // compose file on a contained session for the missing `user:`.
+      // The one that made this worth telling apart: a contained session refuses
+      // a well-formed file over a rule about its content. This used to be the
+      // missing `user:` on a stock file, which docs/271 stopped refusing (ShipIt
+      // supplies the identity instead); a DECLARED root user is still refused,
+      // and is the same shape of decline.
       expect(kindOf(`services:
   web:
     image: node:22-alpine
+    user: "0"
 `, { dockerSocket: false, containEgress: true })).toBe("refused");
       expect(kindOf(`services:
   web:
@@ -1248,13 +1252,56 @@ describe("generateComposeOverride", () => {
       fs.writeFileSync(file, content);
       return file;
     };
-    const p = write(`services:\n  web:\n    image: postgres:17\n`);
-    expect(() => parseComposeFile(p, { dockerSocket: false, containEgress: true })).toThrow("numeric, non-root");
-    expect(() => parseComposeFile(p, { dockerSocket: false })).not.toThrow();
-    const safe = write(`services:\n  web:\n    image: app:test\n    user: "1001:1001"\n`);
-    expect(() => parseComposeFile(safe, { dockerSocket: false, containEgress: true })).not.toThrow();
-    const reserved = write(`services:\n  web:\n    image: app:test\n    user: "911"\n`);
-    expect(() => parseComposeFile(reserved, { dockerSocket: false, containEgress: true })).toThrow("reserved UID");
+    // Explicit about the var: with no worker uid there is no fill-in, so an
+    // undeclared service would run as the image default (often root) and the
+    // declaration is the only thing that can rule that out (docs/271). The
+    // assertion below is about THAT deployment, and it read as environmental
+    // truth until this suite ran inside a container that sets the var.
+    const orig = process.env.SHIPIT_SESSION_WORKER_UID;
+    try {
+      delete process.env.SHIPIT_SESSION_WORKER_UID;
+      const p = write(`services:\n  web:\n    image: postgres:17\n`);
+      expect(() => parseComposeFile(p, { dockerSocket: false, containEgress: true })).toThrow("numeric, non-root");
+      expect(() => parseComposeFile(p, { dockerSocket: false })).not.toThrow();
+      const safe = write(`services:\n  web:\n    image: app:test\n    user: "1001:1001"\n`);
+      expect(() => parseComposeFile(safe, { dockerSocket: false, containEgress: true })).not.toThrow();
+      const reserved = write(`services:\n  web:\n    image: app:test\n    user: "911"\n`);
+      expect(() => parseComposeFile(reserved, { dockerSocket: false, containEgress: true })).toThrow("reserved UID");
+    } finally {
+      if (orig === undefined) delete process.env.SHIPIT_SESSION_WORKER_UID;
+      else process.env.SHIPIT_SESSION_WORKER_UID = orig;
+    }
+  });
+
+  // docs/271 — the rule above is about the uid a contained service RUNS as, and
+  // a declaration is only one way to have one. Where ShipIt fills in the session
+  // identity, demanding a declaration on top of it was not a second safeguard:
+  // it was unsatisfiable. The uid the project would have to name to be correct is
+  // the session's own, and naming that one is refused by the range rule — so a
+  // contained project could only choose between a compose file refused whole and
+  // services that could not write their own workspace (github#2374).
+  it("accepts an undeclared user in contained mode when ShipIt supplies the identity", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "compose-contained-fillin-"));
+    const file = path.join(dir, "docker-compose.yml");
+    fs.writeFileSync(file, `services:\n  web:\n    image: postgres:17\n`);
+    const orig = process.env.SHIPIT_SESSION_WORKER_UID;
+    try {
+      process.env.SHIPIT_SESSION_WORKER_UID = "2000006";
+      expect(() => parseComposeFile(file, { dockerSocket: false, containEgress: true })).not.toThrow();
+      // The range rule still refuses a DECLARED session uid — this relaxes what
+      // ShipIt demands of the project, not what the project may say.
+      fs.writeFileSync(file, `services:\n  web:\n    image: app:test\n    user: "2000006"\n`);
+      expect(() => parseComposeFile(file, { dockerSocket: false, containEgress: true }))
+        .toThrow("reserves for per-session identities");
+      // And root is still refused, because a fill-in is what makes an undeclared
+      // service non-root and this service is not undeclared.
+      fs.writeFileSync(file, `services:\n  web:\n    image: app:test\n    user: "0"\n`);
+      expect(() => parseComposeFile(file, { dockerSocket: false, containEgress: true }))
+        .toThrow("numeric, non-root");
+    } finally {
+      if (orig === undefined) delete process.env.SHIPIT_SESSION_WORKER_UID;
+      else process.env.SHIPIT_SESSION_WORKER_UID = orig;
+    }
   });
 
   // ShipIt's own stack has to obey ShipIt's own rule. It stopped obeying it the
@@ -1442,6 +1489,84 @@ describe("generateComposeOverride — session-worker UID (#1646)", () => {
     );
     const doc = parseYaml(override) as { services: Record<string, { user?: string }> };
     expect(doc.services.emulator.user).toBeUndefined();
+  });
+
+  // docs/271 — a service ShipIt does NOT get to name the uid of still has to be
+  // able to write the workspace, and the group is the only channel left: the
+  // workspace is owned by the session uid, and this service is deliberately not
+  // it. Without the supplementary group, an image with a baked-in account
+  // (`1300:1301`) is outside the session's group entirely, so no amount of
+  // group-write on the tree reaches it.
+  it("adds the session group to a service that declares its own user", () => {
+    process.env.SHIPIT_SESSION_WORKER_UID = "1000";
+    const override = generateComposeOverride(
+      [{ name: "emulator", ports: ["6080:6080"], user: "1300:1301" }],
+      baseOpts,
+    );
+    const doc = parseYaml(override) as {
+      services: Record<string, { user?: string; group_add?: string[] }>;
+    };
+    // The uid stays the project's choice — req 4, unchanged.
+    expect(doc.services.emulator.user).toBeUndefined();
+    expect(doc.services.emulator.group_add).toEqual(["1000"]);
+  });
+
+  it("does not add a group to a service it runs as the session identity", () => {
+    process.env.SHIPIT_SESSION_WORKER_UID = "1000";
+    const override = generateComposeOverride([{ name: "web", ports: ["5173:5173"] }], baseOpts);
+    const doc = parseYaml(override) as {
+      services: Record<string, { user?: string; group_add?: string[] }>;
+    };
+    // Its primary gid already IS the session group — a supplementary copy of it
+    // would be noise in every generated file.
+    expect(doc.services.web.user).toBe("1000:1000");
+    expect(doc.services.web.group_add).toBeUndefined();
+  });
+
+  // docs/271 review finding A1. Validation trimmed before testing for absence,
+  // so it read `user: ""` as "declared nothing" and admitted it under
+  // containment; generation kept the empty string, so it read the same service as
+  // "declared something" and skipped the fill-in. The empty value then reached
+  // the daemon, which resolves it to the image default — root, on the usual
+  // images. Both readers must answer the same question the same way.
+  it("treats an empty user: as absent, and fills in the identity rather than leaving root", () => {
+    process.env.SHIPIT_SESSION_WORKER_UID = "2000006";
+    for (const declared of ['""', '"   "']) {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "compose-empty-user-"));
+      const file = path.join(dir, "docker-compose.yml");
+      fs.writeFileSync(file, `services:\n  web:\n    image: node:22-alpine\n    user: ${declared}\n`);
+      const services = parseComposeFile(file, { dockerSocket: false, containEgress: true });
+      const override = generateComposeOverride(services, { ...baseOpts, containEgress: true });
+      const doc = parseYaml(override) as {
+        services: Record<string, { user?: string; group_add?: string[] }>;
+      };
+      // Filled in — NOT left for the image default to decide.
+      expect(doc.services.web.user).toBe("2000006:2000006");
+      expect(doc.services.web.group_add).toBeUndefined();
+    }
+  });
+
+  // docs/271 review finding A2. `sessionWorkerUid()` returns 0 as a number
+  // (it rejects only a negative), so a deployment that sets the var to 0 would
+  // have had the fill-in emit `user: "0:0"` — root under containment. That
+  // deployment failed closed before the relaxation and must keep failing closed.
+  it("refuses an undeclared contained service when the fill-in would be root", () => {
+    process.env.SHIPIT_SESSION_WORKER_UID = "0";
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "compose-root-fillin-"));
+    const file = path.join(dir, "docker-compose.yml");
+    fs.writeFileSync(file, `services:\n  web:\n    image: node:22-alpine\n`);
+    expect(() => parseComposeFile(file, { dockerSocket: false, containEgress: true }))
+      .toThrow("numeric, non-root");
+  });
+
+  it("adds no group in legacy all-root mode, where there is no session group", () => {
+    delete process.env.SHIPIT_SESSION_WORKER_UID;
+    const override = generateComposeOverride(
+      [{ name: "emulator", ports: ["6080:6080"], user: "1300:1301" }],
+      baseOpts,
+    );
+    const doc = parseYaml(override) as { services: Record<string, { group_add?: string[] }> };
+    expect(doc.services.emulator.group_add).toBeUndefined();
   });
 });
 

@@ -291,7 +291,9 @@ describe("the phase-3 gate, wired end to end (reqs 13, 15)", () => {
     writeConfig(declareProbe);
     fs.writeFileSync(
       path.join(workspaceDir, "docker-compose.yml"),
-      "services:\n  web:\n    image: node:22-alpine\n",
+      // A declared root user — the rule-based refusal this test is about. It was
+      // an absent `user:` until docs/271 stopped refusing that.
+      'services:\n  web:\n    image: node:22-alpine\n    user: "0"\n',
     );
 
     await activateDeclaredPlugins("sess", workspaceDir, {

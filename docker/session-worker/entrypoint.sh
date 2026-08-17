@@ -60,12 +60,55 @@ fi
 # `find … -prune` on the paths above, `-exec chown -h` on everything else. `-h`
 # so a symlink is chowned in place and never followed out of the tree, matching
 # the `lchown` the orchestrator-side helpers use.
+#
+# docs/271 — and group-writable, in a second pass over the same tree.
+#
+# A Compose service cannot run as UID_GID: ShipIt's fill-in supplies it only to a
+# service that declares no `user:`, and a project may not declare a uid in the
+# session range at all. The shared GROUP is therefore the only channel between a
+# service and the workspace it shares with the agent, and the write bit is what
+# that channel was missing — a root-materialized checkout is 0644/0755, so every
+# service in every repository could read the workspace and not write it
+# (github#2374). This is the same rule `umask 002` below already applies to files
+# created after boot, applied to the ones that existed before it.
+#
+# Safe for the same reason the umask is: the session directory is 0700, so
+# group-writable files inside a session are unreachable to every uid outside it.
+#
+# SEPARATE passes rather than more `-exec`s on the one above, because the three
+# differ on what they may touch. `chown -h` must reach a symlink and stop there;
+# `chmod` has no `-h` and follows one, so it would rewrite whatever the link
+# points at — possibly outside the tree — and both mode passes therefore select
+# `-type d` / `-type f`, which excludes symlinks on their own. The git-object
+# prune is kept for the FILE pass and for the same reason it exists above: a mode,
+# like an owner, belongs to the inode, and those inodes are hardlinked into the
+# shared bare cache and every sibling clone. Object DIRECTORIES are moded, exactly
+# as they are chowned, so the worker can still add an object to a fanout dir.
+#
+# Best-effort (`|| true`), unlike the chown: this script runs under `set -e`, and
+# a boot must not die over a file mode on a filesystem that will not take one.
+#
+# The object patterns are anchored at the TOP-LEVEL `.git`, so a submodule's
+# `.git/modules/<name>/objects` is not pruned — matching the chown above, and
+# harmless for the same reason: `git clone --local` hardlinks only the top-level
+# object store from the bare cache, so a submodule's objects are this session's
+# own. Revisit both if the bare cache ever starts carrying submodule objects.
 chown_workspace() {
   d="$1"
   find "$d" \
     \( -path "$d/.pnpm-store" \) -prune -o \
     \( \( -path "$d/.git/objects/*" -o -path "$d/.git/lfs/objects/*" \) -type f \) -prune -o \
     -exec chown -h "${UID_GID}:${WORKER_GID}" {} +
+  # Directories: group write + traverse, and setgid so an entry a Compose service
+  # creates inherits the shared group instead of that service's own.
+  find "$d" \( -path "$d/.pnpm-store" \) -prune -o \
+    -type d -exec chmod g+rwxs {} + || true
+  # Files: group write, and group execute ONLY where some class already has it
+  # (`X`), so nothing becomes executable that was not.
+  find "$d" \
+    \( -path "$d/.pnpm-store" \) -prune -o \
+    \( \( -path "$d/.git/objects/*" -o -path "$d/.git/lfs/objects/*" \) -type f \) -prune -o \
+    -type f -exec chmod g+rwX {} + || true
 }
 
 # Only the writable runtime mounts + the runtime home. NEVER chown /app,

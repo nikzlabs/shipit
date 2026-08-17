@@ -606,8 +606,19 @@ export function parseComposeFile(
 
     // Preserve an explicit `user:` so the override doesn't clobber it. Compose
     // accepts string (`node`, `1000:1000`) and bare-number forms.
-    const user =
+    //
+    // An EMPTY or whitespace-only value normalizes to `undefined`, i.e. to "the
+    // project declared nothing" — which is what it means, and what both readers
+    // must agree it means. docs/271 gave the two readers different answers for a
+    // moment: validation trimmed before testing for absence and so admitted
+    // `user: ""` as a fill-in case, while this kept the empty string, so the
+    // fill-in was skipped and the empty value reached the daemon as the image
+    // default — root, on the usual images, in a CONTAINED session. `user: null`
+    // was already normalized here and was safe throughout; only the empty string
+    // could split the two. One normalization, read by both (review finding A1).
+    const rawUser =
       typeof svc.user === "string" || typeof svc.user === "number" ? String(svc.user) : undefined;
+    const user = rawUser?.trim() ? rawUser : undefined;
 
     result.push({
       name,
@@ -1338,11 +1349,40 @@ export function validateServiceSecurity(
     const containedUser = typeof svc.user === "string" || typeof svc.user === "number"
       ? String(svc.user).trim()
       : "";
+    // docs/271 — what containment needs is a numeric, non-root, non-reserved
+    // runtime UID (docs/263: so repository code can neither be root nor assume a
+    // UID the namespace firewall exempts). A DECLARATION is one way to have one.
+    // ShipIt's own fill-in is the other, and it is the better one: an allocated
+    // session identity is non-root and outside 911/912 by construction, so it
+    // satisfies the rule without asking the project to be right about it.
+    //
+    // Requiring the declaration anyway is what broke every repository. The
+    // fill-in supplies THIS session's uid, and a project may not declare that uid
+    // — req 4a above refuses the whole session range. So a contained project had
+    // two options and both failed: declare nothing and have its entire compose
+    // file refused, or declare some other uid and get services that cannot write
+    // the workspace they share with the agent. `compose.md` documented the first
+    // half of the trap in the same breath as the rule ("Services share the
+    // agent's user … Avoid setting `user:`"), which is what github#2374 caught.
+    //
+    // The group-write half of the fix (`session-worker-uid.ts`) is what keeps a
+    // DELIBERATE declaration working. This is what stops one being demanded.
+    // `> 0`, not merely "set": `sessionWorkerUid()` rejects a negative value but
+    // returns 0 as a number, and a deployment with `SHIPIT_SESSION_WORKER_UID=0`
+    // would have the fill-in emit `user: "0:0"` — root, under containment, which
+    // is the one thing docs/263's rule exists to prevent. That deployment used to
+    // fail closed here (no declaration, whole file refused) and must keep doing
+    // so. Checked at this gate rather than by tightening `sessionWorkerUid()`,
+    // whose 0 is read as "legacy root runtime" by the drift guard and by every
+    // chown helper (review finding A2).
+    const fillInUid = sessionWorkerUid();
+    const shipitFillsIn = containedUser === "" && fillInUid !== null && fillInUid > 0;
     const containedUid = /^\d+(?::\d+)?$/.test(containedUser)
       ? Number(containedUser.split(":", 1)[0])
       : NaN;
-    if (!Number.isInteger(containedUid) || containedUid <= 0
-      || containedUid === EGRESS_RESOLVER_UID || containedUid === EGRESS_PROXY_UID) {
+    if (!shipitFillsIn
+      && (!Number.isInteger(containedUid) || containedUid <= 0
+        || containedUid === EGRESS_RESOLVER_UID || containedUid === EGRESS_PROXY_UID)) {
       throw new ComposeValidationError(
         `Service \`${name}\`: contained services must declare a numeric, non-root \`user:\` `
         + `that is not reserved UID ${EGRESS_RESOLVER_UID} or ${EGRESS_PROXY_UID}. `
@@ -1740,6 +1780,32 @@ export function generateComposeOverride(
       || (!opts.containEgress && svc.name === "docker-socket-proxy");
     if (workerUid !== null && svc.user === undefined && !preservesImageStartupUser) {
       entry.user = `${workerUid}:${workerGid}`;
+    } else if (workerGid !== null && svc.user !== undefined && !preservesImageStartupUser) {
+      // docs/271 — a DELIBERATE `user:` keeps its uid (req 4 — we never override
+      // that choice) and gains the session group as a supplementary group, which
+      // is the only way it can write the workspace it shares with the agent.
+      //
+      // The workspace is owned by this session's uid and made group-writable by
+      // `chownWorktreeRecursive`, with the shared gid as its group. A declared
+      // user that happens to name that gid already reached it; one that names its
+      // own (`user: "1300:1301"`, an image's baked-in account) did not, and no
+      // amount of group-write on the tree would have helped it. `group_add` is
+      // the piece that makes the group channel available to BOTH shapes rather
+      // than only to the lucky spelling.
+      //
+      // Additive and capability-free — but NOT because that gid owns only this
+      // session's workspace. It does not: the shared gid is exactly what makes
+      // the cross-session surfaces writable to every session (docs/270 req 9 —
+      // the dep cache, the pnpm store, the overlay dependency base). What makes
+      // this safe is that a service container cannot ADDRESS any of them: none is
+      // mounted into one, and a project's own bind mounts are restricted to
+      // relative workspace paths. So the reachable set is this session's tree.
+      //
+      // Stated this way on purpose. Mounting a shared surface into a service
+      // container would turn this line into a cross-session write channel, and a
+      // comment claiming the gid owns nothing else would have hidden that from
+      // whoever adds the mount (review finding B).
+      entry.group_add = [String(workerGid)];
     }
 
     // Strip host port bindings — compose services are accessed through

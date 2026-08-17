@@ -35,17 +35,21 @@ services:
       # block below — both name the same image tag, so whichever built last would
       # silently win a disagreement.
     image: shipit-dogfood:local
-    # REQUIRED in a Contained session (docs/263). A contained service must
-    # declare a numeric, non-root runtime UID that is not the reserved resolver
-    # (911) or proxy (912) UID; `compose-generator.ts` rejects the whole file
-    # otherwise, so one undeclared service stops every other service too.
+    # 1000:1000 is NOT the workspace owner, and since docs/270 it cannot be: the
+    # session UID is per-session and a project may not name it. This service
+    # reaches the workspace through the shared GROUP instead — gid 1000, which
+    # docs/271 made group-writable — and that is why it can create
+    # `.inner-shipit/` and its Vite cache again. Before that fix this line was
+    # simply wrong and the inner orchestrator never started.
     #
-    # 1000 is not a free choice here: it is the `shipit` user the session-worker
-    # image drops to (docs/150 §7), it owns the bind-mounted workspace this
-    # service writes into (`.inner-shipit/`, the Vite cache), and it is exactly
-    # what the generator used to inject for a service with no `user:`. So this
-    # line changes nothing about how the service runs — it states what was
-    # already true, in the form containment can verify before start.
+    # KEPT rather than deleted, though docs/271 also stopped requiring it. An
+    # orchestrator that predates the fix still refuses a contained service with no
+    # `user:` — and refuses the WHOLE file, stopping every other service too — so
+    # deleting this line would break dogfooding on every session until the fix is
+    # deployed everywhere. Drop it (here and in `onboarding`, `sdk-test`,
+    # `android`) once that has happened: with no `user:` ShipIt fills in the
+    # session's own identity, and files this service writes become agent-owned
+    # outright instead of merely group-reachable.
     user: "1000:1000"
     # No `npm install` here anymore. The `dev` service now shares the agent
     # container's /workspace/node_modules (see volumes below), which
@@ -390,8 +394,7 @@ services:
   # fix can be verified in production ShipIt before the orchestrator ships it.
   sdk-test:
     image: node:24-slim
-    # Same UID, same reason as `dev` above. node images already carry a `node`
-    # user at 1000, so the image runs directly as this UID.
+    # Same UID, same reason as `dev` above — see the note there.
     user: "1000:1000"
     working_dir: /workspace
     init: true
@@ -502,9 +505,9 @@ services:
     init: true
     # Unlike `emulator` above, this service deliberately KEEPS ShipIt's
     # session-worker UID: it writes Gradle build output into the shared workspace,
-    # so matching the agent's UID is exactly what we want (docs/150 §7). It used
-    # to get that UID by injection (no `user:` here); a Contained session needs it
-    # declared, so it is now stated instead of inferred. Same value, same effect.
+    # so matching the agent's UID is exactly what we want (docs/150 §7). It gets
+    # that UID through the shared group, not by owning the tree — see the `dev`
+    # note above for why 1000 is no longer the owner and why this line stays.
     user: "1000:1000"
     # That UID has no home directory inside this image, and both Gradle and adb need a
     # writable HOME for their caches/keys — so point them at the (UID-owned)

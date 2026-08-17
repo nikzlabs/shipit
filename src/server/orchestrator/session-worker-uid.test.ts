@@ -358,6 +358,60 @@ describe("session-worker-uid (docs/150 §7)", () => {
       }
     });
 
+    // docs/271 / github#2374 — the walk above chowned the checkout and never
+    // touched its mode, so a root-materialized tree stayed 0644/0755. A Compose
+    // service cannot be the owner (its uid is either ShipIt's fill-in or one the
+    // project declared, and the session range is refused to projects), so the
+    // group is the only channel it has — and without the write bit that channel
+    // carried nothing. Three Vite dev servers died at once on a config-bundle
+    // temp file they could not create next to their own config.
+    it("handWorkspaceBackToWorker leaves the worktree group-writable for compose services", () => {
+      const myUid = process.getuid?.();
+      if (myUid === undefined) return; // not POSIX — skip
+      process.env.SHIPIT_SESSION_WORKER_UID = String(myUid);
+      const topFile = path.join(tmpDir, "vite.config.ts");
+      const nestedFile = path.join(tmpDir, "src", "App.tsx");
+      fs.mkdirSync(path.dirname(nestedFile), { recursive: true });
+      fs.writeFileSync(topFile, "{}");
+      fs.writeFileSync(nestedFile, "x");
+      // The modes a root orchestrator's clone/checkout leaves under umask 022.
+      fs.chmodSync(tmpDir, 0o755);
+      fs.chmodSync(topFile, 0o644);
+      fs.chmodSync(path.dirname(nestedFile), 0o755);
+      fs.chmodSync(nestedFile, 0o644);
+
+      handWorkspaceBackToWorker(tmpDir);
+
+      const mode = (p: string) => fs.lstatSync(p).mode & 0o7777;
+      // Files: group write, and nothing became executable.
+      expect(mode(topFile)).toBe(0o664);
+      expect(mode(nestedFile)).toBe(0o664);
+      // Directories: group write + traverse, and setgid so an entry the service
+      // creates inherits the shared group rather than the service's own.
+      expect(mode(tmpDir)).toBe(0o2775);
+      expect(mode(path.dirname(nestedFile))).toBe(0o2775);
+    });
+
+    it("group-write does not make a non-executable file executable", () => {
+      const myUid = process.getuid?.();
+      if (myUid === undefined) return; // not POSIX — skip
+      process.env.SHIPIT_SESSION_WORKER_UID = String(myUid);
+      const script = path.join(tmpDir, "build.sh");
+      const plain = path.join(tmpDir, "README.md");
+      fs.writeFileSync(script, "");
+      fs.writeFileSync(plain, "");
+      fs.chmodSync(script, 0o755);
+      fs.chmodSync(plain, 0o600);
+
+      handWorkspaceBackToWorker(tmpDir);
+
+      const mode = (p: string) => fs.lstatSync(p).mode & 0o7777;
+      // `X`, not `x`: an already-executable file keeps group execute…
+      expect(mode(script)).toBe(0o775);
+      // …and one that was executable for nobody gains only read+write.
+      expect(mode(plain)).toBe(0o660);
+    });
+
     it("handWorkspaceBackToWorker honors agent.dep-dirs from shipit.yaml", () => {
       const myUid = process.getuid?.();
       if (myUid === undefined) return; // not POSIX — skip
