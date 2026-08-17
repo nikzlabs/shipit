@@ -95,6 +95,12 @@
     display: inline-flex; align-items: center; justify-content: center; color: #fff; font-size: 13px;
   }
   .glyph { width: 13px; height: 13px; display: inline-block; vertical-align: -2px; }
+  /*
+   * Mode glyph. Text presentation only — every glyph on this page is monochrome,
+   * so an emoji here is the one thing that does not belong to the palette.
+   * Stands in for Phosphor's FastForward, which is what the real control uses.
+   */
+  .mg { font-size: 9px; letter-spacing: -1px; color: var(--text-tertiary); font-variant-emoji: text; }
 
   /* ---- menu ---- */
   .menu {
@@ -187,7 +193,7 @@
         <div class="composer">
           <div class="field">Describe what you want to build…</div>
           <div class="toolbar">
-            <span class="chip">⚡ Auto <span class="car">▾</span></span>
+            <span class="chip"><span class="mg">&#9656;&#9656;</span> Auto <span class="car">▾</span></span>
             <span class="chip">Claude Code <span class="car">▾</span></span>
             <span class="chip model">Opus 5 <span class="car">▾</span></span>
             <span class="chip">Think <span class="car">▾</span></span>
@@ -201,7 +207,7 @@
         <div class="composer">
           <div class="field">Describe what you want to build…</div>
           <div class="toolbar">
-            <span class="chip">⚡ Auto <span class="car">▾</span></span>
+            <span class="chip"><span class="mg">&#9656;&#9656;</span> Auto <span class="car">▾</span></span>
             <span class="chip">Claude Code <span class="car">▾</span></span>
             <span class="chip model">
               Opus 5 <span class="sep">·</span>
@@ -219,7 +225,7 @@
         <div class="composer">
           <div class="field">Describe what you want to build…</div>
           <div class="toolbar">
-            <span class="chip">⚡ Auto <span class="car">▾</span></span>
+            <span class="chip"><span class="mg">&#9656;&#9656;</span> Auto <span class="car">▾</span></span>
             <span class="chip">Claude Code <span class="car">▾</span></span>
             <span class="chip model">Opus 5 <span class="car">▾</span></span>
             <span class="chip">Think <span class="car">▾</span></span>
@@ -351,7 +357,7 @@
 
       <div>
         <div class="phone">
-          <div class="rootrow"><span>⚡</span><span class="lab">Mode</span><span class="val">Auto</span><span class="car">›</span></div>
+          <div class="rootrow"><span class="mg">&#9656;&#9656;</span><span class="lab">Mode</span><span class="val">Auto</span><span class="car">›</span></div>
           <div class="rootrow"><span>◆</span><span class="lab">Role</span><span class="val accent">Deep dive</span><span class="car">›</span></div>
           <div class="rootrow"><span>▣</span><span class="lab">Harness</span><span class="val">Claude Code</span><span class="car">›</span></div>
           <div class="rootrow"><span>◇</span><span class="lab">Model</span><span class="val">Opus 5</span><span class="car">›</span></div>
