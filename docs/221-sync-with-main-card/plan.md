@@ -44,7 +44,7 @@ Best-effort: any failure logs and the rebase proceeds. Runs on every success pat
 (up-to-date, clean, conflicts-resolved) and on the automatic
 conflict-resolve-on-idle path too — it's plain correctness.
 
-### Persisted "Synced with `<base>`" card (manual route only)
+### Persisted "Synced with `<base>`" card
 
 The card is a sibling of the docs/218 `branchAutoReset` card, wired through the
 same persistence stack so it survives a switch/reload (`BranchSyncedCard` shared
@@ -55,10 +55,28 @@ column + migration → `toRow`/`fromRow` → `CARD_MESSAGE_FIELDS` → client ha
 The clean-rebase path is **not** an agent turn, so `emitChatCard` (which assumes
 an in-progress turn) doesn't fit. `emitSyncCard` instead appends directly to chat
 history **and** broadcasts over WS, sharing one `cardId` that the client handler
-dedupes on (the `emitNoticePostTurn` shape). It's gated on a new
-`RebaseDriverDeps.recordSyncCard`, set **true only by the manual rebase route**
-(`api-routes-git.ts`) — the automatic conflict-resolve path keeps its own
-`auto_resolve_result` envelopes and gains no card.
+dedupes on (the `emitNoticePostTurn` shape). The append is best-effort: by the
+time it runs the branch has been rewritten and pushed, so a failed history write
+must not report that as a failed sync — and on the automatic path it would
+additionally burn an attempt.
+
+**On the two paths that actually rewrote the branch — clean rebase and
+conflicts-resolved — the card is unconditional** (2026-08-17 incident, session
+590c19aa). It was originally gated on `RebaseDriverDeps.recordSyncCard`, set true
+only by the manual route, on the reasoning that the automatic conflict-resolve
+path keeps its own `auto_resolve_result` envelopes. But those are transient WS
+state that renders nothing in the transcript, so the automatic path left **no
+durable record at all**: a user whose branch was rebased, whose conflicts were
+resolved by an agent they never asked for, and whose history was force-pushed,
+saw the conflict prompt scroll past and then nothing. That is the case that needs
+the reassurance most, not least. The card lands last, after everything else the
+flow emitted (including any warning it raised on the way), which is the only
+order in which "it finished, your branch is fine" reassures anyone.
+
+`recordSyncCard` survives as "a human asked for this sync out of band", and still
+gates two narrower things: the **agent-facing notice** below, and the card on the
+**up-to-date** path — a manual sync confirms "already current" as a record of the
+action the user took, while an automatic no-op has no action to confirm.
 
 Every manual sync emits the card, including when the branch and local base were
 already current. This gives the menu action one durable confirmation in every PR
@@ -100,10 +118,12 @@ needs telling.
 Two writers, both gated on "a human asked for this, out of band":
 
 - **`runRebaseFlow`** (`buildBranchSyncAgentNotice`) on the two paths where the
-  branch actually **moved** — clean rebase and conflicts-resolved — under the same
-  `recordSyncCard` flag as the card. A sync that only fast-forwarded the local
-  `<base>` ref leaves the working tree byte-identical, so there is nothing to warn
-  about, and the auto-conflict-resolve path stays silent as before.
+  branch actually **moved** — clean rebase and conflicts-resolved — still gated on
+  `recordSyncCard`, which the card on those paths no longer is. A sync that only
+  fast-forwarded the local `<base>` ref leaves the working tree byte-identical, so
+  there is nothing to warn about, and the auto-conflict-resolve path stays silent:
+  its own conflict-resolution turns ran *inside* the rewrite, so nothing about the
+  agent's view of the repository arrived from outside the session.
 - **`POST /branch/reset-to-base`** (`buildManualResetAgentNotice`, via
   `recordManualResetAgentNotice`) — the merged fork of the *same* "Sync with
   `<base>`" menu item. `runner.running` discriminates this route's two callers:
@@ -141,9 +161,10 @@ to. The notice stays pending and the user's next real turn gets it.
 - `git-sync.test.ts` — `forceUpdateBranchRef` moves a non-current branch without
   switching HEAD; `getRefHash` resolves / returns null.
 - `rebase-driver.test.ts` (docs/221 block) — manual sync emits + persists the card
-  and advances local `main`; auto path emits no card but still moves `main`;
-  up-to-date-but-base-behind moves `main`, emits the card, flags `baseMoved`;
-  truly-up-to-date emits no card.
+  and advances local `main`; the **auto path emits + persists it too**, and on an
+  automatic conflict resolution the card is the **last** row in history; a failed
+  card write does not fail the rebase; up-to-date-but-base-behind moves `main`,
+  emits the card, flags `baseMoved`; truly-up-to-date emits no card.
 - `chat-history.test.ts` — `branchSynced` in `EVERY_OPTIONAL_FIELD_MESSAGE`
   (self-enforcing via `CARD_MESSAGE_FIELDS`) round-trips.
 - `branch-synced-card.test.ts` — live append, idempotent by `cardId`.
@@ -158,8 +179,13 @@ to. The notice stays pending and the user's next real turn gets it.
 
 ## Out of scope
 
-- Surfacing the card on the automatic conflict-resolve-on-idle path (kept to its
-  existing `auto_resolve_result` envelopes).
+- ~~Surfacing the card on the automatic conflict-resolve-on-idle path (kept to its
+  existing `auto_resolve_result` envelopes).~~ **Reversed (2026-08-17 incident).**
+  `auto_resolve_result` is transient client state that renders nothing in the
+  transcript, so "it keeps its own envelopes" amounted to leaving no record at
+  all of a rebase the user never asked for. The card is now unconditional on the
+  two paths that rewrote the branch; only the agent-facing notice and the
+  up-to-date card stay gated on `recordSyncCard`.
 - Moving local base for non-rebase flows (only the sync/rebase entry point).
 - ~~Draining the pending agent notice on **dispatched** turns (CI auto-fix,
   `shipit session message`). Same scope boundary docs/218 drew: a human resuming

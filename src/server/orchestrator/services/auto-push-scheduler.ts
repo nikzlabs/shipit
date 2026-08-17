@@ -67,6 +67,56 @@
  * reaches the log ring and the server log — the suppression is on the transcript
  * only.
  *
+ * ## …unless ShipIt itself is mid-rewrite, in which case it is not news
+ *
+ * The 2026-08-17 incident (session 590c19aa): a turn committed, which armed this
+ * push; 1.2s later the auto-conflict-resolve-on-idle path started a rebase; the
+ * debounced push fired 4s into it and produced the full alarming notice above —
+ * recovery commands, `shipit branch reset-to-base --force` and all — for a
+ * branch the rebase driver force-pushed 23 seconds later and which was fine
+ * throughout.
+ *
+ * **What the push actually did is worth stating, because it is not what "the
+ * branch diverged" suggests** (reproduced in a scratch repo, git 2.x, the
+ * pinned simple-git): mid-rebase the workspace is on a DETACHED HEAD, so
+ * `git status --porcelain -b` reports `## HEAD (no branch)` and
+ * `GitManager.getCurrentBranch()` returns the literal `"HEAD"`. `pushToOrigin`
+ * then runs `git push origin HEAD --set-upstream`, which git refuses outright —
+ * *"The destination you provided is not a full refname"* — and ends with
+ * `error: failed to push some refs`. That last line is one of
+ * `isNonFastForwardError`'s four patterns, so a push that never reached the
+ * remote at all was reported as a divergence. The session branch was never
+ * even the target.
+ *
+ * So the auto-push has no business running mid-rebase, exactly as the auto-COMMIT
+ * side already concluded (`shared/git.ts` consults `isRebaseInProgress()` and
+ * refuses). Two checks, deliberately asymmetric, because the two signals are not
+ * interchangeable:
+ *
+ *  - **Before the push, `git.isRebaseInProgress()` alone.** Exact, and during a
+ *    real rebase the push provably cannot do anything useful — there is no
+ *    branch for it to target. Costs one `git rev-parse` on a path that is about
+ *    to make a network round-trip.
+ *  - **At a non-fast-forward rejection, that OR `runner.systemTurnInProgress`.**
+ *    The flag is held for the WHOLE rebase flow (planning#338), which is what covers
+ *    the gap between `git rebase --continue` finishing and `tryForcePush`
+ *    publishing — 2 seconds in the incident, and a window git itself reports as
+ *    clean. But the flag is generic: CI auto-fix, wake turns and prepared
+ *    dispatch hold it too, and none of those rewrite history. Consulting it
+ *    only at a rejection is what keeps that breadth harmless — it can delay a
+ *    warning about a push that FAILED, never a push that would have succeeded.
+ *
+ * A deferred push is RE-ARMED, not dropped. The rebase driver's own force-push
+ * usually publishes the commit anyway, but not on the abort path: an aborted
+ * rebase restores the pre-rebase branch and pushes nothing, and the commit this
+ * timer carries would then have pushed cleanly. Retrying is what keeps that
+ * commit from going the way of the nine the incident above cost us. The retry is
+ * bounded ({@link MAX_PUSH_DEFERRALS}) so a wedged `systemTurnInProgress` cannot
+ * silence the real notice forever — past the cap the rejection is reported
+ * normally, and a genuine divergence that arises during a long system turn is
+ * delayed by at most that cap. Every deferral still reaches all three log
+ * surfaces; only the transcript notice and the client rebase banner are withheld.
+ *
  * ## One body, two callers
  *
  * The WS path (`route-registry.ts`) and the system-turn path
@@ -152,6 +202,32 @@ export function formatDivergedPushNotice(branch: string | null): string {
   );
 }
 
+/**
+ * How long to wait before retrying a push that was rejected while ShipIt's own
+ * history rewrite was still in flight.
+ *
+ * Deliberately longer than the post-turn debounce: the deferred push is a
+ * BACKSTOP (the rebase driver's own force-push publishes the commit on every
+ * path except an abort), so latency costs nothing, while a 5s retry against a
+ * ten-minute conflict-resolution turn would put a hundred identical lines in the
+ * operator's log — the noise this module's own dedup reasoning warns about.
+ */
+export const PUSH_DEFER_RETRY_MS = 30_000;
+
+/**
+ * How many times one push may be deferred before its rejection is reported as an
+ * ordinary divergence. At {@link PUSH_DEFER_RETRY_MS} that is ~15 minutes —
+ * comfortably past `AUTO_RESOLVE_ATTEMPT_TIMEOUT_MS` (10 min), the longest
+ * legitimate rewrite window there is.
+ *
+ * The cap exists because the cheap signal is a mutable flag: a
+ * `systemTurnInProgress` that never gets cleared would otherwise downgrade every
+ * future rejection on that session to a log line, which is this module's
+ * original bug wearing a hat. Past the cap we go loud — a spurious warning about
+ * a healthy branch is recoverable, a swallowed one is not.
+ */
+export const MAX_PUSH_DEFERRALS = 30;
+
 /** What the push body needs. All session-keyed — none of it is runner-scoped. */
 export interface AutoPushDeps {
   /** Debounce window before an armed push fires. */
@@ -224,6 +300,19 @@ export function createAutoPushScheduler(deps: AutoPushDeps): AutoPushScheduler {
    * safe direction: a repeated warning about a real problem, not a swallowed one.
    */
   const notifiedDiverged = new Set<string>();
+  /**
+   * How many times the current push has been deferred because a history rewrite
+   * was in flight. Cleared by the three outcomes that END a rewrite window — a
+   * push that landed, a rejection reported as a real divergence, an explicit
+   * `cancel` — so the budget is per window rather than per session lifetime.
+   *
+   * One bounded imprecision, stated rather than engineered away: a push that
+   * fails for some OTHER reason (the remote hung up, an invalid token) leaves
+   * the count standing, so the next rewrite window inherits a smaller budget.
+   * That errs toward reporting a divergence sooner, which is the safe direction
+   * for a counter whose only job is to stop a wedged flag from suppressing one.
+   */
+  const deferrals = new Map<string, number>();
 
   /**
    * Say what happened, whether or not anyone is attached — on all three
@@ -291,6 +380,44 @@ export function createAutoPushScheduler(deps: AutoPushDeps): AutoPushScheduler {
     if (!sessionId) return;
     clearTimer(sessionId);
     notifiedDiverged.delete(sessionId);
+    deferrals.delete(sessionId);
+  };
+
+  /**
+   * Arm the push timer and take the post-turn hold that keeps the session alive
+   * for it. Shared by the post-turn arm (`schedule`, at the debounce) and the
+   * rewrite-window retry (`runAutoPush`, at {@link PUSH_DEFER_RETRY_MS}) so a
+   * deferred push is armed EXACTLY like an ordinary one — same lease discipline,
+   * same reporting backstop.
+   *
+   * The re-arm from inside the timer body is hold-neutral: this call takes a
+   * fresh hold, and the firing timer's own `finally` releases the one it was
+   * armed with. `PostTurnHold` counts, so the two cannot get out of step.
+   */
+  const arm = (git: GitManager, sessionId: string, delayMs: number): void => {
+    clearTimer(sessionId);
+    // Held from ARM, not from fire: the debounce window is exactly when the
+    // idle enforcer used to reclaim the session out from under a commit that
+    // had already landed. Released in the timer's `finally` below, and bounded
+    // by `POST_TURN_HOLD_MAX_MS` so a wedged push cannot pin the container.
+    deps.getRunner(sessionId)?.beginPostTurnWork();
+    timers.set(
+      sessionId,
+      setTimeout(() => {
+        timers.delete(sessionId);
+        void runAutoPush(git, sessionId)
+          // Backstop, not the ordinary path — `runAutoPush` handles its own
+          // failures. Without it a throw from the reporting itself (a runner
+          // whose `emitMessage` fails, a listener on the token-invalidation
+          // event) becomes an unhandled rejection routed to the process-wide
+          // handler, which is precisely the swallowed-in-the-logs outcome this
+          // module exists to end.
+          .catch((err: unknown) => {
+            console.error(`[auto-push] ${sessionId}: reporting the push outcome failed:`, err);
+          })
+          .finally(() => releaseHold(sessionId));
+      }, delayMs),
+    );
   };
 
   return {
@@ -305,39 +432,79 @@ export function createAutoPushScheduler(deps: AutoPushDeps): AutoPushScheduler {
         );
         return;
       }
-      clearTimer(sessionId);
-      // Held from ARM, not from fire: the debounce window is exactly when the
-      // idle enforcer used to reclaim the session out from under a commit that
-      // had already landed. Released in the timer's `finally` below, and bounded
-      // by `POST_TURN_HOLD_MAX_MS` so a wedged push cannot pin the container.
-      deps.getRunner(sessionId)?.beginPostTurnWork();
-      timers.set(
-        sessionId,
-        setTimeout(() => {
-          timers.delete(sessionId);
-          void runAutoPush(git, sessionId)
-            // Backstop, not the ordinary path — `runAutoPush` handles its own
-            // failures. Without it a throw from the reporting itself (a runner
-            // whose `emitMessage` fails, a listener on the token-invalidation
-            // event) becomes an unhandled rejection routed to the process-wide
-            // handler, which is precisely the swallowed-in-the-logs outcome this
-            // module exists to end.
-            .catch((err: unknown) => {
-              console.error(`[auto-push] ${sessionId}: reporting the push outcome failed:`, err);
-            })
-            .finally(() => releaseHold(sessionId));
-        }, deps.debounceMs),
-      );
+      arm(git, sessionId, deps.debounceMs);
     },
     cancel,
     cancelAll(): void {
       for (const sessionId of [...timers.keys()]) cancel(sessionId);
       notifiedDiverged.clear();
+      deferrals.clear();
     },
     pending(sessionId: string): boolean {
       return timers.has(sessionId);
     },
   };
+
+  /**
+   * Is git mid-rebase right now? Exact, and the only signal safe to consult
+   * BEFORE a push, because it is the only one that guarantees the push cannot
+   * succeed (detached HEAD — see the module docstring).
+   *
+   * Fails toward LOUD: a probe that throws (an unreadable `.git`, a stub without
+   * the method) means "cannot tell", and the module's whole thesis is that an
+   * unexplained missing push must be visible.
+   */
+  async function rebaseInProgress(git: GitManager, sessionId: string): Promise<boolean> {
+    try {
+      return await git.isRebaseInProgress();
+    } catch (err) {
+      console.warn(`[auto-push] ${sessionId}: could not check for an in-flight rebase:`, err);
+      return false;
+    }
+  }
+
+  /**
+   * Hold this push back because a history rewrite is in flight, and arm a retry.
+   * Returns false — meaning "not deferred, carry on" — when the retry budget for
+   * this window is spent, so the caller falls through to its ordinary handling.
+   *
+   * One helper for both call sites (pre-push and at a rejection) so the budget,
+   * the wording and the re-arm cannot drift apart.
+   */
+  async function deferForRewrite(git: GitManager, sessionId: string): Promise<boolean> {
+    const deferred = (deferrals.get(sessionId) ?? 0) + 1;
+    // Counted even once it is over budget, and NOT reset here. Both call sites
+    // share this counter, so a cap that cleared itself on the way out would let
+    // the pre-push check spend the budget, hand the push to the rejection check,
+    // and have that start a fresh one — deferring forever in a loop, which is
+    // the swallowed-push outcome the cap exists to prevent. Only an outcome that
+    // ENDS the window clears it.
+    deferrals.set(sessionId, deferred);
+    if (deferred > MAX_PUSH_DEFERRALS) {
+      // The window never closed. Something is wedged — stop deferring and let
+      // the caller report whatever it was about to report. Said once, at the
+      // moment the budget runs out, rather than on every later attempt.
+      if (deferred === MAX_PUSH_DEFERRALS + 1) {
+        report(
+          sessionId,
+          `A history rewrite has been in flight for ${MAX_PUSH_DEFERRALS} deferred pushes `
+          + "— no longer holding this push back.",
+        );
+      }
+      return false;
+    }
+    // Quieter wording, same three surfaces. Going silent here is what the whole
+    // module argues against: an operator reading `docker logs` must still see
+    // that the commit has not reached origin yet.
+    report(
+      sessionId,
+      "Push deferred — this session's branch is being rewritten (a rebase is in flight), so a push "
+      + `now cannot land. Retrying in ${Math.round(PUSH_DEFER_RETRY_MS / 1000)}s `
+      + `(attempt ${deferred} of ${MAX_PUSH_DEFERRALS}).`,
+    );
+    arm(git, sessionId, PUSH_DEFER_RETRY_MS);
+    return true;
+  }
 
   async function runAutoPush(git: GitManager, sessionId: string): Promise<void> {
     if (!deps.githubAuthManager.authenticated) {
@@ -350,6 +517,11 @@ export function createAutoPushScheduler(deps: AutoPushDeps): AutoPushScheduler {
       );
       return;
     }
+    // Mid-rebase there is no branch to push (detached HEAD), so the attempt can
+    // only fail — and its failure text ends in "failed to push some refs", which
+    // `isNonFastForwardError` matches, which is how a push that never reached the
+    // remote came to be reported as a diverged branch. Skip it and retry.
+    if (await rebaseInProgress(git, sessionId) && await deferForRewrite(git, sessionId)) return;
     try {
       // The `onSkip` callback closes the module's last fully silent exit: both
       // of `pushToOrigin`'s null returns used to land on a bare `if (!branch)
@@ -366,8 +538,9 @@ export function createAutoPushScheduler(deps: AutoPushDeps): AutoPushScheduler {
       });
       if (!branch) return;
       // A push landed, so whatever divergence there was is over — the next one
-      // gets its own notice.
+      // gets its own notice, and the next rewrite window its own retry budget.
       notifiedDiverged.delete(sessionId);
+      deferrals.delete(sessionId);
       deps.getRunner(sessionId)?.emitMessage({
         type: "github_push_result",
         success: true,
@@ -382,6 +555,19 @@ export function createAutoPushScheduler(deps: AutoPushDeps): AutoPushScheduler {
       deps.notifyAutoPush?.(sessionId);
     } catch (err) {
       if (isNonFastForwardError(err)) {
+        // …but is the rejection OURS, and still in flight? Two shapes reach
+        // here: a rebase that started between the pre-push check and the push,
+        // and — the one only the flag can see — the seconds between `git rebase
+        // --continue` finishing and the driver's own force-push publishing the
+        // rewritten history. Both are healed by the flow that caused them and
+        // are nothing for the user to act on, so retry rather than warn. The
+        // generic flag is safe HERE and nowhere earlier: this push has already
+        // failed, so consulting it can only delay a warning, never a push.
+        const rewriting =
+          deps.getRunner(sessionId)?.systemTurnInProgress === true
+          || await rebaseInProgress(git, sessionId);
+        if (rewriting && await deferForRewrite(git, sessionId)) return;
+        deferrals.delete(sessionId);
         // Branch has diverged. Three surfaces, three different jobs:
         //   - `report` — the log ring (durable, replayed to a late viewer) and
         //     the server log. EVERY rejection, so the operator sees the run.

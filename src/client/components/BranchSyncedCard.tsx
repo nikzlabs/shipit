@@ -1,7 +1,10 @@
 /**
- * BranchSyncedCard — inline record that a manual "Sync with <base>" rebased the
- * session branch onto `origin/<base>` and/or fast-forwarded the session clone's
- * local `<base>` ref (docs/221).
+ * BranchSyncedCard — inline record that a sync rebased the session branch onto
+ * `origin/<base>` and/or fast-forwarded the session clone's local `<base>` ref
+ * (docs/221). Emitted by the manual "Sync with <base>" action AND by the
+ * automatic conflict-resolve-on-idle path, which is the case that most needs a
+ * durable "your branch came out of this fine" — the user never asked for it.
+ * The copy is deliberately trigger-neutral for that reason.
  *
  * Unlike the transient rebase banner/toast, this is durable scrollback: a lasting
  * record that the sync happened, with the concrete `was → now` SHAs for both the

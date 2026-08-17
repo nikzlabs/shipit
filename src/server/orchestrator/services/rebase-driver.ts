@@ -89,16 +89,28 @@ export interface RebaseDriverDeps {
    */
   drainQueue?: () => Promise<void> | void;
   /**
-   * docs/221 — emit the persisted "Synced with <base>" transcript card when the
-   * sync actually changed something (branch rebased and/or local `<base>` moved),
-   * and — when the branch itself moved — record the matching agent-facing notice
-   * for the next turn (`buildBranchSyncAgentNotice`). One flag covers both because
-   * they are the same question asked of two audiences: "did a human ask for this
-   * sync out of band, so does someone need telling?"
-   * Set true ONLY by the manual "Sync with <base>" route — the automatic
-   * conflict-resolve-on-idle path leaves it unset so it keeps its own
-   * `auto_resolve_result` envelopes and doesn't gain a surprise card. The local
-   * `<base>` fast-forward itself is unconditional (it's plain correctness).
+   * docs/221 — "a human asked for this sync out of band". Set true ONLY by the
+   * manual "Sync with <base>" route; the automatic conflict-resolve-on-idle path
+   * leaves it unset.
+   *
+   * Two things still hang off it, and one no longer does:
+   *
+   *  - **The agent-facing notice** (`buildBranchSyncAgentNotice`) — still gated.
+   *    A rebase the agent's own idle triggered is not "rewritten from outside
+   *    the session" news in the way a human's click is, and the auto path's
+   *    conflict-resolution turns already ran inside the rewrite.
+   *  - **The card on the UP-TO-DATE path** — still gated. A manual sync reports
+   *    "already current" as a durable confirmation of the action the user took;
+   *    an automatic no-op has no action to confirm and would be pure noise.
+   *  - **The card on the two paths that actually REWROTE the branch** — no
+   *    longer gated (2026-08-17 incident). It was, and the auto path's transient
+   *    `auto_resolve_result` envelope left nothing in the transcript: a user
+   *    whose branch was rebased, whose conflicts were resolved by an agent they
+   *    never asked, and whose history was force-pushed, saw the conflict prompt
+   *    and then nothing at all — no way to tell whether the branch was healthy.
+   *    That is the case that needs the reassurance MOST, not least.
+   *
+   * The local `<base>` fast-forward itself is unconditional (plain correctness).
    */
   recordSyncCard?: boolean;
   /**
@@ -196,13 +208,25 @@ async function syncLocalBaseRef(git: GitManager, baseBranch: string): Promise<Lo
 }
 
 /**
- * docs/221 — emit the persisted branch-updated card whenever a manual sync
- * completes, including when everything was already current. The clean-rebase
- * path is not an agent turn, so the card is appended
- * directly to chat history AND broadcast over WS, sharing one `cardId` the
- * client dedupes on (mirrors `emitNoticePostTurn`). Returns true when a card was
- * emitted — the caller uses that to suppress the redundant "Already up to date"
- * toast on the up-to-date path.
+ * docs/221 — emit the persisted branch-updated card that says the sync finished.
+ * The clean-rebase path is not an agent turn, so the card is appended directly
+ * to chat history AND broadcast over WS, sharing one `cardId` the client dedupes
+ * on (mirrors `emitNoticePostTurn`). Returns true when a card was emitted — the
+ * caller uses that to suppress the redundant "Already up to date" toast on the
+ * up-to-date path.
+ *
+ * Appended (not `emitChatCard`'d) because every call site runs with the flow's
+ * turns already finalized, which is the append path `emitChatCard` would pick
+ * anyway; the direct call keeps the driver free of the runner-shaped card
+ * plumbing. It lands at the current end of history, which is also its true
+ * position: it is the LAST thing the flow does, so it sits below the conflict
+ * prompt, the resolution turn, and anything the flow warned about on the way —
+ * which is the only order in which "it finished, your branch is fine" reassures
+ * anybody.
+ *
+ * Best-effort: by the time this runs the rebase has landed and, usually, been
+ * pushed. A failed history write must not turn that into a reported failure —
+ * on the automatic path it would additionally be counted as a burned attempt.
  */
 function emitSyncCard(
   deps: RebaseDriverDeps,
@@ -219,9 +243,14 @@ function emitSyncCard(
     forcePushed: opts.forcePushed,
     createdAt: new Date().toISOString(),
   };
-  chatHistoryManager.append(runner.sessionId, { role: "assistant", text: "", branchSynced: card });
-  runner.emitMessage({ type: "branch_synced_card", sessionId: runner.sessionId, card });
-  return true;
+  try {
+    chatHistoryManager.append(runner.sessionId, { role: "assistant", text: "", branchSynced: card });
+    runner.emitMessage({ type: "branch_synced_card", sessionId: runner.sessionId, card });
+    return true;
+  } catch (err) {
+    console.error("[rebase] emitting the branch-synced card failed:", getErrorMessage(err));
+    return false;
+  }
 }
 
 /**
@@ -425,9 +454,13 @@ export async function runRebaseFlow(
     if (result.status === "clean") {
       reevaluateSessionConfig(runner);
       const forcePushed = await tryForcePush(deps);
+      // The card is unconditional here: the branch WAS rewritten, on whichever
+      // trigger, and the transcript is the only surface that still says so
+      // tomorrow. Only the agent-facing notice stays gated on `recordSync` —
+      // see `RebaseDriverDeps.recordSyncCard`.
+      const headAfter = await git.getHeadHash();
+      emitSyncCard(deps, { baseBranch, headFrom: headBefore, headTo: headAfter, baseMove, forcePushed });
       if (recordSync) {
-        const headAfter = await git.getHeadHash();
-        emitSyncCard(deps, { baseBranch, headFrom: headBefore, headTo: headAfter, baseMove, forcePushed });
         recordAgentNotice(deps, { baseBranch, headFrom: headBefore, headTo: headAfter, forcePushed, resolvedConflicts: false });
       }
       runner.emitMessage({ type: "rebase_complete", sessionId: runner.sessionId, forcePushed });
@@ -522,14 +555,19 @@ export async function runRebaseFlow(
     // 7. Force push after successful resolution.
     reevaluateSessionConfig(runner);
     const forcePushed = await tryForcePush(deps);
+    // Unconditional for the same reason as the clean path — and with more force.
+    // An automatic rebase that resolved conflicts and force-pushed is exactly the
+    // sequence the user never asked for: they saw the conflict prompt scroll past
+    // and, before this card, nothing that said it ended well. The card lands
+    // after everything the flow emitted, so it reads as the conclusion it is.
+    const headAfterResolve = await git.getHeadHash();
+    emitSyncCard(deps, { baseBranch, headFrom: headBefore, headTo: headAfterResolve, baseMove, forcePushed });
+    // The conflict-resolution turns told the agent about the *conflicts*, not
+    // about the branch move that follows them — and those turns end before the
+    // continue/force-push. It still needs the same "your tree was rewritten"
+    // notice on its next turn.
     if (recordSync) {
-      const headAfter = await git.getHeadHash();
-      emitSyncCard(deps, { baseBranch, headFrom: headBefore, headTo: headAfter, baseMove, forcePushed });
-      // The conflict-resolution turns told the agent about the *conflicts*, not
-      // about the branch move that follows them — and those turns end before the
-      // continue/force-push. It still needs the same "your tree was rewritten"
-      // notice on its next turn.
-      recordAgentNotice(deps, { baseBranch, headFrom: headBefore, headTo: headAfter, forcePushed, resolvedConflicts: true });
+      recordAgentNotice(deps, { baseBranch, headFrom: headBefore, headTo: headAfterResolve, forcePushed, resolvedConflicts: true });
     }
     runner.emitMessage({ type: "rebase_complete", sessionId: runner.sessionId, forcePushed });
     return { status: "conflicts_resolved", iterations: iter, forcePushed };
