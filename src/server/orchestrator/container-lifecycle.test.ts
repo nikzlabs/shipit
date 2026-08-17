@@ -24,6 +24,11 @@ import {
 } from "./container-lifecycle.js";
 import type { ContainerConfig, SessionContainer } from "./session-container.js";
 import type { DepDirOverlaySpec } from "./overlay-session.js";
+import {
+  INSTALL_MARKER_FILE,
+  sessionSharedStateDir,
+  sessionStateDirForWorkspace,
+} from "./session-state-dir.js";
 import type { HostMount } from "../shared/shipit-config.js";
 
 // ---------------------------------------------------------------------------
@@ -926,24 +931,43 @@ describe("prepareOverlayDirs (planning#147)", () => {
   let tmpDir: string;
   const prevUid = process.env.SHIPIT_SESSION_WORKER_UID;
 
-  function makeSpec(root: string, hash: string): DepDirOverlaySpec {
-    const overlayDir = path.join(root, "sessions", "sess-1", "overlay", hash);
+  function makeSpec(root: string, hash: string, generation = 0): DepDirOverlaySpec {
+    const scopeDir = path.join(root, "sessions", "sess-1", "overlay", hash);
+    const genDir = path.join(scopeDir, `g${generation}`);
     return {
       volumeName: `shipit-sess-1_overlay-${hash}`,
-      lowerdir: `/daemon/overlay-base/${hash}/g0`,
-      upperdir: `/daemon/${path.relative("/", path.join(overlayDir, "upper"))}`,
-      workdir: `/daemon/${path.relative("/", path.join(overlayDir, "work"))}`,
+      lowerdir: `/daemon/overlay-base/${hash}/g${generation}`,
+      upperdir: `/daemon/${path.relative("/", path.join(genDir, "upper"))}`,
+      workdir: `/daemon/${path.relative("/", path.join(genDir, "work"))}`,
       depDir: "node_modules",
       mountPath: "/workspace/node_modules",
       scope: { repoUrl: "https://x/y.git", runtimeKey: "rk", depDir: "node_modules" },
       scopeHash: hash,
-      generation: 0,
+      generation,
       orchDirs: {
-        lowerdir: path.join(root, "overlay-base", hash, "g0"),
-        upperdir: path.join(overlayDir, "upper"),
-        workdir: path.join(overlayDir, "work"),
+        lowerdir: path.join(root, "overlay-base", hash, `g${generation}`),
+        upperdir: path.join(genDir, "upper"),
+        workdir: path.join(genDir, "work"),
+        sessionScopeDir: scopeDir,
       },
     };
+  }
+
+  /**
+   * A session state dir laid out the way `sessionStateDirForWorkspace` expects
+   * (`<sessionDir>/workspace` + `<sessionDir>/state/shared/`), pre-seeded with an
+   * install marker — the state a rotation has to invalidate.
+   */
+  function makeWorkspaceWithMarker(root: string): { workspaceDir: string; markerFile: string } {
+    const workspaceDir = path.join(root, "sessions", "sess-1", "workspace");
+    fs.mkdirSync(workspaceDir, { recursive: true });
+    const markerFile = path.join(
+      sessionSharedStateDir(sessionStateDirForWorkspace(workspaceDir)),
+      INSTALL_MARKER_FILE,
+    );
+    fs.mkdirSync(path.dirname(markerFile), { recursive: true });
+    fs.writeFileSync(markerFile, "{}");
+    return { workspaceDir, markerFile };
   }
 
   afterEach(() => {
@@ -981,6 +1005,97 @@ describe("prepareOverlayDirs (planning#147)", () => {
     const spec = makeSpec(tmpDir, "cccc3333");
     delete spec.orchDirs; // mock/unit configs have no orchestrator state dir
     expect(() => prepareOverlayDirs([spec])).not.toThrow();
+  });
+
+  // -------------------------------------------------------------------------
+  // Base-generation rotation (ops finding 2026-08-17)
+  // -------------------------------------------------------------------------
+
+  it("reaps the superseded generation's upper/work when the base generation rotated", () => {
+    delete process.env.SHIPIT_SESSION_WORKER_UID;
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ovl-rot-"));
+    const hash = "dddd4444";
+
+    // The session last ran over g262 and wrote an install delta into its upper.
+    const old = makeSpec(tmpDir, hash, 262);
+    prepareOverlayDirs([old]);
+    const staleFile = path.join(old.orchDirs!.upperdir, ".package-lock.json");
+    fs.writeFileSync(staleFile, "{}");
+
+    // A publish advanced the pointer while the session slept; the next container
+    // create pins g265 as its lowerdir.
+    const next = makeSpec(tmpDir, hash, 265);
+    prepareOverlayDirs([next]);
+
+    // The g262 upper — valid only over the lower that produced it — is gone, and
+    // the new generation gets its own empty upper/work.
+    expect(fs.existsSync(path.dirname(old.orchDirs!.upperdir))).toBe(false);
+    expect(fs.existsSync(staleFile)).toBe(false);
+    expect(fs.readdirSync(next.orchDirs!.upperdir)).toEqual([]);
+    expect(fs.existsSync(next.orchDirs!.workdir)).toBe(true);
+    // Only the current generation remains under the session's scope dir.
+    expect(fs.readdirSync(next.orchDirs!.sessionScopeDir)).toEqual(["g265"]);
+  });
+
+  it("drops the install marker on rotation, so agent.install re-validates over the new base", () => {
+    delete process.env.SHIPIT_SESSION_WORKER_UID;
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ovl-rot-"));
+    const hash = "eeee5555";
+    const { workspaceDir, markerFile } = makeWorkspaceWithMarker(tmpDir);
+
+    prepareOverlayDirs([makeSpec(tmpDir, hash, 1)], { workspaceDir });
+    // No rotation yet — the marker (and the fast skip it enables) must survive.
+    expect(fs.existsSync(markerFile)).toBe(true);
+
+    prepareOverlayDirs([makeSpec(tmpDir, hash, 2)], { workspaceDir });
+    // Rotated: the marker claimed deps that lived in the now-reaped upper. The
+    // dep dir remounts over a POPULATED base, so overlay-dep-check.ts would see
+    // no contradiction and the install would wrongly skip (planning#296).
+    expect(fs.existsSync(markerFile)).toBe(false);
+  });
+
+  it("keeps the marker when a second dep dir rotates nothing", () => {
+    delete process.env.SHIPIT_SESSION_WORKER_UID;
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ovl-rot-"));
+    const { workspaceDir, markerFile } = makeWorkspaceWithMarker(tmpDir);
+    // Two dep dirs, both cold: nothing superseded anywhere.
+    prepareOverlayDirs([makeSpec(tmpDir, "1111aaaa", 3), makeSpec(tmpDir, "2222bbbb", 0)], {
+      workspaceDir,
+    });
+    expect(fs.existsSync(markerFile)).toBe(true);
+    // Re-creating the container at the SAME generations is not a rotation.
+    prepareOverlayDirs([makeSpec(tmpDir, "1111aaaa", 3), makeSpec(tmpDir, "2222bbbb", 0)], {
+      workspaceDir,
+    });
+    expect(fs.existsSync(markerFile)).toBe(true);
+  });
+
+  // docs/272 — the upperdir's mode is the MERGED dep dir's mode, so a Compose
+  // service at a different uid needs it group-writable. selfHealWorkspaceOwnership
+  // asserts that on boot but runs before this function, so a rotation's brand-new
+  // upperdir has to get it here or stay umask-default until the boot after.
+  it("leaves a freshly created upperdir group-writable", () => {
+    const myUid = process.getuid?.();
+    if (myUid === undefined) return; // not POSIX — skip
+    process.env.SHIPIT_SESSION_WORKER_UID = String(myUid);
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ovl-rot-"));
+    const spec = makeSpec(tmpDir, "6666ffff", 9);
+    prepareOverlayDirs([spec]);
+    expect(fs.statSync(spec.orchDirs!.upperdir).mode & 0o020).toBe(0o020);
+  });
+
+  it("reaps only the rotating dep dir's superseded upper, not its sibling's", () => {
+    delete process.env.SHIPIT_SESSION_WORKER_UID;
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "ovl-rot-"));
+    const rootNm = makeSpec(tmpDir, "3333cccc", 7);
+    const vendor = makeSpec(tmpDir, "4444dddd", 2);
+    prepareOverlayDirs([rootNm, vendor]);
+    fs.writeFileSync(path.join(vendor.orchDirs!.upperdir, "keep"), "x");
+
+    // Only the first dep dir's scope published a new generation.
+    prepareOverlayDirs([makeSpec(tmpDir, "3333cccc", 8), vendor]);
+    expect(fs.readdirSync(rootNm.orchDirs!.sessionScopeDir)).toEqual(["g8"]);
+    expect(fs.existsSync(path.join(vendor.orchDirs!.upperdir, "keep"))).toBe(true);
   });
 });
 

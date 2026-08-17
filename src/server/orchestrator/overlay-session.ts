@@ -190,8 +190,14 @@ export interface DepDirOverlaySpec extends OverlaySpec {
    * here. Container creation mkdirs these right before creating the volume.
    * Absent when the populator has no orchestrator state dir (unit-test/mock
    * configurations).
+   *
+   * `sessionScopeDir` is the PARENT of the generation-scoped `upper`/`work` —
+   * `sessions/<id>/overlay/<scopeHash>/`, holding one `g<N>/` per generation this
+   * session has mounted. It is carried explicitly (rather than re-derived by
+   * path arithmetic) so `prepareOverlayDirs` can reap the superseded generations
+   * from it; see {@link supersededSessionOverlayLayers}.
    */
-  orchDirs?: { lowerdir: string; upperdir: string; workdir: string };
+  orchDirs?: { lowerdir: string; upperdir: string; workdir: string; sessionScopeDir: string };
 }
 
 /**
@@ -205,6 +211,106 @@ export interface DepDirOverlaySpec extends OverlaySpec {
 export const OVERLAY_SESSION_SUBDIR = "overlay";
 
 /**
+ * The per-session, per-dep-dir overlay dir: `sessions/<id>/overlay/<scopeHash>/`.
+ * Holds one {@link sessionOverlayGenDir} per base generation this session has
+ * mounted (usually exactly one — the superseded ones are reaped at the next
+ * container create).
+ */
+export function sessionOverlayScopeDir(root: string, sessionId: string, scopeHash: string): string {
+  return path.join(root, "sessions", sessionId, OVERLAY_SESSION_SUBDIR, scopeHash);
+}
+
+/**
+ * This session's `upper`/`work` parent for ONE base generation:
+ * `sessions/<id>/overlay/<scopeHash>/g<N>/`.
+ *
+ * **An upper layer is only valid over the lower it was built against.** Part of
+ * that is state naming specific lower *inodes* — copy-up origins and the
+ * `index/` entries under the workdir — which is what goes stale loudly. The
+ * larger part is quiet and needs no inode reference at all: a copied-up file, a
+ * whiteout and an opaque dir are keyed by PATH, so they go on shadowing whatever
+ * now sits at that path. Either way the kernel's own rule is that changing a
+ * layer under a live upper is undefined. The base is generational
+ * (`overlay-base/<hash>/g<N>`, see
+ * `overlayBaseGenDir`), and a publish rotates it while a session sleeps, so a
+ * generation-agnostic upper path would remount an old upper over a NEW lower on
+ * the session's next container start. Observed on the prod host as
+ * `overlayfs: failed to get index nlink (…, err=-61)` (ENODATA — the
+ * `trusted.overlay.nlink` xattr was written against a different lower), and
+ * silently as a torn dep tree: files the session had copied up keep shadowing
+ * the newer generation's versions of the same paths while everything it never
+ * touched comes from the new one.
+ *
+ * Keying the upper on the generation makes the rotation a fresh, empty upper
+ * instead — which is safe precisely because the dep-dir upper is a pure
+ * disposable cache (plan §"Disk cleanup"): it holds only the install delta, and
+ * the next install rebuilds it over the new base. `prepareOverlayDirs` pairs the
+ * reset with dropping the install marker, for the same reason
+ * `reclaimBlockedSessionCaches` does (planning#296) — an upper-less session over a
+ * populated lower is NOT present-but-empty, so `overlay-dep-check.ts` would not
+ * fire and `agent.install` would wrongly skip.
+ *
+ * See {@link supersededSessionOverlayLayers} for what a rotation reaps, including
+ * the pre-`g<N>` layout every session on disk at upgrade time still has.
+ */
+export function sessionOverlayGenDir(
+  root: string,
+  sessionId: string,
+  scopeHash: string,
+  generation: number,
+): string {
+  return path.join(sessionOverlayScopeDir(root, sessionId, scopeHash), `g${generation}`);
+}
+
+/**
+ * Absolute paths of the per-session upper layers under one dep dir's overlay
+ * scope dir that the container about to be created will NOT mount — the ones
+ * whose bytes are only meaningful over a lower the daemon is no longer going to
+ * mount. Two kinds:
+ *
+ *  - **a superseded `g<M>/`** — the session slept through a publish and its
+ *    previous generation's upper is still sitting beside the `g<N>/` it is
+ *    about to use; and
+ *  - **the legacy bare `upper/` + `work/`** — the generation-agnostic layout
+ *    every session used before this scope-dir gained its `g<N>` level. Counting
+ *    them is what makes the upgrade itself safe: without it, the first container
+ *    create after the deploy would move every live session onto a fresh, empty
+ *    `g<N>/upper` while its install marker still claimed those deps were
+ *    installed — silently the dep-less session `reclaimBlockedSessionCaches`
+ *    exists to prevent (planning#296). Counted, the same create drops the marker
+ *    and `agent.install` re-validates.
+ *
+ * Returns `[]` when the scope dir is absent (a cold session) or unreadable, and
+ * matches only those exact names, so nothing else that ever lands there becomes
+ * a delete candidate.
+ *
+ * **Nothing reaped here can be a live mount**, which is not obvious because it
+ * takes two calls to see: the sole caller runs inside `createContainer`, and a
+ * session reaches `createContainer` only with no container of its own — either it
+ * never had one, or `destroyContainer` ran first and removed the Docker overlay
+ * volume, which is what makes the daemon unmount the overlay. A session whose
+ * pre-upgrade container is still running was re-adopted through `rediscover`,
+ * which repopulates in-memory state and never creates a container, so its legacy
+ * dirs are not visited at all.
+ */
+export function supersededSessionOverlayLayers(
+  sessionScopeDir: string,
+  keepGeneration: number,
+): string[] {
+  let entries: fs.Dirent[];
+  try {
+    entries = fs.readdirSync(sessionScopeDir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const keep = `g${keepGeneration}`;
+  return entries
+    .filter((e) => e.isDirectory())
+    .filter((e) => (/^g\d+$/.test(e.name) && e.name !== keep) || e.name === "upper" || e.name === "work")
+    .map((e) => path.join(sessionScopeDir, e.name));
+}
+
+/**
  * Build **N** overlay specs — one per declared dep dir — for an eligible session.
  * Pure: given the base `(repo, runtime)` scope, the dep dirs (from `agent.dep-dirs`),
  * and the daemon-host mountpoint of the workspace **state** volume (where the
@@ -214,9 +320,15 @@ export const OVERLAY_SESSION_SUBDIR = "overlay";
  *
  * Each dep dir gets its own base (`overlay-base/<scopeHash>`, scopeHash keyed on the
  * dep-dir relpath) and its own per-session upper/work under
- * `sessions/<id>/overlay/<scopeHash>/` — so two dep dirs never share an upperdir
+ * `sessions/<id>/overlay/<scopeHash>/g<N>/` — so two dep dirs never share an upperdir
  * (the kernel forbids it) and a runtime change rotates the scope (and thus the upper)
  * for free.
+ *
+ * The trailing `g<N>` is the same base generation the lowerdir pins, so the upper
+ * rotates with the lower it was built against on THIS axis too — the one an
+ * unchanged runtime key leaves open, since a publish advances the generation
+ * without touching the scope hash. See {@link sessionOverlayGenDir} for why
+ * carrying an upper across a lower change is wrong.
  */
 export function buildOverlaySpecs(args: {
   sessionId: string;
@@ -246,9 +358,9 @@ export function buildOverlaySpecs(args: {
   return depDirs.map((depDir) => {
     const scopeHash = overlayScopeHash(scope.repoUrl, scope.runtimeKey, depDir);
     const generation = generationForScope(scopeHash);
-    const sessionOverlayDir = path.join(volumeMountpoint, "sessions", sessionId, OVERLAY_SESSION_SUBDIR, scopeHash);
+    const sessionOverlayDir = sessionOverlayGenDir(volumeMountpoint, sessionId, scopeHash, generation);
     const orchSessionOverlayDir = stateRoot
-      ? path.join(stateRoot, "sessions", sessionId, OVERLAY_SESSION_SUBDIR, scopeHash)
+      ? sessionOverlayGenDir(stateRoot, sessionId, scopeHash, generation)
       : undefined;
     return {
       volumeName: overlayVolumeName(sessionId, depDir),
@@ -266,6 +378,7 @@ export function buildOverlaySpecs(args: {
               lowerdir: overlayBaseGenDir(stateRoot, scopeHash, generation),
               upperdir: path.join(orchSessionOverlayDir, "upper"),
               workdir: path.join(orchSessionOverlayDir, "work"),
+              sessionScopeDir: sessionOverlayScopeDir(stateRoot, sessionId, scopeHash),
             },
           }
         : {}),

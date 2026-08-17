@@ -280,8 +280,35 @@ Net: aggregate disk drops sharply (shared base vs. per-session copies), resource
 (N small volumes + per-dep-dir bases), per-session uppers become **safe to drop**, and the only surface
 needing careful GC is "don't reap a base that's a live lowerdir."
 
+**The per-session upper is keyed by base generation (ops finding, 2026-08-17).** An upper layer is
+only valid over the lower it was built against. Part of that binding names specific lower *inodes*
+(copy-up origins, the `index/` entries under the workdir) and is what goes stale loudly; the larger
+part is quiet and needs no inode reference at all — a copied-up file, a whiteout and an opaque dir
+are keyed by PATH, so they go on shadowing whatever now sits there. Either way the kernel's own rule
+is that changing a layer under a live upper is undefined. The scope hash rotates the upper for free
+on a **runtime** change — but a **publish** advances the base generation without touching the scope
+hash, so a session that slept through one used to remount its old upper over a *different* lowerdir.
+On the prod host that surfaced as `overlayfs: failed to get index nlink (…, err=-61)` (ENODATA: the
+`trusted.overlay.nlink` xattr was written against a different lower; 33 kernel lines in 2 days across
+a scope that had rotated g251 → g265), and — the part the warning does not name — as a **dep tree torn
+between two generations**: paths the session had copied up kept shadowing the newer generation's
+versions of the same files while everything it never touched came from the new one.
+
+The upper is therefore `sessions/<id>/overlay/<scopeHash>/g<N>/{upper,work}` — the same `g<N>` the
+lowerdir pins. A rotation is a fresh empty upper, which is safe precisely because of the
+disposable-upper property above. `prepareOverlayDirs` reaps the superseded `g<M>/` at the next
+container create and, in the same step, **drops the install marker** — for the reason
+`reclaimBlockedSessionCaches` documents (planning#296): the dep dir remounts over a *populated* base, so
+it is not present-but-EMPTY, `overlay-dep-check.ts` sees no contradiction, and a still-matching
+marker would skip `agent.install`, leaving the session with the base's deps and none of its own.
+The base-hit fast path survives the rotation anyway: `preStampInstallMarker` runs post-start and
+re-stamps when the NEW generation's pointer genuinely matches this checkout, so a "main unchanged"
+session still pays ~0 and only a session the new base does **not** satisfy pays a delta install.
+The pre-`g<N>` layout (a bare `upper/` + `work/` under the scope dir) counts as superseded too, so
+the upgrade itself takes the marker drop rather than silently emptying every live session's upper.
+
 **On-host upperdir reclaim — `sessions/<id>/overlay/` (planning#194).** The upper/work **bytes** live on
-the host state volume at `sessions/<id>/overlay/<scopeHash>/{upper,work}` — a **sibling** of the
+the host state volume at `sessions/<id>/overlay/<scopeHash>/g<N>/{upper,work}` — a **sibling** of the
 `workspace/` checkout, never inside it (the kernel forbids an upperdir within its own lowerdir; see
 `buildOverlaySpecs` / `OVERLAY_SESSION_SUBDIR`). Removing the Docker overlay *volume* on teardown
 drops only the mount descriptor, not these host bytes. Every disk-reclaim path that wipes a session's

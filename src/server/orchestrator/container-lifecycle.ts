@@ -26,6 +26,7 @@ import {
 import { pluginsRoot } from "./plugin-generations.js";
 import {
   CONTAINER_SESSION_STATE_DIR,
+  INSTALL_MARKER_FILE,
   sessionStateDirForWorkspace,
   sessionSharedStateDir,
 } from "./session-state-dir.js";
@@ -38,7 +39,11 @@ import {
   perSessionCredentialsSubpath,
 } from "./session-credentials.js";
 import { createOverlayVolume, removeOverlayVolume } from "./overlay-volume.js";
-import { preStampInstallMarker, type DepDirOverlaySpec } from "./overlay-session.js";
+import {
+  preStampInstallMarker,
+  supersededSessionOverlayLayers,
+  type DepDirOverlaySpec,
+} from "./overlay-session.js";
 import {
   chownToSessionWorker,
   handWorkspaceBackToWorker,
@@ -727,9 +732,59 @@ export async function waitForWorkerHealth(workerUrl: string): Promise<void> {
  * populated base generation is made worker-owned at publish time (the base
  * materialization's recursive chown), so copy-up of an existing dep preserves
  * worker ownership and stays writable.
+ *
+ * **Superseded-generation reset (the ops finding of 2026-08-17).** The per-session
+ * upper/work dirs are keyed by the base generation they were built against
+ * (`sessionOverlayGenDir`), so a session that slept through a publish arrives here
+ * with its previous `g<M>/` still on disk beside the `g<N>/` it is about to mount.
+ * Those bytes are only meaningful over the lower that produced them — carrying them
+ * across gave the prod host its `overlayfs: failed to get index nlink (…, err=-61)`
+ * warnings and, worse, a merged dep tree torn between two generations. They are a
+ * pure install-delta cache, so they are simply reaped.
+ *
+ * **The install marker goes with them**, for the reason `reclaimBlockedSessionCaches`
+ * documents (planning#296): after the reset the session's dep dir remounts over a
+ * *populated* base, so it is not present-but-EMPTY, `overlay-dep-check.ts` sees no
+ * contradiction, and a still-matching marker would skip `agent.install` — leaving
+ * the session with the base's deps and none of its own. Removed marker FIRST, same
+ * ordering rule: a half-failure must land on "no marker, deps present" (a harmless
+ * extra install), never "marker present, deps gone". `preStampInstallMarker` then
+ * re-stamps post-start if the NEW generation genuinely satisfies this checkout, so
+ * the base-hit fast path survives a rotation instead of paying a full install.
  */
-export function prepareOverlayDirs(specs: DepDirOverlaySpec[] | undefined): void {
+export function prepareOverlayDirs(
+  specs: DepDirOverlaySpec[] | undefined,
+  opts: { workspaceDir?: string; sessionId?: string } = {},
+): void {
   if (!specs) return;
+  const tag = opts.sessionId ? `[overlay:${opts.sessionId}]` : "[overlay]";
+  const superseded = specs.flatMap((spec) =>
+    spec.orchDirs
+      ? supersededSessionOverlayLayers(spec.orchDirs.sessionScopeDir, spec.generation)
+      : [],
+  );
+  if (superseded.length > 0) {
+    // Marker first — see the ordering rule in the docstring.
+    if (opts.workspaceDir) removeInstallMarkerForRotation(opts.workspaceDir);
+    for (const dir of superseded) {
+      try {
+        fs.rmSync(dir, { recursive: true, force: true });
+      } catch (err) {
+        // Best-effort: a leftover upper we could not remove is disk, not
+        // correctness — the mount below pins the new generation's own dirs.
+        console.warn(
+          `${tag} could not reap superseded session upper ${dir}:`,
+          err instanceof Error ? err.message : String(err),
+        );
+      }
+    }
+    const markerNote = opts.workspaceDir
+      ? " and dropped the install marker so agent.install re-validates over the new base"
+      : "";
+    console.log(
+      `${tag} base generation rotated — reset ${superseded.length} superseded upper layer(s)${markerNote}`,
+    );
+  }
   for (const spec of specs) {
     if (!spec.orchDirs) continue;
     fs.mkdirSync(spec.orchDirs.lowerdir, { recursive: true });
@@ -748,8 +803,40 @@ export function prepareOverlayDirs(specs: DepDirOverlaySpec[] | undefined): void
     shareTreeOnce(spec.orchDirs.lowerdir, { beside: true });
     // Hand the per-session copy-on-write dirs to the worker uid so the agent's
     // `npm install` of a new dep lands in the upper as the worker, not root.
+    chownToSessionWorker(path.dirname(spec.orchDirs.upperdir));
     chownToSessionWorker(spec.orchDirs.upperdir);
     chownToSessionWorker(spec.orchDirs.workdir);
+    // docs/272 — the upperdir's own mode IS the merged dep dir's mode (overlayfs
+    // takes the merged root from the upper once it exists), so a Compose service
+    // at a different uid can only create its `node_modules/.vite`-style cache if
+    // this dir is group-writable. `selfHealWorkspaceOwnership` asserts that on
+    // every boot, but it runs BEFORE this function — so on a rotation it sees an
+    // upperdir that does not exist yet and the freshly-mkdir'd one would stay at
+    // the umask default until the boot after. Idempotent and O(1) on an empty
+    // dir; a no-op in the legacy root runtime.
+    reconcileDepDirCacheOwnership(spec.orchDirs.upperdir);
+  }
+}
+
+/**
+ * Drop this session's `.install-done` marker because its overlay lower rotated
+ * under it (see {@link prepareOverlayDirs}). Best-effort and never throws — a
+ * marker we failed to remove costs a skipped install we would rather have run,
+ * which the worker's own gate (`overlay-dep-check.ts`) still backstops for the
+ * empty-dep-dir case; throwing here would fail container creation outright.
+ */
+function removeInstallMarkerForRotation(workspaceDir: string): void {
+  try {
+    const markerFile = path.join(
+      sessionSharedStateDir(sessionStateDirForWorkspace(workspaceDir)),
+      INSTALL_MARKER_FILE,
+    );
+    fs.rmSync(markerFile, { force: true });
+  } catch (err) {
+    console.warn(
+      "[overlay] could not drop the install marker after a base-generation rotation:",
+      err instanceof Error ? err.message : String(err),
+    );
   }
 }
 
@@ -1072,7 +1159,12 @@ export async function createContainer(
     // hands the per-session upper/work dirs to the worker uid so the non-root agent
     // can `npm install` into the overlay (planning#147).
     if (config.overlaySpecs) {
-      prepareOverlayDirs(config.overlaySpecs);
+      // `workspaceDir` lets the rotation reset drop this session's install
+      // marker along with the superseded upper — see prepareOverlayDirs.
+      prepareOverlayDirs(config.overlaySpecs, {
+        workspaceDir: config.workspaceDir,
+        sessionId: config.sessionId,
+      });
       for (const spec of config.overlaySpecs) {
         await createOverlayVolume(deps.docker, spec, deps.baseLabels());
       }

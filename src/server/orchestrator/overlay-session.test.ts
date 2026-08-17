@@ -18,6 +18,7 @@ import simpleGit from "simple-git";
 import {
   buildOverlaySpecs,
   depDirsForSession,
+  supersededSessionOverlayLayers,
   isPnpmRepo,
   preStampInstallMarker,
   pnpmStoreHash,
@@ -251,8 +252,8 @@ describe("buildOverlaySpecs", () => {
     expect(nm.mountPath).toBe("/workspace/node_modules");
     // No generation resolver → generation 0, the empty cold-start lowerdir.
     expect(nm.lowerdir).toBe(`${MP}/overlay-base/${hash}/g0`);
-    expect(nm.upperdir).toBe(`${MP}/sessions/${sessionId}/overlay/${hash}/upper`);
-    expect(nm.workdir).toBe(`${MP}/sessions/${sessionId}/overlay/${hash}/work`);
+    expect(nm.upperdir).toBe(`${MP}/sessions/${sessionId}/overlay/${hash}/g0/upper`);
+    expect(nm.workdir).toBe(`${MP}/sessions/${sessionId}/overlay/${hash}/g0/work`);
     expect(nm.volumeName).toBe(overlayVolumeName(sessionId, "node_modules"));
 
     expect(specs[1].mountPath).toBe("/workspace/packages/app/node_modules");
@@ -282,8 +283,9 @@ describe("buildOverlaySpecs", () => {
     });
     expect(withRoot.orchDirs).toEqual({
       lowerdir: `/workspace/overlay-base/${hash}/g0`,
-      upperdir: `/workspace/sessions/${sessionId}/overlay/${hash}/upper`,
-      workdir: `/workspace/sessions/${sessionId}/overlay/${hash}/work`,
+      upperdir: `/workspace/sessions/${sessionId}/overlay/${hash}/g0/upper`,
+      workdir: `/workspace/sessions/${sessionId}/overlay/${hash}/g0/work`,
+      sessionScopeDir: `/workspace/sessions/${sessionId}/overlay/${hash}`,
     });
     const [withoutRoot] = buildOverlaySpecs({
       sessionId, scope, depDirs: ["node_modules"], volumeMountpoint: MP,
@@ -306,6 +308,82 @@ describe("buildOverlaySpecs", () => {
     expect(nm.orchDirs?.lowerdir).toBe(`/workspace/overlay-base/${nmHash}/g4`);
     // The other dep dir's scope has no base yet — cold-start g0.
     expect(vendor.lowerdir).toBe(`${MP}/overlay-base/${vendor.scopeHash}/g0`);
+  });
+
+  // The ops finding of 2026-08-17: the lowerdir was generation-pinned while the
+  // upper/work dirs were keyed on the scope hash alone, so a publish that rotated
+  // the base remounted the OLD upper over a DIFFERENT lower.
+  it("keys the per-session upper/work on the SAME generation the lowerdir pins", () => {
+    const sessionId = "11112222333344445555";
+    const build = (generation: number) => buildOverlaySpecs({
+      sessionId,
+      scope,
+      depDirs: ["node_modules"],
+      volumeMountpoint: MP,
+      stateRoot: "/workspace",
+      generationForScope: () => generation,
+    })[0];
+    const before = build(262);
+    const after = build(265);
+
+    const hash = overlayScopeHash(scope.repoUrl, scope.runtimeKey, "node_modules");
+    expect(before.upperdir).toBe(`${MP}/sessions/${sessionId}/overlay/${hash}/g262/upper`);
+    expect(after.upperdir).toBe(`${MP}/sessions/${sessionId}/overlay/${hash}/g265/upper`);
+    // The lower moved, so every per-session dir moved with it.
+    expect(after.lowerdir).not.toBe(before.lowerdir);
+    expect(after.upperdir).not.toBe(before.upperdir);
+    expect(after.workdir).not.toBe(before.workdir);
+    expect(after.orchDirs?.upperdir).not.toBe(before.orchDirs?.upperdir);
+    // …but the scope dir is stable, so the reset can find what it supersedes.
+    expect(after.orchDirs?.sessionScopeDir).toBe(before.orchDirs?.sessionScopeDir);
+  });
+});
+
+describe("supersededSessionOverlayLayers", () => {
+  const tmpDirs: string[] = [];
+  afterEach(() => {
+    for (const d of tmpDirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
+  });
+  function scopeDir(names: string[]): string {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ovl-gen-"));
+    tmpDirs.push(dir);
+    for (const n of names) fs.mkdirSync(path.join(dir, n), { recursive: true });
+    return dir;
+  }
+
+  it("returns every generation dir except the one about to be mounted", () => {
+    const dir = scopeDir(["g262", "g263", "g265"]);
+    expect(supersededSessionOverlayLayers(dir, 265).sort()).toEqual([
+      path.join(dir, "g262"),
+      path.join(dir, "g263"),
+    ]);
+  });
+
+  it("returns [] when the only generation present is the current one", () => {
+    const dir = scopeDir(["g265"]);
+    expect(supersededSessionOverlayLayers(dir, 265)).toEqual([]);
+  });
+
+  it("returns [] for an absent scope dir (a cold session)", () => {
+    expect(supersededSessionOverlayLayers("/nope/does/not/exist", 0)).toEqual([]);
+  });
+
+  it("ignores anything that is neither a generation dir nor the legacy layout", () => {
+    const dir = scopeDir(["g1", "gfoo", "index"]);
+    fs.writeFileSync(path.join(dir, "g9"), "a file, not a generation dir");
+    expect(supersededSessionOverlayLayers(dir, 2)).toEqual([path.join(dir, "g1")]);
+  });
+
+  // The upgrade case: every session on disk when this ships has the bare
+  // pre-`g<N>` layout. Counting it is what makes the first post-deploy container
+  // create drop the install marker — otherwise the session silently moves to an
+  // empty `g<N>/upper` while the marker still claims its deps are installed.
+  it("counts the legacy generation-agnostic upper/work as superseded", () => {
+    const dir = scopeDir(["upper", "work"]);
+    expect(supersededSessionOverlayLayers(dir, 3).sort()).toEqual([
+      path.join(dir, "upper"),
+      path.join(dir, "work"),
+    ]);
   });
 });
 
