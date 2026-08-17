@@ -20,7 +20,7 @@ import {
   type CredentialStatusWord,
 } from "../utils/credential-state.js";
 import { serviceLabel } from "../utils/service-label.js";
-import { allServices, nativeServiceForHarness } from "../../server/shared/catalogue/index.js";
+import { allServices, nativeServiceForHarness, subQuotaRefreshable } from "../../server/shared/catalogue/index.js";
 
 /**
  * Stable ordering of pills in the header.
@@ -103,8 +103,8 @@ interface SubscriptionLimitsBadgeProps {
 
 /**
  * Header badge group rendering one **pill per connected subscription** plus a
- * refresh button (Claude only — it's the one with an on-demand
- * `/api/oauth/usage` path). See docs/161 and
+ * refresh button, on the services whose quota can be re-read on demand
+ * (`subQuotaRefreshable`). See docs/161 and
  * docs/135-subscription-limits-badge/plan.md.
  *
  * docs/150-multiple-provider-subscriptions req 10 — quota is per account, so a provider with two connected
@@ -137,9 +137,13 @@ export function SubscriptionLimitsBadge({ limits, autoRefresh }: SubscriptionLim
           label={label}
           snapshot={snapshot}
           {...(attention ? { attention } : {})}
-          // Anthropic is the only service with an on-demand /api/oauth/usage
-          // refresh endpoint; every other group's numbers are event-fed only.
-          showRefresh={serviceId === "anthropic"}
+          // Only a service whose quota can be re-read on demand gets a button
+          // (planning#339). Codex's numbers are pushed during a turn and can
+          // only be received, so a button there would spin and change nothing.
+          // Asked of the catalogue rather than written out as `=== "anthropic"`,
+          // which is what left this and the two Settings rows to be found and
+          // changed by hand when GLM's reader landed.
+          showRefresh={subQuotaRefreshable(serviceId)}
           autoRefresh={autoRefresh}
         />
       ))}
@@ -564,17 +568,31 @@ function Meter({ shortLabel, longLabel, window, windowMs, fetchedAt, now }: Mete
  * Explanations for the outcomes a refresh can end on without producing new
  * numbers. Shown in the button's tooltip — the whole point is that a press
  * which changes nothing on screen still says why.
+ *
+ * planning#339 — named after the service rather than hard-coded to "Anthropic",
+ * now that GLM's plan has a reader too: a GLM pill reporting that *Anthropic*
+ * rate-limited it names the wrong vendor and sends the user to the wrong place.
+ * The two outcomes that are about the *credential* rather than the vendor say
+ * "credential", because it can be either a sign-in or a pasted key.
  */
-const OUTCOME_MESSAGE: Record<LimitsRefreshOutcome, string | null> = {
-  updated: null,
-  skipped: null,
-  locked: "Usage refresh rate-limited by Anthropic",
-  "rate-limited": "Usage refresh rate-limited by Anthropic",
-  "no-credentials": "This account has no usable sign-in — reconnect it in Settings",
-  "expired-token": "This account's sign-in expired — reconnect it in Settings",
-  failed: "Couldn't reach Anthropic's usage endpoint",
-  unavailable: "Usage refresh isn't available for this account",
-};
+function outcomeMessage(outcome: LimitsRefreshOutcome, serviceName: string): string | null {
+  switch (outcome) {
+    case "updated":
+    case "skipped":
+      return null;
+    case "locked":
+    case "rate-limited":
+      return `Usage refresh rate-limited by ${serviceName}`;
+    case "no-credentials":
+      return "This credential has no usable sign-in or key — fix it in Settings";
+    case "expired-token":
+      return "This credential's sign-in expired — reconnect it in Settings";
+    case "failed":
+      return `Couldn't reach ${serviceName}'s usage endpoint`;
+    case "unavailable":
+      return "Usage refresh isn't available for this credential";
+  }
+}
 
 /**
  * Per-subscription refresh button. Fires one on-demand `/api/oauth/usage` fetch
@@ -613,6 +631,7 @@ function LimitsRefreshButton({
   autoRefresh?: boolean;
 }) {
   const api = useApi();
+  const serviceName = serviceLabel(serviceId);
   const [refreshing, setRefreshing] = useState(false);
   const [problem, setProblem] = useState<string | null>(null);
   const now = Date.now();
@@ -637,13 +656,13 @@ function LimitsRefreshButton({
       // response (no routeId sent) has no single owner, so fall back to the
       // first result rather than attributing another account's failure here.
       const mine = res.results?.find((r) => r.routeId === routeId) ?? res.results?.[0];
-      setProblem(mine ? OUTCOME_MESSAGE[mine.outcome] ?? null : null);
+      setProblem(mine ? outcomeMessage(mine.outcome, serviceName) : null);
     } catch (err) {
       setProblem(err instanceof Error ? err.message : "Usage refresh failed");
     } finally {
       setRefreshing(false);
     }
-  }, [api, routeId, serviceId, throttleKey]);
+  }, [api, routeId, serviceId, serviceName, throttleKey]);
 
   // Fire-once-on-mount auto refresh. The ref (not the throttle map) is what
   // makes it once-per-mount: the map only bounds how often *any* mount is
@@ -665,7 +684,7 @@ function LimitsRefreshButton({
   // of one press, so it survives a remount.
   const title = locked
     ? `Usage refresh rate-limited — retry in ${lockCountdown}`
-    : problem ?? "Refresh usage from Anthropic";
+    : problem ?? `Refresh usage from ${serviceName}`;
 
   const failed = !locked && problem !== null;
 

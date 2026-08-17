@@ -4,7 +4,7 @@ import { XIcon } from "@phosphor-icons/react";
 import { ICON_SIZE } from "../../design-tokens.js";
 import type { AgentOption } from "../../agent-types.js";
 import type { AgentId, CredentialRoute, SubscriptionLimits, SubscriptionLimitsMap } from "../../../server/shared/types.js";
-import { getService, loginIntegrationForService, nativeServiceForHarness } from "../../../server/shared/catalogue/index.js";
+import { getService, loginIntegrationForService, nativeServiceForHarness, subQuotaRefreshable } from "../../../server/shared/catalogue/index.js";
 import { Button } from "../ui/button.js";
 import { DropdownMenuItem } from "../ui/dropdown-menu.js";
 import { SubscriptionLimitPill } from "../SubscriptionLimitsBadge.js";
@@ -843,7 +843,7 @@ export function ProviderAccountRows({
                       serviceId={account.serviceId}
                       routeId={account.id}
                       {...(snapshotFor(limits, account) ? { snapshot: snapshotFor(limits, account) } : {})}
-                      showRefresh={account.serviceId === "anthropic"}
+                      showRefresh={subQuotaRefreshable(account.serviceId)}
                     />
                   ) : undefined
                 }

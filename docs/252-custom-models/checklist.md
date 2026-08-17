@@ -39,10 +39,17 @@ table — a phase is checked off when its PR has merged.
       store/Settings key. Deferred out of phase 2 (the type was declared and unread); done
       now. The credential ROOT on disk stays harness-keyed on purpose, and a completed
       sign-in fans out via `refreshAuthForLogin` instead of naming one harness.
-- [ ] GLM's `zai-plan-usage` quota reader — tracked as **planning#339**. **Unblocked by
-      phase 6** — a provider now declares its own `(serviceId, billingMode)` and the registry
-      indexes on it, so this is an addition rather than a change. Req 15 stays unmet on
-      quota until it lands.
+- [x] GLM's `zai-plan-usage` quota reader (**planning#339**). `ZaiLimitsProvider` is built,
+      registered and under test, and `zai-plan-usage` has joined
+      `IMPLEMENTED_QUOTA_INTEGRATIONS`, so GLM's rows carry a usage read-out, a refresh
+      button, a plan tier and failover cutoffs. **Verified against a live coding-plan key**,
+      which is what turned it from plausible to correct: every community-reported field name
+      was wrong, and `usage` — read as a percentage — is the plan's ALLOWANCE, so the first
+      draft would have reported a plan at 0.05% as fully spent. The fail-closed rule that an
+      out-of-range value is a misread field rather than something to clamp is what caught it.
+      Both windows carry a true `startedAt` derived from the payload's own `unit`/`number`:
+      `unit: 3` is hours (measured), `unit: 6` is weeks (confirmed by the plan holder).
+      Req 15 is now met on GLM's quota.
 
 ## Phase 5 — Credential-failure policy
 
@@ -62,10 +69,11 @@ table — a phase is checked off when its PR has merged.
 - [x] Routing controls for a **string-backed** subscription group — the selection mode, on
       the card. Carried from phase 2.
 - [x] Cross-backend review, findings applied (see `plan.md`)
-- [ ] **Failover cutoffs** for a string-backed subscription. A cutoff is a percentage of a
-      reported quota and nothing reports one for these credentials until phase 6 builds
-      `zai-plan-usage`, so the control would be inert. Belongs with the quota reader
-      (**planning#339**), not with failover.
+- [x] **Failover cutoffs** for a string-backed subscription. A cutoff is a percentage of a
+      reported quota, so this waited on the quota reader (**planning#339**) rather than on
+      failover — and needed no code of its own when it landed. The control is gated on
+      `modeReportsQuota` and the string-credential walk already applies cutoffs, so adding
+      `zai-plan-usage` to the implemented set switched both on.
 
 ## Phase 3 — Spawn shaping and eligibility
 

@@ -21,9 +21,10 @@
  * they do not. A snapshot is recorded per route and gated only on the mode
  * being a subscription, so an Anthropic plan supplied as a token reports its 5h
  * and 7d windows exactly as an account does, and the string-delivered walk now
- * applies the cutoffs to it (`stringSelectionFor`). GLM's coding plan declares
- * `zai-plan-usage`, which has no reader yet (planning#339), so it still gets no
- * cutoffs — the original conclusion, reached for the right reason.
+ * applies the cutoffs to it (`stringSelectionFor`). GLM's coding plan is the
+ * case that proves the rule is about the quota and not the delivery shape: it
+ * had no cutoffs while `zai-plan-usage` was a declared id with no reader, and
+ * gained them — with no change here — the moment planning#339 built one.
  *
  * **docs/252 req 19 — the band is one row, and none of its copy was deleted.**
  * It was two stacked radios with a hint under each, a dashed rule, and a

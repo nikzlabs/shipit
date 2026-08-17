@@ -451,9 +451,12 @@ function stringSelectionFor(
      * never take it out, because a credential whose data says it is spent is
      * still the one to try when nothing else is left (docs/260-turn-level-account-routing req 9).
      *
-     * planning#339 is untouched: a service with no quota reader reports no
+     * A service with no quota reader needs no branch here: it reports no
      * snapshot, `limits[id]` is undefined, and both helpers answer "no
-     * opinion" — so GLM's coding plan behaves exactly as it does today.
+     * opinion". That is what let GLM's coding plan run through this walk
+     * unchanged while `zai-plan-usage` was a declared id with nothing behind
+     * it, and what let planning#339's reader switch its cutoffs on without
+     * touching a line of it.
      */
     const limits = deps.providerAccountManager?.subscriptionLimitsFor(
       selection.serviceId,

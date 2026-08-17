@@ -810,7 +810,7 @@ export function setAgentEnv(
   agentId: AgentId,
   key: string,
   value: string,
-): { agentId: AgentId; key: string; agents: AgentInfo[] } {
+): { agentId: AgentId; key: string; agents: AgentInfo[]; route?: CredentialRoute } {
   if (!agentId || !key || typeof value !== "string") {
     throw new ServiceError(400, "Invalid set_agent_env request");
   }
@@ -828,10 +828,17 @@ export function setAgentEnv(
   // second writer for the same fact, and the boot migration would keep moving
   // its writes across. Everything else — every `mcp__*` secret — is unchanged.
   const owner = credentialModeForStorageEnv(key);
-  if (owner) upsertSingleStringCredential(credentialStore, owner.serviceId, owner.billingMode, value);
-  else credentialStore.setAgentEnv(key, value);
+  // planning#339 — the written route travels back so the caller can refresh
+  // that credential's quota read-out. This is the SECOND writer of a
+  // string-delivered credential (the first is `POST /api/credential-routes`),
+  // and a reader that is only seeded from one of them shows a stale number for
+  // a key written through the other.
+  const route = owner
+    ? upsertSingleStringCredential(credentialStore, owner.serviceId, owner.billingMode, value)
+    : undefined;
+  if (!owner) credentialStore.setAgentEnv(key, value);
   agentRegistry.refreshAuth(agentId);
-  return { agentId, key, agents: listAgents(agentRegistry) };
+  return { agentId, key, agents: listAgents(agentRegistry), ...(route ? { route } : {}) };
 }
 
 // docs/150-multiple-provider-subscriptions req 19 — `startAuth` / `submitAuthCode` are gone with the singleton
