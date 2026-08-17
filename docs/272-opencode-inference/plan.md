@@ -165,9 +165,16 @@ Same picture on the Go base (`/zen/go/v1/chat/completions`,
     says a quota id whose reader reports nothing is acceptable).
 - Per-model `styles` authored only from measurement (live sweep); until the
   sweep, the safe launch is each model under the style its own CLI uses
-  (§3 table). `ModeCredential.carriers` needs a decision per mode once
-  measured — the docs/268 Phase-10 lesson (GLM/Anthropic sub-string leak) says
-  get this wrong and the picker offers 401s.
+  (§3 table). **Each mode's string credential needs an explicit `carriers` and
+  `targetOverride` decision at authoring time** (both are per-credential
+  fields on `ModeCredential`): whether Claude Code and Codex can authenticate
+  with the Zen key depends on which header the *server* accepts per style
+  (§3 shows the CLI sending `x-api-key` on `/messages` and Bearer elsewhere —
+  if the live sweep contradicts a harness's default header, that is a
+  `targetOverride` row, e.g. `ANTHROPIC_AUTH_TOKEN` instead of
+  `ANTHROPIC_API_KEY` for Claude). The docs/268 Phase-10 lesson
+  (GLM/Anthropic sub-string leak) says get this wrong and the picker offers
+  401s.
 - `HarnessDef.opencode` gains `nativeService: "opencode"` — deliberately
   deferred by docs/268's catalogue row ("would need honest ServiceDef rows —
   follow-up, not this PR"); this is that follow-up.
@@ -184,7 +191,8 @@ Same picture on the Go base (`/zen/go/v1/chat/completions`,
    `O_CC`/`A_MSG`/`O_RESP` — with a real key, from an open-egress box.
 2. Claude Code and Codex each driven at Zen (the cross-harness cells), incl.
    which header the server actually accepts (`x-api-key` vs Bearer on
-   `/messages`).
+   `/messages`) — the measurement that settles each credential's `carriers`
+   and any `targetOverride` (§6).
 3. Whether a usage/quota endpoint exists for Go caps (console API, response
    headers, 429 shape).
 4. OAuth device flow end-to-end: token shape on the wire, refresh, and whether
