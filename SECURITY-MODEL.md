@@ -132,7 +132,9 @@ be hostile.
   container creation. The agent's own broker routes (`/agent-ops/*`, which relay to the
   orchestrator with the worker's trusted session id injected) and its rendered `present`
   artifacts are **loopback-only** — a token does not open them. Everything else — the
-  terminal, agent start/kill/message, secrets push — requires the token. Without this,
+  terminal, agent start/kill/message, secrets push — requires the token, and a worker
+  that comes up without one **refuses to start** rather than serving those routes
+  unauthenticated (planning#421). Without this,
   session A could POST to B's worker and have B's worker speak to the orchestrator *as B*,
   passing the container-origin guard below (planning#313). See
   `docs/251-worker-trust-boundary/`.

@@ -254,14 +254,38 @@ describe("decideWorkerRequest", () => {
     });
   });
 
-  it("falls back to open for orchestrator routes when no token is configured", () => {
-    // Deliberate: an older orchestrator creating a newer worker image would set
-    // no SHIPIT_WORKER_TOKEN, and failing closed would 403 every call and brick
-    // the session. This is exactly the pre-guard behavior.
-    expect(decide({ url: "/agent/start", configuredToken: undefined })).toEqual({
-      allow: true,
-      reason: "no-token-configured",
+  it("planning#421: refuses every remote caller when no token is configured", () => {
+    // This used to ALLOW, as a compatibility fallback for a container created by
+    // an orchestrator that predates the token. Failing open there served the
+    // whole orchestrator-facing surface to anything on the session subnet.
+    for (const url of ["/agent/start", "/install", "/terminal/start", "/secrets"]) {
+      expect(decide({ url, configuredToken: undefined }), url).toEqual({
+        allow: false,
+        reason: "no-token-configured",
+      });
+    }
+  });
+
+  it("planning#421: a tokenless worker refuses /install from a peer container", () => {
+    // The dependency docs/271-agent-install-trust-boundary rests on and does not
+    // own: its `agent.install` gate sits at `runInstall`, not on a direct POST to
+    // the worker, and `compose-service-egress.ts` lets a contained plugin service
+    // reach the agent container. What keeps that POST out is this rule — so it
+    // gets a test rather than a paragraph in a plan.
+    const denied = decide({
+      url: "/install",
+      remoteAddress: "172.18.0.9",
+      configuredToken: undefined,
     });
+    expect(denied.allow).toBe(false);
+  });
+
+  it("planning#421: a tokenless worker still serves its own agent over loopback", () => {
+    // In-process test workers are the only tokenless population left, and they
+    // drive the worker over 127.0.0.1. Loopback buys nothing an agent with a
+    // shell in the container does not already have.
+    expect(decide({ url: "/agent/start", remoteAddress: "127.0.0.1", configuredToken: undefined }))
+      .toEqual({ allow: true, reason: "loopback" });
   });
 
   it("still closes the loopback-only routes when no token is configured", () => {
@@ -353,14 +377,15 @@ describe("decideWorkerRequest", () => {
     }
   });
 
-  it("planning#241: an unconfigured worker keeps its old lifecycle behavior", () => {
-    // Same fallback as the orchestrator-facing routes: in-process tests build a
-    // SessionWorker with no token and drive /agent/start over loopback, and a
-    // mid-deploy skew must degrade rather than fail to start turns.
-    for (const remoteAddress of ["127.0.0.1", OTHER_SESSION_IP]) {
-      const allowed = decide({ url: "/agent/start", remoteAddress, configuredToken: undefined });
-      expect(allowed.allow, remoteAddress).toBe(true);
-    }
+  it("planning#241: an unconfigured worker keeps its lifecycle behavior on LOOPBACK only", () => {
+    // Step 3 defers to the tokenless case, so an in-process test worker can still
+    // drive /agent/start over 127.0.0.1. planning#421 took the remote half away: the
+    // same call from another container is refused, not waved through.
+    const own = decide({ url: "/agent/start", remoteAddress: "127.0.0.1", configuredToken: undefined });
+    expect(own.allow).toBe(true);
+
+    const peer = decide({ url: "/agent/start", remoteAddress: OTHER_SESSION_IP, configuredToken: undefined });
+    expect(peer).toEqual({ allow: false, reason: "no-token-configured" });
   });
 
   it("exposes stable wire names for the header and env var", () => {

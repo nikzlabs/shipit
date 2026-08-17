@@ -48,7 +48,7 @@ import { ClaudeAdapter } from "./agents/claude/adapter.js";
 import { CodexAdapter } from "./agents/codex/adapter.js";
 import { OpencodeAdapter } from "./agents/opencode/adapter.js";
 import { registerAgentOpsRoutes } from "./agent-ops-routes.js";
-import { registerWorkerAuthGuard } from "./worker-auth-guard.js";
+import { registerWorkerAuthGuard, requireWorkerToken } from "./worker-auth-guard.js";
 import { normalizeAskQuestions } from "./ask-question.js";
 import type { OrchestratorClient } from "./orchestrator-client.js";
 import { ServiceRequestQueue } from "./service-request-queue.js";
@@ -98,8 +98,10 @@ export interface SessionWorkerDeps {
   createOrchestratorClient?: () => OrchestratorClient;
   /**
    * planning#313 — the per-session token the orchestrator presents on its calls.
-   * Defaults to `SHIPIT_WORKER_TOKEN` from the container env; injectable so the
-   * guard's remote-caller behavior is testable in-process.
+   * The container entry point resolves it from `SHIPIT_WORKER_TOKEN` and passes
+   * it here (planning#421 — it refuses to start without one, and the guard reads no
+   * environment of its own). Omitted only by in-process test workers, which are
+   * then reachable from loopback alone.
    */
   workerToken?: string;
 }
@@ -817,10 +819,26 @@ export const createWorkerAgent: WorkerAgentFactory = (agentId: AgentId) =>
 // Only auto-start when run directly (not when imported for testing)
 if (process.argv[1] && import.meta.url.endsWith(process.argv[1])) {
   const workspaceDir = process.env.WORKSPACE_DIR || CONTAINER_WORKSPACE_DIR;
+
+  // planning#421 — resolved HERE, before anything is built, because this block is
+  // the one place that knows this process is a real session-worker container:
+  // an in-process test worker never runs it and so is never subject to the
+  // requirement. A container with no token cannot authenticate its orchestrator,
+  // so it exits instead of serving (the exit is the whole fix; the guard's
+  // remote-caller denial is the second layer).
+  let workerToken: string;
+  try {
+    workerToken = requireWorkerToken(process.env);
+  } catch (err) {
+    console.error(`[session-worker] refusing to start: ${(err as Error).message}`);
+    process.exit(1);
+  }
+
   const worker = new SessionWorker({
     agentFactory: createWorkerAgent,
     port: Number(process.env.WORKER_PORT) || 9100,
     workspaceDir,
+    workerToken,
   });
 
   // docs/248 — honor the repo's `.nvmrc` / `engines.node`. Started here rather

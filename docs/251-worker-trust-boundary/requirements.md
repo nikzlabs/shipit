@@ -52,6 +52,13 @@ The hole is agent→**other agent's worker**, where the worker is the deputy.
    (containers outlive deploys — docs/113), so a skew must degrade to today's
    behavior rather than to a session that can no longer be driven.
 
+6. *(planning#421, added 2026-08-17)* A worker that cannot authenticate its
+   orchestrator MUST NOT serve its orchestrator-facing routes. "Cannot
+   authenticate" means no per-session token was configured; the worker must fail
+   **closed**, not fall back to the pre-guard behavior. This supersedes D3 — see
+   the receipt under [Resolved questions](#resolved-questions) for how it sits
+   with requirement 5.
+
 ## Decisions taken while implementing
 
 Recorded here rather than left implicit, since each goes past the literal ask.
@@ -77,6 +84,10 @@ Recorded here rather than left implicit, since each goes past the literal ask.
   Failing open is exactly the pre-fix behavior, so it is a strict
   non-regression — and D2 means requirement 1 still holds there.
 
+  **SUPERSEDED by requirement 6 (planning#421, 2026-08-17).** A tokenless worker now
+  refuses to start, and refuses every non-loopback caller if it is built anyway.
+  See plan.md §"Token resolution, and failing closed".
+
 - **D4 — local/dogfood mode is documented, not gated.** The report also notes
   that the orchestrator's container guard is deliberately inert without a
   container manager, so an in-process local agent could POST to any session id.
@@ -86,6 +97,27 @@ Recorded here rather than left implicit, since each goes past the literal ask.
   mode also has no worker and no `/agent-ops` host at all
   (`local-agent-mcp.ts:LOCAL_SHIPIT_BRIDGE`), so requirement 1 does not arise
   there. See plan.md §"Local mode".
+
+## Resolved questions
+
+- **2026-08-17 — is D3's fail-open fallback still wanted, given what now depends
+  on it?** No: fail closed. Asked and answered by the requester in planning#421, which
+  filed D3 as a defect after `docs/271-agent-install-trust-boundary` shipped a
+  gate resting on the token being required — "a paragraph is not something a
+  future change can fail". The requester also asked for the population to be
+  established first ("if none can [exist], this is a deletion rather than a
+  redesign") and named the two candidate meanings of closed, preferring refusing
+  to serve at all. Answer taken: refuse to serve, and delete the fallback rather
+  than build a graceful path for a population that no longer exists.
+
+  This does not weaken requirement 5, whose skew is *a container that outlives a
+  deploy*: such a container keeps running the image it was created from, so it
+  never runs the fail-closed code. The reverse pairing — this worker image
+  created by an orchestrator with no token to inject — needs an orchestrator
+  older than v0.3.0 (2026-08-04) and a container created inside that deploy's
+  build window. There, session creation fails and self-heals on the next
+  attempt after the deploy; no live session is bricked. Recorded as
+  requirement 6.
 
 ## Open questions
 

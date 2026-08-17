@@ -52,33 +52,22 @@ if (process.env.SESSION_EGRESS_ENFORCE === undefined) {
  * planning#313 — `SHIPIT_WORKER_TOKEN` is injected into EVERY session container
  * unconditionally (`container-lifecycle.ts:createContainer`, no sandbox/ops
  * branch) and is set on nothing else: CI runners and developer boxes never have
- * it. `registerWorkerAuthGuard` resolves its token as
- * `deps.token ?? env[WORKER_TOKEN_ENV]`, so a test meaning "a worker with no
- * token configured" silently picked up the *ambient container* token and ran the
- * guard in token-configured mode — `worker-auth-guard.test.ts`'s "keeps
- * /agent-ops closed even on a worker with no token configured" then got 403 on
- * the orchestrator leg where it asserts 200, failing only inside a session
- * container. Same class as the git-config injection above: a local-env artifact,
- * not a code defect.
+ * it. So inside a dogfood session container it is ambient, and any test code
+ * that reads it from `process.env` behaves differently there than in CI — the
+ * CI-INVISIBLE failure class this file exists to kill (same shape as the
+ * git-config injection above).
  *
- * Stripping it is safe for the whole suite because no server test wants the
- * ambient value — every test needing a token passes a literal one, and the
- * guard's env fallback is exercised through its injectable `env` dep. The
- * literal is spelled out — this file imports only side-effect-free catalogue
- * data (see the credential strip below) — and is pinned to `WORKER_TOKEN_ENV`
- * by an assertion in `shared/worker-auth.test.ts`.
- *
- * planning#241 made this line LOAD-BEARING, not just a tidy-up — do not narrow it to
- * the guard's own tests. Lifecycle routes (`/agent/start`, `/agent/kill`, …) now
- * require the token even from loopback, so a token-configured worker refuses
- * them. Roughly ten integration fixtures build an in-process `SessionWorker`
- * WITHOUT a token and drive `/agent/start` over loopback; with the ambient value
- * present they would silently become token-configured and 403 their own calls.
- * The failure is deliberately hard to read — `container-agent-wiring.test.ts`
- * surfaces it as `waitFor(agent.run()) timed out`, with only a stderr
- * `lifecycle-needs-token` line naming the cause — and it is CI-INVISIBLE,
- * because CI runners have no `SHIPIT_WORKER_TOKEN`. It reproduces only inside a
- * dogfood session container: exactly the class this strip was added to kill.
+ * planning#421 narrowed how far that can reach: `registerWorkerAuthGuard` no longer
+ * falls back to the environment at all, so a `SessionWorker` built without a
+ * `workerToken` is tokenless everywhere, and the ~ten integration fixtures that
+ * drive `/agent/start` over loopback no longer depend on this line. The single
+ * remaining reader is `requireWorkerToken`, called by the container entry point
+ * (never by a test) and given its env explicitly in its own tests. The strip
+ * stays as the cheap guarantee that a future `requireWorkerToken(process.env)`
+ * in a test cannot pass in a container and fail in CI. The literal is spelled
+ * out — this file imports only side-effect-free catalogue data (see the
+ * credential strip below) — and is pinned to `WORKER_TOKEN_ENV` by an assertion
+ * in `shared/worker-auth.test.ts`.
  */
 Reflect.deleteProperty(process.env, "SHIPIT_WORKER_TOKEN");
 
